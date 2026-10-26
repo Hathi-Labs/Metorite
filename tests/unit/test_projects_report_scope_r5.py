@@ -111,7 +111,8 @@ def test_a_bad_subject_shape_gets_422(subject: Any) -> None:
 
 #: WS-27bn RA-3 adds `waiting`: it reads the coordination of a whole scope.
 #: WS-27bn RA-4 adds `agent_runs`: it reads the runs of a whole scope.
-@pytest.mark.parametrize("section", ["outlook", "waiting", "agent_runs", "hygiene"])
+#: WS-27bn RA-5 adds `quality`: it reads the pull requests of a whole scope.
+@pytest.mark.parametrize("section", ["outlook", "waiting", "agent_runs", "quality", "hygiene"])
 def test_outlook_and_hygiene_refuse_a_subject(section: str) -> None:
     with pytest.raises(HTTPException) as err:
         rep.normalise_report_config({

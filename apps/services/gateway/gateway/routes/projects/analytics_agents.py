@@ -176,6 +176,12 @@ _PR_CLOSED_AT = (
 )
 
 
+#: :data:`_PR_CLOSED_AT` under a public name. WS-27bn RA-5
+#: (`analytics_quality.py`) reads the close time of a pull request from here.
+#: The merge rate and the "merged while red" count then read one time.
+PR_CLOSED_AT_SQL = _PR_CLOSED_AT
+
+
 def pr_closed_at(
     state: str | None, merged_at: datetime | None, pr_updated_at: datetime | None,
 ) -> datetime | None:

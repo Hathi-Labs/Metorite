@@ -430,6 +430,83 @@ const AGENT_RUNS: NonNullable<Sections["agent_runs"]> = {
   max_rows: 20,
 };
 
+/** `quality_body` for an admin: one failing pull request (WS-27bn RA-5). */
+const QUALITY: NonNullable<Sections["quality"]> = {
+  summary:
+    "8 agent pull requests merged and 2 closed with no merge in the last 14 days." +
+    " The merge rate is 80%, up from 70% in the 14 days before." +
+    " 3 agent pull requests are open now, and 1 fails their checks.",
+  on: true,
+  quality_seen: true,
+  days: 14,
+  prs: {
+    merged: 8,
+    closed: 2,
+    rate: 0.8,
+    merged_before: 7,
+    closed_before: 3,
+    rate_before: 0.7,
+    trend: "up",
+    open: 3,
+  },
+  checks: {
+    failing_total: 1,
+    failing: [
+      {
+        id: "tq",
+        task_number: 31,
+        title: "Fix the checks 8401",
+        project_id: "p1",
+        project_name: "Rig",
+        since: "2026-09-22T05:00:00+00:00",
+        age_hours: 50,
+        ref: "acme/rig#12",
+        url: "https://github.com/acme/rig/pull/12",
+        pr_title: "Fix it",
+        pr_state: "open",
+        agent: "Claude Code",
+        client_via: "mcp:claude.ai:claude-code",
+        member: "ana@example.test",
+        member_name: "Ana Rao",
+      },
+    ],
+    merged_red: 1,
+    merged_red_before: 0,
+  },
+  rework: {
+    reopened: {
+      agents: {
+        finished: 10,
+        reopened: 2,
+        finished_before: 8,
+        reopened_before: 1,
+        rate: 0.2,
+        rate_before: 0.125,
+        trend: "up",
+      },
+      people: {
+        finished: 20,
+        reopened: 1,
+        finished_before: 18,
+        reopened_before: 2,
+        rate: 0.05,
+        rate_before: 0.1111,
+        trend: "down",
+      },
+    },
+    retried: {
+      failed: 5,
+      retried: 3,
+      failed_before: 4,
+      retried_before: 1,
+      rate: 0.6,
+      rate_before: 0.25,
+      trend: "up",
+    },
+  },
+  max_rows: 5,
+};
+
 /**
  * Every section, in the shape `render_body` sends since R3a. Each carries one
  * SENTINEL figure (71xx to 77xx) that nothing else in the body repeats.
@@ -515,6 +592,7 @@ const SECTIONS: Required<Sections> = {
   pulse: PULSE,
   waiting: WAITING,
   agent_runs: AGENT_RUNS,
+  quality: QUALITY,
 };
 
 const SENTINEL: Record<keyof Sections, string> = {
@@ -530,6 +608,7 @@ const SENTINEL: Record<keyof Sections, string> = {
   pulse: "8101",
   waiting: "8201",
   agent_runs: "8301",
+  quality: "8401",
 };
 
 function body(sections: Sections): RenderedReportBody {
@@ -582,21 +661,22 @@ const PANEL_TITLE: Record<keyof Sections, string> = {
   pulse: "Team pulse",
   waiting: "Waiting on people",
   agent_runs: "Agent runs",
+  quality: "Quality",
 };
 
 // ── (a) The render ───────────────────────────────────────────────────────────
 
 describe("RenderedBody draws each section as its panel, then its table", () => {
-  it("draws all twelve panels and twelve tables in one report", () => {
+  it("draws all thirteen panels and thirteen tables in one report", () => {
     const html = draw(SECTIONS);
     for (const title of Object.values(PANEL_TITLE)) {
       expect(html, title).toContain(title);
     }
-    expect(html.split(', as a table').length).toBe(13);
+    expect(html.split(', as a table').length).toBe(14);
     // §6.6 D item 5. Each card has one table button in its header.
-    expect(html.match(/aria-label="Show as a table"/g)?.length).toBe(12);
+    expect(html.match(/aria-label="Show as a table"/g)?.length).toBe(13);
     // The panel names its region, so a screen reader announces the title.
-    expect(html.match(/<section[^>]*aria-labelledby=/g)?.length).toBe(12);
+    expect(html.match(/<section[^>]*aria-labelledby=/g)?.length).toBe(13);
   });
 
   it("pulse draws one card a person: the load bar, the status and three focus tasks", () => {
@@ -1112,6 +1192,7 @@ const PANELS = [
   "PulsePanel",
   "WaitingPanel",
   "AgentRunsPanel",
+  "QualityPanel",
 ];
 
 /** Everything that would make `RenderedBody` a second chart component. */
@@ -1130,13 +1211,13 @@ function handDrawnChart(source: string): string[] {
 describe("ReportsView draws with the Analytics panels, and draws nothing itself", () => {
   const source = readFileSync(join(__dirname, "ReportsView.tsx"), "utf-8");
 
-  it("imports the twelve panels from ./AnalyticsPanels", () => {
+  it("imports the thirteen panels from ./AnalyticsPanels", () => {
     const block = source.match(/import\s*\{([^}]*)\}\s*from\s*"\.\/AnalyticsPanels"/);
     expect(block, "no import from ./AnalyticsPanels").not.toBeNull();
     for (const panel of PANELS) expect(block![1]).toMatch(new RegExp(`\\b${panel}\\b`));
   });
 
-  it("renders each of the twelve", () => {
+  it("renders each of the thirteen", () => {
     for (const panel of PANELS) expect(source).toContain(`<${panel}`);
   });
 
