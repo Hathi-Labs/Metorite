@@ -48,9 +48,9 @@ const CLEAR = {
     agent_runs_seen: true,
     days: 14,
     window_start: "2026-09-17",
-    outcomes: { completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0 },
+    outcomes: { completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0, server_closed: 0 },
     ended_total: 0,
-    outcomes_before: { completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0 },
+    outcomes_before: { completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0, server_closed: 0 },
     series: [],
     success: { rate: null, completed: 0, rated: 0, rate_before: null, rated_before: 0, trend: null },
     silent: [],
@@ -190,5 +190,22 @@ describe("items 2 and 9: the HR lines", () => {
     const { parts } = layout({ conflicts: { ...CLEAR.conflicts, hr_visible: false } });
     expect(parts[0].notes).toContain(CONFLICTS_HR_HINT);
     expect(parts[0].notes).not.toContain(SECTION_CLEAR_LINES.conflicts);
+  });
+});
+
+describe("RA-4b: with agent runs off, no section says clear", () => {
+  it("the email prints the server's summary and no clear line", () => {
+    const off = "Agent runs are off for this organization, so no run is counted.";
+    const { parts } = layout({
+      agent_runs: { ...(CLEAR.agent_runs as object), on: false, summary: off },
+    });
+    expect(parts).toHaveLength(1);
+    expect(parts[0].head.lead).toContain(off);
+    expect(parts[0].notes).not.toContain(SECTION_CLEAR_LINES.agent_runs);
+    const waiting = layout({
+      waiting: { ...(CLEAR.waiting as object), on: false, summary: off },
+    });
+    expect(waiting.parts[0].head.lead).toContain(off);
+    expect(waiting.parts[0].notes).not.toContain(SECTION_CLEAR_LINES.waiting);
   });
 });

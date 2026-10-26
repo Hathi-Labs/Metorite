@@ -483,4 +483,6 @@ class TestRunsFlag:
         got = await _waiting(w, w.a)
         assert got["questions"] == [] and got["questions_total"] == 0
         assert got["answer_time"]["asked"] == 0
-        assert got["summary"] == "Nobody is waiting on a person."
+        assert got["on"] is False
+        # RA-4b. Never "nobody is waiting" while the questions are not read.
+        assert got["summary"] == "Agent runs are off for this organization, so no agent question is counted."
