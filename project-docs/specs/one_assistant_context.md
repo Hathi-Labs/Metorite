@@ -232,11 +232,16 @@ the start of the route. With less time left, OCR answers "too slow" and
 starts no child. So the route answers inside the 60 s of
 `read_email_attachment`.
 
-**The fetch that runs on (fix round 4).** A retry of the same read joins
-the running fetch and starts no second one. At most 2 fetches run on after
-their route answered. Above that count, the route cancels its fetch. Such
-a fetch holds a connection of the background lane (H-390), and it ends
-after 120 s in total. The member's hold stays taken until the fetch ends.
+**The fetch that runs on (fix rounds 4 and 5).** A retry of the same read
+joins the running fetch and starts no second one. At most 2 fetches run on
+after their route answered. Above that count, the route cancels its fetch,
+and a read that joined it answers the same 504. A fetch ends after 120 s in
+total. The member's hold stays taken until the fetch ends.
+
+The fetch holds a connection of the member lane, and the limit of 2 caps
+the extra connections. It takes no background mark (fix round 5). The H-390
+gate has 4 slots for sync, rules, classify and embed, and a read that
+waited there answered 504 before the gateway asked the provider.
 
 **Residual risk.**
 

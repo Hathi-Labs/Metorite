@@ -22,7 +22,6 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from acb_auth import UserContext, get_current_user
 from acb_common import db_busy
-from acb_common.db import mark_background
 from acb_common.public_address import host_is_public
 from acb_common.tenant_redis import (
     BINARY_POOL_MAX_CONNECTIONS,
@@ -692,9 +691,14 @@ TEXT_ROUTE_BUDGET_S = 55.0
 FETCH_TIMEOUT_S = 30.0
 
 #: The fetches that may run on after their route answered 504 (fix round 4).
-#: Each one holds a connection of the background lane (H-390). Above this
-#: count, the route cancels its fetch at its timeout, as in round 2.
+#: Each one holds a connection of the member lane, so this count caps the
+#: extra connections. Above it, the route cancels its fetch at its timeout,
+#: as in round 2. The fetch takes NO background mark (fix round 5): the
+#: H-390 gate has 4 slots for sync, rules, classify and embed, and a member's
+#: read that waited there answered 504 before the provider was asked.
 MAX_BACKGROUND_FETCHES = 2
+#: The 504 of a fetch that did not end in time, for each path that answers it.
+_SLOW_FETCH = "The mail provider did not give the file in time."
 #: The longest one fetch may run in total, also after its route answered.
 #: httpx bounds each read of the provider, not the whole download.
 BACKGROUND_FETCH_LIMIT_S = 120.0
@@ -793,7 +797,7 @@ async def attachment_text(
     With ``ATTACHMENT_OCR`` on, the route reads with OCR (WS-67 OA-3). It
     waits :data:`FETCH_TIMEOUT_S` for the fetch and then answers 504, while
     the fetch goes on in its own session and fills the bytes cache (fix
-    round 3). At most :data:`MAX_BACKGROUND_FETCHES` go on, in the background
+    round 3). At most :data:`MAX_BACKGROUND_FETCHES` go on, in the member
     lane. A retry of the same read joins the running fetch, and the member's
     hold stays taken until the fetch ends (fix round 4). OCR gets a deadline
     of :data:`TEXT_ROUTE_BUDGET_S` from the
@@ -829,17 +833,16 @@ async def attachment_text(
         return None
 
     async def _fetch_alone() -> Any:
-        """The owned fetch in a tenant session of its own (fix rounds 3, 4).
+        """The owned fetch in a tenant session of its own (fix rounds 3 to 5).
 
         It runs as a task that can outlive the route, so the session must be
-        its own: the route closes its session when it answers 504. It marks
-        itself background first (H-390), so it holds a connection of the
-        background lane and never one that members need. It ends after
+        its own: the route closes its session when it answers 504. It stays
+        in the member lane (fix round 5), and :data:`MAX_BACKGROUND_FETCHES`
+        caps the fetches that run on. It ends after
         :data:`BACKGROUND_FETCH_LIMIT_S` in total. ``TenantUnbound`` and a
         refused connect still reach main.py's handlers, because
         ``_fetch_for_text`` raises each fault of the database as it is.
         """
-        mark_background()
         async with _tenant_session() as own:
             return await asyncio.wait_for(
                 _fetch_owned_attachment(
@@ -911,6 +914,11 @@ async def _ocr_fetch(
     or is cancelled above it. A joined fetch took the hold of the request
     that started it, so this request takes its own hold for its parse, or
     answers busy.
+
+    The request that started a fetch can cancel it at its own timeout, above
+    the cap. A request that joined it then gets ``CancelledError``, which is
+    not an ``Exception``. It answers the same 504 (fix round 5), unless this
+    request itself is being cancelled.
     """
     running = _RUNNING_FETCHES.get(key)
     if running is None:
@@ -920,7 +928,15 @@ async def _ocr_fetch(
             asyncio.shield(job.task), aid, FETCH_TIMEOUT_S,
             on_timeout=lambda: _keep_or_cancel(job),
         )
-    got = await _fetch_for_text(asyncio.shield(running.task), aid, FETCH_TIMEOUT_S)
+    try:
+        got = await _fetch_for_text(asyncio.shield(running.task), aid, FETCH_TIMEOUT_S)
+    except asyncio.CancelledError:
+        me = asyncio.current_task()
+        if me is not None and me.cancelling():
+            raise
+        _log.warning("attachment_text.fetch_slow", aid=aid, seconds=FETCH_TIMEOUT_S,
+                     joined=True)
+        raise HTTPException(status_code=504, detail=_SLOW_FETCH) from None
     if not got.stopped and not hold.take():
         busy = AttachmentTextModel(**_base(got.row), kind="unreadable", reason=_BUSY_REASON)
         return _OwnedAttachment(row=got.row, stopped=busy)
@@ -947,9 +963,7 @@ async def _fetch_for_text(
         if on_timeout is not None:
             on_timeout()
         _log.warning("attachment_text.fetch_slow", aid=aid, seconds=seconds)
-        raise HTTPException(
-            status_code=504, detail="The mail provider did not give the file in time.",
-        ) from None
+        raise HTTPException(status_code=504, detail=_SLOW_FETCH) from None
     except Exception as exc:
         if _is_database_fault(exc):
             raise

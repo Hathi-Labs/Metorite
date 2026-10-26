@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import importlib.util
 import io
 import json
@@ -1760,9 +1761,10 @@ def _slow_provider(monkeypatch: pytest.MonkeyPatch, payload: bytes, seconds: flo
 
 class TestTheBackgroundFetch:
     """Fix round 4, P2. A fetch that runs on after its route holds a
-    database connection, so it is bounded: one for each read, at most
-    ``MAX_BACKGROUND_FETCHES`` in all, the background lane, and a total time
-    limit. The member's hold stays taken until it ends."""
+    database connection of the member lane, so it is bounded: one for each
+    read, at most ``MAX_BACKGROUND_FETCHES`` in all, and a total time limit.
+    The member's hold stays taken until it ends. Fix round 5: no background
+    mark, and a joined read whose fetch is cancelled answers 504."""
 
     async def test_a_retry_joins_the_running_fetch_and_starts_none(
         self, ocr_on, monkeypatch,
@@ -1824,10 +1826,12 @@ class TestTheBackgroundFetch:
         assert await _wait_until(lambda: not route._RUNNING_FETCHES, 5.0)
         assert not route._READING and not route._BACKGROUND_FETCHES
 
-    async def test_the_fetch_takes_the_background_lane(self, monkeypatch) -> None:
-        """H-390. The fetch of a read with OCR marks itself background before
-        its session opens, so it holds a connection of the lane. A read with
-        no OCR stays in the member lane."""
+    async def test_the_fetch_stays_in_the_member_lane(self, monkeypatch) -> None:
+        """Fix round 5, P2. The H-390 background gate has 4 slots for the
+        whole process, for sync, rules, classify and embed. A member's read
+        that queued there could wait 30 s and answer 504 before the provider
+        was asked. So the fetch of a read with OCR takes no background mark,
+        as the read with no OCR takes none."""
         from contextlib import asynccontextmanager
 
         from acb_common import db as acb_db
@@ -1849,8 +1853,59 @@ class TestTheBackgroundFetch:
         monkeypatch.setattr(get_settings(), "attachment_ocr", False, raising=False)
         route._READING.clear()
         await _text(att="44444444-4444-4444-8444-444444444444")
-        assert lanes == [True, False], lanes
-        assert acb_db._BACKGROUND.get() is False, "the mark leaked into the route"
+        assert lanes == [False, False], f"a read took the background lane: {lanes}"
+        assert acb_db._BACKGROUND.get() is False, "a mark leaked into the route"
+
+    async def test_a_joined_read_whose_fetch_is_cancelled_answers_504(
+        self, ocr_on, monkeypatch,
+    ) -> None:
+        """Fix round 5, LOW. Above the cap, the read that started a fetch
+        cancels it at its own timeout. A second read of the same file by the
+        same member, joined on that fetch, got ``CancelledError`` and a 500.
+        It answers the 504 of a slow fetch, long before its own timeout."""
+        from fastapi import HTTPException
+
+        h = _Harness(monkeypatch, filename="big.pdf", payload=_scan([["x"]]))
+        _slow_provider(monkeypatch, h.payload, 5.0)
+        monkeypatch.setattr(route, "MAX_BACKGROUND_FETCHES", 0)
+        monkeypatch.setattr(route, "FETCH_TIMEOUT_S", 0.3)
+        first = asyncio.ensure_future(_text())
+        assert await _wait_until(lambda: bool(route._RUNNING_FETCHES), 2.0)
+        monkeypatch.setattr(route, "FETCH_TIMEOUT_S", 10.0)  # the joined read's own wait
+        start = time.monotonic()
+        with pytest.raises(HTTPException) as joined:
+            await _text()
+        assert joined.value.status_code == 504
+        assert joined.value.detail == route._SLOW_FETCH
+        assert time.monotonic() - start < 3, "the joined read waited for its own timeout"
+        with pytest.raises(HTTPException) as owner:
+            await first
+        assert owner.value.status_code == 504
+        assert await _wait_until(lambda: not route._RUNNING_FETCHES, 2.0)
+        assert not route._READING and not route._BACKGROUND_FETCHES
+
+    async def test_a_joined_read_that_is_cancelled_itself_stays_cancelled(
+        self, ocr_on, monkeypatch,
+    ) -> None:
+        """The 504 is only for a fetch that another read cancelled. When the
+        joined read itself is cancelled, the cancel goes on, and the shared
+        fetch runs on for the read that started it."""
+        h = _Harness(monkeypatch, filename="big.pdf", payload=_scan([["x"]]))
+        _slow_provider(monkeypatch, h.payload, 1.0)
+        monkeypatch.setattr(route, "FETCH_TIMEOUT_S", 5.0)
+        first = asyncio.ensure_future(_text())
+        assert await _wait_until(lambda: bool(route._RUNNING_FETCHES), 2.0)
+        second = asyncio.ensure_future(_text())
+        await asyncio.sleep(0.1)
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+        job = next(iter(route._RUNNING_FETCHES.values()))
+        assert not job.task.cancelled(), "the joined read's cancel reached the fetch"
+        first.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await first
+        assert await _wait_until(lambda: not route._RUNNING_FETCHES, 5.0)
 
     async def test_a_fetch_ends_at_its_total_limit(self, ocr_on, monkeypatch) -> None:
         from fastapi import HTTPException
