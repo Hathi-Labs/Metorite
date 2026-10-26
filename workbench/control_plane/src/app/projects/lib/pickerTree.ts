@@ -51,6 +51,8 @@ export interface PickerNode {
 
 /** The task rule's refusal, for a folder. `destinations` decides which rows. */
 export const FOLDER_HOLDS_NO_TASKS = "A folder holds projects, not tasks.";
+/** The refusal of a team space in the task picker (`destinations.isTeamSpace`). */
+export const SPACE_HOLDS_NO_TASKS = "A space holds projects, not tasks.";
 
 /**
  * Why a row may not take the thing being placed, or null when it may. The
@@ -69,7 +71,13 @@ export function pickerNodes(roots: readonly ProjectNode[], rule?: PickRule): Pic
     const generations =
       stack.filter((n) => nodeKind(n.node) === "project").length +
       (nodeKind(row.node) === "project" ? 1 : 0);
-    const refusal = rule ? rule(row.node) : row.legal ? null : FOLDER_HOLDS_NO_TASKS;
+    const refusal = rule
+      ? rule(row.node)
+      : row.legal
+        ? null
+        : nodeKind(row.node) === "folder"
+          ? FOLDER_HOLDS_NO_TASKS
+          : SPACE_HOLDS_NO_TASKS;
     const entry: PickerNode = {
       node: row.node,
       id: row.node.id,

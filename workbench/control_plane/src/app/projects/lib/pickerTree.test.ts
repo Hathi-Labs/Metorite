@@ -7,6 +7,7 @@ import { destinations } from "./destinations";
 import {
   FOLDER_HOLDS_NO_TASKS,
   OPEN_ALL_BELOW,
+  SPACE_HOLDS_NO_TASKS,
   ancestorIds,
   initialExpanded,
   matchesTokens,
@@ -58,6 +59,26 @@ const TREE: ProjectNode[] = [
 ];
 
 const NODES = pickerNodes(TREE);
+
+describe("a space holds no tasks (2026-10-26)", () => {
+  it("refuses a team space by name and keeps the projects inside it", () => {
+    const space = NODES.find((n) => n.id === "works")!;
+    expect(space.pickable).toBe(false);
+    expect(space.refusal).toBe(SPACE_HOLDS_NO_TASKS);
+    expect(NODES.find((n) => n.id === "mfg")!.pickable).toBe(true);
+  });
+
+  it("keeps the folder refusal for a folder", () => {
+    expect(NODES.find((n) => n.id === "printing")!.refusal).toBe(FOLDER_HOLDS_NO_TASKS);
+  });
+
+  it("keeps a personal root pickable, because it holds the Inbox", () => {
+    const mine = pickerNodes([
+      { id: "me", name: "My tasks", personal: true } as ProjectNode,
+    ]);
+    expect(mine[0].pickable).toBe(true);
+  });
+});
 const byId = (id: string) => NODES.find((n) => n.id === id)!;
 
 describe("pickerNodes", () => {
@@ -153,9 +174,8 @@ describe("searchRows", () => {
 
   it("lets a word match an ancestor, so a space name lists its projects", () => {
     expect(ids("fracktory fdm")).toEqual(["fdm"]);
-    // Folders never appear: they hold no tasks.
+    // Folders and spaces never appear: they hold no tasks.
     expect(ids("fracktory")).toEqual([
-      "fracktory",
       "customers",
       "fdm",
       "sla",
@@ -177,7 +197,16 @@ describe("searchRows", () => {
   });
 
   it("prefers a hit at the start of a word over an earlier one inside a word", () => {
-    const nodes = pickerNodes([{ id: "a", name: "Reprint print" }, { id: "b", name: "Blueprints" }]);
+    const nodes = pickerNodes([
+      {
+        id: "s",
+        name: "Space",
+        children: [
+          { id: "a", name: "Reprint print" },
+          { id: "b", name: "Blueprints" },
+        ],
+      },
+    ]);
     const hits = searchRows(nodes, "print");
     expect(hits.map((h) => h.node.id)).toEqual(["a", "b"]);
     expect(hits[0].mark).toEqual([8, 13]);

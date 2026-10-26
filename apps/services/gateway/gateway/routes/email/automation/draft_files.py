@@ -64,6 +64,9 @@ UNREAD_NO_TEXT = "no text that can be read"
 UNREAD_KIND = "a type that cannot be read"
 UNREAD_SLOW = "not read in time"
 UNREAD_LIMIT = "over the limit of files"
+#: The text route answered ``kind="busy"``: the reader was in use. The file
+#: can read later, so it is not "a type that cannot be read".
+UNREAD_BUSY = "not read, because the reader was busy"
 
 
 @dataclass
@@ -159,9 +162,21 @@ async def _list_files(db: Any, message_id: str) -> list[Any]:
 
 
 async def _read_text(aid: str, user: UserContext) -> Any:
+    """The text of one file, with NO OCR (WS-67 OA-3 fix round 2).
+
+    The drafter reads up to six files inside one budget of 8 to 20 s
+    (:data:`READ_BUDGET_S` and its callers). One OCR read can take most of
+    the route's 55 s, so it would spend the budget, and the later files
+    would read as "not read in time". A rule draft also runs for an outside
+    sender's mail, so OCR here would let that sender hold the process-wide
+    OCR slot. So the drafter reads as with ``ATTACHMENT_OCR`` off, and a scan
+    reads as a file with no text. ``tests/unit/test_attachment_ocr.py``
+    (``TestTheCallers``) fails when a caller with a short budget can reach
+    OCR.
+    """
     from gateway.routes.email.transport.attachments import attachment_text  # noqa: PLC0415
 
-    return await attachment_text(aid, user)
+    return await attachment_text(aid, user, ocr=False)
 
 
 async def _read_image(aid: str, user: UserContext, mime: str) -> str | None:
@@ -247,7 +262,8 @@ async def load_draft_files(
         body = str(getattr(answer, "text", "") or "").strip()
         if not body:
             kind = str(getattr(answer, "kind", "") or "")
-            out.unread.append((name, UNREAD_NO_TEXT if kind == "no_text" else UNREAD_KIND))
+            why = {"no_text": UNREAD_NO_TEXT, "busy": UNREAD_BUSY}.get(kind, UNREAD_KIND)
+            out.unread.append((name, why))
             continue
         room = min(MAX_FILE_CHARS, MAX_TOTAL_CHARS - total)
         if room <= 0:

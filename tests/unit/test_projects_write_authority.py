@@ -696,6 +696,11 @@ class TestTheMoves:
         a = _authority()
         r = await _new_space(live, VIEWER, "op8 task launder space", VIEWER)
         assert r.status_code == 201, r.text
+        # A space holds no tasks (2026-10-26), so the laundering target is a
+        # project inside the viewer's new space.
+        r = await _as(live, VIEWER, "POST", "/projects/nodes",
+                      {"name": "op8 task launder", "parent_project_id": r.json()["id"]})
+        assert r.status_code == 201, r.text
         space = r.json()["id"]
         theirs = _task(live, live.team, CREATOR, "op8 their task")
         r = await _as(live, VIEWER, "POST", f"/projects/tasks/{theirs}/move",
@@ -719,11 +724,14 @@ class TestTheMoves:
         assert r.status_code == 200, r.text
         assert str(_col(live, "pm_tasks", theirs, "project_id")) == space
         led = _task(live, live.team, CREATOR, "op8 lead moves task")
+        # Into a project inside Elsewhere: Elsewhere is a space, and a space
+        # holds no tasks (2026-10-26).
+        lands = _sub(live, "op8 lead lands", w.OWNER, live.elsewhere)
         r = await _as(live, LEAD, "POST", "/projects/tasks/move",
-                      {"task_ids": [led], "destination_project_id": live.elsewhere,
+                      {"task_ids": [led], "destination_project_id": lands,
                        "accept_drops": True})
         assert r.status_code == 200, r.text
-        assert str(_col(live, "pm_tasks", led, "project_id")) == live.elsewhere
+        assert str(_col(live, "pm_tasks", led, "project_id")) == lands
 
 
 class TestTheSuccessor:

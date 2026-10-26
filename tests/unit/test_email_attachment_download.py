@@ -77,11 +77,18 @@ def test_each_route_opens_its_session_outside_its_try() -> None:
     """Review round 1, P1. A ``try`` with ``except Exception`` around the
     session turned ``TenantUnbound`` and a refused connect into this route's
     500 or 502. The behaviour fence is
-    ``test_email_attachment_text.py::TestTheSessionFaultsReachTheHandlers``."""
-    for route in (m.download_attachment, m.attachment_text):
+    ``test_email_attachment_text.py::TestTheSessionFaultsReachTheHandlers``.
+
+    WS-67 OA-3 (fix round 3): the text route holds TWO session blocks. One
+    is the read with no OCR. The other is ``_fetch_alone``, the fetch of a
+    read with OCR, which runs as a task in a session of its own. Each sits
+    outside every ``try`` with handlers. The behaviour fence of the OCR one
+    is ``test_attachment_ocr.py::TestTheSessionFaultsWithOcr``."""
+    for route, count in ((m.download_attachment, 1), (m.attachment_text, 2)):
         blocks = _session_blocks(route)
-        assert len(blocks) == 1, route.__name__
-        assert blocks[0][1] is False, f"{route.__name__} opens its session inside a try"
+        assert len(blocks) == count, (route.__name__, len(blocks))
+        for _block, in_try in blocks:
+            assert in_try is False, f"{route.__name__} opens a session inside a try"
 
 
 def test_download_requires_auth() -> None:

@@ -693,6 +693,21 @@ is the fact.
 | project | its views, with the subtree folded in | yes | run-state dot | yes |
 | subproject | its own views | yes | run-state dot | yes |
 
+**Status of "Holds tasks: no": ENFORCED 2026-10-26 (WS-64).** Until then the
+server refused only a folder, and the chat filed six tasks on a space. The
+rule is one helper, `core.assert_holds_tasks`. Create, single move, bulk
+move and intake capture call it.
+
+A space is a team root. A personal root is not a space, because it holds the
+member's Inbox. `tree.move_node` refuses to move a project to the top while
+the project holds live tasks of its own. A task that already sits on a space
+still reads, edits and moves out.
+
+The chat refuses a space before its card and lists the projects inside. The
+picker and the Move dialog mark a space as no home for a task. Fences:
+`test_projects_space_holds_no_tasks.py`, its `_r8` twin,
+`test_projects_chat_space_rule.py` and `pickerTree.test.ts`.
+
 **A space is not a project.** It shows a roll-up, and it has none of a
 project's views. A folder does the same for the projects below it. A
 project that holds subprojects keeps its views and adds the subtree to

@@ -167,7 +167,7 @@ from gateway.kb_sources.base import (
     SourceError,
 )
 from gateway.kb_sources.google_drive import client as google_client
-from gateway.kb_sync import discovery, runs
+from gateway.kb_sync import discovery, owner_bump, runs
 
 _log = get_logger("kb_sync.engine")
 
@@ -680,6 +680,8 @@ async def run_source(
                               reconnect=True)
         _log.warning("knowledge.sync_needs_reconnect", organization_id=org,
                      source_id=source_id, code=out.error)
+        # KB-9b slice 2: after close() returned, so after its session closed.
+        await owner_bump.bump_owner(org, run.owner)
         return out
     except RateLimited:
         out = await run.close(runs.STATUS_STOPPED, "rate_limited")
@@ -690,11 +692,13 @@ async def run_source(
         out = await run.close(runs.STATUS_FAILED, exc.code or type(exc).__name__)
         _log.warning("knowledge.sync_failed", organization_id=org, source_id=source_id,
                      kind=kind, code=out.error)
+        await owner_bump.bump_owner(org, run.owner)  # KB-9b slice 2, outside the session
         return out
     except Exception as exc:  # a background run must not raise
         out = await run.close(runs.STATUS_FAILED, type(exc).__name__)
         _log.warning("knowledge.sync_failed", organization_id=org, source_id=source_id,
                      kind=kind, code=out.error)
+        await owner_bump.bump_owner(org, run.owner)  # KB-9b slice 2, outside the session
         return out
     out = await run.close_ok()
     _log.info("knowledge.sync_ok", organization_id=org, source_id=source_id, kind=kind,

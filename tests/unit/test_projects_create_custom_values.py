@@ -105,7 +105,9 @@ def roots_asked(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 def _project(db: FakeProjectsDB) -> Any:
-    project = db.seed_project(name="Ops")
+    # In a space: a space holds no tasks (`core.assert_holds_tasks`). The
+    # ROOT, which scopes the definitions, is the space.
+    project = db.seed_in_space(name="Ops")
     db.seed_status(project.id, name="To do", category="todo", is_default=True)
     return project
 
@@ -168,7 +170,7 @@ async def test_a_good_value_is_stored_shaped_against_the_tasks_root(
 
     # Validated against the ROOT's definitions, as the PATCH validates
     # against `before.root_project_id`, never the subproject's own id.
-    assert roots_asked == [str(root.id)]
+    assert roots_asked == [str(root.parent_project_id)]
     # The fake keeps the JSONB bind as the string the cast receives.
     stored = pm_core.from_jsonb(db.rows("pm_tasks")[0]["custom_fields"])
     assert stored == {
@@ -188,7 +190,7 @@ async def test_a_stated_null_leaves_the_column_default(
     await _create(str(project.id), custom_fields=None)
     await _create(str(project.id), custom_fields={"hours": None})
 
-    assert roots_asked == [str(project.id)]
+    assert roots_asked == [str(project.parent_project_id)]
     assert all(
         "custom_fields" not in sql.split("VALUES")[0]
         for sql in db.statements_touching("INSERT INTO pm_tasks")
@@ -317,13 +319,25 @@ def seeded(_ladder):
 
         made["home"] = home = project("home")
         made["away"] = away = project("away")
+        # `home` is a space, and a space holds no tasks (2026-10-26). The
+        # create lands in `line`, a project inside it with its own lane. The
+        # fields stay on `home`, because the ROOT scopes them.
+        made["line"] = line = str(c.execute(
+            text(
+                "INSERT INTO pm_projects (name, status, source, created_by,"
+                " organization_id, timezone, parent_project_id, owns_statuses)"
+                " VALUES (:n,'active','manual','cf@example.test',"
+                " CAST(:o AS uuid),'UTC',CAST(:p AS uuid),true) RETURNING id"
+            ),
+            {"n": f"line-{tag}", "o": org, "p": home},
+        ).scalar_one())
         c.execute(
             text(
                 "INSERT INTO pm_task_statuses (project_id, name, color, position,"
                 " category, is_default) VALUES"
                 " (CAST(:p AS uuid),'To do','gray',0,'todo',true)"
             ),
-            {"p": home},
+            {"p": line},
         )
 
         def field(project_id: str | None, key: str, field_type: str,
@@ -351,6 +365,8 @@ def seeded(_ladder):
         for pid in (made["home"], made["away"]):
             c.execute(text("DELETE FROM pm_tasks WHERE root_project_id = CAST(:p AS uuid)"),
                       {"p": pid})
+            c.execute(text("DELETE FROM pm_projects WHERE parent_project_id = CAST(:p AS uuid)"),
+                      {"p": pid})
             c.execute(text("DELETE FROM pm_projects WHERE id = CAST(:p AS uuid)"),
                       {"p": pid})
         c.execute(text("DELETE FROM pm_custom_fields WHERE field_key = :k"),
@@ -366,7 +382,7 @@ def _json(value: Any) -> str:
 
 async def _create_on_db(seeded: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
                         custom: Any) -> dict[str, Any]:
-    """``POST /projects/tasks`` into ``home``, on one real database, with the
+    """``POST /projects/tasks`` into ``line`` (in ``home``), on one real database, with the
     route's session seam patched to a committing asyncpg connection."""
     from contextlib import asynccontextmanager
 
@@ -395,7 +411,7 @@ async def _create_on_db(seeded: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
     monkeypatch.setattr(pm_tasks, "emit", _emit)
     try:
         return await pm_tasks.create_task(
-            pm_tasks.TaskIn(project_id=seeded["home"], title="Weld the frame",
+            pm_tasks.TaskIn(project_id=seeded["line"], title="Weld the frame",
                             custom_fields=custom),
             user=projects_user("cf@example.test"),
         )
@@ -486,18 +502,18 @@ def test_r8_the_count_query_finds_each_bad_row_and_no_good_one(
         with eng.begin() as c:
             status = str(c.execute(
                 text("SELECT id FROM pm_task_statuses WHERE project_id = CAST(:p AS uuid)"),
-                {"p": seeded["home"]},
+                {"p": seeded["line"]},
             ).scalar_one())
             for n, (name, values) in enumerate(rows.items(), start=1):
                 ids[name] = str(c.execute(
                     text(
                         "INSERT INTO pm_tasks (title, project_id, root_project_id,"
                         " status_id, created_by, task_number, custom_fields)"
-                        " VALUES (:t, CAST(:p AS uuid), CAST(:p AS uuid),"
+                        " VALUES (:t, CAST(:p AS uuid), CAST(:r AS uuid),"
                         " CAST(:s AS uuid), 'cf@example.test', :n,"
                         " CAST(:cf AS jsonb)) RETURNING id"
                     ),
-                    {"t": name, "p": seeded["home"], "s": status,
+                    {"t": name, "p": seeded["line"], "r": seeded["home"], "s": status,
                      "n": 9000 + n, "cf": _json(values)},
                 ).scalar_one())
         with eng.connect() as c:

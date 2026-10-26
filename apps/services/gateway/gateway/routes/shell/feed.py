@@ -1027,11 +1027,19 @@ register(Provider("chat", ("chat",), _chat, CHAT_KINDS, needs=False, gated=True)
 # with `KNOWLEDGE_GAPS` open and `knowledge:manage` held. `hash_permission`
 # keeps `knowledge:manage` in the read cache key (`cache.features_hash`).
 # `my_day.read` opens ONE tenant session, and this file opens none.
-# `source_sync_failed` is KB-9b slice 2. Fences: `tests/unit/test_kb_my_day.py`,
+# `source_sync_failed` (KB-9b slice 2) keys on `knowledge:source:<id>` and is
+# for the member who connected the Drive. It reads only with `KNOWLEDGE_SOURCES`
+# open, in the same session. Fences: `tests/unit/test_kb_my_day.py`,
 # `tests/unit/test_kb_gaps.py` and the `_r8` twins (R8).
 
 #: The kinds of the source.
-KNOWLEDGE_KINDS = frozenset({"kb_gap", "doc_needs_review", "doc_shared_with_me"})
+KNOWLEDGE_KINDS = frozenset({"kb_gap", "doc_needs_review", "doc_shared_with_me",
+                             "source_sync_failed"})
+
+#: The one act of ``source_sync_failed`` opens the Sources view.
+SOURCES_HREF = "/knowledge/sources"
+#: What the card calls a provider. No account address, no error text.
+_PROVIDER_NAMES = {"google_drive": "Google Drive"}
 
 
 def _gap_signal(row: dict[str, Any]) -> Signal:
@@ -1083,6 +1091,26 @@ def _page_signal(row: dict[str, Any], kind: str) -> Signal:
     )
 
 
+def _source_signal(row: dict[str, Any]) -> Signal:
+    """``source_sync_failed``: a source that the member connected stopped
+    syncing (KB-9b slice 2). The facts are the reason and nothing else: no
+    provider error, no token and no account address."""
+    source_id = str(row["id"])
+    name = _PROVIDER_NAMES.get(str(row.get("provider") or ""), "A source")
+    reconnect = row.get("state") == "needs_reconnect"
+    since = _iso(row.get("failed_since"))
+    return Signal(
+        signal_id=f"knowledge:source:{source_id}", app="knowledge",
+        kind="source_sync_failed",
+        entity={"type": "source", "id": source_id, "label": name}, title=name,
+        facts={"reason": "reconnect" if reconnect else "runs", "provider": name,
+               "failed_since": since},
+        href=SOURCES_HREF, at=since,
+        acts=(link("open-sources", "Reconnect" if reconnect else "Open Sources",
+                   SOURCES_HREF),),
+    )
+
+
 async def _knowledge(user: UserContext) -> Found:
     from gateway.routes.knowledge import flags as kb_flags
     from gateway.routes.knowledge import my_day
@@ -1092,9 +1120,12 @@ async def _knowledge(user: UserContext) -> Found:
     found = await my_day.read(
         user, gaps_on=kb_flags.knowledge_gaps_allowed(user.organization_id),
         limit=PER_APP + 1,
+        sources_on=kb_flags.knowledge_sources_allowed(user.organization_id),
     )
-    # The order before the cut of PER_APP: review, then gaps, then shared.
-    signals = ([_page_signal(r, "doc_needs_review") for r in found.review]
+    # The order before the cut of PER_APP: source failures (the connector's
+    # own, and urgent), then review, gaps and shared.
+    signals = ([_source_signal(r) for r in found.sources]
+               + [_page_signal(r, "doc_needs_review") for r in found.review]
                + [_gap_signal(r) for r in found.gaps]
                + [_page_signal(r, "doc_shared_with_me") for r in found.shared])
     return Found([], 0, capped=len(signals) > PER_APP,
@@ -1294,6 +1325,15 @@ def _gap_line(facts: dict[str, Any]) -> str:
     return f"{who} in the last 30 days. Nobody has written it down in Knowledge."
 
 
+def _source_line(facts: dict[str, Any]) -> str:
+    """The why line of ``source_sync_failed`` (KB-9b slice 2). A code
+    template over the reason: never an error text, a token or an address."""
+    if facts.get("reason") == "reconnect":
+        name = facts.get("provider") or "source"
+        return f"Your {name} stopped syncing. Reconnect it in Knowledge."
+    return "The last three syncs failed."
+
+
 def _review_line(facts: dict[str, Any], tz: ZoneInfo, today: date) -> str:
     """The why line of ``doc_needs_review`` (KB-9b). It names the review date
     and nothing else: no person."""
@@ -1318,6 +1358,8 @@ _ORG_CARD_LINES: dict[str, tuple[str, Any]] = {
     # KB-9b: the two page cards.
     "doc_needs_review": ("review_due", _review_line),
     "doc_shared_with_me": ("shared", lambda f, _tz, _today: _shared_line(f)),
+    # KB-9b slice 2: a source that the member connected stopped syncing.
+    "source_sync_failed": ("source_failed", lambda f, _tz, _today: _source_line(f)),
 }
 
 

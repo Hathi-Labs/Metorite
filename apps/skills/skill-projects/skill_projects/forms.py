@@ -83,6 +83,7 @@ from skill_projects.writes import (
     _yes_no,
     agent_assignee_refusal_as_text,
     mailbox_line,
+    space_refusal,
     update_project,
     update_task,
 )
@@ -965,6 +966,11 @@ def _same_name(a: str, b: str) -> bool:
     return " ".join(str(a).split()).casefold() == " ".join(str(b).split()).casefold()
 
 
+def _new_space_label(label: str) -> str:
+    """What the cards say when the plan has no parent: a space AND a project."""
+    return f"a new space {data(label)} with a project {data(label)}"
+
+
 def _plan_fills_parent(label: str, parent_label: str, parent_id: str) -> str:
     """The refusal for a plan named like its parent project (review of #1160).
 
@@ -1020,7 +1026,10 @@ async def propose_plan(
     either. An unassigned row shows neither, and the member can give it an
     owner on the card. A mark warns and never blocks. risks is the three
     ways the plan fails, one per line. parent_project_id is a full_id from
-    projects_tree; empty makes a space. phase is an optional group name,
+    projects_tree. The plan is always a NEW project inside it. Empty makes a
+    new space named like the plan, with one project of that name inside the
+    space, and the tasks go in that project, because a space holds projects
+    and never tasks. phase is an optional group name,
     such as a milestone: the card folds the rows under it, and nothing stores
     it or makes a task of it."""
     label = _clean(name)
@@ -1029,9 +1038,10 @@ async def propose_plan(
     rows = _plan_rows(tasks)
     if isinstance(rows, str):
         return rows
-    parent_label = "the top level (a new space)"
+    new_space = not parent_project_id.strip()
+    parent_label = _new_space_label(label)
     parent_id = ""
-    if parent_project_id.strip():
+    if not new_space:
         parent_id, parent = await _node(parent_project_id)
         parent_label = _plain(parent.get("name"))
         # Only a PROJECT: a folder named like the plan is a fair place for a
@@ -1069,6 +1079,8 @@ async def propose_plan(
         return final
     project = values.get("project") if isinstance(values.get("project"), dict) else {}
     label = _clean(project.get("name")) or label
+    if new_space:
+        parent_label = _new_space_label(label)
     owners: dict[str, str] = {}
     for row in final:
         who = row["owner"]
@@ -1129,19 +1141,36 @@ async def _write_plan(
     the project node is a write like any other (S10). A row with no owner
     gets no assignee write, and the counts of owners leave it out (§26)."""
     assigned = sum(1 for r in final if r["owner"])
-    payload: dict[str, Any] = {"name": label, "kind": "project"}
-    if parent_id:
-        payload["parent_project_id"] = parent_id
+    out: list[str] = []
+    if not parent_id:
+        # A space holds projects and never tasks (2026-10-26). A plan with no
+        # parent makes the space first, then the project inside it, and the
+        # tasks go in the project.
+        try:
+            space = await post("/projects/nodes", {"name": label, "kind": "project"})
+        except _WRITE_FAILED as exc:
+            return _project_stopped(
+                label, exc, tasks=len(final), links=len(links), owners=assigned
+            )
+        parent_id = uuid_of(str(space.get("id")), "project_id")
+        out.append(f"Created space {data(space.get('name'))}.\n  space_id: {parent_id}")
+    payload: dict[str, Any] = {
+        "name": label, "kind": "project", "parent_project_id": parent_id,
+    }
     if about:
         payload["description"] = about
     try:
         node = await post("/projects/nodes", payload)
     except _WRITE_FAILED as exc:
-        return _project_stopped(
+        stopped = _project_stopped(
             label, exc, tasks=len(final), links=len(links), owners=assigned
         )
+        if out:
+            stopped = "\n".join(out + [stopped])
+        return stopped
     pid = uuid_of(str(node.get("id")), "project_id")
-    out = [f"Created project {data(node.get('name'))} under {parent_label}.\n  project_id: {pid}"]
+    where = "the new space" if out else parent_label
+    out.append(f"Created project {data(node.get('name'))} under {where}.\n  project_id: {pid}")
     created: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for n, row in enumerate(final):
         body: dict[str, Any] = {
@@ -1669,6 +1698,9 @@ async def create_tasks(project_id: str, tasks: str) -> str:
             f"{data(node.get('name'))} is a folder. A folder holds projects, not tasks. "
             "Pick a project inside it. Nothing was created."
         )
+    stop = await space_refusal(pid, node)
+    if stop:
+        return stop
     statuses = await _statuses_of(pid)
     rows = [await _batch_row(pid, i, item, statuses) for i, item in enumerate(items, start=1)]
     names, strangers = await _names_of([w for p in rows for w in p.new.who])

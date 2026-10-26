@@ -192,24 +192,59 @@ async def projects_tree(include_archived: bool = False) -> str:
     if not roots:
         return "You can see no projects yet."
 
-    levels = ("space", "folder", "project", "subproject")
     out = [legend(), f"Projects you can see ({(payload or {}).get('total', 0)} nodes):"]
 
-    def walk(nodes: list[dict[str, Any]], depth: int) -> None:
+    def walk(nodes: list[dict[str, Any]], depth: int, above: int) -> None:
+        # `above` counts the PROJECT ancestors. A folder never adds one.
         for node in nodes:
             if node.get("archived_at") and not include_archived:
                 continue
-            kind = node.get("kind") or "project"
-            level = "folder" if kind == "folder" else levels[min(depth, 3)]
-            if depth == 0:
-                level = "space"
+            is_folder = (node.get("kind") or "project") == "folder"
+            mine = above
+            if depth == 0 and node.get("parent_project_id"):
+                # A top row whose parent the member cannot see. It is not a
+                # root, so it is not a space: count one hidden project above.
+                mine = 1
+            level = tree_level(is_folder, mine + (0 if is_folder else 1))
             head, ident = _project_line(node, level)
+            head += _tree_counts(node)
             out.append("  " * depth + head)
             out.append("  " * depth + ident)
-            walk(node.get("children") or [], depth + 1)
+            walk(node.get("children") or [], depth + 1, mine + (0 if is_folder else 1))
 
-    walk(roots, 0)
+    walk(roots, 0, 0)
     return "\n".join(out)
+
+
+def _tree_counts(node: dict[str, Any]) -> str:
+    """`` · tasks N (done D, cancelled C)``, or ``""`` when the row has none.
+
+    The SUBTREE counts the sidebar draws (``tree._attach_progress``). Said on
+    every row, so a read never infers "empty" from a missing number.
+    """
+    total = node.get("tasks")
+    if not isinstance(total, int):
+        return ""
+    done = node.get("done") if isinstance(node.get("done"), int) else 0
+    cancelled = node.get("cancelled") if isinstance(node.get("cancelled"), int) else 0
+    return f" · tasks {total} (done {done}, cancelled {cancelled}), with everything under it"
+
+
+def tree_level(is_folder: bool, generation: int) -> str:
+    """The level the app draws for a node, from its kind and its ancestry.
+
+    The rule of ``core.node_level`` and ``lib/tree.ts`` ``nodeLevel``.
+    ``generation`` counts the PROJECT ancestors with the node itself, so a
+    folder is transparent. Generation 1 is a space, 2 a project, and 3 or
+    more a subproject. It is never the depth: a project directly in a space
+    was once labelled a folder here (2026-10-26), and the model read five
+    full projects as "empty folders".
+    """
+    if is_folder:
+        return "folder"
+    if generation <= 1:
+        return "space"
+    return "project" if generation == 2 else "subproject"
 
 
 @_annotate(read_only=True, idempotent=True, open_world=False)

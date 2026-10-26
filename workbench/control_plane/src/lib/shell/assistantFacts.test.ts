@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { emailAssistantFacts } from "@/app/email/lib/assistantFacts";
 import { projectsAssistantFacts } from "@/app/projects/lib/assistantFacts";
+import { assistantLevel } from "@/app/projects/lib/assistantPersona";
 import { tasksAssistantFacts } from "@/app/tasks/lib/assistantFacts";
 
 describe("Projects", () => {
@@ -33,6 +34,54 @@ describe("Projects", () => {
     expect(f.facts.join(" ")).toContain("reports page");
     expect(f.facts.join(" ")).not.toContain("board view");
     expect(f.label).toBeUndefined();
+  });
+
+  it("says a team space holds no tasks, and to ask which project (2026-10-26)", () => {
+    const f = projectsAssistantFacts({
+      node: { id: "s-1", name: "Company Operations", level: "space" },
+    });
+    const text = f.facts.join("\n");
+    expect(text).toContain("A space holds projects, not tasks.");
+    expect(text).toContain("ask the member which project");
+  });
+
+  it("says nothing of the kind for a project or a personal root", () => {
+    const project = projectsAssistantFacts({ node: { id: "p", name: "HR", level: "project" } });
+    expect(project.facts.join(" ")).not.toContain("holds projects, not tasks");
+    const mine = projectsAssistantFacts({
+      node: { id: "m", name: "My tasks", level: "space", personal: true },
+    });
+    expect(mine.facts.join(" ")).not.toContain("holds projects, not tasks");
+    expect(mine.facts.join(" ")).toContain("It holds tasks");
+  });
+
+  it("assistantLevel: only a true team space is a space (same rule as isTeamSpace)", () => {
+    const root = { parent_project_id: null, kind: "project", personal: false };
+    expect(assistantLevel("space", root)).toBe("space");
+    // A project whose parent is hidden from the member draws at the top, and holds tasks.
+    expect(assistantLevel("space", { ...root, parent_project_id: "hidden" })).toBe("project");
+    // The member's own root holds tasks.
+    expect(assistantLevel("space", { ...root, personal: true })).toBe("personal root");
+    expect(assistantLevel("folder", { ...root, kind: "folder" })).toBe("folder");
+    expect(assistantLevel("project", { parent_project_id: "s" })).toBe("project");
+  });
+
+  it("a hidden-parent project and the personal root draw no 'holds no tasks' note", () => {
+    const hidden = projectsAssistantFacts({
+      node: {
+        id: "h", name: "Shared launch",
+        level: assistantLevel("space", { parent_project_id: "hidden", kind: "project" }),
+      },
+    });
+    expect(hidden.facts.join(" ")).not.toContain("holds projects, not tasks");
+    const mine = projectsAssistantFacts({
+      node: {
+        id: "m", name: "My tasks", personal: true,
+        level: assistantLevel("space", { parent_project_id: null, personal: true }),
+      },
+    });
+    expect(mine.facts.join(" ")).not.toContain("holds projects, not tasks");
+    expect(mine.facts.join(" ")).not.toContain("the space");
   });
 
   it("a name with a fence mark cannot break out of the data", () => {

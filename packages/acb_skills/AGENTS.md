@@ -229,6 +229,64 @@ clone cache.
    one later).
    Fences: tests/unit/test_attachment_xlsx.py and section 14 of
    tests/unit/test_read_attachment.py.
+5f-1. attachment_ocr.py + attachment_ocr_worker.py -- OCR of a scanned file
+   (WS-67 OA-3, D116, spec `one_assistant_context.md` §4.1). It ships dark
+   behind `ATTACHMENT_OCR`, and `ocr_enabled()` is its one reader. With the
+   flag on, `parse_bounded` sends two kinds of file to `ocr_bounded`. The
+   first is a PDF whose text layer gives no words. The second is a `.png`,
+   `.jpg` or `.jpeg` image. `attachment_text.text_state` is the ONE rule
+   for "no words", and `attachment_text` stays free of processes.
+
+   Only a caller that can wait gets OCR: the chat tool, and the email text
+   route for `read_email_attachment`. The reply drafter reads with
+   `ocr=False` (fix round 2). Spec §4.1 lists each caller, and
+   `TestTheCallers` fails on a new one. A no-OCR read uses the flag-off
+   cache name.
+
+   The OCR runs in a child, never in the gateway process. The parent starts
+   `attachment_ocr_worker.py` as `python -I <path>`, never with `-m`, because
+   the package `__init__` imports every tool. The child imports nothing from
+   `acb_` packages. It gets the `child_env` allowlist and the thread names,
+   and no secret. Each library in it runs on one thread, and it never
+   downloads a model.
+
+   ⚠️ The order of `main()` is the control (fix rounds 1 to 3). The child
+   checks Landlock, then confines itself with `_confine` while it has ONE
+   thread, then preloads every library and model, then closes its limits
+   (`_close_limits`). Only then does it read the bytes. Landlock and seccomp
+   bind only the calling thread and its later threads, so a second thread
+   before `_confine` answers `unavailable`. The onnxruntime helper thread
+   starts in `_preload`, so it starts confined.
+
+   Landlock lets the child read only the Python and library dirs, never a
+   dir that holds the cwd. It may write nowhere, and with ABI 4 it may not
+   bind or connect TCP. The seccomp filter is a DENY list
+   (`seccomp_program`). It refuses each signal to another process,
+   `ptrace`, each socket, io_uring, and each call that sets the priority or
+   the CPUs of a process. It refuses `fcntl` and `ioctl` that make the
+   kernel signal another process, and `prlimit64` for any pid but 0.
+
+   `RLIMIT_NPROC`, `RLIMIT_FSIZE`, `RLIMIT_AS` and `RLIMIT_CPU` cap the rest.
+   `RLIMIT_CORE` is 0 (fix round 4), so a crash writes no core file that
+   holds the bytes of the file. A kernel below ABI 4, another machine than x86-64, or a filter that does
+   not install answers `unavailable`, so it fails closed. A new library in
+   the parse must load from a Python or library dir, and a new lazy thread
+   must start in `_preload`. The fence `TestTheConfinement` runs on Linux
+   only. Spec §4.1 lists what its probe proved, and the deny-list risk.
+
+   At most one child lives in the process (`_SLOT`, process-wide). The wait
+   for it is an `await`, and a wait past 3 s answers busy (`ReaderBusy`).
+
+   The child writes one JSON line for each page (`_Stream`). The parent
+   kills its process group at 28 s, on a cancel and when stdout passes
+   4 MiB. After a time kill it keeps the pages that arrived. A caller may
+   pass a `deadline`. The email text route sets it to 55 s after its start.
+
+   A read takes 15 pages at most, at 150 DPI and 4 million pixels for each
+   page. The text starts with `OCR_MARKER`, and `Extracted.ocr` is true. A
+   capped read ends with a sentence that gives the count. Each failure gives
+   one sentence. With the flag off, no child starts and both paths answer
+   as before. Fence: tests/unit/test_attachment_ocr.py.
 5g. egress.py -- the network control on a covered run and every run under it
    (H-236, spec `maf_coding_engine.md` §16.3). It FAILS CLOSED. Such a run
    binds `no_egress=True` in its artifact context and holds only the
