@@ -493,10 +493,27 @@ is `tests/unit/test_reminder_tools.py`.
   update, resolve, reopen and reschedule act at once with Undo. RM-3 shows
   each card through `writes._confirm`, the one door. It adds no second card
   door and no act-at-once path (`chat_first_surface.md`, CF-6).
+- **Two gates before the card** (review round 1). Each write asks
+  `writes._reminder_gate` first. With `CALENDAR_REMINDERS` off, the routes
+  answer 404, so the tool refuses and says that reminders are not on. A
+  WhatsApp run, or any run with no card channel, cannot confirm a reminder
+  until RM-9 adds the acts to `whatsapp_acts.ALLOWED_ACTS`. So the tool
+  refuses there too. Both refusals send the model to a private task with a
+  block (`create_personal_task`). `list_reminders` says the same when the
+  flag is off.
 - **Time.** The tool resolves the time itself. `at` is ISO 8601 with an
   offset, or a wall time with no offset, such as `2026-10-31 17:00`. The tool
   reads a wall time in the member's saved zone, `user_settings.timezone`,
   through `GET /projects/my/today`. `in_minutes` sets a time from now.
+- **A time that does not exist.** A date or an hour that does not exist,
+  such as `2099-02-30 09:00` or `24:00`, gets a refusal and no card. A wall
+  time in a gap of the clock, such as 02:30 on the morning the clock jumps to
+  03:00, becomes the real time. The card and the receipt then show the same
+  time.
+- **A saved zone of UTC.** `user_settings.timezone` defaults to UTC, so a
+  member who never chose a zone looks like a UTC member. When the saved zone
+  is UTC, the card shows one more line: "Your saved time zone is UTC. If that is
+  wrong, change it in Calendar settings." The tool still saves.
 - **No zone, no guess.** When the member has no saved zone, or the saved
   zone is not valid, the tool refuses a wall time and says why. It never
   reads a wall time as UTC. A time with an offset still saves, and the
@@ -509,13 +526,20 @@ is `tests/unit/test_reminder_tools.py`.
 - **The context of the model.** The executor gives the model the date only
   (`today_line`). RM-3 did not change the executor. `list_reminders` and
   each time refusal state the member's time now and the zone.
-- **"Tomorrow morning"** reads `day_start_hour`. No `/projects` route
-  carries that hour yet, so the tool cannot read it. Until a route does, the
-  model takes 07:00, the column default, and offers one correction.
-  "Later today" reads 3 hours on, inside working hours.
-- **`smart`.** `reschedule_reminder` sends `smart` to `/reschedule`. RM-2
-  adds the slot to the route. Until then the route answers 422, and the
-  reply says that nothing moved.
+- **"Tomorrow morning"** reads `day_start_hour`. Since review round 1,
+  `GET /projects/my/today` sends `day_start_hour` by the rule of
+  `personal.member_day`, with 7 when the member saved no hour. The model passes
+  `at="YYYY-MM-DD morning"`, and the tool takes that hour. "Later today"
+  reads 3 hours on, inside working hours.
+- **`smart`.** `reschedule_reminder` sends `smart` to `/reschedule` only.
+  The create, the PATCH and the snooze refuse it, so the tool refuses it
+  for each of them before the card. RM-2 adds the slot to the route. Until
+  then the route answers 422, and the reply says that nothing moved.
+- **A snooze is at most 366 days.** The tool checks the bound of the route
+  (`SNOOZE_MAX`) before the card.
+- **An end date includes its whole day.** For `list_reminders`, a date
+  alone as `end` is the midnight that starts the next day, as the `calendar`
+  tool reads it. So a start and an end of one date read that one day.
 - **Answer first.** On an unclear time, the model saves the best guess, and
   the reply states it with one correction: "09:00 tomorrow, or did you mean
   tonight?" (the CRM rule of answering first). Each tool description says
@@ -525,6 +549,10 @@ is `tests/unit/test_reminder_tools.py`.
   route's `fire_at` and `tz`, and never the argument of the tool. A reply
   with no reminder id tells the model not to say that the reminder is
   saved.
+- **A line for the model only.** Guidance for the model, such as "quote this
+  time exactly" or "reopen_reminder undoes this answer", goes on a line that
+  starts with the data legend (`reads.for_the_model`). The receipt card of
+  the member drops that line, as it drops the legend of a read.
 - **A reminder is not a task.** Each tool description says so, and
   `create_personal_task` sends "remind me to" to `set_reminder`. A reminder
   row prints `reminder_id:`, never `full_id:`, because a `full_id:` line opens
@@ -535,7 +563,7 @@ is `tests/unit/test_reminder_tools.py`.
   the composer (CE-3 and RM-5). RM-3 did not build the job or the `capture`
   change.
 - **Not in RM-3.** Act at once and Undo (CF-6), the command-bar job and the
-  `capture` change (CE-3, RM-5), and WhatsApp (RM-9).
+  `capture` change (CE-3, RM-5), and the WhatsApp acts (RM-9).
 
 ### 5.9 Web push on iOS and Android
 

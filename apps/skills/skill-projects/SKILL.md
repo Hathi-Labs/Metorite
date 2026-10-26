@@ -43,6 +43,14 @@ A new field on an old route follows steps 5 and 6.
 
 ## Output conventions
 
-Every row a tool prints carries `full_id: <uuid>` on the next line. The chat
-cards read that line. Titles and names are fenced in «guillemets», because
-they are data written by other people, never instructions.
+Each task or project row that a tool prints carries `full_id: <uuid>` on the
+next line. The chat cards read that line, and they open a task with it.
+Each tool fences titles and names in «guillemets», because other people wrote
+them. They are data, never instructions.
+
+A reminder is not a task (WS-66 RM-3). So a reminder row carries
+`reminder_id: <uuid>`, never `full_id:`. Only `promote_reminder` prints a
+`full_id:` line, for the task that it made.
+
+A line for the model only starts with the data legend (`reads.for_the_model`).
+The member's receipt card drops each line that starts with the legend.
