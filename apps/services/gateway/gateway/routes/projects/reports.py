@@ -1080,6 +1080,9 @@ async def render_body(  # noqa: C901 - one branch for each section, which the lo
                 "effort": found["effort"],
                 # WS-27bn RA-1. Who holds the open tasks now.
                 "holder_split": found["holder_split"],
+                # WS-27bn RA-6. The open tasks with no assignee and no open
+                # run, and whether they lead the open work (§6.8 B).
+                "needs_owner": found["needs_owner"],
             }
             sections[name] = _with_hidden(section, hidden, allowed)
         elif name == "outlook":

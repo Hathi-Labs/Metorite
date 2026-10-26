@@ -940,6 +940,11 @@ class Provider:
     #: The app of the cards, when the source id is not the app id (MD-3b,
     #: §5.8 item 6). ``source_app`` reads it.
     app: str | None = None
+    #: A grant that the provider reads INSIDE its run, to choose which of its
+    #: cards a member gets, with no refusal of the source (KB-9b). It does not
+    #: gate ``held_by``. ``cache.features_hash`` reads it with ``permission``,
+    #: so a member who gains or loses it gets a new key at the next read.
+    hash_permission: str | None = None
 
     def held_by(self, user: UserContext) -> bool:
         """The gate the app's router would have applied (the module note),

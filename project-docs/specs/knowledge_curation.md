@@ -87,6 +87,11 @@ under `KNOWLEDGE_ENABLED`). It adds the Directories group in the rail, the
 directory view at `/knowledge/directories/<type>`, and "Write the page" with
 its warning. It adds one read route, `GET /knowledge/entity-types`.
 
+**KC-8e BUILT 2026-10-26** (branch `kc-8e-cmdbar`, no migration, dark under
+`KNOWLEDGE_ENABLED`). A product or a topic name is unique in its space. A second
+post of the folded name or of an alias answers 409 with the existing entity.
+The command bar gains the jobs "Add a product" and "Add a topic".
+
 The Metorite project "Knowledge" (Hathi Labs) holds the build plan: six
 epics, #361 to #366, and one task for each slice, #368 to #411 (§23).
 

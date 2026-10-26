@@ -80,6 +80,13 @@ _INTEGRITY_READS: dict[tuple[str, str], str] = {
         "back the id of the row that won. It returns one id, never a name, "
         "and the caller reads the row through the owner rule."
     ),
+    ("registry.py", "same_name_entity"): (
+        "The create route (KC-8e) reads the names and aliases of the "
+        "entities of one type in a space the caller can write, folds them "
+        "in Python, and returns the id of a match or None. It returns one "
+        "id and never a name, and the route reads the row through the "
+        "owner rule."
+    ),
     ("registry.py", "entity_type"): (
         "A GET by id reads the type of the entity, to pick the owner rule "
         "of that type. It returns the type only. The route answers 404 "

@@ -62,6 +62,11 @@ class TestTheClasses:
             assert classes.REACH_CLASS[kind] == "interrupt"
         assert classes.REACH_CLASS["deal_stage_changed"] == "brief"
 
+    def test_the_knowledge_kinds_are_declared(self):
+        # WS-61 KB-9a and KB-9b: a thing to know, so each goes in the brief.
+        for kind in ("doc_needs_review", "doc_shared_with_me", "kb_gap"):
+            assert classes.REACH_CLASS[kind] == "brief"
+
     def test_an_unknown_kind_reaches_nobody(self):
         assert classes.reach_class({"kind": "something_new"}) == "none"
 

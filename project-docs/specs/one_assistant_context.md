@@ -1,11 +1,31 @@
 # One assistant: context that survives, and tool packs
 
-**Status:** ✅ ACTIVE (2026-10-25). Board: **WS-67**. Decision: **D116**.
+**Status:** ✅ ACTIVE (2026-10-25). Board: **WS-67**. Decisions: **D116**, **D117**.
 OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-4 is
-built, dark behind `CHAT_CONSTRAINTS` (2026-10-25, "As built" below). OA-3
-and OA-5 are dispatchable. OA-6 is an owner gate. OA-7 to OA-10 wait for
-OA-6. Metorite: epic #445 in *AI Chat Interface*, with slices #446 (OA-1)
-to #455 (OA-10).
+built, dark behind `CHAT_CONSTRAINTS` (2026-10-25, "As built" below). OA-5
+is BUILT (2026-10-25): the report is `docs/one_assistant_measure_2026-10-25.md`.
+
+OA-3 is in review, dark behind `ATTACHMENT_OCR`. OA-6 is DECIDED (D117,
+2026-10-26): yes, for all apps. OA-7 to OA-10 wait for their design and an
+audit. Metorite: epic #445 in *AI Chat Interface*,
+with slices #446 (OA-1) to #455 (OA-10).
+
+**As built, OA-5.** `evals/one_assistant_measure` runs 13 email chats (18
+turns) through the one harness of the routing eval, two ways. One way
+delegates to the email assistant, as today. The other way is an eval-only
+tool pack. Fence: `tests/unit/test_one_assistant_measure.py`.
+
+The live run of 2026-10-25 ran 3 times on each arm. Each arm passed 51 of
+54 turns, after a re-score with the fixed checks of fix round 1. The median
+turn took 22.6 s and 10.0 s, and the pack cost half as much. The Navy
+shape passed 6 of 6 on both arms, so no answer named CB6 or CB7 as a part.
+Each arm stated a scanned file's name as its content once in 3 runs, so
+the shape does not fix cause C2.
+
+The measure did not read `agent.run_timing` or `usage_event`, because the
+gateway and the Console write them. It did not read the executor's
+`executor.run_setup_ms` either. The harness timed each turn and priced
+each call instead.
 
 **As built, OA-1 and OA-2.** `acb_skills/handoff.py` owns what crosses a
 handoff. The top-level run binds `member_turns`: the member's typed words of
@@ -18,8 +38,8 @@ four batch sites call it. The tier question reads the task only
 (`task_of`). Fences: `tests/unit/test_handoff_words.py` and
 `evals/trajectories/test_handoff_words_trajectory.py`. Open: a steer that
 the gateway replays after a run died is in neither the history nor the
-typed words, so it does not reach the head. The live halves of the
-acceptance ("no CB6" in the answer, the reply marks) belong to OA-5.
+typed words, so it does not reach the head. OA-5 measured the live half of
+"no CB6" (above). It did not check the reply marks of OA-2.
 
 **As built, OA-4.** `acb_skills/chat_constraints.py` owns the list. It
 ships dark behind `CHAT_CONSTRAINTS`, default off.
@@ -46,9 +66,8 @@ ships dark behind `CHAT_CONSTRAINTS`, default off.
   `evals/trajectories/test_chat_constraints_trajectory.py`.
 - Open: the visible chip in the chat is a later slice.
 
-**Owner:** WS-67. **Amends:** nothing yet. OA-6 decides if D99's
-"specialists behind it" changes to "tool packs in it" for conversational
-work. **Composes with:** `navigation_shell.md` §7.1 (D99, one assistant),
+**Owner:** WS-67. **Amends:** D99 item 2, for conversational work (D117,
+2026-10-26). **Composes with:** `navigation_shell.md` §7.1 (D99, one assistant),
 `skills_registry.md` (WS-23, the skill-family registry),
 `email_app_master_plan.md` §21 (the held-chat guard),
 `multi_agent_orchestration.md` (WS-12, delegation), and the chat-speed
@@ -93,6 +112,12 @@ Owner decision, 2026-10-25, in chat: take the recommendations.
    conversation and loads each app's tools as a **tool pack**. A
    sub-agent stays only for a heavy job, with a structured handoff.
 
+**OA-6, decided 2026-10-26 (D117).** OA-5 supported it, and the owner said
+"Yes, for all apps". The owner then widened it. One chat serves the whole
+app, and its tools load per turn, fast first. The main assistant keeps
+dynamic sub-agents for parallel work. `work_plan.md` §3 D117 holds the
+owner's words and the eight points.
+
 ## 3. The target shape
 
 | Part | Now | Target |
@@ -115,10 +140,10 @@ moves them.
 | **OA-3** | OCR for a scanned PDF and an image in `read_attachment`. It runs off the event loop, with a page cap and a time cap. The result says that the text came from OCR. | HIGH (new dependency, untrusted file input) | none |
 | **OA-4** | Chat constraints: a correction or a limit that the member states goes into the chat's working set, beside the email working set. The per-turn context shows it. The member can see and remove it. | MEDIUM | none |
 | **OA-5** | Measure. Run the email scenarios two ways: email tools loaded into the one assistant, and delegated as now. Compare accuracy, latency and cost. | LOW (eval only) | none |
-| **OA-6** | The owner decides from the OA-5 report. A yes amends D99 for conversational work. | — | **OWNER** |
-| **OA-7** | The email tool pack: the email tools join the WS-23 registry, and the email rules become the pack's rules block. | HIGH (the egress guard moves with the tools) | OA-6 |
-| **OA-8** | The Projects and CRM tool packs. | MEDIUM | OA-7 |
-| **OA-9** | The sub-agent contract of §6 for heavy jobs. | MEDIUM | OA-6 |
+| **OA-6** | DECIDED 2026-10-26 (D117): yes, for all apps. D99 item 2 changes for conversational work. | — | done |
+| **OA-7** | The email tool pack: the email tools join the WS-23 registry, and the email rules become the pack's rules block. The per-turn loader of D117 item 3. | HIGH (the egress guard moves with the tools) | its design and an audit |
+| **OA-8** | The tool packs of every other app that the orchestrator delegates to in conversation (D117 item 1). | MEDIUM | OA-7 |
+| **OA-9** | Dynamic sub-agents (D117 item 5): the contract of §6, for parallel work and heavy jobs. | MEDIUM | its design and an audit |
 | **OA-10** | Retire conversational delegation. A specialist agent stays for a scheduled job, a workflow and an external agent. | HIGH | OA-8, OA-9 |
 
 ## 5. Acceptance
