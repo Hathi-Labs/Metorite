@@ -249,21 +249,23 @@ def test_packs_on_fails_closed_on_a_settings_fault(monkeypatch) -> None:
 
 def test_packs_on_reads_the_two_env_names(monkeypatch) -> None:
     """Mutation: a field named other than ``tool_packs`` and
-    ``tool_packs_orgs``, so ``TOOL_PACKS`` on a box reads as empty."""
-    from acb_common.settings import Settings, get_settings
+    ``tool_packs_orgs``, so ``TOOL_PACKS`` on a box reads as empty.
+
+    It builds a fresh ``Settings`` from the env and hands it to the reader.
+    It never clears the process cache: a cleared cache left the email
+    measure of ``test_one_assistant_measure.py`` on a stale settings object
+    later in the same run (seen 2026-10-26)."""
+    import acb_common
+    from acb_common.settings import Settings
 
     assert Settings.model_fields["tool_packs"].default == ""
     assert Settings.model_fields["tool_packs_orgs"].default == ""
-    get_settings.cache_clear()
-    try:
-        monkeypatch.setenv("TOOL_PACKS", "email-setup")
-        monkeypatch.setenv("TOOL_PACKS_ORGS", ORG_A)
-        get_settings.cache_clear()
-        assert tp.packs_on(ORG_A) == frozenset({"email-setup"})
-    finally:
-        monkeypatch.delenv("TOOL_PACKS", raising=False)
-        monkeypatch.delenv("TOOL_PACKS_ORGS", raising=False)
-        get_settings.cache_clear()
+    monkeypatch.setenv("TOOL_PACKS", "email-setup")
+    monkeypatch.setenv("TOOL_PACKS_ORGS", ORG_A)
+    fresh = Settings()  # type: ignore[call-arg]
+    monkeypatch.setattr(acb_common, "get_settings", lambda: fresh)
+    assert tp.packs_on(ORG_A) == frozenset({"email-setup"})
+    assert tp.packs_on(ORG_B) == frozenset()
 
 
 def test_the_flag_names_are_platform_names() -> None:
