@@ -59,7 +59,7 @@ async def test_the_parent_goes_to_the_route(sent) -> None:
     query = dict(sent[0]["query"])
     assert query["parent_task_id"] == PARENT
     assert "include_descendants" not in query
-    assert sent[0]["not_found"] == tools.TEXT_TASK_NOT_FOUND
+    assert sent[0]["not_found"] == tools.TEXT_PROJECT_NOT_FOUND
     assert out["tasks"][0]["parent_task_id"] == PARENT
     assert out["tasks"][0]["depth"] == 1
 
@@ -68,6 +68,7 @@ async def test_descendants_go_to_the_route_with_the_parent(sent) -> None:
     await tools._list_tasks(
         _CTX, {"parent_task_id": PARENT, "include_descendants": True})
     assert dict(sent[0]["query"])["include_descendants"] == "true"
+    assert sent[0]["not_found"] == tools.TEXT_TASK_NOT_FOUND
 
 
 async def test_descendants_without_a_parent_is_refused(sent) -> None:

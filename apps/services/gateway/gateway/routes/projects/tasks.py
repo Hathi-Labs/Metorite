@@ -628,6 +628,14 @@ async def list_tasks(
             status_code=422,
             detail="include_descendants needs parent_task_id.",
         )
+    if parent_task_id:
+        # A malformed id is a 422, not a uuid cast error in SQL (a 500).
+        try:
+            parent_task_id = str(uuid.UUID(parent_task_id))
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail="parent_task_id is not a valid id.",
+            ) from None
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -635,11 +643,12 @@ async def list_tasks(
         params: dict[str, Any] = dict(vis.params)
         walk_cte = ""
         walk_join = ""
-        if parent_task_id:
-            # MCP-G5. A parent that the caller cannot see answers like a task
-            # that does not exist (404), never a list that says "empty".
-            await load_visible_task(db, vis, parent_task_id)
         if include_descendants:
+            # MCP-G5. The walk needs a visible root. Without this check the
+            # first arm would list the visible children of a hidden root. Direct
+            # mode (`parent_task_id` alone) keeps its old answer: an unseen
+            # parent gives an empty list, as a parent with no children does.
+            await load_visible_task(db, vis, parent_task_id)
             walk_cte = DESCENDANTS_CTE.format(visible=task_visibility_clause(vis, "c"))
             walk_join = " JOIN sub ON sub.id = t.id"
             params["parent"] = parent_task_id

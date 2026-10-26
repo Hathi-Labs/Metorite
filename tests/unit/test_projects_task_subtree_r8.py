@@ -135,15 +135,44 @@ class TestTheSubtree:
 
     async def test_an_unseen_parent_answers_like_a_missing_task(self, world):
         w = world
-        hidden = await _list(w, w.member, f"parent_task_id={w.hidden_child}")
-        missing = await _list(w, w.member, f"parent_task_id={uuid.uuid4()}")
+        deep = "&include_descendants=true"
+        hidden = await _list(w, w.member, f"parent_task_id={w.hidden_child}{deep}")
+        missing = await _list(w, w.member, f"parent_task_id={uuid.uuid4()}{deep}")
         assert hidden.status_code == missing.status_code == 404
         assert hidden.json() == missing.json()
-        both = await _list(w, w.member,
-                           f"parent_task_id={w.hidden_child}&include_descendants=true")
-        assert both.status_code == 404
-        foreign = await _list(w, w.other_org, f"parent_task_id={w.epic}")
+        foreign = await _list(w, w.other_org, f"parent_task_id={w.epic}{deep}")
         assert foreign.status_code == 404
+
+    async def test_direct_mode_keeps_its_old_answer_for_an_unseen_parent(self, world):
+        """No behaviour change: an unseen parent is an empty list, as on main."""
+        w = world
+        got = await _list(w, w.member, f"parent_task_id={uuid.uuid4()}")
+        assert got.status_code == 200, got.text
+        assert got.json()["rows"] == [] and got.json()["total"] == 0
+        # As on main, the rows are the visible tasks whose parent is that id.
+        hidden = await _list(w, w.member, f"parent_task_id={w.hidden_child}")
+        assert _ids(hidden) == [w.under_hidden]
+        foreign = await _list(w, w.other_org, f"parent_task_id={w.epic}")
+        assert foreign.status_code == 200 and foreign.json()["rows"] == []
+
+    async def test_a_malformed_parent_is_a_422_in_both_modes(self, world):
+        w = world
+        for query in ("parent_task_id=abc", "parent_task_id=abc&include_descendants=true"):
+            assert (await _list(w, w.owner, query)).status_code == 422
+
+    async def test_the_depth_cap_holds_on_a_chain_of_twelve(self, world):
+        w = world
+        root = b.project(w.p, w.p.org_a, OWNER)
+        chain = [b.task(w.p, w.p.org_a, OWNER, root, title=f"level {i}") for i in range(13)]
+        for child, parent in zip(chain[1:], chain, strict=False):
+            _child_of(w.p, child, parent)
+        got = await _list(w, w.owner,
+                          f"parent_task_id={chain[0]}&include_descendants=true&page_size=100")
+        assert got.status_code == 200, got.text
+        depths = sorted(r["depth"] for r in got.json()["rows"])
+        assert depths == list(range(1, 11)), "12 levels below the root: only 10 come back"
+        assert got.json()["total"] == 10
+        assert chain[11] not in _ids(got) and chain[12] not in _ids(got)
 
     async def test_descendants_without_a_parent_is_refused(self, world):
         got = await _list(world, world.owner, "include_descendants=true")

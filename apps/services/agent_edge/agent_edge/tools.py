@@ -1271,9 +1271,10 @@ async def _list_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         query.append((_LIST_TASKS_PARAMS["include_descendants"], "true"))
     query += [("page", str(page)), ("page_size", str(size))]
 
-    # A 404 names the task when only the parent was sent, so an unseen parent
-    # reads as get_task reads an unseen task.
-    missing = (TEXT_TASK_NOT_FOUND if "parent_task_id" in args and "project_id" not in args
+    # A 404 names the task in descendants mode, so an unseen root reads as
+    # get_task reads an unseen task. Direct mode answers an empty list instead.
+    missing = (TEXT_TASK_NOT_FOUND
+               if args.get("include_descendants") is True and "project_id" not in args
                else TEXT_PROJECT_NOT_FOUND)
     body = await _get(ctx, LIST_TASKS_ROUTE, missing, query=query)
     rows = body.get("rows") if isinstance(body, dict) else None

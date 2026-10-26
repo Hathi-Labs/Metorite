@@ -568,9 +568,9 @@ EA-3 builds exactly these seven tools. Each one calls only GET routes in `MCP_RO
 
 **Order of the subtree (MCP-G5).** The order is `depth` first, then the sort of the route, which ends on `(created_at, id)`. So the order holds across pages.
 
-**What the subtree hides (MCP-G5).** The walk applies `task_visibility_clause` to each task, and it does not pass through a task that the member cannot see. So the hidden task and every task under it are absent, even a task that the member can see. The answer never shows that a hidden task exists. A parent that the member cannot see gives the 404 of a missing task, and the tool answers "Task not found."
+**What the subtree hides (MCP-G5).** The walk applies `task_visibility_clause` to each task, and it does not pass through a task that the member cannot see. So the hidden task and every task under it are absent, even a task that the member can see. The answer never shows that a hidden task exists. With `include_descendants`, a root that the member cannot see gives the 404 of a missing task, and the tool answers "Task not found." With `parent_task_id` alone, an unseen parent gives only the subtasks that the member can see, and an empty list when there are none. This is the old answer of the route.
 
-**Refusals of the subtree (MCP-G5).** The gateway route refuses `include_descendants` without `parent_task_id` (422), and the edge refuses it first. The walk is `DESCENDANTS_CTE` in `routes/projects/tasks.py`. `cascade._SUBTREE_SQL` walks through hidden tasks for a move, and this walk does not.
+**Refusals of the subtree (MCP-G5).** The gateway route answers 422 for a `parent_task_id` that is not an id. It also refuses `include_descendants` without `parent_task_id` (422), and the edge refuses it first. The walk is `DESCENDANTS_CTE` in `routes/projects/tasks.py`. `cascade._SUBTREE_SQL` walks through hidden tasks for a move, and this walk does not.
 
 **Pages.** Each list tool caps `limit` at 100 and returns `nextCursor` while more rows exist. Three tools have pages: `list_tasks`, `list_projects` and `get_task_timeline`. `search_tasks` caps at 50 and returns `truncated` in its place.
 
