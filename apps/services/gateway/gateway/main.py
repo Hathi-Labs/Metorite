@@ -426,6 +426,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.crm_mirror_sync_skipped", error=str(exc))
 
+    # Start the Knowledge sync loop (gateway/kb_sync/scheduler.py; spec
+    # knowledge_curation.md §7.2 and §22, WS-61 KC-3). It READS the Drive
+    # change feed of each ready source into kb_source_nodes, metadata only.
+    # Dark by default: with KNOWLEDGE_SYNC empty it starts no task and logs
+    # once. The gate lives inside the start function.
+    try:
+        from gateway.kb_sync.scheduler import start_kb_sync
+        kb_sync_started = await start_kb_sync()
+        _log.info("gateway.kb_sync", started=kb_sync_started)
+    except Exception as exc:
+        _log.warning("gateway.kb_sync_skipped", error=str(exc))
+
     # Start the My Day loop (gateway/my_day_loop.py; spec my_day_feed.md §8.4,
     # WS-58 MD-5b). It trims the active set of each org and sweeps old card
     # state once a day. Dark by default: with MY_DAY_LOOP_ENABLED off it
@@ -501,6 +513,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         _log.info("gateway.kb_proposal_expiry", started=kb_expiry_started)
     except Exception as exc:
         _log.warning("gateway.kb_proposal_expiry_skipped", error=str(exc))
+
+    # Start the sweep of stranded agent runs (gateway/agent_run_sweep.py;
+    # spec external_agent_access.md §12.6, WS-55 SW-10a). Every 5 minutes it
+    # nudges the member of a stranded run once, and later opens one recovery
+    # record. Dark by default: with AGENT_RUN_SWEEP_ENABLED off it starts no
+    # task and logs once. The gate lives inside the start function.
+    try:
+        from gateway.agent_run_sweep import start_agent_run_sweep
+        agent_run_sweep_started = await start_agent_run_sweep()
+        _log.info("gateway.agent_run_sweep", started=agent_run_sweep_started)
+    except Exception as exc:
+        _log.warning("gateway.agent_run_sweep_skipped", error=str(exc))
 
     # Chat-run liveness (incident 2026-10-09). This process beats a heartbeat
     # key, so a run it holds reads as alive and a run of a dead process reads
@@ -579,6 +603,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         pass
 
+    # Stop the Knowledge sync loop. Unconditional, like the CRM mirror stop.
+    try:
+        from gateway.kb_sync.scheduler import stop_kb_sync
+        await stop_kb_sync()
+    except Exception:
+        pass
+
     # Stop the My Day loop. Unconditional, like the CRM mirror stop above.
     try:
         from gateway.my_day_loop import stop_my_day_loop
@@ -625,6 +656,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.routes.knowledge.proposal_expiry import stop_kb_proposal_expiry
         await stop_kb_proposal_expiry()
+    except Exception:
+        pass
+
+    # Stop the sweep of stranded agent runs and wait for a tick in progress.
+    try:
+        from gateway.agent_run_sweep import stop_agent_run_sweep
+        await stop_agent_run_sweep()
     except Exception:
         pass
 

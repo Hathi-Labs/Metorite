@@ -5,6 +5,10 @@ The owner accepted every proposal of §15 and every default of §16 the same
 day ("Go with defaults"), recorded as **D104**. Board row **WS-61**.
 Verified against the code on 2026-10-25.
 
+**KB-9b slice 1 is BUILT, 2026-10-26** (branch `kb-9b-my-day`, no
+migration, dark behind `MY_DAY_PROVIDERS`). The cards `doc_needs_review` and
+`doc_shared_with_me` (§9). `source_sync_failed` is slice 2 and is open (§17).
+
 **KB-4b is BUILT, 2026-10-25** (branch `kb-4b-chips`, no migration, frontend
 only, no flag). A link in an assistant answer draws as a chip when the same
 message's finished tools printed the same href (§8.3).
@@ -890,10 +894,24 @@ The orchestrator's persona carries one paragraph for Knowledge:
 > When the member asks about the company, its work, its customers, its
 > mail or its policies, call `search_company` first. Answer from what it
 > returns, and cite each item you used. When it returns nothing, say that
-> the company's records hold nothing on it.
+> the company's records hold nothing on it. A request to change something
+> in one app, such as an email to write or send, a task to make or a record
+> to update, is work in that app. Give it at once to that app's specialist,
+> or to your own tool for it, with no search first. The specialist or the
+> tool finds the email, the contact or the record itself.
+
+"Your own tool" covers a write that the orchestrator holds itself, such as
+`propose_page` and `propose_edit` for a Knowledge page (KB-5a). Once WS-67
+loads tool packs (OA-7), every app's writes are such tools.
 
 KB-4 adds the last sentence, "offer to draft a page", when a member can
 save one.
+
+The sentences on work in one app came from the chat speed review
+(owner go, 2026-10-25). Before them, a request to write an email searched
+first and then delegated, and the email agent searched again. In
+production that cost one model round and a search, about 8.7 s. §20
+already keeps delegation for writes and for deep work in one app.
 
 `search_company` asks Knowledge with the other apps (§20). A specialist
 that needs pages only calls `search_knowledge`.
@@ -1055,31 +1073,32 @@ typed question per hit. READ reads the kept pages. The adapter is thirty lines a
 ## 9. My Day and Reach — the four kinds
 
 Knowledge registers one provider, `register(Provider("knowledge",
-("knowledge",), _knowledge, kinds, needs=False, gated=True))`, in
-`routes/shell/needs.py`. It runs only when `MY_DAY_PROVIDERS` names it. It
-calls `visible_pages_clause` and nothing else, returns 15 signals at most,
-and opens no session of its own.
+("knowledge",), _knowledge, KNOWLEDGE_KINDS, needs=False, gated=True,
+hash_permission="knowledge:manage"))`, in `routes/shell/feed.py`. It runs
+only when `MY_DAY_PROVIDERS` names it. The reads live in
+`routes/knowledge/my_day.py`. Every read of `kb_pages` there goes through
+`visible_pages_clause`. The provider returns 15 signals at most.
+`my_day.read` opens ONE tenant session, and `feed.py` opens none.
 
 | Kind | Signal | Card | Acts | Reach class |
 |---|---|---|---|---|
-| `doc_needs_review` | A published page the member authored or last edited whose review date passed | "Returns policy is 6 months old. 14 people read it this month." | Review (opens the page), "Still current" (moves the date 180 days, class A), Snooze | `brief` (already in `reach/classes.py`) |
-| `doc_shared_with_me` | A page published in the last 24 hours in a space the member reads, by someone else | "Meera published Onboarding checklist in Company." | Read, Snooze | `brief` (already listed) |
+| `doc_needs_review` | A published page past its review date, for the page owner. A page with no owner goes to its author. The date is the publish time plus `COALESCE(review_every_days, 180)` days | "The review date was on Thursday. Check that the page is still right." | Review (opens the page) | `brief` (KB-9b adds it to `reach/classes.py`) |
+| `doc_shared_with_me` | A page that another author published in the last 24 hours, in a space the member reads. At most 5, the newest first | "A new page went live in Company in the last day." | Read (opens the page) | `brief` (KB-9b adds it to `reach/classes.py`) |
 | `kb_gap` | A `kb_gaps` question asked by two or more members in 30 days, in a space the member can write | "3 people asked how to raise a credit note. Nobody has written it down." | "Draft an answer" (opens the editor), Dismiss | `brief` |
 | `source_sync_failed` | A source the member connected is `needs_reconnect` or failed three runs | "Google Drive needs you to sign in again." | Reconnect (a link), Snooze | `interrupt` for the connector, `none` for everyone else |
 
 Each kind gets a row in `feed_rank.BASE` and in the old-path group table of
-`my_day_feed.md` §4.3. `kb_gap` and `source_sync_failed` get rows in
-`REACH_CLASS`, and `test_reach_plan.py::TestTheClasses` pins all four. A
-page publish calls `cache.bump_org`, and a source failure calls
-`cache.bump_member`, so the feed sees the change without a wider `on_event`.
+`my_day_feed.md` §4.3. `kb_gap`, `doc_needs_review`, `doc_shared_with_me` and
+`source_sync_failed` get rows in `REACH_CLASS`, and
+`test_reach_plan.py::TestTheClasses` pins them. A page publish calls
+`cache.bump_org_safe`, and a source failure calls `cache.bump_member_safe`, so
+the feed sees the change without a wider `on_event`.
 
 **`kb_gap` as KB-9a builds it (2026-10-22).** The provider registers in
 `routes/shell/feed.py`, with the other gated feed-only providers. It names
-the feature `knowledge` and the permission `knowledge:manage`. It gives only
-`kb_gap` until KB-9b adds the other three kinds. A closed Knowledge switch or
-a closed `KNOWLEDGE_GAPS` reads `absent`. The read is
-`routes/knowledge/gaps.my_day_rows`, one tenant session, and `feed.py` opens
-none.
+the feature `knowledge`. KB-9b slice 1 moved the permission `knowledge:manage`
+(see below). A closed Knowledge switch or a closed `KNOWLEDGE_GAPS` reads
+`absent`. The gap read is `routes/knowledge/gaps.my_day_rows_in`.
 
 A card shows for an `open` gap with `ask_count` 2 or more and a last
 ask less than 30 days old. Its key is `knowledge:gap:<id>`. Its acts are
@@ -1090,6 +1109,47 @@ The card's own
 Dismiss is the feed's dismiss. The gap's Dismiss is in the Gaps view. The
 reach class of `kb_gap` is `brief`. A gap that reaches 2 askers, a dismiss
 and an answer each call `cache.bump_org_safe`.
+
+**KB-9b slice 1 as built (2026-10-26).** The source `knowledge` no longer
+names `knowledge:manage` as its `permission`, because a plain member gets the
+page cards. `Provider.hash_permission` holds the grant. `cache.features_hash`
+reads it with `permission`, so there is one hash and the key still covers
+`knowledge:manage`. While `knowledge` is listed, the hash also holds
+`knowledge_org=<0|1>`, as `crm_org` does for the CRM.
+
+The gates moved into `_knowledge`. Knowledge off for the org raises
+`SourceAbsent` before any read. The gap read runs only with `KNOWLEDGE_GAPS`
+open and a manager. `my_day.read` reads the gaps, the expired pages and the new
+pages in one session. The order before the cut of 15 is review, then gaps, then
+shared.
+
+Both page kinds key on `knowledge:page:<id>`, so one page makes one card.
+`review_at` is a state fact (`state.STATE_FACTS`). So a dismissed review card
+returns with the next review date, and a dismissed new-page card never hides
+the review card of the same page. The publish route and the accept of a page
+proposal call `cache.bump_org_safe` after the session closes. Fences:
+`tests/unit/test_kb_my_day.py` and `tests/unit/test_kb_my_day_r8.py` (R8). The
+restore of a page and a verify call no bump (OQ9).
+
+The decisions of slice 1:
+
+- **OQ1.** The owner is `COALESCE(owner_email, author_email)`. A page past its
+  review date goes to that person only.
+- **OQ2.** The card names no person.
+- **OQ3.** The card shows no read count.
+- **OQ4.** The card has no "Still current" act. A verify stays in the page view.
+- **OQ5.** A new page is one that ANOTHER author published in the last 24
+  hours. The card expires 24 hours after the publish.
+- **OQ6.** At most 5 new-page cards, the newest first.
+- **OQ7.** `doc_needs_review` ranks 21 and `doc_shared_with_me` ranks 19, both
+  in the group `fyi`. `kb_gap` stays at 20.
+- **OQ8.** Archived spaces and `me` spaces give no card. Both reads name
+  `s.archived_at IS NULL` and `s.kind <> 'me'`.
+- **OQ9.** The restore of a page and a verify may bump the cache, and slice 1
+  adds neither.
+- **OQ10.** The review read returns 10 rows at most (`my_day.REVIEW_MAX`). A
+  dismissed review card keeps its slot among the 15, so the cap leaves room for
+  the gap and new-page cards.
 
 The feed is where insight lives, and the four kinds are deliberately dumb.
 A fifth kind that uses a model, "the handbook contradicts the CRM's price
@@ -1222,11 +1282,11 @@ compact density, a changed accent, and four widths.
 | `kb_links` | §5.5 | as the page |
 | `kb_chunks` | §6.1 | as the page or the document |
 | `kb_gaps` | id, organization_id, norm_query, sample_query, askers TEXT[] (20 at most), ask_count, first_asked_at, last_asked_at, status (`open`, `answered`, `dismissed`), answered_page_id (→ `kb_pages`, ON DELETE SET NULL), dismissed_by, dismissed_at, created_at. UNIQUE (organization_id, norm_query). KB-9a, §8.4 | org scope: `knowledge:manage`. A member: the gaps the member asked |
-| `kb_sources` | id, organization_id, connection_id (→ `integration_connections`), provider, scope_kind, member_email, display_name, last_discovery_at, last_changes_at, status, created_at | org scope: `knowledge:manage`. member scope: the member |
+| `kb_sources` | id, organization_id, connection_id (→ `integration_connections`), provider, kind (`member`, `org`), owner_email, state (`discovering`, `ready`, `failed`, `needs_reconnect`, `disconnected`), default_space_id, account_email, account_id, node_count, discovered_at, last_error, last_new_at, created_at, updated_at. Migration 300 (KC-1a). `last_new_at` is migration 308 (KC-3) | org scope: `knowledge:manage`. member scope: the member |
 | `kb_source_nodes` | organization_id, source_id, ext_id, parent_ext_id, kind, name, mime, size, modified_at, web_url, path, included_space_id, explored, seen_at | as the source |
 | `kb_documents` | id, organization_id, source_id, node_ext_id, space_id, title, text, text_sha, extracted_at, pages, truncated, copied_attachment_id | the space it was included into |
-| `kb_sync_runs` | id, organization_id, source_id, kind (`discover`, `changes`), status, started_at, finished_at, heartbeat_at, counts JSONB, error | as the source |
-| `kb_sync_cursors` | organization_id, source_id, kind, cursor_state JSONB, last_run_at, last_status | as the source |
+| `kb_sync_runs` | id, organization_id, source_id, kind (`discover`, `changes`, `reconcile`), status, started_at, finished_at, heartbeat_at, counts JSONB, error. Migration 308 (KC-3) | as the source |
+| `kb_sync_cursors` | organization_id, source_id, kind (`changes`, `reconcile`), cursor_state JSONB, last_run_at, last_status. Migration 308 (KC-3) | as the source |
 
 Every table carries `organization_id`, defaults it from `app.tenant_id`,
 and takes FORCE RLS from the generated policies. `test_tenant_coverage.py`'s
@@ -1247,8 +1307,8 @@ The first migration adds, and nothing renames (R6).
 | `KNOWLEDGE_PROPOSAL_EXPIRY` | on | The expiry loop of §8.4 door 2 starts. It does nothing for an org that Knowledge does not serve. Off, the loop does not start and a proposal stays open | AGENT-SAFE. It spends no credit and sends nothing |
 | `KNOWLEDGE_SOURCES` | empty | The organization ids that may connect a company file source, in the grammar of `KNOWLEDGE_ORGS`. A star is every org. Empty, every `/knowledge/sources` route answers 404. One flag for each provider opens that provider (`knowledge_curation.md` §17). Built at KC-1a | Agent, on staging. Owner, on production |
 | `KNOWLEDGE_SOURCE_GOOGLE` | empty | The organization ids that may connect Google Drive, in the same grammar. It needs `KNOWLEDGE_SOURCES` too. Empty, the Drive connect and callback answer 404. Built at KC-1a | owner. Outside the Google test users it waits on §7.4 |
-| `KNOWLEDGE_SYNC_ENABLED` | off | The loop runs | AGENT-SAFE to build, owner to flip on the box |
-| `MY_DAY_PROVIDERS` | as WS-58 | `knowledge` joins the list | MD-10's rule |
+| `KNOWLEDGE_SYNC` | empty | The organization ids whose ready sources the sync loop reads, in the grammar of `KNOWLEDGE_ORGS`. It needs `KNOWLEDGE_SOURCES` too. Empty, `start_kb_sync()` starts no task. Built at KC-3 (`knowledge_curation.md` §17) | AGENT-SAFE to build. Agent on staging, owner on production |
+| `MY_DAY_PROVIDERS` | as WS-58 | `knowledge` joins the list | MD-3's flip rule |
 | `KNOWLEDGE_GAPS` | empty | The organization ids whose `search_company` reads with no Knowledge hit write a `kb_gaps` row (KB-9a, §8.4). A star is every org. It opens the gap routes and the `kb_gap` card too. Empty, nothing writes a gap, and the gap routes answer 404 | AGENT-SAFE. It spends no credit and sends nothing. A flip for an org: the owner, gate `enforcement-flip` |
 | `KNOWLEDGE_DISTILL` | off | CX-3 writes a digest for each published page on `tier-fast` (`company_context.md` §5) | owner, it spends credits |
 | `KNOWLEDGE_PROPOSALS` | off | KB-5a. The orchestrator gets `propose_page`, `propose_edit` and their persona line, with `COMPANY_SEARCH_ENABLED` on too. `POST /knowledge/proposals` answers. Off, the POST is 404, and the list, accept and reject stay open, so a filed proposal stays decidable. One flag for every org, because the orchestrator builds its tools once | Agent. It spends no credit. KB-5b has shipped the Review view, where a person accepts, so it may now be turned on |
@@ -1356,8 +1416,8 @@ its own branch, three or four in flight at most.
 | **KB-7c** | The OneDrive and SharePoint adapter on the Microsoft app the Email app uses | Same checks as 7a on a Microsoft 365 account | AGENT-SAFE. Org-wide `Sites.Read.All` consent: owner |
 | **KB-7d** — folded into KC-1 (`knowledge_curation.md` §22). KC-1a BUILT 2026-10-25, backend and dark. KC-1b (the Sources view) is open | The Google Drive adapter on the one Google client, with the shared-grant rule of §7.4 | Same checks on a test user. Disconnecting Drive leaves Gmail connected, and the test proves it | AGENT-SAFE to build. The verification: owner (Q2) |
 | **KB-8** | Replaced on 2026-10-18 by CX-3 of `company_context.md`: a digest per page on `tier-fast`, behind `KNOWLEDGE_DISTILL`, with `raw` kept. `tier-cheap` does not exist | See `company_context.md` §12 | AGENT-SAFE to build. The flip: owner |
-| **KB-9a** ✅ BUILT 2026-10-22 (branch `kb-gaps`, migration 293) | Gaps and the `kb_gap` card (§8.4 door 3, §9). The migration of `kb_gaps` (the next free number, R1). The gap write after `GET /search/company`, behind `KNOWLEDGE_GAPS`, as a background job. `GET /knowledge/gaps`, `POST /knowledge/gaps/{id}/dismiss`, `POST /knowledge/gaps/{id}/answered` and, from the H-402 follow-up, `POST /knowledge/gaps/{id}/reopen`. The gated provider `knowledge` with `kb_gap`, its reach class and its cache bumps. The Gaps view in the rail, and "Write a page" with the question as the title. The member purge takes the address out of `askers`. No model | A zero-hit search writes one row. A second asker adds one to the count, and the same asker twice counts once. A search with a Knowledge hit, a short question, an id, a URL and an email write nothing, and so does an org off `KNOWLEDGE_GAPS`. Org B sees no gap of org A, under row level security. A member sees only the gaps the member asked, and a manager sees all. Dismiss needs `knowledge:manage`. "I wrote it" needs a visible page that the caller can write. The card shows to a manager only, at 2 askers or more inside 30 days. Tests: `test_kb_gaps.py` and `test_kb_gaps_r8.py` (R8), and the Gaps e2e | AGENT-SAFE. `KNOWLEDGE_GAPS` and `MY_DAY_PROVIDERS`: MD-10's rule |
-| **KB-9b** | The other three kinds of §9: `doc_needs_review`, `doc_shared_with_me` and `source_sync_failed`, with their reach classes and the cache bumps of a publish and a source failure. `source_sync_failed` waits for KB-7b | A page past review shows a card to its author. A new page in a space the member reads shows a card. `test_reach_plan.py` pins the classes | AGENT-SAFE. `MY_DAY_PROVIDERS`: MD-10's rule |
+| **KB-9a** ✅ BUILT 2026-10-22 (branch `kb-gaps`, migration 293) | Gaps and the `kb_gap` card (§8.4 door 3, §9). The migration of `kb_gaps` (the next free number, R1). The gap write after `GET /search/company`, behind `KNOWLEDGE_GAPS`, as a background job. `GET /knowledge/gaps`, `POST /knowledge/gaps/{id}/dismiss`, `POST /knowledge/gaps/{id}/answered` and, from the H-402 follow-up, `POST /knowledge/gaps/{id}/reopen`. The gated provider `knowledge` with `kb_gap`, its reach class and its cache bumps. The Gaps view in the rail, and "Write a page" with the question as the title. The member purge takes the address out of `askers`. No model | A zero-hit search writes one row. A second asker adds one to the count, and the same asker twice counts once. A search with a Knowledge hit, a short question, an id, a URL and an email write nothing, and so does an org off `KNOWLEDGE_GAPS`. Org B sees no gap of org A, under row level security. A member sees only the gaps the member asked, and a manager sees all. Dismiss needs `knowledge:manage`. "I wrote it" needs a visible page that the caller can write. The card shows to a manager only, at 2 askers or more inside 30 days. Tests: `test_kb_gaps.py` and `test_kb_gaps_r8.py` (R8), and the Gaps e2e | AGENT-SAFE. `KNOWLEDGE_GAPS` and `MY_DAY_PROVIDERS`: MD-3's flip rule |
+| **KB-9b** slice 1 ✅ BUILT 2026-10-26 (branch `kb-9b-my-day`, no migration), slice 2 open | Slice 1: `doc_needs_review` and `doc_shared_with_me`, with their reach classes, rank rows, labels and the cache bump of a publish and of an accept (§9). `source_sync_failed` is slice 2. It reads the `failed` and `stopped` rows of `kb_sync_runs` and `kb_sources.last_error`, which KC-3 writes (`knowledge_curation.md` §22) | Slice 1: a page past review shows a card to its owner, or to its author when it has no owner. A new page in a space the member reads shows a card to a reader who did not write it, 5 at most. A plain member gets the page cards and no `kb_gap`. `test_reach_plan.py` pins the classes. Slice 2 done-when: the connector (`kb_sources.owner_email`) gets one card when the source is `needs_reconnect`, or when its three newest finished changes or reconcile runs failed with an error other than stale or superseded. A stopped run never counts. No other member gets a card, and a disconnected source gives none. The key is `knowledge:source:<id>`, and the one act opens `/knowledge/sources`. With `KNOWLEDGE_SOURCES` off, no read runs. A reconnect close and a failed close call `bump_member_safe` for the owner, after the session closes. The class is `interrupt`. R8 proves org isolation. Slice 2 waits for KC-4a to merge its `kb_sync/` edits | AGENT-SAFE. `MY_DAY_PROVIDERS`: MD-3's flip rule |
 | **KB-10** | `kb:read` on `/mcp`: the scope, the two tools, the route pairs, the second manifest in `test_mcp_edge_coverage.py` | Claude Desktop, connected with `kb:read`, searches and reads a page the member can see, and gets 404 on one they cannot | AGENT-SAFE. The scope amendment: owner |
 | **KB-11** | The narrowing adapter, "Make this a page" on a report, the Markdown export zip | A report becomes a page. An org exports its pages. `narrow_and_read` answers a question over 60 documents on `tier-decide` | AGENT-SAFE |
 | **KB-12** ✅ DONE 2026-10-18, by owner decision in chat (H-21) | Promotion to `live`: the launch table, `LIVE_SET`, `APP_BAR_HOME`, the two jobs of §11 on both job lists, and Knowledge in the bar's `BAR_APPS` and `SCOPE_APPS`. `NEXT_PUBLIC_KNOWLEDGE` never existed, and §13 says so | The pane shows to every member with `feature:knowledge`. "Find in Knowledge" and "Write a page" answer in the command bar, and a Knowledge page answers in its search | **OWNER-GATE** (H-21), granted in chat on 2026-10-18 |
@@ -1413,6 +1473,12 @@ uv run pytest tests/unit/test_kb_gaps.py tests/unit/test_kb_flags.py \
 uv run pytest tests/unit/test_kb_gaps_r8.py -q -rs
 cd workbench/control_plane && npx vitest run src/app/knowledge/lib/gaps.test.ts \
   src/lib/shell/feedApps.test.ts && npx playwright test e2e/knowledge-gaps.spec.ts
+
+# KB-9b slice 1, the page cards. The R8 suite needs the ladder database, and a skip is not a pass.
+uv run pytest tests/unit/test_kb_my_day.py tests/unit/test_kb_gaps.py \
+  tests/unit/test_reach_plan.py tests/unit/test_my_day_prefs.py \
+  tests/unit/test_feed_rank.py tests/unit/test_shell_feed.py -q
+uv run pytest tests/unit/test_kb_my_day_r8.py -p no:xdist -q -rs
 
 # Wave 1 of §21.7 (KB-2d, KB-2f, KB-2g, KB-2i)
 uv run pytest tests/unit/test_third_party_notices.py -q

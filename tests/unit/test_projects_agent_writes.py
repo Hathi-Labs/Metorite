@@ -2319,9 +2319,11 @@ async def test_every_manifest_tool_is_now_built() -> None:
 
     # The four agent-run tools wait for WS-55 EA-12e, the in-product chat
     # parity of the routes an outside agent already uses (EA12-9, §12.1).
-    # EA-14a adds the release of a run to the same wait.
+    # EA-14a adds the release of a run to the same wait. WS-55 SW-11a adds the
+    # resume of a stalled run (spec §12.7): a member act on a run, as the
+    # release is, so the chat gets it with the other run tools in EA-12e.
     ea_12e = {"agent_runs", "start_agent_run", "post_agent_activity", "finish_agent_run",
-              "release_agent_run"}
+              "release_agent_run", "resume_agent_run"}
     # WS-55 EA-6b: the claim route serves an outside agent over MCP. The chat
     # assigns through `assign` and moves through `update_task`.
     ea_6b = {"claim_task"}

@@ -29,6 +29,24 @@ What the harness replaces, and nothing more:
   through the Router, and ``_run_sub_agent_streaming`` records the agent and
   the message and answers with a fixed line, so no specialist runs, writes or
   spends.
+* Live with ``real_specialists=True`` (WS-67 OA-5): no stand-in. Each
+  specialist runs and asks the real model too. Each host HTTP send that does
+  not start with a prefix of :attr:`RoutingHarness.allow` fails, and
+  :attr:`RoutingHarness.sent` records it. The guard covers async and sync
+  httpx. It does not cover a database, Redis or graph driver. So a test fake must replace each
+  route that a specialist's tools reach, as ``evals/one_assistant_measure``
+  replaces the email gateway.
+
+What the harness adds, in each mode (WS-67 OA-5, the measure of tool packs):
+
+* :attr:`RoutingHarness.model_calls`: each request of each agent's model, with
+  its timing and the usage that the response gave (:class:`ModelCall`). A tap
+  wraps the transport of each agent's client, after the wire above.
+* :attr:`RoutingHarness.after_build`: a hook for each agent name, called on the
+  agents that the real factory built, before the wire. An eval changes the
+  built agents there, and never the factory.
+* :attr:`RunRecord.first_text_s` and :attr:`RunRecord.total_s`: the time from
+  the start of a turn to its first answer text, and to its end.
 
 Two best-effort reads still try the database: the member's access
 (``acb_auth.resolve_access``) and the tier overrides of ``acb_llm``. With no
@@ -47,6 +65,7 @@ import json
 import shutil
 import sys
 import tempfile
+import time
 import types
 import uuid
 from collections.abc import Callable
@@ -146,6 +165,148 @@ class ReplyModel:
                    for b in self.bodies)
 
 
+# ── the wire tap (WS-67 OA-5) ───────────────────────────────────────────────
+
+
+@dataclass
+class ModelCall:
+    """One request of an agent's model, as the wire saw it.
+
+    The times are ``time.monotonic()`` values. ``usage`` is the ``usage``
+    object of the response: the last stream frame that holds one, or the body
+    of a buffered response. A stream gets it when the Router asks the vendor
+    for it (``include_usage``), and the Router always does.
+    """
+
+    agent: str
+    model: str
+    stream: bool
+    messages: int
+    tools: int
+    request_chars: int
+    started: float
+    first_byte: float | None = None
+    #: The first frame with text or a tool call. A buffered call: its end.
+    first_token: float | None = None
+    ended: float | None = None
+    status: int | None = None
+    #: The model that the response names, for example the vendor's model id.
+    served: str = ""
+    usage: dict[str, Any] = field(default_factory=dict)
+
+
+class _TapStream(httpx.AsyncByteStream):
+    """The response body, read as it passes, for :class:`ModelCall`."""
+
+    def __init__(self, inner: Any, call: ModelCall) -> None:
+        self._inner = inner
+        self._call = call
+        self._buffer = b""
+
+    async def __aiter__(self) -> Any:
+        async for chunk in self._inner:
+            self._see(chunk)
+            yield chunk
+        self._done()
+
+    async def aclose(self) -> None:
+        self._done()
+        close = getattr(self._inner, "aclose", None)
+        if close is not None:
+            await close()
+
+    def _see(self, chunk: bytes) -> None:
+        if not self._call.stream:
+            self._buffer += chunk
+            return
+        self._buffer += chunk
+        *lines, self._buffer = self._buffer.split(b"\n")
+        for line in lines:
+            self._frame(line.strip())
+
+    def _frame(self, line: bytes) -> None:
+        if not line.startswith(b"data:"):
+            return
+        body = line[len(b"data:"):].strip()
+        if not body or body == b"[DONE]":
+            return
+        try:
+            frame = json.loads(body)
+        except ValueError:
+            return
+        if not isinstance(frame, dict):
+            return
+        self._call.served = str(frame.get("model") or self._call.served)
+        if isinstance(frame.get("usage"), dict) and frame["usage"]:
+            self._call.usage = dict(frame["usage"])
+        for choice in frame.get("choices") or []:
+            delta = (choice or {}).get("delta") or {}
+            if self._call.first_token is None and (delta.get("content") or delta.get("tool_calls")):
+                self._call.first_token = time.monotonic()
+
+    def _done(self) -> None:
+        if self._call.ended is not None:
+            return
+        self._call.ended = time.monotonic()
+        if self._call.stream:
+            if self._buffer.strip():
+                self._frame(self._buffer.strip())
+            return
+        self._call.first_token = self._call.ended
+        try:
+            body = json.loads(self._buffer or b"{}")
+        except ValueError:
+            return
+        if isinstance(body, dict):
+            self._call.served = str(body.get("model") or "")
+            if isinstance(body.get("usage"), dict):
+                self._call.usage = dict(body["usage"])
+
+
+class _WireTap(httpx.AsyncBaseTransport):
+    """A transport that records each model request of one agent, and passes it on."""
+
+    def __init__(self, inner: Any, agent: str, sink: list[ModelCall]) -> None:
+        self._inner = inner
+        self._agent = agent
+        self._sink = sink
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        try:
+            raw = request.content or b""
+        except httpx.RequestNotRead:
+            raw = b""
+        try:
+            body = json.loads(raw or b"{}")
+        except ValueError:
+            body = {}
+        body = body if isinstance(body, dict) else {}
+        call = ModelCall(
+            agent=self._agent, model=str(body.get("model") or ""),
+            stream=bool(body.get("stream")), messages=len(body.get("messages") or []),
+            tools=len(body.get("tools") or []), request_chars=len(raw),
+            started=time.monotonic(),
+        )
+        self._sink.append(call)
+        response = await self._inner.handle_async_request(request)
+        call.first_byte = time.monotonic()
+        call.status = response.status_code
+        response.stream = _TapStream(response.stream, call)
+        return response
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+def _tap(agents: list[Any], name: str, sink: list[ModelCall]) -> None:
+    """Wrap the transport of the first agent's OpenAI client in a :class:`_WireTap`."""
+    client = getattr(getattr(agents[0] if agents else None, "client", None), "client", None)
+    http = getattr(client, "_client", None)
+    inner = getattr(http, "_transport", None)
+    if inner is not None and not isinstance(inner, _WireTap):
+        http._transport = _WireTap(inner, name, sink)
+
+
 # ── the registry ────────────────────────────────────────────────────────────
 
 
@@ -202,6 +363,10 @@ class RunRecord:
     tool_calls: list[tuple[str, str]] = field(default_factory=list)
     answer: str = ""
     error: str | None = None
+    #: Seconds from the start of the turn to its first answer text, or None.
+    first_text_s: float | None = None
+    #: Seconds from the start of the turn to its end.
+    total_s: float | None = None
 
 
 def delegates_of(name: str, args: str, agents: frozenset[str]) -> list[str]:
@@ -301,8 +466,21 @@ def _finish(record: RunRecord, calls: dict[str, dict[str, str]], agents: frozens
 class RoutingHarness:
     """One sweep: the patches, the state root, and the models of this run."""
 
-    def __init__(self, *, live: bool = False) -> None:
+    def __init__(self, *, live: bool = False, real_specialists: bool = False) -> None:
         self.live = live
+        #: Live: each specialist runs for real, and no stand-in answers.
+        self.real_specialists = real_specialists
+        #: Live with real specialists: the URL prefixes that a host HTTP send
+        #: may reach, for example the Router. Each other send fails.
+        self.allow: tuple[str, ...] = ()
+        #: Live with real specialists: each send that :attr:`allow` let pass.
+        #: It must equal the tapped calls, or a send skipped the tap.
+        self.passed: list[str] = []
+        #: Each model request of each agent, in order (WS-67 OA-5).
+        self.model_calls: list[ModelCall] = []
+        #: A hook for each agent name, called on the agents that its real
+        #: factory built, before the wire (WS-67 OA-5).
+        self.after_build: dict[str, Callable[[list[Any]], None]] = {}
         #: The model of each agent, for the NEXT run. Scripted runs only.
         self.models: dict[str, ReplyModel] = {}
         #: Every agent the loader built, in order.
@@ -395,7 +573,33 @@ class RoutingHarness:
         email_chat_context.clear_cache()
         mp.setitem(sys.modules, "ddgs", None)
         mp.setitem(sys.modules, "duckduckgo_search", None)
-        if self.live:
+        if self.live and self.real_specialists:
+            send = httpx.AsyncHTTPTransport.handle_async_request
+
+            async def only_allowed(transport: Any, request: Any) -> Any:
+                url = str(request.url)
+                if any(url.startswith(prefix) for prefix in self.allow):
+                    self.passed.append(f"{request.method} {url}")
+                    return await send(transport, request)
+                self.sent.append(f"{request.method} {url}")
+                raise AssertionError(f"the live run may not send {request.method} {url}")
+
+            mp.setattr(httpx.AsyncHTTPTransport, "handle_async_request", only_allowed)
+            # Fix round 1 of OA-5: a sync client too (a tool can use one).
+            # The guard covers httpx only: a database, Redis or graph driver
+            # does not go through it.
+            send_sync = httpx.HTTPTransport.handle_request
+
+            def only_allowed_sync(transport: Any, request: Any) -> Any:
+                url = str(request.url)
+                if any(url.startswith(prefix) for prefix in self.allow):
+                    self.passed.append(f"{request.method} {url}")
+                    return send_sync(transport, request)
+                self.sent.append(f"{request.method} {url}")
+                raise AssertionError(f"the live run may not send {request.method} {url}")
+
+            mp.setattr(httpx.HTTPTransport, "handle_request", only_allowed_sync)
+        elif self.live:
             mp.setattr(executor, "_run_sub_agent_streaming", self._stand_in)
         else:
             async def trap(_transport: Any, request: Any) -> Any:
@@ -439,19 +643,22 @@ class RoutingHarness:
             module = load_agent_module(self._registry[name]["local_path"])
             self._modules[name] = module
         agents = module.build_agents()
-        if self.live:
-            return agents
-        model = self.models.get(name)
-        if model is None:
-            raise AssertionError(f"the scripted run has no model for {name!r}")
-        client = getattr(getattr(agents[0], "client", None), "client", None)
-        if client is None or not hasattr(client, "_client"):
-            raise AssertionError(
-                f"{name!r} is not a MAF agent with an OpenAI client, so a script cannot drive it",
+        hook = self.after_build.get(name)
+        if hook is not None:
+            hook(agents)
+        if not self.live:
+            model = self.models.get(name)
+            if model is None:
+                raise AssertionError(f"the scripted run has no model for {name!r}")
+            client = getattr(getattr(agents[0], "client", None), "client", None)
+            if client is None or not hasattr(client, "_client"):
+                raise AssertionError(
+                    f"{name!r} is not a MAF agent with an OpenAI client, so a script cannot drive it",
+                )
+            client._client = httpx.AsyncClient(
+                transport=httpx.MockTransport(model), event_hooks=client._client.event_hooks,
             )
-        client._client = httpx.AsyncClient(
-            transport=httpx.MockTransport(model), event_hooks=client._client.event_hooks,
-        )
+        _tap(agents, name, self.model_calls)
         return agents
 
     # ── live: the stand-in for a specialist ─────────────────────────────────
@@ -483,6 +690,8 @@ class RoutingHarness:
         agent: str = ORCHESTRATOR,
         thread_id: str | None = None,
         solo_room: bool = True,
+        history: list[dict[str, Any]] | None = None,
+        typed: str | None = None,
     ) -> RunRecord:
         """One chat turn of the one assistant, through ``run_agent_stream``.
 
@@ -494,7 +703,10 @@ class RoutingHarness:
         next turn of the same chat (``test_one_assistant_email.py``).
         *solo_room* is the bit that the chat route binds with
         ``room_is_solo(room)``. A member alone in their own chat is solo, so
-        it is True by default (H-406)."""
+        it is True by default (H-406). *history* is the chat's earlier turns
+        as the browser sends them (``messages``), for a test of what a
+        delegated task carries (WS-67 OA-1). *typed* binds the member's typed
+        words of the turn, as the chat route does; None binds nothing."""
         from acb_common.db import bind_tenant, release_tenant
         from acb_skills.write_artifact import bind_artifact_context
         from orchestrator import executor
@@ -506,6 +718,9 @@ class RoutingHarness:
         agents = frozenset(self._registry)
         payload = {"mode": "chat", "message": words, "user_email": member,
                    "system_context": system_context}
+        if history:
+            payload["messages"] = list(history)
+        started = time.monotonic()
 
         async def consume() -> None:
             async for line in executor.run_agent_stream(
@@ -516,14 +731,26 @@ class RoutingHarness:
             ):
                 for event in parse_frames([line]):
                     record.events.append(event)
+                    if (record.first_text_s is None and event.get("type") == "TEXT_MESSAGE_CONTENT"
+                            and event.get("delta")):
+                        record.first_text_s = time.monotonic() - started
                     _take(record, event, calls, on_card, question_answer)
 
         token = bind_tenant(org)
         try:
-            await asyncio.wait_for(consume(), timeout=timeout)
+            if typed is None:
+                await asyncio.wait_for(consume(), timeout=timeout)
+            else:
+                # The route binds the member's typed words before the run
+                # (`member_typed`). A test that needs them opts in.
+                from acb_common.assistant_profile import member_typed
+
+                with member_typed(typed):
+                    await asyncio.wait_for(consume(), timeout=timeout)
         except TimeoutError:
             record.error = f"the run did not end within {timeout:.0f} s"
         finally:
+            record.total_s = time.monotonic() - started
             release_tenant(token)
             bind_artifact_context()
             _finish(record, calls, agents)

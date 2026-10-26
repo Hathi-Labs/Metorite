@@ -345,6 +345,9 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
             ("velocity.verdict", "Forecast"),
             ("plan.planned_finish", "Planned finish"),
             ("velocity.finish_date", "Forecast finish"),
+            # WS-27bn RA-6. The forecast by count: the finish above is the
+            # 50% date, and this is the 85% date.
+            ("velocity.p85_date", "85% finish"),
         ],
     },
     "stuck": {
@@ -386,6 +389,27 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
             ("since_at", "Since"),
         ],
     },
+    # WS-27bn RA-4. The outcomes of 14 days, then one row for each silent
+    # run. `_card_section` names the member over the address, as the panel
+    # does. The success rate and the long runs are in the text beside it.
+    "agent_runs": {
+        "title": "Agent runs",
+        "stats": [
+            ("outcomes.completed", "Completed"),
+            ("outcomes.failed", "Failed"),
+            ("outcomes.abandoned", "Abandoned"),
+            ("silent_total", "Silent now"),
+            ("long_total", "4 hours or more"),
+        ],
+        "rows": "silent",
+        "columns": [
+            ("title", "Task"),
+            ("agent", "Agent"),
+            ("member", "For"),
+            # `_card_section` copies `since` here, so the date cut applies.
+            ("since_at", "Silent since"),
+        ],
+    },
     # WS-27bn R3c. The four counts, then one row for each named task.
     "hygiene": {
         "title": "Data hygiene",
@@ -405,7 +429,8 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
     },
     "load": {
         "title": "Open work",
-        "stats": [("total_tasks", "Open tasks")],
+        # WS-27bn RA-6. The open tasks with no assignee and no open run.
+        "stats": [("total_tasks", "Open tasks"), ("needs_owner.total", "Need an owner")],
         "rows": "people",
         "columns": [("assignee", "Assignee"), ("open_tasks", "Open"), ("overdue", "Overdue")],
     },
@@ -443,6 +468,9 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
     },
 }
 
+#: WS-27bn RA-6. A verdict whose §5 word is not its key in plain case.
+VERDICT_WORDS: dict[str, str] = {"no_history": "Not enough history"}
+
 #: A value that is an ISO timestamp. The card prints its date only, as the
 #: Reports app's `shortDate` does (H-185 item 1).
 #:
@@ -476,7 +504,8 @@ def _card_cell(key: str, row: dict[str, Any], numbers: bool = False) -> Any:
         return value
     if key.endswith("verdict") and isinstance(value, str):
         # A server word such as ``not_converging`` reads as "Not converging".
-        return _human(value)
+        # WS-27bn RA-6: ``no_history`` reads as the §5 word.
+        return VERDICT_WORDS.get(value) or _human(value)
     if key in ("assignee", "name") and not value:
         # The Unassigned row carries no person. Say so, as the Reports app does.
         return _plain(row.get("assignee") or "Unassigned")
@@ -528,6 +557,23 @@ def _report_card_notes(name: str, section: dict[str, Any]) -> list[str]:
 
 #: The most rows a section table of the report card holds.
 REPORT_CARD_ROWS = 25
+
+
+def _card_rows(name: str, rows: Any) -> Any:
+    """The rows of a section as its card table reads them.
+
+    WS-27bn RA-4. A row of ``agent_runs`` names the member over the
+    address, as the panel shows it, and its ``since`` takes the date cut.
+    The rows then go through the one table of :func:`_card_section`, with
+    its one cut. Every other section keeps its rows as they are.
+    """
+    if name != "agent_runs" or not isinstance(rows, list):
+        return rows
+    return [
+        {**r, "member": r.get("member_name") or r.get("member"), "since_at": r.get("since")}
+        for r in rows
+        if isinstance(r, dict)
+    ]
 
 
 def _card_section(
@@ -631,6 +677,7 @@ def _card_section(
             "columns": [label for _, label in columns],
             "rows": cells,
         }
+    rows = _card_rows(name, rows)
     notes = _report_card_notes(name, section)
     if isinstance(rows, list) and rows and isinstance(rows[0], dict) and columns:
         table = {

@@ -167,6 +167,15 @@ async def _update(
     )).first()
 
 
+async def bump_feed_after_publish(user: UserContext) -> None:
+    """The org's My Day cache, after a publish committed (KB-9b). The
+    ``doc_shared_with_me`` card appears with the publish. It waits briefly
+    and never raises. Call it AFTER the session closes."""
+    from gateway.routes.shell import cache
+
+    await cache.bump_org_safe(user.organization_id)
+
+
 async def _written(
     db: Any, user: UserContext, row: Any, reason: str,
     background: BackgroundTasks | None = None,
@@ -629,7 +638,9 @@ async def publish_page(
         if not core.can_write_page(level):
             raise core.forbidden("Publishing this page needs a write grant on its space.")
         row = await _update(db, user, str(page.id), PUBLISH_SETS, {})
-        return await _written(db, user, row, "publish", background)
+        out = await _written(db, user, row, "publish", background)
+    await bump_feed_after_publish(user)
+    return out
 
 
 async def _move_target(

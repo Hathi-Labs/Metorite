@@ -70,6 +70,7 @@
     "task_detail",
     "vocabulary",
     "waiting_agent_requests",
+    "needs_attention",
     "my_task",
     "recurrence",
     "render_board",

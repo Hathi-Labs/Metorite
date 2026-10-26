@@ -10,6 +10,8 @@ decisions EA12-1 to EA12-13) and row EA-12a of §15.
     POST /projects/agent-runs/{run_id}/activities → {activity, run, created}
     POST /projects/agent-runs/{run_id}/finish     → {run, activity}
     POST /projects/agent-runs/{run_id}/release    → {run, released}   (EA-14a)
+    POST /projects/agent-runs/{run_id}/resume     → {run, activity, resumed, created}
+                                                                      (SW-11a)
     POST /projects/tasks/{task_id}/archive-request    → {activity, run, created}
     POST /projects/agent-runs/{run_id}/archive-approval
                                                   → {activity, run, created, archived}
@@ -65,7 +67,13 @@ The rules, each one stated in the spec:
   ``archive-approval``, which is NOT in ``MCP_ROUTES``. An approve writes
   the answer and archives the task in ONE transaction, through
   ``tasks.archive_task_in``, and never the subtasks. The generic answer
-  route refuses a ``prompt`` on a typed request.
+  route refuses a ``prompt`` on a typed request. SW-10a: an approve also
+  closes the run (``completed``, with a system line) in that transaction.
+* **Stranded runs** (WS-55 SW-10a, spec §12.6). The runs wire carries
+  ``needs_agent`` (why the run waits for an agent) and ``stranded`` (the
+  open strand that the sweep of ``gateway/agent_run_sweep.py`` found). The sweep
+  decides; the writes to these two tables stay here
+  (:func:`close_archived_runs`, :func:`write_strand_line`).
 """
 
 from __future__ import annotations
@@ -99,13 +107,19 @@ from gateway.routes.projects.core import (
     wire,
 )
 from gateway.routes.projects.filters import (
+    AGENT_RUN_ANSWER_WAITS_SQL,
     AGENT_RUN_OPEN_STATUSES,
     AGENT_RUN_STATE_SQL,
     agent_runs_enabled,
     attach_agent_state,
     connection_gone_sql,
     holder_free,
+    holder_free_sql,
     lease_expired,
+    open_recovery_sql,
+    open_strand_sql,
+    strand_fits_sql,
+    task_closed_sql,
 )
 from gateway.routes.projects.notifications import excerpt_of, notify, task_audience
 from gateway.routes.projects.tasks import archive_task_in
@@ -174,6 +188,12 @@ ARCHIVE_DECLINE = "decline"
 ARCHIVE_REQUEST_BODY = (
     "The agent asks to archive this task. The subtasks stay where they are. "
     "Only the member of this agent run can approve or decline."
+)
+#: SW-10a (spec §12.6, part 1 item 2). The system line of a run that an
+#: approved archive closed. Before SW-10a such a run read ``answered`` until
+#: an agent came back, and in production none came (tasks #129 and #248).
+ARCHIVE_CLOSED_BODY = (
+    "Closed: the member approved the archive, and the task is archived."
 )
 
 #: The sleep of the long poll. A name of its own, so the fence of R11 can
@@ -262,6 +282,16 @@ class ReleaseIn(BaseModel):
     is the path, and the actor is the context."""
 
     model_config = ConfigDict(extra="forbid")
+
+
+class ResumeIn(BaseModel):
+    """``POST /projects/agent-runs/{id}/resume`` (WS-55 SW-11a, spec §12.7).
+    The key only. The run is the path, the actor is the context, and the text
+    of the prompt is the server's (:data:`RESUME_BODY`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=1, max_length=128)
 
 
 class ArchiveRequestIn(BaseModel):
@@ -360,6 +390,20 @@ _MOVES: dict[str, dict[str, str]] = {
         "created": "abandoned", "in_progress": "abandoned", "awaiting": "abandoned",
         "stopping": "abandoned",
     },
+    # SW-10a (spec §12.6). The member approved the agent's archive request
+    # and the task is archived: the work is over, so the run closes. Only
+    # `close_archived_run` passes it. The approval moved the run from
+    # `awaiting` to `in_progress` the moment before.
+    "archive_close": {"in_progress": "completed"},
+    # SW-10a fix round. The task of the run is done, cancelled or archived,
+    # and the run was quiet for the stale band: the sweep closes it. Only
+    # `close_closed_task_run` passes it.
+    "task_close": {"in_progress": "completed"},
+    # SW-10a fix round. The agent of a run that the SERVER closed (one of
+    # the two moves above) finishes later with a summary. The summary is kept
+    # as a `response`, and the run stays `completed`. Only `finish_agent_run`
+    # passes it, after `_server_closed` holds.
+    "late_summary": {"completed": "completed"},
 }
 
 
@@ -476,10 +520,37 @@ def _activity_out(row: Any) -> dict[str, Any]:
     }
 
 
+#: ``needs_agent``: the reason that a run waits for an agent, or NULL. ONE
+#: text for the filter ``needs_agent=true`` (:data:`_NEEDS_AGENT_SQL`) and for
+#: the field of the runs wire, so the two cannot disagree.
+#:
+#: * ``queued``: a ``created`` run (a member queued work, EA-12d).
+#: * ``stopping``: a member pressed Stop.
+#: * ``answered``: the RAW answered rule (``filters.AGENT_RUN_ANSWER_WAITS_SQL``).
+#:   SW-10a: the derived state of such a run reads ``stale`` after five
+#:   minutes (spec §12.6), and this reason still says ``answered``, so
+#:   ``my_work`` keeps offering the answer as ``run_answered``.
+#: * ``stranded``: SW-10a. The sweep nudged the member about this run, and no
+#:   activity came since (``filters.open_strand_sql``). Derived from the
+#:   ``pm_agent_run_strands`` table, with no column on the run.
+_NEEDS_AGENT_REASON_SQL = (
+    "(CASE WHEN r.status = 'created' THEN 'queued'"
+    " WHEN r.status = 'stopping' THEN 'stopping'"
+    f" WHEN r.status = 'in_progress' AND {AGENT_RUN_ANSWER_WAITS_SQL} THEN 'answered'"
+    f" WHEN {open_strand_sql('r')} THEN 'stranded'"
+    " END)"
+)
+
+#: ``needs_agent=true``: a run the agent must act on. A ``created`` run, a
+#: ``stopping`` run, a run whose answer waits, or a stranded run (SW-10a).
+_NEEDS_AGENT_SQL = f"({_NEEDS_AGENT_REASON_SQL} IS NOT NULL)"
+
 #: EA-14a: every read of a run also carries ``idle_s`` (the seconds since its
-#: last activity, for the lease) and the display name of its member.
+#: last activity, for the lease) and the display name of its member. SW-10a:
+#: and ``needs_agent``, the reason it waits for an agent.
 _RUN_SELECT = (
     f"SELECT r.*, {AGENT_RUN_STATE_SQL} AS state, "
+    f" {_NEEDS_AGENT_REASON_SQL} AS needs_agent, "
     " EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s, "
     " (SELECT u.display_name FROM app_user u"
     "   WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name "
@@ -503,21 +574,47 @@ SELECT DISTINCT ON (a.run_id) a.*
  ORDER BY a.run_id, a.seq DESC
 """
 
+#: SW-10a (spec §12.6). The open strand of each run that still fits it, for
+#: ``stranded`` on the runs wire. The rule is ``filters.open_strand_sql``.
+_OPEN_STRANDS_SQL = f"""
+SELECT DISTINCT ON (s.run_id) s.run_id, s.reason, s.nudged_at, s.recovered_at
+  FROM pm_agent_run_strands s
+  JOIN pm_agent_runs r ON {strand_fits_sql('s', 'r')}
+ WHERE s.run_id = ANY(CAST(:ids AS uuid[]))
+ ORDER BY s.run_id, s.nudged_at DESC
+"""
+
+
+def _stranded_out(found: Any, idle_s: Any) -> dict[str, Any]:
+    """``stranded`` of one run: the reason, the first miss, the second miss
+    (the recovery record) and the seconds since the last activity."""
+    return {
+        "reason": found.reason,
+        "nudged_at": wire(found.nudged_at),
+        "recovered_at": wire(found.recovered_at),
+        "idle_s": int(float(idle_s)) if idle_s is not None else None,
+    }
+
 
 async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
     """The wire shape of each run, with its derived ``state``, its open
-    elicitation and its newest ephemeral line. Two queries for the list."""
+    elicitation, its newest ephemeral line and its open strand (SW-10a).
+    Three queries for the list."""
     ids = [str(r.id) for r in rows]
     questions: dict[str, dict[str, Any]] = {}
     lines: dict[str, dict[str, Any]] = {}
+    strands: dict[str, Any] = {}
     if ids:
         for found in (await db.execute(text(_OPEN_ELICITATIONS_SQL), {"ids": ids})).fetchall():
             questions[str(found.run_id)] = _activity_out(found)
         for found in (await db.execute(text(_LATEST_EPHEMERAL_SQL), {"ids": ids})).fetchall():
             lines[str(found.run_id)] = _activity_out(found)
+        for found in (await db.execute(text(_OPEN_STRANDS_SQL), {"ids": ids})).fetchall():
+            strands[str(found.run_id)] = found
     out: list[dict[str, Any]] = []
     for row in rows:
         key = str(row.id)
+        strand = strands.get(key)
         out.append({
             "id": key,
             "task_id": str(row.task_id),
@@ -555,6 +652,11 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
             "error_metadata": from_jsonb(row.error_metadata),
             "open_elicitation": questions.get(key) if row.status in OPEN_STATUSES else None,
             "latest_ephemeral": lines.get(key),
+            # SW-10a (spec §12.6): why the run waits for an agent, and the
+            # open strand that the sweep found, if any.
+            "needs_agent": getattr(row, "needs_agent", None),
+            "stranded": (_stranded_out(strand, getattr(row, "idle_s", None))
+                         if strand is not None else None),
         })
     return out
 
@@ -814,6 +916,7 @@ async def _write_activity(
     request: dict[str, Any] | None = None,
     typed: bool = False,
     extra: dict[str, Any] | None = None,
+    quiet: bool = False,
 ) -> _Written:
     """Write one activity on a LOCKED run, inside the caller's transaction.
 
@@ -825,6 +928,9 @@ async def _write_activity(
     ``content_metadata``, and the question notifies the run's member only.
     *typed* lets a prompt answer such a request, and only the approval route
     passes it. *extra* adds the server's own keys to ``content``.
+
+    SW-11a. *quiet* keeps the timeline comment and sends no bell: Resume
+    writes a note to the agent, not a comment to people (spec §12.7).
     """
     run_id = str(run.id)
     task_id = str(run.task_id)
@@ -913,6 +1019,7 @@ async def _write_activity(
             text_=_comment_body(kind, content, signal_meta) or kind,
             question=(kind == "elicitation" and new_status == "awaiting"),
             member_only=request is not None,
+            quiet=quiet,
         )
 
     await _move_run(
@@ -926,7 +1033,7 @@ async def _write_activity(
 
 async def _comment(
     db: Any, run: Any, made: Any, *, author: str, via: str | None, text_: str,
-    question: bool, member_only: bool = False,
+    question: bool, member_only: bool = False, quiet: bool = False,
 ) -> Any:
     """The timeline comment of one non-ephemeral activity, and its bell rows.
 
@@ -939,6 +1046,8 @@ async def _comment(
 
     A typed archive request (EA-6g, *member_only*) notifies the run's member
     only, because nobody else may answer it (EA12-8 as amended by EA3-40).
+
+    *quiet* (SW-11a, Resume) writes the comment and sends no bell at all.
     """
     task_id = str(run.task_id)
     meta: dict[str, Any] = {
@@ -959,6 +1068,8 @@ async def _comment(
         ),
         {"pm": str(comment.id), "aid": str(made.id)},
     )).fetchone()
+    if quiet:
+        return linked
     audience = [] if member_only else await task_audience(db, task_id)
     snippet = excerpt_of(text_)
     if question:
@@ -976,11 +1087,16 @@ async def _comment(
 
 
 async def _move_run(
-    db: Any, run: Any, new_status: str, *, ts: Any, user: UserContext, via: str | None,
+    db: Any, run: Any, new_status: str, *, ts: Any, user: UserContext | None,
+    via: str | None,
     error_body: str | None = None, error_activity: str | None = None, stop: bool = False,
 ) -> None:
     """Set the run's status and stamps. Column names are fixed here, and
     only the values are bound.
+
+    *user* is ``None`` only for a move that the server makes with no caller:
+    the archive close of the SW-10a sweep (:func:`close_archived_run`). Such a
+    move passes no *via* and no *stop*, so it reads nothing of a user.
 
     SW-7 (spec §12.5), the session key of the run, ONE assignment:
 
@@ -1016,11 +1132,12 @@ async def _move_run(
         sets.append(
             "session_key = CASE WHEN connection_id IS DISTINCT FROM CAST(:cid AS uuid)"
             " THEN CAST(:sk AS text) ELSE COALESCE(session_key, CAST(:sk AS text)) END")
-    if new_status in TERMINAL_STATUSES:
+    # A late summary goes from terminal to terminal, so the end stays.
+    if new_status in TERMINAL_STATUSES and run.status not in TERMINAL_STATUSES:
         sets.append("ended_at = :ts")
-    elif run.status in TERMINAL_STATUSES:
+    elif new_status in OPEN_STATUSES and run.status in TERMINAL_STATUSES:
         sets.append("ended_at = NULL")
-    if stop:
+    if stop and user is not None:
         sets.append("stopped_at = :ts")
         sets.append("stopped_by = :stopped_by")
         params["stopped_by"] = _member(user)
@@ -1172,9 +1289,16 @@ def _task_held(holder: Any, *, me: str | None = None, via: str | None = None,
 
 
 async def _system_activity(db: Any, run: Any, *, actor_email: str, via: str | None,
-                           body: str) -> None:
+                           body: str, server_close: str | None = None) -> None:
     """One ``response`` row on *run* that the SERVER writes, as the record of
-    a takeover or a release. No comment and no notification."""
+    a takeover or a release. No comment and no notification.
+
+    SW-10a: *server_close* names why the server closed the run (``archive``,
+    ``done``, ``cancelled`` or ``archived``). ``_server_closed`` reads it, so
+    the agent may still leave one late summary."""
+    content: dict[str, Any] = {"body": body, "system": True}
+    if server_close is not None:
+        content["server_close"] = server_close
     await db.execute(
         text(
             "INSERT INTO pm_agent_run_activities "
@@ -1183,7 +1307,7 @@ async def _system_activity(db: Any, run: Any, *, actor_email: str, via: str | No
             "        CAST(:content AS jsonb), false, NULL, :actor, :via)"
         ),
         {"rid": str(run.id), "tid": str(run.task_id), "actor": actor_email, "via": via,
-         "content": _jsonb({"body": body, "system": True})},
+         "content": _jsonb(content)},
     )
 
 
@@ -1502,16 +1626,6 @@ async def start_agent_run(
     return {"run": out, "created": created}
 
 
-#: ``needs_agent=true``: a run the agent must act on. A ``created`` run, a
-#: ``stopping`` run, or a derived ``answered`` run.
-_NEEDS_AGENT_SQL = (
-    "(r.status IN ('created', 'stopping')"
-    " OR (r.status = 'in_progress'"
-    "     AND (r.last_agent_activity_at IS NULL"
-    "          OR r.last_activity_at > r.last_agent_activity_at)))"
-)
-
-
 @router.get("/agent-runs", dependencies=_ENABLED)
 async def list_my_agent_runs(
     status: str | None = None,
@@ -1674,7 +1788,16 @@ async def finish_agent_run(
             # activity, so no key finds it. The run is the result, as the
             # edge's `finish_agent_run` reads it.
             return {"run": (await _runs_out(db, [run]))[0], "activity": None}
-        if summary:
+        if summary and run.status == "completed" and await _server_closed(db, run_id):
+            # SW-10a fix round. The server closed this run (an approved
+            # archive, or a closed task), and its agent now finishes with a
+            # summary. Before, that answered 409 and the summary was lost.
+            # The summary is kept as a `response`, and the run stays closed.
+            written = await _write_activity(
+                db, run, user, kind="response", key=payload.idempotency_key, body=summary,
+                event="late_summary",
+            )
+        elif summary:
             # The response and the finish are ONE move: the response is
             # written under the event `agent_finish`, so it sets `completed`
             # (or `stopped`, when a Stop waits) itself.
@@ -1696,8 +1819,49 @@ async def finish_agent_run(
 # ── Release (WS-55 EA-14a) ──────────────────────────────────────────────────
 
 #: The permission that makes a member an org admin for a release. The same
-#: gate as the billing routes.
+#: gate as the billing routes. HANDOFF H-409 item 2: the Release button of the
+#: run panel reads `access.is_admin`, and the owner has not yet decided
+#: whether a read permission may end another member's run.
 RELEASE_ADMIN_PERMISSION = "admin:members:read"
+
+
+def person_may_end_sql(run: str) -> str:
+    """Who may END a run, for a PERSON, in SQL over the run alias *run*
+    (EA-14a): the run's member, or an assignee of its task. It binds ``:me``,
+    the caller's address in lower case. An org admin may too, and
+    :func:`may_end_run` adds that half from the context.
+
+    ONE text. The release route and the resume route read it through
+    :func:`may_end_run`. Needs attention (``needs_attention.py``, WS-55 SW-11a,
+    spec §12.7) reads it for ``can_act`` on each row, so the list never
+    offers a button that the route refuses.
+    """
+    return (
+        f"({run}.member_email = :me OR EXISTS (SELECT 1 FROM pm_task_assignees ra"
+        f" WHERE ra.task_id = {run}.task_id AND lower(ra.assignee) = :me))"
+    )
+
+
+async def may_end_run(db: Any, run: Any, user: UserContext) -> bool:
+    """True when *user* may end *run*: a release (EA-14a) or a resume
+    (SW-11a).
+
+    * An agent ends its OWN run only: the same member and the same stamp.
+    * A person ends a run when they are its member, an assignee of its task
+      (:func:`person_may_end_sql`), or hold :data:`RELEASE_ADMIN_PERMISSION`.
+    """
+    via = _agent_via(user)
+    me = _member(user)
+    if via is not None:
+        return run.member_email == me and run.client_via == via
+    if user.has_permission(RELEASE_ADMIN_PERMISSION):
+        return True
+    held = (await db.execute(
+        text(f"SELECT {person_may_end_sql('r')} FROM pm_agent_runs r"
+             " WHERE r.id = CAST(:rid AS uuid)"),
+        {"rid": str(run.id), "me": me},
+    )).scalar()
+    return bool(held)
 
 
 @router.post("/agent-runs/{run_id}/release", dependencies=_ENABLED)
@@ -1723,21 +1887,7 @@ async def release_agent_run(
     async with _tenant_session() as db:
         await _load_visible_run(db, user, run_id)
         run = await _lock_run(db, run_id)
-        if via is not None:
-            allowed = run.member_email == me and run.client_via == via
-        else:
-            assigned = (await db.execute(
-                text(
-                    "SELECT 1 FROM pm_task_assignees WHERE task_id = CAST(:tid AS uuid) "
-                    "AND lower(assignee) = :me LIMIT 1"
-                ),
-                {"tid": str(run.task_id), "me": me},
-            )).fetchone() is not None
-            allowed = (
-                run.member_email == me or assigned
-                or user.has_permission(RELEASE_ADMIN_PERMISSION)
-            )
-        if not allowed:
+        if not await may_end_run(db, run, user):
             raise HTTPException(
                 status_code=403, detail="You may not release this agent run.",
             )
@@ -1752,6 +1902,252 @@ async def release_agent_run(
             )
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
     return {"run": out_run, "released": True}
+
+
+# ── Resume (WS-55 SW-11a, spec §12.7) ───────────────────────────────────────
+
+#: The fixed text of the member prompt that Resume writes. It holds no member
+#: text, and the agent reads it as the member's answer (``needs_agent``
+#: ``answered``).
+RESUME_BODY = "Resume this work: pick this run up where it stopped."
+
+#: The open recovery record of one run that still fits it. The rule is
+#: ``filters.open_recovery_sql``, the text that the "stalled" kind of Needs
+#: attention reads, so Resume takes exactly the rows that the list shows.
+_OPEN_RECOVERY_SQL = (
+    "SELECT s.id FROM pm_agent_run_strands s"
+    " JOIN pm_agent_runs r ON r.id = s.run_id"
+    f" WHERE r.id = CAST(:rid AS uuid) AND {open_recovery_sql('s', 'r')}"
+    " LIMIT 1"
+)
+
+#: True when the agent connection of the run is revoked or expired
+#: (``filters.connection_gone_sql``). No session of that client can come back,
+#: so Resume refuses, and Close the run is the act (spec §12.7).
+_RUN_CONNECTION_GONE_SQL = (
+    f"SELECT {connection_gone_sql('r')} FROM pm_agent_runs r WHERE r.id = CAST(:rid AS uuid)"
+)
+
+#: The refusal of Resume on a run with a dead connection.
+RESUME_CONNECTION_GONE = (
+    "The agent connection of this run is revoked or expired, so no agent can"
+    " resume it. Close the run instead."
+)
+
+#: SW-7: Resume hands the run to the next session of its connection.
+_RESUME_KEY_SQL = "UPDATE pm_agent_runs SET session_key = NULL WHERE id = CAST(:rid AS uuid)"
+
+#: True when the task of the run is closed (``filters.task_closed_sql``).
+_RUN_TASK_CLOSED_SQL = (
+    f"SELECT {task_closed_sql('r')} FROM pm_agent_runs r WHERE r.id = CAST(:rid AS uuid)"
+)
+
+
+def _is_resume(row: Any) -> bool:
+    """True when *row* is a prompt that Resume wrote (``content.resume``)."""
+    return row.type == "prompt" and bool((from_jsonb(row.content) or {}).get("resume"))
+
+
+@router.post("/agent-runs/{run_id}/resume", dependencies=_ENABLED)
+async def resume_agent_run(
+    run_id: str, payload: ResumeIn, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Mark a stalled run as needing an agent again (SW-11a, spec §12.7).
+
+    A member act on a run whose open recovery record still fits it. It writes
+    ONE member ``prompt`` with :data:`RESUME_BODY`, through
+    :func:`_write_activity`, the one write path of an activity. The run then
+    reads ``needs_agent`` ``answered``, so ``list_agent_runs`` with
+    ``needs_agent=true`` lists it and ``my_work`` offers it as
+    ``run_answered``. The prompt renews the lease, and the strand stops
+    fitting at once. The sweep clears it with ``new_activity`` at its next
+    tick, and it stays the only writer of ``pm_agent_run_strands``.
+
+    * The rule of Release decides who may (:func:`may_end_run`). An agent
+      caller gets 403: it has its own paths.
+    * A caller who cannot see the task gets 404. A closed task gets 409, and
+      so does a run with no open recovery record that fits it, and a run
+      whose agent connection is revoked or expired (Close the run instead).
+    * It is quiet: the timeline keeps the prompt, and no bell and no event
+      go out. It is a note to the agent, not a comment to people.
+    * A replay of the key returns the first answer, and it writes nothing.
+    * It never changes the task.
+    """
+    run_id = _parse_uuid(run_id, "Agent run")
+    if _agent_via(user) is not None:
+        raise HTTPException(status_code=403, detail="Only a member resumes an agent run.")
+    written: _Written | None = None
+    async with _tenant_session() as db:
+        await _load_visible_run(db, user, run_id)
+        run = await _lock_run(db, run_id)
+        if not await may_end_run(db, run, user):
+            raise HTTPException(status_code=403, detail="You may not resume this agent run.")
+        replay = await _existing_activity(db, run_id, payload.idempotency_key)
+        if replay is not None and not _is_resume(replay):
+            raise HTTPException(status_code=409, detail=_KEY_USED)
+        if replay is None:
+            if (await db.execute(text(_RUN_TASK_CLOSED_SQL), {"rid": run_id})).scalar():
+                raise HTTPException(
+                    status_code=409,
+                    detail="The task of this agent run is closed. Close the run instead.",
+                )
+            if (await db.execute(text(_OPEN_RECOVERY_SQL), {"rid": run_id})).fetchone() is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="This agent run has no open recovery record, so nothing waits to resume.",
+                )
+            # Resume asks the SAME agent client to continue. A dead connection
+            # can send nothing again, so only Close the run helps (§12.7).
+            if (await db.execute(text(_RUN_CONNECTION_GONE_SQL), {"rid": run_id})).scalar():
+                raise HTTPException(status_code=409, detail=RESUME_CONNECTION_GONE)
+            # `quiet`: a note to the agent, not a comment to people. The
+            # timeline keeps the row, and no bell and no event go out.
+            written = await _write_activity(
+                db, run, user, kind="prompt", key=payload.idempotency_key,
+                body=RESUME_BODY, extra={"resume": True}, quiet=True,
+            )
+            # SW-7 (spec §12.5). The session that held the run went quiet past
+            # its lease, so its key names nobody. A run with no key is the own
+            # run of any session of its connection, so the next one adopts it.
+            # A person's prompt keeps the key (`_move_run`), so Resume clears
+            # it here, once, in the same transaction.
+            await db.execute(text(_RESUME_KEY_SQL), {"rid": run_id})
+        out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
+        activity = written.activity if written is not None else replay
+        out_activity = _activity_out(activity)
+    # No `pm.task.comment_added`: a workflow that fires on a comment must not
+    # take a note to the agent for a comment to people.
+    return {"run": out_run, "activity": out_activity, "resumed": True,
+            "created": written is not None and written.created}
+
+
+# ── Stranded runs (WS-55 SW-10a, spec §12.6) ────────────────────────────────
+#
+# This module stays the only writer of `pm_agent_runs` and
+# `pm_agent_run_activities`. The sweep (`gateway/agent_run_sweep.py`) decides WHICH
+# run to close or to mark, and calls these three to write.
+
+
+async def close_archived_run(db: Any, run: Any) -> None:
+    """Close a run whose archive request the member approved (SW-10a, part 1
+    item 2). The run moves to ``completed`` and gets
+    :data:`ARCHIVE_CLOSED_BODY` as a system line, in the caller's
+    transaction. *run* is a row of :data:`_RUN_SELECT` in ``in_progress``.
+
+    The approval route calls it in the transaction of the archive, and the
+    sweep calls it for a run of the old shape. No caller passes a user: the
+    server closes the run, so no agent stamp and no session key move."""
+    new_status = transition(run.status, "archive_close")
+    await _move_run(db, run, new_status, ts=await _clock(db), user=None, via=None)
+    await _system_activity(db, run, actor_email=run.member_email, via=None,
+                           body=ARCHIVE_CLOSED_BODY, server_close="archive")
+
+
+#: SW-10a. An open run of the OLD archive shape: the newest prompt of the run
+#: approved an archive request (``content.archived``, which only the approval
+#: route writes), the task is archived, and no agent activity followed. The
+#: approval route closes a new one at once, so the sweep finds a run of the
+#: deploy window only. ``SKIP LOCKED``: a writer that holds the run wins.
+_ARCHIVE_APPLIED_SQL = (
+    "SELECT r.id FROM pm_agent_runs r"
+    " WHERE r.status = 'in_progress'"
+    f"   AND {AGENT_RUN_ANSWER_WAITS_SQL}"
+    "   AND EXISTS (SELECT 1 FROM pm_tasks t WHERE t.id = r.task_id"
+    "               AND t.archived_at IS NOT NULL)"
+    "   AND (SELECT a.content->>'archived' FROM pm_agent_run_activities a"
+    "         WHERE a.run_id = r.id AND a.type = 'prompt'"
+    "         ORDER BY a.seq DESC LIMIT 1) = 'true'"
+    " ORDER BY r.last_activity_at, r.id LIMIT :n FOR UPDATE OF r SKIP LOCKED"
+)
+
+
+async def archive_applied_run_ids(db: Any, *, limit: int) -> list[str]:
+    """The open runs of the old archive shape, at most *limit*, locked for
+    the caller's tenant transaction (SW-10a). The sweep closes each one with
+    :func:`close_archived_run` in a savepoint of its own."""
+    return [str(r.id) for r in (await db.execute(
+        text(_ARCHIVE_APPLIED_SQL), {"n": limit})).fetchall()]
+
+
+async def load_run(db: Any, run_id: str) -> Any:
+    """One run as :data:`_RUN_SELECT` reads it, for the closers of the
+    sweep (SW-10a)."""
+    return await _load_run(db, run_id)
+
+
+#: SW-10a fix round. The text of the system line of a run that the sweep
+#: closed because its task is closed, by the reason.
+CLOSED_TASK_BODIES: dict[str, str] = {
+    "done": "Closed: the task is done.",
+    "cancelled": "Closed: the task is cancelled.",
+    "archived": "Closed: the task is archived.",
+}
+
+def _closed_task_runs_sql() -> str:
+    """SW-10a. An ``in_progress`` run whose task is closed
+    (``filters.task_closed_sql``) and whose holder is free by the rule of the
+    gate (``filters.holder_free_sql``): its lease ended, or its connection is
+    revoked or expired. The bar is the LEASE, not the stale band. An agent
+    that moves its own task to done and then waits in a long call, for a
+    deploy for example, keeps its run, and any activity, a member's answer
+    too, renews the lease. ``why`` is ``archived`` first, then the status
+    category. Built when a tick runs, because the lease is read then."""
+    return (
+        "SELECT r.id, CASE WHEN t.archived_at IS NOT NULL THEN 'archived'"
+        "                  ELSE st.category END AS why"
+        "  FROM pm_agent_runs r"
+        "  JOIN pm_tasks t ON t.id = r.task_id"
+        "  LEFT JOIN pm_task_statuses st ON st.id = t.status_id"
+        " WHERE r.status = 'in_progress'"
+        f"   AND {holder_free_sql('r')}"
+        f"   AND {task_closed_sql('r')}"
+        " ORDER BY r.last_activity_at, r.id LIMIT :n FOR UPDATE OF r SKIP LOCKED"
+    )
+
+
+async def closed_task_runs(db: Any, *, limit: int) -> list[tuple[str, str]]:
+    """``(run_id, why)`` of each open run whose task is closed and whose
+    lease ended, at most *limit*, locked for the caller's tenant transaction
+    (SW-10a)."""
+    return [(str(r.id), str(r.why)) for r in (await db.execute(
+        text(_closed_task_runs_sql()), {"n": limit})).fetchall()]
+
+
+async def close_closed_task_run(db: Any, run: Any, why: str) -> None:
+    """Close a run whose task is closed (SW-10a fix round). The run moves to
+    ``completed`` and gets the line of :data:`CLOSED_TASK_BODIES`. The task is
+    never touched. Nobody can claim a closed task, so a nudge would be false,
+    and the run would hold nothing."""
+    new_status = transition(run.status, "task_close")
+    await _move_run(db, run, new_status, ts=await _clock(db), user=None, via=None)
+    await _system_activity(db, run, actor_email=run.member_email, via=None,
+                           body=CLOSED_TASK_BODIES[why], server_close=why)
+
+
+#: SW-10a fix round. True when the newest activity of the run that is not
+#: ephemeral is a server-close line. Then the run's agent may still leave
+#: ONE summary: after it, the newest such activity is the summary.
+_SERVER_CLOSED_SQL = (
+    "SELECT (a.content ? 'server_close') AS closed FROM pm_agent_run_activities a"
+    " WHERE a.run_id = CAST(:rid AS uuid) AND NOT a.ephemeral"
+    " ORDER BY a.seq DESC LIMIT 1"
+)
+
+
+async def _server_closed(db: Any, run_id: str) -> bool:
+    found = (await db.execute(text(_SERVER_CLOSED_SQL), {"rid": run_id})).fetchone()
+    return found is not None and bool(found.closed)
+
+
+async def write_strand_line(db: Any, run: Any, body: str) -> None:
+    """The system line of a recovery record on *run* (SW-10a, second miss).
+    It moves no status and no stamp, so the run stays stranded."""
+    await _system_activity(db, run, actor_email=run.member_email, via=None, body=body)
+
+
+async def member_name(db: Any, email: str) -> str:
+    """The display name of a member, or the address (SW-10a texts)."""
+    return await _member_name(db, email)
 
 
 # ── The archive with an approval (EA-6g, EA3-33 and EA3-40) ─────────────────
@@ -1939,7 +2335,9 @@ async def approve_task_archive(
     * An approve archives the task through ``tasks.archive_task_in``, with no
       cascade to the subtasks, and writes the answer through
       :func:`_write_activity`, in ONE transaction (rule 2). The answer's
-      ``content`` carries ``archived``.
+      ``content`` carries ``archived``. SW-10a: in the same transaction the
+      run closes (:func:`close_archived_run`), so it never waits as
+      ``answered`` for an agent that has nothing left to do.
     * The same ``idempotency_key`` again returns the first answer with 200.
       A second answer with a new key finds no open request: 409. So a second
       approve never archives twice. Every answer, a replay too, returns the
@@ -1986,6 +2384,11 @@ async def approve_task_archive(
             db, run, user, kind="prompt", key=key, body=None, selected=[decision],
             typed=True, extra={"archived": archived},
         )
+        if archived and written.created:
+            # SW-10a (spec §12.6, part 1 item 2). The archive was the agent's
+            # disposition, so the run closes in the SAME transaction. Before,
+            # the run read `answered` until an agent came back, and none did.
+            await close_archived_run(db, await _load_run(db, run_id))
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
         out_activity = _activity_out(written.activity)
         task_now = (outcome.row if outcome is not None
@@ -2009,10 +2412,12 @@ async def _task_now(db: Any, user: UserContext, task_id: str) -> dict[str, Any]:
 __all__ = [
     "ACTIVITY_TYPES",
     "ARCHIVE_APPROVE",
+    "ARCHIVE_CLOSED_BODY",
     "ARCHIVE_DECLINE",
     "ARCHIVE_OPTIONS",
     "ARCHIVE_REQUEST_KIND",
     "ARCHIVE_REQUEST_TTL",
+    "CLOSED_TASK_BODIES",
     "EPHEMERAL_CAP",
     "MAX_WAIT_S",
     "POLL_S",
@@ -2025,6 +2430,13 @@ __all__ = [
     "OptionIn",
     "ReleaseIn",
     "StartIn",
+    "archive_applied_run_ids",
     "archive_request_of",
+    "close_archived_run",
+    "close_closed_task_run",
+    "closed_task_runs",
+    "load_run",
+    "member_name",
     "transition",
+    "write_strand_line",
 ]

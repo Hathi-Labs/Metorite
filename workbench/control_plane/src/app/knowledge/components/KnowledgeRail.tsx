@@ -5,16 +5,19 @@
  * §11.1 and §21.5).
  *
  * Three entries today, Search (KB-3b), Review (KB-5b) and Spaces (KB-2a),
- * and Gaps (KB-9a) for a manager of Knowledge when gaps are on for the org.
+ * Gaps (KB-9a) for a manager of Knowledge when gaps are on for the org, a
+ * Maintenance row (KB-AI-4) for a manager, and Sources (KC-1b) when the
+ * sources read answers.
  * After Spaces and the space tree comes the Directories group (KC-8b): a
  * heading, then one row for each type of entity that the gateway says the
  * member can see (Company, Products, People, Customers, Workstreams,
  * Workflows, Topics, in that order). The group is absent when the list is
  * empty. The rail holds no rule about which types show.
  * Review shows only while a proposal of the assistant waits (with the
- * count) or while the member is on it. Files and Sources join them with
- * KB-2c and KB-7a, and each is ABSENT until then, never a stub. Search sits first, above the tree, so it stays in one
- * place while a space opens. Under Spaces, each space the member can open is
+ * count) or while the member is on it. Files joins them with KB-2c, and it
+ * is ABSENT until then, never a stub. Search sits first, above the tree, so
+ * it stays in one place while a space opens. Under Spaces, each space the
+ * member can open is
  * a row, and the open space shows its page tree. Every row is a `RailRow`
  * (AGENTS.md rule 12), as the Projects tree and the CRM rail draw theirs.
  *
@@ -53,9 +56,11 @@ import { invalidate, put } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { KNOWLEDGE_CACHE, KnowledgeError, listPages, movePage, pagesKey } from "../lib/api";
-import { directoryHref, typeIcon, typeLabel, type EntityType } from "../lib/entities";
+import { directoryHref, typeIcon, typeLabel, type CreatableType, type EntityType } from "../lib/entities";
+import { ADD_LABEL } from "../lib/entityForm";
 import { KNOWLEDGE_GAPS } from "../lib/gaps";
 import { KNOWLEDGE_MAINTENANCE } from "../lib/maintenance";
+import { KNOWLEDGE_SOURCES } from "../lib/sources";
 import { spaceIcon } from "../lib/labels";
 import { KNOWLEDGE_HOME, KNOWLEDGE_REVIEW, KNOWLEDGE_SEARCH, pageHref, spaceHref } from "../lib/links";
 import { ancestorIds, buildTree, type TreeNode } from "../lib/tree";
@@ -103,6 +108,11 @@ export interface KnowledgeRailProps {
    * manager of Knowledge whose list read answered. `count` is the expired pages.
    */
   maintenance?: { selected: boolean; count: string | null } | null;
+  /**
+   * The Sources row (KC-1b): `null` hides it. The layout shows it when the
+   * sources read answers. `count` is the drives that are connected.
+   */
+  sources?: { selected: boolean; count: string | null } | null;
   /** True on `/knowledge/review` (KB-5b). */
   atReview?: boolean;
   /** The proposals that wait for the member (KB-5b). Zero hides the Review row. */
@@ -113,6 +123,12 @@ export interface KnowledgeRailProps {
   onNewSubPage?: (parent: SubPageParent) => void;
   /** Ask to archive a page. The layout asks first. Absent: no Archive. */
   onArchive?: (page: PageSummary) => void;
+  /**
+   * Add a product or a topic (KC-8d). The Directories heading gets a `+` that
+   * offers both, and the heading shows even while every directory is empty.
+   * Absent: no `+`, for a member with no space to write in.
+   */
+  onAddEntity?: (type: CreatableType) => void;
 }
 
 /** True when the member can move and add pages in this space. */
@@ -128,12 +144,14 @@ export default function KnowledgeRail({
   atSearch,
   gaps = null,
   maintenance = null,
+  sources = null,
   directories,
   atReview = false,
   reviewCount = 0,
   onNavigate,
   onNewSubPage,
   onArchive,
+  onAddEntity,
 }: KnowledgeRailProps) {
   return (
     <div className="flex flex-col gap-0.5" onKeyDown={moveRailFocus}>
@@ -182,6 +200,17 @@ export default function KnowledgeRail({
           onSelect={() => onNavigate(KNOWLEDGE_MAINTENANCE)}
         />
       ) : null}
+      {sources ? (
+        <RailRow
+          label="Sources"
+          tier="group"
+          selected={sources.selected}
+          icon={<Icon name="HardDrive" className={ICON} />}
+          meta={sources.count ?? undefined}
+          buttonProps={{ "aria-current": sources.selected ? "page" : undefined }}
+          onSelect={() => onNavigate(KNOWLEDGE_SOURCES)}
+        />
+      ) : null}
       <RailRow
         label="Spaces"
         tier="group"
@@ -201,7 +230,7 @@ export default function KnowledgeRail({
           onArchive={onArchive}
         />
       ))}
-      {directories && directories.types.length > 0 ? (
+      {(directories && directories.types.length > 0) || onAddEntity ? (
         <div className="mt-2 flex flex-col gap-0.5" data-knowledge-directories="">
           {/* A heading, not a link: no onSelect, and out of the tab order. */}
           <RailRow
@@ -209,15 +238,17 @@ export default function KnowledgeRail({
             tier="group"
             icon={<Icon name="BookUser" className={ICON} />}
             buttonProps={{ tabIndex: -1, "aria-disabled": true }}
+            actions={onAddEntity ? <AddEntityMenu onAdd={onAddEntity} /> : undefined}
+            phoneActions={onAddEntity ? <AddEntityMenu onAdd={onAddEntity} phone /> : undefined}
           />
-          {directories.types.map((type) => (
+          {(directories?.types ?? []).map((type) => (
             <RailRow
               key={type}
               label={typeLabel(type)}
               depth={1}
-              selected={directories.selected === type}
+              selected={directories?.selected === type}
               icon={<Icon name={typeIcon(type)} className={ICON} />}
-              buttonProps={{ "aria-current": directories.selected === type ? "page" : undefined }}
+              buttonProps={{ "aria-current": directories?.selected === type ? "page" : undefined }}
               rowProps={{ "data-directory-type": type }}
               onSelect={() => onNavigate(directoryHref(type))}
             />
@@ -225,6 +256,54 @@ export default function KnowledgeRail({
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The `+` of the Directories heading (KC-8d): a menu of Add a product and
+ * Add a topic. It is the only way in while a directory is empty, because an
+ * empty type has no row in the rail.
+ */
+function AddEntityMenu({ onAdd, phone = false }: { onAdd: (type: CreatableType) => void; phone?: boolean }) {
+  const [menu, setMenu] = useState<{ x: number; y: number; keyboard: boolean } | null>(null);
+  const button = useRef<HTMLButtonElement | null>(null);
+  const items: CtxItem[] = (["product", "topic"] as const).map((type) => ({
+    kind: "item" as const,
+    label: ADD_LABEL[type],
+    icon: themedIcon(typeIcon(type)),
+    onSelect: () => onAdd(type),
+  }));
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size={phone ? "none" : "icon-xs"}
+        radius="keep"
+        className={phone ? "h-10 w-10 rounded" : "rounded"}
+        icon="Plus"
+        aria-label="Add to Directories"
+        aria-haspopup="menu"
+        aria-expanded={menu !== null}
+        title={phone ? undefined : "Add a product or a topic"}
+        onClick={(event) => {
+          button.current = event.currentTarget;
+          const rect = event.currentTarget.getBoundingClientRect();
+          setMenu({ x: rect.left, y: rect.bottom + 2, keyboard: event.detail === 0 });
+        }}
+      />
+      {menu ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={items}
+          autoFocus={menu.keyboard}
+          onClose={() => {
+            setMenu(null);
+            if (menu.keyboard) button.current?.focus();
+          }}
+        />
+      ) : null}
+    </>
   );
 }
 

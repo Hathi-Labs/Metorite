@@ -9,7 +9,7 @@
 // each record, and answers only with the types and rows that the member may
 // see. This file only draws what it is given. Fence: `entities.test.ts`.
 
-import { call } from "./api";
+import { KnowledgeError, call } from "./api";
 import { KNOWLEDGE_HOME } from "./links";
 
 /** The seven types, in the order of §6.1. */
@@ -208,4 +208,34 @@ export function makeEntityPage(
     method: "POST",
     body: JSON.stringify(spaceId ? { space_id: spaceId } : {}),
   });
+}
+
+/** The two types that Knowledge makes itself. The gateway refuses any other (KC-8d). */
+export type CreatableType = "product" | "topic";
+
+export interface EntityCreateBody {
+  type: CreatableType;
+  name: string;
+  aliases: string[];
+  space_id: string;
+}
+
+/** The line a member reads when the gateway refuses the space (403 or 404). */
+export const CANNOT_ADD_LINE = "You cannot add to that space.";
+
+/**
+ * Make a product or a topic in a space the member can write in. The gateway
+ * checks the space again and answers 403 or 404 for one it will not write.
+ * ⚠️ A second call with the same name makes a second entity: the route is not
+ * get-or-make for a Knowledge-owned type. The form checks the name first.
+ */
+export async function createEntity(body: EntityCreateBody): Promise<Entity> {
+  try {
+    return await call<Entity>("/entities", { method: "POST", body: JSON.stringify(body) });
+  } catch (err) {
+    if (err instanceof KnowledgeError && (err.status === 403 || err.status === 404)) {
+      throw new KnowledgeError(CANNOT_ADD_LINE, err.status);
+    }
+    throw err;
+  }
 }

@@ -46,6 +46,7 @@ from fastapi import Depends, Query
 from gateway.capacity import absences_for, horizon_window
 from gateway.routes.projects.agent_dispatch import AGENT_PREFIX
 from gateway.routes.projects.agent_worked import MCP_VIA_PREFIX, agent_worked_sql
+from gateway.routes.projects.analytics_forecast import count_forecast, forecast_seed
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -59,7 +60,11 @@ from gateway.routes.projects.core import (
     task_visibility_clause,
     triage_exclusion_clause,
 )
-from gateway.routes.projects.filters import attach_parent_context, unheld_clause
+from gateway.routes.projects.filters import (
+    AGENT_RUN_OPEN_STATUSES,
+    attach_parent_context,
+    unheld_clause,
+)
 from gateway.routes.projects.report_scope import (
     filter_person_rows,
     reportable_people,
@@ -724,6 +729,9 @@ async def load_body(
     # WS-27bn RA-1. Who holds the `total_tasks` open tasks now, over the SAME
     # `open_where`, so the three counts add up to that total.
     holder_split = await holder_split_body(db, open_where, params)
+    # WS-27bn RA-6. The open tasks with no assignee and no open run, over the
+    # SAME `open_where`, so the reader sees only the tasks they can open.
+    needs_owner = await needs_owner_body(db, open_where, params)
 
     # "Spent" is DONE work only. Cancelled work consumed effort too, and
     # counting it here would say the team delivered it — the same
@@ -795,6 +803,13 @@ async def load_body(
         # every project that has a backlog.
         "people_named": sum(1 for p in people if p["assignee"]),
         "holder_split": holder_split,
+        # ⚠️ `leads` reads every row, before the reader's row filter. It
+        # compares totals only, and §7.1 rule 3 counts every person in a
+        # total. So two readers of one scope see one order.
+        "needs_owner": {
+            **needs_owner,
+            "leads": needs_owner_leads(needs_owner["total"], people),
+        },
     }
 
 
@@ -867,11 +882,20 @@ def _window(skip_current_week: bool) -> tuple[str, str]:
     Monday, which no `created_at` can reach. It is written anyway, so the
     query states its own period instead of implying one.
     """
-    back = 1 if skip_current_week else 0
-    last = f"({_WEEK_NOW} - make_interval(weeks => {back}))"
+    last = last_week_sql(skip_current_week)
     start = f"(({last} - make_interval(weeks => :weeks - 1)) AT TIME ZONE 'UTC')"
     end = f"(({last} + interval '1 week') AT TIME ZONE 'UTC')"
     return start, end
+
+
+def last_week_sql(skip_current_week: bool) -> str:
+    """The Monday of the last week in the window, in UTC, with no time zone.
+
+    :func:`_window` reads it, and so does the week spine of WS-27bn RA-2's
+    ``actor_series``. So the spine and the window name the same weeks.
+    """
+    back = 1 if skip_current_week else 0
+    return f"({_WEEK_NOW} - make_interval(weeks => {back}))"
 
 
 #: The dashboard's window start. Kept as a name because three docstrings and
@@ -1265,10 +1289,15 @@ def finish_labels_sql(
     Throughput and Finished count. A cancelled task gets no label.
     ``finished_at`` is the completion the window counts, which bounds the
     done move that the label reads.
+
+    WS-27bn RA-2 reads two more columns: ``hours`` (the cycle time of
+    ``cyc``) for the people and agents split of "How long it took", and
+    ``done_at`` (the done move) for the member of an agent finish.
     """
     return (
         f"{cycle_cte_sql(scope_where, skip_current_week=skip_current_week)}"
         f" SELECT c.task_id AS task_id, c.finished_at AS finished_at,"
+        f"        c.hours AS hours, fm.done_at AS done_at,"
         f"        {finish_label_sql()} AS label"
         f"   FROM cyc c{finish_actor_join('c.task_id', 'c.finished_at')}"
         f"  WHERE c.to_category = :done_cat"
@@ -1281,6 +1310,18 @@ def actor_split_sql(scope_where: str, *, skip_current_week: bool = False) -> str
     return f"SELECT l.label AS label, count(*) AS n FROM ({inner}) l GROUP BY 1"
 
 
+def any_assignee_sql() -> str:
+    """The open task ``t`` has an assignee, in SQL.
+
+    A blank assignee is no assignee (Load's unassigned bucket), as in the
+    Python twin. ONE text for the holder rule and for "Needs an owner".
+    """
+    return (
+        "EXISTS (SELECT 1 FROM pm_task_assignees hy WHERE hy.task_id = t.id"
+        " AND btrim(coalesce(hy.assignee, '')) <> '')"
+    )
+
+
 def holder_label_sql() -> str:
     """The SQL twin of :func:`classify_holder`, over the task alias ``t``.
 
@@ -1291,17 +1332,121 @@ def holder_label_sql() -> str:
         "EXISTS (SELECT 1 FROM pm_task_assignees hx WHERE hx.task_id = t.id"
         f" AND {_starts_with('hx.assignee', AGENT_PREFIX)})"
     )
-    # A blank assignee is no assignee (Load's unassigned bucket), as in the
-    # Python twin.
-    any_assignee = (
-        "EXISTS (SELECT 1 FROM pm_task_assignees hy WHERE hy.task_id = t.id"
-        " AND btrim(coalesce(hy.assignee, '')) <> '')"
-    )
     return (
         f"CASE WHEN NOT ({unheld_clause()}) OR {agent_assignee}"
         f"     THEN '{HOLDER_AGENT}'"
-        f"     WHEN {any_assignee} THEN '{HOLDER_PERSON}' END"
+        f"     WHEN {any_assignee_sql()} THEN '{HOLDER_PERSON}' END"
     )
+
+
+# ── Needs an owner — WS-27bn RA-6 ───────────────────────────────────────────
+#
+# Spec: `projects_reports.md` §6.8 F and §5. "An open task with no assignee
+# and no open run." The owner's screenshot of 2026-10-25 had 25 of 26 open
+# tasks with no owner, and that was the finding.
+#
+# ⚠️ **Not the `none` count of `holder_split`, and the difference is the
+# lease.** `none` is "nobody holds it NOW": a run whose lease ended, or whose
+# connection is gone, no longer holds the task (`filters.unheld_clause`).
+# "Needs an owner" reads ANY open run, with no regard to its lease. So every
+# task that needs an owner is in `none`, and `none` also holds an unassigned
+# task whose open run went quiet. That task has an owner that stopped. Needs
+# attention (`needs_attention.py`) and the next claim deal with it, and no
+# person needs to take it.
+
+#: The most tasks that "Needs an owner" names, beside its total.
+NEEDS_OWNER_NAMED = MAX_NAMED
+
+
+def is_needs_owner(assignees: Iterable[str], *, open_run: bool) -> bool:
+    """The Python twin of :func:`needs_owner_sql` (§6.8 F).
+
+    ``open_run`` is True when a run of the task is in an open status
+    (`filters.AGENT_RUN_OPEN_STATUSES`), with no regard to its lease. A blank
+    assignee is no assignee, as :func:`classify_holder` reads it.
+    """
+    named = [a for a in assignees if a and str(a).strip()]
+    return not named and not open_run
+
+
+def open_run_sql() -> str:
+    """The open task ``t`` has an open run, in SQL, with no regard to the
+    lease. The open statuses are `filters.AGENT_RUN_OPEN_STATUSES`."""
+    open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
+    return (
+        "EXISTS (SELECT 1 FROM pm_agent_runs nr WHERE nr.task_id = t.id"
+        f" AND nr.status IN ({open_list}))"
+    )
+
+
+def needs_owner_sql() -> str:
+    """"Needs an owner" over the open task ``t``: no assignee, no open run."""
+    return f"(NOT {any_assignee_sql()} AND NOT {open_run_sql()})"
+
+
+def needs_owner_rows_sql(open_where: str) -> str:
+    """The open tasks that need an owner, the soonest due first, and the
+    total on each row.
+
+    ``open_where`` is :func:`load_open_where`, so the reader sees only the
+    tasks they can open (§7 rule 1), and a stopped project's work is not
+    here (D-PM-32). It binds ``:needs_owner_max``.
+    """
+    return (
+        f"SELECT t.id AS task_id, t.task_number AS task_number, t.title AS title,"
+        f"       t.project_id AS project_id, t.due_at AS due_at,"
+        f"       count(*) OVER () AS total"
+        f"  FROM pm_tasks t"
+        f"  JOIN pm_task_statuses s ON s.id = t.status_id"
+        f" WHERE {open_where}"
+        f"   AND {needs_owner_sql()}"
+        f" ORDER BY t.due_at ASC NULLS LAST, t.created_at, t.id"
+        f" LIMIT :needs_owner_max"
+    )
+
+
+def needs_owner_leads(total: int, people: Iterable[dict[str, Any]]) -> bool:
+    """True when the work that needs an owner leads Open work.
+
+    §6.8 B: "Show 'Needs an owner' first when unassigned work leads". It
+    leads when its total is above zero and at least the open count of each
+    named holder, a person or an agent. The unassigned row of Load is not a
+    holder.
+    """
+    if total <= 0:
+        return False
+    most = max(
+        (int(p.get("open_tasks") or 0) for p in people if p.get("assignee")),
+        default=0,
+    )
+    return total >= most
+
+
+async def needs_owner_body(
+    db: Any, open_where: str, params: dict[str, Any],
+) -> dict[str, Any]:
+    """``needs_owner``: the total, and the first tasks, each with its id so
+    a row opens its task. ``leads`` is the caller's, from the Load rows."""
+    rows = (
+        await db.execute(
+            text(needs_owner_rows_sql(open_where)),
+            {**params, "needs_owner_max": NEEDS_OWNER_NAMED},
+        )
+    ).fetchall()
+    return {
+        "total": int(rows[0].total) if rows else 0,
+        "max_rows": NEEDS_OWNER_NAMED,
+        "tasks": [
+            {
+                "id": str(r.task_id),
+                "task_number": r.task_number,
+                "title": r.title,
+                "project_id": str(r.project_id),
+                "due_at": r.due_at.isoformat() if r.due_at else None,
+            }
+            for r in rows
+        ],
+    }
 
 
 def holder_labels_sql(open_where: str) -> str:
@@ -1816,24 +1961,26 @@ OUTLOOK_HR_KEYS: tuple[str, ...] = ("leaving_within_90d",)
 #: twelfth, and short enough to stay inside `capacity.MAX_HORIZON_DAYS`.
 OUTLOOK_RATE_WEEKS = 12
 
-#: Below this, a forecast is arithmetic on a rumour.
-#:
-#: ⚠️ Two finished weeks is not a velocity, it is two numbers. The verdict
-#: `no_history` is a better answer than a date with no support, because a date
-#: gets quoted in a meeting and a refusal does not.
-MIN_FINISHED_FOR_FORECAST = 3
-
-
 def project_forecast(
     *,
     remaining_tasks: int,
     finished: list[int],
     created: list[int],
+    seed: int = 0,
+    today: date | None = None,
 ) -> dict[str, Any]:
     """Will this land, and when — from what the team ACTUALLY did.
 
     Pure, and separate from the route so it can be tested without a database.
     Every branch below is a refusal the caller must be able to reproduce.
+
+    ⚠️ **WS-27bn RA-6: a forecast by COUNT** (`projects_reports.md` §6.8 B).
+    It runs the observed weeks again many times
+    (:func:`analytics_forecast.count_forecast`), and gives the 50% and the
+    85% dates. No estimate enters it. ``finish_date`` and ``weeks_remaining``
+    carry the 50% figure, so the slip and every older reader keep working.
+    ``seed`` is :func:`analytics_forecast.forecast_seed`, so the same seed
+    gives the same dates.
 
     ⚠️ **SCOPE GROWTH IS PART OF THE ANSWER.** Owner decision, 2026-09-17.
     `remaining ÷ finished_per_week` always yields a date. That date is a lie
@@ -1842,51 +1989,23 @@ def project_forecast(
     **net = finished minus created**, and when net is zero or negative this
     returns `not_converging` and NO date at all. A project adding 5.1 tasks a
     week while finishing 4.2 has no completion date, and saying so is the
-    single most useful thing this endpoint does.
+    single most useful thing this endpoint does. Each run of the count
+    forecast samples a week's arrivals with its finishes, for the same
+    reason.
 
     ⚠️ **It refuses more often than it answers, on purpose.** `no_history`,
     `nothing_left` and `not_converging` are findings. A number invented to
-    fill the space would be quoted in a meeting and believed.
+    fill the space would be quoted in a meeting and believed. Since RA-6 a
+    `not_converging` answer for arrivals also says the finishes a week that
+    would converge it. One for the cap names no rate (fix round 1).
     """
-    weeks = max(len(finished), len(created))
-    fin_total = sum(finished)
-    made_total = sum(created)
-    per_week_fin = round(fin_total / weeks, 2) if weeks else 0.0
-    per_week_made = round(made_total / weeks, 2) if weeks else 0.0
-    net = round(per_week_fin - per_week_made, 2)
-
-    base: dict[str, Any] = {
-        "weeks_sampled": weeks,
-        "finished_per_week": per_week_fin,
-        "created_per_week": per_week_made,
-        "net_per_week": net,
-        "remaining_tasks": remaining_tasks,
-        "weeks_remaining": None,
-        "finish_date": None,
-    }
-
-    if remaining_tasks <= 0:
-        # Nothing open. Not a forecast at all, and a date here would be a
-        # prediction about work that does not exist.
-        return {**base, "verdict": "nothing_left"}
-
-    if fin_total < MIN_FINISHED_FOR_FORECAST:
-        return {**base, "verdict": "no_history"}
-
-    if net <= 0:
-        # ⚠️ The finding. No date is produced, and the two rates travel so a
-        # reader can see WHY rather than being told a forecast failed.
-        return {**base, "verdict": "not_converging"}
-
-    weeks_left = math.ceil(remaining_tasks / net)
-    return {
-        **base,
-        "verdict": "converging",
-        "weeks_remaining": weeks_left,
-        "finish_date": (
-            date.today() + timedelta(weeks=weeks_left)
-        ).isoformat(),
-    }
+    return count_forecast(
+        remaining=remaining_tasks,
+        finished=finished,
+        created=created,
+        seed=seed,
+        today=today or date.today(),
+    )
 
 
 def capacity_forecast(
@@ -2156,10 +2275,16 @@ async def outlook_body(
     )
     window_start, window_end = outlook_window(today)
 
+    # WS-27bn RA-6. The seed is the scope and the last whole week of the
+    # history, so a reload gives the same dates and a new week new ones.
+    last_week = rows[-1].week.date().isoformat() if rows else ""
+    node = project_id or "portfolio"
     velocity = project_forecast(
         remaining_tasks=remaining,
         finished=[int(r.finished or 0) for r in rows],
         created=[int(r.created or 0) for r in rows],
+        seed=forecast_seed(f"{node}:{int(include_subtree)}", last_week),
+        today=today,
     )
     capacity = {
         **capacity_forecast(

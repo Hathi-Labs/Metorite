@@ -88,7 +88,7 @@ export function messageMenuGroups(s: MenuState): MenuItem[][] {
       { id: "forward", label: "Forward", icon: "Forward" },
     ]);
   }
-  groups.push([{ id: "tasks", label: "Add to My Tasks", icon: "ListChecks" }]);
+  groups.push([{ id: "tasks", label: "Add to My work", icon: "ListChecks" }]);
   groups.push([
     { id: "archive", label: "Archive", icon: "Archive" },
     { id: "delete", label: "Delete", icon: "Trash2" },

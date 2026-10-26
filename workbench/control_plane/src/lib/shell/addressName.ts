@@ -1,11 +1,11 @@
 /**
  * The name My Day greets (WS-63 PZ-4, `personalization.md` §5.2).
  *
- * With `NEXT_PUBLIC_ASSISTANT_PROFILE` on, My Day asks the gateway for the
+ * With the profile on for the org, My Day asks the gateway for the
  * form of address: the profile name, then the People preferred name, then
  * the first word of the display name. The assistant uses the same order, so
  * the page and the chat call the member the same name. While the read is
- * out, after a fault, with the flag off, or when the answer is no name, the
+ * out, after a fault, with the profile off, or when the answer is no name, the
  * page keeps the session name and `firstName`, as before PZ-4.
  *
  * Fence: `addressName.test.ts`.

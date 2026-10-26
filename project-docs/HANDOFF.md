@@ -158,6 +158,38 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-413 · Build WS-67 OA-1 to OA-5: the member's words survive the handoff, OCR, chat constraints, then measure · [AGENT]
+- **Check:** the WS-67 row of `project-docs/work_plan.md` says that OA-3, OA-4 and OA-5 are each BUILT. Then delete this entry. OA-1, OA-2 and OA-5 are BUILT (2026-10-25).
+- **Why:** D116. The Navy-order chat of 2026-10-25 lost the member's note between the orchestrator and the email assistant, and named parts from a sample file's name.
+- **Do this:** follow `specs/one_assistant_context.md` §4 and §5 in order: OA-1 and OA-2 in one PR, then OA-3 (OCR, HIGH tier), then OA-4, then OA-5 (the report). Stop at OA-6, which is the owner's decision. Update the Metorite tasks #446 to #450 as each slice merges (epic #445).
+- **Authority:** `specs/one_assistant_context.md` · D116 · board WS-67.
+- **Added:** 2026-10-25 · email single-mailbox session
+
+### H-414 · Verify the nightly release of 2026-10-25 · [AGENT]
+- **Check:** `curl -s https://api.metorite.com/version` shows an `applied_sha` that has `a03c1c081` as an ancestor. If it does, and the checks below pass, delete this entry.
+- **Why:** #1321 (H-406), #1324 (D115), #1325 (H-411, H-410, H-286) and #1326 (H-382) merged on 2026-10-25 and are on staging at `a03c1c081`. They have no migration.
+- **Do this:** read the `deploy.yml` scheduled run. Confirm that `acb-gateway` restarted after it and that `email_held_card_send` still reads True. Report the SHA and the log lines to the owner.
+- **Authority:** CLAUDE.md §4, the daily release.
+- **Added:** 2026-10-25 · email single-mailbox session
+
+### H-415 · After single mailbox: the shared mailbox SM-3 to SM-9, then multiple mailboxes · [AGENT]
+- **Check:** the WS-65 row of `work_plan.md` says SM-9 is BUILT. Then delete this entry.
+- **Why:** the owner's order on 2026-10-24: single mailbox first (done 2026-10-25), then shared, then multiple. H-337 (shared-room identity, security) can go first if the owner says so.
+- **Do this:** build SM-3 to SM-9 of `specs/shared_mailbox.md`. SM-10 and SM-11 are owner gates. The cleaner across several inboxes needs an owner decision.
+- **Authority:** `specs/shared_mailbox.md` · board WS-65.
+- **Added:** 2026-10-25 · email single-mailbox session
+
+### H-412 · The chat-speed work: build the delegated-path slices for the paths that stay after WS-67 · [AGENT]
+- **Check:** the next chat-speed PR after #1323 names WS-67 and `specs/one_assistant_context.md` §7. When it does, delete this entry.
+- **Why:** WS-67 (D116) may remove delegation for email conversation (OA-7). #1323 lists two next slices on the delegated path: "a delegated agent still loads twice and streams no text", and "skip the orchestrator rewrite of a delegated answer". Built for email conversation, that work can be thrown away after OA-7.
+- **Do this:**
+  1. Build those two slices for the paths that stay: the heavy-job sub-agent (OA-9), scheduled jobs and workflows. Or wait for OA-6.
+  2. "Fewer model rounds per email run" needs evals first. Use the OA-5 harness, and do not build a second one.
+  3. Keep the names and fields of `agent.run_timing` and `executor.run_setup_ms` stable. OA-5 reads them.
+  4. Expect OA-1 to add input tokens to a delegated run, and OA-3 (OCR) to add time to `read_attachment`.
+- **Authority:** `specs/one_assistant_context.md` §7 · D116 · board WS-67.
+- **Added:** 2026-10-25 · email single-mailbox session
+
 ### H-366 · Harden the CRM UX batch of 2026-10-20 (CRM-U6 to U9) · [AGENT] · security
 - **Check:** `git log --oneline origin/main | grep -c "harden.*CRM-U[6-9]"` is 0. Then this is open.
 - **Why:** owner rule of 2026-10-19, build first and harden later. Four PRs
@@ -5899,7 +5931,10 @@ line — never reclaim a number by deleting the other entry.
 - **Do this:**
   1. A task that goes to done, cancelled or archived keeps its open run until
      the lease ends. End the run on that status change, or let a closed task
-     not hold. Metorite task SW-10 (#341) covers the same ground.
+     not hold. **SW-10a (spec §12.6, step 2) covers the run side:** the sweep
+     closes a run of a closed task once its lease ended, while `agent_run_sweep_enabled` is
+     on. The task side stays open here: an end of the run at the moment the
+     task closes, with the flag off too.
   2. The Release button uses `access.is_admin`. The server uses
      `admin:members:read`. Make them the same rule, and ask whether a read
      permission should release another member's run.

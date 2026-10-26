@@ -28,7 +28,14 @@ import { CAPACITY_HR_HINT, CONFLICTS_HR_HINT, REBALANCE_HR_HINT } from "@/app/pr
 import { asOfDay, periodFree, sectionName } from "@/app/projects/lib/reportBuilder";
 import { clearNote } from "@/app/projects/lib/sectionEmpty";
 import { answerLine, waitingLists } from "@/app/projects/lib/waiting";
-import type { WaitingReport } from "@/app/projects/lib/api";
+import {
+  longLines,
+  outcomeLine,
+  silentLines,
+  successFigure,
+  successTrend,
+} from "@/app/projects/lib/agentRunsReport";
+import type { AgentRunsReport, WaitingReport } from "@/app/projects/lib/api";
 import {
   type EmailOtpEnv,
   type ResendSender,
@@ -83,6 +90,10 @@ export interface RenderedReport {
         finished_per_week?: number;
         created_per_week?: number;
         weeks_sampled?: number;
+        /** WS-27bn RA-6. The 85% date of the forecast by count. */
+        p85_date?: string | null;
+        /** WS-27bn RA-6. The server's one sentence (§6.8 E5). */
+        summary?: string;
       };
       plan?: {
         planned_finish?: string | null;
@@ -98,6 +109,12 @@ export interface RenderedReport {
       people_total?: number;
       /** WS-27bn R5a. Sent for a reader who is not an admin only. */
       hidden_people?: number;
+      /** WS-27bn RA-6. The open tasks with no assignee and no open run. */
+      needs_owner?: {
+        total: number;
+        leads: boolean;
+        tasks: { id: string; task_number: number | null; title: string }[];
+      };
     };
     /**
      * WS-27bm S7a. Opt-in, and the HR half is absent for a reader without
@@ -161,6 +178,12 @@ export interface RenderedReport {
      * answer time of the period. The summary is the server's sentence.
      */
     waiting?: WaitingReport;
+    /**
+     * WS-27bn RA-4. Opt-in. `agent_runs_body`: the outcomes and the sizes of
+     * its own 14 days, and the silent runs now. The summary and the flag of
+     * the long runs are the server's sentences.
+     */
+    agent_runs?: AgentRunsReport;
     /**
      * WS-27bn R3c. Opt-in. `hygiene_body`, read now. A task counts in each
      * kind that it breaks, so the counts do not add up to `open_total`.
@@ -261,8 +284,10 @@ function dateOnly(iso: string): string {
 /** The outlook's verdict, in words. The server decides it. */
 const OUTLOOK_VERDICT: Record<string, string> = {
   converging: "converging",
-  not_converging: "not converging, because work arrives as fast as it finishes",
-  no_history: "too early to forecast",
+  // WS-27bn RA-6. Two reasons now (work arrives as fast, or past the cap),
+  // and the server's sentence under the heading says which.
+  not_converging: "not converging",
+  no_history: "not enough history",
   nothing_left: "nothing open",
 };
 
@@ -489,6 +514,9 @@ export function reportLayout(
     const v = out.velocity ?? {};
     const p = out.plan ?? {};
     const items: string[] = [];
+    // WS-27bn RA-6. The server's sentence first (§6.8 E5): the 50% and 85%
+    // dates, or why there is no date. An older server sends none.
+    if (typeof v.summary === "string" && v.summary) items.push(v.summary);
     if (p.planned_finish) {
       items.push(
         `Planned finish: ${dateOnly(p.planned_finish)}` +
@@ -498,6 +526,7 @@ export function reportLayout(
       );
     }
     if (v.finish_date) items.push(`Forecast finish: ${dateOnly(v.finish_date)}`);
+    if (v.p85_date) items.push(`85% finish: ${dateOnly(v.p85_date)}`);
     if (typeof p.slip_days === "number") {
       const n = Math.abs(p.slip_days);
       items.push(
@@ -567,20 +596,31 @@ export function reportLayout(
   const load = sections.load;
   if (load) {
     const shownLoad = Math.min(load.people.length, maxRows);
+    // WS-27bn RA-6. "Needs an owner": first when it leads the open work,
+    // last when it does not (§6.8 B). The server decides both.
+    const owner = load.needs_owner;
+    const ownerLine =
+      owner && owner.total > 0
+        ? [`Needs an owner: ${owner.total} with no assignee and no open run`]
+        : [];
     parts.push({
       head: { lead: `${sectionName("load")}: ${load.total_tasks}` },
-      items: load.people
-        .slice(0, maxRows)
-        // ⚠️ The bar is "overdue of open_tasks", never "of total_tasks". The
-        // rows per person add up to more than the total, because a task with
-        // two assignees is on both plates.
-        .map(
-          (p) =>
-            `${p.assignee ?? "Unassigned"}: ${p.open_tasks}` +
-            (p.overdue ? ` (${p.overdue} overdue)` : "") +
-            ` · ${textBar(p.overdue, p.open_tasks)}` +
-            ` ${p.overdue} of ${p.open_tasks} overdue`,
-        ),
+      items: [
+        ...(owner?.leads ? ownerLine : []),
+        ...load.people
+          .slice(0, maxRows)
+          // ⚠️ The bar is "overdue of open_tasks", never "of total_tasks". The
+          // rows per person add up to more than the total, because a task with
+          // two assignees is on both plates.
+          .map(
+            (p) =>
+              `${p.assignee ?? "Unassigned"}: ${p.open_tasks}` +
+              (p.overdue ? ` (${p.overdue} overdue)` : "") +
+              ` · ${textBar(p.overdue, p.open_tasks)}` +
+              ` ${p.overdue} of ${p.open_tasks} overdue`,
+          ),
+        ...(owner?.leads ? [] : ownerLine),
+      ],
       // WS-27bn R5a. The rows this reader may not see, counted. R5f round 1:
       // a clear section says so in the words of the screen.
       notes: [
@@ -710,6 +750,46 @@ export function reportLayout(
     parts.push({
       head: {
         lead: clear.length ? sectionName("waiting") : `${sectionName("waiting")}: ${wait.summary}`,
+        strong: true,
+      },
+      items,
+      notes,
+    });
+  }
+
+  const runs = sections.agent_runs;
+  if (runs) {
+    // WS-27bn RA-4. The server's summary first, then the outcomes and the
+    // success rate, then each list with its rows up to `maxRows`. No colour
+    // and no bar: an email renders outside the theme.
+    const items: string[] = [];
+    const notes: string[] = [];
+    const clear = clearNote("agent_runs", runs);
+    if (!clear.length) {
+      const trend = successTrend(runs);
+      items.push(
+        `${outcomeLine(runs)} in ${runs.days} days · success rate ${successFigure(runs)}` +
+          (trend ? `, ${trend}` : "")
+      );
+      const lists = [
+        { heading: "Silent now", total: runs.silent_total, rows: silentLines(runs, (e) => personDisplayName(null, e)) },
+        { heading: "Runs of 4 hours or more", total: runs.long_total, rows: longLines(runs, (e) => personDisplayName(null, e)) },
+      ];
+      for (const list of lists) {
+        if (list.total === 0) continue;
+        items.push(`${list.heading}: ${list.total}`);
+        const shown = list.rows.slice(0, maxRows);
+        for (const r of shown) items.push(`  ${r.label} · ${r.detail}`);
+        if (list.total > shown.length && shown.length > 0) {
+          items.push(`  …and ${list.total - shown.length} more`);
+        }
+      }
+    }
+    // A clear section says its line once, in the note, as the others do.
+    notes.push(...clear);
+    parts.push({
+      head: {
+        lead: clear.length ? sectionName("agent_runs") : `${sectionName("agent_runs")}: ${runs.summary}`,
         strong: true,
       },
       items,

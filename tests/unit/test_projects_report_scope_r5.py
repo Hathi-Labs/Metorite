@@ -110,7 +110,8 @@ def test_a_bad_subject_shape_gets_422(subject: Any) -> None:
 
 
 #: WS-27bn RA-3 adds `waiting`: it reads the coordination of a whole scope.
-@pytest.mark.parametrize("section", ["outlook", "waiting", "hygiene"])
+#: WS-27bn RA-4 adds `agent_runs`: it reads the runs of a whole scope.
+@pytest.mark.parametrize("section", ["outlook", "waiting", "agent_runs", "hygiene"])
 def test_outlook_and_hygiene_refuse_a_subject(section: str) -> None:
     with pytest.raises(HTTPException) as err:
         rep.normalise_report_config({
@@ -836,9 +837,11 @@ def test_j_a_saved_row_with_no_subject_renders_as_before(seeded, wired) -> None:
     for name in ("load", "capacity", "conflicts"):
         assert "hidden_people" not in body["sections"][name], name
     # WS-27bn R5f adds the effort figures of the Load route. An admin still
-    # gets no `hidden_people` key. WS-27bn RA-1 adds `holder_split`.
+    # gets no `hidden_people` key. WS-27bn RA-1 adds `holder_split`, and
+    # RA-6 adds `needs_owner`.
     assert set(body["sections"]["load"]) == {
         "people", "total_tasks", "people_total", "effort", "holder_split",
+        "needs_owner",
     }
 
     async def direct() -> list[Any]:

@@ -233,7 +233,7 @@ const CONTROL_DEBT: Record<string, { count: number; why: string }> = {
     why: "the form card's fields and toggle. The plan card left with its redesign (2026-10-18)",
   },
   "components/projects/ProjectToolCards.tsx": { count: 1, why: "the task row's open button" },
-  "components/tasks/TaskToolCards.tsx": { count: 3, why: "the row, Apply plan and Open in My Tasks. The Tasks pass" },
+  "components/tasks/TaskToolCards.tsx": { count: 3, why: "the row, Apply plan and Open in My work. The Tasks pass" },
   "components/ArtifactCard.tsx": { count: 1, why: "the file card's open row" },
   "components/TodoPanel.tsx": { count: 1, why: "the plan's fold" },
 };

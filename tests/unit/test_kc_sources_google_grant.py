@@ -45,6 +45,7 @@ from gateway.connections import store
 from gateway.kb_sources.google_drive import GoogleDriveSource
 from gateway.kb_sources.google_drive import auth as google_auth
 from gateway.kb_sources.http import HttpAnswer
+from gateway.kb_sync import runs as sync_runs
 from gateway.routes import knowledge as kb_package
 from gateway.routes.email import teardown
 from gateway.routes.knowledge import core, sources
@@ -76,6 +77,8 @@ class Model:
         self.conns: list[dict[str, Any]] = []
         self.sources: list[dict[str, Any]] = []
         self.nodes: list[dict[str, Any]] = []
+        #: The sources whose sync cursors a disconnect deleted (KC-3).
+        self.cursor_deletes: list[str] = []
         #: A forced answer of a function, by its SQL, or absent for the model.
         self.forced: dict[str, Any] = {}
 
@@ -134,20 +137,32 @@ class FakeDb:
     def __init__(self, model: Model) -> None:
         self.m = model
 
-    async def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Result:
-        sql, p, m = str(statement), dict(params or {}), self.m
-        if sql in (sources._LOCK_ONE_SQL, sources._ONE_SQL):
-            rows = [s for s in m.sources if s["id"] == p["id"]
-                    and (p["manager"] or s["owner"] == p["me"])]
-            return _Result([_source_row(s) for s in rows])
+    def _source_write(self, sql: str, p: dict[str, Any]) -> _Result | None:
+        """The three writes of a disconnect on the source, or ``None``."""
+        m = self.m
         if sql == sources._DELETE_NODES_SQL:
             m.nodes = [n for n in m.nodes if n["source"] != p["source"]]
+            return _Result()
+        if sql == sync_runs._DELETE_CURSORS_SQL:
+            # KC-3: the disconnect deletes the sync cursors in its transaction.
+            m.cursor_deletes.append(p["source"])
             return _Result()
         if sql == sources._DISCONNECTED_SQL:
             for s in m.sources:
                 if s["id"] == p["id"]:
                     s["state"] = "disconnected"
             return _Result()
+        return None
+
+    async def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Result:
+        sql, p, m = str(statement), dict(params or {}), self.m
+        if sql in (sources._PEEK_ONE_SQL, sources._LOCK_ONE_SQL, sources._ONE_SQL):
+            rows = [s for s in m.sources if s["id"] == p["id"]
+                    and (p["manager"] or s["owner"] == p["me"])]
+            return _Result([_source_row(s) for s in rows])
+        written = self._source_write(sql, p)
+        if written is not None:
+            return written
         if sql == teardown.GRANT_SHARED_SQL:
             if sql in m.forced:
                 return _Result(scalar=m.forced[sql])
@@ -156,7 +171,7 @@ class FakeDb:
             if sql in m.forced:
                 return _Result(scalar=m.forced[sql])
             return _Result(scalar=m.drive_shared(p["email"], p["exclude"]))
-        if sql == store._GET_BY_ID_SQL:
+        if sql in (store._GET_BY_ID_SQL, store._LOCK_BY_ID_SQL):
             return _Result([_conn_row(c) for c in m.conns if c["id"] == p["id"]])
         if sql == store._BLOB_SQL:
             return _Result([_conn_row(c) for c in m.conns
@@ -248,6 +263,7 @@ def _assert_drive_gone_gmail_kept(world: dict[str, Any]) -> None:
     assert m.gmail == [{"id": world["gmail"], "email": ADDRESS, "blob": "gmail-blob"}], (
         "the Gmail row or its blob changed")
     assert m.nodes == [], "the nodes of the source stay"
+    assert m.cursor_deletes == [m.sources[0]["id"]], "the sync cursors of the source stay"
     assert m.sources[0]["state"] == "disconnected"
 
 

@@ -39,12 +39,18 @@ Gmail grant of the same Google account.
 ``content`` or a ``body`` key.
 
 **Disconnect (§7.4).** In ONE transaction: the source becomes
-``disconnected``, its nodes are DELETED, and ``store.disconnect`` deletes the
-blob. After the commit, with no session open, the route asks the two
+``disconnected``, its nodes and its sync cursors (KC-3) are DELETED, and
+``store.disconnect`` deletes the blob. The rows of ``kb_sync_runs`` stay. After the commit, with no session open, the route asks the two
 shared-grant functions of migration 300. It calls Google's revoke ONLY when
 both answer false. ``true`` and ``NULL`` both skip it, as
 ``routes/email/teardown.py`` does for Gmail. The source row stays as a
 record, so a reconnect of the same connection reuses it.
+
+**The lock order (KC-3h).** The module doc of ``kb_sync/engine.py`` holds the
+one lock order of the source rows: the advisory lock, the connection row, the
+source row, then the nodes, the cursors and the runs. The callback takes them
+in that order. The disconnect reads the source row with no lock, locks the
+connection row, then locks the source row ``FOR UPDATE`` and reads it again.
 """
 
 from __future__ import annotations
@@ -71,6 +77,7 @@ from gateway.kb_sources.google_drive import auth as google_auth
 from gateway.kb_sources.google_drive.client import PROVIDER as GOOGLE_DRIVE
 from gateway.kb_sources.google_drive.client import GoogleDriveSource
 from gateway.kb_sync import discovery
+from gateway.kb_sync import runs as sync_runs
 from gateway.routes.email import teardown
 from gateway.routes.email.transport.oauth import _workbench_public_url
 from gateway.routes.email.transport.signing import (
@@ -132,10 +139,18 @@ _LIST_SQL = f"SELECT {SOURCE_COLUMNS} FROM kb_sources s WHERE {_VISIBLE} ORDER B
 
 _ONE_SQL = f"SELECT {SOURCE_COLUMNS} FROM kb_sources s WHERE s.id = CAST(:id AS uuid) AND {_VISIBLE}"
 
-_LOCK_ONE_SQL = (
+#: The first read of a disconnect, with NO lock: the visibility check and the
+#: connection id. ``connection_id`` never changes, because the upsert of the
+#: callback conflicts on ``(organization_id, connection_id)`` (KC-3h).
+_PEEK_ONE_SQL = (
     f"SELECT {SOURCE_COLUMNS}, s.connection_id FROM kb_sources s "
-    f"WHERE s.id = CAST(:id AS uuid) AND {_VISIBLE} FOR UPDATE"
+    f"WHERE s.id = CAST(:id AS uuid) AND {_VISIBLE}"
 )
+
+#: ⚠️ The source lock of a disconnect comes AFTER the connection lock (the
+#: lock order of ``kb_sync/engine.py``). It stays ``FOR UPDATE``: the guards of
+#: the sync take ``FOR KEY SHARE``, and only ``FOR UPDATE`` makes them wait.
+_LOCK_ONE_SQL = _PEEK_ONE_SQL + " FOR UPDATE"
 
 _UPSERT_SOURCE_SQL = (
     "INSERT INTO kb_sources AS s (organization_id, connection_id, provider, kind, "
@@ -540,6 +555,8 @@ async def google_drive_callback(
     })
     # 4. The token and the source, in one transaction. A consent to another
     #    Google account drops the old tree, because it is that account's.
+    #    The lock order of kb_sync/engine.py: the advisory lock, the
+    #    connection row, the source row FOR UPDATE, then the nodes.
     async with core._tenant_session() as db:
         await db.execute(text(_CONNECT_LOCK_SQL),
                          {"key": f"kb.source.connect:{org}:{member}:{GOOGLE_DRIVE}"})
@@ -615,12 +632,19 @@ async def disconnect_source(
     org = params["org"]
     cred: SourceCredential | None = None
     async with core._tenant_session() as db:
+        seen = (await db.execute(text(_PEEK_ONE_SQL), {**params, "id": sid})).first()
+        if seen is None:
+            raise HTTPException(status_code=404, detail="Source not found.")
+        if seen.state == discovery.STATE_DISCONNECTED:
+            return source_dict(seen)
+        # KC-3h, the lock order: the connection row, then the source row, as
+        # the callback and the close of a sync run take them.
+        conn = await store.lock_by_id(db, org, str(seen.connection_id))
         src = (await db.execute(text(_LOCK_ONE_SQL), {**params, "id": sid})).first()
-        if src is None:
+        if src is None:  # a purge deleted it while this waited
             raise HTTPException(status_code=404, detail="Source not found.")
         if src.state == discovery.STATE_DISCONNECTED:
             return source_dict(src)
-        conn = await store.get_by_id(db, org, str(src.connection_id))
         email = src.account_email
         if conn is not None:
             email = email or conn.provider_meta.get(google_auth.META_ACCOUNT_EMAIL)
@@ -630,6 +654,8 @@ async def disconnect_source(
             )
             await store.disconnect(db, org, conn.id)
         await db.execute(text(_DELETE_NODES_SQL), {"org": org, "source": sid})
+        # KC-3: the cursors go with the nodes. The run rows stay as the record.
+        await sync_runs.delete_cursors(db, org, sid)
         await db.execute(text(_DISCONNECTED_SQL), {"org": org, "id": sid})
         after = (await db.execute(text(_ONE_SQL), {**params, "id": sid})).first()
     # After the commit, and with no session open: the revoke, only when free.

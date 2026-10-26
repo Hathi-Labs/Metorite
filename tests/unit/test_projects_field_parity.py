@@ -529,6 +529,8 @@ _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
     ("POST", "/projects/tasks/bulk", "tags_add"): {"task_ids": UUID, "tags_add": "q4"},
     ("POST", "/projects/tasks/bulk", "tags_remove"): {"task_ids": UUID, "tags_remove": "urgent"},
     ("GET", "/projects/my/inbox", "include_done"): {"view": "inbox", "include_done": True},
+    # WS-55 SW-11a: the member's own rows of Needs attention.
+    ("GET", "/projects/needs-attention", "mine"): {"mine": True},
     ("GET", "/projects/my/inbox", "page"): {"view": "inbox", "page": 2},
     ("GET", "/projects/my/inbox", "page_size"): {"view": "inbox"},
     ("GET", "/projects/my/calendar", "start"): {

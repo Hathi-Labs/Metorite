@@ -652,7 +652,13 @@ export function feedGroups(
 }
 
 /** Where "Show all in <app>" goes, for each feed app. */
-const FEED_APP_HREF: Readonly<Record<FeedApp, string>> = { ...NEEDS_APP_HREF, ...FEED_ONLY_APP_HREF };
+const FEED_APP_HREF: Readonly<Record<FeedApp, string>> = {
+  ...NEEDS_APP_HREF,
+  ...FEED_ONLY_APP_HREF,
+  // WS-64: the `tasks` rows count on the Projects row (`NEEDS_APP_HREF`, the
+  // nav badge), but "Show all" opens My work, the landing view, `app/projects/lib/myWork.ts`.
+  tasks: "/projects?app=my-today",
+};
 
 /**
  * The "Show all in <app>" links at the end of a group (§6.1, MD-2b): one for
@@ -928,6 +934,9 @@ export const FEED_KIND_LABELS: Readonly<Record<string, string>> = {
   crm_open_questions: "Open questions",
   // WS-61 KB-9a: a question that Knowledge could not answer.
   kb_gap: "Unanswered question",
+  // WS-61 KB-9b: a page of mine is past its review date, and a new page.
+  doc_needs_review: "Page to review",
+  doc_shared_with_me: "New page",
 };
 
 /**
@@ -977,7 +986,7 @@ const FEED_ONLY_MISSING: Readonly<Record<keyof typeof FEED_ONLY_APP_HREF, string
   crm: "follow-ups and deals",
   people: "news about colleagues",
   chat: "questions from the assistant",
-  knowledge: "unanswered questions",
+  knowledge: "pages to review, new pages and unanswered questions",
 };
 
 /**

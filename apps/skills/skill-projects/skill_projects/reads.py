@@ -954,12 +954,21 @@ async def analytics_load(project_id: str = "", offset: int = 0) -> str:
         # WS-27bn R5a. The rows below are not every person: say so, so the
         # model never ranks people across rows it did not receive.
         out.append(f"  {line}. Do not compare the rows below with them.")
+    # WS-27bn RA-6. "Needs an owner" comes first when it leads the open
+    # work (§6.8 B), and after the people when it does not. It is not a page
+    # of people, so only the first page prints it (fix round 1).
+    owners = needs_owner_lines(payload) if start == 0 else []
+    leads = bool((payload.get("needs_owner") or {}).get("leads"))
+    if leads:
+        out.extend(owners)
     for p in payload.get("people") or []:
         who = data(p["assignee"]) if p.get("assignee") else "unassigned"
         out.append(
             f"- {who} · open {p.get('open_tasks', 0)} · overdue {p.get('overdue', 0)}"
             f" · next 7 days {p.get('due_next_7d', p.get('due_soon', 0))} · later {p.get('later', 0)}"
         )
+    if not leads:
+        out.extend(owners)
     listed = payload.get("people_listed")
     if isinstance(listed, int) and (line := page_line(
             listed, start, len(payload.get("people") or []), noun="people")):
@@ -1033,6 +1042,11 @@ async def analytics_outlook(project_id: str = "") -> str:
     dates with its coverage, and who is holding open work."""
     payload = await get("/projects/analytics/outlook", _scope_params(project_id))
     out = [f"Forecast for {_scope_title(payload)}:"]
+    # WS-27bn RA-6. The server's sentence first (§6.8 E5): the 50% and 85%
+    # dates, or why there is no date. It holds no member text.
+    summary = (payload.get("velocity") or {}).get("summary")
+    if isinstance(summary, str) and summary:
+        out.append(f"  {summary}")
     for name in ("velocity", "capacity"):
         block = payload.get(name) or {}
         if block:
@@ -1824,6 +1838,129 @@ async def waiting_agent_requests() -> str:
     return "\n".join(out)
 
 
+# ── WS-55 SW-11a — Needs attention (external_agent_access.md §12.7) ─────────
+
+#: Rows per page of ``needs_attention``. The route pages through ``offset``.
+ATTENTION_PAGE = 25
+
+#: What each kind means, in the words the list on the board uses.
+ATTENTION_KINDS = {
+    "stalled": "stalled: an agent run stopped, and a recovery record waits for a person",
+    "dangling": "an agent run is still open on a closed task",
+    "blocked": "blocked by parked work: the blocker is in the backlog, and nobody holds it",
+}
+
+#: The next action of each row, for the model to say. No chat tool takes
+#: either write yet (`resume_agent_run` and `release_agent_run` are PLANNED).
+ATTENTION_ACTIONS = {
+    "resume": (
+        "Resume (asks the same agent client to continue, and the run keeps the task)"
+        " or Close the run (frees the task for anyone)"
+    ),
+    "close_run": "Close the run (frees the task for anyone, and the task keeps its status)",
+    "open_blocker": "open the blocker and give it an owner or move it on",
+}
+
+#: The server's own answer, quoted: `can_act` is false for this caller. The
+#: route reads the rule of Release (`agent_runs.person_may_end_sql`). No line
+#: here names who holds the right (`test_projects_agent_grants.py`).
+ATTENTION_NO_RIGHT = "only a person with the right to end this run can act on it"
+
+#: A stalled run whose agent connection is revoked or expired. No session of
+#: that client can come back, so the server offers Close the run only.
+ATTENTION_CONNECTION_GONE = "the agent's connection is revoked or expired, so it cannot resume"
+
+
+def _hours_ago(hours: Any) -> str:
+    """``3.4`` → ``3 h``, ``50`` → ``2 d``. An age that does not parse is
+    unknown."""
+    try:
+        value = float(hours)
+    except (TypeError, ValueError):
+        return "for an unknown time"
+    if value < 1:
+        return "for under an hour"
+    if value < 48:
+        return f"for {int(value)} h"
+    return f"for {int(value // 24)} d"
+
+
+def _attention_lines(row: dict[str, Any]) -> list[str]:
+    """One row: the task line, then its ids. Titles and names are fenced."""
+    kind = str(row.get("kind") or "")
+    facts = [ATTENTION_KINDS.get(kind, kind)]
+    if kind == "stalled":
+        why = "did not read the answer" if row.get("reason") == "answer_unread" else "sent nothing"
+        facts.append(f"{data(row.get('client_name') or 'the agent')} {why} "
+                     f"{_hours_ago(row.get('age_hours'))}")
+    elif kind == "dangling":
+        facts.append(f"the task is {row.get('reason') or 'closed'}, and the run is "
+                     f"{row.get('run_status')}, quiet {_hours_ago(row.get('age_hours'))}")
+    elif kind == "blocked":
+        facts.append(f"blocked by #{row.get('blocker_number')} {data(row.get('blocker_title'))} "
+                     f"{_hours_ago(row.get('age_hours'))}")
+    owner = row.get("owner_name") or row.get("owner")
+    facts.append(f"owner {data(owner)}" if owner else "no owner")
+    if row.get("yours"):
+        facts.append("yours")
+    if row.get("project_name"):
+        facts.append(f"in {data(row['project_name'])}")
+    action = ATTENTION_ACTIONS.get(str(row.get("action") or ""), "open the task")
+    if row.get("connection_gone") and kind == "stalled":
+        facts.append(ATTENTION_CONNECTION_GONE)
+    if not row.get("can_act"):
+        action += f" ({ATTENTION_NO_RIGHT})"
+    head = f"- {_number(row)} {data(row.get('title'))} · " + " · ".join(facts)
+    out = [head, f"  next: {action}", f"  full_id: {row.get('task_id')}"]
+    if row.get("blocker_id"):
+        out.append(f"  blocker_id: {row['blocker_id']}")
+    if row.get("run_id"):
+        out.append(f"  run_id: {row['run_id']}")
+    return out
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def needs_attention(project_id: str = "", mine: bool = False, offset: int = 0) -> str:
+    """What is stuck and needs a person: agent runs that stopped and have a
+    recovery record, agent runs still open on closed tasks, and tasks blocked
+    by parked work (a backlog task that nobody holds). Use it for "what is
+    stuck?" and "what needs my attention?". Pass a project_id for one project
+    and its subprojects, or leave it empty for every project the member can
+    see. mine=true keeps the member's own rows. 25 rows a page: offset reads
+    the next. The member resumes or closes a run on the Needs attention list
+    in the app. No tool of yours does it."""
+    start, size = bounds(offset, ATTENTION_PAGE, default=ATTENTION_PAGE)
+    params: dict[str, Any] = {"offset": start, "limit": size}
+    if project_id:
+        params["project_id"] = uuid_of(project_id, "project_id")
+    if mine:
+        params["mine"] = True
+    payload = (await get("/projects/needs-attention", params)) or {}
+    rows = list(payload.get("rows") or [])
+    counts = payload.get("counts") or {}
+    scope = "this project and its subprojects" if project_id else "every project the member can see"
+    whose = "the member's own items" if mine else "items"
+    out = [
+        legend(),
+        f"Needs attention in {scope}: {payload.get('total', 0)} {whose}"
+        f" (stalled {counts.get('stalled', 0)}, open runs of closed tasks"
+        f" {counts.get('dangling', 0)}, blocked by parked work {counts.get('blocked', 0)}).",
+    ]
+    for row in rows:
+        out.extend(_attention_lines(row))
+    if not rows and start == 0:
+        out.append("(nothing needs attention)")
+    listed = payload.get("listed")
+    if isinstance(listed, int) and (line := page_line(listed, start, len(rows), noun="items")):
+        out.append(f"  {line}")
+    if payload.get("capped"):
+        out.append(
+            "  One kind holds more items than the list reads (200 for each kind). "
+            "Name a project to see the rest."
+        )
+    return "\n".join(out)
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def report_render(report_id: str) -> str:
     """Render one saved report now, from the same numbers that the Overview
@@ -1858,7 +1995,7 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "throughput": ("series", "week_start", ("completed", "cancelled", "median_hours", "measured")),
     # `people_total`: the route cuts the rows to 20, so the count says how
     # many people the section left out (2026-10-14).
-    "load": ("people", "assignee", ("total_tasks", "people_total")),
+    "load": ("people", "assignee", ("total_tasks", "people_total", "needs_owner.total")),
     # S7a. The row label is the directory name; the unassigned row has none
     # and prints as "unassigned". Nested HR blocks are skipped per row.
     "capacity": ("people", "name", ("total_tasks", "people_total", "hr_visible", "horizon_days")),
@@ -1870,6 +2007,7 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     # `_dig`. A generic fallback would print nothing for a nested dict.
     "outlook": ("", "", (
         "velocity.verdict", "plan.planned_finish", "velocity.finish_date",
+        "velocity.p85_date", "velocity.converge_per_week",
         "plan.slip_days", "velocity.remaining_tasks", "capacity.verdict",
     )),
     "stuck":("overdue", "name", ("overdue_total", "blocked_total")),
@@ -1879,6 +2017,14 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
         "questions_total", "reviews_total", "handoffs_total",
         "answer_time.median_hours", "answer_time.p90_hours",
         "answer_time.unanswered",
+    )),
+    # WS-27bn RA-4. Two lists: the silent runs now and the long runs.
+    # `_agent_runs_lines` prints both, so the list key here is the first
+    # only. The outcomes and the success rate are nested.
+    "agent_runs": ("silent", "title", (
+        "outcomes.completed", "outcomes.failed", "outcomes.stopped",
+        "outcomes.abandoned", "outcomes.released", "success.rate",
+        "success.rate_before", "silent_total", "long_total",
     )),
     # WS-27bn R3c. One row per task, each with its kind. The four counts sit
     # in `by_kind`, so the scalar keys are dotted paths, as in `outlook`.
@@ -1905,6 +2051,8 @@ _REPORT_LABELS: dict[str, str] = {
     "outlook:velocity.verdict": "forecast",
     "outlook:plan.planned_finish": "planned finish",
     "outlook:velocity.finish_date": "forecast finish",
+    "outlook:velocity.p85_date": "85% finish",
+    "outlook:velocity.converge_per_week": "finished tasks a week to converge",
     "outlook:plan.slip_days": "slip days",
     "outlook:velocity.remaining_tasks": "tasks left",
     "outlook:capacity.verdict": "capacity",
@@ -1921,6 +2069,7 @@ _REPORT_LABELS: dict[str, str] = {
     "hygiene:stale_days": "stale after days",
     "pulse:people_total": "people",
     "load:people_total": "people with open work",
+    "load:needs_owner.total": "tasks that need an owner",
     "pulse:hidden_people": "hidden people",
     "waiting:questions_total": "agent questions with no answer",
     "waiting:reviews_total": "tasks waiting for a review",
@@ -1928,6 +2077,15 @@ _REPORT_LABELS: dict[str, str] = {
     "waiting:answer_time.median_hours": "median answer hours",
     "waiting:answer_time.p90_hours": "p90 answer hours",
     "waiting:answer_time.unanswered": "questions with no answer in the period",
+    "agent_runs:outcomes.completed": "runs completed in 14 days",
+    "agent_runs:outcomes.failed": "runs failed in 14 days",
+    "agent_runs:outcomes.stopped": "runs stopped by a person in 14 days",
+    "agent_runs:outcomes.abandoned": "runs abandoned in 14 days",
+    "agent_runs:outcomes.released": "runs released in 14 days",
+    "agent_runs:success.rate": "success rate",
+    "agent_runs:success.rate_before": "success rate of the 14 days before",
+    "agent_runs:silent_total": "silent runs now",
+    "agent_runs:long_total": "completed runs of 4 hours or more",
 }
 
 #: The three waiting lists, in the panel's order, with the words of each.
@@ -1983,6 +2141,90 @@ def _waiting_lines(section: dict[str, Any]) -> list[str]:
         more = (total if isinstance(total, int) else len(rows)) - len(rows)
         if more > 0:
             out.append(f"  (and {more} more of the {key}{past})")
+    return out
+
+
+def _needs_owner_row(row: dict[str, Any]) -> str:
+    """One task that needs an owner, as one line. The title is member text,
+    so it prints as data, and a newline in it cannot forge a second row."""
+    number = row.get("task_number")
+    task = f"#{number} " if isinstance(number, int) else ""
+    due = f" · due {_day(row.get('due_at'))}" if row.get("due_at") else ""
+    return f"- needs an owner · {task}{data(row.get('title'))}{due}"
+
+
+def needs_owner_lines(section: dict[str, Any]) -> list[str]:
+    """WS-27bn RA-6. The open tasks with no assignee and no open run
+    (§6.8 F), one line each.
+
+    ⚠️ No cut here (`test_read_tool_paging.py`): the server names 20 at most
+    (`analytics.NEEDS_OWNER_NAMED`), so the text prints each row it got. The
+    line after the rows says how many the server's cap left out, from the
+    total."""
+    owner = section.get("needs_owner")
+    if not isinstance(owner, dict):
+        return []
+    total = owner.get("total")
+    if not isinstance(total, int) or isinstance(total, bool) or total <= 0:
+        return []
+    rows = [r for r in owner.get("tasks") or [] if isinstance(r, dict)]
+    head = "first, because it leads the open work" if owner.get("leads") else "after the people"
+    out = [f"  Needs an owner: {total} open {'task' if total == 1 else 'tasks'}"
+           f" with no assignee and no open run ({head})."]
+    out.extend(_needs_owner_row(r) for r in rows)
+    more = total - len(rows)
+    if more > 0:
+        out.append(f"  (and {more} more that need an owner, past the {len(rows)} named)")
+    return out
+
+
+#: WS-27bn RA-4. The two lists of the agent runs section, in the panel's
+#: order, as ``(list key, the word of a row, the total key)``.
+_AGENT_RUN_LISTS: tuple[tuple[str, str, str], ...] = (
+    ("silent", "silent", "silent_total"),
+    ("long_runs", "long run", "long_total"),
+)
+
+
+def _agent_run_row(kind: str, row: dict[str, Any]) -> str:
+    """One run as one line: the task, the agent, its member and the time.
+
+    The title, the agent and the member print as data, for the reason that
+    `_waiting_row` gives: an in-app agent's name is text that a member
+    typed, so a newline in it cannot forge a second row.
+    """
+    number = row.get("task_number")
+    task = f"#{number} " if isinstance(number, int) else ""
+    facts = [f"agent {data(row.get('agent') or 'Agent')}"]
+    member = row.get("member_name") or row.get("member")
+    if member:
+        facts.append(f"for {data(member)}")
+    if kind == "silent" and isinstance(row.get("age_hours"), int | float):
+        facts.append(f"silent {row['age_hours']} hours")
+    if kind == "long run" and isinstance(row.get("hours"), int | float):
+        facts.append(f"agent time {row['hours']} hours")
+    return f"- {kind} · {task}{data(row.get('title'))} · " + ", ".join(facts)
+
+
+def _agent_runs_lines(section: dict[str, Any]) -> list[str]:
+    """The summary of the panel, then every silent run and every long run.
+
+    The summary is the server's sentence, so the chat says the words that
+    the panel says (§6.8 E5). ⚠️ No cut here (`test_read_tool_paging.py`):
+    the server names 20 silent runs and 5 long runs at most
+    (`analytics_agent_runs.py`), so the text prints each row it got. The
+    line after a list says how many the server's cap left out, from the
+    list's own total."""
+    out: list[str] = []
+    if isinstance(section.get("summary"), str):
+        out.append(f"  {section['summary']}")
+    for key, kind, total_key in _AGENT_RUN_LISTS:
+        rows = [r for r in section.get(key) or [] if isinstance(r, dict)]
+        out.extend(_agent_run_row(kind, r) for r in rows)
+        total = section.get(total_key)
+        more = (total if isinstance(total, int) else len(rows)) - len(rows)
+        if more > 0:
+            out.append(f"  (and {more} more {kind} rows that the report does not name)")
     return out
 
 
@@ -2166,16 +2408,37 @@ def _report_row(name: str, label_key: str, row: dict[str, Any]) -> str:
     return f"- {shown} · {facts}"
 
 
+def _section_extras(name: str, section: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """WS-27bn RA-6. The lines a section prints before its rows, and after.
+
+    The outlook prints the server's sentence first (§6.8 E5). Open work
+    prints "Needs an owner" first when it leads the open work (§6.8 B), and
+    after the people when it does not.
+    """
+    if name == "outlook":
+        summary = (section.get("velocity") or {}).get("summary")
+        return ([f"  {summary}"] if isinstance(summary, str) and summary else []), []
+    if name == "load":
+        owners = needs_owner_lines(section)
+        if (section.get("needs_owner") or {}).get("leads"):
+            return owners, []
+        return [], owners
+    return [], []
+
+
 def _report_section(name: str, section: dict[str, Any]) -> list[str]:
     """One report section as lines: its totals, then one line per row."""
     list_key, label_key, scalar_keys = _REPORT_SECTIONS.get(
         name,
         ("rows", "name", tuple(k for k, v in section.items() if not isinstance(v, (dict, list)))),
     )
+    # RA-6 fix round 1: a figure the server sent as null prints nothing. A
+    # converging forecast sends `converge_per_week: null`, and "to converge
+    # None" is a word the model must not repeat.
     totals = ", ".join(
         f"{_REPORT_LABELS.get(f'{name}:{k}', k)} {v}"
         for k in scalar_keys
-        if (v := _dig(section, k)) is not _MISSING
+        if (v := _dig(section, k)) is not _MISSING and v is not None
     )
     out = [f"{name}:" + (f" {totals}" if totals else "")]
     if section.get("hr_visible") is False and name in _REPORT_HINTS:
@@ -2187,6 +2450,12 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
         # WS-27bn RA-3. Three lists, each with its own cap.
         out.extend(_waiting_lines(section))
         return out
+    if name == "agent_runs":
+        # WS-27bn RA-4. Two lists, each with its own cap.
+        out.extend(_agent_runs_lines(section))
+        return out
+    before, after = _section_extras(name, section)
+    out.extend(before)
     rows = section.get(list_key) if list_key else None
     rows = rows or []
     if not isinstance(rows, list):
@@ -2206,6 +2475,7 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
         out.append(_report_row(name, label_key, row))
     if len(rows) > 25:
         out.append(f"  (and {len(rows) - 25} more rows)")
+    out.extend(after)
     return out
 
 

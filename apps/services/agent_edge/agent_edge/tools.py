@@ -79,11 +79,12 @@ import re
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from acb_auth import agent_oauth
 from acb_common import get_logger, get_settings
+from acb_common.priority import importance_for
 
 from agent_edge import cursor as cursor_mod
 from agent_edge import idempotency
@@ -156,8 +157,40 @@ TEXT_PARENT_NOT_FOUND = "Parent task not found."
 TEXT_PARENT_OTHER_PROJECT = (
     "The parent task is in another project. Send the project_id of the parent task.")
 TEXT_UPDATE_EMPTY = (
-    "Send one or more fields to change: title, description, tags, due_at or"
-    " custom_fields.")
+    "Send one or more fields to change: title, description, tags, due_at,"
+    " custom_fields, importance, leveraged, estimate_mins, start_date or"
+    " parent_task_id.")
+#: WS-55 MCP-G2. The texts of the planning fields, of the move inside a
+#: project (``parent_task_id`` of ``update_task``) and of ``set_assignees``.
+TEXT_START_DATE = "The input 'start_date' is not a real date. Send a date such as 2026-10-31."
+TEXT_MOVE_ALONE = (
+    "Send parent_task_id in a call of its own. Then change the other fields"
+    " with the new version.")
+TEXT_MOVE_OTHER_PROJECT = (
+    "The new parent task is in another project. Move a task to another project"
+    " in the Metorite app.")
+TEXT_MOVE_OWN_PARENT = "A task cannot be its own parent."
+TEXT_MOVE_CYCLE = (
+    "The new parent is a subtask of this task. A task cannot move under its own subtask.")
+TEXT_MOVE_TOO_DEEP = "That move makes the task tree too deep."
+TEXT_MOVE_EPIC = "An epic is the top level, so it cannot have a parent task."
+TEXT_ASSIGNEES_REFUSED = (
+    "Metorite cannot assign the task to {names}. An agent can assign only a"
+    " person who can already open the task through a project grant or an admin"
+    " read right. A person must"
+    " assign anybody else in the Metorite app. Nothing changed.")
+TEXT_ASSIGNEES_PERSONAL = (
+    "This task is in a personal project, so only its owner can hold it. Move the"
+    " task to a team project in the Metorite app first. Nothing changed.")
+#: The code of the gateway's 422 for a new assignee who cannot already open
+#: the task through a project grant or an admin read right (fix round 1).
+#: A copy of
+#: ``tasks.AGENT_ASSIGNEE_REFUSED``, and ``test_mcp_edge_assignees.py`` pins
+#: the two equal.
+ASSIGNEE_REFUSED_CODE = "assignee_refused"
+#: The code of the gateway's 422 for another person on a task in a personal
+#: project. A copy of ``tasks.AGENT_ASSIGNEE_PERSONAL``, pinned the same way.
+ASSIGNEE_PERSONAL_CODE = "assignee_personal_project"
 #: The idempotency key of ``create_task`` (EA-6d, ``agent_edge.idempotency``).
 TEXT_KEY_REUSED = (
     "This idempotency_key was used for a different task. Send a new key.")
@@ -299,6 +332,12 @@ DELETE_ANNOTATIONS: Mapping[str, bool] = {
     "openWorldHint": False,
 }
 
+#: The annotations of ``set_assignees`` (MCP-G2, fix round 1). It replaces
+#: the whole set, and an empty list removes every assignee, so
+#: ``destructiveHint`` is true. The same call twice changes nothing more,
+#: so it stays idempotent.
+ASSIGN_ANNOTATIONS: Mapping[str, bool] = {**WRITE_ANNOTATIONS, "destructiveHint": True}
+
 #: The closing status categories, and the one of them that means finished
 #: (§9.2). Copies of ``CLOSING_CATEGORIES`` and ``COMPLETED_CATEGORY`` in
 #: ``gateway/routes/projects/core.py``, because the edge may not import the
@@ -419,7 +458,7 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
                  if_match: str | None = None,
                  texts: Mapping[int, str] | None = None,
                  details: Mapping[tuple[int, str], str] | None = None,
-                 coded: Mapping[str, str] | None = None,
+                 coded: Mapping[str, str | Callable[[Mapping[str, Any]], str]] | None = None,
                  ) -> tuple[int, Any]:
     """One write through ``gateway_client.write``: ``(status, body)`` of a
     2xx answer, or raise the write mapping of :func:`_body_of`. *texts* gives
@@ -431,7 +470,11 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
 
     *coded* (EA-6b) gives a fixed text for a 422 whose detail is
     ``{"error": <code>}`` of the route. The text of the gateway never
-    reaches the agent."""
+    reaches the agent. MCP-G2: a value may be a function of the detail,
+    which builds the text from the tool's OWN inputs (``set_assignees``
+    names the entries of its list that the gateway refused). The coded map
+    goes before *texts*, so a tool may give one text to a coded 422 and
+    another to every other 422."""
     try:
         answer = await gateway_write(
             ctx.key, ctx.caller.lookup, method, template, json_body=json_body,
@@ -454,12 +497,13 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
         # `held_by`, as (U) text. SW-13c: the hint of an own run of another
         # connection, with its id only in the shape of an id.
         raise ToolError(task_held_text(detail))
-    if texts and answer.status in texts:
-        raise ToolError(texts[answer.status])
     if coded and answer.status == 422:
         code = detail.get("error") if isinstance(detail, dict) else None
         if isinstance(code, str) and code in coded:
-            raise ToolError(coded[code])
+            text = coded[code]
+            raise ToolError(text if isinstance(text, str) else text(detail))
+    if texts and answer.status in texts:
+        raise ToolError(texts[answer.status])
     body = _body_of(answer, not_found, write=True)
     # The write landed. From here on the call must report it (fix round 2).
     _landed()
@@ -747,6 +791,12 @@ def check_input(schema: Mapping[str, Any], arguments: Any) -> dict[str, Any]:
     its own ``properties``, or an ``additionalProperties`` rule for each value
     with ``maxProperties`` (EA-12b). An ``object`` with neither is free-form,
     and its tool checks it (``custom_fields`` of ``update_task``, EA-6d).
+
+    A null drops out of the result, so a tool reads it as "not sent". The
+    one exception (MCP-G2): an input whose ``type`` lists ``"null"`` keeps a
+    null that the call sent, because null is a value of that input. Only
+    ``parent_task_id`` of ``update_task`` has one, and its null means "move
+    the task to the top level".
     """
     if arguments is None:
         arguments = {}
@@ -763,10 +813,18 @@ def check_input(schema: Mapping[str, Any], arguments: Any) -> dict[str, Any]:
     for name, rule in properties.items():
         value = arguments.get(name)
         if value is None:
+            if name in arguments and _takes_null(rule):
+                out[name] = None
             continue
         _check_value(name, rule, value)
         out[name] = value
     return out
+
+
+def _takes_null(rule: Mapping[str, Any]) -> bool:
+    """True when null is a value of the input of *rule* (MCP-G2)."""
+    kind = rule.get("type")
+    return kind == "null" or (isinstance(kind, list) and "null" in kind)
 
 
 def _check_value(name: str, rule: Mapping[str, Any], value: Any) -> None:
@@ -774,7 +832,10 @@ def _check_value(name: str, rule: Mapping[str, Any], value: Any) -> None:
     if not _type_ok(value, rule["type"]):
         raise ToolError(f"The input {name!r} must be a {rule['type']}.")
     if "enum" in rule and value not in rule["enum"]:
-        raise ToolError(f"The input {name!r} must be one of {', '.join(rule['enum'])}.")
+        # MCP-G2: an enum of numbers too (`importance`), so each choice is
+        # written as text.
+        choices = ", ".join(str(choice) for choice in rule["enum"])
+        raise ToolError(f"The input {name!r} must be one of {choices}.")
     if "minimum" in rule and value < rule["minimum"]:
         raise ToolError(f"The input {name!r} must be at least {rule['minimum']}.")
     if "maximum" in rule and value > rule["maximum"]:
@@ -935,6 +996,12 @@ class Tool:
     #: the same method. An input may fill a parameter of one of them
     #: (§9.5 rule 4). Only ``ask_on_task`` has one: the start of the run.
     prior_writes: tuple[str, ...] = ()
+    #: MCP-G2. Each ``(method, route)`` of a write that the tool sends IN
+    #: PLACE of its write to :attr:`route`, for some inputs. An input may
+    #: fill a parameter of one of them (§9.5 rule 4), and each pair is in
+    #: ``MCP_WRITE_ROUTES``. Only ``update_task`` has one: the move of
+    #: ``parent_task_id``.
+    alt_writes: tuple[tuple[str, str], ...] = ()
     #: The input that holds the wait of a long poll, or ``None`` (EA-12b).
     #: The call limit is then that wait plus :data:`LONG_POLL_TOOL_MARGIN_S`.
     wait_input: str | None = None
@@ -1758,6 +1825,13 @@ _LINE_SCHEMA = _object({
     "type": {"type": "string"}, "body": _UNTRUSTED_OR_NULL,
     "action": _SHAPED_OR_NULL, "created_at": _NULLABLE_STRING,
 })
+#: SW-10a (spec §12.6). Why the run came back: the sweep found it stranded.
+#: The note is the edge's own text, built from the reason and the minutes.
+_STRANDED_SCHEMA = _object({
+    "reason": {"type": "string", "enum": ["agent_quiet", "answer_unread"]},
+    "idle_minutes": _NULLABLE_INTEGER,
+    "note": {"type": "string"},
+})
 _RUN_SCHEMA = _object({
     "id": {"type": "string"}, "task_id": {"type": "string"},
     "status": _NULLABLE_STRING, "state": _NULLABLE_STRING,
@@ -1766,6 +1840,7 @@ _RUN_SCHEMA = _object({
     "last_activity_at": _NULLABLE_STRING, "ended_at": _NULLABLE_STRING,
     "open_question": {"anyOf": [_QUESTION_SCHEMA, {"type": "null"}]},
     "latest_line": {"anyOf": [_LINE_SCHEMA, {"type": "null"}]},
+    "stranded": {"anyOf": [_STRANDED_SCHEMA, {"type": "null"}]},
 })
 _RUN_ACTIVITY_SCHEMA = _object({
     "id": {"type": "string"}, "seq": _NULLABLE_INTEGER, "type": {"type": "string"},
@@ -1849,6 +1924,33 @@ def _line(row: Any) -> dict[str, Any] | None:
     }
 
 
+#: SW-10a (spec §12.6). The note of a stranded run, by its reason. Fixed
+#: edge text with one number, so it holds no member text (§9.4).
+STRANDED_NOTES: Mapping[str, str] = {
+    "agent_quiet": "Stranded: no agent activity for {minutes} minutes.",
+    "answer_unread": "Stranded: a member's answer waits, unread for {minutes} minutes.",
+}
+
+
+def _stranded(raw: Any) -> dict[str, Any] | None:
+    """``stranded`` of a run (SW-10a): the reason, the quiet minutes and the
+    edge's note. ``None`` for a run that the sweep did not find stranded, and
+    for a reason that the edge does not know."""
+    if not isinstance(raw, dict):
+        return None
+    reason = raw.get("reason")
+    if not isinstance(reason, str) or reason not in STRANDED_NOTES:
+        return None
+    idle = _int_or_none(raw.get("idle_s"))
+    minutes = idle // 60 if idle is not None and idle >= 0 else None
+    return {
+        "reason": reason,
+        "idle_minutes": minutes,
+        "note": STRANDED_NOTES[reason].format(
+            minutes=minutes if minutes is not None else "many"),
+    }
+
+
 def _member_of(value: Any) -> str | dict[str, str] | None:
     """A member address by :func:`assignee`, or ``None``."""
     return assignee(value) if isinstance(value, str) else None
@@ -1873,6 +1975,7 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
         "ended_at": _str_or_none(row.get("ended_at")),
         "open_question": _question(row.get("open_elicitation")),
         "latest_line": _line(row.get("latest_ephemeral")),
+        "stranded": _stranded(row.get("stranded")),
     }
 
 
@@ -2803,6 +2906,16 @@ def _this_session(run: Mapping[str, Any], session: str | None) -> bool:
     return key is None or (session is not None and key == session)
 
 
+def _waiting_reason(run: Mapping[str, Any]) -> Any:
+    """Why a run of the ``needs_agent`` list waits for this client (SW-10a,
+    spec §12.6): the gateway's ``needs_agent`` reason. An answer older than
+    five minutes reads ``state`` ``stale``, and its reason still says
+    ``answered``, so ``my_work`` keeps offering it as ``run_answered``. A
+    gateway that sends no reason gives the old answer, ``state``."""
+    reason = run.get("needs_agent")
+    return reason if isinstance(reason, str) else run.get("state")
+
+
 def _live_holder(value: Any) -> bool:
     """True when an open run that is not stale holds the task (EA-14a)."""
     return isinstance(value, dict) and value.get("stale") is not True
@@ -2893,7 +3006,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         # that session's, until its lease ended. A run with no session key
         # (a member start, a reopen of a finished run, or a run from before
         # SW-7) waits for any session of the connection.
-        waiting = [r for r in needs if r.get("state") in WAITING_REASONS
+        waiting = [r for r in needs if _waiting_reason(r) in WAITING_REASONS
                    and (_this_session(r, ctx.session)
                         or r.get("lease_expired") is True)]
         # P1: only a run whose session went quiet. A live run of a sibling
@@ -2914,7 +3027,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
 
     listed: list[tuple[str, str, str | None]] = []
     seen: set[str] = set()
-    for run, reason in [*((r, WAITING_REASONS[r["state"]]) for r in waiting),
+    for run, reason in [*((r, WAITING_REASONS[_waiting_reason(r)]) for r in waiting),
                         *((r, REASON_HELD) for r in holding)]:
         task_id = _id(run.get("task_id"))
         if task_id is None or task_id in seen:
@@ -3155,14 +3268,59 @@ UPDATED_TASK_KEYS: tuple[str, ...] = tuple(k for k in GET_TASK_KEYS if k != "ass
 CREATE_BODY_KEYS: tuple[str, ...] = (
     "project_id", "parent_task_id", "type_id", "status_id", "title",
     "description", "tags", "due_at",
+    # MCP-G2: the planning fields of the app, and the first assignees.
+    "importance", "leveraged", "estimate_mins", "start_date", "assignees",
 )
 UPDATE_BODY_KEYS: tuple[str, ...] = (
     "title", "description", "tags", "due_at", "custom_fields",
+    # MCP-G2: the planning fields of the app.
+    "importance", "leveraged", "estimate_mins", "start_date",
 )
 
 #: ``custom_fields`` of ``update_task``: at most this many keys, each one
 #: key-shaped (``field_key``).
 MAX_CUSTOM_FIELD_KEYS = 50
+
+#: WS-55 MCP-G2 (D78). The two ``importance`` values that the app writes:
+#: Important and not Important (``acb_common.priority.importance_for``, the
+#: one source). The priority matrix reads Important as 2 or more. The retired
+#: 0-4 scale is not a value here (H-173). ``tasks.AGENT_IMPORTANCE_VALUES``
+#: is the gateway's copy of the same rule.
+IMPORTANCE_VALUES: tuple[int, ...] = (importance_for(False), importance_for(True))
+#: The largest estimate, the INT limit of ``pm_tasks.estimate_mins``.
+MAX_ESTIMATE_MINS = 2_147_483_647
+#: A start date: a calendar date, as the app's date input sends it.
+_START_DATE_PATTERN = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+
+_IMPORTANCE_INPUT: dict[str, Any] = {
+    "type": "integer", "enum": list(IMPORTANCE_VALUES),
+    "description": "The Important input of the priority matrix. Send 2 to mark the"
+                   " task Important, or 0 for not Important. The due date sets"
+                   " Urgent."}
+_LEVERAGED_INPUT: dict[str, Any] = {
+    "type": "boolean",
+    "description": "The Leveraged input of the priority matrix: true when the"
+                   " task has a large upside."}
+_ESTIMATE_INPUT: dict[str, Any] = {
+    "type": "integer", "minimum": 0, "maximum": MAX_ESTIMATE_MINS,
+    "description": "The estimate, in whole minutes. 0 or more."}
+_START_DATE_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": _START_DATE_PATTERN,
+    "description": "The day that work starts, such as 2026-10-31."}
+
+#: The most assignees in one call (MCP-G2).
+MAX_ASSIGNEES = 50
+#: One assignee of an input: a member address in the shape of
+#: :data:`_EMAIL_RE`, or ``agent:<name>`` with the gateway's agent-name rule
+#: (:data:`_AGENT_NAME_RE`). One shape for each, the shape of the output. The
+#: gateway decides whether an address is an active member who can see the
+#: task.
+_ASSIGNEE_PATTERN = f"^(?:{_EMAIL_RE.pattern}|{_AGENT_PREFIX}{_AGENT_NAME_RE.pattern})$"
+_ASSIGNEES_INPUT: dict[str, Any] = {
+    "type": "array", "maxItems": MAX_ASSIGNEES,
+    "items": {"type": "string", "minLength": 3, "maxLength": 254,
+              "pattern": _ASSIGNEE_PATTERN},
+}
 
 #: A due date: an ISO-8601 date, or a date and a time with an optional zone.
 _DUE_PATTERN = (
@@ -3208,6 +3366,17 @@ _CREATE_INPUT: dict[str, Any] = {
                  "description": "Tag names. get_project lists the tags of the project."
                                 " A new name adds a new tag."},
         "due_at": _DUE_INPUT,
+        "importance": _IMPORTANCE_INPUT,
+        "leveraged": _LEVERAGED_INPUT,
+        "estimate_mins": _ESTIMATE_INPUT,
+        "start_date": _START_DATE_INPUT,
+        "assignees": {
+            **_ASSIGNEES_INPUT,
+            "description": "The first assignees: member addresses, or agent:<name>."
+                           " Each person must already open the task through a"
+                           " project grant or an admin read right. Each one gets"
+                           " one notification"
+                           " that names this agent."},
         "idempotency_key": {
             "type": "string", "pattern": idempotency.KEY_PATTERN,
             "description": "8 to 128 letters, digits and . _ : -. The same key"
@@ -3240,6 +3409,15 @@ _UPDATE_INPUT: dict[str, Any] = {
             "type": "object",
             "description": "A map from a field_key of get_project to its new value."
                            " null clears that field. The other fields stay."},
+        "importance": _IMPORTANCE_INPUT,
+        "leveraged": _LEVERAGED_INPUT,
+        "estimate_mins": _ESTIMATE_INPUT,
+        "start_date": _START_DATE_INPUT,
+        "parent_task_id": {
+            "type": ["string", "null"], "pattern": _UUID_PATTERN,
+            "description": "Moves the task under this parent task, in the same"
+                           " project. null moves it to the top level. Send it in a"
+                           " call of its own."},
     },
     "required": ["task_id", "expected_version"],
     "additionalProperties": False,
@@ -3323,11 +3501,50 @@ async def _create(ctx: Context, args: dict[str, Any],
         await _check_type(ctx, project, str(args["type_id"]))
     payload = {name: args[name] for name in CREATE_BODY_KEYS if name in args}
     sent.post = True
+    # MCP-G2: the gateway assigns in the create's own transaction, so a
+    # refused assignee leaves no task, and the key goes free.
     _, row = await _write(ctx, "POST", CREATE_ROUTE, TEXT_PROJECT_NOT_FOUND,
-                          json_body=payload)
+                          json_body=payload,
+                          coded=_assignee_codes(args.get("assignees") or ()))
     if not isinstance(row, dict) or _id(row.get("id")) is None:
         raise ToolError(TEXT_BUSY)
     return row, statuses
+
+
+def _refuse_bad_start_date(args: Mapping[str, Any]) -> None:
+    """Refuse a ``start_date`` that names no real day, such as 2026-02-30
+    (MCP-G2). The input schema checks only the shape. Postgres refuses such a
+    date, and the route would answer 500. Each tool calls this before any
+    claim and any request, as it calls :func:`_refuse_nul`."""
+    value = args.get("start_date")
+    if value is None:
+        return
+    try:
+        date.fromisoformat(str(value))
+    except ValueError:
+        raise ToolError(TEXT_START_DATE) from None
+
+
+def _assignee_codes(sent: Any) -> dict[str, str | Callable[[Mapping[str, Any]], str]]:
+    """The ``coded`` map of a write that sends assignees (MCP-G2).
+
+    The gateway's 422 :data:`ASSIGNEE_REFUSED_CODE` lists the refused
+    entries. The text names only the entries of *sent*, the caller's own
+    list, so no text of the gateway reaches the agent. The text is the same
+    for a made-up address, a member of another organization and a member
+    with no grant, so it does not say whether a hidden member exists. The
+    422 :data:`ASSIGNEE_PERSONAL_CODE` gets its fixed text (fix round 1).
+    """
+    mine = {str(s).strip().lower() for s in sent if isinstance(s, str)}
+
+    def text(detail: Mapping[str, Any]) -> str:
+        named = detail.get("assignees")
+        refused = sorted(mine & {str(n).lower() for n in named if isinstance(n, str)}
+                         ) if isinstance(named, list) else []
+        names = ", ".join(refused) if refused else "one or more of these people"
+        return TEXT_ASSIGNEES_REFUSED.format(names=names)
+
+    return {ASSIGNEE_REFUSED_CODE: text, ASSIGNEE_PERSONAL_CODE: TEXT_ASSIGNEES_PERSONAL}
 
 
 async def _created(ctx: Context, row: dict[str, Any],
@@ -3491,6 +3708,7 @@ async def _create_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     NUL in a body input is refused first, before the claim (fix round 1).
     """
     _refuse_nul(args, CREATE_BODY_KEYS)
+    _refuse_bad_start_date(args)
     key = args.get("idempotency_key")
     sent = _Sent()
     if key is None:
@@ -3513,10 +3731,17 @@ CREATE_TASK = Tool(
         " type ids and the tag names of the project. Send parent_task_id to"
         " make a subtask of a task in the same project. Leave status_id out to"
         " use the default status. A new task cannot start in a done or"
-        " cancelled status. The new task has no assignee. Send an"
-        " idempotency_key when you may retry: the same key gives back the first"
-        " task with created false, and makes no second task. Returns the task"
-        " with its version." + _UNTRUSTED_NOTE
+        " cancelled status. importance is 2 for Important or 0 for not"
+        " Important. estimate_mins is whole minutes, 0 or more. start_date is a"
+        " date such as 2026-10-31. assignees are member addresses or"
+        " agent:<name>. Each person must already open the task through a project"
+        " grant or an admin read right: an agent cannot show a task to anybody"
+        " new. Each person gets"
+        " one notification that names this agent. When one person is refused,"
+        " no task is made. A person assigns anybody else in the app. Send"
+        " an idempotency_key when you may retry: the same key gives back the"
+        " first task with created false, and makes no second task. Returns the"
+        " task with its version." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_CREATE_INPUT,
@@ -3542,30 +3767,36 @@ def _custom_fields_input(value: Any) -> dict[str, Any]:
     return value
 
 
-async def _update_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
-    """PATCH the named fields only, with ``If-Match`` (§9.2).
+#: WS-55 MCP-G2. The move of a task, the route of the ``parent_task_id`` of
+#: ``update_task``. The PATCH refuses a ``parent_task_id``, so the edge sends
+#: a re-parent here, with the body ``{parent_task_id}`` and ``If-Match``.
+MOVE_ROUTE = "/projects/tasks/{task_id}/move"
 
-    The body holds only the keys of :data:`UPDATE_BODY_KEYS` that the call
-    sent. It never holds a status, a project, a parent, an assignee or an
-    archive key, and the PATCH has no query. A NUL in a field, also in a
-    string value of ``custom_fields``, is refused first (EA-6c fix round 1).
+#: The fixed text of each refusal of a move, by the gateway's status and
+#: ``detail`` (the ``details`` map of :func:`_write`). The edge reads the
+#: detail to choose a text, and never sends it. The R8 tests of
+#: ``test_mcp_edge_assignees.py`` meet each one through the real gateway, so
+#: a changed detail fails them.
+_MOVE_DETAILS: Mapping[tuple[int, str], str] = {
+    (422, "The parent task is in another project."): TEXT_MOVE_OTHER_PROJECT,
+    (422, "A task cannot be its own parent."): TEXT_MOVE_OWN_PARENT,
+    (422, "That move would put the task inside its own subtree."): TEXT_MOVE_CYCLE,
+    (422, "Task hierarchy is deeper than the supported maximum."): TEXT_MOVE_TOO_DEEP,
+    (422, "An Epic cannot have a parent task; it is the top level."): TEXT_MOVE_EPIC,
+}
+
+
+async def _updated(ctx: Context, after: Any) -> dict[str, Any]:
+    """The result of a PATCH or a move that landed: the task as it is now,
+    without ``assignees``.
+
+    Fix round 1 of EA-6d: the version after the links of the new text
+    (:func:`_reread`). Fix round 2: each read after the write is bounded, and
+    the write's own answer stands in for it.
     """
-    _refuse_nul(args, UPDATE_BODY_KEYS)
-    payload = {name: args[name] for name in UPDATE_BODY_KEYS if name in args}
-    if not payload:
-        raise ToolError(TEXT_UPDATE_EMPTY)
-    if "custom_fields" in payload:
-        payload["custom_fields"] = _custom_fields_input(payload["custom_fields"])
-    _, after = await _write(
-        ctx, "PATCH", TASK_ROUTE, TEXT_TASK_NOT_FOUND,
-        path_params={"task_id": str(args["task_id"])}, json_body=payload,
-        if_match=str(args["expected_version"]))
     if not isinstance(after, dict):
         raise ToolError(TEXT_BUSY)
     written: dict[str, Any] = after
-    # Fix round 1: the version after the links of the new text (`_reread`).
-    # Fix round 2: each read after the PATCH is bounded, and the PATCH answer
-    # stands in for it.
     current = await _after_write(lambda: _reread(ctx, written), written)
     no_names: dict[str, str] = {}
     names = await _after_write(
@@ -3574,18 +3805,76 @@ async def _update_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     return {"task": {k: task[k] for k in UPDATED_TASK_KEYS}}
 
 
+async def _move_in_project(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """Move a task under another parent of its project, or to the top level
+    (MCP-G2).
+
+    The edge reads a new parent first, so a parent that the member cannot see
+    gets "Parent task not found." Then one POST of :data:`MOVE_ROUTE` with
+    the body ``{parent_task_id}`` and ``If-Match``. The gateway refuses a
+    parent of another project for a signed agent, and its cycle and epic
+    rules hold. Each refusal maps to a text of :data:`_MOVE_DETAILS`.
+    """
+    parent = args["parent_task_id"]
+    if parent is not None:
+        await _get(ctx, TASK_ROUTE, TEXT_PARENT_NOT_FOUND,
+                   path_params={"task_id": str(parent)})
+    _, after = await _write(
+        ctx, "POST", MOVE_ROUTE, TEXT_TASK_NOT_FOUND,
+        path_params={"task_id": str(args["task_id"])},
+        json_body={"parent_task_id": parent},
+        if_match=str(args["expected_version"]), details=_MOVE_DETAILS)
+    return await _updated(ctx, after)
+
+
+async def _update_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """PATCH the named fields only, with ``If-Match`` (§9.2).
+
+    The body holds only the keys of :data:`UPDATE_BODY_KEYS` that the call
+    sent. It never holds a status, a project, a parent, an assignee or an
+    archive key, and the PATCH has no query. A NUL in a field, also in a
+    string value of ``custom_fields``, is refused first (EA-6c fix round 1).
+
+    MCP-G2: ``parent_task_id`` is a move inside the project
+    (:func:`_move_in_project`), never a PATCH. It goes in a call of its own,
+    so one call is one write and one transaction.
+    """
+    _refuse_nul(args, UPDATE_BODY_KEYS)
+    _refuse_bad_start_date(args)
+    payload = {name: args[name] for name in UPDATE_BODY_KEYS if name in args}
+    if "parent_task_id" in args:
+        if payload:
+            raise ToolError(TEXT_MOVE_ALONE)
+        return await _move_in_project(ctx, args)
+    if not payload:
+        raise ToolError(TEXT_UPDATE_EMPTY)
+    if "custom_fields" in payload:
+        payload["custom_fields"] = _custom_fields_input(payload["custom_fields"])
+    _, after = await _write(
+        ctx, "PATCH", TASK_ROUTE, TEXT_TASK_NOT_FOUND,
+        path_params={"task_id": str(args["task_id"])}, json_body=payload,
+        if_match=str(args["expected_version"]))
+    return await _updated(ctx, after)
+
+
 UPDATE_TASK = Tool(
     name="update_task",
     title="Update a task",
     description=(
-        "Change the title, description, tags, due date or custom fields of one"
-        " task this member can see. Send only the fields to change. Send the"
-        " version that get_task returned as expected_version. When the task"
-        " changed after that read, the tool refuses, and you read the task"
-        " again. tags replaces the whole tag list. custom_fields maps a"
-        " field_key from get_project to its new value, and null clears that"
-        " field. This tool cannot change the status (use set_task_status), the"
-        " project, the parent or the assignees. Returns the task with its new"
+        "Change the title, description, tags, due date, custom fields,"
+        " importance, leveraged flag, estimate or start date of one task this"
+        " member can see. Send only the fields to change. Send the version that"
+        " get_task returned as expected_version. When the task changed after"
+        " that read, the tool refuses, and you read the task again. tags"
+        " replaces the whole tag list. custom_fields maps a field_key from"
+        " get_project to its new value, and null clears that field. importance"
+        " is 2 for Important or 0 for not Important. estimate_mins is whole"
+        " minutes, 0 or more. start_date is a date such as 2026-10-31."
+        " parent_task_id moves the task under another task of the same project,"
+        " and null moves it to the top level. Send parent_task_id in a call of"
+        " its own. A move to another project stays a step in the Metorite app."
+        " This tool cannot change the status (use set_task_status), the project"
+        " or the assignees (use set_assignees). Returns the task with its new"
         " version." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
@@ -3593,11 +3882,13 @@ UPDATE_TASK = Tool(
     output_schema=_UPDATE_OUTPUT,
     route=TASK_ROUTE,
     params={"task_id": "task_id", "expected_version": "If-Match",
-            **{name: name for name in UPDATE_BODY_KEYS}},
+            **{name: name for name in UPDATE_BODY_KEYS},
+            "parent_task_id": "parent_task_id"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_update_task,
     routes=(TASK_ROUTE, STATUSES_ROUTE),
     method="PATCH",
+    alt_writes=(("POST", MOVE_ROUTE),),
     annotations=dict(WRITE_ANNOTATIONS),
 )
 
@@ -3859,6 +4150,104 @@ CLAIM_TASK = Tool(
     routes=(TASK_ROUTE, STATUSES_ROUTE),
     method="POST",
     annotations=dict(WRITE_ANNOTATIONS),
+)
+
+
+# ── set_assignees (MCP-G2, §9.2) ────────────────────────────────────────────
+
+ASSIGNEES_ROUTE = "/projects/tasks/{task_id}/assignees"
+
+#: The keys of the result of ``set_assignees`` (§9.2).
+SET_ASSIGNEES_KEYS: tuple[str, ...] = ("id", "assignees", "version")
+
+_SET_ASSIGNEES_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "The task. An id from list_tasks or get_task."},
+        "assignees": {
+            **_ASSIGNEES_INPUT,
+            "description": "The whole new set: member addresses, or agent:<name>."
+                           " It replaces the set. An empty list removes every"
+                           " assignee."},
+        "expected_version": {
+            "type": "string", "pattern": _VERSION_PATTERN,
+            "description": "The version that get_task returned for this task."},
+    },
+    "required": ["task_id", "assignees", "expected_version"],
+    "additionalProperties": False,
+}
+
+_SET_ASSIGNEES_OUTPUT: dict[str, Any] = _object({
+    "id": {"type": "string"}, "assignees": _ASSIGNEES_SCHEMA,
+    "version": _NULLABLE_STRING,
+})
+
+
+async def _set_assignees(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """PUT the whole assignee set with ``If-Match`` (MCP-G2, §9.2).
+
+    The gateway's ``set_assignees`` replaces the set in one transaction. For
+    a signed agent it refuses a new person who cannot already open the task
+    through a project grant or an admin read right, and the edge names the
+    refused entries of the call's
+    own list (:func:`_assignee_codes`). The personal-project guard has its
+    own code. Each NEW person gets one notification, with ``via <client>``.
+    The version rule is strict equality (fix round 1): any change after the
+    read, a comment too, gives 412. Then the edge reads the task again for
+    the version and the set. A failed re-read gives the set that the PUT
+    answered, and a null version.
+
+    It needs no ``_refuse_nul``: each input must match a pattern.
+    """
+    task_id = str(args["task_id"])
+    sent = list(args["assignees"])
+    _, after = await _write(
+        ctx, "PUT", ASSIGNEES_ROUTE, TEXT_TASK_NOT_FOUND,
+        path_params={"task_id": task_id}, json_body={"assignees": sent},
+        if_match=str(args["expected_version"]), coded=_assignee_codes(sent))
+    if not isinstance(after, dict):
+        raise ToolError(TEXT_BUSY)
+    written: dict[str, Any] = {"id": task_id, "assignees": after.get("assignees")}
+    current = await _after_write(lambda: _reread(ctx, written), written)
+    return {
+        "id": task_id,
+        "assignees": _assignees(current.get("assignees")),
+        "version": _str_or_none(current.get("updated_at")),
+    }
+
+
+SET_ASSIGNEES = Tool(
+    name="set_assignees",
+    title="Set the assignees of a task",
+    description=(
+        "Replace the whole assignee set of one task this member can see. Send"
+        " every assignee that must stay, and leave out each one to remove. An"
+        " empty list removes every assignee. An assignee is a member address or"
+        " agent:<name>. Each new person must already open the task through a"
+        " project grant or an admin read right: an agent cannot show a task to"
+        " anybody new."
+        " A person assigns anybody else in the Metorite app. When one entry is"
+        " refused, nothing changes, and the text names the refused entries."
+        " Each new person gets one notification in Metorite that names this"
+        " agent. A task in a personal project takes only its owner. Send the"
+        " version that get_task returned as expected_version. Any change to the"
+        " task after your read, a comment too, refuses the call. Read it again"
+        " and resend the full set. Removing a person does not stop an agent run"
+        " that holds the task. To give back your own task, call release_task."
+        " Returns the task id, its assignees and its new version." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_SET_ASSIGNEES_INPUT,
+    output_schema=_SET_ASSIGNEES_OUTPUT,
+    route=ASSIGNEES_ROUTE,
+    params={"task_id": "task_id", "assignees": "assignees",
+            "expected_version": "If-Match"},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_set_assignees,
+    routes=(TASK_ROUTE,),
+    method="PUT",
+    annotations=dict(ASSIGN_ANNOTATIONS),
 )
 
 
@@ -4486,9 +4875,12 @@ LIST_AGENT_RUNS = Tool(
         " needs the full history. To find your next work, call my_work. With"
         " needs_agent true, it lists the runs that wait for an agent: a run that a"
         " member queued for an agent (state queued), a run whose question a"
-        " member answered (state answered), and a run that a member asked to"
-        " stop (state stopping). For a queued or answered run, read it with"
-        " get_agent_run and go on with the work. For a stopping run, stop the"
+        " member answered (state answered, or stale after five minutes), a run"
+        " that a member asked to stop (state stopping), and a run that went"
+        " quiet past its lease after one nudge to its member (stranded is set,"
+        " and its note says why). For a queued, answered or stranded run, read"
+        " it with get_agent_run and go on with the work, or give the task back"
+        " with release_task. For a stopping run, stop the"
         " work and call finish_agent_run with a summary of what you did. Post no"
         " activity before the finish. Filter by status or task."
         " Send nextCursor back as cursor to read the next page." + _UNTRUSTED_NOTE
@@ -4634,7 +5026,8 @@ RELEASE_TASK = Tool(
 #: reads of EA-15 (``get_task_context`` and ``my_work``) follow the seven
 #: reads of EA-3. The write
 #: tools come after the reads: the two of EA-6a, then the two of EA-6d, then
-#: ``add_comment`` of EA-6c and ``claim_task`` of EA-6b. The six agent-run
+#: ``add_comment`` of EA-6c and ``claim_task`` of EA-6b, then
+#: ``set_assignees`` of MCP-G2. The six agent-run
 #: tools of EA-12b come last, then ``request_task_archive`` of EA-6g, which
 #: shows only while the runs flag is on too. ``delete_task`` of EA-6h is last.
 #: It shows only while the member's switch is on (:func:`listed_for`).
@@ -4642,7 +5035,7 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK,
     SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
-    ADD_COMMENT, CLAIM_TASK,
+    ADD_COMMENT, CLAIM_TASK, SET_ASSIGNEES,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RELEASE_TASK,
     DELETE_TASK,
@@ -4750,6 +5143,10 @@ __all__ = [
     "ANCESTOR_KEYS",
     "ARCHIVE_REQUEST_ROUTE",
     "ASK_ON_TASK",
+    "ASSIGNEES_ROUTE",
+    "ASSIGNEE_PERSONAL_CODE",
+    "ASSIGNEE_REFUSED_CODE",
+    "ASSIGN_ANNOTATIONS",
     "AUTHOR_AGENT",
     "AUTHOR_PERSON",
     "CLAIM_TASK",
@@ -4777,6 +5174,7 @@ __all__ = [
     "GET_TASK_KEYS",
     "GET_TASK_TIMELINE",
     "HELD_STATE",
+    "IMPORTANCE_VALUES",
     "LINK_KEYS",
     "LIST_AGENT_RUNS",
     "LIST_PROJECTS",
@@ -4785,10 +5183,13 @@ __all__ = [
     "LONG_POLL_REQUEST_MARGIN_S",
     "LONG_POLL_TOOL_MARGIN_S",
     "MAX_ANCESTORS",
+    "MAX_ASSIGNEES",
     "MAX_COMMENT_CHARS",
     "MAX_DELETE_IDS",
+    "MAX_ESTIMATE_MINS",
     "MAX_STATUS_READS",
     "MAX_WAIT_SECONDS",
+    "MOVE_ROUTE",
     "MY_WORK",
     "MY_WORK_CATEGORIES",
     "MY_WORK_LIMIT_DEFAULT",
@@ -4810,6 +5211,8 @@ __all__ = [
     "SEARCH_HIT_KEYS",
     "SEARCH_TASKS",
     "SESSION_TEXTS",
+    "SET_ASSIGNEES",
+    "SET_ASSIGNEES_KEYS",
     "SET_STATUS_KEYS",
     "SET_TASK_STATUS",
     "START_AGENT_RUN",
@@ -4819,6 +5222,8 @@ __all__ = [
     "SUBTASK_WORDS",
     "TAG_KEYS",
     "TEXT_ARCHIVE_CONFLICT",
+    "TEXT_ASSIGNEES_PERSONAL",
+    "TEXT_ASSIGNEES_REFUSED",
     "TEXT_BAD_CURSOR",
     "TEXT_BAD_REQUEST",
     "TEXT_BUSY",
@@ -4836,6 +5241,12 @@ __all__ = [
     "TEXT_KEY_RUNNING",
     "TEXT_KEY_UNKNOWN",
     "TEXT_KEY_USED",
+    "TEXT_MOVE_ALONE",
+    "TEXT_MOVE_CYCLE",
+    "TEXT_MOVE_EPIC",
+    "TEXT_MOVE_OTHER_PROJECT",
+    "TEXT_MOVE_OWN_PARENT",
+    "TEXT_MOVE_TOO_DEEP",
     "TEXT_PARENT_COMMENT_NOT_FOUND",
     "TEXT_PARENT_COMMENT_OTHER_TASK",
     "TEXT_PARENT_NOT_A_COMMENT",
@@ -4851,6 +5262,7 @@ __all__ = [
     "TEXT_RUN_CONFLICT",
     "TEXT_RUN_NOT_FOUND",
     "TEXT_STALE",
+    "TEXT_START_DATE",
     "TEXT_SUBTASK_NOT_BELOW",
     "TEXT_TASK_HELD",
     "TEXT_TASK_HELD_SAME_CLIENT",

@@ -25,6 +25,7 @@ import FileUploadButton from "@/components/FileUploadButton";
 import { uploadNote } from "@/lib/chatUpload";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import SuggestionPills from "@/components/SuggestionPills";
+import InterviewOffer from "@/components/profile/InterviewOffer";
 import { starterPills } from "@/lib/starterPills";
 import { chatFirstOn } from "@/lib/shell/chatFlag";
 import { type FeedAnswer, feedKey, fetchFeed } from "@/lib/shell/feed";
@@ -2278,6 +2279,8 @@ export default function AgentChat({
               {agentDescription && currentAgentName === agentName && (
                 <div className="text-muted-foreground/60 text-xs max-w-sm leading-relaxed">{agentDescription}</div>
               )}
+              {/* PZ-27: the "Get to know me" offer. It shows only when its own rule holds. */}
+              <InterviewOffer isOrchestrator={isOrchestrator} messageCount={messages.length} isRoom={isRoom} />
               {/* CF-4: the feed's headlines with the flag on, else the fixed list (`starters`). */}
               <SuggestionPills
                 suggestions={starters}

@@ -103,6 +103,11 @@ _GET_BY_ID_SQL = (
     "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid)"
 )
 
+#: The lock of one row by id, at the strength of the UPDATE that the caller
+#: runs next (WS-61 KC-3h). Any status, so a disconnect and a sync run lock the
+#: same row. The lock order of the Knowledge rows is in ``kb_sync/engine.py``.
+_LOCK_BY_ID_SQL = _GET_BY_ID_SQL + " FOR NO KEY UPDATE"
+
 _BLOB_SQL = (
     "SELECT credentials_encrypted FROM integration_connections "
     f"WHERE {_KEY_WHERE} AND status <> 'disconnected'"
@@ -539,6 +544,21 @@ async def get_by_id(db: Any, org: str, connection_id: str) -> Connection | None:
     except ValueError:
         return None
     row = (await db.execute(text(_GET_BY_ID_SQL), params)).first()
+    return _connection(row) if row is not None else None
+
+
+async def lock_by_id(db: Any, org: str, connection_id: str) -> Connection | None:
+    """Like :func:`get_by_id`, and it locks the row ``FOR NO KEY UPDATE``.
+
+    WS-61 KC-3h. A Knowledge transaction that writes the connection row and
+    a source row takes this lock FIRST, then the source row. The order is in
+    the module doc of ``kb_sync/engine.py``. The row is locked in any status.
+    """
+    try:
+        params = {"id": str(uuid.UUID(str(connection_id))), "org": str(uuid.UUID(str(org)))}
+    except ValueError:
+        return None
+    row = (await db.execute(text(_LOCK_BY_ID_SQL), params)).first()
     return _connection(row) if row is not None else None
 
 
