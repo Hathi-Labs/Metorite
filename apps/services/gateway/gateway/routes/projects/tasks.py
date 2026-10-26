@@ -519,6 +519,31 @@ async def _with_agent_state(db: Any, row: dict) -> dict:
     return row
 
 
+#: MCP-G5. The deepest level `include_descendants` reaches. A deeper task is
+#: left out, and a corrupt cycle ends at this bound.
+DESCENDANTS_MAX_DEPTH = 10
+
+#: MCP-G5. The tasks under ``:parent``, each once, with its ``depth`` (1 = a
+#: direct child). ⚠️ The walk PASSES ONLY THROUGH A TASK THE CALLER CAN SEE:
+#: both arms carry the visibility clause, so a hidden child and everything
+#: under it are absent, and the answer never shows that a hidden node exists.
+#: (`cascade._SUBTREE_SQL` walks through hidden rows on purpose, for a move.)
+#: `min(depth)` gives each task one row.
+DESCENDANTS_CTE = """WITH RECURSIVE walk AS (
+    SELECT c.id, 1 AS depth
+      FROM pm_tasks c
+     WHERE c.parent_task_id = CAST(:parent AS uuid)
+       AND c.id <> CAST(:parent AS uuid)
+       AND {visible}
+    UNION ALL
+    SELECT c.id, w.depth + 1
+      FROM pm_tasks c JOIN walk w ON c.parent_task_id = w.id
+     WHERE w.depth < :max_depth
+       AND c.id <> CAST(:parent AS uuid)
+       AND {visible}
+), sub AS (SELECT id, min(depth) AS depth FROM walk GROUP BY id) """
+
+
 @router.get("/tasks")
 async def list_tasks(
     user: UserContext = Depends(get_current_user),
@@ -572,6 +597,8 @@ async def list_tasks(
     # ended does not hold. It is NOT in `build_task_filters`, so a saved view
     # cannot pin it: who holds a task changes by the hour.
     unheld: bool = False,
+    # MCP-G5. With `parent_task_id`: the whole subtree, not only the children.
+    include_descendants: bool = False,
 ) -> ListResponse:
     """The one task-list endpoint every surface reads through.
 
@@ -596,10 +623,38 @@ async def list_tasks(
             detail=f"Unknown sort direction '{direction}'. One of: asc, desc.",
         )
 
+    if include_descendants and not parent_task_id:
+        raise HTTPException(
+            status_code=422,
+            detail="include_descendants needs parent_task_id.",
+        )
+    if parent_task_id:
+        # A malformed id is a 422, not a uuid cast error in SQL (a 500).
+        try:
+            parent_task_id = str(uuid.UUID(parent_task_id))
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail="parent_task_id is not a valid id.",
+            ) from None
+
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         clauses: list[str] = [task_visibility_clause(vis)]
         params: dict[str, Any] = dict(vis.params)
+        walk_cte = ""
+        walk_join = ""
+        if include_descendants:
+            # MCP-G5. The walk needs a visible root. Without this check the
+            # first arm would list the visible children of a hidden root. Direct
+            # mode (`parent_task_id` alone) keeps its old answer: an unseen
+            # parent gives an empty list, as a parent with no children does.
+            await load_visible_task(db, vis, parent_task_id)
+            walk_cte = DESCENDANTS_CTE.format(visible=task_visibility_clause(vis, "c"))
+            walk_join = " JOIN sub ON sub.id = t.id"
+            params["parent"] = parent_task_id
+            params["max_depth"] = DESCENDANTS_MAX_DEPTH
+            # The walk already holds the parent filter, so the builder gets none.
+            parent_task_id = None
 
         if project_id:
             # Seeing the project is required to filter by it, so an unreadable
@@ -642,7 +697,8 @@ async def list_tasks(
 
         where = " WHERE " + " AND ".join(clauses)
         total = (await db.execute(
-            text(f"SELECT count(*) FROM pm_tasks t{where}"), params,
+            text(f"{walk_cte}SELECT count(*) FROM pm_tasks t{walk_join}{where}"),
+            params,
         )).scalar() or 0
         # `column` is an allowlisted template with `{dir}` slots; the direction
         # is one of OUR two words, never caller text. Every entry ends with the
@@ -661,9 +717,10 @@ async def list_tasks(
             params["view_id"] = view_id
         rows = (await db.execute(
             text(
-                f"SELECT t.*{', vp.position AS view_position' if view_id else ''}"
-                f"  FROM pm_tasks t{join}{where} "
-                f"ORDER BY {column.format(dir=order)} "
+                f"{walk_cte}SELECT t.*{', vp.position AS view_position' if view_id else ''}"
+                f"{', sub.depth AS depth' if walk_join else ''}"
+                f"  FROM pm_tasks t{walk_join}{join}{where} "
+                f"ORDER BY {'sub.depth, ' if walk_join else ''}{column.format(dir=order)} "
                 f"LIMIT :limit OFFSET :offset"
             ),
             {**params, "limit": page.limit, "offset": page.offset},

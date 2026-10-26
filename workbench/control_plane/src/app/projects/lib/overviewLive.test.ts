@@ -204,7 +204,7 @@ describe("R5g rule 3: Filters remembers its state, and storage may fail", () => 
 });
 
 describe("R5g rule 1: the grid leaves no half-empty row", () => {
-  it("names the twelve sections in the order RenderedBody draws them", () => {
+  it("names the thirteen sections in the order RenderedBody draws them", () => {
     expect([...BODY_ORDER].sort()).toEqual(
       [
         "agent_runs",
@@ -215,6 +215,7 @@ describe("R5g rule 1: the grid leaves no half-empty row", () => {
         "load",
         "outlook",
         "pulse",
+        "quality",
         "rebalance",
         "stuck",
         "throughput",

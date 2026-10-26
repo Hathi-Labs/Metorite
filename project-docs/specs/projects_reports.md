@@ -72,8 +72,15 @@ panel by default, and hides it when the scope has no agent run.
 runs the past weeks again 2,000 times and gives the 50% and 85% dates, with
 no estimate. When work arrives as fast as it finishes, "Not converging"
 says the finishes a week that would converge it. "Needs an owner" shows
-first in Open work when it leads. Fix round 1 BUILT 2026-10-26. RA-5, RA-7
-and RA-8 are not built.
+first in Open work when it leads. Fix round 1 BUILT 2026-10-26. RA-7 and
+RA-8 are not built.
+
+**RA-5 BUILT 2026-10-26, not merged** (§6.8 B and F, §8 RA-5). The `quality`
+section shows the agent pull request outcomes, with the merge rate and its
+trend. It shows the tasks reopened after done, for agents and for people. It
+shows the failed runs that got a new run, and the agent pull requests
+with failing checks. Overview shows the panel by default. Overview hides it
+when the scope has no agent pull request, no reopen and no failed run.
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -374,7 +381,9 @@ next to each status, as `classify` already does.
 | **Success rate** | The completed runs divided by the completed, failed and abandoned runs of the window. A stop, a release and a run closed by Metorite stay out of both sides, because a person chose the stop, a release gives the task back with no outcome, and a server close says nothing of the agent's work. With no such run, there is no rate. The trend compares the 14 days before. No text calls 100% the goal. | `analytics_agent_runs.py` `success_rate` (RA-4) |
 | **Run size** | The agent time of a completed run of the window, in one of four sizes: under 15 minutes, under 1 hour, under 4 hours, and 4 hours or more. "Agent time" is the §5 row above, for one run. A run with no agent time has no size, and the section counts it. | `analytics_agent_runs.py` `size_bucket` and `size_bucket_sql` (RA-4). The agent time is `analytics_agents.run_time_joins_sql`. |
 | **Long run** | A completed run of 4 hours of agent time or more. The panel flags it as "maybe a poorly specified task", with the count, and names the longest five. | `analytics_agent_runs.py` `is_long_run` and `long_line` (RA-4) |
-| **Rework** | A task that went back from done to an open status, or a failed run followed by a new run on the same task | RA-5, not built |
+| **Agent PR outcome** | One of three states of a pull request on a task that an agent worked. Merged and closed with no merge are the two outcomes of the last 14 days, counted back from now. Open means a state of `open` or `draft`, on an open task, now. The merge rate and its trend are the §5 row "Agent PR merge rate", read from the same query. So the panel and the tile show one rate. | `analytics_quality.py` `quality_body`, which runs `analytics_agents.merge_sql` (RA-5) |
+| **Rework** | Two kinds, over the last 14 days and the 14 days before. **Reopened**: a status move from a done status to a status that is not done and not cancelled. A move to cancelled is a relabel, and it is no rework. "Tasks reopened" counts each task once. A task belongs to the group of the finish that its latest reopen in the window undid. The groups are Agents (agent-finished or agent-assisted) and People, by the labels of RA-1. Never one person. **Reopen rate**: a cohort. It takes the finishes of the window, by group. It counts the share that a later reopen undid, at any time up to now. A reopen undoes a finish when it comes after the finish and before the next finish of the task. One finish counts once, so the rate never passes 100%. A recent finish has had less time to be reopened, so the newest window reads low. The 14 days before use the same rule. **Retried after failure**: a run that ended `failed`, and a later run on the same task. The later run is created after the failed run ended. While `agent_runs_enabled` is off, no run is read. | `analytics_quality.py` `is_reopen_move`, `finish_undone`, `reopened_tasks`, `reopened_sql`, `is_retried` and `retried_sql` (RA-5) |
+| **CI red** | An open or draft pull request on an agent task, whose `checks_state` is `failing` now. The panel counts them and names five. The oldest comes first, by the time the task linked the pull request. **Merged while red**: an agent pull request that merged in the window. Its `checks_state` is `failing`, read at or before `merged_at`. A read after the merge does not count. The checks write does not look at the state of the pull request (`github_sync.py` `_CHECKS_WRITE_SQL` and `_HEAD_HELD_SQL`). So a late check can rewrite the state after the merge. The count can miss a pull request, and it never adds one. A new head resets the state to `pending`. | `analytics_quality.py` `failing_prs_sql`, `merged_red` and `merged_red_sql` (RA-5) |
 | **Forecast by count** | 2,000 runs play the history weeks again. Each simulated week is one past week, taken at random. Its finished tasks come off the open count, and its new tasks go back on. The 50% date is the week by which half the runs empty the open count. The 85% date is the week by which 85% of them do. Each date is today plus whole weeks. The same seed gives the same dates. The seed is the scope and the last week of the history. | `analytics_forecast.py` `count_forecast`, `simulate_weeks`, `percentile_weeks` and `forecast_seed` (RA-6). The weeks are `analytics.velocity_sql`, the spine of Throughput. |
 | **Not converging** | One of two things gives no date. In the first, new work arrives, and it arrives at least as fast as work finishes. That is the rule of 2026-09-17. The panel then gives the finished tasks a week that would converge it: the new tasks of a week, plus the open count divided by 52, rounded up to one decimal. In the second, fewer than 85% of the runs empty the open count within 52 weeks. The panel then says that the 85% date is more than 52 weeks away. It says that a steadier flow of finished tasks, or smaller tasks, brings that date closer. It names no rate, because an 85% test has no mean rate. | `analytics_forecast.py` `converge_per_week`, `REASON_ARRIVALS` and `REASON_CAP` (RA-6, fix round 1) |
 | **Not enough history** | Fewer than 3 finished tasks in the history weeks, or fewer than 2 weeks with a finish. The forecast gives no date. It says how many tasks finished, and in how many weeks. A project that grows is "Not converging" before this rule runs. | `analytics_forecast.py` `MIN_FINISHED_FOR_FORECAST` and `MIN_FINISH_WEEKS` (RA-6, fix round 1) |
@@ -2180,11 +2189,31 @@ Fences: `tests/unit/test_projects_report_waiting.py` (hermetic), `tests/unit/tes
 
 Fences: `tests/unit/test_projects_report_agent_runs.py` (hermetic) and `tests/unit/test_projects_report_agent_runs_r8.py` (R8), and in the client `lib/agentRunsReport.test.ts` and `components/agentRunsPanel.test.ts`.
 
-### RA-5 — Quality · AGENT-SAFE
+### RA-5 — Quality · AGENT-SAFE · BUILT 2026-10-26, not merged
 
 **What:** agent PR outcomes from `pm_task_refs.state`, rework (§6.8 F) and CI red on agent PRs.
 
 **Done when:** the merge rate shows a trend, with no 100% target in its text.
+
+**Built.** The report section `quality` lives in `routes/projects/analytics_quality.py`. It joins rules that exist, and §5 holds each new word.
+
+1. **Agent PR outcomes.** The section runs RA-2's `merge_sql`, `merge_rate` and `merge_trend`, as they are. So the merged count, the closed count, the rate and the trend equal the KPI tile for the same scope. The R8 suite pins that. It adds the open and draft agent pull requests on open tasks. `analytics_agents.PR_CLOSED_AT_SQL` is the close time of RA-2, under a public name.
+2. **The window.** The last 14 days counted back from now, and the 14 days before. These are the bounds of `merge_sql`, and not 14 UTC calendar days. The tile counts back from now, and the two must agree. Every count of the section uses the same two bounds. The section reads its own window and never the report period. It refuses a subject, as `waiting` does.
+3. **Reopened.** `reopened_sql` reads the status moves of `pm_activities`. A reopen is a move from the done category to a category outside `CLOSING_CATEGORIES`. A finish is a move into done from a status that is not done. RA-1's `finish_actor_join` and `finish_label_sql` label each move. RA-2's `actor_group_sql` puts the label in Agents or People.
+4. **Two counts, on purpose (fix round 1).** "Tasks reopened" counts the distinct tasks with a reopen in the window. Each task takes the group of the finish that its latest reopen undid. The reopen rate is a cohort of the finishes of the window. A finish is undone by a reopen of the same task after it, with no other finish between the two. Any time up to now counts. So the rate never passes 100%. The first version divided reopen moves by finish moves of one window. Three tasks that finished 20 days ago and reopened today read 3 of 1. The cohort reads 0 of 1, and the three tasks show in "Tasks reopened". A task finished twice in the window and reopened once after the first finish gives 1 of 2.
+5. **The newest window reads low.** A recent finish has had less time to be reopened. The `InfoTip` and the §5 row say so. The trend compares the same cohort rule for the 14 days before.
+6. **Retried.** A failed run counts as retried when a later run exists on the same task. The later run has a `created_at` after the `ended_at` of the failed run. The window is the one of that `ended_at`.
+7. **CI red.** The open list is `failing_prs_sql`. Each row opens its task. Each row names the agent and its member (E2), through RA-3's `agent_of` and RA-1's `agent_act_sql`.
+8. **Merged while red: the decision.** The count is in. The stored `checks_state` of a merged pull request is not always the state at the merge. `_CHECKS_WRITE_SQL` in `github_sync.py` matches the head SHA and nothing else. `_HEAD_HELD_SQL` also lets the webhook of a check event pass for a merged reference. So a check that completes after the merge rewrites the state. The count therefore requires `checks_fetched_at <= merged_at`. Then the state was read before the merge, and no later read replaced it. A pull request whose last read came after the merge stays out. The count can miss a pull request, and it never adds one. If the checks write ever looks at the state of the pull request, the guard can go. `test_the_checks_write_has_no_gate_on_the_state_of_the_pull_request` fails then.
+9. **Summary first (E5).** The server writes the sentence. The panel, the email, the download and the chat print it first. No text, no tooltip and no test fixture calls 100% the goal (E4). A pure test scans every copy string of the module for a goal word and for a 100% target. It also runs over a merge rate of 100%.
+10. **§7 rule 1.** The history reads use Throughput's history predicate. The open pull requests use Load's open-work predicate.
+11. **The runs flag.** While `agent_runs_enabled` is off, the retried count reads no run. The failing list reads no run either. It names the agent from the agent acts only. RA-2's test of an agent pull request still sees a run that exists, as the KPI tile does. The pull requests and the reopened tasks do not depend on the flag. While the flag is off, the section is never clear. A failed run cannot show.
+12. **Overview.** The section is on by default. Overview hides the panel when the scope has no agent pull request, no reopen and no failed run. That is RA-3's rule (`quality_seen`). A saved report shows one clear row in its place.
+13. **UI.** Each figure has an `InfoTip` with its rule. Each pull request outcome, and each group, takes an explicit slot of the categorical ramp. Agents and People keep the slots of RA-2. Each failing row opens its task.
+14. **The chat.** A saved report prints the section through `report_render`. The text fences each title, agent name and member name with `data()`.
+15. Live, with no flag. RA-5 adds no table and no migration.
+
+Fences: `tests/unit/test_projects_report_quality.py` (hermetic) and `tests/unit/test_projects_report_quality_r8.py` (R8), and in the client `lib/qualityReport.test.ts` and `components/qualityPanel.test.ts`.
 
 ### RA-6 — The forecast by count · AGENT-SAFE · BUILT 2026-10-25, not merged
 

@@ -35,7 +35,18 @@ import {
   successFigure,
   successTrend,
 } from "@/app/projects/lib/agentRunsReport";
-import type { AgentRunsReport, WaitingReport } from "@/app/projects/lib/api";
+import {
+  failingLines,
+  mergeFigure,
+  mergeTrend,
+  reopenedBefore,
+  reopenedFigure,
+  reopenedRate,
+  reopenedTasks,
+  retriedLine,
+  REWORK_GROUPS,
+} from "@/app/projects/lib/qualityReport";
+import type { AgentRunsReport, QualityReport, WaitingReport } from "@/app/projects/lib/api";
 import {
   type EmailOtpEnv,
   type ResendSender,
@@ -184,6 +195,12 @@ export interface RenderedReport {
      * the long runs are the server's sentences.
      */
     agent_runs?: AgentRunsReport;
+    /**
+     * WS-27bn RA-5. Opt-in. `quality_body`: agent pull request outcomes,
+     * rework and failing checks, over its own 14 days. The summary is the
+     * server's sentence.
+     */
+    quality?: QualityReport;
     /**
      * WS-27bn R3c. Opt-in. `hygiene_body`, read now. A task counts in each
      * kind that it breaks, so the counts do not add up to `open_total`.
@@ -790,6 +807,52 @@ export function reportLayout(
     parts.push({
       head: {
         lead: clear.length ? sectionName("agent_runs") : `${sectionName("agent_runs")}: ${runs.summary}`,
+        strong: true,
+      },
+      items,
+      notes,
+    });
+  }
+
+  const quality = sections.quality;
+  if (quality) {
+    // WS-27bn RA-5. The server's summary first, then the merge rate, the
+    // rework of both groups and the failing pull requests up to `maxRows`.
+    // No colour and no bar: an email renders outside the theme.
+    const items: string[] = [];
+    const notes: string[] = [];
+    const clear = clearNote("quality", quality);
+    if (!clear.length) {
+      const trend = mergeTrend(quality);
+      items.push(
+        `Merge rate ${mergeFigure(quality)}` +
+          (trend ? `, ${trend}` : "") +
+          ` · ${quality.prs.merged} merged · ${quality.prs.closed} closed, not merged · ${quality.prs.open} open now`
+      );
+      for (const g of REWORK_GROUPS) {
+        const r = quality.rework.reopened[g.key];
+        items.push(
+          `Reopened after ${g.noun}: ${reopenedFigure(r)} finishes (${reopenedRate(r)}) · ${reopenedTasks(r)} · ${reopenedBefore(r)}`
+        );
+      }
+      items.push(retriedLine(quality));
+      if (quality.checks.merged_red > 0) {
+        items.push(`Merged while red: ${quality.checks.merged_red}`);
+      }
+      if (quality.checks.failing_total > 0) {
+        items.push(`Checks fail now: ${quality.checks.failing_total}`);
+        const shown = failingLines(quality, (e) => personDisplayName(null, e)).slice(0, maxRows);
+        for (const r of shown) items.push(`  ${r.label} · ${r.detail}`);
+        if (quality.checks.failing_total > shown.length && shown.length > 0) {
+          items.push(`  …and ${quality.checks.failing_total - shown.length} more`);
+        }
+      }
+    }
+    // A clear section says its line once, in the note, as the others do.
+    notes.push(...clear);
+    parts.push({
+      head: {
+        lead: clear.length ? sectionName("quality") : `${sectionName("quality")}: ${quality.summary}`,
         strong: true,
       },
       items,

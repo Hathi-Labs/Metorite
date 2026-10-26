@@ -849,6 +849,10 @@ class TaskModel(BaseModel):
     #: ⚠️ `row_to_dict` FILTERS through this model, so a column added to the
     #: SELECT and not to the model is dropped without a word.
     view_position: float | None = None
+    #: MCP-G5. The depth of the row under the parent that `GET /projects/tasks`
+    #: was asked about with `include_descendants` (1 = a direct child). A JOIN
+    #: PRODUCT, like `view_position`: `None` on every other read.
+    depth: int | None = None
     #: WS-55 EA-12a (external_agent_access.md §12.1, EA12-10). The derived
     #: state of the task's newest open agent run: ``queued``, ``working``,
     #: ``awaiting``, ``answered``, ``stopping``, ``stale`` or ``failed``.
