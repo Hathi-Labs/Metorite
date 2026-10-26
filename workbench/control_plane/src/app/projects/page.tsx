@@ -80,6 +80,7 @@ import {
   PERSONAL_ARCHIVED_FOLD_ID,
   PERSONAL_SECTION_HINT,
   PERSONAL_SECTION_LABEL,
+  isPersonalNode,
   lookupRoots,
   moveDestinationRoots,
   personalRoots,
@@ -3929,7 +3930,13 @@ function ProjectsWorkspace() {
       ONE_ASSISTANT
         ? projectsAssistantFacts({
             node: selected
-              ? { id: selected.id, name: selected.name, level: selectedLevel, archived: Boolean(selected.archived_at) }
+              ? {
+                  id: selected.id,
+                  name: selected.name,
+                  level: selectedLevel,
+                  archived: Boolean(selected.archived_at),
+                  personal: isPersonalNode(selected),
+                }
               : null,
             view: mode,
             app,

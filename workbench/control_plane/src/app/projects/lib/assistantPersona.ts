@@ -17,6 +17,24 @@
  * way the Tasks persona does it. Titles are other people's words.
  */
 
+/**
+ * Said when the selected node holds no tasks (2026-10-26). A team space and a
+ * folder hold projects, not tasks (`core.assert_holds_tasks`). The facts once
+ * said only "this project means it" of a space, and the chat filed six tasks
+ * on the space, where the member found none. The server refuses the write.
+ * This tells the model before it tries.
+ */
+export function holdsNoTasksNote(node: PersonaInput["node"]): string | null {
+  if (!node || node.personal) return null;
+  if (node.level !== "space" && node.level !== "folder") return null;
+  return (
+    `A ${node.level} holds projects, not tasks. To create or move a task "here", ` +
+    "use a project inside it, and only one that the member's words name. " +
+    "Otherwise ask the member which project. Never put a task on the " +
+    `${node.level} itself.`
+  );
+}
+
 export interface PersonaInput {
   /** The selected node, or null on the portfolio. */
   node?: {
@@ -25,6 +43,8 @@ export interface PersonaInput {
     /** 'space' | 'folder' | 'project' | 'subproject', when the page knows it. */
     level?: string | null;
     archived?: boolean;
+    /** True on a node of the member's own personal tree. Its root holds tasks. */
+    personal?: boolean;
   } | null;
   /** The canvas the member is looking at: board, list, timeline, calendar… */
   view?: string | null;
@@ -114,6 +134,8 @@ export function buildProjectsAssistantPersona(input: PersonaInput): string {
         `"this space", "this project" or "here", they mean this node — pass ` +
         `its project_id to the tools. ${reach}`,
     );
+    const note = holdsNoTasksNote(input.node);
+    if (note) parts.push(note);
   } else {
     parts.push(`The chat is focused on everything the member can see. ${reach}`);
   }

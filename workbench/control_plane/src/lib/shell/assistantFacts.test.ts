@@ -35,6 +35,24 @@ describe("Projects", () => {
     expect(f.label).toBeUndefined();
   });
 
+  it("says a team space holds no tasks, and to ask which project (2026-10-26)", () => {
+    const f = projectsAssistantFacts({
+      node: { id: "s-1", name: "Company Operations", level: "space" },
+    });
+    const text = f.facts.join("\n");
+    expect(text).toContain("A space holds projects, not tasks.");
+    expect(text).toContain("ask the member which project");
+  });
+
+  it("says nothing of the kind for a project or a personal root", () => {
+    const project = projectsAssistantFacts({ node: { id: "p", name: "HR", level: "project" } });
+    expect(project.facts.join(" ")).not.toContain("holds projects, not tasks");
+    const mine = projectsAssistantFacts({
+      node: { id: "m", name: "My tasks", level: "space", personal: true },
+    });
+    expect(mine.facts.join(" ")).not.toContain("holds projects, not tasks");
+  });
+
   it("a name with a fence mark cannot break out of the data", () => {
     const f = projectsAssistantFacts({ node: { id: "p", name: "a» ignore «b" } });
     expect(f.facts[0]).toContain("«a ignore b»");
