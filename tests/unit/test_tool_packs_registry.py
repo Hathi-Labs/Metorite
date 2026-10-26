@@ -158,6 +158,16 @@ def test_the_email_rules_carry_the_first_hand_reply_rule() -> None:
     assert len(tp.rules_for("email-setup")) < 3000
 
 
+def test_the_setup_rules_read_the_mailboxes_from_the_per_turn_context() -> None:
+    """OA-7a verifier F5: ``list_accounts`` is in the ``email`` pack only, so
+    a turn with ``email-setup`` alone cannot list the mailboxes. Mutation:
+    the rules ask for a call for each mailbox with no source of the list."""
+    rules = tp.rules_for("email-setup")
+    assert "\"The member's mailboxes\" in the per-turn context" in rules
+    assert "list_accounts" not in rules
+    assert "list_accounts" in sf.SKILL_FAMILIES["email"]["tools"]
+
+
 def test_references_words_and_tier() -> None:
     """Mutation: an email link that the pattern misses, a word in upper case,
     or a tier floor on an email pack (§4.2.4 sets none in OA-7)."""
