@@ -67,6 +67,7 @@ from skill_projects.inbox import (
 from skill_projects.nav import open_in_app, show_view
 from skill_projects.reads import (
     analytics_finished,
+    analytics_agents,
     analytics_load,
     analytics_outlook,
     analytics_stuck,
@@ -137,6 +138,7 @@ from skill_projects.writes import (
 __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     # Class A — reads (S1)
     "analytics_finished",
+    "analytics_agents",
     "analytics_load",
     "analytics_outlook",
     "analytics_stuck",

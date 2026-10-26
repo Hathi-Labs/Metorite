@@ -367,6 +367,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/analytics/throughput", "analytics_throughput", "A"),
     Route("GET", "/projects/analytics/finished", "analytics_finished", "A"),
     Route("GET", "/projects/analytics/outlook", "analytics_outlook", "A"),
+    # WS-27bn RA-8 — the agent sections of the Overview, for the chat.
+    Route("GET", "/projects/analytics/agents", "analytics_agents", "A"),
     # S7a — capacity (analytics_capacity.py). The HR tier is the route's.
     Route("GET", "/projects/analytics/capacity", "team_capacity", "A"),
     # S7b — fit and rebalancing (candidates.py, analytics_rebalance.py).
@@ -1061,6 +1063,10 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     ("GET", "/projects/analytics/outlook"): {
         "project_id": "analytics_outlook.project_id",
         "include_subtree": "analytics_outlook",
+    },
+    ("GET", "/projects/analytics/agents"): {
+        "project_id": "analytics_agents.project_id",
+        "include_subtree": "analytics_agents",
     },
     ("GET", "/projects/analytics/capacity"): {
         "project_id": "team_capacity.project_id",

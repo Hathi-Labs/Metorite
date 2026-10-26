@@ -794,7 +794,7 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: 2026-10-25 (WS-55 SW-11a, external_agent_access.md §12.7): needs_attention (a read) joined.
 #: It reads one gateway route, writes nothing and says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
-    "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
+    "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_agents", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
     "ask_questions", "assign", "bulk_update", "calendar", "call_agent",
     "capture_intake", "comment",

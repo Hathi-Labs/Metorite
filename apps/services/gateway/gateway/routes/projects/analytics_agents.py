@@ -811,6 +811,37 @@ def run_time(hours: Iterable[float | None]) -> dict[str, Any]:
     }
 
 
+#: RA-8. What "agents now" says while agent runs are off. Nothing is read
+#: then, so "no agent is working" would claim more than the strip knows.
+NOW_OFF_LINE = "Agent runs are off for this organization, so no run is counted now."
+
+
+def now_line(runs: dict[str, Any]) -> str:
+    """The one plain sentence of "agents now" (§6.8 E5, RA-8), from the
+    ``runs`` figures of :func:`kpis_body` and no second count. It names no
+    person and sets no goal (E1, E4)."""
+    if not runs.get("on"):
+        return NOW_OFF_LINE
+    working = int(runs.get("working") or 0)
+    silent = int(runs.get("silent") or 0)
+    failed = int(runs.get("failed_today") or 0)
+    if working == 0 and silent == 0 and failed == 0:
+        return "No agent run is working now."
+    parts = [
+        "1 agent run is working now." if working == 1
+        else f"{working} agent runs are working now."
+    ]
+    if silent == 1:
+        parts.append("1 run is silent.")
+    elif silent > 1:
+        parts.append(f"{silent} runs are silent.")
+    if failed == 1:
+        parts.append("1 run failed today.")
+    elif failed > 1:
+        parts.append(f"{failed} runs failed today.")
+    return " ".join(parts)
+
+
 async def kpis_body(
     db: Any, *, past_where: str, open_where: str, params: dict[str, Any],
     skip_current_week: bool, allowed: frozenset[str] | None,

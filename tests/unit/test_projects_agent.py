@@ -155,6 +155,7 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "analytics_throughput": [{"project_id": UUID, "weeks": 4}],
     "analytics_finished": [{"weeks": 2, "skip_current_week": True}],
     "analytics_outlook": [{"project_id": UUID}],
+    "analytics_agents": [{"project_id": UUID}],
     "report_list": [{}],
     # WS-64 OP-6d: who a report goes to, and whether its schedule is on.
     "report_recipients": [{"report_id": UUID}],

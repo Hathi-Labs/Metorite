@@ -24,7 +24,7 @@ import re
 from datetime import UTC, date, datetime
 from typing import Any
 
-from acb_common.paging import bounds, page_line
+from acb_common.paging import bounds, page_line, paged
 
 from skill_projects.client import GatewayRefusal, data, get, uuid_of
 from skill_projects.priority import change_view, level_detail, level_fact
@@ -1095,6 +1095,156 @@ async def analytics_outlook(project_id: str = "") -> str:
     if people:
         out.append("  people: " + ", ".join(f"{k} {v}" for k, v in people.items()))
     return "\n".join(out)
+
+
+# ── The agents in one scope — WS-27bn RA-8 ───────────────────────────────────
+
+#: The most figure and row lines that one section of the answer prints. The
+#: Reports app holds the full lists, and ``report_render`` prints them all.
+AGENTS_LINES_MAX = 3
+
+#: The most members that the "works for" line names before it counts the rest.
+AGENTS_MEMBERS_NAMED = 5
+
+
+def _agents_cut(figures: list[str], rows: list[str], total: int, noun: str) -> list[str]:
+    """The figure lines, then the rows, in ``AGENTS_LINES_MAX`` lines. When
+    rows are left out, the last slot says how many (from the server's own
+    total, which may be larger than the rows it named)."""
+    slots = max(AGENTS_LINES_MAX - len(figures), 1)
+    if total <= slots and len(rows) <= slots:
+        return [*figures, *rows]
+    # `paged` cuts: a limit of 0 reads as the default, so an empty page is [].
+    shown = paged(rows, 0, slots - 1, default=1).items if slots > 1 else []
+    left = max(total - len(shown), 0)
+    return [*figures, *shown, f"  (and {left} more {noun}. Read the saved report or open Reports for the list.)"]
+
+
+def _agents_members_line(runs: dict[str, Any]) -> list[str]:
+    """Each agent figure names the member it works for (§6.8 E2). The server
+    sorts the members by name, never by count (E1), so this keeps its order."""
+    members = [m for m in runs.get("members") or [] if isinstance(m, dict)]
+    if not members:
+        return []
+    named = [
+        f"{data(m.get('member_name') or m.get('member'))}"
+        f" {m.get('working', 0)} working, {m.get('silent', 0)} silent"
+        for m in paged(members, 0, AGENTS_MEMBERS_NAMED, default=AGENTS_MEMBERS_NAMED).items
+    ]
+    more = len(members) - len(named)
+    tail = f", and {more} more members" if more > 0 else ""
+    return ["  agents work for: " + "; ".join(named) + tail]
+
+
+def _agents_now_block(now: Any) -> list[str]:
+    if not isinstance(now, dict) or not isinstance(now.get("summary"), str):
+        return ["Agents now:", "  The server sent no figures for this section."]
+    out = ["Agents now:", f"  {now['summary']}"]
+    runs = now.get("runs") if isinstance(now.get("runs"), dict) else {}
+    if not runs.get("on"):
+        return out
+    figures = _agents_members_line(runs)
+    merge = now.get("merge")
+    if isinstance(merge, dict):
+        figures.append(
+            f"  agent pull requests in {merge.get('days', 14)} days:"
+            f" merged {merge.get('merged', 0)}, closed {merge.get('closed', 0)}"
+        )
+    return out + figures
+
+
+def _agents_section(title: str, section: Any, build: Any) -> list[str]:
+    """One section: its heading, its server sentence verbatim, then at most
+    ``AGENTS_LINES_MAX`` lines. A section the server sent as null, or sent
+    with no sentence, says so. A section that is off keeps its server line
+    alone, so it never reads as "all clear" (RA-4b)."""
+    if not isinstance(section, dict) or not isinstance(section.get("summary"), str):
+        return [f"{title}:", "  The server sent no figures for this section."]
+    out = [f"{title}:", f"  {section['summary']}"]
+    if section.get("on") is False:
+        return out
+    return out + build(section)
+
+
+def _agents_waiting(section: dict[str, Any]) -> list[str]:
+    figures = [
+        f"  waiting: {section.get('questions_total', 0)} questions,"
+        f" {section.get('reviews_total', 0)} reviews,"
+        f" {section.get('handoffs_total', 0)} handoffs"
+    ]
+    rows = [
+        _waiting_row(kind, r)
+        for key, kind in _WAITING_LISTS
+        for r in section.get(key) or []
+        if isinstance(r, dict)
+    ]
+    total = sum(
+        t if isinstance(t := section.get(f"{key}_total"), int) else 0
+        for key, _ in _WAITING_LISTS
+    )
+    return _agents_cut(figures, rows, max(total, len(rows)), "waiting tasks")
+
+
+def _agents_runs(section: dict[str, Any]) -> list[str]:
+    outcomes = section.get("outcomes") if isinstance(section.get("outcomes"), dict) else {}
+    figures = [
+        f"  runs in {section.get('days', 14)} days: completed {outcomes.get('completed', 0)},"
+        f" failed {outcomes.get('failed', 0)}, silent now {section.get('silent_total', 0)}"
+    ]
+    rows = [
+        _agent_run_row(kind, r)
+        for key, kind, _ in _AGENT_RUN_LISTS
+        for r in section.get(key) or []
+        if isinstance(r, dict)
+    ]
+    total = sum(
+        t if isinstance(t := section.get(total_key), int) else 0
+        for _, _, total_key in _AGENT_RUN_LISTS
+    )
+    return _agents_cut(figures, rows, max(total, len(rows)), "runs")
+
+
+def _agents_quality(section: dict[str, Any]) -> list[str]:
+    prs = section.get("prs") if isinstance(section.get("prs"), dict) else {}
+    checks = section.get("checks") if isinstance(section.get("checks"), dict) else {}
+    figures = [
+        f"  agent pull requests in {section.get('days', 14)} days: merged {prs.get('merged', 0)},"
+        f" closed {prs.get('closed', 0)}, open now {prs.get('open', 0)}"
+    ]
+    rows = [_quality_row(r) for r in checks.get("failing") or [] if isinstance(r, dict)]
+    total = checks.get("failing_total")
+    return _agents_cut(
+        figures, rows, total if isinstance(total, int) else len(rows), "failing pull requests",
+    )
+
+
+def agents_answer(payload: dict[str, Any]) -> list[str]:
+    """The answer of ``analytics_agents``, in the fixed order: agents now,
+    waiting on people, agent runs, quality (§6.8 E5).
+
+    Each section opens with the server's own sentence, verbatim, so the chat
+    says what the Overview panel says. Every task title, agent name and
+    member name is fenced as data. No line sets a goal (E4) or ranks a person
+    (E1), and an agent figure names its member (E2)."""
+    sections = payload.get("sections") if isinstance(payload.get("sections"), dict) else {}
+    out = [f"Agents in {_scope_title(payload)}:"]
+    out.extend(_agents_now_block(payload.get("agents_now")))
+    out.extend(_agents_section("Waiting on people", sections.get("waiting"), _agents_waiting))
+    out.extend(_agents_section("Agent runs", sections.get("agent_runs"), _agents_runs))
+    out.extend(_agents_section("Quality", sections.get("quality"), _agents_quality))
+    return out
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def analytics_agents(project_id: str = "") -> str:
+    """How the agents are doing: what runs now, what waits for a person, how
+    agent runs end, and how agent pull requests fare. Use it for "how are the
+    agents doing", "are agents stuck", "what are agents waiting on" and "agent
+    merge rate". Each part opens with the Overview's own sentence. Agent
+    figures name the member that the agent works for. Never rank people. Leave
+    project_id empty for the portfolio."""
+    payload = await get("/projects/analytics/agents", _scope_params(project_id))
+    return "\n".join([legend(), *agents_answer(payload)])
 
 
 # ── Team intelligence — S7a ──────────────────────────────────────────────────

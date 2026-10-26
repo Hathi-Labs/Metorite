@@ -52,6 +52,7 @@
     "run_workflow"
   ],
   "own_tool_scope": [
+    "analytics_agents",
     "analytics_finished",
     "analytics_load",
     "analytics_outlook",

@@ -72,8 +72,10 @@ panel by default, and hides it when the scope has no agent run.
 runs the past weeks again 2,000 times and gives the 50% and 85% dates, with
 no estimate. When work arrives as fast as it finishes, "Not converging"
 says the finishes a week that would converge it. "Needs an owner" shows
-first in Open work when it leads. Fix round 1 BUILT 2026-10-26. RA-7 and
-RA-8 are not built.
+first in Open work when it leads. Fix round 1 BUILT 2026-10-26. RA-7 is
+not built.
+
+**RA-8 BUILT 2026-10-26, not merged** (§6.8 E rule 7 and E5, §8 RA-8). A member asks the chat how the agents do. The tool `analytics_agents` answers from the same bodies as the Overview, with no new figure. Each part opens with the server sentence, word for word.
 
 **RA-5 BUILT 2026-10-26, not merged** (§6.8 B and F, §8 RA-5). The `quality`
 section shows the agent pull request outcomes, with the merge rate and its
@@ -2258,6 +2260,17 @@ Fences: `tests/unit/test_projects_report_forecast.py` (hermetic) and `tests/unit
 **What:** the assistant reads the same sections for "how are the agents doing on this project?". It is a class A read with no card.
 
 **Done when:** the manifest maps the tool, and an answer quotes the panel's own summary sentence.
+
+**Built 2026-10-26, not merged:**
+- The route `GET /projects/analytics/agents` sits in `reports.py`. It builds a config of `waiting`, `agent_runs` and `quality`, and calls `render_body` with the KPI strip.
+- It computes no figure. The reader's row filter, the scope parse and the task visibility are those of the Overview preview.
+- `agents_now` holds the strip's `runs` and `merge`. One sentence from `analytics_agents.now_line` opens it. With runs off, the sentence says so.
+- The tool `analytics_agents` is class A, and it has no card. WhatsApp keeps it. The manifest maps the route, and the read is in `reads.py`.
+- The answer has a fixed order: agents now, waiting on people, agent runs, quality. Each part opens with its server sentence, word for word.
+- Each part adds three lines at most. `data()` fences every task title, agent name and member name.
+- A part that is off or null prints its server line. No part says "all clear" when runs are off.
+- No line sets a goal (E4) or ranks a person (E1). An agent line names its member (E2).
+- Fences: `test_projects_agents_chat.py` pins the shape. `test_projects_agents_chat_r8.py` pins parity with the Overview and the reader's visibility, on a real database.
 
 ## 8a. Later phases — recorded, not scheduled
 

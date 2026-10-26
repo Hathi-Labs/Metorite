@@ -168,6 +168,7 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   analytics_throughput: { kind: "search", verb: V.check, object: "the throughput" },
   analytics_finished: { kind: "search", verb: V.check, object: "what finished" },
   analytics_outlook: { kind: "search", verb: V.check, object: "the outlook" },
+  analytics_agents: { kind: "search", verb: V.check, object: "the agents" },
   report_list: { kind: "read", verb: V.list, object: "the saved reports" },
   report_render: { kind: "read", verb: V.read, object: "a saved report" },
   report_save: { kind: "edit", verb: V.save, object: "a report" },

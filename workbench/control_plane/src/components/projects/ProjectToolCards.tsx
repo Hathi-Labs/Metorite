@@ -68,6 +68,7 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   analytics_throughput: { icon: "TrendingUp", label: "Throughput" },
   analytics_finished: { icon: "CheckCircle2", label: "Finished" },
   analytics_outlook: { icon: "Telescope", label: "Forecast" },
+  analytics_agents: { icon: "Bot", label: "Agents" },
   // S7a — who holds the work, and whether they have the hours.
   team_capacity: { icon: "Gauge", label: "Capacity" },
   // S7b — who fits one task, and who could help whom.
@@ -116,6 +117,7 @@ export const OPENS_APP: Record<string, { app: "reports"; label: string }> = {
   analytics_throughput: { app: "reports", label: "Open Reports" },
   analytics_finished: { app: "reports", label: "Open Reports" },
   analytics_outlook: { app: "reports", label: "Open Reports" },
+  analytics_agents: { app: "reports", label: "Open Reports" },
   team_capacity: { app: "reports", label: "Open Reports" },
   find_conflicts: { app: "reports", label: "Open Reports" },
   report_list: { app: "reports", label: "Open Reports" },

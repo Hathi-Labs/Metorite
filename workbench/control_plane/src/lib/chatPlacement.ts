@@ -102,6 +102,7 @@ const EVIDENCE: readonly string[] = [
   "analytics_throughput",
   "analytics_finished",
   "analytics_outlook",
+  "analytics_agents",
   "report_list",
   "report_recipients",
   "waiting_agent_requests",

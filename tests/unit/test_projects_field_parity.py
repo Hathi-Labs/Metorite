@@ -284,6 +284,7 @@ _BASE: dict[str, dict[str, Any]] = {
     "analytics_finished": {},
     "analytics_load": {},
     "analytics_outlook": {},
+    "analytics_agents": {},
     "analytics_stuck": {},
     "analytics_throughput": {},
     # WS-46 P6: `LIVE` is not archived, and `UUID` is not done.

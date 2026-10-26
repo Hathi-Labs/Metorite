@@ -65,6 +65,7 @@ from gateway.routes.projects.analytics_agents import (
     finished_actor_body,
     finished_summary,
     kpis_body,
+    now_line,
     throughput_actor_body,
 )
 from gateway.routes.projects.analytics_capacity import capacity_body
@@ -1393,6 +1394,53 @@ async def preview_report(
             },
             **body,
         }
+
+
+#: WS-27bn RA-8. The three agent sections the chat reads, in the Overview's
+#: order. "Agents now" is the KPI strip's ``runs`` and ``merge``.
+AGENT_CHAT_SECTIONS: tuple[str, ...] = ("waiting", "agent_runs", "quality")
+
+
+@router.get("/analytics/agents")
+async def analytics_agents(
+    project_id: str | None = None,
+    include_subtree: bool = True,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """How the agents do in one scope: the agent parts of the Overview, for
+    the chat (WS-27bn RA-8, `projects_reports.md` §8).
+
+    ⚠️ **No figure is computed here.** The route builds a config and calls
+    :func:`render_body`, the one render function that the Overview preview
+    and a saved report call. So the reader's row filter, the scope parse and
+    the visibility of each task title are those of the Overview, and each
+    ``summary`` is the text that the panel prints. "Agents now" is the KPI
+    strip's ``runs`` and ``merge`` with one sentence from
+    ``analytics_agents.now_line``. It writes nothing.
+    """
+    config = normalise_report_config(
+        {"sections": list(AGENT_CHAT_SECTIONS), "include_subtree": include_subtree}
+    )
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        if project_id is not None:
+            await load_visible_project(db, vis, str(project_id))
+        body = await render_body(
+            db, vis, user, project_id=project_id, config=config, kpis=True,
+        )
+    kpis = body.get("kpis") or {}
+    runs = dict(kpis.get("runs") or {})
+    return {
+        "scope": "portfolio" if project_id is None else "node",
+        "agents_now": {
+            "summary": now_line(runs),
+            "runs": runs,
+            "merge": kpis.get("merge"),
+        },
+        "sections": {
+            name: body["sections"].get(name) for name in AGENT_CHAT_SECTIONS
+        },
+    }
 
 
 # ── Who a report goes to — §9.12.8 slice 3 ──────────────────────────────────

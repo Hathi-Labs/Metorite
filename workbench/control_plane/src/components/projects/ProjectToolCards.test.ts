@@ -266,6 +266,7 @@ describe("WS-27bn R5f: every app card opens Reports", () => {
       "analytics_throughput",
       "analytics_finished",
       "analytics_outlook",
+      "analytics_agents",
       "team_capacity",
       "find_conflicts",
       "status_report",
