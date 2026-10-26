@@ -223,11 +223,16 @@ export interface EntityCreateBody {
 /** The line a member reads when the gateway refuses the space (403 or 404). */
 export const CANNOT_ADD_LINE = "You cannot add to that space.";
 
+/** The line for a 409: the space holds that name already (KC-8e). */
+export function alreadyExistsLine(type: EntityType, name: string): string {
+  return `A ${typeNoun(type)} named ${name} already exists in that space.`;
+}
+
 /**
  * Make a product or a topic in a space the member can write in. The gateway
  * checks the space again and answers 403 or 404 for one it will not write.
- * ⚠️ A second call with the same name makes a second entity: the route is not
- * get-or-make for a Knowledge-owned type. The form checks the name first.
+ * The gateway answers 409 for a name or an alias that the space holds already
+ * (KC-8e). The form still looks first, so the usual case never posts.
  */
 export async function createEntity(body: EntityCreateBody): Promise<Entity> {
   try {
@@ -235,6 +240,9 @@ export async function createEntity(body: EntityCreateBody): Promise<Entity> {
   } catch (err) {
     if (err instanceof KnowledgeError && (err.status === 403 || err.status === 404)) {
       throw new KnowledgeError(CANNOT_ADD_LINE, err.status);
+    }
+    if (err instanceof KnowledgeError && err.status === 409) {
+      throw new KnowledgeError(alreadyExistsLine(body.type, body.name), err.status);
     }
     throw err;
   }
