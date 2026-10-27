@@ -393,8 +393,9 @@ CRM_NINE = set(sf.SKILL_FAMILIES["crm-records"]["tools"])
     ("mirror", {"create_lead", "update_deal_status", "convert_lead"}),
     ("live", set()),
 ])
+@pytest.mark.usefixtures("store")
 async def test_layer_c_drops_the_mirror_record_writes_through_load_early(
-    store, monkeypatch, mode: str, dropped: set[str],
+    monkeypatch, mode: str, dropped: set[str],
 ) -> None:
     """The pack of a turn-kind "yes" builds in ``before_run``, AFTER the
     executor's ``_drop_mirror_record_writes``, through the real ``load_early``

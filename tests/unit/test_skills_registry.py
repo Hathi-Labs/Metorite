@@ -107,10 +107,9 @@ def _owner_universe(owner: str) -> set[str]:
     from pathlib import Path
 
     from acb_skills.narrowing import TOOL_NAME as NARROW
+    from gateway.routes.agent import _AGENT_REGISTRY
 
     from tests.unit._native_maf_harness import REPO_ROOT, load_agent_module
-
-    from gateway.routes.agent import _AGENT_REGISTRY
 
     # The directory comes from the registry: ``crm-assistant`` lives in
     # ``apps/agents/agent-crm`` (WS-67 OA-8a).
