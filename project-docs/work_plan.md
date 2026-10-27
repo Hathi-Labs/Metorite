@@ -5705,6 +5705,91 @@ assistant's instructions. PR #1356. Fence: `tests/unit/test_no_unasked_draft.py`
 **Fences:** named per slice in `specs/one_assistant_context.md` §5.
 ---
 
+### D118 — Metorite holds the state of the work. The repository holds the specs, the decisions and the rules (2026-10-27)
+
+Owner decision, 2026-10-27, in chat. The owner chose "Metorite owns state, repo owns specs" for the plan reset.
+
+1. **Metorite holds** the status, the priority, the owner and the order of every work item. The HathiLabs project **Metorite** is the one place where people and agents coordinate.
+2. **The repository holds** the specs, these decisions, the rules R1 to R8 and the owner gates in §6.
+3. **`work_plan.md` §2** keeps one short row per workstream. It names the Metorite project and the owning spec. It carries no slice history.
+4. **`HANDOFF.md` retires** into Metorite tasks. The session hook keeps a short file until the sync is complete.
+5. **Fence.** A test that fails when an ACTIVE spec slice has no `Metorite: #N` pointer. Until that test exists, this clause is advisory.
+
+### D119 — The core function brief sets the roadmap: pilots in December 2026, paid customers by 31 March 2027 (2026-10-27)
+
+Owner decision, 2026-10-27, in chat: "go ahead with your recommendations for the decisions owed." The input is the brief "Metorite Core Function Tasks" (2026-10-27).
+
+1. **Phases.** M0 is customer zero (Fracktal and Shaurrya Tele), about three weeks. M1 is pilot-ready, December 2026. M2 is the first paid customer, 31 March 2027. M3 and M4 come after.
+2. **Priority.** Brief tasks 1 to 7 are P0. Brief tasks 8 to 15 are P1. Customer zero comes first inside Phase 1.
+3. **Moved after Phase 2.** Studio, Writing Help, the UX rules, MCP data parity, Notes, Workflows and the Dashboard. Fixes that pilots see stay early: CRM deal stages, My Profile and the Cc and Bcc roll-up. CRM deal stages (UX-3) move into M1, because DEWiN uses them daily.
+4. **WS-37 compliance spec** is written in Phase 1. Brief task 12 needs it, and DPDP has a November 2026 date.
+5. **Ten pilots are ten organizations.** Tenant isolation (M1) lands before the first pilot outside customer zero.
+6. **Dates.** Calendar two-way sync cannot meet December: it ships read-only first. The Gmail review and the external pen test are filed in December and finish after March.
+
+### D120 — H3.2: the identity cutover comes before RLS phase 4. A carve-out is a bridge only (2026-10-27)
+
+Owner decision, 2026-10-27, taking the recommendation of `saas_multitenancy_handover.md` §H3.2.
+
+1. **Option B.** H6 moves sign-in onto `user_identity` and `org_membership`, which are exempt, before a clean phase 4.
+2. **Option A as a bridge only.** If phase 4 must ship before H6, the `app_user` carve-out ships with it. The cross-tenant read of `app_user` it opens is then a tracked P0 item that H6 closes.
+3. **H3.3.** The live-catalog gate subtracts `HOMONYM_BLOCKED` as the spec proposes, with the CRM homonym tracked on its own.
+
+### D121 — WS-40: who may rename, move and delete (2026-10-27)
+
+**Agent-proposed, owner may overrule.** The owner accepted the recommendations in chat, and the four answers below are the recommendation for `org_access_control.md` §8d.4.
+
+1. **Grain.** One permission per content app, `<app>:manage`, in the `workflows:publish` shape. It covers rename, move, delete and settings. Editing content stays with visibility and grants.
+2. **Where authority sits.** On the node. A project grant gains a level: view, edit or manage. An org `admin` holds manage everywhere.
+3. **Delete.** The creator may delete what they made. Anybody else needs manage on the node.
+4. **Day one.** It ships dark behind a flag. Each existing member gets manage on the nodes they created, so nothing turns read-only. One week in log-only mode, then enforce. The rollout copies §7.
+
+### D122 — Integrations for the brief: ERP order, WhatsApp, Gmail in test mode (2026-10-27)
+
+Owner decision, 2026-10-27, in chat, taking the recommendations.
+
+1. **ERP connectors (brief question 1).** Ask the ten pilots first. Without their data the order is Zoho Books, then Tally Prime, then QuickBooks Online.
+2. **WhatsApp (brief question 2).** Use the official API for the business number, plus a forward-to-Metorite path for chosen messages. No linked-device reader, because of the terms-of-service and ban risk. This narrows brief task 8: the official API cannot read personal chats or most groups.
+3. **D115 is lifted for brief task 8 only.** The rest of WhatsApp stays frozen.
+4. **Gmail for the pilots** runs in Google test mode with named test users until the restricted-scope review passes. Check the current test-user limit and refresh-token expiry first, because a short expiry makes each pilot sign in again.
+
+### D123 — Money before the first paid customer: rate card, Razorpay, seats, database size (2026-10-27)
+
+Owner decision, 2026-10-27, in chat, taking the recommendations.
+
+1. **Rate card.** Price it from measured burn before the first paid customer. Flip `CUSTOMER_CONSOLE_SPEND_GATE` after the price is set, never before.
+2. **Razorpay.** The owner creates the TEST account now (H-14). The owner takes the GST position before SC-5 builds the invoice.
+3. **Seats.** Pricing stays flat per user. Ten users per organization is a soft cap that matches `MAX_TEAM_SIZE`.
+4. **Production database.** Move off the free tier before the pilots start. For the tenant plane, use the Supabase Pro plan at Small compute or larger (H-262). The Console database must not auto-pause (H-108). The owner approves the spend.
+
+### D124 — External agents get full parity with the in-built assistant. Writes and deletes ask the member each time (2026-10-27)
+
+Owner decision, 2026-10-27, in chat: "full parity, but the external agent can take permission for writes/deletes". It amends **D91.4** and the version-1 non-goals of `external_agent_access.md` §3.
+
+1. **Reads.** One scope per source (CRM, email, WhatsApp, knowledge, meetings), each with its own line on the consent page. The member's visibility decides every row.
+2. **Writes and deletes.** The agent asks. The member approves in the app, on a card that shows the exact payload. A delete, a send to a third party and a bulk change ask for each act.
+3. **Safety.** Every returned body is marked untrusted text. Every call is audited. An admin can switch any scope off for the organization.
+4. **When.** After Phase 2. The `use_metorite` prompt (MCP-Ga to MCP-Gd) ships earlier.
+
+### D125 — The one assistant is named Mira (2026-10-27)
+
+Owner decision, 2026-10-27, in chat. The one assistant of D99 is called **Mira** in the app, in the MCP prompt and in the docs. No vendor model name is shown to a member.
+
+### D126 — An issue report may carry the member's chat, with consent per report. It amends D64.5 for that report only (2026-10-27)
+
+Owner decision, 2026-10-27, in chat, taking the recommendation. Workstream: Issue Reporting, Metorite #475.
+
+1. A member may attach a chat session to an issue report. The report card shows the exact payload, and the member consents on that card.
+2. Secrets and tokens are scrubbed before the report leaves the organization.
+3. Metorite staff may read that transcript, and only that one. Every read is audited.
+4. A report is kept 90 days and deleted on request.
+
+### D127 — Studio is one app with three object types. Sandbox code comes after the off-box sandbox (2026-10-27)
+
+Owner decisions, 2026-10-27, in chat: "One app, three object types" for AI Studio, and the recommendations for O15.
+
+1. **Studio** is one pane. A member builds tool packs, workflows and AI apps from one library. It replaces App Workshop, Agent Workshop and Workflows. It is scheduled after Phase 2.
+2. **Sandbox code and reusable member tools (SBX)** belong to the one assistant. They ship in Phase 2, after BH-3 moves code execution off the box, and never before. A tool is private by default. Sharing it with the organization needs an admin check.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 | Work | Owner | Mirrors (link-only after §5) |
