@@ -1199,6 +1199,18 @@ def _refused(slug: str, reason: str, text: str) -> str:
     return text
 
 
+def _agent_shape(tools: Sequence[Any]) -> tuple[Any, ...]:
+    """*tools* as MAF ``FunctionTool`` objects, the shape of the agent's own
+    list. When MAF has no ``normalize_tools``, nothing comes back, so the
+    pack does not load (fail closed)."""
+    try:
+        from agent_framework._tools import normalize_tools
+    except ImportError:
+        _log.warning("tool_packs.load_refused", reason="normalize_tools")
+        return ()
+    return tuple(normalize_tools(list(tools)))
+
+
 class LoadSkillTools(FunctionMiddleware):
     """The middleware of ``load_skill_tools`` for ONE run (WS-67 OA-7e).
 
@@ -1234,6 +1246,9 @@ class LoadSkillTools(FunctionMiddleware):
         self._build = build
         self.tool = load_tool(self.offered)
         self._lock = asyncio.Lock()
+        #: OA-7f: the packs that layer (c) loads, and what the load made.
+        self.early: tuple[str, ...] = ()
+        self._early_out: list[tuple[tuple[Any, ...], str]] | None = None
 
     def takes(self, function: Any) -> bool:
         """True for a call of this run's own :attr:`tool`, by identity."""
@@ -1247,6 +1262,107 @@ class LoadSkillTools(FunctionMiddleware):
             return
         async with self._lock:
             context.result = await self._load(context)
+
+    async def _admit(
+        self, found: Pack, ctx: dict[str, Any], live: Sequence[Any], run: PackRun,
+        extra_live: Sequence[Any] = (),
+    ) -> str | tuple[tuple[Any, ...], bool, str, list[str]]:
+        """The guards and the build of ONE pack: steps 4 to 6 of the class
+        text, for a load by the model (:meth:`_load`) and for a load by layer
+        (c) (:meth:`load_early`). THE one builder and THE one set of caps.
+
+        Gives a refusal text, or ``(tools, held, rules, closing)``. It adds
+        nothing to the run: the caller adds the tools and the record."""
+        slug = found.slug
+        if len(run.holds()) >= MAX_PACKS or _tool_count(slug) > MAX_PACK_TOOLS:
+            return _refused(slug, "cap_packs", _past_cap(found))
+        if _beside_mcp(found.owner, [*live, *extra_live]):
+            return _refused(slug, "beside_mcp", LOAD_BESIDE_MCP.format(
+                label=_label(slug), owner=found.owner))
+        from acb_skills.tool_guard import tool_name
+
+        build = await self._build(slug, ctx, frozenset(tool_name(t) for t in live))
+        tools = tuple(getattr(build, "tools", None) or ())
+        if build is None or not tools:
+            return _refused(slug, "unavailable", LOAD_UNAVAILABLE.format(label=_label(slug)))
+        if len(live) + len(tools) > MAX_REQUEST_TOOLS:
+            return _refused(slug, "cap_tools", _past_cap(found))
+        held = getattr(build, "held", True) is not False
+        before = run.holds()
+        try:
+            rules = _rules_block(found, held, (*before, slug))
+        except Exception as exc:  # RuntimeError: nothing loads
+            _log.warning("tool_packs.load_refused", pack=slug, reason="rules",
+                         error=type(exc).__name__)
+            return LOAD_UNAVAILABLE.format(label=_label(slug))
+        return tools, held, rules, _completed_lines(found, before)
+
+    def set_early(self, slugs: Iterable[str]) -> tuple[str, ...]:
+        """Name the packs that layer (c) loads before the first request (OA-7f).
+
+        Only a pack of :attr:`offered` counts, in the order of :data:`PACKS`,
+        so an answer cannot name a pack that the run did not offer. Gives the
+        packs kept."""
+        want = {str(s) for s in slugs or ()}
+        self.early = tuple(slug for slug in self.offered if slug in want)
+        return self.early
+
+    async def load_early(self, agent: Any, context: Any) -> None:
+        """Load the packs of :meth:`set_early` into the first request of the
+        run (layer (c), OA-7f).
+
+        It runs in ``before_run`` of the provider, so the model sees the tools
+        on its first request and no model call is added. Each pack goes through
+        :meth:`_admit`, the guards of a load by the model. The rules ride as
+        an instruction of the turn, in place of the answer of a call. A
+        refused pack loads nothing and the others go on. A load is not sticky
+        (:func:`note_used`). A second call, for a retry of the same turn, adds
+        the same tools and text again and builds nothing."""
+        async with self._lock:
+            if self._early_out is None:
+                self._early_out = await self._build_early(agent, context)
+            for tools, text in self._early_out:
+                context.extend_tools(LOAD_SOURCE_ID, list(tools))
+                context.extend_instructions(LOAD_SOURCE_ID, text)
+
+    async def _build_early(
+        self, agent: Any, context: Any,
+    ) -> list[tuple[tuple[Any, ...], str]]:
+        out: list[tuple[tuple[Any, ...], str]] = []
+        run = self.record
+        if not self.early or not isinstance(run, PackRun):
+            return out
+        opts = getattr(agent, "default_options", None)
+        pool = opts.get("tools") if isinstance(opts, dict) else None
+        live: list[Any] = [
+            *(pool if isinstance(pool, list) else []), *list(getattr(context, "tools", None) or [])]
+        # MAF keeps the tools of an MCP server in ``agent.mcp_tools`` and adds
+        # their functions after ``before_run``, so the live list cannot show
+        # them. They count for the MCP rule only (OA-7f fix round 1).
+        mcp = list(getattr(agent, "mcp_tools", None) or [])
+        ctx = {**dict(_run_context()), PACK_RUN_KEY: self.run_key}
+        for slug in self.early:
+            found = pack(slug)
+            if found is None or slug in run.holds():
+                continue
+            admitted = await self._admit(found, ctx, live, run, extra_live=mcp)
+            if isinstance(admitted, str):
+                continue
+            tools, held, rules, closing = admitted
+            shaped = _agent_shape(tools)
+            if not shaped:
+                continue
+            run.add(slug, held)
+            live.extend(tools)
+            tools = shaped
+            text = rules + ("\n\n" + " ".join(closing) if closing else "")
+            out.append((tools, text))
+            _log.info(
+                "tool_packs.loaded", pack=slug, tools=len(tools), held=held,
+                live_tools=len(live), packs=list(run.holds()), layer="turn_kind",
+                refused=sorted(_refusals_for(run.holds())),
+            )
+        return out
 
     async def _load(self, context: Any) -> str:
         slug = _pack_argument(getattr(context, "arguments", None))
@@ -1265,23 +1381,11 @@ class LoadSkillTools(FunctionMiddleware):
         live = getattr(context, "tools", None)
         if not isinstance(live, list):
             return _refused(slug, "no_live_list", LOAD_UNAVAILABLE.format(label=_label(slug)))
-        if len(run.holds()) >= MAX_PACKS or _tool_count(slug) > MAX_PACK_TOOLS:
-            return _refused(slug, "cap_packs", _past_cap(found))
-        if _beside_mcp(found.owner, live):
-            return _refused(slug, "beside_mcp", LOAD_BESIDE_MCP.format(
-                label=_label(slug), owner=found.owner))
-        from acb_skills.tool_guard import tool_name
-
-        build = await self._build(slug, dict(ctx), frozenset(tool_name(t) for t in live))
-        tools = tuple(getattr(build, "tools", None) or ())
-        if build is None or not tools:
-            return _refused(slug, "unavailable", LOAD_UNAVAILABLE.format(label=_label(slug)))
-        if len(live) + len(tools) > MAX_REQUEST_TOOLS:
-            return _refused(slug, "cap_tools", _past_cap(found))
-        held = getattr(build, "held", True) is not False
-        before = run.holds()
+        admitted = await self._admit(found, dict(ctx), live, run)
+        if isinstance(admitted, str):
+            return admitted
+        tools, held, rules, closing = admitted
         try:
-            rules = _rules_block(found, held, (*before, slug))
             context.add_tools(list(tools))
         except Exception as exc:  # ValueError, RuntimeError: nothing loads
             _log.warning("tool_packs.load_refused", pack=slug, reason="add_tools",
@@ -1289,7 +1393,6 @@ class LoadSkillTools(FunctionMiddleware):
             return LOAD_UNAVAILABLE.format(label=_label(slug))
         run.add(slug, held)
         answer = LOADED.format(label=_label(slug), count=len(tools), rules=rules)
-        closing = _completed_lines(found, before)
         if closing:
             answer += "\n\n" + " ".join(closing)
         _log.info(
@@ -1318,3 +1421,6 @@ class LoadSkillToolsProvider(ContextProvider):
     ) -> None:
         context.extend_tools(LOAD_SOURCE_ID, [self.loader.tool])
         context.extend_middleware(LOAD_SOURCE_ID, [self.loader])
+        if self.loader.early:
+            # OA-7f, layer (c): the turn-kind answer named packs.
+            await self.loader.load_early(agent, context)

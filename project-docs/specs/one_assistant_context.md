@@ -60,6 +60,59 @@ adds the core pack of the app and nothing else.
 - **Not built.** The pack of any other app. Each new pack sets its own
   `Pack.surface`, and the allow-list grows with it.
 
+OA-7f is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7f"
+below). It adds layer (c), the pack items of the turn-kind request.
+
+**As built, OA-7f.** Layer (c) loads a pack that layer (a) missed, from the
+System-1 request that already runs. It adds no model call.
+- **The items.** `tier_policy.turn_kind(..., packs=...)` adds one `yes_no`
+  item for each pack in `packs`, with the id `pack:<slug>`. The request
+  stays one request. The two items of before keep their ids, and a request
+  holds at most 20 items. A slug that is no pack gives no item.
+- **What the items name.** `executor._pack_loader_offer` gives the packs. They are
+  `LoadSkillTools.offered`. The items name a pack only when four things
+  hold. Layer (a) did not load it. The flag allows it. No admin toggle stops
+  it. It fits the caps.
+  A run with no loader asks for none. That covers a shared room, WhatsApp, a
+  delegated run, a sub-agent, the batch path and a run with the flag off.
+  With the flag off the call to `turn_kind` has no `packs` argument, so the
+  request is byte for byte the request of before. No pack state is read.
+- **When no item goes out.** The items ride in the request that goes out
+  anyway. A turn under 12 words, a Max turn and a turn with a pinned default
+  tier send no request, so they send no item.
+- **The answer.** A `yes` at or above the threshold of the effort puts the
+  slug in `TurnKind.packs`, in the order asked. A timeout, a failure, a
+  garbled reply, an unknown id, an off-scale confidence and a choice outside
+  the options load nothing. The pack items never change the kind, its source,
+  the effort or the tier. `RunTierPolicy.packs` only carries the slugs. The
+  tier choice does not read them.
+- **The apply.** The executor hands the answer to the loader after the tier
+  wait (`executor._apply_turn_pack_items`). The line numbers `:5874-5877` in
+  the design moved, and the call now sits right after
+  `_tier_run = await ...`. `LoadSkillToolsProvider.before_run` then loads
+  the packs, so the first model request holds the tools. The rules of the
+  pack ride as an instruction of the turn, in place of the answer of a call.
+- **The same builder and guards.** `LoadSkillTools._admit` holds the caps
+  (3 packs, 35 tools a pack, 110 tools), the MCP rule and the call of
+  `_pack_tools`. Both `_load` (layer (b)) and `load_early` (layer (c)) call
+  it. A refused pack loads nothing and the run goes on. A retry of the turn
+  adds the same tools and builds nothing again.
+- **Sticky.** Unchanged. A load by the turn kind is not sticky. The pack
+  becomes sticky when one of its tools runs.
+- **The MCP rule.** MAF keeps an MCP server in `agent.mcp_tools` and adds
+  its functions after `before_run`. So `load_early` passes `mcp_tools` to
+  `_admit` as `extra_live`, for the MCP rule only. No email pack loads
+  beside a server. The run key in the build context comes from the loader.
+  A frame without the key gives the same build.
+- **MAF import.** `_agent_shape` uses the private `normalize_tools`. If the
+  import fails, the pack does not load. A pin test fails when MAF renames it.
+- **Open.** The persona does not swap the specialist text in layer (c), as
+  in layer (b), because a load adds no owner to `PackRun.replaced`. The
+  cost of a longer System-1 request (a few answer tokens for each item) is
+  an estimate. OA-8 should measure it.
+- **Fences.** `tests/unit/test_tier_policy.py` (`TestTurnKindPackItems`) and
+  `tests/unit/test_turn_kind_pack_items.py`. Each case names its mutation.
+
 **As built, OA-7e.** Layer (b) loads a pack that layer (a) missed, in the
 middle of a turn.
 - **The parts.** `acb_skills/tool_packs.py` holds the tool (`load_tool`),
@@ -293,7 +346,7 @@ probe is hermetic. Open: a live model provider can refuse such a call, and
 no test shows what it does.
 
 With the flag on, the turn-kind request lists the pack tools, because it
-reads the tool names of the run. OA-7f adds the pack items.
+reads the tool names of the run. OA-7f adds the pack items (built).
 
 Fences: `tests/unit/test_tool_packs_choice.py`,
 `tests/unit/test_tool_packs_off.py`, and the probe in
@@ -873,7 +926,7 @@ Each slice merges alone, in this order.
 | OA-7c | Layer (a) and sticky state: packs in live runs. BUILT, dark, 2026-10-27 | HIGH |
 | OA-7d | The structured `surface` field from the dock. BUILT, dark, 2026-10-27 | LOW |
 | OA-7e | Layer (b): `load_skill_tools`. BUILT, dark, 2026-10-27 | MEDIUM |
-| OA-7f | Layer (c): pack items in the turn-kind request | MEDIUM |
+| OA-7f | Layer (c): pack items in the turn-kind request. BUILT, dark, 2026-10-27 | MEDIUM |
 | OA-7h | The email measure on real code, with the tier flags of production | LOW (eval only) |
 
 **OA-7a. The registry and the flag.**
