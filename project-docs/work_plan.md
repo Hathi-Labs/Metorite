@@ -138,7 +138,7 @@ The core function brief sets the phases (D119). Customer zero comes first inside
 7. **Branch protection**: WS-38a, then WS-5a and WS-38b.
 8. **Secrets**: H-97, H-207 and H-3, then WS-24b.
 9. **Enforce the designed controls** (brief tasks 6 and 7): WS-1e, WS-3, BH-3, BH-4, BR-6a to BR-6c, BR-7a and WS-40.
-10. **The daily promise** (brief tasks 2, 4 and 5): BR-4, BR-2a to BR-2d, BR-5 and WS-58.
+10. **The daily promise** (brief tasks 2, 4 and 5): BR-4, BR-2a to BR-2d, BR-5 and WS-58. The brief reads across every app, so fast retrieval comes with it: KG-1 to KG-3 (D128).
 11. **Email and calendar out of preview** (brief task 3): E-05, E-09, E-11, E-07, WS-21-P4 and CE-0.
 12. **A real second organization**: MT-1j-exec provisions it and runs the smoke. E-58 and BR-14 follow.
 13. **Pay** (Phase 2): H-14, the rate card and the spend gate (D123), SC-5, H-292 and H-287.
@@ -164,6 +164,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-CRM | **CRM**: native mode and the Zoho mirror | 🟢 active · M1 | `specs/crm_platform.md` | Metorite: epic 477 · next H-366, E-39 |
 | WS-WA | **WhatsApp** | 🟡 gated · M2 | `specs/whatsapp_message_manager.md` · `specs/whatsapp_assistant_channel.md` | Metorite: epic 476 · D115 freeze, lifted for brief task 8 only (D122.3) · next BR-8a, E-20 |
 | WS-KB | **Knowledge** | 🟢 active · M2 | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | Metorite: project Knowledge · no P0 or P1 · next H-401, KC-1 |
+| WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_base.md` §20 · `specs/company_context.md` (KG-0 writes `specs/knowledge_graph.md`) | Metorite: epic in project Knowledge · D128 · next KG-0, KG-1, KG-9 |
 | WS-MCP | **MCP and external agents** | 🟢 active · M2 | `specs/external_agent_access.md` | Metorite: epics 354 and 495 (MCP & External Agents) · parity after Phase 2 (D124) · next WS-55-follow, MCP-Ga |
 | WS-STU | **Studio**: tool packs, workflows, AI apps | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 491 (Agent Tooling) · D127 · next STU-0 |
 | WS-UX | **UX System** | 🟢 active · M1 | none yet | Metorite: epic 492 · next UI-G1, UX-3 (D119.3) |
@@ -4660,6 +4661,20 @@ Owner decisions, 2026-10-27, in chat: "One app, three object types" for AI Studi
 
 1. **Studio** is one pane. A member builds tool packs, workflows and AI apps from one library. It replaces App Workshop, Agent Workshop and Workflows. It is scheduled after Phase 2.
 2. **Sandbox code and reusable member tools (SBX)** belong to the one assistant. They ship in Phase 2, after BH-3 moves code execution off the box, and never before. A tool is private by default. Sharing it with the organization needs an admin check.
+
+### D128 — One knowledge graph of pointers, in Postgres, behind the one retrieval seam (2026-10-27)
+
+Owner directive, 2026-10-27, in chat: a knowledge graph like Graphify, so that Mira and the external agents find and read knowledge fast, across every app. The design is agent-proposed. Workstream: **WS-KG**. It extends D105 and D106 and changes neither.
+
+1. **A graph of pointers.** `kb_entities` holds the entities, and `kb_links` holds the edges between any two records. An edge holds two record ids, their kinds, a relation and its provenance. It never holds a copy of a record's content, so D105.2 holds.
+2. **One seam.** `search_company` and `gateway/retrieval/` stay the only retrieval path for Mira, the command bar and the MCP. The graph adds one step: after the ranked hits, it adds their neighbours within a token budget.
+3. **Visibility on every read.** The seam checks each record that the graph returns again, through its owning app, with the member's `UserContext`. A link never shows a record that the member cannot open.
+4. **Structure first, inference last.** The first edges come from foreign keys and exact identifiers, and they cost no inference. An exact identifier is an email address, a domain, a phone number or a task number. A model extracts edges only from Knowledge pages, at write time, on the cheap tier. Retrieval itself uses no model (D105.3).
+5. **Provenance on every edge:** EXTRACTED, INFERRED or AMBIGUOUS, with a confidence. An AMBIGUOUS edge is never shown as a fact. An admin can remove a wrong edge.
+6. **Postgres only.** The graph runs in the tenant database with FORCE ROW LEVEL SECURITY. No Neo4j. Graphiti and the empty `acb_graph` tables retire after KG-6. **The owner confirms that retirement**, because WS-7 gates Graphiti.
+7. **Memory is tenant-scoped first.** No memory flag (`MEM0_ENABLED`, `GRAPHITI_ENABLED`) turns on while its store has no organization scope (KG-9). Today the Mem0 org key is the one value `org:global` for every tenant (`acb_memory/compartments.py:36`).
+
+**The owner may overrule it.** It is an engineering shape under the owner's directive, as D105 was.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
