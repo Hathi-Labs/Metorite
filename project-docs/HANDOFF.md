@@ -90,15 +90,15 @@ line — never reclaim a number by deleting the other entry.
 - **Decide (owner), once:** let the root staging apply of `vps_apply.sh` install the tool when the file in the checkout differs (`cmp`, then `install`). The cost: root then copies a file that `acb` can write. `acb` is already root-equivalent through the `docker` group (see the README of `deploy/hostinger/staging/`), so the cost is small today. Say yes or no, and an agent builds it.
 - **Added:** 2026-10-26 · owner, in chat, 2026-10-25
 
-### H-418 · Build PZ-31: a member answer that becomes a steer cannot be saved · [AGENT] · security
+### H-430 · Build PZ-31: a member answer that becomes a steer cannot be saved · [AGENT] · security
 - **Metorite:** #832. The task holds the full entry.
 - **Check:** `grep -n '_typed = ""' apps/services/gateway/gateway/routes/agent.py` → still shows the steer follow-up binding empty typed words (about line 2856), and task #832 is not Done
-- **Added:** 2026-10-27 · found by the review of the interview save fix
+- **Added:** 2026-10-27 · found by the review of the interview save fix (first minted as H-418, renumbered: main took it)
 
-### H-419 · Look at Settings → Assistant settings, and say what still feels stiff · [OWNER]
+### H-431 · Look at Settings → Assistant settings, and say what still feels stiff · [OWNER]
 - **Metorite:** #261 (PZ-11). The task holds the checks and the state.
 - **Check:** task #261 is not Done → still pending. On app.metorite.com: reload, open the account menu, choose Settings → Assistant settings, then start an empty chat and press "Yes, start". Tell the agent what looks wrong and what feels stiff.
-- **Added:** 2026-10-27 · WS-63 session end
+- **Added:** 2026-10-27 · WS-63 session end (first minted as H-419, renumbered: main took it)
 
 ### H-335 · Finish the staging box: DNS, two OAuth clients, one sudo run · [OWNER]
 - **Check:** `curl -s https://api.dev.metorite.com/version` answers a `sha` equal
