@@ -78,7 +78,7 @@ export function ProjectSelect({
   const [trigger, setTrigger] = useState<HTMLButtonElement | null>(null);
 
   const leadRow = lead.flatMap((g) => g.rows).find((r) => r.value === value);
-  const node = leadRow ? null : pickerNodes(roots).find((n) => n.id === value) ?? null;
+  const node = leadRow ? null : pickerNodes(roots, undefined, true).find((n) => n.id === value) ?? null;
   const shown = leadRow?.label ?? node?.name ?? null;
 
   useEffect(() => {

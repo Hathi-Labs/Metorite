@@ -41,7 +41,7 @@ import type {
   ReportTemplate,
 } from "./api";
 import { shortDate } from "./outlook";
-import { flatten } from "./tree";
+import { flattenActive } from "./tree";
 import { personDisplayName, realName } from "@/lib/personName";
 
 /**
@@ -143,7 +143,7 @@ export interface ScopeOption {
 export function scopeOptions(roots: readonly ProjectRow[]): ScopeOption[] {
   return [
     { value: WHOLE_ORGANIZATION, label: "Whole organization", depth: 0 },
-    ...flatten(roots).map(({ node, depth }) => ({
+    ...flattenActive(roots).map(({ node, depth }) => ({
       value: node.id,
       label: node.name,
       depth,

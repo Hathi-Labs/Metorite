@@ -32,6 +32,11 @@ export interface ProjectNode {
    * and writes ONE row.
    */
   position?: number | null;
+  /**
+   * Set when the node is filed. The server returns archived rows in the tree
+   * on purpose (the rail splits them out); every picker leaves them out.
+   */
+  archived_at?: string | null;
   children?: ProjectNode[];
 }
 
@@ -251,6 +256,24 @@ export function flatten(
   for (const node of nodes) {
     out.push({ node, depth });
     out.push(...flatten(node.children ?? [], depth + 1));
+  }
+  return out;
+}
+
+/**
+ * `flatten`, leaving out every archived node and what hangs under it. The
+ * server returns filed rows in the tree on purpose (the rail splits them out),
+ * and every list a member PICKS from reads this instead (WS-64).
+ */
+export function flattenActive(
+  nodes: readonly ProjectNode[],
+  depth = 0
+): Array<{ node: ProjectNode; depth: number }> {
+  const out: Array<{ node: ProjectNode; depth: number }> = [];
+  for (const node of nodes) {
+    if (node.archived_at) continue;
+    out.push({ node, depth });
+    out.push(...flattenActive(node.children ?? [], depth + 1));
   }
   return out;
 }

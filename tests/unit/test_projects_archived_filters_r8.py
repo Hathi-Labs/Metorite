@@ -94,7 +94,7 @@ def world(db):
             text("SELECT id FROM organization ORDER BY created_at LIMIT 1")
         ).scalar_one())
         made["org"] = org
-        root, root_s = _project(c, org, "ar-root")
+        root, _ = _project(c, org, "ar-root")
         live, live_s = _project(c, org, "ar-live", parent=root)
         gone, gone_s = _project(c, org, "ar-gone", parent=root, archived=True)
         under, under_s = _project(c, org, "ar-under", parent=gone, archived=True)

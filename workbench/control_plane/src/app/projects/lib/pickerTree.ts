@@ -61,11 +61,15 @@ export const SPACE_HOLDS_NO_TASKS = "A space holds projects, not tasks.";
 export type PickRule = (node: ProjectNode) => string | null;
 
 /** Every node, in tree order, with what the picker needs to draw and search it. */
-export function pickerNodes(roots: readonly ProjectNode[], rule?: PickRule): PickerNode[] {
+export function pickerNodes(
+  roots: readonly ProjectNode[],
+  rule?: PickRule,
+  includeArchived = false,
+): PickerNode[] {
   const out: PickerNode[] = [];
   // The open ancestors at each depth, as `destinations` walks down.
   const stack: PickerNode[] = [];
-  for (const row of destinations(roots)) {
+  for (const row of destinations(roots, 0, includeArchived)) {
     stack.length = row.depth;
     const parent = stack[row.depth - 1] ?? null;
     const generations =
@@ -88,7 +92,7 @@ export function pickerNodes(roots: readonly ProjectNode[], rule?: PickRule): Pic
       refusal,
       parentId: parent?.id ?? null,
       path: stack.map((n) => n.name),
-      hasChildren: (row.node.children?.length ?? 0) > 0,
+      hasChildren: (row.node.children ?? []).some((c) => includeArchived || !c.archived_at),
     };
     out.push(entry);
     stack.push(entry);
