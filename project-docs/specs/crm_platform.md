@@ -310,9 +310,9 @@ The slices, in Metorite under sub-epic CRM-Z10 of epic #477:
 | CRM-Z10d | Custom modules stay visible in Native mode, with a native writer through the one write guard | R8: the counts match after a cutover |
 | CRM-Z10e | The Zoho attachments are copied into Metorite storage before the cutover | Count and bytes match Zoho |
 | CRM-Z10b | The switch: the export, a final sync, the mode flip and the disconnect in one transaction, `ext_source` and `ext_id` kept as provenance, Zoho settings made native, `processed_watermark` rewound, one audit line. One-way | R8: counts equal before and after, and a second click changes nothing |
-| CRM-Z10f | Owner decision: a cutover org keeps its source labels. It amends D95.2 for cutover orgs | Recorded in `work_plan.md` §3 |
+| CRM-Z10f | ✅ Decided 2026-10-27 (D133). A cutover org keeps its source labels. The admin can rename them. It amends D95.2 for cutover orgs | Recorded in `work_plan.md` §3 |
 
-The production runs for Fracktal and Shaurrya Tele are the owner's (CRM-Z10-run).
+The production runs for Fracktal and Shaurrya Tele are the owner's (CRM-Z10-run). Fracktal goes first. Shaurrya Tele goes second, because its custom modules also need CRM-Z10d (D133).
 
 ### 3.5 The architecture: one store, two writers
 
