@@ -272,7 +272,7 @@ def preview(text: str, ref: str, limit: int) -> str:
     end = _cut_point(text, limit)
     head = text[0:end]
     closers = [
-        f"<<<END {label} {token}>>>" for label, token in reversed(_open_frames(head))
+        UntrustedFrame(token).close_line(label) for label, token in reversed(_open_frames(head))
     ]
     stored = min(len(text), MAX_STORED_CHARS)
     parts = [head if head.endswith("\n") or not closers else head + "\n"]
