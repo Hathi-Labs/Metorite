@@ -512,6 +512,9 @@ class TestTheOverview:
         assert summary["by_disposition"]["next"] == 4
         assert summary["by_disposition"]["someday"] == 0
         assert summary["by_disposition"]["today"] == 1
+        # The zone of that Today count (OP-11 fix round, item 8). The seed
+        # stores no zone for A, so it is UTC, and the client reads it too.
+        assert summary["time_zone"] == "UTC"
 
     async def test_no_row_names_a_project_i_cannot_see(self, armed):
         """Audit P1-8. ``a_secret`` is mine (I am its assignee), and I hold
