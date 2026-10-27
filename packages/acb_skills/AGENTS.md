@@ -129,6 +129,25 @@ clone cache.
    - Fences: `tests/unit/test_tool_packs_choice.py` and
      `tests/unit/test_tool_packs_off.py`.
 
+   OA-7e: layer (b), the meta tool `load_skill_tools`
+   (`one_assistant_context.md` §4.2.2).
+   - `load_tool` builds the tool of ONE run. Its description is the catalog
+     (`catalog`) of the packs that `loadable` gives: allowed, on, and not
+     held.
+   - `LoadSkillTools` is its `FunctionMiddleware`. It takes its own tool by
+     identity. It calls the builder that the orchestrator gives it, and then
+     `FunctionInvocationContext.add_tools`. The caps are 3 packs, 35 tools a
+     pack and 110 tools on the live list. A refusal past a cap names
+     `spawn_subagents`.
+   - `LoadSkillToolsProvider` adds the tool and the middleware to one run.
+     It adds no instruction.
+   - `PackRun.add` records a load, and `PackRun.holds()` gives each pack of
+     the run. `PackRun.refusal` reads the rule of `_refusals_for` over
+     them, so a load that completes the packs of an owner closes the
+     hand-off.
+   - `_rules_block` is the ONE rules text of both layers.
+   - Fence: `tests/unit/test_load_skill_tools.py`.
+
 5b. decide_tools.py -- the `decide` core-floor tool (WS-31 CP-13d, spec:
    project-docs/specs/customer_console.md §6A.14). It asks one typed question
    through `acb_llm.decide` and never through the Console client. It sends no
