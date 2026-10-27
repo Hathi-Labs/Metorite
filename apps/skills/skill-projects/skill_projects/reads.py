@@ -21,6 +21,9 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -86,10 +89,64 @@ REPORT_LIST_MAX = 200
 # ── Small formatters ─────────────────────────────────────────────────────────
 
 
+#: The member's IANA zone while one tool call renders its days (WS-64 chat
+#: wave 2). Empty means "slice the UTC string", as before. Only
+#: :func:`in_member_zone` sets it, and it resets it at the end of the block.
+_ZONE: ContextVar[str] = ContextVar("skill_projects_member_zone", default="")
+
+
 def _day(value: Any) -> str:
-    """``2026-09-22T10:00:00+00:00`` → ``2026-09-22``. Empty stays empty."""
+    """``2026-09-22T10:00:00+00:00`` → ``2026-09-22``. Empty stays empty.
+
+    Inside :func:`in_member_zone`, an instant with an offset is the day in
+    the member's zone, as the app draws it. A due date at noon in Los
+    Angeles is 19:00 UTC, and the next morning in Kolkata is the evening
+    before in UTC, so a slice of the UTC string can name the wrong day.
+    """
     raw = str(value or "")
-    return raw[:10] if raw else ""
+    if not raw:
+        return ""
+    zone = _ZONE.get()
+    if zone and len(raw) > 10:
+        try:
+            at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if at.tzinfo is not None:
+                return at.astimezone(ZoneInfo(zone)).date().isoformat()
+        except (ValueError, ZoneInfoNotFoundError, OSError):
+            pass
+    return raw[:10]
+
+
+def _split_words(value: Any) -> set[str]:
+    """A comma-separated argument as a set of lower-case words."""
+    return {w.strip().lower() for w in str(value or "").split(",") if w.strip()}
+
+
+def _has_time(value: Any) -> bool:
+    return isinstance(value, str) and len(value) > 10
+
+
+async def member_zone_for(rows: Iterable[dict[str, Any]], keys: tuple[str, ...] = ("due_at",)) -> str:
+    """The member's zone when one of *rows* carries an instant under *keys*,
+    else ``""``. ONE read of ``GET /projects/my/today`` per tool call, and
+    none when there is no instant to render. A failed read is UTC."""
+    if not any(_has_time(r.get(k)) for r in rows if isinstance(r, dict) for k in keys):
+        return ""
+    try:
+        _day_now, zone, _label = clock_of(await get("/projects/my/today"))
+    except GatewayRefusal:
+        return ""
+    return zone
+
+
+@contextmanager
+def in_member_zone(zone: str) -> Iterator[None]:
+    """Render every :func:`_day` of the block in *zone*. ``""`` keeps UTC."""
+    token = _ZONE.set(zone or "")
+    try:
+        yield
+    finally:
+        _ZONE.reset(token)
 
 
 def _number(task: dict[str, Any]) -> str:
@@ -187,15 +244,18 @@ async def projects_tree(include_archived: bool = False) -> str:
     """The spaces, folders, projects and subprojects the member can see, nested.
     Start here for "what is in this space?" or to find a project's id before
     another call. Each row carries `full_id`, which later tools take as
-    project_id. Archived rows are hidden unless include_archived=true."""
+    project_id. Archived rows are hidden unless include_archived=true.
+    The member's own personal tree comes last, in its own section, and only
+    the member sees it."""
     payload = await get("/projects/tree")
     roots = (payload or {}).get("rows") or []
-    if not roots:
+    personal = (payload or {}).get("personal") or []
+    if not roots and not personal:
         return "You can see no projects yet."
 
     out = [legend(), f"Projects you can see ({(payload or {}).get('total', 0)} nodes):"]
 
-    def walk(nodes: list[dict[str, Any]], depth: int, above: int) -> None:
+    def walk(nodes: list[dict[str, Any]], depth: int, above: int, own: bool) -> None:
         # `above` counts the PROJECT ancestors. A folder never adds one.
         for node in nodes:
             if node.get("archived_at") and not include_archived:
@@ -207,13 +267,23 @@ async def projects_tree(include_archived: bool = False) -> str:
                 # root, so it is not a space: count one hidden project above.
                 mine = 1
             level = tree_level(is_folder, mine + (0 if is_folder else 1))
+            if own:
+                # The personal root holds the Inbox, so it is not a space
+                # (`writes.is_team_space`). Its levels say "personal".
+                level = "personal folder" if is_folder else "personal"
             head, ident = _project_line(node, level)
             head += _tree_counts(node)
             out.append("  " * depth + head)
             out.append("  " * depth + ident)
-            walk(node.get("children") or [], depth + 1, mine + (0 if is_folder else 1))
+            walk(node.get("children") or [], depth + 1, mine + (0 if is_folder else 1), own)
 
-    walk(roots, 0, 0)
+    walk(roots, 0, 0, False)
+    if personal:
+        # WS-64 chat wave 2 (item 5). `GET /projects/tree` sends the personal
+        # tree under its own key, and this read once dropped it, so "my
+        # Hiring" had no id to land on.
+        out.append("Your personal projects (only you see these):")
+        walk(personal, 0, 0, True)
     return "\n".join(out)
 
 
@@ -229,6 +299,37 @@ def _tree_counts(node: dict[str, Any]) -> str:
     done = node.get("done") if isinstance(node.get("done"), int) else 0
     cancelled = node.get("cancelled") if isinstance(node.get("cancelled"), int) else 0
     return f" · tasks {total} (done {done}, cancelled {cancelled}), with everything under it"
+
+
+def _state_counts(block: dict[str, Any]) -> str:
+    """``12 in every state (done 3, cancelled 1)``: the server's numbers of
+    one summary block, so a total never reads as open work."""
+    by_cat = block.get("by_category") or {}
+    return (
+        f"{block.get('tasks', 0)} in every state (done {by_cat.get('done', 0)}, "
+        f"cancelled {by_cat.get('cancelled', 0)})"
+    )
+
+
+def summary_counts_line(payload: dict[str, Any]) -> str:
+    """The count line of a summary: open, done and cancelled apart.
+
+    WS-64 chat wave 2. "tasks N" counted done and cancelled work too, and the
+    model read it as open work. Each number is the server's: ``open`` and the
+    two closing categories of ``by_category``. The chat adds nothing up. A
+    server with no ``open`` key gets the old total, named for what it is.
+    """
+    by_cat = payload.get("by_category") or {}
+    parts = []
+    if isinstance(payload.get("open"), int):
+        parts.append(f"open {payload['open']}")
+    else:
+        parts.append(f"tasks in every state {payload.get('tasks', 0)}")
+    parts.append(f"done {by_cat.get('done', 0)}")
+    parts.append(f"cancelled {by_cat.get('cancelled', 0)}")
+    parts.append(f"overdue {payload.get('overdue', 0)}")
+    parts.append(f"projects {payload.get('projects', 0)}")
+    return "  " + " · ".join(parts) + " (archived tasks not counted)"
 
 
 def tree_level(is_folder: bool, generation: int) -> str:
@@ -273,24 +374,21 @@ async def project_summary(project_id: str = "") -> str:
         out.append("  " + " · ".join(facts))
         if node.get("description"):
             out.append(f"  description: {data(str(node['description'])[:600])}")
-    out.append(
-        f"  tasks {payload.get('tasks', 0)} · overdue {payload.get('overdue', 0)}"
-        f" · projects {payload.get('projects', 0)}"
-    )
     by_cat = payload.get("by_category") or {}
+    out.append(summary_counts_line(payload))
     if by_cat:
         out.append("  by category: " + ", ".join(f"{k} {v}" for k, v in sorted(by_cat.items())))
     own = payload.get("own") or {}
     if own.get("tasks"):
         out.append(
-            f"  the node's own tasks: {own.get('tasks', 0)} · overdue {own.get('overdue', 0)}"
+            f"  the node's own tasks: {_state_counts(own)} · overdue {own.get('overdue', 0)}"
         )
     children = payload.get("children") or []
     if children:
         out.append(f"Children ({len(children)}):")
         for child in children:
             head, ident = _project_line(child)
-            head += f" · tasks {child.get('tasks', 0)} · overdue {child.get('overdue', 0)}"
+            head += f" · tasks {_state_counts(child)} · overdue {child.get('overdue', 0)}"
             out.append(head)
             out.append(ident)
     return "\n".join(out)
@@ -354,12 +452,13 @@ async def find_tasks(query: str, limit: int = 10) -> str:
     if not rows:
         return f"No task matches {data(term)}. Try a shorter fragment."
     out = [legend(), f"Tasks matching {data(term)} in title or description ({len(rows)}):"]
-    for row in rows:
-        out.extend(_task_line(row))
-        # The route cuts this only for a description hit. It goes AFTER the
-        # `full_id` line, so the card's row-and-id pair stays adjacent.
-        if row.get("snippet"):
-            out.append(f"  description match: {data(str(row['snippet'])[:SNIPPET_MAX])}")
+    with in_member_zone(await member_zone_for(rows)):
+        for row in rows:
+            out.extend(_task_line(row))
+            # The route cuts this only for a description hit. It goes AFTER
+            # the `full_id` line, so the card's row-and-id pair stays adjacent.
+            if row.get("snippet"):
+                out.append(f"  description match: {data(str(row['snippet'])[:SNIPPET_MAX])}")
     if payload.get("truncated"):
         # The search route stops at 50 hits and has no offset. list_tasks
         # runs the same word rule and pages, so every match stays in reach.
@@ -383,11 +482,14 @@ async def list_tasks(
     query: str = "",
     page: int = 1,
     page_size: int = 25,
+    include_triage: bool = False,
 ) -> str:
     """List tasks with the same filters the app's list uses. project_id scopes
     to one node (with its subtree by default); leave it empty for every
-    project the member can see. status_category is one of todo, in_progress,
-    done, cancelled (comma-separated for several). assignee is an email.
+    project the member can see. status_category is one of backlog, todo,
+    in_progress, done, cancelled or triage (comma-separated for several).
+    Triage tasks are left out unless include_triage=true or status_category
+    names triage. assignee is an email.
     tags is comma-separated. watching=true lists only tasks the member
     watches. query matches each word in the title or description, needs 3
     characters, or takes a task number such as #7. The
@@ -403,18 +505,19 @@ async def list_tasks(
         params["status_category"] = status_category
     if assignee:
         params["assignees"] = assignee
-    if unassigned:
-        params["unassigned"] = True
-    if overdue:
-        params["overdue"] = True
     if due_before:
         params["due_before"] = due_before
     if tags:
         params["tags"] = tags
-    if watching:
-        params["watching"] = True
-    if include_archived:
-        params["include_archived"] = True
+    for key, on in (
+        ("unassigned", unassigned), ("overdue", overdue), ("watching", watching),
+        ("include_archived", include_archived),
+        # The route leaves the Triage lane out by default (WS-27u), so a
+        # filter on triage alone read as "no task matches".
+        ("include_triage", include_triage or "triage" in _split_words(status_category)),
+    ):
+        if on:
+            params[key] = True
     term = _clean(query or "")
     if term:
         # The list route matches NOTHING for short text (filters.py), so a
@@ -432,8 +535,9 @@ async def list_tasks(
         {str(r.get("root_project_id")) for r in rows if r.get("root_project_id")}
     )
     out = [legend(), f"Tasks ({total} total, showing {len(rows)}, page {params['page']}):"]
-    for row in rows:
-        out.extend(_task_line(row, names.get(str(row.get("status_id")), "")))
+    with in_member_zone(await member_zone_for(rows)):
+        for row in rows:
+            out.extend(_task_line(row, names.get(str(row.get("status_id")), "")))
     # The rows BEFORE this page are (page - 1) pages, not (page - 1) rows. The
     # old test multiplied the row count, so a short last page claimed a next.
     size = params["page_size"]
@@ -540,6 +644,12 @@ async def task_detail(task_id: str) -> str:
     change to it. task_id is the `full_id` from a list or a search."""
     tid = uuid_of(task_id, "task_id")
     task = await get(f"/projects/tasks/{tid}")
+    with in_member_zone(await member_zone_for([task])):
+        return await _task_detail_text(tid, task)
+
+
+async def _task_detail_text(tid: str, task: dict[str, Any]) -> str:
+    """The body of :func:`task_detail`, rendered in the member's zone."""
     names = await _status_names(
         {str(task.get("root_project_id"))} if task.get("root_project_id") else set()
     )
@@ -627,17 +737,19 @@ def clock_of(row: Any) -> tuple[date | None, str, str]:
     return day, zone, label
 
 
-async def _clock_line() -> str:
-    """"Your date: Tuesday 2026-10-06 (Asia/Kolkata)." for the member's own
-    lists. ``legend`` states the UTC date, and the member's evening can be
-    the next day. An empty line when the read has no answer."""
+async def _clock_line() -> tuple[str, str]:
+    """``(line, zone)``. The line is "Your date: Tuesday 2026-10-06
+    (Asia/Kolkata)." for the member's own lists. ``legend`` states the UTC
+    date, and the member's evening can be the next day. The zone renders the
+    rows' days (:func:`in_member_zone`). Both are empty when the read has no
+    answer."""
     try:
-        day, _zone, label = clock_of(await get("/projects/my/today"))
+        day, zone, label = clock_of(await get("/projects/my/today"))
     except GatewayRefusal:
-        return ""
+        return "", ""
     if day is None:
-        return ""
-    return f"Your date: {WEEKDAYS[day.isoweekday() - 1]} {day.isoformat()} ({label})."
+        return "", ""
+    return f"Your date: {WEEKDAYS[day.isoweekday() - 1]} {day.isoformat()} ({label}).", zone
 
 
 @_annotate(read_only=True, idempotent=True, open_world=False)
@@ -654,7 +766,7 @@ async def my_work(
     which = "inbox" if untriaged else (view or "assigned").strip().lower()
     params: dict[str, Any] = {"page": max(1, int(page or 1)), "page_size": MAX_PAGE}
     home: list[str] = []
-    clock = await _clock_line()
+    clock, zone = await _clock_line()
     if clock:
         home.append(clock)
     if which == "inbox":
@@ -692,7 +804,8 @@ async def my_work(
     )
     out = [legend(), *home, f"{title} ({total} total, showing {len(rows)}):"]
     for row in rows:
-        head, ident = _task_line(row, names.get(str(row.get("status_id")), ""))
+        with in_member_zone(zone):
+            head, ident = _task_line(row, names.get(str(row.get("status_id")), ""))
         overlay: list[str] = []
         for key in ("disposition", "context", "energy", "deferred_until", "assigned_by"):
             if row.get(key):
@@ -785,7 +898,9 @@ async def my_task(task_id: str) -> str:
     task_detail is the project's view of the same task, with no overlay."""
     tid = uuid_of(task_id, "task_id")
     row = await get(f"/projects/my/tasks/{tid}")
-    out = [legend(), "My task:", *_task_line(row)]
+    with in_member_zone(await member_zone_for([row])):
+        head = _task_line(row)
+    out = [legend(), "My task:", *head]
     facts: list[str] = []
     for key in OVERLAY_FACTS:
         value = row.get(key)

@@ -170,6 +170,8 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   archive_project: { icon: "Archive", label: "Project archived" },
   unarchive_project: { icon: "ArchiveRestore", label: "Project restored" },
   move_project: { icon: "FolderInput", label: "Project moved" },
+  // WS-64 chat wave 2: several nodes under one parent, one card with rows.
+  move_projects: { icon: "FolderInput", label: "Projects moved" },
   convert_folder_to_project: { icon: "FolderKanban", label: "Folder converted to a project" },
   archive_task: { icon: "Archive", label: "Task archived" },
   delete_project: { icon: "Trash2", label: "Project deleted" },
@@ -282,6 +284,7 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "archive_project",
   "unarchive_project",
   "move_project",
+  "move_projects",
   "convert_folder_to_project",
   "archive_task",
   "delete_project",

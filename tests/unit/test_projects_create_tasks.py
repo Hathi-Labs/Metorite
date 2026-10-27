@@ -528,13 +528,24 @@ async def test_the_card_names_the_parent_of_a_subtask(monkeypatch) -> None:
     )
 
 
-async def test_the_card_names_the_project_of_a_parent_elsewhere(monkeypatch) -> None:
+async def test_a_parent_elsewhere_refuses_the_batch_before_the_card(monkeypatch) -> None:
+    """WS-64 chat wave 2 (item 1). A subtask lives in its parent's project,
+    so a parent in another project refuses the row before any card. The
+    card once offered the subtask with ", in Sales", and the write then
+    filed it in the wrong project."""
+    from skill_projects.client import GatewayRefusal
+
     asked = approve(monkeypatch)
     elsewhere = {**tw.OTHER_TASK, "project_id": tw.SALES, "project_name": "Sales"}
-    fake_gateway(monkeypatch, _gateway(parent=elsewhere))
+    calls = fake_gateway(monkeypatch, _gateway(parent=elsewhere))
     rows = json.dumps([{"title": "Weld it", "parent_task_id": OTHER}, {"title": "Paint it"}])
-    await skill_projects.create_tasks(UUID, rows)
-    assert asked[0]["rows"][0]["hint"].endswith("subtask of #8 Order the nozzle, in Sales")
+    with pytest.raises(GatewayRefusal) as refused:
+        await skill_projects.create_tasks(UUID, rows)
+    assert "Row 1 («Weld it»)" in str(refused.value)
+    assert "is in the project «Sales»" in str(refused.value)
+    assert f"project_id {tw.SALES}" in str(refused.value)
+    assert asked == []
+    assert writes(calls) == []
 
 
 async def test_the_receipt_names_each_assignee(monkeypatch) -> None:

@@ -328,6 +328,8 @@ _BASE: dict[str, dict[str, Any]] = {
     "merge_tags": {"project_id": UUID, "tag": "urgent", "into": "p0"},
     "merge_tasks": {"target_task_id": UUID, "source_task_ids": OTHER},
     "move_project": {"project_id": UUID, "parent_project_id": tw.SALES},
+    # WS-64 chat wave 2: several nodes under one parent, one card with rows.
+    "move_projects": {"project_ids": UUID, "parent_project_id": tw.SALES},
     "move_task": {"task_ids": UUID, "destination_project_id": OTHER},
     "my_work": {},
     # WS-46 P7 (G17)
@@ -393,6 +395,8 @@ _SAMPLE: dict[str, Any] = {
     "ids": OTHER,
     "important": "yes",
     "include_archived": True,
+    # WS-64 chat wave 2: list_tasks reads the Triage lane on request.
+    "include_triage": True,
     "include_done": True,
     "include_subtasks": "yes",
     "include_subtree": False,

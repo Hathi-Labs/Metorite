@@ -796,6 +796,8 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: 2026-10-25 (WS-66 RM-3, D114): list_reminders (a read) and the six reminder writes
 #: joined. Each write is the member's own reminder, through the gateway, behind one
 #: card, and says open_world=False. None sends anything outside Metorite.
+#: 2026-10-27 (WS-64 chat wave 2): move_projects joined. It moves nodes through the
+#: gateway only, behind one card with a row for each node, and says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
@@ -818,7 +820,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "find_conflicts", "find_tasks", "fit_for_task",
     "intake_queue", "link_tasks", "link_tasks_batch", "list_tasks",
     "make_document", "make_report", "mark_notifications_read", "merge_tags", "merge_tasks",
-    "move_project", "convert_folder_to_project",
+    "move_project", "move_projects", "convert_folder_to_project",
     "move_task", "my_areas", "my_contexts", "my_led_projects", "my_task", "my_work",
     "notifications", "open_in_app", "package_artifacts", "people_for", "project_access", "show_view",
     "project_summary", "project_views", "projects_tree", "propose_plan",

@@ -158,6 +158,7 @@
     "merge_tasks",
     "nudge_task",
     "move_project",
+    "move_projects",
     "report_delete",
     "remove_report_recipient",
     "revoke_access",

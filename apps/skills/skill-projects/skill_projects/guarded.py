@@ -71,6 +71,7 @@ from skill_projects.reads import (
 from skill_projects.refusals import REFUSED
 from skill_projects.writes import (
     _REOPENING,
+    _WRITE_FAILED,
     CANCELLED,
     CARD_CONTEXT_LIMIT,
     CARD_NOTE,
@@ -78,6 +79,11 @@ from skill_projects.writes import (
     MAX_BATCH,
     OVERLAY_ARGUMENTS,
     REPORT_CHANGE_REFUSED,
+    _apply_batch,
+    _ask_batch,
+    _batch_receipt,
+    _BatchRow,
+    _BatchWords,
     _clears,
     _confirm,
     _field_of,
@@ -89,6 +95,8 @@ from skill_projects.writes import (
     _org_wide,
     _overlay_values,
     _ref,
+    _named_refusal,
+    _refusal_words,
     _reminder_card,
     _reminder_gate,
     _reminder_named,
@@ -102,6 +110,7 @@ from skill_projects.writes import (
     _subtasks_phrase,
     _subtasks_wanted,
     _task,
+    _unfence,
     _vocab,
     agent_assignee_refusal_as_text,
     ask_about_subtasks,
@@ -804,24 +813,205 @@ async def move_project(
     title, detail, impact, rest = card
     if not await _confirm(title=title, detail=detail, context=_guard_card(impact, rest)):
         return CANCELLED
-    # The spread first, every row of it, as the tree drag writes it: the
-    # node's own position means nothing until its siblings carry one.
-    for sid, at in spread:
-        sibling_id = uuid_of(sid, "sibling")
-        await post(
-            f"/projects/nodes/{sibling_id}/move",
-            {"parent_project_id": target, "position": at},
-        )
     payload: dict[str, Any] = {"parent_project_id": target}
     if word:
         payload["position"] = position
-    result = (await post(f"/projects/nodes/{pid}/move", payload)) or {}
+    result = await _write_node_move(pid, node, target, spread, payload)
+    if isinstance(result, str):
+        return result
     if reorder:
         return f"Placed {data(node.get('name'))} {phrase} under {where}.\n  project_id: {pid}"
     remapped = (result.get("statuses_remapped") or {}).get("moved")
     tail = f" {remapped} task(s) changed lane." if remapped else ""
     spot = f", {phrase}" if word else ""
     return f"Moved {data(node.get('name'))} under {where}{spot}.{tail}\n  project_id: {pid}"
+
+
+#: The words of a ``move_projects`` receipt (WS-64 chat wave 2).
+MOVE_PROJECTS_WORDS = _BatchWords(
+    tool="move_projects",
+    noun="project",
+    done="Moved",
+    do="move",
+    undone="not moved",
+    maybe="moved",
+    again="moved. Never move them again for this request",
+)
+
+
+class _ProjectMoveRow(_BatchRow):
+    """One node of a ``move_projects`` call: its read, and its one move."""
+
+    def __init__(self, index: int, project_id: str) -> None:
+        super().__init__(index)
+        self.project_id = project_id
+        self.pid = ""
+        self.node: dict[str, Any] = {}
+        self.target: str | None = None
+        self.where = ""
+        self.impact = ""
+
+    @property
+    def ready(self) -> bool:
+        return not self.why and bool(self.pid)
+
+    @property
+    def ref(self) -> str:
+        if self.node:
+            return data(self.node.get("name"))
+        return f"a hidden project (id {data(str(self.project_id)[:8])})"
+
+    @property
+    def hint(self) -> str:
+        return _unfence(self.impact)
+
+    async def send(self) -> Any:
+        pid = uuid_of(self.pid, "project_id")
+        return await post(f"/projects/nodes/{pid}/move", {"parent_project_id": self.target})
+
+    def done(self, result: Any) -> list[str]:
+        remapped = ((result or {}).get("statuses_remapped") or {}).get("moved") if isinstance(
+            result, dict) else None
+        tail = f" · {remapped} task(s) changed lane" if remapped else ""
+        return [f"- {self.ref} → {self.where}{tail}", f"  project_id: {self.pid}"]
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def move_projects(
+    project_ids: str, parent_project_id: str = "", to_top_level: bool = False
+) -> str:
+    """Re-parent several projects, folders or subprojects under ONE node with
+    one approval, or make them spaces (to_top_level=true). project_ids is
+    comma-separated, at most 50. Each node is checked first: a node that is
+    already there, a move under itself or into its own subtree, and a node
+    that is hidden from the member are named on the card and left out. The
+    member sees ONE
+    card with a checkbox for each node, and approves once. Every task under a
+    moved node is re-rooted, as move_project does. The receipt names each
+    node moved and each one that was not, with why. Never move a node again
+    that the receipt lists. To set an order among siblings, use move_project
+    with place."""
+    ids = _split(project_ids)
+    if not ids:
+        return "Give at least one project id."
+    if len(ids) > MAX_BATCH:
+        return f"That is {len(ids)} projects. The limit for one card is {MAX_BATCH}."
+    if bool(parent_project_id.strip()) == bool(to_top_level):
+        return "Pass parent_project_id, or to_top_level=true to make them spaces, not both."
+    rows = [_ProjectMoveRow(i, raw) for i, raw in enumerate(ids, start=1)]
+    seen: set[str] = set()
+    for row in rows:
+        try:
+            row.pid, row.node = await _node(row.project_id)
+        except GatewayRefusal as exc:
+            if not _named_refusal(exc):
+                raise
+            row.why = _refusal_words(exc)
+            continue
+        if row.pid in seen:
+            row.why = "named twice. The first one moves"
+            continue
+        seen.add(row.pid)
+        found = await _move_target(row.pid, row.node, parent_project_id, "", False)
+        # `_move_target` reads the tree for each row. A batch is at most
+        # MAX_BATCH rows, and each read is the member's own tree.
+        if isinstance(found, str):
+            row.why = found
+            continue
+        target, parent, where, tree_rows = found
+        card = await _move_card(row.pid, row.node, parent, target, where, tree_rows, "", 0, False)
+        if isinstance(card, str):
+            row.why = card
+            continue
+        row.target, row.where, row.impact = target, where, card[2]
+    ready = [r for r in rows if r.ready]
+    stuck = [r for r in rows if not r.ready]
+    if not ready:
+        return "\n".join(
+            ["No project of these can be moved. Nothing was changed."]
+            + [f"not moved: row {r.index} {r.ref}: {r.why}" for r in stuck]
+        )
+    body: dict[str, Any] = {
+        "to": ready[0].where,
+        "statuses": "a task whose lane the destination set lacks is re-pointed by category",
+        "undo": "move each one back; the counter and types follow the new root",
+    }
+    body.update({f"cannot move {k}": f"{r.ref}: {r.why}" for k, r in enumerate(stuck, start=1)})
+    more = " and the projects below" if len(ready) > 1 else ""
+    # No count of tasks: each row's hint says its own, and a total goes stale
+    # when the member unticks a row.
+    asked = await _ask_batch(
+        "Move these projects?",
+        f"{ready[0].ref}{more} → {ready[0].where} · untick a project to leave it out",
+        body,
+        list(ready),
+        impact=(
+            f"up to {_plural(len(ready), 'project')}, each with its subtree, moved under "
+            f"{ready[0].where} · each row says its own task count"
+        ),
+    )
+    if isinstance(asked, str):
+        return asked
+    chosen, left = asked
+    out = await _apply_batch(chosen)
+    head = f"Moved {out.made} project{'s' if out.made != 1 else ''} under {ready[0].where}:"
+    return _batch_receipt(MOVE_PROJECTS_WORDS, head, out, chosen, left, stuck)
+
+
+async def _write_node_move(
+    pid: str,
+    node: dict[str, Any],
+    target: str | None,
+    spread: list[tuple[str, float]],
+    payload: dict[str, Any],
+) -> dict[str, Any] | str:
+    """The writes of ``move_project``: the sibling spread, then the node.
+
+    The spread goes first, every row of it, as the tree drag writes it: the
+    node's own position means nothing until its siblings carry one.
+
+    WS-64 chat wave 2. A spread write that fails stops the move, and the
+    receipt says how far it came (:func:`_spread_stopped`). A raise read as
+    "Function failed" with the siblings half numbered. Each position is
+    absolute, so the same call again writes the same numbers. A move with no
+    spread raises as before, because then nothing was written.
+    """
+    node_id = uuid_of(pid, "project_id")
+    for n, (sid, at) in enumerate(spread):
+        sibling_id = uuid_of(sid, "sibling")
+        try:
+            await post(
+                f"/projects/nodes/{sibling_id}/move",
+                {"parent_project_id": target, "position": at},
+            )
+        except _WRITE_FAILED as exc:
+            return _spread_stopped(node, n, len(spread), exc)
+    try:
+        return (await post(f"/projects/nodes/{node_id}/move", payload)) or {}
+    except _WRITE_FAILED as exc:
+        if not spread:
+            raise
+        return _spread_stopped(node, len(spread), len(spread), exc)
+
+
+def _spread_stopped(node: dict[str, Any], written: int, total: int, exc: Exception) -> str:
+    """The receipt of a move whose sibling order or node write failed.
+
+    *written* of *total* siblings carry their new position. The node itself
+    did not move. The same call again is safe: each position is absolute.
+    """
+    why = _refusal_words(exc) if isinstance(exc, GatewayRefusal) else (
+        f"the connection broke ({type(exc).__name__}), so that write may or may not "
+        "have landed"
+    )
+    return "\n".join([
+        f"{data(node.get('name'))} did NOT move: a write failed, {why}.",
+        f"  siblings numbered: {written} of {total}. They keep their new order, "
+        "which the tree draws as before.",
+        f"stopped: {data(node.get('name'))} itself was not moved.",
+        "Next: read projects_tree, then call move_project once more with the same "
+        "arguments. It writes the same positions again.",
+    ])
 
 
 async def _move_target(
@@ -1227,13 +1417,53 @@ async def bulk_update(
         out.append(f"- failed {row.get('task_id')}: {data(row.get('reason'))}")
     # Rows for what the route APPLIED. A skipped or failed id printed as a
     # task row would read as done on the receipt card.
-    applied = {str(r.get("task_id")) for r in result.get("results") or [] if isinstance(r, dict)}
+    applied = {
+        str(r.get("task_id")): r for r in result.get("results") or [] if isinstance(r, dict)
+    }
     for t in tasks:
-        if str(t.get("id")) in applied:
-            out.extend(_task_line(t))
+        row = applied.get(str(t.get("id")))
+        if row is not None:
+            after = bulk_applied_view(t, body, row)
+            out.extend(_task_line(after))
             # The level asked for, against each task's own due date.
-            out.extend(level_note(priority, {**t, **patch}))
+            out.extend(level_note(priority, after))
     return "\n".join(out)
+
+
+def bulk_applied_view(
+    task: dict[str, Any], body: dict[str, Any], row: dict[str, Any]
+) -> dict[str, Any]:
+    """*task* as the bulk write left it, for the receipt (WS-64 chat wave 2).
+
+    The rows were read before the card, so the receipt printed the OLD
+    values: the old due date and the old status under "Applied". The patch,
+    the route's own status name (``results[].status``), the tag and the
+    assignee changes and the shelf verb are merged in. A new status makes
+    the old category and the old completion unknown, so both are dropped.
+    """
+    after = dict(task)
+    patch = body.get("patch") or {}
+    for key, value in patch.items():
+        if key != "status":
+            after[key] = value
+    if "status" in patch:
+        after.pop("category", None)
+        after.pop("completed_at", None)
+        if row.get("status"):
+            after["status_name"] = row["status"]
+    for key, add, drop in (("tags", "tags_add", "tags_remove"),
+                           ("assignees", "assignees_add", "assignees_remove")):
+        if add in body or drop in body:
+            gone = {str(v).lower() for v in body.get(drop) or []}
+            kept = [v for v in after.get(key) or [] if str(v).lower() not in gone]
+            known = {str(v).lower() for v in kept}
+            after[key] = kept + [v for v in body.get(add) or [] if str(v).lower() not in known]
+    verb = body.get("action")
+    if verb == "archive":
+        after["archived_at"] = after.get("archived_at") or "now"
+    elif verb == "unarchive":
+        after["archived_at"] = None
+    return after
 
 
 def _overlay_shown(value: Any) -> str:

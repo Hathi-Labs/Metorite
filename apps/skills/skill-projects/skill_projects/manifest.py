@@ -606,6 +606,9 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # 2026-10-19 — several links under ONE card with a checkbox for each
     # link. Each ticked row is link_tasks' own POST.
     "link_tasks_batch": frozenset({"link_tasks"}),
+    # WS-64 chat wave 2 — several nodes under ONE parent, with ONE card and a
+    # checkbox for each node. Each ticked row is move_project's own POST.
+    "move_projects": frozenset({"move_project"}),
     # S6 — navigation reads the row it opens, then dispatches to the page.
     "open_in_app": frozenset({"task_detail", "project_summary"}),
     # WS-66 RM-3 (D114): the reminder tools read the member's saved zone
@@ -699,8 +702,9 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "page": "list_tasks.page",
         "page_size": "list_tasks.page_size",
         # WS-46 P13 review round 2: the read before a batch's card takes the
-        # triage lane too, so a twin in triage starts unticked.
-        "include_triage": "create_tasks",
+        # triage lane too, so a twin in triage starts unticked. WS-64 chat
+        # wave 2: list_tasks reads the Triage lane on request.
+        "include_triage": ("create_tasks", "list_tasks.include_triage"),
     },
     # WS-46 P13: create_tasks sends each field from one key of each row.
     ("POST", "/projects/tasks"): {
@@ -900,7 +904,10 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "timezone": "update_project.timezone",
     },
     ("POST", "/projects/nodes/{project_id}/move"): {
-        "parent_project_id": "move_project.parent_project_id",
+        "parent_project_id": (
+            "move_project.parent_project_id",
+            "move_projects.parent_project_id",
+        ),
         # WS-46 P7 (G13): the tree drag's order among the siblings.
         "position": "move_project.place",
     },
