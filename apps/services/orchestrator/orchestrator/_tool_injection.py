@@ -24,7 +24,7 @@ import dataclasses
 import functools
 import os
 import weakref
-from collections.abc import Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import Any
 
 from acb_common import get_logger
@@ -3031,10 +3031,53 @@ async def _pack_tools(
             dropped.append(name)
         else:
             tools.append(_pack_call(fn, owner, held, run_key, slug))
+    prefilter = _PACK_OWNER_FILTERS.get(owner)
+    if prefilter is not None and tools:
+        tools, dropped = await prefilter(tools, dropped, held=held)
     _log.info("executor.pack_built", pack=slug, owner=owner, held=held,
               tools=len(tools), dropped=sorted(dropped), skipped=sorted(skipped))
     return PackBuild(slug=slug, owner=owner, held=held, tools=tuple(tools),
                      dropped=tuple(dropped), skipped=tuple(skipped))
+
+
+async def _drop_pack_mirror_writes(
+    tools: list[Any], dropped: list[str], *, held: bool = False,
+) -> tuple[list[Any], list[str]]:
+    """Take the CRM record writes from a pack build in Mirror mode (OA-8a).
+
+    The drop is part of the builder, so each layer gets it: layer (a) runs
+    :func:`_drop_mirror_record_writes` later in the executor, but a pack that
+    ``load_skill_tools`` (OA-7e) or a turn-kind item (OA-7f) loads in the
+    middle of a turn builds after that drop. It reads ``GET /crm/mode`` as
+    the member (``acb_skills.crm_tools.crm_mode``) and reuses
+    :data:`MIRROR_RECORD_WRITES`. A held build reads nothing: the held drop
+    took the writes already. A failed
+    read keeps the tools, and the 409 relay of the write tools is the
+    fallback, as in :func:`_drop_mirror_record_writes`.
+    """
+    if held or not any(_tool_name(t) in MIRROR_RECORD_WRITES for t in tools):
+        return tools, dropped
+    try:
+        from acb_skills.crm_tools import crm_mode
+        mode = await crm_mode()
+    except Exception as exc:  # the 409 relay of the write tools is the fallback
+        _log.info("executor.crm_mode_unread", error=str(exc)[:200])
+        return tools, dropped
+    if mode != "mirror":
+        return tools, dropped
+    kept = [t for t in tools if _tool_name(t) not in MIRROR_RECORD_WRITES]
+    gone = [_tool_name(t) for t in tools if _tool_name(t) in MIRROR_RECORD_WRITES]
+    _log.info("executor.crm_mirror_writes_dropped", tools=sorted(gone), source="pack")
+    return kept, [*dropped, *gone]
+
+
+#: The one pre-filter slot of :func:`_pack_tools`, by owner. A filter takes the
+#: built tools, the dropped names and the held answer, and gives both lists
+#: back, less what the owner's rules take out. It runs for the builds of every
+#: layer (a, b and c), so a rule of an owner lives here and nowhere else.
+_PACK_OWNER_FILTERS: dict[str, Callable[..., Awaitable[tuple[list[Any], list[str]]]]] = {
+    "crm-assistant": _drop_pack_mirror_writes,
+}
 
 
 def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") -> Any:
