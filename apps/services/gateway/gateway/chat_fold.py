@@ -121,6 +121,37 @@ def is_specialist_tool(name: str, sub_agent_name: str) -> bool:
     return bool(agent) and str(name or "").strip().lower() == agent.replace("-", "_")
 
 
+#: What failed, by the code of a ``RUN_ERROR`` (``acb_llm.run_errors``), in
+#: the words of the notice a failed run saves. A code with no entry reads
+#: ``RUN_ERROR_DEFAULT_CAUSE``.
+RUN_ERROR_CAUSES: dict[str, str] = {
+    "timeout": "the AI service did not answer in time",
+    "connection": "the AI service could not be reached",
+    "rate_limited": "the AI service is busy",
+    "credits": "the organization has no AI credits left",
+    "cancelled": "the run was stopped",
+    "interrupted": "a restart stopped the run",
+}
+RUN_ERROR_DEFAULT_CAUSE = "the run stopped with an error"
+
+
+def run_error_notice(code: str, steps_ran: bool) -> str:
+    """The reply a run that failed with no answer saves (2026-10-26).
+
+    Incident: the idle watchdog stopped a run (``code=timeout``), and the
+    fold saved an assistant row with no text (``chat_fold.persisted
+    chars=0``). The member reloaded the chat and found an empty reply. A
+    failed run now always says so. "Nothing was changed" is said only when
+    no tool ran, because a tool that ran may have changed something.
+    """
+    cause = RUN_ERROR_CAUSES.get(code, RUN_ERROR_DEFAULT_CAUSE)
+    tail = (
+        "Some steps ran before it stopped. Check them before you try again."
+        if steps_ran else "Nothing was changed. Try again."
+    )
+    return f"I could not finish this request: {cause}. {tail}"
+
+
 def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Fold one run's AG-UI events into the persisted-message shape.
 
@@ -148,6 +179,8 @@ def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     content = ""
     folded_answer_idx = -1
     last_ms: int | None = None
+    #: The code of the run's RUN_ERROR, or "" for a run that did not fail.
+    run_error_code = ""
 
     def _segment_append(msg_id: str, delta: str) -> None:
         for seg in segments:
@@ -315,6 +348,9 @@ def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
                 content, reasoning_blocks, folded_answer_idx,
             )
 
+        elif t == "RUN_ERROR":
+            run_error_code = str(ev.get("code") or "unknown")
+
     # ── Segment ground truth (Phase 3c — VS Code parity) ────────────────────
     # When the runtime emitted real message segments, EVERY assistant text
     # segment is answer body — not just the last. Assistant text emitted before
@@ -338,6 +374,11 @@ def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
                         reasoning_blocks[i] = ""
                         break
             content = _joined
+
+    if run_error_code and not content.strip():
+        # A failed run never saves an empty reply (incident 2026-10-26). The
+        # notice is the reply, so a reload shows why the turn ended.
+        content = run_error_notice(run_error_code, bool(tool_events))
 
     if not (
         content.strip() or tool_events or reasoning_blocks
