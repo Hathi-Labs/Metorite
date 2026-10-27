@@ -1283,6 +1283,44 @@ async def _apply_pack_turn(
         return None
 
 
+def _pack_loader(agent: Any) -> Any | None:
+    """The ``LoadSkillTools`` of the run's view of *agent*, or None."""
+    try:
+        from acb_skills.tool_packs import LoadSkillToolsProvider
+    except ImportError:
+        return None
+    for provider in getattr(agent, "context_providers", None) or []:
+        if isinstance(provider, LoadSkillToolsProvider):
+            return provider.loader
+    return None
+
+
+def _pack_loader_offer(agent: Any) -> tuple[str, ...]:
+    """The packs that the run still offers to load (layer (b)), for the pack
+    items of the turn-kind request (WS-67 OA-7f). Empty when the run has no
+    loader, so a room, a WhatsApp run and a run with the flag off send none.
+    Each pack is one that layer (a) did not load and that fits the caps."""
+    loader = _pack_loader(agent)
+    return tuple(loader.offered) if loader is not None else ()
+
+
+def _apply_turn_pack_items(agents: list[Any], tier_run: Any) -> None:
+    """Hand the packs of the turn-kind answer to the loader of the run
+    (WS-67 OA-7f). The provider loads them in ``before_run``, so the first
+    model request holds them and no request is added. Never raises."""
+    slugs = tuple(getattr(tier_run, "packs", ()) or ())
+    if not slugs or not agents:
+        return
+    try:
+        loader = _pack_loader(agents[0])
+        if loader is not None:
+            kept = loader.set_early(slugs)
+            _log.info("executor.packs_turn_kind", asked=list(slugs), kept=list(kept))
+    except Exception as exc:  # a pack never costs the turn
+        _log.error("executor.packs_refused", reason="turn_kind_items",
+                   error_type=type(exc).__name__)
+
+
 def _log_pack_request_tools(agents: list[Any]) -> None:
     """Log the tool count of a run that loaded packs, after the injection.
 
@@ -5956,6 +5994,8 @@ async def run_agent_stream(
                     is_copilot=_is_copilot_built(_ag, _agent_runtime),
                     # The member's own turn: read the effort from their words.
                     effort_from_text=True,
+                    # WS-67 OA-7f: the packs that layer (a) did not load.
+                    pack_offer=_pack_loader_offer(_ag),
                 )
 
             if agents:
@@ -6068,6 +6108,9 @@ async def run_agent_stream(
             _tier_run = await (
                 _tier_task if _tier_task is not None else _ask_run_tier(agent)
             )
+            # WS-67 OA-7f: layer (c). The packs that System 1 asked for load
+            # before the first model request, through the guarded builder.
+            _apply_turn_pack_items(agents, _tier_run)
             # Chat speed: the setup of the run, up to the first model request.
             # `tier_wait_ms` is what the tier question still cost after the
             # overlap. Fence: tests/unit/test_chat_speed_slice2.py.
@@ -9037,6 +9080,7 @@ async def _tier_policy_for_run(
     is_copilot: bool,
     emit: bool = True,
     effort_from_text: bool = False,
+    pack_offer: tuple[str, ...] = (),
 ) -> Any:
     """The run's `RunTierPolicy`, or None when the flag does not cover the agent.
 
@@ -9056,6 +9100,11 @@ async def _tier_policy_for_run(
     logs `ai_route.effort_from_text`. The batch path and a sub-agent leave it
     off: their message is a model's words, and they inherit the parent's
     effort through `think_mode` in the bound context.
+
+    *pack_offer* (WS-67 OA-7f): the packs that the run can still load. They
+    ride as items in the same request (`turn_kind`), and the packs that
+    System 1 asks for go in `RunTierPolicy.packs`. Empty: the call is the
+    one of before.
     """
     if not _tier_policy_covers(agent_name):
         return None
@@ -9084,6 +9133,7 @@ async def _tier_policy_for_run(
         read_effort=effort_from_text,
         # A default the kind cannot move asks no question (`pinned`).
         default=default,
+        **({"packs": pack_offer} if pack_offer else {}),
     )
     _log.info(
         "ai_route.turn_kind", agent=agent_name, run_id=run_id, kind=turn.kind,
@@ -9119,6 +9169,7 @@ async def _tier_policy_for_run(
         effort=effort,
         emit=None if (is_copilot or not emit) else _emit_to_run(thread_id),
         context_tokens=context_tokens,
+        **({"packs": tuple(turn.packs)} if getattr(turn, "packs", ()) else {}),
     )
 
 
