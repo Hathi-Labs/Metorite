@@ -329,7 +329,7 @@ const LEVEL_TITLES: Record<NodeSummary["level"], string> = {
   folder: "Folder overview",
   project: "Project overview",
   subproject: "Subproject overview",
-  mine: "Everything assigned to me",
+  mine: "My tasks overview",
 };
 
 /**

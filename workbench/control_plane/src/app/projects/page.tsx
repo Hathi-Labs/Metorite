@@ -2952,14 +2952,22 @@ function ProjectsWorkspace() {
   }, [appLink]);
 
   // WS-64 OP-11 — the address follows My tasks: `?app=my-tasks&chip=next`
-  // while it shows, and neither key once the member leaves it.
+  // while it shows, and neither key once the member leaves it. Only a move
+  // AWAY from My tasks takes the keys out: on the first render `app` is not
+  // yet read from the address, and the link effect above still owns it.
+  const appBefore = useRef(app);
   useEffect(() => {
+    const was = appBefore.current;
+    appBefore.current = app;
     if (!MY_WORK_LIVE) return;
     const search = window.location.search;
-    const target = isMyTasksApp(app) ? myTasksHref(search, myTasks.chip) : withoutMyTasks(search);
     const here = `/projects${search}`;
-    const hasKeys = /[?&](app=my-tasks|chip=)/.test(search);
-    if (target !== here && (isMyTasksApp(app) || hasKeys)) router.replace(target);
+    const target = isMyTasksApp(app)
+      ? myTasksHref(search, myTasks.chip)
+      : isMyTasksApp(was)
+        ? withoutMyTasks(search)
+        : here;
+    if (target !== here) router.replace(target);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [app, myTasks.chip]);
 
