@@ -655,6 +655,27 @@ class MemberRemoveRequest(AdminSchemeRequest):
     new_owner_email: str | None = None
 
 
+#: The longest ``organization.name`` the rename door writes. It is the
+#: gateway's ``DISPLAY_NAME_MAX``, restated here because the Console has no
+#: gateway dependency (CP-8 "Rename an organization").
+ORG_NAME_MAX = 80
+
+
+class OrgRenameRequest(AdminSchemeRequest):
+    """The body of ``POST /registry/orgs/rename`` (CP-8, 2026-10-27).
+
+    It names the new name and nothing else. The org and the actor come from
+    the scheme, exactly as at the member doors (R11).
+
+    ⚠️ **Extra fields are refused (422).** A ``slug`` here would be a caller
+    who believes a rename can move the slug, and it cannot.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    name: str
+
+
 class CreditGrantRequest(BaseModel):
     """An operator's ledger write.
 
@@ -6405,6 +6426,82 @@ def remove_member_admin(
         "previous_status": previous_status,
         "released": released,
         "owner_transferred_to": transferred_to,
+    }
+
+
+# ── The org-RENAME door (CP-8 "Rename an organization", 2026-10-27) ──────────
+#
+# The DEWiN customer renamed its organization in the app, and the Operator
+# Console still showed the old name. The two planes each kept a name and
+# nothing connected them. One rename now changes the display name on both.
+
+
+@app.post("/registry/orgs/rename")
+def rename_org_admin(
+    req: OrgRenameRequest,
+    caller: MemberAdminCaller,
+    request: Request,
+) -> dict[str, Any]:
+    """Set ``organization.name``, the only name the Console stores (CP-8).
+
+    The **sibling of** ``POST /registry/members``: the same ``member_admin``
+    capability, the same two-arm shape and the same derivation seam
+    (:func:`_admin_scheme_context`). It adds no capability.
+
+    * **Operator arm.** The operator BFF names the org by ``org_slug``. It
+      calls this door after the tenant door renamed the tenant plane.
+    * **Deployment arm.** The gateway's admin rename calls it after its own
+      commit. The org and the actor are derived from placement and membership
+      (R11), so an actor in two orgs on one box gets 409.
+
+    **The role set is** :data:`_MEMBER_ADMIN_ROLES`, for the member doors'
+    reason. The tenant plane's ``admin:settings:manage`` is the real gate,
+    and the gateway mirrors here only after that gate passed. A tenant admin
+    can be a Console ``member``, so an ``owner|admin`` set would refuse that
+    admin's rename here, after the tenant plane changed, and leave the two
+    names different.
+
+    **The name check is the Console's own.** The name must not be empty and
+    must be :data:`ORG_NAME_MAX` characters or fewer, or the door answers 422.
+    The gateway's ``clean_display_name`` runs first on both paths, and the
+    Console has no gateway dependency, so this is the only check here.
+
+    It writes the name and never the slug, and one ``org.rename`` audit row
+    records the new name and the old one. A repeat with the same name writes
+    the same value, so a retry is safe.
+    """
+    if not req.name.strip():
+        raise HTTPException(
+            status_code=422, detail="The organization name cannot be empty."
+        )
+    if len(req.name) > ORG_NAME_MAX:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"The organization name is {len(req.name)} characters. "
+                f"The limit is {ORG_NAME_MAX}."
+            ),
+        )
+    with get_engine().begin() as conn:
+        org_id, actor = _admin_scheme_context(
+            conn, req, caller, roles=_MEMBER_ADMIN_ROLES, request=request
+        )
+        renamed = store.rename_org(conn, org_id=org_id, name=req.name)
+        if renamed is None:
+            # `_admin_scheme_context` just read this row, so only a purge in
+            # between can get here.
+            raise HTTPException(status_code=404, detail="no such organization")
+        _audit(
+            conn,
+            org_id,
+            "org.rename",
+            {"name": renamed["name"], "previous_name": renamed["previous_name"]},
+            actor=actor,
+        )
+    return {
+        "slug": renamed["slug"],
+        "name": renamed["name"],
+        "previous_name": renamed["previous_name"],
     }
 
 
