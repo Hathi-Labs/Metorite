@@ -176,6 +176,42 @@ async def _project_generation(db, node_id: str) -> int:
     )).scalar() or 0)
 
 
+#: WS-64 OP-11 (audit P1-4). The PROJECT generations of many nodes in one
+#: read: the batch form of :func:`_project_generation`, with the same count.
+#: The walk goes UP each node's ancestry over ``pm_projects``, because the
+#: generation is a structural fact. A node whose parent the caller cannot
+#: see is still a project or a subproject, not a space.
+_GENERATIONS_SQL = (
+    "WITH RECURSIVE lineage AS ("
+    "  SELECT id AS node_id, id, parent_project_id, kind FROM pm_projects"
+    "    WHERE id = ANY(CAST(:ids AS uuid[]))"
+    "  UNION ALL"
+    "  SELECT l.node_id, p.id, p.parent_project_id, p.kind FROM pm_projects p"
+    "    JOIN lineage l ON p.id = l.parent_project_id"
+    ") SELECT node_id, count(*) FILTER ("
+    "    WHERE coalesce(kind, 'project') = 'project') AS generation"
+    "  FROM lineage GROUP BY node_id"
+)
+
+
+async def attach_levels(db: Any, nodes: list[dict[str, Any]]) -> None:
+    """Stamp ``level`` on each node, by the one rule ``core.node_level``.
+
+    One read for every node. A node the read does not answer keeps
+    ``level`` null: the client then falls back to the kind, as before.
+    """
+    ids = [str(n["id"]) for n in nodes if n.get("id")]
+    gens: dict[str, int] = {}
+    if ids:
+        rows = (await db.execute(text(_GENERATIONS_SQL), {"ids": ids})).fetchall()
+        gens = {str(r.node_id): int(r.generation or 0) for r in rows}
+    for node in nodes:
+        gen = gens.get(str(node.get("id")))
+        node["level"] = (
+            None if gen is None else node_level(node_kind(node.get("kind")), gen)
+        )
+
+
 #: WS-64 OP-10, fix round 1. A share lock on each node of the ancestor
 #: chain of ``:pid``, itself included. The CTE finds the ids, and the outer
 #: select locks them, because Postgres refuses ``FOR SHARE`` in a recursive
@@ -458,6 +494,8 @@ async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
         # WS-64 OP-6b — a personal space is not shared (D-OP-2).
         for node in personal.values():
             await attach_can_write_grants(db, user, node)
+        # WS-64 OP-11 (audit P1-4) — the level of each node, additive (R6).
+        await attach_levels(db, [*nodes.values(), *personal.values()])
 
     roots = _nest(nodes)
     _attach_progress(roots, counts)
@@ -595,6 +633,11 @@ async def get_node(
         # team space holds no tasks (`core.assert_holds_tasks`), and the
         # member's own root holds the Inbox. Additive (R6).
         result["personal"] = bool(getattr(row, "personal_owner", None))
+        # WS-64 OP-11 (audit P1-4) — the level, by `core.node_level`. Additive.
+        result["level"] = node_level(
+            node_kind(getattr(row, "kind", None)),
+            await _project_generation(db, project_id),
+        )
         # WS-64 OP-8 — the chat refuses before its card where this is false.
         await attach_can_delete(db, user, [result], kind="project")
         # WS-64 OP-6b — the chat refuses before its grant card where this is false.

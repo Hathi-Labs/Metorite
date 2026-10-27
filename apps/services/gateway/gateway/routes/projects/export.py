@@ -84,6 +84,7 @@ from gateway.csv_export import (
     csv_cell,
     csv_document,
 )
+from gateway.routes.projects.mine import check_scope, mine_scope
 from gateway.routes.projects.core import (
     DIRECTIONS,
     TASK_SORTS,
@@ -309,6 +310,9 @@ async def export_tasks_csv(
     tags: str | None = None,
     tags_all: str | None = None,
     include_triage: bool = False,
+    #: WS-64 OP-11. `scope=mine` is the My tasks roll-up. The list takes it, so
+    #: the export takes it too, or an export of My tasks would hold every task.
+    scope: str | None = None,
     # WS-27bk §9.12.2. Carried because the docstring below promises this
     # endpoint takes `list_tasks`' parameters verbatim. A filter the board
     # applies and the export ignores hands somebody a file of the wrong rows,
@@ -345,6 +349,11 @@ async def export_tasks_csv(
         clauses: list[str] = [task_visibility_clause(vis)]
         params: dict[str, Any] = dict(vis.params)
         definitions: list[dict[str, Any]] = []
+        if check_scope(scope):
+            # ANDed beside the visibility clause: "mine" narrows, never widens.
+            mine_sql, mine_params = await mine_scope(db, vis)
+            clauses.append(mine_sql)
+            params.update(mine_params)
 
         if project_id:
             # Seeing the project is required to export it: an unreadable id is a

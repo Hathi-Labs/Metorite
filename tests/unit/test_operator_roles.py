@@ -136,6 +136,10 @@ _PROBES: dict[tuple[str, str], dict] = {
     # above. An unknown org answers 404 past the gate, so nothing is written.
     ("POST", "/registry/members/remove"): {"json": {"org_slug": "nope",
                                                     "member_email": "a@b.c"}},
+    # CP-8, 2026-10-27 — the org-rename door. EDITOR. An unknown org answers
+    # 404 past the gate, so nothing is written, and a viewer gets 403.
+    ("POST", "/registry/orgs/rename"): {"json": {"org_slug": "nope",
+                                                 "name": "X"}},
     ("POST", "/credits/grant"): {"json": {"org_slug": "nope", "credits": "1",
                                           "reason": "manual"}},
     ("POST", "/keys"): {"json": {"org_slug": "nope", "label": "t"}},

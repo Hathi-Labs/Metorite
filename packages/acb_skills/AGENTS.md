@@ -37,6 +37,10 @@ not write a second copy of that seam. A bare test file name is under
    - `persona_for` swaps the owner's delegation text for the rules, in load order. It raises when the persona does not hold that text once. A held pack adds `egress.EGRESS_HOLD_NOTE_PACK`.
    - `delegation_refusal` is the ONE refusal rule. A hand-off to an owner gets the pack text only while the run holds every pack of that owner (`owner_packs`). `call_agent_background` does not ask it.
    - Fences: `test_tool_packs_choice.py`, `test_tool_packs_off.py`.
+   - OA-7e, layer (b): `load_tool` builds `load_skill_tools` for one run. Its description is the `catalog` of the packs that `loadable` gives. `LoadSkillTools` is its `FunctionMiddleware`: it takes its own tool by identity, builds through the orchestrator's builder, and calls `FunctionInvocationContext.add_tools`. `LoadSkillToolsProvider` adds both to one run.
+   - A load obeys the caps of layer (a), and a refusal past a cap names `spawn_subagents`. A load alone makes no pack sticky. A pack becomes sticky when one of its tools runs (`note_used`).
+   - MCP rule: a load of a pack of an owner that reads stranger text refuses when the live list holds an MCP tool. `_beside_mcp` fails closed. Precedence differs by layer. In layer (a) the email pack wins and the MCP server stays out. In layer (b) the MCP tool wins and the pack stays out.
+   - `PackRun.holds()` gives each pack of the run, loads too. `PackRun.refusal` applies `_refusals_for` to them. `_rules_block` is the ONE rules text of both layers. Fence: `test_load_skill_tools.py`.
    - `owner_scope(owner, held)` binds `no_egress` for any value of `held` but `False`. Fences: `test_tool_packs_registry.py`, `test_pack_guards.py`.
 5b. decide_tools.py -- the `decide` core-floor tool (spec `customer_console.md` §6A.14). It sends no member and never logs `context`.
    - `decide_tool_enabled()` is its ONE switch. `decide_tool_for(agent_name)` is the one place that picks `system_one_decide` or the Jev `decide`.
@@ -98,6 +102,7 @@ not write a second copy of that seam. A bare test file name is under
    - `handoff.head_task` is the ONE call of every delegation site. `chat_constraints_enabled` is the one reader of `CHAT_CONSTRAINTS`.
    - A keep stores only whole sentences that the member typed in this turn. Never use `member_message` for it. A drop needs the member's approval on a card.
    - Fences: `test_chat_constraints.py`, `test_handoff_words.py`.
+5n-b. subagent_contract.py -- the contract parser of a dynamic sub-agent (WS-67 OA-9a, spec `one_assistant_context.md` §6). It does no I/O, and nothing calls it until OA-9b. `parse_items` turns other output into one `inferred` item. `parse_jobs` checks the jobs against the parent's `run_tools`. `MAX_JOBS` equals `agent_tools._PARALLEL_MAX`. Fence: `test_subagent_contract.py`.
 5n-0. profile_tools.py -- `resolve_person` (spec `personalization.md` §5.4), as the run's member, behind `ASSISTANT_PROFILE_ENABLED`. Fence: `test_resolve_person.py`.
 5n-1. knowledge_tools.py + knowledge_manifest.py -- `read_page` and `list_spaces` (spec `knowledge_base.md` §8.1). They read `/knowledge` as the run's member and take no SQL.
    - A new Knowledge route needs a row in `knowledge_manifest.py`. `propose_page` and `propose_edit` show one card before they send.

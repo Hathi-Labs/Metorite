@@ -2026,6 +2026,84 @@ def triage_exclusion_clause(alias: str = "t") -> str:
     )
 
 
+# ── "Mine" — one definition (WS-64 OP-11) ───────────────────────────────────
+
+#: The arms of :func:`mine_clause`. ``"assigned"`` alone is the read of
+#: ``/projects/assigned-to-me``, whose contract is "assigned to me" only.
+MINE_ARMS: tuple[str, ...] = ("assigned", "personal", "waiting")
+
+
+def mine_clause(alias: str = "t", *, arm: str | None = None) -> str:
+    """The task ``alias`` is the member's own. The ONE definition of "mine".
+
+    A task is mine when one of three arms is true (`one_projects_app.md`
+    §9 OP-11, item 3):
+
+    * ``assigned`` — I am an assignee of the task;
+    * ``personal`` — the task sits in my personal tree;
+    * ``waiting`` — my overlay on the task says WAITING, and the task's
+      root is inside MY grant closure. The overlay narrows and never widens
+      (`personal.MY_TASKS_FROM` carries the reason).
+
+    ``arm`` names one arm. ``None`` is all three, joined by ``OR``.
+
+    ⚠️ **The tenant is NOT in this fragment, on purpose.** Each caller ANDs
+    it in once: ``MY_TASKS_FROM`` composes ``t.organization_id = :vis_org``
+    above the arms, and the board reads AND ``task_visibility_clause``,
+    which carries the tenant. The fragment never runs alone.
+
+    ⚠️ **Identity comes from the session.** It binds ``:who``, and the
+    WAITING arm binds the closure's ``:vis_org``, ``:vis_email`` and
+    ``:vis_groups``. :func:`mine_binds` assembles all four from the member,
+    never from request input (R5, R11).
+
+    Each arm is a self-contained subquery, so a reader that has no overlay
+    join or project join can use it. The aliases ``a``, ``proj`` and ``p``
+    shadow any outer alias of the same name, which is legal SQL and keeps
+    the text the hermetic fakes read.
+    """
+    arms = {
+        "assigned": (
+            f"EXISTS (SELECT 1 FROM pm_task_assignees a"
+            f" WHERE a.task_id = {alias}.id AND lower(a.assignee) = :who)"
+        ),
+        "personal": (
+            f"EXISTS (SELECT 1 FROM pm_projects proj"
+            f" WHERE proj.id = {alias}.project_id"
+            f" AND lower(proj.personal_owner) = :who)"
+        ),
+        "waiting": (
+            f"(EXISTS (SELECT 1 FROM pm_task_personal p"
+            f" WHERE p.task_id = {alias}.id AND lower(p.member_email) = :who"
+            f" AND p.disposition = 'WAITING')"
+            f" AND {alias}.root_project_id IN ({_VISIBLE_PROJECTS_SQL}))"
+        ),
+    }
+    if arm is not None:
+        if arm not in arms:
+            raise ValueError(f"Unknown arm '{arm}'. One of: {list(MINE_ARMS)}.")
+        return arms[arm]
+    return "(" + "\n     OR ".join(arms[name] for name in MINE_ARMS) + ")"
+
+
+async def mine_binds(db: Any, email: str) -> dict[str, Any]:
+    """Every bind :func:`mine_clause` needs, for one member, assembled once.
+
+    ``email`` is the member of the session. The tenant and the groups come
+    from the directory. The groups are the member's OWN, also for a holder
+    of ``data:org:read``: that permission widens the board, and it does not
+    widen the WAITING arm (`personal.MY_TASKS_FROM`).
+    """
+    who = (email or "").strip().lower()
+    groups = (await db.execute(text(_MY_GROUPS_SQL), {"email": who})).fetchall()
+    return {
+        "who": who,
+        "vis_org": await resolve_organization_id(db, who),
+        "vis_email": who,
+        "vis_groups": [r.subject for r in groups if getattr(r, "subject", None)],
+    }
+
+
 # ── SQL helpers ─────────────────────────────────────────────────────────────
 #
 # Every identifier reaching an f-string below is one of ours: a literal table

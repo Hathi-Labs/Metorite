@@ -1103,6 +1103,12 @@ _LIST_TASKS_INPUT: dict[str, Any] = {
     "properties": {
         "project_id": {"type": "string", "pattern": _UUID_PATTERN,
                        "description": "Only tasks of this project. An id from list_projects."},
+        "include_subtree": {
+            "type": "boolean", "default": True,
+            "description": "With project_id: true reads the tasks of the project and of"
+                           " every project under it, as the task_counts of"
+                           " list_projects count them. False reads the tasks of"
+                           " that project only. A space holds no tasks of its own."},
         "status_id": {"type": "string", "pattern": _UUID_PATTERN,
                       "description": "Only tasks in this status."},
         "tag": {"type": "string", "minLength": 1, "maxLength": 100,
@@ -1167,6 +1173,7 @@ _LIST_TASKS_OUTPUT: dict[str, Any] = {
 #: The query parameter of ``GET /projects/tasks`` that each input fills.
 _LIST_TASKS_PARAMS: dict[str, str] = {
     "project_id": "project_id",
+    "include_subtree": "include_subtree",
     "status_id": "status_id",
     "tag": "tags",
     "assignee": "assignee",
@@ -1263,6 +1270,12 @@ async def _list_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     for name in ("project_id", "status_id", "tag", "assignee", "text", "parent_task_id"):
         if name in args:
             query.append((_LIST_TASKS_PARAMS[name], str(args[name])))
+    if "project_id" in args:
+        # WS-64 OP-11 (audit P1-3). The route's default is the node alone, so
+        # `list_tasks(project_id=<space>)` read 0 tasks while list_projects
+        # counted the subtree. The tool's default is the subtree.
+        subtree = args.get("include_subtree", True) is not False
+        query.append((_LIST_TASKS_PARAMS["include_subtree"], "true" if subtree else "false"))
     if args.get("unheld") is True:
         query.append((_LIST_TASKS_PARAMS["unheld"], "true"))
     if args.get("include_descendants") is True:
@@ -1296,7 +1309,9 @@ LIST_TASKS = Tool(
     title="List tasks",
     description=(
         "List the tasks this member can see, newest first, one page at a time."
-        " Filter by project, status, tag, assignee or text. Send unheld true to"
+        " Filter by project, status, tag, assignee or text. A project_id reads"
+        " the project and every project under it, unless include_subtree is"
+        " false. Send unheld true to"
         " see only tasks that no AI session holds. Send parent_task_id to get"
         " only the direct subtasks of one task. Add include_descendants true to"
         " get every task under it, down to 10 levels, with the top level first."
@@ -1497,7 +1512,15 @@ WHOAMI = Tool(
 # ── list_projects ───────────────────────────────────────────────────────────
 
 #: The keys of one ``list_projects`` row (§9.1).
-PROJECT_ROW_KEYS: tuple[str, ...] = ("id", "name", "path", "parent_id", "task_counts")
+PROJECT_ROW_KEYS: tuple[str, ...] = (
+    "id", "name", "path", "parent_id", "kind", "level", "task_counts",
+)
+
+#: The levels a node occupies (`core.NODE_LEVELS`). The gateway derives the
+#: level from the kind and the place (`core.node_level`). The edge copies it.
+_LEVEL_SCHEMA: dict[str, Any] = {
+    "type": ["string", "null"], "enum": ["space", "folder", "project", "subproject", None],
+}
 
 TREE_ROUTE = "/projects/tree"
 
@@ -1538,6 +1561,8 @@ _LIST_PROJECTS_OUTPUT: dict[str, Any] = {
                     "name": _UNTRUSTED_SCHEMA,
                     "path": {"type": "array", "items": _UNTRUSTED_SCHEMA},
                     "parent_id": _NULLABLE_STRING,
+                    "kind": _NULLABLE_STRING,
+                    "level": _LEVEL_SCHEMA,
                     "task_counts": _COUNTS_SCHEMA,
                 },
                 "required": list(PROJECT_ROW_KEYS),
@@ -1577,12 +1602,19 @@ def _count(node: Mapping[str, Any], name: str) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
+def _level(value: Any) -> str | None:
+    """The gateway's level when it is one of the four, else null."""
+    return value if value in ("space", "folder", "project", "subproject") else None
+
+
 def _project_row(node: dict[str, Any], parent: str | None, path: list[str]) -> dict[str, Any]:
     return {
         "id": str(node.get("id")),
         "name": untrusted(node.get("name") or ""),
         "path": [untrusted(p) for p in path],
         "parent_id": parent,
+        "kind": _str_or_none(node.get("kind")),
+        "level": _level(node.get("level")),
         "task_counts": {"tasks": _count(node, "tasks"), "done": _count(node, "done"),
                         "cancelled": _count(node, "cancelled")},
     }
@@ -1625,7 +1657,8 @@ LIST_PROJECTS = Tool(
         "List the projects this member can see, a parent before its children,"
         " one page at a time. Filter by a parent project or by text in the"
         " name. Each row has the project id, name, path of names from the"
-        " root, parent id and task counts for the whole subtree. Archived and"
+        " root, parent id, kind (project or folder), level (space, folder,"
+        " project or subproject) and task counts for the whole subtree. Archived and"
         " personal projects are not listed. Send nextCursor back as cursor to"
         " read the next page. The pages are offsets, so a project that changes"
         " between two calls can be skipped or shown twice." + _UNTRUSTED_NOTE
@@ -1646,7 +1679,7 @@ LIST_PROJECTS = Tool(
 
 #: The keys of the project of ``get_project`` (§9.1).
 PROJECT_KEYS: tuple[str, ...] = (
-    "id", "name", "description", "parent_id", "kind", "task_prefix", "status",
+    "id", "name", "description", "parent_id", "kind", "level", "task_prefix", "status",
     "timezone", "created_at", "updated_at", "archived_at",
 )
 STATUS_KEYS: tuple[str, ...] = ("id", "name", "category", "position", "is_default")
@@ -1669,7 +1702,7 @@ def _object(properties: dict[str, Any]) -> dict[str, Any]:
 
 _PROJECT_SCHEMA = _object({
     "id": {"type": "string"}, "name": _UNTRUSTED_SCHEMA, "description": _UNTRUSTED_OR_NULL,
-    "parent_id": _NULLABLE_STRING, "kind": _NULLABLE_STRING,
+    "parent_id": _NULLABLE_STRING, "kind": _NULLABLE_STRING, "level": _LEVEL_SCHEMA,
     "task_prefix": _SHAPED_OR_NULL, "status": _NULLABLE_STRING,
     "timezone": _SHAPED_OR_NULL, "created_at": _NULLABLE_STRING,
     "updated_at": _NULLABLE_STRING, "archived_at": _NULLABLE_STRING,
@@ -1715,6 +1748,7 @@ def _project(node: Mapping[str, Any]) -> dict[str, Any]:
         "description": untrusted(node.get("description")),
         "parent_id": _str_or_none(node.get("parent_project_id")),
         "kind": _str_or_none(node.get("kind")),
+        "level": _level(node.get("level")),
         "task_prefix": shaped(node.get("task_prefix"), _PREFIX_RE),
         "status": _str_or_none(node.get("status")),
         "timezone": shaped(node.get("timezone"), _TIMEZONE_RE),
@@ -1778,7 +1812,7 @@ GET_PROJECT = Tool(
     title="Get a project",
     description=(
         "Read one project this member can see: its name, description, parent,"
-        " kind, task prefix, status, time zone and dates, with its statuses,"
+        " kind, level, task prefix, status, time zone and dates, with its statuses,"
         " task types, custom field definitions and tags. Use the status ids"
         " and tags to filter list_tasks. An archived project still answers,"
         " with archived_at set." + _UNTRUSTED_NOTE
