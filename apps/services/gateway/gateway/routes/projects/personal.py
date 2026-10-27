@@ -44,8 +44,6 @@ from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.cascade import complete_subtree, emit_all
 from gateway.routes.projects.core import (
-    _MY_GROUPS_SQL,
-    _VISIBLE_PROJECTS_SQL,
     CLOSING_CATEGORIES,
     ListResponse,
     Page,
@@ -65,6 +63,8 @@ from gateway.routes.projects.core import (
     insert_row,
     load_default_status,
     load_visible_task,
+    mine_binds,
+    mine_clause,
     next_task_number,
     now,
     parent_lane_status,
@@ -1241,13 +1241,7 @@ LEFT JOIN pm_projects proj ON proj.id = t.project_id
 WHERE (t.archived_at IS NULL OR CAST(:archived AS boolean))
   AND (proj.archived_at IS NULL OR CAST(:archived AS boolean))
   AND t.organization_id = CAST(:vis_org AS uuid)
-  AND (
-        EXISTS (SELECT 1 FROM pm_task_assignees a
-                WHERE a.task_id = t.id AND lower(a.assignee) = :who)
-     OR lower(proj.personal_owner) = :who
-     OR (p.disposition = 'WAITING'
-         AND t.root_project_id IN (""" + _VISIBLE_PROJECTS_SQL + """))
-  )
+  AND """ + mine_clause("t") + """
 """
 
 
@@ -1267,16 +1261,9 @@ async def my_tasks_binds(
     groups; that permission widens the board, and a member's private list is
     not the board (the fragment's docstring).
     """
-    email = (who or "").strip().lower()
-    groups = (await db.execute(text(_MY_GROUPS_SQL), {"email": email})).fetchall()
-    return {
-        "who": email,
-        "vis_org": await resolve_organization_id(db, email),
-        "vis_email": email,
-        "vis_groups": [r.subject for r in groups if getattr(r, "subject", None)],
-        "archived": archived,
-        **extra,
-    }
+    # WS-64 OP-11: `core.mine_binds` is the one assembler of the binds of
+    # `core.mine_clause`, which the arms of the fragment are.
+    return {**await mine_binds(db, who), "archived": archived, **extra}
 
 
 #: D-PM-38 — which children the roll-up counts. The same two rules the Projects

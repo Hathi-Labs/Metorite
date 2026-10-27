@@ -247,6 +247,32 @@ async def resolve_subject(
     return sorted({email for _, email, _ in rows})
 
 
+#: The one subject value a member-facing Analytics route takes (WS-64 OP-11).
+#: A WORD, never an address (R11): the subject is the member of the session.
+SUBJECT_ME = "me"
+
+
+async def subject_me(
+    db: Any, user: Any, vis: Any, subject: str | None,
+) -> list[str] | None:
+    """``subject=me`` gives the caller's people, ``[me]``. No subject gives ``None``.
+
+    Any other value is a 422, so a route cannot be asked about somebody else
+    by an address in the query string. A report names another person through
+    ``config.subject`` and :func:`resolve_subject`, under the rule of §7.1.
+    The caller still passes the directory check of :func:`resolve_subject`,
+    so a member the directory does not know gets the same 422 as a report.
+    """
+    if subject is None or subject == "":
+        return None
+    if subject != SUBJECT_ME:
+        raise _refuse(
+            f"subject must be '{SUBJECT_ME}'. A report on another person or a"
+            " team is a saved report with config.subject."
+        )
+    return await resolve_subject(db, user, vis, {"kind": "person", "email": _me(user)})
+
+
 def subject_clause(alias: str = "t") -> str:
     """The task ``alias`` is held NOW by a person of the subject.
 

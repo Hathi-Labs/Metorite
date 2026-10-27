@@ -26,6 +26,7 @@ from gateway.routes.projects.core import (
     TaskModel,
     _tenant_session,
     actor,
+    mine_clause,
     resolve_organization_id,
     router,
     row_to_dict,
@@ -66,8 +67,11 @@ async def assigned_to_me(
     email = actor(user).lower()
     clauses = [
         "t.organization_id = CAST(:vis_org AS uuid)",
-        "EXISTS (SELECT 1 FROM pm_task_assignees a "
-        "        WHERE a.task_id = t.id AND lower(a.assignee) = :who)",
+        # WS-64 OP-11: the assignee arm of the ONE "mine" (`core.mine_clause`).
+        # This route's contract is "assigned to me" only: `my_work`
+        # view="assigned" reads it, and its rows sync into no other list.
+        # The arm, not a copy, so the two cannot drift.
+        mine_clause("t", arm="assigned"),
         "t.archived_at IS NULL",
         # WS-64: a task of an archived project is history, not my work.
         "NOT EXISTS (SELECT 1 FROM pm_projects pr "

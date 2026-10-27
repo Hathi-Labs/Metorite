@@ -994,9 +994,21 @@ class TestTheToolResults:
                                    "tag": "bug", "assignee": "a@x.test", "text": "login",
                                    "limit": 7})
         assert armed.gateway.requests[0].path == "/projects/tasks"
+        # WS-64 OP-11 (audit P1-3): a project_id reads its subtree by default.
         assert armed.gateway.requests[0].pairs == {
-            "project_id": _uuid(1), "status_id": _uuid(9000), "tags": "bug",
-            "assignee": "a@x.test", "q": "login", "page": "1", "page_size": "7"}
+            "project_id": _uuid(1), "include_subtree": "true", "status_id": _uuid(9000),
+            "tags": "bug", "assignee": "a@x.test", "q": "login", "page": "1",
+            "page_size": "7"}
+
+    async def test_include_subtree_defaults_true_and_false_reads_the_node(self, armed):
+        """WS-64 OP-11, audit P1-3. list_projects counts a space's subtree, so
+        list_tasks with that space id reads the subtree too. False is the node."""
+        await _tool("list_tasks", {"project_id": _uuid(1)})
+        await _tool("list_tasks", {"project_id": _uuid(1), "include_subtree": False})
+        await _tool("list_tasks", {"text": "login"})
+        sent = [r.pairs.get("include_subtree") for r in armed.gateway.requests
+                if r.path == "/projects/tasks"]
+        assert sent == ["true", "false", None]
 
     async def test_the_edge_never_sends_the_hidden_parameters(self, armed):
         """D11. Over every request of both tools."""
@@ -1436,6 +1448,19 @@ class TestListProjects:
         for dropped in ("clickup", "lead", "about ", "icon", "archived_root_id"):
             assert dropped not in flat
 
+    async def test_each_row_carries_kind_and_level_from_the_tree(self, armed):
+        """WS-64 OP-11, audit P1-4. The edge copies the gateway's level
+        (``core.node_level``) and derives none. A value that is not one of
+        the four levels, or no value, reads as null."""
+        armed.gateway.tree[0]["level"] = "space"
+        armed.gateway.tree[0]["children"][0]["level"] = "project"
+        armed.gateway.tree[1]["level"] = "bogus"
+        rows = {p["id"]: p for p in _structured(await _tool("list_projects"))["projects"]}
+        assert (rows[P_TEAM]["kind"], rows[P_TEAM]["level"]) == ("project", "space")
+        assert rows[P_CHILD]["level"] == "project"
+        assert rows[P_SALES]["level"] is None
+        assert rows[P_UNDER_OLD]["level"] is None
+
     async def test_parent_id_keeps_the_direct_children(self, armed):
         body = _structured(await _tool("list_projects", {"parent_id": P_TEAM}))
         assert [p["id"] for p in body["projects"]] == [P_CHILD]
@@ -1512,6 +1537,12 @@ class TestGetProject:
         flat = json.dumps(body)
         for dropped in ("clickup", "lead", "task_count", "icon", "color", "created_by"):
             assert dropped not in flat, dropped
+
+    async def test_the_project_carries_its_level(self, armed):
+        """WS-64 OP-11, audit P1-4. ``GET /projects/nodes/{id}`` sends ``level``."""
+        armed.gateway.nodes[P_TEAM]["level"] = "space"
+        body = _structured(await _tool("get_project", {"project_id": P_TEAM}))
+        assert (body["project"]["kind"], body["project"]["level"]) == ("project", "space")
 
     async def test_every_free_text_value_is_untrusted(self, armed):
         body = _structured(await _tool("get_project", {"project_id": P_TEAM}))
