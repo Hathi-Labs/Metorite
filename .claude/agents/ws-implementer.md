@@ -41,12 +41,12 @@ From `work_plan.md`:
   for `/agents`; Center/module/group as `department_centers.md` §1 defines them.
 - **R4 — status changes propagate.** If you ship spec'd work, update the owning
   spec's status header **in this same change**. Not later, not in a follow-up.
-- **R5 — tenant-ready by construction** *(owner-directed 2026-08-09, D18; binds
-  while WS-29 is in flight)*: any new persisted table must pass
-  `tests/unit/test_tenant_coverage.py`'s source gate (tenant-scoped or exempted
-  with a reason); no new DB-connection or Redis sites outside the seam/wrapper
-  (allow-list additions need a cited reason); acquire sessions only through the
-  current seam idiom; never take a tenant or identity from request input.
+- **R5 — tenant-ready by construction** *(D18)*. A new persisted table must
+  pass the source gate of `tests/unit/test_tenant_coverage.py`. It is
+  tenant-scoped, or it carries an exemption with a reason. Add no DB-connection
+  or Redis site outside the seam or the wrapper. An allow-list addition needs a
+  cited reason. Get sessions only through the current seam idiom. Never take a
+  tenant or identity from request input.
 - **R9 — an app plugs into the shell, and never builds one** (D89). Do not
   mount a ⌘K listener, a palette, a `NotificationBell` or an `<AgentChat>`
   rail in an app. Do not import one from another app either. Declare jobs, a
@@ -76,10 +76,10 @@ anything other than `main` receive zero CI from pr-check.
 Stop and report rather than proceeding if:
 
 - The work needs an OWNER-GATE action that **no dated line in
-  `.claude/OWNER_GRANTS.md` covers**. ⚠️ Read `CLAUDE.md` §3a first — until
-  2026-09-30 the owner grants deploy, prod reach, `.env` and flag flips by date.
-  Check the file before you stop. If a line covers the gate id, do the work.
-  If none does, name the exact gate id the owner must grant.
+  `.claude/OWNER_GRANTS.md` covers**. ⚠️ Read root `CLAUDE.md` §3a first. The
+  owner grants deploy, prod reach, `.env` and flag flips by date. Check the
+  file before you stop. If a line covers the gate id, do the work. If none
+  does, name the exact gate id the owner must grant.
 - The verified file anchors do not match reality — the spec moved under you.
 - Acceptance can't be met without a decision the spec doesn't record.
 - A verification command fails for a reason you cannot attribute to your change.

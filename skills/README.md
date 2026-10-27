@@ -1,6 +1,6 @@
 # Skills (Anthropic `SKILL.md` format · ADR-013)
 
-Phase-0 home for skills. From Phase 0.5 (WBS 0.5.1) onward these move to a dedicated repo `project-docs-skills`, with weekly upstream sync from `anthropics/skills` and `VoltAgent/awesome-agent-skills`.
+This folder holds the agent-domain skills. A Claude Code session skill lives in `.claude/skills/` instead.
 
 Layout per skill:
 ```

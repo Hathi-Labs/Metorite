@@ -48,54 +48,31 @@ enforces it, or be labelled advisory. "We should always…" is not a rule.
 
 ## 1. Environments and the test database
 
-> ⚠️ **AMENDED 2026-08-26 by D55 — this section's conclusion is superseded; its
-> reasoning is not.** The paragraph below is correct **for the premise it names**:
-> *one box, single-digit customers, one developer.* The owner is changing all three,
-> so it is retired **with its premise** rather than overruled on taste. The ladder we
-> run is now local/CI → **staging** → production, and staging is built the way this
-> section's own **P-1** describes — a nightly re-derivation from production's
-> anonymised dump, not a maintained copy — which is what answers the drift objection
-> instead of ignoring it. **P-1 and "a staging environment" are the same object.**
-> Owning spec: `specs/development_and_delivery_framework.md` §3 (ADOPTED, board
-> **WS-38**); the parity contract is its §3.4.
->
-> ⚠️ **PHASE 0 HAS ENDED (2026-10-17).** Staging now runs at `dev.metorite.com`
-> (WS-38, `specs/staging_and_daily_release.md`). A merge reaches staging first,
-> and production takes one release a day. Test on staging before production.
-> `CLAUDE.md` §4 carries the steps. The note below is the record of Phase 0.
->
-> ⏳ **In force until it isn't: PHASE 0.** Until customer #2, a second contributor, or
-> H3 — whichever comes first — **we work directly in production** (D55.2). So for
-> today the paragraph below still describes what we run; §3.5 of the framework carries
-> the three end-triggers. ⚠️ Everything else in *this* document binds throughout, and
-> §2's **ship dark** binds harder: with no staging in front of production, a flag
-> defaulting OFF is the only thing between a merge and an incident.
-
-**We do not run a classic dev → staging → prod triple, and should not.** At one
-box and single-digit customers it buys drift (a staging environment nobody keeps
-truthful) more than safety.
-
-**What we run instead:**
+**We run four environments** (D55, board WS-38):
 
 1. **Local hermetic** — the unit suite, no database. Fast, and where most tests
-   live. ⚠️ Its fakes agree with whatever SQL they are handed (see §4).
-2. **Local scratch Postgres** — the `mt-scratch` pattern (:5433, full ladder
-   applied). This is where migrations get proven before they are believed.
-3. **Production** — one box, with the box's own 5-minute pull timer as a second
-   delivery path beside the deploy workflow.
+   live. ⚠️ Its fakes agree with whatever SQL they get (see §4).
+2. **Local scratch Postgres** — `scripts/dev_db.sh` (§1.1), with the migration
+   ladders applied. Prove a migration here before you trust it.
+3. **Staging** — `https://dev.metorite.com`, on the dev box. It serves the
+   `staging` ref, and that ref takes every merge. A nightly rebuild from an
+   anonymised dump of production keeps it production-shaped, so it cannot
+   drift.
+4. **Production** runs on its own box. It applies the `release` ref. A daily run
+   moves that ref at 21:30 UTC. A manual dispatch moves it for a hotfix.
 
-**The missing environment, and the one worth building: a production-SHAPED
-restore.** CI replays the migration ladder from zero, which proves the ladder is
-*self-consistent*. It does not prove the next migration survives contact with
-real data — and that is exactly where the failures came from (148's cast, the
-tags migration's `LATERAL` scope error, the People write routes). We already own
-every ingredient: a nightly dump, a rehearsed restore (2026-08-05), and the
-scratch-database pattern.
+`specs/staging_and_daily_release.md` owns staging and the daily release. Root
+`CLAUDE.md` §4 says what to do after a merge. Test on staging before
+production.
 
-> **Practice item P-1 (proposed, not yet a board row): rehearse pending
-> migrations against a restore of last night's production dump**, in CI or on a
-> schedule. Anonymise before it leaves the box. This single job would have caught
-> more of this month's incidents than any other change on this page.
+**Why staging is a nightly copy.** CI replays the migration ladder from zero.
+That proves only that the ladder is *self-consistent*. It does not prove that
+the next migration survives real data. Our failures came from real data:
+148's cast, the tags migration's `LATERAL` scope error, and the People write
+routes.
+
+Staging applies each merged migration to a copy of production's data
+before production takes it. That copy is practice item P-1.
 
 ### 1.1 The local loop — build against a real database, then deploy
 
@@ -157,7 +134,8 @@ the row the LEFT JOIN exists to include, and it removes that row first. Below
 behaviour. Keep them separate, because that separation is what makes a bad merge
 a non-event.
 
-- **Deploy continuously on merge to main.** Already true.
+- **A merge deploys to staging, and production takes one release a day**
+  (WS-38, `specs/staging_and_daily_release.md`).
 - **Ship dark.** Every feature lands behind a flag, defaulting OFF, and the flip
   is a deliberate act — for anything outward-facing or spend-bearing, an
   **owner-gated** one (`work_plan.md` §6). This is already our habit and it is
@@ -182,8 +160,8 @@ a non-event.
   pooled cutover a ring is a per-org feature flag, which **D25.2** already fixed
   as the only version-skew mechanism we support (one codebase, one schema, always
   latest).
-- **A fixed clock is optional; the ring order is not.** "Midday every day" is
-  fine, and matters far less than "us first, then one, then all".
+- **The ring order matters more than the clock.** The clock is 21:30 UTC each
+  day. The order is "us first, then one, then all".
 
 ## 3. Migrations — the sharpest edge we have
 
@@ -278,7 +256,8 @@ queue of six (2026-08-09) is above it.
 **The supervisor loop:** audit the spec (is it dispatchable?) → set the risk
 tier → implement one narrowed slice → **independently** verify against the
 acceptance criteria → adversarially review the diff (HIGH and STANDARD tiers,
-not LOW) → open a PR → merge, and watch the deploy and the `main` unit job.
+not LOW) → open a PR → merge, watch the deploy and the `main` unit job, and
+test on staging.
 `.claude/commands/next-ticket.md` owns the steps and the tiers (owner decision,
 2026-10-16). Locally, run `scripts/affected_tests.py`. pr-check runs the
 whole suite. Two properties make it work:
@@ -438,8 +417,12 @@ cannot drift. Set it up once with `bash scripts/ci_pc/setup.sh`.
 
 ## 8. What to fix before customer #1 — in order
 
-These are named here so they are not rediscovered; each belongs to an existing
-board row.
+This list names them so that nobody finds them again from zero. Each belongs
+to an existing board row.
+
+Rows 1 and 3 are built. `GET /version` serves the deployed SHA
+(`tests/unit/test_build_info.py`). Staging applies each migration to a nightly
+copy of production first (§1). The board row holds the state of the others.
 
 | # | Item | Why it is a business risk, not tech debt | Home |
 |---|---|---|---|
