@@ -44,8 +44,8 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
-from acb_auth import require_authenticated
 from acb_auth import access as access_module
+from acb_auth import require_authenticated
 from acb_auth.access import invalidate as invalidate_access
 from fastapi import FastAPI
 from sqlalchemy import create_engine, text
