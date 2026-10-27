@@ -78,14 +78,20 @@ def _module() -> Any:
 
 @contextlib.contextmanager
 def _run(run_id: str = "r-1", **over: Any) -> Iterator[None]:
-    """The orchestrator's run of a member's own chat, bound by the server."""
+    """The orchestrator's run of a member's own chat, bound by the server.
+
+    OA-7c: the run check of a pack call keys on ``tool_packs.PACK_RUN_KEY``,
+    which the server mints for each run. Here each run id gets its own key,
+    and an empty run id gets none."""
     from acb_common.db import bind_tenant, release_tenant
+    from acb_skills.tool_packs import PACK_RUN_KEY
 
     token = bind_tenant(ORG)
     try:
         with artifact_context_scope():
             values = {"run_id": run_id, "session_id": SESSION, "agent_name": "orchestrator",
-                      "member": MEMBER, "workspace_root": "/tmp/orch-ws", "no_egress": False}
+                      "member": MEMBER, "workspace_root": "/tmp/orch-ws", "no_egress": False,
+                      PACK_RUN_KEY: f"key-{run_id}" if run_id else ""}
             values.update(over)
             bind_artifact_context(**values)
             yield
@@ -635,6 +641,12 @@ async def test_a_pack_tool_acts_only_in_the_run_that_loaded_it() -> None:
         out = await tool(email_id="m-1")
     assert out == ti.PACK_CALL_REFUSED.format(tool="read_email")
     assert await tool(email_id="m-1") == out, "a frame with no run is refused too"
+    # OA-7c condition 3: a client can choose the run id, so a frame with the
+    # same run id and another server key is refused too.
+    from acb_skills.tool_packs import PACK_RUN_KEY
+
+    with _run(run_id="r-turn-1", **{PACK_RUN_KEY: "key-of-another-run"}):
+        assert await tool(email_id="m-1") == out, "the run id alone opens nothing"
     assert ran == []
 
 
@@ -805,13 +817,20 @@ async def test_a_run_with_no_chat_key_builds_a_held_pack() -> None:
         assert (await _build("email")).held is True  # no tenant bound
 
 
-# ── Fix round 1: no run id, no build (item 5) ───────────────────────────────
+# ── Fix round 1: no run key, no build (item 5, keyed by OA-7c) ──────────────
 
 
-async def test_a_run_with_no_run_id_builds_no_tool() -> None:
-    """The run check of each call keys on ``run_id``. Mutation: build with
-    an empty key, so a call of any frame with no ``run_id`` passes → red."""
+async def test_a_run_with_no_run_key_builds_no_tool() -> None:
+    """The run check of each call keys on the value that the server mints
+    (``tool_packs.PACK_RUN_KEY``, OA-7c condition 3). Mutation: build with an
+    empty key, so a call of any frame with no key passes → red. A run id
+    alone builds nothing, because a client can set it."""
+    from acb_skills.tool_packs import PACK_RUN_KEY
+
     with _run(run_id=""):
+        build = await _build("email", _stub(_probe()))
+    assert build.tools == () and build.held is True
+    with _run(run_id="r-client-chosen", **{PACK_RUN_KEY: ""}):
         build = await _build("email", _stub(_probe()))
     assert build.tools == () and build.held is True
 

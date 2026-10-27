@@ -97,13 +97,17 @@ def _orchestrator_run(module: Any) -> tuple[dict[str, Any], bool]:
     runs in the orchestrator's run, which is never held on its own frame
     (``no_egress=False``). So only the builder and ``owner_scope`` can give
     the tool body the held answer (OA-7b fix round 1, F1)."""
+    from acb_skills.tool_packs import PACK_RUN_KEY
     from acb_skills.write_artifact import artifact_context
 
     bound = dict(artifact_context())
     held = (bound.get("no_egress", False) is not False if bound
             else module._egress_held() is not False)
+    run_id = bound.get("run_id") or PACK_TEST_RUN_ID
+    # OA-7c: the run check keys on the value that the server mints for each
+    # run, never on the run id. This view stands in for that server.
     run = {**bound, "agent_name": "orchestrator", "no_egress": False,
-           "run_id": bound.get("run_id") or PACK_TEST_RUN_ID}
+           "run_id": run_id, PACK_RUN_KEY: bound.get(PACK_RUN_KEY) or f"key-{run_id}"}
     if not held and not run.get("session_id"):
         # An open chat needs a key for its mark. A new one for each call, so
         # the mark of one call does not hold the next (``test_pack_guards.py``

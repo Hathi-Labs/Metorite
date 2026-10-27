@@ -21,22 +21,30 @@ that names them. This module holds the rest of a pack:
 and it fails closed. Any value other than empty on a box is OWNER-ONLY
 (``work_plan.md`` §6 D4).
 
-OA-7a ships data and the reader, dark. Nothing calls :func:`packs_on` yet,
-and no run loads a pack. OA-7b builds the guarded builder
+OA-7a ships data and the reader, dark. OA-7b builds the guarded builder
 (``orchestrator._tool_injection._pack_tools``) and :func:`owner_scope`, the
-scope of the owner for each pack call. OA-7c adds the choice of layer (a)
-and the sticky state, OA-7e ``load_skill_tools`` and OA-7f the pack items of
-the turn-kind question. This module never imports the orchestrator or the
-gateway, and it opens no connection. Fences:
-``tests/unit/test_tool_packs_registry.py`` and
-``tests/unit/test_pack_guards.py``.
+scope of the owner for each pack call. OA-7c adds layer (a) and the sticky
+state (§4.2.2): :func:`begin_turn` reads the sticky packs of the chat,
+:func:`choose` picks the packs of the turn, :func:`persona_for` swaps the
+owner's delegation text for the rules, :func:`note_used` makes a pack sticky
+and :func:`delegation_refusal` refuses a hand-off to an owner that a pack
+replaces. OA-7e adds ``load_skill_tools`` and OA-7f the pack items of the
+turn-kind question. This module never imports the orchestrator or the
+gateway. It reaches Redis only through the tenant wrapper (R5). Fences:
+``tests/unit/test_tool_packs_registry.py``, ``tests/unit/test_pack_guards.py``,
+``tests/unit/test_tool_packs_choice.py`` and
+``tests/unit/test_tool_packs_off.py``.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import functools
+import hashlib
+import json
 import re
-from collections.abc import Iterator
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 from acb_common import get_logger
@@ -47,13 +55,30 @@ _log = get_logger("acb_skills.tool_packs")
 
 __all__ = [
     "ALL",
+    "DECAY_TURNS",
+    "MAX_PACKS",
     "MAX_PACK_TOOLS",
+    "MAX_REQUEST_TOOLS",
     "PACKS",
+    "PACKS_KEY",
+    "PACK_RUN_KEY",
+    "Choice",
     "Pack",
+    "PackRun",
+    "PackTurn",
+    "Sticky",
+    "begin_turn",
+    "choose",
+    "delegation_refusal",
+    "drop_sticky",
+    "matched_layer",
+    "note_used",
+    "owner_packs",
     "owner_scope",
     "owner_tools",
     "pack",
     "packs_on",
+    "persona_for",
     "rules_for",
 ]
 
@@ -76,6 +101,18 @@ class Pack:
     words: tuple[str, ...] = ()
     tier_floor: str | None = None
     keeps_reasoning: bool = False
+    #: OA-7c. Not empty: while the pack is loaded, the owner's specialist tool
+    #: and the owner's delegation text leave the run. When the run holds EVERY
+    #: pack of the owner too (:func:`owner_packs`), a hand-off to the owner
+    #: answers this text (:func:`delegation_refusal`). With some packs of the
+    #: owner only, ``call_agent`` and ``delegate_to_agent`` still reach the
+    #: owner for the rest (fix round 1, P1-A). Empty: the pack leaves
+    #: delegation as it is.
+    delegation_refusal: str = ""
+    #: OA-7c fix round 1 (P1-A). ``(old, new)``: when the run holds this pack
+    #: but not every pack of its owner, the rules swap *old* for *new*, the
+    #: line that sends the rest of the owner's work to the owner.
+    handoff_swap: tuple[str, str] = ()
 
     @property
     def owner(self) -> str:
@@ -165,16 +202,39 @@ assistant. Use them yourself.
 #: tools write: ``/email?email=<id>``, with ``&account=<id>`` or not.
 _EMAIL_LINK = re.compile(r"/email\?(?:[^\s()\[\]]*&)?email=[^\s&()\[\]]+")
 
+#: The answer to a hand-off to the email assistant while the ``email`` pack is
+#: loaded (OA-7c). It is the text of the OA-5 fixture
+#: (``evals/one_assistant_measure/pack.py``, ``REFUSED``), which OA-5 measured.
+_EMAIL_DELEGATION_REFUSED = (
+    "Not run. In this chat the email tools are yours: call them yourself. "
+    "No email agent exists to hand the task to."
+)
+
+#: The line of the ``email`` rules that says no email agent exists, and the
+#: line that takes its place while the run holds ``email`` but not
+#: ``email-setup`` (fix round 1, P1-A). The setup work then still has a
+#: path: a hand-off to the email assistant.
+_EMAIL_NO_AGENT_LINE = "No email agent exists to hand a task to."
+_EMAIL_SETUP_ROUTE_LINE = (
+    "For a rule, a setting, the knowledge or the writing style, hand the task "
+    "to the email assistant."
+)
+
 PACKS: dict[str, Pack] = {
     "email": Pack(
         slug="email",
         rules=_EMAIL_RULES,
         references=(_EMAIL_LINK,),
+        # Fix round 1 (P1-B): each word needs an email context. A bare
+        # "draft" matched "Draft the PRD in Notion", and "unread" matched an
+        # unread WhatsApp chat. A run with the email pack gets no MCP server.
         words=(
             "email", "emails", "e-mail", "e-mails", "mail", "mails",
-            "inbox", "inboxes", "mailbox", "mailboxes", "unread", "draft",
-            "drafts",
+            "inbox", "inboxes", "mailbox", "mailboxes",
+            "draft a reply", "draft reply", "reply draft",
         ),
+        delegation_refusal=_EMAIL_DELEGATION_REFUSED,
+        handoff_swap=(_EMAIL_NO_AGENT_LINE, _EMAIL_SETUP_ROUTE_LINE),
     ),
     "email-setup": Pack(
         slug="email-setup",
@@ -194,6 +254,17 @@ def pack(slug: str) -> Pack | None:
     if not is_pack(slug):
         return None
     return PACKS.get(slug)
+
+
+def owner_packs(owner: str) -> tuple[str, ...]:
+    """Every registered pack of agent *owner*, in the order of :data:`PACKS`.
+
+    A run that holds all of them holds every tool of the owner, so only then
+    is a hand-off to the owner refused (fix round 1, P1-A). The flag does not
+    narrow this list: with ``TOOL_PACKS=email`` the run never holds
+    ``email-setup``, so the hand-off for setup work stays open."""
+    return tuple(slug for slug in PACKS
+                 if is_pack(slug) and str(SKILL_FAMILIES[slug].get("owner")) == str(owner))
 
 
 def rules_for(slug: str) -> str:
@@ -282,9 +353,9 @@ def packs_on(org: object) -> frozenset[str]:
 
     The caller passes the bound tenant of the run, never a value from request
     input (R5, ``user_management_contract.md`` R11). Any value other than
-    empty on a box is OWNER-ONLY (``work_plan.md`` §6 D4). OA-7a ships no
-    caller: the fence in ``tests/unit/test_tool_packs_registry.py`` names
-    this module as the only reader.
+    empty on a box is OWNER-ONLY (``work_plan.md`` §6 D4). OA-7c added the
+    one caller, ``orchestrator.executor._start_pack_turn``, and the fence in
+    ``tests/unit/test_tool_packs_registry.py`` names it.
     """
     org_id = str(org or "").strip().lower()
     if not org_id:
@@ -304,3 +375,466 @@ def packs_on(org: object) -> frozenset[str]:
         return frozenset()
     known = frozenset(slug for slug in PACKS if is_pack(slug))
     return known if ALL in slugs else known & slugs
+
+
+# ── OA-7c: layer (a), the sticky state and the persona (§4.2.2) ─────────────
+#
+# Layer (a) takes three inputs in OA-7c: the sticky packs of the chat, a
+# reference in the member's words, and the words of a pack. The surface waits
+# for OA-7d. The executor reads the state beside the load
+# (:func:`begin_turn`), and applies the choice before ``_inject_agent_tools``
+# (``_tool_injection._apply_tool_packs``). Nothing here runs while
+# :func:`packs_on` gives no pack, so with the flag off no state is read or
+# written. Fences: ``tests/unit/test_tool_packs_choice.py`` and
+# ``tests/unit/test_tool_packs_off.py``.
+
+#: The key of the run context that keys the run check of each pack call. The
+#: executor mints its value for each run, so a client cannot set it (OA-7c
+#: condition 3). ``_tool_injection._pack_call`` compares it.
+PACK_RUN_KEY = "pack_run"
+#: The key of the run context that holds what the run loaded (:class:`PackRun`).
+#: A delegated run never inherits it (``executor._run_sub_agent_streaming``).
+PACKS_KEY = "tool_packs"
+
+#: The most packs in one request (§4.2.2, "The cap").
+MAX_PACKS = 3
+#: The most tools in one request. OA-5 measured 110 tools at 51 of 54 turns.
+MAX_REQUEST_TOOLS = 110
+#: A sticky pack leaves at the start of a turn when no tool of it ran in the
+#: last 8 member turns.
+DECAY_TURNS = 8
+
+#: The Redis namespace of the sticky state. The key is
+#: ``cc:<org>:tool-packs:<session>:<member hash>`` through the tenant wrapper,
+#: in the idiom of the email working set (``email_chat_context``).
+NAMESPACE = "tool-packs"
+#: The life of the state, slid by each turn.
+TTL_S = 30 * 24 * 3600
+#: The longest wait for Redis. A slow Redis costs the record, never the turn.
+REDIS_TIMEOUT_S = 1.0
+#: The field of the state hash that counts the member turns of the chat. No
+#: slug starts with "~", so a pack never takes this field.
+_TURN_FIELD = "~turn"
+
+
+@dataclass(frozen=True)
+class Sticky:
+    """One sticky pack of a chat: one of its tools ran in an earlier turn."""
+
+    slug: str
+    #: The turn and the place in the load order of its first load. The
+    #: sticky packs keep this order, so the tool list stays byte-stable.
+    first: tuple[int, int]
+    #: The last member turn in which a tool of the pack ran.
+    used: int
+
+
+@dataclass(frozen=True)
+class PackTurn:
+    """The inputs of layer (a) for one turn, read at the start of the run.
+
+    *org* is the bound tenant, *session* the chat and *member_part* a hash of
+    the verified member, all from the run boundary (R5). *words* are the
+    member's typed words of this turn (``assistant_profile.typed_words``).
+    *stored* is False after a Redis fault, and then nothing is written for
+    this turn.
+    """
+
+    org: str
+    session: str
+    member_part: str
+    turn: int
+    sticky: tuple[Sticky, ...] = ()
+    words: str = ""
+    stored: bool = True
+
+
+@dataclass(frozen=True)
+class Choice:
+    """The packs of one turn, in load order: the sticky packs, then the new."""
+
+    slugs: tuple[str, ...]
+    #: The layer that chose each pack: "sticky", "reference" or "words".
+    layers: Mapping[str, str]
+    #: The first load of each pack, for the sticky state.
+    first: Mapping[str, tuple[int, int]]
+    #: The sticky packs that leave the state: by the decay or by the cap.
+    evicted: tuple[str, ...] = ()
+    #: The new packs that the cap left out. They were never sticky.
+    skipped: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PackRun:
+    """What one run loaded. The executor binds it at :data:`PACKS_KEY`.
+
+    It is server state only. A pack call reads it to make its pack sticky
+    (:func:`note_used`), and a hand-off reads it for the refusal
+    (:func:`delegation_refusal`). Pack names do not join ``run_tools``.
+    """
+
+    org: str
+    session: str
+    member_part: str
+    turn: int
+    stored: bool
+    slugs: tuple[str, ...]
+    first: Mapping[str, tuple[int, int]]
+    #: The held answer of each pack at the build.
+    held: Mapping[str, bool]
+    #: The refusal text of each owner that a hand-off may not reach: the run
+    #: holds every pack of that owner (fix round 1, P1-A).
+    refusals: Mapping[str, str]
+    #: The owners whose specialist tool and persona text left the run. A
+    #: hand-off by ``call_agent`` still reaches such an owner unless it is in
+    #: :attr:`refusals` too.
+    replaced: frozenset[str] = frozenset()
+    #: The packs that this run already made sticky.
+    noted: set[str] = field(default_factory=set, compare=False, repr=False)
+
+    @classmethod
+    def of(cls, turn: PackTurn, choice: Choice, loaded: Sequence[tuple[str, bool]]) -> PackRun:
+        """The record of a run that loaded *loaded*, pairs of a slug and its
+        held answer, in load order."""
+        slugs = tuple(slug for slug, _held in loaded)
+        refusals: dict[str, str] = {}
+        replaced: set[str] = set()
+        for slug in slugs:
+            found = pack(slug)
+            if found is None or not found.delegation_refusal:
+                continue
+            replaced.add(found.owner)
+            if set(owner_packs(found.owner)) <= set(slugs):
+                refusals.setdefault(found.owner, found.delegation_refusal)
+        return cls(
+            org=turn.org, session=turn.session, member_part=turn.member_part,
+            turn=turn.turn, stored=turn.stored, slugs=slugs,
+            first={slug: choice.first.get(slug, (turn.turn, i)) for i, slug in enumerate(slugs)},
+            held={slug: bool(held) for slug, held in loaded},
+            refusals=refusals, replaced=frozenset(replaced),
+        )
+
+
+def _plain(text: Any) -> str:
+    """*text* in lower case, with each run of white space as one space."""
+    return " ".join(str(text or "").lower().split())
+
+
+@functools.lru_cache(maxsize=256)
+def _word_re(word: str) -> re.Pattern[str]:
+    """A whole word or phrase. A letter, a digit, "_" or "-" next to it ends
+    no word, so "mail" does not match in "gmail" or "e-mail", and "draft"
+    does not match in "auto-draft"."""
+    return re.compile(r"(?<![\w-])" + re.escape(_plain(word)) + r"(?![\w-])")
+
+
+def matched_layer(slug: str, words: str) -> str | None:
+    """The layer that a member's *words* load pack *slug* by, or None.
+
+    "reference" when a pattern of :attr:`Pack.references` is in the words,
+    else "words" when a word of :attr:`Pack.words` is, each as a whole word,
+    in any case. The words are the member's own text of this turn, never a
+    tool result. A match only adds a pack that the flag allows. It changes
+    no guard.
+    """
+    found = pack(slug)
+    if found is None:
+        return None
+    raw = str(words or "")
+    if any(pattern.search(raw) for pattern in found.references):
+        return "reference"
+    text = _plain(raw)
+    if text and any(_word_re(word).search(text) for word in found.words):
+        return "words"
+    return None
+
+
+def _tool_count(slug: str) -> int:
+    return len(SKILL_FAMILIES[slug]["tools"])
+
+
+def _replaces_specialist(slug: str) -> bool:
+    found = pack(slug)
+    return bool(found is not None and found.delegation_refusal)
+
+
+def choose(turn: PackTurn, *, allowed: Iterable[str], base_tools: int) -> Choice:
+    """The packs of this turn: layer (a), with no model call (§4.2.2).
+
+    1. The decay: a sticky pack leaves when no tool of it ran in the last
+       :data:`DECAY_TURNS` member turns.
+    2. The sticky packs that *allowed* names, in their first-load order.
+    3. Each other allowed pack whose reference or words the member typed, in
+       the order of :data:`PACKS`.
+    4. The cap: at most :data:`MAX_PACKS` packs, and at most
+       :data:`MAX_REQUEST_TOOLS` tools with the *base_tools* of the run. Past
+       it, the least recently used sticky pack leaves first. With no sticky
+       pack left, a new pack leaves. Among two or more new packs, the last
+       one that replaces its owner's specialist (:attr:`Pack.delegation_refusal`)
+       leaves first, because the specialist then stays and covers its tools.
+       So when both email packs match and only one fits, ``email-setup``
+       stays, and ``email_assistant`` still reads the mail (fix round 1,
+       P1-A). Else the last new pack leaves.
+
+    *allowed* is :func:`packs_on` of the bound tenant less the families that
+    an admin turned off. A slug that is no pack is dropped, and so is a pack
+    of more than :data:`MAX_PACK_TOOLS` tools, so that limit holds in a run
+    and not only in the registry fence.
+    """
+    allow = frozenset(allowed) & frozenset(
+        slug for slug in PACKS if is_pack(slug) and _tool_count(slug) <= MAX_PACK_TOOLS)
+    now = turn.turn
+    evicted: list[str] = []
+    live: list[Sticky] = []
+    for entry in sorted(turn.sticky, key=lambda e: e.first):
+        if now - entry.used > DECAY_TURNS:
+            evicted.append(entry.slug)
+        elif entry.slug in allow:
+            live.append(entry)
+    layers: dict[str, str] = {entry.slug: "sticky" for entry in live}
+    order = [entry.slug for entry in live]
+    for slug in PACKS:
+        if slug in allow and slug not in layers:
+            hit = matched_layer(slug, turn.words)
+            if hit is not None:
+                layers[slug] = hit
+                order.append(slug)
+    sticky = {entry.slug: entry for entry in live}
+    skipped: list[str] = []
+
+    def _over() -> bool:
+        return len(order) > MAX_PACKS or (
+            base_tools + sum(_tool_count(slug) for slug in order) > MAX_REQUEST_TOOLS)
+
+    while order and _over():
+        olds = [sticky[slug] for slug in order if slug in sticky]
+        if olds:
+            victim = min(olds, key=lambda e: (e.used, e.first)).slug
+            evicted.append(victim)
+        else:
+            replacing = [slug for slug in order if _replaces_specialist(slug)]
+            victim = replacing[-1] if replacing and len(order) > 1 else order[-1]
+            skipped.append(victim)
+        order.remove(victim)
+        layers.pop(victim, None)
+    first = {slug: sticky[slug].first if slug in sticky else (now, place)
+             for place, slug in enumerate(order)}
+    return Choice(slugs=tuple(order), layers=layers, first=first,
+                  evicted=tuple(evicted), skipped=tuple(skipped))
+
+
+# ── The sticky state in tenant Redis ────────────────────────────────────────
+
+
+def get_tenant_redis() -> Any:
+    """The tenant Redis client. A seam, so a test passes a fake client."""
+    from acb_common.tenant_redis import get_tenant_redis as _client
+
+    return _client()
+
+
+def _member_part(member: Any) -> str:
+    """A hash of the member, so the key holds no address."""
+    return hashlib.sha256(str(member or "").strip().lower().encode("utf-8")).hexdigest()[:24]
+
+
+def _text(value: Any) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", "replace")
+    return str(value)
+
+
+def _sticky_of(raw: Any) -> tuple[Sticky, ...]:
+    """The sticky packs in a state hash. A field that is no pack, or a value
+    that does not parse, is left out."""
+    out: list[Sticky] = []
+    for name, value in dict(raw or {}).items():
+        slug = _text(name)
+        if slug == _TURN_FIELD or pack(slug) is None:
+            continue
+        try:
+            data = json.loads(_text(value))
+            first = (int(data["first"][0]), int(data["first"][1]))
+            used = int(data["used"])
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+        if min(first[0], first[1], used) < 0:
+            continue
+        out.append(Sticky(slug=slug, first=first, used=used))
+    return tuple(sorted(out, key=lambda e: e.first))
+
+
+async def begin_turn(org: Any, session: Any, member: Any, words: Any) -> PackTurn:
+    """Count this member turn of the chat and read its sticky packs.
+
+    *org* is the bound tenant, *session* the chat, *member* the verified
+    member and *words* the member's typed words of this turn. All come from
+    the run boundary, never from a request field or a tool argument (R5).
+    The count is one ``HINCRBY``, so two turns never take one number. Never
+    raises: a fault gives a turn with no sticky pack that writes nothing.
+    """
+    org_id, chat = str(org or ""), str(session or "")
+    part = _member_part(member)
+    text = str(words or "")
+    if not (org_id and chat and str(member or "").strip()):
+        return PackTurn(org_id, chat, part, 0, (), text, stored=False)
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        with organization_scope(org_id):
+            client = get_tenant_redis()
+            state = key(NAMESPACE, chat, part)
+            turn = await asyncio.wait_for(
+                client.hincrby(state, _TURN_FIELD, 1), timeout=REDIS_TIMEOUT_S)
+            raw = await asyncio.wait_for(client.hgetall(state), timeout=REDIS_TIMEOUT_S)
+            await asyncio.wait_for(client.expire(state, TTL_S), timeout=REDIS_TIMEOUT_S)
+    except Exception as exc:  # the class only: a value never reaches a log
+        _log.warning("tool_packs.state_read_failed", error=type(exc).__name__)
+        return PackTurn(org_id, chat, part, 0, (), text, stored=False)
+    return PackTurn(org_id, chat, part, int(turn), _sticky_of(raw), text, stored=True)
+
+
+async def drop_sticky(turn: PackTurn, slugs: Iterable[str]) -> None:
+    """Take *slugs* out of the sticky state of the chat. Never raises."""
+    names = [slug for slug in dict.fromkeys(slugs) if slug]
+    if not names or not turn.stored:
+        return
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        with organization_scope(turn.org):
+            await asyncio.wait_for(
+                get_tenant_redis().hdel(key(NAMESPACE, turn.session, turn.member_part), *names),
+                timeout=REDIS_TIMEOUT_S)
+    except Exception as exc:
+        _log.warning("tool_packs.state_write_failed", error=type(exc).__name__)
+
+
+async def note_used(slug: str, ctx: Mapping[str, Any] | None = None) -> bool:
+    """Make pack *slug* sticky: one of its tools ran in this turn.
+
+    It writes ONE field of the state hash (``HSET``), so two pack calls at
+    once lose no update, and two calls of one pack write the same value. It
+    reads the :class:`PackRun` of the run context, which the server bound, and
+    writes for a pack that this run loaded only. A run with no record (a
+    test, or a run that loaded no pack) writes nothing. Never raises.
+    """
+    if ctx is None:
+        try:
+            from acb_skills.write_artifact import artifact_context
+
+            ctx = artifact_context()
+        except Exception:
+            return False
+    run = (ctx or {}).get(PACKS_KEY)
+    if not isinstance(run, PackRun) or slug not in run.slugs or not run.stored:
+        return False
+    if slug in run.noted:
+        return True
+    run.noted.add(slug)
+    value = json.dumps({"first": list(run.first.get(slug, (run.turn, 0))), "used": run.turn})
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        with organization_scope(run.org):
+            client = get_tenant_redis()
+            state = key(NAMESPACE, run.session, run.member_part)
+            await asyncio.wait_for(client.hset(state, slug, value), timeout=REDIS_TIMEOUT_S)
+            await asyncio.wait_for(client.expire(state, TTL_S), timeout=REDIS_TIMEOUT_S)
+    except Exception as exc:
+        run.noted.discard(slug)
+        _log.warning("tool_packs.state_write_failed", error=type(exc).__name__)
+        return False
+    return True
+
+
+# ── The persona and the hand-off ────────────────────────────────────────────
+
+
+def _hold_note(owner: str) -> str:
+    """The hold note of a held pack of *owner*. It names no other assistant
+    (``egress.EGRESS_HOLD_NOTE_PACK``, OA-7c condition 6)."""
+    from acb_skills.egress import PACK_CALL_KEY, egress_hold_note
+
+    return egress_hold_note({"agent_name": owner, PACK_CALL_KEY: True})
+
+
+def persona_for(
+    persona: str, loaded: Sequence[tuple[str, bool]], bullets: Mapping[str, str],
+) -> str:
+    """The persona of a run that holds the packs *loaded*, in load order.
+
+    *loaded* holds pairs of a slug and its held answer. For each pack with a
+    :attr:`Pack.delegation_refusal`, the text of its owner in *bullets* leaves
+    the persona by one exact swap. Then the rules of each pack follow the
+    persona, in load order, before the cache break (§4.2.1). A held pack adds
+    its hold note after its rules. With no pack the persona comes back as it
+    was, byte for byte.
+
+    Fix round 1 (P1-A): while *loaded* does not hold every pack of an owner
+    (:func:`owner_packs`), the rules of a pack with a :attr:`Pack.handoff_swap`
+    swap its *old* line for its *new* line. So with ``email`` alone the rules
+    send a rule, a setting, the knowledge or the writing style to the email
+    assistant, and a hand-off to it stays open.
+
+    It raises ``RuntimeError`` when the persona does not hold the owner's
+    text exactly once, or the rules do not hold the *old* line exactly once,
+    as ``orchestrator.agents._orchestrator_instructions`` does. So a moved
+    line never ships a half-swapped persona.
+    """
+    text = str(persona)
+    held_slugs = {slug for slug, _held in loaded}
+    swapped: set[str] = set()
+    blocks: list[str] = []
+    for slug, held in loaded:
+        found = pack(slug)
+        if found is None:
+            continue
+        if found.delegation_refusal and found.owner not in swapped:
+            old = str(bullets.get(found.owner) or "")
+            if not old or text.count(old) != 1:
+                raise RuntimeError(
+                    f"orchestrator persona has no single delegation text of {found.owner!r}")
+            text = text.replace(old, "", 1)
+            swapped.add(found.owner)
+        block = found.rules.rstrip("\n")
+        if found.handoff_swap and not set(owner_packs(found.owner)) <= held_slugs:
+            line, route = found.handoff_swap
+            if block.count(line) != 1:
+                raise RuntimeError(f"pack {slug!r} rules have no single {line[:40]!r}")
+            block = block.replace(line, route, 1)
+        if held:
+            block += "\n\n" + _hold_note(found.owner)
+        blocks.append(block)
+    if not blocks:
+        return str(persona)
+    return text.rstrip("\n") + "\n\n" + "\n\n".join(blocks) + "\n"
+
+
+def delegation_refusal(agent_name: Any, ctx: Mapping[str, Any] | None = None) -> str | None:
+    """The answer to a hand-off to *agent_name* from a run that holds every
+    pack of that agent, or None.
+
+    The rule of OA-7c, as fix round 1 (P1-A) narrowed it: while the chat run
+    holds BOTH email packs, it holds every email tool itself, and a hand-off
+    to ``email-assistant`` answers the pack refusal. With ``email`` alone the
+    hand-off stays open, so a rule or a setting still has a path. The
+    streaming seam (``executor._run_sub_agent_streaming``)
+    asks it before any work, for each specialist tool, ``delegate_to_agent``,
+    ``call_agent`` and ``call_agents_parallel``. The last two also ask it
+    first (``agent_tools._pack_refusal``), so a refused hand-off marks no
+    chat. ``call_agent_background`` does not ask it, because a background run
+    keeps delegation (§4.3.1). A delegated run never holds the record, so a
+    hand-off from a child is never refused here.
+    """
+    if ctx is None:
+        try:
+            from acb_skills.write_artifact import artifact_context
+
+            ctx = artifact_context()
+        except Exception:
+            return None
+    run = (ctx or {}).get(PACKS_KEY)
+    if not isinstance(run, PackRun):
+        return None
+    return run.refusals.get(str(agent_name or "")) or None
