@@ -314,8 +314,8 @@ _PROFILE_SWAP: tuple[str, str] = (
     "  know. If an answer is thin, ask one light follow-up. Match their length,\n"
     "  language, formality. Never mention tools, marks, saving, limits or areas.\n"
     "  Save a short quote of their words, silently. Mark an area answered only after\n"
-    "  a save says Saved. For detail and people, mark it after profile_set or\n"
-    "  profile_alias. If a save is refused, say once you could not keep it. After the\n"
+    "  a save says Saved. For detail and people, mark it at once after profile_set\n"
+    "  or profile_alias. If a save is refused, say once you could not keep it. After the\n"
     "  third answer ask once, lightly, if they want to go on, then next_sitting.\n",
 )
 
