@@ -52,6 +52,9 @@ it finds it weeks later. **One look is not the same as one context.** Mode and
 accent still combine, and the hardest combinations are the ones nobody
 develops in.
 
+**Every UI change passes the UI gate (§11)**, in build mode too. State the
+interaction in one sentence, pass the ratchets, and do the four captures.
+
 ---
 
 ## 1. Colour — always a token
@@ -341,12 +344,14 @@ The rules for NEW motion:
 `no-preference` gate or a selector in the `reduce` block. An exception goes
 in `MOTION_EXEMPT`, with its reason.
 
-⚠️ The test reads `globals.css` only. Two kinds of motion are outside it, so
-they are review. One is a `<style>` string inside a component. The other is
-Tailwind's own `animate-pulse` and `animate-ping`, which have no keyframes in
-`globals.css`. Write a new one as `motion-safe:animate-pulse`.
+Since 2026-10-27 the same file also reads every component (§11). G1 fails on
+an `@keyframes` outside `globals.css`. G2 fails on a raw curve or duration. G3
+fails on a moved width, height, position or margin, and on `transition-all`.
+G4 fails on an `animate-pulse` or `animate-ping` with no `motion-safe:`. Write
+a new one as `motion-safe:animate-pulse`.
 
-The other motion rules above are advisory.
+The rules for a close, a popup, a reveal and a loop are review. No test reads
+them.
 
 *These values come from a study of four outside design kits on 2026-10-14.
 `skills/upstream/README.md` records what we took and what we did not.*
@@ -747,6 +752,9 @@ pair it with an icon or a label.
    says what to do next.
 8. **Look at the captures, not at the code.** Run the `visual-review` skill.
    A review from source alone is not a visual review, so do not call it one.
+9. **Pass the UI gate** (§11). State the interaction in one sentence. Run
+   `npx vitest run src/lib/theme src/lib/uiGates.test.ts`. Put a line that
+   starts with "Visual review:" in the PR body.
 
 ---
 
@@ -810,3 +818,93 @@ These rules are advisory. They are the same plain-language habits that
   in India and a reader in the US read as the same day.
 - **Leave out "simply", "just", "easily" and "seamless".** A reader who is
   stuck hears that the fault is theirs.
+
+---
+
+## 11. The UI gate
+
+Owner directive, 2026-10-27. The UI is simple and immersive. It works as a
+person intends, and it moves only when the motion tells the reader something.
+Every UI change passes this gate, in build mode too. The gate adds no runtime
+dependency and no second look. This changes the two-speed rule of
+`engineering_practice.md` §7a for UI only.
+
+### The order
+
+1. **State the interaction in one sentence.** Say who does what, and what
+   they see next. Write it in the PR body and in the agent report. A UI diff
+   with no stated interaction fails review.
+2. **Mechanical CI.** The ratchets below run in the Frontend job, and they
+   block. Each ratchet keeps the count of today's violations in each file. A
+   new violation fails.
+3. **Visual review.** Run the `visual-review` skill. Capture light mode,
+   compact density, a changed accent and 390 px. Name the captures on a PR body
+   line that starts with "Visual review:". CI fails a PR that changes
+   `workbench/control_plane/src` without that line. Fence: the "Visual review
+   line" step of the `changes` job in `.github/workflows/pr-check.yml`.
+4. **Diff review.** Item 8 of `diff-reviewer` reads the code for the rules
+   that no test sees.
+
+### The ratchets
+
+A ratchet counts the matches in each file. A file with no budget must be
+clean. A budget never rises. A file that got better lowers its number in the
+same change. `src/lib/theme/uiRatchet.ts` holds the ratchet.
+
+| Gate | Rule | Fence |
+|---|---|---|
+| G1 | No `@keyframes` outside `globals.css` | `theme/motion.test.ts` |
+| G2 | No raw `cubic-bezier(` or `duration-[Nms]` outside `globals.css` and `components/ui/`. The two token mirrors are exempt | `theme/motion.test.ts` |
+| G3 | No transition of a width, a height, a position or a margin, and no `transition-all`. The two panels of §4 are exempt | `theme/motion.test.ts` |
+| G4 | `animate-pulse`, `animate-ping` and `animate-bounce` carry `motion-safe:` | `theme/motion.test.ts` |
+| G5 | `outline-none` has a focus ring on the same line. `components/ui/` is exempt | `uiGates.test.ts` |
+| G6 | A drag has a keyboard path in the same file (M6) | `uiGates.test.ts` |
+| G7 | A full height is `h-dvh`, never `h-screen` or `100vh` (M12) | `uiGates.test.ts` |
+| G8 | An `<img>` keeps its space with a width, a height or a size class (M1) | `uiGates.test.ts` |
+
+`tests/fences.json` lists `motion.test.ts`, `fieldFocus.test.ts`,
+`rawControls.test.ts` and `uiGates.test.ts` as `safety`, so they block in
+build mode. `typeScale.test.ts` is in no list, so it blocks too. The other
+design-system fences stay `process`.
+
+### The interaction rules
+
+ADVISORY until PR 2 means that a person checks the rule now. An e2e spec in
+PR 2 holds it.
+
+- **M1. Keep space for async content.** A loading, empty or loaded state
+  keeps one height, so nothing below it moves. Fence: G8 for an image. The
+  rest is review.
+- **M2. No spinner for a fast wait.** Show it after 300 ms only, and keep it
+  for 400 ms once it shows. ADVISORY until PR 2.
+- **M3. One submit for each intent.** A double click or a second Enter saves
+  once. ADVISORY until PR 2.
+- **M4. Focus never hides under a sticky bar.** Its scroll container sets
+  `scroll-padding` to the height of the bar. ADVISORY until PR 2.
+- **M5. Undo, not confirm.** A reversible delete, archive or move runs at once
+  and shows a toast with Undo. Only an irreversible action asks first.
+  ADVISORY until PR 2.
+- **M6. Every drag has a keyboard path.** Give the move a "Move to" item, or
+  Alt with the arrow keys. Fence: G6.
+- **M7. A save shows its result.** "Saving…" shows at once, then "Saved" or an
+  error next to the field. ADVISORY until PR 2.
+- **M8. Link each form error to its field.** Check on blur, and set
+  `aria-invalid` and `aria-describedby`. A failed submit focuses the first bad
+  field. ADVISORY until PR 2.
+- **M9. Announce an async change.** A count or a result that changes without
+  a click sits in one `role="status"` region. ADVISORY until PR 2.
+- **M11. Long text never widens the page.** A long URL, email or id wraps with
+  `break-words`, or it truncates with a tip. ADVISORY until PR 2.
+- **M12. Use dvh for a full height.** A phone's browser bar then never covers
+  the bottom. Fence: G7.
+- **M13. The URL follows what is open.** An open task, tab or filter sets a URL
+  parameter. Back closes it, and a reload opens it again. ADVISORY until PR 2.
+- **M14. A fast double toggle ends in the last state asked for.** A panel is
+  never left half open. ADVISORY until PR 2.
+- **M16. Coming back keeps your place.** The scroll position, the filters and
+  an unsent draft stay. ADVISORY until PR 2.
+- **M17. The answer to the newest search wins.** A search box waits 200 ms after a
+  key, and it drops an answer older than the last query. ADVISORY until PR 2.
+
+**Toast times (M10).** A success toast closes after 5 s (`SUCCESS_TIMEOUT`).
+An error stays until the member closes it. Fence: `src/lib/toast.test.ts`.

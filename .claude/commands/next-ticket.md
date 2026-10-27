@@ -68,9 +68,11 @@ callers, count rows). Never use haiku to build, verify or review.
 **1d — Build or harden.** Owner directive, 2026-10-19. The contract is
 `project-docs/specs/engineering_practice.md` §7a.
 - **Build** (the default): ship working slices fast. Process fences and STE
-  lint are advisory. Skip the visual review, the board-row note, the spec
-  header (R4) and new fence tests (R7). Run `bash scripts/ci_local.sh` (or
-  `bash scripts/prepush.sh` when the PC is busy) before each push.
+  lint are advisory. UI diffs still run the four-capture visual review in
+  build mode, and the UI gate fences block (owner, 2026-10-27,
+  `workbench/control_plane/DESIGN_SYSTEM.md` §11). Skip the board-row note,
+  the spec header (R4) and new fence tests (R7). Run `bash scripts/ci_local.sh`
+  (or `bash scripts/prepush.sh` when the PC is busy) before each push.
 - **Harden** (when the feature works): one PR, labelled `harden`. Run
   `STE_LINT_BLOCK=1` for the session, `bash scripts/prepush.sh --harden`,
   `diff-reviewer` on the WHOLE feature diff, and the visual review. Write the

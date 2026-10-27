@@ -74,7 +74,7 @@ the thing that used to EXPOSE a breach for free: one theme switch and every
 hardcoded value announced itself. The breach is still a breach. Nothing shows
 it to you now.
 
-Ten rules on top of the three above. Each one exists because it was broken:
+Eleven rules on top of the three above. Each one exists because somebody broke it:
 
 4. **One vocabulary per concept, in `src/lib/` or `src/components/`, consumed by
    every app.** Status and lane colour is `src/lib/statusAccent.ts` — the single
@@ -545,11 +545,21 @@ Ten rules on top of the three above. Each one exists because it was broken:
 
    **Fence.** `src/lib/theme/motion.test.ts` fails when an `@keyframes` in
    `globals.css` has no reduced-motion answer. Put an exception in its
-   `MOTION_EXEMPT`, with the reason. Two kinds of motion are outside the
-   test, so they are review: a `<style>` string in a component, and
-   Tailwind's `animate-pulse` and `animate-ping`. Write a new one with the
-   `motion-safe:` prefix. `DESIGN_SYSTEM.md` §4 holds the
+   `MOTION_EXEMPT`, with the reason. `DESIGN_SYSTEM.md` §4 holds the
    rules, and §9 and §10 hold the advisory rules for states and words.
+14. **Every UI change passes the UI gate** (owner directive, 2026-10-27).
+   State the interaction in one sentence. Pass the ratchets. Put the four
+   captures on a "Visual review:" line of the PR body. The gate blocks in
+   build mode too. `DESIGN_SYSTEM.md` §11 holds the order and the rules.
+
+   **Fences.** `src/lib/theme/motion.test.ts` holds G1 to G4: no component
+   `@keyframes`, no raw curve or duration, no moved layout property or
+   `transition-all`, and no `animate-pulse` without `motion-safe:`.
+   `src/lib/uiGates.test.ts` holds G5 to G8: a focus ring beside
+   `outline-none`, a keyboard path for a drag, `h-dvh`, and an `<img>` that
+   keeps its space. Each one keeps today's count of each file, and a new
+   violation fails. The "Visual review line" step of `pr-check.yml` fails a
+   PR body with no such line.
 
 **What CI cannot catch, and you must.** There is no structural or layout test in
 this tree: nothing asserts panel counts, shell adoption, mobile branches, or that

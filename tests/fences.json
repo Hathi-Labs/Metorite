@@ -6,6 +6,8 @@
     "process: advisory while a feature is in build, blocking in the hardening pass (PR label harden).",
     "Naming, docs, registries, wording, the look, lockstep and parity bookkeeping.",
     "A new static fence goes in one list in the PR that adds it. If unsure, choose safety.",
+    "UI gates block in build mode too (owner directive, 2026-10-27), so they sit in safety:",
+    "motion, fieldFocus, rawControls and uiGates. Rule list: workbench/control_plane/DESIGN_SYSTEM.md section 11.",
     "Contract: project-docs/specs/engineering_practice.md section 7a. Fence: tests/unit/test_fence_lists.py."
   ],
   "python": {
@@ -115,6 +117,7 @@
       "workbench/control_plane/src/app/signin/code/code.test.ts",
       "workbench/control_plane/src/app/signin/signin.test.ts",
       "workbench/control_plane/src/app/signup/signup.test.ts",
+      "workbench/control_plane/src/components/rawControls.test.ts",
       "workbench/control_plane/src/lib/e2eGate.test.ts",
       "workbench/control_plane/src/lib/emailOtpAdapter.test.ts",
       "workbench/control_plane/src/lib/gateway.test.ts",
@@ -122,6 +125,9 @@
       "workbench/control_plane/src/lib/htmlSinks.test.ts",
       "workbench/control_plane/src/lib/publicFlags.test.ts",
       "workbench/control_plane/src/lib/sourceHygiene.test.ts",
+      "workbench/control_plane/src/lib/theme/fieldFocus.test.ts",
+      "workbench/control_plane/src/lib/theme/motion.test.ts",
+      "workbench/control_plane/src/lib/uiGates.test.ts",
       "workbench/operator_console/src/lib/catalog.test.ts",
       "workbench/operator_console/src/lib/route_gate.test.ts"
     ],
@@ -144,7 +150,6 @@
       "workbench/control_plane/src/components/chatSuggestions.test.ts",
       "workbench/control_plane/src/components/metoriteMark.test.ts",
       "workbench/control_plane/src/components/pageHeading.test.ts",
-      "workbench/control_plane/src/components/rawControls.test.ts",
       "workbench/control_plane/src/components/ui/ConfirmDialog.test.ts",
       "workbench/control_plane/src/components/ui/collapsible.test.ts",
       "workbench/control_plane/src/components/ui/toastViewport.test.ts",
@@ -159,8 +164,6 @@
       "workbench/control_plane/src/lib/shell/seams.test.ts",
       "workbench/control_plane/src/lib/taskPanel.test.ts",
       "workbench/control_plane/src/lib/theme/conformance.test.ts",
-      "workbench/control_plane/src/lib/theme/fieldFocus.test.ts",
-      "workbench/control_plane/src/lib/theme/motion.test.ts",
       "workbench/control_plane/src/lib/theme/themes.test.ts",
       "workbench/operator_console/src/lib/actionrow.test.ts",
       "workbench/operator_console/src/lib/facetrow.test.ts",

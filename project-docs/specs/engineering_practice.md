@@ -388,6 +388,10 @@ them. A real bug in the PR caused 9. Each red run cost about 30 minutes.
 - A HIGH-tier slice keeps the full loop: tenancy, RLS, auth, identity, a
   migration, money, credits, secrets, a member or role write, or the deploy
   path.
+- **A UI diff is the exception for the look** (owner directive, 2026-10-27).
+  The UI gate fences block in build mode, and a UI diff runs the four-capture
+  visual review. `workbench/control_plane/DESIGN_SYSTEM.md` §11 holds the
+  gate. The other process fences stay advisory.
 
 **2. Harden.** One PR when the feature works, labelled `harden`.
 
