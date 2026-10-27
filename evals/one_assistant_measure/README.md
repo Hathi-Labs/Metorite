@@ -139,6 +139,15 @@ and the key. Close the tunnel with Ctrl+C in that shell.
      --out evals/one_assistant_measure/results_<date>.json
    ```
 
+**The System-1 seam (eval only).** Production runs the turn-kind request, because
+`routing_is_on()` is true there. The eval has no Console, so `system_one._ask`
+would answer `router_off`. In a live run, `run._system_one_seam` makes
+`routing_is_on` read True for `system_one._ask` only. Each other caller reads
+the real answer. The System-1 client already reads the Router base and key
+that `_use_router` sets, and it asks `tier-fast`. The seam sets no
+`ROUTER_SERVING_ENABLED` and changes no product code. It bypasses Console
+billing for that call, as the rest of the eval does.
+
 The runner checks the Router port before each chat. When the Router does
 not answer, the runner stops. When a chat loses the Router, the runner
 drops that chat and stops. The Router address must be on this machine,

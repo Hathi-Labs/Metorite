@@ -70,7 +70,7 @@ The cache share is 0.963 for delegation and 0.950 for the pack arm. The gap is 1
 
 **The setup gap.** The `email` pack alone does not hold the setup tools. Setup work goes to the email assistant, and the check allows it. 3 of 54 turns on each arm did this (the rule in `five_turns` turn 4). The cost per turn was USD 0.013 on delegation and USD 0.021 on the pack arm. The sample is three turns, so read it as an order of size.
 
-**Layer (c), the turn-kind time.** The report cannot give the time with and without pack items. The turn-kind request is a System-1 request. In 42 of 108 turns it answered `unavailable` (`latency_ms` 0 to 16). The cause: `system_one._ask` returns `router_off` when `routing_is_on()` is false. That call needs the setting `ROUTER_SERVING_ENABLED` and a wired Console. The eval sets neither. The other 66 turns were short, and a short turn sends no request. The log event `executor.packs_turn_kind` fired in 0 turns. To measure layer (c), a run needs `ROUTER_SERVING_ENABLED` in the eval process and the Console wiring. That choice routes the eval's calls through the Console, so the owner must decide it.
+**Layer (c), the turn-kind time.** The report cannot give the time with and without pack items. The turn-kind request is a System-1 request. In 42 of 108 turns it answered `unavailable` (`latency_ms` 0 to 16). The cause: `system_one._ask` returns `router_off` when `routing_is_on()` is false. In production it is true, and in this run it was false, because the eval has no Console. The other 66 turns were short, and a short turn sends no request (fewer than 12 words, `SHORT_MESSAGE_WORDS`). The log event `executor.packs_turn_kind` fired in 0 turns. **Follow-up, added after run 1:** the eval now has a System-1 seam (`run._system_one_seam`). It makes `routing_is_on` read True for `system_one._ask` only, and it points that client at the same Router on `tier-fast`. It sets no `ROUTER_SERVING_ENABLED` and bypasses Console billing for that call, as the rest of the eval does. Run 1 did NOT have the seam.
 
 **The `before_run` early load.** Not shown. The 12 loads before the first model call were all layer (a), with `layers={'email': 'words'}`. The `load_early` path of OA-7f needs a turn-kind answer with pack items, and none came.
 
@@ -85,7 +85,9 @@ The cache share is 0.963 for delegation and 0.950 for the pack arm. The gap is 1
 
 The failures that both arms share are the model's choice, not the pack's.
 
-## 8. What the owner decides next
+## 8. What comes next (updated after run 1)
+
+The fix is OA-7i. With packs on, an owner's specialist tool leaves the chat when the loader can reach every pack of that owner. The live measure runs again after OA-7i, with the System-1 seam. The list below is the first reading of run 1.
 
 1. The pack arm needs the model to load the pack. Without layer (c), 42 of 54 turns did not. Options: run layer (c) in the eval (needs `ROUTER_SERVING_ENABLED` in the eval process), or drop the specialist tool `email_assistant` from a run that has the loader offered.
 2. The flag `TOOL_PACKS` stays off for every organization. OA-7h is the gate, and it is not met.
