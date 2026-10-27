@@ -155,14 +155,16 @@ and streams chat responses as AG-UI events.
    - Fence: `tests/unit/test_pack_guards.py`. The email tests of `_held_card_fakes.email_tool_mode` run with the owner's tools and with the pack's tools. In the pack mode the orchestrator's run is open on its own frame. So only the scope gives the tool body the held answer.
 
 27. **The packs of a turn load only in the member's own web chat with the orchestrator** (WS-67 OA-7c, `project-docs/specs/one_assistant_context.md` §4.2.2). It ships dark behind `TOOL_PACKS`.
-   - `_start_pack_turn` is the one caller of `tool_packs.packs_on`. It starts the read of the sticky packs after the H-236 bind, beside the load. A shared room, a batch run (the WhatsApp path, D115), a delegated run, a run with no card channel and a run with no verified member start nothing. With the flag off it reads and writes no pack state.
-   - `_tool_injection._apply_tool_packs` applies the choice after `_apply_agent_md_overrides` and BEFORE `_inject_agent_tools`. It drops the specialist tool of each owner that a pack replaces, swaps the owner's persona text for the rules, and adds the pack tools after the core tools. Each run builds its packs again. A run with no bound tenant loads no pack.
+   - `_start_pack_turn` is the one caller of `tool_packs.packs_on`. It starts the read of the sticky packs as the first statement of the main try, beside the load. So the finally of that try cancels a read that the run did not await.
+   - These runs start no read: a shared room, a batch run (the WhatsApp path, D115) and a delegated run. A run with no card channel or no verified member starts none too. With the flag off it reads and writes no pack state.
+   - `_tool_injection._apply_tool_packs` applies the choice after `_apply_agent_md_overrides` and BEFORE `_inject_agent_tools`. It drops the specialist tool of each owner that a pack replaces. It swaps the owner's persona text for the rules, and it adds the pack tools after the core tools. Each run builds its packs again. A run with no bound tenant loads no pack.
+   - The apply runs before `_apply_own_tool_scope`, so an `own_tool_scope` on the orchestrator would strip the pack tools. The pin `test_the_orchestrator_has_no_own_tool_scope` fails when a change adds one.
    - The run key (`tool_packs.PACK_RUN_KEY`) and the record (`tool_packs.PACKS_KEY`) go into the run binding after `bind_artifact_context`, which replaces the context. `_run_sub_agent_streaming` drops both from the context of a child.
    - `_run_sub_agent_streaming` refuses a hand-off to an owner when the calling run holds every pack of that owner (`tool_packs.delegation_refusal`). With some packs only, the hand-off stays open for the rest. `agent_tools.call_agent` and `call_agents_parallel` ask the same rule first. Do not add a refusal with a rule of its own.
    - The "Delegatable agents" block leaves out an agent only while the run refuses the hand-off to it (`PACK_REFUSED_ATTR`).
    - `_pack_base_count` reads the same scope and withheld names as `_inject_agent_tools`. With no app grant the two counts agree, and a fence says so. Change both together.
    - Pack names stay out of `run_tools`. OA-9c reads the record of the packs.
-   - `_record_pack_call` holds a lock of the chat around the email working set, and its event goes to the relay of a run with no queue (`_emit_to_run_or_relay`).
+   - `_record_pack_call` holds a lock of the chat around the email working set. Its event goes to the relay of a run with no queue (`_emit_to_run_or_relay`).
    - Fences: `tests/unit/test_tool_packs_choice.py` and `tests/unit/test_tool_packs_off.py`.
 
 ## Work Guidance

@@ -44,8 +44,8 @@ the member's words, and the words of a pack. The surface waits for OA-7d.
   ran in the last 8 member turns.
 - **The words.** Each email word needs an email context (fix round 1, P1-B).
   A bare "draft" or "unread" loads no pack, and "draft a reply" does. A run
-  with the email pack gets no registry MCP server, so a false match cost the
-  member the MCP tools of a Notion or Linear draft.
+  with the email pack gets no registry MCP server. So a false match took the
+  MCP tools of a Notion or Linear draft away from the member.
 - **The cap.** A request holds at most 3 packs and 110 tools. A pack of more
   than 35 tools never loads. Past the cap, the least recently used sticky
   pack leaves first. The words of this turn count as the newest use.
@@ -63,6 +63,18 @@ the member's words, and the words of a pack. The surface waits for OA-7d.
 - **The measured base.** The orchestrator held 55 tools before its packs on
   2026-10-27. Beside that base the 31 email tools fit, and the two email
   packs together (114 tools) do not.
+- **The estimate errs on the safe side.** The live request of a flag-off run
+  held 52 tools (the verifier, 2026-10-27). `_add_crm_facts_block` takes CRM
+  tools away after the injection, so the cap counts 3 tools too many there.
+- **A latent hazard: `own_tool_scope`.** The apply runs before
+  `_apply_own_tool_scope`. An `own_tool_scope` on the orchestrator would
+  strip each pack tool, because no pack tool is in that list. The
+  orchestrator has none today. The pin
+  `test_the_orchestrator_has_no_own_tool_scope` fails when a change adds one.
+- **The read starts inside the main try.** The read of the sticky packs is
+  the first statement of the main try of `run_agent_stream` (fix round 2).
+  So a raise before that try starts no read, and its finally cancels a read
+  that the run did not await.
 - **The order.** Sticky packs keep their first-load order. The pack tools
   follow the core tools. The rules of each pack follow the persona in load
   order, before the cache break.
@@ -79,9 +91,9 @@ the member's words, and the words of a pack. The surface waits for OA-7d.
   `call_agents_parallel` ask the rule first, so the refusal marks no chat.
 - **The `email` pack alone.** The run lacks the setup tools, so the hand-off
   stays open. `call_agent` and `delegate_to_agent` reach the email assistant.
-  The rules swap "No email agent exists to hand a task to." for "For a rule,
-  a setting, the knowledge or the writing style, hand the task to the email
-  assistant." (`Pack.handoff_swap`).
+  The rules lose the line "No email agent exists to hand a task to." In its
+  place, one routing line sends a rule, a setting, the knowledge and the
+  writing style to the email assistant (`Pack.handoff_swap`).
 - **The registry block.** The "Delegatable agents" block of the injection
   leaves out an agent only while the run refuses the hand-off to it.
 - **Where the refusal acts today.** Beside the measured base, the two email
@@ -107,19 +119,19 @@ The six conditions of OA-7b fix round 1:
    its rules. Neither note names another assistant.
 
 Pack names do not join `run_tools`. The run binds a record of its packs at
-`tool_packs.PACKS_KEY` instead. The record holds the slugs, the held answer
-of each pack, the owners that the packs replace and the owners that a
-hand-off may not reach. OA-9c reads that record to give a child the same
-packs, and `run_holds_tool` keeps its meaning.
+`tool_packs.PACKS_KEY` instead. The record holds the slugs and the held
+answer of each pack. It also holds the owners that the packs replace, and
+the owners that a hand-off may not reach. OA-9c reads that record to give a
+child the same packs, and `run_holds_tool` keeps its meaning.
 
 Open: "reply to" is not an email word. It also matches a WhatsApp or a
 Linear reply, and a false match removes the MCP tools of the run. A turn
 such as "reply to Anil" with no sticky pack keeps delegation, as before.
 
-The probe of an eviction: with native sessions on, a turn runs on a stored
-call of a tool that the run no longer offers, and it finishes. The probe is
-hermetic. Open: a live model provider can refuse such a call, and no test
-shows what it does.
+The probe of an eviction runs with native sessions on. A turn runs on a
+stored call of a tool that the run no longer offers, and it finishes. The
+probe is hermetic. Open: a live model provider can refuse such a call, and
+no test shows what it does.
 
 With the flag on, the turn-kind request lists the pack tools, because it
 reads the tool names of the run. OA-7f adds the pack items.
@@ -756,7 +768,8 @@ Each slice merges alone, in this order.
   - `orchestrator/agents.py`: the email bullets become one constant, so that the swap is exact
 - **Acceptance.**
   - With the flag on, an email turn holds the `email` pack and not the `email_assistant` tool.
-  - A delegation to `email-assistant` from the chat run gets the pack refusal (`evals/one_assistant_measure/pack.py:47-50`).
+  - A delegation to `email-assistant` from the chat run gets the pack refusal (`evals/one_assistant_measure/pack.py:47-50`). Since fix round 1, the refusal acts only while the run holds both `email` and `email-setup`.
+  - With `email` alone, the hand-off stays open, and the rules show the routing line for a rule, a setting, the knowledge and the writing style.
   - Rooms, WhatsApp and delegated runs see no pack.
   - The persona holds the rules in load order.
   - With native sessions on, a turn after an eviction does not fail on its stored calls.
@@ -810,6 +823,11 @@ Each slice merges alone, in this order.
   - From turn 2, each email chat sends through the held card.
   - No act shows two cards.
   - `no_write` passes on `reply_correction` turn 1, 3 of 3, on both arms (OA-7g).
+- **The refusal against OA-5 (OA-7c fix round 1).**
+  - The OA-5 pack arm held 58 email tools. It refused each hand-off to the email assistant with `pack.REFUSED`.
+  - The live pack arm holds one email pack at a time beside the base of 55 tools. It refuses a hand-off only with both packs, so this measure sees no `REFUSED` text.
+  - With `email` alone, a hand-off for a rule, a setting, the knowledge or the writing style runs. It costs one delegated run, as on the delegation arm.
+  - So the check `_no_email_delegation` (`checks.py`) must allow such a hand-off. It must still fail a hand-off of mail work.
 - **Fence.** `tests/unit/test_one_assistant_measure.py` runs the scripted arm with the real flag.
 
 OA-7h is the gate before the flag turns on for any organization.
@@ -990,9 +1008,12 @@ tokens. OA-7g shipped live (PR #1356, `344cad4fc`).
 **OA-7c. GO, narrowed. Start after OA-7a, OA-7b and OA-7g.**
 - Layer (a) takes three inputs here: sticky packs, references and words.
   The surface input waits for OA-7d.
-- Name the file that refuses a delegation to `email-assistant` when the pack
-  is on: `agent_tools.call_agent`, the streaming seam, or the specialist
-  tool.
+- Name the file that refuses a delegation to `email-assistant`:
+  `agent_tools.call_agent`, the streaming seam, or the specialist tool.
+  The refusal acts only while the run holds every pack of that owner. As
+  built: the streaming seam refuses, and `call_agent` asks the same rule
+  first. With `email` alone the hand-off stays open (fix round 1, "As
+  built, OA-7c").
 - The apply point puts pack tools in the list before `_inject_agent_tools`.
   Then `_gate_own_maf_tools` wraps each tool with no `__cc_gated__` mark. In
   a marked chat that could show two cards. Add a case: a pack send in a
