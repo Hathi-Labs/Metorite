@@ -12,7 +12,7 @@ import type { SummaryChild } from "./api";
 import { dashboardRows } from "./dashboardRows";
 import { destinations } from "./destinations";
 import { pickerNodes } from "./pickerTree";
-import { scopeOptions } from "./reportBuilder";
+import { scopeOptions, scopePhrase } from "./reportBuilder";
 import { type ProjectNode, flattenActive } from "./tree";
 
 const FILED = "2026-10-01T00:00:00Z";
@@ -63,6 +63,17 @@ describe("pickerNodes", () => {
 describe("the report scope chip", () => {
   it("lists the whole organization and the active nodes only", () => {
     expect(scopeOptions(TREE as never).map((o) => o.value)).toEqual(["", "live", "live-a"]);
+  });
+
+  it("keeps a saved report's archived scope, labelled", () => {
+    const scopes = scopeOptions(TREE as never, ["filed-b", "live-a", null]);
+    expect(scopes.map((o) => o.value)).toEqual(["", "live", "live-a", "filed-b"]);
+    expect(scopes[3].label).toBe("Filed B (archived)");
+    expect(scopePhrase("filed-b", false, scopes)).toBe("In Filed B (archived)");
+  });
+
+  it("adds nothing for an unknown id", () => {
+    expect(scopeOptions(TREE as never, ["nope"])).toHaveLength(3);
   });
 });
 

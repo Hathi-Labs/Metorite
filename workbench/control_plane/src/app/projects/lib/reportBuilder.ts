@@ -41,7 +41,7 @@ import type {
   ReportTemplate,
 } from "./api";
 import { shortDate } from "./outlook";
-import { flattenActive } from "./tree";
+import { flatten, flattenActive } from "./tree";
 import { personDisplayName, realName } from "@/lib/personName";
 
 /**
@@ -139,15 +139,35 @@ export interface ScopeOption {
  *
  * Only nodes the caller can see arrive in `/tree`, so the picker never
  * offers a node that the server then refuses.
+ *
+ * `keep` names scopes a saved report already holds. One that sits under an
+ * ARCHIVED node is not in the active list, so it joins the end as
+ * "<name> (archived)". The report keeps its label, and the picker still
+ * offers no archived node for a new choice (WS-64).
  */
-export function scopeOptions(roots: readonly ProjectRow[]): ScopeOption[] {
+export function scopeOptions(
+  roots: readonly ProjectRow[],
+  keep: ReadonlyArray<string | null | undefined> = []
+): ScopeOption[] {
+  const active = flattenActive(roots).map(({ node, depth }) => ({
+    value: node.id,
+    label: node.name,
+    depth,
+  }));
+  const have = new Set(active.map((o) => o.value));
+  const extra: ScopeOption[] = [];
+  const wanted = new Set(keep.filter((id): id is string => Boolean(id)));
+  if (wanted.size > 0) {
+    for (const { node } of flatten(roots)) {
+      if (wanted.has(node.id) && !have.has(node.id)) {
+        extra.push({ value: node.id, label: `${node.name} (archived)`, depth: 0 });
+      }
+    }
+  }
   return [
     { value: WHOLE_ORGANIZATION, label: "Whole organization", depth: 0 },
-    ...flattenActive(roots).map(({ node, depth }) => ({
-      value: node.id,
-      label: node.name,
-      depth,
-    })),
+    ...active,
+    ...extra,
   ];
 }
 
