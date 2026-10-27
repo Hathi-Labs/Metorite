@@ -5534,25 +5534,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/engineering_practice.md` §1.1, the EM-T4 notes in `runner.py`
 - **Added:** 2026-10-18 · email route errors (gateway log, 7 days)
 
-### H-353 · 🔴 The CRM overlay read applies no member visibility · [AGENT] · finding
-- **Check:** in `apps/services/gateway/gateway/routes/crm/aggregate.py`, read
-  `_read_overlay` and `overlay_where`. If the overlay query filters by the
-  `owner` parameter only, and applies none of the visibility that
-  `list_query` applies to a member, this is open.
-- **Why.** #1122 (CRM-Q20-3a) reads the module of an approved overlay in
-  place of a core entity. The review of #1126 found that this path checks
-  the tenant (FORCE RLS) and the `owner` filter, but not the visibility of
-  each record to the member. So a member can get totals over records that
-  the normal CRM path hides from them. No flag gates the path. It goes live
-  for an org when that org's overlay plan is approved. On 2026-10-18 no org
-  had one, because the DEWiN sync is paused.
-- **Do this:** before the first overlay plan is approved, give the overlay
-  query the same member visibility as `list_query`, grouped and ungrouped.
-  Add an R8 test where a member who cannot see a record gets a total
-  without it.
-- **Authority:** `specs/crm_platform.md` §18.13.5, R5
-- **Added:** 2026-10-18 · review of #1126
-
 ### H-354 · A refusal looks wrong in two chat places · [AGENT] · finding
 - **Check:** (1) In `ProjectToolCards.tsx`, if `ProjectEvidenceBody` and
   `InfoCard` still branch only on `status === "error"`, a refused Projects

@@ -310,7 +310,7 @@ The slices, in Metorite under sub-epic CRM-Z10 of epic #477:
 | CRM-Z10d | Custom modules stay visible in Native mode, with a native writer through the one write guard | R8: the counts match after a cutover |
 | CRM-Z10e | The Zoho attachments are copied into Metorite storage before the cutover | Count and bytes match Zoho |
 | CRM-Z10b | The switch: the export, a final sync, the mode flip and the disconnect in one transaction, `ext_source` and `ext_id` kept as provenance, Zoho settings made native, `processed_watermark` rewound, one audit line. One-way | R8: counts equal before and after, and a second click changes nothing |
-| CRM-Z10f | Owner decision: a cutover org keeps its source labels. It amends D95.2 for cutover orgs | Recorded in `work_plan.md` §3 |
+| CRM-Z10f | ✅ Decided 2026-10-27 (D129): a cutover org keeps its source labels, and an admin can edit them later. It amends D95.2 for cutover orgs | Recorded in `work_plan.md` §3, D129 |
 
 The production runs for Fracktal and Shaurrya Tele are the owner's (CRM-Z10-run).
 
@@ -11588,6 +11588,9 @@ Owner, 2026-10-20: the board order and the win chance are two settings.
 1. **The order never follows the probability.** An admin sets the order of
    the boards. A stage at 90% can sit before a stage at 10%. Mirror mode
    without an admin order uses the source position, then the pipeline place.
+   *Amended 2026-10-27 by D130 and CRM-U11 (§20.15): Mirror mode without an
+   admin order uses the place in the Zoho pipeline first, and no type group
+   moves a column.*
 2. **Every stage has a win chance.** Migration 288 adds `probability` and
    `ui_probability` to `crm_lead_statuses`. A won status holds 100 and a lost
    status holds 0, for both kinds (D-CRM-10).
@@ -11638,3 +11641,135 @@ the drawer, and tap again.
 
 Fences (R7): `crmU10.test.ts` holds the tab rule, the wire and the three
 source fences. It checks that `AppShell` draws only what the page emits.
+
+### 20.15 CRM-U11: the stage settings are the board (owner report, 2026-10-27)
+
+**Status.** 📝 Specified 2026-10-27. Decision D130. Metorite: under epic #477.
+
+**Gate.** AGENT-SAFE. No flag, no migration and no gateway change. The order
+route (`PUT /crm/statuses/{kind}/order`) and the reset route
+(`POST /crm/statuses/{kind}/order/reset`) exist. If the build finds that the
+gateway must change, stop and report.
+
+**The owner's report.** The deal stages were "very complicated" to set up.
+The Kanban columns did not show "like it is currently showing up in ZOHO".
+The owner asked for the Zoho order, or an easy setting.
+
+**Measured on production, 2026-10-27 (Fracktal).**
+
+- The pipeline "Fracktal Sales Pipeline" lists 12 stages in this order:
+  Re-Evaluate, Confirmation and Advance, New Deal, Discovery Meeting, Sample
+  parts, Proposal / Quote Sent, Negotiation/Review, Awaiting PO, PO Received,
+  Closed Won, Payment Complete, Closed Lost.
+- Five more stages are outside the pipeline: Meeting Scheduled (0 deals),
+  Delivered & Installed (10), Discovery Meeting Done (4), New Lead (8) and
+  Negotiation / Tendering (2).
+- Each of the 17 stages has a `ui_position` equal to its place in the global
+  Zoho picklist times 10. An admin saved the order once, and it was a copy of
+  the picklist, not of the pipeline.
+
+**Why the board was wrong.** Three causes:
+
+1. With one pipeline, `resolvePipeline` returns null. The board sends no
+   `pipeline_id`, and no lane has a pipeline place.
+2. With a saved order, `orderLanes` reads `ui_position` and never the
+   pipeline place. With no saved order, the place only breaks a tie of the
+   global position (`lib/board.ts`).
+3. `orderLanes` puts the open stages first, then on hold, then won, then
+   lost. A drag in settings that crossed a group moved no column.
+
+**Why the settings were hard.** Each row of `MirrorStatusGrid` holds a drag
+handle, two arrows, the Zoho win chance, the Metorite win chance, a colour,
+a hide box, a Rules toggle, Save, Cancel and "Reset to Zoho". The list holds
+stages outside the pipeline with no mark. A separate read-only card lists the
+pipelines. A strip repeats the order above the list. The list order is not
+the board order, because of cause 3.
+
+#### The order rule (D130)
+
+`orderLanes(lanes, mode, places)` stays the one order. `places` maps a status
+id to its place in the pipeline that the board shows. That is the chosen
+pipeline, or the default pipeline when the board shows every deal. A lane's
+own `pipeline_position` wins when the payload has one. The page builds
+`places` from `GET /crm/pipelines`, which it reads already.
+
+1. **No type group.** The open, on hold, won and lost groups go. A stage that
+   Zoho no longer lists, and a hidden stage, still go to the end.
+2. **Mirror mode, no saved order:** the place in the pipeline first. The
+   stages with no place follow, by source position. Then the name.
+3. **Mirror mode, a saved order:** `ui_position`. A row with none follows, by
+   source position. Then the name.
+4. **Native mode:** `position`, then the name.
+5. **The Leads board:** the same rule, with no pipeline. Mirror mode with no
+   saved order uses the Zoho picklist order.
+6. **The win chance never moves a column.**
+
+#### The Deal stages screen
+
+The screen is one list, and the list is the board.
+
+1. **Heading and one line.** "Deal stages". Then: "These are the columns of
+   your Deals board, left to right. Drag a stage, or use its arrows, to move
+   its column."
+2. **Mirror mode: "Column order".** Two choices, "Same as Zoho" and "Custom".
+   It shows "Custom" when the kind has a saved order. "Same as Zoho" asks first
+   when a saved order exists: "Your custom order will be lost." It then calls
+   the reset route. A move while "Same as Zoho" shows saves a custom order, and
+   the choice then shows "Custom". Under it, one line: "Zoho owns the stage
+   names. Your order, colours and win chances stay in Metorite. Nothing here
+   changes Zoho."
+3. **A pipeline picker** (`SelectButton`) sits above the list when the org
+   has two pipelines or more. The read-only "Pipelines" card goes.
+4. **The list.** Each stage of the kind once, in the order of `orderLanes`
+   for the pipeline on screen, empty stages included. One row, one line: the
+   drag handle, Up and Down, the colour dot, the name, then a tag only where it
+   applies: "Won", "Lost", "On hold", "Hidden", "Not in the Zoho pipeline" or
+   "Removed in Zoho". At the right: the win chance as text, such as "40%", and
+   an "Edit" button. No input, Save, Cancel or Reset sits on a row.
+5. **A move saves at once.** The row moves, then the order route saves every
+   id of the kind. On a failure the row goes back, and the error shows. When
+   the list shows a part of the stages (two pipelines), the stages on screen
+   take their own slots of the full order in their new order, and each other
+   stage keeps its slot. A pure function in `lib/settings.ts` does it.
+6. **Edit opens a `Modal`** with the stage name as its title. It holds the
+   colour, the win chance, "Show this column on the board" (the inverse of
+   hide) and "Warn when a deal stays more than N days". In Mirror mode, the win
+   chance shows "Zoho: 40%" and a "Use Zoho's value" action. A won stage fixes
+   the win chance at 100 and a lost stage at 0, with the reason in one line.
+   Native mode adds the name, the type (Open, On hold, Won, Lost, each with
+   one line of help) and Delete, which asks first. One Save and one Cancel.
+7. **Native mode: "Add stage"** under the list opens the same `Modal`, empty.
+   A new stage lands before the first won or lost stage.
+8. **Lead statuses** use the same list and the same `Modal`, with the Leads
+   board as the board and no pipeline picker.
+
+The OrderStrip, the inline inputs, the row buttons Save, Cancel and "Reset
+to Zoho", and the Rules toggle go. Lost reasons do not change in this slice.
+
+**Fracktal after the deploy.** Its saved order stays, because nothing
+rewrites an admin's choice. The owner picks "Same as Zoho" once to get the
+pipeline order.
+
+#### Done when
+
+1. A test of `orderLanes` with the Fracktal shape above gives the 12 pipeline
+   stages in the pipeline order, then the 5 others in picklist order, with no
+   saved order. With the saved order, it gives the `ui_position` order. No
+   type group and no win chance moves a stage.
+2. With one pipeline and no `pipeline_id`, the board orders by the places of
+   the default pipeline.
+3. The settings list and the board read the same function with the same
+   input, so a move shows the same order in both.
+4. The pure merge of a part order into the full order has tests: a move
+   inside the part, a part at the start, a part at the end, and a part
+   with gaps.
+5. The four captures of `visual-review` (light mode, compact density, a
+   changed accent, 375 px) of the Deal stages screen in Mirror mode and in
+   Native mode, and of the Edit `Modal`.
+6. `npx tsc --noEmit` passes, and `npx vitest run` passes on the CRM tests.
+   The PR names each fence test that D130 changes, with the old rule and the
+   new one.
+
+Fences (R7): `boardStages.test.ts`, `board.test.ts`, `crmC3.test.ts` and
+`crmU6.test.ts` change to D130. `crmU11.test.ts` holds the Fracktal case, the
+merge cases and a source fence that no type group sits in `orderLanes`.
