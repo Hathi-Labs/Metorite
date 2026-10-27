@@ -202,6 +202,7 @@ async def test_a_reset_keeps_the_facts_and_a_chat_reset_is_a_422(db) -> None:
     db.made.append(email)
     user = _member(email)
     async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
         await _add_area_fact(db.org_a, user, "Ships Q4", "goals")
         await _mark(db.org_a, user, "goals", "answered", "chat")
         await _mark(db.org_a, user, "role", "skipped", "chat")
@@ -245,6 +246,7 @@ async def test_the_undo_of_a_fact_with_an_area_opens_the_area_again(db) -> None:
     db.made.append(email)
     user = _member(email)
     async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
         with _tenant(db.org_a):
             fact = await _ap().add_fact(
                 body={"text": "Ship Q4", "kind": "work", "area": "goals"}, user=user,
@@ -383,29 +385,138 @@ async def test_a_chat_answered_with_nothing_saved_is_a_422_and_the_area_stays_op
     assert done["areas"]["goals"]["state"] == "answered"
 
 
+def _person(db) -> str:
+    """A person of org A, so a chat alias to the address passes (PZ-5)."""
+    who = _address()
+    db.made.append(who)
+    with db.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO people (id, name, email, status, skills, source, "
+            "source_key, organization_id, updated_by, updated_at) "
+            "VALUES (gen_random_uuid(), 'Raj', :e, 'active', ARRAY[]::text[], "
+            "'manual', :k, CAST(:o AS uuid), 'test', now())"),
+            {"e": who, "k": f"manual:{who}", "o": db.org_a})
+    return who
+
+
+async def _chat_alias(org: str, user: UserContext, name: str, email: str) -> dict:
+    with _tenant(org):
+        return await _ap().add_alias(body={"alias": name, "email": email}, user=user,
+                                     x_profile_via="chat")
+
+
+async def _chat_style(org: str, user: UserContext, value: dict) -> dict:
+    with _tenant(org):
+        return await _ap().put_assistant_profile(body={"key": "style", "value": value},
+                                                 user=user, x_profile_via="chat")
+
+
 async def test_detail_and_people_take_their_own_evidence(db) -> None:
+    """"Keep it short" -> profile_set -> answered detail passes. A colleague
+    named -> profile_alias -> answered people passes. Nothing new is a 422."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    raj = _person(db)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
+        for area in ("detail", "people"):
+            await _mark(db.org_a, user, area, "asked", "chat")
+            with pytest.raises(HTTPException) as exc:
+                await _mark(db.org_a, user, area, "answered", "chat")
+            assert exc.value.status_code == 422
+        await _chat_style(db.org_a, user, {"length": "short"})
+        await _mark(db.org_a, user, "detail", "answered", "chat")
+        await _chat_alias(db.org_a, user, "Raj", raj)
+        done = await _mark(db.org_a, user, "people", "answered", "chat")
+    assert {a: v["state"] for a, v in done["areas"].items()} == {
+        "detail": "answered", "people": "answered"}
+
+
+async def _sleep_a_second() -> None:
+    """The stored times have whole seconds. A reset must be later than the
+    old evidence, so each scenario waits past one second boundary."""
+    import asyncio
+
+    await asyncio.sleep(1.1)
+
+
+@pytest.mark.parametrize("whole", [False, True], ids=["one_area", "whole_interview"])
+async def test_a_reset_area_needs_a_new_answer(db, whole) -> None:
+    """The review of 2026-10-27: answer goals, reset it in Settings, ask it
+    again from the chat. A mark answered with no new save is a 422, and a
+    new save passes."""
     email = _address()
     db.made.append(email)
     user = _member(email)
     async with tenant_engine_scope(_app_dsn(db)):
-        for area in ("detail", "people"):
-            with pytest.raises(HTTPException) as exc:
-                await _mark(db.org_a, user, area, "answered", "chat")
-            assert exc.value.status_code == 422
-        await _put(db.org_a, user, "style", {"length": "short"})
-        await _mark(db.org_a, user, "detail", "answered", "chat")
-        # One saved alias. The org check of an alias address is not under
-        # test here, so the row is written as the alias route stores it.
-        with db.admin_engine.begin() as c:
-            c.execute(text(
-                "UPDATE user_settings SET assistant_profile = jsonb_set("
-                "assistant_profile, '{aliases}', CAST(:a AS jsonb), true) "
-                "WHERE user_id = :u"),
-                {"a": json.dumps([{"id": "a0001", "alias": "Raj",
-                                   "email": "raj@pz26.test"}]), "u": email})
-        done = await _mark(db.org_a, user, "people", "answered", "chat")
-    assert {a: v["state"] for a, v in done["areas"].items()} == {
-        "detail": "answered", "people": "answered"}
+        await _sit(db.org_a, user)
+        await _mark(db.org_a, user, "goals", "asked", "chat")
+        await _add_area_fact(db.org_a, user, "ship the CRM import", "goals")
+        await _mark(db.org_a, user, "goals", "answered", "chat")
+        await _sleep_a_second()
+        with _tenant(db.org_a):
+            if whole:
+                await _ap().reset_assistant_interview(user=user)
+            else:
+                await _ap().reset_assistant_interview_area("goals", user=user)
+        await _sit(db.org_a, user)
+        await _mark(db.org_a, user, "goals", "asked", "chat")
+        with pytest.raises(HTTPException) as exc:
+            await _mark(db.org_a, user, "goals", "answered", "chat")
+        assert exc.value.status_code == 422
+        assert exc.value.detail["reason"] == acp.NO_ANSWER
+        assert _column(db, email)["interview"]["areas"]["goals"]["state"] == "asked"
+        await _add_area_fact(db.org_a, user, "hire two engineers", "goals")
+        done = await _mark(db.org_a, user, "goals", "answered", "chat")
+    assert done["areas"]["goals"]["state"] == "answered"
+
+
+async def test_a_reset_with_no_new_ask_still_needs_a_new_answer(db) -> None:
+    """A Settings reset of one area sets ``reset_at``. Even with no new
+    `asked` mark, the old fact no longer answers the area."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
+        await _add_area_fact(db.org_a, user, "ship the CRM import", "goals")
+        await _mark(db.org_a, user, "goals", "answered", "chat")
+        await _sleep_a_second()
+        with _tenant(db.org_a):
+            await _ap().reset_assistant_interview_area("goals", user=user)
+        with pytest.raises(HTTPException) as exc:
+            await _mark(db.org_a, user, "goals", "answered", "chat")
+    assert exc.value.status_code == 422
+
+
+@pytest.mark.parametrize("area", ["detail", "people"])
+async def test_a_reset_detail_or_people_needs_a_new_change(db, area) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    raj = _person(db)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
+        await _mark(db.org_a, user, area, "asked", "chat")
+        if area == "detail":
+            await _chat_style(db.org_a, user, {"length": "short"})
+        else:
+            await _chat_alias(db.org_a, user, "Raj", raj)
+        await _mark(db.org_a, user, area, "answered", "chat")
+        await _sleep_a_second()
+        with _tenant(db.org_a):
+            await _ap().reset_assistant_interview_area(area, user=user)
+        await _mark(db.org_a, user, area, "asked", "chat")
+        with pytest.raises(HTTPException) as exc:
+            await _mark(db.org_a, user, area, "answered", "chat")
+        assert exc.value.status_code == 422
+        if area == "detail":
+            await _chat_style(db.org_a, user, {"length": "detailed"})
+        else:
+            await _chat_alias(db.org_a, user, "Sam", raj)
+        done = await _mark(db.org_a, user, area, "answered", "chat")
+    assert done["areas"][area]["state"] == "answered"
 
 
 async def test_settings_and_the_other_states_are_not_limited(db) -> None:
@@ -429,6 +540,8 @@ async def test_a_replace_with_an_area_answers_the_area(db) -> None:
     user = _member(email)
     async with tenant_engine_scope(_app_dsn(db)):
         old = await _add_fact(db.org_a, user, "I want to hire", "work")
+        await _sit(db.org_a, user)
+        await _mark(db.org_a, user, "goals", "asked", "chat")
         with pytest.raises(HTTPException):
             await _mark(db.org_a, user, "goals", "answered", "chat")
         with _tenant(db.org_a):
@@ -437,4 +550,5 @@ async def test_a_replace_with_an_area_answers_the_area(db) -> None:
                                  "area": "goals"}, user=user, x_profile_via="chat")
         done = await _mark(db.org_a, user, "goals", "answered", "chat")
     assert edited["area"] == "goals" and edited["text"] == "hire two engineers"
+    assert edited["at"] >= old["at"]  # the server stamped the answer
     assert done["areas"]["goals"]["state"] == "answered"
