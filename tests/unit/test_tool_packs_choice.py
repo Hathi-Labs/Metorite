@@ -2,9 +2,9 @@
 
 ``project-docs/specs/one_assistant_context.md`` §4.2.2, §4.2.8 (OA-7c) and
 the narrowings of §4.5. Layer (a) takes three inputs here: the sticky packs
-of the chat, a reference in the member's words, and the words of a pack. The
-surface waits for OA-7d. Each case names, in its docstring, the mutation
-that turns it red (R7).
+of the chat, a reference in the member's words, and the words of a pack.
+OA-7d adds the fourth input, the surface (section 8). Each case names, in its
+docstring, the mutation that turns it red (R7).
 
 1. Each input of layer (a), and only the packs that the flag allows.
 2. A pack becomes sticky only after one of its tools ran, and two pack calls
@@ -19,6 +19,7 @@ that turns it red (R7).
    pack refusal. Rooms, WhatsApp and delegated runs see no pack. A pack send
    in a marked chat, built through the real assembly, shows one card.
 7. The six conditions of OA-7b fix round 1.
+8. The surface (OA-7d): the app of the dock adds its core pack, and nothing else.
 
 The probe of a turn after an eviction, with native sessions on, is in
 ``tests/unit/test_native_session_persistence.py``.
@@ -1159,3 +1160,189 @@ def test_the_hold_note_of_a_held_pack_names_no_other_assistant(monkeypatch, swit
     assert "assistant" not in note.lower()
     assert "Another assistant" not in text
     assert eg.egress_hold_note({"agent_name": EA, eg.PACK_CALL_KEY: True}) == note
+
+
+# ── 8. The surface (OA-7d) ──────────────────────────────────────────────────
+
+GATEWAY_ROUTE = REPO / "apps/services/gateway/gateway/routes/agent.py"
+
+
+def test_a_turn_from_email_loads_the_email_pack_with_no_email_words() -> None:
+    """Mutation: ``choose`` ignores ``turn.surface`` -> the pack list is empty
+    and the layer is missing -> red."""
+    turn = tp.PackTurn(ORG, SESSION, tp._member_part(MEMBER), 1, (), "What is the weather?",
+                       True, surface="email")
+    choice = tp.choose(turn, allowed=ALL, base_tools=40)
+    assert choice.slugs == ("email",) and choice.layers == {"email": "surface"}
+    assert tp.matched_layer("email", turn.words) is None, "the words load nothing"
+
+
+def test_the_surface_adds_the_core_pack_and_nothing_else() -> None:
+    """The setup pack, the other pack of the owner, stays out of an email
+    turn. Mutation: the surface loads each pack of its owner, or the setup pack
+    names ``surface="email"`` too -> ``email-setup`` loads -> red."""
+    turn = tp.PackTurn(ORG, SESSION, tp._member_part(MEMBER), 1, (), "", True, surface="email")
+    assert tp.choose(turn, allowed=ALL, base_tools=40).slugs == ("email",)
+    assert tp.surfaces() == {"email"}
+    assert tp.PACKS["email-setup"].surface == ""
+
+
+def test_the_surface_adds_no_word_match_and_keeps_the_sticky_order() -> None:
+    """A sticky pack keeps its place, and the surface adds its pack once
+    after it. Mutation: the surface pack goes before the sticky packs, or
+    loads twice -> the order differs -> red."""
+    turn = tp.PackTurn(ORG, SESSION, tp._member_part(MEMBER), 4,
+                       (_st("email-setup", 1, 3),), "", True, surface="email")
+    choice = tp.choose(turn, allowed=ALL, base_tools=40)
+    assert choice.slugs == ("email-setup", "email")
+    assert choice.layers == {"email-setup": "sticky", "email": "surface"}
+
+
+def test_the_flag_still_decides_what_a_surface_adds() -> None:
+    """A forged or honest surface adds only a pack that the flag allows.
+    Mutation: the surface bypasses ``allowed`` -> a pack loads with the flag
+    off -> red."""
+    turn = tp.PackTurn(ORG, SESSION, tp._member_part(MEMBER), 1, (), "", True, surface="email")
+    assert tp.choose(turn, allowed=frozenset(), base_tools=40).slugs == ()
+    assert tp.choose(turn, allowed={"email-setup"}, base_tools=40).slugs == ()
+
+
+@pytest.mark.parametrize("forged", [
+    "billing", "email-setup", "EMAIL/../", "em\nail", "x" * 400, "", " ", "..", "email;drop",
+    None, 5, ["email"], {"email": 1}, b"email",
+])
+def test_an_unknown_or_forged_surface_is_ignored(forged: Any) -> None:
+    """The check is an allow-list of the slugs that name a core pack, with a
+    bound on the length. Mutation: ``clean_surface`` returns its input, or
+    drops the allow-list, or drops the length bound -> a junk value reaches
+    the turn -> red."""
+    assert tp.clean_surface(forged) == ""
+    with tp.surface_scope(forged):
+        assert tp.current_surface() == ""
+    turn = tp.PackTurn(ORG, SESSION, tp._member_part(MEMBER), 1, (), "", True,
+                       surface=forged)  # type: ignore[arg-type]
+    assert tp.choose(turn, allowed=ALL, base_tools=40).slugs == ()
+
+
+def test_a_surface_is_cleaned_in_case_and_space() -> None:
+    """Mutation: compare the raw value -> "Email " loads nothing although the
+    dock meant email -> red. The case is a courtesy, never an extra pack."""
+    assert tp.clean_surface("  Email ") == "email"
+    assert len("x" * (tp.SURFACE_MAX + 1)) > tp.SURFACE_MAX
+    assert tp.clean_surface("email" + "a" * tp.SURFACE_MAX) == ""
+
+
+def test_the_surface_scope_restores_the_value_it_found() -> None:
+    """Mutation: the scope never resets the variable -> the surface of one
+    turn reaches the next run of the same context -> red."""
+    assert tp.current_surface() == ""
+    with tp.surface_scope("email"):
+        assert tp.current_surface() == "email"
+        with tp.surface_scope("billing"):
+            assert tp.current_surface() == ""
+        assert tp.current_surface() == "email"
+    assert tp.current_surface() == ""
+
+
+async def test_a_surface_turn_holds_the_email_tools_with_no_email_words(
+    store, orchestrator,
+) -> None:
+    """Through the real assembly: the same words with no surface load no pack,
+    and with ``email`` they load the email pack. Mutation: ``begin_turn``
+    drops the surface -> the tools never appear -> red."""
+    assert "email_assistant" in _names(orchestrator), "non-vacuity"
+    words = "Please tidy up my tasks for the week"
+    with _tenant():
+        none = await _apply(orchestrator, words)
+    assert none is None or none.record.slugs == ()
+    assert "read_email" not in _names(orchestrator)
+    with _tenant():
+        turn = await tp.begin_turn(ORG, SESSION, MEMBER, words, "email")
+        applied = await ti._apply_tool_packs(
+            orchestrator, turn, _run_ctx(), allowed=ALL, agent_name="orchestrator",
+            tool_scope=list(CONFIG["tool_scope"]), agent_config=CONFIG, bullets=_bullets())
+    names = set(_names(orchestrator))
+    assert applied is not None and applied.record.slugs == ("email",)
+    assert names >= EMAIL_TOOLS and "email_assistant" not in names and not SETUP_TOOLS & names
+
+
+async def test_begin_turn_cleans_the_surface_again(store) -> None:
+    """Mutation: ``begin_turn`` keeps the raw value -> a forged value reaches
+    ``PackTurn.surface`` -> red."""
+    with _tenant():
+        forged = await tp.begin_turn(ORG, SESSION, MEMBER, "", "billing")
+        honest = await tp.begin_turn(ORG, SESSION, MEMBER, "", "email")
+    assert forged.surface == "" and honest.surface == "email"
+
+
+@pytest.mark.parametrize("why", [
+    "eligible", "flag off", "a shared room", "a delegated run", "a batch run",
+    "no card channel", "another agent", "another member",
+])
+async def test_the_surface_changes_no_guard_of_the_pack_read(
+    why: str, store, monkeypatch,
+) -> None:
+    """A bound surface does not lift a guard of ``_start_pack_turn``. A room,
+    the WhatsApp batch path, a delegated run and a flag-off box load no pack,
+    and the flag-off box reads no state. Mutation: a surface skips one guard
+    -> that run reads the state -> red for its case. The eligible case carries
+    the surface into the turn, so it fails if the executor drops it."""
+    from acb_common import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "tool_packs", "" if why == "flag off" else "*", raising=False)
+    monkeypatch.setattr(settings, "tool_packs_orgs", "*", raising=False)
+    monkeypatch.setattr(ex, "_verified_run_member", lambda: MEMBER)
+    kw: dict[str, Any] = {
+        "member": MEMBER, "delegated": why == "a delegated run",
+        "solo_room": why != "a shared room", "batch_thread": why == "a batch run",
+        "shows_cards": why != "no card channel",
+    }
+    if why == "another member":
+        kw["member"] = "omar@acme.test"
+    agent = EA if why == "another agent" else "orchestrator"
+    with tp.surface_scope("email"):
+        task = ex._start_pack_turn(agent, ORG, SESSION, **kw)
+        if why == "eligible":
+            assert task is not None
+            turn, allowed = await task
+            assert turn.surface == "email" and allowed == ALL
+        else:
+            assert task is None
+            assert _pack_calls(store) == []
+
+
+def test_the_forged_surface_variable_is_cleaned_before_the_turn(store, monkeypatch) -> None:
+    """A value set straight on the variable (a bug elsewhere) still passes the
+    allow-list in ``current_surface``. Mutation: ``current_surface`` returns the
+    raw variable -> "billing" reaches the turn -> red."""
+    token = tp.SURFACE.set("billing")
+    try:
+        assert tp.current_surface() == ""
+    finally:
+        tp.SURFACE.reset(token)
+
+
+def test_the_gateway_pops_the_surface_and_binds_it_with_the_typed_words() -> None:
+    """The route takes ``surface`` out of the payload, so it goes nowhere
+    else, and binds it for the run in the same ``with`` as the typed words.
+    The value is never read for a tenant or a member. Mutation: leave the
+    key in the payload, or drop the binding, or bind it outside the run ->
+    red."""
+    text = GATEWAY_ROUTE.read_text(encoding="utf-8")
+    assert '_surface = req.payload.pop("surface", None)' in text
+    assert "with member_typed(_typed), surface_scope(_surface):" in text
+    assert text.count("_surface") == 2, "popped once and bound once"
+    assert "payload.get(\"surface\")" not in text and "payload[\"surface\"]" not in text
+
+
+def test_only_the_pack_read_reads_the_surface() -> None:
+    """The executor reads ``current_surface`` in ``_start_pack_turn`` and
+    nowhere else, after the flag check. Mutation: read it before ``packs_on``
+    or in another function -> red."""
+    text = (REPO / "apps/services/orchestrator/orchestrator/executor.py").read_text(
+        encoding="utf-8")
+    assert text.count("current_surface()") == 1
+    start = text.index("def _start_pack_turn(")
+    body = text[start:text.index("async def _apply_pack_turn(")]
+    assert body.index("packs_on(organization_id)") < body.index("current_surface()")
