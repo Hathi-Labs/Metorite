@@ -21,6 +21,55 @@ guarded builder its live caller.
 OA-7c is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7c"
 below). The flag is off on each box, so no run loads a pack yet.
 
+The OA-9a parser is BUILT, dark (2026-10-27, "As built, OA-9a parser"
+below). Nothing calls it yet. The OA-9a worker and OA-9b stay NO-GO until
+the edits of §4.5 land.
+
+**As built, OA-9a parser.** `acb_skills/subagent_contract.py` holds the two
+parsers of the contract of §6. No module calls them, and no flag reads them.
+OA-9b builds `spawn_subagents` on them.
+- **The items out (§6.4).** `parse_items` reads the one JSON object of a
+  child. That object has the one key `items`. Each item has exactly the
+  keys `value`, `kind` and `source`. Any other output becomes one item of
+  kind `inferred`, with the source `unstructured` and the whole text.
+- **The parse is strict.** An extra key, a code fence or one bad item makes
+  the whole answer into that one item. So the parser loses no text of a
+  child. No `quoted` mark stays beside text that the parse dropped.
+- **The jobs in (§6.2 and §6.5).** `parse_jobs` checks the `jobs` argument
+  against the `run_tools` of the parent. It checks the first 5 jobs. Each
+  job after the fifth gets its name in one line and does not run.
+- **The refusals.** A job does not run when it names a pack (§4.5, OA-9b
+  item 3). It also does not run when it names a delegation tool or the
+  spawn tool. A tool that the parent does not have stops it too, and so
+  does a tool that is not read-only. Each refusal is one line that tells
+  the model why.
+- **Fix round 1 (verifier).** A repeated key in the JSON of a child makes
+  the answer another shape. `json.loads` keeps the last value, and that
+  would drop a quoted fact. `packs` must be absent or an empty list. So
+  `0`, `false` and `{}` get a refusal. Bytes decode, and no value is stored as
+  a `repr`. A call past the cap names 10 jobs and counts the rest.
+- **The member tools.** `ask_questions`, `ask_user`, `request_confirmation`
+  and `share_artifact` say `read_only=True`, but a child has no member to
+  ask. The parser refuses them (`MEMBER_TOOLS`). `remember` stays a read.
+- **The specialist tools.** `parse_jobs` takes `delegating`, the names of
+  the specialist tools of the parent. They get the hand-off reason.
+- **OA-9b must enforce the child tool set.** The parser only checks the
+  request. Floor tools reach every run, so OA-9b must withhold and refuse
+  all other tools at `tool_guard.WithholdTools` and `RefuseTools`.
+- **Read-only.** The default check reads `tool_annotations`. A tool with no
+  entry is not read-only. OA-9b can give its own check. §4.5 OA-9b item 1
+  stays open: how a child gets read tools only.
+- **The caps.** The module holds the caps of §6.2 as constants. A fence
+  makes sure that `MAX_JOBS` equals `agent_tools._PARALLEL_MAX`, the cap of
+  the one fan-out.
+- **The fence.** `tests/unit/test_subagent_contract.py` holds 58 cases, and
+  16 mutations each made it fail. One case fails when a module of the
+  platform imports the contract. OA-9b replaces that case with its one
+  caller.
+- **§4.5, OA-9a item 1.** `test_tool_packs_off.py` holds no OA-9a case, so
+  no case moved. The worker cases wait for the worker half: the refusal with
+  no job, and the worker out of the picker.
+
 **As built, OA-7c.** Layer (a) and the sticky state put packs in a live run.
 Three inputs choose the packs: the sticky packs of the chat, a reference in
 the member's words, and the words of a pack. The surface waits for OA-7d.
