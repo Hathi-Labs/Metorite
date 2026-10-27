@@ -891,9 +891,13 @@ def test_the_pack_read_starts_inside_the_try_whose_finally_cancels_it() -> None:
     first = main.body[0]
     assert isinstance(first, ast.Assign) and "_start_pack_turn(" in ast.unparse(first), (
         "the read must be the first statement of the main try")
-    fn_src = (REPO / "apps/services/orchestrator/orchestrator/executor.py").read_text(
-        encoding="utf-8")
-    assert fn_src.count("_pack_task = _start_pack_turn(") == 1
+    tree = ast.parse((REPO / "apps/services/orchestrator/orchestrator/executor.py")
+                     .read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "run_agent_stream")
+    calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Name) and n.func.id == "_start_pack_turn"]
+    assert len(calls) == 1, "one read for each run, and only inside the main try"
 
 
 async def test_a_raise_before_the_main_try_leaves_no_pack_read_running(
