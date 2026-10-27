@@ -341,23 +341,35 @@ def _task_no_guess(obs: Observation, arg: Any) -> bool | None:
     return not any(re.search(rf"\b{re.escape(n)}\b", t, re.I) for t in obs.tasks for n in arg)
 
 
-#: A task about the rules, the settings, the knowledge or the writing style of
-#: the email assistant. With the ``email`` pack alone, the run does not hold
-#: these tools, and the rules of the pack route such work to the email
-#: assistant (``tool_packs._EMAIL_SETUP_ROUTE_LINE``, OA-7h).
-SETUP_WORK = r"\b(?:rules?|settings?|knowledge|writing style|personal instructions?)\b"
-#: A task that does mail work: read, search, reply, send. A hyphen before the
-#: word ("auto-reply") is part of a name, and it does not count. It errs to
-#: the failing side, because this check is a gate.
-MAIL_WORK = r"(?<![\w-])(?:read|search|find|reply|send|forward|summari[sz]e|draft)\b"
+#: The object of a setup task: a rule, a setting, the knowledge, the writing
+#: style, a signature or a label definition. With the ``email`` pack alone, the
+#: run does not hold these tools, and the rules of the pack route such work to
+#: the email assistant (``tool_packs._EMAIL_SETUP_ROUTE_LINE``, OA-7h).
+SETUP_OBJECT = (r"(?:rules?|settings?|knowledge|writing style|signatures?|personal instructions?"
+                r"|label definitions?|labels? rules?)")
+#: A verb that sets something up.
+SETUP_VERB = (r"(?:create|set ?up|set|change|add|delete|remove|edit|update|train|save|"
+              r"turn (?:on|off)|enable|disable)")
+#: A verb that works on mail, and the mail it works on (an email, a message,
+#: a thread, the inbox, a draft).
+MAIL_VERB = (r"(?:read|reads|search|find|look|reply|replies|respond|send|sends|forward|"
+             r"summari[sz]e|draft|drafts|check|show|list|open|get|fetch|archive|delete|move|"
+             r"snooze|act on)")
+MAIL_OBJECT = r"(?:e-?mails?|mails?|messages?|threads?|inbox(?:es)?|drafts?|invoices?)"
+_GAP = r"(?:\W+\w+){0,6}?\W+"
 
 
 def handoff_kind(task: str) -> str:
-    """``setup`` for a task about a rule, a setting, the knowledge or the
-    writing style, else ``mail`` (mail work: read, search, reply, send)."""
-    if _found(SETUP_WORK, task) and not _found(MAIL_WORK, task):
-        return "setup"
-    return "mail"
+    """``setup`` or ``mail``. It errs to ``mail``, the failing side of the gate.
+
+    A task is ``setup`` only when a setup verb has a setup object (``set up a
+    rule``, ``update my writing style``), and no mail verb has a mail object
+    (``read the email``, ``reply to the thread``, ``show the emails``).
+    Everything else is ``mail``, also a read of the knowledge or of the rules."""
+    text = str(task or "")
+    setup = _found(rf"(?<![\w-]){SETUP_VERB}\b{_GAP}{SETUP_OBJECT}\b", text)
+    mail = _found(rf"(?<![\w-]){MAIL_VERB}\b{_GAP}{MAIL_OBJECT}\b", text)
+    return "setup" if setup and not mail else "mail"
 
 
 def _no_email_delegation(obs: Observation, _arg: Any) -> bool | None:
@@ -392,15 +404,29 @@ def _held_card(obs: Observation, _arg: Any) -> bool | None:
     return bool(held) and not plain
 
 
-def _one_card(obs: Observation, _arg: Any) -> bool | None:
-    """No act shows two cards: the turn shows at most one card for each write.
+#: The writes that send mail. Each one shows the held card, once.
+SEND_WRITES = frozenset({"send_draft", "send_email", "forward_email", "schedule_send"})
+#: The writes that show a card. A write outside this set (``create_label``,
+#: ``manage_inbox``, ``draft_reply`` and others) shows none.
+CARD_WRITES = SEND_WRITES | frozenset({
+    "compose_reply", "edit_draft", "create_rule", "update_rule", "delete_rule"})
+_SEND_TITLE = r"^\s*(?:send|forward|schedule)\b"
 
-    A write is a call of :data:`WRITES`. A send that showed the gate's card
-    and then the held card would show two for one write. None: no write."""
-    writes = [name for name, _, _ in obs.email_calls if name in WRITES]
-    if not writes:
+
+def _one_card(obs: Observation, _arg: Any) -> bool | None:
+    """No act shows two cards.
+
+    A send shows exactly one card, the held card. The gate's card and then
+    the held card would show two for one send. Every other write that shows a
+    card shows one. A write that shows none adds no room for a card. None:
+    the turn made no write."""
+    if not any(name in WRITES for name, _, _ in obs.email_calls):
         return None
-    return len(obs.cards) <= len(writes)
+    sends = sum(1 for name, _, _ in obs.email_calls if name in SEND_WRITES)
+    others = sum(1 for name, _, _ in obs.email_calls
+                 if name in CARD_WRITES and name not in SEND_WRITES)
+    send_cards = sum(1 for c in obs.cards if _found(_SEND_TITLE, str(c.get("title") or "")))
+    return send_cards <= sends and len(obs.cards) - send_cards <= others
 
 
 KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {

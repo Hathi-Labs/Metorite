@@ -332,6 +332,23 @@ def test_a_named_mailbox_on_a_pooled_read_fails() -> None:
     # Mail work wins over a setup word: it errs to the failing side.
     ("Read the mail that sets the new rule.", "mail"),
     ("Summarise my unread mail.", "mail"),
+    # Fix round 1: four probes of the verifier, and more.
+    ("Check my unread emails against my settings", "mail"),
+    ("Show the emails that match my rules", "mail"),
+    ("Set up a rule to send newsletters to a label", "setup"),
+    # A read of the knowledge is not a setup verb, so it counts as mail.
+    ("Search the knowledge for my writing style", "mail"),
+    ("Create a rule that labels mail from Delta as Invoices", "setup"),
+    ("Update my writing style to be shorter.", "setup"),
+    ("Add a signature setting for Work.", "setup"),
+    ("Delete the rule Receipts.", "setup"),
+    ("Delete the email about the rule.", "mail"),
+    ("Respond to Anil about the date.", "mail"),
+    ("List my drafts.", "mail"),
+    ("Open the thread with Kumar.", "mail"),
+    ("Get the replies from Priya.", "mail"),
+    ("Look up the invoice and send it on.", "mail"),
+    ("Tell me what you did.", "mail"),
 ])
 def test_a_hand_off_is_setup_or_mail_work(task: str, kind: str) -> None:
     assert ck.handoff_kind(task) == kind
@@ -405,6 +422,28 @@ def test_no_act_shows_two_cards() -> None:
     assert ck.check_turn(Turn("x", (), Plan()), both)["one_card"] is True
     read = _obs(email_calls=[("read_email", {}, "")])
     assert ck.check_turn(Turn("x", (), Plan()), read)["one_card"] is None
+
+
+def test_a_card_less_write_gives_a_second_send_card_no_room() -> None:
+    """Fix round 1 (P2-1). ``create_label`` shows no card, so a turn with it and
+    a send that shows the gate card and the held card has two send cards for one
+    send. The old check counted every write, and it passed this turn. Mutation:
+    count ``len(cards) <= len(writes)`` → this case passes → red."""
+    gate = {"title": "Send this email?"}
+    held = {"title": "Send this draft?", "rows": []}
+    calls = [("create_label", {}, ""), ("send_draft", {}, "")]
+    two = _obs(email_calls=calls, cards=[gate, held])
+    assert ck.check_turn(Turn("x", (), Plan()), two)["one_card"] is False
+    assert ck.check_turn(Turn("x", (), Plan()), _obs(email_calls=calls, cards=[held]))[
+        "one_card"] is True
+    # A card with no write that shows one is an extra card.
+    extra = _obs(email_calls=[("manage_inbox", {}, "")], cards=[{"title": "Archive these?"}])
+    assert ck.check_turn(Turn("x", (), Plan()), extra)["one_card"] is False
+    # A reply and a draft edit show one card each, and a send adds one more.
+    full = _obs(email_calls=[("compose_reply", {}, ""), ("edit_draft", {}, ""),
+                             ("send_draft", {}, "")],
+                cards=[{"title": "Reply to a?"}, {"title": "Save these changes?"}, held])
+    assert ck.check_turn(Turn("x", (), Plan()), full)["one_card"] is True
 
 
 @pytest.mark.parametrize("arm", ["delegation", "pack"])

@@ -788,6 +788,15 @@ def rescore(data: dict[str, Any], when: str = "") -> list[str]:
                 changes.append(f"{r['arm']} {r['scenario']}#{r['turn']} r{r['repeat']}: "
                                f"{c.name} {old} -> {new}")
                 r["checks"][c.name] = new
+        if r["arm"] == "pack" and "no_email_delegation" in r["checks"]:
+            # OA-7h fix round 1: the hand-off check reads the stored tasks.
+            now = ck._no_email_delegation(obs, None)
+            was = r["checks"]["no_email_delegation"]
+            if now != was:
+                changes.append(f"{r['arm']} {r['scenario']}#{r['turn']} r{r['repeat']}: "
+                               f"no_email_delegation {was} -> {now}")
+                r["checks"]["no_email_delegation"] = now
+            r["handoffs"] = [ck.handoff_kind(t) for t in obs.tasks]
         r["passed"] = ck.passed(r["checks"])
     data["rescored"] = {"when": when or datetime.now(UTC).date().isoformat(),
                         "sha": _sha(), "checks": sorted(RESCORED), "changes": changes}
