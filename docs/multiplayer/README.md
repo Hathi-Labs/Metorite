@@ -80,7 +80,7 @@ Interactive mockups live alongside this doc:
 
 **Companion docs:**
 
-- [`../../project-docs/specs/agent_platform_hardening_2026-07.md`](../../project-docs/specs/agent_platform_hardening_2026-07.md)
+- `../../project-docs/specs/agent_platform_hardening_2026-07.md`
   — **adversarial review of everything below.** 20 findings, the container-isolation
   decision, and the ordered fix list. Two of them change this document's design rather than
   its implementation: participant input must be **user-role** (steer is otherwise a
@@ -99,7 +99,7 @@ Interactive mockups live alongside this doc:
   one-per-person (coach, email) and which are one-brain-for-a-team (sales assistant).
   Read this first: instancing decides what a memory compartment even is, and whether an
   agent's sessions may become rooms at all.
-- [`../../project-docs/specs/multiplayer_prior_art_qm_2026-08.md`](../../project-docs/specs/multiplayer_prior_art_qm_2026-08.md)
+- `../../project-docs/specs/multiplayer_prior_art_qm_2026-08.md`
   — **prior art: `yc-software/qm`, read 2026-08-01.** An outside team reached this document's
   intersection rule independently and applied it to three resources. Three of its findings change
   what is written below rather than confirming it: **steer should be built before floor control**
@@ -541,7 +541,7 @@ makes the destructive race impossible rather than merely unlikely.
 > must not be able to reach `mark_active(reset=True)` and delete a transcript they don't own), and
 > the carve-out that a human message arriving during an *automation* turn should start its own run
 > rather than steer into a cron. Detail:
-> [`multiplayer_prior_art_qm_2026-08.md` §QM-1](../../project-docs/specs/multiplayer_prior_art_qm_2026-08.md).
+> `multiplayer_prior_art_qm_2026-08.md` §QM-1.
 
 ### 5.2 The Phase 0 correctness fix that unlocks all of this
 
@@ -559,7 +559,7 @@ This one change converts a silent data-loss bug into an explicit product choice,
 worth shipping on its own even if multiplayer stops here.
 
 > **Update 2026-08-01 (built).** Shipped, and with the sequence inverted per
-> [`multiplayer_prior_art_qm_2026-08.md`](../../project-docs/specs/multiplayer_prior_art_qm_2026-08.md)
+> `multiplayer_prior_art_qm_2026-08.md`
 > §QM-1: **steer first, floor control re-decided afterwards.** What landed:
 >
 > - **The supersede rule, stated once: *you may supersede a run you own, and no
@@ -873,7 +873,7 @@ Rules:
 > (WS-2) instead of sitting beside them. Their documented residual applies to us too: a credential
 > materialized into a sandbox is plaintext to any process there, and a stated *purpose* is an audit
 > field, not enforced authorization. Detail:
-> [`multiplayer_prior_art_qm_2026-08.md` §QM-3](../../project-docs/specs/multiplayer_prior_art_qm_2026-08.md).
+> `multiplayer_prior_art_qm_2026-08.md` §QM-3.
 >
 > **Gate: not this workstream's.** Per-credential room grants are net-new work with no
 > acceptance criteria in any doc, and the prior-art map routes QM-3 to **WS-2** (OWNER-GATE
@@ -901,7 +901,7 @@ Total transparency is not the goal; *shared context with private edges* is.
   > narrows what the agent itself may re-read, not just what that person sees. That is the same
   > outcome [`memory-clearance.md`](memory-clearance.md) §5.4 reaches by queueing joins to run
   > boundaries, by a simpler mechanism — worth comparing before building either.
-  > [`multiplayer_prior_art_qm_2026-08.md` §QM-5](../../project-docs/specs/multiplayer_prior_art_qm_2026-08.md).
+  > `multiplayer_prior_art_qm_2026-08.md` §QM-5.
   >
   > **The gap is real; the design is not done. NOT DISPATCHABLE.** Verified 2026-08-02:
   > the viewer half is built and correct (mig 138 `:97-98` → `gateway/rooms.py:277-282`,
@@ -1061,7 +1061,7 @@ confidential-deal case safe, and it is detailed in
 
 > **Update 2026-08-01 (re-scoped and partly built).** The order of this phase is
 > inverted per
-> [`multiplayer_prior_art_qm_2026-08.md`](../../project-docs/specs/multiplayer_prior_art_qm_2026-08.md)
+> `multiplayer_prior_art_qm_2026-08.md`
 > §QM-1: **steer was built first**, and whether the five floor modes still earn
 > their place is now a measurement rather than a plan. Steering dissolves most of
 > the problem the baton was invented for — a second person's message lands in the

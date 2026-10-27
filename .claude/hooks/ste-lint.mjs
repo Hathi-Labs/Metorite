@@ -139,10 +139,11 @@ const STRICT_PATH = [
 /**
  * Files this repo does not own.
  *
- * `skills/upstream/` is rewritten every week by skills-upstream-sync.yml from
- * anthropics/skills and VoltAgent/awesome-agent-skills. A rewrite there is undone
- * by the next sync, and failing a sync pull request on somebody else's prose
- * stops the sync. A vendored file is not a style problem, it is a copy.
+ * `skills/upstream/` held a weekly mirror of anthropics/skills and
+ * VoltAgent/awesome-agent-skills. The cleanup of 2026-10-27 deleted the mirror
+ * and its sync workflow. The entry stays: a vendored copy that comes back is
+ * still not ours, and ste-lint.test.mjs pins that case. A vendored file is not
+ * a style problem, it is a copy.
  *
  * `.github/skills/` is NOT on this list. Nothing syncs it, so it is ours.
  */
@@ -151,7 +152,7 @@ const NOT_OURS = [
   // Vendored verbatim from github.com/dickwu/apple-design-skill @ d0bac1e.
   // A refresh re-copies the upstream files, so a rewrite here is undone too.
   /^\.claude\/skills\/apple-design\//,
-  // Adopted verbatim from skills/upstream/anthropics/ at SHA 53048666.
+  // Adopted verbatim from github.com/anthropics/skills at SHA 53048666.
   //
   // ⚠️ THE PATH CANNOT CARRY THE PROVENANCE, so this list carries it. Claude
   // Code reads `.claude/skills/<name>/SKILL.md` and finds nothing one level

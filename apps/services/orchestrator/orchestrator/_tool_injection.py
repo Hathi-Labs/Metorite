@@ -3352,7 +3352,7 @@ async def _apply_tool_packs(
             return None
         bare = PackApply(builds=(), record=tool_packs.PackRun.of(turn, choice, []),
                          run_key=secrets.token_urlsafe(24))
-        return bare if _offer_pack_loader(agents, bare, allow) else None
+        return bare if _offer_pack_loader(agents, bare, allow, current=base) else None
 
     if not choice.slugs:
         _log.info("executor.packs_chosen", packs=[], evicted=list(choice.evicted),
@@ -3380,8 +3380,10 @@ async def _apply_tool_packs(
     replaced = frozenset(record.replaced)
     added = _as_agent_tools([tool for build in builds for tool in build.tools])
     opts["instructions"] = persona
+    size = len(pool)
     pool[:] = [t for t in pool if _delegates_to(t) not in replaced]
     pool.extend(added)
+    current = base + len(pool) - size
     # Fix round 1: the "Delegatable agents" block of the injection leaves out
     # an owner that the run may not hand off to, and only such an owner.
     with contextlib.suppress(Exception):
@@ -3396,7 +3398,7 @@ async def _apply_tool_packs(
     )
     applied = PackApply(builds=tuple(builds), record=record, run_key=run_key)
     if offer_loader:
-        _offer_pack_loader(agents, applied, allow)
+        _offer_pack_loader(agents, applied, allow, current=current)
     return applied
 
 
@@ -3421,7 +3423,9 @@ async def _build_pack_for_load(
     return await _pack_tools(slug, run_ctx, holds=holds)
 
 
-def _offer_pack_loader(agents: list[Any], applied: PackApply, allow: Iterable[str]) -> bool:
+def _offer_pack_loader(
+    agents: list[Any], applied: PackApply, allow: Iterable[str], *, current: int = 0,
+) -> bool:
     """Put ``load_skill_tools`` on the view of the run (layer (b), OA-7e).
 
     It offers each pack of *allow* that the run does not hold
@@ -3435,6 +3439,14 @@ def _offer_pack_loader(agents: list[Any], applied: PackApply, allow: Iterable[st
     from acb_skills import tool_packs
 
     offered = tool_packs.loadable(allow, applied.record.slugs)
+    # A pack that cannot fit is not offered: the live count is *current*
+    # (the base, the load tool, the packs of layer (a), less the specialists
+    # that left) and a load adds the pack's tools.
+    if len(applied.record.slugs) >= tool_packs.MAX_PACKS:
+        offered = ()
+    offered = tuple(
+        slug for slug in offered
+        if current + len(tool_packs.SKILL_FAMILIES[slug]["tools"]) <= tool_packs.MAX_REQUEST_TOOLS)
     if not offered:
         return False
     try:

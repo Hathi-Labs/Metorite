@@ -913,7 +913,7 @@ rm -rf /tmp/orchprobe        # ALWAYS clean up
 - [Anthropic — Multi-agent coordination patterns](https://claude.com/blog/multi-agent-coordination-patterns)
 
 Related specs: [`agent_file_and_memory_framework.md`](agent_file_and_memory_framework.md) ·
-[`core_module_map.md`](core_module_map.md) · [`harness_hardening_2026-07.md`](harness_hardening_2026-07.md)
+`core_module_map.md` · `harness_hardening_2026-07.md`
 
 **Where this document's struck phases went** (added 2026-08-03 — follow these, not the struck text):
 

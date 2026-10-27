@@ -260,19 +260,27 @@ async def test_a_load_adds_the_pack_through_the_one_guarded_builder(store, monke
     assert loader.record.holds() == ("email",)
 
 
-async def test_a_load_counts_as_use(store, monkeypatch) -> None:
-    """Sticky on load: the next turn holds the pack by layer (a), so the tool
-    list stays byte-stable for the prompt cache. Mutation: drop
-    ``note_used`` from the load → the next turn holds no sticky pack → red."""
+async def test_a_mere_load_is_not_sticky_and_a_call_of_the_pack_is(store, monkeypatch) -> None:
+    """A wrong pack never becomes sticky: a pack is sticky only after one of
+    its tools ran (spec, "Sticky on use"). A load alone writes no state. The
+    first call of a pack tool does, with the place of the load in the order.
+    Mutation: write the sticky state in the load → the first assertion
+    fails. Mutation: drop ``note_used`` from the pack call → the second
+    assertion fails."""
     _stub_email(monkeypatch)
     with _tenant():
         turn = await tp.begin_turn(ORG, SESSION, MEMBER, WORDS)
         choice = tp.choose(turn, allowed=ALL, base_tools=40)
         assert choice.slugs == (), "non-vacuity: layer (a) loaded nothing"
         loader = _loader(tp.PackRun.of(turn, choice, []))
+        live = _dummies(40)
         with _in_run(loader):
-            answer, _ = await _call(loader, "email", _dummies(40))
-        assert answer.startswith("Loaded"), answer
+            answer, _ = await _call(loader, "email", live)
+            assert answer.startswith("Loaded"), answer
+            after_load = await tp.begin_turn(ORG, SESSION, MEMBER, "")
+            assert after_load.sticky == (), "a load alone makes no pack sticky"
+            tool_ = next(t for t in live[40:] if _name(t) == "read_email")
+            await tool_.func(email_id="m-1")
         later = await tp.begin_turn(ORG, SESSION, MEMBER, "")
     assert [(s.slug, s.used, s.first) for s in later.sticky] == [("email", turn.turn, (turn.turn, 0))]
     assert tp.choose(later, allowed=ALL, base_tools=40).slugs == ("email",)
@@ -646,15 +654,92 @@ async def test_the_cap_of_layer_a_counts_the_load_tool(
                            offer_loader=offer_loader)
     assert ((applied is not None and applied.record.slugs == ("email",)) is loads), applied
     if offer_loader:
-        provider = _provider(orchestrator[0])
-        assert provider is not None and provider.loader.offered == ("email",)
+        assert _provider(orchestrator[0]) is None, "111 tools: the pack cannot load, so no offer"
 
 
-async def test_the_loader_offers_the_packs_that_layer_a_did_not_load(store, orchestrator) -> None:
+@pytest.mark.parametrize(("base", "want"), [
+    (60, ("email", "email-setup")),
+    (80, ("email-setup",)),
+    (90, ()),
+])
+async def test_the_catalog_offers_only_a_pack_that_fits(
+    base: int, want: tuple[str, ...], store, orchestrator, monkeypatch,
+) -> None:
+    """A pack that the cap would refuse is not offered. The live count is the
+    base, the load tool and the pack tools: 81 + 28 fits, and 81 + 31 does
+    not. Mutation: offer without the size check → ``email`` is offered at
+    base 80 and 90 → red."""
+    monkeypatch.setattr(ti, "_pack_base_count", lambda *_a, **_k: base)
+    applied = await _apply(orchestrator, WORDS)
+    provider = _provider(orchestrator[0])
+    assert (provider.loader.offered if provider else ()) == want
+    assert (applied is not None) is bool(want)
+
+
+async def test_the_catalog_line_of_a_mail_pack_says_that_an_mcp_server_stops_it(
+    store, orchestrator,
+) -> None:
+    """The offer cannot see an MCP server that attaches later, so the line of
+    a mail pack says it. Mutation: drop the note → red."""
+    await _apply(orchestrator, WORDS)
+    provider = _provider(orchestrator[0])
+    assert provider is not None
+    for line in provider.loader.tool.description.splitlines():
+        if line.startswith("- "):
+            assert line.endswith(tp.LOAD_MCP_NOTE), line
+
+
+async def test_a_turn_that_loads_no_pack_binds_a_server_minted_run_key(
+    store, orchestrator,
+) -> None:
+    """The loader-only branch mints the run key itself. A client-set run_id
+    or run key in the run context is never used. Mutation: key the loader
+    on the context's own ``run_id`` or ``pack_run`` → red."""
+    from orchestrator.agents import PACK_DELEGATION_BULLETS
+
+    client = _run_ctx(run_id="client-run", **{tp.PACK_RUN_KEY: "client-key"})
+    with _tenant():
+        turn = await tp.begin_turn(ORG, SESSION, MEMBER, WORDS)
+        applied = await ti._apply_tool_packs(
+            orchestrator, turn, client, allowed=ALL, agent_name="orchestrator",
+            tool_scope=list(CONFIG["tool_scope"]), agent_config=CONFIG,
+            bullets=PACK_DELEGATION_BULLETS, offer_loader=True)
+    assert applied is not None and applied.builds == () and applied.record.slugs == ()
+    assert applied.run_key not in {"client-run", "client-key"} and len(applied.run_key) >= 24
+    provider = _provider(orchestrator[0])
+    assert provider is not None and provider.loader.run_key == applied.run_key
+    assert applied.context() == {tp.PACK_RUN_KEY: applied.run_key, tp.PACKS_KEY: applied.record}
+    # A load that carries the client's key refuses.
+    loader = provider.loader
+    with _tenant(), _bound(**{**client, tp.PACKS_KEY: applied.record}):
+        answer = (await _call(loader, "email", _dummies(10)))[0]
+    assert answer == tp.LOAD_REFUSED
+
+
+def test_beside_mcp_fails_closed_when_egress_does_not_import(monkeypatch) -> None:
+    """If ``acb_skills.egress`` cannot import, the MCP check cannot tell, so
+    a mail pack stays out. Mutation: return False on ImportError → red."""
+    import builtins
+
+    real = builtins.__import__
+
+    def fake(name: str, *a: Any, **k: Any) -> Any:
+        if name == "acb_skills.egress":
+            raise ImportError("gone")
+        return real(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", fake)
+    assert tp._beside_mcp(EA, _dummies(2)) is True
+
+
+async def test_the_loader_offers_the_packs_that_layer_a_did_not_load(
+    store, orchestrator, monkeypatch,
+) -> None:
     """Layer (a) loaded ``email``, so the loader offers ``email-setup`` with
     the same run key and the same record that the executor binds. Mutation:
     give the loader its own key or record → each load of the run refuses
     → red."""
+    monkeypatch.setattr(ti, "_pack_base_count", lambda *_a, **_k: 40)
     applied = await _apply(orchestrator, "check my inbox")
     assert applied is not None and applied.record.slugs == ("email",)
     provider = _provider(orchestrator[0])

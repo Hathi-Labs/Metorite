@@ -781,7 +781,7 @@ async def note_used(slug: str, ctx: Mapping[str, Any] | None = None) -> bool:
     once lose no update, and two calls of one pack write the same value. It
     reads the :class:`PackRun` of the run context, which the server bound, and
     writes for a pack that this run holds only: a pack of layer (a), or a
-    pack that ``load_skill_tools`` added (OA-7e, a load counts as use). A run
+    pack that ``load_skill_tools`` added (OA-7e), once one of its tools ran. A run
     with no record (a test, or a run that loaded no pack) writes nothing.
     Never raises.
     """
@@ -932,7 +932,8 @@ def delegation_refusal(agent_name: Any, ctx: Mapping[str, Any] | None = None) ->
 # experimental feature), and answers the rules of the pack. The model sees
 # the new tools on its next request. A load is monotonic: no tool leaves the
 # run, and the persona does not change in the turn. The next turn holds the
-# pack by layer (a), because a load counts as use (:func:`note_used`).
+# pack by layer (a) only after one of its tools ran (:func:`note_used`, in the
+# pack call). A mere load is not sticky: a wrong pack never becomes sticky.
 #
 # The pack goes through the SAME guarded builder as layer (a)
 # (``_tool_injection._pack_tools``) and the same caps. The build skips each
@@ -1016,8 +1017,25 @@ def catalog(slugs: Iterable[str]) -> str:
     """One index line for each pack of *slugs*: the slug and the ``summary``
     of its family, the line that ``build_catalog`` prices."""
     return "\n".join(
-        f"- {slug}: {SKILL_FAMILIES[slug]['summary']}" for slug in slugs if pack(slug) is not None
+        f"- {slug}: {SKILL_FAMILIES[slug]['summary']}" + (LOAD_MCP_NOTE if _reads_strangers(slug) else "")
+        for slug in slugs if pack(slug) is not None
     )
+
+
+#: Added to the catalog line of a pack of an owner that reads stranger text.
+#: The offer cannot see an MCP server that attaches later, so the line says it.
+LOAD_MCP_NOTE = " Cannot load while this chat holds tools of a connected server."
+
+
+def _reads_strangers(slug: str) -> bool:
+    found = pack(slug)
+    if found is None:
+        return False
+    try:
+        from acb_skills.egress import UNTRUSTED_INPUT_AGENTS
+    except ImportError:
+        return True
+    return found.owner in UNTRUSTED_INPUT_AGENTS
 
 
 def load_tool(offered: Sequence[str]) -> Any:
@@ -1125,8 +1143,8 @@ class LoadSkillTools(FunctionMiddleware):
     7. ``context.add_tools``. It raises ``ValueError`` for another object of
        a name in the list, and ``RuntimeError`` with no live list. Either
        loads nothing.
-    8. The record: :meth:`PackRun.add` and :func:`note_used`, so the pack is
-       sticky from the next turn on.
+    8. The record: :meth:`PackRun.add`. A load makes no pack sticky. The pack
+       becomes sticky when one of its tools runs (:func:`note_used`).
 
     One load at a time in a run, so two loads at once see each other.
     """
@@ -1194,7 +1212,6 @@ class LoadSkillTools(FunctionMiddleware):
                          error=type(exc).__name__)
             return LOAD_UNAVAILABLE.format(label=_label(slug))
         run.add(slug, held)
-        await note_used(slug, ctx)
         answer = LOADED.format(label=_label(slug), count=len(tools), rules=rules)
         closing = _completed_lines(found, before)
         if closing:

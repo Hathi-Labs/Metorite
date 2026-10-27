@@ -53,20 +53,29 @@ middle of a turn.
   past 110 tools on the live list. The live count holds the load tool too.
   A refusal past a cap names `spawn_subagents` with the slug of the pack.
   The cap of layer (a) counts the load tool too, when the run offers it.
+  The catalog offers a pack only if it can load: the live count (base, load
+  tool, packs of layer (a), less the specialists that left) plus the pack
+  tools must stay within 110, and the run must hold fewer than 3 packs.
 - **The run check.** A load refuses unless the frame holds the run key and
   the record of the run that offered the tool. The middleware matches its
   own tool by identity, never by name. One load runs at a time in a run.
 - **A pack that the run holds.** A second load of it builds nothing, and
   its answer tells the model to call the tools.
-- **Sticky on load.** A load counts as use (`note_used`), so the next turn
-  holds the pack by layer (a). The tool list then stays stable for the
-  prompt cache.
+- **Not sticky on load.** A mere load is not use. A pack becomes sticky
+  only after one of its tools runs (`note_used` in the pack call), so a
+  wrong pack never becomes sticky. A pack that the model loads and calls
+  is sticky from the next turn on, and the tool list then stays stable for
+  the prompt cache.
 - **The held answer.** The build reads it once, as layer (a) does. The
   strict hold within a turn stays.
 - **Mail beside an MCP server.** A load of a pack of the email assistant
   refuses when the live list holds an MCP tool. A load cannot take the
   server away, and the answer sends the task to the email assistant. This
-  keeps the OA-7b rule: a run with a mail pack holds no MCP tool.
+  keeps the OA-7b rule: a run with a mail pack holds no MCP tool. The
+  offer cannot see an MCP server that attaches later, so the catalog line
+  of a mail pack says that a connected server stops it. Precedence differs
+  by layer. In layer (a) the email pack wins and the MCP server stays out.
+  In layer (b) the MCP tool wins and the pack stays out.
 - **The refusal acts live.** A load of `email-setup` after `email` gives
   the run every email pack. From that call on, a hand-off to the email
   assistant gets the pack refusal (`PackRun.refusal`). The answer gives the
