@@ -437,9 +437,11 @@ class TestUntrusted:
         mcp = _mcp_tool()
 
         def owned(owner: str):
-            fn = FunctionTool(func=fetch_small, name="pack_tool", description="")
-            fn.func.__cc_pack_owner__ = owner
-            return fn
+            async def pack_tool() -> str:
+                return "x"
+
+            pack_tool.__cc_pack_owner__ = owner  # type: ignore[attr-defined]
+            return FunctionTool(func=pack_tool, name="pack_tool", description="")
 
         assert await trs._untrusted(plain, "clean") is False
         assert await trs._untrusted(plain, "<<<EMAIL 0123456789abcdef>>>") is True
