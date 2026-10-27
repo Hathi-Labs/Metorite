@@ -70,7 +70,7 @@ jobs:
   # Fence: tests/unit/test_fence_lists.py.
   changes:
     name: "Changed areas"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       frontend: ${{ steps.diff.outputs.frontend }}
       operator: ${{ steps.diff.outputs.operator }}
@@ -104,7 +104,7 @@ jobs:
 
   lint:
     name: "Lint"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # `pull-requests: read` lets ci_advisory.sh read the PR's labels.
     permissions:
       contents: read
@@ -244,7 +244,7 @@ jobs:
   # as `.test_durations`.
   test:
     name: "Unit tests (shard ${{ matrix.shard }}/6)"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # `fail-fast: false`: one run reports the failures of EVERY shard.
     # Fail-fast cancelled the other five and hid their failures until the
     # next round.
@@ -413,7 +413,7 @@ jobs:
   # Fence: tests/unit/test_ci_unit_guard.py.
   unit-tests:
     name: "Unit tests"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: test
     # `always()`, so a failed shard turns THIS check red instead of skipping
     # it. A skipped required check counts as satisfied.
@@ -523,7 +523,7 @@ jobs:
   # against an empty database.
   backup-restore:
     name: "Backup/restore rehearsal"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Its scripts live under scripts/, and the schema under infra/. A PR
     # that touches neither cannot change the result (2026-10-19).
     needs: changes
@@ -589,7 +589,7 @@ jobs:
   # about 152 files nobody had checked together; now it is a build step.
   migrations:
     name: "Migration ladder replay"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The ladder is infra/, and its appliers are under scripts/. The R1
     # number guard runs in the shards and in push-check on every PR anyway.
     needs: changes
@@ -689,7 +689,7 @@ jobs:
   # build` — that stays a deploy-time step.
   frontend:
     name: "Frontend (typecheck + unit tests)"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # ⚠️ NOT filtered by path. Its unit tests read files across the whole
     # repo (apps/, tests/fixtures/, project-docs/), so no path is safe to skip.
     # `pull-requests: read` lets ci_advisory.sh read the PR's labels.
@@ -735,7 +735,7 @@ jobs:
   # authority check first), which is the only fence on that ordering.
   frontend-operator:
     name: "Operator console (typecheck + unit tests)"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: changes
     if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.operator == 'true')"
     permissions:
@@ -890,7 +890,7 @@ jobs:
 
   caddy:
     name: "Caddy config (validate)"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: changes
     if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.caddy == 'true')"
@@ -914,7 +914,7 @@ jobs:
 
   secret-scan:
     name: "Secret scan"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Report-only initially (ratchet, like mypy/ruff-full above): surfaces any
     # credential in a PR's NEW commits without blocking on an install/config
     # hiccup. Graduate to blocking once proven on a few PRs. Scans only the PR's
