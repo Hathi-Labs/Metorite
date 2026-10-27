@@ -23,13 +23,12 @@ fresh context that can only see the repo.
 ## The cycle
 
 **1 — Select.**
-Do not read `work_plan.md` §2 whole. It is too large for one read. Run
-`uv run python scripts/board.py` for a one-line index of every row.
-Run `uv run python scripts/board.py --row WS-n` to read one candidate row.
-If the user named a WS, use it.
-Otherwise choose the highest-leverage 🟢 row whose notes do not read as
-owner-gated end to end, preferring rows that unblock others (the board's own
-dependency notes tell you which). Say which you picked and why, in one line.
+Metorite holds the state (D118). Call `my_work` through the Metorite MCP and
+take the top row, then `claim_task` on it. If the user named a task or a WS,
+use it. Run `uv run python scripts/board.py --row WS-n` to read the row of its
+workstream: the owning spec and the Metorite epic. If `my_work` is empty, pick
+the highest-priority open task in that epic that is not owner-gated end to
+end. Say which you picked and why, in one line.
 
 **1b — Set the risk tier.** The tier sets how much review the slice gets.
 Owner decision, 2026-10-16. Say the tier and the reason in one line.
@@ -78,7 +77,7 @@ callers, count rows). Never use haiku to build, verify or review.
 - **Harden** (when the feature works): one PR, labelled `harden`. Run
   `STE_LINT_BLOCK=1` for the session, `bash scripts/prepush.sh --harden`,
   `diff-reviewer` on the WHOLE feature diff, and the visual review. Write the
-  deferred fences and the backlog items. Update the board row and the spec
+  deferred fences and the backlog items as Metorite tasks. Update the spec
   header.
 - A HIGH-tier slice keeps the full loop in both modes.
 
@@ -112,11 +111,13 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
 - `P1`/`P2` → carry into the PR body as known findings; do not block on them.
 
 **7 — Land.**
-- In build (1d), a one-line note on the WS row is enough: what shipped. The
-  full row note and the spec header (R4) wait for the hardening pass.
-- In harden, update the WS row in `work_plan.md` §2: state, and a dated note
-  saying what shipped and what remains. This is the handoff to the next
-  cycle — write it for an agent with no memory of this one. Confirm the
+- In build (1d), a comment on the Metorite task is enough: what shipped. Move
+  the task with `set_task_status`. The spec header (R4) waits for the
+  hardening pass.
+- In harden, comment on the task: a dated note saying what shipped and what
+  remains. Add a task for each remaining item. This is the handoff to the
+  next cycle — write it for an agent with no memory of this one. Change the
+  `work_plan.md` §2 row only when the workstream's spec or epic changes. Confirm the
   owning spec's status header (R4) is current. If it is not, do it now.
 - Commit, push the branch, open a PR with `gh`. The PR body: WS id, the slice
   built, acceptance evidence, verification output, reviewer findings, and what
