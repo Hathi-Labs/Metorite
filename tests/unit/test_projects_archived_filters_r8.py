@@ -20,6 +20,7 @@ import pytest
 from gateway.routes.projects.core import CLOSING_CATEGORIES
 from gateway.routes.projects.personal import MY_TASKS_FROM
 from gateway.routes.projects.tree import (
+    NODE_DESCENDANTS_ARCHIVED_SQL,
     NODE_DESCENDANTS_SQL,
     fold_node_summary,
     node_counts_sql,
@@ -140,6 +141,45 @@ def test_node_summary_lists_and_counts_only_active_children(db, world):
     assert [c["id"] for c in got["children"]] == [world["live"]]
     # One task in the live child. The archived child and ITS child add none.
     assert got["tasks"] == 1
+
+
+def _summary(db, node, archived_node: bool):
+    sql = NODE_DESCENDANTS_ARCHIVED_SQL if archived_node else NODE_DESCENDANTS_SQL
+    with db.begin() as c:
+        descendants = c.execute(text(sql), {"pid": node}).fetchall()
+        ids = [node] + [str(r.id) for r in descendants]
+        rows = c.execute(
+            text(node_counts_sql("TRUE")),
+            {"ids": ids, "closed": sorted(CLOSING_CATEGORIES)},
+        ).fetchall()
+    return fold_node_summary(node, rows, descendants)
+
+
+def test_the_dashboard_of_an_archived_space_still_lists_its_projects(db):
+    with db.begin() as c:
+        org = str(c.execute(
+            text("SELECT id FROM organization ORDER BY created_at LIMIT 1")
+        ).scalar_one())
+        space, _ = _project(c, org, "arsp", archived=True)
+        a, a_s = _project(c, org, "arsp-a", parent=space, archived=True)
+        b, b_s = _project(c, org, "arsp-b", parent=space, archived=True)
+        _task(c, org, space, a, a_s)
+        _task(c, org, space, b, b_s)
+        _task(c, org, space, b, b_s)
+    try:
+        got = _summary(db, space, archived_node=True)
+        assert sorted(c["id"] for c in got["children"]) == sorted([a, b])
+        assert got["tasks"] == 3
+        # The active walk would hide them, which is the bug this fences.
+        assert _summary(db, space, archived_node=False)["children"] == []
+    finally:
+        ids = [a, b, space]
+        with db.begin() as c:
+            p = {"p": ids}
+            c.execute(text("DELETE FROM pm_tasks WHERE project_id = ANY(CAST(:p AS uuid[]))"), p)
+            c.execute(text("DELETE FROM pm_task_statuses WHERE project_id = ANY(CAST(:p AS uuid[]))"), p)
+            for pid in ids:
+                c.execute(text("DELETE FROM pm_projects WHERE id = CAST(:p AS uuid)"), {"p": pid})
 
 
 def test_the_portfolio_route_drops_archived_projects_from_its_forest():

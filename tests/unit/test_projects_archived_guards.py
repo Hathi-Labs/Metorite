@@ -58,6 +58,12 @@ def test_the_portfolio_and_node_summaries_skip_archived_projects():
     assert tree.NODE_DESCENDANTS_SQL.count("archived_at IS NULL") == 2
 
 
+def test_the_archived_node_walk_drops_both_filters():
+    assert "archived_at IS NULL" not in tree.NODE_DESCENDANTS_ARCHIVED_SQL
+    assert "WITH RECURSIVE" in tree.NODE_DESCENDANTS_ARCHIVED_SQL
+    assert "NODE_DESCENDANTS_ARCHIVED_SQL" in _src("tree.py")
+
+
 def test_my_work_sql_filters_the_project():
     from gateway.routes.projects.personal import MY_TASKS_FROM
 

@@ -747,6 +747,13 @@ NODE_DESCENDANTS_SQL = (
     ") SELECT * FROM sub"
 )
 
+#: The same walk for a node that is ITSELF archived. Archiving stamps the whole
+#: subtree, so the filter above would hide every child of a node opened from
+#: the sidebar's Archived section. Here the filter is dropped.
+NODE_DESCENDANTS_ARCHIVED_SQL = NODE_DESCENDANTS_SQL.replace(
+    "     AND archived_at IS NULL", "",
+).replace("   WHERE p.archived_at IS NULL", "")
+
 
 def node_counts_sql(visibility_clause: str) -> str:
     """One grouped read over the whole subtree — project by category.
@@ -893,7 +900,12 @@ async def get_node_summary(
         # hold no work), each with the id of the child of `project_id` it
         # sits under, so the dashboard can group by the row a user clicks.
         descendants = (await db.execute(
-            text(NODE_DESCENDANTS_SQL), {"pid": project_id},
+            text(
+                NODE_DESCENDANTS_ARCHIVED_SQL
+                if getattr(node, "archived_at", None) is not None
+                else NODE_DESCENDANTS_SQL
+            ),
+            {"pid": project_id},
         )).fetchall()
 
         # The node itself counts too: a project that carries subprojects
