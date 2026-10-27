@@ -73,6 +73,7 @@ __all__ = [
     "drop_sticky",
     "matched_layer",
     "note_used",
+    "owner_packs",
     "owner_scope",
     "owner_tools",
     "pack",
@@ -101,10 +102,17 @@ class Pack:
     tier_floor: str | None = None
     keeps_reasoning: bool = False
     #: OA-7c. Not empty: while the pack is loaded, the owner's specialist tool
-    #: and the owner's delegation text leave the run, and a hand-off to the
-    #: owner answers this text (:func:`delegation_refusal`). Empty: the pack
-    #: leaves delegation as it is.
+    #: and the owner's delegation text leave the run. When the run holds EVERY
+    #: pack of the owner too (:func:`owner_packs`), a hand-off to the owner
+    #: answers this text (:func:`delegation_refusal`). With some packs of the
+    #: owner only, ``call_agent`` and ``delegate_to_agent`` still reach the
+    #: owner for the rest (fix round 1, P1-A). Empty: the pack leaves
+    #: delegation as it is.
     delegation_refusal: str = ""
+    #: OA-7c fix round 1 (P1-A). ``(old, new)``: when the run holds this pack
+    #: but not every pack of its owner, the rules swap *old* for *new*, the
+    #: line that sends the rest of the owner's work to the owner.
+    handoff_swap: tuple[str, str] = ()
 
     @property
     def owner(self) -> str:
@@ -202,17 +210,31 @@ _EMAIL_DELEGATION_REFUSED = (
     "No email agent exists to hand the task to."
 )
 
+#: The line of the ``email`` rules that says no email agent exists, and the
+#: line that takes its place while the run holds ``email`` but not
+#: ``email-setup`` (fix round 1, P1-A). The setup work then still has a
+#: path: a hand-off to the email assistant.
+_EMAIL_NO_AGENT_LINE = "No email agent exists to hand a task to."
+_EMAIL_SETUP_ROUTE_LINE = (
+    "For a rule, a setting, the knowledge or the writing style, hand the task "
+    "to the email assistant."
+)
+
 PACKS: dict[str, Pack] = {
     "email": Pack(
         slug="email",
         rules=_EMAIL_RULES,
         references=(_EMAIL_LINK,),
+        # Fix round 1 (P1-B): each word needs an email context. A bare
+        # "draft" matched "Draft the PRD in Notion", and "unread" matched an
+        # unread WhatsApp chat. A run with the email pack gets no MCP server.
         words=(
             "email", "emails", "e-mail", "e-mails", "mail", "mails",
-            "inbox", "inboxes", "mailbox", "mailboxes", "unread", "draft",
-            "drafts",
+            "inbox", "inboxes", "mailbox", "mailboxes",
+            "draft a reply", "draft reply", "reply draft",
         ),
         delegation_refusal=_EMAIL_DELEGATION_REFUSED,
+        handoff_swap=(_EMAIL_NO_AGENT_LINE, _EMAIL_SETUP_ROUTE_LINE),
     ),
     "email-setup": Pack(
         slug="email-setup",
@@ -232,6 +254,17 @@ def pack(slug: str) -> Pack | None:
     if not is_pack(slug):
         return None
     return PACKS.get(slug)
+
+
+def owner_packs(owner: str) -> tuple[str, ...]:
+    """Every registered pack of agent *owner*, in the order of :data:`PACKS`.
+
+    A run that holds all of them holds every tool of the owner, so only then
+    is a hand-off to the owner refused (fix round 1, P1-A). The flag does not
+    narrow this list: with ``TOOL_PACKS=email`` the run never holds
+    ``email-setup``, so the hand-off for setup work stays open."""
+    return tuple(slug for slug in PACKS
+                 if is_pack(slug) and str(SKILL_FAMILIES[slug].get("owner")) == str(owner))
 
 
 def rules_for(slug: str) -> str:
@@ -449,8 +482,13 @@ class PackRun:
     first: Mapping[str, tuple[int, int]]
     #: The held answer of each pack at the build.
     held: Mapping[str, bool]
-    #: The refusal text of each owner whose specialist the packs replace.
+    #: The refusal text of each owner that a hand-off may not reach: the run
+    #: holds every pack of that owner (fix round 1, P1-A).
     refusals: Mapping[str, str]
+    #: The owners whose specialist tool and persona text left the run. A
+    #: hand-off by ``call_agent`` still reaches such an owner unless it is in
+    #: :attr:`refusals` too.
+    replaced: frozenset[str] = frozenset()
     #: The packs that this run already made sticky.
     noted: set[str] = field(default_factory=set, compare=False, repr=False)
 
@@ -460,16 +498,20 @@ class PackRun:
         held answer, in load order."""
         slugs = tuple(slug for slug, _held in loaded)
         refusals: dict[str, str] = {}
+        replaced: set[str] = set()
         for slug in slugs:
             found = pack(slug)
-            if found is not None and found.delegation_refusal:
+            if found is None or not found.delegation_refusal:
+                continue
+            replaced.add(found.owner)
+            if set(owner_packs(found.owner)) <= set(slugs):
                 refusals.setdefault(found.owner, found.delegation_refusal)
         return cls(
             org=turn.org, session=turn.session, member_part=turn.member_part,
             turn=turn.turn, stored=turn.stored, slugs=slugs,
             first={slug: choice.first.get(slug, (turn.turn, i)) for i, slug in enumerate(slugs)},
             held={slug: bool(held) for slug, held in loaded},
-            refusals=refusals,
+            refusals=refusals, replaced=frozenset(replaced),
         )
 
 
@@ -511,6 +553,11 @@ def _tool_count(slug: str) -> int:
     return len(SKILL_FAMILIES[slug]["tools"])
 
 
+def _replaces_specialist(slug: str) -> bool:
+    found = pack(slug)
+    return bool(found is not None and found.delegation_refusal)
+
+
 def choose(turn: PackTurn, *, allowed: Iterable[str], base_tools: int) -> Choice:
     """The packs of this turn: layer (a), with no model call (§4.2.2).
 
@@ -522,7 +569,12 @@ def choose(turn: PackTurn, *, allowed: Iterable[str], base_tools: int) -> Choice
     4. The cap: at most :data:`MAX_PACKS` packs, and at most
        :data:`MAX_REQUEST_TOOLS` tools with the *base_tools* of the run. Past
        it, the least recently used sticky pack leaves first. With no sticky
-       pack left, the last new pack leaves.
+       pack left, a new pack leaves. Among two or more new packs, the last
+       one that replaces its owner's specialist (:attr:`Pack.delegation_refusal`)
+       leaves first, because the specialist then stays and covers its tools.
+       So when both email packs match and only one fits, ``email-setup``
+       stays, and ``email_assistant`` still reads the mail (fix round 1,
+       P1-A). Else the last new pack leaves.
 
     *allowed* is :func:`packs_on` of the bound tenant less the families that
     an admin turned off. A slug that is no pack is dropped, and so is a pack
@@ -560,7 +612,8 @@ def choose(turn: PackTurn, *, allowed: Iterable[str], base_tools: int) -> Choice
             victim = min(olds, key=lambda e: (e.used, e.first)).slug
             evicted.append(victim)
         else:
-            victim = order[-1]
+            replacing = [slug for slug in order if _replaces_specialist(slug)]
+            victim = replacing[-1] if replacing and len(order) > 1 else order[-1]
             skipped.append(victim)
         order.remove(victim)
         layers.pop(victim, None)
@@ -718,11 +771,19 @@ def persona_for(
     its hold note after its rules. With no pack the persona comes back as it
     was, byte for byte.
 
+    Fix round 1 (P1-A): while *loaded* does not hold every pack of an owner
+    (:func:`owner_packs`), the rules of a pack with a :attr:`Pack.handoff_swap`
+    swap its *old* line for its *new* line. So with ``email`` alone the rules
+    send a rule, a setting, the knowledge or the writing style to the email
+    assistant, and a hand-off to it stays open.
+
     It raises ``RuntimeError`` when the persona does not hold the owner's
-    text exactly once, as ``orchestrator.agents._orchestrator_instructions``
-    does, so a moved line never ships a half-swapped persona.
+    text exactly once, or the rules do not hold the *old* line exactly once,
+    as ``orchestrator.agents._orchestrator_instructions`` does. So a moved
+    line never ships a half-swapped persona.
     """
     text = str(persona)
+    held_slugs = {slug for slug, _held in loaded}
     swapped: set[str] = set()
     blocks: list[str] = []
     for slug, held in loaded:
@@ -737,6 +798,11 @@ def persona_for(
             text = text.replace(old, "", 1)
             swapped.add(found.owner)
         block = found.rules.rstrip("\n")
+        if found.handoff_swap and not set(owner_packs(found.owner)) <= held_slugs:
+            line, route = found.handoff_swap
+            if block.count(line) != 1:
+                raise RuntimeError(f"pack {slug!r} rules have no single {line[:40]!r}")
+            block = block.replace(line, route, 1)
         if held:
             block += "\n\n" + _hold_note(found.owner)
         blocks.append(block)
@@ -746,12 +812,14 @@ def persona_for(
 
 
 def delegation_refusal(agent_name: Any, ctx: Mapping[str, Any] | None = None) -> str | None:
-    """The answer to a hand-off to *agent_name* from a run that holds a pack
-    that replaces it, or None.
+    """The answer to a hand-off to *agent_name* from a run that holds every
+    pack of that agent, or None.
 
-    The rule of OA-7c: while the ``email`` pack is loaded, the chat run holds
-    the email tools itself, and a hand-off to ``email-assistant`` answers the
-    pack refusal. The streaming seam (``executor._run_sub_agent_streaming``)
+    The rule of OA-7c, as fix round 1 (P1-A) narrowed it: while the chat run
+    holds BOTH email packs, it holds every email tool itself, and a hand-off
+    to ``email-assistant`` answers the pack refusal. With ``email`` alone the
+    hand-off stays open, so a rule or a setting still has a path. The
+    streaming seam (``executor._run_sub_agent_streaming``)
     asks it before any work, for each specialist tool, ``delegate_to_agent``,
     ``call_agent`` and ``call_agents_parallel``. The last two also ask it
     first (``agent_tools._pack_refusal``), so a refused hand-off marks no

@@ -196,11 +196,17 @@ def test_a_reference_in_the_members_words_loads_its_pack() -> None:
     ("Set my writing style", ("email-setup",)),
     ("Make my Email   Rules stricter", ("email", "email-setup")),
     ("What is the weather in Pune?", ()),
+    ("Draft a reply to Anil", ("email",)),
+    ("Draft the PRD in Notion", ()),
+    ("create a Linear ticket from the draft spec", ()),
+    ("Show my unread WhatsApp chats", ()),
 ])
 def test_the_words_load_a_pack_as_whole_words_in_any_case(words: str, want: tuple) -> None:
     """Mutation: match a word inside another word, or in one case only →
     "gmail" loads the email pack, "auto-draft" loads it too, or "INBOX"
-    loads nothing → red."""
+    loads nothing → red. Fix round 1 (P1-B): each email word needs an email
+    context. Mutation: put "draft" or "unread" back → "Draft the PRD in
+    Notion" loads the email pack → red."""
     assert tp.choose(_turn(words=words), allowed=ALL, base_tools=40).slugs == want
 
 
@@ -330,14 +336,42 @@ async def test_the_apply_takes_an_evicted_pack_out_of_the_state(store, orchestra
 # ── 4. The cap ──────────────────────────────────────────────────────────────
 
 
-def test_the_cap_holds_110_tools_with_the_base_of_the_run() -> None:
-    """52 base tools, 31 email tools and 28 setup tools make 111. Mutation:
-    the cap ignores the base tools → both packs load, 111 tools in one
-    request → red."""
+def _measured_base(agents: list[Any]) -> int:
+    return ti._pack_base_count(
+        agents[0], agent_name="orchestrator", tool_scope=list(CONFIG["tool_scope"]),
+        agent_config=CONFIG, disabled=frozenset())
+
+
+async def test_the_cap_holds_110_tools_with_the_measured_base(orchestrator) -> None:
+    """Fix round 1 (Q1, P1-A): the cap reads the measured base of the real
+    orchestrator, 55 tools on 2026-10-27. The 31 email tools fit beside it.
+    With the 28 setup tools too, a request holds 114, past 110, so the two
+    email packs never load together beside that base. Mutation: the cap
+    ignores the base tools → both packs load, 114 tools in one request →
+    red."""
+    base = _measured_base(orchestrator)
+    n_email = len(sf.SKILL_FAMILIES["email"]["tools"])
+    n_setup = len(sf.SKILL_FAMILIES["email-setup"]["tools"])
+    assert base + n_email <= tp.MAX_REQUEST_TOOLS < base + n_email + n_setup, base
     turn = _turn(turn=8, sticky=(_st("email", 1, 5), _st("email-setup", 2, 7)))
-    over = tp.choose(turn, allowed=ALL, base_tools=52)
+    over = tp.choose(turn, allowed=ALL, base_tools=base)
     assert over.slugs == ("email-setup",) and over.evicted == ("email",)
-    assert tp.choose(turn, allowed=ALL, base_tools=51).slugs == ("email", "email-setup")
+    both = tp.choose(_turn(words="Make my email rules stricter"), allowed=ALL, base_tools=base)
+    assert both.slugs == ("email-setup",) and both.skipped == ("email",)
+    room = tp.MAX_REQUEST_TOOLS - n_email - n_setup
+    assert tp.choose(turn, allowed=ALL, base_tools=room).slugs == ("email", "email-setup")
+
+
+def test_when_both_email_packs_match_and_one_fits_email_setup_stays() -> None:
+    """Fix round 1 (P1-A). With ``email-setup`` loaded, the ``email_assistant``
+    tool stays, so the mail keeps a path, and the setup work has its tools.
+    Mutation: the cap drops the last new pack again → ``email`` stays, and
+    the request for a rule has no tool of its own → red."""
+    choice = tp.choose(_turn(words="Make my email rules stricter"), allowed=ALL, base_tools=55)
+    assert choice.slugs == ("email-setup",) and choice.skipped == ("email",)
+    # One new pack alone past the cap leaves as before.
+    alone = tp.choose(_turn(words="check my inbox"), allowed=ALL, base_tools=100)
+    assert alone.slugs == () and alone.skipped == ("email",)
 
 
 def test_past_the_cap_the_least_recently_used_sticky_pack_leaves_first() -> None:
@@ -389,15 +423,33 @@ def test_a_pack_of_more_than_35_tools_never_loads(monkeypatch) -> None:
     assert choice.slugs == ("pok",)
 
 
-async def test_the_base_count_holds_the_core_and_the_injected_tools(orchestrator) -> None:
-    """The cap reads the tools of the run before its packs. Mutation: count
-    the agent's own tools only → about 15, and the cap lets 3 packs pass the
-    limit of 110 → red."""
-    base = ti._pack_base_count(
-        orchestrator[0], agent_name="orchestrator", tool_scope=list(CONFIG["tool_scope"]),
-        agent_config=CONFIG, disabled=frozenset())
-    own = len(orchestrator[0].default_options["tools"])
-    assert own + len(CONFIG["tool_scope"]) // 2 < base <= tp.MAX_REQUEST_TOOLS
+@pytest.mark.parametrize("facts", ["crm-questions-off", "org-not-on-the-crm-list"])
+async def test_the_base_count_equals_the_injected_count_with_no_app_grant(
+    orchestrator, monkeypatch, facts: str,
+) -> None:
+    """Fix round 1 (Q1): the apply stays before ``_inject_agent_tools``, so
+    the cap reads an estimate. With no app grant the estimate equals the
+    count after the injection. ``_add_crm_facts_block`` can only take tools
+    away after it, and the executor logs the true count and warns past the
+    cap. Mutation: drop the CRM facts from the withheld names of the
+    estimate → it counts 2 tools that the run never holds → red for an org
+    that is not on the CRM list. Mutation: count the agent's own tools only
+    → red in both cases."""
+    from acb_common import get_settings
+
+    if facts == "org-not-on-the-crm-list":
+        monkeypatch.setattr(get_settings(), "crm_questions_orgs", "org-other", raising=False)
+    monkeypatch.setattr("orchestrator.app_tools.load_app_action_tools", lambda _name: [])
+    with _tenant():
+        base = _measured_base(orchestrator)
+        ti._inject_agent_tools(
+            orchestrator, tool_scope=list(CONFIG["tool_scope"]), agent_name="orchestrator",
+            agent_config=CONFIG, no_egress=False,
+        )
+        injected = _names(orchestrator)
+        await ti._add_crm_facts_block(orchestrator, frozenset(injected), no_egress=False)
+    assert base == len(injected), (base, len(injected))
+    assert len(_names(orchestrator)) <= base
 
 
 # ── 5. The order ────────────────────────────────────────────────────────────
@@ -470,18 +522,26 @@ async def test_an_email_turn_holds_the_email_pack_and_no_email_assistant_tool(
     store, orchestrator,
 ) -> None:
     """Mutation: keep the specialist tool beside the pack → the turn holds
-    ``email_assistant`` and the email tools → red."""
+    ``email_assistant`` and the email tools → red. Fix round 1 (P1-A): with
+    ``email`` alone, the hand-off stays open for the setup work, and the
+    rules say so in one line."""
     assert "email_assistant" in _names(orchestrator), "non-vacuity"
     with _tenant():
         applied = await _apply(orchestrator, "What came in my inbox today?")
     names = set(_names(orchestrator))
     assert applied is not None and applied.record.slugs == ("email",)
-    assert "email_assistant" not in names
+    assert "email_assistant" not in names and "delegate_to_agent" in names
     assert names >= EMAIL_TOOLS and not SETUP_TOOLS & names
     persona = orchestrator[0].default_options["instructions"]
     assert _agents_mod().EMAIL_DELEGATION_BULLETS not in persona
-    assert tp.PACKS["email"].rules.rstrip("\n") in persona
-    assert applied.record.refusals == {EA: tp.PACKS["email"].delegation_refusal}
+    assert _alone_rules() in persona
+    assert applied.record.replaced == {EA} and applied.record.refusals == {}
+
+
+def _alone_rules() -> str:
+    """The rules of the ``email`` pack while the run holds no ``email-setup``."""
+    line, route = tp.PACKS["email"].handoff_swap
+    return tp.PACKS["email"].rules.rstrip("\n").replace(line, route, 1)
 
 
 async def test_a_turn_with_no_email_input_keeps_delegation(store, orchestrator) -> None:
@@ -495,7 +555,48 @@ async def test_a_turn_with_no_email_input_keeps_delegation(store, orchestrator) 
     assert orchestrator[0].default_options["instructions"] == persona
 
 
-def _record(slugs: tuple[str, ...] = ("email",)) -> tp.PackRun:
+@pytest.mark.parametrize("words", [
+    "Draft the PRD in Notion",
+    "create a Linear ticket from the draft spec",
+    "check my inbox",
+])
+async def test_a_draft_that_is_no_mail_keeps_the_mcp_server(
+    words: str, store, orchestrator, monkeypatch,
+) -> None:
+    """Fix round 1 (P1-B). A run with the email pack gets no registry MCP
+    server, so a false match of the words costs the member their MCP tools.
+    For an org on ``TOOL_PACKS`` and ``MAF_MCP_ORGS``, a draft that is no
+    mail loads no pack and keeps its server. "check my inbox" is the
+    non-vacuity case: it loads the pack, and the server goes. Mutation: put
+    the bare word "draft" back in the email words → the Notion turn loses
+    its server → red."""
+    pytest.importorskip("mcp", reason="mcp not installed")
+    from orchestrator import _maf_mcp
+
+    from tests.unit._maf_mcp_fakes import RegistrySpy, row, set_flag
+
+    set_flag(monkeypatch, ORG)
+    spy = RegistrySpy([row("srv-notion", org=ORG)]).install(monkeypatch)
+    attached: list[list[str]] = []
+
+    async def attach(_agent: Any, servers: Any, _opened: Any, **_kw: Any) -> None:
+        attached.append([str(getattr(s, "name", s)) for s in servers])
+
+    monkeypatch.setattr(_maf_mcp, "attach_mcp_tools", attach)
+    with _tenant():
+        applied = await _apply(orchestrator, words)
+        await ti._inject_mcp_servers(orchestrator[0], "orchestrator",
+                                     organization_id=ORG, opened=[])
+    if words == "check my inbox":
+        assert applied is not None and spy.reads == 0 and attached == []
+    else:
+        assert applied is None
+        assert spy.reads == 1 and attached == [["srv-notion"]]
+
+
+def _record(slugs: tuple[str, ...] = ("email", "email-setup")) -> tp.PackRun:
+    """The record of a run that loaded *slugs*. The default holds every pack
+    of the email assistant, so it refuses a hand-off to it."""
     turn = _turn(turn=1, words="my inbox")
     choice = tp.choose(turn, allowed=ALL, base_tools=40)
     return tp.PackRun.of(turn, choice, [(slug, False) for slug in slugs])
@@ -504,7 +605,8 @@ def _record(slugs: tuple[str, ...] = ("email",)) -> tp.PackRun:
 async def test_a_hand_off_to_the_email_assistant_from_the_chat_run_gets_the_pack_refusal(
     store, monkeypatch,
 ) -> None:
-    """The refusal lives in ``tool_packs.delegation_refusal``. The streaming
+    """The refusal lives in ``tool_packs.delegation_refusal``. Since fix
+    round 1 it acts only while the run holds every email pack. The streaming
     seam ``executor._run_sub_agent_streaming`` asks it for each specialist
     tool and ``delegate_to_agent``. ``agent_tools.call_agent`` and each branch
     of ``call_agents_parallel`` ask it first, so the refused hand-off marks no
@@ -546,6 +648,98 @@ async def test_a_background_hand_off_keeps_delegation(store, monkeypatch) -> Non
         out = await agent_tools.call_agent_background(EA, "Sort the old mail.")
         await asyncio.sleep(0.05)
     assert out != tp.PACKS["email"].delegation_refusal and ran == [EA]
+
+
+async def test_with_email_alone_a_hand_off_to_the_email_assistant_stays_open(
+    store, monkeypatch,
+) -> None:
+    """Fix round 1 (P1-A): the run holds ``email`` and not ``email-setup``, so
+    it lacks the setup tools. ``call_agent`` and ``delegate_to_agent`` still
+    reach the email assistant. Mutation: refuse the hand-off whenever the
+    ``email`` pack is loaded → a rule or a setting has no path → red."""
+    ran: list[str] = []
+
+    async def fake_run_agent(name: str, payload: dict, **_k: Any) -> dict:
+        ran.append(name)
+        return {"result": "Rule made.", "tool_calls": []}
+
+    monkeypatch.setattr(ex, "run_agent", fake_run_agent)
+    alone = _record(("email",))
+    assert alone.replaced == {EA} and alone.refusals == {}
+    with _tenant(), _bound(**_run_ctx(), **{tp.PACKS_KEY: alone, tp.PACK_RUN_KEY: "k"}):
+        assert tp.delegation_refusal(EA) is None and ex._pack_delegation_refusal(EA) is None
+        out = await agent_tools.call_agent(EA, "Make a rule that files newsletters.")
+    assert ran == [EA] and "Rule made." in out
+    assert _record().refusals == {EA: tp.PACKS["email"].delegation_refusal}, "non-vacuity"
+
+
+async def _seed_sticky_email(store: Any) -> None:
+    from acb_common.tenant_redis import TenantRedis, key, organization_scope
+
+    with organization_scope(ORG):
+        state = key(tp.NAMESPACE, SESSION, tp._member_part(MEMBER))
+        await TenantRedis(store).hset(state, "email", json.dumps({"first": [1, 0], "used": 1}))
+        await TenantRedis(store).hset(state, "~turn", "1")
+
+
+@pytest.mark.parametrize("case", ["tool-packs-email-alone", "sticky-email"])
+async def test_a_setup_request_beside_the_email_pack_keeps_a_path(
+    case: str, store, orchestrator,
+) -> None:
+    """Fix round 1 (P1-A, 4): two turns that hold ``email`` and no setup tool.
+    ``TOOL_PACKS=email`` with a request for an email rule, and a sticky
+    ``email`` pack with "make a rule that files newsletters". Each keeps a
+    path: the hand-off to the email assistant is open, the rules name it, and
+    ``delegate_to_agent`` is on the list. Mutation: refuse the hand-off with
+    ``email`` alone, or keep the line "No email agent exists" → red."""
+    if case == "sticky-email":
+        await _seed_sticky_email(store)
+        words, allowed = "make a rule that files newsletters", ALL
+    else:
+        words, allowed = "Create an email rule that files newsletters", frozenset({"email"})
+    with _tenant():
+        applied = await _apply(orchestrator, words, allowed=allowed)
+        assert applied is not None and applied.record.slugs == ("email",)
+        with _bound(**_run_ctx(), **applied.context()):
+            refused = ex._pack_delegation_refusal(EA)
+    names = set(_names(orchestrator))
+    persona = orchestrator[0].default_options["instructions"]
+    assert "create_rule" not in names, "non-vacuity: no setup tool in the run"
+    assert refused is None and "delegate_to_agent" in names
+    assert tp.PACKS["email"].handoff_swap[1] in persona
+    assert tp.PACKS["email"].handoff_swap[0] not in persona
+
+
+async def test_a_run_with_both_email_packs_refuses_the_hand_off_and_hides_the_agent(
+    store, orchestrator, monkeypatch,
+) -> None:
+    """With both packs the run holds every email tool, so a hand-off is
+    refused, the rules keep "No email agent exists", and the "Delegatable
+    agents" block leaves the email assistant out. With ``email`` alone the
+    block still lists it. Mutation: never pass the refused agents to the
+    block, or pass every replaced owner → red in one of the two runs."""
+    monkeypatch.setattr(ti, "_pack_base_count", lambda *_a, **_k: 40)
+    from orchestrator.agents import build_orchestrator_agent
+
+    blocks: dict[str, str] = {}
+    with _tenant():
+        for label, words in (("both", "Make my email rules stricter"),
+                             ("alone", "check my inbox")):
+            agents = [build_orchestrator_agent(with_history=False)]
+            applied = await _apply(agents, words)
+            assert applied is not None
+            ti._inject_agent_tools(
+                agents, tool_scope=list(CONFIG["tool_scope"]), agent_name="orchestrator",
+                agent_config=CONFIG, no_egress=False,
+            )
+            text = agents[0].default_options["instructions"]
+            blocks[label] = text[text.index("## Delegatable agents"):]
+            if label == "both":
+                assert applied.record.refusals == {EA: tp.PACKS["email"].delegation_refusal}
+                assert tp.PACKS["email"].handoff_swap[0] in text
+    assert "'email-assistant'" not in blocks["both"]
+    assert "'email-assistant'" in blocks["alone"]
+    assert "'crm-assistant'" in blocks["both"], "non-vacuity: the block lists the others"
 
 
 class _StubLoaded:
@@ -881,7 +1075,7 @@ def test_the_hold_note_of_a_held_pack_names_no_other_assistant(monkeypatch, swit
     persona = _agents_mod()._orchestrator_instructions(False)
     text = tp.persona_for(persona, [("email", True)], _bullets())
     note = eg.EGRESS_HOLD_NOTE_PACK_CARDS if switch else eg.EGRESS_HOLD_NOTE_PACK
-    assert text.endswith(tp.PACKS["email"].rules.rstrip("\n") + "\n\n" + note + "\n")
+    assert text.endswith(_alone_rules() + "\n\n" + note + "\n")
     assert "assistant" not in note.lower()
     assert "Another assistant" not in text
     assert eg.egress_hold_note({"agent_name": EA, eg.PACK_CALL_KEY: True}) == note

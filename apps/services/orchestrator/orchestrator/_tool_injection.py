@@ -19,6 +19,7 @@ as ``orchestrator.executor.<name>``): ``_gate_injected_tool``, ``_tool_name``,
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import functools
 import os
@@ -1513,19 +1514,24 @@ def _registry_line(name: str, description: Any) -> str:
     return f"  - {name!r}: {text}"
 
 
-def _registry_block_for(agent_name: str | None) -> str:
+def _registry_block_for(agent_name: str | None, exclude: Iterable[str] = ()) -> str:
     """The registry block that *agent_name* reads: every agent but itself.
 
     It filters the cached :func:`_build_registry_block`, so a stub of that
     function in a test still applies. ``None`` returns the whole block.
+    *exclude* names more agents to leave out: the agents that a tool pack
+    of the run refuses (WS-67 OA-7c fix round 1, :data:`PACK_REFUSED_ATTR`).
     """
     block = _build_registry_block()
-    if not agent_name:
+    names = [str(n) for n in exclude if n]
+    if agent_name:
+        names.append(str(agent_name))
+    if not names:
         return block
-    own = _registry_line(agent_name, "").rstrip()  # "  - 'name':"
+    prefixes = [_registry_line(name, "").rstrip() for name in names]  # "  - 'name':"
     return "\n".join(
         line for line in block.splitlines()
-        if line.rstrip() != own and not line.startswith(own + " ")
+        if not any(line.rstrip() == own or line.startswith(own + " ") for own in prefixes)
     )
 
 
@@ -2582,8 +2588,12 @@ def _inject_agent_tools(
                 ):
                     try:
                         # The agent itself is not in the list: a hand-off
-                        # to itself only spends a turn.
-                        _reg = _registry_block_for(agent_name)
+                        # to itself only spends a turn. WS-67 OA-7c: nor is
+                        # an agent that a tool pack of this run refuses.
+                        _reg = _registry_block_for(
+                            agent_name,
+                            exclude=getattr(agent, PACK_REFUSED_ATTR, ()) or (),
+                        )
                         _prev = _do.get("instructions") or ""
                         if _reg and "Delegatable agents" not in _prev:
                             _do["instructions"] = (
@@ -2821,6 +2831,11 @@ def _apply_no_egress(
 #: reads it, so a run that holds a pack of an agent of
 #: :data:`UNTRUSTED_INPUT_AGENTS` gets no registry MCP server.
 PACK_OWNER_ATTR = "__cc_pack_owner__"
+
+#: The attribute of an agent that names the agents its run may not hand off
+#: to, because the run holds every pack of each (OA-7c fix round 1). The
+#: "Delegatable agents" block of :func:`_inject_agent_tools` leaves them out.
+PACK_REFUSED_ATTR = "_cc_pack_refused_delegates"
 
 #: The answer of a pack tool that is called outside the run that built it,
 #: or on a frame with no run. The held answer belongs to one run, so the tool
@@ -3239,24 +3254,30 @@ def _pack_base_count(
     """The tools of the run before its packs, for the cap of layer (a).
 
     It counts the tools that *agent* holds now, and the platform tools that
-    :func:`_inject_agent_tools` adds: the static chain within the resolved
-    scope, and the workflow trio. A granted app tool is not counted, so the
-    executor logs the true count after the injection
-    (``executor.pack_request_tools``).
+    :func:`_inject_agent_tools` adds. It reads the same inputs in the same
+    order: the static chain within the resolved scope, the no-match fallback,
+    the workflow trio, and the same withheld names (D85, the floor opt-out,
+    WhatsApp and the CRM facts). So with no app grant it equals the count
+    after the injection (fix round 1, Q1). A granted app tool is not
+    counted, because its read needs the database. ``_add_crm_facts_block``
+    can only take tools away after it. The executor logs the true count
+    after the injection (``executor.pack_request_tools``) and warns past
+    the cap.
     """
     from acb_skills.skill_families import SKILL_FAMILIES
 
     names = {_tool_name(t) for _label, pool in _own_tool_pools(agent) for t in pool}
-    scope = _resolve_injected_scope(
-        tool_scope, disabled_families=disabled,
-        withheld=_withheld_shell_tools(agent_name, agent_config)
-        | _floor_opt_out(agent_name, agent_config),
-    )
-    chain = {_tool_name(fn) for fn in _collect_injectable_platform_tools(agent_name)}
-    names |= chain if scope is None else chain & scope
+    withheld = (_withheld_shell_tools(agent_name, agent_config)
+                | _floor_opt_out(agent_name, agent_config)
+                | _whatsapp_withheld() | _facts_withheld())
+    scope = _resolve_injected_scope(tool_scope, disabled_families=disabled, withheld=withheld)
+    chain = [_tool_name(fn) for fn in _collect_injectable_platform_tools(agent_name)]
+    injected = set(chain) if scope is None else {name for name in chain if name in scope}
+    if scope is not None and not injected:  # the no-match fallback of the injection
+        injected = set(chain)
     if "workflows" not in disabled:
-        names |= set(SKILL_FAMILIES["workflows"]["tools"])
-    return len(names)
+        injected |= set(SKILL_FAMILIES["workflows"]["tools"])
+    return len(names | (injected - withheld))
 
 
 async def _apply_tool_packs(
@@ -3335,15 +3356,20 @@ async def _apply_tool_packs(
         _log.error("executor.packs_refused", reason="persona_swap", error=str(exc)[:200])
         return None
     record = tool_packs.PackRun.of(turn, choice, loaded)
-    replaced = frozenset(record.refusals)
+    replaced = frozenset(record.replaced)
     added = _as_agent_tools([tool for build in builds for tool in build.tools])
     opts["instructions"] = persona
     pool[:] = [t for t in pool if _delegates_to(t) not in replaced]
     pool.extend(added)
+    # Fix round 1: the "Delegatable agents" block of the injection leaves out
+    # an owner that the run may not hand off to, and only such an owner.
+    with contextlib.suppress(Exception):
+        setattr(agent, PACK_REFUSED_ATTR, frozenset(record.refusals))
     _log.info(
         "executor.packs_loaded", packs=list(record.slugs),
         layers={slug: choice.layers.get(slug, "") for slug in record.slugs},
         held=dict(record.held), replaced=sorted(replaced),
+        refused=sorted(record.refusals),
         evicted=list(choice.evicted), skipped=list(choice.skipped),
         base_tools=base, pack_tools=sum(len(b.tools) for b in builds),
     )
