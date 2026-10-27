@@ -11638,3 +11638,75 @@ the drawer, and tap again.
 
 Fences (R7): `crmU10.test.ts` holds the tab rule, the wire and the three
 source fences. It checks that `AppShell` draws only what the page emits.
+
+### 20.16 CRM-U12: plain words and no dead ends in CRM setup (2026-10-27)
+
+**Status.** 📝 Specified 2026-10-27. Metorite: under epic #477.
+
+**Gate.** AGENT-SAFE. No flag, no migration and no gateway change. Copy and
+small UI changes only. The layout of the settings sections does not change
+here. The owner decides that layout first.
+
+**Why.** Owner, 2026-10-27: the CRM setup must be "straightforward and easy
+to understand for the person setting things up", and "not complex to
+understand or overloaded". A read-only audit of the setup screens on
+2026-10-27 found the items below in the code, with file and line evidence.
+
+**Not in this slice.** `PipelineSettings.tsx` (CRM-U11 owns it), the field
+studio words that copy Zoho on purpose (Picklist, Lookup), the merge of
+sections, the one inbox for AI proposals, and the draft of the Field map.
+
+#### The changes
+
+1. **First open (`FirstOpen.tsx`).** Remove the three disabled provider rows
+   (HubSpot, Salesforce, Pipedrive) and their "Coming soon" badges. Put one
+   muted line in their place: "HubSpot, Salesforce and Pipedrive come later."
+   Replace "You can change this later in Settings" with the truth: "To change
+   this later, you start over, and the CRM records are removed."
+2. **The Native conversion card (`ConvertMappingCard.tsx`).** Its title is
+   "When a lead converts", not "Field mapping". The Mirror Field map keeps its
+   title.
+3. **Fields, read only (`FieldsCard.tsx`).** Show the type with the labels of
+   `lib/fieldStudio.ts` `TYPE_LABELS`, so one word names one type. Remove the
+   "Zoho" tag that shows on every row. Make "Edit fields in Zoho" a link when
+   the Zoho address is known (the helper the record page uses). A Native admin
+   with no field editing reads: "Field editing is not on for your
+   organization yet." No other dead end stays.
+4. **Sync health (`SyncHealthCard.tsx`, `lib/syncHealth.ts`).** Business
+   words in place of engine words:
+
+   | Now | New |
+   |---|---|
+   | Entity | Records |
+   | Skipped | Left out |
+   | Not linked | No matching record |
+   | Failed | Could not save |
+   | Not mapped | Did not fit |
+   | Partial read | Some missing |
+   | Hold it | Pause syncing this |
+
+   The details table shows five columns by default: Records, In Zoho, In
+   Metorite, Difference and Sync. The other counts move into an expand on
+   each row.
+5. **The Field map (`FieldMapCard.tsx`, `lib/fieldMap.ts`).** "Stale" reads
+   "Zoho changed this". "Target column" reads "Metorite field". The "Map"
+   button reads "Add to draft", because it adds to a draft and applies
+   nothing. CRM-U13 may remove the draft. Until then the label tells the
+   truth.
+6. **Dead code.** Delete `ComingSoonCard` (`SettingsCards.tsx`) and its
+   tests.
+
+#### Done when
+
+1. Each change above is on screen, and no test asserts an old word.
+2. `npx tsc --noEmit` passes, and `npx vitest run src/app/crm` passes, except
+   the six known CRLF failures (layoutBoundary ×2, railSessions, emailLink,
+   reportsLiveOverview ×2).
+3. A grep of `src/app/crm` for the old words of item 4 and item 5 finds none
+   in a string that a user reads.
+4. The `visual-review` captures (light mode, compact density, a changed
+   accent, 375 px) of First open, Fields and Sync health. If a screen cannot
+   draw without a Zoho-mirrored org, the PR says so and shows what it could.
+
+Fences (R7): the tests that hold each changed string. In build mode no new
+fence file is needed (`engineering_practice.md` §7a).
