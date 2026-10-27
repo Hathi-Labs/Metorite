@@ -540,6 +540,7 @@ async def test_a_replace_with_an_area_answers_the_area(db) -> None:
     user = _member(email)
     async with tenant_engine_scope(_app_dsn(db)):
         old = await _add_fact(db.org_a, user, "I want to hire", "work")
+        await _sleep_a_second()  # the old fact is older than the question
         await _sit(db.org_a, user)
         await _mark(db.org_a, user, "goals", "asked", "chat")
         with pytest.raises(HTTPException):
@@ -550,5 +551,5 @@ async def test_a_replace_with_an_area_answers_the_area(db) -> None:
                                  "area": "goals"}, user=user, x_profile_via="chat")
         done = await _mark(db.org_a, user, "goals", "answered", "chat")
     assert edited["area"] == "goals" and edited["text"] == "hire two engineers"
-    assert edited["at"] >= old["at"]  # the server stamped the answer
+    assert edited["at"] > old["at"]  # the server stamped the answer
     assert done["areas"]["goals"]["state"] == "answered"
