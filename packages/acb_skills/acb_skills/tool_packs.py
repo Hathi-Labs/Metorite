@@ -968,16 +968,32 @@ async def note_used(slug: str, ctx: Mapping[str, Any] | None = None) -> bool:
 # ── The persona and the hand-off ────────────────────────────────────────────
 
 
-def _hold_note(owner: str) -> str:
+def _hold_note(owner: str, ctx: Mapping[str, Any] | None = None) -> str:
     """The hold note of a held pack of *owner*. It names no other assistant
-    (``egress.EGRESS_HOLD_NOTE_PACK``, OA-7c condition 6)."""
+    (``egress.EGRESS_HOLD_NOTE_PACK``, OA-7c condition 6).
+
+    *ctx* is the run context of the build. It gives the note the session of
+    the chat, so a chat that read mail gets the mail reason. Without a session
+    the reason reads "sandbox", which is false for the usual cause of a hold
+    (WS-67 OA-8a fix round 1). The note takes the agent and the pack flag from
+    *owner*, never from *ctx*."""
     from acb_skills.egress import PACK_CALL_KEY, egress_hold_note
 
-    return egress_hold_note({"agent_name": owner, PACK_CALL_KEY: True})
+    base = dict(ctx) if ctx is not None else dict(_run_context())
+    return egress_hold_note({**base, "agent_name": owner, PACK_CALL_KEY: True})
+
+
+#: The owners whose delegation text is NOT in the base persona, by design. The
+#: orchestrator has no CRM persona text (WS-67 OA-8a), so the swap skips. Any
+#: other owner that a pack replaces must have a bullet, or ``persona_for``
+#: raises: a forgotten entry would keep a persona line that sends work to a
+#: tool that has left. Fence: ``tests/unit/test_tool_packs_choice.py``.
+NO_PERSONA_BULLETS: frozenset[str] = frozenset({"crm-assistant"})
 
 
 def persona_for(
     persona: str, loaded: Sequence[tuple[str, bool]], bullets: Mapping[str, str],
+    ctx: Mapping[str, Any] | None = None,
 ) -> str:
     """The persona of a run that holds the packs *loaded*, in load order.
 
@@ -1009,24 +1025,27 @@ def persona_for(
         if found is None:
             continue
         if found.delegation_refusal and found.owner not in swapped:
-            # An owner absent from *bullets* has no persona text to swap out
-            # (the CRM assistant, OA-8a): the swap is skipped. An owner that
-            # is present must still match exactly once, so a moved line never
-            # ships a half-swapped persona.
-            if found.owner in bullets:
+            # An owner in NO_PERSONA_BULLETS has no persona text to swap out
+            # (the CRM assistant, OA-8a): the swap is skipped. Any other owner
+            # must match exactly once, so a moved line, or an owner with no
+            # entry, never ships a half-swapped persona.
+            if found.owner not in NO_PERSONA_BULLETS or found.owner in bullets:
                 old = str(bullets.get(found.owner) or "")
                 if not old or text.count(old) != 1:
                     raise RuntimeError(
                         f"orchestrator persona has no single delegation text of {found.owner!r}")
                 text = text.replace(old, "", 1)
             swapped.add(found.owner)
-        blocks.append(_rules_block(found, held, held_slugs))
+        blocks.append(_rules_block(found, held, held_slugs, ctx))
     if not blocks:
         return str(persona)
     return text.rstrip("\n") + "\n\n" + "\n\n".join(blocks) + "\n"
 
 
-def _rules_block(found: Pack, held: bool, held_slugs: Iterable[str]) -> str:
+def _rules_block(
+    found: Pack, held: bool, held_slugs: Iterable[str],
+    ctx: Mapping[str, Any] | None = None,
+) -> str:
     """The rules of pack *found* in a run that holds the packs *held_slugs*.
 
     ONE text for both layers: :func:`persona_for` puts it after the persona,
@@ -1042,7 +1061,7 @@ def _rules_block(found: Pack, held: bool, held_slugs: Iterable[str]) -> str:
             raise RuntimeError(f"pack {found.slug!r} rules have no single {line[:40]!r}")
         block = block.replace(line, route, 1)
     if held:
-        block += "\n\n" + _hold_note(found.owner)
+        block += "\n\n" + _hold_note(found.owner, ctx)
     return block
 
 
@@ -1371,7 +1390,7 @@ class LoadSkillTools(FunctionMiddleware):
         held = getattr(build, "held", True) is not False
         before = run.holds()
         try:
-            rules = _rules_block(found, held, (*before, slug))
+            rules = _rules_block(found, held, (*before, slug), ctx)
         except Exception as exc:  # RuntimeError: nothing loads
             _log.warning("tool_packs.load_refused", pack=slug, reason="rules",
                          error=type(exc).__name__)

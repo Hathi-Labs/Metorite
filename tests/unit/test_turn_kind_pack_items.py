@@ -413,3 +413,34 @@ async def test_layer_c_drops_the_mirror_record_writes_through_load_early(
     assert got == CRM_NINE - dropped and "log_activity" in got
     assert loader.record.holds() == ("crm-records",)
     assert len(context.instructions) == 1 and "CRM TOOLS." in context.instructions[0]
+
+
+@pytest.mark.parametrize("layer", ["b-load", "c-early"])
+async def test_a_held_crm_pack_gives_the_mail_reason_in_layer_b_and_c(
+    store, monkeypatch, layer: str,
+) -> None:
+    """OA-8a fix round 1: the chat read mail, so the pack builds held, and the
+    rules of a load (layer b answer, layer c instruction) end with the mail
+    reason, never "a sandboxed turn". Mutation: drop the ctx from
+    ``_rules_block`` in ``_admit`` -> the sandbox note -> red."""
+    from acb_skills import egress as eg
+
+    from tests.unit.test_load_skill_tools import _call
+
+    async def crm_mode() -> str:
+        return "live"
+
+    monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    loader = _loader(_record(), offered=("crm-records",))
+    loader.set_early(["crm-records"])
+    if layer == "b-load":
+        with _in_run(loader):
+            await eg.mark_untrusted_answer()
+            text, _passed = await _call(loader, "crm-records", _dummies(10))
+    else:
+        with _in_run(loader):
+            await eg.mark_untrusted_answer()
+        context = await _before_run(loader, _dummies(10))
+        text = "\n".join(context.instructions)
+    assert eg.EGRESS_HOLD_NOTE_PACK_OTHER in text and eg.EGRESS_HOLD_NOTE_SANDBOX not in text
+    assert "CRM TOOLS." in text

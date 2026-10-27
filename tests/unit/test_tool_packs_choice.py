@@ -1573,4 +1573,113 @@ async def test_a_crm_write_after_mail_in_the_same_turn_is_held_and_shows_no_card
     own, untrusted, posts, answer, _decisions = await _crm_write_through_the_assembly(
         orchestrator, monkeypatch, mark=True)
     assert own == [] and untrusted == [] and posts == []
-    assert answer.startswith("create_lead is off"), answer
+    assert answer == eg.EGRESS_HELD_PACK_ANSWER_OTHER.format(name="create_lead"), answer
+
+
+# ── 10. OA-8a fix round 1: the reason of a held CRM pack, the persona set ───
+
+
+async def _mark_chat_as_mail_read() -> None:
+    """The chat read mail on an earlier turn: Redis and this process hold the mark."""
+    with _tenant(), _bound(**_run_ctx()):
+        await eg.mark_untrusted_answer()
+
+
+async def test_a_held_crm_pack_in_a_mail_chat_gives_the_mail_reason_in_the_persona(
+    store, orchestrator, monkeypatch,
+) -> None:
+    """The chat read mail, so the CRM pack builds held. The persona says why:
+    mail from outside senders, never "a sandboxed turn". With the ``email``
+    pack held too, no note of the persona gives the sandbox reason. Mutation:
+    take the session out of ``_hold_note`` -> the sandbox note -> red."""
+    async def crm_mode() -> str:
+        return "live"
+
+    monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    await _mark_chat_as_mail_read()
+    with _tenant():
+        applied = await _apply(orchestrator, "show my crm deals and check my inbox", allowed=EVERY)
+    assert applied is not None and set(applied.record.slugs) == {"crm-records", "email"}
+    assert applied.record.held == {"crm-records": True, "email": True}
+    persona = orchestrator[0].default_options["instructions"]
+    assert eg.EGRESS_HOLD_NOTE_SANDBOX not in persona
+    assert eg.EGRESS_HOLD_NOTE_PACK_OTHER in persona and eg.EGRESS_HOLD_NOTE_PACK in persona
+    assert "create_lead" not in set(_names(orchestrator))
+
+
+async def test_a_held_crm_pack_alone_gives_the_mail_reason_and_no_email_talk(
+    store, orchestrator, monkeypatch,
+) -> None:
+    """The CRM note talks about the CRM pack, not about email tools. Mutation:
+    use the email note for every owner -> ``send_draft`` in the CRM persona ->
+    red."""
+    async def crm_mode() -> str:
+        return "live"
+
+    monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    await _mark_chat_as_mail_read()
+    with _tenant():
+        applied = await _apply(orchestrator, "show my crm deals", allowed=EVERY)
+    assert applied is not None and applied.record.slugs == ("crm-records",)
+    persona = orchestrator[0].default_options["instructions"]
+    block = persona[persona.index("CRM TOOLS."):]
+    assert eg.EGRESS_HOLD_NOTE_PACK_OTHER in block and eg.EGRESS_HOLD_NOTE_SANDBOX not in block
+    assert "send_draft" not in block and "schedule_send" not in block
+
+
+async def test_a_covered_run_keeps_the_sandbox_reason_for_a_held_crm_pack(
+    store, orchestrator, monkeypatch,
+) -> None:
+    """A chat that read no mail but is held by a covered run (H-236) keeps the
+    sandbox reason. The fix reads the real session, and invents no mail reason.
+    Mutation: always answer the mail note -> red."""
+    async def crm_mode() -> str:
+        return "live"
+
+    monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    with _tenant():
+        applied = await _apply(
+            orchestrator, "show my crm deals", allowed=EVERY,
+            run_ctx=_run_ctx(no_egress=True))
+    assert applied is not None and applied.record.held == {"crm-records": True}
+    persona = orchestrator[0].default_options["instructions"]
+    assert eg.EGRESS_HOLD_NOTE_SANDBOX in persona
+    assert eg.EGRESS_HOLD_NOTE_PACK_OTHER not in persona
+
+
+async def test_the_held_answer_of_a_crm_write_names_the_tool_and_a_next_step(store) -> None:
+    """The in-turn answer of a held CRM write names the held tool, says why, and
+    gives a next step that fits a write. It talks of no email tool. The email
+    owner keeps the email wording. Mutation: fall back to the email text for
+    every owner -> ``send_draft`` in the CRM answer -> red."""
+    await _mark_chat_as_mail_read()
+    crm = {"agent_name": CRM, eg.PACK_CALL_KEY: True, "session_id": SESSION}
+    email = {"agent_name": EA, eg.PACK_CALL_KEY: True, "session_id": SESSION}
+    with _tenant():
+        answer = eg.egress_held_answer("update_deal_status", crm)
+        mail = eg.egress_held_answer("send_email", email)
+    assert answer == eg.EGRESS_HELD_PACK_ANSWER_OTHER.format(name="update_deal_status")
+    assert answer.startswith("update_deal_status is off now.")
+    assert "new chat" in answer and "send_draft" not in answer and "mailbox" not in answer
+    assert "send_draft" in mail, "the email wording stays for an email tool"
+
+
+def test_a_missing_persona_bullet_raises_unless_the_owner_has_none_by_design(
+    monkeypatch,
+) -> None:
+    """``NO_PERSONA_BULLETS`` names the owners with no persona text. Any other
+    owner that a pack replaces and that has no bullet raises. Mutation: skip
+    the swap for any absent owner (the old rule) -> the second case does not
+    raise -> red. Mutation: drop ``crm-assistant`` from the set -> the first
+    case raises -> red."""
+    assert tp.NO_PERSONA_BULLETS == {CRM}
+    persona = _agents_mod()._orchestrator_instructions(False)
+    text = tp.persona_for(persona, [("crm-records", False)], _bullets())
+    assert text.startswith(persona.rstrip("\n") + "\n\n")
+    with pytest.raises(RuntimeError, match="email-assistant"):
+        tp.persona_for(persona, [("email", False)], {})
+    _fake_packs(monkeypatch, {"x-pack": 3})
+    monkeypatch.setitem(tp.PACKS, "x-pack", tp.Pack(
+        slug="x-pack", rules="X RULES", words=("xword",), delegation_refusal="Not run."))
+    with pytest.raises(RuntimeError, match="x-agent"):
+        tp.persona_for(persona, [("x-pack", False)], _bullets())

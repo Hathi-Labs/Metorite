@@ -3415,7 +3415,8 @@ async def _apply_tool_packs(
         return _loader_only()
     loaded = [(build.slug, build.held) for build in builds]
     try:
-        persona = tool_packs.persona_for(str(opts.get("instructions") or ""), loaded, bullets)
+        persona = tool_packs.persona_for(
+            str(opts.get("instructions") or ""), loaded, bullets, build_ctx)
     except RuntimeError as exc:
         _log.error("executor.packs_refused", reason="persona_swap", error=str(exc)[:200])
         return None
