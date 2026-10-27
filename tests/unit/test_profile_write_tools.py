@@ -113,6 +113,25 @@ class _Gateway:
     def _items(self, kind: str) -> list[dict[str, Any]]:
         return self.profile[kind]
 
+    def _interview(self, request: httpx.Request, path: str, body: Any) -> httpx.Response:
+        """PZ-26: the interview routes. A mark is recorded and answered."""
+        _, _, area = path.partition("/")
+        self.interview_calls.append((request.method, area, body))
+        if self.interview_fail is not None:
+            return httpx.Response(self.interview_fail, json={"detail": "x"})
+        state = (body or {}).get("state") if isinstance(body, dict) else None
+        # The gateway's rule, through the REAL pure check: a chat mark
+        # `answered` needs a saved answer for the area.
+        if (state == "answered" and request.headers.get("X-Profile-Via")
+                and not ap.area_has_answer(self.profile, area)):
+            return httpx.Response(422, json={"detail": {
+                "reason": ap.NO_ANSWER, "message": ap.NO_ANSWER_TEXT}})
+        if area and state:
+            self.areas[area] = state
+            self.profile["interview"] = ap.apply_interview_mark(
+                self.profile.get("interview"), area, state, datetime.now(UTC))
+        return httpx.Response(200, json={"started_at": "2026-10-25T10:00:00Z"})
+
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         if self.force is not None and request.method != "GET":
@@ -125,23 +144,7 @@ class _Gateway:
             self.profile[body["key"]] = body["value"]
             return httpx.Response(200, json=self.profile)
         if path.startswith("interview"):
-            # PZ-26: the interview routes. A mark is recorded and answered.
-            _, _, area = path.partition("/")
-            self.interview_calls.append((request.method, area, body))
-            if self.interview_fail is not None:
-                return httpx.Response(self.interview_fail, json={"detail": "x"})
-            state = (body or {}).get("state") if isinstance(body, dict) else None
-            # The gateway's rule, through the REAL pure check: a chat mark
-            # `answered` needs a saved answer for the area.
-            if (state == "answered" and request.headers.get("X-Profile-Via")
-                    and not ap.area_has_answer(self.profile, area)):
-                return httpx.Response(422, json={"detail": {
-                    "reason": ap.NO_ANSWER, "message": ap.NO_ANSWER_TEXT}})
-            if area and state:
-                self.areas[area] = state
-                self.profile["interview"] = ap.apply_interview_mark(
-                    self.profile.get("interview"), area, state, datetime.now(UTC))
-            return httpx.Response(200, json={"started_at": "2026-10-25T10:00:00Z"})
+            return self._interview(request, path, body)
         if request.method == "POST" and path == "undo":
             if self.undo_answer[0] >= 400:
                 return httpx.Response(self.undo_answer[0], json={"detail": self.undo_answer[1]})
