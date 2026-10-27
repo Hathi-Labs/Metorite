@@ -562,8 +562,9 @@ routes as the member, with the internal bearer and `X-User-Email`.
   not save that. I save only your own words." The next line starts "For
   the assistant:", and the card never shows it. It tells the model to call
   again once with a short phrase copied from the message. It also tells the
-  model never to ask the member to type it again. A turn with no typed words gets a different
-  pair of lines: the member says it again in a new message. The rule of
+  model never to ask the member to type it again. A turn with no typed words
+  gets a different pair of lines. There the model says once that nothing is
+  saved, and asks the member to say it again in a new message. The rule of
   `grounded()` and the 80% share did not change. Fences:
   `tests/unit/test_profile_write_tools.py` and
   `ProfileToolCards.test.ts`.
@@ -1252,10 +1253,16 @@ member can reset one area or the whole interview. A fact shows its area.
    So the area closed, and the member's answer was lost. Now
    `POST .../interview/{area}` with `X-Profile-Via` refuses `answered` with
    a 422 `{"reason": "no_answer", "message": ...}`. It passes only when
-   `area_has_answer` finds a fact with that area. For `detail` a set
-   `style.length` also counts, and for `people` one saved alias counts.
-   Settings is not limited. A replace sends its area in the `PATCH`, so
-   the mark after it passes. The tool answers the 422 with the reason
+   `area_has_answer` finds a FRESH answer. Four server times set the limit:
+   the entry of the area, `started_at`, `sitting_at` and `reset_at`. The
+   evidence must be no older than the latest of them. A Settings reset of one area
+   sets `reset_at`, so an old fact never answers the area again. With no
+   interview, nothing counts. An area that is `answered` stays answered.
+   A fact counts by its `at`. For `detail` a chat `put` of `style` in
+   `last_change` counts, and for `people` a chat alias `post` or `patch`.
+   Settings is not limited. A replace sends its area in the `PATCH`. The
+   gateway then sets a new `at`, so the mark after it passes. The undo of
+   that replace opens the area again. The tool answers the 422 with the reason
    `no_answer`, and the chat draws no card for it. The persona and the
    tool docs say: copy a short phrase. Mark an area only after a save says
    Saved. Fence: `tests/unit/test_assistant_profile_interview_r8.py`.
