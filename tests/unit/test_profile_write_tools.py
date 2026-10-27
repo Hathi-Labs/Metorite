@@ -95,6 +95,9 @@ class _Gateway:
         #: The interview calls ``(method, area, body)``, and a forced status.
         self.interview_calls: list[tuple[str, str, Any]] = []
         self.interview_fail: int | None = None
+        #: The interview state of each area that a mark set, as the gateway
+        #: stores it (incident 2026-10-27).
+        self.areas: dict[str, str] = {}
 
     def writes(self) -> list[httpx.Request]:
         return [r for r in self.requests if r.method != "GET"]
@@ -123,6 +126,15 @@ class _Gateway:
             self.interview_calls.append((request.method, area, body))
             if self.interview_fail is not None:
                 return httpx.Response(self.interview_fail, json={"detail": "x"})
+            state = (body or {}).get("state") if isinstance(body, dict) else None
+            # The gateway's rule, through the REAL pure check: a chat mark
+            # `answered` needs a saved answer for the area.
+            if (state == "answered" and request.headers.get("X-Profile-Via")
+                    and not ap.area_has_answer(self.profile, area)):
+                return httpx.Response(422, json={"detail": {
+                    "reason": ap.NO_ANSWER, "message": ap.NO_ANSWER_TEXT}})
+            if area and state:
+                self.areas[area] = state
             return httpx.Response(200, json={"started_at": "2026-10-25T10:00:00Z"})
         if request.method == "POST" and path == "undo":
             if self.undo_answer[0] >= 400:
@@ -1834,6 +1846,9 @@ class TestInterviewTool:
 
     @pytest.mark.parametrize("state", ["asked", "answered", "skipped", "never"])
     def test_a_mark_posts_the_state_with_the_chat_header(self, own_chat, state) -> None:
+        # A saved answer, so the gateway takes the mark `answered` too.
+        own_chat.profile["facts"].append(
+            {"id": "f0009", "text": "ship it", "kind": "work", "area": "goals"})
         out = _run(pt.profile_interview(state, "goals"))
         assert _status_of(out) == {"v": 1, "status": "saved"}
         assert own_chat.interview_calls == [("POST", "goals", {"state": state})]
@@ -1904,3 +1919,91 @@ class TestRememberWithArea:
         monkeypatch.setattr(pt, "_member_words", lambda: "I work from Pune")
         _refused(_run(pt.profile_remember("I work from Pune", "work", area="role")), "duplicate")
         assert own_chat.interview_calls == []
+
+
+# ── The interview incident of 2026-10-27 ──────────────────────────────────
+#
+# On production the member answered the goals question. The model saved a
+# paraphrase, which the grounding refused, twice. It then marked goals
+# answered itself, so the area closed with nothing saved. The card told the
+# member to "say it in your own words", which they had done.
+#
+# Mutations this section catches (R7):
+#
+# * the gateway stops refusing a chat mark `answered` with no saved answer
+#   (``area_has_answer``), so a refused save closes the area;
+# * the tool turns the gateway's ``no_answer`` 422 into a generic refusal;
+# * the refusal stops telling the model to copy, or asks the member to retype;
+# * a replace stops sending its area, so the mark after it is refused.
+
+ANSWER = ("This quarter I want to grow our revenue by twenty percent, hire two "
+          "engineers and fix onboarding")
+
+
+class TestInterviewIncident:
+    def test_the_transcript_of_the_incident(self, own_chat) -> None:
+        own_chat.areas["goals"] = "asked"
+        with ap.member_typed(ANSWER):
+            # 1. The model saves a paraphrase: refused, nothing written.
+            out = _run(pt.profile_remember(
+                "Goals: grow revenue, hire engineers, improve onboarding", "work",
+                area="goals"))
+            assert _refused(out, "not_your_words") == pt.NOT_YOUR_WORDS_TEXT
+            assert own_chat.areas == {"goals": "asked"}
+            # 2. The model marks the area itself: refused, the area stays open.
+            out = _run(pt.profile_interview("answered", "goals"))
+            assert _refused(out, ap.NO_ANSWER) == pt.NOT_MARKED_TEXT
+            assert own_chat.areas == {"goals": "asked"}
+            # 3. The model copies a phrase: saved, and the save marks the area.
+            out = _run(pt.profile_remember(
+                "grow our revenue by twenty percent, hire two engineers and fix onboarding",
+                "work", area="goals"))
+            assert _undo_of(out)["op"] == "delete"
+            assert own_chat.areas == {"goals": "answered"}
+            # 4. A mark after it passes.
+            out = _run(pt.profile_interview("answered", "goals"))
+            assert _status_of(out) == {"v": 1, "status": "saved"}
+        facts = [f for f in own_chat.profile["facts"] if f.get("area") == "goals"]
+        assert [f["text"] for f in facts] == [
+            "grow our revenue by twenty percent, hire two engineers and fix onboarding"]
+
+    def test_the_card_line_and_the_model_line_are_apart(self, own_chat) -> None:
+        with ap.member_typed(ANSWER):
+            out = _run(pt.profile_remember("Wants more revenue", "work", area="goals"))
+        member, model = _text(out).splitlines()
+        assert member == ap.NOT_YOUR_WORDS == "I could not save that. I save only your own words."
+        assert "own words and I will save" not in out
+        assert "copied from the member's message" in model
+        assert "Do not rephrase it. Do not ask the member to retype it." in model
+        # WhatsApp after a Confirm reads the member line only.
+        assert pt.member_text(out) == ap.NOT_YOUR_WORDS
+
+    def test_a_turn_with_no_typed_words_says_so(self, own_chat) -> None:
+        with ap.member_typed(""):
+            out = _run(pt.profile_remember("I like tea", "preference", area="goals"))
+        assert _refused(out, "not_your_words") == pt.NO_TYPED_TEXT
+        assert "Do not call again" in pt.NO_TYPED_TEXT
+
+    def test_a_replace_sends_its_area(self, own_chat, monkeypatch) -> None:
+        monkeypatch.setattr(pt, "_member_words", lambda: "I work from Mumbai now")
+        _run(pt.profile_remember("I work from Mumbai now", "work",
+                                 replaces="f0001", area="role"))
+        patch = next(r for r in own_chat.writes() if r.method == "PATCH")
+        assert json.loads(patch.content) == {"text": "I work from Mumbai now",
+                                             "kind": "work", "area": "role"}
+        assert own_chat.areas == {"role": "answered"}
+
+    def test_a_replace_with_no_area_sends_none(self, own_chat, monkeypatch) -> None:
+        monkeypatch.setattr(pt, "_member_words", lambda: "I work from Mumbai now")
+        _run(pt.profile_remember("I work from Mumbai now", "work", replaces="f0001"))
+        patch = next(r for r in own_chat.writes() if r.method == "PATCH")
+        assert "area" not in json.loads(patch.content)
+
+    def test_the_persona_and_the_docs_ask_for_a_copy_and_a_mark_after_saved(self) -> None:
+        line = _orchestrator_module()._PROFILE_SWAP[1]
+        assert "Save a short phrase copied from the member's message" in line
+        assert "Never ask the member to type it again." in line
+        assert "Mark an area answered\n  only after a save of it says Saved." in line
+        assert "Do not rephrase" in (pt.profile_remember.__doc__ or "")
+        assert "only after the save" in (pt.profile_interview.__doc__ or "")
+        assert ap.NO_ANSWER in pt.REASONS
