@@ -230,6 +230,14 @@ export const purgeOrgRegistry = (body: unknown, d?: Deps) =>
 export const removeRegistryMember = (body: unknown, d?: Deps) =>
   callConsole("/registry/members/remove", { method: "POST", body }, d ?? {});
 
+// The registry half of renaming an organization (CP-8, 2026-10-27). Body
+// {org_slug, name}. The Console writes `organization.name`, the only name it
+// stores, and never the slug. A repeat with the same name writes the same
+// value, so a retry is safe. The BFF calls it only AFTER the tenant plane
+// answered 200.
+export const renameRegistryOrg = (body: unknown, d?: Deps) =>
+  callConsole("/registry/orgs/rename", { method: "POST", body }, d ?? {});
+
 // Provision a new organization (create-only): the Console POST /orgs/provision
 // under the `Operator` scheme creates the org + its owner + Core seats, PLACES
 // it on the named deployment and starts a trial subscription in one idempotent

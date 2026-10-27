@@ -195,6 +195,7 @@ __all__ = [
     "redeem_code_on_console",
     "release_seat_on_console",
     "remove_member_on_console",
+    "rename_org_on_console",
     "resolve_for_signin",
     "router_is_wired",
     "seat_overview_on_console",
@@ -997,6 +998,43 @@ async def remove_member_on_console(
     return await _post_deployment_door(
         "/registry/members/remove",
         {"member_email": member_email, "actor_email": actor_email},
+        unavailable=ConsoleMemberWriteUnavailable,
+    )
+
+
+async def rename_org_on_console(
+    *,
+    actor_email: str,
+    name: str,
+) -> tuple[int, dict[str, Any]]:
+    """Mirror an organization rename onto the Customer Console (CP-8, 2026-10-27).
+
+    The same ``member_admin`` door family as the two member doors above:
+    ``POST /registry/orgs/rename``. The Console writes ``organization.name``,
+    the only name it stores, so the Operator Console shows the name the
+    customer's admin chose.
+
+    The body carries ``name`` and ``actor_email`` only. The org is the ANSWER,
+    derived Console-side from placement and membership (R11), exactly as at
+    the member doors. An actor in two organizations on this box gets a 409,
+    which is a verdict and is returned.
+
+    It goes through :func:`_post_deployment_door`, the ONE deployment-key
+    transport. It allocates no seat and never touches
+    :func:`resolve_for_signin`.
+
+    Returns the Console's ``(status_code, body)``.
+
+    Raises:
+        ConsoleMemberWriteUnavailable: the box is not wired, or the Console
+            produced no answer. Never raised for a verdict.
+    """
+    if not is_wired():
+        # Ship-dark, the member mirrors' posture: an unwired box makes no hop.
+        raise ConsoleMemberWriteUnavailable("unwired")
+    return await _post_deployment_door(
+        "/registry/orgs/rename",
+        {"name": name, "actor_email": actor_email},
         unavailable=ConsoleMemberWriteUnavailable,
     )
 

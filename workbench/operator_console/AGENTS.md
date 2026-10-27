@@ -65,8 +65,16 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   (`GATEWAY_INTERNAL_TOKEN` + `GATEWAY_OPERATOR_TOKEN`). The same
   `console.test.ts` scan fences both.
   The owner added a second act on 2026-10-15. `removeTenantMember` removes
-  one member, or deletes the member permanently. A third gateway call added
-  here is a defect until a spec says otherwise.
+  one member, or deletes the member permanently. The owner added a third on
+  2026-10-27. `renameTenantOrg` sets the org's display name
+  (`customer_console.md` CP-8 "Rename an organization"). A fourth gateway
+  call added here is a defect until a spec says otherwise.
+  `api/operator/orgs/rename` calls it. That route reads the caller's rank
+  BEFORE the tenant act, and a rename needs `editor`. The tenant rename goes
+  first. Then the Console rename gets the name that the tenant stored.
+  `src/lib/orgRename.ts` holds the rules, and the gateway's
+  `clean_display_name` is the one name check. Fence:
+  `orgs/rename/route.test.ts`.
   `api/operator/members/remove` calls it. That route reads the caller's rank
   BEFORE the tenant act, because the gateway door trusts our token for every
   caller. A remove needs `editor`. A delete needs `admin`, and an open window
@@ -108,6 +116,9 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   `src/lib/tenantDoor.ts`, its one permitted use).
   `POST /registry/members/remove` and the gateway's member door joined them on
   2026-10-15 (owner request). They are the roster's Remove and Delete.
+  `POST /registry/orgs/rename` and the gateway's rename door joined them on
+  2026-10-27 (CP-8). They are the "Organization name" panel on the Access
+  tab.
   `POST /catalog/decide/try` joined them on 2026-09-23 (CP-13b). It is the
   "Try a decision" panel on `/tiers`, and it never calls the customer door.
 - The invocation verbs and their pairing rule live in `src/lib/invocation.ts`.
