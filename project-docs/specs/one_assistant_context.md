@@ -65,7 +65,7 @@ System-1 request that already runs. It adds no model call.
   becomes sticky when one of its tools runs.
 - **The MCP rule.** MAF keeps an MCP server in `agent.mcp_tools` and adds
   its functions after `before_run`. So `load_early` passes `mcp_tools` to
-  `_admit` as `extra_live`, for the MCP rule only. The email packs never load
+  `_admit` as `extra_live`, for the MCP rule only. No email pack loads
   beside a server. The run key in the build context comes from the loader.
   A frame without the key gives the same build.
 - **MAF import.** `_agent_shape` uses the private `normalize_tools`. If the
