@@ -24,11 +24,10 @@ runs in the sandbox needs a package that the image does not hold.
   scripts and ``python`` blocks of each prebuilt agent skill
   (``skills/<domain>/<skill>/`` and ``apps/agents/*/skills/``).
 
-``skills/upstream/`` is out of scope on purpose. It is a review mirror, and
-nothing loads it (``skills/upstream/README.md``). Its ``pdf``, ``docx``,
-``pptx`` and ``xlsx`` skills ask for LibreOffice, Poppler, Tesseract and npm
-packages too. A skill that is adopted into ``skills/<domain>/`` comes under
-this fence.
+``skills/upstream/`` is out of scope on purpose. It held a vendored review
+mirror that nothing loaded, and the cleanup of 2026-10-27 deleted it. The
+exclusion stays so a copy that comes back is not judged as ours. A skill that
+is adopted into ``skills/<domain>/`` comes under this fence.
 
 Each checker also runs on synthetic bad input, so a checker that goes blind
 is a red test.
@@ -112,8 +111,8 @@ _LEFT_OUT: dict[str, str] = {
     "pdf2image": "needs the Poppler binaries; pypdfium2 renders a page instead",
 }
 
-#: The roots of the prebuilt agent skills. ``skills/upstream`` is a mirror that
-#: nothing loads (see the module docstring).
+#: The roots of the prebuilt agent skills. ``skills/upstream`` is reserved for
+#: vendored copies, which are not ours (see the module docstring).
 _SKILL_ROOTS = (_REPO / "skills", _REPO / "apps" / "agents")
 _NOT_A_SKILL_ROOT = (_REPO / "skills" / "upstream",)
 

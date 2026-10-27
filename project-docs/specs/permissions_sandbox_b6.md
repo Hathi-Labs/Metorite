@@ -16,7 +16,7 @@
 >
 > **Isolation ladder (R2).** This doc's Phase-5 build order is lettered **P5-a/b/c/d**.
 > The **isolation-strength ladder is T0/T1/T2**, defined once in
-> [`agent_platform_hardening_2026-07.md`](agent_platform_hardening_2026-07.md) §1.2 and
+> `agent_platform_hardening_2026-07.md` §1.2 and
 > implemented in `AgentManifest.isolation_tier()`. Until 2026-08-03 this doc used
 > "Tier 0/1/2/3" for its build order while the hardening doc used "T0/T1/T2" for
 > isolation strength — two incompatible ladders inside one board cell. They are not the
@@ -199,7 +199,7 @@ re-checked against the tree at `2ccff9e0` before being written here.
 
 **Cross-doc pointer (contract point 6).** The **build record** for the 2026-07-27 work is
 not in this file — it lives in
-[`competitive_hardening_2026-07.md`](competitive_hardening_2026-07.md)`:119-141` (the
+`competitive_hardening_2026-07.md``:119-141` (the
 `2026-07-27 — BO-7 progress, in two passes` log entry). That is a fourth doc describing
 this board cell, alongside this spec, `agent_platform_hardening_2026-07.md` Part 1, and
 `FOUNDATION_BUILDOUT_CHECKLIST.md` §BO‑7. **This spec is the owner**; the other three

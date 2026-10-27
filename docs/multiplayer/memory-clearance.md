@@ -8,7 +8,7 @@ adversarially reviewed and repaired twice** — line numbers move; re-verify at 
 **Verification commands:** [§9](#9-verification) · **Owner:** vjvarada
 **Companion to:** [`README.md`](README.md) (the multiplayer room model) ·
 [`agent-kinds.md`](agent-kinds.md) (personal vs shared agents) ·
-[`../../project-docs/specs/multi_user_organization_research.md`](../../project-docs/specs/multi_user_organization_research.md) (org/RBAC)
+`../../project-docs/specs/multi_user_organization_research.md` (org/RBAC)
 
 > **What the three passes corrected, so the anchors below can be trusted for the reason they
 > should be — that they were wrong before and were caught.**
@@ -278,7 +278,7 @@ Falcon" in a system prompt is a request. Not passing the scope key is a boundary
 > over-engineering of ours — it is what the problem forces. Second, egress is a third enforcement
 > point we do not use: we intersect what a run may *read* and what it may *do*, not where it may
 > *connect*. Noted against WS-1/WS-3 in
-> [`multiplayer_prior_art_qm_2026-08.md` §QM-0](../../project-docs/specs/multiplayer_prior_art_qm_2026-08.md).
+> `multiplayer_prior_art_qm_2026-08.md` §QM-0.
 
 ### 3.4 The write rule
 

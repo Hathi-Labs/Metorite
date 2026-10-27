@@ -5902,7 +5902,7 @@ banner (D6) · "Agent Creator"→"Agent Workshop" sweep (R3, 5 sites) ·
 `llm_caching_memory.md` proxy-hook sections struck per its own header ·
 drawio §12's stray Hostinger-token action item moved to WS-2's list.
 
-> 📋 **Handing this to another agent?** Start at [`HANDOVER.md`](HANDOVER.md) — branch state,
+> 📋 **Handing this to another agent?** Start at `HANDOVER.md` — branch state,
 > the two migrations that are on no real database yet, the verification protocol, the ticket
 > queue in dependency order, and a list of every trap that cost real time.
 
