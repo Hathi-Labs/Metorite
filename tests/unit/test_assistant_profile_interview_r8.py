@@ -553,3 +553,50 @@ async def test_a_replace_with_an_area_answers_the_area(db) -> None:
     assert edited["area"] == "goals" and edited["text"] == "hire two engineers"
     assert edited["at"] > old["at"]  # the server stamped the answer
     assert done["areas"]["goals"]["state"] == "answered"
+
+
+# ── The undo of an answer opens its area again (second review, 2026-10-27) ─
+
+
+async def _undo(org: str, user: UserContext) -> dict:
+    with _tenant(org):
+        return await _ap().undo_assistant_profile(user=user, x_profile_via="chat")
+
+
+@pytest.mark.parametrize("area", ["detail", "people"])
+async def test_the_undo_of_a_style_or_alias_answer_opens_the_area(db, area) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    raj = _person(db)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
+        await _mark(db.org_a, user, "role", "skipped", "chat")
+        if area == "detail":
+            await _chat_style(db.org_a, user, {"length": "short"})
+        else:
+            await _chat_alias(db.org_a, user, "Raj", raj)
+        await _mark(db.org_a, user, area, "answered", "chat")
+        await _undo(db.org_a, user)
+        read = await _get(db.org_a, user)
+    assert set(read["interview"]["areas"]) == {"role"}
+
+
+async def test_the_undo_route_of_a_replace_with_an_area_opens_the_area(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        old = await _add_fact(db.org_a, user, "I want to hire", "work")
+        await _sit(db.org_a, user)
+        await _mark(db.org_a, user, "role", "skipped", "chat")
+        with _tenant(db.org_a):
+            await _ap().edit_fact(old["id"], body={"text": "hire two engineers",
+                                                   "kind": "work", "area": "goals"},
+                                  user=user, x_profile_via="chat")
+        await _mark(db.org_a, user, "goals", "answered", "chat")
+        await _undo(db.org_a, user)
+        read = await _get(db.org_a, user)
+    assert [f["text"] for f in read["facts"]] == ["I want to hire"]
+    assert "area" not in read["facts"][0]
+    assert set(read["interview"]["areas"]) == {"role"}

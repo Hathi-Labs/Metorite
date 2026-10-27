@@ -561,6 +561,10 @@ def undo_last_change(raw: Any, now: float) -> tuple[dict[str, Any] | None, str]:
             return None, UNDO_CHANGED
         prior = last.get("prior")
         out[key] = prior if isinstance(prior, dict) else {}
+        if key == "style":
+            # A chat style change is the answer of `detail` (fix of
+            # 2026-10-27). Its undo opens the area again.
+            _reopen(out, "detail")
         return out, ""
     lkey = last.get("list")
     if lkey not in ("facts", "aliases"):
@@ -594,6 +598,10 @@ def undo_last_change(raw: Any, now: float) -> tuple[dict[str, Any] | None, str]:
         items[n] = prior
     else:
         return None, UNDO_NOTHING
+    if lkey == "aliases" and op in ("post", "patch"):
+        # A chat alias is the answer of `people` (fix of 2026-10-27). Its
+        # undo opens the area again.
+        _reopen(out, "people")
     out[lkey] = items
     return out, ""
 
