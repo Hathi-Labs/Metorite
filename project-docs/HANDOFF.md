@@ -11,7 +11,7 @@ remember what was in flight.
 > ⚠️ **Never restate state here. Point at it, and carry the command that
 > re-derives it.**
 
-`work_plan.md` §2 is **the only current-state authority** (CLAUDE.md §1). A
+**Metorite holds the current state** (D118, CLAUDE.md §1). A
 handoff file that also described state would be a second board, and a second
 board is the CLAUDE.md §5 defect by construction: two descriptions of one truth,
 one of which stops being updated first, and the stale one is trusted because it

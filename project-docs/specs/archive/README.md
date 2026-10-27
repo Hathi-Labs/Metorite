@@ -5,7 +5,8 @@ feature that each spec describes is live in the code, or a living spec holds
 what is left.
 
 Do not use these specs as the current status of anything.
-`../../work_plan.md` §2 is the only current-state authority.
+Metorite holds the current state (D118). `../../work_plan.md` §2 is the
+workstream index.
 
 On 2026-10-27, the cleanup deleted seven specs from this folder. Only code
 comments named them, and git history keeps them.

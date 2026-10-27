@@ -45,10 +45,10 @@ grandfathered. Do not open a pull request that only repairs old text.
 |---|---|---|
 | 1 | **`project-docs/INDEX.md`** | Which specs are **ACTIVE** (you may build from these), and which are deferred or historical (you may not). A spec missing from INDEX is a defect. Say so. |
 | 2 | **`project-docs/work_plan.md` §1** | The agent-ready spec contract and the standing **R** rules. Binding on every PR. |
-| 3 | **`project-docs/work_plan.md` §2** | The dispatch board: every workstream, its state, its gates. **This is the only current-state authority.** Start at **§2.0**, the product roadmap (M0 to M4). It adds no authority. Where §2.0 and a row disagree, **the row wins**. |
+| 3 | **The HathiLabs project Metorite**, then **`project-docs/work_plan.md` §2** | **Metorite holds the state (D118):** the status, the priority, the owner and the order of each work item. Call `my_work` through the Metorite MCP, then `claim_task`. §2 is the index: one row per workstream, with its owning spec and its Metorite epic. Start at **§2.0**, the roadmap (M0 to M4). For scope, the spec wins. For order and owner, Metorite wins. |
 | 4 | **`project-docs/work_plan.md` §6** | The owner-gate registry. Actions you must **refuse by name**, unless §3a opens them. |
 | 5 | **`project-docs/work_plan.md` §3** | The decisions. Recorded once, never re-litigated. Cite them, and do not reopen them. |
-| 5a | **`project-docs/HANDOFF.md`** | The cross-session **queue of actions** (D39), injected at session start. ⚠️ **Actions, never state.** Row 3 stays the only current-state authority. Run each entry's **Check** first and **delete** the ones that pass. `/handoff` is the workflow. |
+| 5a | **`project-docs/HANDOFF.md`** | The cross-session **queue of actions** (D39), injected at session start. ⚠️ **Actions, never state.** Metorite stays the state authority (row 3). Run each entry's **Check** first and **delete** the ones that pass. `/handoff` is the workflow. |
 | 6 | **`project-docs/specs/engineering_practice.md`** | *How* we build: environments, release, migrations, testing, agent work-partitioning, security, definition of done. |
 | 7 | The **owning spec** named by your board row | Scope and acceptance for the thing you are building. |
 
