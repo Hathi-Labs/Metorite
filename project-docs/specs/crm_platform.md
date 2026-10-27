@@ -11641,7 +11641,7 @@ source fences. It checks that `AppShell` draws only what the page emits.
 
 ### 20.16 CRM-U12: plain words and no dead ends in CRM setup (2026-10-27)
 
-**Status.** 📝 Specified 2026-10-27. Metorite: under epic #477.
+**Status.** ✅ Built 2026-10-27 on branch `crm-u12-plain-words` (PR pending). Visual-review captures not taken. Metorite: under epic #477.
 
 **Gate.** AGENT-SAFE. No flag, no migration and no gateway change. Copy and
 small UI changes only. The layout of the settings sections does not change

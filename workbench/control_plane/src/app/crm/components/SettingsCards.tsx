@@ -37,7 +37,7 @@ export function Card({
   children,
 }: {
   title: string;
-  note?: string;
+  note?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -64,15 +64,6 @@ export function NameList({ names, empty = "None yet." }: { names: string[]; empt
         </li>
       ))}
     </ul>
-  );
-}
-
-/** A card for work that a later slice fills. It says so and does nothing else. */
-export function ComingSoonCard({ title, note }: { title: string; note: string }) {
-  return (
-    <Card title={title} note={note}>
-      <p className="px-4 py-3 text-xs text-muted-foreground">Coming soon.</p>
-    </Card>
   );
 }
 

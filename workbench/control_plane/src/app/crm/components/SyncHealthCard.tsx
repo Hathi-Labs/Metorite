@@ -22,7 +22,7 @@ import { CollapsibleSection } from "@/components/ui/Collapsible";
 import ProgressBar from "@/components/ui/ProgressBar";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
-import { useId, useState } from "react";
+import { Fragment, useId, useState } from "react";
 import { pushView } from "../lib/history";
 import { DEFAULT_VIEW, selectSection, viewHref } from "../lib/urlState";
 import * as api from "../lib/api";
@@ -58,7 +58,7 @@ import {
 import { invalidateCrmMode, useSyncHealth } from "../lib/useCrmMode";
 import { Card } from "./SettingsCards";
 
-const NOTE = "The Zoho count against ours, skipped records and the last error.";
+const NOTE = "The Zoho count against ours, records left out and the last error.";
 
 /** CRM-Q17b: the badge of each kind of "Needs you" item. */
 const NEEDS_YOU_BADGES: Record<
@@ -93,6 +93,7 @@ export function SyncHealthCardView({
   onSetSync = () => undefined,
   onSyncOnly = () => undefined,
   detailsOpen = false,
+  rowsOpen = false,
   onReconnect = () => pushView(viewHref(selectSection(DEFAULT_VIEW, "setup"))),
   onAnswer = () => pushView(viewHref(selectSection(DEFAULT_VIEW, "questions"))),
 }: {
@@ -108,6 +109,8 @@ export function SyncHealthCardView({
   onSyncOnly?: (key: string) => void;
   /** CRM-Q17b item 8: the table of counts starts open. A test opens it. */
   detailsOpen?: boolean;
+  /** Each row of that table starts open, with its four counts. A test opens them. */
+  rowsOpen?: boolean;
   /** "Connect again" of a missing scope: Setup and sync, where the consent is. */
   onReconnect?: () => void;
   /** CRM-Q32-4: "Answer" opens Settings → Open questions. */
@@ -119,6 +122,8 @@ export function SyncHealthCardView({
   const needs = needsYou(health);
   const [open, setOpen] = useState(detailsOpen);
   const detailsId = useId();
+  const [rowsShown, setRowsShown] = useState<Record<string, boolean>>({});
+  const rowOpen = (key: string) => rowsShown[key] ?? rowsOpen;
   const short = shortReads(health);
   const stalled = tieStalls(health);
   const activities = activityLines(health);
@@ -203,7 +208,7 @@ export function SyncHealthCardView({
               <ul className="space-y-1 px-2 pt-2" aria-label="Short reads">
                 {short.map((entity) => (
                   <li key={entity.key} className="flex flex-wrap items-center gap-2 text-xs">
-                    <Badge tone="warning">Partial read</Badge>
+                    <Badge tone="warning">Some missing</Badge>
                     <span className="font-medium text-foreground">{label(entity.key)}</span>
                     <span className="min-w-0 basis-full text-muted-foreground sm:flex-1 sm:basis-auto">
                       {shortReadSentence(entity)}
@@ -254,22 +259,17 @@ export function SyncHealthCardView({
           <div id={detailsId} className="divide-y divide-border/60">
             {/* The table scrolls sideways on a phone. The lists below it do not, so
                 they stay in a sibling block (visual review, CRM-Q16). */}
-            <div className="px-2 pt-2" aria-label="Counts by entity">
+            <div className="px-2 pt-2" aria-label="Counts by record type">
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[32rem]">
+                <table className="w-full min-w-[28rem]">
                   <thead>
                     <tr>
-                      <th className={th}>Entity</th>
-                      {/* The one control sits beside the name, so a phone shows it. */}
-                      <th className={th}>Sync</th>
-                      <th className={th}>Zoho</th>
+                      <th className={th}>Records</th>
+                      <th className={th}>In Zoho</th>
                       <th className={th}>In Metorite</th>
                       <th className={th}>Difference</th>
-                      <th className={th}>Skipped</th>
-                      <th className={th}>Not linked</th>
-                      <th className={th}>Failed</th>
-                      {/* CRM-Q19: values that a Field map rule could not put into its column. */}
-                      <th className={th}>Not mapped</th>
+                      {/* The one control. A held module does not sync. */}
+                      <th className={th}>Sync</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -280,38 +280,69 @@ export function SyncHealthCardView({
                       // CRM-Q17b item 8: Zoho refuses a turned-off module, so a
                       // switch would change nothing. It is disabled.
                       const off = isTurnedOff(entity);
+                      const expanded = rowOpen(entity.key);
+                      const counts: [string, number][] = [
+                        ["Left out", entity.last_run.skipped ?? 0],
+                        ["No matching record", entity.last_run.unlinked ?? 0],
+                        ["Could not save", entity.last_run.failed ?? 0],
+                        // CRM-Q19: values that a Field map rule could not put into its column.
+                        ["Did not fit", unmappedCount(entity)],
+                      ];
                       return (
-                        <tr key={entity.key} aria-label={label(entity.key)}>
-                          <td className="px-2 py-1.5 text-xs font-medium text-foreground">
-                            {label(entity.key)}
-                          </td>
-                          <td className={td}>
-                            {isHoldable(entity.key) ? (
-                              <Checkbox
+                        <Fragment key={entity.key}>
+                          <tr aria-label={label(entity.key)}>
+                            <td className="px-2 py-1.5 text-xs font-medium text-foreground">
+                              <Button
+                                variant="ghost"
                                 size="sm"
-                                className="align-middle disabled:bg-muted"
-                                checked={!heldRow}
-                                disabled={off || busyKey === entity.key}
-                                title={off ? "Turned off in your Zoho" : undefined}
-                                aria-label={`Sync ${label(entity.key)}`}
-                                onChange={(e) => onSetSync(entity.key, e.currentTarget.checked)}
-                              />
-                            ) : (
-                              "—"
-                            )}
-                          </td>
-                          <td className={td}>
-                            {entity.zoho_count === null ? "—" : recordCount(entity.zoho_count)}
-                          </td>
-                          <td className={td}>{entity.ours === null ? "—" : recordCount(entity.ours)}</td>
-                          <td className={td}>
-                            {diff !== null && <Badge tone="warning">{differenceLabel(diff)}</Badge>}
-                          </td>
-                          <td className={td}>{entity.last_run.skipped ?? 0}</td>
-                          <td className={td}>{entity.last_run.unlinked ?? 0}</td>
-                          <td className={td}>{entity.last_run.failed ?? 0}</td>
-                          <td className={td}>{unmappedCount(entity)}</td>
-                        </tr>
+                                icon={expanded ? "ChevronDown" : "ChevronRight"}
+                                aria-expanded={expanded}
+                                aria-label={`${label(entity.key)} counts`}
+                                onClick={() =>
+                                  setRowsShown((was) => ({ ...was, [entity.key]: !rowOpen(entity.key) }))
+                                }
+                              >
+                                {label(entity.key)}
+                              </Button>
+                            </td>
+                            <td className={td}>
+                              {entity.zoho_count === null ? "—" : recordCount(entity.zoho_count)}
+                            </td>
+                            <td className={td}>
+                              {entity.ours === null ? "—" : recordCount(entity.ours)}
+                            </td>
+                            <td className={td}>
+                              {diff !== null && <Badge tone="warning">{differenceLabel(diff)}</Badge>}
+                            </td>
+                            <td className={td}>
+                              {isHoldable(entity.key) ? (
+                                <Checkbox
+                                  size="sm"
+                                  className="align-middle disabled:bg-muted"
+                                  checked={!heldRow}
+                                  disabled={off || busyKey === entity.key}
+                                  title={off ? "Turned off in your Zoho" : undefined}
+                                  aria-label={`Sync ${label(entity.key)}`}
+                                  onChange={(e) => onSetSync(entity.key, e.currentTarget.checked)}
+                                />
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+                          </tr>
+                          {expanded && (
+                            <tr aria-label={`${label(entity.key)} last run`}>
+                              <td colSpan={5} className="px-2 pb-2 text-xs text-muted-foreground">
+                                {counts.map(([name, n], i) => (
+                                  <span key={name}>
+                                    {i > 0 && " · "}
+                                    {name} <span className="tabular-nums text-foreground">{n}</span>
+                                  </span>
+                                ))}
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
                       );
                     })}
                   </tbody>

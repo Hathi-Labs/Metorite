@@ -373,7 +373,7 @@ export function largeUnheld(health: SyncHealth | null | undefined, entity: Healt
 
 /** The suggestion for a large row that is not held. */
 export function largeSentence(label: string, count: number): string {
-  return `${label} has ${recordCount(count)} records. Hold it, and sync it on its own when Metorite is quiet`;
+  return `${label} has ${recordCount(count)} records. Pause syncing it, and sync it on its own when Metorite is quiet`;
 }
 
 // ── "Needs you" (CRM-Q17b item 8, spec section 18.9.6) ─────────────────────
@@ -388,7 +388,7 @@ export const NEEDS_YOU_ACTIONS: Record<NeedsYouAction, string> = {
   // A missing scope clears only with a new consent, in Setup and sync.
   reconnect: "Connect again",
   "sync-alone": "Sync it on its own",
-  hold: "Hold it",
+  hold: "Pause syncing this",
   answer: "Answer",
 };
 
