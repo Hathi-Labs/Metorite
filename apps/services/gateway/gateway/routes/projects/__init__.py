@@ -60,6 +60,7 @@ from gateway.routes.projects import imports as _imports  # noqa: F401
 from gateway.routes.projects import intake as _intake  # noqa: F401
 from gateway.routes.projects import me as _me  # noqa: F401
 from gateway.routes.projects import merge as _merge  # noqa: F401
+from gateway.routes.projects import mine as _mine  # noqa: F401
 from gateway.routes.projects import move as _move  # noqa: F401
 from gateway.routes.projects import needs_attention as _needs_attention  # noqa: F401
 from gateway.routes.projects import notifications as _notifications  # noqa: F401
