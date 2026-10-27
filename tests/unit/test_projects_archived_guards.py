@@ -64,6 +64,22 @@ def test_the_archived_node_walk_drops_both_filters():
     assert "NODE_DESCENDANTS_ARCHIVED_SQL" in _src("tree.py")
 
 
+def test_the_reports_open_predicate_walks_for_an_archived_project():
+    """Every Reports read (overdue by project, workload, pulse, capacity,
+    waiting, rebalance) takes its WHERE from ``load_open_where`` or the same
+    clause. That clause tests ``archived_at`` up the chain, so one rule keeps
+    an archived project out of all of them."""
+    from gateway.routes.projects.core import (
+        reportable_project_clause,
+        reportable_with_ancestors_clause,
+    )
+
+    assert "archived_at IS NULL" in reportable_project_clause("chain")
+    assert "archived_at" in reportable_with_ancestors_clause("t")
+    # load_open_where, the stuck route and the outlook each carry it.
+    assert _src("analytics.py").count("reportable_with_ancestors_clause('t')") >= 3
+
+
 def test_my_work_sql_filters_the_project():
     from gateway.routes.projects.personal import MY_TASKS_FROM
 

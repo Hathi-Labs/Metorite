@@ -210,3 +210,48 @@ def test_my_work_leaves_out_tasks_of_an_archived_project(db, world):
     assert world["mine_gone"] not in live
     # The archive view asks for archived rows, and still sees them.
     assert world["mine_gone"] in projects(True)
+
+
+def test_reports_analytics_leave_out_an_archived_projects_overdue_work(db, world):
+    """``load_open_where`` carries ``reportable_with_ancestors_clause``, and that
+    walk drops an archived project. Overdue-by-project and workload both run on
+    it, so the archived project has no row and no count (WS-64 verifier, 3)."""
+    from gateway.routes.projects.analytics import (
+        load_open_where,
+        load_params,
+        load_sql,
+        overdue_by_project_sql,
+    )
+    from gateway.routes.projects.core import Visibility
+
+    org = world["org"]
+    vis = Visibility(
+        unrestricted=True, email=WHO, groups=(), organization_id=org,
+    )
+    both = [world["live"], world["gone"]]
+    with db.begin() as c:
+        c.execute(
+            text(
+                "UPDATE pm_tasks SET due_at = now() - interval '2 days'"
+                " WHERE project_id = ANY(CAST(:p AS uuid[]))"
+            ),
+            {"p": both},
+        )
+        c.execute(
+            text(
+                "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by)"
+                " SELECT id, :w, :w FROM pm_tasks"
+                " WHERE project_id = ANY(CAST(:p AS uuid[]))"
+            ),
+            {"w": WHO, "p": both},
+        )
+    where = (
+        load_open_where("TRUE", vis)
+        + " AND t.project_id = ANY(CAST(:ids AS uuid[]))"
+    )
+    params = {**load_params(vis, None), "ids": both}
+    with db.begin() as c:
+        overdue = c.execute(text(overdue_by_project_sql(where)), params).fetchall()
+        load = c.execute(text(load_sql(where)), params).fetchall()
+    assert {str(r.project_id) for r in overdue} == {world["live"]}
+    assert sum(r.overdue for r in load) == 1
