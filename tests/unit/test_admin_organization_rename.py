@@ -95,6 +95,9 @@ class _Log:
     def warning(self, event, **kw):
         self.lines.append(("warning", event, kw))
 
+    def error(self, event, **kw):
+        self.lines.append(("error", event, kw))
+
     def named(self, event):
         return [line for line in self.lines if line[1] == event]
 
@@ -182,16 +185,22 @@ async def test_an_admin_rename_writes_the_tenant_and_mirrors_the_console(world):
     assert world["console"] == [{"actor_email": ADMIN, "name": "Shaurrya Tele"}]
     assert world["audit"] == [(ADMIN, "org.renamed", "org:dewin")]
     assert world["log"].named("org_rename_mirror_failed") == []
+    assert world["log"].named("org_rename_mirror_wrong_org") == []
 
 
 async def test_with_the_console_down_the_tenant_rename_still_succeeds(world):
-    """Done-when 2: a Console outage logs the drift line and changes nothing."""
+    """Done-when 2: a Console outage logs the drift line and changes nothing.
+
+    The line carries the slug AND the name, so an operator can repair the
+    drift without reading the tenant database.
+    """
     world["console_answer"] = ConsoleMemberWriteUnavailable("HTTP 503")
     entry = await _patch()
     assert entry.display_name == "Shaurrya Tele"
     [line] = world["log"].named("org_rename_mirror_failed")
     assert line[0] == "warning"
     assert line[2]["slug"] == "dewin"
+    assert line[2]["name"] == "Shaurrya Tele"
 
 
 async def test_a_console_refusal_is_logged_with_its_status(world):
@@ -201,6 +210,7 @@ async def test_a_console_refusal_is_logged_with_its_status(world):
     assert entry.display_name == "Shaurrya Tele"
     [line] = world["log"].named("org_rename_mirror_failed")
     assert line[2]["slug"] == "dewin"
+    assert line[2]["name"] == "Shaurrya Tele"
     assert line[2]["status"] == 409
 
 
@@ -208,7 +218,38 @@ async def test_an_unexpected_error_never_turns_a_rename_into_a_500(world):
     world["console_answer"] = RuntimeError("surprise")
     entry = await _patch()
     assert entry.display_name == "Shaurrya Tele"
-    assert len(world["log"].named("org_rename_mirror_failed")) == 1
+    [line] = world["log"].named("org_rename_mirror_failed")
+    assert line[2]["name"] == "Shaurrya Tele"
+
+
+async def test_a_console_answer_for_another_org_is_an_error_line(world):
+    """Review round 2: the Console derives the org from the ACTOR.
+
+    An admin who is an active Console member of a different org on this
+    deployment gets a 200 for THAT org. The tenant rename stands, and an
+    error line names both slugs and the name the Console replaced.
+    """
+    world["console_answer"] = (
+        200, {"slug": "other-co", "name": "Shaurrya Tele",
+              "previous_name": "Other Co"},
+    )
+    entry = await _patch()
+    assert entry.display_name == "Shaurrya Tele"
+    [line] = world["log"].named("org_rename_mirror_wrong_org")
+    assert line[0] == "error"
+    assert line[2] == {"slug": "dewin", "console_slug": "other-co",
+                       "name": "Shaurrya Tele",
+                       "console_previous_name": "Other Co"}
+    # It is not an outage, so the drift line stays quiet.
+    assert world["log"].named("org_rename_mirror_failed") == []
+
+
+async def test_a_200_that_names_no_slug_is_an_error_line(world):
+    """A 200 that does not say which org changed proves nothing."""
+    world["console_answer"] = (200, {})
+    await _patch()
+    [line] = world["log"].named("org_rename_mirror_wrong_org")
+    assert line[2]["console_slug"] is None
 
 
 async def test_an_unwired_box_makes_no_call_and_logs_nothing(world):

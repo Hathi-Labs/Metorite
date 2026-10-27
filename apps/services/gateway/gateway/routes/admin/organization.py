@@ -99,11 +99,17 @@ async def _mirror_rename_to_console(*, actor_email: str, slug: str, name: str) -
     tenant rename has committed, so no Console outcome changes the answer.
 
     An unwired box has no Console, so this makes no call and logs nothing. A
-    wired box that fails logs ``org_rename_mirror_failed`` with the slug. The
-    two names then differ until an operator rename writes both planes again.
+    wired box that fails logs ``org_rename_mirror_failed`` with the slug and
+    the name. The two names then differ until an operator rename writes both
+    planes again, and the line holds what that repair needs.
 
     ⚠️ ``actor_email`` is the AUTHENTICATED ADMIN (R11). The Console derives
     the org from placement and membership, so this names no organization.
+    That is also the one way this can go WRONG: an admin who is an active
+    Console member of a different org on this deployment renames THAT org.
+    So a 200 must name the slug this route renamed. A different slug logs
+    ``org_rename_mirror_wrong_org`` at error, with both slugs and the name the
+    Console replaced, so an operator can put it back.
     """
     if not is_wired():
         return
@@ -112,13 +118,25 @@ async def _mirror_rename_to_console(*, actor_email: str, slug: str, name: str) -
     except Exception as exc:
         # An outage, or an exception type nobody foresaw. Neither may turn a
         # committed rename into a 500.
-        _log.warning("org_rename_mirror_failed", slug=slug, error=str(exc)[:200])
+        _log.warning(
+            "org_rename_mirror_failed", slug=slug, name=name, error=str(exc)[:200],
+        )
         return
     if status >= 400:
         # A verdict: an actor in two orgs on this box (409), an actor the
         # Console does not hold as an active member (403), a bad name (422).
         _log.warning(
-            "org_rename_mirror_failed", slug=slug, status=status, body=str(body)[:200],
+            "org_rename_mirror_failed", slug=slug, name=name, status=status,
+            body=str(body)[:200],
+        )
+        return
+    console_slug = body.get("slug")
+    if console_slug != slug:
+        # The Console renamed an org, and it is not this one. The tenant
+        # plane is right, and another org's Console name is now wrong.
+        _log.error(
+            "org_rename_mirror_wrong_org", slug=slug, console_slug=console_slug,
+            name=name, console_previous_name=body.get("previous_name"),
         )
 
 

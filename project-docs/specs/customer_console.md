@@ -1923,9 +1923,14 @@ best-effort, like `apps/services/gateway/gateway/routes/admin/members.py:575`.
 **The drift rule.** A Console outage during an admin rename leaves the two names
 different. `reconcile()` sweeps only `console_mirrored_at IS NULL`, so it does
 not repair this. The rule is:
-- The admin mirror logs `org_rename_mirror_failed` with the slug. It logs only
-  when the Console is wired and the call fails. When `is_wired()` is false, it
-  stays silent, so a dev box logs nothing.
+- The admin mirror logs `org_rename_mirror_failed` with the slug and the name.
+  It logs only when the Console is wired and the call fails. When `is_wired()`
+  is false, it stays silent, so a dev box logs nothing.
+- The Console derives the org from the actor. An admin who is an active Console
+  member of a different org on the same deployment renames THAT org. So a 200
+  must name the slug that the tenant renamed. A different slug logs
+  `org_rename_mirror_wrong_org` at error, with both slugs, the name and the
+  name that the Console replaced (review round 2, 2026-10-27).
 - An operator rename repairs the drift, because it writes both planes.
 - A drift sweep is not built. Build it only if the log line ever fires.
 
