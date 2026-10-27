@@ -81,30 +81,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      # The UI gate (owner, 2026-10-27, DESIGN_SYSTEM.md §11). A PR that
-      # changes workbench/control_plane/src names its visual review in its
-      # body: a line that starts "Visual review:", then the four captures or
-      # "no UI change". Python reads the body from the event FILE into a variable,
-      # so no text of it becomes shell code. When the diff cannot be read, the
-      # line is required. ⚠️ A rerun replays the first event, so after you edit
-      # the body, push a commit. ⚠️ Keep this step above `diff`:
-      # test_fence_lists.py reads the LAST step of this job.
-      - name: Visual review line (a frontend PR)
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -u
-          if files="$(git diff --name-only "$BASE"...HEAD 2>/dev/null)"; then
-            grep -q '^workbench/control_plane/src/' <<< "$files" || { echo "no change under workbench/control_plane/src"; exit 0; }
-          fi
-          body="$(python3 -c 'import json, os; e = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8")); print((e.get("pull_request") or {}).get("body") or "")')"
-          if grep -qE '^Visual review:[[:space:]]*[^[:space:]<]' <<< "$body"; then
-            echo "the body names its visual review"
-            exit 0
-          fi
-          echo "::error::This PR changes workbench/control_plane/src, and no line of its body starts with 'Visual review:'. Name the four captures (light, compact, a changed accent, 390 px), or write 'Visual review: no UI change'. Then push a commit, because a rerun reads the old body. Rule: workbench/control_plane/DESIGN_SYSTEM.md section 11."
-          exit 1
-
       - id: diff
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
@@ -752,6 +728,43 @@ jobs:
           files="$(python3 ../../scripts/fences.py vitest control_plane process)"
           [ -n "$files" ] || { echo "no process fences listed"; exit 0; }
           bash ../../scripts/ci_advisory.sh "frontend process fence" -- npx vitest run $files
+
+      # The UI gate (owner, 2026-10-27, DESIGN_SYSTEM.md §11). A PR that
+      # changes workbench/control_plane/src names its visual review in its
+      # body: a line that starts "Visual review:", then the four captures or
+      # "no UI change". It lives in THIS job because this job is a required
+      # check, and "Changed areas" is not.
+      # * Python reads the body and the base sha from the event FILE into
+      #   variables, so no text of the body becomes shell code.
+      # * The checkout is shallow, so the step fetches the one base commit.
+      #   When the base is absent or the diff cannot be read, the line is
+      #   required.
+      # * With no event file (the local CI on the PC) there is no body, so
+      #   the step passes.
+      # * `!cancelled()`: it reports even when a test above failed.
+      # ⚠️ A rerun replays the first event. After you edit the body, push a
+      # commit. Fence: tests/unit/test_fence_lists.py.
+      - name: Visual review line (a frontend PR)
+        if: "!cancelled()"
+        run: |
+          set -u
+          if [ ! -f "${GITHUB_EVENT_PATH:-}" ]; then echo "no pull request event, so no body to check"; exit 0; fi
+          ev() { python3 -c 'import json, os, sys; p = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8")).get("pull_request") or {}; print(((p.get("base") or {}).get("sha") if sys.argv[1] == "base" else p.get("body")) or "")' "$1"; }
+          base="$(ev base)"
+          frontend=true
+          if [ -n "$base" ] \
+            && { git cat-file -e "$base^{commit}" 2>/dev/null || git fetch -q --no-tags --depth=1 origin "$base" 2>/dev/null; } \
+            && files="$(git diff --name-only "$base" HEAD 2>/dev/null)"; then
+            grep -q '^workbench/control_plane/src/' <<< "$files" || frontend=false
+          fi
+          $frontend || { echo "no change under workbench/control_plane/src"; exit 0; }
+          body="$(ev body)"
+          if grep -qE '^Visual review:[[:space:]]*[^[:space:]<]' <<< "$body"; then
+            echo "the body names its visual review"
+            exit 0
+          fi
+          echo "::error::This PR changes workbench/control_plane/src, and no line of its body starts with 'Visual review:'. Name the four captures (light, compact, a changed accent, 390 px), or write 'Visual review: no UI change'. Then push a commit, because a rerun reads the old body. Rule: workbench/control_plane/DESIGN_SYSTEM.md section 11."
+          exit 1
 
   # The operator console had tests but NO CI running them — a fence that never
   # runs is advisory by accident (R7). Same shape as the workbench job; its

@@ -552,14 +552,13 @@ Eleven rules on top of the three above. Each one exists because somebody broke i
    captures on a "Visual review:" line of the PR body. The gate blocks in
    build mode too. `DESIGN_SYSTEM.md` §11 holds the order and the rules.
 
-   **Fences.** `src/lib/theme/motion.test.ts` holds G1 to G4: no component
-   `@keyframes`, no raw curve or duration, no moved layout property or
-   `transition-all`, and no `animate-pulse` without `motion-safe:`.
-   `src/lib/uiGates.test.ts` holds G5 to G8: a focus ring beside
-   `outline-none`, a keyboard path for a drag, `h-dvh`, and an `<img>` that
-   keeps its space. Each one keeps today's count of each file, and a new
-   violation fails. The "Visual review line" step of `pr-check.yml` fails a
-   PR body with no such line.
+   **Fences.** `src/lib/theme/motion.test.ts` holds the motion gates G1 to
+   G4. `src/lib/uiGates.test.ts` holds G5 to G8: focus, drag, height and
+   images. Each gate keeps today's count of each file, and a new violation
+   fails.
+   The "Visual review line" step of the Frontend job in `pr-check.yml` fails
+   a PR body with no such line. `tests/unit/test_fence_lists.py` keeps that
+   step in the required job.
 
 **What CI cannot catch, and you must.** There is no structural or layout test in
 this tree: nothing asserts panel counts, shell adoption, mobile branches, or that

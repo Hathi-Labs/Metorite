@@ -54,8 +54,10 @@ than no review.
    - A confirm on an action that Undo can reverse. Prefer Undo.
    - Content that moves when data loads, because no space was kept for it.
    - A drag with no keyboard path ("Move to", or Alt with the arrow keys).
-   A UI diff with no stated interaction is a P1 (§11). `motion.test.ts` and
-   `uiGates.test.ts` hold the motion, focus, drag and image ratchets.
+   - A budget that rose in a `*_DEBT` map of `motion.test.ts` or
+     `uiGates.test.ts`. No test compares a budget with `main`.
+   A UI diff with no stated interaction is a P1 (§11). For a UI diff, this
+   item runs in build mode too, even when the full review does not.
 
 ## Method
 

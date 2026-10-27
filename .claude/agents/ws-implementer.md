@@ -57,11 +57,13 @@ From `work_plan.md`:
 - **UI-1 — a surface starts with a read, and ends with a look.** This rule is
   local to this agent, and `work_plan.md` does not number it. If the slice
   changes what a page draws, follow `workbench/control_plane/DESIGN_SYSTEM.md`
-  §9 and §10. Before you build, state the interaction in one sentence: who
-  does what, and what they see next. Write it and the one-line read in your
-  report. A UI diff with no stated interaction fails review (§11). Capture an
-  existing surface before you change it. Open each state it can be in. Do not
-  change a colour, a typeface or a control style to make an option differ.
+  §9, §10 and §11. Write the one-line read in your report. Capture an existing
+  surface before you change it. Open each state it can be in.
+
+  **State the interaction first.** Before you build, write one sentence: who
+  does what, and what they see next. Put it in your report. A UI diff with no
+  stated interaction fails review (§11). Do not change a colour, a typeface or
+  a control style to make an option differ.
 
 ## Branch discipline
 

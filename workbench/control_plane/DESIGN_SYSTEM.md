@@ -354,7 +354,7 @@ The rules for a close, a popup, a reveal and a loop are review. No test reads
 them.
 
 *These values come from a study of four outside design kits on 2026-10-14.
-`skills/upstream/README.md` records what we took and what we did not.*
+The "Sources" table in §11 records what we took and what we did not.*
 
 ---
 
@@ -841,15 +841,21 @@ dependency and no second look. This changes the two-speed rule of
    compact density, a changed accent and 390 px. Name the captures on a PR body
    line that starts with "Visual review:". CI fails a PR that changes
    `workbench/control_plane/src` without that line. Fence: the "Visual review
-   line" step of the `changes` job in `.github/workflows/pr-check.yml`.
-4. **Diff review.** Item 8 of `diff-reviewer` reads the code for the rules
-   that no test sees.
+   line" step of the Frontend job in `.github/workflows/pr-check.yml`, a
+   required check. `tests/unit/test_fence_lists.py` keeps the step there.
+4. **The UI checklist of the diff review.** Item 8 of `diff-reviewer` reads
+   the code for the rules that no test sees. For a UI diff it runs in build
+   mode too. The full adversarial review still follows the tier of the slice
+   (`/next-ticket` steps 1b and 1d).
 
 ### The ratchets
 
 A ratchet counts the matches in each file. A file with no budget must be
-clean. A budget never rises. A file that got better lowers its number in the
-same change. `src/lib/theme/uiRatchet.ts` holds the ratchet.
+clean. A file that got better lowers its number in the same change.
+`src/lib/theme/uiRatchet.ts` holds the ratchet.
+
+A budget never rises. That rule is ADVISORY, because no test compares a
+budget with the one on `main`. Item 8 of `diff-reviewer` checks it.
 
 | Gate | Rule | Fence |
 |---|---|---|
@@ -908,3 +914,20 @@ PR 2 holds it.
 
 **Toast times (M10).** A success toast closes after 5 s (`SUCCESS_TIMEOUT`).
 An error stays until the member closes it. Fence: `src/lib/toast.test.ts`.
+
+### Sources
+
+We read outside kits as data. We took rules and no code. Each kit's own look
+stays out, because it is a second look (§0). We also do not use the tools of
+a kit. Each one needs a third-party account or a dependency that we do not
+carry.
+
+| Date | Kit (commit) | What we took |
+|---|---|---|
+| 2026-10-14 | `madebymustafa/design-taste` (c4a6bff) | Rank, then fix. The motion and words rules (§4, §10), the keyboard walk, and the 24 px target (§9) |
+| 2026-10-14 | `superdesigndev/superdesign-skill` (f9f05cd) | Capture a surface before you change it (§9) |
+| 2026-10-14 | `marvkr/better-design` (e146625) | Guidance before the build, and review after it |
+| 2026-10-14 | `ui-layouts/uilayouts` (88d827d) | Nothing |
+| 2026-10-27 | `nextlevelbuilder/ui-ux-pro-max-skill` | The interaction rules M1 to M17 of this section. No style and no palette |
+| 2026-10-27 | `ibelick/motion-primitives` | No code. It needs the `motion` library, and most of it is effects for a sales page. One idea is kept, and it is not tested: a list item that grows into its detail through the View Transitions API |
+| 2026-10-27 | `design-taste` and `better-design`, read again | Nothing new |

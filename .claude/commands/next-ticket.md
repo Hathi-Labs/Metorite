@@ -70,7 +70,9 @@ callers, count rows). Never use haiku to build, verify or review.
 - **Build** (the default): ship working slices fast. Process fences and STE
   lint are advisory. UI diffs still run the four-capture visual review in
   build mode, and the UI gate fences block (owner, 2026-10-27,
-  `workbench/control_plane/DESIGN_SYSTEM.md` §11). Skip the board-row note,
+  `workbench/control_plane/DESIGN_SYSTEM.md` §11). A UI diff also gets item 8
+  of `diff-reviewer`, the UI checklist, even when step 6 skips the full
+  review. Skip the board-row note,
   the spec header (R4) and new fence tests (R7). Run `bash scripts/ci_local.sh`
   (or `bash scripts/prepush.sh` when the PC is busy) before each push.
 - **Harden** (when the feature works): one PR, labelled `harden`. Run
@@ -104,7 +106,8 @@ second implementer to route around a block.
   that grinds on a stuck ticket burns budget and produces nothing.
 
 **6 — Review.** Skip this step for a LOW slice, and for a STANDARD slice in
-build (1d). Otherwise dispatch `diff-reviewer`.
+build (1d). Otherwise dispatch `diff-reviewer`. For a UI diff that skips this
+step, dispatch `diff-reviewer` on item 8 only (1d).
 - Any `P0` → repair round (counts against the same tier budget).
 - `P1`/`P2` → carry into the PR body as known findings; do not block on them.
 
