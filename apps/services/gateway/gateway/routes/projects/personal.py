@@ -80,15 +80,16 @@ from gateway.routes.projects.core import (
     touch_task,
     update_row,
 )
+
+# `notifications` imports only `core` and `watchers`, so this direction adds no
+# cycle — the same note `notifications` itself carries about `watchers`, and the
+# same import `tasks`, `bulk` and `activities` already take.
+from gateway.routes.projects.due import member_due_values
 from gateway.routes.projects.filters import (
     attach_agent_state,
     attach_assignees,
     attach_parent_context,
 )
-
-# `notifications` imports only `core` and `watchers`, so this direction adds no
-# cycle — the same note `notifications` itself carries about `watchers`, and the
-# same import `tasks`, `bulk` and `activities` already take.
 from gateway.routes.projects.notifications import EXCERPT_CHARS, notify
 from gateway.routes.projects.tasks import (
     _TRACKED_TASK_FIELDS,
@@ -679,6 +680,10 @@ async def create_personal_task(
         {"p": project_id},
     )).fetchone()
     assert_not_archived(target, then="Capture into")
+    # WS-64 chat wave 2. A bare due day is noon in the member's zone, for
+    # every capture door (`due.member_due_values`).
+    values = dict(values)
+    await member_due_values(db, email, values)
     stated = dict(overlay or {})
     if stated.get("disposition") is None and not values.get("parent_task_id"):
         stated["disposition"] = "INBOX"
@@ -2857,6 +2862,8 @@ async def _organize(
         delegated and getattr(task, "due_at", None) is not None
     ):
         shared["due_at"] = payload.due_at
+        # WS-64 chat wave 2. A bare due day is noon in the member's zone.
+        await member_due_values(db, email, shared)
     if payload.time_estimate_mins is not None:
         # D77: the one estimate. The clarify card's Estimate is the same
         # field People capacity and analytics read.

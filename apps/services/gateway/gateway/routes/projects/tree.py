@@ -734,6 +734,7 @@ async def get_portfolio_summary(
         "name": "All spaces",
         "level": "portfolio",
         "tasks": sum(totals.values()),
+        "open": open_count(totals),
         "overdue": overdue_total,
         "by_category": totals,
         "projects": sum(
@@ -823,6 +824,14 @@ def node_counts_sql(visibility_clause: str) -> str:
     )
 
 
+def open_count(by_category: dict[str, int]) -> int:
+    """The tasks of every category that does not close a task
+    (``CLOSING_CATEGORIES``). WS-64 chat wave 2: the chat printed "tasks N"
+    with done and cancelled inside it, and read it as open work. The server
+    says the open number, so no client adds categories up."""
+    return sum(n for category, n in by_category.items() if category not in CLOSING_CATEGORIES)
+
+
 def fold_node_summary(
     project_id: str,
     rows: Any,
@@ -898,6 +907,7 @@ def fold_node_summary(
 
     return {
         "tasks": sum(totals.values()),
+        "open": open_count(totals),
         "overdue": overdue_total,
         "by_category": totals,
         "own": per_branch.get(
@@ -1234,28 +1244,31 @@ async def patch_node(
     return result
 
 
-#: The live tasks that sit on one node itself, not on its subtree. An archived
-#: task is out of every view, so it does not hold a move back.
-_OWN_LIVE_TASKS_SQL = (
-    "SELECT count(*) AS own_live_tasks FROM pm_tasks"
-    " WHERE project_id = CAST(:pid AS uuid) AND archived_at IS NULL"
+#: The tasks that sit on one node itself, not on its subtree, archived ones
+#: too. WS-64 chat wave 2 (item 14): an archived task once let its project
+#: move to the top. A restore then put a live task on a space, where no board
+#: draws it, and a repeat rule on it spawned there too.
+_OWN_TASKS_SQL = (
+    "SELECT count(*) AS own_tasks FROM pm_tasks"
+    " WHERE project_id = CAST(:pid AS uuid)"
 )
 
 
 async def _refuse_space_with_tasks(db: Any, project_id: str, moved: Any) -> None:
     """422 when a move to the top would make a space that holds tasks."""
     row = (await db.execute(
-        text(_OWN_LIVE_TASKS_SQL), {"pid": project_id},
+        text(_OWN_TASKS_SQL), {"pid": project_id},
     )).first()
-    held = int(getattr(row, "own_live_tasks", 0) or 0) if row is not None else 0
+    held = int(getattr(row, "own_tasks", 0) or 0) if row is not None else 0
     if held:
         name = str(getattr(moved, "name", "") or "").strip() or "This project"
         raise HTTPException(
             status_code=422,
             detail=(
                 f"{name} holds {held} task{'s' if held != 1 else ''} of its "
-                f"own. At the top it would be a space, and a space holds "
-                f"projects, not tasks. Move its tasks into a project first."
+                f"own, archived ones too. At the top it would be a space, and "
+                f"a space holds projects, not tasks. Move its tasks into a "
+                f"project first."
             ),
         )
 

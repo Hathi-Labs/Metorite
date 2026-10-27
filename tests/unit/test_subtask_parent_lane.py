@@ -100,14 +100,36 @@ async def test_a_parent_in_another_status_set_falls_back(
     db: FakeProjectsDB,
 ) -> None:
     """The parent's lane belongs to another project's set. The step cannot
-    hold it, so it takes the first lane of its own set."""
+    hold it, so it takes the first lane of its own set.
+
+    WS-64 chat wave 2: a create may no longer name another project than the
+    parent's (``tasks.refuse_foreign_parent``). So the seam is driven
+    directly here, for a row that predates the rule."""
     project, lanes = _board(db)
     other = db.seed_in_space(name="Elsewhere", space="Other")
     theirs = db.seed_status(other.id, name="Doing", category="in_progress",
                             position=0)
     parent = db.seed_task(other.id, theirs.id, title="Their parent")
-    step = await _step(project, parent)
-    assert step["status_id"] == str(lanes["backlog"].id)
+    async with pm_core._tenant_session() as session:
+        lane = await pm_core.parent_lane_status(session, parent, str(project.id))
+    assert str(lane.id) == str(lanes["backlog"].id)
+
+
+async def test_a_step_under_a_parent_of_another_project_is_refused(
+    db: FakeProjectsDB,
+) -> None:
+    """WS-64 chat wave 2 (item 1): a subtask lives in its parent's project."""
+    from fastapi import HTTPException
+
+    project, _lanes = _board(db)
+    other = db.seed_in_space(name="Elsewhere", space="Other")
+    theirs = db.seed_status(other.id, name="Doing", category="in_progress",
+                            position=0)
+    parent = db.seed_task(other.id, theirs.id, title="Their parent")
+    with pytest.raises(HTTPException) as refused:
+        await _step(project, parent)
+    assert refused.value.status_code == 422
+    assert refused.value.detail["error"] == pm_tasks.PARENT_OTHER_PROJECT
 
 
 async def test_a_task_with_no_parent_still_takes_the_first_lane(

@@ -1576,7 +1576,7 @@ def _describe(
     shown = card_view({k: payload[k] for k in ("importance", "leveraged") if k in payload})
     facts.extend(f"{k} {v}" for k, v in shown.items())
     if payload.get("parent_task_id"):
-        facts.append(_parent_words(p.new.parent or {}, p.new.pid))
+        facts.append(_parent_words(p.new.parent or {}))
     if payload.get("source"):
         facts.append(f"source {payload['source']}")
     if payload.get("description"):
@@ -1588,14 +1588,14 @@ def _describe(
     p.line = f"{data(p.title)} · {p.facts}"
 
 
-def _parent_words(parent: dict[str, Any], pid: str) -> str:
-    """``subtask of #8 «Order the nozzle»``, and its project when that is not
-    the project of the call (review round 2)."""
-    out = f"subtask of {_number(parent)} {data(parent.get('title'))}"
-    if parent.get("project_id") and str(parent.get("project_id")) != str(pid):
-        where = data(parent.get("project_name")) if parent.get("project_name") else None
-        out += f", in {where}" if where else ", in another project"
-    return out
+def _parent_words(parent: dict[str, Any]) -> str:
+    """``subtask of #8 «Order the nozzle»``.
+
+    The parent is always in the project of the call. ``_prepare_new_task``
+    refuses a parent of another project before the card (WS-64 chat wave 2),
+    so a card never offers a subtask in another project.
+    """
+    return f"subtask of {_number(parent)} {data(parent.get('title'))}"
 
 
 def _left_why(p: _BatchRow) -> str:

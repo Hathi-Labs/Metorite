@@ -864,15 +864,16 @@ class FakeProjectsDB:
         # `pm_task_attachments`, which several statements name.
         if "count(*) AS files" in statement:
             return _Result(self._attachment_counts(args))
-        # `tree._OWN_LIVE_TASKS_SQL` (2026-10-26): the live tasks on ONE node,
-        # never its subtree. Fingerprinted on its own alias.
-        if "AS own_live_tasks" in statement:
+        # `tree._OWN_TASKS_SQL` (2026-10-26, WS-64 chat wave 2): the tasks on
+        # ONE node, archived ones too, never its subtree. Fingerprinted on its
+        # own alias.
+        if "AS own_tasks" in statement:
             pid = str(args.get("pid"))
             held = sum(
                 1 for row in self.rows("pm_tasks")
-                if str(row.get("project_id")) == pid and row.get("archived_at") is None
+                if str(row.get("project_id")) == pid
             )
-            return _Result([SimpleNamespace(own_live_tasks=held)])
+            return _Result([SimpleNamespace(own_tasks=held)])
         # The tree's subtree roll-up (2026-09-23): per project, how many tasks
         # and how many are finished, for the sidebar's completion wheel.
         # `GROUP BY` is not a shape the generic WHERE reader can parse, so it

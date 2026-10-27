@@ -668,13 +668,13 @@ async def _project_ref(value: str) -> tuple[str, str | None]:
         if not project_id_text or not choices.assist_on():
             raise
         nodes = _project_nodes(await get("/projects/tree"))
-        exact = _matches_by_name(nodes, project_id_text)
+        exact = _exact_project(nodes, project_id_text)
         if len(exact) == 1:
             return uuid_of(str(exact[0].get("id")), "project_id"), str(exact[0].get("name"))
         if len(exact) > 1:
             raise GatewayRefusal(
-                f"{data(project_id_text)} matches more than one project ({_names(exact)}). "
-                "Pass the full_id from projects_tree."
+                f"{data(project_id_text)} matches more than one project: "
+                f"{_labelled(exact)}. Ask the member which one, then pass its full_id."
             ) from None
         row = await choices.resolve_name(nodes, project_id_text, "project")
         if row is not None:
@@ -688,6 +688,40 @@ async def _project_ref(value: str) -> tuple[str, str | None]:
         raise
 
 
+#: The words that say a member means their OWN project (WS-64 chat wave 2).
+_MY_WORDS = ("my ", "my own ")
+
+
+def _exact_project(nodes: list[dict[str, Any]], wanted: str) -> list[dict[str, Any]]:
+    """Every node that *wanted* names exactly.
+
+    "my Hiring" means the member's personal Hiring when one exists, so a
+    team Hiring does not make it ask. With no personal match it means any
+    Hiring. A bare "Hiring" that names a team and a personal project
+    matches both, and the caller asks the member.
+    """
+    exact = _matches_by_name(nodes, wanted)
+    if exact:
+        return exact
+    low = str(wanted or "").strip().lower()
+    for word in sorted(_MY_WORDS, key=len, reverse=True):
+        if low.startswith(word):
+            rest = str(wanted).strip()[len(word):]
+            named = _matches_by_name(nodes, rest)
+            own = [n for n in named if n.get("_personal")]
+            return own or named
+    return []
+
+
+def _labelled(rows: list[dict[str, Any]]) -> str:
+    """Each row's name, its side (team or personal) and its full_id."""
+    return "; ".join(
+        f"{data(r.get('name'))} ({'personal' if r.get('_personal') else 'team'}, "
+        f"full_id {r.get('id')})"
+        for r in rows
+    )
+
+
 def _project_nodes(payload: Any) -> list[dict[str, Any]]:
     """Every project and subproject of the tree that is not archived.
 
@@ -695,19 +729,22 @@ def _project_nodes(payload: Any) -> list[dict[str, Any]]:
     can see, the personal tree too (``GET /projects/tree`` key ``personal``).
     The open page never narrows it (owner, 2026-10-26): a name means the
     same thing whichever space is open, and two matches ask the member.
+
+    Each node of the personal tree carries ``_personal`` (WS-64 chat wave 2),
+    so a caller can prefer it for "my" and label it when it asks.
     """
     out: list[dict[str, Any]] = []
 
-    def walk(nodes: list[dict[str, Any]]) -> None:
+    def walk(nodes: list[dict[str, Any]], own: bool) -> None:
         for node in nodes or []:
             if not isinstance(node, dict):
                 continue
             if node.get("kind") != "folder" and not node.get("archived_at"):
-                out.append(node)
-            walk(node.get("children") or [])
+                out.append({**node, "_personal": True} if own else node)
+            walk(node.get("children") or [], own)
 
-    walk((payload or {}).get("rows") or [])
-    walk((payload or {}).get("personal") or [])
+    walk((payload or {}).get("rows") or [], False)
+    walk((payload or {}).get("personal") or [], True)
     return out
 
 
@@ -1113,6 +1150,9 @@ async def _prepare_new_task(
     parent: dict[str, Any] | None = None
     if parent_task_id.strip():
         parent_id, parent = await _task(parent_task_id)
+        refused = foreign_parent_refusal(parent, pid, "create")
+        if refused:
+            raise GatewayRefusal(refused)
         payload["parent_task_id"] = parent_id
         if "status_id" not in payload:
             # The gateway puts a step with no stated status in the parent's
@@ -1650,20 +1690,46 @@ async def add_subtasks(task_id: str, titles: str) -> str:
         return CANCELLED
     # No status is sent: the gateway puts each step in the parent's lane
     # when that lane is open (`core.parent_lane_status`, D-PM-38).
-    rows = [
-        await post(
-            "/projects/tasks", {"project_id": pid, "title": title, "parent_task_id": tid}
-        )
-        for title in parts
-    ]
-    lane = await _lane_name(pid, rows[0].get("status_id"))
+    #
+    # WS-64 chat wave 2. Each POST is its own write, so one that fails ends
+    # in the receipt and never in a raise. A raise read to the model as
+    # "Function failed" after some steps existed, and a retry made them twice.
+    rows: list[dict[str, Any]] = []
+    failed: list[str] = []
+    unknown: list[str] = []
+    for n, title in enumerate(parts, start=1):
+        try:
+            rows.append(await post(
+                "/projects/tasks", {"project_id": pid, "title": title, "parent_task_id": tid}
+            ))
+        except Exception as exc:  # each step ends in the receipt, never in a raise
+            if isinstance(exc, GatewayRefusal):
+                failed.append(f"failed: step {n} {data(title)} {_refusal_words(exc)}.")
+            else:
+                unknown.append(
+                    f"unknown: step {n} {data(title)}: the write failed "
+                    f"({type(exc).__name__}), so it may or may not have happened. Read "
+                    "task_detail of the parent before a retry."
+                )
+    lane = await _lane_name(pid, rows[0].get("status_id")) if rows else ""
     # The parent's id FIRST: the receipt card opens the first `full_id`,
     # and its heading names the parent (H-162). The heading also names the
     # lane the steps landed in, as every status receipt does (D79).
-    head = f"Added to {data(lane)} under {_ref(parent)}:" if lane else f"Added under {_ref(parent)}:"
+    if not failed and not unknown:
+        head = f"Added to {data(lane)} under {_ref(parent)}:" if lane else f"Added under {_ref(parent)}:"
+    else:
+        head = f"Added {len(rows)} of {len(parts)} subtasks under {_ref(parent)}:"
     out = [head, f"  full_id: {tid}"]
     for row in rows:
         out.extend(_task_line(row, lane))
+    if failed or unknown:
+        out.extend([*failed, *unknown])
+        out.append(f"stopped: {len(failed) + len(unknown)} of {len(parts)} steps failed.")
+        if rows:
+            out.append(
+                f"The {len(rows)} subtasks listed above exist. Never add them again. To "
+                "retry, call add_subtasks with only the titles that failed."
+            )
     return "\n".join(out)
 
 
@@ -1940,12 +2006,43 @@ class _SubtaskQuestion(str):
         return made
 
 
+def foreign_parent_refusal(parent: dict[str, Any], pid: Any, act: str) -> str:
+    """``""`` when *parent* is in project *pid*. Else the text the model reads.
+
+    A subtask lives in its parent's project (``tasks.refuse_foreign_parent``,
+    the gateway's rule for every caller). Said BEFORE any card, so the chat
+    never shows a card that the write then refuses. *act* is ``create`` or
+    ``move``.
+    """
+    home = str(parent.get("project_id") or "")
+    if not home or home.lower() == str(pid or "").lower():
+        return ""
+    where = data(parent.get("project_name")) if parent.get("project_name") else home
+    head = (
+        f"{_ref(parent)} is in the project {where}, not in the project of this task. "
+        "A subtask lives in its parent's project, so nothing was done."
+    )
+    if act == "create":
+        return f"{head}\nNext: call again with project_id {home}, the parent's project."
+    return (
+        f"{head}\nNext: move the task into {where} with destination_project_id {home} "
+        "first. Then re-parent it."
+    )
+
+
 async def _plan_reparent(ids: list[str], parent_task_id: str) -> _Move | str:
-    """Make one task a subtask of another, in the same project."""
+    """Make one task a subtask of another, in the same project.
+
+    A parent in another project is refused before the card
+    (:func:`foreign_parent_refusal`). The gateway refuses it too.
+    """
     if len(ids) != 1:
         return "Re-parenting takes exactly one task id."
     tid, task = await _task(ids[0])
     parent_id, parent = await _task(parent_task_id)
+    refused = foreign_parent_refusal(parent, task.get("project_id"), "move")
+    if refused:
+        return refused
     return _Move(
         title="Make this a subtask?",
         detail=f"{_ref(task)} under {_ref(parent)}",
@@ -2314,12 +2411,23 @@ async def _each_at_once(rows: list[Any], step: Callable[[Any], Awaitable[None]])
 
 
 async def _ask_batch(
-    title: str, detail: str, body: dict[str, Any], ready: list[_BatchRow], note: str = ""
+    title: str,
+    detail: str,
+    body: dict[str, Any],
+    ready: list[_BatchRow],
+    note: str = "",
+    impact: str = "",
 ) -> tuple[list[_BatchRow], list[_BatchRow]] | str:
     """ONE card with a checkbox for each ready row: ``(chosen, left)``, or
     the answer for a card the member declined or that answered a forged row.
-    ``note`` is one plain sentence after the body, drawn as prose."""
+    ``note`` is one plain sentence after the body, drawn as prose.
+    ``impact`` is the first line of a guarded batch (``guarded._guard_card``
+    puts it in the same place on a card with no rows)."""
     context = _fields_block(body)
+    if impact:
+        context = (
+            CARD_NOTE + "\nimpact: " + " ".join(impact.split()) + context[len(CARD_NOTE):]
+        )
     if note:
         context = "\n".join([context, note])
     ticked = await _confirm(
@@ -3168,6 +3276,7 @@ async def create_project(
         return "kind is project or folder."
     payload: dict[str, Any] = {"name": label, "kind": which}
     parent_label = "the top level (a new space)"
+    parent: dict[str, Any] | None = None
     if parent_project_id.strip():
         pid = uuid_of(parent_project_id, "parent_project_id")
         parent = await get(f"/projects/nodes/{pid}")
@@ -3177,16 +3286,52 @@ async def create_project(
         payload["description"] = description.strip()
     if lead.strip():
         payload["lead"] = await _resolve_assignee(lead, dispatch=False)
+    # WS-64 chat wave 2 (item 12): the card names the level the new node
+    # takes, so "Create this project?" never stands for a space.
+    level = await new_node_level(which, parent)
     if not await _confirm(
-        title=f"Create this {which}?",
+        title=f"Create this {level}?",
         detail=f"{data(label)} under {parent_label}",
         context=_fields_block({**payload, "under": parent_label}),
     ):
         return CANCELLED
     row = await post("/projects/nodes", payload)
     return (
-        f"Created {which} {data(row.get('name'))} under {parent_label}.\n  full_id: {row.get('id')}"
+        f"Created {level} {data(row.get('name'))} under {parent_label}.\n  full_id: {row.get('id')}"
     )
+
+
+#: The level of a new project under a parent of each level
+#: (``core.node_level``: a folder adds no generation).
+_CHILD_LEVEL = {"space": "project", "project": "subproject", "subproject": "subproject"}
+#: The most folders the level walk climbs (``core.MAX_DEPTH`` caps the tree).
+_FOLDER_CLIMB = 10
+
+
+async def new_node_level(kind: str, parent: dict[str, Any] | None) -> str:
+    """The level a new node takes: space, project, subproject or folder.
+
+    The gateway's rule (``core.node_level``): a folder is a folder wherever
+    it sits, a project with no parent is a space, and a folder adds no
+    generation. So under a folder the walk climbs to the first node that is
+    not a folder. A parent read with no ``level`` gives "project".
+    """
+    if kind == "folder":
+        return "folder"
+    if parent is None:
+        return "space"
+    node: dict[str, Any] | None = parent
+    for _ in range(_FOLDER_CLIMB):
+        level = str((node or {}).get("level") or "")
+        if level != "folder":
+            return _CHILD_LEVEL.get(level, "project")
+        above = (node or {}).get("parent_project_id")
+        if not above:
+            # A folder at the top: its children sit right under a root.
+            return "project"
+        above_id = uuid_of(str(above), "parent_project_id")
+        node = await get(f"/projects/nodes/{above_id}")
+    return "project"
 
 
 #: The icons Space Settings offers (``lib/tree.ts`` ``SPACE_ICON_CHOICES``).
@@ -3602,7 +3747,17 @@ async def space_refusal(pid: str, node: dict[str, Any], *, act: str = "created")
     space because the page named the space, and the member found none of
     them. The text lists the projects inside, so the model can pick one the
     member named, or ask which one. The gateway refuses the same write.
+
+    An archived project is refused here too (WS-64 chat wave 2). A name never
+    resolves to one (``_project_nodes``), but a full_id does, and the card
+    came before the gateway's 422 (``core.assert_not_archived``).
     """
+    if node.get("archived_at"):
+        return (
+            f"{data(node.get('name'))} is archived, so nothing was {act}.\n"
+            "Next: ask the member for an active project. Or, when the member asks "
+            "for it, call unarchive_project on this one first."
+        )
     if not is_team_space(node):
         return ""
     name = data(node.get("name"))

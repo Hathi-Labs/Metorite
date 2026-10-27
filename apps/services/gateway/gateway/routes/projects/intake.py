@@ -77,6 +77,7 @@ from gateway.routes.projects.core import (
     update_row,
     wire,
 )
+from gateway.routes.projects.due import due_instant
 from gateway.routes.projects.filters import parse_when
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -306,7 +307,8 @@ async def capture_intake(
                 {"leveraged": payload.leveraged}
                 if payload.leveraged is not None else {}
             ),
-            "due_at": payload.due_at,
+            # WS-64 chat wave 2. A bare due day is noon in the caller's zone.
+            "due_at": await due_instant(db, actor(user), payload.due_at),
             "task_number": await next_task_number(db, root),
             "created_by": actor(user),
             # The task's own source speaks the CHECK'd vocabulary; the

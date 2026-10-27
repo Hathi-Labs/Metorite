@@ -212,6 +212,7 @@ class TestTheToolRecords:
 
         assert tools.ASSIGNEE_REFUSED_CODE == gw.AGENT_ASSIGNEE_REFUSED
         assert tools.ASSIGNEE_PERSONAL_CODE == gw.AGENT_ASSIGNEE_PERSONAL
+        assert tools.PARENT_OTHER_PROJECT_CODE == gw.PARENT_OTHER_PROJECT
         assert tools.MAX_ASSIGNEES == gw.AGENT_MAX_ASSIGNEES == 50
         assert set(tools.IMPORTANCE_VALUES) == set(gw.AGENT_IMPORTANCE_VALUES) == {0, IMPORTANT_AT}
         assert tools.MAX_ESTIMATE_MINS == gw.AGENT_MAX_ESTIMATE_MINS
@@ -399,7 +400,8 @@ class TestUpdateTaskFields:
         assert _writes(edge.gateway) == []
 
     @pytest.mark.parametrize("detail,text", [
-        ("The parent task is in another project.", tools.TEXT_MOVE_OTHER_PROJECT),
+        # WS-64 chat wave 2: the coded 422 of `tasks.refuse_foreign_parent`.
+        ({"error": "parent_other_project", "message": "x"}, tools.TEXT_MOVE_OTHER_PROJECT),
         ("A task cannot be its own parent.", tools.TEXT_MOVE_OWN_PARENT),
         ("That move would put the task inside its own subtree.", tools.TEXT_MOVE_CYCLE),
         ("Task hierarchy is deeper than the supported maximum.", tools.TEXT_MOVE_TOO_DEEP),

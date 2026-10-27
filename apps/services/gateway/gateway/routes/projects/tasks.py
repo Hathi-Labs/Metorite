@@ -106,6 +106,7 @@ from gateway.routes.projects.custom_fields import (
     apply_values,
     load_definitions,
 )
+from gateway.routes.projects.due import member_due_values
 from gateway.routes.projects.filters import (
     attach_agent_state,
     attach_assignees,
@@ -369,19 +370,60 @@ def _narrow_agent_body(user: UserContext, values: dict[str, Any],
         )
 
 
-def _refuse_agent_parent(user: UserContext, parent: Any, project_id: str) -> None:
-    """An agent's subtask lives in its parent's project (§9.2, EA-6d).
+#: The code of the 422 when a subtask names a project other than its
+#: parent's (WS-64 chat wave 2). The edge maps it to a fixed text, and the
+#: chat reads the message.
+PARENT_OTHER_PROJECT = "parent_other_project"
 
-    The route itself does not check it for a member. For an agent the edge
-    refuses first, and this is the gateway's own copy of the rule.
+
+def refuse_foreign_parent(parent: Any, project_id: str) -> None:
+    """A subtask lives in its parent's project. One rule, for every caller.
+
+    Before WS-64 chat wave 2 this checked a signed agent only, so the chat
+    could file a subtask in one project under a parent in another. The app
+    and the MCP edge always send the parent's project. A member's request
+    is now held to the same rule. The detail names both project ids and no
+    name, because a caller who sees the parent task as its assignee may not
+    see the parent's project.
     """
-    if getattr(user, "agent", None) is None or parent is None:
+    if parent is None:
         return
-    if str(getattr(parent, "project_id", "")).lower() != project_id.lower():
-        raise HTTPException(
-            status_code=422,
-            detail="The parent task is in another project.",
-        )
+    parent_project = str(getattr(parent, "project_id", "") or "")
+    if parent_project.lower() != str(project_id).lower():
+        raise HTTPException(status_code=422, detail={
+            "error": PARENT_OTHER_PROJECT,
+            "message": (
+                f"The parent task is in project {parent_project}, and this task "
+                f"is in project {project_id}. A subtask lives in its parent's "
+                "project. Use the project of the parent task."
+            ),
+            "parent_project_id": parent_project,
+            "project_id": str(project_id),
+        })
+
+
+def carry_to_parent(user: Any, payload: MoveTask, task: Any, parent: Any) -> MoveTask:
+    """A member's re-parent that names no project goes to the parent's project.
+
+    The Tasks app files an Inbox item under a task of a team project with
+    ``{parent_task_id}`` only (``lensFileUnder``). Its words say that this
+    places the item in that project, and the move did not do it, so the
+    item stayed in the personal tree under a team parent. Now the move
+    carries the task, with its subtasks, into the parent's project, and
+    every guard of a move to another project runs.
+
+    It does not carry a signed agent (MCP-G2: an agent moves a task inside
+    its project only), a subtask that a checked move carries (``user`` is
+    ``None``), or a request that names a project. Those meet
+    :func:`refuse_foreign_parent`.
+    """
+    if (user is None or getattr(user, "agent", None) is not None
+            or payload.project_id or parent is None):
+        return payload
+    home = str(getattr(parent, "project_id", "") or "")
+    if not home or home == str(task.project_id):
+        return payload
+    return payload.model_copy(update={"project_id": home, "include_subtasks": True})
 
 
 async def _refuse_agent_type(db: Any, user: UserContext, type_id: Any,
@@ -850,6 +892,8 @@ async def create_task(
         # sit outside every board (`core.assert_holds_tasks`).
         assert_holds_tasks(target, then="Create the task in")
         assert_not_archived(target, then="Create the task in")
+        # WS-64 chat wave 2. A bare due day is noon in the caller's zone.
+        await member_due_values(db, actor(user), values)
         root = await root_project_id(db, str(project_id))
         values["root_project_id"] = root
         # The values pass the gate a PATCH puts them through
@@ -879,7 +923,7 @@ async def create_task(
         parent = (
             await load_visible_task(db, vis, str(parent_id)) if parent_id else None
         )
-        _refuse_agent_parent(user, parent, str(project_id))
+        refuse_foreign_parent(parent, str(project_id))
         await _refuse_agent_type(db, user, values.get("type_id"), str(root))
         await assert_epic_has_no_parent(db, values.get("type_id"), parent_id)
 
@@ -991,6 +1035,8 @@ async def patch_task(
         # write — so a caller who cannot see the task still gets 404 and never
         # learns from a 412 that it exists (R5: 404, never 403).
         require_precondition(before, if_match, row_to_dict(before, TaskModel))
+        # WS-64 chat wave 2. A bare due day is noon in the caller's zone.
+        await member_due_values(db, actor(user), values)
 
         # WS-27l. Merged against the definitions on the task's OWN root, not the
         # caller's current project: a task opened from My work can belong to a
@@ -1188,9 +1234,13 @@ async def move_task_in(
         new_parent = payload.parent_task_id
         if new_parent:
             parent_row = await load_visible_task(db, vis, str(new_parent))
-            # WS-55 MCP-G2. An agent moves a task inside its project only. A
-            # no-op for a member and for a carried subtask (`user` None).
-            _refuse_agent_parent(user, parent_row, str(task.project_id))
+            payload = carry_to_parent(user, payload, task, parent_row)
+            # WS-64 chat wave 2. The new parent is in the project that the
+            # task ends in: the destination of this move, else its own. For
+            # every caller, a member too, not only an agent (MCP-G2).
+            refuse_foreign_parent(
+                parent_row, str(payload.project_id or task.project_id),
+            )
         await assert_no_task_cycle(db, task_id, new_parent)
         await assert_epic_has_no_parent(
             db, getattr(task, "type_id", None), new_parent,

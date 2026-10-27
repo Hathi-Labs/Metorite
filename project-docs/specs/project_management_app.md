@@ -8880,6 +8880,42 @@ synced board shows the subtasks that Hidden folded away.
 
 ---
 
+### 12.10 Two server rules of a task (WS-64 chat wave 2, 2026-10-27)
+
+**Status: BUILT 2026-10-27 on branch `ws64-chat-wave2`, not merged.** No
+migration. The owner of the surface is `one_projects_app.md` §9, "Chat wave 2".
+
+**A subtask lives in its parent's project.** The gateway refuses a create or a
+move that names another project than the parent's. The refusal is a 422 with
+the code `parent_other_project` (`tasks.refuse_foreign_parent`). Its message
+names both project ids. The rule holds for every caller. Before 2026-10-27
+the gateway checked only a signed agent. So the chat filed a subtask in the
+project that the model named.
+
+**A re-parent with no project.** A member's re-parent that names no project
+goes to the parent's project, with its subtasks (`tasks.carry_to_parent`).
+The Tasks app sends that request when it files an Inbox item under a task. A
+signed agent never moves to another project (MCP-G2).
+
+**A due day is noon in the member's zone.** `due_at` is an instant. A bare day
+such as `2026-10-30` becomes 12:00 in `user_settings.timezone`. A member with
+no saved zone gets UTC (`due.member_due_values`). The create, the PATCH, the
+bulk edit, the two captures and the organize decision use this one rule. The
+app already writes noon in the browser's zone (`quickAdd.dueInstantForDay`).
+
+A value with a time does not change.
+
+**Overdue.** `start_date` is a date column, so it has no zone. D-PM-22
+stands: a task is overdue when `due_at < now()`. So a due day goes overdue at
+noon on that day in the member's zone. Before, a bare day was midnight UTC.
+In Los Angeles that showed the day before, and the task went overdue on the
+evening before.
+
+**Fences.** `tests/unit/test_projects_chat_wave2_r8.py` (R8) holds both rules
+through the real router. `tests/unit/test_projects_chat_mcp_parity.py` holds
+the chat and the MCP edge to one request body for each act.
+
+
 ## Board record (2026-08-09) — moved from work_plan.md §2
 
 > Moved here in the 2026-08-09 consolidation (work_plan.md D18): board rows now

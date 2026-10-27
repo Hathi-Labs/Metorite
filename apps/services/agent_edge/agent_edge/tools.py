@@ -191,6 +191,10 @@ ASSIGNEE_REFUSED_CODE = "assignee_refused"
 #: The code of the gateway's 422 for another person on a task in a personal
 #: project. A copy of ``tasks.AGENT_ASSIGNEE_PERSONAL``, pinned the same way.
 ASSIGNEE_PERSONAL_CODE = "assignee_personal_project"
+#: The code of the gateway's 422 for a subtask in a project other than its
+#: parent's (WS-64 chat wave 2). A copy of ``tasks.PARENT_OTHER_PROJECT``,
+#: pinned the same way.
+PARENT_OTHER_PROJECT_CODE = "parent_other_project"
 #: The idempotency key of ``create_task`` (EA-6d, ``agent_edge.idempotency``).
 TEXT_KEY_REUSED = (
     "This idempotency_key was used for a different task. Send a new key.")
@@ -1758,13 +1762,35 @@ def _project(node: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _project_status(row: Mapping[str, Any]) -> dict[str, Any]:
+#: The category of the intake lane. A copy of ``core.TRIAGE_CATEGORY``,
+#: pinned equal by ``test_mcp_edge_coverage.py``.
+TRIAGE_CATEGORY = "triage"
+
+
+def default_lane_id(rows: list[Mapping[str, Any]]) -> str | None:
+    """The id of the lane that a new task lands in: the first lane by
+    position that is not triage (``core.load_default_status``).
+
+    WS-64 chat wave 2 (item 10). ``is_default`` was the stored column, which
+    nothing reads since 2026-09-06, so the flag named a lane that a create
+    does not use. The edge now says the gateway's rule. The gateway breaks a
+    tie of position by name, and so does this.
+    """
+    lanes = [r for r in rows if str(r.get("category") or "") != TRIAGE_CATEGORY]
+    if not lanes:
+        return None
+    first = min(lanes, key=lambda r: (_int_or_none(r.get("position")) or 0,
+                                      str(r.get("name") or "")))
+    return str(first.get("id"))
+
+
+def _project_status(row: Mapping[str, Any], default_id: str | None) -> dict[str, Any]:
     return {
         "id": str(row.get("id")),
         "name": untrusted(row.get("name") or ""),
         "category": _str_or_none(row.get("category")),
         "position": _int_or_none(row.get("position")),
-        "is_default": _bool(row.get("is_default")),
+        "is_default": default_id is not None and str(row.get("id")) == default_id,
     }
 
 
@@ -1800,7 +1826,8 @@ async def _get_project(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         for route in (STATUSES_ROUTE, TYPES_ROUTE, FIELDS_ROUTE, TAGS_ROUTE)))
     return {
         "project": _project(node),
-        "statuses": [_project_status(r) for r in _rows_of(statuses)],
+        "statuses": [_project_status(r, default_lane_id(_rows_of(statuses)))
+                     for r in _rows_of(statuses)],
         "types": [_task_type(r) for r in _rows_of(types_)],
         "fields": [_field_definition(r) for r in _rows_of(fields)],
         "tags": [_tag(r) for r in _rows_of(tags)],
@@ -3572,7 +3599,8 @@ async def _create(ctx: Context, args: dict[str, Any],
     # refused assignee leaves no task, and the key goes free.
     _, row = await _write(ctx, "POST", CREATE_ROUTE, TEXT_PROJECT_NOT_FOUND,
                           json_body=payload,
-                          coded=_assignee_codes(args.get("assignees") or ()))
+                          coded={**_assignee_codes(args.get("assignees") or ()),
+                                 PARENT_OTHER_PROJECT_CODE: TEXT_PARENT_OTHER_PROJECT})
     if not isinstance(row, dict) or _id(row.get("id")) is None:
         raise ToolError(TEXT_BUSY)
     return row, statuses
@@ -3843,14 +3871,16 @@ MOVE_ROUTE = "/projects/tasks/{task_id}/move"
 #: ``detail`` (the ``details`` map of :func:`_write`). The edge reads the
 #: detail to choose a text, and never sends it. The R8 tests of
 #: ``test_mcp_edge_assignees.py`` meet each one through the real gateway, so
-#: a changed detail fails them.
+#: a changed detail fails them. A parent of another project is the coded
+#: 422 :data:`PARENT_OTHER_PROJECT_CODE` (:data:`_MOVE_CODES`).
 _MOVE_DETAILS: Mapping[tuple[int, str], str] = {
-    (422, "The parent task is in another project."): TEXT_MOVE_OTHER_PROJECT,
     (422, "A task cannot be its own parent."): TEXT_MOVE_OWN_PARENT,
     (422, "That move would put the task inside its own subtree."): TEXT_MOVE_CYCLE,
     (422, "Task hierarchy is deeper than the supported maximum."): TEXT_MOVE_TOO_DEEP,
     (422, "An Epic cannot have a parent task; it is the top level."): TEXT_MOVE_EPIC,
 }
+#: The coded 422 of a move (WS-64 chat wave 2).
+_MOVE_CODES: Mapping[str, str] = {PARENT_OTHER_PROJECT_CODE: TEXT_MOVE_OTHER_PROJECT}
 
 
 async def _updated(ctx: Context, after: Any) -> dict[str, Any]:
@@ -3880,7 +3910,8 @@ async def _move_in_project(ctx: Context, args: dict[str, Any]) -> dict[str, Any]
     gets "Parent task not found." Then one POST of :data:`MOVE_ROUTE` with
     the body ``{parent_task_id}`` and ``If-Match``. The gateway refuses a
     parent of another project for a signed agent, and its cycle and epic
-    rules hold. Each refusal maps to a text of :data:`_MOVE_DETAILS`.
+    rules hold. Each refusal maps to a text of :data:`_MOVE_DETAILS` or
+    :data:`_MOVE_CODES`.
     """
     parent = args["parent_task_id"]
     if parent is not None:
@@ -3890,7 +3921,8 @@ async def _move_in_project(ctx: Context, args: dict[str, Any]) -> dict[str, Any]
         ctx, "POST", MOVE_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": str(args["task_id"])},
         json_body={"parent_task_id": parent},
-        if_match=str(args["expected_version"]), details=_MOVE_DETAILS)
+        if_match=str(args["expected_version"]), details=_MOVE_DETAILS,
+        coded=_MOVE_CODES)
     return await _updated(ctx, after)
 
 

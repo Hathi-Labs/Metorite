@@ -182,6 +182,8 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   file_tasks: { kind: "edit", verb: V.move, object: "tasks into their projects" },
   // 2026-10-19: several links between tasks, one card.
   link_tasks_batch: { kind: "edit", verb: V.link, object: "tasks" },
+  // WS-64 chat wave 2: several nodes under one parent, one card.
+  move_projects: { kind: "edit", verb: V.move, object: "projects" },
   mark_notifications_read: { kind: "edit", verb: V.mark, object: "notifications read" },
   set_my_overlay: { kind: "edit", verb: V.update, object: "your view of a task" },
   set_status_set: { kind: "edit", verb: V.update, object: "the statuses" },

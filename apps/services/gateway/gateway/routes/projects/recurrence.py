@@ -36,6 +36,7 @@ from gateway.routes.projects.core import (
     clean_payload,
     insert_row,
     is_runnable_with_ancestors,
+    is_team_space,
     load_default_status,
     load_visible_task,
     next_task_number,
@@ -326,6 +327,22 @@ async def spawn_successor(db: Any, task: Any, *, actor_id: str) -> str | None:
         db, getattr(task, "project_id", None)
     ):
         return None
+    # WS-64 chat wave 2 (item 14). A space and a folder hold no tasks
+    # (`core.assert_holds_tasks`). A task that sits on one from before that
+    # rule must not spawn its successor there, where no board draws it. Like
+    # a pause, the series is not stamped, so a close after the task moves into
+    # a project still spawns. The source task's timeline says why.
+    if await _home_holds_no_tasks(db, getattr(task, "project_id", None)):
+        await record_activity(
+            db, activity_type="system", created_by=actor_id, task_id=str(task.id),
+            body=(
+                "Not recurred: this task sits on a space or a folder, which holds "
+                "no tasks. Move it into a project, and the next one appears when "
+                "it is done again."
+            ),
+            meta={"recurrence_id": str(task.recurrence_id), "skipped": "no_task_home"},
+        )
+        return None
 
     row = (await db.execute(
         text("SELECT * FROM pm_recurrences WHERE id = CAST(:rid AS uuid)"),
@@ -403,6 +420,22 @@ async def spawn_successor(db: Any, task: Any, *, actor_id: str) -> str | None:
         meta={"recurrence_id": rule["id"], "successor_id": str(successor.id)},
     )
     return str(successor.id)
+
+
+async def _home_holds_no_tasks(db: Any, project_id: Any) -> bool:
+    """True when the task's project is a team space or a folder."""
+    if not project_id:
+        return False
+    home = (await db.execute(
+        text(
+            "SELECT parent_project_id, kind, personal_owner FROM pm_projects "
+            "WHERE id = CAST(:pid AS uuid)"
+        ),
+        {"pid": str(project_id)},
+    )).fetchone()
+    if home is None:
+        return False
+    return is_team_space(home) or str(getattr(home, "kind", "") or "project") == "folder"
 
 
 # ── Routes ──────────────────────────────────────────────────────────────────

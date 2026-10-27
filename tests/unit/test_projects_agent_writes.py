@@ -799,6 +799,8 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
             f'{{"task_id": "{OTHER}", "destination_project_id": "{SALES}"}}]',
         }
     ],
+    # WS-64 chat wave 2 — several nodes under one parent, one card with rows.
+    "move_projects": [{"project_ids": f"{UUID},{OTHER}", "parent_project_id": SALES}],
     "propose_plan": [
         {
             "name": "Q4 launch",
@@ -856,7 +858,7 @@ def _class_c_built() -> set[str]:
 
 def test_the_table_covers_every_built_class_b_tool() -> None:
     assert set(_WRITES) == _class_b_built()
-    assert set(_ONE_ID) == _class_c_built() - {"bulk_update", "merge_tasks"}
+    assert set(_ONE_ID) == _class_c_built() - {"bulk_update", "merge_tasks", "move_projects"}
 
 
 def test_the_tools_are_annotated_as_writes_not_reads() -> None:
@@ -1040,7 +1042,7 @@ def test_every_class_b_tool_awaits_the_one_confirm_door() -> None:
     )
     assert "_confirm" in {getattr(n.func, "id", "") for n in ast.walk(shared)
                           if isinstance(n, ast.Call)}
-    batches = {"file_tasks", "link_tasks_batch"}
+    batches = {"file_tasks", "link_tasks_batch", "move_projects"}
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.AsyncFunctionDef) or fn.name not in _class_b_built():
             continue
