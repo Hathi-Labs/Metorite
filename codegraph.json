@@ -4,7 +4,6 @@
     "infra/postgres/schema.generated.sql",
     "**/migrations/**",
     "workbench/control_plane/.next/**",
-    "learning-resources/**",
     "reference/**",
     "**/__pycache__/**",
     "**/*.min.js",

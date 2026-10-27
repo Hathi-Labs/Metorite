@@ -9,7 +9,7 @@ Nothing here ships to the VPS.
 
 | Path | Kind | Purpose |
 |---|---|---|
-| `commands/next-ticket.md` | slash command | One supervisor cycle: select → tier → audit → build → verify → review (not for LOW) → PR |
+| `commands/next-ticket.md` | slash command | One supervisor cycle: select → tier → audit → build → verify → review (not for LOW) → PR → merge |
 | `agents/spec-auditor.md` | subagent | Is this WS dispatchable at all? Gatekeeper, read-only |
 | `agents/ws-implementer.md` | subagent | Builds one cleared slice on a branch |
 | `agents/ws-verifier.md` | subagent | Re-runs acceptance on its own, read-only |
@@ -48,9 +48,10 @@ Nothing here ships to the VPS.
 - **`work_plan.md` §6 and `plan-guard.mjs` change together, in the same PR.** A
   gate that exists in prose but not in the hook is not a gate. Add the case to
   `plan-guard.test.mjs` at the same time.
-- **The loop stops at "PR opened".** A person does the merge and the deploy. The
-  deploy applies migrations before the gateway restarts, and it resets the tree.
-  An agent cannot undo either one. Do not add a deploy step here.
+- **The loop ends at a merge, a watched `deploy` run and a staging check.**
+  Root `CLAUDE.md` §3a and §4 own that rule. A merge moves only the `staging`
+  ref, and production moves once a day. An agent cannot undo a production
+  migration (R6), so do not add a step here that deploys to production.
 - **Subagents are one level deep.** A worker cannot dispatch workers, so all
   orchestration lives in `commands/next-ticket.md` or in the main session.
 - **Keep worker tool grants narrow.** The read-only agents stay read-only. That

@@ -43,6 +43,19 @@ OA-9b builds `spawn_subagents` on them.
   spawn tool. A tool that the parent does not have stops it too, and so
   does a tool that is not read-only. Each refusal is one line that tells
   the model why.
+- **Fix round 1 (verifier).** A repeated key in the JSON of a child makes
+  the answer another shape, because `json.loads` keeps the last value and
+  would drop a quoted fact. `packs` must be absent or an empty list, so
+  `0`, `false` and `{}` are refused. Bytes decode, and no value is stored as
+  a `repr`. A call past the cap names 10 jobs and counts the rest.
+- **The member tools.** `ask_questions`, `ask_user`, `request_confirmation`
+  and `share_artifact` say `read_only=True`, but a child has no member to
+  ask. The parser refuses them (`MEMBER_TOOLS`). `remember` stays a read.
+- **The specialist tools.** `parse_jobs` takes `delegating`, the names of
+  the specialist tools of the parent. They get the hand-off reason.
+- **OA-9b must enforce the child tool set.** The parser only checks the
+  request. Floor tools reach every run, so OA-9b must withhold and refuse
+  all other tools at `tool_guard.WithholdTools` and `RefuseTools`.
 - **Read-only.** The default check reads `tool_annotations`. A tool with no
   entry is not read-only. OA-9b can give its own check. §4.5 OA-9b item 1
   stays open: how a child gets read tools only.

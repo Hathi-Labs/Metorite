@@ -121,14 +121,19 @@ def test_an_object_off_the_contract_becomes_one_inferred_item(payload: dict) -> 
 @pytest.mark.parametrize("payload", [
     {"items": [{"value": "x", "kind": "quoted", "source": "s"}], "note": "I found no PO"},
     {"items": [{"value": "x", "kind": "quoted", "source": "s", "page": 3}]},
+    # A repeated key: json.loads keeps the LAST value, so a fact would vanish.
+    '{"items": [{"value": "a", "kind": "quoted", "source": "s"}], '
+    '"items": [{"value": "b", "kind": "inferred", "source": "s"}]}',
+    '{"items": [{"value": "a", "kind": "quoted", "kind": "inferred", "source": "s"}]}',
 ])
-def test_a_key_outside_the_contract_keeps_all_the_text(payload: dict) -> None:
+def test_a_key_outside_the_contract_keeps_all_the_text(payload: dict | str) -> None:
     """An extra key may hold text of the child. The parser never drops it in
     silence: the whole answer becomes one guess. Catches M3."""
-    text = json.dumps(payload)
+    text = payload if isinstance(payload, str) else json.dumps(payload)
     items = sc.parse_items(text)
     assert items == [sc.Item(text, "inferred", sc.UNSTRUCTURED)]
-    assert "I found no PO" in items[0].value or '"page": 3' in items[0].value
+    assert all(i.kind != "quoted" for i in items)
+    assert items[0].value == text
 
 
 def test_one_bad_item_turns_the_whole_answer_into_one_guess() -> None:
@@ -153,6 +158,14 @@ def test_the_fallback_item_is_never_quoted() -> None:
 
 def test_no_answer_at_all_is_one_empty_guess() -> None:
     assert sc.parse_items(None) == [sc.Item("", "inferred", sc.UNSTRUCTURED)]
+
+
+def test_bytes_decode_and_another_type_is_never_stored_as_a_repr() -> None:
+    """F4. Catches ``str(raw)`` coming back in ``_as_text``."""
+    good = _answer({"value": "x", "kind": "quoted", "source": "s"})
+    assert sc.parse_items(good.encode()) == [sc.Item("x", "quoted", "s")]
+    for odd in (7, {"a": 1}, object()):
+        assert sc.parse_items(odd) == [sc.Item("", "inferred", sc.UNSTRUCTURED)]  # type: ignore[arg-type]
 
 
 # ── The jobs in (§6.2, §6.5) ────────────────────────────────────────────────
@@ -206,6 +219,59 @@ def test_five_jobs_run_and_a_sixth_gets_its_name_and_does_not_run() -> None:
         'At most 5 jobs run in one call. These did not run: job 6 ("Read page 6."), '
         'job 7 ("Read page 7."). Call again with them.',
     )
+
+
+@pytest.mark.parametrize("packs", [0, False, {}, "", "email", ["email"], {"email": 1}])
+def test_any_packs_value_but_none_or_an_empty_list_is_refused(packs: object) -> None:
+    """F3: a falsy value that is no list must not pass as no pack. Catches
+    the truthiness test coming back."""
+    plan = _plan([{"job": "Read.", "packs": packs}])
+    assert plan.jobs == ()
+    assert "tool pack" in plan.refused[0]
+
+
+@pytest.mark.parametrize("packs", [None, []])
+def test_no_pack_and_an_empty_pack_list_pass(packs: object) -> None:
+    assert len(_plan([{"job": "Read.", "packs": packs}]).jobs) == 1
+
+
+def test_overflow_names_ten_jobs_and_counts_the_rest() -> None:
+    """F2: a call with many jobs cannot make a long answer. Catches the
+    unbounded list."""
+    jobs = [{"job": f"Read page {n}.", "tools": ["read_page"]} for n in range(1, 30)]
+    (line,) = _plan(jobs).refused
+    assert line.count('job ') == 10
+    assert 'job 15 ("Read page 15.")' in line and "job 16" not in line
+    assert ", and 14 more." in line
+
+
+@pytest.mark.parametrize("tool", ["ask_questions", "ask_user", "request_confirmation",
+                                  "share_artifact"])
+def test_a_child_cannot_ask_the_member_or_show_a_card(tool: str) -> None:
+    """Q4. These say read_only=True, so the read-only rule lets them pass.
+    Catches MEMBER_TOOLS emptied."""
+    plan = sc.parse_jobs(json.dumps([{"job": "Ask.", "tools": [tool]}]),
+                         parent_tools={tool}, read_only=lambda _n: True)
+    assert plan.jobs == ()
+    assert "a sub-agent cannot ask the member or show a card" in plan.refused[0]
+
+
+def test_remember_stays_a_read_for_a_child() -> None:
+    assert sc.annotated_read_only("remember")
+    plan = sc.parse_jobs(json.dumps([{"job": "Recall.", "tools": ["remember"]}]),
+                         parent_tools={"remember"})
+    assert len(plan.jobs) == 1
+
+
+def test_a_delegating_tool_gets_the_hand_off_reason() -> None:
+    """Q5. A specialist tool is no member of ``DELEGATION_TOOLS``. Catches
+    ``delegating`` ignored."""
+    raw = json.dumps([{"job": "Mail.", "tools": ["email_assistant"]}])
+    plain = sc.parse_jobs(raw, parent_tools={"email_assistant"}, read_only=lambda _n: False)
+    assert "not a read-only tool" in plain.refused[0]
+    plan = sc.parse_jobs(raw, parent_tools={"email_assistant"}, read_only=lambda _n: False,
+                         delegating={"email_assistant"})
+    assert "cannot start another agent" in plan.refused[0]
 
 
 def test_a_job_that_names_a_pack_does_not_run_until_oa_9c() -> None:

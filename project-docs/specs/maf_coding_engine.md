@@ -663,7 +663,7 @@ the coding evals and an owner list for business documents and analysis.
 | `markitdown` | It brings `magika`, and `magika` brings `onnxruntime`, an ML runtime. `pdfplumber`, `python-docx` and `openpyxl` read the same files |
 | `pdf2image`, `pytesseract` | They need the Poppler and Tesseract binaries. `pypdfium2` renders a page, and OCR is not a need today |
 | `torch`, `tensorflow`, `scikit-learn` | GPU or ML scale. No agent uses one |
-| LibreOffice, Pandoc, npm `docx` and `pptxgenjs` | The mirrored `docx`, `pptx` and `xlsx` skills ask for them. Nothing loads that mirror (`skills/upstream/README.md`), and LibreOffice alone is about 400 MB |
+| LibreOffice, Pandoc, npm `docx` and `pptxgenjs` | The mirrored `docx`, `pptx` and `xlsx` skills ask for them. The mirror was removed on 2026-10-27, and LibreOffice alone is about 400 MB |
 
 `pip-audit` found no known vulnerability in the lock on 2026-10-05, against
 the PyPI and OSV databases. It found none again on 2026-10-06, with `duckdb`

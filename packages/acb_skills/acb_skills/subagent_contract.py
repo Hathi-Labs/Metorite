@@ -45,7 +45,9 @@ __all__ = [
     "KINDS",
     "MAX_CHILD_ROUNDS",
     "MAX_JOBS",
+    "MAX_NAMED_OVERFLOW",
     "MAX_SPAWNS_PER_TURN",
+    "MEMBER_TOOLS",
     "SPAWN_TOOL",
     "TIERS",
     "UNSTRUCTURED",
@@ -67,6 +69,9 @@ SPAWN_TOOL = "spawn_subagents"
 #: The most jobs that run in one spawn call. It is the cap of the one fan-out,
 #: ``agent_tools._PARALLEL_MAX``, and the fence pins the two together.
 MAX_JOBS = 5
+
+#: The most jobs past the cap that a refusal line names. The rest are counted.
+MAX_NAMED_OVERFLOW = 10
 
 #: The most spawn calls in one turn, so a turn runs at most 10 children.
 MAX_SPAWNS_PER_TURN = 2
@@ -106,6 +111,10 @@ UNSTRUCTURED = "unstructured"
 
 #: The longest job text or tool name that a refusal line repeats.
 _LABEL_CHARS = 60
+
+#: Tools that ask the member or show a card. They are marked read-only, but a
+#: child has no member to ask (§6.5: each card is the main assistant's).
+MEMBER_TOOLS = frozenset({"ask_questions", "ask_user", "request_confirmation", "share_artifact"})
 
 _CALL_SHAPE = (
     f"Error: jobs must be a JSON array of 1 to {MAX_JOBS} jobs. Each job is an object "
@@ -239,7 +248,7 @@ def _refusal(
     tier = _tier_of(raw.get("tier"))
     if tier is None:
         return 'its tier must be "fast" or "main".', None
-    if raw.get("packs"):
+    if raw.get("packs") not in (None, []):
         # §4.5, OA-9b item 3: a pack in a child waits for OA-9c.
         return ("a sub-agent cannot load a tool pack yet. Name its tools "
                 "instead."), None
@@ -247,6 +256,9 @@ def _refusal(
     if tools is None:
         return "its tools must be a list of tool names.", None
     for name in tools:
+        if name in MEMBER_TOOLS:
+            return (f"a sub-agent cannot ask the member or show a card, so it cannot "
+                    f"hold '{_clip(name)}'."), None
         if name in handoff:
             return (f"a sub-agent cannot start another agent, so it cannot hold "
                     f"'{_clip(name)}'."), None
@@ -260,12 +272,26 @@ def _refusal(
     return "", Job(number=0, job=text.strip(), tools=tools, tier=tier)
 
 
+def _one_of_each(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """``object_pairs_hook``: a repeated key raises, so no value is lost.
+
+    ``json.loads`` keeps the LAST value of a repeated key. That would drop a
+    quoted fact in silence, so a repeat makes the answer another shape.
+    """
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError("repeated key")
+        out[key] = value
+    return out
+
+
 def _loads(raw: Any) -> Any:
     """The JSON value of *raw*, or ``None`` when it is not JSON."""
     if not isinstance(raw, str):
         return raw
     try:
-        return json.loads(raw)
+        return json.loads(raw, object_pairs_hook=_one_of_each)
     except (ValueError, RecursionError):
         return None
 
@@ -275,12 +301,15 @@ def parse_jobs(
     *,
     parent_tools: Collection[str],
     read_only: Callable[[str], bool] = annotated_read_only,
+    delegating: Collection[str] = (),
 ) -> JobPlan:
     """Check the ``jobs`` of one spawn call against the parent run (§6.2).
 
     *raw* is the JSON text that the model sent, or its parsed list.
     *parent_tools* is the ``run_tools`` of the parent run. A job may name only
-    those tools. *read_only* says whether a tool reads only. OA-9b passes the
+    those tools. *delegating* names more tools that start another agent, such as the
+    specialist tools of the parent. They get the hand-off reason.
+    *read_only* says whether a tool reads only. OA-9b passes the
     parent's own view of its tools, and the default reads the risk registry.
 
     The first :data:`MAX_JOBS` jobs are checked, and a valid one runs. Each
@@ -291,7 +320,7 @@ def parse_jobs(
     if not isinstance(jobs, list) or not jobs:
         return JobPlan(error=_CALL_SHAPE)
     parent = frozenset(parent_tools)
-    handoff = _handoff_tools()
+    handoff = _handoff_tools() | frozenset(delegating)
     ready: list[Job] = []
     refused: list[str] = []
     for number, entry in enumerate(jobs[:MAX_JOBS], start=1):
@@ -303,7 +332,11 @@ def parse_jobs(
         ready.append(Job(number=number, job=job.job, tools=job.tools, tier=job.tier))
     left_out = jobs[MAX_JOBS:]
     if left_out:
-        names = ", ".join(_label(n, e) for n, e in enumerate(left_out, start=MAX_JOBS + 1))
+        shown = left_out[:MAX_NAMED_OVERFLOW]
+        names = ", ".join(_label(n, e) for n, e in enumerate(shown, start=MAX_JOBS + 1))
+        more = len(left_out) - len(shown)
+        if more:
+            names += f", and {more} more"
         refused.append(f"At most {MAX_JOBS} jobs run in one call. These did not run: "
                        f"{names}. Call again with them.")
     return JobPlan(jobs=tuple(ready), refused=tuple(refused))
@@ -312,13 +345,14 @@ def parse_jobs(
 # ── The items out ───────────────────────────────────────────────────────────
 
 
-def _as_text(raw: Any) -> str:
-    if raw is None:
-        return ""
-    return raw if isinstance(raw, str) else str(raw)
+def _as_text(raw: str | bytes | None) -> str:
+    """The answer as text. Bytes decode, and a value of another type is no text."""
+    if isinstance(raw, bytes | bytearray):
+        return bytes(raw).decode("utf-8", errors="replace")
+    return raw if isinstance(raw, str) else ""
 
 
-def unstructured(text: Any) -> Item:
+def unstructured(text: str | bytes | None) -> Item:
     """The one item that holds output in any other shape. It is a guess."""
     return Item(value=_as_text(text).strip(), kind="inferred", source=UNSTRUCTURED)
 
@@ -359,7 +393,7 @@ def _items_of(payload: Any) -> list[Item] | None:
     return items
 
 
-def parse_items(text: Any) -> list[Item]:
+def parse_items(text: str | bytes | None) -> list[Item]:
     """The items of a child's answer, in its order (§6.4).
 
     The answer must be exactly one JSON object with the one key ``items``, a
@@ -373,7 +407,7 @@ def parse_items(text: Any) -> list[Item]:
     """
     raw = _as_text(text)
     try:
-        payload = json.loads(raw)
+        payload = json.loads(raw, object_pairs_hook=_one_of_each)
     except (ValueError, RecursionError):
         return [unstructured(raw)]
     items = _items_of(payload)

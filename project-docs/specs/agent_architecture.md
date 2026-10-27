@@ -20,7 +20,7 @@ still load, but they are no longer the shape the architecture is designed around
 new should be built that way.
 
 **Companions:**
-[`agent_platform_hardening_2026-07.md`](agent_platform_hardening_2026-07.md) (**adversarial
+`agent_platform_hardening_2026-07.md` (**adversarial
 review of this doc and the multiplayer design — 20 findings, the isolation decision, and the
 five things to fix first**) ·
 [`memory_architecture.md`](memory_architecture.md) (the six memory tiers) ·
@@ -1426,7 +1426,7 @@ instancing already ships from `config.json` via `AgentManifest.instance_key()` (
    `tool_scope` is absent, meaning *inject everything*, which includes `code_task` and
    `run_script`. A declarative agent with shell is as dangerous as a code agent. Isolation is
    tiered by the **resolved tool surface**, not by agent class — see
-   [`agent_platform_hardening_2026-07.md`](agent_platform_hardening_2026-07.md) Part 1, which
+   `agent_platform_hardening_2026-07.md` Part 1, which
    also flips the `tool_scope` default to deny.
 5. **Does a `personal` agent get a per-user KB?** The base KB is shared by construction. But
    "my own documents this agent should always know" is the natural request after a week of
