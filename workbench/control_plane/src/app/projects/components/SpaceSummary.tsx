@@ -87,7 +87,8 @@ export default function SpaceSummary({
    * none.
    */
   const hasChildren = Array.isArray(summary.children);
-  const children = hasChildren ? summary.children : [];
+  // WS-64: a filed child is not a row. An older gateway still sends it.
+  const children = hasChildren ? summary.children.filter((child) => !child.archived) : [];
   const by = summary.by_category ?? {};
   const cats = columns({ ...summary, children, by_category: by });
   const inProgress = by.in_progress ?? 0;

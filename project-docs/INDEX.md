@@ -35,8 +35,7 @@ limitations). Do not add product specs to `docs/`.
 | `work_plan.md` | THE BOARD — §1 contract · §2 rows · §3 decisions · §4 owners · §6 gates |
 | `HANDOFF.md` | THE QUEUE (D39) — what the last session left unfinished, injected at session start by `.claude/hooks/session-handoff.mjs`. ⚠️ **Actions, never state**: `work_plan.md` §2 stays the only current-state authority, and every entry carries a **Check** that re-derives whether it is still real. Sessions delete entries whose Check passes; `/handoff` is the workflow. |
 | `STAGING_SETUP_RUNBOOK.md` | ACTIVE (2026-10-16) — the owner's steps that turn the dev box into `dev.metorite.com` (WS-38, HANDOFF H-335). Written for a browser session on the owner's PC: DNS in hPanel, a Google client, a Microsoft app, a Router key, and the setup run in the hPanel browser terminal. Part F is the agent's production side and the check. Owning spec: `specs/staging_and_daily_release.md` §5.11. |
-| `GO_LIVE_RUNBOOK.md` | HISTORICAL (2026-08-23) — the multi-tenant RLS cutover sequence for Fractalworks + customer #2. ⚠️ **Not current instructions**: it carries a dated supersession header naming four claims the tree has moved past (D49 retired Center packages, D52 removed ClickUp, PRs #61–69 all merged). Kept for the cutover design and its reasoning, which nothing else records. |
-| `../FOUNDATION_BUILDOUT_CHECKLIST.md` *(repo ROOT)* | WS-1 · WS-4 · WS-5 |
+| `work_plan.md` §2 (the board row itself) | WS-1 · WS-4 · WS-5 |
 | `specs/saas_multitenancy.md` · `specs/saas_multitenancy_implementation.md` · `specs/saas_multitenancy_handover.md` | WS-29 — hand the **handover** to the executing agent. *(All three named in full: the shorthand `(+ _implementation, _handover)` read as complete to a human and as a gap to `test_index_completeness.py`, which is the one reader that cannot ask.)* |
 | `specs/customer_console.md` | WS-31 — the central subscription/seat/AI-metering service (D32). 🆕 **§6A.15 is DSML** (2026-10-15): the Router turns DeepSeek's text tool calls into real tool calls. It is BUILT and live with no flag (#851, #1027, #1047). One known stream gap fails closed (H-323). 🆕 ⭐ **§6A.14 is CP-13** (D75, 2026-09-23): the `decide` task, TypeSafe's Jev behind `POST /v1/decide`, the Operator Console first and the app layer second. CP-13a to CP-13d are BUILT (2026-09-23 and 2026-09-24), and CP-13e to CP-13g are spec only. ⭐ **§6A is the owning record of the AI-management refactor** (D56, 2026-08-26): the artefact-by-artefact inventory for moving model, provider-key and AI-subscription administration **out of the Command Center and into the Operator Console**, reuse-first. **CP-10** is the ticket, and **CP-5** is its removal half. ⭐ **§6B is CP-11** (D57, 2026-08-26) — **the serving hop**: credits, the two different "AI API keys", and the measured fact that **nothing calls the Router**, which is what makes operator configuration inert today. **Order: CP-10 s1 → CP-11 → rest of CP-10.** `work_plan.md` §4 names this spec the single owner of *AI model & provider administration*. |
 | `specs/operator_console_money.md` | WS-50 — the Operator Console money model and UI rebuild (**D94**, 2026-10-09). One vocabulary for what we charged, the AI cost, profit and margin, in rupees. Migration 036 `credit_draw` records which lots each charge spent, so a free credit is never counted as revenue. Slice 0 BUILT. |
@@ -128,30 +127,22 @@ limitations). Do not add product specs to `docs/`.
 
 ## REFERENCE — background; may be stale, verify before relying
 
-`system_architecture.md` · `reference.md` *(both carry stale-warning
-banners)* · `project_plan.md` *(superseded for sequencing by `work_plan.md`)* ·
-`specs/core_module_map.md` *(internal engineering subsystems — NOT the product
-module map; that is `saas_multitenancy.md` §2.4b)* ·
+`system_architecture.md` *(carries a stale-warning banner)* ·
 `agents-workspaces-artifacts.md` · `specs/agent_file_and_memory_framework.md` ·
 `specs/agent_persistence_implementation.md` · `specs/agent_coding_skill.md` ·
 `specs/llm_caching_memory.md` · `specs/mcp_plugin_integration.md` *(Phase A
 shipped; B/C research)* · `specs/task_manager_hr_planning_and_memory.md` *(HR
 data layer WS-28 reads)* · `specs/multi_tenancy_leak_audit.md` *(the 14-finding
-audit feeding WS-29 MT-1i)* · `specs/multi_tenancy.md` *(#399's measured
-record — SUPERSEDED for architecture, banner at top)*
+audit feeding WS-29 MT-1i)*
 
 ## DEFERRED / PARKED / HISTORICAL — banner-marked; nothing dispatches from these
 
 | Spec | Why |
 |---|---|
 | `specs/drawio_integration.md` + `specs/drawio_diagram_svc_contract.md` | ⏸ PARKED by owner (D25.7) |
-| `specs/chat_ux.md` | Superseded by generative_ui_2 §2 (protocol reference; §12 VII–XI items open but unscheduled) |
 | `specs/live_meeting_copilot.md` · `specs/whatsapp_calls_note_taker.md` | Future scope, no board row |
-| `specs/multi_user_organization_research.md` · `specs/note_taker_research_2026-07.md` · `specs/paca_pm_research_2026-08.md` · `specs/plane_pm_research_2026-08.md` · `specs/multiplayer_prior_art_qm_2026-08.md` | Research inputs — reference-only by their own declaration |
-| `specs/agent_platform_hardening_2026-07.md` · `specs/competitive_hardening_2026-07.md` · `specs/harness_hardening_2026-07.md` · `specs/task_manager_harness_2026-07.md` · `specs/single_agent_chat_bug_audit_2026-07.md` · `specs/chat_agent_framework_review_2026-07.md` | 2026-07 audit/build records — history, superseded where D15/D25 touched them |
 | `specs/calendar_ai_review.md` · `specs/calendar_ux_review.md` | Calendar sub-docs — consult via `calendar_focus_os.md` §9 (ux_review is the sole home of the block-reminders item) |
 | `specs/calendar_events_reminders.md` | 🆕 **ACTIVE for reminders (§5, D114, 2026-10-25, board WS-66). PN-1, the web push platform, RM-1, the reminder store and API, and RM-2, the reminder loop, and RM-3, the chat tools, are BUILT and dark. PROPOSED for events** (2026-10-15, no board row). **Events, meetings and reminders on the Calendar.** It recommends one new table, `calendar_entries`, for time that is not a to-do. A task block stays on `pm_task_personal`. **A reminder has its own private store, `reminders`.** It stays open until the member closes it: Metorite checks back, reschedules to a smart slot, and parks it as Unconfirmed after 2 cycles. A tap opens the chat. It reaches the member only as a My Day card through Reach (D103), by the bell and web push. §10.1 holds PN-1 (the web push platform for iOS and Android) and RM-1 to RM-10. CE-0 is the owner's decisions for events, because that design amends D54.5 and D54.4. ⚠️ It owns events and reminders only. `calendar_focus_os.md` keeps timeboxing, `my_day_feed.md` the cards, and `proactive_reach.md` the delivery. |
-| `HANDOVER.md` | #399's branch handover — EXECUTED (merged 2026-08-09); historical |
 | `archive/` | Pre-consolidation archives |
 
 **Rule (binds all future docs):** a new spec enters this INDEX in the same PR

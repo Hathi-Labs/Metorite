@@ -12,11 +12,134 @@ the design of 2026-10-26, with the owner's answers. Each slice waits for an
 audit. OA-7g shipped live (PR #1356, `344cad4fc`). The auditor's gates and narrowings are in §4.5. Verified against code on 2026-10-26 at `1e43fc5c0`. Metorite: epic #445 in *AI Chat Interface*,
 with slices #446 (OA-1) to #455 (OA-10).
 
-OA-7a is BUILT, dark (2026-10-26, "As built, OA-7a" below). No caller reads
-its flag, and no run loads a pack.
+OA-7a is BUILT, dark (2026-10-26, "As built, OA-7a" below). Since OA-7c the
+executor reads its flag.
 
-OA-7b is BUILT, dark (2026-10-26, "As built, OA-7b" below). The guarded
-builder has no live caller. OA-7c wires it into runs.
+OA-7b is BUILT, dark (2026-10-26, "As built, OA-7b" below). OA-7c gives the
+guarded builder its live caller.
+
+OA-7c is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7c"
+below). The flag is off on each box, so no run loads a pack yet.
+
+**As built, OA-7c.** Layer (a) and the sticky state put packs in a live run.
+Three inputs choose the packs: the sticky packs of the chat, a reference in
+the member's words, and the words of a pack. The surface waits for OA-7d.
+- **Where packs act.** `executor._start_pack_turn` is the one caller of
+  `packs_on`. A pack loads only in the stream run of the orchestrator, in
+  the member's own web chat. That run needs a verified member, an org that
+  the flag names and a card channel. A shared room, the WhatsApp batch path,
+  a delegated run and a run with no chat load no pack.
+- **The read and the apply.** The read of the sticky state starts after the
+  H-236 bind, beside the load. `_tool_injection._apply_tool_packs` applies
+  the choice after `_apply_agent_md_overrides` and before
+  `_inject_agent_tools`. The run key and the record of the packs go into the
+  run binding after `bind_artifact_context`.
+- **The state.** It is a hash in tenant Redis at
+  `cc:<org>:tool-packs:<session>:<member hash>`. One field counts the member
+  turns with `HINCRBY`. Each other field is one pack, with its first load and
+  its last use.
+- **Sticky on use.** A pack becomes sticky only after one of its tools ran
+  (`tool_packs.note_used`). That write changes one field only (`HSET`), so
+  two calls at once lose no update. A sticky pack leaves when no tool of it
+  ran in the last 8 member turns.
+- **The words.** Each email word needs an email context (fix round 1, P1-B).
+  A bare "draft" or "unread" loads no pack, and "draft a reply" does. A run
+  with the email pack gets no registry MCP server. So a false match took the
+  MCP tools of a Notion or Linear draft away from the member.
+- **The cap.** A request holds at most 3 packs and 110 tools. A pack of more
+  than 35 tools never loads. Past the cap, the least recently used sticky
+  pack leaves first. The words of this turn count as the newest use.
+- **Two new packs past the cap.** The pack that replaces its owner's
+  specialist leaves first (fix round 1, P1-A). So when both email packs
+  match and one fits, `email-setup` stays, and the `email_assistant` tool
+  stays for the mail.
+- **The base count.** The apply stays before `_inject_agent_tools`, so the
+  cap reads an estimate of the base tools (`_pack_base_count`). It reads the
+  same scope and the same withheld names as the injection. With no app
+  grant it equals the count after the injection, and a fence says so. A tool
+  of a granted app is not in it. `_add_crm_facts_block` can only take tools
+  away after it. The line `executor.pack_request_tools` logs the true count,
+  and it warns past the cap.
+- **The measured base.** The orchestrator held 55 tools before its packs on
+  2026-10-27. Beside that base the 31 email tools fit, and the two email
+  packs together (114 tools) do not.
+- **The estimate errs on the safe side.** The live request of a flag-off run
+  held 52 tools (the verifier, 2026-10-27). `_add_crm_facts_block` takes CRM
+  tools away after the injection, so the cap counts 3 tools too many there.
+- **A latent hazard: `own_tool_scope`.** The apply runs before
+  `_apply_own_tool_scope`. An `own_tool_scope` on the orchestrator would
+  strip each pack tool, because no pack tool is in that list. The
+  orchestrator has none today. The pin
+  `test_the_orchestrator_has_no_own_tool_scope` fails when a change adds one.
+- **The read starts inside the main try.** The read of the sticky packs is
+  the first statement of the main try of `run_agent_stream` (fix round 2).
+  So a raise before that try starts no read, and its finally cancels a read
+  that the run did not await.
+- **The order.** Sticky packs keep their first-load order. The pack tools
+  follow the core tools. The rules of each pack follow the persona in load
+  order, before the cache break.
+- **The swap.** With the `email` pack loaded, the `email_assistant` tool
+  leaves the run. The email bullets of the persona leave by one exact swap
+  (`EMAIL_DELEGATION_BULLETS` in `orchestrator/agents.py`). A swap that does
+  not find the text loads no pack, and logs `executor.packs_refused`.
+- **The refusal.** `tool_packs.delegation_refusal` holds the rule. It acts
+  only while the run holds every pack of the owner (`tool_packs.owner_packs`),
+  so both email packs (fix round 1, P1-A). Then the streaming seam
+  `executor._run_sub_agent_streaming` refuses a hand-off to `email-assistant`
+  from the chat run. That covers each specialist tool and
+  `delegate_to_agent`. `agent_tools.call_agent` and each branch of
+  `call_agents_parallel` ask the rule first, so the refusal marks no chat.
+- **The `email` pack alone.** The run lacks the setup tools, so the hand-off
+  stays open. `call_agent` and `delegate_to_agent` reach the email assistant.
+  The rules lose the line "No email agent exists to hand a task to." In its
+  place, one routing line sends a rule, a setting, the knowledge and the
+  writing style to the email assistant (`Pack.handoff_swap`).
+- **The registry block.** The "Delegatable agents" block of the injection
+  leaves out an agent only while the run refuses the hand-off to it.
+- **Where the refusal acts today.** Beside the measured base, the two email
+  packs never load together, so the refusal does not act in a live run yet.
+  A smaller base, or OA-7e, can load both.
+- **What keeps delegation.** `call_agent_background` keeps delegation
+  (§4.3.1). A delegated run never inherits the record of its parent.
+- **The toggles.** An admin who turns a pack off for the orchestrator stops
+  that pack. The catalog text of each pack says that a run loads it only
+  where tool packs are on.
+
+The six conditions of OA-7b fix round 1:
+1. Each run builds its packs again. No `PackBuild` lives past its run.
+2. The apply runs after the tenant bind. A run with no bound tenant loads no
+   pack, and a build with no tenant is held.
+3. The run check of a pack call keys on `tool_packs.PACK_RUN_KEY`. The
+   server mints its value for each run, and never reads it from the request.
+4. A lock for each chat covers the read and the write of the email working
+   set in `_record_pack_call`.
+5. `executor._emit_to_run_or_relay` sends "Now working on <mailbox>" to the
+   run queue. A run with no queue gets the event on its relay.
+6. A held pack adds `egress.EGRESS_HOLD_NOTE_PACK`, or its cards form, after
+   its rules. Neither note names another assistant.
+
+Pack names do not join `run_tools`. The run binds a record of its packs at
+`tool_packs.PACKS_KEY` instead. The record holds the slugs and the held
+answer of each pack. It also holds the owners that the packs replace, and
+the owners that a hand-off may not reach. OA-9c reads that record to give a
+child the same packs, and `run_holds_tool` keeps its meaning.
+
+Open: "reply to" is not an email word. It also matches a WhatsApp or a
+Linear reply, and a false match removes the MCP tools of the run. A turn
+such as "reply to Anil" with no sticky pack keeps delegation, as before.
+
+The probe of an eviction runs with native sessions on. A turn runs on a
+stored call of a tool that the run no longer offers, and it finishes. The
+probe is hermetic. Open: a live model provider can refuse such a call, and
+no test shows what it does.
+
+With the flag on, the turn-kind request lists the pack tools, because it
+reads the tool names of the run. OA-7f adds the pack items.
+
+Fences: `tests/unit/test_tool_packs_choice.py`,
+`tests/unit/test_tool_packs_off.py`, and the probe in
+`tests/unit/test_native_session_persistence.py`. The fences of OA-7b key the
+run check on the server key now.
 
 **As built, OA-7b.** `_pack_tools(slug, run_ctx)` in
 `orchestrator/_tool_injection.py` builds the tools of one pack for one run.
@@ -28,7 +151,7 @@ dropped names and the skipped names. A slug that is no pack gives None.
   with `fail_closed=True`). So a Redis fault holds the pack. A run context
   that is empty, or that has no tenant or no session, is held too, because
   no mark can be read for it.
-- **The hold within a turn (STRICT by default, awaiting owner confirmation).** The first email
+- **The hold within a turn (STRICT, confirmed by the owner on 2026-10-27).** The first email
   call of a clean turn marks the chat. Each later call of that turn runs
   held. An egress tool then answers the held answer and does not run. Each
   other tool runs with `no_egress` set. With `EMAIL_HELD_CARD_SEND` on, a
@@ -497,7 +620,7 @@ The tools of OA-4 have the same scope (the "As built, OA-4" notes at the top of 
 
 **The rule.** A pack tool runs as its owner would run it in a sub-run of this chat. Three parts make the rule hold.
 
-1. **The held answer, once per run.** At run start, the loader computes the held answer for each pack. It is `_run_no_egress(owner, run_ctx)` (`orchestrator/_tool_injection.py:417-429`), or a known mark in Redis (`acb_skills/agent_tools.py:220-227`). It uses the server-side org and thread of the run. A delegation to the owner would bind the same answer now (`orchestrator/executor.py:2085-2087`). For email it is true when the chat read mail before this run (`orchestrator/_tool_injection.py:411-413`). A Redis fault, and a run with no tenant or no session, are held too. The first email call of a clean turn marks the chat. Each later call of that turn runs held (STRICT by default, awaiting owner confirmation). So the first call of a clean chat is open, and each later call and turn is held.
+1. **The held answer, once per run.** At run start, the loader computes the held answer for each pack. It is `_run_no_egress(owner, run_ctx)` (`orchestrator/_tool_injection.py:417-429`), or a known mark in Redis (`acb_skills/agent_tools.py:220-227`). It uses the server-side org and thread of the run. A delegation to the owner would bind the same answer now (`orchestrator/executor.py:2085-2087`). For email it is true when the chat read mail before this run (`orchestrator/_tool_injection.py:411-413`). A Redis fault, and a run with no tenant or no session, are held too. The first email call of a clean turn marks the chat. Each later call of that turn runs held (STRICT, confirmed by the owner on 2026-10-27). So the first call of a clean chat is open, and each later call and turn is held.
 2. **The scope of the owner, per call.** Each pack call runs in `artifact_context_scope()` with `agent_name=<owner>` and `no_egress=<held>`. This is the idiom of `_delegate_held` (`acb_skills/agent_tools.py:230-243`). The scope is the outermost wrapper, and the permission gate sits inside it.
 3. **The held set, at load.** A held pack drops each tool that `_is_egress` names (`orchestrator/_tool_injection.py:432-447`). That is the held set of the owner itself (`tests/unit/test_no_egress_tool_audit.py:61-89`).
 
@@ -588,7 +711,7 @@ Each slice merges alone, in this order.
 | OA-7g | The rule against an unasked draft. Shipped live ahead of OA-7, owner 2026-10-26 (PR #1356, `344cad4fc`, fence `tests/unit/test_no_unasked_draft.py`) | LOW |
 | OA-7a | The pack key in WS-23, the email split, the rules, the flag reader. BUILT, dark, 2026-10-26 | LOW |
 | OA-7b | The guarded pack builder, with no live caller. BUILT, dark, 2026-10-26 | HIGH |
-| OA-7c | Layer (a) and sticky state: packs in live runs | HIGH |
+| OA-7c | Layer (a) and sticky state: packs in live runs. BUILT, dark, 2026-10-27 | HIGH |
 | OA-7d | The structured `surface` field from the dock | LOW |
 | OA-7e | Layer (b): `load_skill_tools` | MEDIUM |
 | OA-7f | Layer (c): pack items in the turn-kind request | MEDIUM |
@@ -645,7 +768,8 @@ Each slice merges alone, in this order.
   - `orchestrator/agents.py`: the email bullets become one constant, so that the swap is exact
 - **Acceptance.**
   - With the flag on, an email turn holds the `email` pack and not the `email_assistant` tool.
-  - A delegation to `email-assistant` from the chat run gets the pack refusal (`evals/one_assistant_measure/pack.py:47-50`).
+  - A delegation to `email-assistant` from the chat run gets the pack refusal (`evals/one_assistant_measure/pack.py:47-50`). Since fix round 1, the refusal acts only while the run holds both `email` and `email-setup`.
+  - With `email` alone, the hand-off stays open, and the rules show the routing line for a rule, a setting, the knowledge and the writing style.
   - Rooms, WhatsApp and delegated runs see no pack.
   - The persona holds the rules in load order.
   - With native sessions on, a turn after an eviction does not fail on its stored calls.
@@ -699,6 +823,11 @@ Each slice merges alone, in this order.
   - From turn 2, each email chat sends through the held card.
   - No act shows two cards.
   - `no_write` passes on `reply_correction` turn 1, 3 of 3, on both arms (OA-7g).
+- **The refusal against OA-5 (OA-7c fix round 1).**
+  - The OA-5 pack arm held 58 email tools. It refused each hand-off to the email assistant with `pack.REFUSED`.
+  - The live pack arm holds one email pack at a time beside the base of 55 tools. It refuses a hand-off only with both packs, so this measure sees no `REFUSED` text.
+  - With `email` alone, a hand-off for a rule, a setting, the knowledge or the writing style runs. It costs one delegated run, as on the delegation arm.
+  - So the check `_no_email_delegation` (`checks.py`) must allow such a hand-off. It must still fail a hand-off of mail work.
 - **Fence.** `tests/unit/test_one_assistant_measure.py` runs the scripted arm with the real flag.
 
 OA-7h is the gate before the flag turns on for any organization.
@@ -879,9 +1008,12 @@ tokens. OA-7g shipped live (PR #1356, `344cad4fc`).
 **OA-7c. GO, narrowed. Start after OA-7a, OA-7b and OA-7g.**
 - Layer (a) takes three inputs here: sticky packs, references and words.
   The surface input waits for OA-7d.
-- Name the file that refuses a delegation to `email-assistant` when the pack
-  is on: `agent_tools.call_agent`, the streaming seam, or the specialist
-  tool.
+- Name the file that refuses a delegation to `email-assistant`:
+  `agent_tools.call_agent`, the streaming seam, or the specialist tool.
+  The refusal acts only while the run holds every pack of that owner. As
+  built: the streaming seam refuses, and `call_agent` asks the same rule
+  first. With `email` alone the hand-off stays open (fix round 1, "As
+  built, OA-7c").
 - The apply point puts pack tools in the list before `_inject_agent_tools`.
   Then `_gate_own_maf_tools` wraps each tool with no `__cc_gated__` mark. In
   a marked chat that could show two cards. Add a case: a pack send in a

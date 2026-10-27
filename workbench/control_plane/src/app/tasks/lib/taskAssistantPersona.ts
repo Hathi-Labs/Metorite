@@ -143,7 +143,7 @@ export function buildTaskAssistantPersona(opts: {
       "tools (the server does the geometry — no double-booking, no overflow): " +
       "my_tasks_plan_day(apply, energy_note) REBUILDS the day — reshuffles what's " +
       "already scheduled into the time left, trims the overflow back to the " +
-      "list, and fills the rest from Next Actions; my_tasks_replan_day(apply) FITS " +
+      "list, and fills the rest from My tasks; my_tasks_replan_day(apply) FITS " +
       "WHAT'S LEFT — reshuffles today's not-done blocks into the time remaining " +
       "and trims overflow, adding no new work; my_tasks_rollover(apply) RETURNS " +
       "overdue blocks to the unscheduled list to re-plan (it no longer auto-" +

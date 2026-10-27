@@ -69,6 +69,9 @@ async def assigned_to_me(
         "EXISTS (SELECT 1 FROM pm_task_assignees a "
         "        WHERE a.task_id = t.id AND lower(a.assignee) = :who)",
         "t.archived_at IS NULL",
+        # WS-64: a task of an archived project is history, not my work.
+        "NOT EXISTS (SELECT 1 FROM pm_projects pr "
+        "            WHERE pr.id = t.project_id AND pr.archived_at IS NOT NULL)",
     ]
     if not include_done:
         clauses.append(

@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-2 is BUILT 2026-10-24, dark, with fix round 2. OP-3 is BUILT 2026-10-24 (task #297), dark behind the OP-2 flag: the server half and the sidebar half. OP-10 is BUILT 2026-10-24, with fix rounds 1 and 2 (D-OP-16): a folder becomes a project through `POST /projects/nodes/{id}/convert`, with the tree menu entry, the chat tool `convert_folder_to_project`, eval case PO-28 and an R8 test (`test_projects_folder_convert.py`). OP-2b is BUILT 2026-10-24 and meets §4.3. OP-5 is not built. OP-4 is BUILT 2026-10-24 (task #298), dark behind the OP-2 flag, with fix round 2: the /tasks redirect keeps the NS-4b `fill.*` keys and opens capture through the `capture` ShellJob, and `chatLink` no longer rewrites /tasks. Post-merge fixes are BUILT 2026-10-25, with no migration. #128 has a stopgap: the board and My work read again on a chat write, and on focus or on a return to the tab (at most once in 15 s). #8 is fixed: the page closes the phone drawer only when it opened it. #11 is fixed: a move refreshes My work and the open panel. The feed names the app My work, and "Show all" opens `/projects?app=my-today`. "New task" falls back to `/tasks?do=capture` for a member with `feature:tasks` and no `feature:projects`. The visible "My Tasks" labels of Email, Notes and the chat cards now say My work.
+**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-2 is BUILT 2026-10-24, dark, with fix round 2. OP-3 is BUILT 2026-10-24 (task #297), dark behind the OP-2 flag: the server half and the sidebar half. OP-10 is BUILT 2026-10-24, with fix rounds 1 and 2 (D-OP-16): a folder becomes a project through `POST /projects/nodes/{id}/convert`, with the tree menu entry, the chat tool `convert_folder_to_project`, eval case PO-28 and an R8 test (`test_projects_folder_convert.py`). OP-2b is BUILT 2026-10-24 and meets §4.3. OP-5 is not built. OP-4 is BUILT 2026-10-24 (task #298), dark behind the OP-2 flag, with fix round 2: the /tasks redirect keeps the NS-4b `fill.*` keys and opens capture through the `capture` ShellJob, and `chatLink` no longer rewrites /tasks. Post-merge fixes are BUILT 2026-10-25, with no migration. #128 has a stopgap: the board and My work read again on a chat write, and on focus or on a return to the tab (at most once in 15 s). #8 is fixed: the page closes the phone drawer only when it opened it. #11 is fixed: a move refreshes My work and the open panel. The feed names the app My work, and "Show all" opens `/projects?app=my-today`. "New task" falls back to `/tasks?do=capture` for a member with `feature:tasks` and no `feature:projects`. The visible "My Tasks" labels of Email, Notes and the chat cards now say My work. The labels of the two lists are renamed (WS-64, 2026-10-27, labels only): Inbox is now "My task inbox", and "My Next Actions" is now "My tasks". The internal ids `my-inbox`, `my-next`, `INBOX` and `NEXT` stay. The same change keeps archived projects out of the summaries, My work and every picker (§9, OP-11 slice 1). OP-11 "My tasks" is PLANNED, as design only.
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -149,9 +149,9 @@ bottom sheet. Nothing uses it for filters.
 ```
 Projects
 ├── My work                     ← new section, for me only
-│   ├── Inbox            12     capture lands here
-│   ├── Today             5     my Next Actions with a date of today or before
-│   ├── Next actions     31
+│   ├── My task inbox    12     capture lands here
+│   ├── Today             5     my tasks with a date of today or before
+│   ├── My tasks         31
 │   ├── Waiting for       4
 │   ├── Someday / Maybe   9
 │   └── Done
@@ -175,15 +175,15 @@ Projects
 ### 4.2 The flow of a task
 
 1. **Capture.** A quick add in My work, or the capture tab on the phone, makes
-   a task in the personal root with no disposition. It shows in Inbox.
+   a task in the personal root with no disposition. It shows in My task inbox.
    A `#project` token or a project chip sends it straight to a project
    (S6g already built this in My Tasks).
-2. **Clarify.** The Inbox opens the Clarify flow of `ClarifyPanel.tsx`. The
+2. **Clarify.** My task inbox opens the Clarify flow of `ClarifyPanel.tsx`. The
    member picks: do it, a next action, waiting for, someday, delete, or move
    to a project.
 3. **Organise.** "Move to a project" is the one promote path of S6g, through
    `move.py`. A task can also stay in a personal folder.
-4. **Engage.** Today and Next actions show my work with context and energy.
+4. **Engage.** Today and My tasks show my work with context and energy.
    A company task keeps its own stage. My disposition is mine (D53).
 
 ### 4.3 What the member sees in a task
@@ -1223,6 +1223,47 @@ a named mutation.
    and fails on any other importer.
 2. The OP-2 and OP-4 e2e specs still pass.
 3. The visual review at 390, 768 and 1280 px.
+
+### OP-11 — My tasks · PLANNED · design only
+
+**Status: PLANNED, 2026-10-27.** This section records the owner's design.
+No slice after slice 1 is built. Slice 1 is the rename of the two lists and
+the archive filters, and it is BUILT (WS-64, 2026-10-27).
+
+**The design.** My tasks is a virtual roll-up space. It is not a project and
+it is not stored. It reads the one task store through one definition of
+"mine".
+
+1. **The tabs.** My tasks has the project tabs: Overview, Board, List, Table,
+   Calendar, Timeline, Needs attention and Reports.
+2. **The chips.** The Getting Things Done (GTD) lists are filter chips inside
+   those tabs. The chips are Today, Next, Waiting, Someday and Done.
+3. **One definition of "mine".** A task is mine when one of three rules is
+   true, and the task is inside my grants:
+   - I am an assignee of the task.
+   - The task sits in my personal tree.
+   - My overlay on the task says WAITING.
+4. **The overlay narrows and never widens.** The WAITING rule stays inside my
+   grants, as `MY_TASKS_FROM` does today.
+5. **Archived work is out.** A task of an archived project is not mine. This
+   part is BUILT in slice 1.
+
+**Slices.**
+
+| Slice | Scope | State |
+|---|---|---|
+| 1 | Rename the two lists. Keep archived projects out of the summaries, My work and the pickers. | BUILT 2026-10-27 |
+| 2 | The roll-up space in the sidebar, with the Overview tab. | PLANNED |
+| 3 | The Board, List and Table tabs over the roll-up. | PLANNED |
+| 4 | The Calendar and Timeline tabs. | PLANNED |
+| 5 | The Needs attention and Reports tabs, scoped to my tasks. | PLANNED |
+| 6 | The five GTD chips as filters in each tab. | PLANNED |
+| 7 | One server fragment for "mine". It replaces `MY_TASKS_FROM` and `assigned-to-me`. | PLANNED |
+| 8 | Retire the My work section rows. The old ids keep redirecting. | PLANNED |
+
+**Not decided.** Slices 2 to 8 need an audit before dispatch. A slice must
+not change a colour, a typeface or a control style (DESIGN_SYSTEM.md).
+
 
 ## 10. Verification
 

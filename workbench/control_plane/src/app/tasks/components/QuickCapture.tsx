@@ -272,15 +272,15 @@ function QuickCapturePanel() {
                   }
                 }}
                 autoFocus
-                placeholder="Capture to inbox… (# for a project)"
-                aria-label="Capture to inbox"
+                placeholder="Capture to my task inbox… (# for a project)"
+                aria-label="Capture to my task inbox"
                 className="flex-1 bg-transparent text-base text-foreground placeholder:text-muted-foreground focus:outline-none"
               />
               <button
                 type="button"
                 onClick={submitSingle}
                 disabled={!value.trim() || verifying}
-                aria-label="Add to inbox"
+                aria-label="Add to my task inbox"
                 className={[
                   "tech-transition inline-flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-medium",
                   value.trim() && !verifying
@@ -492,7 +492,7 @@ function QuickCapturePanel() {
                 ].join(" ")}
               >
                 <AppIcon name="ListPlus" className="h-4 w-4" />
-                Add {reviewCount} to inbox
+                Add {reviewCount} to my task inbox
               </button>
             </div>
           </div>
@@ -648,7 +648,7 @@ function CaptureWhen({
       </div>
       <p className="text-[10px] text-muted-foreground">
         {kind === "remind"
-          ? "Hidden from the inbox until this date, then it resurfaces."
+          ? "Hidden from my task inbox until this date, then it resurfaces."
           : "A deadline — shows on the Calendar and flags when it's due."}
       </p>
     </div>

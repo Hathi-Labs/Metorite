@@ -21,8 +21,8 @@ a generated design. Do not reach for it.
 must show Anthropic's identity on purpose is the other case. Both are narrow,
 and neither is product work.
 
-*Metorite note, added at adoption. A refresh from `skills/upstream/anthropics/`
-removes this block. Put it back. See `skills/upstream/README.md`.*
+*Metorite note, added at adoption. A refresh from github.com/anthropics/skills
+removes this block. Put it back.*
 
 
 # Anthropic Brand Styling

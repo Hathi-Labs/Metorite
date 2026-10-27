@@ -45,7 +45,7 @@ export const MY_WORK_VIEWS: readonly MyWorkView[] = [
     view: "today",
     label: VIEW_TITLES.today,
     icon: "CalendarDays",
-    note: "My next actions dated today or before",
+    note: "My tasks dated today or before",
   },
   { id: "my-next", view: "next", label: VIEW_TITLES.next, icon: "ListChecks", note: "Mine to do" },
   { id: "my-waiting", view: "waiting", label: VIEW_TITLES.waiting, icon: "Clock", note: "Who owes me what" },

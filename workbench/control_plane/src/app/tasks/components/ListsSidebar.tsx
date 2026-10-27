@@ -26,13 +26,13 @@ type NavRow = {
   soon?: boolean;
 };
 
-// The single flat nav. "My Next Actions" is one destination — its slices
+// The single flat nav. "My tasks" is one destination — its slices
 // (Priority / Suggestion / Context / Energy grouping, list vs board) are
 // configured IN the view (toolbar group-by + column settings), not as separate
 // sidebar entries. Priority and Engage were removed as standalone views for
 // that reason.
 const PRIMARY: NavRow[] = [
-  { view: "inbox", label: "Inbox", icon: "Inbox", showCount: true },
+  { view: "inbox", label: VIEW_TITLES.inbox, icon: "Inbox", showCount: true },
   { view: "next", label: VIEW_TITLES.next, icon: "ListChecks", showCount: true },
   { view: "waiting", label: VIEW_TITLES.waiting, icon: "Clock", showCount: true },
   // ⚠️ Calendar left this list 2026-08-24 (D54, board WS-39 S2): it is its own
@@ -114,8 +114,8 @@ export function ListsSidebar({
           noticed (S6b, 2026-09-23). Restored as they were. */}
       {PRIMARY.map((row) => {
         const count = counts[row.view];
-        // My Next Actions stays highlighted even when an in-view @context pill is
-        // active (selectedContext set) — it's still the Next Actions view.
+        // My tasks stays highlighted even when an in-view @context pill is
+        // active (selectedContext set) — it's still the My tasks view.
         const active =
           selectedView === row.view &&
           (row.view === "next" ? true : !selectedContext);

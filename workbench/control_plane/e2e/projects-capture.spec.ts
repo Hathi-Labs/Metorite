@@ -66,7 +66,7 @@ async function mock(page: Page): Promise<string[]> {
     if (/(^|\/)my\/tasks\/c1$/.test(path)) {
       return route.fulfill({ json: row("c1", { title: written[0] ?? "" }) });
     }
-    if (path.includes("auth/me")) return route.fulfill({ json: { email: "you@example.com", name: "You" } });
+    if (path.includes("auth/me")) return route.fulfill({ json: { email: "you@example.com", name: "You", features: ["tasks", "projects"] } });
     if (path.includes("my/today")) {
       return route.fulfill({ json: { today: TODAY, timezone: "UTC", stored: true, valid: true } });
     }
@@ -79,7 +79,7 @@ async function mock(page: Page): Promise<string[]> {
   return written;
 }
 
-const CAPTURE_INPUT = (page: Page) => page.getByRole("textbox", { name: "Capture to inbox" });
+const CAPTURE_INPUT = (page: Page) => page.getByRole("textbox", { name: "Capture to my task inbox" });
 
 test("at 390 the bar reads Menu, My work, Capture, Search, Ask", async ({ page }) => {
   test.setTimeout(120_000);

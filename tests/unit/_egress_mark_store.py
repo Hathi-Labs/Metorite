@@ -18,23 +18,57 @@ from typing import Any
 
 
 class MemoryMarkClient:
-    """An in-memory raw Redis client with the three calls the mark uses."""
+    """An in-memory raw Redis client with the calls the mark uses, and the
+    hash calls of the sticky packs (WS-67 OA-7c, ``acb_skills.tool_packs``).
+    Each call is appended to :attr:`calls`, so a test can count them."""
 
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
+        self.hashes: dict[str, dict[str, str]] = {}
+        self.calls: list[tuple[str, str]] = []
 
     async def setex(self, name: str, _seconds: int, value: str) -> bool:
+        self.calls.append(("setex", name))
         self.values[name] = value
         return True
 
     async def get(self, name: str) -> str | None:
+        self.calls.append(("get", name))
         return self.values.get(name)
 
     async def exists(self, *names: str) -> int:
-        return sum(1 for n in names if n in self.values)
+        self.calls.append(("exists", ",".join(names)))
+        return sum(1 for n in names if n in self.values or n in self.hashes)
 
     async def expire(self, name: str, _seconds: int) -> bool:
-        return name in self.values
+        self.calls.append(("expire", name))
+        return name in self.values or name in self.hashes
+
+    async def hincrby(self, name: str, key: str, amount: int = 1) -> int:
+        self.calls.append(("hincrby", name))
+        row = self.hashes.setdefault(name, {})
+        row[key] = str(int(row.get(key, "0")) + int(amount))
+        return int(row[key])
+
+    async def hgetall(self, name: str) -> dict[str, str]:
+        self.calls.append(("hgetall", name))
+        return dict(self.hashes.get(name, {}))
+
+    async def hset(self, name: str, key: str | None = None, value: str | None = None,
+                   mapping: dict[str, str] | None = None) -> int:
+        self.calls.append(("hset", name))
+        row = self.hashes.setdefault(name, {})
+        items = dict(mapping or {})
+        if key is not None:
+            items[key] = value if value is not None else ""
+        added = sum(1 for k in items if k not in row)
+        row.update({k: str(v) for k, v in items.items()})
+        return added
+
+    async def hdel(self, name: str, *keys: str) -> int:
+        self.calls.append(("hdel", name))
+        row = self.hashes.get(name, {})
+        return sum(1 for k in keys if row.pop(k, None) is not None)
 
 
 def install_memory_mark_store(patcher: Any) -> MemoryMarkClient | None:
@@ -67,6 +101,13 @@ def install_memory_mark_store(patcher: Any) -> MemoryMarkClient | None:
         pass
     else:
         patcher.setattr(chat_constraints, "get_tenant_redis", lambda: store)
+    # WS-67 OA-7c: the sticky packs of a chat live in the same tenant Redis.
+    try:
+        from acb_skills import tool_packs
+    except ImportError:
+        pass
+    else:
+        patcher.setattr(tool_packs, "get_tenant_redis", lambda: store)
     clear_marks()
     return client
 

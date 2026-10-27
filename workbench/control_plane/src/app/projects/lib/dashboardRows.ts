@@ -58,7 +58,11 @@ export type DashboardRow =
  * exactly that reason. So this reads defensively throughout.
  */
 export function dashboardRows(summary: NodeSummary): DashboardRow[] {
-  const children = Array.isArray(summary.children) ? summary.children : [];
+  // WS-64: a filed child is not a row. The server leaves it out now, and an
+  // older gateway still sends it.
+  const children = Array.isArray(summary.children)
+    ? summary.children.filter((child) => !child.archived)
+    : [];
   const rows: DashboardRow[] = children.map((child) => ({
     kind: "child" as const,
     child,
