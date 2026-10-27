@@ -27,7 +27,7 @@ RULE_PHRASES = {
     "silent save": "Save a short quote of their words, silently",
     "refused save": "If a save is refused, say once you could not keep it",
     "pace": "After the third answer ask once, lightly, if they want to go on",
-    "natural start": "ask you to get to know them or to ask a few questions",
+    "natural start": "asks you to get to know them or to ask a few questions",
 }
 
 
