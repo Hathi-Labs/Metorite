@@ -670,34 +670,6 @@ line — never reclaim a number by deleting the other entry.
   H-123 · H-270
 - **Added:** 2026-10-08 · off-box backup, security review of fix round 2
 
-### H-270 · The gateway's in-process Copilot CLI inherits every secret in `.env` · [AGENT] · security
-- **Check:** `grep -nE "\benv\b|environment" apps/services/orchestrator/orchestrator/copilot_agent.py`.
-  No `env` in the `CopilotClient` options means the CLI still gets the whole gateway
-  environment, and this is open. To confirm the fallback in the SDK, run
-  `grep -n "effective_env = os.environ" .venv/lib/python3.12/site-packages/copilot/client.py`.
-- **Why.** `copilot_agent.py` lines 220 to 226 build `client_options` with a token, a CLI
-  path and a log level. They pass no `env`. The SDK then sets
-  `effective_env = os.environ` (`copilot/client.py` line 1601). The CLI has a shell tool.
-  So a prompt that reaches that tool can read every secret that `acb-gateway.service`
-  loads from `/opt/acb/app/.env`. That includes the database URLs, the OAuth client
-  secrets and the provider API keys.
-- **The partial guard is OFF.** `copilot_sandbox_scope` moves some calls into a
-  container. It is empty by default (`settings.py` line 673), so every call runs in the
-  gateway process.
-- **Do.**
-  1. Give the client an env built from an allow list: `PATH`, `HOME`, the Copilot token
-     and the proxy names that the CLI needs. Give it nothing else.
-  2. Add a test that starts the client with a stub CLI. Make it fail when a secret from
-     `.env` reaches the child env.
-  3. Decide if `copilot_sandbox_scope` must be ON by default.
-- **Not in the off-box PR, on purpose.** This is its own change. H-123 moved the backup
-  key out of `.env` for this reason. WS-43 (D84) removes the Copilot SDK. Until that
-  ships, this stays open.
-- **Spec:** `specs/box_hardening.md` (WS-49), slice BH-1, owns the fix.
-- **Authority:** `apps/services/orchestrator/orchestrator/copilot_agent.py` ·
-  `copilot/client.py` in the SDK · H-123
-- **Added:** 2026-10-08 · off-box backup, security review of fix round 1
-
 ### H-269 · Make the long-header test of the data engine pass on a busy CI runner · [AGENT]
 - **Check:** run `gh run list --workflow pr-check.yml --limit 50 --json databaseId,conclusion`,
   then search the logs of the failed runs for
@@ -1938,33 +1910,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `saas_multitenancy.md` §11 MT-1j · the headers of migrations 200, 201 and 202
 - **Added:** 2026-09-06, from the WS-27 status-sets deploy · **narrowed
   2026-09-15** when the provisioning half was fixed.
-### H-101 · The weekly skills sync cannot open its PR, and has failed since 2026-08-24 · [OWNER]
-- **Check:** `gh run list --workflow=skills-upstream-sync.yml --limit 3`. A
-  `failure` on the most recent scheduled run means this is still open. The log
-  line to look for is `GitHub Actions is not permitted to create or approve
-  pull requests`.
-- **Why:** `.github/workflows/skills-upstream-sync.yml` mirrors
-  anthropics/skills into `skills/upstream/` every Monday, then opens a PR. The
-  repository setting that lets a workflow open a PR is off, so the job dies
-  after 15 seconds. It last succeeded on 2026-08-10.
-- **What it costs:** the mirror froze at SHA `f17010c9` for 24 days. Two new
-  upstream skills, `academy-guide` and `discernment-nudge`, never arrived. This
-  PR refreshed the mirror by hand to `53048666`. **A hand refresh is not a
-  fix.** The next Monday fails the same way.
-- **The fix, and it is yours:** GitHub → repository **Settings → Actions →
-  General → Workflow permissions** → turn on *Allow GitHub Actions to create
-  and approve pull requests*. Then run the workflow once with
-  `gh workflow run skills-upstream-sync.yml` and watch it to green.
-- **⚠️ A workflow that fails reports nothing.** The schedule is weekly and no
-  alert fires, so this stayed silent for three weeks. Whoever flips the setting
-  must also decide whether a sync that fails tells anybody.
-- **If you prefer not to grant that permission:** change the job to push a
-  branch and stop there. A person then opens the PR. That edit is an agent job,
-  and it needs your word first, because it changes CI.
-- **Authority:** `.github/workflows/skills-upstream-sync.yml` ·
-  `skills/upstream/README.md`
-- **Added:** 2026-09-03 · skills-adopt PR (the adoption found the dead sync)
-
 ### H-99 · ⏳ `bypassPermissions` has NO EXPIRY, and everything around it does · [OWNER]
 - **Check:** `grep defaultMode .claude/settings.local.json` on the owner's
   machine. `bypassPermissions` means this is live. **Due 2026-09-30**, with the
@@ -2376,23 +2321,6 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-31 · WS-31 H-46 review round 2 · **renumbered from H-84 on
   2026-08-31**. The router-guards slice took that id first.
 
-### H-86 · One serving prelude for all FOUR Router doors · [AGENT]
-- **Check:** `rg -c '_serving_prelude' apps/services/customer_console/customer_console/main.py`.
-  A count under 5 means fewer than four doors share it, and this entry is still
-  real. One definition plus four call sites reads 5.
-- **Why:** `main._serving_prelude` resolves the chain, loads the keys and the
-  verbs, and stands the three customer walls. H-46 built it for the image door
-  and the speak door. The transcribe route keeps its own copy of the same body,
-  and the chat route wrote the shape first. Three implementations of one gate
-  is root `CLAUDE.md` §5's defect by name, and the copy nobody edits is the one
-  that drifts.
-- 📌 **The fix shape:** move the transcribe route and the chat route onto the
-  prelude. The chat route needs one extra return, because it resolves a vision
-  chain (D-AI-2). Do it as its own slice, and not inside a feature diff.
-- **Authority:** `specs/customer_console.md` §6A.10c · root `CLAUDE.md` §5
-  · board row WS-31
-- **Added:** 2026-08-31 · WS-31 H-46 review round 2
-
 ### H-81 · Decide the TWO open resolution rules for the vision chain · [OWNER]
 - **Check:** `grep -n "def resolve_vision_chain" -A3 apps/services/customer_console/customer_console/router.py`
   and `grep -n "if not attempts:" -A7 apps/services/customer_console/customer_console/main.py`
@@ -2514,19 +2442,6 @@ line — never reclaim a number by deleting the other entry.
   · PR #115 · PR #116
 - **Added:** 2026-08-26 · STE harness session
 
-### H-19 · WS-34: theme-switch the new Organisation surface by eye · [AGENT]
-- **Check:** nothing in the repo can answer this — that is the point. Ask whether
-  anybody has switched the org theme to Fluent → Material → Graphite and LOOKED at
-  **Organisation → Seat assignments** and at a neighbouring app. Unanswered → pending.
-- **Why:** `workbench/control_plane/AGENTS.md` is explicit that the conformance
-  suite checks eight regexes and **nothing in this tree tests layout or cross-app
-  continuity**, so the theme switch is the real gate. WS-34 added two surfaces
-  (the seat roster, the four-tab strip) and moved a third (branding into a tab).
-  The suite is green and that proves no hardcoded colour, not that the surface
-  looks like the product beside it.
-- **Authority:** `specs/launch_surface.md` §10 · `workbench/control_plane/AGENTS.md`
-- **Added:** 2026-08-24 · WS-34 build session
-
 ### H-20 · WS-34 LS-11: decide the fate of seats held on plans D49 retired · [OWNER]
 - **Check:** `SELECT o.slug, sa.plan_slug, count(*) FROM seat_assignment sa
   JOIN organization o ON o.id = sa.organization_id
@@ -2541,50 +2456,6 @@ line — never reclaim a number by deleting the other entry.
   ₹0 onboarding) today, which is why 008 could land as data now.
 - **Authority:** `specs/launch_surface.md` §4.4 · LS-11 · `work_plan.md` §6
 - **Added:** 2026-08-24 · WS-34 build session
-
-### H-21 · Promoting a `preview` app to `live` is an owner decision, not a code change · [OWNER]
-- **Check:** compare `specs/launch_surface.md` §2's live table against
-  `rg -c 'launch: "live"' workbench/control_plane/src/lib/nav.ts` → **9** means
-  nothing has been promoted. ⚠️ **Corrected 2026-08-26: this said `8`.** D54 added the
-  Calendar pane on 2026-08-24 — the same day this entry was written — so the Check
-  was born wrong and would have read *"something was promoted"* on every future run.
-  The number to compare against is `nav.test.ts`'s own fence, never a remembered one. This entry never "completes"; it is the standing rule
-  for the next person who finishes an app.
-- **Why:** Sixteen panes are `preview` — routes, API and tests intact, nav entry
-  absent. Turning one on is the judgement "this is finished enough to sell", which
-  is the owner's; the registry edit plus its `nav.test.ts` line is trivial once the
-  call is made. ⚠️ **Never promote an app by granting its feature** — `preview` is
-  not a permission (§3.4), and confusing the two makes a product decision into a
-  data migration and makes `/access` lie about why a pane is missing.
-- **2026-10-02:** the owner promoted Email on 2026-10-01, and WS-17 EM-T3b
-  ships it. The live set is now **11**. `nav.test.ts` and §2 moved in the same
-  change. The `rg` count of the Check reads 11 on that tree.
-- **2026-10-11:** the owner answered for the CRM in chat: "Promote CRM to
-  live now." CRM-L2 ships it, so the live set is **12**. The `rg` count of the
-  Check reads 12 on that tree. The owner also chose to build the Integrations
-  console (WS-54 IN-1 to IN-7) only after the CRM is in use. The CRM half of
-  this entry is decided, and the entry stays for the other `preview` apps.
-- **Authority:** `specs/launch_surface.md` §2 · §3 · §11 item 4
-- **Added:** 2026-08-24 · WS-34 build session
-
-
-### H-2 · Count archived projects on prod BEFORE migration 171 applies · [OWNER]
-- **Check:** `SELECT count(*) FROM pm_projects WHERE status = 'archived';` on
-  prod. If 171 has already applied, this number is no longer recoverable this
-  way and the query becomes `WHERE archived_root_id = id` — which answers a
-  *different* question. Unanswered → still pending.
-- **Why:** ⚠️ **Time-sensitive.** 171 changes what "archived" means; the
-  pre-migration count is the only baseline that can tell us whether the lifecycle
-  sweep behaved.
-  🔴 **Corrected 2026-08-26 — this said "ordered against H-1", and H-1 no longer
-  exists** (its Check passed and the entry was deleted, correctly). Worse, its
-  premise is now false: the 2026-08-25 deploy reported *"0 applied, 186 already
-  recorded"*, so the box is current with `main` and **171 has almost certainly
-  already applied**. Treat the baseline as **probably lost**: run the count, and if
-  171 is on the box, record that it was lost rather than substituting
-  `WHERE archived_root_id = id`, which answers a different question.
-- **Authority:** `work_plan.md` §2 WS-27 row
-- **Added:** 2026-08-14 · session that built WS-27bj
 
 ### H-3 · Rotate the production SSH credentials pasted into a session · [OWNER]
 - **Check:** can the old password still authenticate? If nobody has rotated it,
@@ -2847,18 +2718,6 @@ line — never reclaim a number by deleting the other entry.
   separate: without it the gateway's agent warm-clones fail on every restart
   and account for most of the ~90 s cold start.
 - **Authority:** `work_plan.md` §6 (credentials) · `specs/engineering_practice.md`
-- **Added:** 2026-08-19 · VPS bring-up session
-
-### H-18 · Verify the first production sign-in by evidence (session → owner chain) · [AGENT]
-- **Check:** on the box, `journalctl -u acb-gateway | grep -i "owner bootstrap"`
-  plus a session row for `vjvarada@gmail.com` after a real browser sign-in at
-  `app.metorite.com` → both present means done. Needs box reach, i.e. a dated
-  D45 `ALLOW <date> deploy` grant or the owner running it.
-- **Why:** `ensure_owner_bootstrap()` fired at startup (log-verified), but no
-  one has verified the full chain — Google OAuth → NextAuth session →
-  gateway identity → owner of `default` — from a real browser. CLAUDE.md §3.8:
-  verify by evidence, never by a green job.
-- **Authority:** `work_plan.md` §2 WS-31 row (CP-2b) · CLAUDE.md §3.8
 - **Added:** 2026-08-19 · VPS bring-up session
 
 ### H-32 · Revoke the ClickUp tokens at ClickUp · [OWNER]
@@ -3276,71 +3135,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `work_plan.md` §3 **D58** · §6 (f) · `specs/customer_console.md` §4
 - **Added:** 2026-08-26 · AI architecture session
 
-### H-171 · The product's OWN AI is never metered, so it is free forever · [AGENT+OWNER]
-- **Check:** `rg -c "console_resolve|customer_console" packages/acb_llm/` → a
-  zero means `acb_llm` still reaches no meter, and this is open.
-- 🔴 **MEASURED 2026-09-23.** `acb_llm.acompletion_with_fallback` imports
-  litellm and calls `acompletion` directly. `acb_llm` holds **zero**
-  references to the Console. The only litellm callback registered anywhere is
-  `"otel"`, which is a trace and not a bill.
-- **So there are TWO AI paths and only one is metered.**
-  `POST /v1/chat/completions` reaches the Console Router behind
-  `ROUTER_SERVING_ENABLED`. Every in-product feature — the apps runtime, the
-  email automation, the assistants, the agents, **29 files** — takes the other
-  path and is billed to nobody.
-- 🔴 **What it costs.** A customer uses the AI inside the product for free, on
-  our vendor account, for ever. Turning the Router on does not change that,
-  because the Router is not on that path. It is a larger hole than the blank
-  cached-input box, and it does not close itself.
-- **The spec reads against it.** `launch_surface.md` §4.1: *"AI usage is
-  metered separately in credits"*. Not API usage. AI usage.
-- ⚠️ **It also empties the feature the owner asked for.** Per-app, per-agent
-  and per-person credit reporting all read `usage_event`. The apps and agents
-  people use write no row there, so those screens would be honest and
-  blank.
-- **Two shapes, and the choice is the owner's because it trades money against
-  latency and failure.**
-  1. **Proxy.** Send `acompletion_with_fallback` through the Console Router.
-     One path, one meter, the balance gate applies BEFORE spending. Costs a
-     Console round trip on every internal call, and D57.7 says a routed call
-     that fails, fails.
-  2. **Report.** Keep litellm serving and POST the result to
-     `/usage/record`, which exists, takes the internal token and is idempotent
-     on `(organization_id, request_id)`. No latency change and no new failure
-     mode. The balance gate cannot refuse before the spend, so a customer can
-     overrun by one call.
-- ⚠️ **Attribution is the real work in either shape.** The meter needs the
-  member, the agent and the module at 29 call sites. H-73 landed the identity
-  seam. H-44 records the same 80+ sites for tier selection, so sweep the two
-  together and not twice.
-- 📌 **THE OWNER CHOSE SHAPE 1 (proxy), 2026-09-24, and it is built.**
-  `acb_llm/routed.py` is the seam. `acompletion_with_fallback`,
-  `client.complete` and `client.complete_with_tools` all route when
-  `routing_is_on()`. The TIER travels, never a resolved model, so the
-  operator's ranked `tier_binding` chain decides. Attribution comes from
-  `get_run_context()`, so none of the call sites changed.
-- 🔴 **Two mistakes worth keeping, because both were caught by a fence and
-  not by me.** The first payload sent `{"tier": ...}` and spread the caller's
-  `**extra`. `CompletionRequest` forbids extras, and its field is called
-  `model`. So EVERY routed call would have been a 422. The suite stayed green,
-  because it stubbed the client. The second left tool-calling on the
-  direct path, on the belief that the Router had no `tools` field. It has,
-  with `tool_choice` beside it. A test that validates against the REAL
-  pydantic model caught both, and it is the fence to keep.
-- ⚠️ **STILL UNROUTED, and each for a reason.**
-  `context.acompletion_stream_text` — the Console streams through a different
-  client (`stream_completion_on_console`) with a different contract, so it is
-  its own slice. `gateway.main._prewarm_prompt_cache` — a startup warm-up with
-  no tenant and no member to bill, so routing it would invent a payer.
-- ⚠️ **It ships DARK.** `routing_is_on()` needs `ROUTER_SERVING_ENABLED` AND a
-  reachable Console. Every box that has not turned billing on behaves exactly
-  as before, and a test pins that for both the completion and the agent paths.
-- **Fences:** `tests/unit/test_internal_ai_is_routed.py` (20) ·
-  `test_console_dependency_boundary.py` gained the seventh allowed caller,
-  which is the same KIND as the `v1_compat` Router hop.
-- **Authority:** `launch_surface.md` §4.1 · D19.2 · D57.7 · CP-6 · H-73 · H-44
-- **Added:** 2026-09-23 · the H-73 session. **Renumbered from H-170 to H-171** the same day (R1): another branch minted the same next free id against a different base and merged first. An id is never reused.
-
 ### H-44 · Feature→tier binding is hardcoded at 80+ call sites · [AGENT]
 - **Check:** `rg -c '"tier-(fast|balanced|powerful|stt)"' --glob '*.py' --glob '*.ts' apps/ packages/ workbench/`
   → any file with a count means that feature's tier is still a literal, not a
@@ -3363,98 +3157,6 @@ line — never reclaim a number by deleting the other entry.
   **D60.10**) · `specs/customer_console.md` **§6A.9**
 - **Added:** 2026-08-26 · AI architecture session
 
-
-### H-46 · Build the Router's non-chat endpoints — shape DECIDED (D61.1) · [AGENT]
-- ✅ **The `transcribe` half is BUILT, 2026-08-31.**
-  `POST /v1/audio/transcriptions` serves the second of D60's six tasks, and
-  `customer_console.md` §6A.10a is now BUILT.
-- ✅ **The image half and the speak half are BUILT too, 2026-08-31.**
-  `POST /v1/images/generations` and `POST /v1/audio/speech` serve the third
-  task and the fourth, and §6A.10c is now BUILT. H-47's handler seam is what
-  is left. Keep this entry until it lands.
-- 📌 **Both media routes are BUILT to `customer_console.md` §6A.10c.** An
-  audit minted that section on 2026-08-31, and the build answered it the same
-  day. It holds twelve clauses and a fence table.
-  ⚠️ **§6A.10c seeds NO `tier_binding` row.** The choice of the vendor model
-  we resell for pictures and for speech is a commercial act, and it belongs to
-  the owner. So each route answers 400 `tier_unknown` until the owner binds
-  `tier-image` and `tier-tts`. Arming each route is ONE `tier_binding` INSERT,
-  beside the three prerequisites H-69 lists.
-  📌 **§6A.10c gave H-47 no first caller.** `aimage_generation` and `aspeech`
-  are litellm verbs already, so neither route needed a native handler.
-- ✅ **REPAIRED 2026-08-31, review round 2.** An adversarial review returned
-  REQUEST-CHANGES on one P1 and four P2s, and the same branch answered all
-  five. The P1 was a revenue defect: the image body forwarded a caller-chosen
-  `size`, and the vendor prices a picture by size. **H-87** now carries the
-  real follow-up. **H-85** carries the unmeasured-call log, and **H-86**
-  carries the one prelude for four doors. §6A.10c holds each answer.
-- ✅ **The mixed-lift-chain finding is CLOSED, 2026-08-31.** It rode here from
-  WS-31 slice 4, and the router-guards slice filtered the chain.
-  `resolve_vision_chain` now keeps only the steps that set `reads_images`, and
-  an empty result falls to `tier-vision`. `ai_metering_and_analytics.md` §3.2
-  step 3b holds the rule under a D16 marker, and §8.5 clauses 7 and 8 hold the
-  done-when.
-- **⚠️ Three review findings are still OPEN, and they ride with H-47
-  (recorded 2026-08-31):**
-  1. The Router sends `verbose_json` to EVERY transcribe model. The precedent
-     (`acb_stt/litellm_provider.py:252`) sends it to the whisper family alone.
-     A tier repointed at Deepgram or `gpt-4o-transcribe` gets a vendor 400,
-     which reads as "upstream provider error". The family branch belongs in
-     H-47's handler seam.
-  2. An unmeasured transcription writes `quantity` 0, and a silent file also
-     writes 0. Cost gets the NULL-means-unknown rule (D-AI-7) and quantity
-     does not. Decide one way when a reader of `quantity` exists.
-  3. A capability row with a wrong verb (for example `aspeech` on a
-     transcribe pair) burns the failover walk and answers 502 "upstream
-     provider error" for OUR configuration error. `_nothing_to_try` shows the
-     precise-503 shape the refusal should copy.
-- **Check:** `rg -n '@app\.post\("/v1/' apps/services/customer_console/customer_console/main.py`
-  → four routes means every endpoint D61.1 named is built. A tree missing
-  `/v1/images/generations` or `/v1/audio/speech` means this half regressed.
-- **Why:** D60's catalog can **describe** `transcribe` / `image` / `speak`; the Router has
-  **nowhere to serve them**. The fork is real and is an owner call because it is a public
-  wire-protocol commitment: **(a)** per-task OpenAI-shaped endpoints
-  (`/v1/audio/transcriptions`, `/v1/images/generations`, `/v1/audio/speech`) — every SDK
-  already speaks them, but each needs its own upload/streaming story; or **(b)** one
-  generic `/v1/invoke` taking `(task, tier, payload)` — one route, but we invent a
-  protocol nothing speaks and file upload gets awkward.
-  ✅ **DECIDED 2026-08-26 by D61.1: (a), one task at a time, starting with `transcribe`.**
-  ⚠️ **And the [OWNER] label on this entry was wrong** — the Router is an **internal seam**
-  (our gateway → our Console, on a credential we issue), not a public API, so its shape
-  commits us to nobody outside. OpenAI's shapes are also what litellm implements on *both*
-  sides, so following them costs nothing and keeps the option of exposing the Router
-  publicly later. Re-labelled [AGENT].
-  📌 **Build `transcribe` only when a caller needs it.** An endpoint nobody calls is CP-4's
-  mistake repeated — which is the entire lesson of the first-caller ticket (D57.3).
-  ✅ **Not blocking:** CP-10 slice 1 and CP-11 both proceed — chat is **96 of the 110**
-  measured call sites. This bounds the multimodal reach, not the next two tickets.
-- **Done when:** `customer_console.md` **§6A.10a** holds the transcribe
-  clauses, and **§6A.10c** holds the twelve clauses for the image endpoint and
-  the speak endpoint. Build to those two sections, and to nothing written in
-  this entry.
-  ✅ **H-78 landed on 2026-08-31, and this change removes its entry.** Clause 5 reads
-  `model_profile.vendor_per_minute_usd`, and H-78 built that column and the
-  seam that fills it. A profile with no price still leaves
-  `provider_cost_usd` NULL (D-AI-7 rule 3), because only a staff save writes
-  the profile.
-  📌 **H-47 folds in as this entry's dispatch clause.** The handler seam lands
-  WITH its first caller (D57.3). §6A.10b clause 7 says so.
-  📌 **The `video` verb is H-78's one handover, and it rides here.** A map of
-  litellm's `video_generation` mode needs a sixth verb in
-  `KNOWN_INVOCATIONS` (`catalog.py`). `check_invocation` (`catalog.py`) is the
-  refuser, and it rejects a video capability until that verb lands. This slice
-  of H-46 adds no verb. Check: `rg -n "KNOWN_INVOCATIONS" -A8
-  apps/services/customer_console/customer_console/catalog.py` — five verbs
-  means the follow-up is open.
-- **Authority:** `customer_console.md` **§6A.10a** and **§6A.10c** (the
-  done-when) ·
-  `work_plan.md` §3 **D61.1** (the decision) · D60.11(b) · `specs/customer_console.md` **§6A.10 G-1**
-- **Added:** 2026-08-26 · AI design audit · **amended 2026-08-30** with a
-  done-when section and the H-78 order · **amended 2026-08-31** with the
-  mixed-lift-chain finding from WS-31 slice 4. **Amended again 2026-08-31**
-  with H-78's `video` follow-up, after H-78 closed. **Amended a third time
-  2026-08-31** with §6A.10c, the contract for the two routes that are left.
-  **Amended a fourth time 2026-08-31**, after the build closed §6A.10c
 
 ### H-47 · Widen `acb_stt`'s provider pattern instead of inventing a handler abstraction (G-2) · [AGENT]
 - **Check:** `rg -n "class SttProvider|resolve_stt_provider" packages/acb_stt/` → present
@@ -4380,27 +4082,6 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-19 · operator console session, after the backup repair.
   Rewritten 2026-10-08, when the off-box copy was built.
 
-### H-140 · `POST /tasks/people` has no caller. Decide whether it stays · [OWNER]
-- **Check:** `rg -n "peopleWriteApi.create|createPerson" workbench/control_plane/src`
-  → no hit means nothing in the product calls it, and this is open.
-- **Why:** the owner removed the People app's "Add person" control on
-  2026-09-21. One door into the organization, and it is Organisation. The
-  endpoint behind the old form is now unreachable from the product.
-- **Kept instead of deleted, on purpose.** It is the door an importer or a
-  re-enabled form would use. A working admin endpoint with no UI is not the
-  same defect as a second door in the product. Its docstring says so, so
-  nobody "restores" the button by accident.
-- **The decision to take:** delete it with its tests and spec sections, or
-  keep it as the seam a future importer uses. Deleting is tidier. Keeping is
-  reversible. Neither is urgent, and both are the owner's call because the
-  question is product shape.
-- 📌 `PATCH /people/{id}` is untouched and still reachable. An administrator
-  still corrects a colleague's title or department from the person page.
-- **Authority:** owner directive 2026-09-21 · `people_center_app.md` §2
-- **Added:** 2026-09-21 · the one-door session · **minted as H-133 and
-  renumbered to H-140** — another branch merged H-133 first, and
-  `test_handoff_queue` caught the reuse. Ids are never reclaimed.
-
 ### H-141 · An admin cannot hide an app from a ROLE · [AGENT]
 - **Check:** `rg -n "is a system role and cannot be edited" apps/services/gateway/gateway/routes/admin/roles.py`
   → a hit means `PATCH /admin/roles/{slug}` still refuses every built-in
@@ -4578,23 +4259,6 @@ line — never reclaim a number by deleting the other entry.
   `scripts/dev_db.sh` · `tests/live/README.md`
 - **Added:** 2026-09-20 · the task lifecycle session
 
-### H-155 · WS-27bm: build the Projects chat slices S2 to S5 · [AGENT]
-- **Check:** `uv run python -c "import skill_projects.manifest as m; print(sorted(m.PLANNED))"`
-  → a non-empty list means at least one slice is still open. The value is
-  the slice each tool belongs to.
-- **Why:** S1 shipped the reads, S2 the fifteen daily writes, S2b the
-  rest of class B, S3 the seventeen guarded acts and S4 the workflows, the
-  views and the forms, and S5 the rest of the manifest (2026-09-23).
-  `PLANNED` is empty of WS-27bm names. Left: the visual review after the
-  flag flip (H-157), and the frontend-tool dispatcher (H-164). Delete
-  this entry when both are closed. `specs/projects_ai_chat.md` §10 is the
-  order and §10.2 the acceptance. `writes.py` is the shape to copy, and it
-  copied the CRM's. Move a tool out of `PLANNED` when it ships. The fence
-  refuses a tool that is both built and planned.
-- **Authority:** `specs/projects_ai_chat.md` §3.2, §3.3, §5, §10 ·
-  `skill_projects/manifest.py`
-- **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
-
 ### H-168 · The gateway refuses the LLM key on `/v1/embeddings` · [AGENT]
 - **Check:** `grep -n '"/v1/embeddings"' apps/services/gateway/gateway/main.py`
   → one hit, on the route only, and not in `PUBLIC_ROUTES`, means this is open.
@@ -4674,21 +4338,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_reports.md` §8 R2b · the R2b review and
   verification, 2026-09-24
 - **Added:** 2026-09-24 · the WS-27bn R2b session
-
-### H-187 · Make the apply reset to the ref that the caller names, not to origin/main · [AGENT]
-- **Check:** `grep -n "git fetch origin main\|git reset --hard origin/main" scripts/vps_apply.sh`
-  → a hit means this is still open.
-- **Why:** `vps_pull.sh` applies the `release` ref and passes
-  `DEPLOY_REF=<release sha>`. `vps_apply.sh` ignores `DEPLOY_REF` and resets
-  to `origin/main`. So the pull path applies the tip of main, and CI gating
-  on `release` does not hold. A commit that failed CI can reach the box
-  through the pull path when it is the tip of main.
-  - The fix must keep the skip check on the sha that the apply resets to.
-  - It must also keep the CI path on main, because CI passes no DEPLOY_REF.
-- **Authority:** `specs/deploy_delivery_path.md` · `scripts/vps_pull.sh`
-  header, "Why it polls `release` and NOT `main`"
-- **Added:** 2026-09-26 · the deploy-serialize review of PR #484. Kept out of
-  that PR on purpose, because it changes what the pull path deploys.
 
 ### H-199 · A lead who left a team cannot remove their old report through the chat · [AGENT]
 - **Check:** `grep -n "refusal=" apps/skills/skill-projects/skill_projects/guarded.py apps/skills/skill-projects/skill_projects/writes.py`
