@@ -26,8 +26,11 @@ describe("VIEW_TITLES", () => {
   });
 
   it("names every My work entry, in the same case", () => {
+    // WS-64 OP-11: My tasks draws no store view. It keeps the name of the
+    // "next" list, which the owner renamed "My tasks" on 2026-10-27.
     for (const v of MY_WORK_VIEWS) {
-      expect(v.label).toBe(VIEW_TITLES[v.view as keyof typeof VIEW_TITLES]);
+      const key = (v.view ?? "next") as keyof typeof VIEW_TITLES;
+      expect(v.label).toBe(VIEW_TITLES[key]);
     }
   });
 
@@ -46,13 +49,14 @@ describe("embedded lists", () => {
     expect(read("components/InboxView.tsx")).toMatch(/embedded \? " hidden"/);
   });
 
-  it("My work mounts both embedded, and /tasks mounts neither", () => {
+  it("My work mounts the inbox embedded, and /tasks mounts neither", () => {
     const host = fs.readFileSync(
       path.join(__dirname, "../../projects/components/MyWorkHost.tsx"),
       "utf8",
     );
     expect(host).toMatch(/<InboxView embedded \/>/);
-    expect(host).toMatch(/<ItemList embedded \/>/);
+    // WS-64 OP-11: the other lists are chips of My tasks (`MyTasksSpace`).
+    expect(host).not.toMatch(/<ItemList embedded \/>/);
     const page = read("../page.tsx");
     expect(page).not.toMatch(/embedded/);
   });

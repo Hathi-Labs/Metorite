@@ -80,6 +80,7 @@ import {
   toggleFold as toggleParentFold,
 } from "../lib/subtaskView";
 import { listColumns } from "../lib/table";
+import { ProjectPathChip } from "./ProjectPathChip";
 import { QuickAdd } from "./QuickAdd";
 import { useFlash } from "./useFlash";
 
@@ -142,6 +143,11 @@ interface Props {
    * what every surface showed before 2026-09-21.
    */
   personLabels?: ReadonlyMap<string, string>;
+  /**
+   * WS-64 OP-11 — the path of the project a row sits in. My tasks passes it,
+   * because its rows come from many projects. Absent, no row draws a chip.
+   */
+  projectPath?: (task: TaskRow) => readonly string[] | null;
 }
 
 export function TaskList({
@@ -165,6 +171,7 @@ export function TaskList({
   onExtendSelection,
   onSelect,
   personLabels,
+  projectPath,
 }: Props) {
   const [cursor, setCursor] = useState(-1);
   const [anchor, setAnchor] = useState<number | null>(null);
@@ -485,6 +492,8 @@ export function TaskList({
                     </span>
                     {/* An orphan, or a Separate subtask, names its parent. */}
                     {row.crumb ? <ParentCrumb parent={task.parent} /> : null}
+                    {/* WS-64 OP-11 — My tasks names the project of each row. */}
+                    {projectPath ? <ProjectPathChip path={projectPath(task)} /> : null}
                     </span>
                   </td>
                   {showStatus ? (

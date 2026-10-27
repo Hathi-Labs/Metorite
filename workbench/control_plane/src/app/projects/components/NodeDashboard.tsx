@@ -58,7 +58,8 @@ import {
   emptyCopy,
   rowsReconcile,
 } from "../lib/dashboardRows";
-import { REPORT_ON_THIS, nodeReportLink } from "../lib/reportEntry";
+import { REPORT_ON_THIS, myDayLink, nodeReportLink } from "../lib/reportEntry";
+import { doneThisWeek, openCount } from "../lib/myTasks";
 import {
   closableCount,
   completion,
@@ -193,6 +194,8 @@ function CompletionFigure({
  * real affordance and it belongs on the board, not disguised as a row here.
  */
 function OwnRow({ row, level }: { row: Extract<DashboardRow, { kind: "own" }>; level: NodeSummary["level"] }) {
+  // WS-64 OP-11 — on My tasks, "own" is the work in no project the member may open.
+  const mine = level === "mine";
   const noun = level === "space" || level === "folder" ? "here" : "this project";
   return (
     <div
@@ -200,7 +203,11 @@ function OwnRow({ row, level }: { row: Extract<DashboardRow, { kind: "own" }>; l
       // shape says "same list, different kind of thing" without a second
       // colour or a badge (AGENTS.md rule 5).
       className="flex w-full flex-col gap-1.5 rounded-lg border border-dashed border-border bg-card px-3 py-2.5 text-left"
-      title={`${row.tasks} tasks sit directly on ${noun}, in no subproject. The figures above count these as well.`}
+      title={
+        mine
+          ? `${row.tasks} of your tasks sit in no project you can open. The figures above count these as well.`
+          : `${row.tasks} tasks sit directly on ${noun}, in no subproject. The figures above count these as well.`
+      }
     >
       <div className="flex min-w-0 items-center gap-2">
         <Icon
@@ -208,7 +215,7 @@ function OwnRow({ row, level }: { row: Extract<DashboardRow, { kind: "own" }>; l
           className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
         />
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-muted-foreground">
-          Direct work
+          {mine ? "In no project you can open" : "Direct work"}
         </span>
         {row.overdue > 0 ? (
           <span className={`shrink-0 text-xs ${statusAccent({ category: "cancelled" }).text}`}>
@@ -276,12 +283,53 @@ function ChildRow({
   );
 }
 
+/**
+ * WS-64 OP-11 — the KPI strip of My tasks. The same six-tile grid and the same
+ * `Stat` as a node, with the figures a member asks of their own work: how
+ * much is open, what is due soon, what is late, and what got done this week.
+ * "Done this week" is the current week of Throughput with `subject=me`. With
+ * no Throughput it is a dash, never a zero.
+ */
+function MineStrip({
+  summary,
+  throughput,
+}: {
+  summary: NodeSummary;
+  throughput?: ThroughputReport | null;
+}) {
+  const days = summary.due_soon_days ?? 7;
+  const late = summary.overdue ?? 0;
+  return (
+    <div className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6" data-mine-kpis="">
+      <Stat label="Projects" value={summary.projects} title="Projects that hold a task of yours." />
+      <Stat label="Open" value={openCount(summary)} title="Your tasks that are not done or cancelled." />
+      <Stat
+        label="Due soon"
+        value={summary.due_soon}
+        title={`Open tasks of yours due in the next ${days} days.`}
+      />
+      <Stat
+        label="Overdue"
+        value={late}
+        tone={late > 0 ? statusAccent({ category: "cancelled" }).text : undefined}
+      />
+      <Stat
+        label="Done this week"
+        value={doneThisWeek(throughput) ?? undefined}
+        title="Tasks you hold that closed this week, from Throughput."
+      />
+      <Stat label="Done" value={summary.by_category?.done ?? 0} />
+    </div>
+  );
+}
+
 const LEVEL_TITLES: Record<NodeSummary["level"], string> = {
   portfolio: "Every space",
   space: "Space overview",
   folder: "Folder overview",
   project: "Project overview",
   subproject: "Subproject overview",
+  mine: "Everything assigned to me",
 };
 
 /**
@@ -424,7 +472,9 @@ export default function NodeDashboard({
             icon="FileText"
             className="shrink-0"
             aria-label={`${REPORT_ON_THIS}: ${summary.name}`}
-            onClick={() => onReport(nodeReportLink(summary.id))}
+            // WS-64 OP-11 — My tasks is no node, so its report is "My day",
+            // the report about its reader (`myDayLink`).
+            onClick={() => onReport(level === "mine" ? myDayLink() : nodeReportLink(summary.id))}
           >
             {REPORT_ON_THIS}
           </Button>
@@ -436,6 +486,9 @@ export default function NodeDashboard({
           at phone and tablet width — an orphan, which reads as a tile that
           failed to load. Six divides by both, and the `col-span` patch that
           papered over it is deleted rather than kept beside the real fix. */}
+      {level === "mine" ? (
+        <MineStrip summary={summary} throughput={throughput} />
+      ) : (
       <div className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <Stat
           label={
@@ -480,6 +533,7 @@ export default function NodeDashboard({
           }
         />
       </div>
+      )}
 
       <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-5">
         <div className="md:col-span-3">

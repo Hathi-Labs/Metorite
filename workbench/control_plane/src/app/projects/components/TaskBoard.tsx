@@ -100,6 +100,7 @@ import {
   stepTab,
   swipeDirection,
 } from "../lib/compactChrome";
+import { ProjectPathChip } from "./ProjectPathChip";
 import { TaskCardActions } from "./TaskCardActions";
 import { useFlash } from "./useFlash";
 import { useAccess } from "@/components/AccessProvider";
@@ -223,6 +224,11 @@ interface Props {
    * what every surface showed before 2026-09-21.
    */
   personLabels?: ReadonlyMap<string, string>;
+  /**
+   * WS-64 OP-11 — the path of the project a card sits in. My tasks passes it,
+   * because its cards come from many projects. Absent, no card draws a chip.
+   */
+  projectPath?: (task: TaskRow) => readonly string[] | null;
 }
 
 export function TaskBoard({
@@ -257,6 +263,7 @@ export function TaskBoard({
   onSelect,
   onDrop,
   personLabels,
+  projectPath,
 }: Props) {
   // A copied link names this organization, so it opens in the right account.
   const orgId = useAccess().access.organization?.id ?? null;
@@ -953,6 +960,12 @@ export function TaskBoard({
           </div>
         ) : null}
         <TaskMeta chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)} />
+        {/* WS-64 OP-11 — My tasks names the project of each card. */}
+        {projectPath ? (
+          <div className="mt-1 flex min-w-0">
+            <ProjectPathChip path={projectPath(task)} />
+          </div>
+        ) : null}
         {composingHere ? (
           <CardInput
             value={subtaskTitle}

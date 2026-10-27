@@ -268,7 +268,8 @@ export interface SummaryChild {
 export interface NodeSummary {
   id: string;
   name: string;
-  level: "portfolio" | "space" | "folder" | "project" | "subproject";
+  /** `mine` is the My tasks roll-up of OP-11 (`GET /projects/my/summary`). */
+  level: "portfolio" | "space" | "folder" | "project" | "subproject" | "mine";
   /** Tasks in the whole subtree, the node's own included. */
   tasks: number;
   overdue: number;
@@ -295,6 +296,18 @@ export interface NodeSummary {
     overdue: number;
     by_category: Record<string, number>;
   };
+  /**
+   * WS-64 OP-11 — the My tasks summary only (`GET /projects/my/summary`).
+   * `due_soon` is open work due in the next `due_soon_days`. `by_disposition`
+   * holds the chip counts, by the rules of `mine.fold_dispositions`. `today`
+   * is the member's date. Absent on a node summary.
+   */
+  due_soon?: number;
+  due_soon_days?: number;
+  by_disposition?: Partial<
+    Record<"inbox" | "today" | "next" | "waiting" | "someday" | "done", number>
+  >;
+  today?: string;
 }
 
 /**
@@ -1814,6 +1827,19 @@ export interface TaskRow {
    * `agent_worked.py`. The "Agent work" filter reads it.
    */
   agent_worked?: boolean | null;
+  /**
+   * WS-64 OP-11 — the CALLER's overlay, on a read with `with_overlay=1`
+   * (`mine.attach_my_overlay`). `disposition` is the effective one (D77).
+   * Absent on every other read.
+   */
+  disposition?: string | null;
+  is_triaged?: boolean;
+  is_mine?: boolean;
+  context?: string | null;
+  energy?: string | null;
+  defer_until?: string | null;
+  /** WS-64 OP-11 — the stage of the row's status, for a board of many projects. */
+  status_category?: string | null;
 }
 
 export interface StatusRow {
@@ -2092,12 +2118,21 @@ export function projectsKey(
  * is not the same thing — FastAPI would read it as a string and answer 404 for
  * a node that cannot exist. So the key is omitted rather than blanked.
  */
-function scopeQuery(nodeId?: string, weeks?: number): string {
+function scopeQuery(nodeId?: string, weeks?: number, subject?: AnalyticsSubject): string {
   const parts: string[] = [];
   if (nodeId) parts.push(`project_id=${encodeURIComponent(nodeId)}`);
   if (weeks) parts.push(`weeks=${weeks}`);
+  if (subject) parts.push(`subject=${subject}`);
   return parts.length ? `?${parts.join("&")}` : "";
 }
+
+/**
+ * WS-64 OP-11 — the one subject an Analytics read takes: `me`, the caller.
+ * A word and never an address (`report_scope.subject_me`). Stuck, Load,
+ * Throughput and Finished take it. ⚠️ The Outlook refuses it with a 422
+ * (`projects_reports.md`), so `outlook` has no subject argument.
+ */
+export type AnalyticsSubject = "me";
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api/projects/${path}`, {
@@ -2210,16 +2245,22 @@ export const projectsApi = {
    * ⚠️ These return finished numbers. Do not post-process them into other
    * numbers in the browser — see the note on `StuckReport`.
    */
-  stuck: (nodeId?: string) =>
-    call<StuckReport>(`analytics/stuck${scopeQuery(nodeId)}`),
-  load: (nodeId?: string) =>
-    call<LoadReport>(`analytics/load${scopeQuery(nodeId)}`),
-  throughput: (nodeId?: string, weeks?: number) =>
+  stuck: (nodeId?: string, subject?: AnalyticsSubject) =>
+    call<StuckReport>(`analytics/stuck${scopeQuery(nodeId, undefined, subject)}`),
+  load: (nodeId?: string, subject?: AnalyticsSubject) =>
+    call<LoadReport>(`analytics/load${scopeQuery(nodeId, undefined, subject)}`),
+  throughput: (nodeId?: string, weeks?: number, subject?: AnalyticsSubject) =>
     call<ThroughputReport>(
-      `analytics/throughput${scopeQuery(nodeId, weeks)}`
+      `analytics/throughput${scopeQuery(nodeId, weeks, subject)}`
     ),
-  finished: (nodeId?: string, weeks?: number) =>
-    call<FinishedReport>(`analytics/finished${scopeQuery(nodeId, weeks)}`),
+  finished: (nodeId?: string, weeks?: number, subject?: AnalyticsSubject) =>
+    call<FinishedReport>(`analytics/finished${scopeQuery(nodeId, weeks, subject)}`),
+  /**
+   * WS-64 OP-11 — the Overview of My tasks: the `NodeSummary` shape over
+   * mine, with `due_soon` and the chip counts in `by_disposition`. It takes
+   * no parameter: the member is the session's.
+   */
+  mySummary: () => call<NodeSummary>("my/summary"),
   outlook: (nodeId?: string) =>
     call<OutlookReport>(`analytics/outlook${scopeQuery(nodeId)}`),
   /** WS-27bm S7a. The server's default horizon (14 days) unless one is named. */
@@ -3179,6 +3220,12 @@ export const attentionApi = {
         `needs-attention?project_id=${encodeURIComponent(projectId)}&limit=${ATTENTION_LIMIT}`,
       ),
     ),
+  /**
+   * WS-64 OP-11 — the list over every project, kept to the rows that are the
+   * caller's (`mine=true`). The Needs attention lens of My tasks reads it.
+   */
+  mine: async (): Promise<AttentionPage> =>
+    attentionPage(await call<unknown>(`needs-attention?mine=true&limit=${ATTENTION_LIMIT}`)),
 };
 
 export interface NotificationRow {
