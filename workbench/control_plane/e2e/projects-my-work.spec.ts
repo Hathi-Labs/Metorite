@@ -353,3 +353,164 @@ test("the Personal section sits between My work and Spaces, with a lock", async 
   expect(names.length).toBeGreaterThan(0);
   expect(names.join("|")).not.toMatch(/move|archive|share|access/i);
 });
+
+// ── OP-11 fix round (the review of #1391) ──────────────────────────────────
+
+/** The board tab of My tasks, with its four stage columns drawn. */
+async function openBoard(page: Page) {
+  await page.goto("/projects?app=my-tasks");
+  await page.locator("[data-my-tasks-tabs]").getByRole("button", { name: "Board", exact: true }).click();
+  await expect(page.getByRole("group", { name: "Done" })).toBeVisible({ timeout: 30_000 });
+}
+
+test("item 1: the Mark-done tick on a board card writes the card's own project's Done", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const { patches } = await mock(page);
+  await openBoard(page);
+  // t-b sits in Sales, whose Done lane is "Won". The merged set holds Ops' "Done".
+  const card = page.getByRole("group", { name: "To do" }).locator("li").filter({ hasText: "Task t-b" }).first();
+  await card.hover();
+  await card.getByRole("button", { name: "Mark done" }).click();
+  await expect.poll(() => patches, { timeout: 15_000 }).toContainEqual(["t-b", { status_id: "b-done" }]);
+});
+
+test("item 2: a drop into Done on a parent with open subtasks asks first", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1920, height: 1000 });
+  const { patches } = await mock(page);
+  const rows = ROWS.map((r) => (r.id === "t-a" ? { ...r, subtasks: { total: 2, done: 0 } } : r));
+  await page.route(/\/api\/projects\/tasks\?/, (route) => route.fulfill({ json: { rows, total: rows.length } }));
+  await openBoard(page);
+  const card = page.getByRole("group", { name: "To do" }).getByText("Task t-a", { exact: true });
+  await card.dragTo(page.getByRole("group", { name: "Done" }));
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("2 subtasks are still open", { timeout: 15_000 });
+  await dialog.locator("[data-cancel]").click();
+  await expect.poll(() => patches, { timeout: 15_000 }).toContainEqual(["t-a", { status_id: "a-done" }]);
+  // The receipt carries Undo, as on a project board.
+  await expect(page.getByRole("button", { name: "Undo" }).first()).toBeVisible();
+});
+
+test("item 7: a failed write keeps its message through the reload after it", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const { reads } = await mock(page);
+  await page.route(/\/api\/projects\/tasks\/t-a$/, (route) =>
+    route.request().method() === "PATCH"
+      ? route.fulfill({ status: 500, json: { detail: "The write failed on the server." } })
+      : route.fallback(),
+  );
+  await openBoard(page);
+  const before = reads.length;
+  await page
+    .getByRole("group", { name: "To do" })
+    .getByText("Task t-a", { exact: true })
+    .dragTo(page.getByRole("group", { name: "In progress" }));
+  const alert = page.locator('[data-my-tasks-error="write"]');
+  await expect(alert).toBeVisible({ timeout: 15_000 });
+  // The reload after the write has read the list again, and the message stays.
+  await expect.poll(() => reads.length, { timeout: 15_000 }).toBeGreaterThan(before);
+  await page.waitForTimeout(500);
+  await expect(alert).toBeVisible();
+  await alert.getByRole("button", { name: "Dismiss" }).click();
+  await expect(alert).toHaveCount(0);
+});
+
+test("item 6: a failed summary read shows Retry, and the List still works", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mock(page);
+  let failing = true;
+  await page.route(/\/api\/projects\/my\/summary/, (route) =>
+    failing ? route.fulfill({ status: 500, json: { detail: "down" } }) : route.fallback(),
+  );
+  await page.goto("/projects?app=my-tasks");
+  await page.locator("[data-my-tasks-tabs]").getByRole("button", { name: "Overview", exact: true }).click();
+  await expect(space(page).getByText("My tasks could not be loaded just now.")).toBeVisible({ timeout: 30_000 });
+  await expect(space(page).getByRole("button", { name: "Retry" })).toBeVisible();
+  await page.locator("[data-my-tasks-tabs]").getByRole("button", { name: "List", exact: true }).click();
+  await expect(space(page).getByText("Task t-b", { exact: true })).toBeVisible({ timeout: 30_000 });
+  // The chips draw with no counts, and no skeleton waits for them.
+  await expect(chip(page, "waiting")).toHaveText("Waiting");
+  failing = false;
+  await page.locator("[data-my-tasks-tabs]").getByRole("button", { name: "Overview", exact: true }).click();
+  await space(page).getByRole("button", { name: "Retry" }).click();
+  await expect(page.locator("[data-mine-kpis]")).toBeVisible({ timeout: 30_000 });
+});
+
+test("item 5: a chip past 2,000 rows says so, and the first paint reads each page once", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mock(page);
+  const pages: number[] = [];
+  const boardReads: string[] = [];
+  await page.route(/\/api\/projects\/tasks\?/, (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("scope") !== "mine") {
+      boardReads.push(url.search);
+      return route.fulfill({ json: { rows: [], total: 0 } });
+    }
+    const n = Number(url.searchParams.get("page") ?? "1");
+    pages.push(n);
+    const rows = Array.from({ length: 100 }, (_, i) => row(`r-${n}-${i}`));
+    return route.fulfill({ json: { rows, total: 2500 } });
+  });
+  await page.goto("/projects?app=my-tasks&chip=done");
+  const notice = page.locator("[data-my-tasks-truncated]");
+  await expect(notice).toHaveText("Showing the first 2,000 of 2,500. Narrow the filter or use All.", {
+    timeout: 60_000,
+  });
+  // Twenty pages, each read ONCE: the mount does not read twice.
+  expect([...pages].sort((a, b) => a - b)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+  // And the page reads no project board behind My tasks.
+  expect(boardReads).toEqual([]);
+});
+
+test("item 13: Back and Forward walk the chips", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mock(page);
+  await page.goto("/projects?app=my-tasks");
+  await expect(space(page).getByText("Task t-b", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await chip(page, "waiting").click();
+  await expect(page).toHaveURL(/chip=waiting/);
+  await chip(page, "next").click();
+  await expect(page).toHaveURL(/chip=next/);
+  await page.goBack();
+  await expect(page).toHaveURL(/chip=waiting/);
+  await expect(chip(page, "waiting")).toHaveAttribute("aria-pressed", "true");
+  await expect(space(page).getByText("Task t-c", { exact: true })).toBeVisible();
+  await page.goForward();
+  await expect(chip(page, "next")).toHaveAttribute("aria-pressed", "true");
+});
+
+test("item 11: on a phone the View sheet reaches Needs attention, with no empty Saved views", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mock(page, { shell: true });
+  await page.goto("/projects?app=my-tasks");
+  await expect(space(page)).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("button", { name: "View", exact: true }).click();
+  const sheet = page.locator("[data-view-sheet]");
+  await expect(sheet).toBeVisible();
+  await expect(sheet.getByText("Saved views")).toHaveCount(0);
+  await expect(sheet.locator('[data-sheet-lens="reports"]')).toBeVisible();
+  await sheet.locator('[data-sheet-lens="attention"]').click();
+  await expect(page.locator("[data-needs-attention]")).toBeVisible({ timeout: 30_000 });
+});
+
+test("item 15: a Table status cell offers only that row's project's statuses", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await mock(page);
+  await page.goto("/projects?app=my-tasks");
+  await page.locator("[data-my-tasks-tabs]").getByRole("button", { name: "Table", exact: true }).click();
+  const tableRow = page.getByRole("row").filter({ hasText: "Task t-b" }).first();
+  await expect(tableRow).toBeVisible({ timeout: 30_000 });
+  await tableRow.getByRole("cell", { name: "Open", exact: true }).click();
+  const options = page.getByRole("option");
+  await expect(options.first()).toBeVisible({ timeout: 15_000 });
+  const names = (await options.allInnerTexts()).map((t) => t.trim());
+  expect(names).toEqual(["Later", "Open", "Working", "Won"]);
+});

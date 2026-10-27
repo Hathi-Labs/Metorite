@@ -2051,9 +2051,13 @@ function ProjectsWorkspace() {
     [filters, tableSort, boardViewId, taskParamsFor]
   );
 
+  // OP-11 fix round, item 5: My tasks draws no board of `selected`, so the
+  // page does not read one behind it (three requests at first paint). The
+  // read runs when the member leaves My tasks.
+  const onMyTasks = isMyTasksApp(app);
   useEffect(() => {
-    if (selected) void loadProject(selected);
-  }, [selected, loadProject]);
+    if (selected && !onMyTasks) void loadProject(selected);
+  }, [selected, loadProject, onMyTasks]);
 
   /**
    * Fetch the next page of tasks and add it to what is on screen.
