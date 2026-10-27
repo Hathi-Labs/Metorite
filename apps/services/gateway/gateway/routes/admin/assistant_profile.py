@@ -524,6 +524,17 @@ def _item_index(items: list[Any], item_id: Any) -> int:
     return -1
 
 
+def _reopen(out: dict[str, Any], area: Any) -> None:
+    """Open *area* again in *out* when it is ``answered``. A skip or a never
+    stays."""
+    marks = out.get("interview")
+    entry = marks.get("areas", {}).get(area) if isinstance(marks, dict) \
+        and isinstance(marks.get("areas"), dict) else None
+    if isinstance(entry, dict) and entry.get("state") == "answered":
+        out["interview"] = {**marks, "areas": {k: v for k, v in marks["areas"].items()
+                                               if k != area}}
+
+
 def undo_last_change(raw: Any, now: float) -> tuple[dict[str, Any] | None, str]:
     """The stored column with its last chat change undone, or ``(None, why)``.
 
@@ -564,13 +575,7 @@ def undo_last_change(raw: Any, now: float) -> tuple[dict[str, Any] | None, str]:
         gone = items.pop(n)
         # PZ-26: an area that this fact answered opens again, so the
         # interview asks it once more. A skip or a never stays.
-        area = gone.get("area") if isinstance(gone, dict) else None
-        marks = out.get("interview")
-        entry = marks.get("areas", {}).get(area) if isinstance(marks, dict) \
-            and isinstance(marks.get("areas"), dict) else None
-        if isinstance(entry, dict) and entry.get("state") == "answered":
-            out["interview"] = {**marks, "areas": {k: v for k, v in marks["areas"].items()
-                                                   if k != area}}
+        _reopen(out, gone.get("area") if isinstance(gone, dict) else None)
     elif op == "delete":
         prior = last.get("prior")
         if not isinstance(prior, dict) or _item_index(items, prior.get("id")) >= 0:
@@ -581,6 +586,11 @@ def undo_last_change(raw: Any, now: float) -> tuple[dict[str, Any] | None, str]:
         n = _item_index(items, last.get("id"))
         if not isinstance(prior, dict) or n < 0 or items[n] != last.get("after"):
             return None, UNDO_CHANGED
+        # A replace that gave the fact an area answered that area. The prior
+        # form does not answer it, so it opens again (fix of 2026-10-27).
+        area = items[n].get("area") if isinstance(items[n], dict) else None
+        if area and prior.get("area") != area:
+            _reopen(out, area)
         items[n] = prior
     else:
         return None, UNDO_NOTHING
@@ -936,11 +946,16 @@ async def edit_fact(
     user: UserContext = Depends(get_current_user),
     x_profile_via: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    """Change the text or the kind. 404 when the member has no such fact."""
+    """Change the text, the kind or the area. 404 when the member has no
+    such fact. A change that names an area is an interview answer, so the
+    server sets ``at`` again: the interview reads its time (fix of
+    2026-10-27). The client never sends ``at``."""
     uid = _member(user)
     via = _via(x_profile_via)
-    patch = _validate(FactPatch, body)
-    return await _patch(uid, "facts", fact_id, patch.model_dump(exclude_unset=True), via)
+    patch = _validate(FactPatch, body).model_dump(exclude_unset=True)
+    if "area" in patch:
+        patch["at"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return await _patch(uid, "facts", fact_id, patch, via)
 
 
 @me_router.delete("/me/assistant-profile/facts/{fact_id}", status_code=204,
@@ -1073,16 +1088,18 @@ async def _interview_write(uid: str, via: str | None, build: Any,
                            check: Any = None) -> dict[str, Any]:
     """Change ``interview`` in one transaction. ``build(current)`` gives the
     new value, and the row lock makes two marks of one member wait.
-    ``check(profile)`` reads the whole stored profile under the same lock,
-    and may refuse before anything is written."""
+    ``check(profile, last_change)`` reads the whole stored profile and the
+    raw last chat change under the same lock, and may refuse before anything
+    is written."""
     params_where = _LEARNING_NOT_OFF if via is not None else ""
 
     async def _run(db: Any) -> Any:
         await _learning_gate(db, uid, via)
         row = (await db.execute(_sql(_READ_LOCKED_SQL), {"uid": uid})).first()
-        profile = stored_profile(row[0] if row is not None else None)
+        raw = _as_dict(row[0]) if row is not None else None
+        profile = stored_profile(raw)
         if check is not None:
-            check(profile)
+            check(profile, raw.get(LAST_CHANGE) if isinstance(raw, dict) else None)
         current = profile.get("interview")
         new = build(current)
         stored = await _upsert(
@@ -1132,8 +1149,9 @@ async def mark_assistant_interview(
     time. ``asked`` also sets ``last_asked_at``, and the first mark sets
     ``started_at``. A chat mark is a 409 while ``learning`` is off.
 
-    A chat mark ``answered`` needs a saved answer for the area
-    (``area_has_answer``). Without one it is a 422 with the detail
+    A chat mark ``answered`` needs a FRESH saved answer for the area
+    (``area_has_answer``): one no older than the area's entry, the start,
+    the sitting and the last reset. Without one it is a 422 with the detail
     ``{"reason": "no_answer", "message": ...}``, so a refused save never
     closes an area (incident 2026-10-27). Settings is not limited."""
     uid = _member(user)
@@ -1141,8 +1159,9 @@ async def mark_assistant_interview(
     _area(area)
     mark = _validate(InterviewMark, body)
 
-    def _check(profile: dict[str, Any]) -> None:
-        if via is not None and mark.state == "answered" and not area_has_answer(profile, area):
+    def _check(profile: dict[str, Any], last_change: Any) -> None:
+        if (via is not None and mark.state == "answered"
+                and not area_has_answer(profile, area, last_change)):
             raise HTTPException(status_code=422,
                                 detail={"reason": NO_ANSWER, "message": NO_ANSWER_TEXT})
 
@@ -1166,7 +1185,8 @@ async def reset_assistant_interview_area(
     x_profile_via: str | None = Header(default=None),
 ) -> Response:
     """The area is open again. The facts stay. A Settings act: a chat call
-    (``X-Profile-Via``) is a 422."""
+    (``X-Profile-Via``) is a 422. ``reset_at`` records the time, so a fact
+    from before the reset never answers the area again."""
     uid = _member(user)
     if _via(x_profile_via) is not None:
         raise _refuse(INTERVIEW_RESET_IN_SETTINGS)
@@ -1175,6 +1195,7 @@ async def reset_assistant_interview_area(
     def _build(cur: Any) -> dict[str, Any]:
         cur = dict(cur or {})
         cur["areas"] = {k: v for k, v in (cur.get("areas") or {}).items() if k != area}
+        cur["reset_at"] = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
         return cur
 
     await _interview_write(uid, None, _build)

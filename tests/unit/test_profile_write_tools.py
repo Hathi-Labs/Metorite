@@ -74,6 +74,10 @@ WORDS = ("I like tea. I like green tea. I work from Mumbai now. Sam is "
 # ── The fake gateway: one profile, every verb ──────────────────────────────
 
 
+def _now_iso() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 class _Gateway:
     def __init__(self) -> None:
         self.requests: list[httpx.Request] = []
@@ -135,6 +139,8 @@ class _Gateway:
                     "reason": ap.NO_ANSWER, "message": ap.NO_ANSWER_TEXT}})
             if area and state:
                 self.areas[area] = state
+                self.profile["interview"] = ap.apply_interview_mark(
+                    self.profile.get("interview"), area, state, datetime.now(UTC))
             return httpx.Response(200, json={"started_at": "2026-10-25T10:00:00Z"})
         if request.method == "POST" and path == "undo":
             if self.undo_answer[0] >= 400:
@@ -148,6 +154,7 @@ class _Gateway:
             item = {"id": self._new("f" if kind == "facts" else "a"), **body}
             if kind == "facts":
                 item["source"] = request.headers.get("X-Profile-Via", "settings")
+                item["at"] = _now_iso()
             items.append(item)
             return httpx.Response(201, json=item)
         hit = next((i for i in items if i["id"] == item_id), None)
@@ -155,6 +162,8 @@ class _Gateway:
             return httpx.Response(404, json={"detail": "Not found"})
         if request.method == "PATCH":
             hit.update(body)
+            if kind == "facts" and "area" in body:
+                hit["at"] = _now_iso()  # the gateway stamps an interview answer
             return httpx.Response(200, json=hit)
         items.remove(hit)
         return httpx.Response(204)
@@ -1848,7 +1857,9 @@ class TestInterviewTool:
     def test_a_mark_posts_the_state_with_the_chat_header(self, own_chat, state) -> None:
         # A saved answer, so the gateway takes the mark `answered` too.
         own_chat.profile["facts"].append(
-            {"id": "f0009", "text": "ship it", "kind": "work", "area": "goals"})
+            {"id": "f0009", "text": "ship it", "kind": "work", "area": "goals",
+             "at": "2999-01-01T00:00:00Z"})
+        own_chat.profile["interview"] = {"started_at": "2026-10-01T00:00:00Z"}
         out = _run(pt.profile_interview(state, "goals"))
         assert _status_of(out) == {"v": 1, "status": "saved"}
         assert own_chat.interview_calls == [("POST", "goals", {"state": state})]
@@ -1942,7 +1953,9 @@ ANSWER = ("This quarter I want to grow our revenue by twenty percent, hire two "
 
 class TestInterviewIncident:
     def test_the_transcript_of_the_incident(self, own_chat) -> None:
-        own_chat.areas["goals"] = "asked"
+        # The model asked the goals question (the gateway stamps the entry).
+        _run(pt.profile_interview("asked", "goals"))
+        own_chat.interview_calls.clear()
         with ap.member_typed(ANSWER):
             # 1. The model saves a paraphrase: refused, nothing written.
             out = _run(pt.profile_remember(
@@ -1983,8 +1996,10 @@ class TestInterviewIncident:
             out = _run(pt.profile_remember("I like tea", "preference", area="goals"))
         assert _refused(out, "not_your_words") == pt.NO_TYPED_TEXT
         assert "Do not call again" in pt.NO_TYPED_TEXT
+        assert "Do not ask the member to retype" not in pt.NO_TYPED_TEXT
 
     def test_a_replace_sends_its_area(self, own_chat, monkeypatch) -> None:
+        own_chat.profile["interview"] = {"started_at": "2026-10-01T00:00:00Z"}
         monkeypatch.setattr(pt, "_member_words", lambda: "I work from Mumbai now")
         _run(pt.profile_remember("I work from Mumbai now", "work",
                                  replaces="f0001", area="role"))
@@ -2002,7 +2017,12 @@ class TestInterviewIncident:
     def test_the_persona_and_the_docs_ask_for_a_copy_and_a_mark_after_saved(self) -> None:
         line = _orchestrator_module()._PROFILE_SWAP[1]
         assert "Save a short phrase copied from the member's message" in line
-        assert "Never ask the member to type it again." in line
+        assert "do not ask them to type it again" in line
+        # Nit 2 of the review: a turn with no typed words is the one case
+        # where the assistant asks the member, once, to say it again.
+        assert "Only when\n  the refusal says the member typed no words" in line
+        assert "ask them\nto say it again" not in pt.NO_TYPED_TEXT
+        assert "ask them to say it again in a new message" in pt.NO_TYPED_TEXT
         assert "Mark an area answered\n  only after a save of it says Saved." in line
         assert "Do not rephrase" in (pt.profile_remember.__doc__ or "")
         assert "only after the save" in (pt.profile_interview.__doc__ or "")

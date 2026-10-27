@@ -344,7 +344,9 @@ NOT_YOUR_WORDS_TEXT = f"{NOT_YOUR_WORDS}\n{RETRY_WITH_COPY}"
 #: says it again in a new message.
 NO_TYPED_TEXT = ("I could not save that. Say it again in a new message and I will "
                  "save it.\nFor the assistant: the member typed no words in this "
-                 "message that a save can use. Do not call again in this turn.")
+                 "message that a save can use. Do not call again in this turn. Tell "
+                 "the member once, in plain words, that it is not saved, and ask them "
+                 "to say it again in a new message.")
 
 #: The start of the machine line of a change: the FIRST line of its result.
 UNDO_PREFIX = "undo: "
@@ -670,7 +672,9 @@ async def profile_remember(text: str, kind: str, replaces: str = "",
     member's message of this turn: a clause, not a summary. Do not rephrase
     it, change the person or add words, or it is refused. When it is
     refused, call once more with a shorter exact copy. When it is refused
-    again, tell the member that it is not saved. It saves at once. A fact
+    again, tell the member that it is not saved, and do not ask them to type
+    it again. Only a refusal that says the member typed no words lets you
+    ask them once to say it again. It saves at once. A fact
     with an address, a link or a long number, a sensitive fact, and a fact
     that replaces a saved one ask the member to approve it first, once.
     Tell the member what you saved.
