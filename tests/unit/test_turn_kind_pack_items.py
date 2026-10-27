@@ -296,15 +296,70 @@ async def test_a_load_by_the_turn_kind_obeys_the_caps(store, monkeypatch) -> Non
     assert both.record.holds() == ("email",)
 
 
-async def test_a_load_by_the_turn_kind_refuses_beside_an_mcp_tool(store, monkeypatch) -> None:
-    """A mail pack never joins a run that holds an MCP tool. Mutation: skip
-    the MCP rule in the early path → the pack loads → red."""
+async def test_a_load_by_the_turn_kind_refuses_beside_an_mcp_server(store, monkeypatch) -> None:
+    """MAF keeps an MCP server in ``agent.mcp_tools`` and adds its functions
+    after ``before_run``, so the live list cannot show it. A mail pack never
+    joins such a run. Mutation: drop ``extra_live=mcp`` in ``_build_early``
+    (or the ``mcp_tools`` read) → the pack loads → red. A marked loader tool
+    in the pool is refused too."""
+    from agent_framework import MCPStreamableHTTPTool
+
     _stub_email(monkeypatch)
-    monkeypatch.setattr(tp, "_beside_mcp", lambda owner, live: owner == EA)
+    server = MCPStreamableHTTPTool(name="registry", url="http://127.0.0.1:9/mcp")
     loader = _loader(_record())
     loader.set_early(["email"])
-    context = await _before_run(loader, _dummies(10))
+    context = _Context()
+    agent = types.SimpleNamespace(default_options={"tools": _dummies(10)}, mcp_tools=[server])
+    with _in_run(loader):
+        await loader.load_early(agent, context)
     assert [t for t in context.tools if t.name in EMAIL_TOOLS] == [] and context.instructions == []
+    assert loader.record.holds() == ()
+    # Non-vacuity: the same run with no server loads the pack.
+    free = _loader(_record())
+    free.set_early(["email"])
+    plain = _Context()
+    with _in_run(free):
+        await free.load_early(types.SimpleNamespace(default_options={"tools": _dummies(10)}), plain)
+    assert {t.name for t in plain.tools} >= set(EMAIL_TOOLS)
+
+
+async def test_the_early_build_carries_the_run_key_the_server_minted(store, monkeypatch) -> None:
+    """The build context holds the key of the loader even when the frame
+    holds none. Mutation: drop ``PACK_RUN_KEY`` from the early context → the
+    builder sees no key → red."""
+    _stub_email(monkeypatch)
+    seen: list[Any] = []
+    real = ti._build_pack_for_load
+
+    async def spy(slug: str, ctx: Any, holds: Any) -> Any:
+        seen.append(ctx.get(tp.PACK_RUN_KEY))
+        return await real(slug, ctx, holds)
+
+    loader = _loader(_record(), build=spy)
+    loader.set_early(["email"])
+    with _tenant(), _bound(**_run_ctx()):
+        await loader.load_early(_agent(_dummies(10)), _Context())
+    assert seen == ["key-oa7e"]
+
+
+def test_maf_keeps_normalize_tools_and_a_missing_one_loads_nothing(monkeypatch) -> None:
+    """``_agent_shape`` imports the private ``agent_framework._tools.normalize_tools``.
+    Mutation: MAF renames it → the pin fails. Mutation: pass raw tools when
+    the import fails → the second assertion fails."""
+    import builtins
+
+    from agent_framework._tools import normalize_tools
+
+    assert callable(normalize_tools)
+    real = builtins.__import__
+
+    def fake(name: str, *a: Any, **k: Any) -> Any:
+        if name == "agent_framework._tools":
+            raise ImportError("gone")
+        return real(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", fake)
+    assert tp._agent_shape(_dummies(2)) == ()
 
 
 async def test_the_loader_with_no_asked_pack_adds_only_the_load_tool(store) -> None:

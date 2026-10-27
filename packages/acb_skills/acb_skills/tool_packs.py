@@ -1125,11 +1125,13 @@ def _refused(slug: str, reason: str, text: str) -> str:
 
 def _agent_shape(tools: Sequence[Any]) -> tuple[Any, ...]:
     """*tools* as MAF ``FunctionTool`` objects, the shape of the agent's own
-    list. With no MAF the tools come back as they are."""
+    list. When MAF has no ``normalize_tools``, nothing comes back, so the
+    pack does not load (fail closed)."""
     try:
         from agent_framework._tools import normalize_tools
-    except ImportError:  # pragma: no cover - MAF ships with the platform
-        return tuple(tools)
+    except ImportError:
+        _log.warning("tool_packs.load_refused", reason="normalize_tools")
+        return ()
     return tuple(normalize_tools(list(tools)))
 
 
@@ -1187,6 +1189,7 @@ class LoadSkillTools(FunctionMiddleware):
 
     async def _admit(
         self, found: Pack, ctx: dict[str, Any], live: Sequence[Any], run: PackRun,
+        extra_live: Sequence[Any] = (),
     ) -> str | tuple[tuple[Any, ...], bool, str, list[str]]:
         """The guards and the build of ONE pack: steps 4 to 6 of the class
         text, for a load by the model (:meth:`_load`) and for a load by layer
@@ -1197,7 +1200,7 @@ class LoadSkillTools(FunctionMiddleware):
         slug = found.slug
         if len(run.holds()) >= MAX_PACKS or _tool_count(slug) > MAX_PACK_TOOLS:
             return _refused(slug, "cap_packs", _past_cap(found))
-        if _beside_mcp(found.owner, live):
+        if _beside_mcp(found.owner, [*live, *extra_live]):
             return _refused(slug, "beside_mcp", LOAD_BESIDE_MCP.format(
                 label=_label(slug), owner=found.owner))
         from acb_skills.tool_guard import tool_name
@@ -1257,18 +1260,25 @@ class LoadSkillTools(FunctionMiddleware):
         pool = opts.get("tools") if isinstance(opts, dict) else None
         live: list[Any] = [
             *(pool if isinstance(pool, list) else []), *list(getattr(context, "tools", None) or [])]
+        # MAF keeps the tools of an MCP server in ``agent.mcp_tools`` and adds
+        # their functions after ``before_run``, so the live list cannot show
+        # them. They count for the MCP rule only (OA-7f fix round 1).
+        mcp = list(getattr(agent, "mcp_tools", None) or [])
         ctx = {**dict(_run_context()), PACK_RUN_KEY: self.run_key}
         for slug in self.early:
             found = pack(slug)
             if found is None or slug in run.holds():
                 continue
-            admitted = await self._admit(found, ctx, live, run)
+            admitted = await self._admit(found, ctx, live, run, extra_live=mcp)
             if isinstance(admitted, str):
                 continue
             tools, held, rules, closing = admitted
+            shaped = _agent_shape(tools)
+            if not shaped:
+                continue
             run.add(slug, held)
             live.extend(tools)
-            tools = _agent_shape(tools)
+            tools = shaped
             text = rules + ("\n\n" + " ".join(closing) if closing else "")
             out.append((tools, text))
             _log.info(
