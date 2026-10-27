@@ -54,11 +54,30 @@ from evals.routing.harness import (
     text_turn,
     tool_turn,
 )
+from tests.unit._egress_mark_store import install_memory_mark_store
 
 HERE = Path(__file__).resolve().parent
 EXIT_PASS, EXIT_FAIL, EXIT_NO_GO = 0, 1, 2
 ARMS = ("delegation", "pack")
 EA = pack.EA
+#: The settings of production that the measure sets in its own process (OA-7h).
+#: They change how the run behaves, so both arms get them. The measure never
+#: writes them on a box.
+PRODUCTION: dict[str, Any] = {
+    "email_held_card_send": True,
+    "ai_tier_routing": "orchestrator",
+    "ai_reasoning_off_agents": "orchestrator",
+    "maf_native_sessions": True,
+    "narrowing_agents": "email-assistant",
+}
+
+
+def pack_flag() -> dict[str, Any]:
+    """The real flag of the ``pack`` arm: ``TOOL_PACKS`` and ``TOOL_PACKS_ORGS``.
+
+    ``email`` alone, for the eval org only. The ``email-setup`` pack does not
+    fit beside ``email`` at the real base of the run (H-417)."""
+    return {"tool_packs": "email", "tool_packs_orgs": ds.ORG}
 EVAL_ENV = Path.home() / ".metorite" / "secrets" / "eval.env"
 RATE_CARD = json.loads((HERE / "rate_card.json").read_text(encoding="utf-8"))
 
@@ -105,11 +124,28 @@ def call_row(c: ModelCall) -> dict[str, Any]:
 # ── the scripted models ──────────────────────────────────────────────────────
 
 
+def pack_tool_names() -> frozenset[str]:
+    """The tools of the real ``email`` pack, from its skill family."""
+    from acb_skills.skill_families import SKILL_FAMILIES
+
+    return frozenset(SKILL_FAMILIES["email"]["tools"])
+
+
 def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:
-    """The known-good models of *sc* on *arm*, from the plan of each turn."""
+    """The known-good models of *sc* on *arm*, from the plan of each turn.
+
+    On the ``pack`` arm a call of the ``email`` pack runs in the orchestrator's
+    own run. A call that the pack does not hold (a rule, a setting) goes to the
+    email assistant by ``call_agent``, as the rules of the pack say (H-417).
+    The model loads the pack first when the member's words do not (layer (b)).
+    """
+    from acb_skills import tool_packs
+
+    in_pack = pack_tool_names()
     orch: list[Any] = []
     email: list[Any] = []
     n = 0
+    used = False
     for turn in sc.turns:
         plan = turn.plan
         if arm == "delegation" and plan.calls:
@@ -120,14 +156,85 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:
                 email.append(tool_turn(name, args, call_id=f"call_{n}"))
             email.append(text_turn(plan.answer))
         elif arm == "pack":
-            for name, args in plan.calls:
+            mine = [c for c in plan.calls if c[0] in in_pack]
+            setup = [c for c in plan.calls if c[0] not in in_pack]
+            if mine and not (used or tool_packs.matched_layer("email", turn.words)):
+                n += 1
+                orch.append(tool_turn(tool_packs.LOAD_TOOL, {"pack": "email"}, call_id=f"call_{n}"))
+            for name, args in mine:
                 n += 1
                 orch.append(tool_turn(name, args, call_id=f"call_{n}"))
+            if setup:
+                n += 1
+                orch.append(tool_turn("call_agent", {"agent_name": EA, "message": turn.words},
+                                      call_id=f"call_{n}"))
+                for name, args in setup:
+                    n += 1
+                    email.append(tool_turn(name, args, call_id=f"call_{n}"))
+                email.append(text_turn(plan.answer))
+            used = used or bool(mine)
         orch.append(text_turn(plan.answer))
     models = {ORCHESTRATOR: ReplyModel(orch)}
     if email:
         models[EA] = ReplyModel(email)
     return models
+
+
+# ── the log tap ──────────────────────────────────────────────────────────────
+
+#: The events of the pack code that the report reads (OA-7h duties 4 and 5):
+#: the turn-kind request with its time, and each load of a pack, with the
+#: number of model calls that came before it in the turn.
+WATCHED = ("ai_route.turn_kind", "tool_packs.", "executor.pack")
+_DROPPED_FIELDS = frozenset({"run_id", "thread_id", "user", "member_verified", "instance", "app",
+                             "agent", "source_id"})
+
+
+class _TappedLog:
+    """A logger that passes each call on, and keeps the watched events."""
+
+    def __init__(self, log: Any, tap: LogTap) -> None:
+        self._log = log
+        self._tap = tap
+
+    def __getattr__(self, level: str) -> Any:
+        method = getattr(self._log, level)
+        if level not in ("debug", "info", "warning", "error", "exception"):
+            return method
+
+        def call(event: Any = None, *args: Any, **fields: Any) -> Any:
+            self._tap.note(level, event, fields)
+            return method(event, *args, **fields)
+
+        return call
+
+
+class LogTap:
+    """Keeps the watched log events of the pack code, in order (OA-7h).
+
+    The code under test logs them already. The tap reads, and changes nothing:
+    the log call goes on to the real logger."""
+
+    def __init__(self, calls: list[ModelCall]) -> None:
+        self.calls = calls
+        self.events: list[dict[str, Any]] = []
+
+    def note(self, level: str, event: Any, fields: dict[str, Any]) -> None:
+        name = str(event or "")
+        if not name.startswith(WATCHED):
+            return
+        keep = {k: (v if isinstance(v, (int, float, bool, str, type(None))) else str(v))
+                for k, v in fields.items() if k not in _DROPPED_FIELDS}
+        self.events.append({"event": name, "level": level, "calls_before": len(self.calls), **keep})
+
+    def install(self, mp: Any) -> None:
+        """Wrap the logger of each module that logs a watched event."""
+        from acb_skills import tool_packs
+        from orchestrator import _tool_injection as ti
+        from orchestrator import executor
+
+        for module in (executor, ti, tool_packs):
+            mp.setattr(module, "_log", _TappedLog(module._log, self))
 
 
 # ── the cards ────────────────────────────────────────────────────────────────
@@ -211,7 +318,6 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
     live = router is not None
     rows: list[dict[str, Any]] = []
     with RoutingHarness(live=live, real_specialists=live) as harness:
-        harness._mp.setattr(get_settings(), "email_held_card_send", True, raising=False)
         if live:
             _use_router(harness, router)
         harness.mailboxes = mb.BOXES
@@ -219,7 +325,24 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
         harness._modules[EA] = module
         gateway = mb.Mailbox(sc.mails)
         mb.install(harness._mp, module, gateway)
-        state = pack.install(harness, module) if arm == "pack" else None
+        # The real pack builds its tools from its own copy of the email module
+        # (``_pack_owner_module``), so that copy gets the fake gateway too.
+        from orchestrator import _tool_injection as ti
+
+        owner_module = ti._pack_owner_module(EA)
+        if owner_module is not None and owner_module is not module:
+            mb.install(harness._mp, owner_module, gateway)
+        settings = get_settings()
+        for name, value in {**PRODUCTION, **(pack_flag() if arm == "pack" else {})}.items():
+            harness._mp.setattr(settings, name, value, raising=False)
+        # OA-7h duty 1: the mark of a chat that read mail lives in Redis. The
+        # harness installs the in-memory store, and the measure installs it
+        # again to keep the handle. Without a store the mark read fails
+        # closed, and every turn reads as held.
+        store = install_memory_mark_store(harness._mp)
+        assert store is not None, "the in-memory mark store did not install"
+        tap = LogTap(harness.model_calls)
+        tap.install(harness._mp)
         if not live:
             harness.models = models if models is not None else scripted_models(sc, arm)
         member = Member()
@@ -227,7 +350,8 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
         thread: str | None = None
         for index, turn in enumerate(sc.turns):
             marks = (len(gateway.calls), len(member.cards), len(harness.model_calls),
-                     len(state.refused) if state else 0, len(harness.sent), len(harness.passed))
+                     len(tap.events), len(harness.sent), len(harness.passed),
+                     len(store.calls))
             record = asyncio.run(harness.drive(
                 turn.words, sc.page, member=ds.MEMBER, org=ds.ORG, tier=tier,
                 on_card=member, timeout=timeout, thread_id=thread,
@@ -237,12 +361,14 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
             obs = ck.Observation(
                 arm=arm, answer=record.answer, email_calls=ck.email_calls_of(record.events),
                 tasks=ck.tasks_of(record.tool_calls),
-                refused=list(state.refused[marks[3]:]) if state else [],
+                refused=[],
                 cards=member.cards[marks[1]:], gateway=gateway.calls[marks[0]:],
-                error=record.error,
+                error=record.error, turn=index + 1,
             )
             result = ck.check_turn(turn, obs)
             calls = [call_row(c) for c in harness.model_calls[marks[2]:]]
+            events = [{**e, "calls_before": e["calls_before"] - marks[2]}
+                      for e in tap.events[marks[3]:]]
             row = {
                 "scenario": sc.id, "turn": index + 1, "arm": arm, "repeat": repeat,
                 "words": turn.words, "checks": result, "passed": ck.passed(result),
@@ -253,6 +379,9 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 "model_calls": calls,
                 "sent": harness.sent[marks[4]:],
                 "router_sends": len(harness.passed) - marks[5],
+                "handoffs": [ck.handoff_kind(t) for t in obs.tasks],
+                "pack_events": events,
+                "mark_writes": sum(1 for kind, _ in store.calls[marks[6]:] if kind == "setex"),
             }
             rows.append(row)
             if on_turn is not None:
@@ -327,6 +456,28 @@ def turn_totals(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _turn_kind_ms(row: dict[str, Any]) -> float | None:
+    """The time of the turn-kind request in *row*, from its log event."""
+    for e in row.get("pack_events") or []:
+        if e["event"] == "ai_route.turn_kind" and isinstance(e.get("latency_ms"), (int, float)):
+            return float(e["latency_ms"])
+    return None
+
+
+def _asked_pack_items(row: dict[str, Any]) -> bool:
+    """True when the turn-kind request of *row* carried pack items (OA-7f)."""
+    return any(e["event"] == "executor.packs_turn_kind" and e.get("asked")
+               for e in row.get("pack_events") or [])
+
+
+def _packs_before_first_call(row: dict[str, Any]) -> bool:
+    """True when a pack loaded before the first model call of the turn (OA-7h
+    duty 5): the load of layer (a) or (c) logs with no model call before it."""
+    return any(e["event"] in ("executor.packs_loaded", "tool_packs.loaded",
+                              "executor.packs_turn_kind") and e["calls_before"] == 0
+               for e in row.get("pack_events") or [])
+
+
 def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
     by_arm: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in rows:
@@ -344,6 +495,12 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
         for r in rs:
             by_scenario[r["scenario"]][1] += 1
             by_scenario[r["scenario"]][0] += int(r["passed"])
+        handoffs = [(r, t) for r, t in zip(rs, totals, strict=True) if r.get("handoffs")]
+        setup_turns = [(r, t) for r, t in handoffs if "setup" in r["handoffs"]
+                       and "mail" not in r["handoffs"]]
+        with_items = [v for r in rs if _asked_pack_items(r) and (v := _turn_kind_ms(r)) is not None]
+        without_items = [v for r in rs if not _asked_pack_items(r)
+                         and (v := _turn_kind_ms(r)) is not None]
         first = [r["first_text_s"] for r in rs if r["first_text_s"] is not None]
         total = [r["total_s"] for r in rs if r["total_s"] is not None]
         out[arm] = {
@@ -363,6 +520,25 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "calls_email_per_turn": _mean([t["calls_email"] for t in totals]),
             "prompt_per_turn": _mean([t["prompt"] for t in totals]),
             "cached_per_turn": _mean([t["cached"] for t in totals]),
+            # The prompt-cache share (OA-7h duty 6): cache-read tokens over
+            # input tokens. A pack load changes the tool list, and the tool
+            # list is the start of the cached prefix.
+            "cache_share": round(sum(t["cached"] for t in totals)
+                                 / sum(t["prompt"] for t in totals), 4)
+            if sum(t["prompt"] for t in totals) else None,
+            # The gap of the email-setup pack (duty 3): turns that hand off
+            # for setup work, and what the hand-off costs.
+            "setup_handoff_turns": len(setup_turns),
+            "setup_handoff_cost_per_turn_usd": _mean([t["cost_usd"] for _, t in setup_turns]),
+            "setup_handoff_total_s": _mean([r["total_s"] or 0.0 for r, _ in setup_turns]),
+            "mail_handoff_turns": sum(1 for r, _ in handoffs if "mail" in r["handoffs"]),
+            # The turn-kind request with and without pack items (duty 4), ms.
+            "turn_kind_ms_with_items": _mean(with_items),
+            "turn_kind_ms_without_items": _mean(without_items),
+            "turn_kind_turns_with_items": len(with_items),
+            "turn_kind_turns_without_items": len(without_items),
+            # Duty 5: turns where a pack loaded before the first model call.
+            "packs_before_first_call_turns": sum(1 for r in rs if _packs_before_first_call(r)),
             "completion_per_turn": _mean([t["completion"] for t in totals]),
             "cost_per_turn_usd": round(statistics.fmean([t["cost_usd"] for t in totals]), 5)
             if totals else None,
@@ -399,6 +575,16 @@ def report(data: dict[str, Any]) -> str:
     row("Of them, the email assistant", lambda v: v["calls_email_per_turn"])
     row("Input tokens per turn", lambda v: v["prompt_per_turn"])
     row("Of them, from the cache", lambda v: v["cached_per_turn"])
+    row("Cache share (cache read / input tokens)", lambda v: v.get("cache_share"))
+    row("Turns that hand off for setup work", lambda v: v.get("setup_handoff_turns"))
+    row("Of them, cost per turn, USD", lambda v: v.get("setup_handoff_cost_per_turn_usd"))
+    row("Turns that hand off mail work", lambda v: v.get("mail_handoff_turns"))
+    row("Turn-kind request with pack items, mean ms",
+        lambda v: v.get("turn_kind_ms_with_items"))
+    row("Turn-kind request without pack items, mean ms",
+        lambda v: v.get("turn_kind_ms_without_items"))
+    row("Turns with a pack loaded before the first model call",
+        lambda v: v.get("packs_before_first_call_turns"))
     row("Output tokens per turn", lambda v: v["completion_per_turn"])
     row("Cost per turn, USD", lambda v: v["cost_per_turn_usd"])
     row("Cost of the arm, USD", lambda v: v["cost_usd"])
