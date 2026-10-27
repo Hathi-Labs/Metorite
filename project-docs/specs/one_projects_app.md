@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-2 is BUILT 2026-10-24, dark, with fix round 2. OP-3 is BUILT 2026-10-24 (task #297), dark behind the OP-2 flag: the server half and the sidebar half. OP-10 is BUILT 2026-10-24, with fix rounds 1 and 2 (D-OP-16): a folder becomes a project through `POST /projects/nodes/{id}/convert`, with the tree menu entry, the chat tool `convert_folder_to_project`, eval case PO-28 and an R8 test (`test_projects_folder_convert.py`). OP-2b is BUILT 2026-10-24 and meets §4.3. OP-5 is not built. OP-4 is BUILT 2026-10-24 (task #298), dark behind the OP-2 flag, with fix round 2: the /tasks redirect keeps the NS-4b `fill.*` keys and opens capture through the `capture` ShellJob, and `chatLink` no longer rewrites /tasks. Post-merge fixes are BUILT 2026-10-25, with no migration. #128 has a stopgap: the board and My work read again on a chat write, and on focus or on a return to the tab (at most once in 15 s). #8 is fixed: the page closes the phone drawer only when it opened it. #11 is fixed: a move refreshes My work and the open panel. The feed names the app My work, and "Show all" opens `/projects?app=my-today`. "New task" falls back to `/tasks?do=capture` for a member with `feature:tasks` and no `feature:projects`. The visible "My Tasks" labels of Email, Notes and the chat cards now say My work. The labels of the two lists are renamed (WS-64, 2026-10-27, labels only): Inbox is now "My task inbox", and "My Next Actions" is now "My tasks". The internal ids `my-inbox`, `my-next`, `INBOX` and `NEXT` stay. The same change keeps archived projects out of the summaries, My work and every picker (§9, OP-11 slice 1). OP-11 "My tasks" is PLANNED, as design only.
+**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-2 is BUILT 2026-10-24, dark, with fix round 2. OP-3 is BUILT 2026-10-24 (task #297), dark behind the OP-2 flag: the server half and the sidebar half. OP-10 is BUILT 2026-10-24, with fix rounds 1 and 2 (D-OP-16): a folder becomes a project through `POST /projects/nodes/{id}/convert`, with the tree menu entry, the chat tool `convert_folder_to_project`, eval case PO-28 and an R8 test (`test_projects_folder_convert.py`). OP-2b is BUILT 2026-10-24 and meets §4.3. OP-5 is not built. OP-4 is BUILT 2026-10-24 (task #298), dark behind the OP-2 flag, with fix round 2: the /tasks redirect keeps the NS-4b `fill.*` keys and opens capture through the `capture` ShellJob, and `chatLink` no longer rewrites /tasks. Post-merge fixes are BUILT 2026-10-25, with no migration. #128 has a stopgap: the board and My work read again on a chat write, and on focus or on a return to the tab (at most once in 15 s). #8 is fixed: the page closes the phone drawer only when it opened it. #11 is fixed: a move refreshes My work and the open panel. The feed names the app My work, and "Show all" opens `/projects?app=my-today`. "New task" falls back to `/tasks?do=capture` for a member with `feature:tasks` and no `feature:projects`. The visible "My Tasks" labels of Email, Notes and the chat cards now say My work. The labels of the two lists are renamed (WS-64, 2026-10-27, labels only): Inbox is now "My task inbox", and "My Next Actions" is now "My tasks". The internal ids `my-inbox`, `my-next`, `INBOX` and `NEXT` stay. The same change keeps archived projects out of the summaries, My work and every picker (§9, OP-11 slice 1). OP-11 "My tasks" is IN PROGRESS. Its server half is BUILT 2026-10-27, with no migration: one "mine" (`core.mine_clause`), `scope=mine` on the list and the calendar, `GET /projects/my/summary`, `subject=me` on Analytics, and the MCP edge fixes of audit P1-3 and P1-4 (§9 OP-11, "The server half"). The UI slices are not built.
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -333,8 +333,10 @@ authority: the route still checks the member's own access.
 | Stays X | the import wizard, the Calendar planner routes | The import needs the review grid. The Calendar app owns the planner. Both have a door in their own app |
 | Stays X | the six `/my/...` doors of My Tasks (project, batch capture, organize, checklist, purge, lanes), `GET /vocabulary/{kind}/{id}/impact` and `POST /tasks/{id}/agent-delete` | The chat gives the same acts through `create_personal_task`, `update_task`, `add_subtasks` and `delete_task`. The impact count belongs to the admin screen. The agent-delete door is for an outside agent (EA3-51, pinned by `test_mcp_edge_coverage.py`) |
 
-`tests/unit/test_projects_chat_x_pin.py` pins the whole list. It names the 27
-routes that stay class X. Its list of pending routes is empty since OP-6d.
+`tests/unit/test_projects_chat_x_pin.py` pins the whole list. It names the 29
+routes that stay class X. OP-11 added `GET /projects/my/summary` to the
+plumbing group, because `my_work` and `list_tasks` read the same tasks. Its
+list of pending routes is empty since OP-6d.
 
 ---
 
@@ -1224,11 +1226,12 @@ a named mutation.
 2. The OP-2 and OP-4 e2e specs still pass.
 3. The visual review at 390, 768 and 1280 px.
 
-### OP-11 — My tasks · PLANNED · design only
+### OP-11 — My tasks · IN PROGRESS · the server half is BUILT
 
-**Status: PLANNED, 2026-10-27.** This section records the owner's design.
-No slice after slice 1 is built. Slice 1 is the rename of the two lists and
-the archive filters, and it is BUILT (WS-64, 2026-10-27).
+**Status: IN PROGRESS, 2026-10-27.** This section records the owner's design.
+Slice 1 is the rename of the two lists and the archive filters, and it is
+BUILT (WS-64, 2026-10-27). The server half of slices 2 to 5, and slice 7, are
+BUILT 2026-10-27 (rows S2 and S3 below). No UI slice after slice 1 is built.
 
 **The design.** My tasks is a virtual roll-up space. It is not a project and
 it is not stored. It reads the one task store through one definition of
@@ -1258,8 +1261,58 @@ it is not stored. It reads the one task store through one definition of
 | 4 | The Calendar and Timeline tabs. | PLANNED |
 | 5 | The Needs attention and Reports tabs, scoped to my tasks. | PLANNED |
 | 6 | The five GTD chips as filters in each tab. | PLANNED |
-| 7 | One server fragment for "mine". It replaces `MY_TASKS_FROM` and `assigned-to-me`. | PLANNED |
+| 7 | One server fragment for "mine". It replaces `MY_TASKS_FROM` and `assigned-to-me`. | BUILT 2026-10-27, in S2 |
 | 8 | Retire the My work section rows. The old ids keep redirecting. | PLANNED |
+| S2 | The server half of slices 2 to 4: `scope=mine` and `with_overlay` on the list and the calendar. The MCP edge fixes of audit P1-3 and P1-4. | BUILT 2026-10-27 |
+| S3 | The server half of slices 2 and 5: `GET /projects/my/summary`, and `subject=me` on Analytics. | BUILT 2026-10-27 |
+
+**The server half (S2 and S3).** It adds no migration and no flag. Each read
+is dark until a UI slice calls it.
+
+1. **One "mine".** `core.mine_clause(alias, arm=None)` holds the three arms.
+   `arm="assigned"` gives the assignee arm alone. `core.mine_binds` reads the
+   member, the tenant and the groups from the directory. `MY_TASKS_FROM`
+   composes the clause under its tenant line. `/projects/assigned-to-me`
+   reads the `assigned` arm, because its contract is "assigned to me" and
+   `my_work` view "assigned" reads it.
+2. **`GET /projects/tasks?scope=mine`.** `scope` takes `mine` or nothing, and
+   any other value is a 422. The clause joins the visibility clause, so every
+   filter, sort, page and archive rule of the list still applies. With no
+   `project_id` the read is org-wide. With a `project_id` and
+   `include_subtree`, it is mine inside that node.
+3. **`with_overlay=1`.** Each row takes the caller's `disposition` (the
+   effective one, by `effective_disposition`), `is_triaged`, `is_mine`,
+   `context`, `energy` and `defer_until`.
+4. **`GET /projects/calendar?scope=mine`.** The same clause and the same
+   `with_overlay` as the list.
+5. **`GET /projects/my/summary`.** It takes no parameter. It returns the
+   `NodeSummary` keys `id` ("mine"), `name`, `level` ("mine"), `tasks`,
+   `overdue`, `by_category`, `projects`, `own` and `children`. It adds
+   `due_soon` (open work due in the next 7 days), `due_soon_days`, `today`
+   and `by_disposition`. The keys of `by_disposition` are `inbox`, `today`,
+   `next`, `waiting`, `someday` and `done`, by the rules of `viewCounts` and
+   `today.ts`. It counts the rows that the list with `scope=mine` gives.
+6. **No row names a hidden project (audit P1-8).** A child is the space of a
+   task when the member may see the space, else the project when the member
+   may see it. Any other task counts in `own`. `fold_node_summary` keeps its
+   walk: the fix there is not a one-line reuse, because a child that is
+   hidden would break its sum rule.
+7. **`subject=me` on Analytics.** `/analytics/stuck`, `/load`, `/throughput`
+   and `/finished` take `subject=me`. It narrows each read to the tasks that
+   the caller holds now, through `report_scope.subject_me`. Any other value
+   is a 422. `/analytics/outlook` gives a 422 for `subject=me` too, because
+   `projects_reports.md` refuses a subject on the outlook.
+8. **Needs attention.** `/needs-attention?mine=true` works with no project and
+   does not change. Its "mine" is the assignee of a blocked task, so its
+   rows are a part of the list with `scope=mine`.
+9. **The MCP edge.** `list_tasks` takes `include_subtree`, and its default
+   is true when the call names a project. `list_projects` rows and the
+   `get_project` project carry `kind` and `level`. The gateway derives the
+   level by `core.node_level` (`/projects/tree` and `/projects/nodes/{id}`).
+10. **Fences.** `tests/unit/test_projects_mine.py` (hermetic) and
+    `tests/unit/test_projects_mine_r8.py` (R8, two members and a second
+    organization). The R8 suite asserts that the list, the calendar, the
+    summary and `/my/inbox` give the same set.
 
 **Not decided.** Slices 2 to 8 need an audit before dispatch. A slice must
 not change a colour, a typeface or a control style (DESIGN_SYSTEM.md).
