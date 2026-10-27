@@ -731,13 +731,15 @@ def _probe_model() -> ScriptedModel:
 def _drive_probe(
     monkeypatch, model: ScriptedModel, payload: dict[str, Any], *,
     thread_id: str | None, organization_id: str | None, run_id: str,
-    session_user: str | None = _OWNER,
+    session_user: str | None = _OWNER, tools: list[Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[Any]]:
     """Run a native MAF agent with one tool through the REAL ``run_agent_stream``.
 
     Only the HTTP transport is scripted. Each run builds a new agent, as
     ``build_agents`` does in production, over ONE scripted model, so the
-    request bodies of both turns land in ``model.bodies``.
+    request bodies of both turns land in ``model.bodies``. *tools* replaces
+    the one tool, for a run that no longer offers it (WS-67 OA-7c, the probe
+    of an eviction).
     """
     routes_agent = pytest.importorskip("gateway.routes.agent", reason="gateway not installed")
     # A run with a verified member resolves that member's access through
@@ -750,7 +752,7 @@ def _drive_probe(
     built: list[Any] = []
 
     def _build() -> list[Any]:
-        agent = _scripted_agent(model, tools=[propose_items])
+        agent = _scripted_agent(model, tools=[propose_items] if tools is None else list(tools))
         built.append(agent)
         return [agent]
 
@@ -1095,6 +1097,47 @@ def test_the_two_turn_probe_carries_turn_one_tool_output(monkeypatch, fake_db, s
     # MAF appends a history provider to the agent it runs on when the run has
     # no history provider. The run's copy carried one, so no agent holds it.
     assert [a.context_providers for a in [*built, *built2]] == [[], []]
+
+
+def list_items() -> str:
+    """List the inbox items. Another tool of the run, so the run has tools."""
+    return json.dumps({"items": []})
+
+
+@pytest.mark.usefixtures("_a_tenant", "_flag_on")
+def test_a_turn_after_a_pack_eviction_does_not_fail_on_its_stored_calls(
+    monkeypatch, fake_db, store_log,
+) -> None:
+    """WS-67 OA-7c, the probe of ``one_assistant_context.md`` §4.2.2 ("Native
+    sessions"). A sticky pack keeps the tool of each stored call on offer. An
+    eviction (the decay or the cap) is the one case where a stored call names
+    a tool that the run no longer offers. Turn 1 calls ``propose_items``.
+    Turn 2 runs on the stored session with that tool gone, as after an
+    eviction. The turn finishes, and its request still holds the call and its
+    result. Mutation: a MAF or a store that fails a stored call to a tool the
+    run lacks, or drops such a session → turn 2 ends in RUN_ERROR or loses
+    turn 1 → red."""
+    tid = "thread-oa7c-evict"
+    fake_db.chat(tid)
+    model = _probe_model()
+    _drive_probe(monkeypatch, model, {"mode": "chat", "message": _PROPOSE, "messages": []},
+                 thread_id=tid, organization_id=_ORG, run_id="run-oa7c-evict-1")
+    fake_db.chats[tid]["rows"] = [("user", _PROPOSE), ("assistant", _ASK), ("user", "yes")]
+    events, _built = _drive_probe(
+        monkeypatch, model,
+        {"mode": "chat", "message": "yes", "messages": [
+            {"role": "user", "content": _PROPOSE}, {"role": "assistant", "content": _ASK},
+        ]},
+        thread_id=tid, organization_id=_ORG, run_id="run-oa7c-evict-2", tools=[list_items],
+    )
+    kinds = [e.get("type") for e in events]
+    assert kinds[-1] == "RUN_FINISHED" and "RUN_ERROR" not in kinds, events
+    assert store_log.outcomes() == ["no_row", "hit"], "the eviction kept the session"
+    body = model.bodies[2]
+    _assert_turn_two_holds_turn_one(body)
+    offered = {t["function"]["name"] for t in body.get("tools") or []}
+    assert "list_items" in offered
+    assert "propose_items" not in offered, "non-vacuity: the stored call names a tool not on offer"
 
 
 @pytest.mark.usefixtures("_a_tenant", "_flag_on")

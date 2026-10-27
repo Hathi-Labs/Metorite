@@ -19,10 +19,12 @@ as ``orchestrator.executor.<name>``): ``_gate_injected_tool``, ``_tool_name``,
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import functools
 import os
-from collections.abc import Iterable
+import weakref
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from acb_common import get_logger
@@ -1512,19 +1514,24 @@ def _registry_line(name: str, description: Any) -> str:
     return f"  - {name!r}: {text}"
 
 
-def _registry_block_for(agent_name: str | None) -> str:
+def _registry_block_for(agent_name: str | None, exclude: Iterable[str] = ()) -> str:
     """The registry block that *agent_name* reads: every agent but itself.
 
     It filters the cached :func:`_build_registry_block`, so a stub of that
     function in a test still applies. ``None`` returns the whole block.
+    *exclude* names more agents to leave out: the agents that a tool pack
+    of the run refuses (WS-67 OA-7c fix round 1, :data:`PACK_REFUSED_ATTR`).
     """
     block = _build_registry_block()
-    if not agent_name:
+    names = [str(n) for n in exclude if n]
+    if agent_name:
+        names.append(str(agent_name))
+    if not names:
         return block
-    own = _registry_line(agent_name, "").rstrip()  # "  - 'name':"
+    prefixes = [_registry_line(name, "").rstrip() for name in names]  # "  - 'name':"
     return "\n".join(
         line for line in block.splitlines()
-        if line.rstrip() != own and not line.startswith(own + " ")
+        if not any(line.rstrip() == own or line.startswith(own + " ") for own in prefixes)
     )
 
 
@@ -2581,8 +2588,12 @@ def _inject_agent_tools(
                 ):
                     try:
                         # The agent itself is not in the list: a hand-off
-                        # to itself only spends a turn.
-                        _reg = _registry_block_for(agent_name)
+                        # to itself only spends a turn. WS-67 OA-7c: nor is
+                        # an agent that a tool pack of this run refuses.
+                        _reg = _registry_block_for(
+                            agent_name,
+                            exclude=getattr(agent, PACK_REFUSED_ATTR, ()) or (),
+                        )
                         _prev = _do.get("instructions") or ""
                         if _reg and "Delegatable agents" not in _prev:
                             _do["instructions"] = (
@@ -2821,6 +2832,11 @@ def _apply_no_egress(
 #: :data:`UNTRUSTED_INPUT_AGENTS` gets no registry MCP server.
 PACK_OWNER_ATTR = "__cc_pack_owner__"
 
+#: The attribute of an agent that names the agents its run may not hand off
+#: to, because the run holds every pack of each (OA-7c fix round 1). The
+#: "Delegatable agents" block of :func:`_inject_agent_tools` leaves them out.
+PACK_REFUSED_ATTR = "_cc_pack_refused_delegates"
+
 #: The answer of a pack tool that is called outside the run that built it,
 #: or on a frame with no run. The held answer belongs to one run, so the tool
 #: never acts in another.
@@ -2980,11 +2996,12 @@ async def _pack_tools(
     each in :func:`_pack_call`. A held pack drops each tool that
     :func:`_is_egress` names, and that drop is the only held-set control of a
     pack run. None for a slug that is no pack. An owner that does not load,
-    and a run context with no ``run_id``, give a held build with no tool.
-    ``run_id`` keys the run check of :func:`_pack_call`. A client can set it
-    (``gateway/routes/agent.py``, ``req.run_id``), so OA-7c must key the
-    check on a value that the server mints (``one_assistant_context.md``,
-    the OA-7c conditions).
+    and a run context with no run key, give a held build with no tool.
+
+    OA-7c (condition 3): the run check of :func:`_pack_call` keys on
+    ``tool_packs.PACK_RUN_KEY``, a value that the executor mints for each run
+    (:func:`_apply_tool_packs`). It never keys on ``run_id``, which a client
+    can set (``gateway/routes/agent.py``, ``req.run_id``).
     """
     import inspect
 
@@ -2994,9 +3011,9 @@ async def _pack_tools(
     if found is None:
         return None
     owner = found.owner
-    run_id = str((run_ctx or {}).get("run_id") or "")
-    if not run_id:  # the run check needs a key, so no key builds nothing
-        _log.warning("executor.pack_refused", pack=slug, reason="no_run_id")
+    run_key = str((run_ctx or {}).get(tool_packs.PACK_RUN_KEY) or "")
+    if not run_key:  # the run check needs a key, so no key builds nothing
+        _log.warning("executor.pack_refused", pack=slug, reason="no_run_key")
         return PackBuild(slug=slug, owner=owner, held=True, tools=())
     source = module if module is not None else _pack_owner_module(owner)
     if source is None:
@@ -3013,20 +3030,21 @@ async def _pack_tools(
         elif held and _is_egress(fn):
             dropped.append(name)
         else:
-            tools.append(_pack_call(fn, owner, held, run_id))
+            tools.append(_pack_call(fn, owner, held, run_key, slug))
     _log.info("executor.pack_built", pack=slug, owner=owner, held=held,
               tools=len(tools), dropped=sorted(dropped), skipped=sorted(skipped))
     return PackBuild(slug=slug, owner=owner, held=held, tools=tuple(tools),
                      dropped=tuple(dropped), skipped=tuple(skipped))
 
 
-def _pack_call(fn: Any, owner: str, held: bool, run_id: str) -> Any:
+def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") -> Any:
     """ONE pack tool: the scope of the owner outside, the gate inside.
 
     Each call, in this order:
 
     1. It refuses a frame of another run, or of no run (the held answer
-       belongs to one run).
+       belongs to one run). The check compares ``tool_packs.PACK_RUN_KEY`` of
+       the frame with *run_key*, which the server minted (OA-7c condition 3).
     2. STRICT (owner, fix round 1): when the chat read mail since the build
        (``read_untrusted_answer``), this call is held although the build was
        open. An egress tool then answers the held answer and does not run.
@@ -3036,7 +3054,10 @@ def _pack_call(fn: Any, owner: str, held: bool, run_id: str) -> Any:
        the owner, so an owner's write asks its own card and never the
        untrusted card too.
     5. It closes the run's profile writes, also after a raise (PZ-6a).
-    6. It writes the email working set from the call (§7.1.1).
+    6. It writes the email working set from the call (§7.1.1), one call of
+       the chat at a time (OA-7c condition 4).
+    7. It makes pack *slug* sticky (``tool_packs.note_used``, OA-7c). A run
+       that bound no ``tool_packs.PACKS_KEY`` writes nothing.
 
     ``functools.wraps`` keeps the name, the docstring, ``__tool_risk__`` and
     ``__wrapped__``, so the signature and the card-bound pin read the owner's
@@ -3045,7 +3066,7 @@ def _pack_call(fn: Any, owner: str, held: bool, run_id: str) -> Any:
     second card. :data:`PACK_OWNER_ATTR` names the owner.
     """
     from acb_skills.egress import _register_platform_wrapper
-    from acb_skills.tool_packs import owner_scope
+    from acb_skills.tool_packs import PACK_RUN_KEY, note_used, owner_scope
 
     gate_on = os.environ.get("AGENT_PERMISSION_MODE", "enforce").strip().lower() != (
         "approve_all"
@@ -3058,7 +3079,7 @@ def _pack_call(fn: Any, owner: str, held: bool, run_id: str) -> Any:
         from acb_skills.write_artifact import artifact_context
 
         ctx = artifact_context()
-        if not ctx or str(ctx.get("run_id") or "") != run_id:
+        if not ctx or not run_key or str(ctx.get(PACK_RUN_KEY) or "") != run_key:
             _log.warning("executor.pack_call_refused", tool=name, owner=owner)
             return PACK_CALL_REFUSED.format(tool=name)
         held_now = held or read_untrusted_answer(ctx)
@@ -3071,6 +3092,8 @@ def _pack_call(fn: Any, owner: str, held: bool, run_id: str) -> Any:
         finally:
             _close_pack_profile_writes()
         await _record_pack_call(owner, ctx, name, _call_args(fn, args, kwargs), result)
+        if slug:
+            await note_used(slug, ctx)
         return result
 
     _pack_tool.__cc_gated__ = True  # type: ignore[attr-defined]
@@ -3120,6 +3143,31 @@ def _call_args(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[s
         return dict(kwargs)
 
 
+#: One lock for each chat, held while a pack call reads and writes the email
+#: working set (OA-7c condition 4). MAF can run two tool calls at once. Each
+#: read the set before the other wrote it, so one update was lost. A weak map,
+#: so a lock leaves when no call holds it.
+_PACK_WS_LOCKS: weakref.WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
+    weakref.WeakValueDictionary())
+
+
+def _pack_ws_lock(ctx: Any) -> asyncio.Lock:
+    """The lock of the chat of *ctx*: its bound tenant and its session."""
+    try:
+        from acb_skills.egress import _session_of
+
+        slot = _session_of(ctx)
+    except ImportError:
+        slot = None
+    if slot is None:
+        slot = ("", str((ctx or {}).get("session_id") or ""))
+    lock = _PACK_WS_LOCKS.get(slot)
+    if lock is None:
+        lock = asyncio.Lock()
+        _PACK_WS_LOCKS[slot] = lock
+    return lock
+
+
 async def _record_pack_call(
     owner: str, ctx: Any, name: str, args: dict[str, Any], result: Any,
 ) -> None:
@@ -3127,22 +3175,205 @@ async def _record_pack_call(
 
     The executor's two functions, which the delegated path calls after an
     email sub-run. An owner other than the email assistant writes nothing.
-    The card event goes to the run's own queue, or nowhere. Never raises."""
+
+    OA-7c condition 4: the read and the write run under the lock of the chat
+    (:func:`_pack_ws_lock`), so two pack calls at once each see the other's
+    update, and none is lost. Condition 5: the mailbox event "Now working on
+    <mailbox>" goes to the run's own queue, and a run with no queue gets it on
+    its relay stream (``executor._emit_to_run_or_relay``). Never raises."""
     try:
         from orchestrator import executor as ex
 
-        before, _preamble = await ex._email_working_set_for(owner, ctx)
-        if before is None:
-            return
-        put = ex._emit_to_run(str(ctx.get("session_id") or "") or None)
-
-        async def _emit(event: dict[str, Any]) -> None:
-            put(event)
-
+        emit = ex._emit_to_run_or_relay(str(ctx.get("session_id") or "") or None)
         call = {"id": "", "name": name, "args": args, "result": str(result), "success": True}
-        await ex._record_email_working_set(owner, ctx, before, [call], _emit)
+        async with _pack_ws_lock(ctx):
+            before, _preamble = await ex._email_working_set_for(owner, ctx)
+            if before is None:
+                return
+            await ex._record_email_working_set(owner, ctx, before, [call], emit)
     except Exception as exc:  # the working set never costs the call
         _log.warning("executor.pack_ws_unwritten", tool=name, error_type=type(exc).__name__)
+
+
+# ── Tool packs in a live run: layer (a) (WS-67 OA-7c, D117) ─────────────────
+# ``one_assistant_context.md`` §4.2.2 and §4.2.8. The executor reads the
+# sticky state beside the load (``executor._start_pack_turn``), and calls
+# :func:`_apply_tool_packs` after ``_apply_agent_md_overrides`` and BEFORE
+# :func:`_inject_agent_tools`. Each pack tool carries ``__cc_gated__``, so
+# :func:`_gate_own_maf_tools` never gates it twice. Each run builds its packs
+# again: no ``PackBuild`` and no pack tool lives past its run (condition 1).
+# Fences: ``tests/unit/test_tool_packs_choice.py`` and
+# ``tests/unit/test_tool_packs_off.py``.
+
+
+@dataclasses.dataclass(frozen=True)
+class PackApply:
+    """What :func:`_apply_tool_packs` put in one run."""
+
+    builds: tuple[PackBuild, ...]
+    #: ``tool_packs.PackRun``: the record that the run binds.
+    record: Any
+    #: The value that keys the run check of each pack call. The server mints
+    #: it for each run (condition 3).
+    run_key: str
+
+    def context(self) -> dict[str, Any]:
+        """The keys that the executor derives into the run binding, after
+        ``bind_artifact_context``. A delegated run drops both."""
+        from acb_skills.tool_packs import PACK_RUN_KEY, PACKS_KEY
+
+        return {PACK_RUN_KEY: self.run_key, PACKS_KEY: self.record}
+
+
+def _as_agent_tools(tools: list[Any]) -> list[Any]:
+    """*tools* in the shape of the agent's own list: a MAF ``FunctionTool``
+    for each, as ``Agent.__init__`` makes them. The ``func`` of each is the
+    pack wrapper, so it keeps ``__cc_gated__`` and :func:`_gate_own_maf_tools`
+    skips it: the mark, not the shape, stops a second gate. With no MAF the
+    plain functions come back."""
+    try:
+        from agent_framework._tools import normalize_tools
+    except ImportError:  # pragma: no cover - MAF ships with the platform
+        return list(tools)
+    return list(normalize_tools(list(tools)))
+
+
+def _delegates_to(tool: Any) -> str | None:
+    """The agent that a specialist tool hands work to (``__delegates_to__``,
+    set in ``orchestrator.agents``), or None."""
+    target = getattr(getattr(tool, "func", None), "__delegates_to__", None)
+    if target is None:
+        target = getattr(tool, "__delegates_to__", None)
+    return str(target) if target else None
+
+
+def _pack_base_count(
+    agent: Any, *, agent_name: str | None, tool_scope: list[str] | None,
+    agent_config: dict[str, Any] | None, disabled: frozenset[str],
+) -> int:
+    """The tools of the run before its packs, for the cap of layer (a).
+
+    It counts the tools that *agent* holds now, and the platform tools that
+    :func:`_inject_agent_tools` adds. It reads the same inputs in the same
+    order: the static chain within the resolved scope, the no-match fallback,
+    the workflow trio, and the same withheld names (D85, the floor opt-out,
+    WhatsApp and the CRM facts). So with no app grant it equals the count
+    after the injection (fix round 1, Q1). A granted app tool is not
+    counted, because its read needs the database. ``_add_crm_facts_block``
+    can only take tools away after it. The executor logs the true count
+    after the injection (``executor.pack_request_tools``) and warns past
+    the cap.
+    """
+    from acb_skills.skill_families import SKILL_FAMILIES
+
+    names = {_tool_name(t) for _label, pool in _own_tool_pools(agent) for t in pool}
+    withheld = (_withheld_shell_tools(agent_name, agent_config)
+                | _floor_opt_out(agent_name, agent_config)
+                | _whatsapp_withheld() | _facts_withheld())
+    scope = _resolve_injected_scope(tool_scope, disabled_families=disabled, withheld=withheld)
+    chain = [_tool_name(fn) for fn in _collect_injectable_platform_tools(agent_name)]
+    injected = set(chain) if scope is None else {name for name in chain if name in scope}
+    if scope is not None and not injected:  # the no-match fallback of the injection
+        injected = set(chain)
+    if "workflows" not in disabled:
+        injected |= set(SKILL_FAMILIES["workflows"]["tools"])
+    return len(names | (injected - withheld))
+
+
+async def _apply_tool_packs(
+    agents: list[Any],
+    turn: Any,
+    run_ctx: Mapping[str, Any],
+    *,
+    allowed: Iterable[str],
+    agent_name: str,
+    tool_scope: list[str] | None,
+    agent_config: dict[str, Any] | None,
+    bullets: Mapping[str, str],
+) -> PackApply | None:
+    """Put the packs of this turn in the run (layer (a), §4.2.2).
+
+    *turn* is the ``tool_packs.PackTurn`` that the executor read beside the
+    load. *allowed* is ``tool_packs.packs_on`` of the bound tenant. The
+    admin's skill toggles narrow it here (``skills_registry.md`` rule 1), so
+    a pack that an admin turned off for the orchestrator never loads.
+
+    In order: the choice and the cap (``tool_packs.choose``), the eviction of
+    the decayed and capped sticky packs, a fresh run key, the build of each
+    pack (:func:`_pack_tools`, with the run's own tool names as *holds*), the
+    persona (``tool_packs.persona_for``), and last the change of the agent:
+    the persona, the specialist tool of each owner that a pack replaces, and
+    the pack tools after the core tools, in load order.
+
+    *run_ctx* is the server-side run context: the tenant is bound, and it
+    names the session, the member and ``no_egress`` (condition 2). A run with
+    no bound tenant loads no pack at all, so it holds no pack send, and
+    :func:`_pack_held` holds a build with no tenant too. Returns None, and
+    changes nothing, when no pack loads, when the agent is not a native MAF
+    ``Agent``, or when the persona does not hold the owner's text exactly
+    once.
+    """
+    import secrets
+
+    from acb_common.db import current_tenant
+    from acb_skills import tool_packs
+
+    agent = agents[0] if agents else None
+    opts = getattr(agent, "default_options", None)
+    pool = opts.get("tools") if isinstance(opts, dict) else None
+    if not isinstance(pool, list):
+        _log.warning("executor.packs_refused", reason="agent_shape")
+        return None
+    if not current_tenant():
+        _log.warning("executor.packs_refused", reason="no_tenant")
+        return None
+    disabled = frozenset(_load_disabled_skill_families(agent_name))
+    allow = frozenset(allowed) - disabled
+    base = _pack_base_count(agent, agent_name=agent_name, tool_scope=tool_scope,
+                            agent_config=agent_config, disabled=disabled)
+    choice = tool_packs.choose(turn, allowed=allow, base_tools=base)
+    await tool_packs.drop_sticky(turn, choice.evicted)
+    if not choice.slugs:
+        _log.info("executor.packs_chosen", packs=[], evicted=list(choice.evicted),
+                  skipped=list(choice.skipped), base_tools=base)
+        return None
+    run_key = secrets.token_urlsafe(24)
+    build_ctx = {**dict(run_ctx), tool_packs.PACK_RUN_KEY: run_key}
+    holds = {_tool_name(t) for t in pool}
+    builds: list[PackBuild] = []
+    for slug in choice.slugs:
+        build = await _pack_tools(slug, build_ctx, holds=holds)
+        if build is None or not build.tools:
+            continue
+        builds.append(build)
+        holds |= {_tool_name(t) for t in build.tools}
+    if not builds:
+        return None
+    loaded = [(build.slug, build.held) for build in builds]
+    try:
+        persona = tool_packs.persona_for(str(opts.get("instructions") or ""), loaded, bullets)
+    except RuntimeError as exc:
+        _log.error("executor.packs_refused", reason="persona_swap", error=str(exc)[:200])
+        return None
+    record = tool_packs.PackRun.of(turn, choice, loaded)
+    replaced = frozenset(record.replaced)
+    added = _as_agent_tools([tool for build in builds for tool in build.tools])
+    opts["instructions"] = persona
+    pool[:] = [t for t in pool if _delegates_to(t) not in replaced]
+    pool.extend(added)
+    # Fix round 1: the "Delegatable agents" block of the injection leaves out
+    # an owner that the run may not hand off to, and only such an owner.
+    with contextlib.suppress(Exception):
+        setattr(agent, PACK_REFUSED_ATTR, frozenset(record.refusals))
+    _log.info(
+        "executor.packs_loaded", packs=list(record.slugs),
+        layers={slug: choice.layers.get(slug, "") for slug in record.slugs},
+        held=dict(record.held), replaced=sorted(replaced),
+        refused=sorted(record.refusals),
+        evicted=list(choice.evicted), skipped=list(choice.skipped),
+        base_tools=base, pack_tools=sum(len(b.tools) for b in builds),
+    )
+    return PackApply(builds=tuple(builds), record=record, run_key=run_key)
 
 
 def _holds_untrusted_pack(agent: Any) -> bool:

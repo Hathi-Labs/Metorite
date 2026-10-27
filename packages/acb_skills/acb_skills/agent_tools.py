@@ -76,6 +76,22 @@ def _delegation_refusal(agent_name: str) -> str | None:
     return None
 
 
+def _pack_refusal(agent_name: str) -> str | None:
+    """The pack refusal of a hand-off to *agent_name*, or None (WS-67 OA-7c).
+
+    ``tool_packs.delegation_refusal``: the chat run holds a pack that replaces
+    the agent. ``call_agent`` and each branch of ``call_agents_parallel`` ask
+    it BEFORE the sub-run and before ``_answer_of``, so a refused hand-off
+    never marks the chat as one that read mail. The streaming seam
+    (``executor._run_sub_agent_streaming``) asks it too, for the specialist
+    tools and ``delegate_to_agent``. ``call_agent_background`` does not ask
+    it: a background run is not conversational, so it keeps delegation
+    (``one_assistant_context.md`` §4.3.1)."""
+    from acb_skills.tool_packs import delegation_refusal
+
+    return delegation_refusal(agent_name)
+
+
 def _parent_run_model() -> str | None:
     """The resolved model/tier of the current (parent) agent run, if any.
 
@@ -116,7 +132,7 @@ async def call_agent(agent_name: str, message: str) -> str:
     """
     run_id = str(_uuid.uuid4())
 
-    refusal = _delegation_refusal(agent_name)
+    refusal = _delegation_refusal(agent_name) or _pack_refusal(agent_name)
     if refusal:
         return refusal
 
@@ -344,7 +360,7 @@ async def call_agents_parallel(tasks: str) -> str:
         # Delegation guard (P0-7): refuse cycles/over-depth per fanned task,
         # and extend the ancestry chain for this branch only (gather copies
         # the context per coroutine, so branches don't see each other).
-        refusal = _delegation_refusal(agent_name)
+        refusal = _delegation_refusal(agent_name) or _pack_refusal(agent_name)
         if refusal:
             return agent_name, refusal
         _tok = _delegation_chain.set((*_delegation_chain.get(), agent_name))
@@ -430,6 +446,11 @@ async def call_agents_parallel(tasks: str) -> str:
 
     parts = []
     for agent_name, response in results:
+        # WS-67 OA-7c: a pack refusal is not an answer of the agent, so it is
+        # not framed and it marks nothing.
+        if _pack_refusal(agent_name) is not None:
+            parts.append(f"[{agent_name}]\n{response}")
+            continue
         parts.append(f"[{agent_name}]\n{await _answer_of(agent_name, response)}")
     parts.extend(_not_run())
     return "\n\n".join(parts)

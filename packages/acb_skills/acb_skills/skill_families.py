@@ -289,8 +289,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # does not carry the setup tools (OA-5 measured about 20,800 input tokens
     # for 58 of them). ``scope_governed`` is True only so that no surface
     # calls a pack "always injected": every scope helper skips a pack before
-    # it reads that key. No run loads a pack until OA-7c, and the description
-    # says so, because the admin reads it beside the toggle.
+    # it reads that key. From OA-7c a run loads a pack only where the owner
+    # turned tool packs on, and the description says so, because the admin
+    # reads it beside the toggle. Turned off, the toggle stops the pack.
     "email": {
         "label": "Email",
         "summary": (
@@ -301,8 +302,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "A tool pack: the Email Assistant's own tools for daily mail "
             "work, for the main assistant to load in an email turn. It holds "
             "the tools to read, find, summarise, reply, send, forward, keep "
-            "drafts, send later, follow up and act on the inbox. No run loads "
-            "a pack yet, so this switch has no effect for now."
+            "drafts, send later, follow up and act on the inbox. A run loads "
+            "a pack only where tool packs are on, so until then this switch "
+            "has no effect."
         ),
         "tools": (
             "bulk_manage_inbox",
@@ -354,8 +356,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "A tool pack: the Email Assistant's own tools to set it up, for "
             "the main assistant to load when a turn needs them. It holds the "
             "rules, the mailbox and assistant settings, the knowledge, the "
-            "writing voice, the senders and the categories. No run loads a "
-            "pack yet, so this switch has no effect for now."
+            "writing voice, the senders and the categories. A run loads a "
+            "pack only where tool packs are on, so until then this switch "
+            "has no effect."
         ),
         "tools": (
             "apply_settings_to_mailboxes",
