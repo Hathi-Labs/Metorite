@@ -297,6 +297,78 @@ class TestTheDeploymentArm:
         assert _row(db, second["id"])["name"] == "Dewin"
 
 
+def _member_actor(db, org_id: str, *, status: str = "active") -> str:
+    """A registry ``member`` of *org_id*. Returns the address.
+
+    This is the tenant's second admin: nothing maps a tenant ``org_role``
+    onto the registry role (D12), so the Console holds that admin as a plain
+    ``member``.
+    """
+    email = f"second-admin-{uuid.uuid4().hex[:6]}@x.example"
+    with db.begin() as c:
+        identity = store.ensure_identity(c, email=email)
+        c.execute(
+            text(
+                "INSERT INTO org_membership (organization_id, "
+                "user_identity_id, role, status, joined_at) "
+                "VALUES (:o, :i, 'member', :s, now())"
+            ),
+            {"o": org_id, "i": identity, "s": status},
+        )
+    return email
+
+
+class TestTheDeploymentArmRoleSet:
+    """R7: the door demands ``_MEMBER_ADMIN_ROLES``, and these fail without it.
+
+    🔴 **Why ``member`` must pass.** The tenant plane's
+    ``admin:settings:manage`` is the real gate, and the gateway mirrors here
+    only after it passed and the tenant rename committed. A tenant admin can
+    be a Console ``member``. An ``owner|admin`` set here would refuse that
+    admin's mirror after the tenant name changed, and the two planes would
+    show different names with only a log line to say so.
+    """
+
+    def test_a_registry_member_renames_on_the_deployment_arm(
+        self, client, db, member_key
+    ):
+        org = _new_org(client)
+        who = _member_actor(db, org["id"])
+        r = _rename(client, member_key, actor_email=who, name="Shaurrya Tele")
+        assert r.status_code == 200, r.text
+        assert _row(db, org["id"])["name"] == "Shaurrya Tele"
+        assert [row["actor"] for row in _audit_rows(db, org["id"])] == [who]
+
+    def test_a_role_outside_the_set_is_403_and_writes_nothing(
+        self, client, db, member_key, monkeypatch
+    ):
+        """The registry CHECK allows only owner, admin and member, and all
+        three are in the set. So the test narrows the CONSTANT. That also
+        proves the door reads ``_MEMBER_ADMIN_ROLES`` and no copy of it."""
+        from customer_console import main
+
+        org = _new_org(client)
+        who = _member_actor(db, org["id"])
+        monkeypatch.setattr(main, "_MEMBER_ADMIN_ROLES",
+                            frozenset({"owner", "admin"}))
+        r = _rename(client, member_key, actor_email=who, name="X")
+        assert r.status_code == 403, r.text
+        assert _row(db, org["id"])["name"] == "Dewin"
+        assert _audit_rows(db, org["id"]) == []
+
+    @pytest.mark.parametrize("status", ["invited", "suspended", "removed"])
+    def test_a_member_who_is_not_active_is_403(
+        self, client, db, member_key, status
+    ):
+        """The other half of the gate: the role is in the set, the status is
+        not ``active``, so the actor acts for nobody."""
+        org = _new_org(client)
+        who = _member_actor(db, org["id"], status=status)
+        r = _rename(client, member_key, actor_email=who, name="X")
+        assert r.status_code == 403, r.text
+        assert _row(db, org["id"])["name"] == "Dewin"
+
+
 # ── Done-when 4 — the Console's own name check ───────────────────────────────
 
 class TestTheNameCheck:

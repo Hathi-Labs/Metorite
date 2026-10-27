@@ -65,23 +65,24 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   (`GATEWAY_INTERNAL_TOKEN` + `GATEWAY_OPERATOR_TOKEN`). The same
   `console.test.ts` scan fences both.
   The owner added a second act on 2026-10-15. `removeTenantMember` removes
-  one member, or deletes the member permanently. The owner added a third on
-  2026-10-27. `renameTenantOrg` sets the org's display name
-  (`customer_console.md` CP-8 "Rename an organization"). A fourth gateway
-  call added here is a defect until a spec says otherwise.
-  `api/operator/orgs/rename` calls it. That route reads the caller's rank
-  BEFORE the tenant act, and a rename needs `editor`. The tenant rename goes
-  first. Then the Console rename gets the name that the tenant stored.
-  `src/lib/orgRename.ts` holds the rules, and the gateway's
+  one member, or deletes the member permanently.
+  `api/operator/members/remove` calls `removeTenantMember`. That route reads
+  the caller's rank BEFORE the tenant act, because the gateway door trusts
+  our token for every caller. A remove needs `editor`. A delete needs
+  `admin`, and an open window when the Console requires one. It also reads
+  the registry roster BEFORE the tenant act. The only active owner needs
+  `new_owner_email`, which must name another active member (owner decision,
+  2026-10-15). A failed roster read refuses with no write. Fence:
+  `members/remove/route.test.ts`.
+  The owner added a third act on 2026-10-27. `renameTenantOrg` sets the
+  org's display name (`customer_console.md` CP-8 "Rename an organization").
+  `api/operator/orgs/rename` calls `renameTenantOrg`. That route reads the
+  caller's rank BEFORE the tenant act, and a rename needs `editor`. The
+  tenant rename goes first. Then the Console rename gets the name that the
+  tenant stored. `src/lib/orgRename.ts` holds the rules, and the gateway's
   `clean_display_name` is the one name check. Fence:
   `orgs/rename/route.test.ts`.
-  `api/operator/members/remove` calls it. That route reads the caller's rank
-  BEFORE the tenant act, because the gateway door trusts our token for every
-  caller. A remove needs `editor`. A delete needs `admin`, and an open window
-  when the Console requires one. It also reads the registry roster BEFORE
-  the tenant act. The only active owner needs `new_owner_email`, which must
-  name another active member (owner decision, 2026-10-15). A failed roster
-  read refuses with no write. Fence: `members/remove/route.test.ts`.
+  A fourth gateway call added here is a defect until a spec says otherwise.
 - `src/lib/staff.ts` — the **INTERIM** staff-secret gate
   (`OPERATOR_CONSOLE_STAFF_SECRET`), marked for replacement by staff Entra.
   Fails closed when unset.
