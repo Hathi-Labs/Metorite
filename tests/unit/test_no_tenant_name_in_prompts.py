@@ -50,8 +50,26 @@ def test_no_agent_instructions_name_a_tenant(path: Path) -> None:
     assert hits == [], f"{path.relative_to(ROOT)} names a tenant: {hits}"
 
 
+def _folded(node: ast.AST, names: dict[str, str]) -> str | None:
+    """The value of a string constant, a name of an earlier module-level
+    string, or a ``+`` of those, or None."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return names.get(node.id)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _folded(node.left, names), _folded(node.right, names)
+        return None if left is None or right is None else left + right
+    return None
+
+
 def _prompt_strings(path: Path) -> list[str]:
-    """Every docstring and module-level string constant: the text a model reads."""
+    """Every docstring and module-level string constant: the text a model reads.
+
+    A module-level string that joins constants with ``+`` is folded into its
+    whole value. WS-67 OA-7c builds the orchestrator persona so
+    (``"..." + EMAIL_DELEGATION_BULLETS + "..."``), and a reader of literal
+    values only would miss the persona."""
     tree = ast.parse(path.read_text(encoding="utf-8-sig"))
     out: list[str] = []
     for node in ast.walk(tree):
@@ -59,9 +77,17 @@ def _prompt_strings(path: Path) -> list[str]:
             doc = ast.get_docstring(node)
             if doc:
                 out.append(doc)
+    names: dict[str, str] = {}
     for node in tree.body:
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-            out.append(node.value.value)
+        if not isinstance(node, ast.Assign):
+            continue
+        value = _folded(node.value, names)
+        if value is None:
+            continue
+        out.append(value)
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                names[target.id] = value
     return out
 
 
