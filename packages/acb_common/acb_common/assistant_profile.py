@@ -558,9 +558,11 @@ def typed_words() -> str:
     return MEMBER_TYPED.get()
 
 
-#: The refusal of a value that the member did not say in this turn.
-NOT_YOUR_WORDS = ("I can only save what you tell me yourself. Say it in your own "
-                  "words and I will save it.")
+#: The refusal of a value that the member did not say in this turn, as the
+#: member reads it on the card. The member did say it: the model changed the
+#: words (incident 2026-10-27). So the line never asks the member to say it
+#: again. The tool adds a line for the model (``profile_tools``).
+NOT_YOUR_WORDS = "I could not save that. I save only your own words."
 
 _GROUND_EMAIL = re.compile(r"[^\s@<>()\[\]\"',;:]+@[^\s@<>()\[\]\"',;:]+")
 _GROUND_URL = re.compile(r"(?:[a-z][a-z0-9+.\-]*://|www\.)[^\s<>\"']+")
@@ -1047,6 +1049,36 @@ def due_area(interview: Any, now: datetime) -> str:
     if started is None or last is None or now - last <= timedelta(hours=DUE_HOURS):
         return ""
     return next(iter(open_areas(stored, now, 1)), "")
+
+
+#: The machine reason of a chat mark ``answered`` with no saved answer
+#: (incident 2026-10-27). The gateway answers it as a 422.
+NO_ANSWER = "no_answer"
+#: What the model reads with that 422.
+NO_ANSWER_TEXT = "Nothing is saved for this area yet. Save the answer first."
+
+
+def area_has_answer(profile: Any, area: str) -> bool:
+    """True when the stored *profile* holds an answer for *area*.
+
+    A fact with ``area == area`` is an answer for every area. The area
+    ``detail`` also counts a set ``style.length``, and the area ``people``
+    counts one saved alias at least. The gateway refuses a chat mark
+    ``answered`` without one, so a refused save cannot close an area
+    (incident 2026-10-27). Fence:
+    ``tests/unit/test_assistant_profile_interview_r8.py``.
+    """
+    stored = profile if isinstance(profile, dict) else {}
+    facts = stored.get("facts") if isinstance(stored.get("facts"), list) else []
+    if any(isinstance(f, dict) and f.get("area") == area for f in facts):
+        return True
+    if area == "detail":
+        style = stored.get("style") if isinstance(stored.get("style"), dict) else {}
+        return bool(style.get("length"))
+    if area == "people":
+        aliases = stored.get("aliases")
+        return isinstance(aliases, list) and len(aliases) > 0
+    return False
 
 
 def may_ask(interview: Any, now: datetime) -> bool:

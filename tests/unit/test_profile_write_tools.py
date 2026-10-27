@@ -1136,7 +1136,7 @@ class TestTypedWords:
         with ap.member_typed(""), artifact_context_scope():
             bind_artifact_context(member_message=tail)
             out = _run(pt.profile_remember("I like oolong tea", "preference"))
-        assert _refused(out, "not_your_words") == pt.NOT_YOUR_WORDS_TEXT
+        assert _refused(out, "not_your_words") == pt.NO_TYPED_TEXT
         assert own_chat.writes() == []
 
     @pytest.mark.parametrize("text", [

@@ -73,6 +73,13 @@ async def _sit(org: str, user: UserContext):
         return await _ap().start_assistant_interview(body={"sitting": True}, user=user)
 
 
+async def _add_area_fact(org: str, user: UserContext, text_: str, area: str) -> dict:
+    """A chat save of an interview answer, as ``profile_remember`` sends it."""
+    with _tenant(org):
+        return await _ap().add_fact(body={"text": text_, "kind": "work", "area": area},
+                                    user=user, x_profile_via="chat")
+
+
 def _column(db, email: str) -> dict:
     ((_org, stored),) = _stored(db, email)
     return stored if isinstance(stored, dict) else json.loads(stored)
@@ -85,6 +92,7 @@ async def test_the_first_mark_makes_the_row_and_sets_the_times(db) -> None:
     async with tenant_engine_scope(_app_dsn(db)):
         await _sit(db.org_a, user)
         first = await _mark(db.org_a, user, "goals", "asked", "chat")
+        await _add_area_fact(db.org_a, user, "Ship the CRM import", "goals")
         second = await _mark(db.org_a, user, "goals", "answered", "chat")
         read = await _get(db.org_a, user)
     assert set(first) == {"started_at", "sitting_at", "last_asked_at", "areas"}
@@ -194,7 +202,7 @@ async def test_a_reset_keeps_the_facts_and_a_chat_reset_is_a_422(db) -> None:
     db.made.append(email)
     user = _member(email)
     async with tenant_engine_scope(_app_dsn(db)):
-        await _add_fact(db.org_a, user, "Ships Q4", "work")
+        await _add_area_fact(db.org_a, user, "Ships Q4", "goals")
         await _mark(db.org_a, user, "goals", "answered", "chat")
         await _mark(db.org_a, user, "role", "skipped", "chat")
         with _tenant(db.org_a):
@@ -342,3 +350,91 @@ async def test_a_due_question_allows_an_asked_mark_from_the_chat(db) -> None:
                     "started_at": old, "last_asked_at": old}}), "u": email})
         done = await _mark(db.org_a, user, "role", "asked", "chat")
     assert done["areas"]["role"]["state"] == "asked"
+
+
+# ── A chat mark `answered` needs a saved answer (incident 2026-10-27) ──────
+#
+# The model marked `goals` answered after its save was refused, so the area
+# closed and the member's answer was lost. The route now refuses that mark
+# from the chat. Mutation: remove `_check` in `mark_assistant_interview`,
+# and the three tests below go red.
+
+
+async def test_a_chat_answered_with_nothing_saved_is_a_422_and_the_area_stays_open(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
+        await _mark(db.org_a, user, "goals", "asked", "chat")
+        # A fact of ANOTHER area, and a fact with no area, are no answer.
+        await _add_area_fact(db.org_a, user, "I run the sales team", "role")
+        await _add_fact(db.org_a, user, "I like tea")
+        for via in ("chat", "whatsapp"):
+            with pytest.raises(HTTPException) as exc:
+                await _mark(db.org_a, user, "goals", "answered", via)
+            assert exc.value.status_code == 422
+            assert exc.value.detail == {"reason": acp.NO_ANSWER,
+                                        "message": acp.NO_ANSWER_TEXT}
+        assert _column(db, email)["interview"]["areas"]["goals"]["state"] == "asked"
+        # The save of the answer, then the mark passes.
+        await _add_area_fact(db.org_a, user, "ship the CRM import", "goals")
+        done = await _mark(db.org_a, user, "goals", "answered", "chat")
+    assert done["areas"]["goals"]["state"] == "answered"
+
+
+async def test_detail_and_people_take_their_own_evidence(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        for area in ("detail", "people"):
+            with pytest.raises(HTTPException) as exc:
+                await _mark(db.org_a, user, area, "answered", "chat")
+            assert exc.value.status_code == 422
+        await _put(db.org_a, user, "style", {"length": "short"})
+        await _mark(db.org_a, user, "detail", "answered", "chat")
+        # One saved alias. The org check of an alias address is not under
+        # test here, so the row is written as the alias route stores it.
+        with db.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE user_settings SET assistant_profile = jsonb_set("
+                "assistant_profile, '{aliases}', CAST(:a AS jsonb), true) "
+                "WHERE user_id = :u"),
+                {"a": json.dumps([{"id": "a0001", "alias": "Raj",
+                                   "email": "raj@pz26.test"}]), "u": email})
+        done = await _mark(db.org_a, user, "people", "answered", "chat")
+    assert {a: v["state"] for a, v in done["areas"].items()} == {
+        "detail": "answered", "people": "answered"}
+
+
+async def test_settings_and_the_other_states_are_not_limited(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        settings = await _mark(db.org_a, user, "goals", "answered")  # no header
+        skipped = await _mark(db.org_a, user, "role", "skipped", "chat")
+        never = await _mark(db.org_a, user, "energy", "never", "chat")
+    assert settings["areas"]["goals"]["state"] == "answered"
+    assert skipped["areas"]["role"]["state"] == "skipped"
+    assert never["areas"]["energy"]["state"] == "never"
+
+
+async def test_a_replace_with_an_area_answers_the_area(db) -> None:
+    """``profile_remember(replaces=...)`` PATCHes the old fact with the area,
+    so the mark after a replace still passes."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        old = await _add_fact(db.org_a, user, "I want to hire", "work")
+        with pytest.raises(HTTPException):
+            await _mark(db.org_a, user, "goals", "answered", "chat")
+        with _tenant(db.org_a):
+            edited = await _ap().edit_fact(
+                old["id"], body={"text": "hire two engineers", "kind": "work",
+                                 "area": "goals"}, user=user, x_profile_via="chat")
+        done = await _mark(db.org_a, user, "goals", "answered", "chat")
+    assert edited["area"] == "goals" and edited["text"] == "hire two engineers"
+    assert done["areas"]["goals"]["state"] == "answered"

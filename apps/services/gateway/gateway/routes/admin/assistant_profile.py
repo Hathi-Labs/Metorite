@@ -118,7 +118,10 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     _stored_fact,
     _stored_keys,
     _text,
+    NO_ANSWER,
+    NO_ANSWER_TEXT,
     apply_interview_mark,
+    area_has_answer,
     empty_profile,
     mark_changed,
     may_ask,
@@ -201,6 +204,9 @@ class FactPatch(BaseModel):
 
     text: str | None = None
     kind: FactKind | None = None
+    #: The interview area that the changed fact now answers. A replace in
+    #: the interview sends it, so the area can be marked ``answered``.
+    area: AreaId | None = None
 
     @field_validator("text", mode="before")
     @classmethod
@@ -1063,15 +1069,21 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-async def _interview_write(uid: str, via: str | None, build: Any) -> dict[str, Any]:
+async def _interview_write(uid: str, via: str | None, build: Any,
+                           check: Any = None) -> dict[str, Any]:
     """Change ``interview`` in one transaction. ``build(current)`` gives the
-    new value, and the row lock makes two marks of one member wait."""
+    new value, and the row lock makes two marks of one member wait.
+    ``check(profile)`` reads the whole stored profile under the same lock,
+    and may refuse before anything is written."""
     params_where = _LEARNING_NOT_OFF if via is not None else ""
 
     async def _run(db: Any) -> Any:
         await _learning_gate(db, uid, via)
         row = (await db.execute(_sql(_READ_LOCKED_SQL), {"uid": uid})).first()
-        current = stored_profile(row[0] if row is not None else None).get("interview")
+        profile = stored_profile(row[0] if row is not None else None)
+        if check is not None:
+            check(profile)
+        current = profile.get("interview")
         new = build(current)
         stored = await _upsert(
             db, uid, _NEW_KEY, _MERGE_KEY,
@@ -1118,11 +1130,21 @@ async def mark_assistant_interview(
 ) -> dict[str, Any]:
     """Body ``{"state": asked|answered|skipped|never}``. The server sets the
     time. ``asked`` also sets ``last_asked_at``, and the first mark sets
-    ``started_at``. A chat mark is a 409 while ``learning`` is off."""
+    ``started_at``. A chat mark is a 409 while ``learning`` is off.
+
+    A chat mark ``answered`` needs a saved answer for the area
+    (``area_has_answer``). Without one it is a 422 with the detail
+    ``{"reason": "no_answer", "message": ...}``, so a refused save never
+    closes an area (incident 2026-10-27). Settings is not limited."""
     uid = _member(user)
     via = _via(x_profile_via)
     _area(area)
     mark = _validate(InterviewMark, body)
+
+    def _check(profile: dict[str, Any]) -> None:
+        if via is not None and mark.state == "answered" and not area_has_answer(profile, area):
+            raise HTTPException(status_code=422,
+                                detail={"reason": NO_ANSWER, "message": NO_ANSWER_TEXT})
 
     def _build(cur: Any) -> dict[str, Any]:
         now = _now()
@@ -1132,7 +1154,7 @@ async def mark_assistant_interview(
             raise _refuse(NO_SITTING)
         return apply_interview_mark(cur, area, mark.state, now)
 
-    return await _interview_write(uid, via, _build)
+    return await _interview_write(uid, via, _build, _check)
 
 
 @me_router.delete("/me/assistant-profile/interview/{area}", status_code=204,

@@ -264,7 +264,11 @@ def test_the_route_model_takes_only_a_known_area() -> None:
         routes.FactIn(text="a", kind="work", area="hobbies")
     with pytest.raises(ValidationError):
         routes.InterviewMark(state="maybe")
-    assert routes.FactPatch.model_fields.keys() == {"text", "kind"}
+    # A replace in the interview carries its area (incident 2026-10-27).
+    assert routes.FactPatch.model_fields.keys() == {"text", "kind", "area"}
+    assert routes.FactPatch(text="a", area="goals").area == "goals"
+    with pytest.raises(ValidationError):
+        routes.FactPatch(text="a", area="hobbies")
 
 
 # ── The block in the executor ──────────────────────────────────────────────

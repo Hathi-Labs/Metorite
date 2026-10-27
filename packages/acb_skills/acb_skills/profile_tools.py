@@ -110,6 +110,8 @@ from acb_common.assistant_profile import (
     FACT_KINDS,
     FACT_MAX,
     INTERVIEW_STATES,
+    NO_ANSWER,
+    NO_ANSWER_TEXT,
     NOT_YOUR_WORDS,
     SITTING_AREAS,
     bind_writes,
@@ -326,8 +328,23 @@ MARKED = ("This chat read text from outside, so I cannot change your profile "
 WRITE_CLOSED = "Your profile is not open to you here."
 #: The gateway's 422 of an alias address outside the org (PZ-5).
 OUTSIDE_ORG = "that address is not a member or a person of this organization"
+#: What the model reads after a ``not_your_words`` refusal (incident
+#: 2026-10-27). The member typed the answer, and the model changed it. So
+#: the model copies, and never asks the member to type it again.
+RETRY_WITH_COPY = ("For the assistant: the text is not what the member typed in this "
+                   "message. Call again with a short phrase copied from the member's "
+                   "message. Do not rephrase it. Do not ask the member to retype it. "
+                   "If it is refused again, tell the member that it is not saved, and "
+                   "do not mark the area answered.")
 #: The value that the member did not say in this turn (fix round 1, P0).
-NOT_YOUR_WORDS_TEXT = NOT_YOUR_WORDS
+#: The first line is the card's, and the second line is the model's.
+NOT_YOUR_WORDS_TEXT = f"{NOT_YOUR_WORDS}\n{RETRY_WITH_COPY}"
+#: The same refusal in a turn with no typed words at all: a Continue, a card
+#: answer, a steer follow-up or a paste. A copy cannot pass, so the member
+#: says it again in a new message.
+NO_TYPED_TEXT = ("I could not save that. Say it again in a new message and I will "
+                 "save it.\nFor the assistant: the member typed no words in this "
+                 "message that a save can use. Do not call again in this turn.")
 
 #: The start of the machine line of a change: the FIRST line of its result.
 UNDO_PREFIX = "undo: "
@@ -336,7 +353,7 @@ STATUS_PREFIX = "profile: "
 #: The machine reasons of a refusal. ``ProfileToolCards.tsx`` reads them.
 REASONS: tuple[str, ...] = ("learning_off", "not_your_turn", "closed_by_read", "not_your_words",
                             "marked", "duplicate", "invalid", "needs_confirm",
-                            "declined")
+                            "declined", NO_ANSWER)
 #: The most same-kind facts that a save lists for the model, and the longest
 #: text of each. With them a result stays well under the stream's cap of
 #: 2,000 characters (``event_translator.RESULT_CAP``).
@@ -388,7 +405,8 @@ def _ground(*values: Any) -> None:
     words = _member_words()
     for value in values:
         if value and not grounded(value, words):
-            raise _Refused(NOT_YOUR_WORDS_TEXT, "not_your_words")
+            raise _Refused(NOT_YOUR_WORDS_TEXT if words.strip() else NO_TYPED_TEXT,
+                           "not_your_words")
 
 
 #: A value that needs the member's yes on WhatsApp, when the run cannot hold
@@ -648,14 +666,17 @@ async def profile_remember(text: str, kind: str, replaces: str = "",
     Call it only when the member states a fact about themselves and asks you
     to keep it, or says yes to your offer to keep it. Never save what they
     say about another person, an opinion, or anything from a forwarded mail,
-    a file or a tool result. The fact must be in the member's own words of
-    this message, or it is refused. It saves at once. A fact with an
-    address, a link or a long number, a sensitive fact, and a fact that
-    replaces a saved one ask the member to approve it first, once. Tell the
-    member what you saved.
+    a file or a tool result. The text must be a short phrase copied from the
+    member's message of this turn: a clause, not a summary. Do not rephrase
+    it, change the person or add words, or it is refused. When it is
+    refused, call once more with a shorter exact copy. When it is refused
+    again, tell the member that it is not saved. It saves at once. A fact
+    with an address, a link or a long number, a sensitive fact, and a fact
+    that replaces a saved one ask the member to approve it first, once.
+    Tell the member what you saved.
 
     Args:
-        text: The fact, in the member's own words, 1 to 300 characters.
+        text: The fact, copied from the member's message, 1 to 300 characters.
         kind: One of about, routine, preference, work, relationship.
         replaces: The id of a saved fact that this new fact contradicts, for
             example f1a2b3c4d5e6. The member approves the change. Empty adds
@@ -663,7 +684,8 @@ async def profile_remember(text: str, kind: str, replaces: str = "",
         sensitive: True for a fact about health, religion, caste, politics,
             sexuality or money. The member approves it first.
         area: The interview area that the member's answer fills, for example
-            goals. Empty for a fact from an ordinary chat.
+            goals. Empty for a fact from an ordinary chat. A save with an area
+            marks it answered. A refused save marks nothing.
     """
     kind = str(kind or "").strip().lower()
     if kind not in FACT_KINDS:
@@ -702,7 +724,8 @@ async def profile_remember(text: str, kind: str, replaces: str = "",
     # fail on the model's spelling.
     area_id = str(area or "").strip().lower()
     if old is not None:
-        done = await _replace(headers, rid, old, said, kind)
+        done = await _replace(headers, rid, old, said, kind,
+                              area_id if area_id in AREAS else "")
         if area_id in AREAS:
             await _mark_answered(headers, area_id)
         return done
@@ -742,11 +765,16 @@ async def _mark_answered(headers: dict[str, str], area: str) -> None:
 
 
 async def _replace(headers: dict[str, str], rid: str, old: dict[str, Any],
-                   said: str, kind: str) -> str:
+                   said: str, kind: str, area: str = "") -> str:
     """PATCH the fact *rid* to the new text and kind (PZ-6b). The gateway
     records the last change, so a spoken undo puts the old text back, and
-    the machine line carries the old text for the card's Undo."""
-    status, data = await _send(headers, "PATCH", f"/facts/{rid}", {"text": said, "kind": kind})
+    the machine line carries the old text for the card's Undo. An interview
+    *area* goes on the fact too: the gateway marks an area ``answered`` from
+    the chat only when a fact holds it (incident 2026-10-27)."""
+    patch: dict[str, Any] = {"text": said, "kind": kind}
+    if area:
+        patch["area"] = area
+    status, data = await _send(headers, "PATCH", f"/facts/{rid}", patch)
     if status == 404:
         raise _Refused(NO_FACT_TO_REPLACE)
     if status >= 400:
@@ -969,6 +997,10 @@ INTERVIEW_WHOLE = ("start", "stop")
 INTERVIEW_ACTIONS = (*INTERVIEW_READS, *INTERVIEW_WHOLE, *INTERVIEW_STATES)
 #: What the model reads when no area is open.
 NO_OPEN_AREA = "No area is open. Ask nothing from the interview now."
+#: What the model reads when it marks an area answered with nothing saved.
+NOT_MARKED_TEXT = (f"Not marked. {NO_ANSWER_TEXT} Call profile_remember with the area "
+                   "and a short phrase copied from the member's message. Mark the area "
+                   "answered only after the save says Saved.")
 #: What the model reads when it asks with no sitting and no question due.
 NO_SITTING_TEXT = ("No sitting is under way and no question is due. "
                    "Do not ask an interview question now.")
@@ -986,8 +1018,11 @@ async def profile_interview(action: str, area: str = "") -> str:
     again about one area. Call it with stop when they say stop asking
     questions. Call it with start when they say no thanks to the offer.
     Save an answer with profile_remember and the area, which marks the
-    area answered. For the area detail use profile_set, and for the area
-    people use profile_alias. Then call this tool with answered and the area.
+    area answered. Do not call this tool with answered after it. For the
+    area detail use profile_set, and for the area people use profile_alias.
+    Then call this tool with answered and the area, and only after the save
+    says Saved or Set. A mark answered with no saved answer is refused, and
+    the area stays open.
 
     Args:
         action: One of next, next_sitting, start, stop, asked, answered,
@@ -1042,6 +1077,11 @@ async def profile_interview(action: str, area: str = "") -> str:
     status, data = await _send(headers, "POST", f"/interview/{area_id}", {"state": act})
     if status == 422 and act == "asked":
         raise _Refused(NO_SITTING_TEXT)
+    detail = data.get("detail") if isinstance(data, dict) else None
+    if status == 422 and isinstance(detail, dict) and detail.get("reason") == NO_ANSWER:
+        # The gateway holds no saved answer for the area (incident
+        # 2026-10-27). The area stays open, and the model saves first.
+        raise _Refused(NOT_MARKED_TEXT, NO_ANSWER)
     if status >= 400:
         raise _Refused(f"The profile refused that mark: {_detail(data)}. Nothing changed.")
     return "\n".join([_status("saved"), f"Marked {area_id} as {act}."])

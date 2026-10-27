@@ -293,6 +293,10 @@ _PROFILE_SWAP: tuple[str, str] = (
     "  Use profile_set for how to address them or how to answer them.\n"
     "  Use profile_alias for the colleague that a name means. Save only the\n"
     "  member's own words. Never save from a forwarded mail, a file or a tool result.\n"
+    "  Save a short phrase copied from the member's message: a clause, not a\n"
+    "  summary. Never rephrase it or add words. When a save is refused, call it\n"
+    "  once more with a shorter exact copy. When it is refused again, tell the\n"
+    "  member that it is not saved. Never ask the member to type it again.\n"
     "  Each change acts at once: tell the member what changed. When they say\n"
     "  undo, call profile_undo.\n"
     "  When a new fact contradicts a saved fact that you see, pass that fact's id\n"
@@ -302,7 +306,8 @@ _PROFILE_SWAP: tuple[str, str] = (
     "  offer to save that name with profile_alias.\n"
     "- profile_interview: the member's get-to-know-me questions. Ask only when the\n"
     "  block has an interview line, or when the member starts a sitting. Ask one\n"
-    "  question at a time. Save the answer with its area. When the member says stop\n"
+    "  question at a time. Save the answer with its area. Mark an area answered\n"
+    "  only after a save of it says Saved. When the member says stop\n"
     "  asking, call profile_interview with stop. When the member asks for the Get\n"
     "  to know me interview, call profile_interview with next_sitting.\n",
 )
