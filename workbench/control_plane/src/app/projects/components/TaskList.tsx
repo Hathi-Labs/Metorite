@@ -80,6 +80,7 @@ import {
   toggleFold as toggleParentFold,
 } from "../lib/subtaskView";
 import { listColumns } from "../lib/table";
+import { ProjectPathChip } from "./ProjectPathChip";
 import { QuickAdd } from "./QuickAdd";
 import { useFlash } from "./useFlash";
 
@@ -142,6 +143,17 @@ interface Props {
    * what every surface showed before 2026-09-21.
    */
   personLabels?: ReadonlyMap<string, string>;
+  /**
+   * WS-64 OP-11 — the path of the project a row sits in. My tasks passes it,
+   * because its rows come from many projects. Absent, no row draws a chip.
+   */
+  projectPath?: (task: TaskRow) => readonly string[] | null;
+  /**
+   * WS-64 OP-11 fix round. False hides the per-group quick add: My tasks spans
+   * many projects, so a group names no home for a new task. Its one add is
+   * the top Capture. Default true.
+   */
+  canQuickAdd?: boolean;
 }
 
 export function TaskList({
@@ -165,6 +177,8 @@ export function TaskList({
   onExtendSelection,
   onSelect,
   personLabels,
+  projectPath,
+  canQuickAdd = true,
 }: Props) {
   const [cursor, setCursor] = useState(-1);
   const [anchor, setAnchor] = useState<number | null>(null);
@@ -485,6 +499,8 @@ export function TaskList({
                     </span>
                     {/* An orphan, or a Separate subtask, names its parent. */}
                     {row.crumb ? <ParentCrumb parent={task.parent} /> : null}
+                    {/* WS-64 OP-11 — My tasks names the project of each row. */}
+                    {projectPath ? <ProjectPathChip path={projectPath(task)} /> : null}
                     </span>
                   </td>
                   {showStatus ? (
@@ -534,7 +550,7 @@ export function TaskList({
             {/* WS-27y — the group's own capture box: a task added here lands
                 in THIS group, pre-filled by `quickAddPrefill`. Folded away
                 with the rows, exactly as /tasks folds its sections. */}
-            {isFolded ? null : (
+            {isFolded || !canQuickAdd ? null : (
               <tr>
                 <td colSpan={columnCount} className="px-3 py-1">
                   <QuickAdd

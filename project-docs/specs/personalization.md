@@ -20,6 +20,14 @@ the due line in the block. See §14.4 "PZ-26 as built".
 chat, the interview list in Settings → Assistant settings and the chat receipt. See
 §14.4 "PZ-27 as built". The visual review is UNVERIFIED.
 
+**PZ-30 BUILT 2026-10-27, dark.** The interview reads as a talk, not a form.
+See §14.4 "PZ-30 as built".
+
+**Interview save fix BUILT 2026-10-27.** On production a refused save
+still closed the `goals` area. The gateway now refuses a chat mark
+`answered` with no saved answer. See §14.4 "PZ-26 as built" item 9 and
+§5.5 "The refusal speaks to two readers".
+
 **PZ-28 BUILT 2026-10-26.** The row and the page are named "Assistant
 settings", and the row moved from the You group to the Settings group of the
 account menu. The offer card links to the page. The visual review is
@@ -550,6 +558,19 @@ routes as the member, with the internal bearer and `X-User-Email`.
   number, with its separators gone, must be one number of them. At least
   80% of the content words, and at least one, must be in them. A choice
   field is exempt. Else the tool refuses with `not_your_words`.
+- **The refusal speaks to two readers** (fix, 2026-10-27). On production
+  the model saved a summary of an interview answer, and the rule refused
+  it twice. The card then told the member to say it in their own words,
+  which they had done. Now the first text line is for the member: "I could
+  not save that. I save only your own words." The next line starts "For
+  the assistant:", and the card never shows it. It tells the model to call
+  again once with a short phrase copied from the message. It also tells the
+  model never to ask the member to type it again. A turn with no typed words
+  gets a different pair of lines. There the model says once that nothing is
+  saved, and asks the member to say it again in a new message. The rule of
+  `grounded()` and the 80% share did not change. Fences:
+  `tests/unit/test_profile_write_tools.py` and
+  `ProfileToolCards.test.ts`.
 - **WhatsApp.** `bot_run` binds the channel for every WhatsApp run, so a
   write labels `whatsapp`. With the org's WhatsApp writes off, the run holds
   no write tool, as its scope rule says. `resolve_person` stays.
@@ -1162,7 +1183,7 @@ unknown area.
   only, and the offer does not come back. "Not now" hides the offer for the
   browser session only.
 
-In the sitting, the model asks up to five open areas, one question at a
+In the sitting, the model asks up to three open areas, one question at a
 time. It saves each answer with the tools of §5.5, with the area set. The
 member can skip a question or stop the sitting at any time.
 
@@ -1209,7 +1230,7 @@ member can reset one area or the whole interview. A fact shows its area.
    `last_change`, and it does not count in the 6,000-character budget.
    A reset from the chat is a 422. The routes take no org flag, as the other
    write routes take none.
-3. `profile_interview` reads the open areas (`next`, `next_sitting` with five)
+3. `profile_interview` reads the open areas (`next`, `next_sitting` with three)
    and marks one area. `profile_remember` takes `area` and marks the area
    `answered` after the save. The undo of that fact opens the area again.
 4. The executor keeps the stored `interview` in its 60 second cache. It
@@ -1230,11 +1251,34 @@ member can reset one area or the whole interview. A fact shows its area.
    area marks the area `answered` too.
 8. The fences are `tests/unit/test_assistant_profile_interview.py` and
    `tests/unit/test_assistant_profile_interview_r8.py`.
+9. **A chat mark `answered` needs a saved answer** (fix, 2026-10-27). On
+   production the model marked `goals` answered after its save was refused.
+   So the area closed, and the member's answer was lost. Now
+   `POST .../interview/{area}` with `X-Profile-Via` refuses `answered` with
+   a 422 `{"reason": "no_answer", "message": ...}`. It passes only when
+   `area_has_answer` finds a FRESH answer. Four server times set the limit:
+   the entry of the area, `started_at`, `sitting_at` and `reset_at`. The
+   evidence must be no older than the latest of them. A Settings reset of one area
+   sets `reset_at`, so an old fact never answers the area again. With no
+   interview, nothing counts. An area that is `answered` stays answered.
+   A fact counts by its `at`. For `detail` a chat `put` of `style` in
+   `last_change` counts, and for `people` a chat alias `post` or `patch`.
+   Settings is not limited. A replace sends its area in the `PATCH`. The
+   gateway then sets a new `at`, so the mark after it passes. The undo of
+   that replace opens the area again. The undo of a chat style change opens
+   `detail`, and the undo of a chat alias opens `people`. `last_change`
+   holds only the last chat write. So the model marks `detail` or `people`
+   at once after `profile_set` or `profile_alias`, before any other save.
+   The refusal names the tool of the area. A chat `asked` mark never takes
+   back an `answered` area. Only a reset in Settings opens it. The tool answers the 422 with the reason
+   `no_answer`, and the chat draws no card for it. The persona and the
+   tool docs say: copy a short phrase. Mark an area only after a save says
+   Saved. Fence: `tests/unit/test_assistant_profile_interview_r8.py`.
 
 **PZ-27 as built (2026-10-25).**
 
 1. `openAssistant({ fresh: true, text })` sends the fixed message. The text is
-   "Let's do the Get to know me interview." and it names no tool. The orchestrator
+   "Get to know me. Ask me a few questions." (PZ-30) and it names no tool. The orchestrator
    persona (`_PROFILE_SWAP`) tells the model to call `profile_interview` with
    `next_sitting` when the member asks for it.
 2. `InterviewOffer` draws in the empty chat of the dock and of `/chat`, above
@@ -1244,10 +1288,31 @@ member can reset one area or the whole interview. A fact shows its area.
    confirm. Reset of the whole interview asks first, and the facts stay.
 4. The BFF routes are `interview` (POST, DELETE) and `interview/[area]`
    (DELETE). A bad area id is a 404.
-5. A `profile_interview` write draws the receipt "Interview updated". A read
-   (`next`, `next_sitting`) draws nothing.
+5. A `profile_interview` write drew the receipt "Interview updated". PZ-30
+   removed it: a mark and a read draw nothing.
 6. The fences are `interviewAreas.test.ts` (the TS table equals `AREAS`),
    `InterviewOffer.test.ts` and `AssistantPane.test.ts`.
+
+**PZ-30 as built (2026-10-27).** The owner tried the interview in production
+and said it felt too robotic.
+
+1. The start message is "Get to know me. Ask me a few questions." It names no
+   tool and no interview. The persona calls `next_sitting` for that request.
+2. `AREA_INTENTS` holds what we want to learn from each area, and why.
+   The tool lists each open area. A line gives the id, the intent, and the
+   starting question marked "Example, do not read it out". The model asks in its own words.
+3. The persona and the tool text carry the tone rules. One warm opening line.
+   One short reaction, then one question. No list of the answer. No numbering.
+   One light follow-up when an answer is thin. No word about tools, marks or
+   areas. A save is silent. A refused save gets one plain sentence.
+4. A saved interview mark draws no card. A saved fact keeps one quiet receipt
+   "Noted" with Undo. A refused save keeps "Not saved".
+5. A sitting asks three areas (`SITTING_AREAS`). After the third answer the
+   model asks once, lightly, whether to go on. The due line reads as a soft
+   prompt: ask only if it fits, at the end of the reply.
+6. Fences: `tests/unit/test_interview_tone.py` and the fixture
+   `tests/fixtures/interview_tone_cases.json` (six answers for PZ-10). No
+   model runs. The interview, tool and card tests changed too.
 
 ### 14.5 The slices
 
@@ -1256,6 +1321,7 @@ member can reset one area or the whole interview. A fact shows its area.
 | **PZ-25** | Rollout by org (§14.2), and the Settings nav entry | A test shows the profile off for an organization outside the list, in the block, the tools, the routes and the web app. A test shows the master switch off wins | AGENT-SAFE · **HIGH** (who gets the block). **BUILT 2026-10-25, dark** |
 | **PZ-26** | The `area` key, the `interview` key, the interview tools and the due line in the block (§14.3, §14.4) | A test for each limit of §14.4. A test shows no question in a shared room | AGENT-SAFE · MEDIUM. **BUILT 2026-10-25, dark** |
 | **PZ-27** | "Get to know me", the first-chat offer, and the interview list on Settings → Assistant settings | A test shows the button opens the chat with the fixed message. The visual review passes | AGENT-SAFE · LOW. **BUILT 2026-10-25, dark.** The visual review is UNVERIFIED |
+| **PZ-30** | A natural interview: a plain start message, intents instead of questions, tone rules, no card for a mark, three areas a sitting (§14.4) | A test shows each area has an intent, the persona holds each tone rule, a mark draws no card, and a sitting gives three | AGENT-SAFE · MEDIUM. **BUILT 2026-10-27, dark** |
 | **PZ-11** | After PZ-27: the staging test, then the production switch with `ASSISTANT_PROFILE_ORGS` set to Hathi Labs | Verified on staging | **OWNER-GATE** for production |
 
 ### 14.6 How this fits phase 2

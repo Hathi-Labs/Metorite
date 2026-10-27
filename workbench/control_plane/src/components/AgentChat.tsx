@@ -212,6 +212,9 @@ interface AgentChatProps {
   availableAgents?: AgentEntry[];
   /** Persona / system prompt injected as system context (e.g. Metorite brain). */
   persona?: string;
+  /** WS-67 OA-7d: the app slug of the pane (`email`). Only the assistant dock
+   *  sets it. It goes in the request as `surface`, a hint for the tool packs. */
+  surface?: string | null;
   /** Persistent memory lines (Mem0) injected as system context. */
   memories?: string[];
   /** When set, the conversation is saved to Mem0 on unmount under this userId. */
@@ -342,6 +345,7 @@ export default function AgentChat({
   integrationStatuses: externalStatuses,
   availableAgents: externalAgents,
   persona,
+  surface,
   memories,
   memoryUserId,
   onActivity,
@@ -589,6 +593,7 @@ export default function AgentChat({
     model: modelPlan.sendModel ? currentModel : null,
     mode: effectiveRuntime,
     systemContext,
+    surface,
     // A covered agent sends "auto", and the executor reads the effort from
     // the member's words (`tier_policy.turn_kind`).
     thinkMode: sentThinkMode(modelPlan.covered, thinkMode),

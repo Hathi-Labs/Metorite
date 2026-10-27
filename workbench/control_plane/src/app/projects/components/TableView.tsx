@@ -85,6 +85,7 @@ import {
 } from "../lib/table";
 import { type Fold, collapsedNow, subtaskSections, toggleFold } from "../lib/subtaskView";
 import { NO_CELL, clampCell, stepCell } from "../lib/tableCursor";
+import { ProjectPathChip } from "./ProjectPathChip";
 import { QuickAdd } from "./QuickAdd";
 import { useFlash } from "./useFlash";
 import { useSubtaskComplete } from "./useSubtaskComplete";
@@ -149,6 +150,19 @@ interface Props {
    * what every surface showed before 2026-09-21.
    */
   personLabels?: ReadonlyMap<string, string>;
+  /**
+   * WS-64 OP-11 — the path of the project a row sits in, and the statuses a
+   * row's status cell may pick from. My tasks passes both, because its rows
+   * come from many projects and each project has its own statuses. Absent,
+   * the table reads `statuses` for every row and draws no chip.
+   */
+  projectPath?: (task: TaskRow) => readonly string[] | null;
+  statusesFor?: (task: TaskRow) => readonly StatusRow[];
+  /**
+   * WS-64 OP-11 fix round. False hides the quick adds: My tasks spans many
+   * projects, so a group names no home for a new task. Default true.
+   */
+  canQuickAdd?: boolean;
 }
 
 export function TableView({
@@ -168,6 +182,9 @@ export function TableView({
   onReload,
   onSelect,
   personLabels,
+  projectPath,
+  statusesFor,
+  canQuickAdd = true,
 }: Props) {
   // WS-27ak(3) — a cell edit on a spreadsheet is the mutation furthest from
   // wherever the one inline error line is drawn; see `saveCell`.
@@ -261,8 +278,11 @@ export function TableView({
     try {
       const keys = Object.keys(patch);
       if (keys.length === 1 && typeof patch.status_id === "string") {
+        // OP-11 fix round: the lanes of the ROW'S OWN project. My tasks holds
+        // rows of many projects, and a Done lane that no loaded row uses is
+        // not in the merged `statuses`, so the ask was skipped there.
         const asked = await subtaskComplete.changeStatus(
-          task, patch.status_id, statuses, () => onReload?.(),
+          task, patch.status_id, statusesFor?.(task) ?? statuses, () => onReload?.(),
         );
         if (asked) {
           onSaved(asked);
@@ -472,7 +492,7 @@ export function TableView({
           widthClass="w-full"
           value={task.status_id}
           onChange={(next) => void saveCell(task, { status_id: next })}
-          options={statuses.map((s) => ({ value: s.id, label: s.name }))}
+          options={(statusesFor?.(task) ?? statuses).map((s) => ({ value: s.id, label: s.name }))}
         />
       );
     }
@@ -606,11 +626,13 @@ export function TableView({
         <p className="mb-2 text-sm text-muted-foreground">No tasks here yet.</p>
         {/* No group to land in, so the UNSET sentinel: every axis maps it to
             the empty plan, and the server assigns the default status. */}
-        <QuickAdd
-          label="Add a task"
-          onAdd={(title) => quickAdd(title, UNSET)}
-          className="max-w-md"
-        />
+        {canQuickAdd ? (
+          <QuickAdd
+            label="Add a task"
+            onAdd={(title) => quickAdd(title, UNSET)}
+            className="max-w-md"
+          />
+        ) : null}
       </div>
     );
   }
@@ -746,6 +768,8 @@ export function TableView({
                           its parent. A nested row does not: the indent and
                           the mark above already say where it sits. */}
                       {row.crumb ? <ParentCrumb parent={task.parent} /> : null}
+                      {/* WS-64 OP-11 — My tasks names the project of each row. */}
+                      {projectPath ? <ProjectPathChip path={projectPath(task)} /> : null}
                       </span>
                     </td>
                     {columns.map((column, columnIndex) => {
@@ -776,15 +800,17 @@ export function TableView({
               })}
               {/* WS-27y machinery, per the ticket: a task added here lands in
                   THIS group, pre-filled by `quickAddPrefill`. */}
-              <tr>
-                <td colSpan={colCount} className="px-3 py-1">
-                  <QuickAdd
-                    label={groupBy === "none" ? "Add a task" : `Add to ${section.label}`}
-                    onAdd={(title) => quickAdd(title, section.key)}
-                    className="max-w-md"
-                  />
-                </td>
-              </tr>
+              {canQuickAdd ? (
+                <tr>
+                  <td colSpan={colCount} className="px-3 py-1">
+                    <QuickAdd
+                      label={groupBy === "none" ? "Add a task" : `Add to ${section.label}`}
+                      onAdd={(title) => quickAdd(title, section.key)}
+                      className="max-w-md"
+                    />
+                  </td>
+                </tr>
+              ) : null}
             </tbody>
           );
         })}

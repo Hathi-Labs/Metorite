@@ -87,6 +87,21 @@ AREAS: dict[str, str] = {
     "peeves": "Is there something that assistants do that annoys you?",
     "people": "Who do you work with most?",
 }
+#: What each area is for (PZ-30, §14.4). One table, same ids as :data:`AREAS`.
+#: The model reads the intent and asks in its own words. The starting
+#: question is only an example.
+AREA_INTENTS: dict[str, str] = {
+    "role": "their role and what fills most of their week, so help fits their real work",
+    "goals": "what they most want to move this quarter, so plans and reminders point at it",
+    "good_day": "what makes a day a win for them, so daily plans aim at it",
+    "decisions": "whether they want options with a recommendation or only the answer",
+    "detail": "whether they want the headline first or the full reasoning",
+    "rhythm": "when they do deep work and when not to interrupt, so timing fits them",
+    "channels": "what must reach them on WhatsApp and what can wait for the web",
+    "energy": "which part of their work they enjoy most, so you can lean into it",
+    "peeves": "what assistants do that annoys them, so you stop doing it",
+    "people": "who they work with most, so names and mail resolve to the right people",
+}
 #: The state of an area (§14.3). An area with no entry is open.
 INTERVIEW_STATES: tuple[str, ...] = ("asked", "answered", "skipped", "never")
 #: The most hours between two questions (§14.4, limit 1).
@@ -94,8 +109,8 @@ DUE_HOURS = 24
 #: The days that a skipped area, or an asked area with no answer, waits
 #: (§14.4, limit 2, D-PZ-13).
 WAIT_DAYS = 14
-#: The most areas that one sitting asks (§14.4).
-SITTING_AREAS = 5
+#: The most areas that one sitting asks (§14.4, PZ-30: three, a softer pace).
+SITTING_AREAS = 3
 #: The hours that a sitting lasts after the member starts it. In a sitting
 #: the model may mark an area `asked` without a due line.
 SITTING_HOURS = 2
@@ -316,7 +331,7 @@ def _stored_interview(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     out: dict[str, Any] = {}
-    for key in ("started_at", "last_asked_at", "sitting_at"):
+    for key in ("started_at", "last_asked_at", "sitting_at", "reset_at"):
         if _parse_time(raw.get(key)) is not None:
             out[key] = raw[key]
     areas: dict[str, Any] = {}
@@ -558,9 +573,11 @@ def typed_words() -> str:
     return MEMBER_TYPED.get()
 
 
-#: The refusal of a value that the member did not say in this turn.
-NOT_YOUR_WORDS = ("I can only save what you tell me yourself. Say it in your own "
-                  "words and I will save it.")
+#: The refusal of a value that the member did not say in this turn, as the
+#: member reads it on the card. The member did say it: the model changed the
+#: words (incident 2026-10-27). So the line never asks the member to say it
+#: again. The tool adds a line for the model (``profile_tools``).
+NOT_YOUR_WORDS = "I could not save that. I save only your own words."
 
 _GROUND_EMAIL = re.compile(r"[^\s@<>()\[\]\"',;:]+@[^\s@<>()\[\]\"',;:]+")
 _GROUND_URL = re.compile(r"(?:[a-z][a-z0-9+.\-]*://|www\.)[^\s<>\"']+")
@@ -1049,6 +1066,73 @@ def due_area(interview: Any, now: datetime) -> str:
     return next(iter(open_areas(stored, now, 1)), "")
 
 
+#: The machine reason of a chat mark ``answered`` with no saved answer
+#: (incident 2026-10-27). The gateway answers it as a 422.
+NO_ANSWER = "no_answer"
+#: What the model reads with that 422.
+NO_ANSWER_TEXT = "Nothing is saved for this area yet. Save the answer first."
+
+
+def answer_since(interview: Any, area: str) -> datetime | None:
+    """The time after which a save counts as an answer for *area*, or None.
+
+    It is the latest of the area's current entry (``asked`` or ``skipped``,
+    for example), ``started_at``, ``sitting_at`` and ``reset_at``. A reset
+    in Settings removes the entry and sets ``reset_at``, so a fact from
+    before the reset never answers the area again (review of the 2026-10-27
+    fix). None means no interview: then nothing counts."""
+    stored = _stored_interview(interview) or {}
+    entry = (stored.get("areas") or {}).get(area) or {}
+    times = [_parse_time(stored.get(k)) for k in ("started_at", "sitting_at", "reset_at")]
+    times.append(_parse_time(entry.get("at")))
+    known = [t for t in times if t is not None]
+    return max(known) if known else None
+
+
+def area_has_answer(profile: Any, area: str, last_change: Any = None) -> bool:
+    """True when the stored *profile* holds a FRESH answer for *area*.
+
+    An area that is ``answered`` already stays answered. Else the evidence
+    must be no older than :func:`answer_since`, by server times only:
+
+    * a fact with ``area == area`` whose ``at`` is not earlier;
+    * for ``detail``, a chat ``put`` of ``style`` in *last_change*;
+    * for ``people``, a chat ``post`` or ``patch`` of an alias in
+      *last_change*.
+
+    *last_change* is the raw :data:`LAST_CHANGE` record of the column. Its
+    ``at`` is epoch seconds. The gateway refuses a chat mark ``answered``
+    without a fresh answer, so a refused save cannot close an area
+    (incident 2026-10-27). Fence:
+    ``tests/unit/test_assistant_profile_interview_r8.py``.
+    """
+    stored = profile if isinstance(profile, dict) else {}
+    interview = stored.get("interview")
+    entry = ((_stored_interview(interview) or {}).get("areas") or {}).get(area) or {}
+    if entry.get("state") == "answered":
+        return True
+    since = answer_since(interview, area)
+    if since is None:
+        return False
+    facts = stored.get("facts") if isinstance(stored.get("facts"), list) else []
+    for fact in facts:
+        at = _parse_time(fact.get("at")) if isinstance(fact, dict) else None
+        if fact.get("area") == area and at is not None and at >= since:
+            return True
+    last = last_change if isinstance(last_change, dict) else {}
+    at = last.get("at")
+    if not isinstance(at, (int, float)) or isinstance(at, bool):
+        return False
+    # The interview times have whole seconds, and so does the record.
+    if datetime.fromtimestamp(int(at), UTC) < since:
+        return False
+    if area == "detail":
+        return last.get("op") == "put" and last.get("key") == "style"
+    if area == "people":
+        return last.get("op") in ("post", "patch") and last.get("list") == "aliases"
+    return False
+
+
 def may_ask(interview: Any, now: datetime) -> bool:
     """True when the model may mark an area ``asked`` from the chat: a
     sitting is under way, or a question is due. A member who said no has
@@ -1068,8 +1152,11 @@ def interview_due_line(interview: Any, now: datetime) -> str:
     area = due_area(interview, now)
     if not area:
         return ""
-    return (f"Interview (one question is due): {area}: «{AREAS[area]}» "
-            "Ask it only at the end of a reply that fits. "
+    return ("Interview (one question is due): "
+            f"{area}: {AREA_INTENTS[area]}. "
+            f"Example, do not read it out: «{AREAS[area]}» "
+            "Ask it only if it fits the moment, at the end of your reply, "
+            "in your own words. "
             f'Then call profile_interview("asked", "{area}").')
 
 

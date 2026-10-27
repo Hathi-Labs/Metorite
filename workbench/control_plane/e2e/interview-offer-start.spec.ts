@@ -99,7 +99,7 @@ const offer = (page: Page) => panel(page).getByRole("region", { name: "Get to kn
 const chatPosts = (page: Page) =>
   page.evaluate(() => (window as unknown as { __chatPosts: Array<{ message?: string }> }).__chatPosts.map((p) => p.message));
 
-const MESSAGE = "Let's do the Get to know me interview.";
+const MESSAGE = "Get to know me. Ask me a few questions.";
 
 async function pressYes(page: Page) {
   await expect(offer(page)).toBeVisible({ timeout: 60_000 });

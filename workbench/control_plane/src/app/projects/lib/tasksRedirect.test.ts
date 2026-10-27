@@ -14,10 +14,10 @@ describe("tasksRedirectTarget, flag on", () => {
   const to = (search: string, hash = "") => tasksRedirectTarget({ search, hash }, true);
 
   it("/tasks goes to Today", () => {
-    expect(to("")).toBe("/projects?app=my-today");
+    expect(to("")).toBe("/projects?app=my-tasks&chip=today");
   });
   it("/tasks#today goes to Today", () => {
-    expect(to("", "#today")).toBe("/projects?app=my-today");
+    expect(to("", "#today")).toBe("/projects?app=my-tasks&chip=today");
   });
   it("/tasks?do=capture goes to the Inbox with capture open", () => {
     expect(to("?do=capture")).toBe("/projects?app=my-inbox&do=capture");
@@ -35,9 +35,9 @@ describe("tasksRedirectTarget, flag on", () => {
     );
   });
   it("unknown query keys and another fragment pass through", () => {
-    expect(to("?x=1")).toBe("/projects?app=my-today&x=1");
+    expect(to("?x=1")).toBe("/projects?app=my-tasks&chip=today&x=1");
     expect(to("?task=t1&x=1", "#c2")).toBe("/projects?task=t1&x=1#c2");
-    expect(to("", "#today")).toBe("/projects?app=my-today");
+    expect(to("", "#today")).toBe("/projects?app=my-tasks&chip=today");
   });
   it("another shell job stays on /tasks", () => {
     expect(to("?do=open-chat&fill.session=s1")).toBeNull();
@@ -54,7 +54,7 @@ describe("tasksRedirectTarget, flag off", () => {
 
 describe("tasksLink", () => {
   it("repoints a /tasks link when the flag is on", () => {
-    expect(tasksLink("/tasks", true)).toBe("/projects?app=my-today");
+    expect(tasksLink("/tasks", true)).toBe("/projects?app=my-tasks&chip=today");
     expect(tasksLink("/tasks?do=capture", true)).toBe("/projects?app=my-inbox&do=capture");
     expect(tasksLink("/tasks?item=t1", true)).toBe("/projects?task=t1");
   });
@@ -82,9 +82,10 @@ describe("projectsPhoneTabs", () => {
       ["Search", "projects-search"],
     ]);
   });
-  it("flag on: My work, Capture, Search (Menu and Ask are the shell's)", () => {
+  it("flag on: My tasks, Capture, Search (Menu and Ask are the shell's)", () => {
+    // WS-64 OP-11: the "My work" tab became "My tasks". The event id stays.
     expect(projectsPhoneTabs(true).map((t) => [t.label, t.event])).toEqual([
-      ["My work", "projects-mywork"],
+      ["My tasks", "projects-mywork"],
       ["Capture", "projects-capture"],
       ["Search", "projects-search"],
     ]);
@@ -100,8 +101,10 @@ describe("projectsPhoneTabs", () => {
     const shell = fs.readFileSync(path.join(root, "components", "AppShell.tsx"), "utf-8");
     expect(shell).toContain("projectsPhoneTabs(myWorkEnabled())");
     expect(shell).not.toContain("projectsMenuEvent");
-    // "My work" opens the Projects sheet, the one the "Projects" tab opens.
-    expect(page).toMatch(/tab === "projects-mywork"\) \{[^}]*setSheet\(\(s\) => \(s === "tree"/);
+    // OP-11: "My tasks" opens the My tasks space. A second tap there opens
+    // the Projects sheet, the one the "Projects" tab opens.
+    expect(page).toMatch(/tab === "projects-mywork"\) \{[^}]*phoneMyTasksTap\(/);
+    expect(page).toMatch(/phoneMyTasksTap\([\s\S]{0,400}setSheet\(\(s\) => \(s === "tree"/);
   });
   it("the /tasks page redirects through the one function", () => {
     const root = path.resolve(__dirname, "..", "..", "..");
@@ -113,7 +116,7 @@ describe("projectsPhoneTabs", () => {
 describe("tasksRedirectFor, the member may not hold Projects", () => {
   const url = { search: "", hash: "" };
   it("redirects when the flag is on and Projects is held", () => {
-    expect(tasksRedirectFor(url, true, true)).toBe("/projects?app=my-today");
+    expect(tasksRedirectFor(url, true, true)).toBe("/projects?app=my-tasks&chip=today");
   });
   it("stays when the flag is on and Projects is not held", () => {
     expect(tasksRedirectFor(url, true, false)).toBeNull();

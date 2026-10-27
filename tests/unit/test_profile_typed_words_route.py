@@ -117,3 +117,17 @@ def test_a_replayed_steer_never_reaches_the_typed_words(world, seen) -> None:  #
         "signal_id": "s1", "at": 1.0})]
     assert _post(_body("t-replay", "remember I like green tea"))[0] == 200
     assert seen[0]["typed"] == "remember I like green tea"
+
+
+def test_turn_two_binds_turn_two_words_and_not_the_history(seen) -> None:
+    """The interview incident of 2026-10-27: the answer is turn 2 or later of
+    one chat. The run of turn 2 must see the words of turn 2 only, never the
+    first message of the chat and never the history that the client sends."""
+    first = "Get to know me"
+    answer = ("This quarter I want to ship the CRM import, hire two engineers "
+              "and cut the support backlog in half")
+    assert _post(_body("t-turns", first))[0] == 200
+    history = [{"role": "user", "content": first},
+               {"role": "assistant", "content": "What do you want to move this quarter?"}]
+    assert _post(_body("t-turns", answer, history=history))[0] == 200
+    assert [run["typed"] for run in seen] == [first, answer]

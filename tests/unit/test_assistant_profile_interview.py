@@ -138,6 +138,12 @@ def test_a_mark_refuses_an_unknown_area_or_state() -> None:
         ap.apply_interview_mark(None, "goals", "maybe", NOW)
 
 
+def test_every_area_has_an_intent_and_a_sitting_is_three() -> None:
+    assert set(ap.AREA_INTENTS) == set(ap.AREAS)
+    assert all(ap.AREA_INTENTS[a].strip() for a in ap.AREAS)
+    assert ap.SITTING_AREAS == 3
+
+
 def test_start_sets_started_at_once_and_no_last_asked() -> None:
     first = ap.start_interview(None, NOW)
     assert set(first) == {"started_at"}
@@ -167,14 +173,16 @@ def test_the_due_line_waits_more_than_twenty_four_hours() -> None:
     due = ap.interview_due_line(_iv(last=timedelta(hours=24, minutes=1)), NOW)
     exact = ap.interview_due_line(_iv(last=timedelta(hours=24)), NOW)
     assert quiet == "" and exact == ""
-    assert due.startswith("Interview (one question is due): role: «")
-    assert ap.AREAS["role"] in due
+    assert due.startswith("Interview (one question is due): role: ")
+    assert ap.AREA_INTENTS["role"] in due
+    assert f"Example, do not read it out: «{ap.AREAS['role']}»" in due
+    assert "Ask it only if it fits the moment, at the end of your reply" in due
     assert 'profile_interview("asked", "role")' in due
 
 
 def test_the_line_names_the_first_open_area() -> None:
     iv = _iv(role=("answered", timedelta(days=2)), goals=("skipped", timedelta(days=2)))
-    assert "good_day: «" in ap.interview_due_line(iv, NOW)
+    assert "good_day: " in ap.interview_due_line(iv, NOW)
 
 
 def test_a_decline_sets_started_at_only_and_no_line_ever_comes() -> None:
@@ -264,7 +272,11 @@ def test_the_route_model_takes_only_a_known_area() -> None:
         routes.FactIn(text="a", kind="work", area="hobbies")
     with pytest.raises(ValidationError):
         routes.InterviewMark(state="maybe")
-    assert routes.FactPatch.model_fields.keys() == {"text", "kind"}
+    # A replace in the interview carries its area (incident 2026-10-27).
+    assert routes.FactPatch.model_fields.keys() == {"text", "kind", "area"}
+    assert routes.FactPatch(text="a", area="goals").area == "goals"
+    with pytest.raises(ValidationError):
+        routes.FactPatch(text="a", area="hobbies")
 
 
 # ── The block in the executor ──────────────────────────────────────────────
@@ -302,7 +314,7 @@ def test_a_due_line_follows_the_block(run, clock, writes) -> None:  # noqa: F811
     assert block.startswith(epb.GOLDEN)
     lines = block.splitlines()
     assert lines[-2] == ap.BLOCK_FOOTER
-    assert lines[-1].startswith("Interview (one question is due): role: «")
+    assert lines[-1].startswith("Interview (one question is due): role: ")
 
 
 def test_no_interview_key_leaves_the_block_unchanged(run, clock, writes) -> None:  # noqa: F811
@@ -453,3 +465,64 @@ def test_may_ask_for_a_due_question_but_not_after_a_decline() -> None:
     assert not ap.may_ask(ap.start_interview(None, NOW - timedelta(days=9)), NOW)
     assert not ap.may_ask(None, NOW)
     assert ap.due_area(_iv(), NOW) == "role"
+
+
+# ── Fresh evidence for a chat mark `answered` (review of the 2026-10-27 fix) ─
+
+
+_T0 = "2026-10-20T10:00:00Z"
+_T1 = "2026-10-27T10:00:00Z"
+_T1_EPOCH = int(datetime(2026, 10, 27, 10, 0, 0, tzinfo=UTC).timestamp())
+
+
+def _fact(area: str, at: str) -> dict[str, Any]:
+    return {"id": "f1", "text": "ship it", "kind": "work", "area": area, "at": at}
+
+
+def test_an_old_fact_does_not_answer_an_area_asked_again() -> None:
+    asked = {"started_at": _T0, "areas": {"goals": {"state": "asked", "at": _T1}}}
+    assert not ap.area_has_answer({"facts": [_fact("goals", _T0)], "interview": asked}, "goals")
+    assert ap.area_has_answer({"facts": [_fact("goals", _T1)], "interview": asked}, "goals")
+
+
+def test_a_reset_makes_every_older_fact_stale() -> None:
+    reset = {"started_at": _T0, "reset_at": _T1}
+    assert not ap.area_has_answer({"facts": [_fact("goals", _T0)], "interview": reset}, "goals")
+
+
+def test_no_interview_counts_nothing_and_answered_stays_answered() -> None:
+    assert not ap.area_has_answer({"facts": [_fact("goals", _T1)]}, "goals")
+    done = {"started_at": _T0, "areas": {"goals": {"state": "answered", "at": _T1}}}
+    assert ap.area_has_answer({"interview": done}, "goals")
+
+
+@pytest.mark.parametrize("area,last,ok", [
+    ("detail", {"op": "put", "key": "style", "at": _T1_EPOCH}, True),
+    ("detail", {"op": "put", "key": "style", "at": _T1_EPOCH - 60}, False),
+    ("detail", {"op": "put", "key": "address", "at": _T1_EPOCH}, False),
+    ("people", {"op": "post", "list": "aliases", "at": _T1_EPOCH}, True),
+    ("people", {"op": "patch", "list": "aliases", "at": _T1_EPOCH - 60}, False),
+    ("people", {"op": "post", "list": "facts", "at": _T1_EPOCH}, False),
+    ("goals", {"op": "put", "key": "style", "at": _T1_EPOCH}, False),
+])
+def test_detail_and_people_read_the_last_chat_change(area, last, ok) -> None:
+    profile = {"style": {"length": "short"},
+               "aliases": [{"id": "a1", "alias": "Raj", "email": "r@x.test"}],
+               "interview": {"started_at": _T0,
+                             "areas": {area: {"state": "asked", "at": _T1}}}}
+    assert ap.area_has_answer(profile, area, last) is ok
+    assert ap.area_has_answer(profile, area) is False  # an old style or alias
+
+
+def test_the_undo_of_a_replace_with_an_area_opens_the_area() -> None:
+    prior = {"id": "f1", "text": "hire", "kind": "work", "at": _T0}
+    after = {**prior, "text": "hire two engineers", "area": "goals", "at": _T1}
+    raw = {"facts": [after],
+           "interview": {"started_at": _T0, "areas": {
+               "goals": {"state": "answered", "at": _T1},
+               "role": {"state": "skipped", "at": _T1}}},
+           ap.LAST_CHANGE: {"op": "patch", "list": "facts", "id": "f1", "at": 1000,
+                            "prior": prior, "after": after}}
+    out, why = routes.undo_last_change(raw, 1010.0)
+    assert why == "" and out["facts"] == [prior]
+    assert set(out["interview"]["areas"]) == {"role"}

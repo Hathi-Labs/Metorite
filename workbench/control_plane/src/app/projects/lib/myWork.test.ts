@@ -1,33 +1,35 @@
 /**
- * Projects · My work (WS-64 OP-2, `one_projects_app.md` §9 OP-2).
+ * Projects · My work (WS-64 OP-2 and OP-11, `one_projects_app.md` §9 OP-2 and
+ * §9 OP-11).
  *
- * Fences: the flag, the six entries, the counts that equal `/tasks`, the
- * `?app=` keys, the landing rule, and the two source rules (no copy of a
- * `/tasks` component, no import of its page).
+ * Fences: the flag, the two rows (My task inbox and My tasks), the counts
+ * from the server summary, the `?app=` keys and their aliases, the landing
+ * rule, and the two source rules (no copy of a `/tasks` component, no import
+ * of its page).
  */
 import fs from "node:fs";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { inboxCount } from "@/app/tasks/lib/inbox";
-import { viewCounts } from "@/app/tasks/lib/taskStore";
-import type { MyTask } from "@/app/tasks/lib/types";
-
 import {
   MY_WORK_VIEWS,
+  isMyTasksApp,
   isMyWorkId,
   landingApp,
-  projectsUndoScope,
-  myWorkCounts,
   myWorkEnabled,
+  myWorkNavCounts,
   myWorkView,
+  linkKeepsApp,
+  projectsUndoScope,
 } from "./myWork";
 import { MY_WORK_SECTION_LABEL, PROJECT_APP_SECTIONS, projectAppSections, resolveAppLink } from "./projectApps";
 
 const ON = { NEXT_PUBLIC_PROJECTS_MY_WORK: "1" };
 const OFF = { NEXT_PUBLIC_PROJECTS_MY_WORK: "0" };
-const KEYS = ["my-inbox", "my-today", "my-next", "my-waiting", "my-someday", "my-done"];
+const KEYS = ["my-inbox", "my-tasks"];
+/** The ids of the five old lists. Each one is an alias of My tasks now (OP-11). */
+const LEGACY = ["my-today", "my-next", "my-waiting", "my-someday", "my-done"];
 
 describe("myWorkEnabled", () => {
   it("is off by default and on for the four spellings", () => {
@@ -49,10 +51,12 @@ describe("the My work section", () => {
   it("is absent with the flag off, and the list is the shape of record", () => {
     const sections = projectAppSections(OFF);
     expect(sections.map((s) => s.id)).toEqual(PROJECT_APP_SECTIONS.map((s) => s.id));
-    expect(sections.flatMap((s) => s.items.map((i) => i.id as string))).not.toContain("my-today");
+    const ids = sections.flatMap((s) => s.items.map((i) => i.id as string));
+    expect(ids).not.toContain("my-tasks");
+    expect(ids).not.toContain("my-today");
   });
 
-  it("shows six live entries, first, with the flag on", () => {
+  it("shows two live rows, first, with the flag on", () => {
     const sections = projectAppSections(ON);
     expect(sections[0].id).toBe("my-work");
     expect(sections[0].label).toBe(MY_WORK_SECTION_LABEL);
@@ -63,15 +67,8 @@ describe("the My work section", () => {
     expect(sections.slice(1).map((s) => s.id)).toEqual(PROJECT_APP_SECTIONS.map((s) => s.id));
   });
 
-  it("names the six views in the order of the spec", () => {
-    expect(MY_WORK_VIEWS.map((v) => v.label)).toEqual([
-      "My task inbox",
-      "Today",
-      "My tasks",
-      "Waiting For",
-      "Someday / Maybe",
-      "Done",
-    ]);
+  it("names the two rows My task inbox and My tasks", () => {
+    expect(MY_WORK_VIEWS.map((v) => v.label)).toEqual(["My task inbox", "My tasks"]);
   });
 });
 
@@ -79,27 +76,37 @@ describe("resolveAppLink", () => {
   it("opens each key with the flag on", () => {
     const sections = projectAppSections(ON);
     for (const key of KEYS) expect(resolveAppLink(key, sections), key).toBe(key);
-    expect(resolveAppLink(" My-Today ", sections)).toBe("my-today");
+    expect(resolveAppLink(" My-Tasks ", sections)).toBe("my-tasks");
   });
 
-  it("refuses each key with the flag off", () => {
+  it("sends each old list id to My tasks with the flag on (OP-11)", () => {
+    const sections = projectAppSections(ON);
+    for (const key of LEGACY) expect(resolveAppLink(key, sections), key).toBe("my-tasks");
+    expect(resolveAppLink(" My-Today ", sections)).toBe("my-tasks");
+  });
+
+  it("refuses each key and each old id with the flag off", () => {
     const sections = projectAppSections(OFF);
-    for (const key of KEYS) expect(resolveAppLink(key, sections), key).toBeNull();
+    for (const key of [...KEYS, ...LEGACY]) expect(resolveAppLink(key, sections), key).toBeNull();
   });
 
   it("knows which keys draw a store view", () => {
     expect(KEYS.every((k) => isMyWorkId(k))).toBe(true);
+    expect(LEGACY.some((k) => isMyWorkId(k))).toBe(false);
     expect(isMyWorkId("reports")).toBe(false);
-    expect(myWorkView("my-today")).toBe("today");
-    expect(myWorkView("my-next")).toBe("next");
+    expect(myWorkView("my-inbox")).toBe("inbox");
+    // My tasks reads the board endpoints, never the task store.
+    expect(myWorkView("my-tasks")).toBeNull();
     expect(myWorkView("settings")).toBeNull();
+    expect(isMyTasksApp("my-tasks")).toBe(true);
+    expect(isMyTasksApp("my-inbox")).toBe(false);
   });
 });
 
 describe("the landing rule", () => {
-  it("opens Today with the flag on and no link", () => {
-    expect(landingApp(true, {})).toBe("my-today");
-    expect(landingApp(true, { project: null, task: null, app: null })).toBe("my-today");
+  it("opens My tasks with the flag on and no link", () => {
+    expect(landingApp(true, {})).toBe("my-tasks");
+    expect(landingApp(true, { project: null, task: null, app: null })).toBe("my-tasks");
   });
 
   it("lets every link win", () => {
@@ -114,48 +121,32 @@ describe("the landing rule", () => {
   it("changes nothing with the flag off", () => {
     expect(landingApp(false, {})).toBeNull();
   });
+
+  it("the page puts the Today chip on the landing", () => {
+    const page = fs.readFileSync(path.join(__dirname, "..", "page.tsx"), "utf8");
+    expect(page).toMatch(/setApp\(to\);[\s\S]{0,200}chip: "today"/);
+  });
 });
 
-describe("the counts", () => {
-  const task = (id: string, over: Partial<MyTask> = {}): MyTask => ({
-    id,
-    source: "LOCAL",
-    title: id,
-    disposition: "NEXT",
-    isMine: true,
-    createdAt: "2026-10-01T09:00:00Z",
-    updatedAt: "2026-10-01T09:00:00Z",
-    ...over,
-  });
-  const ITEMS: MyTask[] = [
-    task("i1", { disposition: "INBOX" }),
-    task("i2", { disposition: "INBOX" }),
-    task("b1", { disposition: "NEXT" }),
-    task("n1", { dueAt: "2026-10-24" }),
-    task("n2", { dueAt: "2026-10-01" }),
-    task("n3"),
-    task("w1", { disposition: "WAITING" }),
-    task("s1", { disposition: "SOMEDAY" }),
-    task("d1", { disposition: "DONE" }),
-    task("a1", { archivedAt: "2026-10-02T00:00:00Z" }),
-  ];
-  const FROM = new Set(["b1"]);
+describe("the counts (OP-11)", () => {
+  const SUMMARY = {
+    tasks: 12,
+    by_category: { todo: 5, in_progress: 2, done: 4, cancelled: 1 },
+    by_disposition: { inbox: 3, today: 2, next: 4, waiting: 1, someday: 1, done: 4 },
+  };
 
-  it("each count is the one that /tasks draws", () => {
-    const mine = myWorkCounts(ITEMS, FROM, "2026-10-24");
-    const tasks = viewCounts(ITEMS);
-    expect(mine["my-inbox"]).toBe(inboxCount(ITEMS, FROM));
-    expect(mine["my-next"]).toBe(tasks.next);
-    expect(mine["my-waiting"]).toBe(tasks.waiting);
-    expect(mine["my-someday"]).toBe(tasks.someday);
-    expect(mine["my-done"]).toBe(tasks.done);
-    expect(mine["my-today"]).toBe(2);
+  it("My task inbox shows the server inbox count, and My tasks the open tasks", () => {
+    expect(myWorkNavCounts(SUMMARY)).toEqual({ "my-inbox": 3, "my-tasks": 7 });
   });
 
-  it("is built from the two functions of /tasks, with no copy", () => {
-    const source = fs.readFileSync(path.join(__dirname, "myWork.ts"), "utf8");
-    expect(source).toMatch(/viewCounts\(/);
-    expect(source).toMatch(/inboxCount\(/);
+  it("shows no count before the summary lands, never a zero", () => {
+    expect(myWorkNavCounts(null)).toEqual({});
+    expect(myWorkNavCounts(undefined)).toEqual({});
+  });
+
+  it("reads no client counter of /tasks", () => {
+    const source = fs.readFileSync(path.join(__dirname, "myWork.ts"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(source).not.toMatch(/viewCounts|inboxCount|taskStore/);
   });
 });
 
@@ -209,20 +200,22 @@ describe("My work is a mount, not a copy", () => {
     expect(offenders.map((f) => path.relative(APP, f))).toEqual([]);
   });
 
-  it("the host imports the views by path from app/tasks/components", () => {
+  it("the host imports the inbox view by path from app/tasks/components", () => {
     const source = fs
       .readFileSync(path.join(PROJECTS, "components", "MyWorkHost.tsx"), "utf8")
       .replace(/\/\*[\s\S]*?\*\//g, "");
-    for (const view of ["InboxView", "ItemList"]) {
-      expect(source).toContain(`@/app/tasks/components/${view}`);
-    }
+    expect(source).toContain("@/app/tasks/components/InboxView");
+    // OP-11: the five other lists render in My tasks, not through ItemList.
+    expect(source).not.toContain("@/app/tasks/components/ItemList");
     expect(source).not.toMatch(/tasks\/page/);
   });
 });
 
 describe("My work and the shared stores (fix round 1)", () => {
   it("My work has its own undo scope, and the board scope returns after it", () => {
-    expect(projectsUndoScope("my-today", "p1")).toBe("projects:my-work");
+    // OP-11 fix round, item 12: My tasks does not share the inbox's history.
+    expect(projectsUndoScope("my-tasks", "p1")).toBe("projects:my-tasks");
+    expect(projectsUndoScope("my-tasks", null)).not.toBe(projectsUndoScope("my-inbox", null));
     expect(projectsUndoScope("my-inbox", null)).toBe("projects:my-work");
     expect(projectsUndoScope(null, "p1")).toBe("projects:p1");
     expect(projectsUndoScope("reports", "p1")).toBe("projects:p1");
@@ -248,6 +241,17 @@ describe("My work and the shared stores (fix round 1)", () => {
     const hook = fs.readFileSync(path.join(PROJECTS, "lib", "liveRefresh.ts"), "utf8");
     expect(hook).toContain('"visibilitychange"');
     expect(hook).toContain('"focus"');
+  });
+
+  it("OP-11 fix round 4: a capture link keeps app=my-inbox while its job waits", () => {
+    const q = (s: string) => new URLSearchParams(s);
+    expect(linkKeepsApp("my-inbox", q("app=my-inbox&do=capture&fill.title=x"))).toBe(true);
+    expect(linkKeepsApp("my-tasks", q("app=my-tasks&do=capture"))).toBe(true);
+    expect(linkKeepsApp("my-inbox", q("app=my-inbox"))).toBe(false);
+    expect(linkKeepsApp("reports", q("app=reports&do=capture"))).toBe(false);
+    expect(linkKeepsApp(null, q("do=capture"))).toBe(false);
+    const page = fs.readFileSync(path.join(PROJECTS, "page.tsx"), "utf8");
+    expect(page).toContain("if (linkKeepsApp(live, searchParams)) return;");
   });
 
   it("the page uses the scope rule, not a project-only scope", () => {

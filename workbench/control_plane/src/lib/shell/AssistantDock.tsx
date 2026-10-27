@@ -140,6 +140,7 @@ import {
   wantsBrief,
   type AssistantMode,
 } from "./assistant";
+import { surfaceOfPane } from "./surface";
 import { chatFilesHref, mergeFileEntry, sessionTitle } from "./chatHistory";
 import { SessionPicker } from "./SessionPicker";
 
@@ -636,6 +637,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const active = chat.active;
   const agent = active?.agentName ?? ASSISTANT_AGENT;
   const context = surfaceContext(here, facts);
+  // WS-67 OA-7d: the app slug of the pane, sent as `surface` (a hint for the tool packs).
+  const surface = surfaceOfPane(here);
   // WS-62 CF-3: the page line joins only with the chat-first flag on.
   const personaText = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;
   const persona = agent === ASSISTANT_AGENT ? `${personaText}\n\n${context}` : context;
@@ -1090,6 +1093,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 phoneChrome={phoneChrome}
                 moreActs={moreActs}
                 persona={persona}
+                surface={surface}
                 memories={memories}
                 memoryUserId={userId ?? undefined}
                 expectedMessageCount={active.messageCount}

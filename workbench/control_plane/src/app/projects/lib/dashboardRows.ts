@@ -122,6 +122,8 @@ export const EMPTY_COPY: Record<NodeSummary["level"], string> = {
     "No subprojects. The task views hold everything this project owns.",
   subproject:
     "Nothing sits below a subproject — the tree stops here by design.",
+  // WS-64 OP-11 — My tasks. Its rows are the spaces that hold my tasks.
+  mine: "Nothing is assigned to you yet. Capture a task, or ask a colleague to assign one.",
 };
 
 /**
@@ -146,6 +148,10 @@ export function emptyCopy(summary: NodeSummary): string {
     return `No projects here yet. ${tasks} ${
       tasks === 1 ? "task sits" : "tasks sit"
     } directly in this ${noun}.`;
+  }
+  // WS-64 OP-11 — work that is mine and sits in no project I may open.
+  if (tasks > 0 && level === "mine") {
+    return `${tasks} ${tasks === 1 ? "task sits" : "tasks sit"} in no project you can open.`;
   }
   // ⚠️ A level this map does not know rendered an EMPTY dashed box — a
   // container with nothing in it, which reads as a half-built feature. The

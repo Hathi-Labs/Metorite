@@ -2769,6 +2769,10 @@ async def run_agent_stream_endpoint(
     # The display of a card answer that went as a new message. It is for the
     # saved turn only, and never reaches the executor.
     _card_answer = req.payload.pop("card_answer", None)
+    # WS-67 OA-7d: the app slug of the dock, a hint for the tool packs. Popped
+    # so the payload never carries it on. Cleaned against the packs that name
+    # an app, bound for the run below, and never read for a tenant or a member.
+    _surface = req.payload.pop("surface", None)
     _edit_keep = [_new_user_id, req.assistant_message_id or ""]
     # WS-51 S4: the member's turn, as they typed it. The server saves it
     # below, before the run starts, so a tab closed at once keeps it. The
@@ -3245,6 +3249,7 @@ async def run_agent_stream_endpoint(
     _floor = list(room.members) if (room is not None and room.is_shared) else None
 
     from acb_common.assistant_profile import member_typed  # noqa: PLC0415
+    from acb_skills.tool_packs import surface_scope  # noqa: PLC0415
 
     async def _serve():
         timing = _RunTiming(_route_started)
@@ -3253,7 +3258,7 @@ async def run_agent_stream_endpoint(
             # this ONE binding. The drain task that `run_detached` starts
             # copies the context here, so the run reads them, and nothing
             # else does.
-            with member_typed(_typed):
+            with member_typed(_typed), surface_scope(_surface):
                 async for chunk in _serve_run(timing):
                     yield chunk
         finally:

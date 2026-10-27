@@ -1234,9 +1234,14 @@ def _start_pack_turn(
     if not allowed:
         return None
     words = typed_words()
+    # OA-7d: the app of the dock. The gateway cleaned it and bound it for this
+    # run, and begin_turn cleans it again. It adds the core pack of that app
+    # only when the flag allows it, and it changes no guard.
+    surface = tool_packs.current_surface()
 
     async def _read() -> tuple[Any, frozenset[str]]:
-        turn = await tool_packs.begin_turn(organization_id, thread_id, verified, words)
+        turn = await tool_packs.begin_turn(
+            organization_id, thread_id, verified, words, surface)
         return turn, allowed
 
     return asyncio.ensure_future(_read())

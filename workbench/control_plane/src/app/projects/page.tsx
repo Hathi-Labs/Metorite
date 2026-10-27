@@ -74,7 +74,23 @@ import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterChrome } from "./components/CompactFilterBar";
 import { compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
-import { isMyWorkId, landingApp, myWorkCounts, myWorkEnabled, projectsUndoScope } from "./lib/myWork";
+import {
+  isMyTasksApp,
+  isMyWorkId,
+  landingApp,
+  linkKeepsApp,
+  myWorkEnabled,
+  myWorkNavCounts,
+  projectsUndoScope,
+} from "./lib/myWork";
+import { asChip, myTasksHref, phoneMyTasksTap, withoutMyTasks } from "./lib/myTasks";
+import MyTasksSpace, {
+  DEFAULT_MY_TASKS_VIEW,
+  MyTasksActionRow,
+  type MyTasksView,
+  useMyAttention,
+  useMySummary,
+} from "./components/MyTasksSpace";
 import {
   MIXED_MOVE_HINT,
   PERSONAL_ARCHIVED_FOLD_ID,
@@ -243,6 +259,7 @@ import SpaceSettings from "./components/SpaceSettings";
 import {
   chatEnabled,
   projectAppSections,
+  resolveAppChip,
   resolveAppLink,
   type ProjectAppId,
   SPACES_SECTION_LABEL,
@@ -889,6 +906,14 @@ function ProjectsWorkspace() {
    * sections now).
    */
   const [app, setApp] = useState<ProjectAppId | null>(null);
+  // WS-64 OP-11 — My tasks: its tab, its lens and its chip, and a counter the
+  // task panel bumps so the roll-up reads its rows again.
+  const [myTasks, setMyTasks] = useState<MyTasksView>(DEFAULT_MY_TASKS_VIEW);
+  const [myTasksVersion, setMyTasksVersion] = useState(0);
+  const appRef = useRef(app);
+  useEffect(() => {
+    appRef.current = app;
+  }, [app]);
   // `null` = nobody has chosen yet, which is a different state from "board":
   // the right default depends on the viewport, and a board of fixed-width
   // columns is the wrong first screen on a 390px one. An explicit pick wins on
@@ -971,16 +996,16 @@ function ProjectsWorkspace() {
     if (id === "settings") setSettingsSeed({});
     setApp(id);
   }, []);
-  // WS-64 OP-2 — the My work counts are the ones `/tasks` draws (`myWorkCounts`).
-  // They read the task store, which loads when a My work view opens, so a
-  // count shows once the store holds rows.
-  const myWorkItems = useTaskStore((s) => s.items);
-  const myWorkFrom = useTaskStore((s) => s.fromProjectIds);
-  const myWorkToday = useTaskStore((s) => s.myToday);
-  const myWorkTimezone = useTaskStore((s) => s.myTimezone);
-  const myWorkNavCounts = useMemo(
-    () => (MY_WORK_LIVE ? myWorkCounts(myWorkItems, myWorkFrom, myWorkToday, myWorkTimezone) : undefined),
-    [myWorkItems, myWorkFrom, myWorkToday, myWorkTimezone],
+  // WS-64 OP-11 — the My work counts come from the server summary of mine
+  // (`myWorkNavCounts`), not from the task store, so they show at once and
+  // need no whole-list hydrate. My tasks reads the same cache key.
+  const mySummary = useMySummary(MY_WORK_LIVE);
+  // OP-11 fix round, item 11: the count on the Needs attention lens of My
+  // tasks. The space reads the same cache key for the lens itself.
+  const myAttention = useMyAttention(MY_WORK_LIVE && isMyTasksApp(app));
+  const navCounts = useMemo(
+    () => (MY_WORK_LIVE ? myWorkNavCounts(mySummary.data) : undefined),
+    [mySummary.data],
   );
   const { access, loading: accessLoading } = useAccess();
   const mayImport = IMPORT_LIVE && canImport(access, accessLoading);
@@ -1317,18 +1342,24 @@ function ProjectsWorkspace() {
       if (tab === "projects-tree") setSheet((s) => (s === "tree" ? null : "tree"));
       else if (tab === "projects-views") setSheet((s) => (s === "views" ? null : "views"));
       else if (tab === "projects-mywork") {
-        // WS-64 OP-4 — the phone's "My work" tab opens the Projects sheet
-        // (`ProjectNav`: My work on top, then Personal, then Spaces). The
-        // shell's "Menu" tab keeps the global drawer.
-        setSheet((s) => (s === "tree" ? null : "tree"));
+        // WS-64 OP-11 — the phone's "My tasks" tab opens My tasks on its
+        // List. A second tap there opens the Projects sheet (`ProjectNav`:
+        // My work, Personal, Spaces). The shell's "Menu" keeps the drawer.
+        if (phoneMyTasksTap(appRef.current) === "sheet") {
+          setSheet((s) => (s === "tree" ? null : "tree"));
+        } else {
+          setSheet(null);
+          setApp("my-tasks");
+          setMyTasks((v) => ({ ...v, mode: "list", attention: false }));
+        }
       } else if (tab === "projects-capture") {
         // WS-64 OP-4 — Capture must work with no My work view open. The quick
         // capture lives in the task store and `MyWorkHost` mounts it, so open
-        // the Inbox when no My work view shows, then set the store's flag. The
-        // flag survives until the host mounts. The smallest change: no
-        // second capture host.
+        // My task inbox, then set the store's flag. The flag survives until
+        // the host mounts. OP-11: My tasks mounts no capture host, so it
+        // opens the inbox too. The smallest change: no second capture host.
         setSheet(null);
-        setApp((a) => (isMyWorkId(a) ? a : "my-inbox"));
+        setApp("my-inbox");
         useTaskStore.getState().openQuickCapture("single");
       }
       else if (tab === "projects-search") {
@@ -1819,7 +1850,7 @@ function ProjectsWorkspace() {
             personal={personal}
             selectedId={selected?.id ?? null}
             app={app}
-            counts={myWorkNavCounts}
+            counts={navCounts}
             onApp={chooseApp}
             onSelect={(project) => {
               setApp(null);
@@ -2021,9 +2052,13 @@ function ProjectsWorkspace() {
     [filters, tableSort, boardViewId, taskParamsFor]
   );
 
+  // OP-11 fix round, item 5: My tasks draws no board of `selected`, so the
+  // page does not read one behind it (three requests at first paint). The
+  // read runs when the member leaves My tasks.
+  const onMyTasks = isMyTasksApp(app);
   useEffect(() => {
-    if (selected) void loadProject(selected);
-  }, [selected, loadProject]);
+    if (selected && !onMyTasks) void loadProject(selected);
+  }, [selected, loadProject, onMyTasks]);
 
   /**
    * Fetch the next page of tasks and add it to what is on screen.
@@ -2887,8 +2922,12 @@ function ProjectsWorkspace() {
       assignee: searchParams.get("assignee"),
       center: searchParams.get("center"),
     });
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (to) setApp(to);
+    if (to) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setApp(to);
+      // OP-11: the landing opened Today, so My tasks lands on the Today chip.
+      setMyTasks((v) => ({ ...v, chip: "today" }));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
@@ -2898,15 +2937,67 @@ function ProjectsWorkspace() {
       if (live === "settings") setSettingsSeed({});
       setApp(live);
     }
-    const rest = new URLSearchParams(searchParams.toString());
-    rest.delete("app");
+    // WS-64 OP-11 — My tasks keeps `?app=my-tasks&chip=…` in the address, so
+    // a reload and a shared link open the same chip. An old list id
+    // (`?app=my-today`) opens My tasks on its List with its chip.
+    if (live === "my-tasks") {
+      const chip = resolveAppChip(appLink, searchParams.get("chip")) ?? "all";
+      const legacy = appLink.trim().toLowerCase() !== "my-tasks";
+      setMyTasks((v) =>
+        legacy ? { ...v, chip, mode: "list", attention: false } : v.chip === chip ? v : { ...v, chip },
+      );
+      const target = myTasksHref(searchParams.toString(), chip);
+      if (legacy) router.replace(target);
+      return;
+    }
     // WS-64 OP-4 — `/tasks?do=capture&fill.*` arrives as `?app=my-inbox&do=capture&fill.*`.
     // `do` and `fill.*` stay in the address: the `capture` ShellJob below
-    // reads them, opens the box, and takes them out (the one door).
+    // reads them, opens the box, and takes them out (the one door). While a
+    // job waits, a My work `app` stays too, so the address ends on the view
+    // the box opened in: `?app=my-inbox` (OP-11 fix round, item 4).
+    if (linkKeepsApp(live, searchParams)) return;
+    const rest = new URLSearchParams(searchParams.toString());
+    rest.delete("app");
     const qs = rest.toString();
     router.replace(qs ? `/projects?${qs}` : "/projects");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appLink]);
+
+  // WS-64 OP-11 — the address follows My tasks: `?app=my-tasks&chip=next`
+  // while it shows, and neither key once the member leaves it. Only a move
+  // AWAY from My tasks takes the keys out: on the first render `app` is not
+  // yet read from the address, and the link effect above still owns it.
+  //
+  // OP-11 fix round, item 13: a member's chip click PUSHES, so Back and
+  // Forward walk the chips. Entering or leaving My tasks replaces, as an
+  // alias does, so Back never lands on a half-read address.
+  const appBefore = useRef(app);
+  useEffect(() => {
+    const was = appBefore.current;
+    appBefore.current = app;
+    if (!MY_WORK_LIVE) return;
+    const search = window.location.search;
+    const here = `/projects${search}`;
+    const target = isMyTasksApp(app)
+      ? myTasksHref(search, myTasks.chip)
+      : isMyTasksApp(was)
+        ? withoutMyTasks(search)
+        : here;
+    if (target === here) return;
+    const chipMove = isMyTasksApp(app) && isMyTasksApp(was) && searchParams.get("app") === "my-tasks";
+    if (chipMove) router.push(target);
+    else router.replace(target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [app, myTasks.chip]);
+
+  // The other half of item 13: Back or Forward changes `?chip=` under a
+  // mounted page, and the chip follows the address. A link to a legacy id
+  // is the link effect's above, so this reads only `app=my-tasks`.
+  const linkChip = appLink === "my-tasks" ? asChip(searchParams.get("chip")) : null;
+  useEffect(() => {
+    if (!MY_WORK_LIVE || linkChip === null || !isMyTasksApp(appRef.current)) return;
+    setMyTasks((v) => (v.chip === linkChip ? v : { ...v, chip: linkChip }));
+  }, [linkChip]);
 
   // The chat's navigation (WS-27bm S6, H-164). `open_in_app` reads the row,
   // then dispatches one of these through a CUSTOM `frontend_tool` event.
@@ -3565,7 +3656,10 @@ function ProjectsWorkspace() {
         openTaskId: openTask?.id ?? null,
         movedIds: ids,
       });
-      if (follow.reloadMyWork) {
+      if (follow.reloadMyWork && isMyTasksApp(app)) {
+        // OP-11 — My tasks reads the board endpoints, never the store.
+        setMyTasksVersion((v) => v + 1);
+      } else if (follow.reloadMyWork) {
         const store = useTaskStore.getState();
         void store.reloadItems().then(() => {
           if (useTaskStore.getState().selectedView === "done") void store.loadDone();
@@ -3944,14 +4038,16 @@ function ProjectsWorkspace() {
                   personal: isPersonalNode(selected),
                 }
               : null,
-            view: mode,
+            // OP-11 — on My tasks the facts name its own tab and chip.
+            view: isMyTasksApp(app) ? (myTasks.attention ? "Needs attention" : myTasks.mode) : mode,
             app,
-            filterSummary: describeFilters(filters),
+            chip: isMyTasksApp(app) ? myTasks.chip : null,
+            filterSummary: isMyTasksApp(app) ? undefined : describeFilters(filters),
             openTask: openTask ? { id: openTask.id, title: openTask.title, number: openTask.task_number ?? null } : null,
             selectedTaskIds: Array.from(picked),
           })
         : null,
-    [selected, selectedLevel, mode, app, filters, openTask, picked],
+    [selected, selectedLevel, mode, app, filters, openTask, picked, myTasks],
   );
   useAssistantFacts(assistantFacts);
   if (loading) return renderState("loading", LOADING_COPY, "page");
@@ -4000,7 +4096,11 @@ function ProjectsWorkspace() {
    * WS-39 S1). Metorite is the system of record — nothing to import from.
    */
   const projectActions = (compact: boolean) =>
-    selected ? (
+    // OP-11 fix round, item 12: My tasks is not the selected project. It
+    // offers its own undo scope, and only while a step can be undone.
+    isMyTasksApp(app) ? (
+      <UndoControls hideWhenIdle />
+    ) : selected ? (
       <>
       {/* Undo/redo sits with the VIEW ACTIONS, not in the filter bar: it acts
           on the project, not on what is on screen, and the filter bar is
@@ -4208,7 +4308,41 @@ function ProjectsWorkspace() {
     scopeRoots: visibleRoots,
   };
 
-  const workArea = isMyWorkId(app) ? (
+  // WS-64 OP-11 — the three doors of My tasks into the rest of the page.
+  // Capture opens My task inbox, where the capture host lives. A row's chip
+  // names its project's path. An Overview row opens that node, filtered to me.
+  const openInboxCapture = () => {
+    setApp("my-inbox");
+    useTaskStore.getState().openQuickCapture("single");
+  };
+  const myTasksPath = (projectId: string) => taskWhere(allRoots, projectId).map((n) => n.name);
+  const openMineIn = (id: string) => {
+    const row = flatten(visibleRoots).find((e) => e.node.id === id);
+    if (!row) return;
+    setApp(null);
+    setSelected(row.node as ProjectRow);
+    if (me) changeFilters({ ...EMPTY_FILTERS, assignee: me });
+  };
+
+  const workArea = isMyTasksApp(app) ? (
+    // WS-64 OP-11 — My tasks, the roll-up space: a project's canvases over mine.
+    <MyTasksSpace
+      view={myTasks}
+      onView={setMyTasks}
+      phone={isMobile}
+      compactChrome={compactChrome}
+      me={me}
+      people={people}
+      personLabels={personLabels}
+      projectPath={myTasksPath}
+      personalRootId={personal[0]?.id ?? null}
+      onOpenTask={(task) => void openWithStatuses(task, true)}
+      onOpenTaskId={(id) => void openTaskById(id, true)}
+      onOpenProject={openMineIn}
+      onReport={(href) => router.push(href)}
+      version={myTasksVersion}
+    />
+  ) : isMyWorkId(app) ? (
     // WS-64 OP-2 — a My work view: the task store's views, mounted once.
     <MyWorkHost
       app={app}
@@ -4775,6 +4909,7 @@ function ProjectsWorkspace() {
     <TaskPanel
       where={openWhere(openTask)}
       myWork={isMyWorkId(app)}
+      serverOverlay={isMyTasksApp(app)}
       personLabels={personLabels}
       me={me}
       /**
@@ -4803,12 +4938,15 @@ function ProjectsWorkspace() {
       onOpenTask={(id) => void openTaskById(id, isMyWorkId(app))}
       onClose={() => setOpenTask(null)}
       onTaskAdded={() => {
-        if (selected) void loadProject(selected);
+        if (isMyTasksApp(app)) setMyTasksVersion((v) => v + 1);
+        else if (selected) void loadProject(selected);
       }}
       onChanged={(fresh) => {
+        // OP-11 — My tasks reads the board endpoints, so it reads them again.
+        if (isMyTasksApp(app)) setMyTasksVersion((v) => v + 1);
         // OP-2b — the My work list reads the task store, so a change in the
         // panel (status, fields) is read back into it. One source, no loop.
-        if (isMyWorkId(app)) void useTaskStore.getState().refreshItem(fresh.id);
+        else if (isMyWorkId(app)) void useTaskStore.getState().refreshItem(fresh.id);
         setOpenTask(fresh);
         setTasks((current) =>
           current.map((t) => (t.id === fresh.id ? { ...t, ...fresh } : t))
@@ -4853,7 +4991,8 @@ function ProjectsWorkspace() {
         id="capture"
         ready={!loading && mountSettled}
         onOpen={(f) => {
-          if (MY_WORK_LIVE) setApp((a) => (isMyWorkId(a) ? a : "my-inbox"));
+          // OP-11: the capture host is My task inbox's, so the box opens there.
+          if (MY_WORK_LIVE) setApp("my-inbox");
           useTaskStore.getState().openQuickCapture("single", f.title ?? "", true);
         }}
       />
@@ -5246,7 +5385,7 @@ function ProjectsWorkspace() {
               personal={personal}
               selectedId={selected?.id ?? null}
               app={app}
-              counts={myWorkNavCounts}
+              counts={navCounts}
               onApp={chooseApp}
               onSelect={(project) => {
                 setApp(null);
@@ -5322,7 +5461,16 @@ function ProjectsWorkspace() {
                 project actions to offer, so the whole action row goes —
                 leaving an empty strip would look like a surface that failed
                 to load. */}
-            {noProjectChrome ? null : (
+            {isMyTasksApp(app) ? (
+              // WS-64 OP-11 — My tasks has a project's tabs in the same row.
+              <MyTasksActionRow
+                view={myTasks}
+                onView={setMyTasks}
+                attentionCount={myAttention.data?.total ?? null}
+                onReport={(href) => router.push(href)}
+                onCapture={openInboxCapture}
+              />
+            ) : noProjectChrome ? null : (
               // `flex-wrap`: with the chat docked the canvas loses 26rem, and
               // an action row that cannot wrap paints its right half over the
               // chat column (measured at 1440, 2026-09-23).
