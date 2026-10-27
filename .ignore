@@ -1,0 +1,29 @@
+# Search noise. ripgrep, and the Claude Code Grep and Glob tools on top of it,
+# skip these paths. Git still tracks every file here, and nothing is deleted.
+# To search one of them, name the path, or pass --no-ignore to rg.
+# Added 2026-10-27 (repo cleanup). Uses .gitignore syntax.
+
+# Static assets of the web app: sprites, icons and a 1 MB PDF worker.
+workbench/control_plane/public/
+
+# Test and eval input data (JSON and CSV). The tests read them by path.
+**/fixtures/**
+tests/unit/import_fixtures/
+
+# Committed eval run output. Large JSON that nobody reads by search.
+evals/**/results*.json
+
+# pytest shard timings for CI (about 3.8 MB of test ids).
+.test_durations
+
+# Dependency lockfiles. Edit the manifest, and let the tool write the lock.
+**/package-lock.json
+uv.lock
+
+# Generated SQL, written by scripts/dump_schema.sh and gen_tenant_migration.py.
+# schema.generated.sql is the current schema shape: open it by path.
+infra/postgres/schema.generated.sql
+infra/postgres/generated/
+
+# Vendored minified scripts of the impeccable design-review skill.
+.github/skills/impeccable/scripts/
