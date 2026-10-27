@@ -77,7 +77,8 @@ describe("the sources", () => {
 
   it("the panel draws the strip above the fields, from the shared rows", () => {
     const panel = code(read(PROJECTS, "components", "TaskPanel.tsx"));
-    expect(panel).toContain("above={strip}");
+    // WS-64 OP-11: from My tasks, with no store row, a server strip stands in.
+    expect(panel).toContain("above={strip ?? serverStrip}");
     expect(panel).toContain("showMyWorkStrip(");
     const strip = code(read(PROJECTS, "components", "MyWorkStrip.tsx"));
     expect(strip).toContain("<PlanningRows");

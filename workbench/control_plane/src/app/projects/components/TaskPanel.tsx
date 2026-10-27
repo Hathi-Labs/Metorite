@@ -71,6 +71,7 @@ import {
 import { taskDeepLink, taskRef } from "../lib/card";
 import { PANEL_WIDTH_CLASS, type PanelMode, panelEscape } from "../lib/panelMode";
 import { TaskBody, resolveStatus } from "./TaskBody";
+import { MineDispositionStrip } from "./MineDispositionStrip";
 import { MyWorkStrip } from "./MyWorkStrip";
 import { myWorkEnabled, pickMine, showMyWorkStrip, statusDrifted } from "../lib/myWork";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
@@ -187,6 +188,27 @@ export function TaskPanel({
   }) ? (
     <MyWorkStrip taskId={task.id} />
   ) : null;
+  // WS-64 OP-11 — opened from My tasks, the store does not hold the task (My
+  // tasks runs no hydrate). The same row then writes to the server, and the
+  // page reads the task again, so the My tasks rows follow the new chip.
+  const serverStrip =
+    !strip && enabled && myWork && mine ? (
+      <MineDispositionStrip
+        disposition={mine.disposition}
+        onPick={(next) => {
+          setMine((m) => (m ? { ...m, disposition: next, isTriaged: true } : m));
+          void lensPatchItem(task.id, { disposition: next })
+            .then((item) => {
+              setMine(overlayOf(item));
+              return projectsApi.task(task.id);
+            })
+            .then((fresh) => onChanged(fresh))
+            .catch(() => {
+              void lensMyOverlay(task.id).then(setMine);
+            });
+        }}
+      />
+    ) : null;
   const shownMine = pickMine({
     myWork,
     enabled,
@@ -381,7 +403,7 @@ export function TaskPanel({
         personLabels={personLabels}
         onPeopleSeen={onPeopleSeen}
         twoColumn={twoColumn}
-        above={strip}
+        above={strip ?? serverStrip}
       />
     </aside>
   );

@@ -267,6 +267,18 @@ describe("each row names its project", () => {
   });
 });
 
+describe("the task panel keeps a disposition control", () => {
+  it("writes it to the server when the store does not hold the task", () => {
+    const panel = code("components/TaskPanel.tsx");
+    expect(panel).toContain("above={strip ?? serverStrip}");
+    expect(panel).toMatch(/!strip && enabled && myWork && mine \?/);
+    expect(panel).toContain("lensPatchItem(task.id, { disposition: next })");
+    const strip = code("components/MineDispositionStrip.tsx");
+    expect(strip).toContain("STRIP_DISPOSITIONS");
+    expect(strip).not.toMatch(/useTaskStore/);
+  });
+});
+
 // ── The tabs, the phone, the facts and the address ─────────────────────────
 
 describe("the tabs", () => {
