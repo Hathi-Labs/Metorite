@@ -24,6 +24,42 @@ below, PR #1383). The flag is off on each box, so no run loads a pack yet.
 OA-7e is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7e"
 below, PR #1389). It adds layer (b), the meta tool `load_skill_tools`.
 
+OA-7d is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7d"
+below). The dock sends `surface`, and a turn from `/email` loads the `email`
+pack with no email word.
+
+**As built, OA-7d.** The surface is input 2 of layer (a). It is a hint, and it
+adds the core pack of the app and nothing else.
+- **The client.** `lib/shell/surface.ts` holds `surfaceOfPane` (the first path
+  segment of `here.href`), `cleanSurface` and `surfaceField`. The dock passes
+  `surface` to `AgentChat`, and `AgentChat` passes it to `useAgentChat`. The
+  hook puts `{ surface }` in the body of the live send and of the `buildBody`
+  send. The reconnect replays a run that has begun, so it sends none. A page
+  that belongs to no app sends no key. Only the dock sets it.
+- **The route.** `api/agent/chat/route.ts` cleans the value and puts it in the
+  gateway payload. The gateway pops it, as it pops `card_answer`, and binds it
+  with `tool_packs.surface_scope` in the same `with` as the typed words. A
+  room, the WhatsApp path and a scheduled run bind none, so they read "".
+- **The check, twice.** `tool_packs.clean_surface` is the allow-list. A value
+  passes only when it is a string of at most 32 characters, a slug, and the
+  `surface` of a pack. Today only `email` passes. Anything else reads "".
+  `current_surface` and `begin_turn` clean it again.
+- **The choice.** `Pack.surface` names the app whose core pack it is. `email`
+  names `email`. `email-setup` names none, so the surface never adds it.
+  `choose` loads a pack with a matching surface after the sticky packs, with
+  the layer `surface`, and the cap and `allowed` still apply. So the flag
+  decides what a forged value adds.
+- **No new guard path.** `_start_pack_turn` reads the surface after
+  `packs_on`, so a flag-off run reads no surface and no pack state. The held
+  chat, `no_egress`, the card rules and the MCP skip are all downstream of the
+  choice and do not read the surface. A room, a batch run and a delegated run
+  start no read, so a bound surface loads no pack there.
+- **Fence.** Section 8 of `tests/unit/test_tool_packs_choice.py` and
+  `workbench/control_plane/src/lib/shell/surface.test.ts`. Each case names its
+  mutation.
+- **Not built.** The pack of any other app. Each new pack sets its own
+  `Pack.surface`, and the allow-list grows with it.
+
 **As built, OA-7e.** Layer (b) loads a pack that layer (a) missed, in the
 middle of a turn.
 - **The parts.** `acb_skills/tool_packs.py` holds the tool (`load_tool`),
@@ -146,7 +182,7 @@ OA-9b builds `spawn_subagents` on them.
 
 **As built, OA-7c.** Layer (a) and the sticky state put packs in a live run.
 Three inputs choose the packs: the sticky packs of the chat, a reference in
-the member's words, and the words of a pack. The surface waits for OA-7d.
+the member's words, and the words of a pack. The surface came with OA-7d.
 - **Where packs act.** `executor._start_pack_turn` is the one caller of
   `packs_on`. A pack loads only in the stream run of the orchestrator, in
   the member's own web chat. That run needs a verified member, an org that
@@ -835,7 +871,7 @@ Each slice merges alone, in this order.
 | OA-7a | The pack key in WS-23, the email split, the rules, the flag reader. BUILT, dark, 2026-10-26 | LOW |
 | OA-7b | The guarded pack builder, with no live caller. BUILT, dark, 2026-10-26 | HIGH |
 | OA-7c | Layer (a) and sticky state: packs in live runs. BUILT, dark, 2026-10-27 | HIGH |
-| OA-7d | The structured `surface` field from the dock | LOW |
+| OA-7d | The structured `surface` field from the dock. BUILT, dark, 2026-10-27 | LOW |
 | OA-7e | Layer (b): `load_skill_tools`. BUILT, dark, 2026-10-27 | MEDIUM |
 | OA-7f | Layer (c): pack items in the turn-kind request | MEDIUM |
 | OA-7h | The email measure on real code, with the tier flags of production | LOW (eval only) |
