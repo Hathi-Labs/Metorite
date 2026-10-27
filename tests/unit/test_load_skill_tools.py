@@ -633,6 +633,23 @@ async def test_a_run_that_holds_each_allowed_pack_gets_no_loader(store, orchestr
     assert _provider(orchestrator[0]) is None
 
 
+@pytest.mark.parametrize(("offer_loader", "loads"), [(False, True), (True, False)])
+async def test_the_cap_of_layer_a_counts_the_load_tool(
+    offer_loader: bool, loads: bool, store, orchestrator, monkeypatch,
+) -> None:
+    """The load tool rides in each request of a run that offers it, so the
+    cap of layer (a) counts it. A base of 79 and the 31 email tools make 110
+    with no load tool, and 111 with it. Mutation: drop the count of the load
+    tool → the run holds 111 tools in one request → red."""
+    monkeypatch.setattr(ti, "_pack_base_count", lambda *_a, **_k: 79)
+    applied = await _apply(orchestrator, "check my inbox", allowed=frozenset({"email"}),
+                           offer_loader=offer_loader)
+    assert ((applied is not None and applied.record.slugs == ("email",)) is loads), applied
+    if offer_loader:
+        provider = _provider(orchestrator[0])
+        assert provider is not None and provider.loader.offered == ("email",)
+
+
 async def test_the_loader_offers_the_packs_that_layer_a_did_not_load(store, orchestrator) -> None:
     """Layer (a) loaded ``email``, so the loader offers ``email-setup`` with
     the same run key and the same record that the executor binds. Mutation:

@@ -3338,6 +3338,11 @@ async def _apply_tool_packs(
     allow = frozenset(allowed) - disabled
     base = _pack_base_count(agent, agent_name=agent_name, tool_scope=tool_scope,
                             agent_config=agent_config, disabled=disabled)
+    if offer_loader and tool_packs.loadable(allow):
+        # OA-7e: the load tool rides in the request too, so the cap counts
+        # it. When layer (a) then loads each allowed pack, the run offers no
+        # load tool, and the count errs by one on the safe side.
+        base += 1
     choice = tool_packs.choose(turn, allowed=allow, base_tools=base)
     await tool_packs.drop_sticky(turn, choice.evicted)
 
