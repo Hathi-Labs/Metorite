@@ -20,6 +20,11 @@ the due line in the block. See §14.4 "PZ-26 as built".
 chat, the interview list in Settings → Assistant settings and the chat receipt. See
 §14.4 "PZ-27 as built". The visual review is UNVERIFIED.
 
+**Interview save fix BUILT 2026-10-27.** On production a refused save
+still closed the `goals` area. The gateway now refuses a chat mark
+`answered` with no saved answer. See §14.4 "PZ-26 as built" item 9 and
+§5.5 "The refusal speaks to two readers".
+
 **PZ-28 BUILT 2026-10-26.** The row and the page are named "Assistant
 settings", and the row moved from the You group to the Settings group of the
 account menu. The offer card links to the page. The visual review is
@@ -550,6 +555,18 @@ routes as the member, with the internal bearer and `X-User-Email`.
   number, with its separators gone, must be one number of them. At least
   80% of the content words, and at least one, must be in them. A choice
   field is exempt. Else the tool refuses with `not_your_words`.
+- **The refusal speaks to two readers** (fix, 2026-10-27). On production
+  the model saved a summary of an interview answer, and the rule refused
+  it twice. The card then told the member to say it in their own words,
+  which they had done. Now the first text line is for the member: "I could
+  not save that. I save only your own words." The next line starts "For
+  the assistant:", and the card never shows it. It tells the model to call
+  again once with a short phrase copied from the message. It also tells the
+  model never to ask the member to type it again. A turn with no typed words gets a different
+  pair of lines: the member says it again in a new message. The rule of
+  `grounded()` and the 80% share did not change. Fences:
+  `tests/unit/test_profile_write_tools.py` and
+  `ProfileToolCards.test.ts`.
 - **WhatsApp.** `bot_run` binds the channel for every WhatsApp run, so a
   write labels `whatsapp`. With the org's WhatsApp writes off, the run holds
   no write tool, as its scope rule says. `resolve_person` stays.
@@ -1230,6 +1247,18 @@ member can reset one area or the whole interview. A fact shows its area.
    area marks the area `answered` too.
 8. The fences are `tests/unit/test_assistant_profile_interview.py` and
    `tests/unit/test_assistant_profile_interview_r8.py`.
+9. **A chat mark `answered` needs a saved answer** (fix, 2026-10-27). On
+   production the model marked `goals` answered after its save was refused.
+   So the area closed, and the member's answer was lost. Now
+   `POST .../interview/{area}` with `X-Profile-Via` refuses `answered` with
+   a 422 `{"reason": "no_answer", "message": ...}`. It passes only when
+   `area_has_answer` finds a fact with that area. For `detail` a set
+   `style.length` also counts, and for `people` one saved alias counts.
+   Settings is not limited. A replace sends its area in the `PATCH`, so
+   the mark after it passes. The tool answers the 422 with the reason
+   `no_answer`, and the chat draws no card for it. The persona and the
+   tool docs say: copy a short phrase. Mark an area only after a save says
+   Saved. Fence: `tests/unit/test_assistant_profile_interview_r8.py`.
 
 **PZ-27 as built (2026-10-25).**
 
