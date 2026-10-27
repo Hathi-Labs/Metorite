@@ -177,6 +177,11 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # the person on the tenant plane and then meet a Console 403. The operator
     # BFF checks EDITOR for remove and ADMIN with a window for purge first.
     ("POST", "/registry/members/remove"): _R(EDITOR),
+    # The org-RENAME door (CP-8, 2026-10-27). EDITOR, with no window: it
+    # changes a label, grows nothing and moves no money. The operator BFF
+    # checks EDITOR before the tenant rename, so a higher rank here would let
+    # the tenant plane change and then refuse the Console half with a 403.
+    ("POST", "/registry/orgs/rename"): _R(EDITOR),
     # ⚠️ Editor covers a grant AT OR BELOW the threshold only. The amount is in
     # the BODY, which a dependency cannot see, so the route body raises the bar
     # to `admin` above `credit_elevation()`. Both halves are tested.

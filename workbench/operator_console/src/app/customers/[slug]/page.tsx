@@ -669,7 +669,13 @@ export default async function CustomerDetailPage({
       )}
 
       {tab === "access" && (
-        <AccessActions slug={org.slug} status={org.status} keys={keys} keysError={keysError} />
+        <AccessActions
+          slug={org.slug}
+          name={org.name}
+          status={org.status}
+          keys={keys}
+          keysError={keysError}
+        />
       )}
     </main>
   );

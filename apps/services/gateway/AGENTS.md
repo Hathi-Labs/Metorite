@@ -145,6 +145,9 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - ⚠️ **The provisioning `ON CONFLICT` arms name the statuses they rewrite, and never negate.** The target is `ON CONFLICT (lower(email))`. Approve never rewrites the roles of an existing member that is not `invited`. Fences: `test_signin_requests.py`, `test_app_user_upserts.py`.
    - The `/auth/me/*` routes take the member and the tenant from the session. 🔴 No staff route reads an assistant profile. Fence: `test_assistant_profile_private.py`.
    - `routes/operator.py` needs the internal bearer AND `X-Operator-Token`. Fence: `test_operator_door.py`.
+   - `PATCH /internal/operator/organizations/{slug}` renames one org (CP-8). The org comes from the path slug, and the body allows only `name`.
+   - **A rename has ONE body.** `routes/admin/organization.py::rename_org_row` holds the UPDATE of `organization.display_name`. Both rename doors call it after `clean_display_name`. The slug never changes. Fences: `test_operator_door.py`, `test_admin_organization_rename.py`.
+   - After the commit, the admin rename mirrors the name to the Console, best-effort. It logs `org_rename_mirror_failed` with the slug and the name when the call fails. It logs `org_rename_mirror_wrong_org` when the Console answers for another org.
 15. routes/workflows/ -- **The Workflows app `/workflows` API** (`workflows_app.md`, `docs/workflow-editor/README.md`). Publish compiles the edit-model to an immutable run-model, and a run pins its version.
    - **The engine (`engine/`) is transport-free**, with no FastAPI or DB import. Agent nodes call `orchestrator.executor.run_agent`. Write-class tool nodes go through `action_broker.propose/submit` and fail closed.
    - ⚠️ **`__init__.py` import order is load-bearing.** Static paths come before `/{workflow_id}`.
