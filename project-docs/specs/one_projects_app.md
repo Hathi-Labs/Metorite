@@ -1309,10 +1309,26 @@ is dark until a UI slice calls it.
    is true when the call names a project. `list_projects` rows and the
    `get_project` project carry `kind` and `level`. The gateway derives the
    level by `core.node_level` (`/projects/tree` and `/projects/nodes/{id}`).
-10. **Fences.** `tests/unit/test_projects_mine.py` (hermetic) and
+10. **The inbox count.** `by_disposition.inbox` is the count of the "My task
+    inbox" badge (`inbox.ts` `inboxCount`). It holds the INBOX rows that do
+    not wait for their date. It also holds the untriaged board rows. An
+    untriaged board row is open and on a company board. A colleague assigned
+    it to me, and I set no disposition. This is `personal.UNTRIAGED_CLAUSE`,
+    the set of `/my/inbox?untriaged=true`. Such a row also counts in `next`
+    or `someday`, because `viewCounts` counts it there. The client counters
+    are independent.
+11. **Cost: measured, and not fixed here.** `/my/inbox` takes about 1.5 to
+    2.3 s at 5000 tasks. This change did not cause it. The overlay join uses
+    `lower(member_email)`, so it cannot use `idx_pm_task_personal_member`.
+    `scope=mine` costs 60 to 90 ms for each query. **Follow-up for the UI
+    slice:** keyset paging, and an index on `lower(member_email)`.
+12. **Fences.** `tests/unit/test_projects_mine.py` (hermetic) and
     `tests/unit/test_projects_mine_r8.py` (R8, two members and a second
     organization). The R8 suite asserts that the list, the calendar, the
     summary and `/my/inbox` give the same set.
+    `TestTheMemberTestsAreFenced` kills two mutations. The first removes the
+    member test from the WAITING arm. The second removes it from the overlay
+    join of the summary.
 
 **Not decided.** Slices 2 to 8 need an audit before dispatch. A slice must
 not change a colour, a typeface or a control style (DESIGN_SYSTEM.md).
