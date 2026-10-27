@@ -1672,7 +1672,7 @@ def test_a_missing_persona_bullet_raises_unless_the_owner_has_none_by_design(
     the swap for any absent owner (the old rule) -> the second case does not
     raise -> red. Mutation: drop ``crm-assistant`` from the set -> the first
     case raises -> red."""
-    assert tp.NO_PERSONA_BULLETS == {CRM}
+    assert CRM in tp.NO_PERSONA_BULLETS and len(tp.NO_PERSONA_BULLETS) == 1
     persona = _agents_mod()._orchestrator_instructions(False)
     text = tp.persona_for(persona, [("crm-records", False)], _bullets())
     assert text.startswith(persona.rstrip("\n") + "\n\n")

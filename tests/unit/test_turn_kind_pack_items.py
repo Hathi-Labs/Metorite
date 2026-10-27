@@ -416,8 +416,9 @@ async def test_layer_c_drops_the_mirror_record_writes_through_load_early(
 
 
 @pytest.mark.parametrize("layer", ["b-load", "c-early"])
+@pytest.mark.usefixtures("store")
 async def test_a_held_crm_pack_gives_the_mail_reason_in_layer_b_and_c(
-    store, monkeypatch, layer: str,
+    monkeypatch, layer: str,
 ) -> None:
     """OA-8a fix round 1: the chat read mail, so the pack builds held, and the
     rules of a load (layer b answer, layer c instruction) end with the mail
