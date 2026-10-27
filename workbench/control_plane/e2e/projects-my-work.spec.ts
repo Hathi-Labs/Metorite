@@ -1,25 +1,33 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { VIEW_TITLES } from "../src/app/tasks/lib/viewTitles";
-
 /**
- * My work in the Projects sidebar (WS-64 OP-2, `one_projects_app.md` §4.1 and
- * §9 OP-2).
+ * My work and My tasks in the Projects sidebar (WS-64 OP-2 and OP-11,
+ * `one_projects_app.md` §4.1, §9 OP-2 and §9 OP-11).
  *
  * ## The rules
  *
- * 1. With the flag on, the sidebar shows six entries under "My work".
- * 2. Each count equals the count that `/tasks` shows for the same member.
- * 3. `?app=my-today` opens Today, and `/projects` with nothing opens Today.
+ * 1. With the flag on, the My work section holds two rows: "My task inbox"
+ *    and "My tasks", each with the count of `GET /projects/my/summary`.
+ * 2. My tasks is a roll-up space with a project's tabs: Overview, Board,
+ *    List, Table and Calendar, the Needs attention lens and Reports.
+ * 3. The chips (All, Today, Next, Waiting, Someday, Done) filter the rows,
+ *    and the address keeps the chip.
+ * 4. The board groups by stage. A drop writes the first status of that stage
+ *    in the card's OWN project.
+ * 5. Each row names its project. `/projects` lands on My tasks with Today,
+ *    and the old ids (`?app=my-today`, `?app=my-waiting`) open their chip.
+ * 6. At 390 px the bar reads Menu, My tasks, Capture, Search, Ask, and My
+ *    tasks opens its List with the chip row.
  *
  * ## How to run it
  *
- * The flag is inlined at build time, so the dev server must start with it:
+ * The flags are inlined at build time, so the dev server must start with them:
  *
- *     NEXT_PUBLIC_PROJECTS_MY_WORK=1 npx playwright test e2e/projects-my-work.spec.ts
+ *     NEXT_PUBLIC_PROJECTS_MY_WORK=1 NEXT_PUBLIC_PROJECTS_COMPACT_CHROME=1 \
+ *       npx playwright test e2e/projects-my-work.spec.ts
  *
- * Without the flag the file skips. A vitest test cannot see the page
- * (`src/app/projects/lib/myWork.test.ts` fences the rules).
+ * Without the My work flag the file skips. A vitest test cannot see the page
+ * (`src/app/projects/lib/myTasks.test.ts` and `myWork.test.ts` fence the rules).
  */
 
 test.skip(
@@ -27,208 +35,263 @@ test.skip(
   "start the server with NEXT_PUBLIC_PROJECTS_MY_WORK=1",
 );
 
-/** The date the gateway answers, and a due date on or before it. */
-const TODAY = "2026-10-24";
+/** The member's date, as the summary gives it. */
+const TODAY = "2026-10-27";
 
 function row(id: string, over: Record<string, unknown> = {}) {
   return {
     id,
     title: `Task ${id}`,
+    project_id: "pa",
+    root_project_id: "pa",
+    status_id: "a-todo",
+    status_category: "todo",
     disposition: "NEXT",
     is_mine: true,
-    project_id: "root-1",
+    is_triaged: true,
     created_at: "2026-10-01T09:00:00Z",
     updated_at: "2026-10-01T09:00:00Z",
-    assignees: [],
+    assignees: ["you@example.com"],
     tags: [],
     ...over,
   };
 }
 
-/**
- * The gateway answers `my/inbox` with every open row, whatever its disposition,
- * so the store counts all of them. The test never assumes a number: it compares
- * the settled counts of the two pages.
- *
- * 2 inbox, 3 next (2 of them dated today or before), 1 waiting, 1 someday. */
+/** Six tasks of mine, in three projects. */
 const ROWS = [
-  row("i1", { disposition: "INBOX" }),
-  row("i2", { disposition: "INBOX" }),
-  row("n1", { due_at: "2026-10-24" }),
-  row("n2", { due_at: "2026-10-01" }),
-  row("n3"),
-  row("w1", { disposition: "WAITING" }),
-  row("s1", { disposition: "SOMEDAY" }),
+  row("t-a", { project_id: "pa-h", due_at: "2026-10-27T10:00:00Z" }),
+  row("t-b", { project_id: "pb", root_project_id: "pb", status_id: "b-todo" }),
+  row("t-c", { status_id: "a-doing", status_category: "in_progress", disposition: "WAITING" }),
+  row("t-d", { project_id: "pb", root_project_id: "pb", status_id: "b-back", status_category: "backlog", disposition: "SOMEDAY" }),
+  row("t-e", { status_id: "a-done", status_category: "done", disposition: "DONE", completed_at: "2026-10-26T09:00:00Z" }),
+  row("t-f", { project_id: "p-root", root_project_id: "p-root", disposition: "INBOX", assignees: [] }),
 ];
 
+const status = (id: string, project: string, category: string, position: number, name = id) => ({
+  id,
+  project_id: project,
+  name,
+  color: "",
+  position,
+  category,
+  is_default: false,
+});
+
+/** Ops (and its project Hiring) and Sales have their own lanes. Sales sorts first. */
+const OPS = [
+  status("a-back", "pa", "backlog", 10, "Backlog"),
+  status("a-todo", "pa", "todo", 20, "To do"),
+  status("a-doing", "pa", "in_progress", 30, "Doing"),
+  status("a-review", "pa", "in_progress", 40, "Review"),
+  status("a-done", "pa", "done", 50, "Done"),
+];
+const SALES = [
+  status("b-back", "pb", "backlog", 1, "Later"),
+  status("b-todo", "pb", "todo", 2, "Open"),
+  status("b-doing", "pb", "in_progress", 3, "Working"),
+  status("b-done", "pb", "done", 4, "Won"),
+];
+
+const SUMMARY = {
+  id: "mine",
+  name: "My tasks",
+  level: "mine",
+  tasks: 6,
+  overdue: 1,
+  due_soon: 2,
+  due_soon_days: 7,
+  by_category: { backlog: 1, todo: 3, in_progress: 1, done: 1 },
+  projects: 3,
+  own: { tasks: 0, overdue: 0, due_soon: 0, by_category: {} },
+  children: [
+    { id: "pa", name: "Ops", kind: "project", archived: false, tasks: 4, overdue: 1, by_category: { todo: 2, in_progress: 1, done: 1 } },
+    { id: "pb", name: "Sales", kind: "project", archived: false, tasks: 2, overdue: 0, by_category: { todo: 1, backlog: 1 } },
+  ],
+  by_disposition: { inbox: 3, today: 1, next: 2, waiting: 1, someday: 1, done: 1 },
+  today: TODAY,
+};
+
+const TREE = {
+  rows: [
+    { id: "pa", name: "Ops", tasks: 4, children: [{ id: "pa-h", name: "Hiring", parent_project_id: "pa", tasks: 1 }] },
+    { id: "pb", name: "Sales", tasks: 2 },
+  ],
+  total: 2,
+  personal: [{ id: "p-root", name: "Personal space", personal: true, can_delete: false, can_write_grants: false }],
+};
+
 const FIXTURES: Record<string, unknown> = {
-  "auth/me": { email: "you@example.com", name: "You" },
-  "projects/tree": { rows: [], total: 0 },
+  "auth/me": { email: "you@example.com", name: "You", features: ["tasks", "projects"] },
+  "projects/tree": TREE,
+  "projects/my/summary": SUMMARY,
   "my/today": { today: TODAY, timezone: "UTC", stored: true, valid: true },
-  "my/inbox": { rows: ROWS, total: ROWS.length },
+  "my/inbox": { rows: [], total: 0 },
+  "projects/tasks": { rows: ROWS, total: ROWS.length },
+  "projects/calendar": { from: "2026-10-01", to: "2026-11-01", rows: ROWS, links: [], truncated: false, cap: 500, undated: 0, unscheduled: [] },
+  "projects/nodes/pa/statuses": { rows: OPS, total: OPS.length, counts: {}, owner_id: "pa" },
+  "projects/nodes/pa-h/statuses": { rows: OPS, total: OPS.length, counts: {}, owner_id: "pa" },
+  "projects/nodes/pb/statuses": { rows: SALES, total: SALES.length, counts: {}, owner_id: "pb" },
+  "projects/needs-attention": { rows: [], total: 0, counts: {} },
 };
 const EMPTY = { rows: [], items: [], total: 0, links: [], subtasks: [], children: [], buckets: [] };
 
-async function mock(page: Page) {
+/** Every status write of a task, in order: `[task id, body]`. */
+type Patch = [string, Record<string, unknown>];
+
+async function mock(page: Page, opts: { shell?: boolean } = {}): Promise<{ patches: Patch[]; reads: string[] }> {
+  const patches: Patch[] = [];
+  const reads: string[] = [];
+  if (opts.shell) {
+    await page.addInitScript(() => {
+      for (const key of ["cc-shell-chat", "cc-shell-bar", "cc-shell-nav"]) localStorage.setItem(key, "1");
+    });
+  }
   await page.route("**/api/**", async (route) => {
-    const path = new URL(route.request().url()).pathname.replace(/^\/api\//, "");
+    const req = route.request();
+    const url = new URL(req.url());
+    const path = url.pathname.replace(/^\/api\//, "");
+    if (req.method() === "PATCH") {
+      const id = /projects\/tasks\/([^/]+)$/.exec(path)?.[1];
+      if (id) patches.push([id, req.postDataJSON() as Record<string, unknown>]);
+      return route.fulfill({ json: { ...row(id ?? "x"), ...(req.postDataJSON() as object) } });
+    }
+    if (path.startsWith("projects/tasks") || path.startsWith("projects/my/summary")) reads.push(`${path}${url.search}`);
+    // The analytics answer nothing here: each panel then draws nothing.
+    if (path.includes("projects/analytics")) return route.fulfill({ status: 404, json: { detail: "not stubbed" } });
     const hit = Object.keys(FIXTURES)
       .sort((a, b) => b.length - a.length)
       .find((key) => path.includes(key));
     return route.fulfill({ json: hit ? (FIXTURES[hit] as object) : EMPTY });
   });
+  return { patches, reads };
 }
 
-const ENTRIES = Object.values(VIEW_TITLES);
+const space = (page: Page) => page.getByTestId("my-tasks-space");
+const chip = (page: Page, id: string) => page.locator(`[data-chip="${id}"]`);
 
-/** The number in a sidebar entry, or null when it shows none. */
-async function countOf(page: Page, name: string): Promise<number | null> {
-  const button = page.getByRole("button", { name: new RegExp(`^${name}`) }).first();
-  const text = (await button.innerText()).replace(name, "").trim();
-  return /^\d+$/.test(text) ? Number(text) : null;
-}
-
-test("the section shows the six entries", async ({ page }) => {
+test("the section shows My task inbox and My tasks, with the server counts", async ({ page }) => {
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 1280, height: 800 });
   await mock(page);
   await page.goto("/projects");
   await expect(page.getByText("My work", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
-  for (const name of ENTRIES) {
-    await expect(page.getByRole("button", { name: new RegExp(`^${name}`) }).first()).toBeVisible();
+  // The inbox shows `by_disposition.inbox`, and My tasks the open tasks (6 - 1 done).
+  await expect(page.getByRole("button", { name: /^My task inbox\s*3$/ })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: /^My tasks\s*5$/ })).toBeVisible();
+  // The five old rows are gone from the sidebar.
+  for (const name of ["Today", "Waiting For", "Someday / Maybe"]) {
+    await expect(page.getByRole("navigation").getByRole("button", { name: new RegExp(`^${name}`) })).toHaveCount(0);
   }
 });
 
-test("/projects with nothing opens Today", async ({ page }) => {
+test("/projects lands on My tasks with Today, and the tab strip is a project's", async ({ page }) => {
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 1280, height: 800 });
-  await mock(page);
+  const { reads } = await mock(page);
   await page.goto("/projects");
-  await expect(page.getByRole("button", { name: /^Today/ }).first()).toHaveAttribute("aria-pressed", "true", {
-    timeout: 30_000,
-  });
-  // Today holds the two next actions dated today or before.
-  await expect(page.getByText("Task n1", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("Task n2", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("Task n3", { exact: true })).toHaveCount(0);
+  await expect(space(page)).toBeVisible({ timeout: 30_000 });
+  await expect(page).toHaveURL(/app=my-tasks&chip=today/);
+  await expect(chip(page, "today")).toHaveAttribute("aria-pressed", "true");
+  const tabs = page.locator("[data-my-tasks-tabs]");
+  for (const name of ["Overview", "Board", "List", "Table", "Calendar"]) {
+    await expect(tabs.getByRole("button", { name, exact: true })).toBeVisible();
+  }
+  await expect(tabs.getByRole("button", { name: /Needs attention/ })).toBeVisible();
+  await expect(tabs.getByRole("button", { name: "Reports" })).toBeVisible();
+  // Today holds the one task of mine due today.
+  await expect(space(page).getByText("Task t-a", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(space(page).getByText("Task t-b", { exact: true })).toHaveCount(0);
+  // The list pages through the board read over mine, and never the whole inbox.
+  expect(reads.some((r) => r.includes("scope=mine") && r.includes("with_overlay=1"))).toBe(true);
 });
 
-test("?app=my-waiting opens its view", async ({ page }) => {
+test("the chips filter the list, and the address keeps the chip", async ({ page }) => {
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 1280, height: 800 });
   await mock(page);
+  await page.goto("/projects?app=my-tasks");
+  await expect(space(page)).toBeVisible({ timeout: 30_000 });
+  // All: every row but none in TRASH. The counts come from the summary.
+  await expect(space(page).getByText("Task t-b", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(chip(page, "waiting")).toContainText("1");
+  await chip(page, "waiting").click();
+  await expect(page).toHaveURL(/app=my-tasks&chip=waiting/);
+  await expect(space(page).getByText("Task t-c", { exact: true })).toBeVisible();
+  await expect(space(page).getByText("Task t-b", { exact: true })).toHaveCount(0);
+  await chip(page, "next").click();
+  await expect(page).toHaveURL(/app=my-tasks&chip=next/);
+  await expect(space(page).getByText("Task t-a", { exact: true })).toBeVisible();
+  await expect(space(page).getByText("Task t-b", { exact: true })).toBeVisible();
+  await expect(space(page).getByText("Task t-c", { exact: true })).toHaveCount(0);
+  // Each row names its project, with the path.
+  await expect(space(page).locator("[data-project-chip]").filter({ hasText: "Ops › Hiring" })).toBeVisible();
+  await page.reload();
+  await expect(chip(page, "next")).toHaveAttribute("aria-pressed", "true", { timeout: 30_000 });
+});
+
+test("the Overview shows the KPI figures of the summary", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mock(page);
+  await page.goto("/projects?app=my-tasks");
+  await page.locator("[data-my-tasks-tabs]").getByRole("button", { name: "Overview", exact: true }).click();
+  const kpis = page.locator("[data-mine-kpis]");
+  await expect(kpis).toBeVisible({ timeout: 30_000 });
+  await expect(kpis).toContainText("Open");
+  await expect(kpis).toContainText("5");
+  await expect(kpis).toContainText("Due soon");
+  await expect(kpis).toContainText("2");
+  await expect(kpis).toContainText("Overdue");
+  // "Where my work sits": a row for each space.
+  await expect(space(page).getByRole("button", { name: /Ops/ })).toBeVisible();
+  await expect(space(page).getByRole("button", { name: /Sales/ })).toBeVisible();
+});
+
+test("the board groups by stage, and a drop writes the card's own project's status", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const { patches } = await mock(page);
+  await page.goto("/projects?app=my-tasks");
+  await page.locator("[data-my-tasks-tabs]").getByRole("button", { name: "Board", exact: true }).click();
+  for (const stage of ["Backlog", "To do", "In progress", "Done"]) {
+    await expect(page.getByRole("group", { name: stage })).toBeVisible({ timeout: 30_000 });
+  }
+  const card = page.getByRole("group", { name: "To do" }).getByText("Task t-a", { exact: true });
+  await expect(card).toBeVisible();
+  await card.dragTo(page.getByRole("group", { name: "In progress" }));
+  // Hiring uses Ops' lanes, so the first In progress status is Ops' "Doing",
+  // never Sales' "Working", which sorts first in the merged set.
+  await expect.poll(() => patches, { timeout: 15_000 }).toContainEqual(["t-a", { status_id: "a-doing" }]);
+});
+
+test("the old ids open My tasks with their chip", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mock(page);
+  await page.goto("/projects?app=my-today");
+  await expect(page).toHaveURL(/app=my-tasks&chip=today/, { timeout: 30_000 });
+  await expect(chip(page, "today")).toHaveAttribute("aria-pressed", "true");
   await page.goto("/projects?app=my-waiting");
-  await expect(page.getByRole("button", { name: /^Waiting For/ }).first()).toHaveAttribute(
-    "aria-pressed",
-    "true",
-    { timeout: 30_000 },
-  );
-});
-
-/**
- * Read until three reads in a row agree. The store fills in steps, so a count
- * seen once can be a value on the way to the settled one. The test compares
- * only the settled value, never a number it expects in advance.
- */
-async function settled<T>(read: () => Promise<T>): Promise<T> {
-  let last = await read();
-  let same = 0;
-  for (let i = 0; i < 100 && same < 3; i++) {
-    await new Promise((r) => setTimeout(r, 200));
-    const now = await read();
-    same = JSON.stringify(now) === JSON.stringify(last) ? same + 1 : 0;
-    last = now;
-  }
-  expect(same, "the counts never settled").toBeGreaterThanOrEqual(3);
-  return last;
-}
-
-// WS-64 OP-4: with the flag on (the only way this file runs), `/tasks` is a
-// redirect into Projects, so the page this test compared against no longer
-// draws and no flag-on equivalent exists. `myWork.test.ts` ("each count is the
-// one that /tasks draws") fences the same equality on `viewCounts` and
-// `inboxCount`, the shared count functions.
-test.fixme("each count equals the count that /tasks shows", async ({ page }) => {
-  test.setTimeout(180_000);
-  await page.setViewportSize({ width: 1280, height: 800 });
-  await mock(page);
-
-  await page.goto("/projects");
-  await expect(page.getByRole("button", { name: /^Today/ }).first()).toHaveAttribute("aria-pressed", "true", {
-    timeout: 30_000,
-  });
-  // The store loads when the view opens. Wait for a count to show, then for it to stop moving.
-  await expect(page.getByRole("button", { name: /^My task inbox\s*\d/ }).first()).toBeVisible({ timeout: 30_000 });
-  const mine = await settled(async () => ({
-    inbox: await countOf(page, "My task inbox"),
-    next: await countOf(page, VIEW_TITLES.next),
-    waiting: await countOf(page, VIEW_TITLES.waiting),
-    someday: await countOf(page, VIEW_TITLES.someday),
-  }));
-
+  await expect(page).toHaveURL(/app=my-tasks&chip=waiting/, { timeout: 30_000 });
+  await expect(chip(page, "waiting")).toHaveAttribute("aria-pressed", "true");
   await page.goto("/tasks");
-  const nav = page.getByRole("navigation").filter({ hasText: "Your lists" });
-  await expect(nav.getByRole("button", { name: /^My task inbox\s*\d/ })).toBeVisible({ timeout: 30_000 });
-  const theirs = async (name: string) => {
-    const text = (await nav.getByRole("button", { name: new RegExp(`^${name}`) }).first().innerText())
-      .replace(name, "")
-      .trim();
-    return /^\d+$/.test(text) ? Number(text) : null;
-  };
-  const tasks = await settled(async () => ({
-    inbox: await theirs("My task inbox"),
-    next: await theirs(VIEW_TITLES.next),
-    waiting: await theirs(VIEW_TITLES.waiting),
-    someday: await theirs(VIEW_TITLES.someday),
-  }));
-  expect(mine.inbox).not.toBeNull();
-  expect(mine).toEqual(tasks);
+  await expect(page).toHaveURL(/\/projects\?app=my-tasks&chip=today/, { timeout: 60_000 });
+  await expect(space(page)).toBeVisible();
 });
 
-/**
- * OP-2b (`one_projects_app.md` §4.3): a row click in a My work view opens the
- * ONE Projects task panel, with the overlay strip, and not the My Tasks focus
- * modal. A change of disposition moves the row out of Today with no reload.
- * Fixtures are exact: the sub-requests of the panel get explicit empties, and
- * the disposition write answers with the updated row.
- */
-test("a Today row opens the Projects panel with the overlay strip", async ({ page }) => {
-  test.setTimeout(180_000);
-  await page.setViewportSize({ width: 1280, height: 800 });
-  await mock(page);
-  const one = row("n1", { due_at: "2026-10-24" });
-  FIXTURES["projects/tasks/n1"] = { ...one, root_project_id: "root-1", status: "To do" };
-  FIXTURES["my/tasks/n1"] = one;
-  for (const sub of ["timeline", "refs", "subtasks", "links", "comments", "activities", "attachments"]) {
-    FIXTURES[`projects/tasks/n1/${sub}`] = { rows: [], items: [], total: 0 };
-  }
-  // The disposition write answers with the updated row, and the next read of
-  // the task carries it.
-  await page.route("**/api/projects/tasks/n1/personal", async (route) => {
-    const patch = route.request().postDataJSON() as Record<string, unknown>;
-    const updated = { ...(FIXTURES["projects/tasks/n1"] as object), ...patch };
-    FIXTURES["projects/tasks/n1"] = updated;
-    FIXTURES["my/tasks/n1"] = { ...one, ...patch };
-    await route.fulfill({ json: updated });
-  });
-
-  await page.goto("/projects");
-  const target = page.getByText("Task n1", { exact: true }).first();
-  await expect(target).toBeVisible({ timeout: 30_000 });
-  await target.click();
-
-  // The Projects panel opens, with the strip, and the My Tasks modal does not.
-  await expect(page.getByTestId("my-work-strip")).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole("button", { name: "Edit Disposition" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Edit Defer until" })).toBeVisible();
-  // Today stays under the panel.
-  await expect(page.getByRole("button", { name: /^Today/ }).first()).toHaveAttribute("aria-pressed", "true");
-
-  // Waiting is not a Today disposition, so the row leaves Today at once.
-  await page.getByRole("button", { name: "Edit Disposition" }).click();
-  await page.getByRole("button", { name: "Waiting", exact: true }).click();
-  await page.keyboard.press("Escape");
-  await expect(page.getByText("Task n1", { exact: true })).toHaveCount(0);
+test("at 390 the bar reads Menu, My tasks, Capture, Search, Ask, and My tasks shows its chips", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mock(page, { shell: true });
+  await page.goto("/projects?project=pb");
+  const bar = page.locator("nav").filter({ has: page.locator("[data-ask-tab]") }).last();
+  await expect(bar.locator("[data-ask-tab]")).toBeVisible({ timeout: 60_000 });
+  const labels = (await bar.locator("button").allInnerTexts()).map((t) => t.trim()).filter(Boolean);
+  expect(labels).toEqual(["Menu", "My tasks", "Capture", "Search", "Ask"]);
+  await bar.getByRole("button", { name: "My tasks" }).click();
+  await expect(space(page)).toHaveAttribute("data-mode", "list", { timeout: 30_000 });
+  await expect(page.locator("[data-my-tasks-chips]")).toBeVisible();
+  await expect(chip(page, "all")).toBeVisible();
 });
 
 /**
@@ -289,4 +352,165 @@ test("the Personal section sits between My work and Spaces, with a lock", async 
   const names = await page.getByRole("menuitem").allTextContents();
   expect(names.length).toBeGreaterThan(0);
   expect(names.join("|")).not.toMatch(/move|archive|share|access/i);
+});
+
+// ── OP-11 fix round (the review of #1391) ──────────────────────────────────
+
+/** The board tab of My tasks, with its four stage columns drawn. */
+async function openBoard(page: Page) {
+  await page.goto("/projects?app=my-tasks");
+  await page.locator("[data-my-tasks-tabs]").getByRole("button", { name: "Board", exact: true }).click();
+  await expect(page.getByRole("group", { name: "Done" })).toBeVisible({ timeout: 30_000 });
+}
+
+test("item 1: the Mark-done tick on a board card writes the card's own project's Done", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const { patches } = await mock(page);
+  await openBoard(page);
+  // t-b sits in Sales, whose Done lane is "Won". The merged set holds Ops' "Done".
+  const card = page.getByRole("group", { name: "To do" }).locator("li").filter({ hasText: "Task t-b" }).first();
+  await card.hover();
+  await card.getByRole("button", { name: "Mark done" }).click();
+  await expect.poll(() => patches, { timeout: 15_000 }).toContainEqual(["t-b", { status_id: "b-done" }]);
+});
+
+test("item 2: a drop into Done on a parent with open subtasks asks first", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1920, height: 1000 });
+  const { patches } = await mock(page);
+  const rows = ROWS.map((r) => (r.id === "t-a" ? { ...r, subtasks: { total: 2, done: 0 } } : r));
+  await page.route(/\/api\/projects\/tasks\?/, (route) => route.fulfill({ json: { rows, total: rows.length } }));
+  await openBoard(page);
+  const card = page.getByRole("group", { name: "To do" }).getByText("Task t-a", { exact: true });
+  await card.dragTo(page.getByRole("group", { name: "Done" }));
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("2 subtasks are still open", { timeout: 15_000 });
+  await dialog.locator("[data-cancel]").click();
+  await expect.poll(() => patches, { timeout: 15_000 }).toContainEqual(["t-a", { status_id: "a-done" }]);
+  // The receipt carries Undo, as on a project board.
+  await expect(page.getByRole("button", { name: "Undo" }).first()).toBeVisible();
+});
+
+test("item 7: a failed write keeps its message through the reload after it", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const { reads } = await mock(page);
+  await page.route(/\/api\/projects\/tasks\/t-a$/, (route) =>
+    route.request().method() === "PATCH"
+      ? route.fulfill({ status: 500, json: { detail: "The write failed on the server." } })
+      : route.fallback(),
+  );
+  await openBoard(page);
+  const before = reads.length;
+  await page
+    .getByRole("group", { name: "To do" })
+    .getByText("Task t-a", { exact: true })
+    .dragTo(page.getByRole("group", { name: "In progress" }));
+  const alert = page.locator('[data-my-tasks-error="write"]');
+  await expect(alert).toBeVisible({ timeout: 15_000 });
+  // The reload after the write has read the list again, and the message stays.
+  await expect.poll(() => reads.length, { timeout: 15_000 }).toBeGreaterThan(before);
+  await page.waitForTimeout(500);
+  await expect(alert).toBeVisible();
+  await alert.getByRole("button", { name: "Dismiss" }).click();
+  await expect(alert).toHaveCount(0);
+});
+
+test("item 6: a failed summary read shows Retry, and the List still works", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mock(page);
+  let failing = true;
+  await page.route(/\/api\/projects\/my\/summary/, (route) =>
+    failing ? route.fulfill({ status: 500, json: { detail: "down" } }) : route.fallback(),
+  );
+  await page.goto("/projects?app=my-tasks");
+  await page.locator("[data-my-tasks-tabs]").getByRole("button", { name: "Overview", exact: true }).click();
+  await expect(space(page).getByText("My tasks could not be loaded just now.")).toBeVisible({ timeout: 30_000 });
+  await expect(space(page).getByRole("button", { name: "Retry" })).toBeVisible();
+  await page.locator("[data-my-tasks-tabs]").getByRole("button", { name: "List", exact: true }).click();
+  await expect(space(page).getByText("Task t-b", { exact: true })).toBeVisible({ timeout: 30_000 });
+  // The chips draw with no counts, and no skeleton waits for them.
+  await expect(chip(page, "waiting")).toHaveText("Waiting");
+  failing = false;
+  await page.locator("[data-my-tasks-tabs]").getByRole("button", { name: "Overview", exact: true }).click();
+  await space(page).getByRole("button", { name: "Retry" }).click();
+  await expect(page.locator("[data-mine-kpis]")).toBeVisible({ timeout: 30_000 });
+});
+
+test("item 5: a chip past 2,000 rows says so, and the first paint reads each page once", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mock(page);
+  const pages: number[] = [];
+  const boardReads: string[] = [];
+  await page.route(/\/api\/projects\/tasks\?/, (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("scope") !== "mine") {
+      boardReads.push(url.search);
+      return route.fulfill({ json: { rows: [], total: 0 } });
+    }
+    const n = Number(url.searchParams.get("page") ?? "1");
+    pages.push(n);
+    const rows = Array.from({ length: 100 }, (_, i) => row(`r-${n}-${i}`));
+    return route.fulfill({ json: { rows, total: 2500 } });
+  });
+  await page.goto("/projects?app=my-tasks&chip=done");
+  const notice = page.locator("[data-my-tasks-truncated]");
+  await expect(notice).toHaveText("Showing the first 2,000 of 2,500. Narrow the filter or use All.", {
+    timeout: 60_000,
+  });
+  // Twenty pages, each read ONCE: the mount does not read twice.
+  expect([...pages].sort((a, b) => a - b)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+  // And the page reads no project board behind My tasks.
+  expect(boardReads).toEqual([]);
+});
+
+test("item 13: Back and Forward walk the chips", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mock(page);
+  await page.goto("/projects?app=my-tasks");
+  await expect(space(page).getByText("Task t-b", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await chip(page, "waiting").click();
+  await expect(page).toHaveURL(/chip=waiting/);
+  await chip(page, "next").click();
+  await expect(page).toHaveURL(/chip=next/);
+  await page.goBack();
+  await expect(page).toHaveURL(/chip=waiting/);
+  await expect(chip(page, "waiting")).toHaveAttribute("aria-pressed", "true");
+  await expect(space(page).getByText("Task t-c", { exact: true })).toBeVisible();
+  await page.goForward();
+  await expect(chip(page, "next")).toHaveAttribute("aria-pressed", "true");
+});
+
+test("item 11: on a phone the View sheet reaches Needs attention, with no empty Saved views", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mock(page, { shell: true });
+  await page.goto("/projects?app=my-tasks");
+  await expect(space(page)).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("button", { name: "View", exact: true }).click();
+  const sheet = page.locator("[data-view-sheet]");
+  await expect(sheet).toBeVisible();
+  await expect(sheet.getByText("Saved views")).toHaveCount(0);
+  await expect(sheet.locator('[data-sheet-lens="reports"]')).toBeVisible();
+  await sheet.locator('[data-sheet-lens="attention"]').click();
+  await expect(page.locator("[data-needs-attention]")).toBeVisible({ timeout: 30_000 });
+});
+
+test("item 15: a Table status cell offers only that row's project's statuses", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await mock(page);
+  await page.goto("/projects?app=my-tasks");
+  await page.locator("[data-my-tasks-tabs]").getByRole("button", { name: "Table", exact: true }).click();
+  const tableRow = page.getByRole("row").filter({ hasText: "Task t-b" }).first();
+  await expect(tableRow).toBeVisible({ timeout: 30_000 });
+  await tableRow.getByRole("cell", { name: "Open", exact: true }).click();
+  const options = page.getByRole("option");
+  await expect(options.first()).toBeVisible({ timeout: 15_000 });
+  const names = (await options.allInnerTexts()).map((t) => t.trim());
+  expect(names).toEqual(["Later", "Open", "Working", "Won"]);
 });

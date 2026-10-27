@@ -130,7 +130,7 @@ describe("the source map of MD-3b (source_apps, §14.1a)", () => {
       "Calendar did not answer, so its time blocks may be missing.",
     ]);
     expect(cappedLinks(group, ["tasks"])).toEqual([
-      { app: "tasks", label: "Show all in My work", href: "/projects?app=my-today" },
+      { app: "tasks", label: "Show all in My work", href: "/projects?app=my-tasks&chip=today" },
     ]);
     // WS-64: the nav badge still keys on the pane href, so it is not touched.
     expect(NEEDS_APP_HREF.tasks).toBe("/projects");

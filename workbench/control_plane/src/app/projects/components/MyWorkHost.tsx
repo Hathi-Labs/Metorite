@@ -3,24 +3,27 @@
 /**
  * Projects · My work (WS-64 OP-2, `one_projects_app.md` §9 OP-2 item 4).
  *
- * Draws one of the six My work views and mounts, ONCE, the hosts that
- * `app/tasks/page.tsx` mounts around the same views: capture, the task
- * overlay, undo, the stage prompt, promote and delete. The views are the
- * components of `app/tasks/components`, imported by path. No file of
- * `/tasks` is copied, and nothing imports its page. Fence: `myWork.test.ts`.
+ * Draws "My task inbox" (the Inbox view, with Clarify) and mounts, ONCE, the
+ * hosts that `app/tasks/page.tsx` mounts around the same view: capture, the
+ * task overlay, undo, the stage prompt, promote and delete. The view is the
+ * component of `app/tasks/components`, imported by path. No file of `/tasks`
+ * is copied, and nothing imports its page. Fence: `myWork.test.ts`.
  *
- * The component is mounted only while a My work view is open, so
- * `hydrate()` runs only then. The store is the one store of D52 to D54.
+ * WS-64 OP-11: the five other lists (Today, Next, Waiting, Someday, Done)
+ * are chips of My tasks now, and `MyTasksSpace` draws them over the board
+ * endpoints. This host no longer draws `ItemList`.
+ *
+ * The component is mounted only while My task inbox is open, so `hydrate()`
+ * runs only then, and never for My tasks. The store is the one store of D52
+ * to D54.
  */
 
 import { useEffect, useRef } from "react";
 
-import Button from "@/components/ui/Button";
 import { DelegatePopup } from "@/app/tasks/components/DelegatePopup";
 import { DeleteConfirmModal } from "@/app/tasks/components/DeleteConfirmModal";
 import { EliminatePopup } from "@/app/tasks/components/EliminatePopup";
 import { InboxView } from "@/app/tasks/components/InboxView";
-import { ItemList } from "@/app/tasks/components/ItemList";
 import { PromoteHost } from "@/app/tasks/components/PromoteHost";
 import { PromoteToast } from "@/app/tasks/components/PromoteToast";
 import { QuickCapture } from "@/app/tasks/components/QuickCapture";
@@ -50,7 +53,6 @@ export default function MyWorkHost({
   const loadMyToday = useTaskStore((s) => s.loadMyToday);
   const loadDone = useTaskStore((s) => s.loadDone);
   const selectView = useTaskStore((s) => s.selectView);
-  const openQuickCapture = useTaskStore((s) => s.openQuickCapture);
   const view = useTaskStore((s) => s.selectedView);
   const wanted = myWorkView(app);
 
@@ -129,28 +131,10 @@ export default function MyWorkHost({
       onClickCapture={markInside}
       onKeyDownCapture={markInside}
     >
-      {ready ? (
-        wanted === "inbox" ? (
-          <div className="min-h-0 flex-1 overflow-hidden">
-            <InboxView embedded />
-          </div>
-        ) : (
-          <>
-            <div className="flex items-center justify-end border-b border-border bg-card px-3 py-2">
-              <Button
-                variant="secondary"
-                size="sm"
-                icon="Plus"
-                onClick={() => openQuickCapture("single")}
-              >
-                Capture
-              </Button>
-            </div>
-            <div className="min-h-0 flex-1">
-              <ItemList embedded />
-            </div>
-          </>
-        )
+      {ready && wanted === "inbox" ? (
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <InboxView embedded />
+        </div>
       ) : null}
       <QuickCapture />
       <ReclarifyModal />

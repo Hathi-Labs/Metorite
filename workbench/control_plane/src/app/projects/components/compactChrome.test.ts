@@ -205,6 +205,27 @@ describe("done-when 4: every control of the old FilterBar is reachable by role a
     })
   );
 
+  it("OP-11 fix round 11: My tasks puts its lenses beside the tabs, and no empty Saved views", () => {
+    const onPick = noop;
+    const mine = renderToStaticMarkup(
+      createElement(ViewSheetBody, {
+        ...barProps({ views: [], canSave: false }),
+        savedViews: false,
+        lenses: [
+          { id: "attention", label: "Needs attention", icon: "TriangleAlert", count: 3, onPick },
+          { id: "reports", label: "Reports", icon: "FileText", onPick },
+        ],
+      })
+    );
+    expect(mine).toContain('data-sheet-lens="attention"');
+    expect(mine).toContain('data-sheet-lens="reports"');
+    expect(mine).toMatch(/Needs attention<span[^>]*>3<\/span>/);
+    expect(mine).not.toContain("Saved views");
+    // A project's sheet is unchanged: no lens row, and its Saved views stay.
+    expect(viewSheet).not.toContain("data-sheet-lenses");
+    expect(viewSheet).toContain("Saved views");
+  });
+
   it("the filter controls are in the Filters sheet", () => {
     // [role, name] — a SelectButton is a button named by its label, a toggle is a
     // button with aria-pressed, and a tag is a button named by its tag.

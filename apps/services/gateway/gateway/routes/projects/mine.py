@@ -106,7 +106,10 @@ async def attach_my_overlay(
     """Put the CALLER's overlay on each row, in one query for the page.
 
     Each row takes ``disposition`` (the effective one), ``is_triaged``,
-    ``is_mine``, ``context``, ``energy`` and ``defer_until``. A task with no
+    ``is_mine``, ``context``, ``energy`` and ``defer_until``. It also takes
+    ``status_category``, the stage of its status, because the rows of My
+    tasks come from many projects and the client groups them by stage (WS-64
+    OP-11, the Board tab). A task with no
     overlay row takes the derived disposition of ``effective_disposition``,
     the one rule every reader calls (D77). The member is ``vis.email``, from
     the session.
@@ -119,6 +122,7 @@ async def attach_my_overlay(
         row.update({
             "disposition": None, "is_triaged": False, "is_mine": False,
             "context": None, "energy": None, "defer_until": None,
+            "status_category": None,
         })
     ids = [str(r["id"]) for r in rows if r.get("id")]
     if not ids:
@@ -145,6 +149,7 @@ async def attach_my_overlay(
             "context": hit.context,
             "energy": hit.energy,
             "defer_until": defer.isoformat() if defer is not None else None,
+            "status_category": hit.status_category,
         })
     return rows
 
@@ -406,6 +411,10 @@ async def my_summary(user: UserContext = Depends(get_current_user)) -> dict[str,
         "due_soon_days": DUE_SOON_DAYS,
         "by_disposition": fold_dispositions(rows, at=clock, today=today, zone=zone),
         "today": today.isoformat(),
+        # The zone the Today count used (`stored_zone`, else UTC). The client
+        # reads Today in this zone too, so a chip and its count agree when the
+        # browser sits in another zone (WS-64 OP-11 fix round, item 8).
+        "time_zone": zone,
     }
 
 

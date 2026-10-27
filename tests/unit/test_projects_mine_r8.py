@@ -442,6 +442,9 @@ class TestTheOneMine:
         assert rows[armed.t["a_done"]]["disposition"] == "DONE"
         assert rows[armed.t["a_personal"]]["disposition"] == "INBOX"
         assert rows[armed.t["a_open"]]["is_triaged"] is False
+        # WS-64 OP-11 Board tab: each row names the stage of its status.
+        assert rows[armed.t["a_done"]]["status_category"] in ("done", "cancelled")
+        assert rows[armed.t["a_open"]]["status_category"] not in (None, "done", "cancelled")
         # B reads the same task with B's own overlay: none, so derived.
         b_rows = {r["id"]: r for r in await _list_mine(armed, B, with_overlay="1")}
         assert b_rows[armed.t["a_waits"]]["disposition"] == "NEXT"
@@ -509,6 +512,9 @@ class TestTheOverview:
         assert summary["by_disposition"]["next"] == 4
         assert summary["by_disposition"]["someday"] == 0
         assert summary["by_disposition"]["today"] == 1
+        # The zone of that Today count (OP-11 fix round, item 8). The seed
+        # stores no zone for A, so it is UTC, and the client reads it too.
+        assert summary["time_zone"] == "UTC"
 
     async def test_no_row_names_a_project_i_cannot_see(self, armed):
         """Audit P1-8. ``a_secret`` is mine (I am its assignee), and I hold

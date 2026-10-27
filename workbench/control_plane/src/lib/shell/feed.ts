@@ -657,7 +657,9 @@ const FEED_APP_HREF: Readonly<Record<FeedApp, string>> = {
   ...FEED_ONLY_APP_HREF,
   // WS-64: the `tasks` rows count on the Projects row (`NEEDS_APP_HREF`, the
   // nav badge), but "Show all" opens My work, the landing view, `app/projects/lib/myWork.ts`.
-  tasks: "/projects?app=my-today",
+  // OP-11 fix round, item 14: straight to the Today chip of My tasks, with
+  // no alias hop through the old `my-today` id.
+  tasks: "/projects?app=my-tasks&chip=today",
 };
 
 /**

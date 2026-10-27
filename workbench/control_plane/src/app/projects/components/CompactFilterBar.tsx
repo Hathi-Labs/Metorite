@@ -30,7 +30,7 @@ import type { ViewMode } from "../lib/commands";
 import { EMPTY_FILTERS, labelWith } from "../lib/grouping";
 import { FilterBar, type Props as FilterBarProps } from "./FilterBar";
 import { FilterSheet } from "./FilterSheet";
-import { ViewSheet } from "./ViewSheet";
+import { type SheetLens, ViewSheet } from "./ViewSheet";
 
 export type CompactFilterBarProps = FilterBarProps & {
   phone: boolean;
@@ -44,6 +44,10 @@ export type CompactFilterBarProps = FilterBarProps & {
   agentSummary: AgentSummary | null;
   agentFocus: AgentFocus | null;
   onAgentFocus: (next: AgentFocus | null) => void;
+  /** WS-64 OP-11 fix round: doors beside the View sheet's tabs (`ViewSheet`). */
+  sheetLenses?: readonly SheetLens[];
+  /** False hides the View sheet's Saved views block. Default true. */
+  savedViews?: boolean;
 };
 
 export function CompactFilterBar(props: CompactFilterBarProps) {
@@ -146,6 +150,8 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
           onUpdateView={props.onUpdateView}
           canSave={props.canSave}
           onExport={props.onExport}
+          lenses={props.sheetLenses}
+          savedViews={props.savedViews}
           phone={phone}
         />
         {loadedLabel ? (
@@ -233,6 +239,8 @@ export function FilterChrome({
     agentSummary: _agentSummary,
     agentFocus: _agentFocus,
     onAgentFocus: _onAgentFocus,
+    sheetLenses: _sheetLenses,
+    savedViews: _savedViews,
     ...legacy
   } = props;
   return <FilterBar {...legacy} />;
