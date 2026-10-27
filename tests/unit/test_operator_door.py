@@ -353,3 +353,256 @@ class TestTheMemberDoorActs:
         r = _member_delete(client, email="second@fracktal.in")
         assert r.status_code == 200, r.text
         assert db.users["u-owner2"]["status"] == "removed"
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# The rename door (CP-8 "Rename an organization", owner request, 2026-10-27)
+#
+# `PATCH /internal/operator/organizations/{slug}` sets the tenant plane's
+# `organization.display_name`. The order is the contract: the two tokens, then
+# `clean_display_name`, then the slug lookup (404), then the tenant session,
+# the ONE shared UPDATE body and the audit entry. The tenant comes from the
+# PATH slug only, never from the body.
+# ════════════════════════════════════════════════════════════════════════════
+
+import os  # noqa: E402
+import uuid  # noqa: E402
+
+
+class _RenameResult:
+    def __init__(self, row):
+        self._row = row
+
+    def mappings(self):
+        return self
+
+    def first(self):
+        return self._row
+
+
+class _RenameDB:
+    """Answers the shared UPDATE body only, and records what it was handed."""
+
+    def __init__(self):
+        self.statements: list[tuple[str, dict]] = []
+
+    async def execute(self, statement, params=None):
+        sql = str(statement)
+        self.statements.append((sql, dict(params or {})))
+        assert "UPDATE organization SET display_name" in sql, sql
+        return _RenameResult({"id": ORG, "slug": "acme",
+                              "display_name": params["name"]})
+
+
+@pytest.fixture
+def rename_world(monkeypatch):
+    from gateway.routes import operator as op
+
+    fake = _RenameDB()
+    world = {"db": fake, "slugs": [], "bound": [], "audit": []}
+
+    async def _org_for(slug):
+        world["slugs"].append(slug)
+        return ORG if slug == "acme" else None
+
+    monkeypatch.setattr(offboard, "organization_id_for_slug", _org_for)
+
+    @asynccontextmanager
+    async def _bound(organization_id=None):
+        world["bound"].append(organization_id)
+        yield fake
+
+    monkeypatch.setattr(op, "_tenant_session", _bound)
+
+    def _record(actor, action, target, **payload):
+        world["audit"].append((actor, action, target, payload))
+
+    monkeypatch.setattr(op, "record_admin_change", _record)
+    return world
+
+
+def _rename(client, slug="acme", *, body=None, bearer=INTERNAL,
+            operator=OPERATOR):
+    headers = {}
+    if bearer is not None:
+        headers["Authorization"] = f"Bearer {bearer}"
+    if operator is not None:
+        headers["X-Operator-Token"] = operator
+    return client.patch(
+        f"/internal/operator/organizations/{slug}",
+        json={"name": "Shaurrya Tele"} if body is None else body,
+        headers=headers,
+    )
+
+
+class TestTheRenameDoorLadder:
+    def test_without_the_app_level_bearer_the_gateway_refuses_first(
+        self, client, rename_world
+    ):
+        r = _rename(client, bearer=None)
+        assert r.status_code == 401, r.text
+        assert "operator token" not in r.json()["detail"]
+        assert rename_world["slugs"] == []
+
+    def test_the_internal_token_alone_is_refused_by_the_door(
+        self, client, rename_world
+    ):
+        assert _rename(client, operator=None).status_code == 401
+        assert _rename(client, operator="not-it").status_code == 401
+        assert rename_world["slugs"] == []
+        assert rename_world["db"].statements == []
+
+    def test_ship_dark_an_unset_operator_token_answers_503(
+        self, client, rename_world, monkeypatch
+    ):
+        monkeypatch.delenv("GATEWAY_OPERATOR_TOKEN", raising=False)
+        r = _rename(client)
+        assert r.status_code == 503, r.text
+        assert rename_world["slugs"] == []
+
+    @pytest.mark.parametrize("name", ["", "   ", "a" * 81, "Acme" + chr(0) + "Corp"])
+    def test_a_bad_name_is_422_before_the_slug_is_read(
+        self, client, rename_world, name
+    ):
+        """Done-when 4, operator path: ``clean_display_name`` runs first."""
+        r = _rename(client, body={"name": name})
+        assert r.status_code == 422, r.text
+        assert rename_world["slugs"] == []
+        assert rename_world["db"].statements == []
+
+    def test_an_unknown_slug_is_404_and_binds_nothing(self, client, rename_world):
+        """Done-when 5: an unknown slug gets 404."""
+        r = _rename(client, slug="nowhere")
+        assert r.status_code == 404, r.text
+        assert "nowhere" in r.json()["detail"]
+        assert rename_world["bound"] == []
+        assert rename_world["db"].statements == []
+
+    def test_a_body_that_names_a_tenant_is_422(self, client, rename_world):
+        """R11: the tenant comes from the path. A body field is refused."""
+        r = _rename(client, body={"name": "X", "organization_id": ORG})
+        assert r.status_code == 422, r.text
+        assert rename_world["db"].statements == []
+
+
+class TestTheRenameDoorAct:
+    def test_the_slug_names_the_tenant_and_the_shared_body_runs(
+        self, client, rename_world
+    ):
+        r = _rename(client, body={"name": "  Shaurrya   Tele "})
+        assert r.status_code == 200, r.text
+        assert r.json() == {"slug": "acme", "organization_id": ORG,
+                            "display_name": "Shaurrya Tele"}
+        # The session was bound to the org the SLUG named.
+        assert rename_world["bound"] == [ORG]
+        [(_sql, params)] = rename_world["db"].statements
+        # The cleaned name, and the id from the slug lookup.
+        assert params == {"name": "Shaurrya Tele", "id": ORG}
+
+    def test_the_audit_names_the_operator(self, client, rename_world):
+        assert _rename(client).status_code == 200
+        assert rename_world["audit"] == [
+            ("operator", "org.renamed", "org:acme",
+             {"display_name": "Shaurrya Tele", "via": "operator"}),
+        ]
+
+    def test_the_door_and_the_admin_route_share_one_update_body(self):
+        """Both gateway doors call one shared UPDATE body."""
+        import inspect
+
+        from gateway.routes import operator as op
+        from gateway.routes.admin import organization
+
+        assert op.rename_org_row is organization.rename_org_row
+        door = inspect.getsource(op.rename_organization)
+        admin = inspect.getsource(organization.update_organization)
+        for src in (door, admin):
+            assert "rename_org_row(" in src
+            assert "UPDATE organization" not in src
+
+
+# ── R8: the door against a real tenant database ─────────────────────────────
+
+_LADDER_URL = (
+    os.environ.get("_ACB_TENANT_LADDER_URL_AT_LAUNCH")
+    or os.environ.get("TENANT_LADDER_DATABASE_URL", "")
+).strip()
+
+_LADDER_GATE = pytest.mark.skipif(
+    not _LADDER_URL,
+    reason=(
+        "TENANT_LADDER_DATABASE_URL unset — R8 requires a REAL Postgres. "
+        "A skip here is not a pass; CI must set it."
+    ),
+)
+
+
+@_LADDER_GATE
+class TestTheRenameDoorOnRealPostgres:
+    """Done-when 1 and 3: the door sets ``display_name`` and keeps the slug.
+
+    The route function is called on the test's own event loop, inside
+    ``tenant_engine_scope``, so the slug lookup, the bound session and the
+    shared UPDATE all reach the real tenant ladder.
+    """
+
+    @pytest.fixture
+    def ladder(self):
+        from sqlalchemy import create_engine
+
+        from tests.unit._tenant_ladder import apply_ladder
+
+        engine = create_engine(_LADDER_URL, future=True)
+        with engine.begin() as conn:
+            apply_ladder(conn)
+        yield engine
+        engine.dispose()
+
+    async def test_the_door_renames_the_tenant_row(self, ladder, monkeypatch):
+        from fastapi import HTTPException
+        from gateway.routes import operator as op
+        from sqlalchemy import text
+
+        from tests.unit._tenant_ladder import tenant_engine_scope
+
+        monkeypatch.setenv("GATEWAY_OPERATOR_TOKEN", OPERATOR)
+        audit: list[tuple] = []
+        monkeypatch.setattr(op, "record_admin_change",
+                            lambda *a, **k: audit.append((a, k)))
+        slug = f"cp8-rename-{uuid.uuid4().hex[:8]}"
+        with ladder.begin() as conn:
+            org = str(conn.execute(
+                text("INSERT INTO organization (slug, display_name) "
+                     "VALUES (:s, 'Dewin') RETURNING id"),
+                {"s": slug},
+            ).scalar_one())
+        try:
+            async with tenant_engine_scope(_LADDER_URL):
+                out = await op.rename_organization(
+                    slug, op.OrganizationRename(name="Shaurrya Tele"),
+                    x_operator_token=OPERATOR,
+                )
+                with pytest.raises(HTTPException) as missing:
+                    await op.rename_organization(
+                        f"{slug}-absent",
+                        op.OrganizationRename(name="X"),
+                        x_operator_token=OPERATOR,
+                    )
+            assert out == {"slug": slug, "organization_id": org,
+                           "display_name": "Shaurrya Tele"}
+            assert missing.value.status_code == 404
+            with ladder.begin() as conn:
+                row = conn.execute(
+                    text("SELECT slug, display_name FROM organization "
+                         "WHERE id = CAST(:o AS uuid)"),
+                    {"o": org},
+                ).mappings().one()
+            # The slug is the same before and after (done-when 3).
+            assert dict(row) == {"slug": slug, "display_name": "Shaurrya Tele"}
+            assert len(audit) == 1
+        finally:
+            with ladder.begin() as conn:
+                conn.execute(
+                    text("DELETE FROM organization WHERE id = CAST(:o AS uuid)"),
+                    {"o": org},
+                )

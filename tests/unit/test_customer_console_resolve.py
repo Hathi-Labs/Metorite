@@ -152,6 +152,9 @@ _CAPABILITY_GATED_ROUTES: dict[str, str] = {
     # the SAME capability. A key that may add a member to the registry may
     # take one off it. A separate capability would let the two planes drift.
     "/registry/members/remove": "member_admin",
+    # 2026-10-27, CP-8 — the org-rename door, on the SAME capability. The
+    # gateway's admin rename mirrors through it, and it adds no capability.
+    "/registry/orgs/rename": "member_admin",
     # 2026-09-15 — the inbound bootstrap's READ, on the SAME capability as
     # `/orgs/provision`. Deliberately not a fifth capability: this door exists
     # only to drive provisioning and answers exactly the set that door already

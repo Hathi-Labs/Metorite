@@ -42,7 +42,7 @@ from types import SimpleNamespace
 from typing import Any, NamedTuple
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, Query
+from fastapi import Depends, HTTPException, Query
 from gateway.capacity import absences_for, horizon_window
 from gateway.routes.projects.agent_dispatch import AGENT_PREFIX
 from gateway.routes.projects.agent_worked import MCP_VIA_PREFIX, agent_worked_sql
@@ -66,8 +66,10 @@ from gateway.routes.projects.filters import (
     unheld_clause,
 )
 from gateway.routes.projects.report_scope import (
+    NO_SUBJECT_REASON,
     filter_person_rows,
     reportable_people,
+    subject_me,
     subject_params,
     with_subject,
 )
@@ -244,6 +246,9 @@ def scope_params(project_id: str | None) -> dict[str, Any]:
 async def stuck(
     project_id: str | None = None,
     include_subtree: bool = True,
+    # WS-64 OP-11. `me` narrows to the tasks the caller holds now. A word,
+    # never an address (`report_scope.subject_me`).
+    subject: str | None = None,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Where work is stuck, under one node or across the portfolio.
@@ -257,8 +262,12 @@ async def stuck(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
+        subject_people = await subject_me(db, user, vis, subject)
 
-        scope_sql = await scope_clause(db, vis, project_id, include_subtree)
+        scope_sql = with_subject(
+            await scope_clause(db, vis, project_id, include_subtree),
+            subject_people,
+        )
 
         # The predicate every read below shares. Written once: three copies
         # would drift, and a dashboard whose panels disagree about what "open"
@@ -280,6 +289,7 @@ async def stuck(
         params: dict[str, Any] = {
             **vis.params,
             **scope_params(project_id),
+            **subject_params(subject_people),
             "closed": sorted(CLOSING_CATEGORIES),
             "reportable_states": sorted(REPORTABLE_STATUSES),
         }
@@ -624,6 +634,8 @@ async def load(
     project_id: str | None = None,
     include_subtree: bool = True,
     people_offset: int = 0,
+    # WS-64 OP-11. `me` narrows to the tasks the caller holds now.
+    subject: str | None = None,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Who is overloaded, under one node — §9.12.7(b).
@@ -655,6 +667,7 @@ async def load(
         vis = await resolve_visibility(db, user)
         body = await load_body(
             db, vis, project_id=project_id, include_subtree=include_subtree,
+            subject_people=await subject_me(db, user, vis, subject),
         )
         # WS-27bn R5a. The reader's rows, AFTER the body, with the filter
         # the report's `load` section runs too (§7.1 rule 3).
@@ -1670,6 +1683,8 @@ async def throughput(
     project_id: str | None = None,
     include_subtree: bool = True,
     weeks: int = Query(DEFAULT_WEEKS, ge=1, le=MAX_WEEKS),
+    # WS-64 OP-11. `me` narrows to the tasks the caller holds now.
+    subject: str | None = None,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Are we getting faster, under one node — §9.12.7(c).
@@ -1699,8 +1714,12 @@ async def throughput(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
+        subject_people = await subject_me(db, user, vis, subject)
 
-        scope_sql = await scope_clause(db, vis, project_id, include_subtree)
+        scope_sql = with_subject(
+            await scope_clause(db, vis, project_id, include_subtree),
+            subject_people,
+        )
 
         # ⚠️ Deliberately WITHOUT `archived_at IS NULL` and without the
         # open-only status arm — see the docstring. Visibility and triage stay,
@@ -1709,6 +1728,7 @@ async def throughput(
         params: dict[str, Any] = {
             **vis.params,
             **scope_params(project_id),
+            **subject_params(subject_people),
             "weeks": weeks,
             "closing": sorted(CLOSING_CATEGORIES),
             "done_cat": COMPLETED_CATEGORY,
@@ -1838,6 +1858,8 @@ async def finished(
     include_subtree: bool = True,
     weeks: int = Query(DEFAULT_WEEKS, ge=1, le=MAX_WEEKS),
     skip_current_week: bool = False,
+    # WS-64 OP-11. `me` narrows to the tasks the caller holds now.
+    subject: str | None = None,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """What we finished, by project — §9.12.7(d).
@@ -1860,8 +1882,12 @@ async def finished(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
+        subject_people = await subject_me(db, user, vis, subject)
 
-        scope_sql = await scope_clause(db, vis, project_id, include_subtree)
+        scope_sql = with_subject(
+            await scope_clause(db, vis, project_id, include_subtree),
+            subject_people,
+        )
         # The same predicate `throughput` uses, and deliberately without
         # `archived_at IS NULL` for the same reason: this describes the past,
         # and an archive sweep in September must not empty July.
@@ -1873,6 +1899,7 @@ async def finished(
         params: dict[str, Any] = {
             **vis.params,
             **scope_params(project_id),
+            **subject_params(subject_people),
             "weeks": weeks,
             "closing": sorted(CLOSING_CATEGORIES),
             "done_cat": COMPLETED_CATEGORY,
@@ -2139,6 +2166,10 @@ async def outlook(
     project_id: str | None = None,
     include_subtree: bool = True,
     weeks: int = FORECAST_WEEKS,
+    # WS-64 OP-11. Declared so `subject=me` gets the recorded refusal and is
+    # not dropped in silence (`projects_reports.md`: an outlook with a
+    # subject is a 422, "not available for a person or team scope").
+    subject: str | None = None,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Will this land, when, and what would have to be true — §9.12.7 wave 7.
@@ -2175,6 +2206,12 @@ async def outlook(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
+        # The shape check first: a value that is not `me` is a 422 of its
+        # own. Then `me` gets the section's refusal (NO_SUBJECT_SECTIONS).
+        if await subject_me(db, user, vis, subject) is not None:
+            raise HTTPException(
+                status_code=422, detail=f"outlook: {NO_SUBJECT_REASON}.",
+            )
         return await outlook_body(
             db, vis,
             hr_visible=can_read_hr_fields(user),

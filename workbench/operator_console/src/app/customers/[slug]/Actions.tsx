@@ -25,6 +25,7 @@ import {
   removePrompt,
   type MemberRemoveMode,
 } from "@/lib/memberRemove";
+import { renameBlocked } from "@/lib/orgRename";
 
 // The management ACTIONS for one customer. Every action POSTs to a server-side
 // `/api/operator/*` BFF route that holds the operator token; NOTHING here holds
@@ -136,14 +137,17 @@ export function PeopleActions({
   );
 }
 
-/** "Access & keys": account state, API keys, and the purge. */
+/** "Access & keys": the name, account state, API keys, and the purge. */
 export function AccessActions({
   slug,
+  name,
   status,
   keys,
   keysError,
 }: {
   slug: string;
+  /** The organization's name on the Console (`organization.name`). */
+  name: string;
   status: string;
   /** The org's `cc_live_` keys, metadata only (CP-11 s1). */
   keys: KeyRow[];
@@ -152,6 +156,9 @@ export function AccessActions({
 }) {
   return (
     <>
+      {/* A deleted org's tenant plane is gone or about to go, so there is
+          nothing left to rename. */}
+      {status !== "deleted" && <RenamePanel slug={slug} name={name} />}
       <LifecyclePanel slug={slug} status={status} />
       <KeysPanel slug={slug} keys={keys} keysError={keysError} />
       {status === "deleted" && !TOMBSTONE_RE.test(slug) && <DangerPanel slug={slug} />}
@@ -978,6 +985,57 @@ function CreditsPanel({ slug, price }: { slug: string; price: Price | null }) {
         {busy ? "Adding…" : "Add credits"}
       </button>
       <ResultLine result={result} />
+    </form>
+  );
+}
+
+/**
+ * Rename the organization — CP-8 "Rename an organization" (2026-10-27).
+ *
+ * One rename changes the display name on both planes: the tenant plane
+ * first, then the Console. The slug never changes. The gateway is the one
+ * judge of the name, so a name it refuses comes back here as its 422, named
+ * as the tenant plane's refusal. If the Console half fails after the tenant
+ * half, the result line says so and says whether a retry is safe.
+ */
+function RenamePanel({ slug, name }: { slug: string; name: string }) {
+  const [typed, setTyped] = useState(name);
+  const [result, setResult] = useState<Result>(null);
+  const [busy, setBusy] = useState(false);
+  const blocked = renameBlocked(typed, name);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (blocked !== null) return;
+    setBusy(true);
+    const r = await post("/api/operator/orgs/rename", {
+      org_slug: slug,
+      name: typed,
+    });
+    setResult(r);
+    setBusy(false);
+    if (r?.ok) reload();
+  }
+
+  return (
+    <form className="panel" onSubmit={submit}>
+      <h2 style={{ marginTop: 0 }}>Organization name</h2>
+      <p className="muted">
+        The name the customer and our staff see. The change shows in the
+        customer&apos;s app and in this console. The short ID{" "}
+        <strong>{slug}</strong> does not change.
+      </p>
+      <label>Name</label>
+      <input value={typed} onChange={(e) => setTyped(e.target.value)} />
+      <p className="muted small">Needs an editor.</p>
+      <button
+        type="submit"
+        title={blocked ?? "Rename the organization on both planes."}
+        disabled={busy || blocked !== null}
+      >
+        {busy ? "Renaming…" : "Rename"}
+      </button>
+      <ResultLine result={result} who={result ? refusedBy(result.text) : undefined} />
     </form>
   );
 }

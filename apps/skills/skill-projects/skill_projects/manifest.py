@@ -253,6 +253,16 @@ MANIFEST: tuple[Route, ...] = (
     # `my_work` may pass the flag ("what landed on my plate").
     Route("GET", "/projects/my/inbox", "my_work", "A"),
     Route("GET", "/projects/my/tasks/{task_id}", "my_task", "A"),
+    # WS-64 OP-11 — the Overview of My tasks: counts over the one "mine".
+    Route(
+        "GET",
+        "/projects/my/summary",
+        "",
+        "X",
+        "The counts the Overview tab of My tasks draws (WS-64 OP-11). A second "
+        "door to a read the chat has: my_work and list_tasks read the same "
+        "tasks, and the chat counts them in its answer.",
+    ),
     # WS-39 S6g — My Tasks' purge: the hard delete that finalises a soft
     # delete, and only for a task in the caller's personal tree. A delete is
     # never a chat act, for the reason `DELETE /projects/tasks/{id}` gives.
@@ -1137,6 +1147,20 @@ _READ_FILTER_REASON = (
     "A filter of the app's list. The chat narrows tasks through list_tasks, "
     "which prints the facts this filter reads."
 )
+#: WS-64 OP-11. The My tasks space of the app sends these. The chat has its
+#: own door to the same set.
+_MINE_SCOPE_REASON = (
+    "The My tasks space of the app (WS-64 OP-11). The chat reads the member's "
+    "own tasks through my_work, which reads the same set."
+)
+_MINE_OVERLAY_REASON = (
+    "The member's own overlay on each row of the app's My tasks tabs. The chat "
+    "reads it through my_work and my_task, and sets it through set_my_overlay."
+)
+_SUBJECT_ME_REASON = (
+    "The Reports tab of My tasks (WS-64 OP-11). The chat reads a report on the "
+    "member through a saved report with a subject."
+)
 _SCOPE_AT_CREATE_REASON = (
     "Where a NEW row lands. The PATCH route drops it, because a row keeps its scope."
 )
@@ -1177,6 +1201,8 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
             "MCP-G5: an outside agent reads a whole subtree in one call. The chat "
             "reads subtasks through task_detail, and no screen sends it."
         ),
+        "scope": _MINE_SCOPE_REASON,
+        "with_overlay": _MINE_OVERLAY_REASON,
     },
     # WS-64 OP-6c: the export takes the same subset as list_tasks.
     ("GET", "/projects/export/tasks.csv"): {
@@ -1334,10 +1360,20 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "include_triage": _TRIAGE_READ_REASON,
         "watching": _READ_FILTER_REASON,
         "top_level": _READ_FILTER_REASON,
+        "scope": _MINE_SCOPE_REASON,
+        "with_overlay": _MINE_OVERLAY_REASON,
     },
     ("GET", "/projects/analytics/outlook"): {
         "weeks": "The app sends no horizon either. The tool reads the route's default.",
+        "subject": (
+            "The route refuses subject=me, as a report refuses a subject on its "
+            "outlook section (NO_SUBJECT_SECTIONS)."
+        ),
     },
+    ("GET", "/projects/analytics/stuck"): {"subject": _SUBJECT_ME_REASON},
+    ("GET", "/projects/analytics/load"): {"subject": _SUBJECT_ME_REASON},
+    ("GET", "/projects/analytics/throughput"): {"subject": _SUBJECT_ME_REASON},
+    ("GET", "/projects/analytics/finished"): {"subject": _SUBJECT_ME_REASON},
 }
 
 #: The open gaps of ``projects_agent_parity.md`` §3.3 that a field waits on,

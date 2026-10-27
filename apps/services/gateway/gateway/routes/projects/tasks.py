@@ -121,6 +121,7 @@ from gateway.routes.projects.landing import (
     record_drops,
     resolve_field_map,
 )
+from gateway.routes.projects.mine import attach_my_overlay, check_scope, mine_scope
 from gateway.routes.projects.notifications import (
     excerpt_of,
     grant_holders,
@@ -600,6 +601,15 @@ async def list_tasks(
     unheld: bool = False,
     # MCP-G5. With `parent_task_id`: the whole subtree, not only the children.
     include_descendants: bool = False,
+    # WS-64 OP-11. `mine` narrows the read to the caller's own tasks
+    # (`core.mine_clause`). A WORD, never an address (R11): the member is the
+    # session's. With no `project_id` it is org-wide. With one, it is mine
+    # inside that node. Every other rule of this read still applies.
+    scope: str | None = None,
+    # WS-64 OP-11. The CALLER's overlay on each row: the effective
+    # `disposition`, `context`, `energy` and `defer_until`
+    # (`mine.attach_my_overlay`).
+    with_overlay: bool = False,
 ) -> ListResponse:
     """The one task-list endpoint every surface reads through.
 
@@ -638,10 +648,18 @@ async def list_tasks(
                 status_code=422, detail="parent_task_id is not a valid id.",
             ) from None
 
+    mine = check_scope(scope)
+
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         clauses: list[str] = [task_visibility_clause(vis)]
         params: dict[str, Any] = dict(vis.params)
+        if mine:
+            # ANDed beside the visibility clause, so "mine" narrows the
+            # board and never widens it (WS-64 OP-11).
+            mine_sql, mine_params = await mine_scope(db, vis)
+            clauses.append(mine_sql)
+            params.update(mine_params)
         walk_cte = ""
         walk_join = ""
         if include_descendants:
@@ -739,6 +757,9 @@ async def list_tasks(
         await attach_parent_context(db, vis, page_rows)
         # WS-64 OP-8 — the app hides Delete where this is false.
         await attach_can_delete(db, user, page_rows, kind="task")
+        if with_overlay:
+            # WS-64 OP-11 — the caller's own overlay, one query for the page.
+            await attach_my_overlay(db, vis, page_rows)
         return ListResponse(rows=page_rows, total=int(total))
 
 
