@@ -228,7 +228,12 @@ async def test_with_overlay_reads_the_callers_overlay_only(
     assert params["who"] == ME_LOWER and params["vis_org"] == ORG
     # No overlay row: every key is present and empty.
     assert rows[0]["disposition"] is None and rows[0]["defer_until"] is None
-    assert set(rows[0]) >= {"disposition", "context", "energy", "defer_until", "is_mine"}
+    assert set(rows[0]) >= {
+        "disposition", "context", "energy", "defer_until", "is_mine", "status_category",
+    }
+    assert rows[0]["status_category"] is None
+    # The stage comes from the status join of the same query (the Board tab).
+    assert "s.category AS status_category" in sql
 
 
 # ── GET /projects/my/summary ────────────────────────────────────────────────
