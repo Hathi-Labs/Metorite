@@ -128,10 +128,13 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
 - **⚠️ A merge does NOT deploy to production (WS-38, since 2026-10-16).** The
   push run moves the `staging` ref only. Production moves at 21:30 UTC (03:00
   IST) each day. Report the merge as "reaches production at the next daily
-  release". A fix that cannot wait is a manual run:
-  `gh workflow run deploy.yml --ref main -f reason="<why>"`. Watch that run, and
-  report the SHA that `GET /version` serves. Do not call a hotfix done before
-  you see that SHA.
+  release".
+- **⚠️ Do not dispatch production** (owner directive, 2026-10-27). Run
+  `gh workflow run deploy.yml --ref main -f reason="<why>"` only when the owner
+  asks for it in this session, or when production is down. A dark feature
+  never needs it. If you think a change cannot wait, ask the owner. After a
+  run that the owner asked for, watch it and report the SHA that
+  `GET /version` serves. Do not call a hotfix done before you see that SHA.
 - **⚠️ Test it on staging (owner directive, 2026-10-17).** Wait until
   `curl -s https://api.dev.metorite.com/version` shows your merge SHA, or a later
   one, as `sha` and `applied_sha`. Then test the change on
