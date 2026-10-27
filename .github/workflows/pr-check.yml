@@ -796,7 +796,11 @@ jobs:
   # browser and a dev server, and nothing else.
   e2e:
     name: "Browser suite (e2e) ${{ matrix.shard }}/3"
-    runs-on: ubuntu-latest
+    # Pinned 2026-10-27. `ubuntu-latest` became Ubuntu 26.04, and Playwright
+    # cannot install Chromium there ("does not support chromium on
+    # ubuntu26.04-x64"), so every shard failed in 30 seconds. Unpin when
+    # Playwright supports the new image.
+    runs-on: ubuntu-24.04
     # ── Three shards, each with its own dev server ──────────────────────────
     #
     # One worker took 17-19 minutes for 374 tests (measured 2026-10-16), and
