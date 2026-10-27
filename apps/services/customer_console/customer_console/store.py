@@ -94,6 +94,7 @@ __all__ = [
     "redemption_for_order",
     "release_seat",
     "remove_member",
+    "rename_org",
     "resolve_deployment_key",
     "resolve_discount_code",
     "resolve_key",
@@ -138,6 +139,30 @@ def ensure_organization(
     ).first()
     assert row is not None  # guaranteed by DO UPDATE
     return str(row[0])
+
+
+def rename_org(conn: Connection, *, org_id: str, name: str) -> dict[str, Any] | None:
+    """Set ``organization.name`` and return the slug, the name and the old name.
+
+    CP-8 "Rename an organization" (2026-10-27). The name is the only one the
+    Console stores. The slug is never written here.
+
+    Returns None when no row has this id. The sub-select reads the row as it
+    was when the statement began, so ``previous_name`` is the name this call
+    replaced. The caller has checked the name, so this decides nothing.
+    """
+    row = conn.execute(
+        text(
+            """
+            UPDATE organization o SET name = :name, updated_at = now()
+              FROM (SELECT id, name FROM organization WHERE id = :id) p
+             WHERE o.id = p.id
+            RETURNING o.slug, o.name, p.name AS previous_name
+            """
+        ),
+        {"name": name, "id": org_id},
+    ).mappings().first()
+    return None if row is None else dict(row)
 
 
 def ensure_identity(conn: Connection, *, email: str, display_name: str | None = None) -> str:

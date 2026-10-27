@@ -43,6 +43,7 @@ under `project-docs/specs/`.
   - The metered party never reports its own usage. Balance is `SUM(credit_ledger.delta)`, and no code writes a balance column (`TestNoCodePathUpdatesABalanceColumn`).
   - 🔴 OWNER-GATE: issuing or widening a real `cc_depl_` key, and flipping `CUSTOMER_CONSOLE_SPEND_GATE` for a real customer. A live seat write on a real org, a model bound to a tier and the Razorpay account (even in TEST mode) are OWNER-GATE too. No HTTP route mints a deployment key.
   - **The member doors.** `POST /registry/members` is create-or-reinstate and mints no role (D12). `store.activate_invited_member` guards with `AND status = 'invited'` in its own WHERE, never an `if`. `POST /registry/members/remove` hands the last owner on through `store.make_owner`.
+  - **The rename door (CP-8).** `POST /registry/orgs/rename` uses `member_admin` and `_MEMBER_ADMIN_ROLES`, and adds no capability. `store.rename_org` writes `organization.name` and never the slug. It refuses an empty name or a name over 80 characters with 422. Fence: `test_customer_console_org_rename.py` (R8).
   - Member fences: `test_customer_console_member_write.py` (R8), `test_invite_console_mirror.py`, `test_customer_console_seat_overview.py` (R8).
   - ⚠️ **`customer_console/payments.py` is the ONLY path from money to entitlement.**
     - Money is integer PAISE past `payments.paise()`, which refuses a float.
