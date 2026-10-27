@@ -994,9 +994,21 @@ class TestTheToolResults:
                                    "tag": "bug", "assignee": "a@x.test", "text": "login",
                                    "limit": 7})
         assert armed.gateway.requests[0].path == "/projects/tasks"
+        # WS-64 OP-11 (audit P1-3): a project_id reads its subtree by default.
         assert armed.gateway.requests[0].pairs == {
-            "project_id": _uuid(1), "status_id": _uuid(9000), "tags": "bug",
-            "assignee": "a@x.test", "q": "login", "page": "1", "page_size": "7"}
+            "project_id": _uuid(1), "include_subtree": "true", "status_id": _uuid(9000),
+            "tags": "bug", "assignee": "a@x.test", "q": "login", "page": "1",
+            "page_size": "7"}
+
+    async def test_include_subtree_defaults_true_and_false_reads_the_node(self, armed):
+        """WS-64 OP-11, audit P1-3. list_projects counts a space's subtree, so
+        list_tasks with that space id reads the subtree too. False is the node."""
+        await _tool("list_tasks", {"project_id": _uuid(1)})
+        await _tool("list_tasks", {"project_id": _uuid(1), "include_subtree": False})
+        await _tool("list_tasks", {"text": "login"})
+        sent = [r.pairs.get("include_subtree") for r in armed.gateway.requests
+                if r.path == "/projects/tasks"]
+        assert sent == ["true", "false", None]
 
     async def test_the_edge_never_sends_the_hidden_parameters(self, armed):
         """D11. Over every request of both tools."""
