@@ -11644,7 +11644,19 @@ source fences. It checks that `AppShell` draws only what the page emits.
 
 ### 20.15 CRM-U11: the stage settings are the board (owner report, 2026-10-27)
 
-**Status.** 📝 Specified 2026-10-27. Decision D130. Metorite: under epic #477.
+**Status.** 📝 Specified 2026-10-27. Decision D130. Metorite: task #833 under
+epic #477. The spec audit of 2026-10-27 checked it against the code at
+72094831d and gave GO-NARROWED.
+
+**Two scope rules from the audit.**
+
+- **Native mode with two pipelines or more** keeps the read-only list and its
+  note "Stage editing for several pipelines is not available yet." The new
+  screen serves Mirror mode, and Native mode with one pipeline or none.
+- **A Native stage that sits after Won or Lost** now shows there, because no
+  type group moves it. Production holds two Native orgs on 2026-10-27, and
+  each has only the six seed stages, in order. So no org changes, and no data
+  fix runs.
 
 **Gate.** AGENT-SAFE. No flag, no migration and no gateway change. The order
 route (`PUT /crm/statuses/{kind}/order`) and the reset route
@@ -11733,7 +11745,10 @@ The screen is one list, and the list is the board.
    stage keeps its slot. A pure function in `lib/settings.ts` does it.
 6. **Edit opens a `Modal`** with the stage name as its title. It holds the
    colour, the win chance, "Show this column on the board" (the inverse of
-   hide) and "Warn when a deal stays more than N days". In Mirror mode, the win
+   hide) and "Warn when a deal stays more than N days". A deal stage also keeps
+   "Fields a deal needs to enter this stage", the checkboxes of
+   `REQUIREABLE_FIELDS` (WS-26h). The move gate reads them, so they stay, in
+   both modes. A lead status has neither. In Mirror mode, the win
    chance shows "Zoho: 40%" and a "Use Zoho's value" action. A won stage fixes
    the win chance at 100 and a lost stage at 0, with the reason in one line.
    Native mode adds the name, the type (Open, On hold, Won, Lost, each with
@@ -11764,7 +11779,7 @@ pipeline order.
    inside the part, a part at the start, a part at the end, and a part
    with gaps.
 5. The four captures of `visual-review` (light mode, compact density, a
-   changed accent, 375 px) of the Deal stages screen in Mirror mode and in
+   changed accent, 390 px) of the Deal stages screen in Mirror mode and in
    Native mode, and of the Edit `Modal`.
 6. `npx tsc --noEmit` passes, and `npx vitest run` passes on the CRM tests.
    The PR names each fence test that D130 changes, with the old rule and the
