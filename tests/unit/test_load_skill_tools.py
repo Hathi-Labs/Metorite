@@ -596,18 +596,20 @@ def _provider(agent: Any) -> tp.LoadSkillToolsProvider | None:
     return found[0] if found else None
 
 
-@pytest.mark.parametrize(("allowed", "disabled", "want"), [
-    (ALL, frozenset(), ("email", "email-setup")),
-    (frozenset({"email"}), frozenset(), ("email",)),
-    (ALL, frozenset({"email-setup"}), ("email",)),
+@pytest.mark.parametrize(("allowed", "disabled", "want", "replaces"), [
+    (ALL, frozenset(), ("email", "email-setup"), True),
+    (frozenset({"email"}), frozenset(), ("email",), False),
+    (ALL, frozenset({"email-setup"}), ("email",), False),
 ])
 async def test_the_catalog_lists_only_the_packs_that_the_flag_allows(
-    allowed: frozenset[str], disabled: frozenset[str], want: tuple[str, ...],
+    allowed: frozenset[str], disabled: frozenset[str], want: tuple[str, ...], replaces: bool,
     store, orchestrator, monkeypatch,
 ) -> None:
     """``packs_on`` fails closed, and an admin toggle stops a pack. Mutation:
     offer every registered pack → the catalog lists a pack that the flag or
-    a toggle stops → red."""
+    a toggle stops → red. OA-7i: the specialist leaves only when the loader
+    reaches EVERY pack of the owner. With ``email-setup`` stopped by the flag
+    or a toggle, the specialist stays and the run is the run of OA-7e."""
     monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda _n: disabled)
     original = orchestrator[0]
     tools_before = _names(original.default_options["tools"])
@@ -620,8 +622,15 @@ async def test_the_catalog_lists_only_the_packs_that_the_flag_allows(
     for slug in ALL:
         assert (f"- {slug}: " in description) is (slug in want), description
     assert orchestrator[0] is not original and _provider(original) is None, "a per-run view"
-    assert _names(orchestrator[0].default_options["tools"]) == tools_before
-    assert orchestrator[0].default_options["instructions"] == persona
+    tools_after = _names(orchestrator[0].default_options["tools"])
+    if replaces:
+        assert [n for n in tools_before if n not in tools_after] == ["email_assistant"]
+        assert orchestrator[0].default_options["instructions"] != persona
+        assert applied.record.via_loader == {EA} and applied.record.replaced == {EA}
+    else:
+        assert tools_after == tools_before and "email_assistant" in tools_after
+        assert orchestrator[0].default_options["instructions"] == persona
+        assert applied.record.via_loader == frozenset() and applied.record.replaced == frozenset()
 
 
 async def test_without_the_offer_the_apply_is_layer_a_only(store, orchestrator) -> None:
@@ -784,7 +793,7 @@ def test_only_the_run_that_layer_a_serves_offers_the_loader() -> None:
     injection = "apps/services/orchestrator/orchestrator/_tool_injection.py"
     assert _calls_with_keyword(executor, "offer_loader") == {"_apply_pack_turn"}
     assert _calls_with_keyword(injection, "offer_loader") == set()
-    assert _callers(injection, "_offer_pack_loader") == {"_apply_tool_packs", "_loader_only"}
+    assert _callers(injection, "_offer_pack_loader") == {"_apply_tool_packs"}
     assert _callers(executor, "_apply_pack_turn") == {"run_agent_stream"}
 
 
@@ -906,7 +915,7 @@ def test_a_scripted_run_loads_email_then_compose_reply_runs_with_the_held_answer
     assert len(model.bodies) == 3
     first, second = _tool_names(model.bodies[0]), _tool_names(model.bodies[1])
     assert first[-1] == tp.LOAD_TOOL and "compose_reply" not in first
-    assert "email_assistant" in first, "layer (a) loaded nothing"
+    assert "email_assistant" not in first, "OA-7i: the loader replaces the hand-off"
     assert set(EMAIL_TOOLS) <= set(second) and second[:len(first)] == first
     loaded = _tool_result(model.bodies[1], "c-load")
     assert loaded.startswith("Loaded the Email tools (31 tools).") and "EMAIL TOOLS." in loaded
@@ -943,9 +952,10 @@ def test_a_scripted_load_past_the_cap_refuses_and_names_spawn_subagents(
     assert set(EMAIL_TOOLS) <= set(names) and not set(SETUP_TOOLS) & set(names)
     assert len(names) + len(SETUP_TOOLS) > 90 >= len(names), "non-vacuity of the cap"
     refused = _tool_result(model.bodies[2], "c-2")
-    assert refused == tp.LOAD_PAST_CAP.format(
-        label="Email setup", packs=3, tools=90, slug="email-setup", owner=EA)
-    assert "spawn_subagents" in refused
+    # OA-7i: the run offered the loader in place of the hand-off, so the
+    # refusal sends the model to finish the work, not to the owner.
+    assert refused == tp.LOAD_NO_PATH.format(label="Email setup", slug="email-setup")
+    assert "spawn_subagents" in refused and EA not in refused
 
 
 @pytest.mark.parametrize("why", ["flag off", "a shared room", "no card channel"])

@@ -73,6 +73,7 @@ __all__ = [
     "Choice",
     "LoadSkillTools",
     "LoadSkillToolsProvider",
+    "LoaderPlan",
     "Pack",
     "PackRun",
     "PackTurn",
@@ -94,6 +95,7 @@ __all__ = [
     "pack",
     "packs_on",
     "persona_for",
+    "plan_loader",
     "rules_for",
     "surface_scope",
     "surfaces",
@@ -134,6 +136,11 @@ class Pack:
     #: app loads the pack with no word of the member (layer (a), input 2).
     #: Only the core pack of an app names it. The setup pack names none.
     surface: str = ""
+    #: OA-7i. The line that takes the place of ``handoff_swap[0]`` while the
+    #: loader reaches the rest of the owner's packs (:func:`plan_loader`). The
+    #: hand-off to the owner is then refused, so the rules send the rest of
+    #: the work to ``load_skill_tools``, never to the owner.
+    loader_route: str = ""
 
     @property
     def owner(self) -> str:
@@ -241,6 +248,13 @@ _EMAIL_SETUP_ROUTE_LINE = (
     "to the email assistant."
 )
 
+#: OA-7i. The line that takes the place of ``_EMAIL_NO_AGENT_LINE`` while the
+#: run holds ``email`` and the loader can still load ``email-setup``.
+_EMAIL_SETUP_LOAD_LINE = (
+    "For a rule, a setting, the knowledge or the writing style, call "
+    "load_skill_tools with the pack email-setup."
+)
+
 PACKS: dict[str, Pack] = {
     "email": Pack(
         slug="email",
@@ -256,6 +270,7 @@ PACKS: dict[str, Pack] = {
         ),
         delegation_refusal=_EMAIL_DELEGATION_REFUSED,
         handoff_swap=(_EMAIL_NO_AGENT_LINE, _EMAIL_SETUP_ROUTE_LINE),
+        loader_route=_EMAIL_SETUP_LOAD_LINE,
         surface="email",
     ),
     "email-setup": Pack(
@@ -514,6 +529,11 @@ class PackRun:
     #: :attr:`refusals` too. A load in the middle of the turn (OA-7e) never
     #: adds an owner here, because no tool and no persona text leaves a run.
     replaced: frozenset[str] = frozenset()
+    #: OA-7i. The owners whose specialist tool left because the loader reaches
+    #: every pack of the owner that the run does not hold (:func:`plan_loader`).
+    #: A hand-off to such an owner answers :data:`LOADER_HANDOFF_REFUSED`. It
+    #: is a subset of :attr:`replaced`.
+    via_loader: frozenset[str] = frozenset()
     #: The packs that this run already made sticky.
     noted: set[str] = field(default_factory=set, compare=False, repr=False)
     #: OA-7e. The packs that ``load_skill_tools`` added in this run, in load
@@ -521,11 +541,16 @@ class PackRun:
     later: dict[str, bool] = field(default_factory=dict, compare=False, repr=False)
 
     @classmethod
-    def of(cls, turn: PackTurn, choice: Choice, loaded: Sequence[tuple[str, bool]]) -> PackRun:
+    def of(
+        cls, turn: PackTurn, choice: Choice, loaded: Sequence[tuple[str, bool]],
+        via_loader: Iterable[str] = (),
+    ) -> PackRun:
         """The record of a run that loaded *loaded*, pairs of a slug and its
-        held answer, in load order."""
+        held answer, in load order. *via_loader* names the owners that the
+        loader replaces (OA-7i, :func:`plan_loader`)."""
         slugs = tuple(slug for slug, _held in loaded)
-        replaced: set[str] = set()
+        via = frozenset(str(owner) for owner in via_loader)
+        replaced: set[str] = set(via)
         for slug in slugs:
             found = pack(slug)
             if found is not None and found.delegation_refusal:
@@ -535,7 +560,7 @@ class PackRun:
             turn=turn.turn, stored=turn.stored, slugs=slugs,
             first={slug: choice.first.get(slug, (turn.turn, i)) for i, slug in enumerate(slugs)},
             held={slug: bool(held) for slug, held in loaded},
-            refusals=_refusals_for(slugs), replaced=frozenset(replaced),
+            refusals=_refusals_for(slugs), replaced=frozenset(replaced), via_loader=via,
         )
 
     def holds(self) -> tuple[str, ...]:
@@ -559,12 +584,18 @@ class PackRun:
         :attr:`refusals` holds the answer at the start of the run. A load in
         the middle of the turn can complete the packs of an owner, and from
         that call on the hand-off to that owner is refused too. The rule is
-        the one of :meth:`of` (:func:`_refusals_for`)."""
+        the one of :meth:`of` (:func:`_refusals_for`). OA-7i: an owner in
+        :attr:`via_loader` that the run does not hold in full answers
+        :data:`LOADER_HANDOFF_REFUSED`, which names the packs to load."""
         name = str(agent_name or "")
         found = self.refusals.get(name)
-        if found or not self.later:
-            return found or None
-        return _refusals_for(self.holds()).get(name) or None
+        if not found and self.later:
+            found = _refusals_for(self.holds()).get(name)
+        if found:
+            return found
+        if name in self.via_loader:
+            return _loader_handoff_refusal(name, self.holds())
+        return None
 
     def add(self, slug: str, held: bool) -> None:
         """Record that ``load_skill_tools`` added pack *slug* in this run.
@@ -591,6 +622,16 @@ def _refusals_for(slugs: Iterable[str]) -> dict[str, str]:
         if set(owner_packs(found.owner)) <= set(held):
             refusals.setdefault(found.owner, found.delegation_refusal)
     return refusals
+
+
+def _loader_handoff_refusal(owner: str, held: Iterable[str]) -> str | None:
+    """The refusal of a hand-off to *owner* while the loader reaches its
+    packs (OA-7i), or None when the run holds each of them."""
+    have = set(held)
+    rest = [slug for slug in owner_packs(owner) if slug not in have]
+    if not rest:
+        return None
+    return LOADER_HANDOFF_REFUSED.format(owner=owner, packs=", ".join(rest))
 
 
 def _plain(text: Any) -> str:
@@ -903,6 +944,7 @@ def _hold_note(owner: str) -> str:
 
 def persona_for(
     persona: str, loaded: Sequence[tuple[str, bool]], bullets: Mapping[str, str],
+    via_loader: Iterable[str] = (),
 ) -> str:
     """The persona of a run that holds the packs *loaded*, in load order.
 
@@ -919,6 +961,11 @@ def persona_for(
     send a rule, a setting, the knowledge or the writing style to the email
     assistant, and a hand-off to it stays open.
 
+    OA-7i: the owners in *via_loader* (:func:`plan_loader`) lose their
+    delegation text too, with no pack loaded. Their packs reach the run
+    through ``load_skill_tools``. A pack of such an owner swaps its
+    :attr:`Pack.handoff_swap` line for its :attr:`Pack.loader_route` line.
+
     It raises ``RuntimeError`` when the persona does not hold the owner's
     text exactly once, or the rules do not hold the *old* line exactly once,
     as ``orchestrator.agents._orchestrator_instructions`` does. So a moved
@@ -926,8 +973,15 @@ def persona_for(
     """
     text = str(persona)
     held_slugs = {slug for slug, _held in loaded}
+    via = frozenset(str(owner) for owner in via_loader)
     swapped: set[str] = set()
     blocks: list[str] = []
+    for owner in sorted(via):
+        old = str(bullets.get(owner) or "")
+        if not old or text.count(old) != 1:
+            raise RuntimeError(f"orchestrator persona has no single delegation text of {owner!r}")
+        text = text.replace(old, "", 1)
+        swapped.add(owner)
     for slug, held in loaded:
         found = pack(slug)
         if found is None:
@@ -939,24 +993,30 @@ def persona_for(
                     f"orchestrator persona has no single delegation text of {found.owner!r}")
             text = text.replace(old, "", 1)
             swapped.add(found.owner)
-        blocks.append(_rules_block(found, held, held_slugs))
+        blocks.append(_rules_block(found, held, held_slugs, via))
     if not blocks:
-        return str(persona)
+        return text if swapped else str(persona)
     return text.rstrip("\n") + "\n\n" + "\n\n".join(blocks) + "\n"
 
 
-def _rules_block(found: Pack, held: bool, held_slugs: Iterable[str]) -> str:
+def _rules_block(
+    found: Pack, held: bool, held_slugs: Iterable[str], via_loader: Iterable[str] = (),
+) -> str:
     """The rules of pack *found* in a run that holds the packs *held_slugs*.
 
     ONE text for both layers: :func:`persona_for` puts it after the persona,
     and ``load_skill_tools`` gives it as the answer of a load (OA-7e). While
     the run does not hold every pack of the owner, the :attr:`Pack.handoff_swap`
     line takes the place of its old line. A held pack adds its hold note,
-    which names no other assistant. Raises ``RuntimeError`` when the rules do
-    not hold the old line exactly once."""
+    which names no other assistant. OA-7i: while the owner is in *via_loader*,
+    the :attr:`Pack.loader_route` line takes the place of the route to the
+    owner. Raises ``RuntimeError`` when the rules do not hold the old line
+    exactly once."""
     block = found.rules.rstrip("\n")
     if found.handoff_swap and not set(owner_packs(found.owner)) <= set(held_slugs):
         line, route = found.handoff_swap
+        if found.loader_route and found.owner in set(via_loader):
+            route = found.loader_route
         if block.count(line) != 1:
             raise RuntimeError(f"pack {found.slug!r} rules have no single {line[:40]!r}")
         block = block.replace(line, route, 1)
@@ -1065,6 +1125,25 @@ LOAD_REFUSED = "Not loaded. load_skill_tools acts only in the run that offered i
 #: The line before the old lines of :attr:`Pack.handoff_swap`, when a load
 #: completes the packs of an owner.
 LOAD_COMPLETES = "Each tool of {owner} is now yours."
+#: OA-7i. The answer to a hand-off to an owner whose packs the loader reaches
+#: in this run (:func:`plan_loader`). It names the packs that the run does not
+#: hold yet.
+LOADER_HANDOFF_REFUSED = (
+    "Not run. In this chat the {owner} tools are yours: call load_skill_tools "
+    "with the pack that you need ({packs}), then call the tools yourself. "
+    "No {owner} agent exists to hand the task to."
+)
+#: OA-7i. A load of a pack of an owner that the loader replaces, refused past
+#: a cap or beside an MCP tool. A hand-off is refused too, so the answer sends
+#: the model to finish with the tools that it holds, and the member to the
+#: next message.
+LOAD_NO_PATH = (
+    "Not loaded. The {label} tools do not fit with the tools that you hold in "
+    "this request. Finish the work with the tools that you hold. Tell the "
+    "member to ask for the {label} work in the next message. If "
+    "spawn_subagents is in your tools, you may call it with a job that names "
+    "the pack \"{slug}\"."
+)
 
 #: Builds ONE pack for ONE run: ``_tool_injection._pack_tools`` with the run
 #: context of the call and the names that the live list holds. It gives a
@@ -1114,6 +1193,80 @@ def _reads_strangers(slug: str) -> bool:
     return found.owner in UNTRUSTED_INPUT_AGENTS
 
 
+@dataclass(frozen=True)
+class LoaderPlan:
+    """What the loader can do in ONE run (OA-7i, :func:`plan_loader`)."""
+
+    #: The packs that ``load_skill_tools`` offers, in the order of :data:`PACKS`.
+    offered: tuple[str, ...] = ()
+    #: The owners whose specialist tool and delegation text leave the run,
+    #: because the loader reaches each pack of the owner that the run does not
+    #: hold. Each one has a pack in :attr:`offered`.
+    via_loader: frozenset[str] = frozenset()
+
+
+def plan_loader(
+    allow: Iterable[str],
+    held: Iterable[str],
+    *,
+    current: int,
+    removable: Mapping[str, int] | None = None,
+    mcp: bool = False,
+    available: Callable[[str], bool] | None = None,
+) -> LoaderPlan:
+    """THE one reachability rule of the loader in a run (OA-7i, §4.2.8).
+
+    ``_tool_injection._apply_tool_packs`` asks it once and uses the answer for
+    both decisions: the offer of ``load_skill_tools`` (:attr:`LoaderPlan.offered`)
+    and the removal of an owner's specialist tool and delegation text
+    (:attr:`LoaderPlan.via_loader`). So the two cannot disagree.
+
+    *allow* is :func:`packs_on` of the bound tenant less the admin's toggles.
+    *held* names the packs that the run holds (layer (a)). *current* is the
+    live tool count: the base, the load tool and the packs held. *removable*
+    gives, for an owner, how many of its specialist tools are still in the
+    run. *mcp* is True when a tool of an MCP server will join the run.
+    *available* says whether the pack builder can load an owner (default: yes).
+
+    A pack is **offered** while the run holds fewer than :data:`MAX_PACKS`
+    packs, and *current* plus the tools of the pack fits :data:`MAX_REQUEST_TOOLS`.
+    It is the admission of ``LoadSkillTools._admit`` for one pack on its own.
+    An owner is **reached** (``via_loader``) when it has a pack that replaces
+    its specialist (:attr:`Pack.delegation_refusal`), the run does not hold
+    each of its packs, and EVERY pack of the owner that the run does not hold
+    is allowed, loadable beside the MCP tools of the run (the rule of
+    :func:`_beside_mcp`), and fits with the specialist gone (so *current* less
+    *removable*). Else the specialist stays, as it did before OA-7i (fix
+    round 1 of OA-7c: the hand-off stays open).
+    """
+    held_set = frozenset(held)
+    cut = dict(removable or {})
+    pool = () if len(held_set) >= MAX_PACKS else loadable(allow, held_set)
+
+    def _fits(slug: str, discount: int) -> bool:
+        return current - discount + _tool_count(slug) <= MAX_REQUEST_TOOLS
+
+    via: set[str] = set()
+    owners = dict.fromkeys(
+        found.owner for found in PACKS.values() if is_pack(found.slug) and found.delegation_refusal)
+    for owner in owners:
+        rest = [slug for slug in owner_packs(owner) if slug not in held_set]
+        if not rest:
+            continue
+        if mcp and any(_reads_strangers(slug) for slug in rest):
+            continue
+        if available is not None and not available(owner):
+            continue
+        if all(slug in pool and _fits(slug, cut.get(owner, 0)) for slug in rest):
+            via.add(owner)
+    offered: list[str] = []
+    for slug in pool:
+        owner = SKILL_FAMILIES[slug].get("owner")
+        if _fits(slug, cut.get(str(owner), 0) if owner in via else 0):
+            offered.append(slug)
+    return LoaderPlan(offered=tuple(offered), via_loader=frozenset(via))
+
+
 def load_tool(offered: Sequence[str]) -> Any:
     """The ``load_skill_tools`` tool of ONE run, with the catalog of *offered*.
 
@@ -1146,7 +1299,9 @@ def _pack_argument(arguments: Any) -> str:
     return str(value or "").strip().lower()
 
 
-def _past_cap(found: Pack) -> str:
+def _past_cap(found: Pack, run: PackRun | None = None) -> str:
+    if run is not None and found.owner in run.via_loader:
+        return LOAD_NO_PATH.format(label=_label(found.slug), slug=found.slug)
     return LOAD_PAST_CAP.format(
         label=_label(found.slug), packs=MAX_PACKS, tools=MAX_REQUEST_TOOLS,
         slug=found.slug, owner=found.owner,
@@ -1275,10 +1430,11 @@ class LoadSkillTools(FunctionMiddleware):
         nothing to the run: the caller adds the tools and the record."""
         slug = found.slug
         if len(run.holds()) >= MAX_PACKS or _tool_count(slug) > MAX_PACK_TOOLS:
-            return _refused(slug, "cap_packs", _past_cap(found))
+            return _refused(slug, "cap_packs", _past_cap(found, run))
         if _beside_mcp(found.owner, [*live, *extra_live]):
-            return _refused(slug, "beside_mcp", LOAD_BESIDE_MCP.format(
-                label=_label(slug), owner=found.owner))
+            text = (LOAD_NO_PATH.format(label=_label(slug), slug=slug) if found.owner in run.via_loader
+                    else LOAD_BESIDE_MCP.format(label=_label(slug), owner=found.owner))
+            return _refused(slug, "beside_mcp", text)
         from acb_skills.tool_guard import tool_name
 
         build = await self._build(slug, ctx, frozenset(tool_name(t) for t in live))
@@ -1286,11 +1442,11 @@ class LoadSkillTools(FunctionMiddleware):
         if build is None or not tools:
             return _refused(slug, "unavailable", LOAD_UNAVAILABLE.format(label=_label(slug)))
         if len(live) + len(tools) > MAX_REQUEST_TOOLS:
-            return _refused(slug, "cap_tools", _past_cap(found))
+            return _refused(slug, "cap_tools", _past_cap(found, run))
         held = getattr(build, "held", True) is not False
         before = run.holds()
         try:
-            rules = _rules_block(found, held, (*before, slug))
+            rules = _rules_block(found, held, (*before, slug), run.via_loader)
         except Exception as exc:  # RuntimeError: nothing loads
             _log.warning("tool_packs.load_refused", pack=slug, reason="rules",
                          error=type(exc).__name__)
