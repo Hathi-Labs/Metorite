@@ -107,8 +107,8 @@ emit(
     "left, in one short list, and carry on with what they asked for.",
     "",
     "⚠️ `[OWNER]` entries are `work_plan.md` §6 gates. Verify and report them;",
-    "never do them. ⚠️ These are ACTIONS, not state — `work_plan.md` §2 remains",
-    "the only current-state authority, and an entry that disagrees with the board",
-    "is wrong.",
+    "never do them. ⚠️ These are ACTIONS, not state. Metorite holds the state",
+    "(D118), and an entry that disagrees with Metorite or the owning spec is",
+    "wrong.",
   ].join("\n")
 );
