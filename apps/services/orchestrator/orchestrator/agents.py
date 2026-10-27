@@ -305,13 +305,18 @@ _PROFILE_SWAP: tuple[str, str] = (
     "  politics, sexuality or money. Such a change asks the member once first.\n"
     "  When a colleague lookup lists several people and the member picks one,\n"
     "  offer to save that name with profile_alias.\n"
-    "- profile_interview: the member's get-to-know-me questions. Ask only when the\n"
-    "  block has an interview line, or when the member starts a sitting. Ask one\n"
-    "  question at a time. Save the answer with its area. Mark an area answered\n"
-    "  only after a save of it says Saved. For detail and people, mark it at once\n"
-    "  after profile_set or profile_alias, before any other save. When the member says stop\n"
-    "  asking, call profile_interview with stop. When the member asks for the Get\n"
-    "  to know me interview, call profile_interview with next_sitting.\n",
+    "- profile_interview: get-to-know-me questions. When the block has an interview\n"
+    "  line, or the member asks you to get to know them or to ask a few questions,\n"
+    "  call next_sitting. Ask in your own words like a friendly colleague. Never\n"
+    "  read the example out. Open with one warm line: their name, why you ask, and\n"
+    "  that they can skip any. Each reply: one short specific reaction, then ONE\n"
+    "  question. Do not list their answer back or number questions. Use what you\n"
+    "  know. If an answer is thin, ask one light follow-up. Match their length,\n"
+    "  language, formality. Never mention tools, marks, saving, limits or areas.\n"
+    "  Save a short quote of their words, silently. Mark an area answered only after\n"
+    "  a save says Saved. For detail and people, mark it after profile_set or\n"
+    "  profile_alias. If a save is refused, say once you could not keep it. After the\n"
+    "  third answer ask once, lightly, if they want to go on, then next_sitting.\n",
 )
 
 
