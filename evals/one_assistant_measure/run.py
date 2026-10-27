@@ -300,6 +300,35 @@ def _use_router(harness: RoutingHarness, router: tuple[str, str]) -> None:
     mp.setattr(settings, "mem0_enabled", False, raising=False)
     mp.setattr(settings, "graphiti_enabled", False, raising=False)
     harness.allow = (base + "/",)
+    _system_one_seam(mp)
+
+
+def _system_one_seam(mp: Any) -> None:
+    """The EVAL-ONLY System-1 seam: the turn-kind request goes to the Router.
+
+    Production runs the turn-kind request, because ``routing_is_on()`` is true
+    there (the owner's serving flag and a wired Console). The eval has neither,
+    so ``system_one._ask`` answered ``router_off`` and the request never went
+    out (the run of 2026-10-27). This seam makes ``system_one._ask`` read True
+    and nothing else: any other caller of ``routing_is_on`` reads the real
+    answer. The client already reads the same Router base and key that
+    :func:`_use_router` set (``system_one._gateway``), on ``tier-fast``. It
+    sets no ``ROUTER_SERVING_ENABLED`` and changes no product code. It
+    BYPASSES Console billing for that one call, as the rest of the eval does.
+    """
+    import sys
+
+    from acb_llm import routed
+
+    real = routed.routing_is_on
+
+    def routing_is_on() -> bool:
+        caller = sys._getframe(1)
+        if caller.f_code.co_name == "_ask" and caller.f_code.co_filename.endswith("system_one.py"):
+            return True
+        return real()
+
+    mp.setattr(routed, "routing_is_on", routing_is_on)
 
 
 def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,

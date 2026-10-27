@@ -503,6 +503,35 @@ def test_a_live_run_refuses_a_router_that_is_not_on_this_machine(monkeypatch) ->
     assert run.main(["--live", "--scenarios", "read_invoice"]) == run.EXIT_NO_GO
 
 
+def test_the_live_harness_installs_the_system_one_seam() -> None:
+    """In a live run, ``system_one._ask`` reads ``routing_is_on`` as True, so the
+    turn-kind request goes to the Router on ``tier-fast``. Every other caller
+    reads the real answer, and the seam ends with the harness. Mutation: drop
+    ``_system_one_seam`` from ``_use_router`` → ``_ask`` raises ``router_off``
+    → red."""
+    from acb_llm import routed
+    from acb_skills import system_one
+
+    real = routed.routing_is_on
+    with RoutingHarness(live=True, real_specialists=True) as harness:
+        run._use_router(harness, ("http://127.0.0.1:1", "k-test"))
+        assert system_one._gateway() == ("http://127.0.0.1:1/v1", "k-test")
+        assert system_one.SYSTEM_ONE_TIER == "tier-fast"
+
+        async def ask() -> None:
+            item = system_one.Item(id="x", question="q", kind="yes_no", options=system_one.YES_NO)
+            await system_one.ask("c", [item], timeout_s=0.5)
+
+        # The seam passes `router_off`. The request then fails on the closed
+        # port or the blocked send, which is any reason but `router_off`.
+        with pytest.raises(system_one.SystemOneUnavailable) as raised:
+            asyncio.run(ask())
+        assert raised.value.reason != "router_off", raised.value.reason
+        # A caller that is not `_ask` reads the real answer.
+        assert routed.routing_is_on() is real()
+    assert routed.routing_is_on is real
+
+
 def _stored_row(answer: str, claim: bool) -> dict[str, Any]:
     return {"scenario": "scanned_file", "turn": 1, "arm": "pack", "repeat": 2,
             "answer": answer, "tasks": [], "model_calls": [], "first_text_s": 1.0,
