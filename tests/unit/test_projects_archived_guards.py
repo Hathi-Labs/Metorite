@@ -13,8 +13,18 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from gateway.routes.projects import me, tree
+from gateway.routes.projects import core, me, tree
+from gateway.routes.projects import tasks as pm_tasks
 from gateway.routes.projects.core import assert_not_archived
+
+from tests.unit._projects_fakes import (
+    FakeProjectsDB,
+    bind_db,
+    projects_user,
+    silence_events,
+)
+
+USER = projects_user()
 
 ROUTES = Path(tree.__file__).parent
 
@@ -50,6 +60,48 @@ def test_a_row_with_no_archived_field_passes():
 ])
 def test_each_placing_route_calls_the_guard(module, call):
     assert call in _src(module)
+
+
+@pytest.fixture
+def db(monkeypatch: pytest.MonkeyPatch) -> FakeProjectsDB:
+    fake = FakeProjectsDB()
+    mods = (core, tree, pm_tasks)
+    bind_db(monkeypatch, fake, mods)
+    silence_events(monkeypatch, mods)
+    return fake
+
+
+def _space_with_two_projects(db: FakeProjectsDB, *, first_archived: bool):
+    space = db.seed_project(name="Ops", personal_owner=None)
+    todo = db.seed_status(space.id, name="To do", category="todo", is_default=True)
+    first = db.seed_project(
+        name="Old plan", parent=space.id, personal_owner=None, owns_statuses=False,
+        archived_at="2026-10-01" if first_archived else None,
+    )
+    second = db.seed_project(
+        name="New plan", parent=space.id, personal_owner=None, owns_statuses=False,
+    )
+    return space, first, second, todo
+
+
+async def test_create_task_into_an_archived_project_is_a_422(db: FakeProjectsDB):
+    _space, old, _new, _todo = _space_with_two_projects(db, first_archived=True)
+    with pytest.raises(HTTPException) as err:
+        await pm_tasks.create_task(
+            pm_tasks.TaskIn(project_id=str(old.id), title="Late idea"), user=USER,
+        )
+    assert err.value.status_code == 422
+    assert "Old plan is archived" in err.value.detail
+    assert db.rows("pm_tasks") == []
+
+
+async def test_a_task_can_still_move_out_of_an_archived_project(db: FakeProjectsDB):
+    space, old, new, todo = _space_with_two_projects(db, first_archived=True)
+    task = db.seed_task(old.id, todo.id, root=space.id, title="Rescue me")
+    moved = await pm_tasks.move_task(
+        str(task.id), pm_tasks.MoveTask(project_id=str(new.id)), user=USER,
+    )
+    assert moved["project_id"] == str(new.id)
 
 
 def test_the_portfolio_and_node_summaries_skip_archived_projects():
