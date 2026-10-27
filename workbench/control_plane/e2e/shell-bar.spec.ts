@@ -122,6 +122,7 @@ test.describe("desktop", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
   test("flag off: no shell bar, and My Tasks draws its own row", async ({ page }) => {
+    test.skip(MY_WORK_ON, "the page redirects into Projects when My work is on");
     await stub(page);
     await page.goto("/tasks");
     await expect(appBar(page).getByRole("heading", { level: 1, name: "My Tasks" })).toBeVisible();
@@ -147,6 +148,7 @@ test.describe("desktop", () => {
   });
 
   test("My Tasks' title and tools sit in its own title bar, and the shell bar holds none of them", async ({ page }) => {
+    test.skip(MY_WORK_ON, "the page redirects into Projects when My work is on");
     await shellOn(page);
     await stub(page);
     await page.goto("/tasks");
@@ -213,7 +215,7 @@ test.describe("desktop", () => {
     await page.keyboard.press("Enter");
     await page.waitForURL((u) => u.pathname === "/projects");
     if (!MY_WORK_ON) return; // the box below needs My work (see `MY_WORK_ON`)
-    await expect(page.getByRole("textbox", { name: "Capture to inbox" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Capture to my task inbox" })).toBeVisible();
     // The job left the address, so a reload does not open Capture again.
     await expect.poll(() => new URL(page.url()).search).toBe("");
   });
@@ -287,7 +289,7 @@ test.describe("desktop", () => {
     await stub(page);
     await stubProjects(page);
     await page.goto("/projects");
-    const capture = page.getByRole("textbox", { name: "Capture to inbox" });
+    const capture = page.getByRole("textbox", { name: "Capture to my task inbox" });
     for (let round = 0; round < 2; round++) {
       await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
       await field(page).fill("new task");
@@ -306,11 +308,11 @@ test.describe("desktop", () => {
     await stub(page);
     await stubProjects(page);
     await page.goto("/projects?app=my-inbox");
-    const filter = page.locator('[data-page-filter="the inbox"]');
+    const filter = page.locator('[data-page-filter="my task inbox"]');
     await expect(filter).toBeVisible();
     await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
     await field(page).fill("vendor review");
-    await commandBar(page).getByRole("option", { name: /Show all in the inbox/ }).click();
+    await commandBar(page).getByRole("option", { name: /Show all in my task inbox/ }).click();
     await expect(filter).toHaveValue("vendor review");
   });
 });
@@ -403,12 +405,15 @@ test.describe("the coordinator (NS-4b)", () => {
     await expect(row).toBeVisible();
     await expect(row).toContainText("Suggested by AI");
     await row.click();
-    await page.waitForURL((u) => u.pathname === "/tasks");
-    await expect(page.getByRole("textbox", { name: "Capture to inbox" })).toHaveValue("call the vendor");
+    // With My work on, /tasks hands over to Projects' inbox.
+    await page.waitForURL((u) => (MY_WORK_ON ? u.pathname === "/projects" : u.pathname === "/tasks"));
+    await expect(page.getByRole("textbox", { name: "Capture to my task inbox" })).toHaveValue("call the vendor");
     // §6.4 rule 2: the box says the AI filled it.
     await expect(page.getByText("Filled by AI. Check it, then press Enter to add it.")).toBeVisible();
     // The job and its fields left the address.
-    await expect.poll(() => new URL(page.url()).search).toBe("");
+    await expect
+      .poll(() => new URL(page.url()).search)
+      .toBe(MY_WORK_ON ? "?app=my-inbox" : "");
   });
 
   test("out of credits says so in one line, and the other groups keep working", async ({ page }) => {
@@ -586,6 +591,7 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
   // the shell bar's side zones hold nothing an app put there, and the app's
   // title bar fits its own row, the name and the last tool both in view.
   test("both flags at 1280: the app's title bar fits its own row, under the command bar", async ({ page }) => {
+    test.skip(MY_WORK_ON, "the page redirects into Projects when My work is on");
     await page.setViewportSize({ width: 1280, height: 800 });
     await shellOn(page);
     await page.addInitScript(() => {

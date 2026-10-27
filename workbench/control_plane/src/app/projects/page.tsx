@@ -1777,7 +1777,9 @@ function ProjectsWorkspace() {
     const stillVisible =
       selected &&
       JSON.stringify(visibleRoots).includes(`"${selected.id}"`);
-    if (!stillVisible) setSelected(visibleRoots[0]);
+    // WS-64: the default is never a filed space. A member may still open one
+    // from the rail's Archived section, and `stillVisible` lets that stand.
+    if (!stillVisible) setSelected(visibleRoots.find((root) => !root.archived_at) ?? null);
   }, [visibleRoots, selected]);
 
   // The drawer holds a SNAPSHOT — AppShell keeps injected content in its own
@@ -3875,14 +3877,18 @@ function ProjectsWorkspace() {
   /** Every visible node, for the chat's focus picker (`lib/chatScope.ts`). */
   const chatScopes = useMemo(
     () =>
-      flatten(visibleRoots).map((e) => ({
+      flatten(visibleRoots)
+        // WS-64: a filed node is not offered as a scope. The one the member
+        // has open stays, so its own chat still finds its focus.
+        .filter((e) => !(e.node as ProjectRow).archived_at || e.node.id === selected?.id)
+        .map((e) => ({
         id: e.node.id,
         name: e.node.name,
         level: levelOf(visibleRoots, e.node.id),
         depth: e.depth,
         archived: Boolean((e.node as ProjectRow).archived_at),
       })),
-    [visibleRoots],
+    [visibleRoots, selected?.id],
   );
 
   // WS-27bm S8 visual review — may a document open in the side panel beside

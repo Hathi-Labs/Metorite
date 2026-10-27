@@ -58,6 +58,7 @@ from gateway.routes.projects.core import (
     actor,
     apply_status_transition,
     assert_holds_tasks,
+    assert_not_archived,
     emit,
     insert_row,
     load_default_status,
@@ -283,6 +284,7 @@ async def capture_intake(
         # A capture is a task, so it lands where a task may: in a project,
         # never on a space or a folder (`core.assert_holds_tasks`).
         assert_holds_tasks(target, then="Capture into")
+        assert_not_archived(target, then="Capture into")
         root = await root_project_id(db, str(payload.project_id))
         # The triage lane belongs to the set this project USES, which is
         # the nearest owner and not necessarily the root (migration 196).

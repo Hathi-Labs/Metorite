@@ -57,6 +57,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     assert_holds_tasks,
+    assert_not_archived,
     assert_move_keeps_privacy,
     emit,
     from_jsonb,
@@ -229,6 +230,7 @@ async def _destination(db: Any, vis: Any, project_id: str) -> Any:
     # After the visibility load, so a caller who cannot see the folder still
     # gets 404 and never learns from a 422 that it exists (R5).
     assert_holds_tasks(dest, then="Move into")
+    assert_not_archived(dest, then="Move into")
     return dest
 
 

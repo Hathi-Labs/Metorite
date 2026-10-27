@@ -124,7 +124,7 @@ export function UnscheduledRail({
       <div className="flex-1 overflow-y-auto p-2">
         {tasks.length === 0 ? (
           <p className="px-1 py-4 text-center text-[11px] text-muted-foreground">
-            Nothing to schedule — inbox zero on next actions. 🎉
+            Nothing to schedule — My tasks is clear. 🎉
           </p>
         ) : (
           <div className="flex flex-col gap-1.5">
@@ -244,7 +244,7 @@ export function UnscheduledRail({
           </div>
         )}
       </div>
-      {/* AI plan-my-day — the assistant timeboxes your Next Actions. */}
+      {/* AI plan-my-day — the assistant timeboxes My tasks. */}
       <div className="border-t border-border p-2">
         <button
           type="button"

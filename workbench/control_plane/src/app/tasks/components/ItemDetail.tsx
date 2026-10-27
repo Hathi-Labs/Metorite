@@ -373,7 +373,7 @@ export function TaskDetail({
   // directory alone — which is the correct answer under one store, and worth
   // saying rather than leaving as an unexplained simplification.
   const memberPeople: Person[] = people;
-  // The local Kanban stage (the workflow-stage axis of My Next Actions). Used to
+  // The local Kanban stage (the workflow-stage axis of My tasks). Used to
   // show/change the task's status category in the detail, like the card.
   const stageActions = useCardActions(item);
   // The full owner set (falls back to the single assignee for older rows / mock).
@@ -467,7 +467,7 @@ export function TaskDetail({
               </MetaEdit>
 
               {/* Stage — for a SYNCED task the raw ClickUp status (back-syncs on
-                  change); for a LOCAL task the workflow stage (the My Next Actions
+                  change); for a LOCAL task the workflow stage (the My tasks
                   column). Local tasks always show one now, so their stage is
                   visible/changeable here too, not just on the board. */}
               {isSynced ? (
@@ -619,18 +619,18 @@ export function TaskDetail({
             </section>
           )}
 
-          {/* Offer to drop a just-reassigned/unassigned task from My Next Actions.
+          {/* Offer to drop a just-reassigned/unassigned task from My tasks.
               It stays on ClickUp — only the personal list changes. The regular
               delete/two-way sync is untouched. */}
           {offerDropFromNext && (
             <div className="flex flex-wrap items-center gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
               <AppIcon name="AlertTriangle" className="h-4 w-4 shrink-0 text-warning" />
               <span className="min-w-0 flex-1 text-[12.5px] text-foreground">
-                No longer your action? Remove it from My Next Actions — it stays on its project board.
+                No longer your action? Remove it from My tasks — it stays on its project board.
               </span>
               <Button size="none" radius="keep" layout="inline-flex items-center" type="button" onClick={() => { updateItem(item.id, { isMine: false }); setOfferDropFromNext(false); }} className="gap-1.5 rounded-md px-2.5 py-1.5 text-xs">
                 <AppIcon name="UserMinus" className="h-3.5 w-3.5" />
-                Remove from My Next Actions
+                Remove from My tasks
               </Button>
               <Button variant="ghost" size="none" radius="keep" layout="" type="button" onClick={() => setOfferDropFromNext(false)} className="rounded-md px-2.5 py-1.5 text-xs">
                 Keep

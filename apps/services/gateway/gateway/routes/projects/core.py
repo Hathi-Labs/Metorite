@@ -492,6 +492,27 @@ def is_team_space(node: Any) -> bool:
     return node_kind(getattr(node, "kind", None)) == "project"
 
 
+def assert_not_archived(node: Any, *, then: str) -> None:
+    """Refuse a NEW placement under an archived project (WS-64).
+
+    A child filed under an archived parent kept ``archived_at`` NULL, so it
+    showed in the lists the archive hides. ``then`` finishes the advice, for
+    example ``"Create the task in"``. It must read before
+    ``" an active project, or unarchive this one first."``.
+
+    Call it AFTER the visibility load, as :func:`assert_holds_tasks` is, so a
+    caller who cannot see the node gets 404 (R5). It judges a NEW placement
+    only. Reads, edits, and moves OUT of an archived project still work.
+    """
+    if getattr(node, "archived_at", None) is not None:
+        name = str(getattr(node, "name", "") or "").strip() or "This project"
+        raise HTTPException(
+            status_code=422,
+            detail=f"{name} is archived. {then} an active project, or "
+                   f"unarchive this one first.",
+        )
+
+
 def assert_holds_tasks(node: Any, *, then: str) -> None:
     """Refuse a task placed on a node that holds no tasks (one rule, D-PM).
 

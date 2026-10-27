@@ -494,7 +494,7 @@ function TaskRowView({ row }: { row: ProjectTaskRow }) {
 function listLabel(e: ToolEvent): string {
   const args = (e.args ?? {}) as Record<string, unknown>;
   if (e.name === "find_tasks") return `Search${args.query ? ` · ${String(args.query)}` : ""}`;
-  if (e.name === "my_work") return String(args.view ?? "") === "inbox" ? "My inbox" : "Assigned to me";
+  if (e.name === "my_work") return String(args.view ?? "") === "inbox" ? "My task inbox" : "Assigned to me";
   if (e.name === "calendar") return "Calendar";
   if (e.name === "intake_queue") return "Intake";
   if (e.name === "notifications") return "Notifications";

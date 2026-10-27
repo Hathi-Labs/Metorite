@@ -494,7 +494,7 @@ export function CalendarView() {
       <button
         type="button"
         onClick={() => setPlanMode("plan")}
-        title="Rebuild my day: reshuffle what's on your calendar into the time left, trim the overflow back to your list, and fill any remaining room from your Next Actions."
+        title="Rebuild my day: reshuffle what's on your calendar into the time left, trim the overflow back to your list, and fill any remaining room from My tasks."
         className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/20"
       >
         <Icon name="Wand2" className="h-3.5 w-3.5" />

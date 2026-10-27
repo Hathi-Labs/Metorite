@@ -16,9 +16,9 @@ const read = (rel: string) => fs.readFileSync(path.join(__dirname, "..", rel), "
 describe("VIEW_TITLES", () => {
   it("holds the /tasks wording", () => {
     expect(VIEW_TITLES).toEqual({
-      inbox: "Inbox",
+      inbox: "My task inbox",
       today: "Today",
-      next: "My Next Actions",
+      next: "My tasks",
       waiting: "Waiting For",
       someday: "Someday / Maybe",
       done: "Done",

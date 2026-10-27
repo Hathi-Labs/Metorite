@@ -665,7 +665,7 @@ async def my_work(
             # mine, and adds `assigned_by` (personal.py `my_inbox`).
             params["untriaged"] = True
         payload = await get("/projects/my/inbox", params)
-        title = "Landed on my plate, not triaged yet" if untriaged else "My inbox"
+        title = "Landed on my plate, not triaged yet" if untriaged else "My task inbox"
         # The personal project is where a private task lives (D53). Named
         # here so "add this to my own list" has an id to land on later.
         # 404 until the member captures their first private task. That is

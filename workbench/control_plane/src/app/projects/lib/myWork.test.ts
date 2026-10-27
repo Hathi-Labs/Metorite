@@ -65,9 +65,9 @@ describe("the My work section", () => {
 
   it("names the six views in the order of the spec", () => {
     expect(MY_WORK_VIEWS.map((v) => v.label)).toEqual([
-      "Inbox",
+      "My task inbox",
       "Today",
-      "My Next Actions",
+      "My tasks",
       "Waiting For",
       "Someday / Maybe",
       "Done",

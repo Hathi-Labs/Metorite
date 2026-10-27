@@ -158,9 +158,9 @@ test.fixme("each count equals the count that /tasks shows", async ({ page }) => 
     timeout: 30_000,
   });
   // The store loads when the view opens. Wait for a count to show, then for it to stop moving.
-  await expect(page.getByRole("button", { name: /^Inbox\s*\d/ }).first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: /^My task inbox\s*\d/ }).first()).toBeVisible({ timeout: 30_000 });
   const mine = await settled(async () => ({
-    inbox: await countOf(page, "Inbox"),
+    inbox: await countOf(page, "My task inbox"),
     next: await countOf(page, VIEW_TITLES.next),
     waiting: await countOf(page, VIEW_TITLES.waiting),
     someday: await countOf(page, VIEW_TITLES.someday),
@@ -168,7 +168,7 @@ test.fixme("each count equals the count that /tasks shows", async ({ page }) => 
 
   await page.goto("/tasks");
   const nav = page.getByRole("navigation").filter({ hasText: "Your lists" });
-  await expect(nav.getByRole("button", { name: /^Inbox\s*\d/ })).toBeVisible({ timeout: 30_000 });
+  await expect(nav.getByRole("button", { name: /^My task inbox\s*\d/ })).toBeVisible({ timeout: 30_000 });
   const theirs = async (name: string) => {
     const text = (await nav.getByRole("button", { name: new RegExp(`^${name}`) }).first().innerText())
       .replace(name, "")
@@ -176,7 +176,7 @@ test.fixme("each count equals the count that /tasks shows", async ({ page }) => 
     return /^\d+$/.test(text) ? Number(text) : null;
   };
   const tasks = await settled(async () => ({
-    inbox: await theirs("Inbox"),
+    inbox: await theirs("My task inbox"),
     next: await theirs(VIEW_TITLES.next),
     waiting: await theirs(VIEW_TITLES.waiting),
     someday: await theirs(VIEW_TITLES.someday),

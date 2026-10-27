@@ -412,7 +412,7 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
     }
   }, [run, currentMapping, confirmedNewTree]);
 
-  const spaces = roots.filter((r) => !r.parent_project_id);
+  const spaces = roots.filter((r) => !r.parent_project_id && !r.archived_at);
   const plan = run?.plan;
   const rows = useMemo(() => importTreeRows(plan?.tree ?? [], containers), [plan, containers]);
   const totals = treeTotals(rows);

@@ -138,7 +138,7 @@ describe("Clarify opens on an untriaged From Projects row", () => {
   it("the modal renders the panel for a NEXT + untriaged row", () => {
     useTaskStore.getState().openClarify(FROM_BOARD.id);
     const html = renderToStaticMarkup(createElement(ClarifyModal));
-    expect(html).toContain("Processing inbox");
+    expect(html).toContain("Processing my task inbox");
     expect(html).toContain(FROM_BOARD.title);
     // Both halves of the walk are counted.
     expect(html).toContain("2 left");
