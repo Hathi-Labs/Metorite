@@ -20,6 +20,7 @@ import {
   myWorkEnabled,
   myWorkNavCounts,
   myWorkView,
+  linkKeepsApp,
   projectsUndoScope,
 } from "./myWork";
 import { MY_WORK_SECTION_LABEL, PROJECT_APP_SECTIONS, projectAppSections, resolveAppLink } from "./projectApps";
@@ -240,6 +241,17 @@ describe("My work and the shared stores (fix round 1)", () => {
     const hook = fs.readFileSync(path.join(PROJECTS, "lib", "liveRefresh.ts"), "utf8");
     expect(hook).toContain('"visibilitychange"');
     expect(hook).toContain('"focus"');
+  });
+
+  it("OP-11 fix round 4: a capture link keeps app=my-inbox while its job waits", () => {
+    const q = (s: string) => new URLSearchParams(s);
+    expect(linkKeepsApp("my-inbox", q("app=my-inbox&do=capture&fill.title=x"))).toBe(true);
+    expect(linkKeepsApp("my-tasks", q("app=my-tasks&do=capture"))).toBe(true);
+    expect(linkKeepsApp("my-inbox", q("app=my-inbox"))).toBe(false);
+    expect(linkKeepsApp("reports", q("app=reports&do=capture"))).toBe(false);
+    expect(linkKeepsApp(null, q("do=capture"))).toBe(false);
+    const page = fs.readFileSync(path.join(PROJECTS, "page.tsx"), "utf8");
+    expect(page).toContain("if (linkKeepsApp(live, searchParams)) return;");
   });
 
   it("the page uses the scope rule, not a project-only scope", () => {

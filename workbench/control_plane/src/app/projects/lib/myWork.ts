@@ -113,6 +113,17 @@ export function landingApp(
 
 
 /**
+ * Does the `?app=` link stay in the address once the page has read it? Only
+ * a My work id with a `?do=` job still waiting (OP-11 fix round, item 4).
+ * The job's ShellJob takes `do` and `fill.*` out, so the address ends on the
+ * view the box opened in: `/tasks?do=capture` ends on `?app=my-inbox`.
+ * Any other link is consumed, as before.
+ */
+export function linkKeepsApp(live: string | null | undefined, params: { has: (key: string) => boolean }): boolean {
+  return isMyWorkId(live) && params.has("do");
+}
+
+/**
  * The undo scope of the Projects page (§9 OP-2). My work has its own scope, so
  * entering it clears the board history, and Ctrl+Z reaches one store only.
  *

@@ -78,6 +78,7 @@ import {
   isMyTasksApp,
   isMyWorkId,
   landingApp,
+  linkKeepsApp,
   myWorkEnabled,
   myWorkNavCounts,
   projectsUndoScope,
@@ -2954,7 +2955,7 @@ function ProjectsWorkspace() {
     // reads them, opens the box, and takes them out (the one door). While a
     // job waits, a My work `app` stays too, so the address ends on the view
     // the box opened in: `?app=my-inbox` (OP-11 fix round, item 4).
-    if (live && isMyWorkId(live) && searchParams.has("do")) return;
+    if (linkKeepsApp(live, searchParams)) return;
     const rest = new URLSearchParams(searchParams.toString());
     rest.delete("app");
     const qs = rest.toString();
