@@ -4676,6 +4676,14 @@ Owner directive, 2026-10-27, in chat: a knowledge graph like Graphify, so that M
 
 **The owner may overrule it.** It is an engineering shape under the owner's directive, as D105 was.
 
+### D131 — CRM settings fold into five sections, the AI's questions sit in one list, and a Field map pick applies at once (2026-10-27)
+
+Owner answers, 2026-10-27, in chat, to three questions after the audit of the CRM setup screens. Workstream: **WS-CRM**. Owning spec: `specs/crm_platform.md` §20.17 (CRM-U13).
+
+1. **Five sections for an admin of a Zoho mirror:** Connection, Needs your input, Fields, Pipeline and AI rules. Today there are eleven. Each old `?section=` id stays as an alias, so no link breaks.
+2. **One list holds what the AI asks.** "Needs your input" holds the open questions, the suggestions, the Field map proposals and the choices that members made in chat. Its main button accepts each suggestion of the AI. An admin can change or undo each one later.
+3. **A Field map pick applies at once.** The draft step goes. The change history keeps each version, and an admin can go back to any of them.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 | Work | Owner | Mirrors (link-only after §5) |

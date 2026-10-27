@@ -11710,3 +11710,63 @@ sections, the one inbox for AI proposals, and the draft of the Field map.
 
 Fences (R7): the tests that hold each changed string. In build mode no new
 fence file is needed (`engineering_practice.md` §7a).
+
+### 20.17 CRM-U13: five sections, one list for the AI, one-step Field map (2026-10-27)
+
+**Status.** 📝 Specified 2026-10-27. Decision D131. Waits for CRM-U11 and CRM-U12 to merge, because it changes the same screens. Not yet audited.
+
+**Gate.** AGENT-SAFE. No flag and no migration. A gateway change is not expected. The audit confirms it per slice.
+
+**Evidence.** The read-only audit of the CRM setup screens, 2026-10-27. It counted 11 rail rows for a Mirror admin and five or six places where the AI asks for an approval, with no "done" signal.
+
+#### The sections (D131.1)
+
+| Section | Who | What it holds | From today |
+|---|---|---|---|
+| Connection | admin | The Zoho link and its state, Sync now, sync trouble, and who can open the CRM. "Advanced" folds the record counts, the module table and holds, the runs, the credits, Disconnect, Switch to Metorite and Start over | Setup and sync, Sync health, Access |
+| Needs your input | admin | Each thing the AI asks, in one list, with a count on the rail | Open questions, Suggestions, the Field map proposals, "Your choices in the chat" |
+| Fields | admin | Mirror: each Zoho field and where it shows in Metorite, one row each, with one control. Native: the field studio, and a tab "When a lead converts" | Fields, Field mapping |
+| Pipeline | each member reads, an admin changes | Three tabs: Deal stages, Lead statuses, Lost reasons | three sections |
+| AI rules | each member | Today's Business rules, renamed | Business rules |
+
+- A member sees Pipeline and AI rules.
+- A Native admin sees Connection (the mode and the access), Fields, Pipeline and AI rules.
+- The main view of Connection drops the rows "Mode", "Data centre" and "Connected by". They move into "Advanced".
+- "Sync now" and the last sync show once, in Connection.
+- Until the setup is done, Connection opens first and shows three steps with a done mark on each: Connect Zoho, Review what the AI found, Choose who can open the CRM. After that, an admin lands on "Needs your input" when it holds an item, else on Pipeline.
+- `lib/settingsSections.ts` keeps each old id as an alias of its new section (`crmC1.test.ts` fences the ids).
+
+#### Needs your input (D131.2)
+
+1. One list. Each item is one card: one question in one line, the AI's suggestion as the highlighted choice, "Other…" and a "Why?" fold that holds the reason and what the answer changes.
+2. The list shows three items, then "Show more".
+3. The main button "Accept the AI's suggestions" accepts the suggestion of each item in the list, through the existing routes. It reports how many it accepted and how many need a person, because they have no suggestion.
+4. Each accepted item shows in "Your answers", where an admin can change it or undo it.
+5. A suggestion of a module (CRM-Q20-2) is a card of the same list, with its preview.
+6. A Field map proposal is one line: "Zoho field X fills Y", with Accept and Change.
+7. A member's choice in chat waits here for an admin, with Confirm and Change.
+8. "Run the AI analysis again" sits once, in a "More" menu of the section.
+
+#### Fields and the Field map (D131.3)
+
+1. A pick applies at once. The client sends the draft and its approval as one action, through the routes that exist (`POST /crm/mapping/plans`, then the approve). The toast says "Saved. The next sync fills it."
+2. The Draft box, its words and the second press go. The rule-by-rule Approve and Reject go too, because "Needs your input" holds the proposals.
+3. "Change history" opens the versions. "Go back" restores one, and asks first.
+4. Mirror rows: the unmapped fields first, then the mapped ones. Each row shows the Zoho field, where it shows in Metorite, a status in plain words, and one control.
+
+#### Slices
+
+| Slice | What | Size |
+|---|---|---|
+| CRM-U13a | The five sections, the aliases, Connection with "Advanced", the setup steps, Pipeline tabs, AI rules | L |
+| CRM-U13b | Needs your input, with accept-all and "Your answers" | L |
+| CRM-U13c | The Field map in one step, and Fields merged | M to L |
+
+U13a goes first. U13b and U13c can run side by side after it.
+
+#### Done when (each slice adds its own after the audit)
+
+1. A Mirror admin sees five rail rows, a member two, and a Native admin four. Each old `?section=` link opens the new section.
+2. One press of "Accept the AI's suggestions" accepts each item that has a suggestion, and the count on the rail falls to the items that need a person.
+3. One pick on the Field map saves it, and "Change history" lists it as a new version.
+4. The four `visual-review` captures (light mode, compact density, a changed accent, 390 px) of each new section.

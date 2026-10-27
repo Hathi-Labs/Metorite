@@ -167,7 +167,7 @@ export function SyncHealthCardView({
             <ul className="space-y-1.5 pt-2">
               {needs.map((item) => {
                 const badge = NEEDS_YOU_BADGES[item.kind];
-                // "Hold it" writes while a run goes on, as before. A run of
+                // "Pause syncing this" writes while a run goes on, as before. A run of
                 // one key waits for the run that holds the lock.
                 const blocked =
                   (busyKey !== null && busyKey !== item.key) || (item.kind !== "large" && running);

@@ -418,7 +418,7 @@ export type NeedsYouItem = {
  * The block at the top of Sync health (CRM-Q17b item 8): the modules that
  * need the admin, each with one action. A module that Zoho refuses comes
  * first (`unavailableAction`), then a held module ("Sync it on its own"), then a
- * large module that nobody decided on ("Hold it"). A key shows once, by
+ * large module that nobody decided on ("Pause syncing this"). A key shows once, by
  * that order.
  *
  * CRM-Q32-4 (§18.14.5): the open questions about the data give one more
