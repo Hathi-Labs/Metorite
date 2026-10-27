@@ -1,8 +1,9 @@
 """R8 for the space rule's one SQL statement (2026-10-26).
 
-``tree._OWN_LIVE_TASKS_SQL`` counts the live tasks that sit on one node
-itself. ``tree.move_node`` refuses a project that holds any when a move would
-make it a space. The hermetic fake answers it by its alias
+``tree._OWN_TASKS_SQL`` counts the tasks that sit on one node itself,
+archived ones too (WS-64 chat wave 2, item 14: a restore of an archived task
+put it on a space). ``tree.move_node`` refuses a project that holds any when
+a move would make it a space. The hermetic fake answers it by its alias
 (``_projects_fakes``), so this file runs the real statement on asyncpg, on the
 driver production uses, and checks the answer on seeded rows.
 
@@ -55,13 +56,13 @@ async def _org(conn) -> str:
 
 
 @pytest.mark.asyncio
-async def test_the_count_runs_on_asyncpg_and_counts_only_live_own_tasks(conn) -> None:
-    from gateway.routes.projects.tree import _OWN_LIVE_TASKS_SQL
+async def test_the_count_runs_on_asyncpg_and_counts_only_own_tasks(conn) -> None:
+    from gateway.routes.projects.tree import _OWN_TASKS_SQL
 
     absent = (await conn.execute(
-        text(_OWN_LIVE_TASKS_SQL), {"pid": "00000000-0000-0000-0000-000000000000"},
+        text(_OWN_TASKS_SQL), {"pid": "00000000-0000-0000-0000-000000000000"},
     )).first()
-    assert absent.own_live_tasks == 0
+    assert absent.own_tasks == 0
 
     org = await _org(conn)
     tag = uuid.uuid4().hex[:8]
@@ -96,7 +97,8 @@ async def test_the_count_runs_on_asyncpg_and_counts_only_live_own_tasks(conn) ->
     await task(hr, 3, True)
     await task(child, 4, False)
 
-    got = (await conn.execute(text(_OWN_LIVE_TASKS_SQL), {"pid": hr})).first()
-    # Two live tasks on HR itself. The archived one and the subproject's are
-    # not HR's own live work.
-    assert got.own_live_tasks == 2
+    got = (await conn.execute(text(_OWN_TASKS_SQL), {"pid": hr})).first()
+    # Three tasks on HR itself: two live and one archived. A restore would
+    # bring the archived one back on HR, so it counts. The subproject's task
+    # is not HR's own.
+    assert got.own_tasks == 3

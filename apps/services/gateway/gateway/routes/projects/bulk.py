@@ -65,6 +65,7 @@ from gateway.routes.projects.core import (
     touch_task,
     update_row,
 )
+from gateway.routes.projects.due import member_due_values
 from gateway.routes.projects.notifications import notifiable, notify
 from gateway.routes.projects.personal import (
     PersonalIn,
@@ -558,6 +559,10 @@ async def bulk_edit(
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
+        if patch:
+            # WS-64 chat wave 2. A bare due day is noon in the caller's zone,
+            # once for the whole selection (`due.member_due_values`).
+            await member_due_values(db, who, patch)
         # WS-64 OP-8 (D-OP-12). The lead set is read once for the selection,
         # and not at all for an admin, who may delete each task.
         led = (

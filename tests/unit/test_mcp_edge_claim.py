@@ -655,6 +655,10 @@ class TestAnAgentMayMoveATaskToDone:
 
     async def test_f4_an_agents_done_on_a_recurring_task_makes_one_successor(self, live):
         task = _task(live, live.team, live.s.doing, "f4 weekly")
+        # WS-64 chat wave 2: a repeat on a space spawns nothing, so in a project.
+        from tests.unit._github_r8 import into_a_child_project
+
+        into_a_child_project(live.admin, task)
         r = await _send(live, "PUT", f"/projects/tasks/{task}/recurrence", signed=None,
                         body={"freq": "daily", "interval": 1, "anchor": "completed"})
         assert r.status_code == 200, r.text

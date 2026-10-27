@@ -743,6 +743,10 @@ class TestTheSuccessor:
         a = _authority()
         done = live.seeder.status(live.elsewhere, "op8 Done", "done", 9)
         task = _task(live, live.elsewhere, CREATOR, "op8 weekly report")
+        # WS-64 chat wave 2: a repeat on a space spawns nothing, so in a project.
+        from tests.unit._github_r8 import into_a_child_project
+
+        into_a_child_project(live.admin, task)
         r = await _as(live, CREATOR, "PUT", f"/projects/tasks/{task}/recurrence",
                       {"freq": "daily", "interval": 1, "anchor": "completed"})
         assert r.status_code == 200, r.text

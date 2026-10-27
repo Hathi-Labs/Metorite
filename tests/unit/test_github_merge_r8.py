@@ -420,6 +420,8 @@ async def test_d6_a_closed_held_or_archived_task_does_not_move(world) -> None:
 async def test_d7_a_recurring_task_makes_exactly_one_successor(world) -> None:
     w = world
     task = _task(w, recurring=True)
+    # WS-64 chat wave 2: a repeat on a space spawns nothing, so in a project.
+    g.into_a_child_project(w.p.admin_engine, task)
     _run(w, task)
     _ref(w, task, 61)
     rule = g.scalar(w.p, "SELECT recurrence_id FROM pm_tasks WHERE id = CAST(:t AS uuid)", t=task)

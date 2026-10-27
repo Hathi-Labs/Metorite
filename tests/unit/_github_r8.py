@@ -358,3 +358,26 @@ async def call(
             )
     finally:
         release_tenant(scope)
+
+
+def into_a_child_project(engine, task_id: str) -> str:
+    """Move a seeded task from its root into a new child project of that root.
+
+    WS-64 chat wave 2 (item 14): a repeat on a task that sits on a team space
+    spawns no successor there. A seed that files a task on a root is such a
+    task. A test of the successor files it in a project, as the app does.
+    The child keeps the root's lanes (``owns_statuses`` false).
+    """
+    from sqlalchemy import text as _text
+
+    with engine.begin() as c:
+        row = c.execute(_text(
+            "SELECT project_id, organization_id FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
+            {"t": task_id}).one()
+        child = c.execute(_text(
+            "INSERT INTO pm_projects (organization_id, name, created_by, parent_project_id,"
+            " owns_statuses) VALUES (:o, 'child', 'seed@x.test', :p, false) RETURNING id"),
+            {"o": row.organization_id, "p": row.project_id}).scalar_one()
+        c.execute(_text("UPDATE pm_tasks SET project_id = :c WHERE id = CAST(:t AS uuid)"),
+                  {"c": child, "t": task_id})
+    return str(child)
