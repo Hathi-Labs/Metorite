@@ -87,6 +87,21 @@ AREAS: dict[str, str] = {
     "peeves": "Is there something that assistants do that annoys you?",
     "people": "Who do you work with most?",
 }
+#: What each area is for (PZ-30, §14.4). One table, same ids as :data:`AREAS`.
+#: The model reads the intent and asks in its own words. The starting
+#: question is only an example.
+AREA_INTENTS: dict[str, str] = {
+    "role": "their role and what fills most of their week, so help fits their real work",
+    "goals": "what they most want to move this quarter, so plans and reminders point at it",
+    "good_day": "what makes a day a win for them, so daily plans aim at it",
+    "decisions": "whether they want options with a recommendation or only the answer",
+    "detail": "whether they want the headline first or the full reasoning",
+    "rhythm": "when they do deep work and when not to interrupt, so timing fits them",
+    "channels": "what must reach them on WhatsApp and what can wait for the web",
+    "energy": "which part of their work they enjoy most, so you can lean into it",
+    "peeves": "what assistants do that annoys them, so you stop doing it",
+    "people": "who they work with most, so names and mail resolve to the right people",
+}
 #: The state of an area (§14.3). An area with no entry is open.
 INTERVIEW_STATES: tuple[str, ...] = ("asked", "answered", "skipped", "never")
 #: The most hours between two questions (§14.4, limit 1).
@@ -94,8 +109,8 @@ DUE_HOURS = 24
 #: The days that a skipped area, or an asked area with no answer, waits
 #: (§14.4, limit 2, D-PZ-13).
 WAIT_DAYS = 14
-#: The most areas that one sitting asks (§14.4).
-SITTING_AREAS = 5
+#: The most areas that one sitting asks (§14.4, PZ-30: three, a softer pace).
+SITTING_AREAS = 3
 #: The hours that a sitting lasts after the member starts it. In a sitting
 #: the model may mark an area `asked` without a due line.
 SITTING_HOURS = 2
@@ -1137,8 +1152,11 @@ def interview_due_line(interview: Any, now: datetime) -> str:
     area = due_area(interview, now)
     if not area:
         return ""
-    return (f"Interview (one question is due): {area}: «{AREAS[area]}» "
-            "Ask it only at the end of a reply that fits. "
+    return ("Interview (one question is due): "
+            f"{area}: {AREA_INTENTS[area]}. "
+            f"Example, do not read it out: «{AREAS[area]}» "
+            "Ask it only if it fits the moment, at the end of your reply, "
+            "in your own words. "
             f'Then call profile_interview("asked", "{area}").')
 
 

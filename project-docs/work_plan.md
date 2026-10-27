@@ -4441,7 +4441,7 @@ Owner decision, 2026-10-25, in chat: "Go ahead with your recommendation". Board:
 
 1. **The profile turns on for named organizations first** (PZ-25). A new setting, `ASSISTANT_PROFILE_ORGS`, limits the master switch to a list. The first release is Hathi Labs only.
 2. **Settings gains an "Assistant" entry.** It is a Settings entry, not a pane, so the twelve live panes stay twelve.
-3. **The assistant interviews the member** (PZ-26, PZ-27). Ten areas: role, goals, a good day, decisions, detail, rhythm, channels, energy, peeves and people. The first sitting asks up to five questions, one at a time. After it, one question a day at most.
+3. **The assistant interviews the member** (PZ-26, PZ-27). Ten areas: role, goals, a good day, decisions, detail, rhythm, channels, energy, peeves and people. The first sitting asks up to three questions, one at a time. After it, one question a day at most.
 4. **The limits of D-PZ-13 apply.** A skip waits 14 days. "Don't ask again" stops an area. No question goes to a shared room, and none goes out on WhatsApp.
 5. **Each answer is an explicit write with Undo** (D-PZ-2). The second yes of D-PZ-16 stays for a sensitive answer.
 

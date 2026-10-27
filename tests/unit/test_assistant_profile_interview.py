@@ -138,6 +138,12 @@ def test_a_mark_refuses_an_unknown_area_or_state() -> None:
         ap.apply_interview_mark(None, "goals", "maybe", NOW)
 
 
+def test_every_area_has_an_intent_and_a_sitting_is_three() -> None:
+    assert set(ap.AREA_INTENTS) == set(ap.AREAS)
+    assert all(ap.AREA_INTENTS[a].strip() for a in ap.AREAS)
+    assert ap.SITTING_AREAS == 3
+
+
 def test_start_sets_started_at_once_and_no_last_asked() -> None:
     first = ap.start_interview(None, NOW)
     assert set(first) == {"started_at"}
@@ -167,14 +173,16 @@ def test_the_due_line_waits_more_than_twenty_four_hours() -> None:
     due = ap.interview_due_line(_iv(last=timedelta(hours=24, minutes=1)), NOW)
     exact = ap.interview_due_line(_iv(last=timedelta(hours=24)), NOW)
     assert quiet == "" and exact == ""
-    assert due.startswith("Interview (one question is due): role: «")
-    assert ap.AREAS["role"] in due
+    assert due.startswith("Interview (one question is due): role: ")
+    assert ap.AREA_INTENTS["role"] in due
+    assert f"Example, do not read it out: «{ap.AREAS['role']}»" in due
+    assert "Ask it only if it fits the moment, at the end of your reply" in due
     assert 'profile_interview("asked", "role")' in due
 
 
 def test_the_line_names_the_first_open_area() -> None:
     iv = _iv(role=("answered", timedelta(days=2)), goals=("skipped", timedelta(days=2)))
-    assert "good_day: «" in ap.interview_due_line(iv, NOW)
+    assert "good_day: " in ap.interview_due_line(iv, NOW)
 
 
 def test_a_decline_sets_started_at_only_and_no_line_ever_comes() -> None:
@@ -306,7 +314,7 @@ def test_a_due_line_follows_the_block(run, clock, writes) -> None:  # noqa: F811
     assert block.startswith(epb.GOLDEN)
     lines = block.splitlines()
     assert lines[-2] == ap.BLOCK_FOOTER
-    assert lines[-1].startswith("Interview (one question is due): role: «")
+    assert lines[-1].startswith("Interview (one question is due): role: ")
 
 
 def test_no_interview_key_leaves_the_block_unchanged(run, clock, writes) -> None:  # noqa: F811

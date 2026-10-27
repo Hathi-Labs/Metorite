@@ -189,7 +189,7 @@ describe("the interview section (PZ-27)", () => {
     const { GET_TO_KNOW_ME_MESSAGE, startGetToKnowMe } = await import("@/lib/shell/interviewMessage");
     startGetToKnowMe();
     expect(openAssistant).toHaveBeenCalledWith({ fresh: true, text: GET_TO_KNOW_ME_MESSAGE });
-    expect(GET_TO_KNOW_ME_MESSAGE).toBe("Let's do the Get to know me interview.");
+    expect(GET_TO_KNOW_ME_MESSAGE).toBe("Get to know me. Ask me a few questions.");
     expect(GET_TO_KNOW_ME_MESSAGE).not.toMatch(/profile_|_/);
   });
 
