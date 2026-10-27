@@ -67,9 +67,13 @@ def _injectable_names() -> set[str]:
 def test_every_injected_tool_registered_in_exactly_one_family():
     injected = _injectable_names()
     for name in sorted(injected):
+        # A pack (a family with an ``owner``) is not an injected family. It
+        # skips this check and has its own gate, ``test_an_owner_tool_is_in_
+        # one_pack_only``. WS-67 OA-8a: ``crm_search_notes`` is injected in
+        # ``crm`` and is also a tool of the ``crm-records`` pack.
         owners = [
             slug for slug, fam in sf.SKILL_FAMILIES.items()
-            if name in fam["tools"]
+            if name in fam["tools"] and not fam.get("owner")
         ]
         assert len(owners) == 1, (
             f"{name!r} is injected by _tool_injection but belongs to "
@@ -106,7 +110,12 @@ def _owner_universe(owner: str) -> set[str]:
 
     from tests.unit._native_maf_harness import REPO_ROOT, load_agent_module
 
-    rel = f"apps/agents/agent-{owner}"
+    from gateway.routes.agent import _AGENT_REGISTRY
+
+    # The directory comes from the registry: ``crm-assistant`` lives in
+    # ``apps/agents/agent-crm`` (WS-67 OA-8a).
+    entry = next(a for a in _AGENT_REGISTRY if a.get("name") == owner)
+    rel = str(entry["local_path"])
     cfg = json.loads((Path(REPO_ROOT) / rel / "config.json").read_text(encoding="utf-8"))
     module = load_agent_module(rel)
     built = {fn.__name__ for fn in module._agent_tools()}
