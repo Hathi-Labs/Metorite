@@ -1,5 +1,7 @@
 # The email measure on real code (WS-67 OA-7h, 2026-10-27)
 
+**Re-scored.** Run 1 was re-scored on 2026-10-28 with the strict checks of fix round 1 (`handoff_kind` errs to mail, `one_card` holds the send cards apart). `--rescore` read the stored tasks. No count changed: pack 14 of 54, delegation 48 of 54, and `no_email_delegation` 15 of 54. A stored row keeps no card titles, so `one_card` could not be re-scored. The stored card counts stay within the bound of the new rule in every turn with a write.
+
 **Verdict: the gate is NOT met.** The pack arm passes 14 of 54 turns. The delegation arm passes 48 of 54. The cause is one check, `no_email_delegation`. In 42 of 54 pack turns the run loaded no pack, and the model handed the mail work to the email assistant. Layer (c) did not run, because the System-1 request was unavailable in this eval. The quality of the answers is equal on both arms.
 
 Spec: `project-docs/specs/one_assistant_context.md` §4.2.8, slice OA-7h. The first report is `docs/one_assistant_measure_2026-10-25.md`. This report keeps its table shape.
@@ -28,7 +30,7 @@ Only three turns send mail, so `held_card` has few cases. One delegation chat di
 
 ## 3. Why the pack arm fails the gate
 
-The pack loaded in 12 of 54 pack turns. In all 12, the member's words matched (layer a). In 0 turns did layer (c) load it. In 0 turns did the model call `load_skill_tools` in a way that loaded it.
+The pack loaded in 12 of 54 pack turns. In all 12, the member's words matched (layer a). In those 12 the model handed off no mail work (3 of the 12 handed off setup work). In 0 turns did layer (c) load it. In 0 turns did the model call `load_skill_tools` in a way that loaded it.
 
 In the 42 other turns, the loader was on offer, and the specialist tool `email_assistant` stayed in the list. The model used the specialist. 39 turns handed mail work to the email assistant, and each one fails `no_email_delegation`. Three turns handed setup work, and they pass.
 
@@ -60,7 +62,7 @@ So the pack arm of a live model mostly behaves as delegation, with the pack idle
 | Cost per turn, USD | 0.0099 | 0.0098 |
 | Cost of the arm, USD | 0.535 | 0.530 |
 
-The pack arm is not faster here, because 39 of its turns still hand off. The six pack turns that ran the email tools in the chat run took a median of 7.4 s (5.7 to 9.4 s). The 42 pack turns that handed off took a median of 17.6 s (9.0 to 33.9 s). On the delegation arm, 45 hand-offs took a median of 18.6 s (8.5 to 155.5 s).
+The pack arm is not faster here, because 42 pack turns handed off (39 of mail work and 3 of setup work). The six pack turns that ran the email tools in the chat run took a median of 7.4 s (5.7 to 9.4 s). The 42 pack turns that handed off took a median of 17.6 s (9.0 to 33.9 s). On the delegation arm, 45 hand-offs took a median of 18.6 s (8.5 to 155.5 s).
 
 ## 5. The cache share
 
