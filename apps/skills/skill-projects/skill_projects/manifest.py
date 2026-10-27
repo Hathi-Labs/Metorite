@@ -1210,6 +1210,11 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "status_id": (
             "One lane by id. export_tasks filters by status_category, as list_tasks does."
         ),
+        "scope": (
+            "WS-64 OP-11: the My tasks roll-up. The export takes it so a file of "
+            "My tasks holds only the member's own rows. The chat's my_work reads "
+            "the same set through the mine rule, so no tool argument sets it."
+        ),
         "assignee": "The older single form. export_tasks sends assignees.",
         "sort": "The order of the app's list. The file holds the rows in the route's own order.",
         "direction": "The order of the app's list. The file holds the rows in the route's own order.",
@@ -1439,6 +1444,7 @@ UI_ACTIONS: dict[str, str] = {
     # ── projectsApi: the tree and the roll-ups ───────────────────────────
     "projectsApi.tree": "projects_tree",
     "projectsApi.summary": "project_summary",
+    "attentionApi.mine": "needs_attention",
     "projectsApi.portfolio": "project_summary",
     "projectsApi.createProject": "create_project",
     "projectsApi.patchProject": "update_project",
@@ -1574,6 +1580,10 @@ UI_ACTIONS: dict[str, str] = {
 #: exemption only where the route the method calls is class X. Where a tool
 #: reaches the route, the method names the tool in ``UI_ACTIONS``.
 UI_EXEMPT: dict[str, str] = {
+    "projectsApi.mySummary": (
+        "WS-64 OP-11: the counts and Overview of My tasks, from the mine rule. "
+        "The chat reads the same set with my_work and list_tasks."
+    ),
     "agentRunsApi.archiveApproval": (
         "The run's member answers an agent's request on the task card only "
         "(EA3-40, D-OP-13). The chat lists the request and links the card."
