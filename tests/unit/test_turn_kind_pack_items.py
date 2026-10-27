@@ -19,6 +19,7 @@ import pytest
 
 pytest.importorskip("agent_framework", reason="MAF not installed")
 
+from acb_skills import skill_families as sf
 from acb_skills import tier_policy
 from acb_skills import tool_packs as tp
 from orchestrator import _tool_injection as ti
@@ -381,3 +382,33 @@ async def test_a_failed_builder_loads_nothing_and_the_turn_goes_on(store) -> Non
     loader.set_early(["email"])
     context = await _before_run(loader, _dummies(10))
     assert [t.name for t in context.tools] == [tp.LOAD_TOOL] and loader.record.holds() == ()
+
+
+# ── 5. The CRM pack in layer (c) (WS-67 OA-8a) ──────────────────────────────
+
+CRM_NINE = set(sf.SKILL_FAMILIES["crm-records"]["tools"])
+
+
+@pytest.mark.parametrize(("mode", "dropped"), [
+    ("mirror", {"create_lead", "update_deal_status", "convert_lead"}),
+    ("live", set()),
+])
+async def test_layer_c_drops_the_mirror_record_writes_through_load_early(
+    store, monkeypatch, mode: str, dropped: set[str],
+) -> None:
+    """The pack of a turn-kind "yes" builds in ``before_run``, AFTER the
+    executor's ``_drop_mirror_record_writes``, through the real ``load_early``
+    path. In Mirror mode the three record writes are not in the request, and
+    ``log_activity`` stays. Mutation: take the drop out of ``_pack_tools`` ->
+    the Mirror case holds all 9 tools -> red."""
+    async def crm_mode() -> str:
+        return mode
+
+    monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    loader = _loader(_record(), offered=("crm-records",))
+    assert loader.set_early(["crm-records"]) == ("crm-records",)
+    context = await _before_run(loader, _dummies(10))
+    got = {t.name for t in context.tools if t.name in CRM_NINE}
+    assert got == CRM_NINE - dropped and "log_activity" in got
+    assert loader.record.holds() == ("crm-records",)
+    assert len(context.instructions) == 1 and "CRM TOOLS." in context.instructions[0]
