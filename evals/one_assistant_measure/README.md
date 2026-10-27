@@ -6,7 +6,9 @@ chats. The owning spec is `project-docs/specs/one_assistant_context.md`,
 `docs/one_assistant_measure_2026-10-25.md`.
 
 **Status.** Built on 2026-10-25. The scripted run passes on both arms. The
-live run of 2026-10-25 is in `results_2026-10-25.json`.
+results of the live run of 2026-10-25 are in git history only. Commit
+`63550a052` (#1348) added `results_2026-10-25.json`, and the cleanup of
+2026-10-27 deleted it.
 
 ## The two arms
 

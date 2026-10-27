@@ -296,12 +296,15 @@ def test_the_flag_names_are_platform_names() -> None:
     assert env_guard.is_platform_env("tool_packs_orgs")
 
 
-def test_no_caller_reads_the_flag_yet() -> None:
-    """Mutation: a module outside ``tool_packs.py`` reads the flag or calls
-    ``packs_on``. OA-7a ships the reader with no caller; OA-7c adds the first
-    one and names it here."""
+def test_one_caller_reads_the_flag() -> None:
+    """Mutation: a module outside ``tool_packs.py`` reads the flag, or a
+    second module calls ``packs_on``. OA-7a shipped the reader with no
+    caller. OA-7c added the one caller, ``executor._start_pack_turn``."""
     allowed = {
-        "packs_on(": {"packages/acb_skills/acb_skills/tool_packs.py"},
+        "packs_on(": {
+            "packages/acb_skills/acb_skills/tool_packs.py",
+            "apps/services/orchestrator/orchestrator/executor.py",
+        },
         "tool_packs_orgs": {
             "packages/acb_skills/acb_skills/tool_packs.py",
             "packages/acb_common/acb_common/settings.py",
@@ -326,7 +329,7 @@ def test_no_caller_reads_the_flag_yet() -> None:
         assert paths <= allowed[key], (key, sorted(paths - allowed[key]))
 
 
-# ── 5. A pack is not injected, and its toggle does nothing yet ─────────────
+# ── 5. A pack is not injected, and its toggle narrows no injected scope ────
 
 
 def _orchestrator_scope() -> list[str]:
@@ -376,11 +379,13 @@ def test_no_pack_is_in_the_skill_index_or_the_matrix() -> None:
         assert f"- **{sf.SKILL_FAMILIES[slug]['label']}**" not in text
 
 
-def test_the_pack_toggle_text_says_it_does_nothing_yet() -> None:
-    """Mutation: the admin text of a pack drops the line that the switch has
-    no effect until a run loads packs (§4.5, OA-7a narrowing 4)."""
+def test_the_pack_toggle_text_says_when_it_acts() -> None:
+    """Mutation: the admin text of a pack drops the line that the switch acts
+    only where tool packs are on (§4.5, OA-7a narrowing 4). From OA-7c a run
+    loads a pack where the owner turned packs on, and the toggle stops it."""
     for slug in sf.pack_slugs():
-        assert "No run loads a pack yet" in sf.SKILL_FAMILIES[slug]["description"]
+        assert ("A run loads a pack only where tool packs are on"
+                in sf.SKILL_FAMILIES[slug]["description"])
 
 
 # ── 6. The price ───────────────────────────────────────────────────────────

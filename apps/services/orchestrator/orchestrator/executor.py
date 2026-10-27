@@ -1181,6 +1181,144 @@ def _inherited_chat_constraints(parent: Any) -> dict[str, Any]:
     return {cc.CONSTRAINTS: tuple(items)} if items else {}
 
 
+# ── The tool packs of the one assistant (WS-67 OA-7c) ───────────────────────
+# ``one_assistant_context.md`` §4.2.2 and §4.2.8. Layer (a) in a live run.
+# The read starts beside the load (:func:`_start_pack_turn`), the apply runs
+# after ``_apply_agent_md_overrides`` and before ``_inject_agent_tools``
+# (``_tool_injection._apply_tool_packs``), and the run key and the record go
+# into the run binding after ``bind_artifact_context``. With the flag off the
+# read never starts, so no pack state is read or written. Fences:
+# ``tests/unit/test_tool_packs_choice.py`` and ``tests/unit/test_tool_packs_off.py``.
+
+#: The agent whose own chat runs load tool packs.
+_PACK_AGENT = "orchestrator"
+
+
+def _start_pack_turn(
+    agent_name: str,
+    organization_id: str | None,
+    thread_id: str | None,
+    *,
+    member: str,
+    delegated: bool,
+    solo_room: bool | None,
+    batch_thread: bool,
+    shows_cards: bool,
+) -> asyncio.Future[Any] | None:
+    """Start the read of layer (a) beside the load, or None (§4.2.2).
+
+    Packs act only in the stream run of the orchestrator, in the member's own
+    chat on the web, with a verified member and an org that the flag names.
+    So a delegated run, a shared room, a batch run (the WhatsApp path, D115,
+    and each run with no chat) and a run that shows no card load no pack.
+    Each input comes from the run boundary, never from the payload (R5).
+
+    It is the ONE caller of ``tool_packs.packs_on``. With no pack on for the
+    org it starts nothing, so it reads and writes no pack state. The task
+    counts the turn and reads the sticky packs (``tool_packs.begin_turn``),
+    and it gives that turn and the allowed slugs.
+    """
+    if agent_name != _PACK_AGENT or delegated or solo_room is not True:
+        return None
+    if batch_thread or not shows_cards or not thread_id or not organization_id:
+        return None
+    verified = _verified_run_member()
+    if not verified or str(member or "").strip().lower() != verified:
+        return None
+    try:
+        from acb_common.assistant_profile import typed_words
+        from acb_skills import tool_packs
+    except ImportError:
+        return None
+    allowed = tool_packs.packs_on(organization_id)
+    if not allowed:
+        return None
+    words = typed_words()
+
+    async def _read() -> tuple[Any, frozenset[str]]:
+        turn = await tool_packs.begin_turn(organization_id, thread_id, verified, words)
+        return turn, allowed
+
+    return asyncio.ensure_future(_read())
+
+
+async def _apply_pack_turn(
+    task: asyncio.Future[Any] | None,
+    agents: list[Any],
+    run_ctx: dict[str, Any],
+    *,
+    agent_name: str,
+    tool_scope: list[str] | None,
+    agent_config: dict[str, Any] | None,
+) -> Any:
+    """Await the read of :func:`_start_pack_turn` and apply layer (a).
+
+    Returns the ``_tool_injection.PackApply`` of the run, or None when no pack
+    loads. A fault loads no pack and never fails the turn: the run then has
+    the tools and the persona of a run with the flag off.
+    """
+    if task is None:
+        return None
+    try:
+        turn, allowed = await task
+        from orchestrator._tool_injection import _apply_tool_packs
+        from orchestrator.agents import PACK_DELEGATION_BULLETS
+
+        return await _apply_tool_packs(
+            agents, turn, run_ctx, allowed=allowed, agent_name=agent_name,
+            tool_scope=tool_scope, agent_config=agent_config,
+            bullets=PACK_DELEGATION_BULLETS,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # a pack never costs the turn
+        _log.error("executor.packs_refused", reason="apply_failed",
+                   error_type=type(exc).__name__)
+        return None
+
+
+def _log_pack_request_tools(agents: list[Any]) -> None:
+    """Log the tool count of a run that loaded packs, after the injection.
+
+    The cap of layer (a) reads an estimate before the injection
+    (``_tool_injection._pack_base_count``), and this line gives the true
+    count, so OA-8e can measure the gap."""
+    try:
+        from acb_skills.tool_packs import MAX_REQUEST_TOOLS
+    except ImportError:
+        return
+    count = len(_agent_tool_names(agents[0])) if agents else 0
+    log = _log.warning if count > MAX_REQUEST_TOOLS else _log.info
+    log("executor.pack_request_tools", tools=count, cap=MAX_REQUEST_TOOLS)
+
+
+def _pack_delegation_refusal(agent_name: str) -> str | None:
+    """The pack refusal of a hand-off to *agent_name* from this frame, or None.
+
+    The rule is ``tool_packs.delegation_refusal``: the chat run holds a pack
+    that replaces the agent. It reads the run binding of the CALLING run,
+    never a tool argument. Never raises."""
+    try:
+        from acb_skills.tool_packs import delegation_refusal
+
+        refused = delegation_refusal(agent_name)
+    except Exception:
+        return None
+    if refused:
+        _log.info("executor.pack_delegation_refused", agent=agent_name)
+    return refused
+
+
+def _without_pack_keys() -> dict[str, Any]:
+    """The changes that take the pack keys out of a derived run context, so a
+    delegated run never inherits the run key or the record of its parent."""
+    try:
+        from acb_skills.tool_packs import PACK_RUN_KEY, PACKS_KEY
+    except ImportError:
+        return {}
+    return {PACK_RUN_KEY: None, PACKS_KEY: None}
+
+
 def _resolve_sub_agent_org() -> str | None:
     """The tenant a delegated sub-run must act in: its PARENT run's org.
 
@@ -2034,6 +2172,13 @@ async def _run_sub_agent_streaming(
 
     Returns the final text response.
     """
+    # WS-67 OA-7c: THE refusal of a hand-off to an agent whose pack the calling
+    # chat run holds. The specialist tools, delegate_to_agent, call_agent and
+    # call_agents_parallel all come here. It reads the parent's binding on the
+    # parent's frame, before any work and before any mark of the chat.
+    _pack_refused = _pack_delegation_refusal(agent_name)
+    if _pack_refused is not None:
+        return _pack_refused
     settings = get_settings()
     # WS-67 OA-1 and OA-2: the member's own words, verbatim, and the reply
     # rules (quoted or inferred) head every delegated task. The executor adds
@@ -2084,7 +2229,9 @@ async def _run_sub_agent_streaming(
     # binding, and bound at once, so no later path reads the parent's frame.
     _parent_ctx_sub = artifact_context()
     _sub_no_egress = _run_no_egress(agent_name, _parent_ctx_sub)
-    derive_artifact_context(no_egress=_sub_no_egress)
+    # WS-67 OA-7c: a delegated run never inherits the run key or the record of
+    # its parent's packs, so its own hand-offs are never refused for them.
+    derive_artifact_context(no_egress=_sub_no_egress, **_without_pack_keys())
     # WS-17 EM-G11f3: a run of an agent that reads mail marks the CALLING
     # session now, before it does any work, so a cancel or an error cannot
     # skip the mark. After the no_egress decision, so the sub-run's tools do
@@ -5470,6 +5617,12 @@ async def run_agent_stream(
     _derive_ctx(no_egress=_stream_no_egress)
     if _stream_no_egress:
         _remember_no_egress_run(run_id)
+    # WS-67 OA-7c (§4.2.2): layer (a) of the tool packs. The read of the
+    # sticky packs starts as the FIRST statement of the main try below, so its
+    # finally cancels it on every early end (fix round 2). The tenant is bound
+    # above. None when packs are off, so no pack state is read.
+    _pack_task: asyncio.Future[Any] | None = None
+    _pack_apply: Any = None
     # Expose the run's model so sub-agents inherit the parent tier. Seed with the
     # raw requested model now; refined to the fully-resolved tier once known.
     _model_token = _active_run_model.set((model or "").strip() or None)
@@ -5542,6 +5695,13 @@ async def run_agent_stream(
     _tier_task: asyncio.Future[Any] | None = None
 
     try:
+        # WS-67 OA-7c: the read of layer (a) runs beside the load, and the
+        # apply awaits it. Inside the try, so a raise cannot leave it running.
+        _pack_task = _start_pack_turn(
+            agent_name, organization_id, thread_id, member=_corr_user,
+            delegated=_delegated_run, solo_room=solo_room,
+            batch_thread=_batch_thread, shows_cards=shows_cards,
+        )
         if _relay_mark_active is not None:
             with contextlib.suppress(Exception):
                 # The SAME run that run_detached just marked: keep the actor,
@@ -5600,6 +5760,23 @@ async def run_agent_stream(
             _agent_md_spec = _apply_agent_md_overrides(
                 agents, loaded.agent_dir, agent_name,
             )
+            # WS-67 OA-7c: the packs of this turn go in here, BEFORE
+            # `_inject_agent_tools`. Each pack tool carries `__cc_gated__`, so
+            # the injection gates none twice. The build reads the server's
+            # run context: the bound tenant, the chat, the member and the H-236
+            # answer. Each run builds its packs again (condition 1).
+            _pack_apply = await _apply_pack_turn(
+                _pack_task, agents,
+                {**dict(_ctx_now()), "run_id": run_id,
+                 "session_id": thread_id or run_id, "agent_name": agent_name,
+                 "member": _corr_user, "batch_thread": _batch_thread,
+                 "no_egress": _stream_no_egress},
+                agent_name=agent_name,
+                tool_scope=_merged_tool_scope(
+                    loaded.config.get("tool_scope") or None, _agent_md_spec,
+                ),
+                agent_config=loaded.config,
+            )
             _apply_own_tool_scope(
                 agents, loaded.config.get("own_tool_scope") or None,
             )
@@ -5625,6 +5802,11 @@ async def run_agent_stream(
             _run_tools = await _add_crm_facts_block(
                 agents, _run_tools, no_egress=_stream_no_egress, mark_run=True)
             _log_agent_tools_resolved(agent_name, agents, _own_tools)
+            if _pack_apply is not None:
+                # WS-67 OA-7c: the true tool count beside the estimate of the
+                # cap. Pack names stay out of `_run_tools` (OA-9c reads the
+                # record of the packs instead).
+                _log_pack_request_tools(agents)
             # Inject MCP servers from the registry into every agent at runtime.
             # H-236: an MCP server reaches outside the platform, so a
             # no_egress run gets none. WS-8c: the org is the gateway's
@@ -5744,6 +5926,11 @@ async def run_agent_stream(
                 # ``write_artifact.run_holds_tool`` (§14.10).
                 run_tools=_run_tools,
             )
+            if _pack_apply is not None:
+                # WS-67 OA-7c: the bind above replaced the context, so the
+                # run key of the pack calls and the record of the packs go in
+                # now, before any tool can run. A delegated run drops both.
+                _derive_ctx(**_pack_apply.context())
 
             # Chat speed (2026-10-25): the tier question asks System 1, and it
             # took 1.3 to 3.0 s in production. Its inputs are final once the
@@ -7601,6 +7788,10 @@ async def run_agent_stream(
                 # Read a result nobody awaited, so asyncio logs no "Task
                 # exception was never retrieved" for it.
                 _tier_task.exception()
+        # WS-67 OA-7c: the read of the packs, when the run ended before the
+        # apply awaited it.
+        if _pack_task is not None and not _pack_task.done():
+            _pack_task.cancel()
         # H-363: a turn that was cancelled, or stopped on any other path,
         # pushes nothing. The request goes, and the log says so.
         _drop_agent_push(run_id, "the turn did not finish")
@@ -8804,6 +8995,25 @@ def _emit_to_run(thread_id: str | None) -> Any:
         queue = resolve_run_queue(thread_id)
         if queue is not None:
             queue.put_nowait(event)
+    return _emit
+
+
+def _emit_to_run_or_relay(thread_id: str | None) -> Any:
+    """An async callback that puts one event on the run's own queue, and on
+    the run's relay stream when the run has no queue (WS-67 OA-7c condition 5).
+
+    A relay-only run lost the event of :func:`_emit_to_run`. The relay line
+    has the shape of ``_run_sub_agent_streaming``'s own relay push. A frame
+    with neither a queue nor a relay sends the event nowhere, never to
+    another run (H-201)."""
+    async def _emit(event: dict[str, Any]) -> None:
+        queue = resolve_run_queue(thread_id)
+        if queue is not None:
+            queue.put_nowait(event)
+            return
+        relay = resolve_relay_thread_id()
+        if relay:
+            await _push_sse_to_stream(relay, f"data: {json.dumps(event, default=str)}\n\n")
     return _emit
 
 
