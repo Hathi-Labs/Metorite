@@ -120,8 +120,12 @@ clone cache.
      pack adds `egress.EGRESS_HOLD_NOTE_PACK`, which names no other
      assistant.
    - `delegation_refusal` is the ONE rule of the pack refusal. A hand-off to
-     an owner that a pack of the calling run replaces gets the pack text.
+     an owner gets the pack text only while the calling run holds every pack
+     of that owner (`owner_packs`). With the `email` pack alone the hand-off
+     stays open, and the rules name it (`Pack.handoff_swap`).
      `call_agent_background` does not ask it.
+   - Each email word needs an email context. A bare "draft" or "unread"
+     loads no pack, because a run with the email pack gets no MCP server.
    - Fences: `tests/unit/test_tool_packs_choice.py` and
      `tests/unit/test_tool_packs_off.py`.
 

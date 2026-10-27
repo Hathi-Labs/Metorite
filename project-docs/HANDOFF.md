@@ -198,7 +198,7 @@ line — never reclaim a number by deleting the other entry.
 - **Why:** D117. The owner chose one chat for the whole app, tools loaded per turn, and dynamic sub-agents for parallel work (2026-10-26). OA-5 measured the pack at 2.3 times faster and half the cost, with the same accuracy.
 - **Do this:**
   1. PR #1378 merged OA-7b (`3a06ed097`, dark). The owner confirmed the strict hold within a turn on 2026-10-27.
-  2. OA-7c (sticky packs and layer (a)) is BUILT, dark, on branch `ws67-oa7c-sticky-packs`, with no PR yet. Spec §4.2 "As built, OA-7c" says how it meets the six conditions. Next: a verifier and a reviewer, then the PR. Then OA-7d to OA-7f and OA-7h. The OA-7h measure must install the in-memory mark store.
+  2. OA-7c (sticky packs and layer (a)) is BUILT, dark, on branch `ws67-oa7c-sticky-packs`, with no PR yet. Spec §4.2 "As built, OA-7c" says how it meets the six conditions. Fix round 1 of the diff review is done: the `email` pack alone keeps the hand-off to the email assistant open, and a bare "draft" loads no pack. Next: a verifier pass on fix round 1, then the PR. Then OA-7d to OA-7f and OA-7h. The OA-7h measure must install the in-memory mark store.
   3. OA-9a parser: build beside OA-7. The OA-9a worker and OA-9b stay NO-GO until the §4.5 edits land in the spec.
   4. OA-8a to OA-8e, then OA-8e passes before OA-10. OA-10 also moves the Email and Projects rails to the one assistant, with their pack pinned.
   5. `TOOL_PACKS`, `TOOL_PACKS_ORGS` and `SPAWN_SUBAGENTS_ORGS` are owner-only (`work_plan.md` §6 D4). Do not flip them.
