@@ -1262,7 +1262,12 @@ member can reset one area or the whole interview. A fact shows its area.
    `last_change` counts, and for `people` a chat alias `post` or `patch`.
    Settings is not limited. A replace sends its area in the `PATCH`. The
    gateway then sets a new `at`, so the mark after it passes. The undo of
-   that replace opens the area again. The tool answers the 422 with the reason
+   that replace opens the area again. The undo of a chat style change opens
+   `detail`, and the undo of a chat alias opens `people`. `last_change`
+   holds only the last chat write. So the model marks `detail` or `people`
+   at once after `profile_set` or `profile_alias`, before any other save.
+   The refusal names the tool of the area. A chat `asked` mark never takes
+   back an `answered` area. Only a reset in Settings opens it. The tool answers the 422 with the reason
    `no_answer`, and the chat draws no card for it. The persona and the
    tool docs say: copy a short phrase. Mark an area only after a save says
    Saved. Fence: `tests/unit/test_assistant_profile_interview_r8.py`.
