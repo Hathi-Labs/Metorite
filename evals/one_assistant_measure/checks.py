@@ -406,25 +406,22 @@ def _held_card(obs: Observation, _arg: Any) -> bool | None:
 
 #: The writes that send mail. Each one shows the held card, once.
 SEND_WRITES = frozenset({"send_draft", "send_email", "forward_email", "schedule_send"})
-#: The writes that show a card. A write outside this set (``create_label``,
-#: ``manage_inbox``, ``draft_reply`` and others) shows none.
-CARD_WRITES = SEND_WRITES | frozenset({
-    "compose_reply", "edit_draft", "create_rule", "update_rule", "delete_rule"})
 _SEND_TITLE = r"^\s*(?:send|forward|schedule)\b"
 
 
 def _one_card(obs: Observation, _arg: Any) -> bool | None:
     """No act shows two cards.
 
-    A send shows exactly one card, the held card. The gate's card and then
-    the held card would show two for one send. Every other write that shows a
-    card shows one. A write that shows none adds no room for a card. None:
-    the turn made no write."""
+    A send shows at most one card, the held card. The gate's card and then
+    the held card would show two for one send, also when another write of the
+    turn leaves room in a total. Each other write shows at most one card. This
+    holds the cards of the sends apart from the others. It does not tie a card
+    of one other write to its own write. None: the turn made no write."""
     if not any(name in WRITES for name, _, _ in obs.email_calls):
         return None
     sends = sum(1 for name, _, _ in obs.email_calls if name in SEND_WRITES)
     others = sum(1 for name, _, _ in obs.email_calls
-                 if name in CARD_WRITES and name not in SEND_WRITES)
+                 if name in WRITES and name not in SEND_WRITES)
     send_cards = sum(1 for c in obs.cards if _found(_SEND_TITLE, str(c.get("title") or "")))
     return send_cards <= sends and len(obs.cards) - send_cards <= others
 

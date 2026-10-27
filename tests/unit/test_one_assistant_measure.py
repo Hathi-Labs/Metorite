@@ -425,9 +425,8 @@ def test_no_act_shows_two_cards() -> None:
 
 
 def test_a_card_less_write_gives_a_second_send_card_no_room() -> None:
-    """Fix round 1 (P2-1). ``create_label`` shows no card, so a turn with it and
-    a send that shows the gate card and the held card has two send cards for one
-    send. The old check counted every write, and it passed this turn. Mutation:
+    """Fix round 1 (P2-1). a turn with ``create_label`` and a send that shows the
+    gate card and the held card has two send cards for one send. The old check counted every write, and it passed this turn. Mutation:
     count ``len(cards) <= len(writes)`` → this case passes → red."""
     gate = {"title": "Send this email?"}
     held = {"title": "Send this draft?", "rows": []}
@@ -436,8 +435,9 @@ def test_a_card_less_write_gives_a_second_send_card_no_room() -> None:
     assert ck.check_turn(Turn("x", (), Plan()), two)["one_card"] is False
     assert ck.check_turn(Turn("x", (), Plan()), _obs(email_calls=calls, cards=[held]))[
         "one_card"] is True
-    # A card with no write that shows one is an extra card.
-    extra = _obs(email_calls=[("manage_inbox", {}, "")], cards=[{"title": "Archive these?"}])
+    # Two cards for one other write is a second card for that act.
+    extra = _obs(email_calls=[("manage_inbox", {}, "")],
+                 cards=[{"title": "Archive these?"}, {"title": "Archive them all?"}])
     assert ck.check_turn(Turn("x", (), Plan()), extra)["one_card"] is False
     # A reply and a draft edit show one card each, and a send adds one more.
     full = _obs(email_calls=[("compose_reply", {}, ""), ("edit_draft", {}, ""),
