@@ -538,6 +538,46 @@ class TestTheNumberCheck:
         assert "7,654,321" not in _tool_texts(client.requests[1])[0]
 
 
+    async def test_the_real_injection_puts_the_spill_first(self, monkeypatch) -> None:
+        """Through ``_inject_agent_tools``: the spill provider comes before the
+        number check, so its middleware is the outermost."""
+        import acb_common.settings as settings_mod
+        from orchestrator import _tool_injection as ti
+
+        monkeypatch.setattr(settings_mod, "crm_answer_check_mode", lambda: "on")
+        monkeypatch.setattr(settings_mod, "tool_result_spill_mode", lambda: "on")
+        agent, _ = _agent([], tools=[crm_aggregate, read_tool_result])
+        agents: list[Any] = [agent]
+        ti._inject_agent_tools(
+            agents, tool_scope=["ask_questions"], agent_name="crm-assistant",
+            agent_config={"sharing": {"instancing": "shared"}}, no_egress=False,
+        )
+        kinds = [type(p) for p in agents[0].context_providers]
+        assert kinds.index(ToolResultSpillProvider) < kinds.index(AnswerCheckProvider)
+
+    async def test_with_the_spill_inside_the_check_would_lose_the_figure(self, as_run) -> None:
+        """Why the order matters: a spill INSIDE the check hides the late
+        figure from it, and the check rejects a true answer."""
+        as_run()
+        late = _big(30_000) + "- Won: INR 7,654,321\n"
+
+        async def crm_report(entity: str) -> str:
+            """A fake CRM report with its figure late in the text."""
+            return late
+
+        from orchestrator._native_run_context import agent_with_providers
+
+        agent, client = _agent(
+            [("call", "crm_report", {"entity": "deals"}),
+             ("text", "Won deals hold INR 7,654,321."),
+             ("text", "Won deals hold INR 7,654,321.")],
+            tools=[crm_report, read_tool_result])
+        view = agent_with_providers(agent, [
+            AnswerCheckProvider(ON), ToolResultSpillProvider("on", SPILL, PREVIEW)])
+        await view.run("What is won?")
+        assert len(client.requests) == 3, "the check retried: it saw only the preview"
+
+
 # ── 8. exempt tools ──────────────────────────────────────────────────────────
 
 class TestExempt:
