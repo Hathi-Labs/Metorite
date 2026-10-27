@@ -73,6 +73,13 @@ async def _sit(org: str, user: UserContext):
         return await _ap().start_assistant_interview(body={"sitting": True}, user=user)
 
 
+async def _add_area_fact(org: str, user: UserContext, text_: str, area: str) -> dict:
+    """A chat save of an interview answer, as ``profile_remember`` sends it."""
+    with _tenant(org):
+        return await _ap().add_fact(body={"text": text_, "kind": "work", "area": area},
+                                    user=user, x_profile_via="chat")
+
+
 def _column(db, email: str) -> dict:
     ((_org, stored),) = _stored(db, email)
     return stored if isinstance(stored, dict) else json.loads(stored)
@@ -85,6 +92,7 @@ async def test_the_first_mark_makes_the_row_and_sets_the_times(db) -> None:
     async with tenant_engine_scope(_app_dsn(db)):
         await _sit(db.org_a, user)
         first = await _mark(db.org_a, user, "goals", "asked", "chat")
+        await _add_area_fact(db.org_a, user, "Ship the CRM import", "goals")
         second = await _mark(db.org_a, user, "goals", "answered", "chat")
         read = await _get(db.org_a, user)
     assert set(first) == {"started_at", "sitting_at", "last_asked_at", "areas"}
@@ -194,7 +202,8 @@ async def test_a_reset_keeps_the_facts_and_a_chat_reset_is_a_422(db) -> None:
     db.made.append(email)
     user = _member(email)
     async with tenant_engine_scope(_app_dsn(db)):
-        await _add_fact(db.org_a, user, "Ships Q4", "work")
+        await _sit(db.org_a, user)
+        await _add_area_fact(db.org_a, user, "Ships Q4", "goals")
         await _mark(db.org_a, user, "goals", "answered", "chat")
         await _mark(db.org_a, user, "role", "skipped", "chat")
         with _tenant(db.org_a):
@@ -237,6 +246,7 @@ async def test_the_undo_of_a_fact_with_an_area_opens_the_area_again(db) -> None:
     db.made.append(email)
     user = _member(email)
     async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
         with _tenant(db.org_a):
             fact = await _ap().add_fact(
                 body={"text": "Ship Q4", "kind": "work", "area": "goals"}, user=user,
@@ -342,3 +352,265 @@ async def test_a_due_question_allows_an_asked_mark_from_the_chat(db) -> None:
                     "started_at": old, "last_asked_at": old}}), "u": email})
         done = await _mark(db.org_a, user, "role", "asked", "chat")
     assert done["areas"]["role"]["state"] == "asked"
+
+
+# ── A chat mark `answered` needs a saved answer (incident 2026-10-27) ──────
+#
+# The model marked `goals` answered after its save was refused, so the area
+# closed and the member's answer was lost. The route now refuses that mark
+# from the chat. Mutation: remove `_check` in `mark_assistant_interview`,
+# and the three tests below go red.
+
+
+async def test_a_chat_answered_with_nothing_saved_is_a_422_and_the_area_stays_open(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
+        await _mark(db.org_a, user, "goals", "asked", "chat")
+        # A fact of ANOTHER area, and a fact with no area, are no answer.
+        await _add_area_fact(db.org_a, user, "I run the sales team", "role")
+        await _add_fact(db.org_a, user, "I like tea")
+        for via in ("chat", "whatsapp"):
+            with pytest.raises(HTTPException) as exc:
+                await _mark(db.org_a, user, "goals", "answered", via)
+            assert exc.value.status_code == 422
+            assert exc.value.detail == {"reason": acp.NO_ANSWER,
+                                        "message": acp.NO_ANSWER_TEXT}
+        assert _column(db, email)["interview"]["areas"]["goals"]["state"] == "asked"
+        # The save of the answer, then the mark passes.
+        await _add_area_fact(db.org_a, user, "ship the CRM import", "goals")
+        done = await _mark(db.org_a, user, "goals", "answered", "chat")
+    assert done["areas"]["goals"]["state"] == "answered"
+
+
+def _person(db) -> str:
+    """A person of org A, so a chat alias to the address passes (PZ-5)."""
+    who = _address()
+    db.made.append(who)
+    with db.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO people (id, name, email, status, skills, source, "
+            "source_key, organization_id, updated_by, updated_at) "
+            "VALUES (gen_random_uuid(), 'Raj', :e, 'active', ARRAY[]::text[], "
+            "'manual', :k, CAST(:o AS uuid), 'test', now())"),
+            {"e": who, "k": f"manual:{who}", "o": db.org_a})
+    return who
+
+
+async def _chat_alias(org: str, user: UserContext, name: str, email: str) -> dict:
+    with _tenant(org):
+        return await _ap().add_alias(body={"alias": name, "email": email}, user=user,
+                                     x_profile_via="chat")
+
+
+async def _chat_style(org: str, user: UserContext, value: dict) -> dict:
+    with _tenant(org):
+        return await _ap().put_assistant_profile(body={"key": "style", "value": value},
+                                                 user=user, x_profile_via="chat")
+
+
+async def test_detail_and_people_take_their_own_evidence(db) -> None:
+    """"Keep it short" -> profile_set -> answered detail passes. A colleague
+    named -> profile_alias -> answered people passes. Nothing new is a 422."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    raj = _person(db)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
+        for area in ("detail", "people"):
+            await _mark(db.org_a, user, area, "asked", "chat")
+            with pytest.raises(HTTPException) as exc:
+                await _mark(db.org_a, user, area, "answered", "chat")
+            assert exc.value.status_code == 422
+        await _chat_style(db.org_a, user, {"length": "short"})
+        await _mark(db.org_a, user, "detail", "answered", "chat")
+        await _chat_alias(db.org_a, user, "Raj", raj)
+        done = await _mark(db.org_a, user, "people", "answered", "chat")
+    assert {a: v["state"] for a, v in done["areas"].items()} == {
+        "detail": "answered", "people": "answered"}
+
+
+async def _sleep_a_second() -> None:
+    """The stored times have whole seconds. A reset must be later than the
+    old evidence, so each scenario waits past one second boundary."""
+    import asyncio
+
+    await asyncio.sleep(1.1)
+
+
+@pytest.mark.parametrize("whole", [False, True], ids=["one_area", "whole_interview"])
+async def test_a_reset_area_needs_a_new_answer(db, whole) -> None:
+    """The review of 2026-10-27: answer goals, reset it in Settings, ask it
+    again from the chat. A mark answered with no new save is a 422, and a
+    new save passes."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
+        await _mark(db.org_a, user, "goals", "asked", "chat")
+        await _add_area_fact(db.org_a, user, "ship the CRM import", "goals")
+        await _mark(db.org_a, user, "goals", "answered", "chat")
+        await _sleep_a_second()
+        with _tenant(db.org_a):
+            if whole:
+                await _ap().reset_assistant_interview(user=user)
+            else:
+                await _ap().reset_assistant_interview_area("goals", user=user)
+        await _sit(db.org_a, user)
+        await _mark(db.org_a, user, "goals", "asked", "chat")
+        with pytest.raises(HTTPException) as exc:
+            await _mark(db.org_a, user, "goals", "answered", "chat")
+        assert exc.value.status_code == 422
+        assert exc.value.detail["reason"] == acp.NO_ANSWER
+        assert _column(db, email)["interview"]["areas"]["goals"]["state"] == "asked"
+        await _add_area_fact(db.org_a, user, "hire two engineers", "goals")
+        done = await _mark(db.org_a, user, "goals", "answered", "chat")
+    assert done["areas"]["goals"]["state"] == "answered"
+
+
+async def test_a_reset_with_no_new_ask_still_needs_a_new_answer(db) -> None:
+    """A Settings reset of one area sets ``reset_at``. Even with no new
+    `asked` mark, the old fact no longer answers the area."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
+        await _add_area_fact(db.org_a, user, "ship the CRM import", "goals")
+        await _mark(db.org_a, user, "goals", "answered", "chat")
+        await _sleep_a_second()
+        with _tenant(db.org_a):
+            await _ap().reset_assistant_interview_area("goals", user=user)
+        with pytest.raises(HTTPException) as exc:
+            await _mark(db.org_a, user, "goals", "answered", "chat")
+    assert exc.value.status_code == 422
+
+
+@pytest.mark.parametrize("area", ["detail", "people"])
+async def test_a_reset_detail_or_people_needs_a_new_change(db, area) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    raj = _person(db)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
+        await _mark(db.org_a, user, area, "asked", "chat")
+        if area == "detail":
+            await _chat_style(db.org_a, user, {"length": "short"})
+        else:
+            await _chat_alias(db.org_a, user, "Raj", raj)
+        await _mark(db.org_a, user, area, "answered", "chat")
+        await _sleep_a_second()
+        with _tenant(db.org_a):
+            await _ap().reset_assistant_interview_area(area, user=user)
+        await _mark(db.org_a, user, area, "asked", "chat")
+        with pytest.raises(HTTPException) as exc:
+            await _mark(db.org_a, user, area, "answered", "chat")
+        assert exc.value.status_code == 422
+        if area == "detail":
+            await _chat_style(db.org_a, user, {"length": "detailed"})
+        else:
+            await _chat_alias(db.org_a, user, "Sam", raj)
+        done = await _mark(db.org_a, user, area, "answered", "chat")
+    assert done["areas"][area]["state"] == "answered"
+
+
+async def test_settings_and_the_other_states_are_not_limited(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        settings = await _mark(db.org_a, user, "goals", "answered")  # no header
+        skipped = await _mark(db.org_a, user, "role", "skipped", "chat")
+        never = await _mark(db.org_a, user, "energy", "never", "chat")
+    assert settings["areas"]["goals"]["state"] == "answered"
+    assert skipped["areas"]["role"]["state"] == "skipped"
+    assert never["areas"]["energy"]["state"] == "never"
+
+
+async def test_a_replace_with_an_area_answers_the_area(db) -> None:
+    """``profile_remember(replaces=...)`` PATCHes the old fact with the area,
+    so the mark after a replace still passes."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        old = await _add_fact(db.org_a, user, "I want to hire", "work")
+        await _sleep_a_second()  # the old fact is older than the question
+        await _sit(db.org_a, user)
+        await _mark(db.org_a, user, "goals", "asked", "chat")
+        with pytest.raises(HTTPException):
+            await _mark(db.org_a, user, "goals", "answered", "chat")
+        with _tenant(db.org_a):
+            edited = await _ap().edit_fact(
+                old["id"], body={"text": "hire two engineers", "kind": "work",
+                                 "area": "goals"}, user=user, x_profile_via="chat")
+        done = await _mark(db.org_a, user, "goals", "answered", "chat")
+    assert edited["area"] == "goals" and edited["text"] == "hire two engineers"
+    assert edited["at"] > old["at"]  # the server stamped the answer
+    assert done["areas"]["goals"]["state"] == "answered"
+
+
+# ── The undo of an answer opens its area again (second review, 2026-10-27) ─
+
+
+async def _undo(org: str, user: UserContext) -> dict:
+    with _tenant(org):
+        return await _ap().undo_assistant_profile(user=user, x_profile_via="chat")
+
+
+@pytest.mark.parametrize("area", ["detail", "people"])
+async def test_the_undo_of_a_style_or_alias_answer_opens_the_area(db, area) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    raj = _person(db)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
+        await _mark(db.org_a, user, "role", "skipped", "chat")
+        if area == "detail":
+            await _chat_style(db.org_a, user, {"length": "short"})
+        else:
+            await _chat_alias(db.org_a, user, "Raj", raj)
+        await _mark(db.org_a, user, area, "answered", "chat")
+        await _undo(db.org_a, user)
+        read = await _get(db.org_a, user)
+    assert set(read["interview"]["areas"]) == {"role"}
+
+
+async def test_the_undo_route_of_a_replace_with_an_area_opens_the_area(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        old = await _add_fact(db.org_a, user, "I want to hire", "work")
+        await _sit(db.org_a, user)
+        await _mark(db.org_a, user, "role", "skipped", "chat")
+        with _tenant(db.org_a):
+            await _ap().edit_fact(old["id"], body={"text": "hire two engineers",
+                                                   "kind": "work", "area": "goals"},
+                                  user=user, x_profile_via="chat")
+        await _mark(db.org_a, user, "goals", "answered", "chat")
+        await _undo(db.org_a, user)
+        read = await _get(db.org_a, user)
+    assert [f["text"] for f in read["facts"]] == ["I want to hire"]
+    assert "area" not in read["facts"][0]
+    assert set(read["interview"]["areas"]) == {"role"}
+
+
+async def test_a_chat_asked_keeps_an_answered_area(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
+        await _add_area_fact(db.org_a, user, "ship the CRM import", "goals")
+        done = await _mark(db.org_a, user, "goals", "answered", "chat")
+        again = await _mark(db.org_a, user, "goals", "asked", "chat")
+        settings = await _mark(db.org_a, user, "goals", "asked")  # Settings is not limited
+    assert again["areas"]["goals"] == done["areas"]["goals"]
+    assert settings["areas"]["goals"]["state"] == "asked"

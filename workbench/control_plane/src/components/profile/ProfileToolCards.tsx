@@ -25,6 +25,12 @@
  * its Undo PATCHes the old text back. A card that the member declined reads
  * "Not saved" in the neutral tone: the member chose it, and nothing failed.
  *
+ * A refusal can carry a line for the model, after the member's line. It
+ * starts "For the assistant:", and the card never shows it (incident
+ * 2026-10-27). A `profile_interview` mark that the gateway refused with
+ * `no_answer` draws nothing: the refused save above it already reads
+ * "Not saved", and a second alarm adds nothing for the member.
+ *
  * The pattern is `TaskToolCards.tsx`: one meta map, one parser of the result
  * text, and a `RollupCard` receipt. Fence: `ProfileToolCards.test.ts`.
  */
@@ -59,8 +65,15 @@ export const PROFILE_CARD_TOOLS: readonly string[] = Object.keys(ACTION_META);
 export function drawsReceipt(e: ToolEvent): boolean {
   if (!isProfileCardTool(e.name)) return false;
   if (e.name !== "profile_interview" || e.status === "error") return true;
-  return readProfileResult(e.result || "").status !== "unknown";
+  const { status, reason } = readProfileResult(e.result || "");
+  if (status === "refused" && reason === NO_ANSWER) return false;
+  return status !== "unknown";
 }
+
+/** The reason of a mark `answered` with nothing saved. `assistant_profile.NO_ANSWER`. */
+const NO_ANSWER = "no_answer";
+/** The start of a line that only the model reads. `profile_tools.RETRY_WITH_COPY`. */
+const FOR_MODEL = "For the assistant:";
 
 /** True when a tool of this name draws a profile receipt. */
 export function isProfileCardTool(name: string): boolean {
@@ -157,6 +170,7 @@ export function readProfileResult(result: string): {
     // The card has its button, and never names a tool to the member.
     text: (machine ? lines.slice(1) : lines)
       .filter((l) => !l.trim().startsWith(UNDO_PREFIX.trim()))
+      .filter((l) => !l.trim().startsWith(FOR_MODEL))
       .map((l) => l.replace(/\s*To undo: .*$/, ""))
       .join("\n")
       .trim(),

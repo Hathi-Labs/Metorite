@@ -101,6 +101,8 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     LAST_CHANGE,
     LENGTH,
     NAME_MAX,
+    NO_ANSWER,
+    NO_ANSWER_TEXT,
     NOTE_MAX,
     NOTES_MAX,
     PROFILE_MAX,
@@ -119,6 +121,7 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     _stored_keys,
     _text,
     apply_interview_mark,
+    area_has_answer,
     empty_profile,
     mark_changed,
     may_ask,
@@ -201,6 +204,9 @@ class FactPatch(BaseModel):
 
     text: str | None = None
     kind: FactKind | None = None
+    #: The interview area that the changed fact now answers. A replace in
+    #: the interview sends it, so the area can be marked ``answered``.
+    area: AreaId | None = None
 
     @field_validator("text", mode="before")
     @classmethod
@@ -518,6 +524,17 @@ def _item_index(items: list[Any], item_id: Any) -> int:
     return -1
 
 
+def _reopen(out: dict[str, Any], area: Any) -> None:
+    """Open *area* again in *out* when it is ``answered``. A skip or a never
+    stays."""
+    marks = out.get("interview")
+    entry = marks.get("areas", {}).get(area) if isinstance(marks, dict) \
+        and isinstance(marks.get("areas"), dict) else None
+    if isinstance(entry, dict) and entry.get("state") == "answered":
+        out["interview"] = {**marks, "areas": {k: v for k, v in marks["areas"].items()
+                                               if k != area}}
+
+
 def undo_last_change(raw: Any, now: float) -> tuple[dict[str, Any] | None, str]:
     """The stored column with its last chat change undone, or ``(None, why)``.
 
@@ -544,6 +561,10 @@ def undo_last_change(raw: Any, now: float) -> tuple[dict[str, Any] | None, str]:
             return None, UNDO_CHANGED
         prior = last.get("prior")
         out[key] = prior if isinstance(prior, dict) else {}
+        if key == "style":
+            # A chat style change is the answer of `detail` (fix of
+            # 2026-10-27). Its undo opens the area again.
+            _reopen(out, "detail")
         return out, ""
     lkey = last.get("list")
     if lkey not in ("facts", "aliases"):
@@ -558,13 +579,7 @@ def undo_last_change(raw: Any, now: float) -> tuple[dict[str, Any] | None, str]:
         gone = items.pop(n)
         # PZ-26: an area that this fact answered opens again, so the
         # interview asks it once more. A skip or a never stays.
-        area = gone.get("area") if isinstance(gone, dict) else None
-        marks = out.get("interview")
-        entry = marks.get("areas", {}).get(area) if isinstance(marks, dict) \
-            and isinstance(marks.get("areas"), dict) else None
-        if isinstance(entry, dict) and entry.get("state") == "answered":
-            out["interview"] = {**marks, "areas": {k: v for k, v in marks["areas"].items()
-                                                   if k != area}}
+        _reopen(out, gone.get("area") if isinstance(gone, dict) else None)
     elif op == "delete":
         prior = last.get("prior")
         if not isinstance(prior, dict) or _item_index(items, prior.get("id")) >= 0:
@@ -575,9 +590,18 @@ def undo_last_change(raw: Any, now: float) -> tuple[dict[str, Any] | None, str]:
         n = _item_index(items, last.get("id"))
         if not isinstance(prior, dict) or n < 0 or items[n] != last.get("after"):
             return None, UNDO_CHANGED
+        # A replace that gave the fact an area answered that area. The prior
+        # form does not answer it, so it opens again (fix of 2026-10-27).
+        area = items[n].get("area") if isinstance(items[n], dict) else None
+        if area and prior.get("area") != area:
+            _reopen(out, area)
         items[n] = prior
     else:
         return None, UNDO_NOTHING
+    if lkey == "aliases" and op in ("post", "patch"):
+        # A chat alias is the answer of `people` (fix of 2026-10-27). Its
+        # undo opens the area again.
+        _reopen(out, "people")
     out[lkey] = items
     return out, ""
 
@@ -930,11 +954,16 @@ async def edit_fact(
     user: UserContext = Depends(get_current_user),
     x_profile_via: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    """Change the text or the kind. 404 when the member has no such fact."""
+    """Change the text, the kind or the area. 404 when the member has no
+    such fact. A change that names an area is an interview answer, so the
+    server sets ``at`` again: the interview reads its time (fix of
+    2026-10-27). The client never sends ``at``."""
     uid = _member(user)
     via = _via(x_profile_via)
-    patch = _validate(FactPatch, body)
-    return await _patch(uid, "facts", fact_id, patch.model_dump(exclude_unset=True), via)
+    patch = _validate(FactPatch, body).model_dump(exclude_unset=True)
+    if "area" in patch:
+        patch["at"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return await _patch(uid, "facts", fact_id, patch, via)
 
 
 @me_router.delete("/me/assistant-profile/facts/{fact_id}", status_code=204,
@@ -1063,15 +1092,23 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-async def _interview_write(uid: str, via: str | None, build: Any) -> dict[str, Any]:
+async def _interview_write(uid: str, via: str | None, build: Any,
+                           check: Any = None) -> dict[str, Any]:
     """Change ``interview`` in one transaction. ``build(current)`` gives the
-    new value, and the row lock makes two marks of one member wait."""
+    new value, and the row lock makes two marks of one member wait.
+    ``check(profile, last_change)`` reads the whole stored profile and the
+    raw last chat change under the same lock, and may refuse before anything
+    is written."""
     params_where = _LEARNING_NOT_OFF if via is not None else ""
 
     async def _run(db: Any) -> Any:
         await _learning_gate(db, uid, via)
         row = (await db.execute(_sql(_READ_LOCKED_SQL), {"uid": uid})).first()
-        current = stored_profile(row[0] if row is not None else None).get("interview")
+        raw = _as_dict(row[0]) if row is not None else None
+        profile = stored_profile(raw)
+        if check is not None:
+            check(profile, raw.get(LAST_CHANGE) if isinstance(raw, dict) else None)
+        current = profile.get("interview")
         new = build(current)
         stored = await _upsert(
             db, uid, _NEW_KEY, _MERGE_KEY,
@@ -1118,11 +1155,23 @@ async def mark_assistant_interview(
 ) -> dict[str, Any]:
     """Body ``{"state": asked|answered|skipped|never}``. The server sets the
     time. ``asked`` also sets ``last_asked_at``, and the first mark sets
-    ``started_at``. A chat mark is a 409 while ``learning`` is off."""
+    ``started_at``. A chat mark is a 409 while ``learning`` is off.
+
+    A chat mark ``answered`` needs a FRESH saved answer for the area
+    (``area_has_answer``): one no older than the area's entry, the start,
+    the sitting and the last reset. Without one it is a 422 with the detail
+    ``{"reason": "no_answer", "message": ...}``, so a refused save never
+    closes an area (incident 2026-10-27). Settings is not limited."""
     uid = _member(user)
     via = _via(x_profile_via)
     _area(area)
     mark = _validate(InterviewMark, body)
+
+    def _check(profile: dict[str, Any], last_change: Any) -> None:
+        if (via is not None and mark.state == "answered"
+                and not area_has_answer(profile, area, last_change)):
+            raise HTTPException(status_code=422,
+                                detail={"reason": NO_ANSWER, "message": NO_ANSWER_TEXT})
 
     def _build(cur: Any) -> dict[str, Any]:
         now = _now()
@@ -1130,9 +1179,14 @@ async def mark_assistant_interview(
         # member who declined has neither. Settings is not limited.
         if via is not None and mark.state == "asked" and not may_ask(cur, now):
             raise _refuse(NO_SITTING)
+        # A chat `asked` never takes an `answered` area back: only a reset
+        # in Settings opens it (second review, 2026-10-27).
+        entry = ((cur or {}).get("areas") or {}).get(area) or {}
+        if via is not None and mark.state == "asked" and entry.get("state") == "answered":
+            return dict(cur)
         return apply_interview_mark(cur, area, mark.state, now)
 
-    return await _interview_write(uid, via, _build)
+    return await _interview_write(uid, via, _build, _check)
 
 
 @me_router.delete("/me/assistant-profile/interview/{area}", status_code=204,
@@ -1144,7 +1198,8 @@ async def reset_assistant_interview_area(
     x_profile_via: str | None = Header(default=None),
 ) -> Response:
     """The area is open again. The facts stay. A Settings act: a chat call
-    (``X-Profile-Via``) is a 422."""
+    (``X-Profile-Via``) is a 422. ``reset_at`` records the time, so a fact
+    from before the reset never answers the area again."""
     uid = _member(user)
     if _via(x_profile_via) is not None:
         raise _refuse(INTERVIEW_RESET_IN_SETTINGS)
@@ -1153,6 +1208,7 @@ async def reset_assistant_interview_area(
     def _build(cur: Any) -> dict[str, Any]:
         cur = dict(cur or {})
         cur["areas"] = {k: v for k, v in (cur.get("areas") or {}).items() if k != area}
+        cur["reset_at"] = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
         return cur
 
     await _interview_write(uid, None, _build)
