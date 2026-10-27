@@ -252,6 +252,25 @@ async def test_the_overview_reads_the_list_predicate(db: _RecordingDB) -> None:
     assert set(body["by_disposition"]) == set(pm_mine.DISPOSITION_KEYS)
 
 
+def test_the_overview_where_carries_the_visibility_clause() -> None:
+    """M3 for the Overview. Every arm of mine is inside the member's reach
+    on the R8 seed, so only this pin sees a dropped clause. It matters for an
+    outside agent, whose narrowing rides on the visibility clause."""
+    from acb_auth import AgentScope
+
+    for vis in (
+        pm_core.Visibility(unrestricted=False, email=ME_LOWER, groups=(),
+                           organization_id=ORG),
+        pm_core.Visibility(unrestricted=True, email=ME_LOWER, groups=(),
+                           organization_id=ORG,
+                           agent=AgentScope(connection_id="c", pinned_projects=(),
+                                             include_personal=False)),
+    ):
+        where, _ = pm_mine.mine_where(vis)
+        assert pm_core.task_visibility_clause(vis) in where
+        assert mine_clause("t") in where
+
+
 def _row(**kw: Any) -> SimpleNamespace:
     base = dict(
         id="t", project_id="p1", root_project_id="r1", category="todo",
