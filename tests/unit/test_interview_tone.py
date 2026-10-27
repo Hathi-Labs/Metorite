@@ -23,11 +23,16 @@ RULE_PHRASES = {
     "use what you know": "Use what you know",
     "thin answer": "If an answer is thin, ask one light follow-up",
     "match member": "Match their length, language, formality",
-    "no machinery words": "Never mention tools, marks, saving, limits or areas",
-    "silent save": "Save a short quote of their words, silently",
+    "no machinery words": "Never mention tools, marks or limits",
+    "silent save": "do not announce an ordinary save in words",
     "refused save": "If a save is refused, say once you could not keep it",
     "pace": "After the third answer ask once, lightly, if they want to go on",
-    "natural start": "asks you to get to know them or to ask a few questions",
+    "natural start": "asks you to get to know them or to ask a few questions, call next_sitting",
+    "due line is one question": "ask that one question as it says, at the end of your reply",
+    "scoped silence": "A receipt tells them, so do not announce an ordinary save in words",
+    "sensitive asks first": "A sensitive fact still asks first",
+    "save with area": "Save a short quote of their words with its area",
+    "stop": "call profile_interview with stop",
 }
 
 
@@ -42,11 +47,20 @@ def test_the_persona_carries_each_tone_rule() -> None:
     assert missing == []
 
 
+def test_the_block_line_never_starts_a_sitting() -> None:
+    persona = _persona()
+    assert "interview line, call next_sitting" not in persona
+    assert "or the member asks you to get to know them" not in persona
+    start = persona.index("When the block has an interview line")
+    first = persona[start:persona.index("call next_sitting")]
+    assert "mark it asked" in first and "get to know them" in first
+
+
 def test_the_interview_lines_of_the_persona_stay_tight() -> None:
     mod = importlib.import_module("orchestrator.agents")._mod
     lines = mod._PROFILE_SWAP[1].splitlines()
     start = next(i for i, ln in enumerate(lines) if ln.startswith("- profile_interview"))
-    assert len(lines) - start <= 12
+    assert len(lines) - start <= 14
 
 
 def test_the_fixture_parses_and_holds_six_cases() -> None:

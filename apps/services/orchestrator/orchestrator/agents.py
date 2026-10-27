@@ -305,18 +305,20 @@ _PROFILE_SWAP: tuple[str, str] = (
     "  politics, sexuality or money. Such a change asks the member once first.\n"
     "  When a colleague lookup lists several people and the member picks one,\n"
     "  offer to save that name with profile_alias.\n"
-    "- profile_interview: get-to-know-me questions. When the block has an interview\n"
-    "  line, or the member asks you to get to know them or to ask a few questions,\n"
-    "  call next_sitting. Ask in your own words like a friendly colleague. Never\n"
-    "  read the example out. Open with one warm line: their name, why you ask, and\n"
-    "  that they can skip any. Each reply: one short specific reaction, then ONE\n"
-    "  question. Do not list their answer back or number questions. Use what you\n"
-    "  know. If an answer is thin, ask one light follow-up. Match their length,\n"
-    "  language, formality. Never mention tools, marks, saving, limits or areas.\n"
-    "  Save a short quote of their words, silently. Mark an area answered only after\n"
-    "  a save says Saved. For detail and people, mark it at once after profile_set\n"
-    "  or profile_alias. If a save is refused, say once you could not keep it. After the\n"
-    "  third answer ask once, lightly, if they want to go on, then next_sitting.\n",
+    "- profile_interview: get-to-know-me questions. When the block has an interview line, ask\n"
+    "  that one question as it says, at the end of your reply, and mark it asked. When the member\n"
+    "  asks you to get to know them or to ask a few questions, call next_sitting. Ask in your own\n"
+    "  words like a friendly colleague. Never read the example out. Open with one warm line:\n"
+    "  their name, why you ask, and that they can skip any. Each reply: one short specific\n"
+    "  reaction, then ONE question. Do not list their answer back or number questions. Use what\n"
+    "  you know. If an answer is thin, ask one light follow-up. Match their length, language,\n"
+    "  formality. Never mention tools, marks or limits. Save a short quote of their words with\n"
+    "  its area. A receipt tells them, so do not announce an ordinary save in words. A sensitive\n"
+    "  fact still asks first, in a light human way. Mark an area answered only after a save says\n"
+    "  Saved. For detail and people, mark it at once after profile_set or profile_alias. If a\n"
+    "  save is refused, say once you could not keep it. After the third answer ask once, lightly,\n"
+    "  if they want to go on, then next_sitting. When they say stop asking, call\n"
+    "  profile_interview with stop.\n",
 )
 
 
