@@ -129,7 +129,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - A turn that loads no pack still returns a `PackApply` with no build. The executor then binds the run key and the record that a load needs.
    - The load tool rides in each request of the run, so the cap of layer (a) counts it (`base += 1`).
    - A load never takes a tool or a persona text away. `PackRun.replaced` and the "Delegatable agents" block keep the state of the run start.
-   - MCP rule: a load of a pack of the email assistant refuses when the live list holds an MCP tool, and the catalog line says so. Precedence differs by layer. In layer (a) the email pack wins and `_inject_mcp_servers` attaches none. In layer (b) the MCP tool wins and the pack stays out.
+   - MCP rule: a load of a pack of the email assistant refuses when the live list holds an MCP tool. The catalog line says so. Precedence differs by layer. In layer (a) the email pack wins and `_inject_mcp_servers` attaches none. In layer (b) the MCP tool wins and the pack stays out.
    - A load makes no pack sticky. A pack becomes sticky when one of its tools runs (`_pack_call`). The catalog offers only a pack that fits the cap.
    - Fence: `tests/unit/test_load_skill_tools.py`.
 
