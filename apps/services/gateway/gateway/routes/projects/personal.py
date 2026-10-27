@@ -1215,6 +1215,10 @@ def waiting_on_for(others: Any, stored: Any) -> dict[str, Any] | None:
 #:   member who reached a task by assignment ALONE and delegates it loses it
 #:   from their lists, because they hold no grant to keep it by.
 #:
+#: ⚠️ **A task of an ARCHIVED project is not in these lists** (WS-64). The
+#: project filter rides the same ``:archived`` bind as the task filter, so the
+#: archive view, which asks for archived rows, still sees them.
+#:
 #: Binds: ``:who`` (lower-cased email), ``:vis_org``, ``:archived``, and the
 #: closure's ``:vis_email`` and ``:vis_groups``. :func:`my_tasks_binds` is
 #: the one place they are assembled, so a composer cannot forget one — a
@@ -1227,6 +1231,7 @@ LEFT JOIN pm_task_personal p
        ON p.task_id = t.id AND lower(p.member_email) = :who
 LEFT JOIN pm_projects proj ON proj.id = t.project_id
 WHERE (t.archived_at IS NULL OR CAST(:archived AS boolean))
+  AND (proj.archived_at IS NULL OR CAST(:archived AS boolean))
   AND t.organization_id = CAST(:vis_org AS uuid)
   AND (
         EXISTS (SELECT 1 FROM pm_task_assignees a
