@@ -171,6 +171,7 @@ and streams chat responses as AG-UI events.
    - `_offer_pack_loader` puts `tool_packs.LoadSkillToolsProvider` on a view of the run (`agent_with_providers`). Only `_apply_tool_packs` with `offer_loader` calls it, and only `executor._apply_pack_turn` passes that. Do not offer the loader on another path.
    - The load builds through `_pack_tools` (`_build_pack_for_load`), with the run context of the call and the names of the live tool list. Do not build a pack a second way.
    - A turn that loads no pack still returns a `PackApply` with no build. The executor then binds the run key and the record that a load needs.
+   - The load tool rides in each request of the run, so the cap of layer (a) counts it (`base += 1`).
    - A load never takes a tool or a persona text away. `PackRun.replaced` and the "Delegatable agents" block keep the state of the run start.
    - Fence: `tests/unit/test_load_skill_tools.py`.
 

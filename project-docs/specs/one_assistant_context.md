@@ -52,6 +52,7 @@ middle of a turn.
 - **The same caps.** A load refuses past 3 packs, past 35 tools a pack, or
   past 110 tools on the live list. The live count holds the load tool too.
   A refusal past a cap names `spawn_subagents` with the slug of the pack.
+  The cap of layer (a) counts the load tool too, when the run offers it.
 - **The run check.** A load refuses unless the frame holds the run key and
   the record of the run that offered the tool. The middleware matches its
   own tool by identity, never by name. One load runs at a time in a run.
