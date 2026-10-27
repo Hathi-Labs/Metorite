@@ -45,12 +45,16 @@ The names it may write:
 | `KNOWLEDGE_ORGS` | The organizations that Knowledge serves |
 | `KNOWLEDGE_EMBED` | It spends `tier-embed` credits. The owner asked for embeddings on staging |
 | `KNOWLEDGE_EMBED_SWEEP` | The embed sweep of KB-3c, with the same reason |
+| `KNOWLEDGE_PROPOSAL_EXPIRY` | The proposal expiry of KB-5c. It spends no money and reaches no one |
 | `COMPANY_SEARCH_ENABLED` | Company retrieval for the assistant |
 | `CONTEXT_RECENCY` | Recency in company retrieval (WS-61 CX-1). It spends nothing |
 | `MY_DAY_PROVIDERS` | The gated My Day feed sources, which read only the database |
 | `ARTIFACT_REGISTRY_ENABLED` | The artifact registry hook and its read routes |
 | `CRM_ENABLED` | The CRM kill switch |
 | `CRM_ORGS` | The organizations that the CRM serves |
+| `ASSISTANT_PROFILE_ENABLED` | The master switch of the assistant profile (WS-63 PZ-25). It reaches no one |
+| `ASSISTANT_PROFILE_ORGS` | The organizations that get the assistant profile. Empty means each one |
+| `ATTACHMENT_OCR` | OCR of a scanned attachment (WS-67 OA-3). It spends CPU on the box, and no money. It reaches no one |
 
 Three names stay off the list on purpose. `DECIDE_ENABLED` is owner-only and
 sends content to a third party. `DECIDE_FEATURE_MODES` is owner gate H-166 on

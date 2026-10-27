@@ -10,7 +10,7 @@
  */
 
 import { shellChatOn } from "@/lib/shell/chatFlag";
-import { clearCachedLayouts } from "@/lib/shell/shellCache";
+import { clearCachedLayouts, clearNudgeMarks } from "@/lib/shell/shellCache";
 import { clearSidebarFolds } from "@/lib/shell/sidebarFolds";
 import { clearComposerHeights } from "@/app/email/lib/composerSize";
 import { serializeReasoning, parseReasoning } from "@/lib/chatStream";
@@ -37,6 +37,13 @@ export interface ChatSession {
   isOwner?: boolean;
   /** >1 means somebody else is in here too. Drives the shared badge. */
   participantCount?: number;
+  /**
+   * WS-62 CF-5: whether a MEMBER wrote in this chat, from the server's list.
+   * A chat that holds only the day's brief (an agent turn) reads false, so
+   * the nudge stays (`memberWrote` in `shell/shellPrefs.ts`). Undefined for
+   * a chat the server has not listed yet.
+   */
+  hasUserMessage?: boolean;
   /**
    * D99 (migration 254): when the member archived the chat, or null. An
    * archived chat stays, and the assistant lists it under "Archived".
@@ -317,6 +324,8 @@ export function clearSignedOutAccount(): void {
       clearSidebarFolds([email]);
       // The kept height of the email composer (owner request, 2026-10-14).
       clearComposerHeights([email]);
+      // The nudge's browser copy (WS-62 CF-2).
+      clearNudgeMarks([email]);
     }
     localStorage.removeItem(LAST_SCOPE_KEY);
   } catch {
@@ -349,6 +358,7 @@ export function clearAccountNamespaces(emails: readonly string[]): void {
     clearCachedLayouts(emails);
     clearSidebarFolds(emails);
     clearComposerHeights(emails);
+    clearNudgeMarks(emails);
     localStorage.removeItem(LAST_SCOPE_KEY);
   } catch {
     /* storage unavailable: nothing is stored */
@@ -612,7 +622,7 @@ export function touchSession(id: string, messageCount?: number): void {
 }
 
 /** Truncate text at a word boundary, appending an ellipsis when cut. */
-function truncateAtWord(text: string, max: number): string {
+export function truncateAtWord(text: string, max: number): string {
   const clean = text.replace(/\s+/g, " ").trim();
   if (clean.length <= max) return clean;
   const slice = clean.slice(0, max);
@@ -627,7 +637,7 @@ function truncateAtWord(text: string, max: number): string {
  */
 export function enrichSession(
   id: string,
-  info: { firstUserMessage?: string; lastPreview?: string; messageCount?: number },
+  info: { title?: string; firstUserMessage?: string; lastPreview?: string; messageCount?: number },
 ): void {
   const sessions = getSessions();
   const s = sessions.find((x) => x.id === id);
@@ -636,10 +646,15 @@ export function enrichSession(
   // turn, a second device with an old title undid a rename made on the
   // first (D99 review, 2026-10-12). The server keeps a title it has.
   let newTitle: string | undefined;
-  if (info.firstUserMessage && !s.title) {
-    s.title = truncateAtWord(info.firstUserMessage, 60);
+  // A chat that opens on the day's brief takes the brief's title, not the
+  // first pill the member taps (owner report, 2026-10-22).
+  const auto = info.title || info.firstUserMessage;
+  if (auto && !s.title) {
+    s.title = truncateAtWord(auto, 60);
     newTitle = s.title;
   }
+  // CF-5: a member turn in this page is the fact, before the server lists it.
+  if (info.firstUserMessage) s.hasUserMessage = true;
   if (info.lastPreview !== undefined) {
     s.lastPreview = truncateAtWord(info.lastPreview, 120);
   }
@@ -765,6 +780,7 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       visibility?: ChatSession["visibility"];
       isOwner?: boolean;
       participantCount?: number;
+      hasUserMessage?: boolean;
       archivedAt?: string | null;
     }>;
 
@@ -781,6 +797,9 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       s.visibility = r.visibility;
       s.isOwner = r.isOwner;
       s.participantCount = r.participantCount;
+      // CF-5: a member turn seen here stays true. The server's answer can
+      // lag a save by one list, and the fact never goes back to false.
+      if (r.hasUserMessage !== undefined) s.hasUserMessage = s.hasUserMessage || r.hasUserMessage;
       // D99: an archive and a name made on another device reach this one.
       // The server keeps both, so its answer wins here. The name only with
       // the chat bar on: off, the merge keeps every local title, as before.
@@ -814,6 +833,7 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
           visibility: r.visibility,
           isOwner: r.isOwner,
           participantCount: r.participantCount,
+          hasUserMessage: r.hasUserMessage,
           archivedAt: r.archivedAt ?? null,
         });
       }

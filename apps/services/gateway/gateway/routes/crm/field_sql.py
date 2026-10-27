@@ -50,6 +50,7 @@ groups of ``aggregate.py`` take their month on that clock, through
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -756,9 +757,11 @@ def _split(scope: FieldScope, name: str) -> tuple[FieldRef, str | None]:
 
 
 def _filter(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
-            value: str) -> tuple[str, Any, dict[str, Any], str]:
-    """One filter clause, its bound value, its bound key and its FROM text."""
-    clause, bound = _filter_value(scope, ref, end, k, v, value)
+            value: str, also: Sequence[str] = ()) -> tuple[str, Any, dict[str, Any], str]:
+    """One filter clause, its bound value, its bound key and its FROM text.
+    *also* holds the stored values that a text filter counts too
+    (§18.16 part 6, :func:`text_matches`)."""
+    clause, bound = _filter_value(scope, ref, end, k, v, value, also)
     if ref.type in MEASURE_TYPES and end is None:
         number, keys, source = _amount(scope.column, ref, k)
         return f"{number} = {clause}", bound, keys, source
@@ -766,7 +769,7 @@ def _filter(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
 
 
 def _filter_value(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
-                  value: str) -> tuple[str, Any]:
+                  value: str, also: Sequence[str] = ()) -> tuple[str, Any]:
     """One filter clause and its bound value. A number gives only the right
     side of its clause: :func:`_filter` puts the number of :func:`_amount`
     on the left."""
@@ -810,15 +813,52 @@ def _filter_value(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: 
         )
     # A picklist, a text and each other type match the text. A multiselect
     # holds a JSON array, and the array arm matches one of its options.
+    # WS-53 §18.16 part 6: in any case, and each stored variant in *also*.
+    # The CASE keeps the array read off a value that is no array.
+    wanted = sorted({_folded(x) for x in (value, *also) if _folded(x)})
     return (
-        f"({column} ->> :{k} = :{v} OR (jsonb_typeof({column} -> :{k}) = 'array' "
-        f"AND jsonb_exists({column} -> :{k}, :{v})))",
-        value,
+        f"(lower(btrim({column} ->> :{k})) = ANY(CAST(:{v} AS text[])) OR "
+        f"CASE WHEN jsonb_typeof({column} -> :{k}) = 'array' THEN EXISTS (SELECT 1 FROM "
+        f"jsonb_array_elements_text({column} -> :{k}) agf_e WHERE lower(btrim(agf_e)) = "
+        f"ANY(CAST(:{v} AS text[]))) ELSE false END)",
+        wanted or [""],
     )
+
+
+def _folded(text_value: Any) -> str:
+    """A filter value as the text clause compares it: trimmed, lower case."""
+    return str(text_value or "").strip().lower()
+
+
+#: §18.16 part 6: the types whose filter value counts its stored variants.
+ALIAS_TYPES: tuple[str, ...] = ("text", "select")
+#: The most distinct values that one alias read takes.
+ALIAS_VALUES = 500
+
+
+async def text_matches(db: Any, org: str, scope: FieldScope, module: str,
+                       pairs: Sequence[tuple[str, str]]) -> dict[int, list[str]]:
+    """The stored values that each text filter of *pairs* counts, by the
+    index of the pair (WS-53 §18.16 part 6): the value in each case, and its
+    short forms, from the distinct values of the field
+    (``crm_sync.terms.value_matches``). One grouped statement for each text
+    filter, in the caller's tenant session. A range and each other type
+    take none."""
+    from gateway.crm_sync.terms import value_matches
+
+    out: dict[int, list[str]] = {}
+    for index, (name, value) in enumerate(pairs):
+        ref = scope.fields.get(name)
+        if ref is None or ref.type not in ALIAS_TYPES or ref.parts or not str(value).strip():
+            continue
+        distinct = await value_counts(db, org, module, ref.key, ALIAS_VALUES)
+        out[index] = value_matches(str(value), distinct)
+    return out
 
 
 def module_where(
     scope: FieldScope, module: str, pairs: list[tuple[str, str]], *, zone: str,
+    matches: Mapping[int, Sequence[str]] | None = None,
 ) -> WhereSql:
     """The WHERE clause of one module: the module, and each field filter.
 
@@ -832,7 +872,8 @@ def module_where(
     for index, (name, value) in enumerate(pairs):
         ref, end = _split(scope, name)
         k, v = f"agf_k{index}", f"agf_v{index}"
-        clause, bound, keys, source = _filter(scope, ref, end, k, v, value)
+        clause, bound, keys, source = _filter(scope, ref, end, k, v, value,
+                                              (matches or {}).get(index, ()))
         clauses.append(clause)
         params.update(keys)
         params[v] = bound
@@ -1230,6 +1271,7 @@ __all__ = [
     "overlay_where",
     "sum_check",
     "sum_check_sql",
+    "text_matches",
     "used_keys",
     "value_counts",
     "zoned",

@@ -20,6 +20,11 @@ spawn_copilot_agent = _mod.spawn_copilot_agent
 delegate_to_agent = _mod.delegate_to_agent
 enrich_instructions_with_memory = _mod.enrich_instructions_with_memory
 search_timeline = _mod.search_timeline
+# WS-62 CF-3: the orchestrator's page tool (tests/unit/test_show_in_app.py).
+show_in_app = _mod.show_in_app
+# WS-67 OA-7c: the persona text of each pack owner's delegation, so that a
+# pack swaps the exact text out (``acb_skills.tool_packs.persona_for``).
+PACK_DELEGATION_BULLETS = _mod.PACK_DELEGATION_BULLETS
 # Private by convention, but it is the ONE gateway-/v1/ client factory — the
 # declarative builder (orchestrator.declarative) is a second legitimate consumer
 # inside this package, and re-exporting beats duplicating the token-precedence
@@ -34,5 +39,6 @@ __all__ = [
     "retrieve_entity_context",
     "retrieve_sales_context",
     "search_timeline",
+    "show_in_app",
     "spawn_copilot_agent",
 ]

@@ -18,7 +18,9 @@
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
+import { CollapsibleSection } from "@/components/ui/Collapsible";
 import ProgressBar from "@/components/ui/ProgressBar";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 import { useId, useState } from "react";
 import { pushView } from "../lib/history";
@@ -201,7 +203,7 @@ export function SyncHealthCardView({
               <ul className="space-y-1 px-2 pt-2" aria-label="Short reads">
                 {short.map((entity) => (
                   <li key={entity.key} className="flex flex-wrap items-center gap-2 text-xs">
-                    <Badge tone="warning">Short read</Badge>
+                    <Badge tone="warning">Partial read</Badge>
                     <span className="font-medium text-foreground">{label(entity.key)}</span>
                     <span className="min-w-0 basis-full text-muted-foreground sm:flex-1 sm:basis-auto">
                       {shortReadSentence(entity)}
@@ -261,10 +263,10 @@ export function SyncHealthCardView({
                       {/* The one control sits beside the name, so a phone shows it. */}
                       <th className={th}>Sync</th>
                       <th className={th}>Zoho</th>
-                      <th className={th}>Ours</th>
+                      <th className={th}>In Metorite</th>
                       <th className={th}>Difference</th>
                       <th className={th}>Skipped</th>
-                      <th className={th}>Unlinked</th>
+                      <th className={th}>Not linked</th>
                       <th className={th}>Failed</th>
                       {/* CRM-Q19: values that a Field map rule could not put into its column. */}
                       <th className={th}>Not mapped</th>
@@ -345,23 +347,22 @@ export function SyncHealthCardView({
         </div>
 
         <div className="px-4 py-3" aria-label="Recent runs">
-          <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground">
-            Recent runs
-          </h3>
-          {health.history.length === 0 ? (
-            <p className="pt-2 text-xs text-muted-foreground">No run yet.</p>
-          ) : (
-            <ul className="space-y-0.5 pt-2">
-              {health.history.map((run, i) => (
-                <li key={`${run.started_at}-${i}`} className="flex gap-2 text-xs text-foreground">
-                  <span>{runLine(run)}</span>
-                  <span className="ml-auto text-muted-foreground">
-                    {agoLabel(run.started_at, nowMs)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
+          <CollapsibleSection label="Recent runs" count={health.history.length} defaultOpen={false} keepMounted>
+            {health.history.length === 0 ? (
+              <p className="pt-2 text-xs text-muted-foreground">No run yet.</p>
+            ) : (
+              <ul className="space-y-0.5 pt-2">
+                {health.history.map((run, i) => (
+                  <li key={`${run.started_at}-${i}`} className="flex gap-2 text-xs text-foreground">
+                    <span>{runLine(run)}</span>
+                    <span className="ml-auto text-muted-foreground">
+                      {agoLabel(run.started_at, nowMs)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CollapsibleSection>
         </div>
       </div>
     </Card>
@@ -371,7 +372,7 @@ export function SyncHealthCardView({
 /** The card with its data. The page draws it for an admin in Mirror mode. */
 export default function SyncHealthCard() {
   const toast = useToast();
-  const { health, loading } = useSyncHealth(true);
+  const { health, loading, refresh } = useSyncHealth(true);
   const [syncing, setSyncing] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
@@ -439,9 +440,21 @@ export default function SyncHealthCard() {
   if (!health) {
     return (
       <Card title="Sync health" note={NOTE}>
-        <p className="px-4 py-3 text-xs text-muted-foreground">
-          {loading ? "Loading." : "The sync health is not available."}
-        </p>
+        {loading ? (
+          <div className="space-y-2 px-4 py-3" aria-label="Loading the sync health">
+            <Skeleton className="h-4 w-48" />
+            <Skeleton className="h-4 w-32" />
+          </div>
+        ) : (
+          <div className="flex items-center gap-3 px-4 py-3">
+            <p className="text-xs text-muted-foreground">
+              Could not load the sync health. Try again.
+            </p>
+            <Button size="sm" variant="secondary" onClick={() => refresh()}>
+              Try again
+            </Button>
+          </div>
+        )}
       </Card>
     );
   }

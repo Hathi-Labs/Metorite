@@ -383,6 +383,7 @@ async def test_a_row_sends_what_create_task_sends(monkeypatch) -> None:
         "leveraged": "no",
         "type": "bug",
         "fields": '{"Customer": "SMB"}',
+        "source": "email",
     }
     assert set(words) == set(F.ROW_KEYS) - {"priority"}
     approve(monkeypatch)
@@ -728,14 +729,27 @@ def seeded(_ladder):
             c.execute(text("SELECT id FROM organization ORDER BY created_at LIMIT 1")).scalar_one()
         )
         made["org"] = org
-        made["project"] = pid = str(
+        # A space holds no tasks (2026-10-26), so the project sits in a space.
+        # The space is the ROOT, so the root-scoped field goes on it.
+        made["space"] = space = str(
             c.execute(
                 text(
                     "INSERT INTO pm_projects (name, status, source, created_by, organization_id,"
                     " timezone, owns_statuses) VALUES (:n, 'active', 'manual',"
                     " 'p13@example.test', CAST(:o AS uuid), 'UTC', true) RETURNING id"
                 ),
-                {"n": f"p13-{tag}", "o": org},
+                {"n": f"p13-space-{tag}", "o": org},
+            ).scalar_one()
+        )
+        made["project"] = pid = str(
+            c.execute(
+                text(
+                    "INSERT INTO pm_projects (name, status, source, created_by, organization_id,"
+                    " timezone, owns_statuses, parent_project_id) VALUES (:n, 'active',"
+                    " 'manual', 'p13@example.test', CAST(:o AS uuid), 'UTC', true,"
+                    " CAST(:s AS uuid)) RETURNING id"
+                ),
+                {"n": f"p13-{tag}", "o": org, "s": space},
             ).scalar_one()
         )
         made["lanes"] = {}
@@ -757,7 +771,7 @@ def seeded(_ladder):
                 " CAST(:o AS uuid), 'tier', 'Tier', 'select', CAST(:opts AS jsonb), false,"
                 " 'p13@example.test')"
             ),
-            {"p": pid, "o": org, "opts": json.dumps(["gold", "silver"])},
+            {"p": space, "o": org, "opts": json.dumps(["gold", "silver"])},
         )
     yield made
     with eng.begin() as c:
@@ -768,6 +782,12 @@ def seeded(_ladder):
             "DELETE FROM pm_projects WHERE id = CAST(:p AS uuid)",
         ):
             c.execute(text(sql), {"p": made["project"]})
+        for sql in (
+            "DELETE FROM pm_custom_fields WHERE project_id = CAST(:p AS uuid)",
+            "DELETE FROM pm_task_statuses WHERE project_id = CAST(:p AS uuid)",
+            "DELETE FROM pm_projects WHERE id = CAST(:p AS uuid)",
+        ):
+            c.execute(text(sql), {"p": made["space"]})
     eng.dispose()
 
 

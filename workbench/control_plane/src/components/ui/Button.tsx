@@ -173,6 +173,12 @@ export type ButtonProps = Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "c
    * loading control has nowhere to go, so it draws as the disabled button.
    */
   href?: string;
+  /**
+   * Only with `href`: where the link opens. A link that leaves the app sets
+   * `target="_blank"` with `rel="noopener noreferrer"`. A button ignores both.
+   */
+  target?: React.HTMLAttributeAnchorTarget;
+  rel?: string;
   /** Extra classes for layout only — never for colour, radius or weight. */
   className?: string;
   children?: React.ReactNode;
@@ -190,6 +196,9 @@ const BUTTON_ONLY = [
   "name",
   "value",
 ] as const;
+
+/** The attributes that belong to a link and never to a `<button>`. */
+const LINK_ONLY = ["target", "rel"] as const;
 
 function anchorAttributes(rest: Record<string, unknown>): React.AnchorHTMLAttributes<HTMLAnchorElement> {
   const out = { ...rest };
@@ -236,8 +245,10 @@ export default function Button({
       </Link>
     );
   }
+  const buttonRest: Record<string, unknown> = { ...rest };
+  for (const key of LINK_ONLY) delete buttonRest[key];
   return (
-    <button {...rest} aria-pressed={pressed} disabled={disabled || loading} className={classes}>
+    <button {...(buttonRest as React.ButtonHTMLAttributes<HTMLButtonElement>)} aria-pressed={pressed} disabled={disabled || loading} className={classes}>
       {content}
     </button>
   );

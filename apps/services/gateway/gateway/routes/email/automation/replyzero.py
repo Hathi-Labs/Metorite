@@ -31,16 +31,16 @@ from gateway.routes.email.core import (
     _assert_thread_in_mailbox,
     _attachment_summaries,
     _fmt_addr_list,
-    _tenant_session,
     _instantiate_provider,
     _llm_json,
     _log,
     _persist_rotated_creds,
+    _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_ids_sql
 from pydantic import BaseModel
 from sqlalchemy import text
-
 
 
 def _addr_dict(raw: Any) -> dict:
@@ -269,7 +269,7 @@ async def count_damaged_conversation_threads(
         params["aid"] = account_id
     if user_email:
         where.append(
-            "d.account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid)"
+            "d.account_id IN (" + mailbox_ids_sql(uid="uid", level="read") + ")"
         )
         params["uid"] = user_email
     filt = (" WHERE " + " AND ".join(where)) if where else ""
@@ -3008,7 +3008,7 @@ async def resolve_thread(
     ``mark_thread_done`` has no mail id, so this check is what makes a wrong
     mailbox from the model fail closed."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
         await _assert_thread_in_mailbox(db, req.account_id, req.thread_id)
         keep_label = "Done"
         if req.dismiss:
@@ -3047,8 +3047,7 @@ async def resolve_thread(
             # commitment task, or an inbound capture on the same thread). The
             # helper only touches non-DONE tasks, so a task the forward path
             # already closed is left alone — no ping-pong.
-            from gateway.routes.tasks.email_link import (
-                propagate_thread_done_to_tasks)
+            from gateway.routes.tasks.email_link import propagate_thread_done_to_tasks
             with contextlib.suppress(Exception):  # best-effort; thread is Done
                 await propagate_thread_done_to_tasks(
                     db, user.email or "anonymous", req.account_id,
@@ -3120,7 +3119,7 @@ async def reclassify_reply_zero_status(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
     job = _RECLASSIFY_JOBS.get(account_id)
     if not job:
         return {"status": "idle"}
@@ -3148,13 +3147,18 @@ async def reply_zero(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         want = {"awaiting": "AWAITING", "done": "DONE"}.get(type, "NEEDS_REPLY")
-        # Trash is hidden from every bucket; archiving a thread also drops it from
-        # the ACTIVE buckets ("archived = off my reply queue") while it still shows
-        # under Done. (Controlled literal — safe to inline.)
-        excluded = ("'trash', 'archive'"
-                    if want in ("NEEDS_REPLY", "AWAITING") else "'trash'")
+        # Trash is hidden from every bucket. The ACTIVE buckets read the ONE
+        # live-thread rule of the digest and the shell's needs feed
+        # (``digest._LIVE_THREAD``, HANDOFF H-286): a last message in trash,
+        # junk or the archive, or one the member snoozed, is off the reply
+        # queue. Done still shows an archived thread, so it hides trash only.
+        # (Controlled literals — safe to inline.)
+        from gateway.routes.email.digest import _LIVE_THREAD
+
+        hidden = (_LIVE_THREAD if want in ("NEEDS_REPLY", "AWAITING")
+                  else "LOWER(COALESCE(em.folder, '')) <> 'trash'")
         rows = (await db.execute(text(
             f"""SELECT ts.thread_id, ts.reason, ts.last_message_at,
                       em.id, em.subject, em.from_address, em.is_read,
@@ -3170,8 +3174,8 @@ async def reply_zero(
                  LIMIT 1
                ) d ON true
                WHERE ts.account_id = :aid AND ts.status = :st
-                 -- Hide trashed (all buckets) / archived (active buckets) threads.
-                 AND LOWER(COALESCE(em.folder, '')) NOT IN ({excluded})
+                 -- Trash (all buckets). Junk, archive, snoozed (active buckets).
+                 AND {hidden}
                -- The thread id breaks a tie, so a bigger LIMIT begins with
                -- the smaller one and the chat's next page repeats nothing.
                ORDER BY ts.last_message_at DESC NULLS LAST, ts.thread_id DESC

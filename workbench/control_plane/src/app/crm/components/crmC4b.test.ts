@@ -35,6 +35,7 @@ import {
   picklistDefs,
   setCustom,
 } from "../lib/filterBar";
+import { filterFields } from "../lib/filterFields";
 import { listQuery, queryString } from "../lib/filters";
 import {
   createCustom,
@@ -446,14 +447,6 @@ const barProps = {
   entity: "deals" as const,
   onChange: noop,
   fieldDefs: FIELDS.filter((f) => !f.is_system),
-  activeView: null,
-  dirty: false,
-  canEdit: false,
-  isAdmin: false,
-  saving: false,
-  onSave: async () => undefined,
-  onUpdate: async () => undefined,
-  onReset: noop,
 };
 
 const drawBar = (value: FieldLayout | null, view: CrmView = DEFAULT_VIEW) =>
@@ -497,21 +490,27 @@ describe("the filter bar offers the custom filters of Scope item 5 (done-when 7)
     expect(no?.description).toBe(NO_HINT);
   });
 
-  it("draws a control for each new type", () => {
-    // CRM-Q17b item 5: the filters past the 3 fullest picklists sit behind
-    // "Filters". A source in force opens them, so each control draws here.
-    const html = drawBar(layout(), { ...DEFAULT_VIEW, source: "email" });
-    expect(html).toContain("Filters (1)");
-    for (const word of ["Tier", "Colours", "Signed", 'aria-label="Seats equals"', 'aria-label="Rate equals"',
-      'aria-label="Budget equals"', 'aria-label="Starts on"']) {
-      expect(html).toContain(word);
-    }
-    expect(html).not.toContain("Old code");
-    expect(html).not.toContain("Deal code");
+  it("lists each new type in a group of the + Filter panel", () => {
+    // CRM-U8: the panel lists every field, in groups. A retired field and a
+    // system row never reach it (`customFilters`).
+    const fields = filterFields("deals", customFilters(layout().fields, true));
+    const group = (label: string) => fields.filter((f) => f.label === label).map((f) => f.group);
+    expect(group("Tier")).toEqual(["Picklists"]);
+    expect(group("Colours")).toEqual(["Picklists"]);
+    expect(group("Seats")).toEqual(["Numbers"]);
+    expect(group("Rate")).toEqual(["Numbers"]);
+    expect(group("Budget")).toEqual(["Numbers"]);
+    expect(group("Starts")).toEqual(["Dates"]);
+    expect(group("Signed")).toEqual(["Other"]);
+    const labels = fields.map((f) => f.label);
+    expect(labels).not.toContain("Old code");
+    expect(labels).not.toContain("Deal code");
   });
 
-  it("shows a number filter that the URL holds", () => {
-    expect(drawBar(layout(), setCustom(DEFAULT_VIEW, "seats", "12"))).toMatch(/value="12"/);
+  it("draws a chip for a number filter that the URL holds", () => {
+    const html = drawBar(layout(), setCustom(DEFAULT_VIEW, "seats", "12"));
+    expect(html).toContain("Seats: 12");
+    expect(html).toContain('aria-label="Remove Seats: 12"');
   });
 });
 
@@ -613,7 +612,10 @@ describe("with studio false, each surface draws as today (done-when 9)", () => {
 
   it("draws the filter bar of today", () => {
     expect(drawBar(off)).toBe(drawBar(null));
-    expect(drawBar(off)).not.toContain("Seats equals");
+    // With the studio off, the panel lists the picklists only (`customFilters`).
+    expect(
+      filterFields("deals", customFilters(FIELDS, false)).filter((f) => f.group === "Numbers"),
+    ).toEqual([]);
   });
 });
 

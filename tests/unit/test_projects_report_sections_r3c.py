@@ -128,7 +128,12 @@ def test_the_render_awaits_hygiene_body_with_no_period() -> None:
 def test_hygiene_is_opt_in_between_stuck_and_conflicts() -> None:
     """(h)."""
     order = list(rep.SECTIONS)
-    assert order.index("stuck") + 1 == order.index("hygiene")
+    # WS-27bn RA-3 puts `waiting` between `stuck` and `hygiene`, and RA-4
+    # puts `agent_runs` after `waiting`. RA-5 puts `quality` after that.
+    assert order.index("stuck") + 4 == order.index("hygiene")
+    assert order[order.index("stuck") + 1: order.index("hygiene")] == [
+        "waiting", "agent_runs", "quality",
+    ]
     assert order.index("hygiene") + 1 == order.index("conflicts")
     assert "hygiene" not in rep.DEFAULT_SECTIONS
     assert "hygiene" not in rep.normalise_report_config({})["sections"]

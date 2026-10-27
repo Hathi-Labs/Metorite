@@ -24,7 +24,7 @@ import { describe, expect, it } from "vitest";
 
 import type { FieldDef } from "../lib/fields";
 import { fieldMatches, fillLabel } from "../lib/fields";
-import { SHOWN_FILTERS, hiddenActiveCount, moreFiltersLabel, moreOpenAfter, splitFilters } from "../lib/filterBar";
+import { filterFields, filtersButtonLabel } from "../lib/filterFields";
 import type { CrmModule } from "../lib/modules";
 import type { OverlayPreview, Suggestion } from "../lib/suggestions";
 import {
@@ -413,14 +413,6 @@ describe("the search box names the list on screen (Batch M review)", () => {
         owners: null,
         fieldDefs: null,
         search: true,
-        activeView: null,
-        dirty: false,
-        canEdit: false,
-        isAdmin: false,
-        saving: false,
-        onSave: async () => undefined,
-        onUpdate: async () => undefined,
-        onReset: noop,
         ...over,
       }),
     );
@@ -450,7 +442,7 @@ const pick = (key: string, fill: number | null, position: number): FieldDef => (
   fill,
 });
 
-describe("item 5: the filter bar shows Owner and the 3 fullest picklists", () => {
+describe("item 5 (CRM-U8): the + Filter panel lists the fullest picklists first", () => {
   const defs = [
     pick("region", 0.2, 0),
     pick("tier", 0.9, 1),
@@ -460,30 +452,23 @@ describe("item 5: the filter bar shows Owner and the 3 fullest picklists", () =>
   ];
   const filters = defs.map((def) => ({ def, kind: "options" as const }));
 
-  it("takes the fullest picklists, a tie in the order of the bar", () => {
-    const { shown, more } = splitFilters(filters);
-    expect(shown.map((f) => f.def.key)).toEqual(["tier", "segment", "channel"]);
-    expect(more.map((f) => f.def.key)).toEqual(["region", "zone"]);
-    expect(SHOWN_FILTERS).toBe(3);
+  it("orders the picklists by fill, a tie in the order of the bar", () => {
+    const picklists = filterFields("leads", filters).filter((f) => f.group === "Picklists");
+    expect(picklists.map((f) => f.label)).toEqual(["Tier", "Channel", "Segment", "Region", "Zone"]);
+    expect(filtersButtonLabel(0)).toBe("Filters");
+    expect(filtersButtonLabel(3)).toBe("Filters (3)");
   });
 
-  it("takes the first picklists with no fill number, and never a checkbox at rest", () => {
-    const flat = defs.map((def) => ({ def: { ...def, fill: null }, kind: "options" as const }));
-    expect(splitFilters(flat).shown.map((f) => f.def.key)).toEqual(["region", "tier", "segment"]);
-    const box = { def: { ...pick("signed", 1, 9), type: "boolean" }, kind: "boolean" as const };
-    expect(splitFilters([box, ...filters]).more).toContain(box);
+  it("keeps a field with no fill number after the fields that have one", () => {
+    const flat = [
+      { def: { ...pick("a", null, 0) }, kind: "options" as const },
+      { def: pick("b", 0.1, 1), kind: "options" as const },
+    ];
+    const labels = filterFields("leads", flat).filter((f) => f.group === "Picklists");
+    expect(labels.map((f) => f.label)).toEqual(["B", "A"]);
   });
 
-  it("counts the filters in force behind the button", () => {
-    const { more } = splitFilters(filters);
-    expect(hiddenActiveCount(DEFAULT_VIEW, more)).toBe(0);
-    const view = { ...DEFAULT_VIEW, source: "email", ranges: { updated_from: "2026-10-01" }, custom: { zone: ["a"] } };
-    expect(hiddenActiveCount(view, more)).toBe(3);
-    expect(moreFiltersLabel(0)).toBe("Filters");
-    expect(moreFiltersLabel(3)).toBe("Filters (3)");
-  });
-
-  it("draws the three at rest, and Source and the rest behind the button", () => {
+  it("draws Owner and the + Filter button at rest, and no picklist", () => {
     const html = renderToStaticMarkup(
       createElement(FilterBar, {
         entity: "leads",
@@ -491,20 +476,10 @@ describe("item 5: the filter bar shows Owner and the 3 fullest picklists", () =>
         onChange: noop,
         owners: null,
         fieldDefs: defs,
-        activeView: null,
-        dirty: false,
-        canEdit: false,
-        isAdmin: false,
-        saving: false,
-        onSave: async () => undefined,
-        onUpdate: async () => undefined,
-        onReset: noop,
       }),
     );
-    for (const word of ["Owner", "Tier", "Segment", "Channel", ">Filters<", 'aria-expanded="false"']) {
-      expect(html).toContain(word);
-    }
-    for (const word of ["Region", "Zone", "Source", "Updated"]) expect(html).not.toContain(word);
+    for (const word of ["Owner", "Filter"]) expect(html).toContain(word);
+    for (const word of ["Tier", "Region", "Zone", "Source"]) expect(html).not.toContain(word);
   });
 });
 
@@ -815,19 +790,5 @@ describe("fix round 1, item 3: a phone member can sort the cards", () => {
   it("draws the sort above the cards on a phone", () => {
     expect(read("./RecordList.tsx")).toMatch(/isMobile \? \(\s*<>\s*<PhoneSort/);
     expect(DEFAULT_ORDER).toBe("Default order");
-  });
-});
-
-describe("fix round 1, item 4: a hidden filter that arrives later opens the second row", () => {
-  it("opens the row when the count leaves 0, and keeps the member's choice else", () => {
-    expect(moreOpenAfter(false, 0, 1)).toBe(true);
-    expect(moreOpenAfter(false, 1, 2)).toBe(false);
-    expect(moreOpenAfter(true, 1, 0)).toBe(true);
-    expect(moreOpenAfter(false, 0, 0)).toBe(false);
-  });
-
-  it("follows the count during the render", () => {
-    const bar = read("./FilterBar.tsx");
-    expect(bar).toMatch(/setMoreOpen\(moreOpenAfter\(moreOpen, seenActive, hiddenActive\)\)/);
   });
 });

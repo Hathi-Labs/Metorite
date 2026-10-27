@@ -10,7 +10,25 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { DEFAULT_NUMBER_SYSTEM, NUMBER_SYSTEMS, compactNumber, numberSystem } from "./numberFormat.mjs";
+import { DEFAULT_NUMBER_SYSTEM, NUMBER_SYSTEMS, compactNumber, groupedNumber, numberSystem } from "./numberFormat.mjs";
+
+// WS-47 follow-up of #1154: the stat tile wrote its value with the browser's
+// locale. It now groups by the member's system, through this module.
+describe("groupedNumber", () => {
+  it("groups by the member's system and keeps the decimals it is given", () => {
+    expect(groupedNumber(1234567, "indian")).toBe("12,34,567");
+    expect(groupedNumber(1234567, "international")).toBe("1,234,567");
+    expect(groupedNumber(1234567.5, "indian", 2)).toBe("12,34,567.50");
+    expect(groupedNumber(-98765, "indian")).toBe("-98,765");
+  });
+
+  it("is indian for a value it does not know, and leaves a non-number as it is", () => {
+    expect(groupedNumber(150000, undefined)).toBe("1,50,000");
+    expect(groupedNumber(150000, "roman")).toBe("1,50,000");
+    expect(groupedNumber(Number.NaN, "indian")).toBe("NaN");
+    expect(groupedNumber(7, "indian", -3)).toBe("7");
+  });
+});
 
 const L = "\u00a0L";
 const CR = "\u00a0Cr";

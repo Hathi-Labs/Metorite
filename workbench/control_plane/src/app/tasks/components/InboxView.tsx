@@ -104,7 +104,7 @@ type SortOrder = "newest" | "oldest";
  * lands in the personal ROOT, before any Area, so an Area scope would empty
  * this list. Clarify is where a capture gets its Area.
  */
-export function InboxView() {
+export function InboxView({ embedded = false }: { embedded?: boolean } = {}) {
   const items = useTaskStore((s) => s.items);
   const loading = useTaskStore((s) => s.loading);
   const backend = useTaskStore((s) => s.backend);
@@ -384,9 +384,9 @@ export function InboxView() {
   return (
     <div className="flex h-full flex-col bg-background">
       {/* Mobile heading — the hero is hidden on mobile, so orient the user. */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5 sm:hidden">
+      <div className={`flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5 sm:hidden${embedded ? " hidden" : ""}`}>
         <AppIcon name="Inbox" className="h-4 w-4 shrink-0 text-primary" />
-        <h2 className="text-sm font-medium text-foreground">Inbox</h2>
+        <h2 className="text-sm font-medium text-foreground">My task inbox</h2>
         <span className="text-[11px] text-muted-foreground">Capture now, clarify later</span>
       </div>
 
@@ -403,7 +403,7 @@ export function InboxView() {
         <div className="flex flex-wrap items-center gap-2.5 px-4 py-2.5">
           <div className="flex shrink-0 items-center gap-2">
             <AppIcon name="Inbox" className="h-4 w-4 text-primary" />
-            <h2 className="text-sm font-medium text-foreground">Inbox</h2>
+            <h2 className="text-sm font-medium text-foreground">My task inbox</h2>
           </div>
           {/* `overflow-hidden`: the chip's list is portalled (AnchoredPanel),
               so nothing inside needs to spill, and at 768 the chip used to. */}
@@ -638,9 +638,9 @@ export function InboxView() {
                       <input
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
-                        placeholder={`${filterWord()} the inbox…`}
-                        aria-label={`${filterWord()} the inbox`}
-                        data-page-filter={shellBarOn() ? "the inbox" : undefined}
+                        placeholder={`${filterWord()} my task inbox…`}
+                        aria-label={`${filterWord()} my task inbox`}
+                        data-page-filter={shellBarOn() ? "my task inbox" : undefined}
                         className="min-w-0 flex-1 bg-transparent text-base text-foreground placeholder:text-muted-foreground focus:outline-none sm:text-xs"
                       />
                     </div>
@@ -803,7 +803,7 @@ function TicklerList({
   return (
     <>
       <p className="mb-3 text-[11px] text-muted-foreground">
-        Deferred items — hidden from the inbox until they resurface.
+        Deferred items — hidden from my task inbox until they resurface.
       </p>
       <div className="flex flex-col gap-2">
         {items.map((item) => (

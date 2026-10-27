@@ -566,3 +566,68 @@ def test_no_scan_against_the_real_catalog(live):
 
     fake = aioredis.from_url("redis://unused")
     assert fake.scans == []
+
+
+# ---------------------------------------------------------------------------
+# §4.10 (re-review of #1171): one identity per run
+# ---------------------------------------------------------------------------
+
+def test_a_re_register_of_the_same_run_keeps_its_start_and_its_id(fake_redis):
+    """run_detached registers first, then the executor registers the SAME run
+    again. The token changes (the executor's finally removes its own entry),
+    but startedAt and runId stay: a moved startedAt read as a new run."""
+    org = str(uuid.uuid4())
+    asyncio.run(stream_relay.register_live_run(
+        "t-1", organization_id=org, actor=_ALICE, token="detached-tok", run_id="run-1",
+    ))
+    first = json.loads(fake_redis.store[f"cc:{org}:liveruns"]["t-1"])
+    assert first["runId"] == "run-1"
+    asyncio.run(stream_relay.register_live_run(
+        "t-1", organization_id=org, actor=_ALICE, token="run-1",
+        run_id="run-1", keep_run_facts=True,
+    ))
+    again = json.loads(fake_redis.store[f"cc:{org}:liveruns"]["t-1"])
+    assert again["startedAt"] == first["startedAt"]
+    assert again["runId"] == "run-1"
+    # What the re-register is for: the executor's token now holds the entry.
+    assert again["token"] == "run-1"
+    asyncio.run(stream_relay.unregister_live_run("t-1", organization_id=org, token="run-1"))
+    assert "t-1" not in fake_redis.store[f"cc:{org}:liveruns"]
+
+
+def test_a_re_register_never_keeps_another_run_s_facts(fake_redis):
+    org = str(uuid.uuid4())
+    asyncio.run(stream_relay.register_live_run(
+        "t-1", organization_id=org, actor=_ALICE, token="old", run_id="run-old",
+    ))
+    old = json.loads(fake_redis.store[f"cc:{org}:liveruns"]["t-1"])
+    import time
+    time.sleep(0.002)
+    asyncio.run(stream_relay.register_live_run(
+        "t-1", organization_id=org, actor=_ALICE, token="run-new",
+        run_id="run-new", keep_run_facts=True,
+    ))
+    new = json.loads(fake_redis.store[f"cc:{org}:liveruns"]["t-1"])
+    assert new["runId"] == "run-new"
+    assert new["startedAt"] != old["startedAt"]
+
+
+def test_a_first_register_writes_fresh_facts(fake_redis):
+    org = str(uuid.uuid4())
+    asyncio.run(stream_relay.register_live_run(
+        "t-1", organization_id=org, actor=_ALICE, token="a", run_id="run-a",
+    ))
+    asyncio.run(stream_relay.register_live_run(
+        "t-1", organization_id=org, actor=_ALICE, token="b", run_id="run-b",
+    ))
+    assert json.loads(fake_redis.store[f"cc:{org}:liveruns"]["t-1"])["runId"] == "run-b"
+
+
+def test_the_route_sends_the_run_id(fake_redis, db_down):
+    org = str(uuid.uuid4())
+    asyncio.run(stream_relay.mark_active("t-r", reset=True, actor=_ALICE))
+    asyncio.run(stream_relay.register_live_run(
+        "t-r", organization_id=org, actor=_ALICE, token="tok", run_id="run-r",
+    ))
+    rows = _list(_user(_ALICE, org))
+    assert [(r["threadId"], r["runId"]) for r in rows] == [("t-r", "run-r")]

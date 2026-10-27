@@ -97,20 +97,32 @@ _DB_GATE = pytest.mark.skipif(
 
 GOLDEN_ORG = "11111111-1111-1111-1111-111111111111"
 
+#: ⚠️ WS-64 OP-9 fix round 1 changed this ON PURPOSE (D-OP-15). A stray
+#: grant on another member's personal node seeds nothing, and the closure
+#: does not descend into such a node. The restricted digests changed with it.
 _GRANTED = (
     "\nWITH RECURSIVE granted AS (\n    SELECT DISTINCT g.project_id AS id\n"
     "    FROM pm_project_grants g\n    JOIN pm_projects gp ON gp.id = g.project_id\n"
     "    WHERE g.organization_id = CAST(:vis_org AS uuid)\n"
     "      AND gp.sealed_at IS NULL\n      AND (g.subject = 'org'\n"
     "           OR lower(g.subject) = :vis_email\n"
-    "           OR g.subject = ANY(:vis_groups))\n    UNION\n    SELECT p.id\n"
+    "           OR g.subject = ANY(:vis_groups))\n"
+    "      AND (gp.personal_owner IS NULL OR lower(gp.personal_owner) = :vis_email)\n"
+    "    UNION\n    SELECT p.id\n"
     "    FROM pm_projects p\n    JOIN granted a ON p.parent_project_id = a.id\n"
     "    WHERE p.organization_id = CAST(:vis_org AS uuid)\n"
-    "      AND p.sealed_at IS NULL\n)\nSELECT id FROM granted\n"
+    "      AND p.sealed_at IS NULL\n"
+    "      AND (p.personal_owner IS NULL OR lower(p.personal_owner) = :vis_email)\n"
+    ")\nSELECT id FROM granted\n"
 )
+#: ⚠️ WS-64 OP-9 changed this ON PURPOSE (D-OP-15). The tenant set leaves
+#: out every other member's personal node, so `data:org:read` reads no
+#: personal task of somebody else. The four unrestricted digests changed
+#: with it. Fence of the rule: `test_personal_privacy_r8.py`.
 _TENANT_ONLY = (
     "\nSELECT id FROM pm_projects\nWHERE organization_id = CAST(:vis_org AS uuid)\n"
     "  AND sealed_at IS NULL\n"
+    "  AND (personal_owner IS NULL OR lower(personal_owner) = :vis_email)\n"
 )
 
 
@@ -126,35 +138,35 @@ def _assignee(alias: str) -> str:
 GOLDEN: dict[str, tuple[str, str]] = {
     "restricted.project_clause()": (
         f"id IN ({_GRANTED})",
-        "dba65e0b590787f64898e72d22bee7038c18e66ea2ca7687141ba65c83995c39"),
+        "6e437adf35509eb526f58ecc614250bae397a04520e1d63dc9314066b8bbb8c9"),
     "restricted.project_clause('p.id')": (
         f"p.id IN ({_GRANTED})",
-        "ecd969e75b9fd54e88baec240b7c430877d723fa7f41baa6ae3f312493364859"),
+        "85fb3aaa290e04da742aeaabe29bb16ecdcfdf3318c6e1babdc9d712061b37a5"),
     "unrestricted.project_clause()": (
         f"id IN ({_TENANT_ONLY})",
-        "34f2ac865083391bda3ac3d3136083b710ad4fdabda6e79c72f5f4f789a99497"),
+        "726ab86a486c93b214eed1e3b206aca5f55373758c3be6f8dcfecfb618f2bcfe"),
     "unrestricted.project_clause('p.id')": (
         f"p.id IN ({_TENANT_ONLY})",
-        "a9bbbdea0760ab66d3143bb3420a659132cf8abc8b1348639b93d8a714b3bd78"),
+        "7d8ed5c36e49bea85b17030f54f0ac9343270c1fe899c826ddf5e34d78d752a5"),
     "task_visibility_clause(restricted)": (
         f"(t.organization_id = CAST(:vis_org AS uuid) AND (t.project_id IN ({_GRANTED})"
         + _assignee("t"),
-        "3c4159407bc824edc0b27b6b9a70a20ba7236657d0c865e3a0570bd738b5eb12"),
+        "1d8c447e2e30ac1286e5a0f8c0c8514cecfb1384b8404e3edeb7cf822660d408"),
     "task_visibility_clause(restricted, 'x')": (
         f"(x.organization_id = CAST(:vis_org AS uuid) AND (x.project_id IN ({_GRANTED})"
         + _assignee("x"),
-        "cc2295becad3c04cbac338584b95bf7c27c47cc363aa012f6918000471e84480"),
+        "172d07827befe1d27e9f33d9a1d3593c472d9428311114345aa1ef11257c86f5"),
     # ⚠️ H-304 changed these two ON PURPOSE (D63). The unrestricted task
     # clause was the tenant alone, so `data:org:read` read a closed tree. It
     # now has the same two arms as the restricted clause, over the tenant set.
     "task_visibility_clause(unrestricted)": (
         f"(t.organization_id = CAST(:vis_org AS uuid) AND (t.project_id IN ({_TENANT_ONLY})"
         + _assignee("t"),
-        "bbf499b5a640c6de7e3ec2c8f344620f29223a9e000b7962646653b703561ec1"),
+        "f392c5f5a2def108db16be227deee2210da4846851ba8e57665b564a0dd1314f"),
     "task_visibility_clause(unrestricted, 'x')": (
         f"(x.organization_id = CAST(:vis_org AS uuid) AND (x.project_id IN ({_TENANT_ONLY})"
         + _assignee("x"),
-        "ef6e9fc8a6643692f405b9a218bc030cfa2f2c54e303c1d7b8b2a74591c7f60f"),
+        "ab90b01dfd32fb0192080b070de3fbcfe2f714454b40003ab67386303abf9b9a"),
 }
 
 

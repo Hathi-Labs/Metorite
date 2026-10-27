@@ -22,13 +22,17 @@
  * `full_id: <uuid>` (lists) or `(id: <uuid>)` (schedules) for exactly this.
  */
 
+import ShowMore from "@/components/ui/ShowMore";
 import Button from "@/components/ui/Button";
 import AppIcon from "@/components/Icon";
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+
+import { chatTaskTarget, myWorkEnabled } from "@/app/projects/lib/myWork";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { apiPatchItem, apiAgentPlanToday } from "@/app/tasks/lib/api";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
+import { announceChange, isFreshReceipt } from "@/components/projects/ProjectToolCards";
 import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
@@ -98,7 +102,7 @@ const PLAN_META: Record<string, { label: string; kind: "plan-today" | "replan-to
 
 /** Read-only tools that return a titled text blob. */
 const INFO_META: Record<string, { icon: string; label: string }> = {
-  my_tasks_inbox_insights: { icon: "Inbox", label: "Inbox health" },
+  my_tasks_inbox_insights: { icon: "Inbox", label: "My task inbox health" },
   my_tasks_day_digest: { icon: "CalendarDays", label: "Day summary" },
   my_tasks_estimate_stats: { icon: "Timer", label: "Estimate accuracy" },
   my_tasks_accounts: { icon: "Milestone", label: "No connected tool" },
@@ -112,8 +116,8 @@ const INFO_TOOLS = new Set(Object.keys(INFO_META));
 
 /** Friendly label + icon for the generic confirmation card (mutating tools). */
 const ACTION_META: Record<string, { icon: string; label: string; danger?: boolean }> = {
-  my_tasks_capture: { icon: "Inbox", label: "Captured to inbox" },
-  my_tasks_capture_many: { icon: "Inbox", label: "Captured to inbox" },
+  my_tasks_capture: { icon: "Inbox", label: "Captured to my task inbox" },
+  my_tasks_capture_many: { icon: "Inbox", label: "Captured to my task inbox" },
   my_tasks_organize: { icon: "ListChecks", label: "Organized" },
   my_tasks_update: { icon: "PenLine", label: "Task updated" },
   my_tasks_complete: { icon: "CheckCircle2", label: "Task completed" },
@@ -207,18 +211,26 @@ function parseScheduleRows(result: string): TaskRow[] {
 
 // ── Navigation helper ─────────────────────────────────────────────────────────
 
-/** Open a task in the Tasks app: select it (the detail modal keys off the
- *  store) and route to /tasks — a no-op route change inside the Tasks app,
- *  navigation from the chat app. */
+/** Open a task. On `/projects` with My work on, that is the ONE Projects
+ *  panel, through its deep link, and the store focus is NOT raised (it is a
+ *  route change, and My work's host reads the focus). Elsewhere it selects the
+ *  task (the detail modal keys off the store) and routes to /tasks. */
 function useOpenTask() {
   const router = useRouter();
+  const pathname = usePathname();
   return (id: string) => {
-    try {
-      useTaskStore.getState().openFocus(id);
-    } catch {
-      /* store unavailable — still navigate */
+    // WS-64 OP-2b and OP-4: one rule (`chatTaskTarget`). With My work on, the
+    // task opens in the one Projects panel (`?task=`) from any page, because
+    // /tasks redirects there; the store focus is not raised for a route change.
+    const target = chatTaskTarget(pathname, myWorkEnabled(), id);
+    if (target.kind === "modal") {
+      try {
+        useTaskStore.getState().openFocus(id);
+      } catch {
+        /* store unavailable — still navigate */
+      }
     }
-    router.push("/tasks");
+    router.push(target.href);
   };
 }
 
@@ -234,6 +246,8 @@ function TaskRowView({ row }: { row: TaskRow }) {
     try {
       await apiPatchItem(row.id, { disposition: "DONE" });
       setState("done");
+      // WS-64 #128 — the open board and My work read the change at once.
+      announceChange(`task-row:${row.id}:${Date.now()}`);
     } catch {
       setState("idle");
     }
@@ -244,7 +258,7 @@ function TaskRowView({ row }: { row: TaskRow }) {
       <button
         onClick={() => openTask(row.id)}
         className="flex-1 min-w-0 text-left px-1.5 py-1 rounded-md hover:bg-secondary/60"
-        title="Open in My Tasks"
+        title="Open in My work"
       >
         <span
           className={`block text-[11px] truncate ${
@@ -271,7 +285,7 @@ function TaskRowView({ row }: { row: TaskRow }) {
             <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={complete} title="Mark done" aria-label="Mark done" className="rounded">
               <AppIcon name="CheckCircle2" size={11} />
             </Button>
-            <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={() => openTask(row.id)} title="Open in My Tasks" aria-label="Open in My Tasks" className="rounded">
+            <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={() => openTask(row.id)} title="Open in My work" aria-label="Open in My work" className="rounded">
               <AppIcon name="ExternalLink" size={11} />
             </Button>
           </>
@@ -290,7 +304,7 @@ function TaskListCard({ event: e }: { event: ToolEvent }) {
   const title =
     e.name === SCHEDULE_TOOL
       ? `Scheduled (${rows.length})`
-      : `My Tasks${view ? ` · ${view}` : ""} (${rows.length})`;
+      : `My work${view ? ` · ${view}` : ""} (${rows.length})`;
   // Nothing parseable (e.g. "No items in inbox.") → plain text info card.
   if (rows.length === 0) {
     return (
@@ -311,11 +325,11 @@ function TaskListCard({ event: e }: { event: ToolEvent }) {
       icon={e.name === SCHEDULE_TOOL ? <AppIcon name="CalendarClock" size={12} /> : <AppIcon name="ListChecks" size={12} />}
       onDismiss={() => dismissToolCard(e.id)}
     >
-      <div className="space-y-0.5 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
+      <ShowMore className="space-y-0.5">
         {rows.map((r) => (
           <TaskRowView key={r.id} row={r} />
         ))}
-      </div>
+      </ShowMore>
     </ToolCardShell>
   );
 }
@@ -341,6 +355,7 @@ function PlanResultCard({ event: e }: { event: ToolEvent }) {
         typeof args.energy_note === "string" ? args.energy_note : undefined,
       );
       setState("applied");
+      announceChange(`plan:${e.id}:${Date.now()}`);
     } catch {
       setState("failed");
     }
@@ -356,11 +371,12 @@ function PlanResultCard({ event: e }: { event: ToolEvent }) {
     <ToolCardShell
       title={`${meta.label} ${applied ? "· applied" : "· proposed"}`}
       icon={<AppIcon name="CalendarDays" size={12} />}
-      onDismiss={() => dismissToolCard(e.id)}
+      // A day plan is a RESULT: it folds, and it never closes, because it
+      // is the record of the answer (spec `projects_ai_chat.md` §29 rule 2).
     >
-      <div className="text-[11px] whitespace-pre-wrap break-words text-foreground/90 max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin">
+      <ShowMore className="text-[11px] whitespace-pre-wrap break-words text-foreground/90">
         {body || "(no blocks)"}
-      </div>
+      </ShowMore>
       {wasProposal && (
         <div className="mt-2 flex items-center gap-2">
           {state === "applied" ? (
@@ -407,15 +423,15 @@ function InfoResultCard({ event: e }: { event: ToolEvent }) {
       icon={<AppIcon name={iconName} size={12} />}
       onDismiss={() => dismissToolCard(e.id)}
     >
-      <div className="text-[11px] whitespace-pre-wrap break-words text-foreground/90 max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin">
+      <ShowMore className="text-[11px] whitespace-pre-wrap break-words text-foreground/90">
         {text || "(no result)"}
-      </div>
+      </ShowMore>
       {itemId && (
         <button
           onClick={() => openTask(itemId)}
           className="mt-1.5 inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
         >
-          <AppIcon name="ExternalLink" size={10} /> Open in My Tasks
+          <AppIcon name="ExternalLink" size={10} /> Open in My work
         </button>
       )}
     </ToolCardShell>
@@ -450,6 +466,12 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   // long receipt folds like any long card instead.
   const detail = detailLines;
   const tone = failed ? "text-destructive" : meta.danger ? "text-warning" : "text-success";
+  // WS-64 #128 — a fresh write receipt tells the open Projects page and My
+  // work to read again. `my_tasks_sync` writes nothing.
+  useEffect(() => {
+    if (!failed && e.name !== "my_tasks_sync" && isFreshReceipt(e)) announceChange(e.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
+  }, [failed, e.id]);
 
   // One look with the Projects receipts: a `RollupCard` whose title row is
   // the shared header, with the icon in the card's tone.
@@ -479,7 +501,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
               onClick={() => openTask(itemId)}
               className="mt-1 gap-1 text-[10px] text-primary"
             >
-              Open in My Tasks
+              Open in My work
             </Button>
           )}
       </RollupBody>

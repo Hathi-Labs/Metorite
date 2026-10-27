@@ -375,6 +375,36 @@ def code_amount(src: Source) -> Field | None:
     return _one([f for f in money if _filled(src, f, FILL_SURE)])
 
 
+#: §18.16 part 5: the most money fields whose GST evidence one amount pick
+#: reads (one bounded statement, ``field_sql.gst_check``).
+AMOUNT_EVIDENCE_FIELDS = 6
+#: The evidence word of a field that excludes GST (``questions.GST_EXCLUDES``).
+EXCLUDES_GST = "excludes_gst"
+
+
+def amount_evidence_fields(src: Source) -> list[Field]:
+    """The currency fields of *src* that an amount pick weighs (WS-53 §18.16
+    part 5): filled 50% or more, no tax part in the label or the key, the
+    most filled first, at most :data:`AMOUNT_EVIDENCE_FIELDS`. A field with
+    a tax word is a GST sibling, and the evidence reads it beside these."""
+    from gateway.crm_sync.terms import TAX_PART_WORDS, words
+
+    if src.fills is None:
+        return []
+    money = [f for f in src.fields if f.type == "currency" and _filled(src, f, FILL_SURE)
+             and not (TAX_PART_WORDS & {*words(f.label), *words(f.key)})]
+    money.sort(key=lambda f: (-(_share(src, f.key) or 0.0), f.key))
+    return money[:AMOUNT_EVIDENCE_FIELDS]
+
+
+def code_amount_ex_gst(src: Source, evidence: Mapping[str, Sequence[str]]) -> Field | None:
+    """The amount that the evidence of GST picks (WS-53 §18.16 part 5): of
+    :func:`amount_evidence_fields`, the most filled one that the arithmetic
+    or its label marks as excluding GST. None when no field is marked."""
+    found = [f for f in amount_evidence_fields(src) if EXCLUDES_GST in (evidence.get(f.key) or ())]
+    return found[0] if found else None
+
+
 def code_date(src: Source) -> Field | None:
     """Rule 7. A date field named ``<Singular>_Date``, filled 50% or more.
     Else the one date or datetime field filled 90% or more. A system time
@@ -873,6 +903,7 @@ __all__ = [
     "build",
     "clear_parts",
     "code_amount",
+    "code_amount_ex_gst",
     "code_date",
     "code_parent",
     "code_parts",

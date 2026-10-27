@@ -79,7 +79,7 @@ import { CATEGORY_LABEL, EDITABLE_CATEGORIES } from "@/lib/statusCategory";
  * "Stage", never "status": this filters by the CATEGORY, which is what the
  * "Group by stage" option below calls it. A status is a lane's own name.
  */
-const CATEGORIES: Array<[string, string]> = [
+export const CATEGORIES: Array<[string, string]> = [
   ["", "Any stage"],
   ...EDITABLE_CATEGORIES.map((c): [string, string] => [c, CATEGORY_LABEL[c]]),
 ];
@@ -93,7 +93,7 @@ const CATEGORIES: Array<[string, string]> = [
  * lived in a `<label>` that the flex row then had to carry. Folding the verb
  * into the option text removes two elements from the busiest row in the app.
  */
-const GROUP_OPTION_LABELS: Record<GroupBy, string> = {
+export const GROUP_OPTION_LABELS: Record<GroupBy, string> = {
   status: "Group by status",
   // "Stage", never "category". The database column is `category`; the word a
   // member uses for Backlog / To do / In progress / Done is a stage, which is
@@ -107,7 +107,7 @@ const GROUP_OPTION_LABELS: Record<GroupBy, string> = {
   none: "No grouping",
 };
 
-const LANE_OPTION_LABELS: Record<GroupBy, string> = {
+export const LANE_OPTION_LABELS: Record<GroupBy, string> = {
   status: "Lanes by status",
   category: "Lanes by stage",
   assignee: "Lanes by assignee",
@@ -147,10 +147,10 @@ const LANE_OPTION_LABELS: Record<GroupBy, string> = {
  * `font-weight` from `--label-weight` in unlayered CSS, which beats a utility
  * class.
  */
-const AT_DEFAULT = "";
+export const AT_DEFAULT = "";
 
 
-interface Props {
+export interface Props {
   filters: Filters;
   onFilters: (next: Filters) => void;
   /**

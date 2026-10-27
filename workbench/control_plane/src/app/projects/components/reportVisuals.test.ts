@@ -98,6 +98,11 @@ const OUTLOOK: NonNullable<Sections["outlook"]> = {
     weeks_remaining: 10,
     finish_date: "2027-03-12",
     verdict: "converging",
+    // WS-27bn RA-6. The forecast by count: the 50% and the 85% dates.
+    p50_weeks: 10,
+    p50_date: "2027-03-12",
+    p85_weeks: 13,
+    p85_date: "2027-04-02",
   },
   capacity: {
     hours_per_week: 60,
@@ -132,6 +137,10 @@ const NOT_CONVERGING: NonNullable<Sections["outlook"]> = {
     weeks_remaining: null,
     finish_date: null,
     verdict: "not_converging",
+    p50_weeks: null,
+    p50_date: null,
+    p85_weeks: null,
+    p85_date: null,
   },
   plan: { ...OUTLOOK.plan, planned_finish: null, dated: 0, slip_days: null },
 };
@@ -311,6 +320,197 @@ const PULSE_MEMBER: NonNullable<Sections["pulse"]> = {
   ],
 };
 
+/** `waiting_body` for an admin: one row in each list (WS-27bn RA-3). */
+const WAITING_ROW = {
+  task_number: 12,
+  project_id: "p1",
+  project_name: "Rig",
+  since: "2026-09-20T06:00:00+00:00",
+  age_hours: 3,
+  agent: "Claude Code",
+  client_via: "mcp:claude.ai:claude-code",
+  member: "ana@example.test",
+  member_name: "Ana Rao",
+};
+
+const WAITING: NonNullable<Sections["waiting"]> = {
+  summary:
+    "1 agent question waits for an answer. It is 3 hours old. 1 task waits for a review." +
+    " 1 handoff between a person and an agent is blocked.",
+  agent_runs_seen: true,
+  questions: [{ ...WAITING_ROW, id: "tq", title: "Choose the nozzle 8201" }],
+  questions_total: 1,
+  reviews: [
+    {
+      ...WAITING_ROW,
+      id: "tr",
+      title: "Ship the fix",
+      reasons: ["pull_request"],
+      pr_url: "https://github.com/acme/widgets/pull/9",
+    },
+  ],
+  reviews_total: 1,
+  handoffs: [
+    {
+      ...WAITING_ROW,
+      id: "th",
+      title: "Wire the board",
+      agent: "coder",
+      client_via: null,
+      member: null,
+      member_name: null,
+      blocker_id: "tb",
+      blocker_number: 3,
+      blocker_title: "Order steel",
+      agent_side: "blocked",
+      person: "dee@example.test",
+      person_name: "Dee",
+    },
+  ],
+  handoffs_total: 1,
+  answer_time: { asked: 4, answered: 3, unanswered: 1, median_hours: 3, p90_hours: 4.6 },
+  max_rows: 20,
+};
+
+/** `agent_runs_body` for an admin: one silent run and one long run (WS-27bn RA-4). */
+const AGENT_RUN_ROW = {
+  project_id: "p1",
+  project_name: "Rig",
+  agent: "Claude Code",
+  client_via: "mcp:claude.ai:claude-code",
+  member: "ana@example.test",
+  member_name: "Ana Rao",
+};
+
+const AGENT_RUNS: NonNullable<Sections["agent_runs"]> = {
+  summary:
+    "9 agent runs ended in the last 14 days. The success rate is 75%, down from 80% in the 14 days before." +
+    " 1 run is silent now. 1 completed run took 4 hours or more of agent time: maybe a poorly specified task.",
+  on: true,
+  agent_runs_seen: true,
+  days: 14,
+  window_start: "2026-09-11",
+  outcomes: { completed: 6, failed: 1, stopped: 1, abandoned: 1, released: 0, server_closed: 0 },
+  ended_total: 9,
+  outcomes_before: { completed: 4, failed: 1, stopped: 0, abandoned: 0, released: 0, server_closed: 0 },
+  series: [
+    { day: "2026-09-23", completed: 2, failed: 1, stopped: 0, abandoned: 0, released: 0, server_closed: 0, total: 3 },
+    { day: "2026-09-24", completed: 4, failed: 0, stopped: 1, abandoned: 1, released: 0, server_closed: 0, total: 6 },
+  ],
+  success: { rate: 0.75, completed: 6, rated: 8, rate_before: 0.8, rated_before: 5, trend: "down" },
+  silent: [
+    {
+      ...AGENT_RUN_ROW,
+      id: "ts",
+      run_id: "rs",
+      task_number: 21,
+      title: "Calibrate the bed 8301",
+      since: "2026-09-24T05:00:00+00:00",
+      age_hours: 2,
+    },
+  ],
+  silent_total: 1,
+  silent_after_minutes: 15,
+  sizes: { under_15m: 2, under_1h: 2, under_4h: 1, over_4h: 1, unmeasured: 0 },
+  sized_total: 6,
+  long_runs: [
+    {
+      ...AGENT_RUN_ROW,
+      id: "tl",
+      run_id: "rl",
+      task_number: 22,
+      title: "Port the firmware",
+      hours: 6.5,
+      ended_at: "2026-09-24T03:00:00+00:00",
+    },
+  ],
+  long_total: 1,
+  long_after_hours: 4,
+  long_line: "1 completed run took 4 hours or more of agent time: maybe a poorly specified task.",
+  max_rows: 20,
+};
+
+/** `quality_body` for an admin: one failing pull request (WS-27bn RA-5). */
+const QUALITY: NonNullable<Sections["quality"]> = {
+  summary:
+    "8 agent pull requests merged and 2 closed with no merge in the last 14 days." +
+    " The merge rate is 80%, up from 70% in the 14 days before." +
+    " 3 agent pull requests are open now, and 1 fails their checks.",
+  on: true,
+  quality_seen: true,
+  days: 14,
+  prs: {
+    merged: 8,
+    closed: 2,
+    rate: 0.8,
+    merged_before: 7,
+    closed_before: 3,
+    rate_before: 0.7,
+    trend: "up",
+    open: 3,
+  },
+  checks: {
+    failing_total: 1,
+    failing: [
+      {
+        id: "tq",
+        task_number: 31,
+        title: "Fix the checks 8401",
+        project_id: "p1",
+        project_name: "Rig",
+        since: "2026-09-22T05:00:00+00:00",
+        age_hours: 50,
+        ref: "acme/rig#12",
+        url: "https://github.com/acme/rig/pull/12",
+        pr_title: "Fix it",
+        pr_state: "open",
+        agent: "Claude Code",
+        client_via: "mcp:claude.ai:claude-code",
+        member: "ana@example.test",
+        member_name: "Ana Rao",
+      },
+    ],
+    merged_red: 1,
+    merged_red_before: 0,
+  },
+  rework: {
+    reopened: {
+      agents: {
+        finished: 10,
+        undone: 2,
+        reopened: 3,
+        finished_before: 8,
+        undone_before: 1,
+        reopened_before: 1,
+        rate: 0.2,
+        rate_before: 0.125,
+        trend: "up",
+      },
+      people: {
+        finished: 20,
+        undone: 1,
+        reopened: 1,
+        finished_before: 18,
+        undone_before: 2,
+        reopened_before: 2,
+        rate: 0.05,
+        rate_before: 0.1111,
+        trend: "down",
+      },
+    },
+    retried: {
+      failed: 5,
+      retried: 3,
+      failed_before: 4,
+      retried_before: 1,
+      rate: 0.6,
+      rate_before: 0.25,
+      trend: "up",
+    },
+  },
+  max_rows: 5,
+};
+
 /**
  * Every section, in the shape `render_body` sends since R3a. Each carries one
  * SENTINEL figure (71xx to 77xx) that nothing else in the body repeats.
@@ -394,6 +594,9 @@ const SECTIONS: Required<Sections> = {
   rebalance: REBALANCE,
   hygiene: HYGIENE,
   pulse: PULSE,
+  waiting: WAITING,
+  agent_runs: AGENT_RUNS,
+  quality: QUALITY,
 };
 
 const SENTINEL: Record<keyof Sections, string> = {
@@ -407,6 +610,9 @@ const SENTINEL: Record<keyof Sections, string> = {
   rebalance: "7801",
   hygiene: "7901",
   pulse: "8101",
+  waiting: "8201",
+  agent_runs: "8301",
+  quality: "8401",
 };
 
 function body(sections: Sections): RenderedReportBody {
@@ -457,21 +663,24 @@ const PANEL_TITLE: Record<keyof Sections, string> = {
   rebalance: "Who could help",
   hygiene: "Data hygiene",
   pulse: "Team pulse",
+  waiting: "Waiting on people",
+  agent_runs: "Agent runs",
+  quality: "Quality",
 };
 
 // ── (a) The render ───────────────────────────────────────────────────────────
 
 describe("RenderedBody draws each section as its panel, then its table", () => {
-  it("draws all ten panels and ten tables in one report", () => {
+  it("draws all thirteen panels and thirteen tables in one report", () => {
     const html = draw(SECTIONS);
     for (const title of Object.values(PANEL_TITLE)) {
       expect(html, title).toContain(title);
     }
-    expect(html.split(', as a table').length).toBe(11);
+    expect(html.split(', as a table').length).toBe(14);
     // §6.6 D item 5. Each card has one table button in its header.
-    expect(html.match(/aria-label="Show as a table"/g)?.length).toBe(10);
+    expect(html.match(/aria-label="Show as a table"/g)?.length).toBe(13);
     // The panel names its region, so a screen reader announces the title.
-    expect(html.match(/<section[^>]*aria-labelledby=/g)?.length).toBe(10);
+    expect(html.match(/<section[^>]*aria-labelledby=/g)?.length).toBe(13);
   });
 
   it("pulse draws one card a person: the load bar, the status and three focus tasks", () => {
@@ -617,11 +826,13 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     expect(html).not.toContain("No open work in this scope");
   });
 
-  it("outlook draws the slip as a range bar, with both dates and the slip in text", () => {
+  it("outlook draws the forecast band, with both dates, the plan and the slip in text", () => {
+    // WS-27bn RA-6. The band holds the 50% and 85% dates and the plan.
     const html = draw({ outlook: OUTLOOK });
-    expect(html).toContain("Plan 17 Feb 2027, forecast 12 Mar 2027: 23 days late.");
+    expect(html).toContain("50% by 12 Mar 2027, 85% by 2 Apr 2027. Plan 17 Feb 2027: 23 days late.");
     expect(html).toContain("Plan 17 Feb 2027");
-    expect(html).toContain("Forecast 12 Mar 2027");
+    expect(html).toContain("50% by 12 Mar 2027");
+    expect(html).toContain("85% by 2 Apr 2027");
     expect(html).toContain("23 days late");
   });
 
@@ -734,11 +945,11 @@ describe("degrade: a report-shaped body prints no broken words", () => {
     expect(panel).not.toContain('role="img"');
   });
 
-  it("draws no slip bar and shows the verdict when the forecast has no date", () => {
+  it("draws no forecast band and shows the verdict when the forecast has no date", () => {
     const html = draw({ outlook: NOT_CONVERGING });
     expect(html).toContain("Not converging");
     expect(html).not.toContain("days late");
-    expect(html).not.toMatch(/aria-label="Plan /);
+    expect(html).not.toMatch(/aria-label="50% by /);
     // The folded table says each absent date as a dash.
     expect(html).toMatch(/>Forecast finish<\/dt><dd[^>]*>—</);
   });
@@ -941,18 +1152,19 @@ describe("the Analytics panels render as before", () => {
     expect(html).not.toContain("Nothing in this scope yet");
   });
 
-  it("the Outlook panel draws the slip bar from the route's own body", () => {
-    // WS-27bn R3a. The Analytics app and the node dashboard share this panel.
+  it("the Outlook panel draws the forecast band from the route's own body", () => {
+    // WS-27bn R3a, and RA-6: the band holds the 50% and 85% dates and the
+    // plan. The Analytics app and the node dashboard share this panel.
     const html = renderToStaticMarkup(createElement(OutlookPanel, { data: OUTLOOK }));
     expect(html).toContain("23 days late");
     expect(html).toContain(
-      'aria-label="Plan 17 Feb 2027, forecast 12 Mar 2027: 23 days late."'
+      'aria-label="50% by 12 Mar 2027, 85% by 2 Apr 2027. Plan 17 Feb 2027: 23 days late."'
     );
     const none = renderToStaticMarkup(
       createElement(OutlookPanel, { data: NOT_CONVERGING })
     );
     expect(none).toContain("Not converging");
-    expect(none).not.toMatch(/aria-label="Plan /);
+    expect(none).not.toMatch(/aria-label="50% by /);
     for (const word of ["undefined", "NaN"]) expect(none).not.toContain(word);
   });
 
@@ -982,6 +1194,9 @@ const PANELS = [
   "RebalancePanel",
   "HygienePanel",
   "PulsePanel",
+  "WaitingPanel",
+  "AgentRunsPanel",
+  "QualityPanel",
 ];
 
 /** Everything that would make `RenderedBody` a second chart component. */
@@ -1000,13 +1215,13 @@ function handDrawnChart(source: string): string[] {
 describe("ReportsView draws with the Analytics panels, and draws nothing itself", () => {
   const source = readFileSync(join(__dirname, "ReportsView.tsx"), "utf-8");
 
-  it("imports the ten panels from ./AnalyticsPanels", () => {
+  it("imports the thirteen panels from ./AnalyticsPanels", () => {
     const block = source.match(/import\s*\{([^}]*)\}\s*from\s*"\.\/AnalyticsPanels"/);
     expect(block, "no import from ./AnalyticsPanels").not.toBeNull();
     for (const panel of PANELS) expect(block![1]).toMatch(new RegExp(`\\b${panel}\\b`));
   });
 
-  it("renders each of the ten", () => {
+  it("renders each of the thirteen", () => {
     for (const panel of PANELS) expect(source).toContain(`<${panel}`);
   });
 

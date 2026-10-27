@@ -22,6 +22,7 @@ real Postgres.
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -114,7 +115,11 @@ EMPTY_DEALS = (qs.SlotState(slot="company", empty=False), qs.SlotState(slot="dea
 
 
 def test_each_kind_on_dewin_shape() -> None:
-    found = qs.build(_inputs(slots=EMPTY_DEALS, stages=(DEAL_STAGE,)))
+    # WS-53 §18.16 part 4: a term opens only when the chat met it, so the
+    # seed names one word that two money fields of Invoices hold.
+    inputs = _inputs(slots=EMPTY_DEALS, stages=(DEAL_STAGE,))
+    found = qs.build(replace(inputs, terms={
+        "term:Invoices:amount": {"module": "Invoices", "word": "amount"}}))
     by = _by_id(found)
     assert {q.kind for q in found} == set(qs.KINDS)
     # purpose: a renamed core entity and a custom module with no purpose word.

@@ -9,6 +9,9 @@ decisions EA12-1 to EA12-13) and row EA-12a of §15.
     GET  /projects/agent-runs/{run_id}            → {run, activities, cursor}
     POST /projects/agent-runs/{run_id}/activities → {activity, run, created}
     POST /projects/agent-runs/{run_id}/finish     → {run, activity}
+    POST /projects/agent-runs/{run_id}/release    → {run, released}   (EA-14a)
+    POST /projects/agent-runs/{run_id}/resume     → {run, activity, resumed, created}
+                                                                      (SW-11a)
     POST /projects/tasks/{task_id}/archive-request    → {activity, run, created}
     POST /projects/agent-runs/{run_id}/archive-approval
                                                   → {activity, run, created, archived}
@@ -19,6 +22,15 @@ ACTIVITIES: ``prompt``, ``thought``, ``action``, ``response``,
 and the run waits (``awaiting``) until a member writes a ``prompt``. These
 routes are the only writer of ``pm_agent_runs`` and
 ``pm_agent_run_activities``.
+
+**One AI for each task (EA-14a).** A task has at most ONE open run, across
+every member and every client. A start or a claim on a task that another run
+holds answers 409 with the code ``task_held``. A run keeps its task while its
+last activity is newer than the lease (:func:`filters.agent_run_lease_s`, two
+hours, or three leases while it waits on a question). After that, the next
+claim takes the task over: the old run becomes ``abandoned``. The holder, a
+person who owns the run or the task, or an admin may release a run
+(``released``). Fence: ``tests/unit/test_agent_run_exclusive.py``.
 
 The rules, each one stated in the spec:
 
@@ -55,7 +67,13 @@ The rules, each one stated in the spec:
   ``archive-approval``, which is NOT in ``MCP_ROUTES``. An approve writes
   the answer and archives the task in ONE transaction, through
   ``tasks.archive_task_in``, and never the subtasks. The generic answer
-  route refuses a ``prompt`` on a typed request.
+  route refuses a ``prompt`` on a typed request. SW-10a: an approve also
+  closes the run (``completed``, with a system line) in that transaction.
+* **Stranded runs** (WS-55 SW-10a, spec §12.6). The runs wire carries
+  ``needs_agent`` (why the run waits for an agent) and ``stranded`` (the
+  open strand that the sweep of ``gateway/agent_run_sweep.py`` found). The sweep
+  decides; the writes to these two tables stay here
+  (:func:`close_archived_runs`, :func:`write_strand_line`).
 """
 
 from __future__ import annotations
@@ -65,6 +83,8 @@ import json
 import re
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
@@ -87,30 +107,46 @@ from gateway.routes.projects.core import (
     wire,
 )
 from gateway.routes.projects.filters import (
+    AGENT_RUN_ANSWER_WAITS_SQL,
     AGENT_RUN_OPEN_STATUSES,
     AGENT_RUN_STATE_SQL,
     agent_runs_enabled,
     attach_agent_state,
+    connection_gone_sql,
+    holder_free,
+    holder_free_sql,
+    lease_expired,
+    open_recovery_sql,
+    open_strand_sql,
+    strand_fits_sql,
+    task_closed_sql,
 )
 from gateway.routes.projects.notifications import excerpt_of, notify, task_audience
 from gateway.routes.projects.tasks import archive_task_in
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 _log = get_logger("gateway.projects.agent_runs")
 
 # ── The vocabulary ──────────────────────────────────────────────────────────
 
-#: The eight statuses of Plane's ``AgentRun``. ``stale`` is never stored: it
+#: The eight statuses of Plane's ``AgentRun``, and the two of EA-14a:
+#: ``abandoned`` (another session took the task over after the lease) and
+#: ``released`` (the holder gave the task up). ``stale`` is never stored: it
 #: is derived on read (:data:`AGENT_RUN_STATE_SQL`). The CHECK of the
-#: migration lists the same eight.
+#: EA-14a migration lists the stored ones.
 RUN_STATUSES: tuple[str, ...] = (
     "created", "in_progress", "awaiting", "completed",
-    "stopping", "stopped", "failed", "stale",
+    "stopping", "stopped", "failed", "stale", "abandoned", "released",
 )
 OPEN_STATUSES: frozenset[str] = frozenset(AGENT_RUN_OPEN_STATUSES)
 #: Terminal for the agent. A member ``prompt`` on ``completed`` opens it again.
-TERMINAL_STATUSES: frozenset[str] = frozenset({"completed", "stopped", "failed"})
+TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {"completed", "stopped", "failed", "abandoned", "released"},
+)
+#: The stable code of the 409 for a task that another run holds (EA-14a).
+TASK_HELD = "task_held"
 
 ACTIVITY_TYPES: tuple[str, ...] = (
     "prompt", "thought", "action", "response", "elicitation", "error",
@@ -152,6 +188,12 @@ ARCHIVE_DECLINE = "decline"
 ARCHIVE_REQUEST_BODY = (
     "The agent asks to archive this task. The subtasks stay where they are. "
     "Only the member of this agent run can approve or decline."
+)
+#: SW-10a (spec §12.6, part 1 item 2). The system line of a run that an
+#: approved archive closed. Before SW-10a such a run read ``answered`` until
+#: an agent came back, and in production none came (tasks #129 and #248).
+ARCHIVE_CLOSED_BODY = (
+    "Closed: the member approved the archive, and the task is archived."
 )
 
 #: The sleep of the long poll. A name of its own, so the fence of R11 can
@@ -233,6 +275,23 @@ class FinishIn(BaseModel):
 
     summary: str | None = Field(default=None, max_length=MAX_BODY)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class ReleaseIn(BaseModel):
+    """``POST /projects/agent-runs/{id}/release`` (EA-14a). No field: the run
+    is the path, and the actor is the context."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ResumeIn(BaseModel):
+    """``POST /projects/agent-runs/{id}/resume`` (WS-55 SW-11a, spec §12.7).
+    The key only. The run is the path, the actor is the context, and the text
+    of the prompt is the server's (:data:`RESUME_BODY`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=1, max_length=128)
 
 
 class ArchiveRequestIn(BaseModel):
@@ -321,6 +380,30 @@ _MOVES: dict[str, dict[str, str]] = {
     # The member's first instruction, inside the start of a `created` run
     # (EA-12d). Only `start_agent_run` passes it. No route takes it as input.
     "member_start": {"created": "created"},
+    # EA-14a. The holder (or a person) gives the task up, and a later claim
+    # takes a task over after the lease. Both end an OPEN run only.
+    "release": {
+        "created": "released", "in_progress": "released", "awaiting": "released",
+        "stopping": "released",
+    },
+    "abandon": {
+        "created": "abandoned", "in_progress": "abandoned", "awaiting": "abandoned",
+        "stopping": "abandoned",
+    },
+    # SW-10a (spec §12.6). The member approved the agent's archive request
+    # and the task is archived: the work is over, so the run closes. Only
+    # `close_archived_run` passes it. The approval moved the run from
+    # `awaiting` to `in_progress` the moment before.
+    "archive_close": {"in_progress": "completed"},
+    # SW-10a fix round. The task of the run is done, cancelled or archived,
+    # and the run was quiet for the stale band: the sweep closes it. Only
+    # `close_closed_task_run` passes it.
+    "task_close": {"in_progress": "completed"},
+    # SW-10a fix round. The agent of a run that the SERVER closed (one of
+    # the two moves above) finishes later with a summary. The summary is kept
+    # as a `response`, and the run stays `completed`. Only `finish_agent_run`
+    # passes it, after `_server_closed` holds.
+    "late_summary": {"completed": "completed"},
 }
 
 
@@ -338,14 +421,16 @@ def transition(status: str, event: str) -> str:
         raise ValueError(f"unknown event {event!r}")
     to = moves.get(current)
     if to is None:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "The agent has not picked this run up yet. Wait for it to start, then reply."
-                if status == "created" and event == "member_prompt"
-                else f"This agent run is {status}. It cannot take this activity."
-            ),
-        )
+        if status == "abandoned":
+            detail = (
+                "Another AI session took this task over. This run is abandoned. "
+                "Stop the work on this task."
+            )
+        elif status == "created" and event == "member_prompt":
+            detail = "The agent has not picked this run up yet. Wait for it to start, then reply."
+        else:
+            detail = f"This agent run is {status}. It cannot take this activity."
+        raise HTTPException(status_code=409, detail=detail)
     return to
 
 
@@ -435,7 +520,42 @@ def _activity_out(row: Any) -> dict[str, Any]:
     }
 
 
-_RUN_SELECT = f"SELECT r.*, {AGENT_RUN_STATE_SQL} AS state FROM pm_agent_runs r"
+#: ``needs_agent``: the reason that a run waits for an agent, or NULL. ONE
+#: text for the filter ``needs_agent=true`` (:data:`_NEEDS_AGENT_SQL`) and for
+#: the field of the runs wire, so the two cannot disagree.
+#:
+#: * ``queued``: a ``created`` run (a member queued work, EA-12d).
+#: * ``stopping``: a member pressed Stop.
+#: * ``answered``: the RAW answered rule (``filters.AGENT_RUN_ANSWER_WAITS_SQL``).
+#:   SW-10a: the derived state of such a run reads ``stale`` after five
+#:   minutes (spec §12.6), and this reason still says ``answered``, so
+#:   ``my_work`` keeps offering the answer as ``run_answered``.
+#: * ``stranded``: SW-10a. The sweep nudged the member about this run, and no
+#:   activity came since (``filters.open_strand_sql``). Derived from the
+#:   ``pm_agent_run_strands`` table, with no column on the run.
+_NEEDS_AGENT_REASON_SQL = (
+    "(CASE WHEN r.status = 'created' THEN 'queued'"
+    " WHEN r.status = 'stopping' THEN 'stopping'"
+    f" WHEN r.status = 'in_progress' AND {AGENT_RUN_ANSWER_WAITS_SQL} THEN 'answered'"
+    f" WHEN {open_strand_sql('r')} THEN 'stranded'"
+    " END)"
+)
+
+#: ``needs_agent=true``: a run the agent must act on. A ``created`` run, a
+#: ``stopping`` run, a run whose answer waits, or a stranded run (SW-10a).
+_NEEDS_AGENT_SQL = f"({_NEEDS_AGENT_REASON_SQL} IS NOT NULL)"
+
+#: EA-14a: every read of a run also carries ``idle_s`` (the seconds since its
+#: last activity, for the lease) and the display name of its member. SW-10a:
+#: and ``needs_agent``, the reason it waits for an agent.
+_RUN_SELECT = (
+    f"SELECT r.*, {AGENT_RUN_STATE_SQL} AS state, "
+    f" {_NEEDS_AGENT_REASON_SQL} AS needs_agent, "
+    " EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s, "
+    " (SELECT u.display_name FROM app_user u"
+    "   WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name "
+    "FROM pm_agent_runs r"
+)
 
 _OPEN_ELICITATIONS_SQL = """
 SELECT DISTINCT ON (a.run_id) a.*
@@ -454,26 +574,64 @@ SELECT DISTINCT ON (a.run_id) a.*
  ORDER BY a.run_id, a.seq DESC
 """
 
+#: SW-10a (spec §12.6). The open strand of each run that still fits it, for
+#: ``stranded`` on the runs wire. The rule is ``filters.open_strand_sql``.
+_OPEN_STRANDS_SQL = f"""
+SELECT DISTINCT ON (s.run_id) s.run_id, s.reason, s.nudged_at, s.recovered_at
+  FROM pm_agent_run_strands s
+  JOIN pm_agent_runs r ON {strand_fits_sql('s', 'r')}
+ WHERE s.run_id = ANY(CAST(:ids AS uuid[]))
+ ORDER BY s.run_id, s.nudged_at DESC
+"""
+
+
+def _stranded_out(found: Any, idle_s: Any) -> dict[str, Any]:
+    """``stranded`` of one run: the reason, the first miss, the second miss
+    (the recovery record) and the seconds since the last activity."""
+    return {
+        "reason": found.reason,
+        "nudged_at": wire(found.nudged_at),
+        "recovered_at": wire(found.recovered_at),
+        "idle_s": int(float(idle_s)) if idle_s is not None else None,
+    }
+
 
 async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
     """The wire shape of each run, with its derived ``state``, its open
-    elicitation and its newest ephemeral line. Two queries for the list."""
+    elicitation, its newest ephemeral line and its open strand (SW-10a).
+    Three queries for the list."""
     ids = [str(r.id) for r in rows]
     questions: dict[str, dict[str, Any]] = {}
     lines: dict[str, dict[str, Any]] = {}
+    strands: dict[str, Any] = {}
     if ids:
         for found in (await db.execute(text(_OPEN_ELICITATIONS_SQL), {"ids": ids})).fetchall():
             questions[str(found.run_id)] = _activity_out(found)
         for found in (await db.execute(text(_LATEST_EPHEMERAL_SQL), {"ids": ids})).fetchall():
             lines[str(found.run_id)] = _activity_out(found)
+        for found in (await db.execute(text(_OPEN_STRANDS_SQL), {"ids": ids})).fetchall():
+            strands[str(found.run_id)] = found
     out: list[dict[str, Any]] = []
     for row in rows:
         key = str(row.id)
+        strand = strands.get(key)
         out.append({
             "id": key,
             "task_id": str(row.task_id),
             "member_email": row.member_email,
+            # EA-14a: the name for "Held by <member> via <client>", and whether
+            # the lease ended (the run no longer keeps its task).
+            "member_name": getattr(row, "member_name", None) or row.member_email,
+            "lease_expired": bool(
+                row.status in OPEN_STATUSES
+                and getattr(row, "idle_s", None) is not None
+                and lease_expired(row.status, float(row.idle_s))
+            ),
             "connection_id": wire(row.connection_id),
+            # SW-7: the MCP session key, so `my_work` keeps this session's
+            # runs. The key alone is no credential: the edge verifies the HMAC
+            # of the session id before it signs a key in (spec §12.5).
+            "session_key": getattr(row, "session_key", None),
             "client_via": row.client_via,
             # EA-13d: the curated name and the verified host of the stamp, for
             # the run pill "<client_name> · <host>". The name comes from the one
@@ -494,6 +652,11 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
             "error_metadata": from_jsonb(row.error_metadata),
             "open_elicitation": questions.get(key) if row.status in OPEN_STATUSES else None,
             "latest_ephemeral": lines.get(key),
+            # SW-10a (spec §12.6): why the run waits for an agent, and the
+            # open strand that the sweep found, if any.
+            "needs_agent": getattr(row, "needs_agent", None),
+            "stranded": (_stranded_out(strand, getattr(row, "idle_s", None))
+                         if strand is not None else None),
         })
     return out
 
@@ -753,6 +916,7 @@ async def _write_activity(
     request: dict[str, Any] | None = None,
     typed: bool = False,
     extra: dict[str, Any] | None = None,
+    quiet: bool = False,
 ) -> _Written:
     """Write one activity on a LOCKED run, inside the caller's transaction.
 
@@ -764,6 +928,9 @@ async def _write_activity(
     ``content_metadata``, and the question notifies the run's member only.
     *typed* lets a prompt answer such a request, and only the approval route
     passes it. *extra* adds the server's own keys to ``content``.
+
+    SW-11a. *quiet* keeps the timeline comment and sends no bell: Resume
+    writes a note to the agent, not a comment to people (spec §12.7).
     """
     run_id = str(run.id)
     task_id = str(run.task_id)
@@ -778,6 +945,13 @@ async def _write_activity(
         raise HTTPException(status_code=403, detail="This agent run belongs to another member.")
 
     new_status = transition(run.status, event or _event_of(kind, signal))
+    reopened_end: str | None = None
+    if run.status in TERMINAL_STATUSES and new_status in OPEN_STATUSES:
+        # RA-4b. Read the end BEFORE the move clears it: the report takes the
+        # idle gap of a reopened run from this end to the prompt.
+        ended = getattr(run, "ended_at", None)
+        reopened_end = ended.isoformat() if isinstance(ended, datetime) else None
+        await _clear_for_reopen(db, run, user)
 
     content: dict[str, Any] = {"body": body}
     content_metadata: dict[str, Any] | None = None
@@ -804,6 +978,11 @@ async def _write_activity(
             )
     if extra:
         content.update(extra)
+    if kind == "prompt" and reopened_end is not None:
+        # RA-4b. The marker of a REAL reopen. The report reads it for the idle
+        # gap (`analytics_agents._REOPEN_GAPS_JOIN`), never the row trail,
+        # because the cap of ephemeral rows deletes the rows between two acts.
+        content["reopens"] = {"ended_at": reopened_end}
 
     ts = await _clock(db)
     ephemeral = kind in EPHEMERAL_TYPES
@@ -850,6 +1029,7 @@ async def _write_activity(
             text_=_comment_body(kind, content, signal_meta) or kind,
             question=(kind == "elicitation" and new_status == "awaiting"),
             member_only=request is not None,
+            quiet=quiet,
         )
 
     await _move_run(
@@ -863,7 +1043,7 @@ async def _write_activity(
 
 async def _comment(
     db: Any, run: Any, made: Any, *, author: str, via: str | None, text_: str,
-    question: bool, member_only: bool = False,
+    question: bool, member_only: bool = False, quiet: bool = False,
 ) -> Any:
     """The timeline comment of one non-ephemeral activity, and its bell rows.
 
@@ -876,6 +1056,8 @@ async def _comment(
 
     A typed archive request (EA-6g, *member_only*) notifies the run's member
     only, because nobody else may answer it (EA12-8 as amended by EA3-40).
+
+    *quiet* (SW-11a, Resume) writes the comment and sends no bell at all.
     """
     task_id = str(run.task_id)
     meta: dict[str, Any] = {
@@ -896,6 +1078,8 @@ async def _comment(
         ),
         {"pm": str(comment.id), "aid": str(made.id)},
     )).fetchone()
+    if quiet:
+        return linked
     audience = [] if member_only else await task_audience(db, task_id)
     snippet = excerpt_of(text_)
     if question:
@@ -913,11 +1097,32 @@ async def _comment(
 
 
 async def _move_run(
-    db: Any, run: Any, new_status: str, *, ts: Any, user: UserContext, via: str | None,
+    db: Any, run: Any, new_status: str, *, ts: Any, user: UserContext | None,
+    via: str | None,
     error_body: str | None = None, error_activity: str | None = None, stop: bool = False,
 ) -> None:
     """Set the run's status and stamps. Column names are fixed here, and
-    only the values are bound."""
+    only the values are bound.
+
+    *user* is ``None`` only for a move that the server makes with no caller:
+    the archive close of the SW-10a sweep (:func:`close_archived_run`). Such a
+    move passes no *via* and no *stop*, so it reads nothing of a user.
+
+    SW-7 (spec §12.5), the session key of the run, ONE assignment:
+
+    * A terminal status clears it (a takeover clears it in ``_take_over``).
+      A reopen of a finished run then finds no key, and the next session
+      adopts the run.
+    * A person's move that is not terminal keeps the key: a plain prompt,
+      an answer to the session's question, and a Stop. The asking session
+      may be alive and polling, so an answer must not hand its run to a
+      sibling. A sibling sees a waiting run once its lease ended
+      (``my_work``, group 1).
+    * An agent move on the SAME connection adopts a run with no key and
+      keeps a key that is set (``COALESCE``).
+    * An agent move from ANOTHER connection writes the caller's key, which
+      may be NULL. A key minted for the old connection never survives.
+    """
     sets = ["status = :status", "last_activity_at = :ts"]
     params: dict[str, Any] = {"rid": str(run.id), "status": new_status, "ts": ts}
     if via is not None:
@@ -925,23 +1130,62 @@ async def _move_run(
         sets.append("last_agent_activity_at = :ts")
         sets.append("connection_id = CAST(:cid AS uuid)")
         params["cid"] = str(agent.connection_id) if agent is not None else None
+        params["sk"] = getattr(agent, "session_key", None) if agent is not None else None
     if new_status == "in_progress" and run.started_at is None:
         sets.append("started_at = :ts")
+    # Only a terminal status clears the key. Every run that reached one went
+    # through here or `_take_over`, and a run that ended before migration 302
+    # never had a key, so a reopen needs no clear of its own.
     if new_status in TERMINAL_STATUSES:
+        sets.append("session_key = NULL")
+    elif via is not None:
+        sets.append(
+            "session_key = CASE WHEN connection_id IS DISTINCT FROM CAST(:cid AS uuid)"
+            " THEN CAST(:sk AS text) ELSE COALESCE(session_key, CAST(:sk AS text)) END")
+    # A late summary goes from terminal to terminal, so the end stays.
+    if new_status in TERMINAL_STATUSES and run.status not in TERMINAL_STATUSES:
         sets.append("ended_at = :ts")
-    elif run.status in TERMINAL_STATUSES:
+    elif new_status in OPEN_STATUSES and run.status in TERMINAL_STATUSES:
         sets.append("ended_at = NULL")
-    if stop:
+    if stop and user is not None:
         sets.append("stopped_at = :ts")
         sets.append("stopped_by = :stopped_by")
         params["stopped_by"] = _member(user)
     if new_status == "failed":
         sets.append("error_metadata = CAST(:err AS jsonb)")
         params["err"] = _jsonb({"activity_id": error_activity, "body": error_body})
-    await db.execute(
-        text(f"UPDATE pm_agent_runs SET {', '.join(sets)} WHERE id = CAST(:rid AS uuid)"),
-        params,
-    )
+    update = text(f"UPDATE pm_agent_runs SET {', '.join(sets)} WHERE id = CAST(:rid AS uuid)")
+    if not (run.status in TERMINAL_STATUSES and new_status in OPEN_STATUSES):
+        await db.execute(update, params)
+        return
+    # H-409 item 1. Two members prompt two completed runs of one task at once.
+    # Both pass `_clear_for_reopen`, and the second UPDATE breaks
+    # `pm_agent_runs_one_open_per_task`. Inside a savepoint that error is a
+    # 409 `task_held` that names the run that won, not a 500 that aborts the
+    # whole transaction.
+    try:
+        async with _savepoint(db):
+            await db.execute(update, params)
+    except IntegrityError:
+        holder = (await db.execute(
+            text(_HOLDER_SQL), {"tid": str(run.task_id), "open": list(AGENT_RUN_OPEN_STATUSES)},
+        )).fetchone()
+        if holder is None:
+            raise HTTPException(status_code=409, detail="Try the call again.") from None
+        raise _task_held(holder) from None
+
+
+@asynccontextmanager
+async def _savepoint(db: Any) -> AsyncIterator[None]:
+    """A ``SAVEPOINT`` around one statement, so its error leaves the
+    transaction usable. The test fakes have no nested transactions, so there
+    it is a pass-through (the idiom of ``crm.core``)."""
+    begin_nested = getattr(db, "begin_nested", None)
+    if begin_nested is None:  # pragma: no cover — only the fakes lack it
+        yield
+        return
+    async with begin_nested():
+        yield
 
 
 # ── The routes ──────────────────────────────────────────────────────────────
@@ -967,13 +1211,239 @@ async def list_task_agent_runs(
         return {"rows": await _runs_out(db, list(rows))}
 
 
+# ── One AI for each task (WS-55 EA-14a) ─────────────────────────────────────
+
+#: The open run of a task, whoever holds it, with its idle time and the name
+#: of its member. At most one row exists, because the partial unique index
+#: ``pm_agent_runs_one_open_per_task`` allows one open run for each task.
+#: SW-13c: ``connection_gone`` is true when the run's agent connection is
+#: revoked or expired, and :func:`_free` then lets the gate take it over.
+_HOLDER_SQL = (
+    f"SELECT r.*, {AGENT_RUN_STATE_SQL} AS state, "
+    " EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s, "
+    f" {connection_gone_sql('r')} AS connection_gone, "
+    " (SELECT u.display_name FROM app_user u"
+    "   WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name "
+    "FROM pm_agent_runs r WHERE r.task_id = CAST(:tid AS uuid) "
+    "  AND r.status = ANY(:open) "
+    "ORDER BY r.created_at DESC, r.id DESC LIMIT 1"
+)
+
+_NAME_SQL = (
+    "SELECT display_name FROM app_user WHERE lower(email) = lower(:me) LIMIT 1"
+)
+
+
+async def _member_name(db: Any, email: str) -> str:
+    found = (await db.execute(text(_NAME_SQL), {"me": email})).scalar()
+    return str(found or email)
+
+
+#: SW-13c fix round 1 (P2-a), and SW-7. The hint of a 409 whose holder is the
+#: caller's OWN run from another session of the same client: another
+#: terminal (SW-7), another machine, or an earlier sign-in (SW-13c). The
+#: release checks the member and the stamp only, so the agent may end it.
+SAME_CLIENT_HINT = (
+    "This is your own run from another session of this client: another"
+    " machine, an earlier sign-in, or another terminal when MCP sessions are"
+    " on. If that session has ended, release it with release_task and this"
+    " run_id, then claim again."
+)
+
+
+def _same_client(holder: Any, me: str | None, via: str | None,
+                 connection: str | None, session: str | None = None) -> bool:
+    """True when *holder* is of the caller's member and stamp, in ANOTHER
+    session: another connection (SW-13c), or another MCP session of the same
+    connection (SW-7). Only an agent caller passes a connection."""
+    return (connection is not None and holder.member_email == me
+            and holder.client_via == via
+            and (str(holder.connection_id or "") != connection
+                 or getattr(holder, "session_key", None) != session))
+
+
+def _task_held(holder: Any, *, me: str | None = None, via: str | None = None,
+               connection: str | None = None,
+               session: str | None = None) -> HTTPException:
+    """The 409 ``task_held``. The message names the holder, the client, the
+    start and the last activity, and tells the caller to pick another task.
+
+    SW-13c fix round 1: ``same_client`` is true when the holder is the
+    caller's own run from another connection of the same client. Then the
+    detail also carries ``run_id`` and :data:`SAME_CLIENT_HINT`, because only
+    then may the caller release that run. Another member's run id never
+    leaves."""
+    name = holder.member_name or holder.member_email
+    client = agent_oauth.client_label(holder.client_via)
+    since = wire(holder.started_at or holder.created_at)
+    last = wire(holder.last_activity_at)
+    message = (
+        f"Another AI session holds this task. {name} holds it through {client}. "
+        f"The run began at {since}. The last activity was at {last}. "
+        "Pick another task. Do not try this task again."
+    )
+    own = _same_client(holder, me, via, connection, session)
+    detail: dict[str, Any] = {
+        "error": TASK_HELD, "message": message, "same_client": own,
+        "held_by": {
+            "member": holder.member_email, "member_name": name,
+            "client_via": holder.client_via, "client_name": client,
+            "since": since, "last_activity_at": last,
+        },
+    }
+    if own:
+        detail["message"] = f"{message} {SAME_CLIENT_HINT}"
+        detail["run_id"] = str(holder.id)
+        detail["hint"] = SAME_CLIENT_HINT
+    return HTTPException(status_code=409, detail=detail)
+
+
+async def _system_activity(db: Any, run: Any, *, actor_email: str, via: str | None,
+                           body: str, server_close: str | None = None) -> None:
+    """One ``response`` row on *run* that the SERVER writes, as the record of
+    a takeover or a release. No comment and no notification.
+
+    SW-10a: *server_close* names why the server closed the run (``archive``,
+    ``done``, ``cancelled`` or ``archived``). ``_server_closed`` reads it, so
+    the agent may still leave one late summary."""
+    content: dict[str, Any] = {"body": body, "system": True}
+    if server_close is not None:
+        content["server_close"] = server_close
+    await db.execute(
+        text(
+            "INSERT INTO pm_agent_run_activities "
+            "(run_id, task_id, type, content, ephemeral, signal, actor, actor_via) "
+            "VALUES (CAST(:rid AS uuid), CAST(:tid AS uuid), 'response', "
+            "        CAST(:content AS jsonb), false, NULL, :actor, :via)"
+        ),
+        {"rid": str(run.id), "tid": str(run.task_id), "actor": actor_email, "via": via,
+         "content": _jsonb(content)},
+    )
+
+
+async def _take_over(db: Any, holder: Any, *, me: str, via: str | None) -> bool:
+    """Move a run whose lease ended to ``abandoned``, and write the line
+    "Taken over by <member>/<client>". False when the run moved in the
+    meantime: a heartbeat changes ``last_activity_at``, so the guard misses
+    and the caller reads the holder again."""
+    ts = await _clock(db)
+    moved = (await db.execute(
+        text(
+            "UPDATE pm_agent_runs SET status = :to, ended_at = :ts, session_key = NULL "
+            " WHERE id = CAST(:rid AS uuid) AND status = ANY(:open) "
+            "   AND last_activity_at = :seen RETURNING id"
+        ),
+        {"to": transition(holder.status, "abandon"), "ts": ts, "rid": str(holder.id),
+         "open": list(AGENT_RUN_OPEN_STATUSES), "seen": holder.last_activity_at},
+    )).fetchone()
+    if moved is None:
+        return False
+    client = agent_oauth.client_label(via) if via else "the app"
+    await _system_activity(
+        db, holder, actor_email=me, via=via,
+        body=f"Taken over by {await _member_name(db, me)}/{client}",
+    )
+    return True
+
+
+def _free(holder: Any) -> bool:
+    """True when *holder*, an open run of :data:`_HOLDER_SQL`, keeps its task
+    no longer: its lease ended, or its connection is revoked or expired
+    (SW-13c, ``filters.holder_free``)."""
+    return holder_free(holder.status, float(holder.idle_s),
+                       getattr(holder, "connection_gone", False) is True)
+
+
+def _agent_session(user: UserContext) -> str | None:
+    """SW-7 (spec §12.5). The MCP session key of an AGENT caller, from
+    ``UserContext.agent``, which branch 0 fills from the SIGNED
+    ``X-Agent-Session``. Never from a body. ``None`` for a person, and for an
+    agent call outside an MCP session."""
+    agent = getattr(user, "agent", None)
+    return getattr(agent, "session_key", None) if agent is not None else None
+
+
+def _agent_connection(user: UserContext) -> str | None:
+    """SW-13c. The connection of an AGENT caller, from ``UserContext.agent``,
+    which branch 0 builds from the signed ``X-Agent-Connection`` and the token
+    row. Never from a body. ``None`` for a person."""
+    agent = getattr(user, "agent", None)
+    return str(agent.connection_id) if agent is not None else None
+
+
+async def _gate_task(db: Any, task_id: str, me: str, *, via: str,
+                     connection: str | None, session: str | None) -> Any | None:
+    """The ONE gate of EA-14a, before any run opens on *task_id*.
+
+    * The caller's own open run (same member, same client, EA12-6): that run.
+      SW-13c: for an AGENT caller, *connection* is its own connection, and
+      the run must carry it too. Two machines of one member share the stamp,
+      so a run of the same member and stamp on ANOTHER connection is a
+      holder like any other. A person passes ``None`` and keeps the old rule.
+      SW-7: an agent's own run is of its own MCP *session* too. A run with no
+      session key (a member start, or a run from before SW-7) counts as the
+      own run of any session of its connection, and the gate stamps the
+      caller's key on it (adoption). A sibling session that loses the race
+      to adopt reads the run again and finds a holder.
+    * No open run: None. The caller may insert.
+    * Another run whose lease ended (and, for a question, three leases), or
+      whose connection is revoked or expired (SW-13c): the run moves to
+      ``abandoned``, and None comes back.
+    * Any other open run: 409 ``task_held``.
+
+    There is no task row lock. The arbiter is the partial unique index
+    ``pm_agent_runs_one_open_per_task``: two callers that both read "free"
+    both insert, and the second insert finds no row (``ON CONFLICT DO
+    NOTHING``), so the caller runs this gate again and gets ``task_held``.
+    A takeover locks only the old run, with the guard on ``last_activity_at``.
+    So the gate never takes the task row before a run, which keeps the lock
+    order of ``open_run_for_claim`` (run, then task row).
+    """
+    args = _open_run_args(task_id, me, via, connection, session)
+    own = (await db.execute(text(_OPEN_RUN_SQL), args)).fetchone()
+    if own is not None and session is not None and own.session_key is None:
+        await db.execute(text(_ADOPT_SQL), {"rid": str(own.id), "sk": session})
+        own = (await db.execute(text(_OPEN_RUN_SQL), args)).fetchone()
+    if own is not None:
+        return own
+    for _ in range(3):
+        holder = (await db.execute(
+            text(_HOLDER_SQL), {"tid": task_id, "open": list(AGENT_RUN_OPEN_STATUSES)},
+        )).fetchone()
+        if holder is None:
+            return None
+        if not _free(holder):
+            raise _task_held(holder, me=me, via=via, connection=connection,
+                             session=session)
+        if await _take_over(db, holder, me=me, via=via):
+            return None
+    raise HTTPException(status_code=409, detail="Try the call again.")
+
+
+async def _clear_for_reopen(db: Any, run: Any, user: UserContext) -> None:
+    """A member's prompt opens a ``completed`` run again. The task must have
+    no OTHER open run, or the unique index would refuse the move with a 500.
+    A run whose lease ended, or whose connection is revoked or expired
+    (SW-13c), is taken over, as a claim would."""
+    holder = (await db.execute(
+        text(_HOLDER_SQL), {"tid": str(run.task_id), "open": list(AGENT_RUN_OPEN_STATUSES)},
+    )).fetchone()
+    if holder is None or str(holder.id) == str(run.id):
+        return
+    via = _agent_via(user)
+    if not _free(holder) or not await _take_over(db, holder, me=_member(user), via=via):
+        raise _task_held(holder, me=_member(user), via=via,
+                         connection=_agent_connection(user),
+                         session=_agent_session(user))
+
+
 _INSERT_RUN_SQL = (
     "INSERT INTO pm_agent_runs "
     "(task_id, member_email, connection_id, client_via, status, started_by, "
     " started_at, external_link, last_activity_at, last_agent_activity_at, "
-    " idempotency_key) "
+    " idempotency_key, session_key) "
     "VALUES (CAST(:tid AS uuid), :me, CAST(:cid AS uuid), :via, :status, :by, "
-    "        :started, :link, :ts, :agent_ts, :key) "
+    "        :started, :link, :ts, :agent_ts, :key, CAST(:sk AS text)) "
     "ON CONFLICT DO NOTHING RETURNING id"
 )
 
@@ -981,33 +1451,53 @@ _INSERT_RUN_SQL = (
 #: The ONE open-run read of EA12-6: the open run of a task for a member and a
 #: client stamp. The start, the archive request and the claim read it.
 #:
-#: ⚠️ EA-13a, for one release (spec §12.2 item 1). The stamp changed from
-#: ``mcp:<host>`` to ``mcp:<host>:<slug>``. A run that opened before the
-#: deploy holds the old host stamp, so the read also matches that stamp, for
-#: the SAME connection only. Then a start after the deploy finds the run, and
-#: no second run opens. A run under the new stamp comes first. Remove the
-#: legacy arm in the release after EA-13a.
+#: It matches the stamp of the caller only. When the connection's client id
+#: gives a slug, an open run under its legacy host stamp ``mcp:<host>`` is not
+#: found (H-356 closed the window of EA-13a fix round 1, spec §12.2 item 1).
+#: When it gives no slug, ``mcp:<host>`` is the caller's own stamp, so the
+#: read finds that run.
+#:
+#: SW-13c: ``:cid`` is the connection of an AGENT caller, and the run must
+#: carry it. A person binds NULL, and the read keeps the old rule (member and
+#: stamp). One query for both, so the rule cannot fork.
+#:
+#: Fix round 1 (P2-b): a run whose connection is revoked or expired is never
+#: anyone's own. So a person's start does not write into a dead run that the
+#: next claim abandons: the gate takes it over, and a new run opens on the
+#: live connection that the person names. An agent's own connection is live
+#: (branch 0 refuses a dead one), so the arm changes nothing for an agent.
+#:
+#: SW-7 (spec §12.5): an agent also binds its MCP session key ``:sk``. Its
+#: own run carries that key, or no key (the transition rule: a member start
+#: and a run from before SW-7). An agent with no session owns only runs with
+#: no key, so leaving the header out never reaches the run of a session. A
+#: person binds NULL connection and skips the arm.
 _OPEN_RUN_SQL = (
     f"{_RUN_SELECT} WHERE r.task_id = CAST(:tid AS uuid) AND r.member_email = :me "
-    "   AND r.status = ANY(:open) "
-    "   AND (r.client_via = :via "
-    "        OR (r.client_via = :legacy AND r.connection_id = CAST(:cid AS uuid))) "
-    " ORDER BY (r.client_via = :via) DESC, r.created_at DESC LIMIT 1"
+    "   AND r.status = ANY(:open) AND r.client_via = :via "
+    "   AND (CAST(:cid AS uuid) IS NULL OR r.connection_id = CAST(:cid AS uuid)) "
+    "   AND (CAST(:cid AS uuid) IS NULL OR r.session_key IS NULL "
+    "        OR r.session_key = CAST(:sk AS text)) "
+    f"   AND NOT {connection_gone_sql('r')} "
+    " ORDER BY r.created_at DESC LIMIT 1"
 )
 
 
-def _open_run_args(task_id: str, me: str, via: str, *, legacy: str,
-                   connection_id: str | None) -> dict[str, Any]:
-    """The binds of :data:`_OPEN_RUN_SQL`. *legacy* is the host stamp of the
-    connection (``actor_via_for(origin, client_id=None)``)."""
-    return {"tid": task_id, "me": me, "via": via, "legacy": legacy,
-            "cid": connection_id, "open": list(AGENT_RUN_OPEN_STATUSES)}
+def _open_run_args(task_id: str, me: str, via: str,
+                   connection: str | None, session: str | None) -> dict[str, Any]:
+    """The binds of :data:`_OPEN_RUN_SQL`. *connection* (SW-13c) and
+    *session* (SW-7) have no default, so each caller names them."""
+    return {"tid": task_id, "me": me, "via": via, "cid": connection, "sk": session,
+            "open": list(AGENT_RUN_OPEN_STATUSES)}
 
 
-def _legacy_via(user: UserContext) -> str:
-    """The host stamp that an agent's connection had before EA-13a."""
-    agent = getattr(user, "agent", None)
-    return actor_via_for(getattr(agent, "client_origin", None), client_id=None)
+#: SW-7: the adoption of a run with no session key by the first agent
+#: session that the gate finds it for. The guard on NULL makes a race of two
+#: sibling sessions give the run to ONE of them.
+_ADOPT_SQL = (
+    "UPDATE pm_agent_runs SET session_key = :sk "
+    " WHERE id = CAST(:rid AS uuid) AND session_key IS NULL"
+)
 
 
 async def _replay_start(db: Any, me: str, key: str | None, task_id: str) -> dict | None:
@@ -1058,7 +1548,6 @@ async def start_agent_run(
         await load_visible_task(db, vis, task_id)
         if via is not None:
             client_via, connection_id = via, str(user.agent.connection_id)  # type: ignore[union-attr]
-            legacy = _legacy_via(user)
         else:
             cid = _parse_uuid(str(payload.connection_id), "Connection")
             conn = (await db.execute(
@@ -1076,7 +1565,6 @@ async def start_agent_run(
                 actor_via_for(origin, client_id=getattr(conn, "client_id", None))
                 if conn else ""
             )
-            legacy = actor_via_for(origin, client_id=None) if conn else ""
             if conn is None or not ACTOR_VIA_PATTERN.fullmatch(client_via):
                 raise HTTPException(
                     status_code=422, detail="Name one of your own live agent connections.",
@@ -1088,10 +1576,15 @@ async def start_agent_run(
             response.status_code = 200
             return replay
 
-        open_sql = _OPEN_RUN_SQL
-        open_args = _open_run_args(task_id, me, client_via, legacy=legacy,
-                                   connection_id=connection_id)
-        existing = (await db.execute(text(open_sql), open_args)).fetchone()
+        # EA-14a: ONE AI for each task. The gate returns this caller's own
+        # open run, or None for a free task, or it raises 409 `task_held`.
+        # SW-13c: an agent's own run is of its own connection. A member's
+        # start keeps the old rule (member and stamp), so it binds no
+        # connection here, though its insert stores the one it names.
+        own_connection = _agent_connection(user)
+        own_session = _agent_session(user)
+        existing = await _gate_task(db, task_id, me, via=client_via,
+                                    connection=own_connection, session=own_session)
         if existing is None:
             ts = await _clock(db)
             made = (await db.execute(text(_INSERT_RUN_SQL), {
@@ -1100,7 +1593,7 @@ async def start_agent_run(
                 "by": via if via is not None else me,
                 "started": ts if via is not None else None,
                 "link": link, "ts": ts, "agent_ts": ts if via is not None else None,
-                "key": payload.idempotency_key,
+                "key": payload.idempotency_key, "sk": own_session,
             })).fetchone()
             if made is None:  # a concurrent start won the open-run or the key index
                 # A retry with the same key that lost the race replays the
@@ -1109,7 +1602,9 @@ async def start_agent_run(
                 if replay is not None:
                     response.status_code = 200
                     return replay
-                existing = (await db.execute(text(open_sql), open_args)).fetchone()
+                existing = await _gate_task(db, task_id, me, via=client_via,
+                                            connection=own_connection,
+                                            session=own_session)
                 if existing is None:
                     raise HTTPException(status_code=409, detail="Start the run again.")
         if existing is not None:
@@ -1139,16 +1634,6 @@ async def start_agent_run(
     if written is not None and written.commented:
         await emit("pm.task.comment_added", {"task_id": task_id})
     return {"run": out, "created": created}
-
-
-#: ``needs_agent=true``: a run the agent must act on. A ``created`` run, a
-#: ``stopping`` run, or a derived ``answered`` run.
-_NEEDS_AGENT_SQL = (
-    "(r.status IN ('created', 'stopping')"
-    " OR (r.status = 'in_progress'"
-    "     AND (r.last_agent_activity_at IS NULL"
-    "          OR r.last_activity_at > r.last_agent_activity_at)))"
-)
 
 
 @router.get("/agent-runs", dependencies=_ENABLED)
@@ -1313,7 +1798,16 @@ async def finish_agent_run(
             # activity, so no key finds it. The run is the result, as the
             # edge's `finish_agent_run` reads it.
             return {"run": (await _runs_out(db, [run]))[0], "activity": None}
-        if summary:
+        if summary and run.status == "completed" and await _server_closed(db, run_id):
+            # SW-10a fix round. The server closed this run (an approved
+            # archive, or a closed task), and its agent now finishes with a
+            # summary. Before, that answered 409 and the summary was lost.
+            # The summary is kept as a `response`, and the run stays closed.
+            written = await _write_activity(
+                db, run, user, kind="response", key=payload.idempotency_key, body=summary,
+                event="late_summary",
+            )
+        elif summary:
             # The response and the finish are ONE move: the response is
             # written under the event `agent_finish`, so it sets `completed`
             # (or `stopped`, when a Stop waits) itself.
@@ -1330,6 +1824,340 @@ async def finish_agent_run(
     if written is not None and written.commented:
         await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
     return {"run": out_run, "activity": out_activity}
+
+
+# ── Release (WS-55 EA-14a) ──────────────────────────────────────────────────
+
+#: The permission that makes a member an org admin for a release. The same
+#: gate as the billing routes. HANDOFF H-409 item 2: the Release button of the
+#: run panel reads `access.is_admin`, and the owner has not yet decided
+#: whether a read permission may end another member's run.
+RELEASE_ADMIN_PERMISSION = "admin:members:read"
+
+
+def person_may_end_sql(run: str) -> str:
+    """Who may END a run, for a PERSON, in SQL over the run alias *run*
+    (EA-14a): the run's member, or an assignee of its task. It binds ``:me``,
+    the caller's address in lower case. An org admin may too, and
+    :func:`may_end_run` adds that half from the context.
+
+    ONE text. The release route and the resume route read it through
+    :func:`may_end_run`. Needs attention (``needs_attention.py``, WS-55 SW-11a,
+    spec §12.7) reads it for ``can_act`` on each row, so the list never
+    offers a button that the route refuses.
+    """
+    return (
+        f"({run}.member_email = :me OR EXISTS (SELECT 1 FROM pm_task_assignees ra"
+        f" WHERE ra.task_id = {run}.task_id AND lower(ra.assignee) = :me))"
+    )
+
+
+async def may_end_run(db: Any, run: Any, user: UserContext) -> bool:
+    """True when *user* may end *run*: a release (EA-14a) or a resume
+    (SW-11a).
+
+    * An agent ends its OWN run only: the same member and the same stamp.
+    * A person ends a run when they are its member, an assignee of its task
+      (:func:`person_may_end_sql`), or hold :data:`RELEASE_ADMIN_PERMISSION`.
+    """
+    via = _agent_via(user)
+    me = _member(user)
+    if via is not None:
+        return run.member_email == me and run.client_via == via
+    if user.has_permission(RELEASE_ADMIN_PERMISSION):
+        return True
+    held = (await db.execute(
+        text(f"SELECT {person_may_end_sql('r')} FROM pm_agent_runs r"
+             " WHERE r.id = CAST(:rid AS uuid)"),
+        {"rid": str(run.id), "me": me},
+    )).scalar()
+    return bool(held)
+
+
+@router.post("/agent-runs/{run_id}/release", dependencies=_ENABLED)
+async def release_agent_run(
+    run_id: str, payload: ReleaseIn, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Give a task up without finishing it: the run moves to ``released``.
+    The task keeps its status, and every assignee stays.
+
+    * An agent releases its OWN run only: the same member and the same
+      client stamp.
+    * A person releases a run when they are its member, an assignee of the
+      task, or an org admin.
+    * A caller who cannot see the task gets 404. A caller who sees it and
+      has no right to release gets 403.
+    * A run that is already ``released`` answers 200 again, with no write.
+      Any other terminal run is 409.
+    """
+    run_id = _parse_uuid(run_id, "Agent run")
+    _require_write_scope(user)
+    via = _agent_via(user)
+    me = _member(user)
+    async with _tenant_session() as db:
+        await _load_visible_run(db, user, run_id)
+        run = await _lock_run(db, run_id)
+        if not await may_end_run(db, run, user):
+            raise HTTPException(
+                status_code=403, detail="You may not release this agent run.",
+            )
+        if run.status != "released":
+            new_status = transition(run.status, "release")
+            ts = await _clock(db)
+            await _move_run(db, run, new_status, ts=ts, user=user, via=via)
+            client = agent_oauth.client_label(via) if via else "the app"
+            await _system_activity(
+                db, run, actor_email=me, via=via,
+                body=f"Released by {await _member_name(db, me)}/{client}",
+            )
+        out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
+    return {"run": out_run, "released": True}
+
+
+# ── Resume (WS-55 SW-11a, spec §12.7) ───────────────────────────────────────
+
+#: The fixed text of the member prompt that Resume writes. It holds no member
+#: text, and the agent reads it as the member's answer (``needs_agent``
+#: ``answered``).
+RESUME_BODY = "Resume this work: pick this run up where it stopped."
+
+#: The open recovery record of one run that still fits it. The rule is
+#: ``filters.open_recovery_sql``, the text that the "stalled" kind of Needs
+#: attention reads, so Resume takes exactly the rows that the list shows.
+_OPEN_RECOVERY_SQL = (
+    "SELECT s.id FROM pm_agent_run_strands s"
+    " JOIN pm_agent_runs r ON r.id = s.run_id"
+    f" WHERE r.id = CAST(:rid AS uuid) AND {open_recovery_sql('s', 'r')}"
+    " LIMIT 1"
+)
+
+#: True when the agent connection of the run is revoked or expired
+#: (``filters.connection_gone_sql``). No session of that client can come back,
+#: so Resume refuses, and Close the run is the act (spec §12.7).
+_RUN_CONNECTION_GONE_SQL = (
+    f"SELECT {connection_gone_sql('r')} FROM pm_agent_runs r WHERE r.id = CAST(:rid AS uuid)"
+)
+
+#: The refusal of Resume on a run with a dead connection.
+RESUME_CONNECTION_GONE = (
+    "The agent connection of this run is revoked or expired, so no agent can"
+    " resume it. Close the run instead."
+)
+
+#: SW-7: Resume hands the run to the next session of its connection.
+_RESUME_KEY_SQL = "UPDATE pm_agent_runs SET session_key = NULL WHERE id = CAST(:rid AS uuid)"
+
+#: True when the task of the run is closed (``filters.task_closed_sql``).
+_RUN_TASK_CLOSED_SQL = (
+    f"SELECT {task_closed_sql('r')} FROM pm_agent_runs r WHERE r.id = CAST(:rid AS uuid)"
+)
+
+
+def _is_resume(row: Any) -> bool:
+    """True when *row* is a prompt that Resume wrote (``content.resume``)."""
+    return row.type == "prompt" and bool((from_jsonb(row.content) or {}).get("resume"))
+
+
+@router.post("/agent-runs/{run_id}/resume", dependencies=_ENABLED)
+async def resume_agent_run(
+    run_id: str, payload: ResumeIn, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Mark a stalled run as needing an agent again (SW-11a, spec §12.7).
+
+    A member act on a run whose open recovery record still fits it. It writes
+    ONE member ``prompt`` with :data:`RESUME_BODY`, through
+    :func:`_write_activity`, the one write path of an activity. The run then
+    reads ``needs_agent`` ``answered``, so ``list_agent_runs`` with
+    ``needs_agent=true`` lists it and ``my_work`` offers it as
+    ``run_answered``. The prompt renews the lease, and the strand stops
+    fitting at once. The sweep clears it with ``new_activity`` at its next
+    tick, and it stays the only writer of ``pm_agent_run_strands``.
+
+    * The rule of Release decides who may (:func:`may_end_run`). An agent
+      caller gets 403: it has its own paths.
+    * A caller who cannot see the task gets 404. A closed task gets 409, and
+      so does a run with no open recovery record that fits it, and a run
+      whose agent connection is revoked or expired (Close the run instead).
+    * It is quiet: the timeline keeps the prompt, and no bell and no event
+      go out. It is a note to the agent, not a comment to people.
+    * A replay of the key returns the first answer, and it writes nothing.
+    * It never changes the task.
+    """
+    run_id = _parse_uuid(run_id, "Agent run")
+    if _agent_via(user) is not None:
+        raise HTTPException(status_code=403, detail="Only a member resumes an agent run.")
+    written: _Written | None = None
+    async with _tenant_session() as db:
+        await _load_visible_run(db, user, run_id)
+        run = await _lock_run(db, run_id)
+        if not await may_end_run(db, run, user):
+            raise HTTPException(status_code=403, detail="You may not resume this agent run.")
+        replay = await _existing_activity(db, run_id, payload.idempotency_key)
+        if replay is not None and not _is_resume(replay):
+            raise HTTPException(status_code=409, detail=_KEY_USED)
+        if replay is None:
+            if (await db.execute(text(_RUN_TASK_CLOSED_SQL), {"rid": run_id})).scalar():
+                raise HTTPException(
+                    status_code=409,
+                    detail="The task of this agent run is closed. Close the run instead.",
+                )
+            if (await db.execute(text(_OPEN_RECOVERY_SQL), {"rid": run_id})).fetchone() is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="This agent run has no open recovery record, so nothing waits to resume.",
+                )
+            # Resume asks the SAME agent client to continue. A dead connection
+            # can send nothing again, so only Close the run helps (§12.7).
+            if (await db.execute(text(_RUN_CONNECTION_GONE_SQL), {"rid": run_id})).scalar():
+                raise HTTPException(status_code=409, detail=RESUME_CONNECTION_GONE)
+            # `quiet`: a note to the agent, not a comment to people. The
+            # timeline keeps the row, and no bell and no event go out.
+            written = await _write_activity(
+                db, run, user, kind="prompt", key=payload.idempotency_key,
+                body=RESUME_BODY, extra={"resume": True}, quiet=True,
+            )
+            # SW-7 (spec §12.5). The session that held the run went quiet past
+            # its lease, so its key names nobody. A run with no key is the own
+            # run of any session of its connection, so the next one adopts it.
+            # A person's prompt keeps the key (`_move_run`), so Resume clears
+            # it here, once, in the same transaction.
+            await db.execute(text(_RESUME_KEY_SQL), {"rid": run_id})
+        out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
+        activity = written.activity if written is not None else replay
+        out_activity = _activity_out(activity)
+    # No `pm.task.comment_added`: a workflow that fires on a comment must not
+    # take a note to the agent for a comment to people.
+    return {"run": out_run, "activity": out_activity, "resumed": True,
+            "created": written is not None and written.created}
+
+
+# ── Stranded runs (WS-55 SW-10a, spec §12.6) ────────────────────────────────
+#
+# This module stays the only writer of `pm_agent_runs` and
+# `pm_agent_run_activities`. The sweep (`gateway/agent_run_sweep.py`) decides WHICH
+# run to close or to mark, and calls these three to write.
+
+
+async def close_archived_run(db: Any, run: Any) -> None:
+    """Close a run whose archive request the member approved (SW-10a, part 1
+    item 2). The run moves to ``completed`` and gets
+    :data:`ARCHIVE_CLOSED_BODY` as a system line, in the caller's
+    transaction. *run* is a row of :data:`_RUN_SELECT` in ``in_progress``.
+
+    The approval route calls it in the transaction of the archive, and the
+    sweep calls it for a run of the old shape. No caller passes a user: the
+    server closes the run, so no agent stamp and no session key move."""
+    new_status = transition(run.status, "archive_close")
+    await _move_run(db, run, new_status, ts=await _clock(db), user=None, via=None)
+    await _system_activity(db, run, actor_email=run.member_email, via=None,
+                           body=ARCHIVE_CLOSED_BODY, server_close="archive")
+
+
+#: SW-10a. An open run of the OLD archive shape: the newest prompt of the run
+#: approved an archive request (``content.archived``, which only the approval
+#: route writes), the task is archived, and no agent activity followed. The
+#: approval route closes a new one at once, so the sweep finds a run of the
+#: deploy window only. ``SKIP LOCKED``: a writer that holds the run wins.
+_ARCHIVE_APPLIED_SQL = (
+    "SELECT r.id FROM pm_agent_runs r"
+    " WHERE r.status = 'in_progress'"
+    f"   AND {AGENT_RUN_ANSWER_WAITS_SQL}"
+    "   AND EXISTS (SELECT 1 FROM pm_tasks t WHERE t.id = r.task_id"
+    "               AND t.archived_at IS NOT NULL)"
+    "   AND (SELECT a.content->>'archived' FROM pm_agent_run_activities a"
+    "         WHERE a.run_id = r.id AND a.type = 'prompt'"
+    "         ORDER BY a.seq DESC LIMIT 1) = 'true'"
+    " ORDER BY r.last_activity_at, r.id LIMIT :n FOR UPDATE OF r SKIP LOCKED"
+)
+
+
+async def archive_applied_run_ids(db: Any, *, limit: int) -> list[str]:
+    """The open runs of the old archive shape, at most *limit*, locked for
+    the caller's tenant transaction (SW-10a). The sweep closes each one with
+    :func:`close_archived_run` in a savepoint of its own."""
+    return [str(r.id) for r in (await db.execute(
+        text(_ARCHIVE_APPLIED_SQL), {"n": limit})).fetchall()]
+
+
+async def load_run(db: Any, run_id: str) -> Any:
+    """One run as :data:`_RUN_SELECT` reads it, for the closers of the
+    sweep (SW-10a)."""
+    return await _load_run(db, run_id)
+
+
+#: SW-10a fix round. The text of the system line of a run that the sweep
+#: closed because its task is closed, by the reason.
+CLOSED_TASK_BODIES: dict[str, str] = {
+    "done": "Closed: the task is done.",
+    "cancelled": "Closed: the task is cancelled.",
+    "archived": "Closed: the task is archived.",
+}
+
+def _closed_task_runs_sql() -> str:
+    """SW-10a. An ``in_progress`` run whose task is closed
+    (``filters.task_closed_sql``) and whose holder is free by the rule of the
+    gate (``filters.holder_free_sql``): its lease ended, or its connection is
+    revoked or expired. The bar is the LEASE, not the stale band. An agent
+    that moves its own task to done and then waits in a long call, for a
+    deploy for example, keeps its run, and any activity, a member's answer
+    too, renews the lease. ``why`` is ``archived`` first, then the status
+    category. Built when a tick runs, because the lease is read then."""
+    return (
+        "SELECT r.id, CASE WHEN t.archived_at IS NOT NULL THEN 'archived'"
+        "                  ELSE st.category END AS why"
+        "  FROM pm_agent_runs r"
+        "  JOIN pm_tasks t ON t.id = r.task_id"
+        "  LEFT JOIN pm_task_statuses st ON st.id = t.status_id"
+        " WHERE r.status = 'in_progress'"
+        f"   AND {holder_free_sql('r')}"
+        f"   AND {task_closed_sql('r')}"
+        " ORDER BY r.last_activity_at, r.id LIMIT :n FOR UPDATE OF r SKIP LOCKED"
+    )
+
+
+async def closed_task_runs(db: Any, *, limit: int) -> list[tuple[str, str]]:
+    """``(run_id, why)`` of each open run whose task is closed and whose
+    lease ended, at most *limit*, locked for the caller's tenant transaction
+    (SW-10a)."""
+    return [(str(r.id), str(r.why)) for r in (await db.execute(
+        text(_closed_task_runs_sql()), {"n": limit})).fetchall()]
+
+
+async def close_closed_task_run(db: Any, run: Any, why: str) -> None:
+    """Close a run whose task is closed (SW-10a fix round). The run moves to
+    ``completed`` and gets the line of :data:`CLOSED_TASK_BODIES`. The task is
+    never touched. Nobody can claim a closed task, so a nudge would be false,
+    and the run would hold nothing."""
+    new_status = transition(run.status, "task_close")
+    await _move_run(db, run, new_status, ts=await _clock(db), user=None, via=None)
+    await _system_activity(db, run, actor_email=run.member_email, via=None,
+                           body=CLOSED_TASK_BODIES[why], server_close=why)
+
+
+#: SW-10a fix round. True when the newest activity of the run that is not
+#: ephemeral is a server-close line. Then the run's agent may still leave
+#: ONE summary: after it, the newest such activity is the summary.
+_SERVER_CLOSED_SQL = (
+    "SELECT (a.content ? 'server_close') AS closed FROM pm_agent_run_activities a"
+    " WHERE a.run_id = CAST(:rid AS uuid) AND NOT a.ephemeral"
+    " ORDER BY a.seq DESC LIMIT 1"
+)
+
+
+async def _server_closed(db: Any, run_id: str) -> bool:
+    found = (await db.execute(text(_SERVER_CLOSED_SQL), {"rid": run_id})).fetchone()
+    return found is not None and bool(found.closed)
+
+
+async def write_strand_line(db: Any, run: Any, body: str) -> None:
+    """The system line of a recovery record on *run* (SW-10a, second miss).
+    It moves no status and no stamp, so the run stays stranded."""
+    await _system_activity(db, run, actor_email=run.member_email, via=None, body=body)
+
+
+async def member_name(db: Any, email: str) -> str:
+    """The display name of a member, or the address (SW-10a texts)."""
+    return await _member_name(db, email)
 
 
 # ── The archive with an approval (EA-6g, EA3-33 and EA3-40) ─────────────────
@@ -1364,9 +2192,11 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
     comment. The id is None only when a concurrent start won the open-run
     index and then rolled back, which the caller answers as a retry.
     """
-    open_args = _open_run_args(task_id, me, via, legacy=_legacy_via(user),
-                               connection_id=str(user.agent.connection_id))  # type: ignore[union-attr]
-    existing = (await db.execute(text(_OPEN_RUN_SQL), open_args)).fetchone()
+    # EA-14a: the gate returns the caller's own open run, None for a free
+    # task, or raises 409 `task_held`. A lease that ended is taken over.
+    existing = await _gate_task(db, task_id, me, via=via,
+                                connection=_agent_connection(user),
+                                session=_agent_session(user))
     if existing is not None:
         return str(existing.id), False
     ts = await _clock(db)
@@ -1374,11 +2204,15 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
         "tid": task_id, "me": me, "cid": str(user.agent.connection_id),  # type: ignore[union-attr]
         "via": via, "status": "in_progress", "by": via, "started": ts,
         "link": None, "ts": ts, "agent_ts": ts, "key": None,
+        "sk": _agent_session(user),
     })).fetchone()
     if made is not None:
         return str(made.id), True
-    # A concurrent start won the open-run index. Its run is the answer.
-    existing = (await db.execute(text(_OPEN_RUN_SQL), open_args)).fetchone()
+    # A concurrent start won the open-run index. Its run is the answer when it
+    # is this caller's own. Another member's run is `task_held`.
+    existing = await _gate_task(db, task_id, me, via=via,
+                                connection=_agent_connection(user),
+                                session=_agent_session(user))
     return (str(existing.id) if existing is not None else None), False
 
 
@@ -1402,8 +2236,8 @@ async def open_run_for_claim(db: Any, task_id: str, user: UserContext) -> str | 
     * Only for a signed agent claim (``UserContext.agent``) while
       ``agent_runs_enabled`` is on. A member's claim opens no run, and None
       comes back.
-    * With an open run of this task, member and stamp (EA12-6, and the legacy
-      stamp of EA-13a), it writes nothing and returns that run. Else it
+    * With an open run of this task, member and stamp (EA12-6), it writes
+      nothing and returns that run. Else it
       inserts one ``in_progress`` run, started by the stamp, with the
       connection and ``last_agent_activity_at`` now. No activity row, no
       comment and no notification (C7 and C9 of EA-6b).
@@ -1511,7 +2345,9 @@ async def approve_task_archive(
     * An approve archives the task through ``tasks.archive_task_in``, with no
       cascade to the subtasks, and writes the answer through
       :func:`_write_activity`, in ONE transaction (rule 2). The answer's
-      ``content`` carries ``archived``.
+      ``content`` carries ``archived``. SW-10a: in the same transaction the
+      run closes (:func:`close_archived_run`), so it never waits as
+      ``answered`` for an agent that has nothing left to do.
     * The same ``idempotency_key`` again returns the first answer with 200.
       A second answer with a new key finds no open request: 409. So a second
       approve never archives twice. Every answer, a replay too, returns the
@@ -1558,6 +2394,11 @@ async def approve_task_archive(
             db, run, user, kind="prompt", key=key, body=None, selected=[decision],
             typed=True, extra={"archived": archived},
         )
+        if archived and written.created:
+            # SW-10a (spec §12.6, part 1 item 2). The archive was the agent's
+            # disposition, so the run closes in the SAME transaction. Before,
+            # the run read `answered` until an agent came back, and none did.
+            await close_archived_run(db, await _load_run(db, run_id))
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
         out_activity = _activity_out(written.activity)
         task_now = (outcome.row if outcome is not None
@@ -1581,20 +2422,31 @@ async def _task_now(db: Any, user: UserContext, task_id: str) -> dict[str, Any]:
 __all__ = [
     "ACTIVITY_TYPES",
     "ARCHIVE_APPROVE",
+    "ARCHIVE_CLOSED_BODY",
     "ARCHIVE_DECLINE",
     "ARCHIVE_OPTIONS",
     "ARCHIVE_REQUEST_KIND",
     "ARCHIVE_REQUEST_TTL",
+    "CLOSED_TASK_BODIES",
     "EPHEMERAL_CAP",
     "MAX_WAIT_S",
     "POLL_S",
     "RUN_STATUSES",
+    "TASK_HELD",
     "ActivityIn",
     "ArchiveApprovalIn",
     "ArchiveRequestIn",
     "FinishIn",
     "OptionIn",
+    "ReleaseIn",
     "StartIn",
+    "archive_applied_run_ids",
     "archive_request_of",
+    "close_archived_run",
+    "close_closed_task_run",
+    "closed_task_runs",
+    "load_run",
+    "member_name",
     "transition",
+    "write_strand_line",
 ]

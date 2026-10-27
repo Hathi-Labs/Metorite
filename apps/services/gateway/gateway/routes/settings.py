@@ -2141,23 +2141,24 @@ async def put_member_number_system(
     from acb_common import number_system as ns
     from gateway.db import tenant_session
     from gateway.routes.tasks.settings import (
-        _BOUND_ORG,
         _seed_from_work_schedule,
         upsert_settings_sql,
     )
     from sqlalchemy import text
 
-    uid = user.email or ""
+    email = user.email or ""
     org = current_tenant()
-    if not uid or not org:
+    if not email or not org:
         raise HTTPException(status_code=401, detail="Authentication required")
     async with tenant_session() as db:
-        found = (await db.execute(text(
-            f"SELECT 1 FROM user_settings WHERE organization_id = {_BOUND_ORG}"
-            " AND user_id = :uid"), {"uid": uid})).first()
+        # WS-47 follow-up of #1154: the member's row in any case. An existing
+        # row keeps its own address, so a save never adds a second row. A NEW
+        # row holds the address in lower case, as the run reads its member.
+        found = (await db.execute(text(ns.ROW_SQL), {"org": org, "uid": email})).first()
+        uid = str(found[0]) if found else ns.member_key(email)
         # A new row carries the calendar seed, as every first settings save
         # does (`routes/shell/prefs.py`), so the calendar keeps its hours.
-        seed = {} if found else await _seed_from_work_schedule(db, uid)
+        seed = {} if found else await _seed_from_work_schedule(db, email)
         await db.execute(
             text(upsert_settings_sql(["number_system", *seed], update=["number_system"])),
             {"uid": uid, "number_system": body.value, **seed},

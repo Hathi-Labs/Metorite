@@ -419,12 +419,12 @@ class StatusModel(BaseModel):
     #: names it ("Pipeline", "Closed Won"). ``None`` for a native stage.
     forecast_category: str | None = None
     #: CRM-C3: the values the source gave — Zoho in Mirror mode, the admin in
-    #: Native mode. ``source_probability`` is ``None`` on a lead status.
+    #: Native mode. ``source_probability`` is the stored value on both kinds.
     source_position: int = 0
     source_probability: int | None = None
     source_color: str = "gray"
     #: CRM-C3: the overlay as stored. ``None`` means "not set", so the source
-    #: value applies. ``ui_probability`` is ``None`` on a lead status.
+    #: value applies. ``ui_probability`` is ``None`` until an admin sets it.
     ui_position: int | None = None
     ui_probability: int | None = None
     ui_color: str | None = None
@@ -863,11 +863,14 @@ def _effective_columns(table: str, *, deal: bool) -> str:
         "ELSE s.position END AS position",
         "COALESCE(s.ui_color, s.color) AS color",
     ]
+    # Both kinds carry a win chance since migration 288 (CRM-U6).
+    columns += [
+        "s.ui_probability", "s.probability AS source_probability",
+        "COALESCE(s.ui_probability, s.probability) AS probability",
+    ]
     if deal:
         columns += [
             "s.required_fields", "s.max_dwell_days", "s.forecast_category",
-            "s.ui_probability", "s.probability AS source_probability",
-            "COALESCE(s.ui_probability, s.probability) AS probability",
         ]
     return ", ".join(columns)
 
@@ -1208,6 +1211,41 @@ class ExtraFilterInput:
     custom: tuple[tuple[str, str], ...] = ()
 
 
+def custom_value_clauses(
+    column: str, grouped: dict[tuple[str, bool], list[str]],
+) -> tuple[list[str], dict[str, Any]]:
+    """The SQL of the custom field filters, over the JSONB *column*.
+
+    *grouped* maps ``(key, is_in)`` to the chosen values. *column* is a literal
+    of the caller (``custom`` or ``fields``). Every key and value is a bound
+    parameter (``ck<n>``, ``cv<n>``). One seam for the four core lists and the
+    module lists (CRM-U9).
+    """
+    clauses: list[str] = []
+    bound: dict[str, Any] = {}
+    for index, ((key, is_in), values) in enumerate(grouped.items()):
+        bound[f"ck{index}"] = key
+        if is_in or len(values) > 1:
+            # A multiselect field holds a JSON array (`["Red","Blue"]`),
+            # and `->>` would give its text. The array arm matches when
+            # any chosen option is in the array. Every value is bound.
+            clauses.append(
+                f"({column} ->> :ck{index} = ANY(CAST(:cv{index} AS text[])) "
+                f"OR (jsonb_typeof({column} -> :ck{index}) = 'array' "
+                f"AND jsonb_exists_any({column} -> :ck{index}, "
+                f"CAST(:cv{index} AS text[]))))"
+            )
+            bound[f"cv{index}"] = values
+        else:
+            clauses.append(
+                f"({column} ->> :ck{index} = :cv{index} "
+                f"OR (jsonb_typeof({column} -> :ck{index}) = 'array' "
+                f"AND jsonb_exists({column} -> :ck{index}, :cv{index})))"
+            )
+            bound[f"cv{index}"] = values[0]
+    return clauses, bound
+
+
 async def extra_filters(
     db: Any, entity: Entity, given: ExtraFilterInput,
 ) -> tuple[tuple[str, ...], dict[str, Any]]:
@@ -1309,26 +1347,9 @@ async def extra_filters(
                     status_code=422,
                     detail=f"'{name}' is not a custom field of {entity.slug}.",
                 )
-        for index, ((key, is_in), values) in enumerate(grouped.items()):
-            bound[f"ck{index}"] = key
-            if is_in or len(values) > 1:
-                # A multiselect field holds a JSON array (`["Red","Blue"]`),
-                # and `->>` would give its text. The array arm matches when
-                # any chosen option is in the array. Every value is bound.
-                clauses.append(
-                    f"(custom ->> :ck{index} = ANY(CAST(:cv{index} AS text[])) "
-                    f"OR (jsonb_typeof(custom -> :ck{index}) = 'array' "
-                    f"AND jsonb_exists_any(custom -> :ck{index}, "
-                    f"CAST(:cv{index} AS text[]))))"
-                )
-                bound[f"cv{index}"] = values
-            else:
-                clauses.append(
-                    f"(custom ->> :ck{index} = :cv{index} "
-                    f"OR (jsonb_typeof(custom -> :ck{index}) = 'array' "
-                    f"AND jsonb_exists(custom -> :ck{index}, :cv{index})))"
-                )
-                bound[f"cv{index}"] = values[0]
+        more, more_bound = custom_value_clauses("custom", grouped)
+        clauses.extend(more)
+        bound.update(more_bound)
     return tuple(clauses), bound
 
 
@@ -1679,7 +1700,7 @@ NOT_NULL_DEFAULTED: dict[str, frozenset[str]] = {
     "crm_deals": frozenset({"source", "currency", "status_changed_at"}),
     # CRM-C3 (migration 257): `hidden` on the three settings tables. An admin
     # PATCHes it from the settings grid, in both modes.
-    "crm_lead_statuses": frozenset({"color", "is_default", "hidden"}),
+    "crm_lead_statuses": frozenset({"color", "is_default", "hidden", "probability"}),
     # `required_fields` arrives by ALTER in the WS-26h migration rather than in
     # 144's CREATE TABLE, and it is here for the same reason the others are: the
     # settings grid PATCHes it, so an explicit `null` is a request a client can
@@ -1820,7 +1841,9 @@ MIRROR_OVERLAY_COLUMNS: dict[str, frozenset[str]] = {
     "crm_deal_statuses": frozenset({
         "hidden", "ui_position", "ui_probability", "ui_color", "max_dwell_days",
     }),
-    "crm_lead_statuses": frozenset({"hidden", "ui_position", "ui_color"}),
+    "crm_lead_statuses": frozenset({
+        "hidden", "ui_position", "ui_probability", "ui_color",
+    }),
     "crm_lost_reasons": frozenset({"hidden"}),
 }
 

@@ -3,7 +3,20 @@
 **Status: ACTIVE, 2026-10-15.** Owner directive of 2026-10-15, in chat.
 The owner accepted every proposal of §15 and every default of §16 the same
 day ("Go with defaults"), recorded as **D104**. Board row **WS-61**.
-Verified against the code on 2026-10-15.
+Verified against the code on 2026-10-25.
+
+**KB-9b slice 2 is BUILT, 2026-10-26** (branch `kb-9b2-sync-card`, no
+migration, dark behind `MY_DAY_PROVIDERS` and `KNOWLEDGE_SOURCES`, Metorite
+task #461). The card `source_sync_failed` for the member who connected a
+Drive, and the cache bump of a failed sync (§9).
+
+**KB-9b slice 1 is BUILT, 2026-10-26** (branch `kb-9b-my-day`, no
+migration, dark behind `MY_DAY_PROVIDERS`). The cards `doc_needs_review` and
+`doc_shared_with_me` (§9).
+
+**KB-4b is BUILT, 2026-10-25** (branch `kb-4b-chips`, no migration, frontend
+only, no flag). A link in an assistant answer draws as a chip when the same
+message's finished tools printed the same href (§8.3).
 
 **KB-0 is BUILT, 2026-10-15** (PR #1058, migration 270). The
 feature `knowledge`, the capability `knowledge:manage`, the pane at
@@ -75,6 +88,53 @@ writer drags a page in the tree to reorder it or to nest it. The move takes
 `position`, and the gateway renumbers the siblings 0 to n under a tree lock.
 A move of the place only writes no version. A writer's row shows a `+` and
 a `…`, a reader's row shows neither, and the arrow keys walk the rows.
+
+**KB-2b is BUILT, 2026-10-18** (PR #1159, frontend only, no migration).
+The page is the editor: one TipTap editor draws the read view and the edit
+view, over the same Markdown body. **D107 and §21.7 are added,
+2026-10-19.** Docmost core code may be ported, and the plan to match
+Docmost is in §21.7. Wave 1 is KB-2d, KB-2f, KB-2g and KB-2i.
+
+**Notion-style shortcuts are BUILT, 2026-10-22** (branch
+`ws61-notion-shortcuts`, frontend only, no migration). The stored form is
+unchanged. Owner request: "`[[` is weird, do better shortcuts. Try what
+Notion does."
+
+`@` opens a menu of Pages and a Date section. A page pick writes the same
+Markdown link as `[[` did, and `[[` still works. A link to a page by uuid draws
+as a mention chip. The `/` menu has groups, a line for each block and its
+Markdown shortcut. The link button of the bubble menu opens one popover for a
+page or an address. **KB-2k is BUILT, 2026-10-22** (people mentions, the hover
+preview and Create page, see "KB-2k in detail" in §21.7).
+
+**Wave 1 of §21.7 is BUILT, 2026-10-22** (PR #1210). KB-2f took migration
+291: the page icon and the table `kb_favorites`. KB-2g added the read of one
+old version.
+
+**KB-5b is BUILT, 2026-10-23** (frontend, no migration). The Review view
+at `/knowledge/review` lists the pending proposals, with a Review row in the
+rail that shows the count. An edit shows a word diff, which reuses the
+history compare of KB-2g. A page shows its draft. The member can publish or
+apply, or reject. A draft from the assistant carries a "Proposed by the
+assistant" badge, and a published page with a pending edit shows a notice.
+The chat card links to the Review view. `KNOWLEDGE_PROPOSALS` may now be
+turned on. Nobody has turned it on yet.
+
+**KB-5a is BUILT, 2026-10-22** (branch `ws61-kb5a-proposals`, migration
+292). It adds the proposal routes, the table `kb_page_proposals`, and the tools
+`propose_page` and `propose_edit` behind one card. The tools and the POST
+are dark behind `KNOWLEDGE_PROPOSALS`, default off, and the tools need
+`COMPANY_SEARCH_ENABLED` too. The agent turns `KNOWLEDGE_PROPOSALS` on when
+KB-5b ships the Review view. Accept and reject are web only, so the agent
+never publishes. KB-5b and KB-5c come next (§17).
+
+**KB-9a is BUILT, 2026-10-22** (branch `kb-gaps`, migration 293, dark behind
+`KNOWLEDGE_GAPS`). A `search_company` read with no Knowledge hit writes a
+`kb_gaps` row after the search answers, in its own tenant session. The Gaps
+view shows the open questions to a manager, and "Write a page" opens the New
+page form with the question as the title. The gated My Day source `knowledge`
+gives the card `kb_gap` at 2 askers. No model runs. §8.4 door 3 and §9 hold
+the rules, and KB-9b holds the other three kinds.
 
 **§20 (D105, 2026-10-15)** adds company
 retrieval across every app. **KR-1 and KR-2 are BUILT, 2026-10-15**
@@ -225,7 +285,7 @@ read and grow it. And it owns the "Save to Knowledge" act on an artifact.
 | `agent_kb_chunk` is designed and unbuilt | `agent_architecture.md` §7 | `kb_chunks` is that shape, keyed by the company and not by an agent. An agent's base knowledge (layer 3) becomes a space with `agent:<slug>` as a reader. That is §8.5 |
 | An artifact has a row since AM-1: `artifacts(id, owner_email, agent_name, instance, path, sha256, kind, title, scope, search_tsv, …)`, with `artifact_shares` in the D12 grammar. The bytes stay BYTEA in `agent_blob`. The registry is dark behind `ARTIFACT_REGISTRY_ENABLED` | `268_artifacts.sql`, `acb_memory/artifacts.py`, `artifact_management.md` §4 and §5 | A link to an artifact holds its UUID. A page made from an artifact is a copy with its own space, because the artifact's audience is its scope and shares, and a page's audience is its space (§10.1). A file on a page is an artifact, and Knowledge adds no file store (§4.3) |
 | The lifecycle verbs on an artifact are "promote" (`inputs/` to `agent-data/`), and from AM-2 star, rename, trash and share. None makes a page | `routes/workspace.py:2365-2437`, `artifact_management.md` §6.1 | "Save to Knowledge" is a new act, on the artifact page, on the chat card and in the library |
-| One registry of connections, one encrypted column, one store module, and a fence | `245_integration_connections.sql`, `gateway/connections/store.py`, `tests/unit/test_crm_connection.py` | A source row is `provider ∈ google_drive, onedrive, dropbox`, `owning_app = knowledge`. ⚠️ `save_credential` and `_DISCONNECT_SQL` carry CRM-only side effects (`_DROP_PROFILES_SQL`, the `provider_meta` strip). KB-3a lifts them behind an `owning_app` test first |
+| One registry of connections, one encrypted column, one store module, and a fence | `245_integration_connections.sql`, `gateway/connections/store.py`, `tests/unit/test_crm_connection.py` | A source row is `provider ∈ google_drive, onedrive, dropbox`, `owning_app = knowledge`. ⚠️ `save_credential` and `_DISCONNECT_SQL` carry CRM-only side effects (`_DROP_PROFILES_SQL`, the `provider_meta` strip). KB-3a lifts them behind an `owning_app` test first. KC-1a lifted them on 2026-10-25 |
 | The CRM sync is provider-generic: an adapter protocol, a discovery step, cursors, a run lock, and an in-process loop that ticks every 60 s | `gateway/crm_sources/base.py:184-259`, `gateway/crm_sync/engine.py`, `scheduler.py`, `runs.py` | `gateway/kb_sources/` and `gateway/kb_sync/` copy the shape, and share `shared_token.fresh_credential`. They do not import the CRM engine, because its steps are CRM entities |
 | Metorite owns ONE Google OAuth client. Google keeps one grant per account and client | `email_app_master_plan.md:552` (D-EM-5), `263_email_gmail_grant_shared.sql` | A Drive scope on the same client shares the Gmail grant. Disconnecting one must not revoke the other. §7.4 |
 | Text extraction exists and is hardened: docx, xlsx, pptx, pdf, odt, rtf, html, text. No OCR | `packages/acb_skills/acb_skills/attachment_text.py:312` | The one extractor. Knowledge adds Google Docs export (as text) in front of it and nothing else |
@@ -429,7 +489,7 @@ card. C is a hard-to-undo write with one card per act. X is not on chat.
 | `GET /knowledge/spaces` | A | The spaces the member can read, with page counts |
 | `POST /knowledge/spaces` | C | Make a space. Needs `knowledge:manage` |
 | `PATCH /knowledge/spaces/{id}` | C | Rename, re-icon, change the purpose |
-| `PUT /knowledge/spaces/{id}/grants` | X | Replace the grants. Never on chat (the D-PM-40 rule) |
+| `PUT /knowledge/spaces/{id}/grants` | X | Replace the grants. Never on chat (the D-PM-40 rule). D-OP-9 reversed D-PM-40 for the Projects chat only, on 2026-10-23. Knowledge keeps the rule |
 | `GET /knowledge/pages?space=&parent=&q=` | A | The tree, or a filtered list |
 | `GET /knowledge/pages/{id}` | A | One page, its files, its links, its versions |
 | `POST /knowledge/pages` | B | Make a draft |
@@ -445,8 +505,10 @@ card. C is a hard-to-undo write with one card per act. X is not on chat.
 | `GET /knowledge/about?entity=task:<id>` | A | Every page that links to this entity (§10.2) |
 | `GET /knowledge/search?q=&space=&kind=` | A | The one search, §6.3 |
 | `POST /knowledge/from-artifact` | B | "Save to Knowledge", §10.1 |
-| `POST /knowledge/proposals` | B | An agent's proposed page or edit, as a draft with `reason = agent_proposal` |
-| `POST /knowledge/proposals/{id}/accept` | B | A person accepts. The draft publishes |
+| `POST /knowledge/proposals` | B | An agent's proposed page or edit (KB-5a). `kind = page` makes a draft with `reason = agent_proposal`. `kind = edit` makes one `kb_page_proposals` row at the `base_version` the caller read, and is 409 when the page has a newer version. The tools `propose_page` and `propose_edit` |
+| `GET /knowledge/proposals?status=pending` | A | The proposals the member can see. The Review view of KB-5b reads it |
+| `POST /knowledge/proposals/{id}/accept` | X | A person accepts in the app. A page proposal publishes with an `accept` version. An edit applies when the page is still at `base_version`, else 409. Never on chat (D-KB-4) |
+| `POST /knowledge/proposals/{id}/reject` | X | A person rejects in the app. A page proposal archives as a draft. The gateway marks an edit proposal `rejected`. Never on chat |
 | `GET /knowledge/sources` | A | The connected sources and their last sync |
 | `POST /knowledge/sources/{provider}/start` | X | The consent URL. `knowledge:manage` for `org` scope |
 | `GET /knowledge/oauth/{provider}/callback` | X | The provider's redirect |
@@ -788,8 +850,9 @@ specialist is a full model run (§20.8). A specialist would also load for
 every org, because the registry is static, so `KNOWLEDGE_ORGS` could not
 keep it dark. So the read tools live in `acb_skills/knowledge_tools.py` and
 join the orchestrator's `core_tools` behind `COMPANY_SEARCH_ENABLED`, as
-`search_company` does. KB-5 decides whether a specialist earns its cost for
-`propose_page`, which needs judgement.
+`search_company` does. KB-5a builds no specialist for `propose_page`. The two
+propose tools join the orchestrator on the same path as the reads, and only
+while `KNOWLEDGE_PROPOSALS` is on (§13).
 
 The route manifest, `acb_skills/knowledge_manifest.py`, lists every route of
 §5.3 with its class, and the client refuses a route outside it. It lives in
@@ -802,16 +865,32 @@ The route manifest, `acb_skills/knowledge_manifest.py`, lists every route of
 | `knowledge_about(entity)` | A | The pages linked to a task, a project, a record or a meeting |
 | `list_spaces()` | A | The spaces the member can read, with counts |
 | `browse_source(source_id, parent=None)` | A | One level of a connected tree, names only |
-| `propose_page(space, title, body, links=[])` | B | A draft with `reason = agent_proposal`, behind one card. The card shows the title, the space, the first lines and "Publish now" or "Keep as draft" |
-| `propose_edit(page_id, body, summary)` | B | A new draft version behind one card, with the diff in the card |
-| `save_to_knowledge(artifact_path, space, title)` | B | §10.1, behind one card |
-| `link_page(page_id, entity)` | B | A typed link, behind one card |
+| `propose_page(title, body, summary, space_id=None)` | B | A draft with `reason = agent_proposal`, behind one card (KB-5a). The card shows the title, the space and the first lines. It files a draft and links to it. It never publishes |
+| `propose_edit(page_id, base_version, body, summary, title=None)` | B | One `kb_page_proposals` row behind one card (KB-5a). `base_version` is the version the assistant read: `read_page` prints it as `Version: <n>`. The POST is 409 when the page has a newer version, so an edit never rests on old text. The card shows the summary and the first lines of the new text. The diff is in the Review view (KB-5b) |
+| `save_to_knowledge(artifact_path, space, title)` | B | §10.1, behind one card. Not in KB-5a |
+| `link_page(page_id, entity)` | B | A typed link, behind one card. Out until `POST /knowledge/pages/{id}/links` exists |
 
 **The one rule for a write:** an agent never publishes. Every write lands as
 a draft or as a card that a person answers, through `request_confirmation`,
 which blocks and fails closed. A draft an agent made shows "Proposed by the
 assistant" until a person accepts it. That is D-PM-39's spirit, applied to
 knowledge: the record of who wrote a company fact is never forged.
+
+**Two KB-5a defaults (2026-10-22).** The supervisor took them so that KB-5a
+could start. The owner may overrule each one.
+
+- **F1, who sees and who accepts.** The member who asked the assistant is the
+  `author_email` of the draft, and is its reviewer. `visible_pages_clause`
+  already shows a draft to its author, so visibility does not change. Only its
+  author accepts or rejects a page proposal. A member with `write` on the
+  page's space who can see the page accepts or rejects an edit proposal. Both need `write` on the space at the time of the call,
+  because authorship is no bypass (§5.2). A space manager's review of the
+  drafts of other members is a later ticket, and needs an owner decision.
+- **F2, publishing.** The agent never publishes. The tool only sends
+  `POST /knowledge/proposals`. The card in the chat asks whether the tool may
+  file a proposal, and it is not a publish. A person publishes only through accept,
+  from the web (`via = web`). The accept and reject routes refuse a call
+  through `chat` or `mcp` with 403, and the manifest gives them no tool.
 
 ### 8.2 The grounding rule
 
@@ -820,10 +899,24 @@ The orchestrator's persona carries one paragraph for Knowledge:
 > When the member asks about the company, its work, its customers, its
 > mail or its policies, call `search_company` first. Answer from what it
 > returns, and cite each item you used. When it returns nothing, say that
-> the company's records hold nothing on it.
+> the company's records hold nothing on it. A request to change something
+> in one app, such as an email to write or send, a task to make or a record
+> to update, is work in that app. Give it at once to that app's specialist,
+> or to your own tool for it, with no search first. The specialist or the
+> tool finds the email, the contact or the record itself.
+
+"Your own tool" covers a write that the orchestrator holds itself, such as
+`propose_page` and `propose_edit` for a Knowledge page (KB-5a). Once WS-67
+loads tool packs (OA-7), every app's writes are such tools.
 
 KB-4 adds the last sentence, "offer to draft a page", when a member can
 save one.
+
+The sentences on work in one app came from the chat speed review
+(owner go, 2026-10-25). Before them, a request to write an email searched
+first and then delegated, and the email agent searched again. In
+production that cost one model round and a search, about 8.7 s. §20
+already keeps delegation for writes and for deep work in one app.
 
 `search_company` asks Knowledge with the other apps (§20). A specialist
 that needs pages only calls `search_knowledge`.
@@ -840,9 +933,28 @@ as a link to its `/knowledge/pages/<id>`, which `InAppLink` in
 `MarkdownMessage.tsx` already opens in this tab. A link is cited only when
 the same href appears in this message's tool results (the S9 rule).
 
-**KB-4b may draw pills** for those links. A pill is a chip with the app
-icon and the title. It keys on an in-app href that a tool result carries,
-for every kind that `search_company` returns. It needs no «» and no change to rule 10.
+**KB-4b draws chips** for those links (BUILT 2026-10-25). A chip is an
+`EntityPill` with the app icon and a label. It keys on an in-app href that a
+finished tool result carries, for every kind that `search_company` returns. It
+needs no «» and no change to rule 10. `src/lib/linkChips.ts` builds the index
+and `MarkdownBody` draws the chip. Three decisions close the gaps:
+
+- **The hrefs.** `search_company` returns these: a task as
+  `/projects?task=<id>`, an email as `/email?email=<id>`, a person as
+  `/people/<id>`, a CRM row as `/crm?tab=<leads|deals|contacts|organizations>&<lead|deal|contact|organization>=<id>`,
+  a page as `/knowledge/pages/<id>`, an artifact as `/artifacts?session=<id>`
+  or bare `/artifacts`, and WhatsApp as bare `/whatsapp`. The app and icon come
+  from the pane whose href is the first path segment. A task wears the
+  Projects icon.
+- **The label.** The label comes from the tool result and never from the
+  model's link text. The tool line is `- «Title» (hint, date) <href>`. The
+  index reads the title from the line that holds the href. If more than one
+  distinct title carries one href, the label is the app name, such as
+  "WhatsApp". If no title parses, the label is the link text, then the app name.
+- **The syntax.** Only a Markdown link `[x](/path)` draws a chip. A bare
+  `/crm?...` stays text. The Markdown source is not changed, so WhatsApp keeps
+  `[title](/path)`. A running or failed tool, and an href inside a code span,
+  draw no chip. The index reads `toolEvents` and `subAgentTools`.
 
 ### 8.4 Growth — the three doors
 
@@ -853,7 +965,11 @@ for every kind that `search_company` returns. It needs no «» and no change to 
 2. **An agent proposes.** After an answer the member marked useful, after a
    meeting summary, after a resolved thread, the specialist may call
    `propose_page`. The card is the gate. A proposal that nobody answers in
-   14 days archives itself, and no draft piles up.
+   14 days archives itself, and no draft piles up. KB-5c builds this
+   (2026-10-25). Every hour `routes/knowledge/proposal_expiry.py` runs.
+   It marks a pending edit proposal older than 14 days `expired`. It
+   archives a page proposal when nobody edited the draft in 14 days. Each
+   archive writes one version with the author `system` and the channel `sync`.
 3. **A gap is recorded (KB-9).** A `search_company` read can return no
    Knowledge hit. Then it writes one `kb_gaps` row. The row holds the question's normalised text, the asker and
    the time. A second asker within 30 days
@@ -862,6 +978,64 @@ for every kind that `search_company` returns. It needs no «» and no change to 
 
 Door 3 is the "opportunities" the owner asked for, in its cheapest form. It
 needs no model: a gap is a search with no hit, counted.
+
+**Door 3 as KB-9a builds it (2026-10-22).** These rules replace the short
+form above where the two differ.
+
+1. **The trigger.** `GET /search/company` asks Knowledge, and Knowledge
+   answers with zero hits. Hits from other apps do not matter, because a gap
+   is about Knowledge. A Knowledge source that failed, timed out or was
+   skipped writes nothing.
+2. **The gate.** `KNOWLEDGE_GAPS` names the org (§13), and Knowledge serves
+   the org. The caller is a member: a person's email address and an org. A
+   service call (`system:internal`) or a principal with no email writes
+   nothing.
+3. **The skip rules.** The route writes nothing for a question with fewer
+   than 3 words. It writes nothing for a question that holds a URL, an email
+   address or a uuid. It writes nothing when more than half of the words
+   hold a digit. Such a question is an id or a number.
+4. **The normal form.** Unicode NFKC, then lower case. Each character that is
+   not a letter, a mark or a digit becomes a space. A vowel sign of Hindi or
+   Tamil is a mark (category M), so it stays inside its word. Then the spaces
+   fold to one, and the ends are cut. Two questions with one normal form are
+   one gap. `sample_query` keeps the first wording, cut to 300 characters.
+5. **The write.** The route answers first. Then a `BackgroundTasks` job
+   writes in its own tenant session (`acb_common.db.tenant_session`). The
+   org and the member come from the session. One `INSERT ... ON CONFLICT`
+   statement adds the asker when the asker is new, and it moves
+   `last_asked_at`. The job never raises, so a failed write never fails the
+   search.
+6. **The window.** `ask_count` counts the different askers in one window. The
+   window runs 30 days from its first ask (`first_asked_at`). A new ask after
+   that starts a new window with one asker, even when the last ask is recent.
+   `askers` keeps 20 addresses at most. When the list is full, the count
+   stops at 20. A new address then changes neither the list nor the count.
+7. **Who sees a gap.** A holder of `knowledge:manage` sees each gap of the
+   org. A member sees the gaps that the member asked. A gap stores no space,
+   so the card goes to a holder of `knowledge:manage`.
+8. **How a gap closes.** A person closes it. "I wrote it" links a page, and
+   the gap reads `answered`. Dismiss sets `dismissed`. A publish closes no
+   gap in KB-9a. Undo of a Dismiss is `POST /knowledge/gaps/{id}/reopen`. It
+   needs `knowledge:manage` and it works on a dismissed gap only (409 for an
+   open or answered gap). The next ask reopens an `answered` gap whose page
+   is deleted (`answered_page_id` is NULL). A dismissed gap stays dismissed
+   at a new ask, by design.
+9. **The stored text.** The route masks the question after the skip rules and
+   before the normal form. So `norm_query` and `sample_query` both hold the
+   masked text. An email address becomes `[email]` and a phone number becomes
+   `[phone]`. An amount (a currency sign or word beside a figure) becomes
+   `[amount]`. Any other run of 5 digits or more becomes `[number]`. A figure
+   grouped by commas, such as 85,000, also becomes `[number]`. A phone number
+   needs a separator or a leading + to read `[phone]`. A plain run of digits
+   reads `[number]`. A short figure, such as a year, stays. A figure can have
+   spaces inside it, as in "Rs 85 000". One side effect follows. The questions
+   "salary Rs 50000" and "salary Rs 60000" are one gap. A name is not masked. Only a holder of `knowledge:manage` and the
+   asker see the stored text. One function does the mask, `mask_text` in
+   `gaps.py`. CX-3 may replace it with its shared mask.
+
+KB-AI-3 (§22) adds "Draft with AI" to the card. It drafts on
+`tier-balanced` and files the draft as a KB-5a proposal. KB-9a calls no
+model.
 
 ### 8.5 Where knowledge ends and memory begins
 
@@ -904,23 +1078,133 @@ typed question per hit. READ reads the kept pages. The adapter is thirty lines a
 ## 9. My Day and Reach — the four kinds
 
 Knowledge registers one provider, `register(Provider("knowledge",
-("knowledge",), _knowledge, kinds, needs=False, gated=True))`, in
-`routes/shell/needs.py`. It runs only when `MY_DAY_PROVIDERS` names it. It
-calls `visible_pages_clause` and nothing else, returns 15 signals at most,
-and opens no session of its own.
+("knowledge",), _knowledge, KNOWLEDGE_KINDS, needs=False, gated=True,
+hash_permission="knowledge:manage"))`, in `routes/shell/feed.py`. It runs
+only when `MY_DAY_PROVIDERS` names it. The reads live in
+`routes/knowledge/my_day.py`. Every read of `kb_pages` there goes through
+`visible_pages_clause`. The provider returns 15 signals at most.
+`my_day.read` opens ONE tenant session, and `feed.py` opens none.
 
 | Kind | Signal | Card | Acts | Reach class |
 |---|---|---|---|---|
-| `doc_needs_review` | A published page the member authored or last edited whose review date passed | "Returns policy is 6 months old. 14 people read it this month." | Review (opens the page), "Still current" (moves the date 180 days, class A), Snooze | `brief` (already in `reach/classes.py`) |
-| `doc_shared_with_me` | A page published in the last 24 hours in a space the member reads, by someone else | "Meera published Onboarding checklist in Company." | Read, Snooze | `brief` (already listed) |
+| `doc_needs_review` | A published page past its review date, for the page owner. A page with no owner goes to its author. The date is the publish time plus `COALESCE(review_every_days, 180)` days | "The review date was on Thursday. Check that the page is still right." | Review (opens the page) | `brief` (KB-9b adds it to `reach/classes.py`) |
+| `doc_shared_with_me` | A page that another author published in the last 24 hours, in a space the member reads. At most 5, the newest first | "A new page went live in Company in the last day." | Read (opens the page) | `brief` (KB-9b adds it to `reach/classes.py`) |
 | `kb_gap` | A `kb_gaps` question asked by two or more members in 30 days, in a space the member can write | "3 people asked how to raise a credit note. Nobody has written it down." | "Draft an answer" (opens the editor), Dismiss | `brief` |
 | `source_sync_failed` | A source the member connected is `needs_reconnect` or failed three runs | "Google Drive needs you to sign in again." | Reconnect (a link), Snooze | `interrupt` for the connector, `none` for everyone else |
 
 Each kind gets a row in `feed_rank.BASE` and in the old-path group table of
-`my_day_feed.md` §4.3. `kb_gap` and `source_sync_failed` get rows in
-`REACH_CLASS`, and `test_reach_plan.py::TestTheClasses` pins all four. A
-page publish calls `cache.bump_org`, and a source failure calls
-`cache.bump_member`, so the feed sees the change without a wider `on_event`.
+`my_day_feed.md` §4.3. `kb_gap`, `doc_needs_review`, `doc_shared_with_me` and
+`source_sync_failed` get rows in `REACH_CLASS`, and
+`test_reach_plan.py::TestTheClasses` pins them. A page publish calls
+`cache.bump_org_safe`, and a source failure calls `cache.bump_member_safe`, so
+the feed sees the change without a wider `on_event`.
+
+**`kb_gap` as KB-9a builds it (2026-10-22).** The provider registers in
+`routes/shell/feed.py`, with the other gated feed-only providers. It names
+the feature `knowledge`. KB-9b slice 1 moved the permission `knowledge:manage`
+(see below). A closed Knowledge switch or a closed `KNOWLEDGE_GAPS` reads
+`absent`. The gap read is `routes/knowledge/gaps.my_day_rows_in`.
+
+A card shows for an `open` gap with `ask_count` 2 or more and a last
+ask less than 30 days old. Its key is `knowledge:gap:<id>`. Its acts are
+"Write a page", which opens `/knowledge/gaps?write=<id>`, and "See all gaps".
+The New page form then opens with the question as the title.
+
+The card's own
+Dismiss is the feed's dismiss. The gap's Dismiss is in the Gaps view. The
+reach class of `kb_gap` is `brief`. A gap that reaches 2 askers, a dismiss
+and an answer each call `cache.bump_org_safe`.
+
+**KB-9b slice 1 as built (2026-10-26).** The source `knowledge` no longer
+names `knowledge:manage` as its `permission`, because a plain member gets the
+page cards. `Provider.hash_permission` holds the grant. `cache.features_hash`
+reads it with `permission`, so there is one hash and the key still covers
+`knowledge:manage`. While `knowledge` is listed, the hash also holds
+`knowledge_org=<0|1>`, as `crm_org` does for the CRM.
+
+The gates moved into `_knowledge`. Knowledge off for the org raises
+`SourceAbsent` before any read. The gap read runs only with `KNOWLEDGE_GAPS`
+open and a manager. `my_day.read` reads the gaps, the expired pages and the new
+pages in one session. The order before the cut of 15 is review, then gaps, then
+shared.
+
+Both page kinds key on `knowledge:page:<id>`, so one page makes one card.
+`review_at` is a state fact (`state.STATE_FACTS`). So a dismissed review card
+returns with the next review date, and a dismissed new-page card never hides
+the review card of the same page. The publish route and the accept of a page
+proposal call `cache.bump_org_safe` after the session closes. Fences:
+`tests/unit/test_kb_my_day.py` and `tests/unit/test_kb_my_day_r8.py` (R8). The
+restore of a page and a verify call no bump (OQ9).
+
+**KB-9b slice 2 as built (2026-10-26).** `source_sync_failed` is a card for
+the member who connected a Drive, and for no one else. `my_day.read` takes
+`sources_on`, which is true when `KNOWLEDGE_SOURCES` names the org. With it
+off, no source statement runs and the page cards still come. With it on, the
+read of the viewer's own sources runs in the SAME one session.
+
+The read names the org, `lower(owner_email) = :kb_viewer` and
+`state <> 'disconnected'`. It reads 10 sources at most (`SOURCES_MAX`). It uses
+`kb_sync_runs_source_started_idx`.
+
+A source fails when its state is `needs_reconnect`. It also fails when its
+three newest finished runs are all `failed`. Those runs are of kind `changes`
+or `reconcile`. Their error is not `stale` and not `superseded`.
+
+A stopped run is
+finished and is not failed, so it breaks the three. A running run is not
+finished. Fewer than three finished runs never fail.
+
+The card keys on `knowledge:source:<source id>`. Its one act opens
+`/knowledge/sources`. The why line for `needs_reconnect` is "Your Google Drive
+stopped syncing. Reconnect it in Knowledge." The line for the rest is "The last
+three syncs failed." The row holds the id, the provider, the state and
+`failed_since`.
+
+So the card holds no provider error, no account address and no token.
+
+`failed_since` is a state fact (`state.STATE_FACTS`), and it is the `at` of the
+signal. It changes once for each failure episode. For `needs_reconnect` it is
+`kb_sources.updated_at`, because the loop skips a source that is not `ready`.
+
+For failed runs it is the `started_at` of the newest run before the streak.
+That run is an ok, stopped, stale or superseded run. It stays fixed when a 4th
+or 5th failed run lands. It also stays fixed when the retention sweep prunes
+old failed runs. So a dismissed card returns in a new episode, and a new
+episode gets one new push.
+
+The rank is 31, the group is `needs_you`, and the reach class is `interrupt`.
+`MAX_KINDS` is 26. The order before the cut of 15 is source failures, review,
+gaps, shared.
+
+The bump is `cache.bump_member_safe(org, owner_email)` through
+`kb_sync/owner_bump.py`. `run_source` calls it after `close()` returned, when
+the run closed `failed` or the source went `needs_reconnect`. The discovery
+`_mark` calls it after its session closed. It is never inside a session, because
+of the lock order of KC-3h. A bump failure never fails the run.
+
+Fences: `tests/unit/test_kb_my_day.py` (`TestTheSourceCard`,
+`TestTheSourceSignal`, `TestTheEpisodeOfASourceCard`, `TestTheSyncBump`) and
+`tests/unit/test_kb_my_day_r8.py` (R8).
+
+The decisions of slice 1:
+
+- **OQ1.** The owner is `COALESCE(owner_email, author_email)`. A page past its
+  review date goes to that person only.
+- **OQ2.** The card names no person.
+- **OQ3.** The card shows no read count.
+- **OQ4.** The card has no "Still current" act. A verify stays in the page view.
+- **OQ5.** A new page is one that ANOTHER author published in the last 24
+  hours. The card expires 24 hours after the publish.
+- **OQ6.** At most 5 new-page cards, the newest first.
+- **OQ7.** `doc_needs_review` ranks 21 and `doc_shared_with_me` ranks 19, both
+  in the group `fyi`. `kb_gap` stays at 20.
+- **OQ8.** Archived spaces and `me` spaces give no card. Both reads name
+  `s.archived_at IS NULL` and `s.kind <> 'me'`.
+- **OQ9.** The restore of a page and a verify may bump the cache, and slice 1
+  adds neither.
+- **OQ10.** The review read returns 10 rows at most (`my_day.REVIEW_MAX`). A
+  dismissed review card keeps its slot among the 15, so the cap leaves room for
+  the gap and new-page cards.
 
 The feed is where insight lives, and the four kinds are deliberately dumb.
 A fifth kind that uses a model, "the handbook contradicts the CRM's price
@@ -1026,6 +1310,7 @@ never a stub. The first screen is the space cards. A card opens its space, and t
 | Files | The connected documents and the files on pages the member can see, as a list with kind, size, space and where it lives. Filter by kind and source. A link opens the Artifacts library for everything members and agents make. This is the "file app" the owner raised, as a view, and the library of `artifact_management.md` stays the one library |
 | Sources | The connected folders, their trees, the include switches, the last sync. An admin connects an org source here. A member connects a personal one here |
 | Review | For a space manager: the drafts proposed by agents, the pages past review, the gaps. Hidden from a member with no `manage` |
+| Gaps | Built at KB-9a, before Review. The questions that Knowledge could not answer, the most asked first, with "Write a page" and Dismiss (with Undo). The row shows to a holder of `knowledge:manage` while `KNOWLEDGE_GAPS` names the org. A member reaches `/knowledge/gaps` by URL and sees the questions the member asked |
 
 The page view is the editor. It has a title, the body, the files as inline images or cards, and the links
 as pills. A right strip holds the author, the versions, the review date and
@@ -1047,15 +1332,16 @@ compact density, a changed accent, and four widths.
 | `kb_space_grants` | §5.1 | — |
 | `kb_pages` | id, organization_id, space_id, parent_id, position, title, body_md, state, author_email, reviewers TEXT[], review_at, history_from (§4.2), archived_from_state, source_ref (document id or null), origin JSONB, published_at, archived_at, updated_at, created_at | inherits the space, plus the author and the reviewers of a draft |
 | `kb_page_versions` | id, organization_id, page_id, version, body_md, title, author_email, reason, `via`, created_at | as the page |
+| `kb_page_proposals` | id, organization_id, page_id (→ `kb_pages`, cascade), base_version, title, body_md, summary, proposer_email, `via`, status (`pending`, `accepted`, `rejected`, `expired`), decided_by, decided_at, created_at. A partial index on (organization_id, status, created_at) where `status = 'pending'`. KB-5a, migration 292. An edit proposal only: a page proposal is a draft in `kb_pages` | as the page, and a writer of its space. A member purge keeps the member's rows as authored work and the record (`knowledge_proposals` in `_PURGE_KEEPS`). KB-5c expires a pending one |
 | `kb_page_files` | organization_id, page_id, artifact_id (→ `artifacts`), position, caption, created_by, created_at | as the page |
 | `kb_links` | §5.5 | as the page |
 | `kb_chunks` | §6.1 | as the page or the document |
-| `kb_gaps` | id, organization_id, question_norm, question, asker_email, space_hint, asked_at, resolved_page_id | the space the hint names, else org |
-| `kb_sources` | id, organization_id, connection_id (→ `integration_connections`), provider, scope_kind, member_email, display_name, last_discovery_at, last_changes_at, status, created_at | org scope: `knowledge:manage`. member scope: the member |
+| `kb_gaps` | id, organization_id, norm_query, sample_query, askers TEXT[] (20 at most), ask_count, first_asked_at, last_asked_at, status (`open`, `answered`, `dismissed`), answered_page_id (→ `kb_pages`, ON DELETE SET NULL), dismissed_by, dismissed_at, created_at. UNIQUE (organization_id, norm_query). KB-9a, §8.4 | org scope: `knowledge:manage`. A member: the gaps the member asked |
+| `kb_sources` | id, organization_id, connection_id (→ `integration_connections`), provider, kind (`member`, `org`), owner_email, state (`discovering`, `ready`, `failed`, `needs_reconnect`, `disconnected`), default_space_id, account_email, account_id, node_count, discovered_at, last_error, last_new_at, created_at, updated_at. Migration 300 (KC-1a). `last_new_at` is migration 308 (KC-3) | org scope: `knowledge:manage`. member scope: the member |
 | `kb_source_nodes` | organization_id, source_id, ext_id, parent_ext_id, kind, name, mime, size, modified_at, web_url, path, included_space_id, explored, seen_at | as the source |
 | `kb_documents` | id, organization_id, source_id, node_ext_id, space_id, title, text, text_sha, extracted_at, pages, truncated, copied_attachment_id | the space it was included into |
-| `kb_sync_runs` | id, organization_id, source_id, kind (`discover`, `changes`), status, started_at, finished_at, heartbeat_at, counts JSONB, error | as the source |
-| `kb_sync_cursors` | organization_id, source_id, kind, cursor_state JSONB, last_run_at, last_status | as the source |
+| `kb_sync_runs` | id, organization_id, source_id, kind (`discover`, `changes`, `reconcile`), status, started_at, finished_at, heartbeat_at, counts JSONB, error. Migration 308 (KC-3) | as the source |
+| `kb_sync_cursors` | organization_id, source_id, kind (`changes`, `reconcile`), cursor_state JSONB, last_run_at, last_status. Migration 308 (KC-3) | as the source |
 
 Every table carries `organization_id`, defaults it from `app.tenant_id`,
 and takes FORCE RLS from the generated policies. `test_tenant_coverage.py`'s
@@ -1073,11 +1359,20 @@ The first migration adds, and nothing renames (R6).
 | ~~`NEXT_PUBLIC_KNOWLEDGE`~~ | — | Not built. KB-12 found no such flag in the code. The launch status of the pane is the one gate of the sidebar (`launch_surface.md` §3), so no second flag is needed | — |
 | `KNOWLEDGE_EMBED` | off | Chunks get a vector. Off, the index is lexical only | AGENT-SAFE. Spends `tier-embed` credits, so a flip for an org is the owner's |
 | `KNOWLEDGE_EMBED_SWEEP` | on | The embed sweep of §6.4 starts. It does nothing for an org that `KNOWLEDGE_EMBED` does not name. Off, the loop does not start. Then a chunk that the door refused once gets a vector only when its text changes, because the request-time job embeds only new shas | AGENT-SAFE. The spend follows `KNOWLEDGE_EMBED` |
-| `KNOWLEDGE_SOURCES` | empty | The providers a member can connect: `dropbox`, `onedrive`, `google_drive` | owner. `google_drive` waits on §7.4 |
-| `KNOWLEDGE_SYNC_ENABLED` | off | The loop runs | AGENT-SAFE to build, owner to flip on the box |
-| `MY_DAY_PROVIDERS` | as WS-58 | `knowledge` joins the list | MD-10's rule |
+| `KNOWLEDGE_PROPOSAL_EXPIRY` | on | The expiry loop of §8.4 door 2 starts. It does nothing for an org that Knowledge does not serve. Off, the loop does not start and a proposal stays open | AGENT-SAFE. It spends no credit and sends nothing |
+| `KNOWLEDGE_SOURCES` | empty | The organization ids that may connect a company file source, in the grammar of `KNOWLEDGE_ORGS`. A star is every org. Empty, every `/knowledge/sources` route answers 404. One flag for each provider opens that provider (`knowledge_curation.md` §17). Built at KC-1a | Agent, on staging. Owner, on production |
+| `KNOWLEDGE_SOURCE_GOOGLE` | empty | The organization ids that may connect Google Drive, in the same grammar. It needs `KNOWLEDGE_SOURCES` too. Empty, the Drive connect and callback answer 404. Built at KC-1a | owner. Outside the Google test users it waits on §7.4 |
+| `KNOWLEDGE_SYNC` | empty | The organization ids whose ready sources the sync loop reads, in the grammar of `KNOWLEDGE_ORGS`. It needs `KNOWLEDGE_SOURCES` too. Empty, `start_kb_sync()` starts no task. Built at KC-3 (`knowledge_curation.md` §17) | AGENT-SAFE to build. Agent on staging, owner on production |
+| `MY_DAY_PROVIDERS` | as WS-58 | `knowledge` joins the list | MD-3's flip rule |
+| `KNOWLEDGE_GAPS` | empty | The organization ids whose `search_company` reads with no Knowledge hit write a `kb_gaps` row (KB-9a, §8.4). A star is every org. It opens the gap routes and the `kb_gap` card too. Empty, nothing writes a gap, and the gap routes answer 404 | AGENT-SAFE. It spends no credit and sends nothing. A flip for an org: the owner, gate `enforcement-flip` |
 | `KNOWLEDGE_DISTILL` | off | CX-3 writes a digest for each published page on `tier-fast` (`company_context.md` §5) | owner, it spends credits |
+| `KNOWLEDGE_PROPOSALS` | off | KB-5a. The orchestrator gets `propose_page`, `propose_edit` and their persona line, with `COMPANY_SEARCH_ENABLED` on too. `POST /knowledge/proposals` answers. Off, the POST is 404, and the list, accept and reject stay open, so a filed proposal stays decidable. One flag for every org, because the orchestrator builds its tools once | Agent. It spends no credit. KB-5b has shipped the Review view, where a person accepts, so it may now be turned on |
 | `COMPANY_SEARCH_ENABLED` | off | The assistant gets `search_company` and loses the two legacy retrievers (§20.5) | Agent, under the dev-phase `enforcement-flip` grant. It spends no credit, sends nothing, and reads only what the member can already read. After the grant ends, the owner |
+
+KB-5 adds no flag that spends credits. `propose_page` and `propose_edit` ride
+`COMPANY_SEARCH_ENABLED` with the reads, and `KNOWLEDGE_PROPOSALS` keeps them dark. A draft is not indexed, and an
+accepted proposal embeds only when `KNOWLEDGE_EMBED` names the org.
+`KNOWLEDGE_EMBED` stays the owner's flip, and KB-5 builds no specialist agent.
 
 ---
 
@@ -1164,23 +1459,26 @@ its own branch, three or four in flight at most.
 | **KB-3** ✅ BUILT 2026-10-16 | Backend only. Migration 273 (check at merge): `kb_chunks` with the generated `tsv` and a partial HNSW index. `gateway/kb_index/`: chunking, `embed()` with the zero-vector rule, `query()` with fusion, and the hook in `_written` that writes or deletes a page's chunks in its transaction, then embeds after the commit. `GET /knowledge/search`. The flag `KNOWLEDGE_EMBED` (default off). KR-3 ships on the same branch | A published page is found by an exact token, and by a paraphrase with a fixed fake embedder in the R8 suite. A draft is never found, and an archived page leaves the index. The embed door down returns the lexical half with `degraded`. `test_kb_one_index.py` holds, and the one-seam fence covers `kb_chunks` reads | AGENT-SAFE to build. The embed flip spends credits: owner |
 | **KB-3b** ✅ BUILT 2026-10-16 | The Search rail entry and view over `GET /knowledge/search`, results grouped by space with the heading path | A member finds a published page by a word in its body, and the hit opens the page at `/knowledge/pages/<id>` | AGENT-SAFE |
 | **KB-3c** ✅ BUILT 2026-10-18 | The whole index by meaning (owner request, 2026-10-18). `GET /search/company` asks Knowledge for the vector half when `KNOWLEDGE_EMBED` names the org, and the command bar stays lexical. The sweep `kb_index/sweep.py` and its kill switch `KNOWLEDGE_EMBED_SWEEP`. The embed job takes the new shas only and binds the acting member (H-330) | A page published before the flag gets vectors in one tick. `search_company` finds a paraphrase that shares no word with the page. The bar makes no embed call. Two concurrent saves embed each chunk once. The job and the sweep carry a member. With the flag off for an org, nothing calls the door | AGENT-SAFE to build. The flip of `KNOWLEDGE_EMBED` for an org: owner |
-| **KB-3a** | Lift the CRM-only side effects out of `connections/store.py` behind an `owning_app` test | `save_credential` for `owning_app = knowledge` touches no `crm_source_profiles` row. The CRM tests are unchanged | AGENT-SAFE |
+| **KB-3a** ✅ BUILT 2026-10-25, folded into KC-1 (`knowledge_curation.md` §22) | Lift the CRM-only side effects out of `connections/store.py` behind an `owning_app` test. KC-1a built it: `save_credential` and `disconnect` run the CRM SQL for `owning_app = crm` only. Fence: `tests/unit/test_kc_sources_store_lift.py` | `save_credential` for `owning_app = knowledge` touches no `crm_source_profiles` row. The CRM tests are unchanged | AGENT-SAFE |
 | **KB-4a** ✅ BUILT 2026-10-16 | `acb_skills/knowledge_tools.py` with two read tools, `read_page` (one section by heading path, at most 4 000 tokens) and `list_spaces`, behind `COMPANY_SEARCH_ENABLED` in the orchestrator's `core_tools`. `acb_skills/knowledge_manifest.py` lists every Knowledge route with its class, and the client refuses an unmapped route. The index block of §6.5, built in the executor. One line in the flag-on persona names the two tools | With the flag off, the persona and the tools are byte-identical to main. A scripted orchestrator run with "what is our refund window" calls `search_company`, then `read_page`. The model's input holds the index block, and the answer cites `/knowledge/pages/<id>`. With no hit, the answer says the company's records hold nothing on it. The block is absent for an org that is not on `KNOWLEDGE_ORGS`, and for a member who can read no published page, and it is identical across two turns. Every Knowledge route is in the manifest | AGENT-SAFE |
-| **KB-4b** | Pills for in-app links that a tool result carries, for every kind of `search_company` (§8.3) | An answer that cites a page, a task and a deal draws three chips, and a link absent from the tool results draws none | AGENT-SAFE |
-| **KB-5** | `propose_page`, `propose_edit`, `link_page`, the proposal routes, the Review view, the 14-day archive of unanswered drafts | An agent's page lands as a draft with a card. A person accepts, and the history says who proposed and who accepted. The agent cannot publish, and the test proves it | AGENT-SAFE |
+| **KB-4b** | Pills for in-app links that a tool result carries, for every kind of `search_company` (§8.3) | An answer that cites a page, a task and a deal draws three chips, and a link absent from the tool results draws none | **BUILT 2026-10-25** (branch `kb-4b-chips`, fence `linkChips.render.test.ts`) |
+| **KB-5a** ✅ BUILT 2026-10-22, dark behind `KNOWLEDGE_PROPOSALS` | Backend only. Migration 292 (check at merge): `kb_page_proposals` (§12) with FORCE RLS, the generated-phase lines and the tenant-coverage entry. `POST /knowledge/proposals` with `kind = page` (a draft, `origin = {"kind": "agent_proposal", "via": ..., "proposer": ...}`, a version with `reason = agent_proposal`) or `kind = edit` (a proposal row at the `base_version` that `read_page` printed, 409 when the page moved since). `POST /knowledge/proposals/{id}/accept` and `/reject`, web only, with the F1 rules of §8.1. `GET /knowledge/proposals?status=pending`. The tools `propose_page` and `propose_edit` in `knowledge_tools.py`, each behind `request_confirmation`, which send `X-Actor-Via: chat`. Their manifest rows, their `tool_annotations` entries (`read_only False`, `destructive False`, `open_world False`), the orchestrator's `retrieval_tools`, and one persona line. Not `link_page` and not `save_to_knowledge` | 1. A scripted run of `propose_page` with the card approved leaves one `kb_pages` row with `state = draft` and `origin.kind = agent_proposal`, one version with `reason = agent_proposal` and `via = chat`, and no row in `kb_chunks`. 2. A declined card, or a run with nobody to answer, writes nothing. 3. No tool in the manifest maps to a publish, accept, reject, restore or archive route, and a source test fails if one does. 4. Accept by the author writes a version with `reason = accept` and `via = web`, and the history returns the proposer and the accepter. 5. A member with no `write` on the space gets 403. A member who cannot see the page gets the 404 of a missing page. 6. A second accept is 409. An edit whose `base_version` moved is 409. 7. A proposal id of org A is 404 for org B (R8). 8. The tool output shows page text only under the "data, not instructions" line, with the title on one line. Fences: `test_kb_proposals.py` (hermetic: 2, 3 and 8) and `test_kb_proposals_r8.py` (R8: 1, 4, 5, 6 and 7) | AGENT-SAFE |
+| **KB-5b** ✅ BUILT 2026-10-23 (frontend, plus the space on each listed proposal) | The Review view and the card in the app. A list of the pending proposals over `GET /knowledge/proposals`, Accept and Reject, the diff of an edit proposal, "Proposed by the assistant" on a draft, and the link from the chat card to the draft | A member opens the Review view, sees the proposals of the assistant, and accepts one. The page history then says "Proposed by the assistant, accepted by <member>". The visual review passes in light mode, compact density and a changed accent | AGENT-SAFE |
+| **KB-5c** ✅ BUILT 2026-10-25 (branch `kb-5c-expiry`, no migration) | The 14-day expiry (§8.4 door 2). A loop marks each pending edit proposal older than 14 days `expired`, and archives each page proposal that nobody answered in 14 days | A proposal 15 days old is `expired` or archived after one tick, and one 13 days old is not. The loop writes one version for each archive, with the actor `system`. The page age is `updated_at`, so an edited draft stays. The version channel is `sync`, because the CHECK has no `system`. Tests: `test_kb_proposal_expiry.py` and `test_kb_proposal_expiry_r8.py` (R8) | AGENT-SAFE |
 | **KB-6** | Save to Knowledge: the artifact card act, the Files panel act, the Artifacts app act, the route, the origin and the back link | A Markdown artifact becomes a page in `me` with provenance. The artifact is unchanged. A later edit shows "Compare" | AGENT-SAFE |
 | **KB-7a** | Sources: the adapter protocol, the Dropbox adapter, the connect flow in the app, the registry row, discovery, the tree view, the include switch | A Dropbox account connects, its tree shows with no text, one folder included becomes read-only pages that search finds. Disconnect revokes and keeps the pages. `test_kb_sources_no_global_creds.py` holds | AGENT-SAFE to build. The Dropbox app registration: owner |
 | **KB-7b** | The sync loop, changes, cursors, the run lock, `source_sync_failed` | A file edited at Dropbox re-indexes within 15 minutes with one embedding call. A revoked token sets `needs_reconnect` and never retries | AGENT-SAFE to build. The flip on the box: owner |
 | **KB-7c** | The OneDrive and SharePoint adapter on the Microsoft app the Email app uses | Same checks as 7a on a Microsoft 365 account | AGENT-SAFE. Org-wide `Sites.Read.All` consent: owner |
-| **KB-7d** | The Google Drive adapter on the one Google client, with the shared-grant rule of §7.4 | Same checks on a test user. Disconnecting Drive leaves Gmail connected, and the test proves it | AGENT-SAFE to build. The verification: owner (Q2) |
+| **KB-7d** — folded into KC-1 (`knowledge_curation.md` §22). KC-1a BUILT 2026-10-25, backend and dark. KC-1b (the Sources view) is open | The Google Drive adapter on the one Google client, with the shared-grant rule of §7.4 | Same checks on a test user. Disconnecting Drive leaves Gmail connected, and the test proves it | AGENT-SAFE to build. The verification: owner (Q2) |
 | **KB-8** | Replaced on 2026-10-18 by CX-3 of `company_context.md`: a digest per page on `tier-fast`, behind `KNOWLEDGE_DISTILL`, with `raw` kept. `tier-cheap` does not exist | See `company_context.md` §12 | AGENT-SAFE to build. The flip: owner |
-| **KB-9** | The My Day provider and the four kinds, the reach classes, the cache bumps, and `kb_gaps` with its write on a Knowledge search with no hit (§8.4 door 3) | A page past review shows a card to its author. A twice-asked gap shows a card to a writer. `test_reach_plan.py` pins the classes | AGENT-SAFE. `MY_DAY_PROVIDERS`: MD-10's rule |
+| **KB-9a** ✅ BUILT 2026-10-22 (branch `kb-gaps`, migration 293) | Gaps and the `kb_gap` card (§8.4 door 3, §9). The migration of `kb_gaps` (the next free number, R1). The gap write after `GET /search/company`, behind `KNOWLEDGE_GAPS`, as a background job. `GET /knowledge/gaps`, `POST /knowledge/gaps/{id}/dismiss`, `POST /knowledge/gaps/{id}/answered` and, from the H-402 follow-up, `POST /knowledge/gaps/{id}/reopen`. The gated provider `knowledge` with `kb_gap`, its reach class and its cache bumps. The Gaps view in the rail, and "Write a page" with the question as the title. The member purge takes the address out of `askers`. No model | A zero-hit search writes one row. A second asker adds one to the count, and the same asker twice counts once. A search with a Knowledge hit, a short question, an id, a URL and an email write nothing, and so does an org off `KNOWLEDGE_GAPS`. Org B sees no gap of org A, under row level security. A member sees only the gaps the member asked, and a manager sees all. Dismiss needs `knowledge:manage`. "I wrote it" needs a visible page that the caller can write. The card shows to a manager only, at 2 askers or more inside 30 days. Tests: `test_kb_gaps.py` and `test_kb_gaps_r8.py` (R8), and the Gaps e2e | AGENT-SAFE. `KNOWLEDGE_GAPS` and `MY_DAY_PROVIDERS`: MD-3's flip rule |
+| **KB-9b** slice 1 ✅ BUILT 2026-10-26 (branch `kb-9b-my-day`, no migration), slice 2 ✅ BUILT 2026-10-26 (branch `kb-9b2-sync-card`, no migration, task #461) | Slice 1: `doc_needs_review` and `doc_shared_with_me`, with their reach classes, rank rows, labels and the cache bump of a publish and of an accept (§9). `source_sync_failed` is slice 2 (built). It reads the `failed` and `stopped` rows of `kb_sync_runs` and the state of `kb_sources`, which KC-3 writes (`knowledge_curation.md` §22) | Slice 1: a page past review shows a card to its owner, or to its author when it has no owner. A new page in a space the member reads shows a card to a reader who did not write it, 5 at most. A plain member gets the page cards and no `kb_gap`. `test_reach_plan.py` pins the classes. Slice 2 done-when: the connector (`kb_sources.owner_email`) gets one card when the source is `needs_reconnect`, or when its three newest finished changes or reconcile runs failed with an error other than stale or superseded. A stopped run never counts. No other member gets a card, and a disconnected source gives none. The key is `knowledge:source:<id>`, and the one act opens `/knowledge/sources`. With `KNOWLEDGE_SOURCES` off, no read runs. A reconnect close and a failed close call `bump_member_safe` for the owner, after the session closes. The class is `interrupt`. R8 proves org isolation. Slice 2 is built, and the cards stay dark until `MY_DAY_PROVIDERS` lists `knowledge` | AGENT-SAFE. `MY_DAY_PROVIDERS`: MD-3's flip rule |
 | **KB-10** | `kb:read` on `/mcp`: the scope, the two tools, the route pairs, the second manifest in `test_mcp_edge_coverage.py` | Claude Desktop, connected with `kb:read`, searches and reads a page the member can see, and gets 404 on one they cannot | AGENT-SAFE. The scope amendment: owner |
 | **KB-11** | The narrowing adapter, "Make this a page" on a report, the Markdown export zip | A report becomes a page. An org exports its pages. `narrow_and_read` answers a question over 60 documents on `tier-decide` | AGENT-SAFE |
 | **KB-12** ✅ DONE 2026-10-18, by owner decision in chat (H-21) | Promotion to `live`: the launch table, `LIVE_SET`, `APP_BAR_HOME`, the two jobs of §11 on both job lists, and Knowledge in the bar's `BAR_APPS` and `SCOPE_APPS`. `NEXT_PUBLIC_KNOWLEDGE` never existed, and §13 says so | The pane shows to every member with `feature:knowledge`. "Find in Knowledge" and "Write a page" answer in the command bar, and a Knowledge page answers in its search | **OWNER-GATE** (H-21), granted in chat on 2026-10-18 |
 
 The order is KB-0, KB-1, KB-2a, KB-3, KB-4, then KB-6 and KB-5 together,
-then KB-7a and KB-9, then the rest. KB-3 before KB-4, because the assistant
+then KB-7a and KB-9a, then the rest. KB-3 before KB-4, because the assistant
 with no index is the assistant we have today.
 
 ---
@@ -1222,6 +1520,43 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/nav.tes
   src/lib/shell/seams.test.ts src/lib/shell/appBar.test.ts src/app/knowledge
 npx playwright test e2e/knowledge-pages.spec.ts      # KB-2a
 npx playwright test e2e/knowledge-search.spec.ts     # KB-3b
+
+# KB-9a, the gaps. The R8 suite needs the ladder database, and a skip is not a pass.
+uv run pytest tests/unit/test_kb_gaps.py tests/unit/test_kb_flags.py \
+  tests/unit/test_knowledge_chat_coverage.py tests/unit/test_company_search_sources.py \
+  tests/unit/test_feed_rank.py tests/unit/test_reach_plan.py tests/unit/test_my_day_prefs.py -q
+uv run pytest tests/unit/test_kb_gaps_r8.py -q -rs
+cd workbench/control_plane && npx vitest run src/app/knowledge/lib/gaps.test.ts \
+  src/lib/shell/feedApps.test.ts && npx playwright test e2e/knowledge-gaps.spec.ts
+
+# KB-9b slice 1, the page cards. The R8 suite needs the ladder database, and a skip is not a pass.
+uv run pytest tests/unit/test_kb_my_day.py tests/unit/test_kb_gaps.py \
+  tests/unit/test_reach_plan.py tests/unit/test_my_day_prefs.py \
+  tests/unit/test_feed_rank.py tests/unit/test_shell_feed.py -q
+uv run pytest tests/unit/test_kb_my_day_r8.py -p no:xdist -q -rs
+# KB-9b slice 2 adds its tests to the same two files, and the engine fence.
+uv run pytest tests/unit/test_kb_my_day.py tests/unit/test_kb_sync_engine.py -q
+
+# Wave 1 of §21.7 (KB-2d, KB-2f, KB-2g, KB-2i)
+uv run pytest tests/unit/test_third_party_notices.py -q
+uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_kb_visibility_one_seam.py \
+  tests/unit/test_knowledge_chat_coverage.py tests/unit/test_kb_flags.py -q
+uv run pytest tests/unit/test_kb_editor_golden.py tests/unit/test_kb_chunk.py -q
+# With a real database (KB-2f and KB-2g). A skip is not a pass.
+uv run pytest tests/unit/test_kb_pages_r8.py tests/unit/test_kb_search_r8.py -q -rs
+cd workbench/control_plane && npx vitest run src/app/knowledge \
+  src/components/markdownImage.test.ts src/lib/htmlSinks.test.ts \
+  src/lib/railRows.test.ts src/lib/theme/conformance.test.ts
+
+# KB-5a, the proposals (hermetic, then R8 one suite at a time)
+uv run pytest tests/unit/test_kb_proposals.py tests/unit/test_knowledge_chat_coverage.py \
+  tests/unit/test_knowledge_tools.py tests/unit/test_kb_visibility_one_seam.py \
+  tests/unit/test_tenant_coverage.py tests/unit/test_kb_flags.py \
+  tests/unit/test_crm_answer_first_fix1.py tests/unit/test_admin_member_purge.py \
+  tests/unit/test_company_search_tool.py -q
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_kb_proposals_r8.py -p no:xdist -rs -q   # a skip is not a pass
+uv run pytest tests/unit/test_kb_pages_r8.py tests/unit/test_kb_history_r8.py -p no:xdist -rs -q
 ```
 
 A merged slice updates this header (R4), and the board row, in the same
@@ -1494,22 +1829,46 @@ wiki in the Notion and Confluence shape. The owner asked us to study its
 features and its experience, and to build what is good. This section is the
 result. It extends §11.1 and replaces the text of KB-2b.
 
-### 21.1 The licence rule — ideas only, never code
+### 21.1 The licence rule — Docmost core may be ported (D107, 2026-10-19)
 
-Docmost core is AGPL-3.0. Its folders `apps/server/src/ee`,
-`apps/client/src/ee` and `packages/ee` carry a separate enterprise licence.
-Metorite is a closed SaaS. So **we take behaviour and layout, and we copy no
-file, no component and no stylesheet.** Each slice writes its own code on
-our own design system. A reviewer refuses a diff that carries Docmost
-source, its CSS class names, or its UI strings word for word.
+**This rule replaced "ideas only, never code" on 2026-10-19.** The owner
+wrote that the product will release under AGPL-3.0, so code from Docmost may
+be taken when it is needed. `work_plan.md` D107 records it.
 
-The editor library is TipTap, MIT, which Docmost also uses. The workbench
-already depends on TipTap 3 (`SignatureEditor.tsx`). The add-ons this
-section needs are MIT at the same version: `@tiptap/markdown`,
-`@tiptap/extension-list`, `@tiptap/extension-bubble-menu`,
-`@tiptap/suggestion` and `@tiptap/extension-drag-handle-react`. The table
-of contents extension is under the TipTap Pro licence, so we do not use it.
-The outline of §21.4 reads the headings itself.
+Docmost core is AGPL-3.0. Four folders carry a separate enterprise licence:
+`apps/server/src/ee`, `apps/client/src/ee`, `packages/ee` and
+`packages/base-formula`. The rule has five parts.
+
+1. **Core only.** A builder may port code from core. A builder never ports
+   a file from the four enterprise folders, and never reads them as a
+   source for a re-write. Each enterprise feature is built from the spec.
+   Some core files carry an upstream MIT notice, for example
+   `search-and-replace`, the footnotes and `recreate-transform`. A port
+   keeps that notice.
+2. **A header on each ported file.** The first lines name the source:
+   `Adapted from Docmost (AGPL-3.0), <path in the Docmost repo>`. The
+   marker text is `Adapted from Docmost`.
+3. **A line in `THIRD_PARTY_NOTICES.md`**, in the same pull request. The
+   test `tests/unit/test_third_party_notices.py` fails when a file with the
+   marker is not listed, when a listed file is gone, and when a listed
+   path is under an enterprise folder.
+4. **Our look and our seams stay.** A port keeps what Docmost does and how
+   it behaves. It takes our components from `src/components/ui/`, our tokens
+   from `globals.css`, our API client and our access rules. No Mantine
+   dependency enters the workbench. `DESIGN_SYSTEM.md` binds.
+5. **The repo licence is the owner's call.** D107 does not change it.
+   AGPL-3.0 section 13 gives each user who talks to modified AGPL code over
+   a network the right to the Corresponding Source. That duty starts with
+   the first release that serves ported code. HANDOFF H-370 asks the owner
+   to set the date of the licence change. The owner ruled on 2026-10-19:
+   staging first, production after the owner has tested and says so
+   (D107 part 5). A pull request with a ported file merges after its review.
+   The nightly release stays held with `RELEASE_HOLD=1` until then.
+
+The editor library is TipTap, MIT, and the workbench already depends on
+TipTap 3. The table of contents extension of TipTap is under the Pro
+licence, so we do not use it. The outline of §21.4 reads the headings
+itself.
 
 ### 21.2 What Docmost does well
 
@@ -1530,13 +1889,15 @@ that make it feel good, in our words.
 
 ### 21.3 What we take, and what we leave
 
+**The directive of 2026-10-19 overrides this table where they differ.** Section 21.7 holds the plan. Rows below that say "Leave" or "Later" for a feature that §21.7 builds are out of date.
+
 | Pattern | Decision | Why |
 |---|---|---|
 | The page is the editor (WYSIWYG) | **Take** (KB-2b) | The biggest gap today. The Markdown field with a Preview tab makes a member think in syntax |
 | `/` menu, bubble menu, Markdown shortcuts, block handle | **Take** (KB-2b) | They are what makes the editor fast without a toolbar |
 | Callouts, toggles, task lists, code with language, tables | **Take** (KB-2b) | Manuals and policies need them |
 | Page link picker and `[[` | **Take** (KB-2b) | A link to a page is a Markdown link to `/knowledge/pages/<id>` |
-| Backlinks into `kb_links` | **Later** (KB-2h) | The gateway has no `kb_links` writer yet. It reads the links of the saved body, so the editor needs no change |
+| Backlinks into `kb_links` | **Take** (KB-2h, built 2026-10-21) | Each page write reads the links of the saved body into `kb_links` (`routes/knowledge/backlinks.py`), so the editor needs no change. Old pages gain links on their next write, or when an operator runs `scripts/backfill_kb_links.py` (K-2, 2026-10-26) |
 | Tree hover actions, drag to reorder and nest, arrow keys | **Take** (KB-2e) | The tree is the app for most members |
 | Breadcrumbs, outline, heading anchors, byline, page menu | **Take** (KB-2d) | Low cost, high polish |
 | A page icon (an emoji) | **Take** (KB-2f) | It makes the tree and the search results readable at a glance |
@@ -1591,14 +1952,14 @@ styles live in `globals.css` under the one look. No Docmost class names.
 | Ticket | What | Done when | Gate |
 |---|---|---|---|
 | **KB-2b** (text replaced 2026-10-18) ✅ BUILT 2026-10-18 (branch `ws61-kb2b-editor`) | The block editor: a shared `KnowledgeEditor` on TipTap 3 with `@tiptap/markdown`. The `/` menu, the bubble menu, Markdown shortcuts, the block drag handle, task lists, callouts, toggles, code with a language and a copy button, tables, dividers, images by URL. The page link picker on `[[` and in the link control, which writes `/knowledge/pages/<id>` links. The page view reads through the same editor, read-only. Frontend only | A golden set of Markdown bodies round-trips with no loss for the supported set. "No loss" means: parse and write once gives md′, and md′ parsed and written again gives md′ byte for byte, with every block and mark of the set kept. A save with no edit writes nothing. The `/` menu inserts each block of the set, the bubble menu sets each mark, the block handle moves a block, and `[[` inserts a page link. Every image draws through `MarkdownImage`, and `markdownImage.test.ts` scans the editor too. The editor binds no `Mod-k`. A member writes a page with a heading, a list, a callout, a table and a link to another page, saves it, and reads the same layout. The chunker indexes the saved body unchanged. The visual review passes in light mode, compact density and a changed accent, at 1440, 1024, 768 and 390 px | AGENT-SAFE |
-| **KB-2d** | Page chrome: breadcrumbs that fold the middle, the outline, heading anchors, the byline with the last editor and a word count, the page menu (copy link, copy as Markdown, download `.md`, history, move, archive), and an Archived view with restore | Each act works on a local stack. An archived page shows a banner with Restore | AGENT-SAFE |
+| **KB-2d** | Superseded on 2026-10-19 by the row of §21.7 | See §21.7 | AGENT-SAFE |
 | **KB-2e** ✅ BUILT 2026-10-18 | The tree: a `+` and a `…` on hover and on focus, drag to reorder and to nest, the arrow keys. `POST /knowledge/pages/{id}/move` gains `position`, an integer: the 0-based place among the new siblings. The server renumbers the siblings 0 to n under a lock. A move that changes only `position` writes no version and does not change `updated_at`, because a place in the tree is not a change in substance (`company_context.md` §3). A move that changes the space or the parent keeps today's version | A drop between two pages keeps its place after a reload. A page cannot drop into its own subtree. A reader sees no handle, no `+` and no `…`. The `+` opens the New page form with the row as the parent. The `…` holds Copy link, New sub-page and Archive. Archive shows only for a member with manage on the space, because the gateway refuses it otherwise. ArrowUp and ArrowDown move the focus between visible rows, and ArrowRight and ArrowLeft open and close a row, as `RailRow` does today. A reorder adds no row to `kb_page_versions` | AGENT-SAFE |
-| **KB-2f** | A page icon: migration (check the number at merge) adding `kb_pages.icon`, nullable, set in `PATCH`, drawn in the tree, the breadcrumbs, the title and the search hits. The Knowledge home gains "Recently updated" and "Created by me" across the spaces the member can see | An icon set on a page shows in all four places. The home lists the last 20 visible pages, and a hidden page never appears | AGENT-SAFE |
-| **KB-2g** | Version compare: read an old version's body, show two versions with the changes marked, restore from the compare | A member compares version 2 with version 5 and restores version 2 | AGENT-SAFE |
+| **KB-2f** | Superseded on 2026-10-19 by the row of §21.7 | See §21.7 | AGENT-SAFE |
+| **KB-2g** | Superseded on 2026-10-19 by the row of §21.7 | See §21.7 | AGENT-SAFE |
 
 | **KB-2h** | Backlinks: the page write reads the page links of the saved body into `kb_links`, and the right strip lists the pages that link here | A page that links to another shows in that page's "Linked from" list. A link the member cannot see is not listed | AGENT-SAFE |
 
-The order is KB-2b and KB-2e in parallel, then KB-2d, then KB-2f, KB-2g and KB-2h.
+The order of the remaining slices is in §21.7.
 
 ### 21.6 KB-2b as built (2026-10-18)
 
@@ -1649,3 +2010,263 @@ The order is KB-2b and KB-2e in parallel, then KB-2d, then KB-2f, KB-2g and KB-2
   draw it. A keyboard move of a block is a later slice. Table columns do not
   resize, because Markdown keeps no width. Tab in the last cell of a table
   leaves the editor.
+
+### 21.7 Parity with Docmost — the plan of 2026-10-19
+
+**Owner directive, 2026-10-19.** "Do what is needed to get the UI/UX
+systems as similar to Docmost as soon as possible." With §21.1, a builder
+may port Docmost core code.
+
+**What similar means.** The same features, the same layout and the same
+interactions. The look stays Metorite's one look (§21.1 part 4). A page
+that a Docmost user opens must feel known, and a Metorite member must not
+see a second design.
+
+**What is already built.** The block editor with its `/` menu, bubble menu,
+drag handle, callouts, toggles, code blocks, tables and `[[` links (KB-2b),
+the page tree with drag, `+`, `…` and keys (KB-2e), and the search view
+(KB-3b).
+
+**No flag.** The Knowledge pane is live. A flag would keep two designs, so
+each slice below replaces its view and ships as KB-2b did. A slice that
+adds a table adds it dark, behind R6.
+
+**Storage rule for blocks with no Markdown form.** `body_md` stays the one
+stored body. A block that has no Markdown syntax (columns, a status badge,
+a date, a subpages list) stores as one HTML fragment with `data-type`
+attributes. The editor parses the fragment back into the block. The
+chunker strips the tags and keeps the text. A golden case for each block
+proves the round trip, as §21.5 requires.
+
+#### Wave 1 — five slices in parallel
+
+| Ticket | What | Done when | Gate |
+|---|---|---|---|
+| **KB-2d** ✅ BUILT 2026-10-20 (branch `ws61-kb2d-chrome`) | Page chrome, frontend only, no gateway change. Breadcrumbs that fold the middle into a `…` popover (all crumbs on a phone). A byline "Edited by X, 3 min ago" with a contributors popover, from `versions`. A right panel with the tabs Outline and Details: the outline follows the scroll and marks the heading in view, and Details shows author, last editor, word and character counts, review date and state. A copy-link anchor on each heading. A page menu built as an item array, so KB-2f and KB-2g each add one item: Copy link, Copy as Markdown, Download as `.md`, Full width (kept in the browser, because a per-member store needs a migration), Move (a space and parent picker over the existing move route), Archive and Restore (the restore route exists, and `api.ts` gains `restorePage` and a `state` argument on `listPages`), Print. An Archived view of `GET /pages?state=archived`, which only a manager sees, with Restore, and a banner on an archived page. No "Page history" entry until KB-2g merges | Each act works on a local stack, with an e2e test for each. The outline hides on a page with fewer than two headings. A reader sees no Move, Archive or Restore. The visual review passes in light mode, compact density and a changed accent, at 1440, 1024, 768 and 390 px. `tests/unit/test_third_party_notices.py` stays green | AGENT-SAFE |
+| **KB-2f** ✅ BUILT 2026-10-20 (branch `ws61-kb2f-icons`) | Icon, favourites and home. **A migration with the next free number at build time** (R1. 287 and 288 went to the CRM on 2026-10-19. It took 291 at merge, because 289 is #1192's and 290 is the Email app's): `ALTER TABLE kb_pages ADD COLUMN IF NOT EXISTS icon TEXT` with a CHECK of at most 16 characters, and `kb_favorites (organization_id, member_email, page_id)` with the primary key on those three, the tenancy shape of `268_artifacts.sql` and the guarded ENABLE and FORCE RLS block of `272_knowledge_pages.sql`, the four generated phases from `scripts/gen_tenant_migration.py`, and the table in `test_tenant_coverage.py`. `icon` is one emoji. It is not the icon name of `kb_spaces.icon`. `member_email` comes from `core.viewer_email(user)`, never from input. Routes, each with a class in `knowledge_manifest.py`: `PATCH /knowledge/pages/{id}` takes `icon`, `POST` and `DELETE /knowledge/pages/{id}/favorite`, and `GET /knowledge/favorites` and `GET /knowledge/recent`. **A change of the icon writes no version and does not change `updated_at`**, as a change of the place does not (KB-2e). Recently updated lists what `visible_pages_clause` shows: published pages, and the member's own drafts. It excludes archived pages. It orders by `updated_at DESC, id DESC` with a keyset cursor. Favourites join `kb_pages` under the same clause, so a page that becomes hidden drops out. An emoji picker, built once for KB-2f and used by KB-2i, from emoji data only and drawn with `OptionList`. The icon shows in the tree, the breadcrumbs, the title, search hits and the home lists. A star in the page menu and the tree menu. Knowledge home with the tabs Recently updated (with Load more), Favourites and Created by me, each with an empty state. A space switcher at the top of the rail, a searchable list | An icon set on a page shows in all five places. A hidden page never appears on the home or in favourites. A second org sees none of the favourites. The one-seam fence holds each read of `kb_favorites` to a join of `kb_pages` (R7). The R8 suite runs with no skip. New R8 tests live in a new file | AGENT-SAFE |
+| **KB-2g** ✅ BUILT 2026-10-20 | Page history. `GET /knowledge/pages/{id}/versions/{n}` in a new `routes/knowledge/history.py`. It calls `core.load_page`, then the history floor, answers 404 under the floor as `revert_page` does, and reads `version, title, body_md, author_email, reason, via, created_at` from `kb_page_versions`. It has a class A row in `knowledge_manifest.py`. The one-seam fence does not see `kb_page_versions`, so the R8 test for a version of a hidden page is the fence. A history modal: a list with date and author, a read-only view of the chosen version, a compare of two versions with additions and deletions marked inline, a "Highlight changes" switch and change counts, and Restore with a confirm over the existing revert route. The compare is a word diff of the two Markdown bodies. A builder may port `recreate-transform` only under D107 part 5. | A member compares version 2 with version 5 and restores version 2. A member who cannot read the page gets 404 on a version. A version before the history floor of a moved page is refused. R8 proves both, in a new test file | AGENT-SAFE |
+| **KB-2i** ✅ BUILT 2026-10-20 (branch `ws61-kb2i-editor-a`) | Editor, first set. Port from `packages/editor-ext`, core files only. Table handles and menu: add and delete rows and columns on each side, the header row, alignment, and drag of a column or a row. Footnotes as a node that keeps `[^n]` byte for byte. Find and replace in the page on `Mod-F`. The `:` emoji insert, using the picker of KB-2f. The title flow: Enter in the title moves the text after the caret into the first paragraph, and the arrow keys move between the title and the body. These need no new stored form. The blocks and marks that do are KB-2p. | A golden case for each block and mark round-trips as a fixed point, and keeps its CommonMark meaning where it has one. An e2e test inserts each block from the `/` menu. Find and replace marks, steps and replaces. The rules of KB-2b hold: no HTML sink, every image through `MarkdownImage`, no `Mod-K`, and a save with no edit writes nothing. No `@mantine/*`, `@tabler/icons-react` or `@slidoapp/emoji-mart*` dependency. Each ported file has the header and a line in `THIRD_PARTY_NOTICES.md` | AGENT-SAFE. Merges to staging. Production waits for the owner's test (D107 part 5) |
+| **KB-2p** ✅ BUILT 2026-10-20 (branch `ws61-kb2p-editor-b`) | Editor, second part, in parallel with KB-2i. The blocks and marks with a stored form (see the rules after this table): text colour, highlight, superscript and subscript, text alignment, a status badge, a date, columns of 2 to 5, a subpages block (Manual, A to Z and Recent order), a page break, and the table features that GFM cannot hold (merge, split, a header column, a cell colour). Indent is not built, because lists already nest | A golden case for each block and mark round-trips as a fixed point, and keeps its CommonMark meaning where it has one. The chunker strips the tags of these fragments and keeps the text, and `test_kb_editor_golden.py` is amended as the rules say. An e2e test inserts each block from the `/` menu. The rules of KB-2b hold. Each ported file has the header and a line in `THIRD_PARTY_NOTICES.md` | AGENT-SAFE. Merges to staging. Production waits for the owner's test (D107 part 5) |
+
+#### The stored form of a block or a mark with no Markdown syntax
+
+The editor writes and reads these exact shapes. Any other HTML stays raw
+text, as in KB-2b. A fragment that holds Markdown has a blank line after
+its opening tag and before its closing tag, so the inner Markdown stays
+Markdown for every reader.
+
+| Item | Stored as |
+|---|---|
+| Text colour | `<span data-color="#2563eb">text</span>` |
+| Highlight | `<mark data-color="#fde68a">text</mark>` |
+| Superscript, subscript | `<sup>text</sup>`, `<sub>text</sub>` |
+| Text alignment | `<p data-align="center">text</p>`, and `<h2 data-align="right">text</h2>` for a heading |
+| Status badge | `<span data-type="status" data-color="green">Done</span>` |
+| Date | `<time data-type="date" datetime="2026-10-19">19 Oct 2026</time>`. Docmost core has no date node, so this is built from the spec |
+| Columns | `<div data-type="columns" data-count="2">` holding one `<div data-type="column">` for each column |
+| Subpages | `<div data-type="subpages" data-order="manual"></div>` |
+| Page break | `<div data-type="page-break"></div>` |
+| A table with a merged cell, a header column or a cell colour | one `<table>` block of HTML, because GFM has no form for them. A table that GFM can hold stays GFM |
+
+**The chunker.** `kb_index/chunk.py` strips the tags of a fragment with a
+`data-type` attribute, and of the colour, highlight, `sup` and `sub`
+fragments above, and keeps their text. It strips nothing else, so the
+`content_sha` of every stored `<details>` toggle does not change. The fence
+`tests/unit/test_kb_editor_golden.py` says that every text line is indexed
+byte for byte. It is amended to say that for every line outside these
+fragments. For a line inside one, the text must be indexed with the tags
+removed. `read_page` shows the stored body, as it does today.
+
+#### Build rules for wave 1
+
+Four builders work at once, so they keep out of each other's files.
+
+- **Hot files:** `PageView.tsx`, `layout.tsx`, `KnowledgeRail.tsx`,
+  `schema.ts`, `api.ts`, `types.ts` and `globals.css`. A builder edits a
+  hot file only at the mount point of its own component, and puts new code
+  in new files. New R8 tests go in new files, not in `test_kb_pages_r8.py`.
+- **KB-2d** owns the layout of `PageView`. **KB-2f** touches the icon and
+  the star. **KB-2g** touches the history item and the `VersionList`
+  mount. **KB-2i** touches the title, and otherwise stays under
+  `lib/editor/` and `components/editor/`. **KB-2p** stays under the same
+  two folders, adds one file for each block, and touches `schema.ts` only
+  to register them.
+- **One emoji picker.** KB-2f builds it, and KB-2i uses it. Until it
+  merges, KB-2i builds against a stub of the same props.
+- **Merge order** follows readiness, with KB-2f first when it is ready,
+  because it claims the next migration number. Each branch merges `origin/main` before
+  its pull request, never a rebase.
+- Restore `package-lock.json` from `main` before adding a dependency.
+
+#### Wave 2 — specified now, dispatched when wave 1 lands
+
+| Ticket | What |
+|---|---|
+| **KB-2j** | Editor, second set: math with KaTeX, mermaid diagrams as code blocks with a live preview, image resize, align, caption and lightbox, and embeds from an allowlist of providers (YouTube, Vimeo, Loom, Figma and the like) in a sandboxed iframe, with `frame-src` in the CSP |
+| **KB-2h** ✅ BUILT 2026-10-21 (#1212) | Backlinks written to `kb_links` from the saved body, and a "Linked from" list |
+| **KB-2k** | ✅ BUILT 2026-10-22 (KB-2k1, KB-2k2 and KB-2k3). `@` mentions of a person, a hover preview on a page link, and "Create page" from a mention with no match. The `@` menu for pages and dates is built (#1225). See "KB-2k in detail" below |
+| **KB-3d** ✅ BUILT 2026-10-22 (branch `ws61-kb3d-search`) | Search view like the Docmost spotlight: chips for Space, Creator, Date and Title only, matched words marked in each snippet, and a match bar on the opened page |
+| **KB-2m** | ✅ BUILT 2026-10-22 (KB-2m1 to KB-2m5). Import of Markdown and HTML files and of a Notion zip, with folders becoming parents. Export of a page or a space as Markdown or HTML, with sub-pages, as a zip. Attachments wait for KB-2c. See "KB-2m in detail" below |
+| **KB-2o** | Labels on pages, a labels list and a page of the pages with one label |
+| **KB-2c** | Files: attachments, video, audio and PDF blocks, and draw.io and Excalidraw blocks that save as attachments. After AM-5 and H-322 |
+
+
+#### KB-2k in detail (specified 2026-10-22)
+
+The `@` menu of #1225 already lists pages and dates. KB-2k adds three things to it. No slice needs a migration, and each slice is AGENT-SAFE.
+
+| Slice | What | Done when |
+|---|---|---|
+| **KB-2k1** ✅ BUILT 2026-10-22 | A People section in the `@` menu, after Pages. It reads `GET /people/?q=` (the one directory read, `routes/people/directory.py`) and shows at most 5 people with their name and email. A pick stores `[@Name](/people/<person_id>)`, a plain Markdown link. The editor draws it as a chip, as it draws a page chip. A person without Knowledge access can be mentioned, because the mention is only a link. KB-2k1 writes no `kb_links` row and sends no notice. A later ticket adds both, with the reader that needs them | `@as` shows "Asha Rao" under People. Enter saves `[@Asha Rao](/people/<id>)`. The read view draws a person chip that opens the People profile. A member who cannot read the directory sees no People section, and the menu still works |
+| **KB-2k2** ✅ BUILT 2026-10-22 | A hover preview on a page chip. After 400 ms of hover, or on keyboard focus, a card shows the page icon, title, space, state and the first 200 characters of its text. It reads the existing `GET /knowledge/pages/{id}` through the cache. A page that the reader cannot open shows "You cannot open this page", and no title. The card closes on Esc and on leave | A hover on a chip shows the card with the title and the text. A chip to a page in a space the member cannot read shows the refusal line. Tab to a chip shows the card. Esc closes it |
+| **KB-2k3** ✅ BUILT 2026-10-22 | "Create page" from the `@` menu. When the typed text matches no page, the last row reads "Create page \"<text>\"". A pick creates a draft page with that title, as a child of the page being edited, in its space, through the existing `POST /knowledge/pages`. Then it inserts a link to the new page. The row shows only when the member can write in that space | Typing `@Refund FAQ` with no match shows the row. Enter creates a draft child page titled "Refund FAQ" and inserts its link. The tree shows the new page. A member without write sees no row |
+
+Verify each slice with `cd workbench/control_plane && npx tsc --noEmit && npx vitest run app/knowledge`, and with `npx playwright test --project=ci e2e/knowledge-shortcuts.spec.ts`, which gains a test for each "Done when".
+
+**Built 2026-10-22, with four choices.** The People read waits for at least one typed character. The "Create page" row does not show when the typed words match a date row. The preview card shows the refusal line for any failed read, not only a 403 or a 404. A person chip draws a user icon and the name after "@". The code is in `lib/editor/people.ts`, `chipPreview.ts`, `mention.ts` and `components/editor/PageChipPreview.tsx`.
+
+#### KB-2m in detail (specified 2026-10-22)
+
+KB-2m is frontend only. It adds no gateway route and no migration. Every page it makes goes through the existing `POST /knowledge/pages`, which checks the write grant on the server. Every page it exports comes from the existing reads, so the server decides what the member can see. The code sits in `app/knowledge/lib/importExport/` as pure functions, and the dialogs are thin.
+
+| Slice | What | Done when |
+|---|---|---|
+| **KB-2m1** ✅ BUILT 2026-10-22 | Read the files. A dialog in the space menu and in the page menu ("Import") takes `.md`, `.markdown`, `.html`, `.htm` and `.zip` files. A Markdown file keeps its text as the body. Its title is its first `# heading`, which leaves the body, or else the file name with no extension. An HTML file goes through DOMPurify (the one policy of `src/lib/untrustedHtml.ts`), then through `generateJSON` with `knowledgeExtensions`, then through `writeBody`. Its title is `<title>` or the first `<h1>`. An image becomes its alt text in italics, or `*[image: name]*`. | Two files give two plans. A script tag and an `onerror` attribute are gone from the result. A list, a table and a link keep their shape |
+| **KB-2m2** ✅ BUILT 2026-10-22 | Read a zip. Each `.md` or `.html` entry is a page. A folder that has the base name of a page file beside it (Notion: `Title <32-hex>.md` and `Title <32-hex>/`) makes its entries children of that page. Any other folder is a parent page with an empty body. The trailing 32-hex id leaves each title. | The Notion fixture gives the right tree and the right titles |
+| **KB-2m3** ✅ BUILT 2026-10-22 | The limits. 25 MB for each file, 100 MB in total, 500 entries, 300 pages, a depth of 12. An entry path with `..`, an absolute path or a NUL is refused. The reader checks the declared sizes before it inflates anything, and it checks the real size after. Over a limit, the dialog refuses with a clear message, and it creates nothing. | Each limit has a test. A zip with a declared size over the limit creates nothing |
+| **KB-2m4** ✅ BUILT 2026-10-22 | Create the pages. They are drafts, made parents first through `createPage`, under the space root or under the page that started the import. The dialog shows "12 of 40" and a Cancel that stops after the current page. A second pass rewrites each relative link between imported files to `/knowledge/pages/<new id>` with `PATCH /knowledge/pages/{id}`. A page that fails does not stop the others. Its children are skipped, and the report says so. The final report counts created, skipped and failed, with the reasons. Then the Knowledge cache is invalidated. | The two-file import POSTs two drafts and shows the report. The Notion zip creates the parent before the child, and the PATCH body holds the new link. A reader sees no Import |
+| **KB-2m5** ✅ BUILT 2026-10-22 | Export. "Export page" in the page menu and "Export space" in the space menu take a format (Markdown or HTML) and, for a page, "With sub-pages" (on by default). The reads are `getPage` and `listPages`. The zip has one file for each page, and a folder for each page that has children, in the layout that the import reads. A file name is the title with its unsafe characters removed, and a duplicate gets a number. A link between exported pages becomes a relative file link. A link to a page outside the export stays `/knowledge/pages/<id>`. HTML is `generateHTML` inside a minimal document with a `<title>` and no script. A page with no sub-pages downloads as one `.md` or `.html` file. The download goes through `saveBlob`. | The export of a page with a sub-page gives a zip with the right names and contents. An export then an import gives the same titles, the same tree and the same bodies |
+
+**Attachments wait for KB-2c.** An attachment is not imported and it is not exported. The import dialog says how many files it skipped. The export dialog says in one line that attachments are not in the file. KB-2c adds both when it adds attachments.
+
+**The dependency.** `fflate` (MIT, no dependencies) reads and writes the zip. The dialogs load it with a dynamic `import()`, so the first paint of Knowledge pays nothing.
+
+Verify with `cd workbench/control_plane && npx tsc --noEmit && npx vitest run app/knowledge lib components`, and with `npx playwright test --project=ci e2e/knowledge-import-export.spec.ts e2e/knowledge-chrome.spec.ts e2e/knowledge-pages.spec.ts`.
+
+**Built 2026-10-22, with six choices.**
+
+- The space had no menu, so its landing header gains a `…` menu ("Space actions"). The page menu gains "Export page" and "Import into this page", and the second shows for a writer only.
+- An image becomes its alt text in both paths, even a remote one.
+- The unit runner has no DOM, so the HTML tests run in Chromium, in `e2e/knowledge-import-export.spec.ts`.
+- An HTML export cleans its body with `sanitizeFileHtml` in `src/lib/untrustedHtml.ts`. That function keeps remote images, which the viewer policy blocks.
+- An exported file starts with its title as a heading. An import reads that heading, so the title returns even when the file name had to change.
+- A zip holds no page order, so the siblings of an import follow the file names.
+
+The code is in `lib/importExport/`, `components/ImportDialog.tsx`, `ExportDialog.tsx` and `SpaceMenu.tsx`.
+
+#### What stays with the owner
+
+These Docmost features change the product, so no builder starts them.
+
+- **Real-time co-editing and autosave** (Yjs, a websocket server, presence
+  carets). Our Save writes one version, and a published page is live at
+  once. Autosave on a published page would publish half-written text, so it
+  needs a rule first. §19 keeps this for later.
+- **Public share links and public spaces.** They publish company data
+  outside the tenant.
+- **Inline comments.** The anchor in a Markdown body needs a design.
+- **Watch and notifications, and presentation mode.** Both wait on the
+  notification seam of WS-59.
+- **AI writing menu and templates.** They are enterprise features in
+  Docmost, so §21.1 part 1 bars a port. The one assistant of D99 already
+  edits text.
+
+The order is KB-2d, KB-2f, KB-2g and KB-2i in parallel, then wave 2.
+
+
+#### KB-3d in detail (specified 2026-10-22, built 2026-10-22)
+
+KB-3d takes no migration. It changes one gateway
+read and the Search view (KB-3b). The look stays Metorite's one look.
+
+| Slice | What | Done when |
+|---|---|---|
+| **Filters on the route** | `GET /knowledge/search` takes three more parameters. `author` is an email of at most 320 characters, and the page's `author_email` must equal it, ignoring case. `updated_after` is an ISO date, and the page's `updated_at` must be on or after its midnight UTC. `title_only` is a boolean. When true, the lexical half matches the page title and not the chunk text, and the semantic half does not run, so no embed call happens. All three add to `core.visible_pages_clause`. They never replace it, and no second predicate exists. Every value is a bound parameter. The tenant and the member come from the session. A bad date answers 422. The defaults change no result, so `GET /search/company` and the chat tools stay as they are | An R8 test on a real database shows that `author` keeps only that author's pages, that `updated_after` drops older pages, and that `title_only` finds a title word and not a body-only word. A second member never sees a page through a filter that the page's grants hide. Org 2 sees nothing. `test_kb_visibility_one_seam.py` stays green |
+| **Terms and author in the answer** | The answer gains `terms`, the plain words of the query without the operators of `websearch_to_tsquery` (quotes, `or` and a leading `-`). Each hit gains `author_email`. The gateway returns no HTML. The client builds the marks from the text and the terms | The R8 test reads `terms` for a query with a quoted phrase, an `or` and a negated word. The hit keys in the R8 test list `author_email` |
+| **Filter chips** | A chip row under the field: Space (a menu of the spaces), Creator (the authors in the current hits, or a typed email), Date (Any time, Past week, Past month, Past year) and a Title only toggle. A chip with a value shows the value and a clear button. The chips use `ui/` primitives and `<Icon>`, with no colour literal. The filters live in the URL query as `space`, `author`, `date` and `title`, so a reload or a shared link keeps them. A Date preset becomes `updated_after` at request time | A vitest test round-trips the URL query and the presets. An e2e test shows that each chip sends its parameter, that a chip clears, and that a reload keeps the filters |
+| **Marked words** | Each title and snippet marks the matched words. The view builds React elements from the text and the terms. A term is escaped before it enters a pattern. Case does not matter. There is no `dangerouslySetInnerHTML`, because `src/lib/htmlSinks.test.ts` fences it. The mark uses the highlight look of the editor find bar | A vitest test gives terms in and gets segments out, with a case-insensitive match, no pattern injection and escaped special characters. An e2e test sees the marked words |
+| **Match bar** | A hit opens its page with `?q=<terms>`. A slim bar under the page toolbar says `N matches for "<terms>"`, with up and down buttons to step and a close button. The bar marks the matches in the body. It reuses the find engine of KB-2i (`lib/editor/searchAndReplace.ts`) and builds no second match engine. Close removes `q` from the URL | An e2e test opens a result and sees the bar with the count. Down moves to the next match. Close hides the bar and clears `q` |
+
+**R5.** The route reads no tenant and no identity from its input. The
+`author` value is a filter on rows that the member can already see. It grants
+no access.
+
+**KB-3d is BUILT, 2026-10-22** (branch `ws61-kb3d-search`, no migration).
+`GET /knowledge/search` takes `author`, `updated_after` and `title_only`,
+and answers `terms` and each hit's `author_email`. The Search view has the
+four chips, with the filters in the address (`space`, `author`, `date`,
+`title`). A snippet marks the matched words as React elements. A hit opens
+its page with `?q=`, and `MatchBar` drives the find engine of KB-2i. The R8
+tests are in `tests/unit/test_kb_search_r8.py`, and the e2e tests are in
+`e2e/knowledge-search-filters.spec.ts`.
+
+
+## 22. AI in Knowledge: the roadmap of 2026-10-22
+
+This section orders the AI work for Knowledge. It adds no decision to D104 or D105. Each slice below keeps the rules of §14 and the retrieval seam of §20. A slice that reads or writes a page uses the same visibility clause as every other read.
+
+### 22.1 Research basis
+
+**Verification gates what the AI may cite.** Guru and Slite give each card an owner and a review date. An expired card is flagged, and the AI answer shows the flag. We take the same pattern in KB-AI-4.
+
+**Permission filtering comes before ranking.** A ranker that sees a page the member cannot read leaks it through the order of the results. Our search already filters first, through `core.visible_pages_clause`, and no AI slice may change that order.
+
+**Contextual retrieval.** Anthropic prefixes each chunk with one sentence of context about its document. With BM25 and a rerank step, this cut retrieval failures by 67%. The cost is about $1.02 per million document tokens when prompt caching is on. We take it in CX-3 and KB-AI-6.
+
+**Parent-child chunks.** Dify matches a small child chunk and returns its larger parent. The match is precise, and the answer keeps its context. CX-3 uses the same shape.
+
+**Gap detection.** Slite lists the questions that the knowledge base could not answer ("Missing Answers"). KB-9 does the same with no model call. A question with no Knowledge hit writes a gap row.
+
+**AI drafts, a human reviews.** The AI never writes to a published page. It files a proposal (KB-5a), and a member with the write grant accepts or refuses it. KB-AI-2 and the draft of KB-9 use this rule.
+
+**Source-scoped chat.** NotebookLM and Copilot Notebooks answer only from the sources that the member chose. "Ask this space" in KB-AI-6 does the same, and the space is a filter on the same visible set.
+
+**Document ingestion libraries.** Docling and MarkItDown are MIT licensed. PyMuPDF4LLM is AGPL, so we avoid it. The Marker weights carry a licence that limits use by revenue, so we do not ship them. KB-AI-1 needs none of these, because it parses in the browser with libraries that the app already has.
+
+### 22.2 The tier map
+
+Each AI call goes through the Router and writes one usage row with `module_slug="knowledge"`. Each paid pass has a flag, default off, and the owner flips it.
+
+| Work | Tier | Note |
+|---|---|---|
+| Upload (KB-AI-1), gaps (KB-9), verification (KB-AI-4) | none | No model call and no credit |
+| "Tidy with AI", page digests (CX-3), chunk context | `tier-fast` | A short, cheap pass |
+| Typed picks: rerank, the narrowing PICK, KB-11 | `tier-decide` | The model picks from a list |
+| Draft a page from a gap or a chat | `tier-balanced` | The result is a proposal |
+| Vectors | `tier-embed` | The card is absorbed, so 0 credits |
+| OCR of scans | `tier-vision` | Later |
+
+### 22.3 The slices, in order
+
+| Slice | What | Tier | Done when |
+|---|---|---|---|
+| **KB-AI-1, upload documents as pages** | The import dialog of KB-2m also takes `.docx`, `.pdf`, `.pptx` and `.xlsx`, and a zip of them. Each file becomes one draft page through the same plan, run and report path. The browser parses it. The server sees only the finished page | none | A Word file keeps its headings, lists and tables. A PDF with a text layer keeps its text, with its headings and a divider for each page. A deck is one page with a section for each slide. A workbook is one page with a table for each sheet. A scan reports "no text layer" and makes no page. One bad file never stops the others |
+| **KB-AI-2, Tidy with AI** | Restructures a draft: title, headings and a summary. It files the result as a KB-5a edit proposal and never writes the page | `tier-fast` | A proposal appears for the owner of the draft. The page body is unchanged until a member accepts |
+| **KB-9, gaps** | A `search_company` call with no Knowledge hit writes a `kb_gaps` row. A second asker within 30 days makes a My Day card, "Draft this page". The draft is a proposal | none, then `tier-balanced` for the draft | The second asker makes one card. The draft needs a click and arrives as a proposal |
+| **KB-AI-4, verified sources** | A page owner and a review interval. An expired page is demoted by the 0.7 factor of CX-1 and flagged in the citation. `search_company` takes a "verified only" option. A maintenance list shows expired, unowned and stale pages | none | An expired page ranks lower and carries the flag. "Verified only" returns no expired page. The list names each page once |
+| **CX-3, page digests and contextual chunks** | A digest for each page and a context line for each chunk (`KNOWLEDGE_DISTILL`) | `tier-fast` | A chunk carries its context line. The usage row names the module |
+| **KB-AI-6, rerank and "Ask this space"** | A rerank of the top hits, and chat that answers from one space | `tier-decide` | The rerank cannot add a page that the clause hides. The chat cites only pages of the space |
+| **KB-4b and KB-10** | Citation chips in the answer (KB-4b), and `kb:read` on MCP (KB-10) | none | A chip opens the cited page. The MCP read uses the same clause |
+| **Later** | Server-side layout-aware parsing (Docling, MIT) and OCR on `tier-vision`, for scans and complex PDFs | `tier-vision` | Not scheduled |
+
+**KB-AI-4 is AGENT-SAFE. PR A is BUILT, 2026-10-25** (migration 303, no new flag). PR B, the UI, is BUILT, 2026-10-25. It is frontend only, with no flag and no backend change. The side panel gains an Owner fact, an "Overdue" badge and "Verify". The page menu gains "Set owner" and "Review every". A Maintenance view and rail row list the pages. These are the definitions.
+
+- **Expired.** A published page with `review_at` at or before now. This is the CX-1 rule, unchanged.
+- **Verified.** A published page with an owner and a `review_at` in the future. One SQL predicate, `core.VERIFIED_SQL`, serves search and the list. A page with no `review_at` is not verified, and it is not demoted. CX-1 keeps it at 1.0.
+- **Unowned.** A published page with no `owner_email`.
+- **Stale.** A published page with `updated_at` older than 365 days (`core.STALE_DAYS`).
+- **Verify (the act).** `POST /knowledge/pages/{id}/verify` sets `review_at` to now plus `review_every_days` (180 when empty). It sets `owner_email` to the caller when it is empty. It writes no version, keeps `updated_at` and does not reindex. A writer of the space verifies. An agent never does, so the chat has no tool for it.
+- **Publish.** A publish sets `review_at` the same way. The route and the accept of a page proposal do this. A publish also sets `owner_email` to the author when it is empty.
+- **No backfill.** An old page reads as unowned until a person claims it.
+
+`PATCH /knowledge/pages/{id}` takes `owner_email` and `review_every_days` (1 to 3650). A PATCH of these two alone writes no version, as the icon alone does. `GET /knowledge/maintenance?reason=&limit=` lists the expired, unowned and stale pages to a holder of `knowledge:manage`. One SELECT builds the list, so a page that has three reasons is one row.
+
+The flag text follows.
+
+`GET /search/company` with `CONTEXT_RECENCY` on marks a Knowledge hit with `flag` set to `expired` or `unowned`, and with `review_at`. The tool prints "[review overdue since YYYY-MM-DD]" or "[no owner]". The flag values come from a closed list in code, never from page text.
+
+The dated tool takes `verified_only`, and the route takes `verified`. Both read only with `CONTEXT_RECENCY` on. A search with `verified` set writes no gap, because the filter hid the pages. Fences: `tests/unit/test_kb_verified.py`, `tests/unit/test_kb_verified_r8.py` and `tests/unit/test_company_search_recency.py`.
+
+**KB-AI-1 is BUILT, 2026-10-22** (branch `kb-docs-ingest`). It has no migration, no route, no model call and no new dependency. It reuses `mammoth`, the pdf.js of `react-pdf` and `fflate`. 
+
+The limits are in `lib/importExport/limits.ts`. A file may have 25 MB and an import 100 MB. A PDF may have 300 pages and a deck 500 slides. A sheet keeps 200 rows and 30 columns. A date in a workbook stays as the number that Excel stores, and the report says so.

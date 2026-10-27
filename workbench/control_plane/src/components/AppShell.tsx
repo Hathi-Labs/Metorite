@@ -51,6 +51,7 @@ import { ShellBell, ShellBellHost } from "@/lib/shell/ShellBell";
 import { AgentPill, RunSignalsHost } from "@/lib/shell/RunSignals";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { AssistantWorkArea } from "@/lib/shell/ChatBar";
+import { ChatNudge, useChatFirstLanding } from "@/lib/shell/ChatNudge";
 import { openAssistant } from "@/lib/shell/assistant";
 // D99: the one assistant, loaded on demand, so a shell with the flag off
 // never carries the chat in its bundle.
@@ -67,6 +68,7 @@ import {
   shellSidebar,
   strayCount,
 } from "@/lib/shell/shellNav";
+import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
 import { addAppsName, rowMeta, rowName } from "@/lib/shell/navNeeds";
 import { useNavNeeds } from "@/lib/shell/useNavNeeds";
 import { shouldPollWorkspace } from "@/lib/access";
@@ -81,6 +83,9 @@ import { SubtaskPromptHost } from "@/app/tasks/components/SubtaskPromptHost";
 // The note-taker's live recording dock — same shell-level pattern, so an
 // in-progress meeting recording follows the user across every app (spec §5.2).
 import { LiveDock } from "@/app/notes/components/LiveDock";
+import { navDetail, type PhoneNav } from "@/app/crm/lib/phoneNav";
+import { myWorkEnabled } from "@/app/projects/lib/myWorkFlag";
+import { projectsPhoneTabs } from "@/app/projects/lib/phoneTabs";
 import { RecordingDock } from "@/app/notes/components/RecordingDock";
 // ---------------------------------------------------------------------------
 // Mobile drawer context — lets child pages inject content into the hamburger
@@ -115,7 +120,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerContent, setDrawerContent] = useState<ReactNode>(null);
   const pathname = usePathname();
-  const { loading: accessLoading } = useAccess();
+  const { access, loading: accessLoading } = useAccess();
 
   /**
    * ⚠️ Bind the read cache to whoever is signed in.
@@ -132,9 +137,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
    */
   const { data: cacheSession } = useSession();
   const signedInAs = cacheSession?.user?.email ?? null;
+  // ⚠️ The organization binds too (WS-53, 2026-10-19). An email alone let a
+  // cached answer of org A, such as a CRM gate that was off, hide org B's
+  // section in the same tab. An unknown org (the access read has not
+  // answered) changes nothing, so the first load does not empty it twice.
+  const cacheOrg = access.organization?.id ?? null;
   useEffect(() => {
-    bindIdentity(signedInAs);
-  }, [signedInAs]);
+    bindIdentity(signedInAs, cacheOrg);
+  }, [signedInAs, cacheOrg]);
   // ⚠️ A switch (or a sign-in as someone else) in ANOTHER tab changes the
   // cookie under this one. This reloads the tab, so it never writes as an
   // account it does not show (`lib/accountSwitch.ts`).
@@ -157,6 +167,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // route needs only the session. The sidebar mounts once access resolves,
   // and by then the answer is often in memory (`shellPrefs.ts`).
   useShellPrefs();
+  // WS-62 CF-2: a phone that lands on `/` opens the assistant, once per
+  // browser session, with the chat-first flag on. Off, it does nothing.
+  useChatFirstLanding(isMobile);
 
   // The shell nav flag, read once as the Sidebar reads it: the dev override
   // must not flip mid-session, and the two must agree on the frame.
@@ -355,6 +368,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
         {/* Bottom navigation bar — fixed at viewport bottom, never scrolls. pb-safe lifts it above the iOS home indicator */}
         <div className="fixed bottom-0 inset-x-0 z-50 border-t border-border bg-card/90 backdrop-blur pb-safe">
+          {/* CF-2: one nudge above the Ask tab, for a member who never wrote
+              to the assistant. Behind the chat-first flag. */}
+          {chatOn ? <ChatNudge placement="tab" /> : null}
           <MobileBottomNavInner pathname={pathname} toggleView={toggleView} />
         </div>
 
@@ -460,6 +476,8 @@ function MobileBottomNavInner({
   );
   // The shell nav (NS-2): the drawer takes the sidebar's shape (§9).
   const [shellNav] = useState(() => shellNavOn());
+  // WS-63 PZ-25: the "Assistant settings" account row, only with the profile on for this org.
+  const assistant = useAssistantProfileEnabled();
   // "Home", or "My Day" with that flag on (NS-3). Read once, as above.
   // ⚠️ Read in `useState`, as `shellNavOn` is: with the dev-only
   // `localStorage` override the server and the browser can disagree, and
@@ -669,7 +687,7 @@ function MobileBottomNavInner({
       {/* The rare acts, after the apps: the member's pages, the settings and
           sign-out, in one list (owner review, 2026-10-09). */}
       <div className="mt-auto border-t border-border px-2 py-3">
-        <DrawerAccountFoot you={shellNav ? accountLinks(navSections) : undefined} onNavigate={close}>
+        <DrawerAccountFoot you={shellNav ? accountLinks(navSections, { assistant }) : undefined} onNavigate={close}>
           <ThemeToggleMenuItem onClick={close} />
           <Button variant="ghost" size="none" layout="flex items-center" onClick={() => { toggleView(); close(); }} className="w-full gap-3 px-3 py-2.5 text-sm">
             <AppIcon name="Monitor" size={16} className="shrink-0" />
@@ -703,6 +721,17 @@ function MobileBottomNavInner({
   // stay in the page's own title row: the bell is self-anchored and has no
   // external open control, so a tab could not raise it.
   const isProjectsPage = pathname?.startsWith("/projects") ?? false;
+  const projectsTabs = projectsPhoneTabs(myWorkEnabled());
+  // CRM (CRM-U10): the page names the lists of the bar and the one on screen,
+  // because it knows the mode, the source's labels and the rows Zoho turned
+  // off. It emits `cc-crm-nav`, and `null` when it unmounts.
+  const isCrmPage = pathname?.startsWith("/crm") ?? false;
+  const [crmNav, setCrmNav] = useState<PhoneNav | null>(null);
+  useEffect(() => {
+    const h = (e: Event) => setCrmNav((e as CustomEvent<PhoneNav | null>).detail ?? null);
+    window.addEventListener("cc-crm-nav", h);
+    return () => window.removeEventListener("cc-crm-nav", h);
+  }, []);
 
   // Tasks: the bottom bar reflects which My Tasks section you're in. The page emits
   // `cc-tasks-section` whenever the active view changes.
@@ -812,20 +841,34 @@ function MobileBottomNavInner({
         )}
         {isProjectsPage && (
           <>
+            {projectsTabs.map((tab) => (
+              <TaskTab
+                key={tab.event}
+                onClick={() => dispatchNav(tab.event)}
+                icon={themedIcon(tab.icon)}
+                label={tab.label}
+                accent={tab.accent}
+              />
+            ))}
+          </>
+        )}
+        {isCrmPage && crmNav && (
+          <>
+            {crmNav.tabs.map((tab) => (
+              <TaskTab
+                key={tab.id}
+                active={crmNav.active === tab.id}
+                onClick={() => dispatchNav(navDetail(tab.id))}
+                icon={themedIcon(tab.icon)}
+                label={tab.label}
+              />
+            ))}
             <TaskTab
-              onClick={() => dispatchNav("projects-tree")}
-              icon={themedIcon("FolderKanban")}
-              label="Projects"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("projects-views")}
+              active={crmNav.active === "more"}
+              onClick={() => dispatchNav(navDetail("more"))}
               icon={themedIcon("LayoutGrid")}
-              label="Views"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("projects-search")}
-              icon={themedIcon("Search")}
-              label="Search"
+              label="More"
+              badge={crmNav.badge}
             />
           </>
         )}
@@ -940,16 +983,20 @@ function TaskTab({
   icon: Icon,
   label,
   accent,
+  badge,
 }: {
   active?: boolean;
   onClick: () => void;
   icon: ThemedIcon;
   label: string;
   accent?: boolean;
+  /** A count that waits for the member, drawn on the icon. */
+  badge?: number | null;
 }) {
   return (
     <button
       onClick={onClick}
+      aria-current={active ? "page" : undefined}
       className={`flex flex-1 min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1 transition-colors ${
         accent
           ? "text-primary"
@@ -958,7 +1005,12 @@ function TaskTab({
             : "text-muted-foreground hover:text-foreground"
       }`}
     >
-      <Icon size={20} strokeWidth={active || accent ? 2.4 : 2} />
+      <span className="relative">
+        <Icon size={20} strokeWidth={active || accent ? 2.4 : 2} />
+        {badge ? (
+          <NavBadge count={badge} tone="info" label={`${badge} waiting`} placement="tab" />
+        ) : null}
+      </span>
       <span className="text-[10px] font-medium leading-none">{label}</span>
     </button>
   );

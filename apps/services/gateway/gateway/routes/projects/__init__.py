@@ -60,13 +60,16 @@ from gateway.routes.projects import imports as _imports  # noqa: F401
 from gateway.routes.projects import intake as _intake  # noqa: F401
 from gateway.routes.projects import me as _me  # noqa: F401
 from gateway.routes.projects import merge as _merge  # noqa: F401
+from gateway.routes.projects import mine as _mine  # noqa: F401
 from gateway.routes.projects import move as _move  # noqa: F401
+from gateway.routes.projects import needs_attention as _needs_attention  # noqa: F401
 from gateway.routes.projects import notifications as _notifications  # noqa: F401
 from gateway.routes.projects import personal as _personal  # noqa: F401
 from gateway.routes.projects import plan_preview as _plan_preview  # noqa: F401
 from gateway.routes.projects import planning as _planning  # noqa: F401
 from gateway.routes.projects import recurrence as _recurrence  # noqa: F401
 from gateway.routes.projects import refs as _refs  # noqa: F401
+from gateway.routes.projects import reminders as _reminders  # noqa: F401
 from gateway.routes.projects import reports as _reports  # noqa: F401
 from gateway.routes.projects import relations as _relations  # noqa: F401
 from gateway.routes.projects import search as _search  # noqa: F401

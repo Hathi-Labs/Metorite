@@ -127,6 +127,11 @@ const PURGE_LABELS: Record<string, string> = {
   room_participations: "room membership",
   app_grants: "app grant",
   app_tool_grants: "remembered tool approval",
+  // H-375: a send that the member scheduled for later.
+  scheduled_sends: "scheduled send",
+  // WS-65: the member's own grants on a shared mailbox. The mailbox stays.
+  mailbox_grants: "shared mailbox grant",
+  mailbox_member_prefs: "shared mailbox setting",
   email_accounts: "connected mailbox",
   whatsapp_accounts: "connected WhatsApp number",
   task_accounts: "connected task workspace",
@@ -134,6 +139,14 @@ const PURGE_LABELS: Record<string, string> = {
   sign_in_requests: "sign-in request",
   // WS-53 CRM-Q33: the member's own business rules of the CRM.
   crm_member_rules: "own CRM business rule",
+  // WS-61 KB-2f: the member's starred Knowledge pages.
+  knowledge_favorites: "starred Knowledge page",
+  // WS-66 RM-1: the member's private reminders, with their ledger.
+  reminders: "private reminder",
+  // WS-63 PZ-9: the member's settings row, with the assistant profile.
+  member_settings: "personal settings record",
+  // WS-66 PN-1: a browser or Home Screen app that gets the member's pushes.
+  push_devices: "notification device",
   audit_entries: "app audit entry",
   audit_events: "audit event",
   agent_runs: "agent run trace",
@@ -141,6 +154,10 @@ const PURGE_LABELS: Record<string, string> = {
   apps: "app",
   workflows: "workflow",
   meetings: "meeting",
+  // WS-61 KB-5a: an edit the assistant proposed for the member, kept.
+  knowledge_proposals: "proposed Knowledge edit",
+  // WS-55 SW-10a: a nudge or a recovery record of the member's agent run, kept.
+  agent_run_strands: "stranded agent run record",
 };
 
 function purgeLabel(key: string, n: number): string {
@@ -1017,6 +1034,7 @@ function PurgeDialog({
             task and project that came from the task workspace.
           </li>
           <li>Their private chat sessions, and any sign-in request on record</li>
+          <li>Their personal settings, and what the assistant remembered about them</li>
         </ul>
 
         <p className="mt-3 text-[11px] font-medium text-success">Kept</p>

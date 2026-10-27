@@ -69,6 +69,7 @@ import {
 } from "./lib/mailbox";
 import { keepStorage, readStorageKept, withRemovalMeter } from "./lib/storage";
 import { isSearchActive } from "./lib/searchFilters";
+import { tasksLink } from "@/app/projects/lib/tasksRedirect";
 
 /** D99: the chat bar's one assistant replaces this app's chat scene. */
 const ONE_ASSISTANT = shellChatOn();
@@ -1406,9 +1407,9 @@ export default function EmailPage() {
               {isMessage ? (
                 n.title
               ) : n.created ? (
-                <>Captured to My Tasks: &ldquo;{n.title}&rdquo;</>
+                <>Captured to My work: &ldquo;{n.title}&rdquo;</>
               ) : (
-                <>Already in My Tasks: &ldquo;{n.title}&rdquo;</>
+                <>Already in My work: &ldquo;{n.title}&rdquo;</>
               )}
             </span>
             {n.created && disp && (
@@ -1417,8 +1418,8 @@ export default function EmailPage() {
                 {due ? ` · due ${due}` : ""}
               </span>
             )}
-            <a href="/tasks" className="text-primary font-medium hover:opacity-80">
-              Open My Tasks
+            <a href={tasksLink("/tasks")} className="text-primary font-medium hover:opacity-80">
+              Open My work
             </a>
             <button
               onClick={() => useEmailStore.getState().clearTaskCaptureNotice()}
@@ -1488,6 +1489,7 @@ export default function EmailPage() {
               setShowAddModal(false);
               handleConnect(provider, undefined, importMonths);
             }}
+            onDone={() => setShowAddModal(false)}
             availability={connectProviders}
           />
         </div>

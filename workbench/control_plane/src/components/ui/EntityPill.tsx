@@ -94,9 +94,10 @@ export function pillLinkName(
   label: string,
   number?: string,
   statusName?: string,
+  app = "Projects",
 ): string {
   const what = [KIND_WORD[kind], number, label].filter(Boolean).join(" ");
-  return `Open ${what} in Projects${statusName ? `, status ${statusName}` : ""}`;
+  return `Open ${what} in ${app}${statusName ? `, status ${statusName}` : ""}`;
 }
 
 export interface EntityPillProps {
@@ -115,6 +116,10 @@ export interface EntityPillProps {
   email?: string;
   /** Fill the column, not 16rem: a card's value column. */
   fit?: boolean;
+  /** A `PANES` icon name that replaces the kind's icon (a citation chip). */
+  icon?: string;
+  /** The app the link opens, for the screen reader. Default "Projects". */
+  app?: string;
 }
 
 /**
@@ -159,8 +164,9 @@ function PillBody({
   statusName,
   email,
   linked = false,
+  icon: ownIcon,
 }: EntityPillProps & { linked?: boolean }) {
-  const icon = ENTITY_ICONS[kind];
+  const icon = ownIcon ?? ENTITY_ICONS[kind];
   return (
     <>
       {kind === "person" && (
@@ -215,7 +221,7 @@ function LinkedPill(props: EntityPillProps & { href: string }) {
         before?.(props.href);
         router.push(props.href);
       }}
-      aria-label={pillLinkName(props.kind, props.label, props.number, props.statusName)}
+      aria-label={pillLinkName(props.kind, props.label, props.number, props.statusName, props.app)}
       title={tooltip(props)}
       className={`${BADGE_BASE} ${toneOf(props, true)} ${SHAPE} ${widthOf(props.fit)} no-underline`}
     >

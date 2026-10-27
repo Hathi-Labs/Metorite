@@ -199,6 +199,17 @@ def _read_tool(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str
 
 # ── The answer ──────────────────────────────────────────────────────────────
 
+def _close_profile_writes() -> None:
+    """WS-63 PZ-6a fix round 1: a passage of the answer can be a mail, a
+    WhatsApp message or a page that another person wrote. So the run's
+    profile writes close for the rest of the run, BEFORE the answer reaches
+    the model (``acb_common.assistant_profile.close_writes``). Fence:
+    ``tests/unit/test_profile_write_tools.py``."""
+    from acb_common.assistant_profile import close_writes
+
+    close_writes()
+
+
 def _line(value: Any) -> str:
     """One line of text, with no guillemet to break the title's marks."""
     return _SPACE.sub(" ", str(value or "")).replace("«", "").replace("»", "").strip()
@@ -235,6 +246,13 @@ def _hit_lines(hit: dict[str, Any], *, dated: bool = False) -> list[str]:
     about = f"{hint}, {dates}" if dates else hint
     href = _line(hit.get("href"))
     first = f"- «{title}»" + (f" ({about})" if about else "") + (f" {href}" if href else "")
+    if dated:
+        # KB-AI-4: a closed list, never page text. The date is cut to ten characters.
+        flag = hit.get("flag")
+        if flag == "expired":
+            first += f" [review overdue since {str(hit.get('review_at') or '')[:10]}]"
+        elif flag == "unowned":
+            first += " [no owner]"
     second = f"  full_id: {_line(hit.get('kind'))}:{_line(hit.get('id'))}"
     snippet = _line(hit.get("snippet")).replace('"', "'")
     if snippet:
@@ -298,12 +316,14 @@ async def search_company(query: str, apps: str | None = None) -> str:
     words = " ".join(str(query or "").split())
     if not 2 <= len(words) <= 300:
         return "Give 2 to 300 characters to find."
+    _close_profile_writes()
     body = await _get("/search/company", {"q": words, "apps": apps or None})
     return format_answer(body)
 
 
 async def _search_company_dated(
     query: str, apps: str | None = None, after: str | None = None,
+    verified_only: bool = False,
 ) -> str:
     """Find the company's records that match the words, in every app the member holds.
 
@@ -321,12 +341,17 @@ async def _search_company_dated(
             whatsapp and knowledge.
         after: Optional. A date as YYYY-MM-DD. Only records that changed on
             or after it come back, for example the first day of this month.
+        verified_only: Optional. Only Knowledge pages that have an owner and a review date in the future. Other apps are unchanged.
     """
     words = " ".join(str(query or "").split())
     if not 2 <= len(words) <= 300:
         return "Give 2 to 300 characters to find."
     since = str(after or "").strip() or None
-    body = await _get("/search/company", {"q": words, "apps": apps or None, "after": since})
+    _close_profile_writes()
+    params: dict[str, Any] = {"q": words, "apps": apps or None, "after": since}
+    if verified_only:
+        params["verified"] = "true"
+    body = await _get("/search/company", params)
     return format_answer(body, dated=True)
 
 

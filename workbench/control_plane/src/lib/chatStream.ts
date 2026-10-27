@@ -29,6 +29,19 @@ export function nanoid(): string {
 }
 
 /**
+ * Is `name` the orchestrator's own tool for the agent `agentName`? The
+ * orchestrator names each specialist tool after its agent, with `-` as `_`
+ * (`orchestrator/agents.py`). Such a tool is a hand-off as much as
+ * `call_agent` is, so the steps of its sub-run belong on its row
+ * (`navigation_shell.md` §7.1.1 rule 5). The server twin is
+ * `is_specialist_tool` in `gateway/chat_fold.py`.
+ */
+export function isSpecialistTool(name: string | null | undefined, agentName: string | null | undefined): boolean {
+  const agent = String(agentName ?? "").trim().toLowerCase();
+  return !!agent && String(name ?? "").trim().toLowerCase() === agent.replace(/-/g, "_");
+}
+
+/**
  * Fold pre-tool narration into the reasoning blocks and compute the timeline
  * cutoff for a starting tool (VS Code-style interleaved thinking).
  *
@@ -383,10 +396,14 @@ export function applySubAgentEvent(
   evt: Record<string, unknown>,
 ): ChatMessage {
   const evts = m.toolEvents ?? [];
-  /** Index of the last active delegate row, or -1. */
+  const eventAgent = String(evt.agentName ?? "");
+  /** Index of the last active delegate row, or -1. A running specialist
+   *  tool of the event's agent counts too (§7.1.1 rule 5): its start could
+   *  not know it was a hand-off. */
   const lastDelegate = (): number => {
     const idx = [...evts].reverse().findIndex(
-      (t) => t.subAgentActive && (t.name.toLowerCase().includes("call_agent") || t.subAgentName),
+      (t) => (t.subAgentActive && (t.name.toLowerCase().includes("call_agent") || t.subAgentName))
+        || (t.status === "running" && isSpecialistTool(t.name, eventAgent)),
     );
     return idx === -1 ? -1 : evts.length - 1 - idx;
   };
@@ -411,7 +428,11 @@ export function applySubAgentEvent(
       return {
         ...m,
         toolEvents: evts.map((t, i) => i === ri
-          ? { ...t, subAgentName: t.subAgentName ?? agent, subAgentTools: [...(t.subAgentTools ?? []), { id: stId, name: String(evt.name ?? "tool"), status: "running" as const }] }
+          ? { ...t, subAgentName: t.subAgentName ?? agent, subAgentTools: [...(t.subAgentTools ?? []), {
+              id: stId, name: String(evt.name ?? "tool"), status: "running" as const,
+              // The step's arguments: an email card reads its ids there.
+              ...(evt.args && typeof evt.args === "object" ? { args: evt.args as Record<string, unknown> } : {}),
+            }] }
           : t),
       };
     }

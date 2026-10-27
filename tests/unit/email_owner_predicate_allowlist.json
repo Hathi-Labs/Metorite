@@ -1,0 +1,13 @@
+{
+  "_doc": "WS-65 SM-2. The files under routes/email that keep an inline owner predicate (user_id = :uid) with no # private-only: marker. Each count is a ceiling: the fence fails above it, and fails when the file holds fewer (lower the count). Each entry needs a reason. Fence: tests/unit/test_email_owner_predicate_seam.py.",
+  "files": {
+    "automation/held_card.py": {
+      "count": 10,
+      "reason": "The egress guard of the held chat (email_app_master_plan.md §21). WS-65 SM-2 does not touch it. SM-7 moves the sent and own classes and KNOWN_DOMAINS_SQL to the sending mailbox (shared_mailbox.md §6.2), and the other reads to the seam. Until then a shared mailbox fails closed here. §21.12 (owner, 2026-10-24) adds THREAD_PARTICIPANTS_SQL on the member's own thread; SM-7 moves it with the rest."
+    },
+    "automation/reply_card.py": {
+      "count": 3,
+      "reason": "REPLY_ROW_SQL of the reply card, a part of the egress path of the held chat. WS-65 SM-2 does not touch it. SM-7 moves it to the seam at level send. §21.12 (owner, 2026-10-24) adds the member's own Sent read of 'you usually copy' (7a) and the recent-reply read; SM-7 moves both to the seam."
+    }
+  }
+}

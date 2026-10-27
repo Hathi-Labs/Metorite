@@ -46,6 +46,13 @@ import {
   planSubmitTicked,
   planSummary,
   planTimeline,
+  planOutcome,
+  workingStart,
+  barInset,
+  EFFORT_DAYS_MAX,
+  TIMELINE_MIN_ROW_PX,
+  TIMELINE_MAX_PX,
+  TIMELINE_MIN_ROWS,
   rowBadges,
   rowProblem,
   rowSpan,
@@ -138,21 +145,130 @@ describe("the summary line", () => {
   });
 });
 
-describe("the timeline strip", () => {
-  it("places each bar on the plan's own span", () => {
-    const t = planTimeline(rows())!;
+describe("the timeline strip (owner report, 2026-10-19)", () => {
+  it("spans each bar from its start to its due date, on the plan's own span", () => {
+    const t = planTimeline(rows(), 2026)!;
     expect(t.from).toBe("2026-10-22");
     expect(t.to).toBe("2026-11-15");
     const days = 25;
-    expect(t.bars[0]).toMatchObject({ key: "t1", left: 0, width: 3 / days, marked: false });
-    expect(t.bars[1]).toMatchObject({ key: "t2", left: 1 / days, width: 1 / days, unassigned: true });
-    expect(t.bars[2].marked).toBe(true);
-    // No start: one day at its due date, the last day of the span.
-    expect(t.bars[4]).toMatchObject({ left: 24 / days, width: 1 / days });
+    expect(t.bars[0]).toMatchObject({ key: "t1", left: 0, width: 3 / days, derived: false, point: false });
+    expect(t.bars[0].dates).toBe("22 Oct → 24 Oct");
+    expect(t.bars[1]).toMatchObject({ key: "t2", left: 1 / days, width: 1 / days });
   });
 
-  it("is absent with no dated row", () => {
-    expect(planTimeline([])).toBeNull();
+  it("works a row with no start back from its due date by its effort, in working days, and draws it faint", () => {
+    const t = planTimeline(rows(), 2026)!;
+    // t5: 720 minutes is 1.5 working days, so two. It is due on Sunday 15 Nov,
+    // and the count skips Saturday 14 Nov, so the bar starts on Friday 13 Nov.
+    expect(t.bars[4]).toMatchObject({ key: "t5", left: 22 / 25, width: 3 / 25, derived: true, point: false });
+    expect(t.bars[4].dates).toBe("13 Nov → 15 Nov (start from effort)");
+  });
+
+  it("counts working days back across a weekend", () => {
+    const day = (iso: string) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / 86_400_000;
+    // Due Tuesday 27 Oct 2026, three working days: Fri 23, Mon 26, Tue 27.
+    expect(workingStart(day("2026-10-27"), 3)).toBe(day("2026-10-23"));
+    expect(workingStart(day("2026-10-27"), 1)).toBe(day("2026-10-27"));
+    // Due Wednesday 28 Oct, two days: Tue 27 and Wed 28, no weekend between.
+    expect(workingStart(day("2026-10-28"), 2)).toBe(day("2026-10-27"));
+  });
+
+  it("draws a row with no start and no effort as a dot, never a bar of a made-up length", () => {
+    const t = planTimeline([...rows().slice(0, 4), { ...rows()[4], effort_mins: 0 }], 2026)!;
+    expect(t.bars[4]).toMatchObject({ point: true, width: 0, left: 24 / 25 });
+    expect(t.bars[4].dates).toBe("due 15 Nov");
+  });
+
+  it("follows the list's order, under its phases", () => {
+    const mixed = planRowsFrom([
+      { ...TASKS[3], phase: "Rollout" },
+      { ...TASKS[0], phase: "Foundation" },
+      { ...TASKS[4], phase: "Rollout" },
+      { ...TASKS[1], phase: "" },
+    ]);
+    // planGroups: Rollout first (it shows first), then Foundation, then no phase.
+    expect(planTimeline(mixed, 2026)!.bars.map((b) => b.key)).toEqual(["t4", "t5", "t1", "t2"]);
+  });
+
+  it("puts a small marker on a marked row only, and never colours the bar", () => {
+    const t = planTimeline(rows(), 2026)!;
+    expect(t.bars.map((b) => b.marked)).toEqual([false, false, true, true, false]);
+  });
+
+  it("drops every marker when every row is marked: a plan of marks is not all yellow", () => {
+    const all = rows().map((r) => ({ ...r, owner: r.owner || "x@y.io", marks: ["no skill match"] }));
+    const t = planTimeline(all, 2026)!;
+    expect(t.bars.every((b) => !b.marked)).toBe(true);
+  });
+
+  it("grows with the rows, and stops at the cap", () => {
+    expect(planTimeline(rows(), 2026)!.rowPx).toBe(8);
+    const many = planRowsFrom(Array.from({ length: 19 }, (_, i) => ({
+      key: `k${i}`, title: `Task ${i}`, owner: "a@b.io", effort_mins: 600,
+      due: `2026-11-${String(i + 1).padStart(2, "0")}` })));
+    const t = planTimeline(many, 2026)!;
+    expect(t.rowPx).toBe(5);
+    expect(t.bars.length * t.rowPx).toBeLessThanOrEqual(TIMELINE_MAX_PX);
+  });
+
+  const plan = (n: number) => planRowsFrom(Array.from({ length: n }, (_, i) => ({
+    key: `k${i}`, title: `Task ${i}`, owner: "a@b.io", effort_mins: 60,
+    due: `2026-12-${String((i % 28) + 1).padStart(2, "0")}` })));
+
+  it("draws no strip when its rows would be thinner than 3 px: a grey box of dots says nothing", () => {
+    // 96 px over 40 or 50 rows is 2 px or less (MAX_BATCH is 50).
+    expect(planTimeline(plan(40), 2026)).toBeNull();
+    expect(planTimeline(plan(50), 2026)).toBeNull();
+    expect(planTimeline(plan(33), 2026)).toBeNull();
+    const t = planTimeline(plan(32), 2026)!;
+    expect(t.rowPx).toBe(TIMELINE_MIN_ROW_PX);
+  });
+
+  it("gives every bar a height at 30 rows, because the inset grows with the row", () => {
+    const t = planTimeline(plan(30), 2026)!;
+    expect(t.rowPx).toBe(3);
+    expect(t.bars.length * t.rowPx).toBeLessThanOrEqual(TIMELINE_MAX_PX);
+    for (const px of [3, 3.5, 4, 5, 8]) expect(px - 2 * barInset(px), String(px)).toBeGreaterThan(0);
+    expect(barInset(3)).toBe(0);
+    expect(barInset(8)).toBe(1);
+  });
+
+  it("caps an absurd effort, so the strip never loops over millions of days", () => {
+    const rows = planRowsFrom([
+      { key: "a", title: "A", owner: "a@b.io", effort_mins: 1e12, due: "2026-11-02" },
+      { key: "b", title: "B", owner: "a@b.io", effort_mins: 60, start: "2026-10-01", due: "2026-10-02" },
+      { key: "c", title: "C", owner: "a@b.io", effort_mins: 60, due: "2026-10-05" },
+    ]);
+    const t = planTimeline(rows, 2026)!;
+    // Two working years: 520 working days are 104 weeks, so 726 calendar days back.
+    const span = (Date.UTC(2026, 10, 2) - Date.UTC(+t.from.slice(0, 4), +t.from.slice(5, 7) - 1, +t.from.slice(8, 10))) / 86_400_000;
+    expect(span).toBeLessThanOrEqual(EFFORT_DAYS_MAX / 5 * 7);
+    // A span past a year draws no week lines.
+    expect(t.weeks).toEqual([]);
+  });
+
+  it("draws faint week lines on a span of two weeks or more", () => {
+    const t = planTimeline(rows(), 2026)!;
+    // 22 Oct 2026 is a Thursday: Mondays 26 Oct, 2 Nov, 9 Nov.
+    expect(t.weeks).toEqual([4 / 25, 11 / 25, 18 / 25]);
+  });
+
+  it("hides when it says nothing: under three dated rows, or every bar on the same days", () => {
+    expect(planTimeline([], 2026)).toBeNull();
+    expect(planTimeline(rows().slice(0, TIMELINE_MIN_ROWS - 1), 2026)).toBeNull();
+    const same = rows().slice(0, 3).map((r) => ({ ...r, start: "2026-10-22", due: "2026-10-24" }));
+    expect(planTimeline(same, 2026)).toBeNull();
+  });
+});
+
+describe("the answered plan folds to what happened (owner report, 2026-10-19)", () => {
+  it("names the tasks sent, or a cancel, and never an empty line", () => {
+    const sent = `Review plan — ${JSON.stringify(planSubmit({ name: "Memory" }, "Memory", rows()))}`;
+    expect(planOutcome(rows(), sent)).toBe("5 tasks sent for approval");
+    const one = `Review plan — ${JSON.stringify(planSubmit({ name: "Memory" }, "Memory", rows().slice(0, 1)))}`;
+    expect(planOutcome(rows(), one)).toBe("1 task sent for approval");
+    expect(planOutcome(rows(), PLAN_CANCEL)).toBe("cancelled, nothing created");
+    expect(planOutcome(rows(), "")).toBe("");
   });
 });
 

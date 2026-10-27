@@ -1,20 +1,24 @@
 # Projects agent parity — the assistant can do everything the app can — WS-46
 
 **Status: ACTIVE. D91 DECIDED by the owner on 2026-10-06, with the defaults
-of §14 as the answers to Q1 to Q6. P1 is BUILT (2026-10-06, branch
+of §14 as the answers to Q1 to Q6. P11 is BUILT (2026-10-22): `show_view` sets the
+canvas, a saved view, the filters and the grouping of the open page. The owner
+reversed Q4 that day. P1 is BUILT (2026-10-06, branch
 `ws46-p1-recurring-task`). P2 is BUILT (2026-10-06): a refusal
 reaches the model as text, and an unknown argument is refused by name.
 P3 is BUILT (2026-10-06): `evals/projects_ops/` runs PO-1 to PO-7, and the
 scripted run passes six tasks in six, uncovered and covered. PO-3 is
-`xfail` until P8 and P9. P4 is BUILT (2026-10-06): the field fence F2 holds
+`xfail` until P8 (P9 is built). P4 is BUILT (2026-10-06): the field fence F2 holds
 each of the 313 request fields of a mapped route to one decision. P5 is
 BUILT (2026-10-06): the UI action fence F3 holds each of the 104 Projects
 UI client methods to one decision. P6 is BUILT (2026-10-06). The chat now
 sets each task field of the screen (G5 to G9). P7 is BUILT (2026-10-06).
 The chat sets the project and personal fields of the screen (G12 to G18),
 and a guessed day is the member's own today. P13 is BUILT (2026-10-06):
-`create_tasks` makes several new tasks in one project as one batch. P8 to
-P10 are open.** Written
+`create_tasks` makes several new tasks in one project as one batch. P9 is BUILT
+(2026-10-25): the chat sends `source` and `source_ref`, and a task from a
+mail shows the mailbox line on its card. P8 is open. P10 is BUILT (2026-10-23, as WS-64 OP-6c): `attach_to_task`
+sends a chat file to a task.** Written
 2026-10-05.
 
 **§16, owner directive 2026-10-07.** The server decides each write from
@@ -212,8 +216,8 @@ the chat does part of it, or does it in a way that fails in practice.
 | G7 | Custom field values on a task | `CustomFieldValues.tsx:69` | `PATCH /projects/tasks/{id}` `custom_fields` | None | Closed by P6: `fields` on `create_task` and `update_task` | P6 |
 | G8 | Required fields of the target project on a move | `PromoteFields.tsx:142` | `MoveTask.custom_fields` (`tasks.py:126-143`) | `move_task` does not send them | Closed by P6: `move_task.fields` | P6 |
 | G9 | Close or archive the subtasks too (D-PM-38) | Asked once in the panel and the bulk bar | `include_subtasks` on `PATCH`, move and bulk (`tasks.py:467`, `bulk.py:122`) | Never sent | Closed by P6: `include_subtasks` on five tools | P6 |
-| G10 | Where a task came from | Set by the capture paths | `TaskIn.source` (`core.py:370`: `manual`, `import`, `email`, `agent`, `automation`) | Never set | Partial | P9 |
-| G11 | Intake with its source and reference | Email capture in the Tasks app | `IntakeIn.source`, `source_ref` (`intake.py:99-100`) | `capture_intake` sends neither | Partial | P9 |
+| G10 | Where a task came from | Set by the capture paths | `TaskIn.source` (`core.py:370`: `manual`, `import`, `email`, `agent`, `automation`) | Never set | Closed by P9: `source` on `create_task` and on each row of `create_tasks`. A node takes none (exempt) | P9 |
+| G11 | Intake with its source and reference | Email capture in the Tasks app | `IntakeIn.source`, `source_ref` (`intake.py:99-100`) | `capture_intake` sends neither | Closed by P9: `source` and `source_ref` on `capture_intake` | P9 |
 | G12 | Project settings: icon, task prefix, timezone, lifecycle months | `saveSpaceSettings` (`page.tsx:1271`), `LifecyclePolicy.tsx:53` | `PATCH /projects/nodes/{id}` (`ProjectIn`, `core.py:615-634`) | `update_project` sends name, description, status and lead only | Closed by P7: `icon`, `icon_slot`, the two months and `timezone` on `update_project`. No screen sets the prefix, so it is exempt | P7 |
 | G13 | Order of a node among its siblings | Tree drag (`page.tsx:3075-3091`) | `POST …/nodes/{id}/move` `position` (`tree.py:1015`) | `move_project` re-parents only | Closed by P7: `move_project.place` | P7 |
 | G14 | A saved view with its filters | `page.tsx:2188` | `ViewIn.config` (`views.py:59-63`) | `save_view` sends name and type only | Closed by P7: `filters`, `group_by` and `subtasks` on `save_view` | P7 |
@@ -223,14 +227,15 @@ the chat does part of it, or does it in a way that fails in practice.
 | G18 | "What landed on my plate" | My Tasks | `GET /projects/my/inbox?untriaged=true` | The manifest says `my_work` may pass it (`manifest.py:233-235`). It never does | Closed by P7: `my_work.untriaged` | P7 |
 | G19 | **A plan with subprojects** | Nodes made one at a time | `POST /projects/nodes` | `propose_plan` writes one node (`forms.py:934-940`), and W1 tells the model to use subprojects | Partial | P8 |
 | G20 | A repeat rule in a plan, an intake capture or a private capture | Not in one step | `PUT …/recurrence` after the create | None | **Missing** | P8 |
-| G21 | **Attach a file to a task** | `TaskBody.tsx:455` | `POST /projects/tasks/{id}/attachments` (multipart) | Class X, "The chat has no file input". That reason is false since H-229 | **Missing** | P10 |
-| G22 | Filter the board from the chat | The filter bar | Browser state | `set_filter` is not built (`projects_ai_chat.md` §4.2) | **Missing** | Not now (Q4) |
+| G21 | **Attach a file to a task** | `TaskBody.tsx:455` | `POST /projects/tasks/{id}/attachments` (multipart) | Class X, "The chat has no file input". That reason is false since H-229. Closed by P10: `attach_to_task` | Closed | P10 |
+| G22 | Filter the board from the chat | The filter bar | Browser state | Closed by P11: `show_view` sets the canvas, a saved view, the filters and the grouping | Closed | P11 |
 | G23 | Agent runs on a task: the three reads, the start, an activity and the finish | The task detail (EA-12c) | `routes/projects/agent_runs.py` (`external_agent_access.md` §12.1) | The four tools are in `PLANNED`. An outside agent reaches the routes over MCP | **Missing** | EA-12e |
+| G24 | The member's reminders: list, set, change, answer, reopen, promote and move | The Calendar (RM-5) | `routes/projects/reminders.py` (`calendar_events_reminders.md` §5.8) | Closed by RM-3: the seven tools are built, and each field is in `SENDS` | Closed | RM-3 |
 
-**Count: 23 gaps.** WS-55 EA-12a added G23 on 2026-10-14. The counts below are the measure of 2026-10-05. P1, P2
+**Count: 24 gaps.** WS-55 EA-12a added G23 on 2026-10-14. WS-66 RM-1 added G24 on 2026-10-25, and RM-3 closed it on the same day. The counts below are the measure of 2026-10-05. P1, P2
 and P6 have closed G1 to G9 since then, and P7 has closed G12 to G18.
 
-- 6 missing: G6, G7, G17, G20, G21 and G22.
+- 6 missing: G6, G7, G17, G20, G21 and G22. G21 is closed by P10 (2026-10-23).
 - 14 partial: G1, G2, G5, G8 to G16, G18 and G19.
 - 2 defects that touch every tool: G3 and G4.
 
@@ -926,8 +931,9 @@ does.
 | **PO-8** | "Add a bug to Launch that starts next Monday, for the customer Acme" (P6) | One card. One `POST /projects/tasks` with the type id of Bug, `start_date` next Monday and `custom_fields` `{"customer": "Acme"}`. No other write. No setting in the title or the description. The answer names Acme |
 | **PO-9** | "Save a board of the overdue work in Launch, grouped by owner" (P7) | One card. One `POST …/views` on Launch, a board, with `filters` `{"overdue": true}` and `group_by` assignee. The route's own normaliser keeps every key. No other write. The answer names the view |
 
-PO-3 needs P8 (subprojects in a plan) and P9. Until both ship, PO-3 is
-`xfail` with the slice ids, and the runner reports it as such.
+PO-3 needs P8 (subprojects in a plan) and P9. P9 is built (2026-10-25).
+Until P8 ships, PO-3 is `xfail` with the slice id, and the runner reports it
+as such.
 
 ### 11.3 How it runs
 
@@ -966,9 +972,9 @@ slice updates this spec's status header in the same PR (R4).
 | **P6 · Task fields** ✅ BUILT 2026-10-06 | `start` on create · task type by name · custom field values by name · required fields on a move · `include_subtasks`, asked once as D-PM-38 asks | G5 to G9 | AGENT-SAFE |
 | **P7 · Project and personal fields** ✅ BUILT 2026-10-06 | Project settings · node order · a view with its filters · the full overlay · the overlay in bulk · `my_areas` · `untriaged` | G12 to G18 | AGENT-SAFE |
 | **P8 · Plans that match the app** | `propose_plan` rows take a subproject group and a repeat rule · `capture_intake` and `create_personal_task` take a repeat rule | G19, G20 | AGENT-SAFE |
-| **P9 · Context from email and CRM** | §9.4 · the delegated message shape · the mailbox line on the card · `source` and `source_ref` · PO-3 | G10, G11 | AGENT-SAFE |
-| **P10 · Attach a chat file to a task** | A tool that sends a file the member uploaded in this thread to `POST …/attachments` · the manifest row moves from X to B · the client gains a multipart request | G21 | AGENT-SAFE. A reviewer checks the X-to-B move |
-| **P11 · Filter the board** | `set_filter`, once the page's filter state has a stable shape | G22 | Not now. The owner answered Q4 on 2026-10-06 |
+| **P9 · Context from email and CRM** ✅ BUILT 2026-10-25 | §9.4 · the delegated message shape · the mailbox line on the card · `source` and `source_ref` · PO-3 | G10, G11 | AGENT-SAFE |
+| **P10 · Attach a chat file to a task** ✅ BUILT 2026-10-23 | A tool that sends a file the member uploaded in this thread to `POST …/attachments` · the manifest row moves from X to B · the client gains a multipart request | G21 | AGENT-SAFE. A reviewer checks the X-to-B move |
+| **P11 · Filter the board** ✅ BUILT 2026-10-22 | `show_view`: the canvas, a saved view by name, the filters in `save_view`'s words, `group_by` and `sub_group_by`. It writes nothing and shows no card. The page reads the filters through `fromConfig`. Fences: `test_projects_show_view.py`, `chatView.test.ts` | G22 | AGENT-SAFE. The owner reversed Q4 on 2026-10-22 |
 | **P12 · MCP facade for external clients** | Its own spec first (§5.3) | — | ⏸ PARKED, OWNER-GATE |
 | **P13 · Several new tasks in one call** ✅ BUILT 2026-10-06 | `create_tasks`: rows that take the keys of `create_task`, ONE confirmation card with a checkbox for each task, a receipt for each row · eval task PO-10 | — (a chat need, not a UI input) | AGENT-SAFE |
 
@@ -1071,7 +1077,7 @@ as the answer. The slices build to these answers.
 | **Q1** | A weekly repeat with no day named: take the due date's weekday, or always ask? | Take the due date's weekday, else today's, and name it on the card. The member can decline |
 | **Q2** | Should a task made from an email link back to the email? This needs `source_ref` on `pm_tasks`, which is a migration | No link in P9. `source="email"` and the line on the card only. Intake keeps its `source_ref` |
 | **Q3** | May the chat nudge a colleague? The nudge route stays class X (`manifest.py:95-106`) | No. The member presses Nudge in the app |
-| **Q4** | Should the chat filter the board the member is looking at (G22)? It needs a stable filter shape first | Not now. `open_in_app` stays the chat's only navigation |
+| **Q4** | Should the chat filter the board the member is looking at (G22)? It needs a stable filter shape first | Not now. `open_in_app` stays the chat's only navigation. **Reversed by the owner on 2026-10-22**: the chat sets filters and views. P11 built it |
 | **Q5** | Confirm D91: native tools now, the MCP facade parked | Yes, as written |
 | **Q6** | May the Projects agent hold a direct, read-only CRM tool for an org-visible record by id, later? | Not in this spec. Delegation only |
 
@@ -1172,7 +1178,7 @@ as the answer. The slices build to these answers.
     path of each gateway call. It also reads `exportPath` in
     `lib/export.ts`, because `page.tsx` fetches that path by itself.
   - The fence counts 104 methods. `UI_ACTIONS` holds 90, `UI_EXEMPT`
-    holds 13 and `UI_PLANNED` holds 1, the attachment upload (G21, P10).
+    holds 13 and `UI_PLANNED` holds 1, the attachment upload (G21, P10). P10 then closed it: `UI_PLANNED` is empty, and `UI_ACTIONS` holds the upload and the export.
   - A claim must be true. The tool must reach the route that the method
     calls, and that route must not be class X. An exemption is allowed
     only on a class X route.
@@ -1336,6 +1342,29 @@ as the answer. The slices build to these answers.
     - `GET /projects/my/today` answers `valid: false` for a saved zone that
       is not valid. The card then says "UTC, no valid zone saved".
     - The working trail of the chat names `my_areas` (`toolSteps.ts`).
+- 2026-10-25 — P9 is built (H-382). These facts are as built:
+  - `create_task` and each row of `create_tasks` take `source` (`manual`,
+    `import`, `email`, `agent`, `automation`). `capture_intake` takes
+    `source` and `source_ref`. Both rows moved from `FIELD_PLANNED` to
+    `SENDS`. G10 and G11 left `FIELD_GAPS`, so `FIELD_PLANNED` holds the
+    G23 rows only.
+  - G10 on `POST /projects/nodes`: decided as exempt. No space or project
+    comes from a mail, and the route's `agent` value names no origin that
+    the chat can claim.
+  - A card for a task with `source` email starts with a `mailbox` line:
+    "This text leaves your mailbox. Everyone who can see <project> will see
+    it." A batch card and an intake card do the same.
+  - Q2 holds: `pm_tasks` gains no `source_ref`, and no migration is added.
+    The "From email: <subject>, <date>" line goes in the task description,
+    so the card shows it.
+  - The instructions gain a section on work from another app (§9.4). The
+    eval gains the stub email agent: a `call_agent` to `email-assistant`
+    answers with a fixed synthetic mail, and any other agent is refused.
+  - `tests/unit/test_projects_context_sources.py` holds the vocabulary equal
+    to the route's, the mailbox line, the intake words and the rule that no
+    `save_memory` call carries the callee's text.
+  - PO-3 stays `xfail`, now for P8 only. Its recorded sequence runs in the
+    test file with the `xfail` removed.
 - 2026-10-06 — P13 is built. The cause is a production run of the same
   day. A member asked for nine tasks from an email, in a project that
   existed. No tool took several top-level tasks. So the model called
@@ -1601,7 +1630,7 @@ as for the app's screens.
 | `report_save`, `report_delete` | `_visible_report`: the author or an admin | The pre-check reads the server's `can_edit` and `can_delete`, and quotes the server's words. Kept |
 | `capture_intake`, `triage_intake` | Visibility, the queue state | None |
 | `mark_notifications_read` | The member's own bell | None |
-| Grants (who may see a project) | Class X in the manifest | No tool (D-PM-40) |
+| Grants (who may see a project) | Class X in the manifest | No tool (D-PM-40). ⚠️ Superseded 2026-10-24: `grant_access` and `revoke_access` are class C (WS-64 OP-6b, D-OP-9), and the route checks D-OP-11 |
 | Hard delete of a project or a task | Class X in the manifest | No tool (D-PM-35) |
 
 ### 16.7 The rules that stay
@@ -1609,7 +1638,7 @@ as for the app's screens.
 | Rule | Owner | Kind |
 |---|---|---|
 | The chat never hard-deletes a project or a task. Archive is the remove verb | D-PM-35 | Product decision |
-| The chat does not write grants | D-PM-40 | Product decision |
+| The chat does not write grants. ⚠️ Superseded by D-OP-9, built in WS-64 OP-6b | D-PM-40 | Product decision |
 | A guarded act is one card for each act, with the counts first | `projects_ai_chat.md` §3.3 | Product decision |
 | An agent assignee in a run that may not send is refused | H-236 | Product decision (egress) |
 | A comment is edited or deleted by its author only | `activities.py` `_load_own_comment` | Server rule, mirrored before the card |

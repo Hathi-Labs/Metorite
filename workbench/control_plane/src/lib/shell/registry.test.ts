@@ -60,6 +60,19 @@ describe("buildItems", () => {
     expect(keys).not.toContain("do:plan-day");
   });
 
+  it("WS-64: New task falls back to /tasks for a member with feature:tasks and no Projects pane", () => {
+    const noProjects = HELD.filter((p) => p.href !== "/projects");
+    const find = (items: ReturnType<typeof buildItems>) => items.find((i) => i.key === "do:capture");
+    // Both held: the Projects target, and one item.
+    const both = buildItems(HELD, false, ["tasks", "projects"]);
+    expect(both.filter((i) => i.key === "do:capture")).toHaveLength(1);
+    expect(find(both)!.href).toBe("/projects?do=capture");
+    // No Projects pane, feature:tasks: the old target.
+    expect(find(buildItems(noProjects, false, ["tasks"]))!.href).toBe("/tasks?do=capture");
+    // Neither: no job.
+    expect(find(buildItems(noProjects, false, []))).toBeUndefined();
+  });
+
   it("offers every held app, and no app the member does not hold", () => {
     const go = buildItems(HELD).filter((i) => i.group === "go");
     expect(go.map((i) => i.href)).toEqual(HELD.map((p) => p.href));
@@ -209,7 +222,7 @@ describe("the empty bar follows the member's preset (NS-7)", () => {
   });
 
   it("still puts the app the member is in before the preset", () => {
-    expect(jobs(["compose"], "/tasks")[0]).toBe("do:capture");
+    expect(jobs(["compose"], "/projects")[0]).toBe("do:capture");
   });
 
   it("changes nothing once the member types", () => {
@@ -297,14 +310,13 @@ describe("every app the member holds, with nothing pinned", () => {
       .filter((i) => i.group === "go")
       .map((i) => i.href);
 
-  it("an admin who pinned nothing finds all thirteen live panes, Admin and AI Studio too", () => {
+  it("an admin who pinned nothing finds all twelve live panes, Admin and AI Studio too", () => {
     const sections = visibleSections([...LIVE_FEATURES, ...PREVIEW_FEATURES], true, false);
     // The sidebar's own input, with nothing starred and every app known: it
     // holds nothing to draw. The bar still lists the FULL held set below.
     const known = sections.flatMap((s) => s.items.map((p) => p.href)).filter((h) => STARRABLE.has(h));
     expect([...starredHrefs({ pins: [], known }, sections)!]).toEqual([]);
     expect(goHrefs([...LIVE_FEATURES, ...PREVIEW_FEATURES], true)).toEqual([
-      "/tasks",
       "/calendar",
       "/people/me",
       "/email",
@@ -324,7 +336,6 @@ describe("every app the member holds, with nothing pinned", () => {
     // Integrations is open to every member since D-EA-9 (2026-10-14), for the
     // AI agents view. Organisation stays admin-only.
     expect(goHrefs(["tasks", "chat"], false)).toEqual([
-      "/tasks",
       "/calendar",
       "/people/me",
       "/chat",

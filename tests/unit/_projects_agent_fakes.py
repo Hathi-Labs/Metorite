@@ -39,6 +39,7 @@ class FakeResponse:
         self.status_code = status_code
         self.text = ""
         self.content = b"{}"
+        self.headers: dict[str, str] = {}
 
     def json(self) -> Any:
         return self._payload
@@ -66,6 +67,7 @@ class FakeClient:
             "headers": kwargs.get("headers") or {},
             "params": kwargs.get("params") or {},
             "json": kwargs.get("json"),
+            "files": kwargs.get("files"),
         }
         self._calls.append(call)
         payload = self._responder(call) if callable(self._responder) else self._responder

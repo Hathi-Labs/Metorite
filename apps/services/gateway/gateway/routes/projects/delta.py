@@ -86,6 +86,7 @@ from uuid import UUID
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.projects.authority import attach_can_delete
 from gateway.routes.projects.core import (
     TaskModel,
     _tenant_session,
@@ -395,6 +396,8 @@ async def delta_tasks(
             await attach_parent_context(db, vis, page_rows)
             # WS-55 EA-12c — a synced row carries the agent pill too.
             await attach_agent_state(db, page_rows)
+            # WS-64 OP-8 — and the flag that hides Delete, as the list does.
+            await attach_can_delete(db, user, page_rows, kind="task")
             kept = {str(r["id"]) for r in page_rows}
             removed.extend(ident for ident in row_ids if ident not in kept)
 

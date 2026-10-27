@@ -136,14 +136,25 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "LOG_LEVEL", "LOG", "LLM_USAGE_AUDIT", "PROJECTS_IMPORT",
     "AGENTS_CLONE_DIR", "GITHUB_INSTALLATION_ID", "GITHUB_ORG",
     "GITHUB_BOT_NAME", "GITHUB_BOT_EMAIL", "GITHUB_PAT",
+    # H-363: the read credential of the agent clones. Only the operator sets it.
+    "GITHUB_READ_TOKEN",
     "ENABLE_INSTRUMENTATION", "CI",
     # WS-45 (D90): the agents that the tier policy covers. It moves what an
     # organization pays, so only the operator writes it (ai_tier_routing.md).
     "AI_TIER_ROUTING",
+    # Chat speed (2026-10-25): the covered agents whose auto chat turns run
+    # with thinking off. It changes how a model answers, so only the
+    # operator writes it.
+    "AI_REASONING_OFF_AGENTS",
     # WS-48 N1 (D93): the agents that hold `narrow_and_read`. It moves what
     # an organization pays, so only the operator writes it
     # (data_narrowing_pipeline.md §11).
     "NARROWING_AGENTS",
+    # WS-67 OA-7a: the tool packs of the one assistant, and the orgs that may
+    # use them. A pack moves the egress guards and spends model tokens, so
+    # only the owner writes them (work_plan.md §6 D4). The `TOOL_` prefix
+    # covers both too.
+    "TOOL_PACKS", "TOOL_PACKS_ORGS",
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",
@@ -159,6 +170,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # text that every member's assistant reads, so only the operator writes
     # it (company_context.md §11).
     "CONTEXT_RECENCY",
+    # WS-67 OA-3: OCR of a scanned file. It starts a child process for each
+    # scan that any member reads, so only the operator writes it
+    # (one_assistant_context.md §4).
+    "ATTACHMENT_OCR",
     # WS-58 MD-5a: My Day's read cache. It changes what every member's feed
     # serves, so only the operator writes it (my_day_feed.md §8.4 item 7).
     "MY_DAY_CACHE",
@@ -226,6 +241,10 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # and passes --homedir to gpg as well, and this is the second layer. zstd
     # reads ZSTD_CLEVEL and ZSTD_NBTHREADS.
     "BACKUP_", "KEEP_", "RCLONE_", "ZSTD_",
+    # MT-1g-1 (D108): the one object store. OBJECT_STORE_* holds the bucket's
+    # key, the Supabase sign-in and the bucket name, so a tenant that set it
+    # could read or write every org's objects.
+    "OBJECT_STORE_",
     # WS-38 T-9: STAGING_EXPORT_SLUGS names the organizations whose data the
     # nightly backup copies to the staging box. A tenant that set it could
     # send its neighbours' data there.
@@ -247,6 +266,16 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-61 KB-1: the Knowledge app. KNOWLEDGE_ORGS opens it for an org, so
     # a tenant that set it could open it for every org on the box.
     "KNOWLEDGE_",
+    # WS-63 PZ-25: the assistant profile. ASSISTANT_PROFILE_ORGS opens it for
+    # an org, so a tenant that set it could open it for every org on the box.
+    "ASSISTANT_PROFILE_",
+    # WS-66 PN-1: web push. VAPID_PRIVATE_KEY signs every push of the box, so
+    # a tenant that set it would hold the key of every org's devices.
+    # WEB_PUSH_ENABLED is the switch, and the `_ENABLED` suffix covers it too.
+    "VAPID_", "WEB_PUSH_",
+    # WS-66 RM-1: reminders. CALENDAR_REMINDERS is the switch of the reminder
+    # routes, so a tenant that set it could turn them on for every org.
+    "CALENDAR_REMINDERS",
     # Agent runtime, sandbox and models.
     "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",

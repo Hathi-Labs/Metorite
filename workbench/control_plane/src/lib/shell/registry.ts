@@ -72,6 +72,14 @@ export interface ShellJob {
    * feature, and `test_shell_intent.py` holds the two equal.
    */
   feature?: string;
+  /**
+   * WS-64: where the job opens for a member who holds `fallback.feature` but
+   * not its pane. "New task" moved to Projects, and a member with
+   * `feature:tasks` and no `feature:projects` (a custom role, a deny) must
+   * keep it, at the old `/tasks` target. The coordinator's `intent.JOBS`
+   * names the same fallback, and `test_shell_intent.py` holds the two equal.
+   */
+  fallback?: { feature: string; href: string };
 }
 
 /**
@@ -84,9 +92,12 @@ export const JOBS: readonly ShellJob[] = [
     id: "capture",
     label: "New task",
     words: ["task", "todo", "to-do", "capture", "add", "remind", "reminder", "note"],
-    app: "/tasks",
-    href: "/tasks?do=capture",
+    // The owning pane is Projects since the OP-4 flip (2026-10-25): My Tasks
+    // left the nav, and its inbox is the My work section of Projects.
+    app: "/projects",
+    href: "/projects?do=capture",
     icon: "CirclePlus",
+    fallback: { feature: "tasks", href: "/tasks?do=capture" },
   },
   {
     id: "compose",
@@ -236,6 +247,24 @@ export const JOBS: readonly ShellJob[] = [
     href: "/knowledge?do=write-page",
     icon: "FilePlus",
   },
+  // WS-61 KC-8e. Two jobs that open the KC-8d form. The layout listens for
+  // each `?do=` and does nothing for a member with no space to write in.
+  {
+    id: "add-product",
+    label: "Add a product",
+    words: ["product", "products", "item", "catalogue", "catalog", "knowledge", "add", "new"],
+    app: "/knowledge",
+    href: "/knowledge?do=add-product",
+    icon: "Package",
+  },
+  {
+    id: "add-topic",
+    label: "Add a topic",
+    words: ["topic", "topics", "subject", "theme", "knowledge", "add", "new"],
+    app: "/knowledge",
+    href: "/knowledge?do=add-topic",
+    icon: "Tag",
+  },
   {
     id: "edit-profile",
     label: "Update my profile",
@@ -337,18 +366,34 @@ export function buildItems(
 ): BarItem[] {
   const held = new Map(panes.map((p) => [p.href, p]));
   const granted = new Set(features);
-  const jobs: BarItem[] = JOBS.filter(
-    (j) => held.has(j.app) && (!j.feature || granted.has(j.feature)),
-  ).map((j) => ({
-    key: `do:${j.id}`,
-    group: "do",
-    label: j.label,
-    hint: `Start · ${held.get(j.app)!.label}`,
-    icon: j.icon,
-    href: j.href,
-    app: j.app,
-    words: j.words,
-  }));
+  const jobs: BarItem[] = JOBS.flatMap((j): BarItem[] => {
+    if (held.has(j.app) && (!j.feature || granted.has(j.feature))) {
+      return [{
+        key: `do:${j.id}`,
+        group: "do",
+        label: j.label,
+        hint: `Start · ${held.get(j.app)!.label}`,
+        icon: j.icon,
+        href: j.href,
+        app: j.app,
+        words: j.words,
+      }];
+    }
+    // WS-64: the member lacks the job's pane but holds its fallback feature.
+    if (j.fallback && granted.has(j.fallback.feature)) {
+      return [{
+        key: `do:${j.id}`,
+        group: "do",
+        label: j.label,
+        hint: "Start · My work",
+        icon: j.icon,
+        href: j.fallback.href,
+        app: j.app,
+        words: j.words,
+      }];
+    }
+    return [];
+  });
   const apps: BarItem[] = panes.map((p) => ({
     key: `go:${p.href}`,
     group: "go",

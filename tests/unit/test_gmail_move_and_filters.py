@@ -284,17 +284,19 @@ def test_the_folder_after_a_gmail_label_move_is_archive(
     assert gmail.folder_after_move(name) == key
     assert local_folder_after_move(gmail, name) == key
 
-    assert IMAPProvider({}).folder_after_move(name) == canonical_folder(name)
+    # §21 fix round 1 (P1-a): no provider moves a mail INTO Sent or Drafts.
+    other = None if canonical_folder(name) in ("sent", "drafts") else canonical_folder(name)
+    assert IMAPProvider({}).folder_after_move(name) == other
 
     mock = AsyncMock()
-    assert local_folder_after_move(mock, name) == canonical_folder(name)
+    assert local_folder_after_move(mock, name) == other
     assert not mock.folder_after_move.called
 
     class _Plain:
         async def move_to_folder(self, *_a: Any) -> None:
             return None
 
-    assert local_folder_after_move(_Plain(), name) == canonical_folder(name)
+    assert local_folder_after_move(_Plain(), name) == other
 
 
 @pytest.mark.parametrize(("name", "request_"), [

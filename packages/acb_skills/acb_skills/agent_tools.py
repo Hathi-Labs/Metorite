@@ -36,6 +36,8 @@ from collections.abc import Iterator
 
 from acb_common.paging import paged
 
+from acb_skills.handoff import head_task
+
 # ── Delegation guard (review P0-7) ──────────────────────────────────────────
 # Sub-agents receive the call_agent family too, so without a guard an
 # A→B→A chain recurses and call_agents_parallel fans out 5^depth runs.
@@ -72,6 +74,22 @@ def _delegation_refusal(agent_name: str) -> str | None:
             "sub-task yourself with your own tools."
         )
     return None
+
+
+def _pack_refusal(agent_name: str) -> str | None:
+    """The pack refusal of a hand-off to *agent_name*, or None (WS-67 OA-7c).
+
+    ``tool_packs.delegation_refusal``: the chat run holds a pack that replaces
+    the agent. ``call_agent`` and each branch of ``call_agents_parallel`` ask
+    it BEFORE the sub-run and before ``_answer_of``, so a refused hand-off
+    never marks the chat as one that read mail. The streaming seam
+    (``executor._run_sub_agent_streaming``) asks it too, for the specialist
+    tools and ``delegate_to_agent``. ``call_agent_background`` does not ask
+    it: a background run is not conversational, so it keeps delegation
+    (``one_assistant_context.md`` §4.3.1)."""
+    from acb_skills.tool_packs import delegation_refusal
+
+    return delegation_refusal(agent_name)
 
 
 def _parent_run_model() -> str | None:
@@ -114,7 +132,7 @@ async def call_agent(agent_name: str, message: str) -> str:
     """
     run_id = str(_uuid.uuid4())
 
-    refusal = _delegation_refusal(agent_name)
+    refusal = _delegation_refusal(agent_name) or _pack_refusal(agent_name)
     if refusal:
         return refusal
 
@@ -191,7 +209,8 @@ async def call_agent(agent_name: str, message: str) -> str:
             result = await asyncio.wait_for(
                 run_agent(
                     agent_name,
-                    {"message": message, "mode": "sub_task"},
+                    # WS-67 OA-1: the batch path heads the task as the stream does.
+                    {"message": head_task(message), "mode": "sub_task"},
                     run_id=run_id,
                     model=_parent_model,
                 ),
@@ -341,7 +360,7 @@ async def call_agents_parallel(tasks: str) -> str:
         # Delegation guard (P0-7): refuse cycles/over-depth per fanned task,
         # and extend the ancestry chain for this branch only (gather copies
         # the context per coroutine, so branches don't see each other).
-        refusal = _delegation_refusal(agent_name)
+        refusal = _delegation_refusal(agent_name) or _pack_refusal(agent_name)
         if refusal:
             return agent_name, refusal
         _tok = _delegation_chain.set((*_delegation_chain.get(), agent_name))
@@ -374,7 +393,7 @@ async def call_agents_parallel(tasks: str) -> str:
                 result = await asyncio.wait_for(
                     run_agent(
                         agent_name,
-                        {"message": message, "mode": "sub_task"},
+                        {"message": head_task(message), "mode": "sub_task"},
                         run_id=run_id,
                         model=_parent_model,
                     ),
@@ -427,6 +446,11 @@ async def call_agents_parallel(tasks: str) -> str:
 
     parts = []
     for agent_name, response in results:
+        # WS-67 OA-7c: a pack refusal is not an answer of the agent, so it is
+        # not framed and it marks nothing.
+        if _pack_refusal(agent_name) is not None:
+            parts.append(f"[{agent_name}]\n{response}")
+            continue
         parts.append(f"[{agent_name}]\n{await _answer_of(agent_name, response)}")
     parts.extend(_not_run())
     return "\n\n".join(parts)
@@ -470,9 +494,14 @@ async def call_agent_background(agent_name: str, message: str) -> str:
             _task = asyncio.create_task(
                 run_agent(
                     agent_name,
-                    {"message": message, "mode": "background_sub_task"},
+                    {"message": head_task(message), "mode": "background_sub_task"},
                     run_id=run_id,
                     model=_parent_model,
+                    # WS-63 PZ-2 (personalization.md §5.1): the task copies
+                    # this context, solo bit too, and its answer goes to the
+                    # inbox and not to the member's solo chat. So it is never
+                    # solo, and gets no profile block.
+                    solo_room=False,
                 )
             )
         finally:

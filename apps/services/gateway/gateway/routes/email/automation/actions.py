@@ -417,8 +417,15 @@ async def _move_folder_action(
     from email_ingestion.providers.base import (
         canonical_folder,
         local_folder_after_move,
+        move_refusal,
     )
     dest = label.strip()
+    # H-395: a rule saved before the save-time refusal may still hold a move
+    # into Sent or Drafts. The run skips that action with one plain sentence,
+    # and History shows it as the issue of the rule.
+    refusal = move_refusal(dest)
+    if refusal:
+        raise ValueError(refusal)
     canon = canonical_folder(dest)
     folder = local_folder_after_move(provider, dest)
     if folder is None:
@@ -486,6 +493,46 @@ async def _notify_me(
 
 #: The actions that call no mail provider. A 404 there is not a gone message.
 _NO_MAILBOX_ACTIONS = frozenset({"CALL_WEBHOOK", "NOTIFY_ME"})
+
+
+#: The seconds that a rule draft may spend on the files of a mail. No member
+#: waits at a card, so it is longer than an interactive draft's.
+RULE_FILES_BUDGET_S = 20.0
+
+
+async def _rule_draft_files(db: Any, message_id: str, owner: str) -> Any:
+    """The files of the mail for a rule draft (H-377), or None.
+
+    A rule runs with no member session. The member is the OWNER of the
+    mailbox, from its row (``user_email`` of the job), and the tenant is the
+    one that the job bound. Neither comes from request input (R5). Each read
+    proves ownership again (``attachment_text``). With no bound tenant or no
+    owner, nothing is read. A follow-up nudge reads no file: it answers the
+    member's own last mail, whose files the member sent."""
+    from acb_auth.roles import UserContext, UserRole  # noqa: PLC0415
+    from acb_common.db import current_tenant  # noqa: PLC0415
+    from gateway.routes.email.automation.draft_files import (  # noqa: PLC0415
+        load_draft_files,
+    )
+
+    org = current_tenant()
+    if not owner or not org:
+        return None
+    member = UserContext(email=owner, role=UserRole.EMPLOYEE, organization_id=str(org))
+    try:
+        return await load_draft_files(db, message_id, member, budget_s=RULE_FILES_BUDGET_S,
+                                      vision=None)
+    except Exception as exc:  # noqa: BLE001 - a rule draft still writes
+        _log.warning("email.rule_draft_files_failed", error=type(exc).__name__)
+        return None
+
+
+def _action_copies(action: dict[str, Any]) -> tuple[list[str] | None, list[str] | None]:
+    """The Cc and the Bcc of a reply or forward action, or None for each
+    that the action does not name (H-404). Each field holds one address."""
+    cc = str(action.get("cc_address") or "").strip()
+    bcc = str(action.get("bcc_address") or "").strip()
+    return ([cc] if cc else None), ([bcc] if bcc else None)
 
 
 async def _apply_rule_actions(
@@ -633,6 +680,10 @@ async def _apply_rule_actions(
                             "attachments": (await _attachment_summaries(
                                 db, [message_id])).get(str(message_id), ""),
                         }
+                    # The files of the mail, as an interactive draft reads them
+                    # (H-377). No member waits, so the budget is longer.
+                    draft_email["_files"] = await _rule_draft_files(
+                        db, str(message_id), user_email)
                     body = await _agent_draft_reply(
                         draft_email, about, signature, user_email, use_agent=True,
                         confidence=draft_conf,
@@ -659,11 +710,15 @@ async def _apply_rule_actions(
                 # so Outlook writes it over the To of createReply. With none,
                 # createReply keeps its To, which honours a Reply-To (EM-T10
                 # review round 1).
+                # H-404: the Cc and the Bcc that the rule names go on the
+                # draft, as the card that saved the rule showed them.
+                cc, bcc = _action_copies(a)
                 draft_pid = await provider.create_draft(
                     to=[to], subject=subj, body_text=body,
                     reply_to_message_id=provider_msg_id,
                     thread_id=email.get("thread_id") or None,
                     attachments=_load_action_attachments(a, user_email) or None,
+                    cc=cc, bcc=bcc,
                     exact_to=bool(a.get("to_address")),
                 )
                 # Mirror the draft locally so it shows in the Drafts folder and
@@ -675,7 +730,7 @@ async def _apply_rule_actions(
                         thread_id=email.get("thread_id") or None,
                         owner_email=await _draft_from_address(
                             db, account_id, None if tmpl else draft_email, email),
-                        to_email=to, subject=subj, body=body,
+                        to_email=to, subject=subj, body=body, cc=cc, bcc=bcc,
                     )
                 # AI-written (non-template) drafts: remember for edit-learning.
                 # commit=False: every caller of _apply_rule_actions holds a
@@ -708,11 +763,13 @@ async def _apply_rule_actions(
                     append_signature_text,
                 )
                 fwd = append_signature_text(signature, fwd)
+                fcc, fbcc = _action_copies(a)  # H-404, as for a reply
                 fwd_pid = await provider.create_draft(
                     to=[a["to_address"]],
                     subject=fwd_subject,
                     body_text=fwd,
                     attachments=_load_action_attachments(a, user_email) or None,
+                    cc=fcc, bcc=fbcc,
                 )
                 if fwd_pid and account_id:
                     await _upsert_local_draft(
@@ -720,7 +777,7 @@ async def _apply_rule_actions(
                         owner_email=await _draft_from_address(
                             db, account_id, email),
                         to_email=a["to_address"],
-                        subject=fwd_subject, body=fwd,
+                        subject=fwd_subject, body=fwd, cc=fcc, bcc=fbcc,
                     )
             elif t == "NOTIFY_ME":
                 await _notify_me(db, a, email, message_id, user_email=user_email,

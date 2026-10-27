@@ -274,6 +274,10 @@ describe("(3) a report with no period section reads as of today", () => {
       "capacity",
       "pulse",
       "stuck",
+      // WS-27bn RA-4. It reads its own 14 days back from today.
+      "agent_runs",
+      // WS-27bn RA-5. It reads its own 14 days back from now.
+      "quality",
       "hygiene",
       "conflicts",
       "rebalance",
@@ -392,7 +396,7 @@ describe("(4) the sections sit under three labels, in SECTIONS order", () => {
     ]);
     expect(groups.map((g) => g.sections.map((s) => s.key))).toEqual([
       ["finished", "throughput"],
-      ["outlook", "load", "capacity", "stuck", "hygiene"],
+      ["outlook", "load", "capacity", "stuck", "waiting", "agent_runs", "quality", "hygiene"],
       ["pulse", "conflicts", "rebalance"],
     ]);
     const order = REPORT_SECTIONS.map((s) => s.key);

@@ -132,6 +132,7 @@ import { Card } from "./SettingsCards";
 import { SuggestionPanel, useSuggestionActions, useSuggestions } from "./Suggestions";
 import { ProposalList } from "./ProposalList";
 import { SumDialog } from "./SumPicker";
+import AnalysisRerun from "./AnalysisRerun";
 
 // One copy, shared with the picker of a sum (CRM-Q32-8).
 export { ProposalList };
@@ -496,6 +497,7 @@ export function OpenQuestionsView({
   answers,
   sort = "impact",
   onSort,
+  tools,
 }: {
   /** The read of `GET /crm/questions`, or `undefined` while it loads. */
   read: QuestionsRead | undefined;
@@ -512,6 +514,8 @@ export function OpenQuestionsView({
   /** CRM-Q32-8: the order of the open tab. */
   sort?: QuestionSort;
   onSort?: (sort: QuestionSort) => void;
+  /** CRM-Q32-10: the "Re-run AI analysis" button, at the top of the card. */
+  tools?: React.ReactNode;
 }) {
   if (read?.off) return null;
   const body = read?.body ?? null;
@@ -523,6 +527,7 @@ export function OpenQuestionsView({
   return (
     <Card title={QUESTIONS_TITLE} note={QUESTIONS_NOTE}>
       <div className="space-y-3 px-4 py-3">
+        {tools}
         <Tabs
           tabs={[
             { id: "open", label: openTabLabel(open) },
@@ -862,6 +867,8 @@ export default function OpenQuestionsCard() {
     <>
       <OpenQuestionsView
         read={read}
+        // CRM-Q32-10: run the analysis now, not after the next sync.
+        tools={<AnalysisRerun />}
         failed={failed}
         onRetry={refresh}
         tab={tab}

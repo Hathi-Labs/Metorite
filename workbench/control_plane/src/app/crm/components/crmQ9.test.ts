@@ -107,8 +107,8 @@ describe("the Sync health card, healthy", () => {
 
   it("names each module with its state", () => {
     expect(html).toContain("Modules in your Zoho");
-    expect(html).toContain("Mirrored");
-    expect(html).toContain("Not mirrored yet");
+    expect(html).toContain("Synced");
+    expect(html).toContain("Not synced yet");
     expect(html).toContain("Not available through the API");
   });
 

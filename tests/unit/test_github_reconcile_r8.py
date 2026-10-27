@@ -217,11 +217,20 @@ def _task(w: Any) -> str:
                        category="in_progress")
 
 
+def _recent() -> str:
+    """One hour ago. A fixed date fell out of the poll window a day after
+    the suite was written, and every PR went red on 2026-10-19."""
+    from datetime import UTC, datetime, timedelta
+
+    return (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _pull(number: int, *, state: str = "open", merged: bool = False, sha: str = SHA_OLD,
-          updated: str = "2026-10-18T10:00:00Z") -> dict:
+          updated: str | None = None) -> dict:
+    at = updated or _recent()
     return {"number": number, "title": f"PR {number}", "state": state, "merged": merged,
-            "merged_at": "2026-10-18T10:00:00Z" if merged else None, "draft": False,
-            "updated_at": updated, "merged_by": {"login": "octo"},
+            "merged_at": at if merged else None, "draft": False,
+            "updated_at": at, "merged_by": {"login": "octo"},
             "head": {"ref": "feat/x", "sha": sha}, "base": {"ref": "main"}}
 
 

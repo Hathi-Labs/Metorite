@@ -420,12 +420,16 @@ describe("review P2: a task pill in the phone's assistant sheet closes the sheet
   });
 
   it("closes on a phone only, and the dock provides it around its chat", async () => {
-    expect(onChatLink({ phone: true })).toBe("close");
-    expect(onChatLink({ phone: false })).toBeNull();
+    // Flag off, as before PR CF-1. Flag on, the sheet drops to the strip.
+    expect(onChatLink({ phone: true, chatFirst: false })).toBe("close");
+    expect(onChatLink({ phone: true, chatFirst: true })).toBe("peek");
+    expect(onChatLink({ phone: false, chatFirst: false })).toBeNull();
+    expect(onChatLink({ phone: false, chatFirst: true })).toBeNull();
     const { readFileSync } = await import("node:fs");
     const { fileURLToPath } = await import("node:url");
     const dock = readFileSync(fileURLToPath(new URL("../lib/shell/AssistantDock.tsx", import.meta.url)), "utf-8");
     expect(dock).toContain("<PillNavigateContext.Provider value={beforePillNavigate}>");
-    expect(dock).toMatch(/onChatLink\(\{ phone \}\) === "close"\) closeAssistant\(\)/);
+    expect(dock).toContain("const act = onChatLink({ phone, chatFirst });");
+    expect(dock).toMatch(/act === "peek"\) setAssistantMode\("peek"\);\s*else if \(act === "close"\) closeAssistant\(\)/);
   });
 });

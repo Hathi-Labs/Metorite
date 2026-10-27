@@ -60,6 +60,7 @@ import { accentForHue, statusAccent } from "@/lib/statusAccent";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import {
+  type NeedsOwner,
   type NodeSummary,
   type PreviewReportBody,
   type ReportRow,
@@ -79,6 +80,23 @@ import {
   kindTitle,
 } from "../lib/hygiene";
 import { headlineVerdict, shortDate } from "../lib/outlook";
+import { answerLine, waitingLists, waitingRowCount } from "../lib/waiting";
+import {
+  agentRunsRowCount,
+  longLines,
+  outcomeLine,
+  silentLines,
+  successFigure,
+  successTrend,
+} from "../lib/agentRunsReport";
+import {
+  failingLines,
+  mergeFigure,
+  mergeTrend,
+  qualityRowCount,
+  retriedLine,
+} from "../lib/qualityReport";
+import { WHO_DID_THE_WORK, overviewTiles, whoDidTheWorkShown } from "../lib/kpiStrip";
 import { PANEL_HINTS } from "../lib/panelHints";
 import {
   focusWhy,
@@ -96,6 +114,7 @@ import {
   rebalanceTasks,
 } from "../lib/rebalance";
 import {
+  agentRunsPanelData,
   capacityPanelData,
   conflictsPanelData,
   finishedPanelData,
@@ -103,10 +122,13 @@ import {
   loadPanelData,
   outlookPanelData,
   pulsePanelData,
+  qualityPanelData,
   rebalancePanelData,
   reportTiles,
   stuckPanelData,
   throughputPanelData,
+  waitingPanelData,
+  whoDidTheWorkPanelData,
 } from "../lib/reportPanels";
 import {
   AS_OF_TODAY,
@@ -183,6 +205,7 @@ import {
   createPreviewController,
   gridSpans,
   overviewFilterCount,
+  overviewShown,
   overviewSummary,
   previewRequest,
   readFiltersOpen,
@@ -194,18 +217,23 @@ import {
 import { allClear, clearLine, sectionIsClear } from "../lib/sectionEmpty";
 import { sectionIcon } from "../lib/sectionIcons";
 import {
+  AgentRunsPanel,
   CapacityPanel,
   ConflictsPanel,
   FinishedPanel,
   HygienePanel,
   LoadPanel,
+  OpenTaskContext,
   OutlookPanel,
   PanelChromeContext,
   PulsePanel,
+  QualityPanel,
   RebalancePanel,
   Stat,
   StuckPanel,
   ThroughputPanel,
+  WaitingPanel,
+  WhoDidTheWorkPanel,
 } from "./AnalyticsPanels";
 import { ReportFileButtons } from "./ReportFileButtons";
 import SpaceSummary from "./SpaceSummary";
@@ -349,6 +377,44 @@ export function HeaderMeta({ line }: { line: string }) {
 }
 
 /** One project line: a name, a count, and the cancellations beside it. */
+/**
+ * WS-27bn RA-6 — "Needs an owner" in the table of Open work: every task the
+ * server named, the soonest due first, as the panel lists them. `first`
+ * places it above the people when it leads the open work (§6.8 B).
+ */
+function NeedsOwnerTable({
+  owner,
+  first,
+}: {
+  owner: NeedsOwner | undefined;
+  first: boolean;
+}) {
+  if (!owner || !(owner.total > 0)) return null;
+  return (
+    <div className={`text-xs ${first ? "mb-2" : "mt-2"}`}>
+      <span className="font-medium text-foreground">Needs an owner</span>
+      <span
+        className="text-muted-foreground"
+        title="Open tasks with no assignee and no open run, the soonest due first"
+      >
+        {" "}
+        · {owner.total}
+      </span>
+      <ul className="mt-0.5 space-y-0.5">
+        {(owner.tasks ?? []).map((t) => (
+          <li key={t.id} className="truncate pr-px text-muted-foreground" title={t.title}>
+            <span className="text-foreground">
+              {typeof t.task_number === "number" ? `#${t.task_number} ` : ""}
+              {t.title}
+            </span>
+            {t.due_at ? ` · Due ${shortDate(t.due_at)}` : ""}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function Row({
   name,
   value,
@@ -433,10 +499,12 @@ export function RenderedBody({
 }) {
   const done = statusAccent({ category: "done" });
   const late = statusAccent({ category: "cancelled" });
-  const { sections } = body;
+  const grid = layout === "grid";
+  // WS-27bn RA-3. The live Overview hides "Waiting on people" when the scope
+  // has no agent run and nothing waits. A report and the builder keep it.
+  const sections = grid ? overviewShown(body.sections) : body.sections;
   // The Load table names people as the Load panel does (owner, 2026-10-10).
   const loadNames = usePersonNames(sections.load?.people.map((p) => p.assignee) ?? []);
-  const grid = layout === "grid";
   // R5g rule 1. Which panels take the full row. `gridSpans` leaves no row
   // with one panel alone.
   const drawn = BODY_ORDER.filter((k) => (sections as Record<string, unknown>)[k]);
@@ -458,6 +526,11 @@ export function RenderedBody({
       node
     );
   const tiles = reportTiles(sections);
+  // WS-27bn RA-2 (§6.8 B). The live Overview draws the six tiles of its KPI
+  // strip when the server sent them. A saved report keeps its four tiles.
+  const strip = grid ? overviewTiles({ ...body, sections }) : [];
+  // §6.8 B. "Who did the work" replaces "What we finished" for one project.
+  const who = grid && whoDidTheWorkShown({ ...body, sections });
   const tone = { done: done.text, late: late.text };
   // §6.6 D item 3. Every chosen section is clear: one calm card, and no row
   // for each section.
@@ -477,7 +550,31 @@ export function RenderedBody({
         </header>
       )}
 
-      {tiles.length > 0 && (
+      {strip.length > 0 ? (
+        // Six tiles divide by 2 and by 3, so no tile sits alone on a row.
+        // `@container`: the columns follow the width of the pane, not of the
+        // window, because the rails take most of a tablet (the visual
+        // review). Six in one row wrapped each split line in three.
+        <div className="@container">
+        <div
+          className="grid grid-cols-2 gap-2 @2xl:grid-cols-3"
+          role="group"
+          aria-label="Key figures"
+        >
+          {strip.map((t) => (
+            <Stat
+              key={t.key}
+              label={t.label}
+              display={t.display}
+              detail={t.detail}
+              tone={t.tone ? tone[t.tone] : undefined}
+              title={t.title}
+              help={t.title}
+            />
+          ))}
+        </div>
+        </div>
+      ) : tiles.length > 0 && (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           {tiles.map((t) => (
             <Stat
@@ -515,6 +612,33 @@ export function RenderedBody({
           "finished",
           sectionIsClear("finished", sections.finished) ? (
           <ClearRow sectionKey="finished" title="What we finished" />
+        ) : who ? (
+          <SectionFrame
+            sectionKey="finished"
+            fill={grid}
+            table={
+              <Table title={WHO_DID_THE_WORK} count={sections.finished.actor_series?.length ?? 0}>
+                <p className="mb-1 text-xs text-muted-foreground">
+                  {sections.finished.actor_summary}
+                </p>
+                <ul className="space-y-0.5">
+                  {(sections.finished.actor_series ?? []).map((w) => (
+                    <Row
+                      key={w.week_start}
+                      name={`Week of ${w.week_start}`}
+                      value={w.completed}
+                      aside={`${w.people} people · ${w.agents} agents`}
+                      title={`${w.completed} finished in the week of ${w.week_start}: ${w.people} by people, ${w.agents} by agents`}
+                    />
+                  ))}
+                </ul>
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="who did the work">
+              <WhoDidTheWorkPanel data={whoDidTheWorkPanelData(sections.finished, body)} />
+            </LayoutBoundary>
+          </SectionFrame>
         ) : (
           <SectionFrame
             sectionKey="finished"
@@ -634,6 +758,11 @@ export function RenderedBody({
                   <dd className="tabular-nums">
                     {shortDate(sections.outlook.velocity?.finish_date)}
                   </dd>
+                  {/* WS-27bn RA-6. The finish above is the 50% date. */}
+                  <dt className="text-muted-foreground">85% finish</dt>
+                  <dd className="tabular-nums">
+                    {shortDate(sections.outlook.velocity?.p85_date)}
+                  </dd>
                   <dt className="text-muted-foreground">Open tasks</dt>
                   <dd
                     className="tabular-nums"
@@ -688,6 +817,167 @@ export function RenderedBody({
           </SectionFrame>
         ))}
 
+      {/* WS-27bn RA-3. The coordination panel (§6.8 C). The lists read the
+          state now, and the answer time reads the period. The table names
+          every row the server sent, list by list. */}
+      {sections.waiting &&
+        cell(
+          "waiting",
+          sectionIsClear("waiting", sections.waiting) ? (
+          <ClearRow sectionKey="waiting" title="Waiting on people" />
+        ) : (
+          <SectionFrame
+            sectionKey="waiting"
+            fill={grid}
+            table={
+              <Table title="Waiting on people" count={waitingRowCount(sections.waiting)}>
+                <p className="mb-1 text-xs text-muted-foreground">{sections.waiting.summary}</p>
+                {answerLine(sections.waiting) && (
+                  <p className="mb-1 text-xs text-muted-foreground">
+                    {answerLine(sections.waiting)}
+                  </p>
+                )}
+                <ul className="space-y-1.5">
+                  {waitingLists(sections.waiting, (e) => personDisplayName(null, e)).map((l) => (
+                    <li key={l.kind} className="text-xs">
+                      <span className="font-medium text-foreground">{l.heading}</span>
+                      <span
+                        className="text-muted-foreground"
+                        title={`${l.total} in total, the longest wait first`}
+                      >
+                        {" "}
+                        · {l.total}
+                      </span>
+                      <ul className="mt-0.5 space-y-0.5">
+                        {l.rows.map((r) => (
+                          <li
+                            key={r.key}
+                            className="truncate pr-px text-muted-foreground"
+                            title={r.label}
+                          >
+                            <span className="text-foreground">{r.label}</span> · {r.detail}
+                          </li>
+                        ))}
+                      </ul>
+                    </li>
+                  ))}
+                </ul>
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="waiting on people">
+              <WaitingPanel data={waitingPanelData(sections.waiting, body)} />
+            </LayoutBoundary>
+          </SectionFrame>
+        ))}
+
+      {/* WS-27bn RA-4. How agent runs end (§6.8 B). The outcomes and the
+          sizes read their own 14 days, and the silent runs read the state
+          now. The table names every silent run and long run the server
+          sent. */}
+      {sections.agent_runs &&
+        cell(
+          "agent_runs",
+          sectionIsClear("agent_runs", sections.agent_runs) ? (
+          <ClearRow sectionKey="agent_runs" title="Agent runs" />
+        ) : (
+          <SectionFrame
+            sectionKey="agent_runs"
+            fill={grid}
+            table={
+              <Table title="Agent runs" count={agentRunsRowCount(sections.agent_runs)}>
+                <p className="mb-1 text-xs text-muted-foreground">{sections.agent_runs.summary}</p>
+                <p className="mb-1 text-xs text-muted-foreground">
+                  {outcomeLine(sections.agent_runs)} · success rate{" "}
+                  {successFigure(sections.agent_runs)}
+                  {successTrend(sections.agent_runs) ? `, ${successTrend(sections.agent_runs)}` : ""}
+                </p>
+                <ul className="space-y-1.5">
+                  {[
+                    {
+                      key: "silent",
+                      heading: "Silent now",
+                      total: sections.agent_runs.silent_total,
+                      rows: silentLines(sections.agent_runs, (e) => personDisplayName(null, e)),
+                    },
+                    {
+                      key: "long",
+                      heading: "Runs of 4 hours or more",
+                      total: sections.agent_runs.long_total,
+                      rows: longLines(sections.agent_runs, (e) => personDisplayName(null, e)),
+                    },
+                  ]
+                    .filter((l) => l.total > 0)
+                    .map((l) => (
+                      <li key={l.key} className="text-xs">
+                        <span className="font-medium text-foreground">{l.heading}</span>
+                        <span className="text-muted-foreground" title={`${l.total} in total`}>
+                          {" "}
+                          · {l.total}
+                        </span>
+                        <ul className="mt-0.5 space-y-0.5">
+                          {l.rows.map((r) => (
+                            <li
+                              key={r.key}
+                              className="truncate pr-px text-muted-foreground"
+                              title={r.label}
+                            >
+                              <span className="text-foreground">{r.label}</span> · {r.detail}
+                            </li>
+                          ))}
+                        </ul>
+                      </li>
+                    ))}
+                </ul>
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="agent runs">
+              <AgentRunsPanel data={agentRunsPanelData(sections.agent_runs)} />
+            </LayoutBoundary>
+          </SectionFrame>
+        ))}
+
+      {/* WS-27bn RA-5. Is the speed real (§6.8 B)? The pull requests and the
+          rework read their own 14 days back from now. The table names every
+          failing pull request the server sent. */}
+      {sections.quality &&
+        cell(
+          "quality",
+          sectionIsClear("quality", sections.quality) ? (
+          <ClearRow sectionKey="quality" title="Quality" />
+        ) : (
+          <SectionFrame
+            sectionKey="quality"
+            fill={grid}
+            table={
+              <Table title="Quality" count={qualityRowCount(sections.quality)}>
+                <p className="mb-1 text-xs text-muted-foreground">{sections.quality.summary}</p>
+                <p className="mb-1 text-xs text-muted-foreground">
+                  Merge rate {mergeFigure(sections.quality)}
+                  {mergeTrend(sections.quality) ? `, ${mergeTrend(sections.quality)}` : ""} ·{" "}
+                  {retriedLine(sections.quality)}
+                </p>
+                <ul className="space-y-1.5">
+                  {failingLines(sections.quality, (e) => personDisplayName(null, e)).map((r) => (
+                    <li
+                      key={r.key}
+                      className="truncate pr-px text-xs text-muted-foreground"
+                      title={r.label}
+                    >
+                      <span className="text-foreground">{r.label}</span> · {r.detail}
+                    </li>
+                  ))}
+                </ul>
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="quality">
+              <QualityPanel data={qualityPanelData(sections.quality)} />
+            </LayoutBoundary>
+          </SectionFrame>
+        ))}
+
       {sections.load &&
         cell(
           "load",
@@ -707,6 +997,11 @@ export function RenderedBody({
                 >
                   {sections.load.total_tasks} open
                 </p>
+                {/* WS-27bn RA-6, fix round 1: first when it leads, as the
+                    panel, the chat and the email put it (§6.8 B). */}
+                {sections.load.needs_owner?.leads && (
+                  <NeedsOwnerTable owner={sections.load.needs_owner} first />
+                )}
                 <ul className="space-y-0.5">
                   {sections.load.people.slice(0, 8).map((p) => (
                     <Row
@@ -725,6 +1020,10 @@ export function RenderedBody({
                     />
                   ))}
                 </ul>
+                {/* WS-27bn RA-6, fix round 1: last when it does not lead. */}
+                {!sections.load.needs_owner?.leads && (
+                  <NeedsOwnerTable owner={sections.load.needs_owner} first={false} />
+                )}
               </Table>
             }
           >
@@ -1180,7 +1479,14 @@ export function ReportBuilder({
   const [ctl] = useState(() =>
     createPreviewController<PreviewReportBody>({
       initial: initialPreview,
-      fetch: ({ project_id, config }) => projectsApi.previewReport({ project_id, name: "", config }),
+      // WS-27bn RA-2. The Overview asks for the figures of its KPI strip.
+      fetch: ({ project_id, config }) =>
+        projectsApi.previewReport({
+          project_id,
+          name: "",
+          config,
+          ...(mode === "reportsOverview" ? { kpis: true } : {}),
+        }),
       now: () => Date.now(),
       errorMessage: (e) => message(e, "The preview could not be drawn."),
     })
@@ -1229,7 +1535,10 @@ export function ReportBuilder({
   // edits a member's day leaves it about the member (R5b-1 repair). A lead
   // of one team starts Team pulse on that team (§6.5 item 7).
   const self = selfSubject(answer);
-  const scopes = useMemo(() => scopeOptions(roots), [roots]);
+  const scopes = useMemo(
+    () => scopeOptions(roots, [draft.projectId]),
+    [roots, draft.projectId]
+  );
   const derived = startingTeam(
     builderSubject(draft, needs, self, isEdit),
     template,
@@ -2477,9 +2786,15 @@ type Pane =
  */
 export default function ReportsView({
   onOpenNode,
+  onOpenTask,
 }: {
   /** Open a row of Overview's space table in the Projects page. */
   onOpenNode?: (id: string) => void;
+  /**
+   * WS-27bn RA-3. Open a task that a report row names, in the Projects page.
+   * Each panel reads it through `OpenTaskContext`.
+   */
+  onOpenTask?: (taskId: string) => void;
 }) {
   const [rows, setRows] = useState<ReportRow[] | null>(null);
   /** The finished total of Overview's last preview, for the Home line. */
@@ -2507,7 +2822,14 @@ export default function ReportsView({
   // same key the page uses, so this adds no request on a warm page.
   const tree = useCachedResource(projectsKey("tree"), () => projectsApi.tree());
   const roots = useMemo(() => tree.data?.rows ?? [], [tree.data]);
-  const scopes = useMemo(() => scopeOptions(roots), [roots]);
+  const scopes = useMemo(
+    () =>
+      scopeOptions(roots, [
+        ...(rows ?? []).map((r) => r.project_id),
+        overviewDraft.projectId,
+      ]),
+    [roots, rows, overviewDraft.projectId]
+  );
 
   // WS-27bn R2. The catalogue is the server's, through the one read cache.
   const catalogue = useCachedResource(projectsKey("reports/templates"), () =>
@@ -2651,7 +2973,9 @@ export default function ReportsView({
       : undefined;
 
   return (
-    // §6.6 E item 1. No heading here: the page header names the app.
+    // WS-27bn RA-3. A row of a panel opens its task through the page.
+    <OpenTaskContext.Provider value={onOpenTask ?? null}>
+    {/* §6.6 E item 1. No heading here: the page header names the app. */}
     <div className="flex-1 overflow-y-auto p-4">
       {/* §6.5 item 1. While the member builds a report the rail leaves, and
           the builder takes the width for its preview. R5f rule 16: Home is
@@ -2785,5 +3109,6 @@ export default function ReportsView({
         </div>
       </div>
     </div>
+    </OpenTaskContext.Provider>
   );
 }

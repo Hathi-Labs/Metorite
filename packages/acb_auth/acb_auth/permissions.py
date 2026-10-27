@@ -171,6 +171,13 @@ CAPABILITIES: tuple[str, ...] = (
     # holds it through `*`. KB-1's migration (`kb_spaces` and its seed) grants
     # it to `admin` in every organization and in provision_org_roles.
     "knowledge:manage",
+    # The Email app's shared-mailbox admin verb: make a mailbox shared and
+    # change its grants. Reading or sending from a shared mailbox needs a
+    # mailbox grant, not this. Argued in specs/shared_mailbox.md Q-SM-2. The
+    # owner holds it through `*`. SM-1's migration (`email_mailbox_grants` and
+    # its seed) grants it to `admin` in every organization and in
+    # provision_org_roles.
+    "email:shared:manage",
 )
 
 #: System role slugs seeded by migration 128. `agent_service` is never

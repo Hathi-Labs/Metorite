@@ -456,12 +456,16 @@ My Day and Reach loops, in the shape of `routes/email/memory_purge.py`:
 
 - The meter is a sum over `artifacts.size` by owner and by organization,
   cached for a minute.
-- `ARTIFACT_MEMBER_QUOTA_MB` (default 2048) and `ARTIFACT_ORG_QUOTA_MB`
-  (default 20480). At 80 % the meter turns amber and the chat card says so. At
+- `ARTIFACT_MEMBER_QUOTA_MB` (default 5120) and `ARTIFACT_SEAT_QUOTA_MB`
+  (default 5120). The organization limit is the seat quota × the org's
+  `seats_purchased`, pooled (D108, 2026-10-20). A membership row is not a
+  seat (D32.5). At 80 % the meter turns amber and the chat card says so. At
   100 % a write is refused with a reason, and a delete still works, which is
   the sandbox store's rule already (§7.1 of `maf_coding_engine.md`).
 - The organization's quota is a plan fact later (WS-31). Until then it is a
-  setting, and §13 Q3 asks the owner for the numbers.
+  setting. The owner answered §13 Q3 on 2026-10-20 (D108).
+- The bytes move to the object store of `saas_multitenancy.md` MT-1g (D108).
+  The quota counts the bytes, wherever they live.
 
 ---
 
@@ -674,7 +678,7 @@ others gate the slice they name.
 |---|---|---|---|
 | Q1 | Does every artifact start **personal**, including one an agent makes on a shared project's task? | Yes. Personal, and attaching to the task widens it through the task | AM-3 |
 | Q2 | Scratch expiry and trash window | 90 days of no use, then 30 days in trash | AM-5 |
-| Q3 | Quotas | 2 GB per member, 20 GB per organization, refuse writes at 100 %, deletes always work | AM-5 |
+| Q3 | Quotas | **Decided: owner, 2026-10-20 (D108).** 5 GB per member, and 5 GB × `seats_purchased` per organization, pooled. Refuse writes at 100 %, deletes always work | AM-5 |
 | Q4 | Deleting a chat | Trash its scratch artifacts, keep the kept ones | AM-5 |
 | Q5 | Links for people outside the organization | Not in this release. Later as an org switch, off by default, signed URL with expiry | AM-3 external half |
 | Q6 | Keep the bodies of old versions | Last five, text kinds under 1 MB, text only | AM-9 |

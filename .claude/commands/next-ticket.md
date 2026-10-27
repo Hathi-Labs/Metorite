@@ -1,5 +1,5 @@
 ---
-description: Run one full supervisor cycle against the work plan — audit, build, verify, review by risk tier, PR — for the next dispatchable WS ticket (or the one named).
+description: Run one full supervisor cycle against the work plan — audit, build, verify, review by risk tier, PR, merge — for the next dispatchable WS ticket (or the one named).
 argument-hint: "[WS-n | 'next']"
 ---
 
@@ -23,25 +23,63 @@ fresh context that can only see the repo.
 ## The cycle
 
 **1 — Select.**
-Do not read `work_plan.md` §2 whole. It is about 117,000 tokens. Run
-`uv run python scripts/board.py` for a one-line index of every row.
-Run `uv run python scripts/board.py --row WS-n` to read one candidate row.
-If the user named a WS, use it.
-Otherwise choose the highest-leverage 🟢 row whose notes do not read as
-owner-gated end to end, preferring rows that unblock others (the board's own
-dependency notes tell you which). Say which you picked and why, in one line.
+Metorite holds the state (D118). Call `my_work` through the Metorite MCP and
+take the top row, then `claim_task` on it. If the user named a task or a WS,
+use it. Run `uv run python scripts/board.py --row WS-n` to read the row of its
+workstream: the owning spec and the Metorite epic. If `my_work` is empty, pick
+the highest-priority open task in that epic that is not owner-gated end to
+end. Say which you picked and why, in one line.
 
 **1b — Set the risk tier.** The tier sets how much review the slice gets.
 Owner decision, 2026-10-16. Say the tier and the reason in one line.
 - **HIGH**: tenancy, RLS, auth, identity, a migration, money, credits,
   secrets, a member or role write, or the deploy path. Verifier, then
   reviewer. At most two repair rounds.
-- **STANDARD**: other product code. Verifier, then reviewer. One repair
-  round. After it, record in `HANDOFF.md` each finding that cannot reach a
-  customer, and land the slice.
+- **STANDARD**: other product code. Verifier only while the feature is in
+  build (step 1d). One repair round. The reviewer runs ONCE, on the whole
+  feature, in the hardening pass. Record each deferred guardrail in
+  `project-docs/hardening_backlog.md`, and land the slice.
 - **LOW**: tooling, tests, docs, or a style change with no data path.
   Verifier only. Skip the reviewer. One repair round.
 If you are not sure, take the higher tier. The verifier is never skipped.
+
+**1c — Pick the model for each dispatch.** Owner directive, 2026-10-19:
+Sonnet does the work, and Opus is for the hard cases. The agent files default
+to Sonnet. Pass `model: "opus"` on the Agent call only where this table says
+so. Say the models in the same line as the tier.
+
+| Role | LOW | STANDARD | HIGH |
+|---|---|---|---|
+| `spec-auditor` | sonnet | sonnet | sonnet |
+| `ws-implementer` | sonnet | sonnet | **opus** |
+| `ws-verifier` | sonnet | sonnet | **opus** |
+| `diff-reviewer` | skipped | **opus**, at the hardening pass | **opus** |
+
+Two escalations override the table:
+- **A repair round after a FAIL on the same finding**: dispatch the next
+  `ws-implementer` with `model: "opus"`. Sonnet already missed it once.
+- **A slice that crosses three or more services, or a concurrency, cache or
+  ordering bug**: take `opus` for the implementer, at any tier.
+
+Use `model: "haiku"` for a pure lookup with no judgement (find a file, list
+callers, count rows). Never use haiku to build, verify or review.
+
+**1d — Build or harden.** Owner directive, 2026-10-19. The contract is
+`project-docs/specs/engineering_practice.md` §7a.
+- **Build** (the default): ship working slices fast. Process fences and STE
+  lint are advisory. UI diffs still run the four-capture visual review in
+  build mode, and the UI gate fences block (owner, 2026-10-27,
+  `workbench/control_plane/DESIGN_SYSTEM.md` §11). A UI diff also gets item 8
+  of `diff-reviewer`, the UI checklist, even when step 6 skips the full
+  review. Skip the board-row note,
+  the spec header (R4) and new fence tests (R7). Run `bash scripts/ci_local.sh`
+  (or `bash scripts/prepush.sh` when the PC is busy) before each push.
+- **Harden** (when the feature works): one PR, labelled `harden`. Run
+  `STE_LINT_BLOCK=1` for the session, `bash scripts/prepush.sh --harden`,
+  `diff-reviewer` on the WHOLE feature diff, and the visual review. Write the
+  deferred fences and the backlog items as Metorite tasks. Update the spec
+  header.
+- A HIGH-tier slice keeps the full loop in both modes.
 
 **2 — Audit.** Dispatch `spec-auditor` on that WS.
 - `NO-GO` → stop the cycle. If the blocker is documentation, that *is* the next
@@ -66,35 +104,48 @@ second implementer to route around a block.
   fails, stop, leave the branch in place, and report what is unresolved. A loop
   that grinds on a stuck ticket burns budget and produces nothing.
 
-**6 — Review.** Skip this step for a LOW slice. Otherwise dispatch `diff-reviewer`.
+**6 — Review.** Skip this step for a LOW slice, and for a STANDARD slice in
+build (1d). Otherwise dispatch `diff-reviewer`. For a UI diff that skips this
+step, dispatch `diff-reviewer` on item 8 only (1d).
 - Any `P0` → repair round (counts against the same tier budget).
 - `P1`/`P2` → carry into the PR body as known findings; do not block on them.
 
 **7 — Land.**
-- Update the WS row in `work_plan.md` §2: state, and a dated note saying what
-  shipped and what remains. This is the handoff to the next cycle — write it for
-  an agent with no memory of this one.
-- Confirm the implementer updated the owning spec's status header (R4). If it
-  did not, do it now.
+- In build (1d), a comment on the Metorite task is enough: what shipped. Move
+  the task with `set_task_status`. The spec header (R4) waits for the
+  hardening pass.
+- In harden, comment on the task: a dated note saying what shipped and what
+  remains. Add a task for each remaining item. This is the handoff to the
+  next cycle — write it for an agent with no memory of this one. Change the
+  `work_plan.md` §2 row only when the workstream's spec or epic changes. Confirm the
+  owning spec's status header (R4) is current. If it is not, do it now.
 - Commit, push the branch, open a PR with `gh`. The PR body: WS id, the slice
   built, acceptance evidence, verification output, reviewer findings, and what
   was deferred.
-- **⚠️ DEV PHASE — merge it and watch it.** Wait for `pr-check` to go green.
-  Merge with `gh pr merge --squash`. Then watch the `deploy` run to green.
+- **Merge it and watch it** (root `CLAUDE.md` §3a and §4). Wait for `pr-check`
+  to go green. Merge with `gh pr merge --squash`. Then watch the `deploy` run
+  to green.
 - **⚠️ A merge does NOT deploy to production (WS-38, since 2026-10-16).** The
   push run moves the `staging` ref only. Production moves at 21:30 UTC (03:00
   IST) each day. Report the merge as "reaches production at the next daily
-  release". A fix that cannot wait is a manual run:
-  `gh workflow run deploy.yml --ref main -f reason="<why>"`. Watch that run, and
-  report the SHA that `GET /version` serves. Do not call a hotfix done before
-  you see that SHA.
+  release".
+- **⚠️ Do not dispatch production** (owner directive, 2026-10-27). Run
+  `gh workflow run deploy.yml --ref main -f reason="<why>"` only when the owner
+  asks for it in this session, or when production is down. A dark feature
+  never needs it. If you think a change cannot wait, ask the owner. After a
+  run that the owner asked for, watch it and report the SHA that
+  `GET /version` serves. Do not call a hotfix done before you see that SHA.
 - **⚠️ Test it on staging (owner directive, 2026-10-17).** Wait until
   `curl -s https://api.dev.metorite.com/version` shows your merge SHA, or a later
   one, as `sha` and `applied_sha`. Then test the change on
-  `https://dev.metorite.com` against the acceptance criteria. Report "verified on
-  staging at `<sha>`". If staging shows a defect, fix forward or revert before
-  21:30 UTC. Until HANDOFF H-335 closes, staging may not serve. Then write
-  "staging not up", and do not claim the test. `CLAUDE.md` §4 owns this rule.
+  `https://dev.metorite.com` against the acceptance criteria. Sign in with the
+  same Google or Microsoft account as on production. Report "verified on
+  staging at `<sha>`, reaches production at the next daily release". If staging
+  does not answer, write "staging not up", and do not claim the test.
+- If staging shows a defect, fix forward or revert before 21:30 UTC. To stop
+  that night's release, set the repository variable `RELEASE_HOLD` to `1`. A
+  hotfix goes to staging first too, unless production is down.
+  `specs/staging_and_daily_release.md` owns the design.
 - Watch the job `Unit tests (a signal on a push, a gate on a release)` in that
   same `deploy` run to its end. On a push it does not gate, so two PRs that
   pass alone and fail together can land on `main`. A red `main` also blocks
@@ -102,13 +153,13 @@ second implementer to route around a block.
   say so in the report. (No merge queue. Owner decision, 2026-10-16.)
 - Deploy auto-applies migrations and you cannot undo a bad one (R6). Before a
   migration reaches production, confirm the pre-migration backup completed.
-- On 2026-10-01 this step reverts to: **stop there, merging is the owner's**.
 
 ## Refusals
 
-**⚠️ Read `CLAUDE.md` §3a first. The owner opened most of §6 until 2026-09-30.**
-Check `.claude/OWNER_GRANTS.md` for a dated line covering the gate id. If a line
-covers it, **do the work**. Do not refuse, and do not ask the owner again.
+**⚠️ Read root `CLAUDE.md` §3a first.** The window ends on the date of the
+`ALLOW-UNTIL` lines in `.claude/OWNER_GRANTS.md`. Check that file for a dated
+line that covers the gate id. If a line covers it, **do the work**. Do not
+refuse, and do not ask the owner again.
 
 Four acts stay refused, and no grant unlocks them: force-push, history rewrite,
 committing on `main`, and writing the grant file. Three more need the owner's

@@ -3,7 +3,15 @@
 Spec: ``project-docs/specs/knowledge_base.md`` §5.3 and §6.3. KB-1 builds
 the four space routes (``spaces.py``) and the nine page routes
 (``pages.py``), with ``restore``. KB-3 adds ``GET /knowledge/search``
-(``search.py``) over the index in ``gateway/kb_index/``.
+(``search.py``) over the index in ``gateway/kb_index/``. KB-2f adds the
+home lists and the favourites (``home.py``) and the page icon (``icon.py``).
+KB-2g adds ``GET /knowledge/pages/{id}/versions/{n}`` (``history.py``), one old
+version with its body. KB-5a adds the four proposal routes (``proposals.py``).
+KB-9a adds the gap routes (``gaps.py``): the questions that Knowledge
+could not answer, behind ``KNOWLEDGE_GAPS``. KC-1a adds the source routes
+(``sources.py``): connect Google Drive, read its folder tree, disconnect,
+behind ``KNOWLEDGE_SOURCES`` and ``KNOWLEDGE_SOURCE_GOOGLE``
+(``knowledge_curation.md`` §7 and §17).
 
 Same layout as ``routes/crm``: ``core`` is the leaf. It holds the router, the
 one visibility rule (``visible_pages_clause``) and the data helpers. The
@@ -19,7 +27,19 @@ organization is on ``KNOWLEDGE_ORGS`` (``flags.py``), then 403 without
 ``tests/unit/test_kb_pages_r8.py``.
 """
 
-from gateway.routes.knowledge import pages, search, spaces  # noqa: F401 — registers routes
+from gateway.routes.knowledge import (  # noqa: F401 — registers routes
+    backlinks,
+    entities,
+    gaps,
+    history,
+    home,
+    maintenance,
+    pages,
+    proposals,
+    search,
+    sources,
+    spaces,
+)
 from gateway.routes.knowledge.core import router
 
 __all__ = ["router"]

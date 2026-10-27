@@ -95,8 +95,10 @@ def test_sub_agent_timeline_attaches_to_delegate_tool():
     [tool] = folded["tool_events"]
     assert tool["subAgentName"] == "task-manager"
     assert tool["subAgentText"] == "Checking tasks."
+    # A sub-run step keeps its args since §7.1.1 (one assistant, email cards
+    # draw from them). A step that sent none keeps an empty dict.
     assert tool["subAgentTools"] == [
-        {"id": "s1", "name": "sql", "status": "done", "result": "3 rows"},
+        {"id": "s1", "name": "sql", "status": "done", "result": "3 rows", "args": {}},
     ]
 
 

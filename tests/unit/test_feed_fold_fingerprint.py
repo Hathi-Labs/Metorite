@@ -68,6 +68,19 @@ def _note(nid: str, at: datetime) -> dict:
             "task_title": "One", "task_number": None, "excerpt": None, "created_at": at}
 
 
+def _knowledge_signal(kind: str) -> shell.Signal:
+    """WS-61 KB-9a: a question that Knowledge could not answer. KB-9b: the two
+    page kinds key on one page, so they fold."""
+    if kind == "kb_gap":
+        return feed._gap_signal({"id": "g-1", "question": "how do we raise a credit note",
+                                 "ask_count": 3, "last_asked_at": NOW})
+    if kind == "source_sync_failed":
+        return feed._source_signal({"id": "s-1", "provider": "google_drive",
+                                    "state": "needs_reconnect", "failed_since": NOW})
+    return feed._page_signal({"id": "p-1", "title": "Refund policy", "space": "Finance",
+                              "review_at": NOW, "published_at": NOW}, kind)
+
+
 def _real(kind: str) -> shell.Signal | None:
     """The signal of ``kind`` from its REAL builder, on one entity of its
     family. None for a kind of ``NO_BUILDER``."""
@@ -114,6 +127,8 @@ def _real(kind: str) -> shell.Signal | None:
     if kind == "crm_open_questions":
         # WS-53 CRM-Q32-4: the open questions of the CRM, for a CRM admin.
         return feed._questions_signal({"new_at": NOW, "count": 2, "open": 5, "money": True})
+    if kind in ("kb_gap", "doc_needs_review", "doc_shared_with_me", "source_sync_failed"):
+        return _knowledge_signal(kind)
     if kind == "no_answer":
         return feed._no_answer_signal({
             "thread_id": THREAD, "message_id": "m-2", "subject": "S", "who": "dana",
@@ -121,7 +136,19 @@ def _real(kind: str) -> shell.Signal | None:
     return None
 
 
+def _reminder(kind: str) -> shell.Signal:
+    """WS-66 RM-2: one reminder, in the state that gives *kind*."""
+    state, step = {"reminder_due": ("due", "fired"),
+                   "reminder_check": ("due", "check_back"),
+                   "reminder_unconfirmed": ("unconfirmed", "gave_up")}[kind]
+    return feed._reminder_signal({
+        "id": "r-1", "title": "Get a haircut", "kind": "action", "state": state,
+        "step": step, "step_at": NOW, "fire_at": NOW - timedelta(hours=1), "cycles": 0})
+
+
 def _signal_of(kind: str) -> shell.Signal:
+    if kind in feed.REMINDER_KINDS:
+        return _reminder(kind)
     real = _real(kind)
     if real is not None:
         return real
@@ -235,3 +262,14 @@ class TestADismissedCardStaysDismissed:
         newer = shell._note_signals([_note("n-1", NOW - timedelta(hours=1)),
                                      _note("n-2", NOW - timedelta(minutes=5))])[0]
         assert self._shown(row, newer)
+
+
+class TestASourceEpisodeIsAStateFact:
+    def test_the_episode_moves_the_fingerprint_and_a_fold_cannot(self):
+        a = _signal_of("source_sync_failed")
+        b = feed._source_signal({"id": "s-1", "provider": "google_drive",
+                                 "state": "needs_reconnect",
+                                 "failed_since": NOW + timedelta(days=9)})
+        assert _fp(a) != _fp(b)
+        # The kind is a main kind of its own entity: no other kind folds in.
+        assert [m for m, f in _pairs() if "source_sync_failed" in (m, f)] == []

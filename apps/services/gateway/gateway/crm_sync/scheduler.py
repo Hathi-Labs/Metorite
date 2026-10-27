@@ -62,12 +62,23 @@ for the mapping pipeline of the same run, so it sees each part that the
 pipeline closed. For an org outside ``CRM_QUESTIONS_ORGS`` it starts no
 task, and no mode of the mapping pipeline gates it. One step runs at a time
 for each org (``_questioning``).
+
+**Re-run the analysis** (WS-53 CRM-Q32-10, ``crm_platform.md`` §18.14.14).
+An admin asks for the analysis now, with no sync run. :func:`start_analysis`
+starts the same three steps as the end of a run: ``start_labels``,
+``start_mapping`` and ``start_questions`` after the mapping. It adds no
+second pipeline, so each cap, each cost limit and each mode still binds.
+When a step of the org already runs, it waits for that step and starts no
+second one. One analysis goes at a time for each org (``_analyses``).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import uuid
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from acb_common import get_logger
@@ -116,6 +127,10 @@ _embedding: set[str] = set()
 _digesting: set[str] = set()
 #: The orgs whose questions step runs now (CRM-Q32-4).
 _questioning: set[str] = set()
+#: The running mapping task and questions task of each org (CRM-Q32-10),
+#: so a re-run waits for a step that a sync run started.
+_map_tasks: dict[str, asyncio.Task[Any]] = {}
+_question_tasks: dict[str, asyncio.Task[Any]] = {}
 
 
 async def _organization_ids() -> list[str]:
@@ -257,6 +272,13 @@ def _forget_label_task(org: str, task: asyncio.Task[Any]) -> None:
         del _label_tasks[org]
 
 
+def _forget(tasks: dict[str, asyncio.Task[Any]], org: str, task: asyncio.Task[Any]) -> None:
+    """Drop the task of ``org`` from ``tasks`` when it ends, unless a newer
+    one holds the key."""
+    if tasks.get(org) is task:
+        del tasks[org]
+
+
 def start_labels(org: str) -> asyncio.Task[Any] | None:
     """Start the label step of ``org`` in the background (CRM-Q26). Never raises.
 
@@ -301,10 +323,13 @@ def start_mapping(org: str) -> asyncio.Task[Any] | None:
         )
         # A done-callback, as `start_labels` does, so a cancelled task frees the org.
         task.add_done_callback(lambda _t: _mapping.discard(org))
+        task.add_done_callback(lambda t: _forget(_map_tasks, org, t))
+        _map_tasks[org] = task
         return _track(task)
     except Exception as exc:  # the pipeline never breaks a sync run
         _mapping.discard(org)
         _log.warning("crm.map_pipeline.not_started class=%s", type(exc).__name__)
+        return None
 
 
 async def _vectors_after(org: str, after: asyncio.Task[Any] | None) -> Any:
@@ -405,11 +430,123 @@ def start_questions(org: str, *, after: asyncio.Task[Any] | None = None,
         # A done-callback, as for the label step: a task cancelled before its
         # first step never runs a `finally`.
         task.add_done_callback(lambda _t: _questioning.discard(org))
+        task.add_done_callback(lambda t: _forget(_question_tasks, org, t))
+        _question_tasks[org] = task
         return _track(task)
     except Exception as exc:  # a questions step never breaks a sync run
         _questioning.discard(org)
         _log.warning("crm.questions.not_started class=%s", type(exc).__name__)
         return None
+
+
+# ── Re-run the analysis (CRM-Q32-10) ────────────────────────────────────────
+
+#: The steps of an analysis, in the order of the progress line.
+ANALYSIS_STEPS: tuple[str, ...] = ("mapping", "labels", "questions")
+
+#: The reasons of a mapping run that a cap or a cost limit stopped.
+LIMIT_REASONS: frozenset[str] = frozenset({
+    "daily_cap", "token_cap", "run_cap", "catalogue_token_cap", "catalogue_run_cap",
+    "cooldown",
+})
+
+
+@dataclass
+class Analysis:
+    """One analysis that an admin asked for. States and times only."""
+
+    id: str
+    started_at: datetime
+    #: Each step of :data:`ANALYSIS_STEPS`: ``running``, ``done`` or ``skipped``.
+    steps: dict[str, str] = field(default_factory=dict)
+    finished_at: datetime | None = None
+    #: ``done``, ``limit`` (a cap or a cost limit stopped the mapping) or ``failed``.
+    outcome: str | None = None
+    task: asyncio.Task[Any] | None = field(default=None, repr=False)
+
+    @property
+    def running(self) -> bool:
+        return self.finished_at is None
+
+
+#: The last analysis of each org. One runs at a time for each org.
+_analyses: dict[str, Analysis] = {}
+
+
+def _live(tasks: dict[str, asyncio.Task[Any]], org: str) -> asyncio.Task[Any] | None:
+    task = tasks.get(org)
+    return task if task is not None and not task.done() else None
+
+
+def _outcome(mapping: asyncio.Task[Any] | None) -> str:
+    """What the mapping step says of the whole analysis."""
+    if mapping is None:
+        return "done"
+    if mapping.cancelled() or mapping.exception() is not None:
+        return "failed"
+    reason = getattr(mapping.result(), "reason", None)
+    if reason in LIMIT_REASONS:
+        return "limit"
+    return "failed" if reason == "failed" else "done"
+
+
+async def _analyse(org: str, run: Analysis) -> None:
+    """Start the steps of the end of a sync run, or wait for the ones that
+    run now. Never raises."""
+    try:
+        mapping = start_mapping(org) or _live(_map_tasks, org)
+        labels = start_labels(org) or _live(_label_tasks, org)
+        questions = start_questions(org, after=mapping) or _live(_question_tasks, org)
+        tasks = {"mapping": mapping, "labels": labels, "questions": questions}
+        for name, task in tasks.items():
+            run.steps[name] = "skipped" if task is None else "running"
+            if task is not None:
+                task.add_done_callback(lambda _t, n=name: run.steps.__setitem__(n, "done"))
+        pending = {t for t in tasks.values() if t is not None}
+        if pending:
+            await asyncio.wait(pending)
+        run.outcome = _outcome(mapping)
+    except Exception as exc:  # an analysis never breaks the sync loop
+        run.outcome = "failed"
+        _log.warning("crm.analysis.failed class=%s", type(exc).__name__)
+    finally:
+        run.finished_at = datetime.now(UTC)
+        _log.info("crm.analysis.done", organization_id=org, outcome=run.outcome,
+                  steps=",".join(f"{k}={v}" for k, v in sorted(run.steps.items())))
+
+
+def _close(run: Analysis) -> None:
+    """A task that is cancelled before its first step never runs its
+    ``finally``, so the done-callback closes the analysis."""
+    if run.finished_at is None:
+        run.finished_at = datetime.now(UTC)
+        run.outcome = run.outcome or "failed"
+
+
+def analysis_of(org: str) -> Analysis | None:
+    """The last analysis of ``org`` in this process, or ``None``."""
+    return _analyses.get(org)
+
+
+def start_analysis(org: str) -> tuple[Analysis, bool]:
+    """Start an analysis of ``org`` now (CRM-Q32-10). Returns the analysis,
+    and whether this call started it. While one runs, it returns that one.
+
+    The org comes from the session of the caller, never from the request.
+    The route checks the admin and the gates first.
+    """
+    held = _analyses.get(org)
+    if held is not None and held.running:
+        return held, False
+    run = Analysis(id=uuid.uuid4().hex, started_at=datetime.now(UTC),
+                   steps=dict.fromkeys(ANALYSIS_STEPS, "running"))
+    _analyses[org] = run
+    task = asyncio.get_running_loop().create_task(_analyse(org, run), name="crm-analysis")
+    task.add_done_callback(lambda _t: _close(run))
+    run.task = task
+    _track(task)
+    _log.info("crm.analysis.started", organization_id=org)
+    return run, True
 
 
 async def _execute_then_label(handle: engine.RunHandle) -> engine.RunResult:
@@ -453,13 +590,17 @@ async def start_first_import(org: str) -> bool:
 
 
 __all__ = [
+    "ANALYSIS_STEPS",
     "STOP_GRACE_SECONDS",
     "TICK_SECONDS",
+    "Analysis",
+    "analysis_of",
     "due_orgs",
     "is_due",
     "loop_running",
     "run_tick",
     "spawn",
+    "start_analysis",
     "start_crm_mirror_sync",
     "start_digest",
     "start_first_import",

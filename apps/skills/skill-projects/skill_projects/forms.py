@@ -82,6 +82,8 @@ from skill_projects.writes import (
     _vocab,
     _yes_no,
     agent_assignee_refusal_as_text,
+    mailbox_line,
+    space_refusal,
     update_project,
     update_task,
 )
@@ -959,6 +961,42 @@ def _confirm_card(
     return card
 
 
+def _same_name(a: str, b: str) -> bool:
+    """Two project names that a member reads as one name."""
+    return " ".join(str(a).split()).casefold() == " ".join(str(b).split()).casefold()
+
+
+def _new_space_label(label: str) -> str:
+    """What the cards say when the plan has no parent: a space AND a project."""
+    return f"a new space {data(label)} with a project {data(label)}"
+
+
+def _plan_fills_parent(label: str, parent_label: str, parent_id: str) -> str:
+    """The refusal for a plan named like its parent project (review of #1160).
+
+    The owner's plan "Personalization & Memory System" came "Under
+    Personalization & Memory System." ``propose_plan`` always POSTs a NEW
+    project, so the batch made a second project of that name inside the
+    first one, and put every task there. The model meant to fill the project
+    that exists. ``propose_plan`` cannot target an existing project, so the
+    refusal names the tool that can: ``create_tasks`` with its ``full_id``.
+    """
+    from .refusals import refusal_text
+
+    return refusal_text(GatewayRefusal(
+        f"propose_plan makes a NEW project, and the plan is named like its parent "
+        f"project {data(parent_label)}. It would make a second {data(label)} inside "
+        "it, so nothing was created. To add the tasks to the project that exists, "
+        f"call create_tasks with project_id {parent_id}. Map each plan task to a "
+        "create_tasks row: title stays title, owner becomes assignees, effort_mins "
+        "becomes estimate_mins, and start and due stay. Leave out key, after and "
+        "phase, because create_tasks refuses them. Then make each waits-on link in "
+        "a second call, link_tasks_batch (link_tasks for 1 or 2), with type blocks "
+        "and the task ids from the receipt. For a new sub-project, give the plan "
+        "its own name."
+    ))
+
+
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 @agent_assignee_refusal_as_text
 async def propose_plan(
@@ -988,7 +1026,10 @@ async def propose_plan(
     either. An unassigned row shows neither, and the member can give it an
     owner on the card. A mark warns and never blocks. risks is the three
     ways the plan fails, one per line. parent_project_id is a full_id from
-    projects_tree; empty makes a space. phase is an optional group name,
+    projects_tree. The plan is always a NEW project inside it. Empty makes a
+    new space named like the plan, with one project of that name inside the
+    space, and the tasks go in that project, because a space holds projects
+    and never tasks. phase is an optional group name,
     such as a milestone: the card folds the rows under it, and nothing stores
     it or makes a task of it."""
     label = _clean(name)
@@ -997,11 +1038,16 @@ async def propose_plan(
     rows = _plan_rows(tasks)
     if isinstance(rows, str):
         return rows
-    parent_label = "the top level (a new space)"
+    new_space = not parent_project_id.strip()
+    parent_label = _new_space_label(label)
     parent_id = ""
-    if parent_project_id.strip():
+    if not new_space:
         parent_id, parent = await _node(parent_project_id)
         parent_label = _plain(parent.get("name"))
+        # Only a PROJECT: a folder named like the plan is a fair place for a
+        # new project, and create_tasks refuses a folder (review of #1160).
+        if parent.get("kind", "project") == "project" and _same_name(label, parent_label):
+            return _plan_fills_parent(label, parent_label, parent_id)
     soft, unresolved = await _soft_owners(rows)
     checks, warnings, capacity_line = _capacity(rows, await _preview(rows, soft), unresolved)
     values = await _ask(
@@ -1033,6 +1079,8 @@ async def propose_plan(
         return final
     project = values.get("project") if isinstance(values.get("project"), dict) else {}
     label = _clean(project.get("name")) or label
+    if new_space:
+        parent_label = _new_space_label(label)
     owners: dict[str, str] = {}
     for row in final:
         who = row["owner"]
@@ -1093,19 +1141,36 @@ async def _write_plan(
     the project node is a write like any other (S10). A row with no owner
     gets no assignee write, and the counts of owners leave it out (§26)."""
     assigned = sum(1 for r in final if r["owner"])
-    payload: dict[str, Any] = {"name": label, "kind": "project"}
-    if parent_id:
-        payload["parent_project_id"] = parent_id
+    out: list[str] = []
+    if not parent_id:
+        # A space holds projects and never tasks (2026-10-26). A plan with no
+        # parent makes the space first, then the project inside it, and the
+        # tasks go in the project.
+        try:
+            space = await post("/projects/nodes", {"name": label, "kind": "project"})
+        except _WRITE_FAILED as exc:
+            return _project_stopped(
+                label, exc, tasks=len(final), links=len(links), owners=assigned
+            )
+        parent_id = uuid_of(str(space.get("id")), "project_id")
+        out.append(f"Created space {data(space.get('name'))}.\n  space_id: {parent_id}")
+    payload: dict[str, Any] = {
+        "name": label, "kind": "project", "parent_project_id": parent_id,
+    }
     if about:
         payload["description"] = about
     try:
         node = await post("/projects/nodes", payload)
     except _WRITE_FAILED as exc:
-        return _project_stopped(
+        stopped = _project_stopped(
             label, exc, tasks=len(final), links=len(links), owners=assigned
         )
+        if out:
+            stopped = "\n".join(out + [stopped])
+        return stopped
     pid = uuid_of(str(node.get("id")), "project_id")
-    out = [f"Created project {data(node.get('name'))} under {parent_label}.\n  project_id: {pid}"]
+    where = "the new space" if out else parent_label
+    out.append(f"Created project {data(node.get('name'))} under {where}.\n  project_id: {pid}")
     created: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for n, row in enumerate(final):
         body: dict[str, Any] = {
@@ -1193,6 +1258,7 @@ ROW_KEYS: tuple[str, ...] = (
     "leveraged",
     "type",
     "fields",
+    "source",
 )
 #: The create_task arguments a row does not take: the repeat rule (P1) and
 #: the retired ``importance``. A repeating task is create_task's alone.
@@ -1378,6 +1444,7 @@ async def _batch_row(
             parent_task_id=_row_text(item, "parent_task_id"),
             assignees=_row_list(item, "assignees"),
             statuses=statuses,
+            source=_row_text(item, "source"),
         )
     except GatewayRefusal as exc:
         raise _relabel(label, exc) from None
@@ -1510,6 +1577,8 @@ def _describe(
     facts.extend(f"{k} {v}" for k, v in shown.items())
     if payload.get("parent_task_id"):
         facts.append(_parent_words(p.new.parent or {}, p.new.pid))
+    if payload.get("source"):
+        facts.append(f"source {payload['source']}")
     if payload.get("description"):
         # The whole text, as the POST sends it. A cut card is not consent
         # (projects_ai_chat.md §13.6 rule 8), so a batch too long for the
@@ -1562,10 +1631,12 @@ def _batch_card(node: dict[str, Any], rows: list[_BatchRow], strangers: list[str
     The title names the project and the count, and the rows carry every
     fact, so the body repeats neither (PR #691 review: "Tasks 4" read wrong
     once a row was unticked). It keeps a warning about an unknown address.
-    ``node`` and ``rows`` stay in the signature for the fit measure.
+    A row from a mail (WS-46 P9) puts the mailbox line first.
     """
-    del node, rows
     card: dict[str, Any] = {}
+    if any(p.new.payload.get("source") == "email" for p in rows):
+        # WS-46 P9: the first line says that mail text leaves the mailbox.
+        card["mailbox"] = mailbox_line(data(node.get("name")))
     if strangers:
         card["not in the directory"] = ", ".join(strangers)
     return card
@@ -1606,8 +1677,8 @@ async def create_tasks(project_id: str, tasks: str) -> str:
     (required), description, status (by NAME), assignees (comma-separated
     emails, agent:<name>, or people's names), due and start (YYYY-MM-DD),
     estimate_mins, tags (comma-separated), parent_task_id, priority or
-    important and leveraged, type (by NAME), and fields (a JSON object keyed
-    by field NAME). A repeating task is create_task with repeat, not this
+    important and leveraged, type (by NAME), fields (a JSON object keyed
+    by field NAME), and source (email for a task made from a mail). A repeating task is create_task with repeat, not this
     tool. Every name is checked before any card, and one bad row refuses the
     whole batch and names the row. The member then sees ONE card with a
     checkbox for each task, and approves the ticked tasks once. A task with
@@ -1627,6 +1698,9 @@ async def create_tasks(project_id: str, tasks: str) -> str:
             f"{data(node.get('name'))} is a folder. A folder holds projects, not tasks. "
             "Pick a project inside it. Nothing was created."
         )
+    stop = await space_refusal(pid, node)
+    if stop:
+        return stop
     statuses = await _statuses_of(pid)
     rows = [await _batch_row(pid, i, item, statuses) for i, item in enumerate(items, start=1)]
     names, strangers = await _names_of([w for p in rows for w in p.new.who])

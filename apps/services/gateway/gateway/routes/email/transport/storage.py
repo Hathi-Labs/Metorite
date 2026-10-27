@@ -51,6 +51,7 @@ from gateway.routes.email.core import (
     _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -187,7 +188,8 @@ async def remove_older_mail(
         found = (await db.execute(
             text(
                 """SELECT organization_id FROM email_accounts
-                   WHERE id = :id AND user_id = :uid"""
+                   WHERE id = :id AND """
+                + mailbox_predicate(uid="uid", level="manage")
             ),
             {"id": account_id, "uid": owner},
         )).fetchone()

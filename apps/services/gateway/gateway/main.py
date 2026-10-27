@@ -177,6 +177,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # the Files/Artifacts viewers until they happen to run again.  This restores
     # them on startup so their workspace is browsable without a manual pull.
     async def _warm_clone_agents() -> None:
+        # H-363: scrub every clone FIRST. An older loader wrote the token into
+        # each clone's remote URL, and a clone keeps it until it loads again.
+        # This takes it out of every clone before any run starts, and it logs
+        # an error for a config that still holds one. It never logs a value.
+        try:
+            from acb_skills.loader import scrub_clone_credentials
+
+            await _asyncio.to_thread(scrub_clone_credentials, settings)
+        except Exception as exc:
+            _log.warning("gateway.clone_scrub_failed", error=str(exc)[:200])
         try:
             from acb_skills.loader import _install_agent_deps, load_agent
 
@@ -207,6 +217,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 except Exception:
                     continue
                 if _ws is not None:
+                    # H-363: pin the clone's repo from the registry, so a
+                    # push or a credentialed read after this restart goes to
+                    # the agent's own repo.
+                    try:
+                        from gateway.routes.agent import _pin_registry_clone
+
+                        _pin_registry_clone(name, _ws)
+                    except Exception:
+                        pass
                     # Already cloned — ensure its declared deps are installed
                     # into agent-site (WS-49 BH-7; idempotent, a no-op when
                     # unchanged), so its tools work before the next run.
@@ -407,6 +426,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.crm_mirror_sync_skipped", error=str(exc))
 
+    # Start the Knowledge sync loop (gateway/kb_sync/scheduler.py; spec
+    # knowledge_curation.md §7.2 and §22, WS-61 KC-3). It READS the Drive
+    # change feed of each ready source into kb_source_nodes, metadata only.
+    # Dark by default: with KNOWLEDGE_SYNC empty it starts no task and logs
+    # once. The gate lives inside the start function.
+    try:
+        from gateway.kb_sync.scheduler import start_kb_sync
+        kb_sync_started = await start_kb_sync()
+        _log.info("gateway.kb_sync", started=kb_sync_started)
+    except Exception as exc:
+        _log.warning("gateway.kb_sync_skipped", error=str(exc))
+
     # Start the My Day loop (gateway/my_day_loop.py; spec my_day_feed.md §8.4,
     # WS-58 MD-5b). It trims the active set of each org and sweeps old card
     # state once a day. Dark by default: with MY_DAY_LOOP_ENABLED off it
@@ -450,6 +481,27 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.email_purge_loop_skipped", error=str(exc))
 
+    # Start the send-later job (routes/email/automation/send_later.py; spec
+    # email_app_master_plan.md §19, H-375). Every 60 s it sends the drafts
+    # that are due. Dark by default: with EMAIL_SEND_LATER off it starts no
+    # task. Fence: test_email_send_later.py.
+    try:
+        from gateway.routes.email.automation.send_later import start_send_later_loop
+        _log.info("gateway.email_send_later_loop", started=await start_send_later_loop())
+    except Exception as exc:
+        _log.warning("gateway.email_send_later_loop_skipped", error=str(exc))
+
+    # Start the reminder loop (gateway/reminders/loop.py; spec
+    # calendar_events_reminders.md §5.4, WS-66 RM-2). Every 60 s it fires the
+    # reminders that are due, checks back, and reschedules. Dark by default:
+    # with CALENDAR_REMINDERS off it starts no task. Fence:
+    # test_reminder_loop.py.
+    try:
+        from gateway.reminders.loop import start_reminder_loop
+        _log.info("gateway.reminder_loop", started=await start_reminder_loop())
+    except Exception as exc:
+        _log.warning("gateway.reminder_loop_skipped", error=str(exc))
+
     # Start the Knowledge embed sweep (gateway/kb_index/sweep.py; spec
     # knowledge_base.md §6.4, WS-61 KB-3c). Every 120 s it embeds the chunks
     # that have no vector, for each org on KNOWLEDGE_EMBED. The kill switch
@@ -461,6 +513,29 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         _log.info("gateway.kb_embed_sweep", started=kb_sweep_started)
     except Exception as exc:
         _log.warning("gateway.kb_embed_sweep_skipped", error=str(exc))
+
+    # Start the Knowledge proposal expiry (spec knowledge_base.md §8.4, WS-61
+    # KB-5c). Every hour it expires a proposal that waited 14 days. The kill
+    # switch KNOWLEDGE_PROPOSAL_EXPIRY (default on) lives inside the start
+    # function.
+    try:
+        from gateway.routes.knowledge.proposal_expiry import start_kb_proposal_expiry
+        kb_expiry_started = await start_kb_proposal_expiry()
+        _log.info("gateway.kb_proposal_expiry", started=kb_expiry_started)
+    except Exception as exc:
+        _log.warning("gateway.kb_proposal_expiry_skipped", error=str(exc))
+
+    # Start the sweep of stranded agent runs (gateway/agent_run_sweep.py;
+    # spec external_agent_access.md §12.6, WS-55 SW-10a). Every 5 minutes it
+    # nudges the member of a stranded run once, and later opens one recovery
+    # record. Dark by default: with AGENT_RUN_SWEEP_ENABLED off it starts no
+    # task and logs once. The gate lives inside the start function.
+    try:
+        from gateway.agent_run_sweep import start_agent_run_sweep
+        agent_run_sweep_started = await start_agent_run_sweep()
+        _log.info("gateway.agent_run_sweep", started=agent_run_sweep_started)
+    except Exception as exc:
+        _log.warning("gateway.agent_run_sweep_skipped", error=str(exc))
 
     # Chat-run liveness (incident 2026-10-09). This process beats a heartbeat
     # key, so a run it holds reads as alive and a run of a dead process reads
@@ -539,6 +614,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         pass
 
+    # Stop the Knowledge sync loop. Unconditional, like the CRM mirror stop.
+    try:
+        from gateway.kb_sync.scheduler import stop_kb_sync
+        await stop_kb_sync()
+    except Exception:
+        pass
+
     # Stop the My Day loop. Unconditional, like the CRM mirror stop above.
     try:
         from gateway.my_day_loop import stop_my_day_loop
@@ -567,10 +649,38 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         pass
 
+    # Stop the send-later job and wait for a tick in progress.
+    try:
+        from gateway.routes.email.automation.send_later import stop_send_later_loop
+        await stop_send_later_loop()
+    except Exception:
+        pass
+
+    # Stop the reminder loop and wait for a tick in progress.
+    try:
+        from gateway.reminders.loop import stop_reminder_loop
+        await stop_reminder_loop()
+    except Exception:
+        pass
+
     # Stop the Knowledge embed sweep and wait for a tick in progress.
     try:
         from gateway.kb_index.sweep import stop_kb_embed_sweep
         await stop_kb_embed_sweep()
+    except Exception:
+        pass
+
+    # Stop the Knowledge proposal expiry and wait for a tick in progress.
+    try:
+        from gateway.routes.knowledge.proposal_expiry import stop_kb_proposal_expiry
+        await stop_kb_proposal_expiry()
+    except Exception:
+        pass
+
+    # Stop the sweep of stranded agent runs and wait for a tick in progress.
+    try:
+        from gateway.agent_run_sweep import stop_agent_run_sweep
+        await stop_agent_run_sweep()
     except Exception:
         pass
 
@@ -1130,8 +1240,11 @@ if _HAS_MAF:
                 "",
             )
 
-            # Build per-request agent (cheap — tools are closures, no network I/O)
-            agent = build_orchestrator_agent(with_history=False)
+            # Build per-request agent (cheap — tools are closures, no network I/O).
+            # PZ-25: the org of the server-side UserContext decides the
+            # profile tools, because this build comes before run_detached binds.
+            agent = build_orchestrator_agent(
+                with_history=False, organization_id=_organization_id)
 
             # thread_id (also derived below for the Redis relay) — pass it into
             # memory enrichment so the memory block is session-cached and stays
@@ -1635,6 +1748,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-66 PN-1 — web push: `/push/public-key`, `/push/subscriptions` and
+    # `/push/test` (calendar_events_reminders.md §10.2). Gated on
+    # `feature:chat`, as `/reach` is. With WEB_PUSH_ENABLED off, each 404.
+    from gateway.push.routes import router as _push_router
+
+    app.include_router(_push_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     from gateway.routes.settings import router as _settings_router
 
     app.include_router(_settings_router)
@@ -1691,6 +1814,16 @@ try:
     from gateway.routes.chat import router as _chat_router
 
     app.include_router(_chat_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-62 CF-5 — the day's brief as the first turn of a fresh chat on a
+    # phone (`chat_first_surface.md` §4.6). Shares /chat's prefix, in its own
+    # module, as the rooms do.
+    from gateway.routes.chat_brief import router as _chat_brief_router
+
+    app.include_router(_chat_brief_router)
 except Exception:  # pragma: no cover
     pass
 
@@ -1958,6 +2091,17 @@ class Version(BaseModel):
     #: Null when the box holds no readable marker.
     applied_sha: str | None = None
     applied_at: str | None = None
+    #: WS-66 PN-1. The gateway's `WEB_PUSH_ENABLED`, the ONE switch of web
+    #: push, so `curl` shows whether a box serves it. The browser has no
+    #: build-time flag: My Profile asks `/push/public-key`, which answers 404
+    #: with the switch off. It names the switch only, never a key
+    #: (calendar_events_reminders.md §10.2 item 2).
+    web_push: bool = False
+    #: WS-66 RM-1 (`calendar_events_reminders.md` §9). The gateway's
+    #: `CALENDAR_REMINDERS` flag, the ONE switch of reminders, so `curl`
+    #: shows whether a box serves them. With it off, every reminder route
+    #: answers 404. Off by default.
+    calendar_reminders: bool = False
 
 
 def _runtime_checks() -> dict[str, dict]:
@@ -2049,7 +2193,13 @@ async def version() -> Version:
     visible with `curl`. Both flags are retired, and the one task store is the
     only store. The key stays for one release so the monitoring that reads it
     does not break. S9 may drop it.
+
+    `web_push` is the gateway's `WEB_PUSH_ENABLED` (WS-66 PN-1), through
+    its one reader, `gateway.push.flags`.
     """
+    from gateway.push import flags as push_flags
+    from gateway.routes.projects.reminders import reminders_enabled
+
     applied_sha, applied_at = applied_marker()
     return Version(
         sha=build_sha(),
@@ -2057,6 +2207,8 @@ async def version() -> Version:
         tasks_lens=True,
         applied_sha=applied_sha,
         applied_at=applied_at,
+        web_push=push_flags.enabled(),
+        calendar_reminders=reminders_enabled(),
     )
 
 
@@ -2299,7 +2451,10 @@ async def pull(req: PullRequest, _user: UserContext = Depends(get_current_user))
     _log.info("pull.received", query=req.query, user=user_id, trace_id=trace_id)
     try:
         from orchestrator.agents import build_orchestrator_agent, enrich_instructions_with_memory
-        agent = build_orchestrator_agent(with_history=False)
+        # PZ-25: the org of the server-side UserContext, never of the body.
+        agent = build_orchestrator_agent(
+            with_history=False,
+            organization_id=getattr(_user, "organization_id", None))
         # Inject Mem0 + Graphiti context for this user + query (no-op if disabled)
         enriched = await enrich_instructions_with_memory(agent, user_id, req.query)
         opts = agent.default_options

@@ -49,9 +49,66 @@ permissions:
   contents: read
 
 jobs:
+  # ── Which parts of the tree this PR touches (2026-10-19) ─────────────────
+  #
+  # A job that does not touch its area is SKIPPED by `if:`. GitHub counts a
+  # skipped job as satisfied, so a required check still passes (see the note
+  # at the top). A backend PR then frees 4 of the Free plan's 20 runners: the
+  # operator console and the three e2e shards. Measured 15-19 Oct: a shard
+  # waited up to 22 minutes for a runner.
+  #
+  # `frontend` gates ONLY the e2e shards: the browser suite stubs `/api/**`
+  # and reads nothing outside workbench/control_plane. The Frontend unit job
+  # reads the whole repo, so it always runs.
+  #
+  # ⚠️ Fail OPEN: when the diff cannot be read, every area reads `true`. And
+  # when this whole job fails, each job that needs it RUNS: its `if:` asks
+  # `needs.changes.result != 'success'`. Without that, a failed `changes`
+  # would skip every required check below, and a skip counts as a pass.
+  # `!cancelled()`, NOT `always()`: `always()` still starts these jobs after a
+  # newer push cancelled the run, and they then hold runners for nothing.
+  # Fence: tests/unit/test_fence_lists.py.
+  changes:
+    name: "Changed areas"
+    runs-on: ubuntu-24.04
+    outputs:
+      frontend: ${{ steps.diff.outputs.frontend }}
+      operator: ${{ steps.diff.outputs.operator }}
+      database: ${{ steps.diff.outputs.database }}
+      caddy: ${{ steps.diff.outputs.caddy }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -u
+          if files="$(git diff --name-only "$BASE"...HEAD 2>/dev/null)" && [ -n "$files" ]; then :; else
+            echo "cannot read the diff, so every area runs"
+            for a in frontend operator database caddy; do echo "$a=true" >> "$GITHUB_OUTPUT"; done
+            exit 0
+          fi
+          echo "$files"
+          # A change to CI itself runs everything.
+          all=false; echo "$files" | grep -qE '^\.github/' && all=true
+          hit() { $all && echo true || { echo "$files" | grep -qE "$1" && echo true || echo false; }; }
+          {
+            echo "frontend=$(hit '^workbench/control_plane/')"
+            echo "operator=$(hit '^workbench/operator_console/')"
+            echo "database=$(hit '^(infra/|scripts/|deploy/)')"
+            echo "caddy=$(hit '^deploy/hostinger/caddy/')"
+          } | tee -a "$GITHUB_OUTPUT"
+
   lint:
     name: "Lint"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # `pull-requests: read` lets ci_advisory.sh read the PR's labels.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v5
 
@@ -98,6 +155,39 @@ jobs:
       # than trusted. R7 — the rule names its fence.
       - name: session-handoff queue injection (blocking)
         run: node .claude/hooks/session-handoff.test.mjs
+
+      # CLAUDE.md §0 names ste-lint.mjs as the STE fence on every markdown
+      # write. Until Metorite #465 no job ran its test, so PR #1362 changed the
+      # hook and showed 18 green checks with none of them testing it. A lint
+      # that nobody tests can go blind silently, as `--staged` did in a
+      # worktree (#460). R7 — the rule names its fence.
+      - name: ste-lint hook (blocking)
+        run: node .claude/hooks/ste-lint.test.mjs
+
+      # ── The process fences (two-speed CI, 2026-10-19) ─────────────────────
+      #
+      # These tests read files as text and guard consistency: naming, docs,
+      # registries, wording, lockstep. They ran inside the 12-27 minute unit
+      # shards with `-x`, so an agent met them one at a time, about 30
+      # minutes a round. Of 70 red runs on 15-19 Oct, 29 were a fence and 9
+      # were a real bug.
+      #
+      # They are ADVISORY while a feature is in build: a warning, and the job
+      # goes on. Label the PR `harden` for the hardening pass, and they block.
+      # The shards skip them (`pytest-ignore`).
+      #
+      # The SAFETY fences are not here. They stay in the shards, blocking, as
+      # before: without a database half of them skip, so a second copy here
+      # would cost about 4 minutes and prove less.
+      # Lists: tests/fences.json. Contract: engineering_practice.md §7a.
+      #
+      # The label is read LIVE, not from the event: a rerun replays the event
+      # of the first run, so a label added later would not count.
+      - name: Process fences (advisory in build, blocking with the `harden` label)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: bash scripts/ci_advisory.sh "process fence" -- uv run python scripts/fences.py run process
 
       # Non-blocking report: the FULL ruff check (all configured rules incl. the
       # ~1.3k-finding style backlog + C901 complexity hotspots). This is the
@@ -154,10 +244,10 @@ jobs:
   # as `.test_durations`.
   test:
     name: "Unit tests (shard ${{ matrix.shard }}/6)"
-    runs-on: ubuntu-latest
-    # `fail-fast: false`: each shard stops at its own first failure (`-x`),
-    # and one run then reports the first failure of EVERY shard. Fail-fast
-    # cancelled the other five and hid their failures until the next round.
+    runs-on: ubuntu-24.04
+    # `fail-fast: false`: one run reports the failures of EVERY shard.
+    # Fail-fast cancelled the other five and hid their failures until the
+    # next round.
     strategy:
       fail-fast: false
       matrix:
@@ -279,9 +369,17 @@ jobs:
       # `-o junit_family=xunit1` puts the FILE on each test case, which the
       # guard in `unit-tests` reads. The report also carries the timings that
       # refresh `.test_durations`.
+      #
+      # Two-speed CI (2026-10-19):
+      #   * No `-x`. One run reports EVERY failure, not one a round.
+      #   * `--reruns 1`. A timing flake costs a second try, not a 30-minute
+      #     round. 18 of 70 red runs on 15-19 Oct were flakes or infra.
+      #   * The process fences run in the Lint job. They are skipped here, or
+      #     they would still block.
       - name: Run unit tests (this shard)
         run: |
-          uv run python -m pytest tests/unit/ -x -v -rs \
+          uv run python -m pytest tests/unit/ -v -rs --reruns 1 \
+            $(python3 scripts/fences.py pytest-ignore) \
             --splits 6 --group ${{ matrix.shard }} \
             --splitting-algorithm duration_based_chunks \
             -o junit_family=xunit1 --junitxml=junit/shard-${{ matrix.shard }}.xml
@@ -315,7 +413,7 @@ jobs:
   # Fence: tests/unit/test_ci_unit_guard.py.
   unit-tests:
     name: "Unit tests"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: test
     # `always()`, so a failed shard turns THIS check red instead of skipping
     # it. A skipped required check counts as satisfied.
@@ -354,6 +452,7 @@ jobs:
               tests/unit/test_customer_console_payments.py \
               tests/unit/test_customer_console_operator_list.py \
               tests/unit/test_customer_console_member_write.py \
+              tests/unit/test_customer_console_org_rename.py \
               tests/unit/test_customer_console_seat_overview.py \
               tests/unit/test_customer_console_billing_reads.py \
               tests/unit/test_customer_console_billing_checkout.py \
@@ -425,7 +524,11 @@ jobs:
   # against an empty database.
   backup-restore:
     name: "Backup/restore rehearsal"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # Its scripts live under scripts/, and the schema under infra/. A PR
+    # that touches neither cannot change the result (2026-10-19).
+    needs: changes
+    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.database == 'true')"
     services:
       postgres:
         image: postgres:16
@@ -487,7 +590,11 @@ jobs:
   # about 152 files nobody had checked together; now it is a build step.
   migrations:
     name: "Migration ladder replay"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # The ladder is infra/, and its appliers are under scripts/. The R1
+    # number guard runs in the shards and in push-check on every PR anyway.
+    needs: changes
+    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.database == 'true')"
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -583,7 +690,13 @@ jobs:
   # build` — that stays a deploy-time step.
   frontend:
     name: "Frontend (typecheck + unit tests)"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # ⚠️ NOT filtered by path. Its unit tests read files across the whole
+    # repo (apps/, tests/fixtures/, project-docs/), so no path is safe to skip.
+    # `pull-requests: read` lets ci_advisory.sh read the PR's labels.
+    permissions:
+      contents: read
+      pull-requests: read
     defaults:
       run:
         working-directory: workbench/control_plane
@@ -602,8 +715,57 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit -p tsconfig.json
 
+      # Two-speed CI (2026-10-19): the process fences (design-system regexes,
+      # nav parity, ratchets) are skipped here and run in the advisory step
+      # below. Lists: tests/fences.json.
       - name: Unit tests
-        run: npm test
+        run: npx vitest run $(python3 ../../scripts/fences.py vitest-exclude control_plane)
+
+      - name: Process fences (advisory in build, blocking with the `harden` label)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          files="$(python3 ../../scripts/fences.py vitest control_plane process)"
+          [ -n "$files" ] || { echo "no process fences listed"; exit 0; }
+          bash ../../scripts/ci_advisory.sh "frontend process fence" -- npx vitest run $files
+
+      # The UI gate (owner, 2026-10-27, DESIGN_SYSTEM.md §11). A PR that
+      # changes workbench/control_plane/src names its visual review in its
+      # body: a line that starts "Visual review:", then the four captures or
+      # "no UI change". It lives in THIS job because this job is a required
+      # check, and "Changed areas" is not.
+      # * Python reads the body and the base sha from the event FILE into
+      #   variables, so no text of the body becomes shell code.
+      # * The checkout is shallow, so the step fetches the one base commit.
+      #   When the base is absent or the diff cannot be read, the line is
+      #   required.
+      # * With no event file (the local CI on the PC) there is no body, so
+      #   the step passes.
+      # * `!cancelled()`: it reports even when a test above failed.
+      # ⚠️ A rerun replays the first event. After you edit the body, push a
+      # commit. Fence: tests/unit/test_fence_lists.py.
+      - name: Visual review line (a frontend PR)
+        if: "!cancelled()"
+        run: |
+          set -u
+          if [ ! -f "${GITHUB_EVENT_PATH:-}" ]; then echo "no pull request event, so no body to check"; exit 0; fi
+          ev() { python3 -c 'import json, os, sys; p = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8")).get("pull_request") or {}; print(((p.get("base") or {}).get("sha") if sys.argv[1] == "base" else p.get("body")) or "")' "$1"; }
+          base="$(ev base)"
+          frontend=true
+          if [ -n "$base" ] \
+            && { git cat-file -e "$base^{commit}" 2>/dev/null || git fetch -q --no-tags --depth=1 origin "$base" 2>/dev/null; } \
+            && files="$(git diff --name-only "$base" HEAD 2>/dev/null)"; then
+            grep -q '^workbench/control_plane/src/' <<< "$files" || frontend=false
+          fi
+          $frontend || { echo "no change under workbench/control_plane/src"; exit 0; }
+          body="$(ev body)"
+          if grep -qE '^Visual review:[[:space:]]*[^[:space:]<]' <<< "$body"; then
+            echo "the body names its visual review"
+            exit 0
+          fi
+          echo "::error::This PR changes workbench/control_plane/src, and no line of its body starts with 'Visual review:'. Name the four captures (light, compact, a changed accent, 390 px), or write 'Visual review: no UI change'. Then push a commit, because a rerun reads the old body. Rule: workbench/control_plane/DESIGN_SYSTEM.md section 11."
+          exit 1
 
   # The operator console had tests but NO CI running them — a fence that never
   # runs is advisory by accident (R7). Same shape as the workbench job; its
@@ -611,7 +773,12 @@ jobs:
   # authority check first), which is the only fence on that ordering.
   frontend-operator:
     name: "Operator console (typecheck + unit tests)"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    needs: changes
+    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.operator == 'true')"
+    permissions:
+      contents: read
+      pull-requests: read
     defaults:
       run:
         working-directory: workbench/operator_console
@@ -631,7 +798,16 @@ jobs:
         run: npx tsc --noEmit -p tsconfig.json
 
       - name: Unit tests
-        run: npm test
+        run: npx vitest run $(python3 ../../scripts/fences.py vitest-exclude operator_console)
+
+      - name: Process fences (advisory in build, blocking with the `harden` label)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          files="$(python3 ../../scripts/fences.py vitest operator_console process)"
+          [ -n "$files" ] || { echo "no process fences listed"; exit 0; }
+          bash ../../scripts/ci_advisory.sh "operator console process fence" -- npx vitest run $files
 
   # ── H-27: the browser suite finally has a job ──────────────────────────────
   #
@@ -658,7 +834,11 @@ jobs:
   # browser and a dev server, and nothing else.
   e2e:
     name: "Browser suite (e2e) ${{ matrix.shard }}/3"
-    runs-on: ubuntu-latest
+    # Pinned 2026-10-27. `ubuntu-latest` became Ubuntu 26.04, and Playwright
+    # cannot install Chromium there ("does not support chromium on
+    # ubuntu26.04-x64"), so every shard failed in 30 seconds. Unpin when
+    # Playwright supports the new image.
+    runs-on: ubuntu-24.04
     # ── Three shards, each with its own dev server ──────────────────────────
     #
     # One worker took 17-19 minutes for 374 tests (measured 2026-10-16), and
@@ -679,7 +859,11 @@ jobs:
     # runs the suite.
     #
     # Fence: `workbench/control_plane/src/lib/e2eGate.test.ts`.
-    if: github.event_name != 'push'
+    #
+    # 2026-10-19: and only when the PR touches the control plane. A skipped
+    # e2e frees three runners for the other PRs.
+    needs: changes
+    if: "!cancelled() && github.event_name != 'push' && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true')"
     # A hung dev server must cost minutes, not the runner's six-hour default.
     #
     # 🔴 THE CAP WAS THE FAULT, NOT THE CODE. It was 20 minutes, set when the
@@ -721,7 +905,13 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Browser suite
-        run: npx playwright test --project=ci --shard=${{ matrix.shard }}/3
+        # The watchdog ends a run whose dev server stops answering. See the
+        # header of scripts/e2e_watchdog.sh. The run's exit code passes through.
+        run: |
+          npx playwright test --project=ci --shard=${{ matrix.shard }}/3 &
+          pw=$!
+          bash ../../scripts/e2e_watchdog.sh http://127.0.0.1:3101/chat "$pw" &
+          wait "$pw"
 
       # ⚠️ Without this a red run is a wall of text and no screenshot, and an
       # undiagnosable gate is one somebody deletes. The report carries the
@@ -738,8 +928,10 @@ jobs:
 
   caddy:
     name: "Caddy config (validate)"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
+    needs: changes
+    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.caddy == 'true')"
     # H-60: the deploy installs deploy/hostinger/caddy/Caddyfile on the box by
     # itself. The apply validates it there and refuses a bad file, but then the
     # deploy is red AFTER the merge. This job refuses it BEFORE the merge.
@@ -760,7 +952,7 @@ jobs:
 
   secret-scan:
     name: "Secret scan"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Report-only initially (ratchet, like mypy/ruff-full above): surfaces any
     # credential in a PR's NEW commits without blocking on an install/config
     # hiccup. Graduate to blocking once proven on a few PRs. Scans only the PR's

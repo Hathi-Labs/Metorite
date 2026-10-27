@@ -175,14 +175,14 @@ async def test_a_refusal_that_no_argument_fixes_gets_a_neutral_next(monkeypatch)
 
 
 async def test_a_manifest_refusal_gets_a_neutral_next(monkeypatch) -> None:
-    """A class X route (D-PM-35) is refused by the manifest itself."""
+    """A class X route is refused by the manifest itself."""
     import skill_projects.client as client
 
     fake_gateway(monkeypatch, {})
     with pytest.raises(client.GatewayRefusal) as caught:
-        await client.request("DELETE", f"/projects/tasks/{TASK}")
+        await client.request("DELETE", f"/projects/my/tasks/{TASK}")
     assert caught.value.fixable is False
-    assert caught.value.route == "/projects/tasks/{task_id}"
+    assert caught.value.route == "/projects/my/tasks/{task_id}"
     text = refusal_text(caught.value)
     assert "Next: Tell the member that this could not be done here" in text
     assert "Fix" not in text

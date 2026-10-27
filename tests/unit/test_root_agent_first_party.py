@@ -229,6 +229,17 @@ def _as_parent(member: str, org: str, fn) -> Any:
     return asyncio.run(_go())
 
 
+def _assert_gate_passed(text: str, calls: _Calls) -> None:
+    """The access gate let an admin's delegation through. The root agent is a
+    Copilot agent, so the next check refuses it as a specialist (D84, D92,
+    ``loader.refuse_copilot_specialist``), before any load. The admin still
+    runs it as the agent of its own chat (section 1)."""
+    from acb_skills.loader import COPILOT_SPECIALIST_TEXT
+
+    assert "not found" not in text, text
+    assert COPILOT_SPECIALIST_TEXT in text and calls.loads == 0, text
+
+
 @pytest.mark.parametrize("member, org, allowed", [
     (CUST_OWNER, CUST_ORG, False),
     (FP_MANAGER, FP_ORG, False),
@@ -239,7 +250,7 @@ def test_call_agent_takes_the_parent_runs_member(calls: _Calls, member, org, all
 
     text = _as_parent(member, org, lambda: call_agent("metorite", "run the tests"))
     if allowed:
-        assert LOADED in text and calls.loads == 1, text
+        _assert_gate_passed(text, calls)
     else:
         assert "Agent 'metorite' not found." in text and calls.loads == 0, text
 
@@ -255,7 +266,7 @@ def test_the_streamed_delegation_takes_the_parent_runs_member(
         "metorite", "run the tests", "r-sub", event_queue=asyncio.Queue(),
     ))
     if allowed:
-        assert LOADED in text and calls.loads == 1, text
+        _assert_gate_passed(text, calls)
     else:
         assert "Agent 'metorite' not found." in text and calls.loads == 0, text
 

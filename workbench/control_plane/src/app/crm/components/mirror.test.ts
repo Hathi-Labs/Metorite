@@ -257,13 +257,11 @@ describe("who may open the CRM (CRM-L2)", () => {
     expect(html).not.toContain("Use Metorite");
   });
 
-  it("tells an admin that only admins can open it, and links to the control", () => {
+  it("tells an admin that only admins can open it, and shows the control", () => {
     const html = renderToStaticMarkup(
       createElement(AccessPanel, { access: undefined, groups: [], allGroups: [], saving: false, onChange: noop }),
     );
     expect(html).toContain("Only admins can open the CRM now.");
-    expect(html).toContain("Choose who else can use it.");
-    expect(html).toContain('href="#crm-access"');
     expect(html).toContain('id="crm-access"');
   });
 

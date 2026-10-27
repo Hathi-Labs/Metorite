@@ -44,7 +44,7 @@ from gateway.routes.crm.core import (
     checked_uuid,
     router,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import text
 
 #: The longest name a view may have.
@@ -67,7 +67,26 @@ _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 MAX_CUSTOM_FILTERS = 20
 MAX_CUSTOM_OPTIONS = 50
 
-EntityName = Literal["leads", "deals", "contacts", "organizations"]
+CORE_ENTITIES = ("leads", "deals", "contacts", "organizations")
+#: A generic Zoho module list is a view scope too: ``module:<api_name>``
+#: (CRM-U8). The name rule is the one of the URL grammar (``MODULE_NAME``).
+MODULE_ENTITY = re.compile(r"module:[A-Za-z][A-Za-z0-9_]{0,99}")
+
+
+def check_entity(value: str) -> str:
+    """*value* when it names a core entity or ``module:<api_name>``, else 422-able."""
+    if value in CORE_ENTITIES or MODULE_ENTITY.fullmatch(value or ""):
+        return value
+    raise ValueError(
+        f"Unknown entity. One of {list(CORE_ENTITIES)} or module:<api_name>."
+    )
+
+
+def _entity_query(entity: str = Query(...)) -> str:
+    try:
+        return check_entity(entity)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 _COLUMNS = (
     "id, entity, name, owner_email, shared, layout, filters, sort, columns, "
@@ -76,7 +95,7 @@ _COLUMNS = (
 
 
 class ViewIn(BaseModel):
-    entity: EntityName
+    entity: str
     name: str
     layout: Literal["list", "board"] = "list"
     filters: dict[str, Any] = {}
@@ -84,6 +103,11 @@ class ViewIn(BaseModel):
     columns: list[str] | None = None
     pipeline_id: str | None = None
     shared: bool = False
+
+    @field_validator("entity")
+    @classmethod
+    def _entity_known(cls, value: str) -> str:
+        return check_entity(value)
 
 
 class ViewPatch(BaseModel):
@@ -198,7 +222,7 @@ def _check_shape(
     columns: list[str] | None, pipeline_id: str | None,
 ) -> str | None:
     """Check the parts of a view that the entity limits. Returns the pipeline id."""
-    if layout == "board" and entity not in ("deals", "leads"):
+    if layout == "board" and entity not in ("deals", "leads"):  # a module has none
         raise HTTPException(
             status_code=422, detail=f"{entity} have no board. Use the list layout.",
         )
@@ -235,7 +259,7 @@ async def _load(db: Any, view_id: str, me: str) -> Any:
 
 @router.get("/views", response_model=list[ViewOut])
 async def list_views(
-    entity: EntityName = Query(...),
+    entity: str = Depends(_entity_query),
     user: UserContext = Depends(get_current_user),
 ) -> list[ViewOut]:
     """The caller's own views and the shared ones for one entity."""

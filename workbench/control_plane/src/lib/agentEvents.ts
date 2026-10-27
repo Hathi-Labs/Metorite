@@ -39,6 +39,10 @@ export interface AgentEventPayload {
   error?: string;
   /** Run identifier */
   runId?: string;
+  /** The in-app path a `navigate` event opens (WS-62 CF-3). */
+  path?: string;
+  /** The one sentence the member reads for it. */
+  why?: string;
   /**
    * Session/thread this event belongs to.  The subscriber registry is global
    * (a single process-wide list), so when more than one session is streaming
@@ -75,6 +79,13 @@ export interface AgentSubscriber {
    * emitted on a reconnect replay.
    */
   onDelegate?: (payload: AgentEventPayload) => void;
+  /**
+   * The live run opened a page with `show_in_app` (WS-62 CF-3,
+   * `chat_first_surface.md` §4.4): `path` and `why`. The one assistant
+   * pushes the route and says so. Never emitted on a reconnect replay, so a
+   * refresh moves no page.
+   */
+  onNavigate?: (payload: AgentEventPayload) => void;
 }
 
 // ── Global subscriber registry ─────────────────────────────────────────────

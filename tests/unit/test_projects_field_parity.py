@@ -292,8 +292,16 @@ _BASE: dict[str, dict[str, Any]] = {
     "bulk_update": {"task_ids": f"{UUID},{OTHER}", "status": "done"},
     "calendar": {"start": "2026-09-22", "end": "2026-09-29"},
     "capture_intake": {"title": "Vendor called"},
+    # WS-64 OP-6c: the file is in the fake upload (tw.UPLOAD).
+    "attach_to_task": {"task_id": UUID, "file_name": "brief.pdf"},
+    # WS-64 OP-6b: one grant, for the whole organization.
+    "grant_access": {"project_id": UUID},
+    # WS-64 OP-6d: the report is the one of the write fence.
+    "add_report_recipient": {"report_id": UUID},
+    "set_report_schedule": {"report_id": UUID},
     "comment": {"task_id": UUID, "body": "Waiting on legal."},
     "complete": {"task_id": UUID},
+    "convert_folder_to_project": {"project_id": tw.FOLDER},
     "create_field": {"project_id": UUID, "name": "Region", "field_type": "select", "options": "EU"},
     "create_personal_task": {"title": "Renew the domain"},
     "create_project": {"name": "Q4 launch"},
@@ -309,6 +317,7 @@ _BASE: dict[str, dict[str, Any]] = {
     "defer": {"task_id": UUID, "until": "2026-10-06"},
     "delete_status": {"project_id": UUID, "status": "to do", "move_to": "done"},
     "edit_comment": {"task_id": UUID, "comment_id": tw.LINK, "body": "Waiting on finance."},
+    "export_tasks": {},
     "find_conflicts": {},
     "find_tasks": {"query": "extruder"},
     "fit_for_task": {"title": "Weld the frame"},
@@ -329,6 +338,8 @@ _BASE: dict[str, dict[str, Any]] = {
     "rebalance": {},
     "render_report": {"template": "team pulse"},
     "render_timeline": {"task_id": UUID},
+    # WS-64 OP-6a: the area is in the fake gateway's list (tw.AREAS)
+    "rename_area": {"area": "Home", "new_name": "House"},
     "report_save": {"name": "Weekly", "sections": "finished"},
     "save_view": {"project_id": UUID, "name": "Mine"},
     "set_my_overlay": {"task_id": UUID, "disposition": "someday"},
@@ -343,9 +354,18 @@ _BASE: dict[str, dict[str, Any]] = {
     "update_tag": {"project_id": UUID, "tag": "urgent", "name": "p1"},
     "update_task": {"task_id": UUID, "title": "Fix the extruder now"},
     "update_type": {"project_id": UUID, "type_name": "bug", "name": "Defect"},
+    # WS-66 RM-3: the member's reminders. The fake saves the zone UTC.
+    "list_reminders": {},
+    "set_reminder": {"title": "Call the bank", "at": "2099-10-31 09:00"},
+    "update_reminder": {"reminder_id": tw.REMINDER, "title": "Fix the extruder today"},
+    "resolve_reminder": {"reminder_id": tw.REMINDER},
+    "reschedule_reminder": {"reminder_id": tw.REMINDER, "at": "2099-11-02 08:00"},
 }
 _SAMPLE: dict[str, Any] = {
     "all_unread": True,
+    "subject": "org",
+    "recipient": "priya@x.io",
+    "enabled": True,
     "assignee": "priya@x.io",
     "assignees": "priya@x.io",
     "assignees_add": "Priya",
@@ -403,6 +423,9 @@ _SAMPLE: dict[str, Any] = {
     "reply_to": tw.LINK,
     "required": "yes",
     "skip_current_week": True,
+    # WS-46 P9 (G10, G11): the one mail source, and its message id.
+    "source": "email",
+    "source_ref": "msg-123",
     "source_task_ids": OTHER,
     "start": "2026-10-01",
     "status": "in progress",
@@ -433,6 +456,9 @@ _SAMPLE: dict[str, Any] = {
     "block_start": "2026-10-07 14:00",
     "block_end": "2026-10-07 15:00",
     "flexible": "yes",
+    # WS-64 OP-6c
+    "file_name": "brief.pdf",
+    "shown_fields": "status,tags",
     "hard_date": "yes",
     "actual_start": "2026-10-07 14:05",
     "actual_end": "2026-10-07 14:50",
@@ -442,11 +468,28 @@ _SAMPLE: dict[str, Any] = {
     "expected_by": "2026-10-09",
     "filters": '{"overdue": true}',
     "personal": '{"disposition": "someday", "context": "@home"}',
+    # WS-66 RM-3: a reminder's time, kind, estimate, answer and list state.
+    "at": "2099-11-01 10:00",
+    "in_minutes": 60,
+    "kind": "notice",
+    "estimate_minutes": 30,
+    "answer": "drop",
+    "state": "done",
 }
 #: A row key's sample, where the argument of the same name takes another form.
 _ROW_SAMPLE: dict[str, Any] = {"name": "Spike", "is_epic": "yes"}
 #: The whole call, where the base call takes another branch of the tool.
 _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
+    # D-OP-10 (OP-7): the card sends the ids that the member ticked.
+    ("DELETE", "/projects/tasks/{task_id}", "delete_subtask_ids"): {
+        "task_id": tw.LIVE,
+        "subtasks_to_delete": "all",
+    },
+    # The same tool, a tree above the 200-id cap: "all" sends the flag.
+    ("DELETE", "/projects/tasks/{task_id}", "delete_all_subtasks"): {
+        "task_id": tw.LIVE,
+        "subtasks_to_delete": "all",
+    },
     # WS-47 WAC-4b: a capture's block needs its start, as the Calendar reads
     # a block by its start.
     ("POST", "/projects/my/tasks", "scheduled_end"): {
@@ -486,6 +529,8 @@ _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
     ("POST", "/projects/tasks/bulk", "tags_add"): {"task_ids": UUID, "tags_add": "q4"},
     ("POST", "/projects/tasks/bulk", "tags_remove"): {"task_ids": UUID, "tags_remove": "urgent"},
     ("GET", "/projects/my/inbox", "include_done"): {"view": "inbox", "include_done": True},
+    # WS-55 SW-11a: the member's own rows of Needs attention.
+    ("GET", "/projects/needs-attention", "mine"): {"mine": True},
     ("GET", "/projects/my/inbox", "page"): {"view": "inbox", "page": 2},
     ("GET", "/projects/my/inbox", "page_size"): {"view": "inbox"},
     ("GET", "/projects/my/calendar", "start"): {
@@ -573,6 +618,30 @@ _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
         "task_ids": f"{UUID},{OTHER}",
         "personal": '{"disposition": "someday"}',
     },
+    # WS-66 RM-3: a link is both parts or neither, and a snooze is in_minutes.
+    ("POST", "/projects/my/reminders", "subject_kind"): {
+        "title": "Call the bank", "at": "2099-10-31 09:00",
+        "subject_kind": "task", "subject_id": UUID,
+    },
+    ("POST", "/projects/my/reminders", "subject_id"): {
+        "title": "Call the bank", "at": "2099-10-31 09:00",
+        "subject_kind": "task", "subject_id": UUID,
+    },
+    ("PATCH", "/projects/my/reminders/{reminder_id}", "subject_kind"): {
+        "reminder_id": tw.REMINDER, "subject_kind": "task", "subject_id": UUID,
+    },
+    ("PATCH", "/projects/my/reminders/{reminder_id}", "subject_id"): {
+        "reminder_id": tw.REMINDER, "subject_kind": "task", "subject_id": UUID,
+    },
+    ("PATCH", "/projects/my/reminders/{reminder_id}", "tz"): {
+        "reminder_id": tw.REMINDER, "at": "2099-11-01 10:00",
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/snooze", "fire_at"): {
+        "reminder_id": tw.REMINDER, "in_minutes": 60, "snooze": "yes",
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/snooze", "tz"): {
+        "reminder_id": tw.REMINDER, "in_minutes": 60, "snooze": "yes",
+    },
 }
 
 
@@ -606,15 +675,33 @@ def _responder(call: dict) -> Any:
     return tw.responder(call)
 
 
+def _wide_responder(call: dict) -> Any:
+    """``_responder``, with a subtree of 250 rows (above the 200-id cap)."""
+    if call["method"] == "GET" and call["path"].endswith("/subtree"):
+        rows = [
+            tw._sub(f"{i:08x}-d9cb-469f-a165-70867728950e", tw.LIVE, f"t{i}")
+            for i in range(1, 251)
+        ]
+        return {"task_id": tw.LIVE, "subtasks": rows, "hidden": 0}
+    return _responder(call)
+
+
 def _carries(call: dict, name: str, where: str) -> bool:
     if where == "query":
         return name in (call["params"] or {})
     if where == "header":
         return name.lower() in {h.lower() for h in (call["headers"] or {})}
+    if where == "body" and call.get("files") and name in call["files"]:
+        return True
     body = call["json"]
     if name == "payload":
         return isinstance(body, dict) and bool(body)
     return isinstance(body, dict) and name in body
+
+
+@pytest.fixture(autouse=True)
+def _a_chat_upload(monkeypatch) -> None:
+    tw.stub_chat_upload(monkeypatch)
 
 
 @pytest.fixture
@@ -636,7 +723,9 @@ async def test_every_sends_claim_is_true_on_the_wire(
 ) -> None:
     approve(monkeypatch)
     form_stub(monkeypatch, tw.FORM_ANSWERS)
-    calls = fake_gateway(monkeypatch, _responder)
+    calls = fake_gateway(
+        monkeypatch, _wide_responder if name == "delete_all_subtasks" else _responder
+    )
     kwargs = _call_for(key, name, tool, arg)
     out = await getattr(skill_projects, tool)(**kwargs)
     where = route_fields()[key][name]
@@ -675,8 +764,9 @@ def _built_slices() -> set[str]:
 
 def test_the_spec_tables_parse() -> None:
     """A spec edit that breaks the parse would pass every check below."""
-    # 23 since WS-55 EA-12a added G23, the agent-run routes (EA12-9).
-    assert len(_spec_gaps()) == 23
+    # 23 since WS-55 EA-12a added G23, the agent-run routes (EA12-9). 24
+    # since WS-66 RM-1 added G24, the reminder routes.
+    assert len(_spec_gaps()) == 24
     assert {"P1", "P2", "P3"} <= _built_slices()
 
 

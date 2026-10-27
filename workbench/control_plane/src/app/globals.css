@@ -42,6 +42,9 @@
   --elevation: 0 4px 16px hsl(0 0% 0% / 0.25);
   --motion-duration: 0.2s;
   --motion-easing: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  /* A spring that overshoots and settles: a card let go after a drag. */
+  --spring-easing: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --spring-duration: 420ms;
   /* The one motion of a side panel (`lib/panelMotion.ts`). The left sidebar's
      fold and the assistant's open and close read the same two values, so the
      two panels cannot drift. `panelMotion.test.ts` holds the mirror. */
@@ -689,6 +692,45 @@ select optgroup {
 :root[data-agent-pill] .pb-nav {
   padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 3rem);
 }
+
+/* ── The chat nudge on a phone (CF-2, `lib/shell/ChatNudge.tsx`) ──────────
+   One bubble above the Ask tab, on the fixed bottom nav. While it shows,
+   `ChatNudge` sets `data-chat-nudge` on <html>, and the page's last row
+   moves up by the bubble's height and a gap (3rem), so it never covers a
+   composer's action row. The peek strip's rule below wins when both show,
+   and the strip hides the bubble anyway. Only the phone sets the attribute. */
+:root[data-chat-nudge] .pb-nav {
+  padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 3rem);
+}
+
+/* ── The assistant's peek strip on a phone (CF-1, `lib/shell/AssistantDock.tsx`) ──
+   A 56 px row on the fixed bottom nav. It takes the place the agent pill
+   takes. While it shows, `AssistantDock` sets `data-assistant-peek` on
+   <html>, and the toasts and the page's last row move up by the strip's
+   height (3.5rem). Only the phone draws the strip, so the attribute is the
+   gate, not a width.
+   ⚠️ The box starts at the screen's foot and runs UNDER the nav (z-50 over
+   z-40). The row sits on top of the nav's clearance (3.5rem and the inset,
+   as `.pb-nav` reserves it). The nav's real height comes from its content
+   and is less than 3.5rem (measured 49 px at 390 px wide), so a box that
+   started at 3.5rem left a gap where the page showed through. */
+.assistant-peek-bottom {
+  bottom: 0;
+  height: calc(3.5rem + 3.5rem + env(safe-area-inset-bottom, 0px));
+  padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px));
+}
+/* The sheet's body stays laid out under the strip, hidden and inert, so the
+   chat keeps its scroll and its draft. Its height is the sheet's. */
+.assistant-peek-body {
+  top: 3.5rem;
+  height: 100dvh;
+}
+:root[data-assistant-peek] .toast-viewport-bottom {
+  bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 4rem);
+}
+:root[data-assistant-peek] .pb-nav {
+  padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 3.5rem);
+}
 /* The thin progress line. It slides only when the member allows motion. With
    reduced motion it is a still third of the line. */
 @keyframes agent-pill-progress {
@@ -776,26 +818,45 @@ select optgroup {
    a token, so light mode, density and accent all reach it. */
 .kb-editor-shell { position: relative; }
 .kb-editor { outline: none; }
-.kb-editor-shell.is-editing .kb-editor { min-height: 16rem; padding-bottom: 2rem; }
-/* The body shows where the keys go while a member edits: a quiet ring
-   from the ring token, on the shell, so the text does not move. */
-.kb-editor-shell.is-editing {
-  margin: -0.25rem -0.5rem;
-  padding: 0.25rem 0.5rem;
-  border-radius: calc(var(--radius) - 4px);
+.kb-editor-shell.is-editing .kb-editor { min-height: 16rem; padding-bottom: 6rem; }
+/* One canvas (WS-61, 2026-10-22): the edit surface draws no box, no ring
+   and no background. The caret is the focus signal, as in Notion. The shell
+   adds no padding or margin either, so the first line sits where it sits in
+   the read view. */
+/* The page title, read and edit alike: one class, so the h2 and the
+   textarea draw the same glyphs on the same line. */
+.kb-title {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: 1.875rem;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
 }
-.kb-editor-shell.is-editing:focus-within {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ring) 30%, transparent);
-}
-/* The same rhythm as the chat's Markdown (`MarkdownBody`): compact
-   headings under the page title, and tight lists. */
-.kb-editor :where(h2, h3, h4, h5, h6) { color: var(--foreground); font-weight: 600; line-height: 1.35; }
-.kb-editor :where(h2) { font-size: 1.15em; margin: 1.5em 0 0.5em; }
-.kb-editor :where(h3) { font-size: 1.05em; margin: 1.25em 0 0.4em; }
-.kb-editor :where(h4, h5, h6) { font-size: 1em; margin: 1em 0 0.35em; }
+textarea.kb-title { resize: none; overflow: hidden; outline: none; box-shadow: none; }
+textarea.kb-title::placeholder { color: var(--muted-foreground); opacity: 0.6; }
+/* The body reads at 1rem on a 1.7 line, whatever the typography plugin's
+   small size says. Rem, so the density setting reaches it. */
+.kb-editor.prose { font-size: 1rem; line-height: 1.7; }
+.kb-editor :where(p) { margin: 0.75em 0; }
+.kb-editor :where(h2, h3, h4, h5, h6) { color: var(--foreground); font-weight: 600; line-height: 1.3; }
+/* A body heading draws one level down: the app bar owns the one h1. The
+   editor's own level sits in data-md-level, so the sizes follow it. */
+.kb-editor :where(h2, h3, h4, h5, h6) { margin: 1.6em 0 0.4em; }
+.kb-editor [data-md-level="1"] { font-size: 1.875rem; }
+.kb-editor [data-md-level="2"] { font-size: 1.5rem; }
+.kb-editor [data-md-level="3"] { font-size: 1.25rem; }
+.kb-editor [data-md-level="4"], .kb-editor [data-md-level="5"], .kb-editor [data-md-level="6"] { font-size: 1.0625rem; }
 .kb-editor > :first-child { margin-top: 0; }
-.kb-editor :where(ul, ol) { margin: 0.5em 0; }
-.kb-editor :where(li) { margin: 0.15em 0; }
+.kb-editor :where(ul, ol) { margin: 0.75em 0; }
+.kb-editor :where(li) { margin: 0.3em 0; }
 .kb-editor :where(li > p) { margin: 0; }
 .kb-editor :where(hr) { margin: 1.5em 0; }
 .kb-editor :where(blockquote) { font-style: normal; color: var(--muted-foreground); }
@@ -812,6 +873,106 @@ select optgroup {
 .kb-editor-shell .ProseMirror-dropcursor,
 .kb-editor + .ProseMirror-dropcursor { background: var(--primary); }
 .kb-editor .ProseMirror-gapcursor::after { border-top-color: var(--foreground); }
+
+/* A link to a page of this app draws as a mention chip, as in Notion: a page
+   glyph, then the title, no underline, a soft hover and rounded corners. The
+   `<a>` gets `kb-page-chip` from the Link mark (`lib/editor/schema.ts`), and
+   the first text of the link gets `kb-page-glyph` (`lib/editor/pageChips.ts`).
+   With no emoji the glyph is a file icon cut from `currentColor` by a mask,
+   so it follows the text colour in every mode. The stored form is still a
+   Markdown link. */
+.kb-editor a.kb-page-chip {
+  color: var(--foreground);
+  text-decoration: none;
+  border-radius: calc(var(--radius) - 0.25rem);
+  font-weight: inherit;
+  padding: 0.05em 0.1em 0.05em 0.2em;
+  margin: 0 -0.05em 0 -0.15em;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.kb-editor a.kb-page-chip:hover { background-color: var(--muted); }
+.kb-editor a.kb-page-chip .kb-page-glyph::before {
+  content: "";
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.25em;
+  vertical-align: -0.15em;
+  background-color: var(--muted-foreground);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z'/%3E%3Cpath d='M14 2v4a2 2 0 0 0 2 2h4'/%3E%3Cpath d='M10 9H8'/%3E%3Cpath d='M16 13H8'/%3E%3Cpath d='M16 17H8'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z'/%3E%3Cpath d='M14 2v4a2 2 0 0 0 2 2h4'/%3E%3Cpath d='M10 9H8'/%3E%3Cpath d='M16 13H8'/%3E%3Cpath d='M16 17H8'/%3E%3C/svg%3E");
+}
+.kb-editor a.kb-page-chip .kb-page-glyph[data-emoji]::before {
+  content: attr(data-emoji);
+  width: auto;
+  background: none;
+  -webkit-mask-image: none;
+  mask-image: none;
+  vertical-align: baseline;
+}
+
+/* KB-2k1: a link to a person (`/people/<id>`) draws as a person chip. It is
+   the page chip's twin: the same soft hover and rounded corners, and a user
+   icon cut from `currentColor` by a mask in place of the page glyph. The
+   stored form is a plain Markdown link, `[@Name](/people/<id>)`. */
+.kb-editor a.kb-person-chip {
+  color: var(--foreground);
+  text-decoration: none;
+  border-radius: calc(var(--radius) - 0.25rem);
+  font-weight: inherit;
+  padding: 0.05em 0.2em 0.05em 0.2em;
+  margin: 0 -0.05em 0 -0.15em;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.kb-editor a.kb-person-chip:hover { background-color: var(--muted); }
+.kb-editor a.kb-person-chip::before {
+  content: "";
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.25em;
+  vertical-align: -0.15em;
+  background-color: var(--muted-foreground);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2'/%3E%3Ccircle cx='12' cy='7' r='4'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2'/%3E%3Ccircle cx='12' cy='7' r='4'/%3E%3C/svg%3E");
+}
+
+/* KB-2g: the marks of a compare in the page history (`lib/historyDiff.ts`).
+   An added word takes a tint of --success, and a removed word shows struck
+   through in --destructive: the status vocabulary, never a palette class. */
+.kb-diff-added {
+  background: color-mix(in srgb, var(--success) 20%, transparent);
+  color: var(--foreground);
+  border-radius: 2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.kb-diff-removed {
+  color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 12%, transparent);
+  text-decoration: line-through;
+  border-radius: 2px;
+  padding: 0 2px;
+  margin-right: 0.25em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.kb-diff-node-added { outline: 2px solid var(--success); outline-offset: 2px; border-radius: 4px; }
+.kb-diff-current { box-shadow: 0 0 0 2px var(--primary); }
 
 /* Task lists: the box, then the item's own blocks. */
 .kb-editor ul[data-type="taskList"] { list-style: none; padding-left: 0.25em; }
@@ -929,9 +1090,10 @@ select optgroup {
 }
 .kb-editor :where(th, td) { padding: 0.4em 0.75em; vertical-align: top; }
 .kb-editor :where(td) { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
-/* While a member edits, a table leaves room above it for its tools, so they
-   never cover the block above. */
-.kb-editor-shell.is-editing .kb-editor .tableWrapper { margin-top: 2.75rem; }
+/* While a member edits, a table leaves room under it for its tools (KB-2i:
+   they hang under the table, as in Docmost), so they never cover the block
+   below, and room above it for the column grips. */
+.kb-editor-shell.is-editing .kb-editor .tableWrapper { margin-top: 1.25rem; margin-bottom: 3rem; }
 .kb-editor-shell.is-editing .kb-editor :where(td, th) { position: relative; border: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
 .kb-editor-shell.is-editing .kb-editor .selectedCell::after {
   content: "";
@@ -968,6 +1130,268 @@ select optgroup {
   background: var(--popover);
   padding: 0.25rem;
 }
+
+/* ── KB-2i (knowledge_base.md §21.7): table grips, footnotes, find ──────── */
+/* A grip above a column and left of a row. It sits on the cell's edge, on
+   the card surface, so the table line does not run through it. */
+.kb-table-handle {
+  position: absolute;
+  z-index: 20;
+  transform: translate(-50%, -50%);
+  border-radius: calc(var(--radius) - 6px);
+  background: var(--card);
+}
+.kb-table-handle.is-col { width: 1.75rem; height: 1rem; }
+.kb-table-handle.is-row { width: 1rem; height: 1.75rem; }
+.kb-table-handle .cc-control { cursor: grab; }
+.kb-table-handle .cc-control:active { cursor: grabbing; }
+@media (max-width: 640px) {
+  .kb-table-handle { display: none; }
+}
+@media print {
+  .kb-table-handle { display: none; }
+}
+/* The copy of a row or column under the pointer, and the line where it lands. */
+.kb-table-drag-preview {
+  position: fixed;
+  z-index: 70;
+  pointer-events: none;
+  opacity: 0.85;
+  border: 1px solid var(--primary);
+  border-radius: calc(var(--radius) - 6px);
+  background: var(--card);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--foreground) 12%, transparent);
+}
+.kb-table-drag-preview table { width: 100%; margin: 0; border-collapse: collapse; }
+.kb-table-drop-line {
+  position: fixed;
+  z-index: 71;
+  pointer-events: none;
+  background: var(--primary);
+  border-radius: 1px;
+}
+
+/* Footnotes: the mark draws its number, and a note draws it in a gutter.
+   The number comes from a decoration (`--kb-fn-label`, `footnotes.ts`). */
+.kb-footnote-ref {
+  color: var(--primary);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0 1px;
+}
+.kb-footnote-ref::after { content: var(--kb-fn-label, "?"); }
+.kb-footnote {
+  display: flex;
+  gap: 0.5em;
+  font-size: 0.875em;
+  color: var(--muted-foreground);
+  margin: 0.25em 0;
+}
+.kb-footnote:not(.kb-footnote + .kb-footnote) {
+  margin-top: 2rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+.kb-footnote-label {
+  flex-shrink: 0;
+  min-width: 1.25em;
+  font-weight: 600;
+  color: var(--foreground);
+  user-select: none;
+}
+.kb-footnote-label::before { content: var(--kb-fn-label, "?") "."; }
+.kb-footnote-body { flex: 1 1 auto; min-width: 0; }
+.kb-footnote-body > :first-child { margin-top: 0; }
+.kb-footnote-body > :last-child { margin-bottom: 0; }
+
+/* Find in the page: a bar at the top right of the body that stays in view,
+   and a mark on each match. The match in focus takes the primary tint. */
+.kb-find-anchor {
+  position: sticky;
+  top: 0.5rem;
+  z-index: 30;
+  height: 0;
+}
+.kb-find {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: min(26rem, 100%);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--popover);
+  padding: 0.25rem;
+}
+/* ── KB-2p: the stored forms (knowledge_base.md §21.7) ──────────────────────
+   A colour name of `lib/editor/colors.ts` maps to a slot of the categorical
+   ramp, which clears AA on the card in both modes. A hex value from another
+   tool comes as a checked inline style instead. Never rename a name. */
+.kb-text-color[data-color="gray"] { color: var(--muted-foreground); }
+.kb-text-color[data-color="blue"] { color: var(--cat-1); }
+.kb-text-color[data-color="orange"] { color: var(--cat-2); }
+.kb-text-color[data-color="green"] { color: var(--cat-3); }
+.kb-text-color[data-color="purple"] { color: var(--cat-4); }
+.kb-text-color[data-color="red"] { color: var(--cat-5); }
+.kb-text-color[data-color="teal"] { color: var(--cat-6); }
+.kb-text-color[data-color="pink"] { color: var(--cat-7); }
+.kb-text-color[data-color="yellow"] { color: var(--cat-12); }
+.kb-highlight {
+  --kb-mark: var(--cat-12);
+  background: color-mix(in srgb, var(--kb-mark) 28%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 0.1em;
+}
+/* KB-3d: a matched word in a search snippet. The look of `.kb-highlight`. */
+.kb-search-mark {
+  background: color-mix(in srgb, var(--cat-12) 32%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 0.1em;
+}
+.kb-editor [data-align="center"] { text-align: center; }
+.kb-editor [data-align="right"] { text-align: right; }
+.kb-editor [data-align="justify"] { text-align: justify; }
+/* The panels of the bubble menu: the alignment and the colour picker. */
+.kb-bubble-panel {
+  position: absolute;
+  top: calc(100% + 0.375rem);
+  left: 0;
+  z-index: 1;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--popover);
+  padding: 0.25rem;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--foreground) 12%, transparent);
+}
+@media print {
+  .kb-find-anchor { display: none; }
+}
+.kb-editor .kb-find-match {
+  background: color-mix(in srgb, var(--warning) 35%, transparent);
+  border-radius: 2px;
+}
+.kb-editor .kb-find-match-current {
+  background: color-mix(in srgb, var(--primary) 40%, transparent);
+  outline: 1px solid var(--primary);
+}
+/* KB-2p adds buttons to the bubble, so on a phone its row wraps. */
+.kb-bubble { max-width: calc(100vw - 1rem); }
+/* A panel under the last button of a bar hangs from its right edge. */
+.kb-bubble-panel-end { left: auto; right: 0; }
+/* A phone wraps the bubble's row, so a panel hangs from the whole bubble. */
+@media (max-width: 640px) {
+  .kb-panel-anchor { position: static; }
+  .kb-bubble-panel, .kb-bubble-panel-end { left: 0; right: auto; max-width: calc(100vw - 2rem); }
+}
+.kb-color-panel { display: flex; flex-direction: column; gap: 0.25rem; width: max-content; }
+.kb-color-heading { padding: 0.125rem 0.25rem 0; font-size: 0.6875rem; font-weight: 600; color: var(--muted-foreground); }
+.kb-color-grid { display: grid; grid-template-columns: repeat(5, auto); gap: 0.125rem; }
+.kb-color-glyph { font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
+.kb-swatch-mark, .kb-swatch-none { display: inline-block; min-width: 1.125rem; border-radius: 3px; font-weight: 600; }
+.kb-swatch-none { box-shadow: inset 0 0 0 1px var(--border); }
+/* The status badge and the date: inline chips on the text line. */
+.kb-status-wrap, .kb-date-wrap { display: inline; }
+.kb-status {
+  padding: 0 0.4em;
+  font-size: 0.75em;
+  font-weight: 600;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  vertical-align: 0.08em;
+}
+.kb-status-button, .kb-date-button { cursor: pointer; border: 0; font-family: inherit; }
+.kb-status-button:focus-visible, .kb-date-button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.kb-date { font-size: 0.875em; line-height: 1.6; vertical-align: 0.02em; }
+
+/* Columns: side by side, and stacked on a phone. */
+.kb-columns { margin: 1em 0; }
+.kb-columns-grid { display: grid; gap: 1.25rem; grid-template-columns: repeat(var(--kb-cols, 2), minmax(0, 1fr)); }
+.kb-columns[data-count="3"] { --kb-cols: 3; }
+.kb-columns[data-count="4"] { --kb-cols: 4; }
+.kb-columns[data-count="5"] { --kb-cols: 5; }
+/* The React node view puts the columns in one more element. It takes no box,
+   so each column is a cell of the grid. */
+.kb-columns-grid > [data-node-view-content-react] { display: contents; }
+.kb-column { min-width: 0; }
+.kb-column > :first-child { margin-top: 0; }
+.kb-column > :last-child { margin-bottom: 0; }
+.kb-editor-shell.is-editing .kb-column {
+  border: 1px dashed color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: calc(var(--radius) - 4px);
+  padding: 0.5rem 0.75rem;
+}
+.kb-columns-bar { display: flex; align-items: center; gap: 0.125rem; margin-bottom: 0.375rem; user-select: none; }
+.kb-columns-label { margin-right: 0.25rem; font-size: 0.75em; color: var(--muted-foreground); }
+@media (max-width: 767px) {
+  .kb-columns-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* The sub-pages list: a card of links to the child pages. */
+.kb-subpages {
+  margin: 1em 0;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--card);
+  padding: 0.625rem 0.75rem;
+}
+.kb-subpages-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; min-height: 2rem; }
+.kb-subpages-title { display: inline-flex; align-items: center; gap: 0.375rem; font-size: 0.8125em; font-weight: 600; color: var(--foreground); }
+.kb-subpages-count { font-weight: 500; color: var(--muted-foreground); }
+.kb-subpages-list { list-style: none; margin: 0.25rem 0 0; padding: 0; }
+.kb-subpages-list li { margin: 0; }
+.kb-subpage {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2rem;
+  border-radius: calc(var(--radius) - 4px);
+  padding: 0 0.375rem;
+  color: var(--foreground);
+  text-decoration: none;
+}
+a.kb-subpage:hover { background: var(--secondary); }
+a.kb-subpage:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.kb-subpage svg { flex-shrink: 0; color: var(--muted-foreground); }
+.kb-subpages-note { margin: 0.25rem 0 0; font-size: 0.8125em; color: var(--muted-foreground); }
+
+/* The page break: a labelled rule on screen, a new page in print. */
+.kb-page-break {
+  position: relative;
+  margin: 1.5em 0;
+  border-top: 1px dashed var(--border);
+}
+.kb-page-break::after {
+  content: "Page break";
+  position: absolute;
+  top: -0.7em;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 0.5em;
+  background: var(--background);
+  font-size: 0.6875rem;
+  color: var(--muted-foreground);
+}
+@media print {
+  .kb-page-break { border: 0; margin: 0; break-after: page; page-break-after: always; }
+  .kb-page-break::after { content: none; }
+  .kb-columns-bar { display: none; }
+}
+/* A cell colour: a tint of the same name as a highlight. */
+.kb-editor :where(td, th)[data-color] { background: color-mix(in srgb, var(--kb-mark, var(--cat-12)) 18%, transparent); }
+.kb-cell-swatch { display: inline-block; width: 1rem; height: 1rem; border-radius: 3px; box-shadow: inset 0 0 0 1px var(--border); }
+.kb-cell-swatch[data-color] { background: color-mix(in srgb, var(--kb-mark, var(--cat-12)) 40%, transparent); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="gray"] { --kb-mark: var(--muted-foreground); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="blue"] { --kb-mark: var(--cat-1); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="orange"] { --kb-mark: var(--cat-2); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="green"] { --kb-mark: var(--cat-3); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="purple"] { --kb-mark: var(--cat-4); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="red"] { --kb-mark: var(--cat-5); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="teal"] { --kb-mark: var(--cat-6); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="pink"] { --kb-mark: var(--cat-7); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="yellow"] { --kb-mark: var(--cat-12); }
+/* KB-2p stored forms: end */
 
 @keyframes chat-shimmer {
   0%   { background-position: 200% 0; }
@@ -1106,6 +1530,11 @@ select optgroup {
   opacity: 0;
   transform: translateY(-2px);
 }
+/* The peek strip tucks under the bottom nav when it closes. */
+.assistant-panel[data-panel-form="peek"] {
+  opacity: 0;
+  transform: translateY(100%);
+}
 .assistant-panel[data-shown] {
   opacity: 1;
   transform: none;
@@ -1120,6 +1549,23 @@ select optgroup {
   transition:
     opacity var(--sheet-duration) var(--sheet-easing),
     transform var(--sheet-duration) var(--sheet-easing);
+}
+.assistant-panel[data-moving][data-panel-form="peek"] {
+  transition:
+    opacity var(--sheet-duration) var(--sheet-easing),
+    transform var(--sheet-duration) var(--sheet-easing);
+}
+/* The sheet drops to the strip while it is open, so no phase moves. The
+   strip rises from the nav as it appears, on the sheet's tokens. With
+   reduced motion it shows at once. */
+@keyframes assistant-peek-rise {
+  from { opacity: 0; transform: translateY(100%); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .assistant-panel[data-panel-form="peek"][data-shown]:not([data-moving]) {
+    animation: assistant-peek-rise var(--sheet-duration) var(--sheet-easing);
+  }
 }
 .assistant-panel[data-panel-phase="closed"] {
   visibility: hidden;
@@ -1180,6 +1626,34 @@ html.panel-swap::view-transition-new(assistant-panel) {
 }
 .animate-bounce-subtle {
   animation: bounce-subtle 1.5s ease-in-out infinite;
+}
+
+/* A stack of cards that wait on the member (components/ui/CardStack.tsx,
+   owner 2026-10-24: "the card moves a little bit to the side in slight
+   angle and then comes back like a spring … almost like Tinder"). The top
+   card swings out once, turned, and springs back past its rest; the card
+   behind lifts as it goes. A release after a drag uses the spring easing.
+   With reduced motion nothing moves, and the banner and the edges say it. */
+@keyframes card-stack-nudge {
+  0%   { transform: translateX(0) rotate(0); }
+  30%  { transform: translateX(-28px) rotate(-4deg); }
+  52%  { transform: translateX(9px) rotate(1.2deg); }
+  70%  { transform: translateX(-4px) rotate(-0.5deg); }
+  85%  { transform: translateX(2px) rotate(0.2deg); }
+  100% { transform: translateX(0) rotate(0); }
+}
+@keyframes card-stack-lift {
+  0%, 100% { translate: 0 0; scale: 1; }
+  30%      { translate: 0 -6px; scale: 1.02; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .card-stack-nudge[data-nudge] {
+    transform-origin: 50% 100%;
+    animation: card-stack-nudge 1.25s var(--motion-easing) 0.35s 1 both;
+  }
+  .card-stack-lift {
+    animation: card-stack-lift 1.25s var(--motion-easing) 0.35s 1;
+  }
 }
 
 /* ── Scrollbars ────────────────────────────────────────────── */
@@ -1463,6 +1937,7 @@ html.panel-swap::view-transition-new(assistant-panel) {
      override whichever one is active. */
   :root {
     --motion-duration: 0.01ms;
+    --spring-duration: 0.01ms;
   }
 
   *,

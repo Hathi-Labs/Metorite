@@ -75,7 +75,7 @@ describe("the chat's wiring", () => {
   it("replays a returned card through the SAME handler as a streamed one", () => {
     expect(chat).toContain("useAgentEvents(hitlSubscriber);");
     expect(chat).toMatch(
-      /for \(const card of cardsToRestore\(asks\)\) \{\s*hitlRef\.current\.onCustomEvent\?\.\(\{ name: card\.name, value: card\.value, threadId: forSession \}\);/,
+      /for \(const card of cardsToRestore\(asks \?\? \[\]\)\) \{\s*hitlRef\.current\.onCustomEvent\?\.\(\{ name: card\.name, value: card\.value, threadId: forSession \}\);/,
     );
   });
 

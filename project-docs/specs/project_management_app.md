@@ -12,7 +12,10 @@
 > only task store, and `routes/projects/personal.py` is the lens Tasks renders.
 
 > **Product:** Metorite · **Feature:** Projects (the primary work-management
-> module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-08-25**
+> module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-10-25**
+> 🟢 **WS-55 MCP-G7 BUILT 2026-10-25, not merged** (§9.10.3, migration 304). A comment or a link
+> on a task no longer gives 412 to a pending write with the old `If-Match`. A field change still does.
+> · **Previously updated 2026-08-25**
 > 🟢 **WS-27bg SLICE 2 REMAINDER — RENAME — BUILT 2026-08-21 on `ws-27bg-project-rename`
 > (PR #47), NOT merged and NOT deployed** (§11.36's narrowed list, corrected) — a project can
 > be renamed for the first time: inline on the tree row, frontend only, **no migration and no
@@ -689,6 +692,21 @@ is the fact.
 | folder | a dashboard of the projects below | no | folder glyph | no |
 | project | its views, with the subtree folded in | yes | run-state dot | yes |
 | subproject | its own views | yes | run-state dot | yes |
+
+**Status of "Holds tasks: no": ENFORCED 2026-10-26 (WS-64).** Until then the
+server refused only a folder, and the chat filed six tasks on a space. The
+rule is one helper, `core.assert_holds_tasks`. Create, single move, bulk
+move and intake capture call it.
+
+A space is a team root. A personal root is not a space, because it holds the
+member's Inbox. `tree.move_node` refuses to move a project to the top while
+the project holds live tasks of its own. A task that already sits on a space
+still reads, edits and moves out.
+
+The chat refuses a space before its card and lists the projects inside. The
+picker and the Move dialog mark a space as no home for a task. Fences:
+`test_projects_space_holds_no_tasks.py`, its `_r8` twin,
+`test_projects_chat_space_rule.py` and `pickerTree.test.ts`.
 
 **A space is not a project.** It shows a roll-up, and it has none of a
 project's views. A folder does the same for the projects below it. A
@@ -3944,6 +3962,115 @@ make it rare, not impossible.
 Per CLAUDE.md §5 this is recorded as a **finding for the board, not a refactor**: it predates
 this work, and fixing it (`clock_timestamp()`, or a sequence) is a change to the delta feed's
 contract that deserves its own row and its own decision.
+
+#### 9.10.3 A comment does not stale the token — WS-55 MCP-G7 (BUILT 2026-10-25, not merged)
+
+**Status: BUILT 2026-10-25 on branch `g7-link-version-mt-baa82d19`, not merged.** Task #367.
+Migration `304_pm_tasks_fields_at.sql`. The builder took the number at build time (R1). It was 303
+until `303_kb_page_verification.sql` merged first. Check it again at merge.
+
+**The defect.** `core.touch_task` moves `updated_at` for each comment, link, attachment and
+assignee, because the delta feed must see them. `If-Match` compared `updated_at` for equality. So
+a comment on task A, or a `#mention` of A in another task, gave 412 to each pending write to that
+task.
+The owner's agents met this many times on 2026-10-25.
+
+**The decision.**
+
+* Migration 304 adds `pm_tasks.fields_at`. It holds the `updated_at` of the last write that
+  changed a field of the row. The trigger `trg_pm_tasks_stamp_fields` keeps it, so no writer can
+  forget it.
+* The trigger fires on INSERT and on every UPDATE. On UPDATE it lifts a `now()` stamp that is
+  older than the old stamp to the old stamp plus one microsecond. If no other column changed, it
+  stops there.
+* If a field changed and the row carries this transaction's stamp, `fields_at` takes
+  `updated_at`. If a field changed and `updated_at` did not move, `fields_at` goes above
+  `updated_at`. That means equality only.
+* The backfill sets `fields_at` on each existing task, one tenant at a time. It runs before the
+  trigger exists, in the same transaction, because it does not set `updated_at`.
+* `core.precondition_holds` passes a token that equals `updated_at`, as before. It also passes a
+  token from `fields_at` up to `updated_at`. The PATCH and the claim use it.
+* The agent delete keeps strict equality on `updated_at`. It does not use the new rule.
+* The promote paths also stamp `updated_at` in the same statement, as defence in depth:
+  `core.lift_subtasks_to_grandparent`, `merge._reparent_children` and the kept subtasks of
+  `tasks.delete_task_in`.
+
+**Why a delete by an agent keeps equality.** A delete is one-way. `fields_at` does not see a subtask
+that `/move` puts under the task, because `/move` bumps only the parent. A My Tasks step and a
+merge into the task act the same way. Under the new rule, `subtasks_to_delete: all` could delete
+a subtree that the member never saw.
+
+So any change after the read makes the member's yes stale, and a comment does too. The
+coordinator decided this on 2026-10-25 (review P1).
+
+**Why the trigger fires on every UPDATE.** A sweep changes a field and does not set
+`updated_at`. The tag rename, the custom-field delete, the status remap, the recurrence detach
+and an FK `ON DELETE SET NULL` are sweeps. Under `UPDATE OF updated_at` a sweep did not fire the
+trigger. A later comment then moved the token, and a token from before the sweep passed, where
+main gave it 412.
+
+The coordinator chose the fix in the trigger (fix round 2, item 4).
+
+The GREATEST of a sweep also takes the old `fields_at`. That term only keeps `fields_at`
+monotonic. It is ADVISORY (R7): no test fences it, because the precondition reads no difference
+without it.
+
+Now a sweep sets `fields_at` above `updated_at`. The token that was current still passes by
+equality, as on main. After the next bump, that token gets 412, as on main. A token read after
+the sweep but before the bump also gets 412. That is fail-closed, and main does the same.
+
+**Why the promote paths stamp.** Each path changed `parent_task_id` with no stamp, and then
+touched the row. Under `UPDATE OF updated_at` the touch hid the change, and an old token of a
+promoted task passed. The stamp in the same statement restores the 412. The every-UPDATE trigger
+now catches the unstamped move too, so the stamps are defence in depth.
+
+**Why the backfill loops per tenant.** The production runner owns `pm_tasks`. It is not a
+superuser and has no BYPASSRLS, and FORCE row security binds it. With no tenant bound it sees no
+task, so a bare UPDATE backfilled nothing. The backfill now binds each tenant in turn, in the
+shape of migration 297.
+
+**An accepted gap: a second claim of a started task.** A claim of a task that is already
+`in_progress` only adds an assignee. An assignee is a satellite, so a stale token of a second
+member now passes the claim. The coordinator accepts this. While `agent_runs_enabled` is on, the run hold
+still refuses a second agent session on the task. The claim tool text changes after SW-7 merges.
+
+**A known limit: the lift pins a future stamp.** A restore or a clock skew can leave
+`updated_at` ahead of the clock. Then each later `now()` write moves it by one microsecond only.
+`SET updated_at = now()` cannot repair it, because the trigger lifts that stamp too.
+
+The repair is an explicit time that is not `now()`, written to both columns. The trigger keeps an
+explicit time as written. The migration header gives the statement.
+
+**Why this is not a second version.** §9.10 refused a `version` column, because two monotonic
+facts about one row disagree in time. `updated_at` stays the one token and the one feed stamp.
+No client sends `fields_at`, and no reply carries it. It never refuses a token that equality
+passes. It only narrows what a mismatch means.
+
+**Why the stamp is monotonic.** `now()` is the start of the transaction. A writer that waits on
+the row lock can stamp a time older than a token a client holds. Without the lift, that client
+would pass the `fields_at` arm across a real change. A stamp equal to the old stamp stays, so one
+request keeps one instant. An explicit time, such as a test fixture, stays as written.
+
+**Why "equals `now()`" counts as stamped.** The claim adds the assignee and then moves the
+status, both at one `now()`. The second statement does not move `updated_at`. A trigger that
+tested only "the value moved" read it as a sweep. The first draft then gave two 200s for one
+version in the claim race of `test_mcp_edge_claim.py`.
+
+**Fences.** `tests/unit/test_task_precondition_fields_at.py` runs on R8. A link and a comment keep
+the old token good for a field PATCH and a status move. A change of each of ten user-visible
+columns still gives 412, and a bump leaves `fields_at`. Each promote path gives 412 to an old
+token. A tag rename or a type delete, then a comment, gives 412.
+
+The same file proves that a write with no stamp keeps the current token good, and that the repair
+of a future stamp holds. `tests/unit/test_task_fields_at_backfill_r8.py` runs the migration as a
+NOSUPERUSER NOBYPASSRLS owner of `pm_tasks` under FORCE, with a task in each of two tenants.
+
+`tests/unit/test_projects_precondition.py` holds the pure rule. H2b and H2c of
+`tests/unit/test_mcp_edge_delete.py` fence the strict delete: a comment, or
+a subtask moved in, after the read gives 409 and deletes nothing.
+
+**Not in scope.** The PATCH still loads the row with no lock before it writes. That gap is the
+open follow-up of `external_agent_access.md` §17, and this change does not close it.
 
 ---
 

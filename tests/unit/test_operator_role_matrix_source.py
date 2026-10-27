@@ -146,3 +146,19 @@ def test_the_member_remove_door_is_an_editor_act_with_no_window():
     release = operator_roles.rule_for("POST", "/billing/seats/release")
     assert (rule.min_role, rule.elevated) == (
         release.min_role, release.elevated)
+
+
+def test_the_org_rename_door_is_an_editor_act_with_no_window():
+    """CP-8 "Rename an organization" (2026-10-27). The BFF pre-checks EDITOR.
+
+    The BFF renames the tenant plane first, then calls this door. A row at a
+    higher rank, or one that needs a window, would let the tenant rename land
+    and then refuse the Console half with a 403.
+    """
+    from customer_console import operator_roles
+    from customer_console.operators import EDITOR
+
+    rule = operator_roles.rule_for("POST", "/registry/orgs/rename")
+    assert rule is not None, "the org-rename door has no matrix row"
+    assert rule.min_role == EDITOR
+    assert not rule.elevated

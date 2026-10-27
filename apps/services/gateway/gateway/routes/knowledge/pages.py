@@ -5,7 +5,7 @@ Spec: ``project-docs/specs/knowledge_base.md`` §4.2, §5.3 and §5.4.
     GET  /knowledge/pages?space=&parent=&q=&state=   the tree or a list
     GET  /knowledge/pages/{id}                        one page, its versions, its links
     POST /knowledge/pages                             make a draft
-    PATCH /knowledge/pages/{id}                       edit, one version
+    PATCH /knowledge/pages/{id}                       edit, one version (the icon alone: none)
     POST /knowledge/pages/{id}/publish                publish
     POST /knowledge/pages/{id}/move                   change the space, the parent or the place
     POST /knowledge/pages/{id}/archive                archive (manage on the space)
@@ -43,15 +43,16 @@ same visible siblings.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
 from gateway.kb_index import index as kb_index
-from gateway.routes.knowledge import core, flags
+from gateway.routes.knowledge import backlinks, core, flags, icon
 from gateway.routes.knowledge.core import router
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 
 #: The longest body one page holds, in characters. The column allows more,
@@ -68,6 +69,31 @@ MAX_POSITION = 100_000
 #: the space, so two spaces never wait for each other.
 _TREE_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
 
+#: The SET of a publish. ``publish_page`` and the accept of a page proposal
+#: (``proposals.py``, KB-5a) both write it, so the two cannot drift.
+PUBLISH_SETS = (
+    "state = 'published', published_at = now(), archived_at = NULL, "
+    f"review_at = now() + make_interval(days => COALESCE(p.review_every_days, {core.REVIEW_DAYS})), "
+    "owner_email = COALESCE(p.owner_email, p.author_email)"
+)
+
+#: The SET of a verify (KB-AI-4). It moves the review date by the interval
+#: of the page and claims an empty owner for the caller. It does not touch
+#: ``updated_at``, so a verify is no edit.
+VERIFY_SETS = (
+    f"review_at = now() + make_interval(days => COALESCE(p.review_every_days, {core.REVIEW_DAYS})), "
+    "owner_email = COALESCE(p.owner_email, :verifier)"
+)
+
+#: The PATCH fields that are metadata of care, not of substance. A PATCH of
+#: these alone writes no version (KB-AI-4), as the icon alone does (KB-2f).
+_CARE_FIELDS = frozenset({"owner_email", "review_every_days"})
+
+#: The SET of an archive. The right side reads the row as it was, so the
+#: prior state is kept. ``archive_page`` and the reject of a page proposal
+#: (KB-5a) both write it.
+ARCHIVE_SETS = "state = 'archived', archived_at = now(), archived_from_state = state"
+
 
 class PageCreate(BaseModel):
     space_id: str | None = Field(None, max_length=64)
@@ -82,6 +108,19 @@ class PagePatch(BaseModel):
     body_md: str | None = Field(None, max_length=MAX_BODY)
     reviewers: list[str] | None = Field(None, max_length=core.MAX_REVIEWERS)
     review_at: datetime | None = None
+    #: One emoji, or empty or null to clear it (KB-2f, ``icon.clean_icon``).
+    icon: str | None = Field(None, max_length=64)
+    #: The person who answers for the page (KB-AI-4). Null clears it.
+    owner_email: str | None = Field(None, max_length=320)
+    #: The days from a publish or a verify to the next review. Null clears it.
+    review_every_days: int | None = Field(None, ge=1, le=3650)
+
+    @field_validator("owner_email")
+    @classmethod
+    def _owner(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return core.clean_owner(value)
 
 
 class PageMove(BaseModel):
@@ -92,7 +131,7 @@ class PageMove(BaseModel):
 
 
 class PageRevert(BaseModel):
-    version: int = Field(..., ge=1)
+    version: int = Field(..., ge=1, le=core.MAX_VERSION)
 
 
 def _title(value: str) -> str:
@@ -128,6 +167,15 @@ async def _update(
     )).first()
 
 
+async def bump_feed_after_publish(user: UserContext) -> None:
+    """The org's My Day cache, after a publish committed (KB-9b). The
+    ``doc_shared_with_me`` card appears with the publish. It waits briefly
+    and never raises. Call it AFTER the session closes."""
+    from gateway.routes.shell import cache
+
+    await cache.bump_org_safe(user.organization_id)
+
+
 async def _written(
     db: Any, user: UserContext, row: Any, reason: str,
     background: BackgroundTasks | None = None,
@@ -143,6 +191,7 @@ async def _written(
         db, user, row, title=row.title, body_md=row.body_md, reason=reason,
     )
     org = core.org_of(user)
+    await backlinks.sync_page_links(db, user, row, row.body_md)
     rank = await _rank(db, user, row)
     reindexed = await kb_index.reindex_page(db, row, organization_id=org)
     if (background is not None and reindexed.new_shas
@@ -153,6 +202,56 @@ async def _written(
     out = core.page_dict(row, position=rank)
     out["version"] = version
     return out
+
+
+async def writable_space(db: Any, user: UserContext, space_id: str | None) -> Any:
+    """The space a new draft lands in, checked. The ``me`` space with none.
+
+    404 for a space the caller cannot open, 403 without ``write`` on it at the
+    time of the call, and 409 for an archived space. ``create_page`` and a
+    page proposal (KB-5a) both call it.
+    """
+    if space_id is None:
+        space = await core.ensure_me_space(db, user)
+    else:
+        space = await core.load_space(db, user, space_id)
+        if space is None:
+            raise core.not_found()
+        level = await core.space_level(db, user, space)
+        if core.LEVEL_RANK.get(level or "", 0) < core.LEVEL_RANK["write"]:
+            raise core.forbidden("Writing in this space needs a write grant.")
+    if space.archived_at is not None:
+        raise _conflict("The space is archived.")
+    return space
+
+
+async def insert_draft(
+    db: Any, user: UserContext, space: Any, *, parent_id: str | None, title: str,
+    body_md: str, reviewers: list[str], origin: dict[str, Any] | None = None,
+) -> Any:
+    """Insert one draft, last among its siblings, and return the new row.
+
+    The caller has checked the space (:func:`writable_space`) and the parent.
+    The author is the session's member, never a body field. *origin* is the
+    provenance of the draft, for an agent's proposal (KB-5a), or None. The
+    caller then ends the write in :func:`_written`, which appends the version.
+    """
+    # KB-2e: a new page goes last among its siblings, under the tree lock.
+    await _lock_trees(db, user, str(space.id))
+    position = await core.next_position(db, user, str(space.id), parent_id)
+    return (await db.execute(
+        text("INSERT INTO kb_pages AS p "
+             "(organization_id, space_id, parent_id, position, title, body_md, "
+             "state, author_email, reviewers, origin) "
+             "VALUES (CAST(:org AS uuid), CAST(:sid AS uuid), "
+             "CAST(:parent AS uuid), :position, :title, :body, 'draft', :author, "
+             "CAST(:reviewers AS text[]), CAST(:origin AS jsonb)) "
+             f"RETURNING {core.PAGE_COLUMNS}"),
+        {"org": core.org_of(user), "sid": str(space.id), "parent": parent_id,
+         "position": position, "title": title, "body": body_md,
+         "author": core.viewer_email(user), "reviewers": reviewers,
+         "origin": json.dumps(origin) if origin is not None else None},
+    )).first()
 
 
 async def _lock_trees(db: Any, user: UserContext, *space_ids: str) -> None:
@@ -351,17 +450,7 @@ async def create_page(
     title = _title(body.title)
     reviewers = core.clean_reviewers(body.reviewers)
     async with core._tenant_session() as db:
-        if body.space_id is None:
-            space = await core.ensure_me_space(db, user)
-        else:
-            space = await core.load_space(db, user, body.space_id)
-            if space is None:
-                raise core.not_found()
-            level = await core.space_level(db, user, space)
-            if core.LEVEL_RANK.get(level or "", 0) < core.LEVEL_RANK["write"]:
-                raise core.forbidden("Writing in this space needs a write grant.")
-        if space.archived_at is not None:
-            raise _conflict("The space is archived.")
+        space = await writable_space(db, user, body.space_id)
         if space.kind == "me" and reviewers:
             raise HTTPException(
                 status_code=422,
@@ -378,22 +467,54 @@ async def create_page(
                     detail="The parent must be a live page in the same space.",
                 )
             parent_id = str(parent.id)
-        # KB-2e: a new page goes last among its siblings, under the tree lock.
-        await _lock_trees(db, user, str(space.id))
-        position = await core.next_position(db, user, str(space.id), parent_id)
-        row = (await db.execute(
-            text("INSERT INTO kb_pages AS p "
-                 "(organization_id, space_id, parent_id, position, title, body_md, "
-                 "state, author_email, reviewers) "
-                 "VALUES (CAST(:org AS uuid), CAST(:sid AS uuid), "
-                 "CAST(:parent AS uuid), :position, :title, :body, 'draft', :author, "
-                 "CAST(:reviewers AS text[])) "
-                 f"RETURNING {core.PAGE_COLUMNS}"),
-            {"org": core.org_of(user), "sid": str(space.id), "parent": parent_id,
-             "position": position, "title": title, "body": body.body_md,
-             "author": core.viewer_email(user), "reviewers": reviewers},
-        )).first()
+        row = await insert_draft(
+            db, user, space, parent_id=parent_id, title=title, body_md=body.body_md,
+            reviewers=reviewers,
+        )
         return await _written(db, user, row, "create")
+
+
+def _care_sets(body: PagePatch, given: set[str]) -> tuple[list[str], dict[str, Any]]:
+    """The SET parts and the parameters of the owner and the interval (KB-AI-4)."""
+    sets: list[str] = []
+    params: dict[str, Any] = {}
+    if "owner_email" in given:
+        sets.append("owner_email = :owner_email")
+        params["owner_email"] = body.owner_email
+    if "review_every_days" in given:
+        sets.append("review_every_days = :every")
+        params["every"] = body.review_every_days
+    return sets, params
+
+
+async def _check_owner(db: Any, body: PagePatch, given: set[str]) -> None:
+    """422 when the new owner is no person or member of the caller's org (KB-AI-4).
+
+    An address outside the org would make a page verified by a stranger.
+    Null clears the owner and needs no check. The one check is
+    ``email_in_org``, the helper of the assistant's alias rule.
+    """
+    if "owner_email" not in given or body.owner_email is None:
+        return
+    from gateway.routes.admin.assistant_profile_people import email_in_org
+
+    if not await email_in_org(db, body.owner_email):
+        raise HTTPException(
+            status_code=422, detail="The owner must be a member of your organization.",
+        )
+
+
+async def _write_care(
+    db: Any, user: UserContext, page_id: str, body: PagePatch, given: set[str],
+) -> Any:
+    """Set the owner or the interval of a locked page. No version, no reindex."""
+    sets, params = _care_sets(body, given)
+    return (await db.execute(
+        text(f"UPDATE kb_pages AS p SET {', '.join(sets)} "
+             "WHERE p.organization_id = CAST(:org AS uuid) "
+             f"AND p.id = CAST(:pid AS uuid) RETURNING {core.PAGE_COLUMNS}"),
+        {**params, "org": core.org_of(user), "pid": page_id},
+    )).first()
 
 
 @router.patch("/pages/{page_id}")
@@ -403,10 +524,15 @@ async def update_page(
     background: BackgroundTasks,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Edit the title, the body, the reviewers or the review date. One version."""
+    """Edit the title, the body, the reviewers, the review date or the icon.
+
+    One version. A change of only the icon writes no version, keeps
+    ``updated_at`` and does not reindex (KB-2f, ``icon.write_icon``).
+    """
     given = body.model_fields_set
     if not given:
         raise HTTPException(status_code=422, detail="Nothing to change.")
+    new_icon = icon.clean_icon(body.icon) if "icon" in given else None
     async with core._tenant_session() as db:
         page = await core.load_page(db, user, page_id, lock=True)
         if page is None:
@@ -417,8 +543,25 @@ async def update_page(
         level = await core.space_level(db, user, space)
         if not core.can_write_page(level):
             raise core.forbidden("Editing this page needs a write grant on its space.")
+        await _check_owner(db, body, given)
+        if given <= _CARE_FIELDS:
+            # KB-AI-4: an owner or an interval is no change in substance. No
+            # version, no `updated_at`, no index, as the icon alone.
+            row = await _write_care(db, user, str(page.id), body, given)
+            return core.page_dict(row, position=await _rank(db, user, row))
+        if given == {"icon"}:
+            # KB-2f: an icon is not a change in substance. No version, no
+            # `updated_at`, no index, as a move of the place only (KB-2e).
+            row = await icon.write_icon(db, user, str(page.id), new_icon)
+            return core.page_dict(row, position=await _rank(db, user, row))
         sets: list[str] = []
         params: dict[str, Any] = {}
+        if "icon" in given:
+            sets.append("icon = :icon")
+            params["icon"] = new_icon
+        care_sets, care_params = _care_sets(body, given)
+        sets += care_sets
+        params.update(care_params)
         if "title" in given and body.title is not None:
             sets.append("title = :title")
             params["title"] = _title(body.title)
@@ -443,6 +586,40 @@ async def update_page(
         return await _written(db, user, row, "edit", background)
 
 
+@router.post("/pages/{page_id}/verify")
+async def verify_page(
+    page_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """A person vouches that a published page is still right (KB-AI-4).
+
+    The review date moves forward by the interval of the page, and an empty
+    owner becomes the caller. It writes no version, keeps ``updated_at`` and
+    does not reindex, because a verify is no edit. A writer of the space
+    verifies.
+    """
+    if not core.viewer_email(user):
+        raise core.forbidden("Verifying a page needs a signed-in person.")
+    async with core._tenant_session() as db:
+        page = await core.load_page(db, user, page_id, lock=True)
+        if page is None:
+            raise core.not_found()
+        if page.state != "published":
+            raise _conflict(f"Only a published page is verified. This page is {page.state}.")
+        space = await _space_of(db, user, page)
+        level = await core.space_level(db, user, space)
+        if not core.can_write_page(level):
+            raise core.forbidden("Verifying this page needs a write grant on its space.")
+        row = (await db.execute(
+            text(f"UPDATE kb_pages AS p SET {VERIFY_SETS} "
+                 "WHERE p.organization_id = CAST(:org AS uuid) "
+                 f"AND p.id = CAST(:pid AS uuid) RETURNING {core.PAGE_COLUMNS}"),
+            {"org": core.org_of(user), "pid": str(page.id),
+             "verifier": core.viewer_email(user)},
+        )).first()
+        return core.page_dict(row, position=await _rank(db, user, row))
+
+
 @router.post("/pages/{page_id}/publish")
 async def publish_page(
     page_id: str,
@@ -460,13 +637,10 @@ async def publish_page(
         level = await core.space_level(db, user, space)
         if not core.can_write_page(level):
             raise core.forbidden("Publishing this page needs a write grant on its space.")
-        row = await _update(
-            db, user, str(page.id),
-            "state = 'published', published_at = now(), archived_at = NULL, "
-            f"review_at = now() + interval '{core.REVIEW_DAYS} days'",
-            {},
-        )
-        return await _written(db, user, row, "publish", background)
+        row = await _update(db, user, str(page.id), PUBLISH_SETS, {})
+        out = await _written(db, user, row, "publish", background)
+    await bump_feed_after_publish(user)
+    return out
 
 
 async def _move_target(
@@ -616,11 +790,7 @@ async def archive_page(
         space = await _space_of(db, user, page)
         if await core.space_level(db, user, space) != "manage":
             raise core.forbidden("Archiving a page needs manage on its space.")
-        row = await _update(
-            db, user, str(page.id),
-            # The right side reads the row as it was, so the prior state is kept.
-            "state = 'archived', archived_at = now(), archived_from_state = state", {},
-        )
+        row = await _update(db, user, str(page.id), ARCHIVE_SETS, {})
         return await _written(db, user, row, "archive", background)
 
 

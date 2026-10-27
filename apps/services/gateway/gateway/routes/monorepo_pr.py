@@ -34,6 +34,7 @@ the caller falls back to the previous keep-local behaviour.
 from __future__ import annotations
 
 import asyncio
+import functools
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -234,17 +235,23 @@ async def open_monorepo_pr(
     import tempfile  # noqa: PLC0415
 
     workdir = Path(tempfile.mkdtemp(prefix=f"ccpr-{agent_name}-"))
-    auth_remote = (
-        f"https://x-token:{token}@github.com/{repo.removesuffix('.git')}.git"
-    )
+    # H-363: no token in a URL, an argv or a .git/config. The credential
+    # reaches the clone and the push only, through the seam's helper.
+    from acb_common import git_credentials as git_auth  # noqa: PLC0415
+
+    owner, _, name = repo.removesuffix(".git").partition("/")
+    try:
+        remote = git_auth.GitHubRemote(owner, name)
+    except ValueError as exc:
+        raise MonorepoPRError(f"mutation_monorepo_repo is not owner/name: {repo!r}") from exc
     try:
         # Shallow-clone the monorepo base branch (fast; we only need one path).
-        rc, _o, err = await _run(
-            ["git", "clone", "--depth", "1", "--branch", base, auth_remote, "repo"],
-            cwd=workdir, timeout=180,
-        )
-        if rc != 0:
-            raise MonorepoPRError(f"monorepo clone failed: {err.strip()[:200]}")
+        cloned = await asyncio.to_thread(functools.partial(
+            git_auth.clone, remote, workdir / "repo",
+            credential=token, extra_args=("--depth", "1", "--branch", base), timeout=180,
+        ))
+        if not cloned.ok:
+            raise MonorepoPRError(f"monorepo clone failed: {cloned.stderr.strip()[:200]}")
         repo_dir = workdir / "repo"
         await _run(["git", "config", "user.name", bot_name], cwd=repo_dir)
         await _run(["git", "config", "user.email", bot_email], cwd=repo_dir)
@@ -280,12 +287,15 @@ async def open_monorepo_pr(
         if rc != 0:
             raise MonorepoPRError(f"commit failed: {err.strip()[:200]}")
 
-        rc, _o, err = await _run(
-            ["git", "push", "--force-with-lease", "origin", branch],
-            cwd=repo_dir, timeout=120,
-        )
-        if rc != 0:
-            raise MonorepoPRError(f"push failed: {err.strip()[:200]}")
+        # The checkout is the gateway's own throwaway, so the credentialed
+        # push may run in it (no agent shares this dir).
+        pushed = await asyncio.to_thread(functools.partial(
+            git_auth.run_with_credential,
+            ["push", "--force-with-lease", "origin", branch],
+            cwd=repo_dir, credential=token, timeout=120,
+        ))
+        if not pushed.ok:
+            raise MonorepoPRError(f"push failed: {pushed.stderr.strip()[:200]}")
 
         pr_body = (
             f"### Agent self-mutation → `{target_path}`\n\n"

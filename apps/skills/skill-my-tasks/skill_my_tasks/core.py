@@ -731,12 +731,25 @@ async def my_tasks_list(view: str = "inbox", query: str = "",
             + (f"\n{page.line}" if page.line else ""))
 
 
+def _is_team_space(row: dict) -> bool:
+    """A root of kind project that is not personal: the gateway's rule
+    (`core.is_team_space`), read from the node row's own parent id. A project
+    whose parent the member cannot see still carries that parent id."""
+    # A row without the key is not judged here. The gateway still refuses the write.
+    if "parent_project_id" not in row or row.get("parent_project_id"):
+        return False
+    if row.get("personal"):
+        return False
+    return str(row.get("kind") or "project") == "project"
+
+
 @_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_list_projects(offset: int = 0, limit: int = 100) -> str:
     """List where a task can live: the member's own AREAS (private categories
     under their personal project) and the COMPANY's projects (shared with the
     team). Use an Area id to file private work, a project id to delegate or
-    promote work the team must see.
+    promote work the team must see. A row marked SPACE holds projects, not
+    tasks: pick a project inside it.
 
     Args:
         offset: Where the page starts, over the areas and then the projects.
@@ -764,6 +777,12 @@ async def my_tasks_list_projects(offset: int = 0, limit: int = 100) -> str:
             out.append(f"  [AREA] {_data(row.get('name'))} · "
                        f"{row.get('open_tasks', 0)} open · id={row.get('id')}")
         else:
+            if _is_team_space(row):
+                # A team space holds projects, not tasks (the gateway's
+                # `core.is_team_space`). It is not a place a task can live.
+                out.append(f"  [SPACE – holds projects, not tasks] "
+                           f"{_data(row.get('name'))} · id={row.get('id')}")
+                continue
             label = "FOLDER" if row.get("kind") == "folder" else "PROJECT"
             out.append(f"  [{label}] {_data(row.get('name'))} · id={row.get('id')}")
     if page.line:

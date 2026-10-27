@@ -38,6 +38,19 @@ export type LiveRun = {
   /** The kind of card that waits, when `state` is `needs_input`. */
   askKind?: string | null;
   /**
+   * A run runs for this thread (owner report, 2026-10-19). False on a
+   * `needs_input` row whose run ended: the card waits, and an answer starts a
+   * new run. The open chat calls that `parked` (`lib/runStatus.ts`). Absent
+   * from an older gateway.
+   */
+  live?: boolean;
+  /**
+   * The run's own id, stable for the whole run (re-review of #1171). The open
+   * chat keys the run by it (`runKeyOf` in `lib/runStatus.ts`). Absent from an
+   * older gateway, and on a parked question.
+   */
+  runId?: string;
+  /**
    * The run's latest step, such as "Search tasks" (WS-51 S3). Plain text that
    * the server caps at 60 characters. The panel draws it as text, never HTML.
    */
@@ -67,6 +80,16 @@ const _listeners = new Set<() => void>();
 let _timer: ReturnType<typeof setTimeout> | null = null;
 let _inflight = false;
 let _onVisibility: (() => void) | null = null;
+/** Hear each COMPLETE poll, with the time it started (`lib/runStatus.ts`). */
+const _pollListeners = new Set<(at: number) => void>();
+/** A poll was asked for while one was in flight: run one more after it. */
+let _again = false;
+/** When the poll in flight started, epoch ms. */
+let _inflightAt = 0;
+/** A poll this young answers an ask made during it: no second request. */
+const FRESH_MS = 250;
+/** The least wait before a poll that an ask during a poll owes. */
+export const AGAIN_GAP_MS = 1_000;
 /** Bumped when the member changes. A poll that started under an older
  *  generation belongs to the member who asked, and publishes nothing. */
 let _generation = 0;
@@ -118,7 +141,7 @@ function _publish(runs: readonly LiveRun[]): void {
   // Same contents → same reference, so a subscriber that puts the list in a
   // dependency array does not loop (React #185, see useActiveSessions).
   const key = runs
-    .map((r) => `${r.threadId}:${r.agentName}:${r.title ?? ""}:${r.state ?? "running"}:${r.startedAt ?? ""}:${r.lastStep ?? ""}`)
+    .map((r) => `${r.threadId}:${r.agentName}:${r.title ?? ""}:${r.state ?? "running"}:${r.live === false ? "parked" : ""}:${r.runId ?? ""}:${r.startedAt ?? ""}:${r.lastStep ?? ""}`)
     .sort()
     .join("\n");
   if (key === _key) return;
@@ -131,9 +154,13 @@ async function _poll(): Promise<void> {
   if (_listeners.size === 0) return;
   // One request at a time. A visibility change during a slow request must
   // not start a second one beside it.
-  if (_inflight) return;
+  // A poll that started a moment ago answers this ask too.
+  if (_inflight) { if (Date.now() - _inflightAt > FRESH_MS) _again = true; return; }
   _inflight = true;
   const generation = _generation;
+  const startedAt = Date.now();
+  _inflightAt = startedAt;
+  let complete = false;
   try {
     const res = await fetch(pollUrl(), { signal: AbortSignal.timeout(TIMEOUT_MS) });
     // A partial list (WS-51 S5) may lack runs that still run. Keep the last
@@ -155,9 +182,12 @@ async function _poll(): Promise<void> {
               startedAt: d.startedAt ?? null,
               state: d.state === "needs_input" ? ("needs_input" as const) : ("running" as const),
               askKind: typeof d.askKind === "string" ? d.askKind : null,
+              ...(typeof d.live === "boolean" ? { live: d.live } : {}),
+              ...(typeof d.runId === "string" && d.runId ? { runId: d.runId } : {}),
               lastStep: _step(d.lastStep),
             })),
         );
+        complete = true;
       }
     }
   } catch {
@@ -165,8 +195,37 @@ async function _poll(): Promise<void> {
     _degradedAt = Date.now();
   } finally {
     _inflight = false;
-    _schedule(pollIntervalMs());
+    if (complete) _pollListeners.forEach((l) => l(startedAt));
+    if (_again) {
+      // One more poll, but never back to back: a slow server under load
+      // must not meet a chain of polls (CI hang of #1171).
+      _again = false;
+      _schedule(AGAIN_GAP_MS);
+    } else {
+      _schedule(pollIntervalMs());
+    }
   }
+}
+
+/**
+ * Poll now (owner report, 2026-10-19): a chat opened, a stream ended with no
+ * terminal event, or the tab came back. A poll in flight runs one more after
+ * it, so the answer is never older than the ask. Does nothing while no
+ * surface subscribes.
+ */
+export function refreshLiveRuns(): void {
+  void _poll();
+}
+
+/**
+ * Hear each complete poll, with the time it STARTED. A list that does not
+ * name a run says something only about runs older than its start, so the
+ * run state (`lib/runStatus.ts`) needs that time, not the list alone. A
+ * failed or partial poll is not heard. Returns the release.
+ */
+export function subscribeLiveRunsPolls(listener: (at: number) => void): () => void {
+  _pollListeners.add(listener);
+  return () => { _pollListeners.delete(listener); };
 }
 
 /**
@@ -243,6 +302,8 @@ export function _resetLiveRunsForTests(): void {
   if (_timer) clearTimeout(_timer);
   _timer = null;
   _inflight = false;
+  _again = false;
+  _pollListeners.clear();
   _runs = EMPTY;
   _key = "";
   _stepWanters = 0;

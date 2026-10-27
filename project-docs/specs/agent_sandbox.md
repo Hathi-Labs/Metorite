@@ -2,13 +2,13 @@
 
 <!-- ste-tier: strict -->
 
-- **Status:** DRAFT, 2026-10-19. Awaiting the owner calls of §14. Nothing
-  built. Not ACTIVE until the owner approves it, so nothing dispatches from
-  it yet.
-- **Verified against code on 2026-10-19** at `main` `daad004f9`.
-- **Board row:** none yet. SBX-0 asks the owner to mint one. The work is a
-  child of **WS-43** (`maf_coding_engine.md`), because it extends the one
-  sandbox broker of D83.
+- **Status:** ACTIVE, 2026-10-27. **D130** answers every owner call of §14,
+  and takes each recommendation. Nothing built. SBX-1 is the first slice.
+- **Verified against code on 2026-10-19** at `main` `daad004f9`. Re-verify
+  every anchor at dispatch.
+- **Board row:** **WS-TO**, Metorite epic 521 (D130). The work extends the
+  one sandbox broker of D83, so `maf_coding_engine.md` (WS-43) still owns the
+  broker.
 - **Asked by:** the owner, 2026-10-18 and 2026-10-19, in chat. The owner
   asked whether the AI may write code for a function that no tool covers. The
   owner chose **"A full capable sandbox"**, and asked us to check
@@ -848,7 +848,7 @@ every box until SBX-9.
 
 | Slice | Work | Depends on | Gate |
 |---|---|---|---|
-| **SBX-0** | The owner answers §14, and mints a board row | Nothing | **OWNER-GATE** |
+| **SBX-0** | ✅ Done 2026-10-27. D130 answers §14, and the board row is WS-TO | Nothing | Done |
 | **SBX-1** | The registry tables (§7), `find_tool` with the gap record (§6.1), the log lines of §9.1 for gaps, and the gap view for an approver. No code runs anywhere | SBX-0 for the board row only | AGENT-SAFE. Dark |
 | **SBX-2** | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
 | **SBX-3** | Writes held for a card (§5.3), the batch card, `meta.via` | SBX-2 | AGENT-SAFE. Dark |
@@ -934,6 +934,10 @@ target stays off there.
 
 ## 14. Owner calls
 
+**Answered 2026-10-27.** D130 takes the recommendation of each call below.
+It also sets a cap of USD 200 a month on the `e2b` backend. The owner still
+does each act of §13.
+
 Every call has a default. A slice that needs a call waits for it, and the
 default never ships to production by itself.
 
@@ -972,3 +976,5 @@ here, and each needs its own check before anyone acts on it.
 
 - 2026-10-19 — Drafted from the owner's choice of "A full capable sandbox"
   and the nine tasks #234 to #242. Nothing built.
+- 2026-10-27 — ACTIVE. The owner deferred the calls of §14 to the
+  recommendations, and D130 records them. The board row is WS-TO.

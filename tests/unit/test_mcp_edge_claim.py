@@ -379,7 +379,15 @@ def world():
     b_project = b.project("B team")
     b_todo = b.status(b_project, "To do", "todo", 0)
     b.status(b_project, "Doing", "in_progress", 1)
+    # A project inside Team that keeps Team's lanes. A create goes here, not
+    # on Team: Team is a space, and a space holds no tasks (2026-10-26).
+    inherits = str(a.one(
+        "INSERT INTO pm_projects (name, status, source, created_by, organization_id,"
+        " timezone, owns_statuses, parent_project_id) VALUES ('Inherits', 'active',"
+        " 'manual', :a, CAST(:o AS uuid), 'Asia/Kolkata', false, CAST(:p AS uuid))"
+        " RETURNING id", a=w.OWNER, o=org, p=team))
     world_ = SimpleNamespace(admin=eng, org=org, seeder=a, team=team, sub=sub, bare=bare,
+                             inherits=inherits,
                              s=s, c={}, tok={}, personal=personal,
                              org_b=SimpleNamespace(seeder=b, project=b_project, todo=b_todo))
     for name, scopes in (("write", w.WRITE_SCOPES),):
@@ -674,10 +682,10 @@ class TestAnAgentMayMoveATaskToDone:
     async def test_f5_create_task_with_a_done_status_is_still_refused(self, live):
         for status in (live.s.done, live.s.cancelled):
             result = await _mcp(live, "create_task", {
-                "project_id": live.team, "title": "f5 closed", "status_id": status})
+                "project_id": live.inherits, "title": "f5 closed", "status_id": status})
             assert _text(result) == CREATE_TEXT
         r = await _send(live, "POST", "/projects/tasks", body={
-            "project_id": live.team, "title": "f5 closed", "status_id": live.s.done})
+            "project_id": live.inherits, "title": "f5 closed", "status_id": live.s.done})
         assert r.status_code == 422, r.text
         assert r.json()["detail"] == CREATE_TEXT
         assert tw._count(live, "f5 closed") == 0
@@ -851,9 +859,13 @@ class TestTheClaimGuardsAndReach:
     pytestmark = _DB_GATE
 
     async def test_a_task_in_another_persons_personal_project_is_refused(self, live):
+        # WS-64 OP-9 (D-OP-15): the member cannot read another member's
+        # personal task at all, so the claim meets "not found" before the
+        # assignee guard. Before OP-9 an org reader read it and the guard
+        # refused with TEXT_BAD_REQUEST.
         task = _task(live, live.personal.other, live.s.other_todo, "their own")
-        result = await _claim(live, task)
-        assert _text(result) == tools.TEXT_BAD_REQUEST
+        result = await _claim(live, task, "2026-10-15T00:00:00+00:00")
+        assert _text(result) == "Task not found."
         assert _assignees(live, task) == []
         assert _activities(live, task) == []
         assert str(_row(live, task).status_id) == live.s.other_todo

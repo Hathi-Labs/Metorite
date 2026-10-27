@@ -384,6 +384,24 @@ _THE_BILLING_CALLER = "apps/services/gateway/gateway/routes/billing.py"
 #: (``acb_llm.routed.run_attribution``), never from a request body. The entry
 #: is NARROWED by ``test_the_embed_door_touches_only_the_embed_client`` below.
 _THE_EMBED_CALLER = "apps/services/gateway/gateway/kb_index/embed.py"
+#: ⚠️ **The TWELFTH entry — the admin org rename, CP-8, 2026-10-27 — and the
+#: argument, because this list's own rule is that a new entry states one.**
+#:
+#: ``PATCH /admin/organization`` renames the tenant plane and commits. A
+#: post-commit mirror then calls ``rename_org_on_console``, so the Console's
+#: ``organization.name`` follows. That door writes one name and **allocates no
+#: seat**. It never touches ``resolve_for_signin``.
+#:
+#: **Why it had to be added.** The two planes each kept a name and nothing
+#: connected them. A customer admin renamed their org in the app, and the
+#: Operator Console still showed the old name (``customer_console.md`` CP-8
+#: "Rename an organization").
+#:
+#: 📌 It is a **session-email-only** route like the member doors: the actor is
+#: ``admin.email`` from the authenticated context (R11), and the Console derives
+#: the org from placement and membership. The entry is NARROWED by
+#: ``test_the_rename_mirror_touches_only_the_rename_client`` below.
+_THE_RENAME_CALLER = "apps/services/gateway/gateway/routes/admin/organization.py"
 _ALLOWED_CALLERS = (
     _THE_IN_PRODUCT_AI_CALLER,
     _THE_ONE_CALLER,
@@ -396,7 +414,13 @@ _ALLOWED_CALLERS = (
     _THE_APPROVE_CALLER,
     _THE_BILLING_CALLER,
     _THE_EMBED_CALLER,
+    _THE_RENAME_CALLER,
 )
+
+#: The ONLY names ``routes/admin/organization.py`` may read from
+#: ``console_resolve``: the rename client and the wiring question. The mirror
+#: asks ``is_wired`` first, so an unwired box makes no call and logs nothing.
+_RENAME_ALLOWED_NAMES = frozenset({"rename_org_on_console", "is_wired"})
 
 #: The ONLY names ``acb_llm/decide.py`` may read from ``console_resolve``.
 _DECIDE_ALLOWED_NAMES = frozenset({"decide_on_console", "ConsoleRouterUnavailable"})
@@ -531,6 +555,22 @@ def test_the_billing_proxy_touches_only_the_billing_read_client() -> None:
     )
 
 
+def test_the_rename_mirror_touches_only_the_rename_client() -> None:
+    """``routes/admin/organization.py`` is on the list for TWO names.
+
+    The list admits the FILE. This admits only the rename client and the
+    wiring question, so a later edit cannot call ``resolve_for_signin`` or a
+    seat write from the rename route.
+    """
+    used, imported = _console_resolve_names(_tree(_REPO / _THE_RENAME_CALLER))
+    assert used or imported, "the rename mirror no longer reaches console_resolve"
+    assert (used | imported) <= _RENAME_ALLOWED_NAMES, (
+        f"routes/admin/organization.py reads "
+        f"{sorted((used | imported) - _RENAME_ALLOWED_NAMES)} from "
+        "console_resolve. It may read only the rename client and is_wired."
+    )
+
+
 def _imports_console_resolve(path: Path) -> bool:
     for node in ast.walk(_tree(path)):
         if isinstance(node, ast.Import):
@@ -577,7 +617,8 @@ def test_resolve_is_reachable_only_from_the_signin_path() -> None:
 
     ⚠️ The approve door, the billing proxy and, on 2026-10-17, CP-EMB's
     ``kb_index/embed.py`` (``embeddings_on_console``) took the list to
-    ELEVEN. Each argument is written beside its name above.
+    ELEVEN. On 2026-10-27 CP-8's admin rename (``rename_org_on_console``)
+    took it to TWELVE. Each argument is written beside its name above.
 
     What stays forbidden is unchanged: wiring any of them behind
     ``resolve_access`` (six callers, one a room fan-out) = farmable seat burn.

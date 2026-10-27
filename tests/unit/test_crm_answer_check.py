@@ -35,6 +35,9 @@ import pytest
 from acb_skills import answer_check
 from acb_skills.answer_check import (
     FALLBACK_LEAD,
+    HOW_HEAD,
+    HOW_NONE,
+    NOTE_MISSING,
     ON,
     SHADOW,
     AnswerCheckProvider,
@@ -54,6 +57,11 @@ from agent_framework import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+
+def missing(*figures: str) -> str:
+    """The note of round 8 for figures that no CRM result holds, each with
+    its reason and its action."""
+    return "\n\n" + "\n".join(NOTE_MISSING.format(figure=f) for f in figures)
 
 CRM_RESULT = (
     "Deals, sum_amount by status:\n"
@@ -204,14 +212,17 @@ async def test_an_invented_total_is_caught(stream: bool) -> None:
 
 
 @STREAMS
-async def test_two_failures_give_the_fallback(stream: bool) -> None:
+async def test_two_failures_deliver_the_answer_with_a_caveat(stream: bool) -> None:
+    """Round 7 (owner direction): the retried answer still fails, so it goes
+    out with a caveat that names its figures. It is never replaced."""
+    second = "Open deals hold ₹14 lakh."
     agent, client = _agent([("call", "crm_aggregate", {"entity": "deals"}),
                             ("text", "Open deals hold ₹13.5 lakh."),
-                            ("text", "Open deals hold ₹14 lakh.")])
+                            ("text", second)])
     out = await _run(agent, stream=stream)
-    assert out.startswith(FALLBACK_LEAD)
-    assert CRM_RESULT in out
-    assert "13.5" not in out and "₹14 lakh" not in out
+    assert out.startswith(second)
+    assert out == second + missing("₹14 lakh")
+    assert FALLBACK_LEAD not in out and "13.5" not in out
     assert len(client.requests) == 3  # one extra request at most
 
 
@@ -239,7 +250,7 @@ async def test_the_model_s_own_text_is_never_a_source(stream: bool) -> None:
 @STREAMS
 async def test_the_run_has_one_retry_in_all(stream: bool) -> None:
     """Item 12: the retry is per run, not per request. A later failure of
-    the same run goes straight to the fallback."""
+    the same run goes out at once, with a caveat (round 7)."""
     agent, client = _agent([
         ("call", "crm_aggregate", {"entity": "deals"}),
         ("text", "Open deals hold ₹13.5 lakh."),
@@ -247,8 +258,8 @@ async def test_the_run_has_one_retry_in_all(stream: bool) -> None:
         ("text", "Open deals hold ₹15 lakh."),
     ])
     out = await _run(agent, stream=stream)
-    assert FALLBACK_LEAD in out
-    assert "₹15 lakh" not in out
+    assert FALLBACK_LEAD not in out
+    assert out.endswith("Open deals hold ₹15 lakh." + missing("₹15 lakh"))
     assert len(client.requests) == 4
 
 
@@ -452,16 +463,23 @@ async def test_a_bad_card_with_clean_text_is_never_shipped(stream: bool) -> None
 
 
 @STREAMS
-async def test_a_bad_card_with_bad_text_gives_the_fallback(stream: bool) -> None:
+async def test_a_bad_card_with_bad_text_goes_out_with_a_caveat(stream: bool) -> None:
+    """Round 7: after the one retry, the answer and its card go out, and the
+    caveat names the figures that the check could not match."""
     agent, client = _agent([
         ("call", "crm_aggregate", {"entity": "deals"}),
         ("both", "Open and won hold ₹18.3 lakh.", "emit_generative_ui", _card(1834567)),
         ("both", "Still ₹18.3 lakh.", "emit_generative_ui", _card(1834567)),
+        ("text", "Done."),
     ])
     out = await _run(agent, stream=stream)
-    assert CARDS == []
-    assert out.startswith(FALLBACK_LEAD)
-    assert len(client.requests) == 3
+    assert [_card(1834567)["ui"]] == CARDS     # the retried card, once
+    # Both figures of the answer fail, so the note names none of them and
+    # says how the answer read the CRM (round 8).
+    assert out.startswith("Still ₹18.3 lakh.\n\n" + HOW_HEAD + "\n- Deals, sum of the amount")
+    assert "1834567" not in out.split(HOW_HEAD, 1)[1]
+    assert FALLBACK_LEAD not in out
+    assert len(client.requests) == 4
 
 
 def test_the_shown_text_of_a_card_skips_layout_and_code() -> None:
@@ -710,10 +728,10 @@ async def test_a_derived_figure_with_no_operands_is_caught(stream: bool) -> None
 
 
 def test_whatsapp_ui_is_a_display_tool() -> None:
-    from acb_skills.answer_check import DISPLAY_TOOLS, SHOWN_TOOLS, display_text
+    from acb_skills.answer_check import DISPLAY_TOOLS, QUIET_TOOLS, display_text
 
     assert "whatsapp_ui" in DISPLAY_TOOLS
-    assert "share_artifact" in SHOWN_TOOLS - DISPLAY_TOOLS
+    assert "share_artifact" not in QUIET_TOOLS
     shown = display_text("whatsapp_ui", _stats(1834567))
     assert "1834567" in shown and "stats" not in shown
 
@@ -757,12 +775,15 @@ async def test_a_failed_text_beside_a_shared_file_is_not_stripped(stream: bool) 
     agent, client = _agent([
         ("call", "crm_aggregate", {"entity": "deals"}),
         ("both", "Open deals hold ₹99 lakh.", "share_artifact", {"path": "outputs/a.pdf"}),
-        ("both", "Open deals hold ₹99 lakh.", "share_artifact", {"path": "outputs/a.pdf"}),
+        ("both", "Open deals hold ₹98 lakh.", "share_artifact", {"path": "outputs/a.pdf"}),
+        ("text", "Done."),
     ], tools=[crm_aggregate, share_artifact])
     out = await _run(agent, stream=stream)
-    assert ELEMENTS == []
-    assert out.startswith(FALLBACK_LEAD)
-    assert len(client.requests) == 3
+    # The first step fails and is retried, so its file is never shown. The
+    # retried step goes out with its file and a caveat (round 7).
+    assert ELEMENTS == [("file", "outputs/a.pdf")]
+    assert out.startswith("Open deals hold ₹98 lakh." + missing("₹98 lakh"))
+    assert len(client.requests) == 4
 
 
 @pytest.mark.parametrize("label", [
@@ -827,6 +848,172 @@ def test_the_ledger_keeps_only_the_newest_fallback_results() -> None:
     assert ledger.check("INR 1,000").ok
 
 
+# ── Fix round 4 (2026-10-17): the adversarial review of round 3 ───────────
+
+def _response(text: str, calls: list[tuple[str, dict[str, Any]]]) -> ChatResponse:
+    contents = ([Content.from_text(text)] if text else []) + [
+        Content.from_function_call(f"c{i}", name, arguments=json.dumps(args))
+        for i, (name, args) in enumerate(calls)]
+    return ChatResponse(messages=[Message("assistant", contents)])
+
+
+def _verdict(text: str, calls: list[tuple[str, dict[str, Any]]]) -> str:
+    from acb_skills.answer_check import CheckAnswers
+
+    ledger = RunLedger()
+    ledger.record("crm_aggregate", CRM_RESULT, arguments={"entity": "deals"})
+    verdict, _result = CheckAnswers(ledger, ON)._verdict(_response(text, calls))
+    return verdict
+
+
+@pytest.mark.parametrize(("name", "args"), [
+    ("ask_questions", {"questions": json.dumps([{
+        "header": "Drill down", "question": "The pipeline is Rs 14.6 crore. Which stage?",
+        "options": [{"label": "Open (Rs 5.9 crore)"}]}])}),
+    ("request_confirmation", {"title": "Log a Rs 22 lakh deal?",
+                              "detail": "Amount Rs 22,40,000"}),
+])
+def test_a_question_or_confirmation_card_is_checked(name: str, args: dict[str, Any]) -> None:
+    """Rule 1: the two cards show their arguments, so their numbers count."""
+    from acb_skills.answer_check import DISPLAY_TOOLS, display_text
+
+    assert name in DISPLAY_TOOLS
+    assert display_text(name, args)
+    assert _verdict("Here is the split.", [(name, args)]) == "fail"
+
+
+@pytest.mark.parametrize("name", [
+    "ask_questions", "share_artifact", "web_lookup", "send_email", "a_tool_no_one_knows",
+])
+def test_a_failed_step_with_a_call_outside_the_quiet_list_fails(name: str) -> None:
+    """Rule 1: a strip is allowed only when EACH call is quiet."""
+    assert _verdict("Open deals hold ₹99 lakh.", [(name, {"x": "y"})]) == "fail"
+    assert _verdict("Open deals hold ₹99 lakh.",
+                    [("crm_aggregate", {"entity": "deals"}), (name, {"x": "y"})]) == "fail"
+
+
+@pytest.mark.parametrize("name", ["crm_aggregate", "get_pipeline", "recall_notes", "remember"])
+def test_a_failed_step_with_only_quiet_calls_is_stripped(name: str) -> None:
+    from acb_skills.answer_check import QUIET_TOOLS
+
+    assert name in QUIET_TOOLS
+    assert _verdict("Open deals hold ₹99 lakh.", [(name, {"entity": "deals"})]) == "strip"
+
+
+@pytest.mark.parametrize(("tool", "text"), [
+    ("code_task", "Session report: the pipeline total is Rs 19.2 crore."),
+    ("run_script", "exit 0\nstdout:\n192000000\n"),
+    ("run_command", "192000000"),
+    ("call_agent", "The pipeline total is Rs 19.2 crore."),
+])
+def test_text_that_a_model_wrote_is_no_source(tool: str, text: str) -> None:
+    """Rule 3: a coding agent's report and the output of the model's own
+    script are no source, as a delegated answer is not."""
+    ledger = RunLedger()
+    ledger.record("crm_aggregate", CRM_RESULT)
+    ledger.record(tool, text)
+    assert not ledger.check("The pipeline total is Rs 19.2 crore.").ok
+    assert not ledger.check("The pipeline total is 192000000.").ok
+
+
+async def test_a_large_result_is_read_off_the_event_loop(monkeypatch) -> None:
+    """Rule 8: a result over RECORD_INLINE_CHARS is read on a thread."""
+    import asyncio
+
+    from acb_skills.answer_check import RECORD_INLINE_CHARS, RecordToolResults
+
+    threads: list[str] = []
+    real = asyncio.to_thread
+
+    async def _to_thread(fn: Any, *args: Any, **kwargs: Any) -> Any:
+        threads.append(getattr(getattr(fn, "func", fn), "__name__", "?"))
+        return await real(fn, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _to_thread)
+
+    class _Context:
+        function = None
+        arguments = None
+
+        def __init__(self, result: str) -> None:
+            self.result = result
+
+    async def _next() -> None:
+        return None
+
+    ledger = RunLedger()
+    middleware = RecordToolResults(ledger)
+    await middleware.process(_Context("Small: INR 5,00,000"), _next)
+    assert threads == []
+    big = "\n".join(f"- row {i}: INR {1000 + i}" for i in range(RECORD_INLINE_CHARS // 10))
+    await middleware.process(_Context(big), _next)
+    assert threads == ["record"]
+    # The thread also sorts the book, so the check on the loop sorts nothing.
+    assert ledger.book._pending == []
+    assert ledger.check("Row holds INR 1,005.").ok
+
+
+async def test_the_win_loss_report_says_its_window(monkeypatch) -> None:
+    """Rule 6: "in the last 90 days" has a source."""
+    from acb_common.number_check import check
+    from acb_skills import crm_tools
+
+    async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
+        if path.endswith("win-loss"):
+            return {"since": "2026-07-19", "won": 12, "lost": 8, "win_rate": 60.0,
+                    "won_amount": 18400000, "lost_amount": 9750000,
+                    "closed_without_date": 0, "lost_reasons": [], "window_days": 90}
+        return {"owners": [{"owner_email": "a@x.test", "open_deals": 3, "weighted": 100,
+                            "won_amount": 200}], "window_days": 90}
+
+    monkeypatch.setattr(crm_tools, "_get", _get)
+    for kind in ("win-loss", "owners"):
+        text = await crm_tools.crm_report(kind)
+        assert "The window is the last 90 days." in text, text
+    text = await crm_tools.crm_report("win-loss")
+    answer = "In the last 90 days we won 12 deals and lost 8, a 60% win rate."
+    assert check(answer, [text]).ok
+
+
+# ── Fix round 5 (2026-10-18): a choice is no claim ────────────────────────
+
+def _ask(question: str, options: list[str]) -> tuple[str, dict[str, Any]]:
+    return ("ask_questions", {"questions": json.dumps([{
+        "header": "Next", "question": question,
+        "options": [{"label": o} for o in options]}])})
+
+
+@pytest.mark.parametrize("options", [
+    ["Last 30 days", "Last 90 days", "This quarter"],
+    ["Top 10", "Top 25", "All of them"],
+    ["Above ₹10 lakh", "Above ₹50 lakh"],
+    ["At least 5 deals", "More than ₹2 crore", "Within 7 days", "Up to 20%"],
+])
+def test_a_choice_in_an_option_label_is_not_checked(options: list[str]) -> None:
+    """P1-b: the chat asks clarifying questions as cards. A choice is no
+    claim, so the card goes out with no retry."""
+    assert _verdict("", [_ask("Which one should I use?", options)]) == "pass"
+
+
+@pytest.mark.parametrize(("question", "options"), [
+    ("Which stage?", ["Proposal (Rs 5.9 crore)", "Negotiation (Rs 8.7 crore)"]),
+    ("The pipeline is Rs 14.6 crore. Which window?", ["Last 30 days"]),
+    ("Which one?", ["Above ₹10 lakh, the ₹99 lakh deals"]),
+])
+def test_a_claim_in_a_question_card_is_still_checked(question: str,
+                                                      options: list[str]) -> None:
+    assert _verdict("", [_ask(question, options)]) == "fail"
+
+
+def test_the_retry_note_states_the_rule_of_the_check() -> None:
+    from acb_common.number_check import check
+
+    note = answer_check.retry_note(check("₹99 lakh", ["Open: INR 5,00,000"]))
+    for words in ("BOTH", "same paragraph", "total", "net", "share", "average",
+                  "in brackets"):
+        assert words in note, words
+
+
 # ── WS-53 CRM-Q32-8 item 19: a CLARIFY card passes the number check ─────────
 
 
@@ -889,3 +1076,91 @@ async def test_q32_8_a_run_that_shows_the_card_needs_no_retry(stream: bool) -> N
     ], tools=[crm_aggregate, ask_questions])
     assert await _run(agent, stream=stream) == answer
     assert shown == [arguments["questions"]] and len(client.requests) == 3
+
+
+# ── Fix round 6 (2026-10-18): a failed check never loses the turn ─────────
+
+@STREAMS
+async def test_a_check_that_raises_lets_the_answer_through(stream: bool, monkeypatch) -> None:
+    """Item 3: in ``on`` mode a check that raises logs it and sends the
+    answer unchanged, with no retry and no fallback."""
+    warned: list[str] = []
+    monkeypatch.setattr(answer_check._log, "warning",
+                        lambda event, **kw: warned.append(event))
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("the check broke")
+
+    monkeypatch.setattr(answer_check, "check", _boom)
+    answer = "Open deals hold ₹99 lakh."
+    agent, client = _agent([("call", "crm_aggregate", {"entity": "deals"}),
+                            ("text", answer)])
+    assert await _run(agent, stream=stream) == answer
+    assert len(client.requests) == 2
+    assert "answer_check.check_failed" in warned
+
+
+@pytest.mark.parametrize("arguments", [
+    "[" * 5000 + "]" * 5000,
+    json.dumps({"options": ["[" * 5000 + "]" * 5000]}),
+    '{"label": "' + "[" * 3000 + '"}',
+])
+@pytest.mark.parametrize("name", ["ask_questions", "emit_generative_ui"])
+def test_a_spec_nested_too_deep_never_raises(name: str, arguments: str) -> None:
+    from acb_skills.answer_check import display_text
+
+    assert isinstance(display_text(name, arguments), str)
+
+
+def test_a_deep_python_spec_never_raises() -> None:
+    """A spec that arrives as data, nested deeper than the stack, gives no
+    text and no error."""
+    from acb_skills.answer_check import display_text
+
+    node: Any = "INR 99"
+    for _ in range(5000):
+        node = [node]
+    assert display_text("emit_generative_ui", {"ui": node}) == ""
+
+
+def test_the_retry_note_says_how_to_write_a_total_a_ratio_and_a_rank() -> None:
+    from acb_common.number_check import check
+
+    note = answer_check.retry_note(check("₹99 lakh", ["Open: INR 5,00,000"]))
+    for words in ("27 (20 won, 7 lost)", "6x", "rank", "state the whole"):
+        assert words in note, words
+
+
+# ── Fix round 7 (2026-10-19): an answer is never replaced ─────────────────
+
+def test_many_failed_figures_name_no_figure_in_plain_words() -> None:
+    """Round 8: seven failed figures are a limit of the check, so the note
+    names none of them (it used to list five raw figures)."""
+    from acb_common.number_check import check
+
+    result = check("We have 91, 92, 93, 94, 95, 96 and 97 deals, and 91 again.",
+                   ["Open: INR 5,00,000"])
+    kind, note = answer_check.note_text(result, RunLedger())
+    assert (kind, note) == ("how", "\n\n" + HOW_NONE)
+    for word in ("91", "CRM-Q29", "answer_check", "check failed", "tool", "source"):
+        assert word not in note
+
+
+def test_an_answer_with_no_text_still_gets_the_fallback() -> None:
+    """``fallback_text`` stays only for an answer with no text."""
+    from acb_skills.answer_check import CheckAnswers
+
+    ledger = RunLedger()
+    ledger.record("crm_aggregate", CRM_RESULT)
+    ledger.retried = True
+    middleware = CheckAnswers(ledger, ON)
+    card = ChatResponse(messages=[Message("assistant", [Content.from_function_call(
+        "c1", "emit_generative_ui", arguments=json.dumps(_card(1834567)))])])
+
+    class _Context:
+        messages: tuple[Any, ...] = ()
+
+    import asyncio
+
+    out = asyncio.run(middleware._checked(_Context(), lambda: None, card))
+    assert out.text.startswith(FALLBACK_LEAD)

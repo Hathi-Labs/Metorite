@@ -48,54 +48,31 @@ enforces it, or be labelled advisory. "We should always…" is not a rule.
 
 ## 1. Environments and the test database
 
-> ⚠️ **AMENDED 2026-08-26 by D55 — this section's conclusion is superseded; its
-> reasoning is not.** The paragraph below is correct **for the premise it names**:
-> *one box, single-digit customers, one developer.* The owner is changing all three,
-> so it is retired **with its premise** rather than overruled on taste. The ladder we
-> run is now local/CI → **staging** → production, and staging is built the way this
-> section's own **P-1** describes — a nightly re-derivation from production's
-> anonymised dump, not a maintained copy — which is what answers the drift objection
-> instead of ignoring it. **P-1 and "a staging environment" are the same object.**
-> Owning spec: `specs/development_and_delivery_framework.md` §3 (ADOPTED, board
-> **WS-38**); the parity contract is its §3.4.
->
-> ⚠️ **PHASE 0 HAS ENDED (2026-10-17).** Staging now runs at `dev.metorite.com`
-> (WS-38, `specs/staging_and_daily_release.md`). A merge reaches staging first,
-> and production takes one release a day. Test on staging before production.
-> `CLAUDE.md` §4 carries the steps. The note below is the record of Phase 0.
->
-> ⏳ **In force until it isn't: PHASE 0.** Until customer #2, a second contributor, or
-> H3 — whichever comes first — **we work directly in production** (D55.2). So for
-> today the paragraph below still describes what we run; §3.5 of the framework carries
-> the three end-triggers. ⚠️ Everything else in *this* document binds throughout, and
-> §2's **ship dark** binds harder: with no staging in front of production, a flag
-> defaulting OFF is the only thing between a merge and an incident.
-
-**We do not run a classic dev → staging → prod triple, and should not.** At one
-box and single-digit customers it buys drift (a staging environment nobody keeps
-truthful) more than safety.
-
-**What we run instead:**
+**We run four environments** (D55, board WS-38):
 
 1. **Local hermetic** — the unit suite, no database. Fast, and where most tests
-   live. ⚠️ Its fakes agree with whatever SQL they are handed (see §4).
-2. **Local scratch Postgres** — the `mt-scratch` pattern (:5433, full ladder
-   applied). This is where migrations get proven before they are believed.
-3. **Production** — one box, with the box's own 5-minute pull timer as a second
-   delivery path beside the deploy workflow.
+   live. ⚠️ Its fakes agree with whatever SQL they get (see §4).
+2. **Local scratch Postgres** — `scripts/dev_db.sh` (§1.1), with the migration
+   ladders applied. Prove a migration here before you trust it.
+3. **Staging** — `https://dev.metorite.com`, on the dev box. It serves the
+   `staging` ref, and that ref takes every merge. A nightly rebuild from an
+   anonymised dump of production keeps it production-shaped, so it cannot
+   drift.
+4. **Production** runs on its own box. It applies the `release` ref. A daily run
+   moves that ref at 21:30 UTC. A manual dispatch moves it for a hotfix.
 
-**The missing environment, and the one worth building: a production-SHAPED
-restore.** CI replays the migration ladder from zero, which proves the ladder is
-*self-consistent*. It does not prove the next migration survives contact with
-real data — and that is exactly where the failures came from (148's cast, the
-tags migration's `LATERAL` scope error, the People write routes). We already own
-every ingredient: a nightly dump, a rehearsed restore (2026-08-05), and the
-scratch-database pattern.
+`specs/staging_and_daily_release.md` owns staging and the daily release. Root
+`CLAUDE.md` §4 says what to do after a merge. Test on staging before
+production.
 
-> **Practice item P-1 (proposed, not yet a board row): rehearse pending
-> migrations against a restore of last night's production dump**, in CI or on a
-> schedule. Anonymise before it leaves the box. This single job would have caught
-> more of this month's incidents than any other change on this page.
+**Why staging is a nightly copy.** CI replays the migration ladder from zero.
+That proves only that the ladder is *self-consistent*. It does not prove that
+the next migration survives real data. Our failures came from real data:
+148's cast, the tags migration's `LATERAL` scope error, and the People write
+routes.
+
+Staging applies each merged migration to a copy of production's data
+before production takes it. That copy is practice item P-1.
 
 ### 1.1 The local loop — build against a real database, then deploy
 
@@ -157,7 +134,8 @@ the row the LEFT JOIN exists to include, and it removes that row first. Below
 behaviour. Keep them separate, because that separation is what makes a bad merge
 a non-event.
 
-- **Deploy continuously on merge to main.** Already true.
+- **A merge deploys to staging, and production takes one release a day**
+  (WS-38, `specs/staging_and_daily_release.md`).
 - **Ship dark.** Every feature lands behind a flag, defaulting OFF, and the flip
   is a deliberate act — for anything outward-facing or spend-bearing, an
   **owner-gated** one (`work_plan.md` §6). This is already our habit and it is
@@ -182,8 +160,8 @@ a non-event.
   pooled cutover a ring is a per-org feature flag, which **D25.2** already fixed
   as the only version-skew mechanism we support (one codebase, one schema, always
   latest).
-- **A fixed clock is optional; the ring order is not.** "Midday every day" is
-  fine, and matters far less than "us first, then one, then all".
+- **The ring order matters more than the clock.** The clock is 21:30 UTC each
+  day. The order is "us first, then one, then all".
 
 ## 3. Migrations — the sharpest edge we have
 
@@ -278,7 +256,8 @@ queue of six (2026-08-09) is above it.
 **The supervisor loop:** audit the spec (is it dispatchable?) → set the risk
 tier → implement one narrowed slice → **independently** verify against the
 acceptance criteria → adversarially review the diff (HIGH and STANDARD tiers,
-not LOW) → open a PR → merge, and watch the deploy and the `main` unit job.
+not LOW) → open a PR → merge, watch the deploy and the `main` unit job, and
+test on staging.
 `.claude/commands/next-ticket.md` owns the steps and the tiers (owner decision,
 2026-10-16). Locally, run `scripts/affected_tests.py`. pr-check runs the
 whole suite. Two properties make it work:
@@ -364,10 +343,86 @@ A change is done when **all** of these hold — not when CI is green:
    wrong four times in one day.
 6. The owning spec's status header is updated in the same PR (R4).
 
+## 7a. Two-speed delivery: build first, harden when the feature is done
+
+Owner directive, 2026-10-19. The guardrails cost more time than they saved.
+We measured 70 red CI runs on 15-19 October. A process fence caused 29 of
+them. A real bug in the PR caused 9. Each red run cost about 30 minutes.
+
+**A feature now moves at two speeds.**
+
+**1. Build.** One PR or many, until the feature works.
+
+- The product tests block.
+- The SAFETY fences block. They guard tenancy, auth, secrets, migrations,
+  money, and the deploy and CI path.
+- The PROCESS fences are advisory. They guard naming, docs, registries, the
+  design system and source-string pins. CI shows a warning and goes on.
+- STE lint is advisory. The hook reports an error and goes on. The
+  hardening pass sets `STE_LINT_BLOCK=1`, and then it blocks.
+- The agent loop is implement, then verify (`/next-ticket` step 1d). The
+  adversarial review, the
+  visual review, the board row, the spec header (R4) and new fence tests (R7)
+  wait for the hardening pass.
+- A HIGH-tier slice keeps the full loop: tenancy, RLS, auth, identity, a
+  migration, money, credits, secrets, a member or role write, or the deploy
+  path.
+- **A UI diff is the exception for the look** (owner directive, 2026-10-27).
+  In build mode the UI gate fences block, and a UI diff gets the four-capture
+  visual review. It also gets item 8 of `diff-reviewer`, the UI checklist.
+  The full adversarial review still follows the tier of the slice
+  (`/next-ticket` step 1b). `workbench/control_plane/DESIGN_SYSTEM.md` §11
+  holds the gate. The other process fences stay advisory.
+
+**2. Harden.** One PR when the feature works, labelled `harden`.
+
+- The process fences block. Run `bash scripts/prepush.sh --harden` first.
+- Run `diff-reviewer` on the WHOLE feature diff, not on each slice.
+- Write the fence tests that R7 asks for, and the items for this feature in
+  `project-docs/hardening_backlog.md`.
+- Update the board row and the spec header.
+
+**What never relaxes:** plan-guard, the safety fences, the R8 database
+suites, the migration ladder replay, and the R1 migration-number guard. We
+cannot roll back production, and every customer shares one database.
+
+**The lists.** `tests/fences.json` sorts each static fence into `safety` or
+`process`. A fence is `safety` when its failure would reach production or a
+customer: a 404, a 422, a wrong write, a leak. A fence is `process` when it
+guards naming, docs, registries, wording, the look or lockstep. A new static
+fence goes into one list in the PR that adds it. If you are not sure, choose
+`safety`. Fence: `tests/unit/test_fence_lists.py`.
+
+**Before you push.** `bash scripts/prepush.sh` runs the fences and the
+affected tests in a few minutes.
+
+**The whole suite, on this PC.** `bash scripts/ci_local.sh` runs every
+pr-check job in the `metorite-ci` WSL2 distro. The distro is preset, so a run
+spends its time on tests, not on installs. The jobs come from
+`.github/workflows/pr-check.yml` through `scripts/ci_pc/steps.py`, so the two
+cannot drift. Set it up once with `bash scripts/ci_pc/setup.sh`.
+
+- It tests a COMMIT. Commit first.
+- The distro cannot read the Windows drives and cannot start a Windows
+  program. The code reaches it through `git`, never through a mount.
+- It is not the merge gate. pr-check on GitHub is.
+- It shares ONE WSL2 VM with Docker Desktop and every distro. So it sizes its
+  shards by free memory, caps each container, and refuses to start below
+  8 GB free. On 2026-10-20 an uncapped run hung the VM for every session.
+- When WSL or Docker hangs, run `bash scripts/ci_pc/doctor.sh` from
+  Windows. `--fix` repairs it in a known order: `wsl --shutdown`, then the
+  WSL service (one UAC prompt), then Docker Desktop and only its own distro,
+  then the containers that were running.
+- Fence: `tests/unit/test_ci_pc.py`.
+
 ## 8. What to fix before customer #1 — in order
 
-These are named here so they are not rediscovered; each belongs to an existing
-board row.
+This list names them so that nobody finds them again from zero. Each belongs
+to an existing board row.
+
+Rows 1 and 3 are built. `GET /version` serves the deployed SHA
+(`tests/unit/test_build_info.py`). Staging applies each migration to a nightly
+copy of production first (§1). The board row holds the state of the others.
 
 | # | Item | Why it is a business risk, not tech debt | Home |
 |---|---|---|---|

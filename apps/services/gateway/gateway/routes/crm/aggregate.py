@@ -101,6 +101,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
+from acb_common import get_logger
 from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.crm.core import (
     CLOSING_TYPES,
@@ -141,6 +142,7 @@ from gateway.routes.crm.field_sql import (
     overlay_stage,
     overlay_weighted,
     overlay_where,
+    text_matches,
     used_keys,
     zoned,
 )
@@ -157,6 +159,8 @@ from gateway.routes.crm.records import ListParams, list_query
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
+
+_log = get_logger("crm.aggregate")
 
 #: ``measure`` → the SQL aggregate. ``weighted`` is not here: it reuses
 #: ``core.WEIGHTED_SQL`` lane by lane (see the module doc). The field measures
@@ -304,6 +308,11 @@ class AggregateResponse(BaseModel):
     #: CRM-Q20-3a: the slot and the module of an overlay, for example
     #: ``{"slot": "deal", "module": "Commercials"}``. Absent with no overlay.
     overlay: dict[str, str] | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: WS-53 §18.16 part 6: each text filter of a module → the stored values
+    #: that it counted ("in any case, and each short form"), so the answer
+    #: can say which ones. Absent with no text filter.
+    matched: dict[str, list[str]] | None = Field(
+        default=None, exclude_if=lambda value: value is None)
 
 
 class StageDwell(BaseModel):
@@ -541,6 +550,8 @@ class _Read:
     #: status group.
     overlay: dict[str, str] | None = None
     types: dict[str, str] = dc_field(default_factory=dict)
+    #: §18.16 part 6: the stored values that each text filter counted.
+    matched: dict[str, list[str]] = dc_field(default_factory=dict)
 
 
 def _is_timeout(exc: DBAPIError) -> bool:
@@ -567,11 +578,16 @@ async def _read(
         field_measure, field = module_measure(measure, field)
         # CRM-Q25b: one zone for each bucket and each range of the answer.
         zone = await crm_zone(db, current_tenant())
-        where = module_where(scope, module, pairs, zone=zone)
+        # §18.16 part 6: a text filter counts each case and short form.
+        matches = await text_matches(db, str(current_tenant()), scope, module, pairs)
+        where = module_where(scope, module, pairs, zone=zone, matches=matches)
         table, where_sql, bound = MODULE_TABLE, where.sql, dict(where.params)
         source = where.source
+        matched = {pairs[i][0]: list(found) for i, found in matches.items()}
+        await _seed_aliases(db, module, pairs, matches)
     else:
         assert found is not None
+        matched = {}
         if group_by == "created_month" and await is_mirror_mode(db, current_tenant()):
             # The created date of a mirrored row is the import time (Q8).
             raise HTTPException(status_code=422, detail={
@@ -634,7 +650,32 @@ async def _read(
         used_keys(scope, [field, group_field, *(name for name, _value in pairs)])
         if module is not None and scope is not None else {}
     )
-    return _Read(values, labels, order, measured, grouped, zone, keys)
+    return _Read(values, labels, order, measured, grouped, zone, keys, matched=matched)
+
+
+async def _seed_aliases(db: Any, module: str, pairs: list[tuple[str, str]],
+                        matches: dict[int, list[str]]) -> None:
+    """Keep each alias set of two or more values as the org's value-alias
+    fact (WS-53 §18.16 part 6), in ``zoho:questions`` under ``aliases``, so
+    ``org_facts`` names it. Only for an org on ``CRM_QUESTIONS_ORGS``. A
+    savepoint holds the write, so a fault never fails the total."""
+    from gateway.crm_sync import runs
+    from gateway.crm_sync.questions import QUESTIONS_ROW
+    from gateway.crm_sync.terms import ALIASES_BUCKET
+    from gateway.routes.crm.flags import questions_allowed
+
+    org = str(current_tenant() or "")
+    found = {i: v for i, v in matches.items() if len(v) > 1}
+    if not org or not found or not questions_allowed(org):
+        return
+    try:
+        async with db.begin_nested():
+            for index, values in found.items():
+                name = f"{module}.{pairs[index][0]}.{values[0]}"
+                await runs.merge_cursor_entry(db, org, QUESTIONS_ROW, ALIASES_BUCKET, name,
+                                              values)
+    except Exception as exc:  # the fact is advice: the total stands
+        _log.warning("crm.aggregate.alias_seed_failed", error_type=type(exc).__name__)
 
 
 #: The groups that an overlay has no source for.
@@ -886,6 +927,7 @@ async def compute(
             else sum(acc.rows for acc in read.values.values())
         ),
         overlay=read.overlay,
+        matched=read.matched or None,
     )
 
 

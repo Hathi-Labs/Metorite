@@ -132,6 +132,17 @@ def runs_enabled() -> bool:
     return bool(get_settings().agent_runs_enabled)
 
 
+def mcp_sessions_enabled() -> bool:
+    """True when ``agent_mcp_sessions_enabled`` is on (SW-7, spec §12.5).
+
+    The ONE reader of the session flag. Only the edge reads it. While it is
+    false, ``initialize`` answers no ``Mcp-Session-Id``, an id that a client
+    sends is read as no session, and no ``X-Agent-Session`` is signed. The
+    gateway needs no flag: with no signed session it behaves as before SW-7.
+    """
+    return bool(get_settings().agent_mcp_sessions_enabled)
+
+
 #: The ``detail`` of the 403 that branch 0 answers to a SIGNED write while the
 #: writes flag is off (EA-6a fix round 1). The edge maps it to a tool error,
 #: never to the MCP 401, so a client keeps its token and its reads.
@@ -544,9 +555,19 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: /projects/agent-runs/{run_id}/archive-approval`` and ``POST
 #: /projects/tasks/{task_id}/archive`` stay OUT of both sets: only the
 #: member archives, and branch 0 refuses a signed request to either.
+#: EA-6h adds the agent delete, the route of ``delete_task`` (EA3-51). It
+#: is the ONE destructive pair. The route refuses it unless the member's
+#: switch is on, and it checks the version and the exact title. ⚠️ The plain
+#: ``DELETE /projects/tasks/{task_id}`` stays OUT of both sets.
+#: WS-55 MCP-G2 adds two pairs. The ``PUT`` of the assignees is the route of
+#: ``set_assignees``, the one ``PUT`` of the set. The task move is the route
+#: of the ``parent_task_id`` of ``update_task``, and the route refuses a
+#: signed move to another project.
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("PATCH", "/projects/tasks/{task_id}"),
+    ("PUT", "/projects/tasks/{task_id}/assignees"),
+    ("POST", "/projects/tasks/{task_id}/move"),
     ("POST", "/projects/tasks/{task_id}/refs"),
     ("POST", "/projects/tasks"),
     ("POST", "/projects/tasks/{task_id}/comments"),
@@ -554,7 +575,10 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/tasks/{task_id}/agent-runs"),
     ("POST", "/projects/agent-runs/{run_id}/activities"),
     ("POST", "/projects/agent-runs/{run_id}/finish"),
+    # EA-14a: the holder gives a task up. The route of ``release_task``.
+    ("POST", "/projects/agent-runs/{run_id}/release"),
     ("POST", "/projects/tasks/{task_id}/archive-request"),
+    ("POST", "/projects/tasks/{task_id}/agent-delete"),
 })
 
 #: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the
@@ -563,9 +587,12 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
 #: request. EA-3 listed the GET routes of the seven read tools (§9.1). EA-6a
 #: adds the references read and the two write pairs of
 #: :data:`MCP_WRITE_ROUTES` (§9.2). EA-12a adds the three GET pairs of the
-#: agent runs (§12.1). Fence: ``tests/unit/test_mcp_edge_coverage.py``.
+#: agent runs (§12.1). EA-6h adds the read of the member's switch, which the
+#: edge sends at ``tools/list``. ⚠️ Its ``PUT`` stays out: only the member
+#: sets the switch. Fence: ``tests/unit/test_mcp_edge_coverage.py``.
 MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/auth/me"),
+    ("GET", "/auth/me/agent-access"),
     ("GET", "/projects/tree"),
     ("GET", "/projects/nodes/{project_id}"),
     ("GET", "/projects/nodes/{project_id}/statuses"),
@@ -639,8 +666,13 @@ def actor_via_for(client_origin: str | None, *, client_id: str | None) -> str:
     gives ``""``, which matches no pattern, so branch 0 refuses it (step 7).
 
     *client_id* is keyword-only and has no default, so a caller names it.
-    ``client_id=None`` gives the legacy host stamp, which the open-run read
-    of ``routes/projects/agent_runs.py`` matches for one release.
+    ``client_id=None`` gives the legacy host stamp. When the row's client id
+    gives a slug, branch 0 and the open-run read of
+    ``routes/projects/agent_runs.py`` refuse that host stamp (H-356). When it
+    gives no slug (a DCR client, a client id that is not a URL, an IPv6 host,
+    or a client id at another host), ``mcp:<host>`` IS the row's stamp, and
+    both accept it. The label of an old row reads it, through
+    :data:`CLIENT_LABELS`.
     """
     origin = (client_origin or "").strip()
     if not origin:
@@ -754,6 +786,7 @@ __all__ = [
     "is_valid_challenge",
     "is_valid_verifier",
     "issuer",
+    "mcp_sessions_enabled",
     "org_allowed",
     "parse_scope",
     "pkce_matches",

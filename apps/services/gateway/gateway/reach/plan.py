@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from gateway.reach.classes import REACHING, reach_class, reach_kind
+from gateway.reach.classes import NOT_ON_WHATSAPP, REACHING, reach_class, reach_kind
 from gateway.routes.shell import feed_rank
 from gateway.routes.shell.needs import _instant
 
@@ -81,6 +82,14 @@ def reach_print(card: dict[str, Any]) -> str:
 def pair(card: dict[str, Any]) -> Pair:
     """The identity of one card at one reason to reach (:func:`reach_print`)."""
     return str(card["signal_id"]), reach_print(card)
+
+
+def on_whatsapp(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The cards that may go on WhatsApp: each card whose main kind and
+    folded kinds are all outside ``classes.NOT_ON_WHATSAPP`` (D114.7). Each
+    WhatsApp message reads its cards through this. The chat brief does not."""
+    return [c for c in cards
+            if not ({c.get("kind"), *(c.get("folded") or ())} & NOT_ON_WHATSAPP)]
 
 
 def is_open(card: dict[str, Any]) -> bool:
@@ -209,7 +218,10 @@ def line(card: dict[str, Any], now: datetime, *, kind: str | None = None) -> str
     if kind == "day_overbooked":
         return f"Overbooked: {_clean(card.get('why'), 100)}"
     if kind == "no_plan_yet":
-        return "Nothing is planned for today yet"
+        # A chat pill sends its line as the member's own message, so the
+        # line asks for the act. A plain fact sent back made no sense
+        # (owner report, 2026-10-22).
+        return "Plan my day: nothing is planned yet"
     if kind == "notify_me":
         # Every request line carries its body, cut to one short line (RE-5).
         head = _clean(card.get("title"), REQUEST_TITLE_CHARS)
@@ -315,19 +327,58 @@ def brief_items(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return feed_rank.order(top, len(top)) if top else []
 
 
-def compose_brief(cards: list[dict[str, Any]], app_url: str, local_date: date, *,
-                  now: datetime) -> str | None:
-    """The morning brief, or None when no open card is in Now or Needs you."""
+@dataclass(frozen=True)
+class BriefParts:
+    """The one brief, before any channel lays it out (WS-62 CF-5, D-CF-6).
+
+    WhatsApp draws it as text (:func:`compose_brief`). The chat draws it as a
+    card with one pill for each line (``routes/chat_brief.py``). Both read
+    these parts, so the two never disagree on a line.
+    """
+
+    #: "Your day, Thu 15 Oct".
+    title: str
+    #: One line for each shown card, in the feed's order, with no bullet.
+    lines: list[str]
+    #: How many brief items the lines do not show.
+    rest: int
+
+    @property
+    def total(self) -> int:
+        return len(self.lines) + self.rest
+
+
+def brief_parts(cards: list[dict[str, Any]], local_date: date, *,
+                now: datetime) -> BriefParts | None:
+    """The brief's parts, or None when no open card is in Now or Needs you."""
     ordered = brief_items(cards)
     if not ordered:
         return None
     shown = ordered[:BRIEF_LINES]
-    rest = len(ordered) - len(shown)
+    return BriefParts(f"Your day, {_date_words(local_date)}",
+                      [line(c, now) for c in shown], len(ordered) - len(shown))
+
+
+def brief_lead(parts: BriefParts) -> str:
+    """The brief's first sentence, from the counts: the words of the chat
+    turn that carries the card (``my_day_feed.md`` §5.7, "code writes it from
+    the counts")."""
+    n = parts.total
+    return f"{parts.title}. {n} thing{'' if n == 1 else 's'} need{'s' if n == 1 else ''} you."
+
+
+def compose_brief(cards: list[dict[str, Any]], app_url: str, local_date: date, *,
+                  now: datetime) -> str | None:
+    """The morning brief on WhatsApp, or None when no open card is in Now or
+    Needs you. A card that may not go on WhatsApp is not in it
+    (:func:`on_whatsapp`)."""
+    parts = brief_parts(on_whatsapp(cards), local_date, now=now)
+    if parts is None:
+        return None
     tail = f"My Day: {app_url.rstrip('/')}/"
-    if rest > 0:
-        tail = f"+{rest} more. {tail}"
-    return _fit(f"*Your day, {_date_words(local_date)}*",
-                [line(c, now) for c in shown], tail)
+    if parts.rest > 0:
+        tail = f"+{parts.rest} more. {tail}"
+    return _fit(f"*{parts.title}*", parts.lines, tail)
 
 
 # ── The template parameters (RE-2a) ─────────────────────────────────────────
@@ -369,8 +420,9 @@ def needs_you_params(name: str, cards: list[dict[str, Any]], now: datetime) -> l
 def brief_params(name: str, cards: list[dict[str, Any]], local_date: date,
                  now: datetime) -> list[str]:
     """The parameters of the brief template: the name, the date, the count of
-    brief items and the first line. *cards* must hold a brief item."""
-    items = brief_items(cards)
+    brief items and the first line, over the cards that may go on WhatsApp
+    (:func:`on_whatsapp`). They must hold a brief item."""
+    items = brief_items(on_whatsapp(cards))
     return [template_param(name, 40), _date_words(local_date), str(len(items)),
             template_param(line(items[0], now))]
 

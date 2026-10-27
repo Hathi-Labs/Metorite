@@ -2,6 +2,7 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
+import { tasksLink } from "@/app/projects/lib/tasksRedirect";
 import { useCallback, useEffect, useState } from "react";
 import {
   createEmailCapture, createReplyCommitment, detectReplyCommitment,
@@ -41,8 +42,8 @@ export interface CommitmentContext {
 
 // Capture-time dispositions the backend accepts (_CAPTURE_DISPOSITIONS).
 const DISPOSITIONS: { value: string; label: string; hint: string }[] = [
-  { value: "INBOX", label: "Inbox", hint: "Clarify later" },
-  { value: "NEXT", label: "Next action", hint: "I'll do this" },
+  { value: "INBOX", label: "My task inbox", hint: "Clarify later" },
+  { value: "NEXT", label: "My tasks", hint: "I'll do this" },
   { value: "WAITING", label: "Waiting / delegate", hint: "On someone else" },
   { value: "CALENDAR", label: "Scheduled", hint: "Date-specific" },
   { value: "SOMEDAY", label: "Someday", hint: "No action now" },
@@ -208,8 +209,8 @@ export function TaskCaptureModal({
   const showAssignee = disp === "WAITING";
   const showDue = disp === "NEXT" || disp === "CALENDAR" || disp === "WAITING";
   // For an actionable capture (I'll do this), the AI also clarifies the energy,
-  // time estimate and any subtasks — mirror the inbox Clarify flow so the task
-  // lands complete. These fields are meaningless for WAITING/SOMEDAY/Inbox.
+  // time estimate and any subtasks — mirror the My task inbox Clarify flow so the task
+  // lands complete. These fields are meaningless for WAITING/SOMEDAY/My task inbox.
   const showDetails = disp === "NEXT" || disp === "CALENDAR";
 
   return (
@@ -224,7 +225,7 @@ export function TaskCaptureModal({
         {/* Header */}
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border flex-shrink-0">
           <div className="text-sm font-medium text-foreground">
-            {commitment ? "You committed to a task" : "Add to My Tasks"}
+            {commitment ? "You committed to a task" : "Add to My work"}
           </div>
           <button
             onClick={onClose}
@@ -249,10 +250,10 @@ export function TaskCaptureModal({
                   <Icon name="CheckCircle2" size={14} className="text-primary mt-0.5 flex-shrink-0" />
                   <div className="min-w-0">
                     <div className="text-foreground">
-                      This email is already in My Tasks: &ldquo;{already.title}&rdquo;
+                      This email is already in My work: &ldquo;{already.title}&rdquo;
                     </div>
-                    <a href="/tasks" className="text-primary font-medium hover:opacity-80">
-                      Open My Tasks →
+                    <a href={tasksLink("/tasks")} className="text-primary font-medium hover:opacity-80">
+                      Open My work →
                     </a>
                   </div>
                 </div>

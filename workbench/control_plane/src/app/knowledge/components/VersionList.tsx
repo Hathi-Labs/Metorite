@@ -6,7 +6,8 @@
  * Each save is a version, newest first, with its reason in words, its author
  * and its time. A member who can write may revert to any older version, which
  * writes that version's title and body as a NEW version, so nothing in the
- * list is lost. The body of an old version is not shown in KB-2a.
+ * list is lost. A click on a version opens it in the page history (KB-2g,
+ * `history/PageHistory.tsx`), which shows its body and compares it.
  */
 
 import Button from "@/components/ui/Button";
@@ -19,10 +20,13 @@ export default function VersionList({
   versions,
   canRevert,
   onRevert,
+  onOpen,
 }: {
   versions: readonly PageVersion[];
   canRevert: boolean;
   onRevert: (version: PageVersion) => void;
+  /** KB-2g: open this version in the page history. */
+  onOpen?: (version: PageVersion) => void;
 }) {
   if (!versions.length) {
     return <p className="text-xs text-muted-foreground">No versions to show.</p>;
@@ -39,13 +43,20 @@ export default function VersionList({
           <span className="mt-0.5 w-7 shrink-0 text-[11px] tabular-nums text-muted-foreground">
             v{v.version}
           </span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-xs text-foreground">{reasonLabel(v.reason)}</span>
-            <span className="block truncate text-[11px] text-muted-foreground">
-              {v.author_email}
-              {v.created_at ? ` · ${relativeTime(v.created_at) || "now"}` : ""}
+          {onOpen ? (
+            <button
+              type="button"
+              aria-label={`Open version ${v.version} in the page history`}
+              onClick={() => onOpen(v)}
+              className="min-w-0 flex-1 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <VersionText version={v} />
+            </button>
+          ) : (
+            <span className="min-w-0 flex-1">
+              <VersionText version={v} />
             </span>
-          </span>
+          )}
           {canRevert && v.version !== newest ? (
             <Button
               variant="ghost"
@@ -59,5 +70,17 @@ export default function VersionList({
         </li>
       ))}
     </ol>
+  );
+}
+
+function VersionText({ version: v }: { version: PageVersion }) {
+  return (
+    <>
+      <span className="block text-xs text-foreground">{reasonLabel(v.reason)}</span>
+      <span className="block truncate text-[11px] text-muted-foreground">
+        {v.author_email}
+        {v.created_at ? ` · ${relativeTime(v.created_at) || "now"}` : ""}
+      </span>
+    </>
   );
 }

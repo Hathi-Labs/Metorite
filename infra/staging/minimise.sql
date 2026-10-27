@@ -22,6 +22,7 @@
 --   4. Keeps an identity only for a member of a kept organization.
 --   5. Blanks every credential, in the kept organizations too. Staging holds
 --      no production secret, so the ciphertext would only be dead weight.
+--      It also blanks each member's assistant profile (WS-63 PZ-9).
 --   6. Refuses when any credential-shaped column still holds a value. A new
 --      credential column fails the export until it is blanked here.
 --   7. Refuses when any JSON value looks like a live token (a bearer header,
@@ -118,6 +119,9 @@ BEGIN
   UPDATE public.mcp_servers             SET headers = '{}'::jsonb, env_vars = '{}'::jsonb;
   -- Names of env vars, not values. Blanked so that step 6 never stops the export on them.
   UPDATE public.custom_api_definitions  SET env_vars = '{}'::jsonb;
+  -- The member's own words to the assistant (WS-63 PZ-9, personalization.md
+  -- §7 point 5). No copy of the profile leaves production.
+  UPDATE public.user_settings           SET assistant_profile = NULL;
 
   -- 6. Nothing credential-shaped is left. Counters (`*_tokens`, `token_cost`)
   --    are numbers, so the text and binary types alone are checked, by type

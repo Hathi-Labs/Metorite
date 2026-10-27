@@ -315,6 +315,12 @@ interface Props {
   onManageFields?: (space: ProjectRow) => void;
   onManageTags?: (space: ProjectRow) => void;
   onManageLifecycle?: (space: ProjectRow) => void;
+  /**
+   * Project generations above a ROOT row. Absent = 0, which is right for the
+   * live tree. The Archived section lists heads that sit deeper in the full
+   * tree, so the level of a filed project (and its menu) comes from here.
+   */
+  rootParentGen?: (node: ProjectRow) => number;
 }
 
 /**
@@ -878,6 +884,7 @@ export function ProjectTree({
   onManageFields,
   onManageTags,
   onManageLifecycle,
+  rootParentGen,
 }: Props) {
   const draftAtRoot = creating != null && creating.parentId === null;
 
@@ -956,7 +963,7 @@ export function ProjectTree({
           key={root.id}
           node={root}
           depth={0}
-          parentGen={0}
+          parentGen={rootParentGen?.(root) ?? 0}
           parentId={null}
           index={rootIndex}
           selectedId={selectedId}

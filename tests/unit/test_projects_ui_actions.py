@@ -474,6 +474,8 @@ def test_the_reader_finds_the_client_objects_and_their_routes() -> None:
         "refsApi",
         # WS-55 EA-12c: agent runs on a task.
         "agentRunsApi",
+        # WS-55 SW-11a: the Needs attention list.
+        "attentionApi",
         "watchersApi",
         "projectWatchersApi",
         "intakeApi",
@@ -498,6 +500,8 @@ def test_the_reader_finds_the_client_objects_and_their_routes() -> None:
         "agentRunsApi.get": [("GET", "/projects/agent-runs/{}")],
         "agentRunsApi.enabled": [("GET", "/projects/agent-runs")],
         "agentRunsApi.summary": [("GET", "/projects/{}/agent-summary")],
+        "agentRunsApi.resume": [("POST", "/projects/agent-runs/{}/resume")],
+        "attentionApi.list": [("GET", "/projects/needs-attention")],
     }
     for name, calls in shapes.items():
         assert methods[name].calls == calls, f"{name}: read {methods[name].calls}"
@@ -615,11 +619,11 @@ def test_a_false_claim_fails() -> None:
     methods, _ = catalogue()
     tables = _tables()
     tables["UI_ACTIONS"]["projectsApi.createTask"] = "list_tasks"
-    tables["UI_ACTIONS"]["projectsApi.deleteProject"] = "archive_project"
+    tables["UI_ACTIONS"]["projectsApi.setViewState"] = "archive_project"
     tables["UI_ACTIONS"]["projectsApi.tree"] = "no_such_tool"
     bad = false_claims(methods, tables)
     assert any(b.startswith("projectsApi.createTask: list_tasks may not reach POST") for b in bad)
-    assert any(b.startswith("projectsApi.deleteProject: DELETE /projects/nodes/") for b in bad)
+    assert any(b.startswith("projectsApi.setViewState: ") for b in bad)
     assert "projectsApi.tree: no_such_tool is not an exported tool and not in PLANNED" in bad
     assert len(bad) == 3, bad
 
@@ -635,12 +639,12 @@ def test_a_false_exemption_fails() -> None:
     methods, _ = catalogue()
     tables = _tables()
     tables["UI_EXEMPT"]["projectsApi.createTask"] = "The chat does not make tasks, said nobody."
-    tables["UI_EXEMPT"]["projectsApi.deleteTask"] = "short"
+    tables["UI_EXEMPT"]["projectsApi.setPositions"] = "short"
     bad = false_exemptions(methods, tables)
     assert bad == [
         "projectsApi.createTask: create_task reaches POST /projects/tasks. Name the tool "
         "in UI_ACTIONS instead of an exemption.",
-        "projectsApi.deleteTask: no real reason ('short')",
+        "projectsApi.setPositions: no real reason ('short')",
     ]
 
 

@@ -32,6 +32,7 @@ import re
 from collections.abc import Mapping
 
 __all__ = [
+    "AGENT_GIT_VALUES",
     "AGENT_PATH_VALUES",
     "AGENT_SITE_DIR",
     "BASE_NAMES",
@@ -151,6 +152,18 @@ AGENT_PATH_VALUES: dict[str, str] = {
     "npm_config_cache": NPM_CACHE_DIR,
 }
 
+#: Fixed git values for the children that run agent code (H-363): the
+#: Copilot CLI (``copilot_env()``) and ``run_script``
+#: (``code_tools._script_env``). An agent's clone holds no credential, and
+#: its env holds none either. So a ``git push`` or a private ``git fetch``
+#: that a shell runs must FAIL at once. Without these values git would ask
+#: on a terminal, and a shell with a pty would hang until its timeout. No
+#: value here is a secret.
+AGENT_GIT_VALUES: dict[str, str] = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "GCM_INTERACTIVE": "never",
+}
+
 #: The names that tell the ``docker`` CLI where the daemon is and how to
 #: reach it. ``DOCKER_CERT_PATH`` is a dir, not a key.
 DOCKER_NAMES: tuple[str, ...] = (
@@ -182,7 +195,10 @@ SECRET_SHAPED = re.compile(
 
 def check_lists() -> None:
     """Refuse a secret-shaped name on any allowlist of this module."""
-    named = [*BASE_NAMES, *_WINDOWS_NAMES, *COPILOT_NAMES, *DOCKER_NAMES, *AGENT_PATH_VALUES]
+    named = [
+        *BASE_NAMES, *_WINDOWS_NAMES, *COPILOT_NAMES, *DOCKER_NAMES,
+        *AGENT_PATH_VALUES, *AGENT_GIT_VALUES,
+    ]
     bad = sorted(n for n in named if SECRET_SHAPED.search(n))
     if bad:
         raise RuntimeError(f"child_env: a secret-shaped name is on an allowlist: {bad}")
@@ -244,7 +260,9 @@ def copilot_env() -> dict[str, str]:
     Pass it as ``CopilotClient(env=copilot_env(), github_token=...)``. The SDK
     copies this mapping and then sets ``COPILOT_SDK_AUTH_TOKEN`` itself.
     """
-    env = child_env(extra={**env_values(*COPILOT_NAMES), **AGENT_PATH_VALUES})
+    env = child_env(extra={
+        **env_values(*COPILOT_NAMES), **AGENT_PATH_VALUES, **AGENT_GIT_VALUES,
+    })
     for name in _COPILOT_TOKEN_NAMES:
         env.pop(name, None)
     return env

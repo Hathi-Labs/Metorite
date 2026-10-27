@@ -464,8 +464,10 @@ class TestTurnKind:
         assert (turn.kind, turn.source) == ("chat", "timeout")
         assert turn.latency_ms is not None and turn.latency_ms < 900
 
-    def test_the_wait_is_one_and_a_half_seconds(self) -> None:
-        assert tier_policy.TURN_KIND_TIMEOUT_S == 1.5
+    def test_the_wait_is_three_seconds(self) -> None:
+        # 1.5 s until 2026-10-22: production answers took 1.1 to 1.5 s, and
+        # 51% of the questions timed out (tier_policy.TURN_KIND_TIMEOUT_S).
+        assert tier_policy.TURN_KIND_TIMEOUT_S == 3.0
         assert tier_policy.SHORT_MESSAGE_WORDS == 12
 
     def test_max_sends_no_question(self, monkeypatch) -> None:

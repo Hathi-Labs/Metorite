@@ -268,6 +268,10 @@ test.describe("the Email waiting card draws the shared header, and no toggle whi
 
   test("the draft waits: the shared header, and no fold toggle, under newer cards", async ({ page }) => {
     await startTurn(page, [...DRAFT, ...RULE_EVENT, ...SETTINGS, ...ARCHIVE, ...LONG]);
+    // The newest draft draws in full in the thread, and nothing pins above
+    // the composer (owner report, 2026-10-23, `projects_ai_chat.md` §24.10).
+    await expect(page.locator("[data-pinned-draft]")).toHaveCount(0);
+    await expect(page.locator('[data-email-card="draft-line"]')).toHaveCount(0);
     const draft = page.locator('[data-rollup-card="tool:t-draft"]');
     // The shared header: its title box, with the card's icon, and no toggle.
     await expect(draft.locator("[data-rollup-title]")).toHaveText("Draft reply");

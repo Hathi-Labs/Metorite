@@ -80,16 +80,62 @@ const OFF_PATH_MARKS = /[\\\u0000-\u001f\u007f]/;
  * round 1). No page of this app has one, and each parser reads them in its
  * own way. Fences: `EntityPill.test.ts`, `inAppLink.test.ts` and
  * `feedHandled.test.ts`.
+ *
+ * A dot segment is refused too (review of #1197, P0): `router.push` resolves
+ * `/projects/../crm` to `/crm`, so a prefix check on the raw path would let a
+ * path walk out of its pane. Each segment is decoded once, and must not be
+ * `.`, `..`, empty, or hold a slash, a backslash, a control mark or another
+ * percent ({@link pathSegments}). The server's `is_in_app_path` is the twin,
+ * and `inAppPaths.cases.json` is the one table both read.
  */
 export function isInAppPath(href: string | undefined): boolean {
-  if (!href || !href.startsWith("/") || href.startsWith("//")) return false;
-  if (OFF_PATH_MARKS.test(href)) return false;
+  return inAppPathname(href) !== null;
+}
+
+/** First segments that are never a page, on either side of the twin. */
+const NEVER_A_PAGE = new Set(["api", "_next"]);
+
+/**
+ * The decoded segments of a raw path, or `null` when one is not a page's.
+ * The root gives `[]`. The same rule as `path_segments` in
+ * `orchestrator/in_app_path.py`.
+ */
+export function pathSegments(pathname: string): string[] | null {
+  if (pathname === "/") return [];
+  const out: string[] = [];
+  for (const raw of pathname.split("/").slice(1)) {
+    if (raw === "") return null;
+    let seg: string;
+    try {
+      seg = decodeURIComponent(raw);
+    } catch {
+      return null;
+    }
+    if (seg.includes("%") || seg.includes("/") || OFF_PATH_MARKS.test(seg)) return null;
+    if (seg === "." || seg === "..") return null;
+    out.push(seg);
+  }
+  return out;
+}
+
+/**
+ * The decoded pathname of an in-app href (`/projects` for
+ * `/projects?task=42`), or `null` when {@link isInAppPath} would refuse it.
+ * The one assistant matches it against the member's panes (`navigateAct`).
+ */
+export function inAppPathname(href: string | undefined): string | null {
+  if (!href || !href.startsWith("/") || href.startsWith("//")) return null;
+  if (OFF_PATH_MARKS.test(href)) return null;
   let url: URL;
   try {
     url = new URL(href, SERVER_ORIGIN);
   } catch {
-    return false;
+    return null;
   }
-  if (url.origin !== SERVER_ORIGIN) return false;
-  return !url.pathname.startsWith("/api/") && url.pathname !== "/api";
+  if (url.origin !== SERVER_ORIGIN) return null;
+  // The RAW path part, before the parser folds a dot segment away.
+  const segments = pathSegments(href.split(/[?#]/)[0]);
+  if (segments === null) return null;
+  if (segments.length && NEVER_A_PAGE.has(segments[0])) return null;
+  return "/" + segments.join("/");
 }

@@ -460,7 +460,9 @@ async def test_the_ai_mirror_and_drafts_save_never_clear_html(
                 account_id=m.aid, message_id=mail, body="The card text."),
                 user=m.me)
 
-        assert saved == {"created": True, "id": local}
+        # ``kept_draft``: the fake gives the AI mirror's id again, so the
+        # save lands on that same row (owner, 2026-10-22, §18.9).
+        assert (saved["created"], saved["id"]) == (True, local)
         row = _row(m.admin, local)
         assert row.body_text.startswith("The card text.")
         assert row.body_html == STORED_HTML, "/drafts/save cleared the HTML"

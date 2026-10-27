@@ -1644,10 +1644,19 @@ export async function installPresetRules(
  * each rule again as "(copy)", so the caller guards it (`ruleCopier` in
  * `lib/mailboxSettings.ts`).
  */
-export async function copyRules(fromAccountId: string, toAccountId: string): Promise<RuleCopyResult> {
+export async function copyRules(
+  fromAccountId: string,
+  toAccountId: string,
+  skipNames: ReadonlyArray<string> = [],
+): Promise<RuleCopyResult> {
   const raw = await gatewayFetch<Record<string, unknown>>("/email/rules/copy", {
     method: "POST",
-    body: JSON.stringify({ from_account_id: fromAccountId, to_account_id: toAccountId }),
+    body: JSON.stringify({
+      from_account_id: fromAccountId,
+      to_account_id: toAccountId,
+      // Rules the target holds already. The route leaves them out.
+      ...(skipNames.length > 0 ? { skip_names: skipNames.slice(0, 200) } : {}),
+    }),
   });
   return mapRuleCopyResult(raw ?? {});
 }
@@ -2110,6 +2119,50 @@ export async function saveAssistantSettings(
     method: "PUT",
     body: JSON.stringify(settings),
   });
+}
+
+/** One "always copy" rule of a mailbox (§21.16): a domain or an address,
+ *  and the colleagues that go, ticked, on each matching reply or new mail. */
+export interface AlwaysCopyRule {
+  match: string;
+  cc: string[];
+}
+
+/** The rules of a mailbox and their version. The PUT sends the version
+ *  back, and the server refuses it when the list changed in between. */
+export interface AlwaysCopyList {
+  rules: AlwaysCopyRule[];
+  version: string;
+}
+
+function alwaysCopyList(res: { rules?: unknown; version?: unknown } | undefined): AlwaysCopyList {
+  if (!res || !Array.isArray(res.rules) || typeof res.version !== "string") {
+    throw new Error("The always-copy rules could not be read.");
+  }
+  return { rules: res.rules as AlwaysCopyRule[], version: res.version };
+}
+
+export async function getAlwaysCopy(accountId: string): Promise<AlwaysCopyList> {
+  return alwaysCopyList(
+    await gatewayFetch<{ rules?: unknown; version?: unknown }>(
+      `/email/assistant/always-copy?account_id=${encodeURIComponent(accountId)}`
+    )
+  );
+}
+
+/** Save the WHOLE list. The server takes only a colleague or a person you
+ *  wrote to before, and its refusal names the person. */
+export async function saveAlwaysCopy(
+  accountId: string,
+  rules: AlwaysCopyRule[],
+  expected: string
+): Promise<AlwaysCopyList> {
+  return alwaysCopyList(
+    await gatewayFetch<{ rules?: unknown; version?: unknown }>("/email/assistant/always-copy", {
+      method: "PUT",
+      body: JSON.stringify({ account_id: accountId, rules, expected }),
+    })
+  );
 }
 
 export async function generateWritingStyle(

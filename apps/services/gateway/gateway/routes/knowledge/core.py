@@ -50,6 +50,9 @@ from fastapi import APIRouter, Depends, HTTPException
 
 # The shared seam, aliased so a test can patch `_tenant_session` by name.
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
+
+# OQ7: the one age bound of a provider reader, shared with the Python twin.
+from gateway.kb_access.resolve import ACCESS_MAX_AGE_SECONDS
 from gateway.routes.knowledge.flags import require_knowledge_enabled
 from gateway.routes.projects.core import (
     _MY_GROUPS_SQL,
@@ -97,12 +100,31 @@ ME_PURPOSE = "Your private drafts. Only you can see them."
 #: The days from a publish to the review date (§4.2).
 REVIEW_DAYS = 180
 
-#: The page columns that each page read returns.
+#: The days without an edit after which a published page reads as stale
+#: (KB-AI-4). The maintenance list uses it.
+STALE_DAYS = 365
+
+
+def VERIFIED_SQL(alias: str) -> str:
+    """The one test of a verified page (KB-AI-4), on the page alias *alias*.
+
+    A page is verified when it has an owner AND a review date in the future.
+    A page with no review date is not verified. Search and the list share
+    this text, so the two cannot drift. *alias* is code, never input.
+    """
+    return f"{alias}.owner_email IS NOT NULL AND {alias}.review_at > now()"
+
+#: The highest version number. ``kb_page_versions.version`` is int4, so a
+#: route refuses a bigger number with 422 before it reaches the driver.
+MAX_VERSION = 2_147_483_647
+
+#: The page columns that each page read returns. ``p.icon`` is one emoji, or
+#: NULL (KB-2f). It is not the icon NAME of a space.
 PAGE_COLUMNS = (
     "p.id, p.space_id, p.parent_id, p.position, p.title, p.body_md, p.state, "
     "p.author_email, p.reviewers, p.review_at, p.source_ref, p.origin, "
     "p.published_at, p.archived_at, p.updated_at, p.created_at, p.history_from, "
-    "p.archived_from_state"
+    "p.archived_from_state, p.icon, p.owner_email, p.review_every_days"
 )
 
 #: The space columns that each space read returns.
@@ -262,6 +284,85 @@ def readable_spaces_clause(
         f"))"
     )
     return sql, _viewer_params(user)
+
+
+# ── The documents of a connected source (KC-4a) ─────────────────────────────
+
+def document_reader_clause(
+    user: UserContext, node_alias: str = "n",
+) -> tuple[str, dict[str, Any]]:
+    """The viewer is a proven reader of the node (``knowledge_curation.md``
+    §8.2 and §8.4), and its parameters.
+
+    Put the text in a statement that reads ``kb_source_nodes AS <alias>``.
+    The node is ``live`` and of the viewer's org, the viewer is an active
+    member of that org, and the node's source is ``ready`` (OQ7). Then one
+    of these holds:
+
+    * the viewer is the ``owner_email`` of the node's member source (OQ3);
+    * a ``user`` row of the node names the viewer's email;
+    * a ``domain`` row of the node names the org's own domain, and the
+      viewer's email is in that domain (OQ1).
+
+    A row proves its reader only while its ``synced_at`` is newer than
+    ``resolve.ACCESS_MAX_AGE_SECONDS`` (OQ7). So a source that stops
+    syncing stops proving its old readers. A ``group`` row and an ``anyone``
+    row prove nobody (OQ2), and ``knowledge:manage`` proves nothing (OQ4).
+    The Python twin is ``kb_access/resolve.py``, and the two read the same
+    constant. ⚠️ This clause alone does not show a document. A read of a
+    document uses :func:`visible_documents_clause`, which adds the read of
+    the space. *node_alias* is code, never input.
+    """
+    a = node_alias
+    age = int(ACCESS_MAX_AGE_SECONDS)
+    sql = (
+        f"({a}.organization_id = CAST(:kb_org AS uuid) AND {a}.state = 'live'"
+        f" AND EXISTS (SELECT 1 FROM app_user kb_au"
+        f" WHERE kb_au.organization_id = CAST(:kb_org AS uuid)"
+        f" AND kb_au.status = 'active' AND lower(kb_au.email) = :kb_viewer)"
+        f" AND EXISTS (SELECT 1 FROM kb_sources kb_src"
+        f" WHERE kb_src.id = {a}.source_id"
+        f" AND kb_src.organization_id = CAST(:kb_org AS uuid)"
+        f" AND kb_src.state = 'ready'"
+        f" AND ((kb_src.kind = 'member' AND kb_src.owner_email = :kb_viewer)"
+        f" OR EXISTS (SELECT 1 FROM kb_node_access kb_na"
+        f" WHERE kb_na.node_id = {a}.id"
+        f" AND kb_na.organization_id = CAST(:kb_org AS uuid)"
+        f" AND kb_na.synced_at > now() - make_interval(secs => {age})"
+        f" AND ((kb_na.principal_kind = 'user' AND kb_na.principal = :kb_viewer)"
+        f" OR (kb_na.principal_kind = 'domain'"
+        f" AND split_part(:kb_viewer, '@', 2) = kb_na.principal"
+        f" AND split_part(:kb_viewer, '@', 3) = ''"
+        f" AND EXISTS (SELECT 1 FROM organization kb_o"
+        f" WHERE kb_o.id = CAST(:kb_org AS uuid)"
+        f" AND lower(btrim(kb_o.domain)) = kb_na.principal)))))))"
+    )
+    return sql, _viewer_params(user)
+
+
+def visible_documents_clause(
+    user: UserContext, node_alias: str = "n", space_expr: str = "d.space_id",
+) -> tuple[str, dict[str, Any]]:
+    """The ONE predicate of who sees a connected document (§8.4).
+
+    Two tests, both: the viewer reads the space of the document
+    (:func:`readable_spaces_clause` on the space that *space_expr* names),
+    AND the viewer is a proven reader of the node
+    (:func:`document_reader_clause`). The second test is the fence that a
+    stale filing cannot pass. A holder of ``knowledge:manage`` opens every
+    space that is not a ``me`` space, and still sees a document only when
+    the provider proves them (OQ4).
+
+    *node_alias* names ``kb_source_nodes`` in the caller's statement, and
+    *space_expr* is the SQL of the space id. Both are code, never input.
+    """
+    readable, params = readable_spaces_clause(user, "kb_ds")
+    reader, _same = document_reader_clause(user, node_alias)
+    sql = (
+        f"(EXISTS (SELECT 1 FROM kb_spaces kb_ds WHERE kb_ds.id = {space_expr}"
+        f" AND {readable}) AND {reader})"
+    )
+    return sql, params
 
 
 # ── Audit ───────────────────────────────────────────────────────────────────
@@ -497,10 +598,13 @@ def page_dict(
         "parent_id": str(row.parent_id) if row.parent_id else None,
         "position": position,
         "title": row.title,
+        "icon": row.icon,
         "state": row.state,
         "author_email": row.author_email,
         "reviewers": list(row.reviewers or []),
         "review_at": _iso(row.review_at),
+        "owner_email": getattr(row, "owner_email", None),
+        "review_every_days": getattr(row, "review_every_days", None),
         "source_ref": row.source_ref,
         "published_at": _iso(row.published_at),
         "archived_at": _iso(row.archived_at),
@@ -704,11 +808,24 @@ async def read_links(db: Any, user: UserContext, page_id: str) -> list[dict[str,
              "AND page_id = CAST(:pid AS uuid) ORDER BY created_at"),
         {"org": org_of(user), "pid": page_id},
     )).fetchall()
+    # A page link lists only when the CALLER can see its target (§5.5): a
+    # link is a reference and never a grant, and it must not tell a reader
+    # that a hidden page exists. The other kinds are listed as they are.
+    wanted = [str(r.target_id) for r in rows if r.target_kind == "page"]
+    seen: set[str] = set()
+    if wanted:
+        vis, vparams = visible_pages_clause(user, "p")
+        seen = {str(r[0]) for r in (await db.execute(
+            text(f"SELECT p.id::text FROM kb_pages p WHERE {vis} "
+                 "AND p.id::text = ANY(CAST(:rl_ids AS text[]))"),
+            {**vparams, "rl_ids": wanted},
+        )).fetchall()}
     return [
         {"id": str(r.id), "target_kind": r.target_kind, "target_id": r.target_id,
          "label": r.label, "created_by": r.created_by,
          "created_at": _iso(r.created_at)}
         for r in rows
+        if r.target_kind != "page" or str(r.target_id) in seen
     ]
 
 
@@ -734,6 +851,14 @@ def clean_reviewers(values: list[str] | None) -> list[str]:
             status_code=422, detail=f"A draft names at most {MAX_REVIEWERS} reviewers.",
         )
     return out
+
+
+def clean_owner(raw: str) -> str:
+    """The owner address of a page, folded. ValueError on a value that is no address."""
+    value = (raw or "").strip().lower()
+    if not _EMAIL.match(value):
+        raise ValueError("An owner must be an email address.")
+    return value
 
 
 def can_write_page(level: str | None) -> bool:

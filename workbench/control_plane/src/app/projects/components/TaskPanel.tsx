@@ -71,6 +71,10 @@ import {
 import { taskDeepLink, taskRef } from "../lib/card";
 import { PANEL_WIDTH_CLASS, type PanelMode, panelEscape } from "../lib/panelMode";
 import { TaskBody, resolveStatus } from "./TaskBody";
+import { MineDispositionStrip } from "./MineDispositionStrip";
+import { MyWorkStrip } from "./MyWorkStrip";
+import { myWorkEnabled, pickMine, showMyWorkStrip, statusDrifted } from "../lib/myWork";
+import { useTaskStore } from "@/app/tasks/lib/taskStore";
 import { useAccess } from "@/components/AccessProvider";
 import { taskRefResolverFor } from "@/lib/taskRefs";
 
@@ -129,6 +133,18 @@ interface Props {
    * it because the page holds the tree, and opening a crumb selects a node.
    */
   where?: TaskWhere;
+  /**
+   * WS-64 OP-2b (`one_projects_app.md` §4.3) — the panel was opened from a My
+   * work view. The overlay strip then sits above the fields. In a company view
+   * it shows only when I hold an overlay row.
+   */
+  myWork?: boolean;
+  /**
+   * WS-64 OP-11 fix round, item 9: the panel opened from My tasks. Its strip
+   * then writes to the server (`MineDispositionStrip`), never the store, so
+   * the My tasks rows move to the new chip after a pick.
+   */
+  serverOverlay?: boolean;
 }
 
 /** The viewer's own overlay on this task, or null when they hold none. */
@@ -149,6 +165,8 @@ export function TaskPanel({
   me,
   onPeopleSeen,
   where,
+  myWork = false,
+  serverOverlay = false,
 }: Props) {
   // A copied link names this organization, so it opens in the right account.
   const orgId = useAccess().access.organization?.id ?? null;
@@ -163,6 +181,72 @@ export function TaskPanel({
   // Tasks. Null with the lens off, and null when I hold no overlay row.
   const [mine, setMine] = useState<MyOverlay>(null);
   const { current: currentStatus, tone: statusTone } = resolveStatus(task, statuses);
+  // OP-2b — the store's row for this task, when the one task store holds it.
+  // The strip writes through the store, so the My work list moves with it.
+  const stored = useTaskStore((s) => s.items.find((i) => i.id === task.id));
+  // Fix round 1 — the flag gates both. The store is a singleton that a
+  // `/tasks` visit hydrates, so holding the task proves nothing here.
+  const enabled = myWorkEnabled();
+  const strip = showMyWorkStrip({
+    enabled,
+    stored: !!stored,
+    myWork,
+    filedByMe: filedByMe(mine),
+    serverOverlay,
+  }) ? (
+    <MyWorkStrip taskId={task.id} />
+  ) : null;
+  // WS-64 OP-11 — opened from My tasks, the store does not hold the task (My
+  // tasks runs no hydrate). The same row then writes to the server, and the
+  // page reads the task again, so the My tasks rows follow the new chip.
+  const serverStrip =
+    !strip && enabled && myWork && mine ? (
+      <MineDispositionStrip
+        disposition={mine.disposition}
+        onPick={(next) => {
+          setMine((m) => (m ? { ...m, disposition: next, isTriaged: true } : m));
+          void lensPatchItem(task.id, { disposition: next })
+            .then((item) => {
+              setMine(overlayOf(item));
+              return projectsApi.task(task.id);
+            })
+            .then((fresh) => onChanged(fresh))
+            .catch((err: unknown) => {
+              // Say so, then show what the server holds (item 9).
+              toast.show({
+                variant: "error",
+                title: `Could not change the disposition. ${String((err as Error).message)}`,
+              });
+              void lensMyOverlay(task.id).then(setMine);
+            });
+        }}
+      />
+    ) : null;
+  const shownMine = pickMine({
+    myWork,
+    serverOverlay,
+    enabled,
+    stored,
+    mine,
+    fromStore: () => overlayOf(stored!),
+  });
+  // A strip write can move the status. The store learns the new one from the
+  // server's answer, and the panel's task is read again so its badge follows.
+  const drifted = strip !== null && statusDrifted(stored, task.status_id);
+  useEffect(() => {
+    if (!drifted) return;
+    let live = true;
+    void projectsApi
+      .task(task.id)
+      .then((fresh) => {
+        if (live) onChanged(fresh);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drifted, stored?.statusId, task.id]);
 
   /**
    * WS-27ab — hand the keyboard back on close.
@@ -288,14 +372,14 @@ export function TaskPanel({
           {/* S6e — the viewer's OWN disposition in My Tasks, when they hold
               one. Never anybody else's: `/my/tasks/{id}` answers for the
               session's caller only. */}
-          {mine && filedByMe(mine) ? (
+          {shownMine && filedByMe(shownMine) ? (
             <Badge
               tone="neutral"
               icon="UserRound"
-              title="How you filed this task in My Tasks"
+              title="How you filed this task in My work"
             >
-              {mine.isTriaged ? mine.disposition : "Untriaged"}
-              {mine.context ? ` · ${mine.context}` : ""}
+              {shownMine.isTriaged ? shownMine.disposition : "Untriaged"}
+              {shownMine.context ? ` · ${shownMine.context}` : ""}
             </Badge>
           ) : null}
         </div>
@@ -333,6 +417,7 @@ export function TaskPanel({
         personLabels={personLabels}
         onPeopleSeen={onPeopleSeen}
         twoColumn={twoColumn}
+        above={strip ?? serverStrip}
       />
     </aside>
   );

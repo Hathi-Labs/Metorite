@@ -9,6 +9,7 @@ import type { PageSummary } from "../types";
 import {
   addressOf,
   isAllowedHref,
+  linkChoices,
   linkedPageId,
   loadPageChoices,
   looksLikeAddress,
@@ -94,5 +95,33 @@ describe("isAllowedHref", () => {
     for (const href of ["javascript:alert(1)", "JavaScript:x", "data:text/html,x", "//evil.example/a", "/\\evil.example", "", "https://", "vbscript:x"]) {
       expect(isAllowedHref(href), href).toBe(false);
     }
+  });
+});
+
+describe("linkChoices (the link popover)", () => {
+  const pages = [choice("a", "Refund policy"), choice("b", "Holiday calendar")];
+
+  it("offers Link to <address> for an address, and no page", () => {
+    const rows = linkChoices("https://example.com/x", pages);
+    expect(rows).toEqual([
+      { kind: "url", key: "url:https://example.com/x", label: "Link to https://example.com/x", href: "https://example.com/x" },
+    ]);
+    expect(linkChoices("example.com", pages)[0]).toMatchObject({ kind: "url", href: "https://example.com" });
+  });
+
+  it("searches the pages for other words, and links to the page path", () => {
+    const rows = linkChoices("refund", pages);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: "page", label: "Refund policy", href: "/knowledge/pages/a" });
+  });
+
+  it("offers nothing for empty words, or for words before the pages load", () => {
+    expect(linkChoices("  ", pages)).toEqual([]);
+    expect(linkChoices("refund", null)).toEqual([]);
+    expect(linkChoices("zzz", pages)).toEqual([]);
+  });
+
+  it("leaves out the open page", () => {
+    expect(linkChoices("refund", pages, { exclude: "a" })).toEqual([]);
   });
 });

@@ -158,7 +158,7 @@ export function errorSentence(code: string | null | undefined): string | null {
     case "not_configured":
       return "Zoho sync is not set up on this server.";
     case "mode_changed":
-      return "The CRM is no longer in Mirror mode.";
+      return "The CRM no longer syncs from Zoho.";
     case "shutdown":
       return "The server restarted during the run. The next run continues.";
     case "stale":
@@ -283,7 +283,7 @@ export function isTurnedOff(entity: HealthEntity): boolean {
 
 export function moduleState(module: HealthModule): string {
   if (!module.api_supported) return "Not available through the API";
-  return module.mirrored ? "Mirrored" : "Not mirrored yet";
+  return module.mirrored ? "Synced" : "Not synced yet";
 }
 
 /** The credits bar. 0 to 100, and 0 with no budget. */

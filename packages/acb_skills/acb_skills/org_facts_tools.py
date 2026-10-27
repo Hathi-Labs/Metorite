@@ -19,6 +19,7 @@ Fences: ``tests/unit/test_org_facts.py`` and ``tests/unit/test_org_facts_r8.py``
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from acb_common.paging import paged
@@ -31,17 +32,74 @@ ORG_FACTS_PATH = "/org/facts"
 #: The facts of one page of the tool.
 MAX_FACTS = 60
 
-#: The most lines of the CRM facts block, its heading included.
-BLOCK_LINES = 12
+#: The most lines of the CRM facts block, its heading and its routing line
+#: included. So 11 lines at most hold facts, as before the routing line.
+BLOCK_LINES = 13
 
 #: The heading of the block. It marks the block, so a second append of one
 #: run adds nothing.
 BLOCK_MARKER = "## CRM facts"
 
+#: The routing line, second in the block (WS-47 parity, 2026-10-19). The
+#: block reaches only a run of an org whose CRM holds answered facts, so the
+#: line never sends the business questions of an org with no CRM to the CRM.
+#: The persona's rule 1 sends a company question to ``search_company`` first,
+#: and that search finds documents. A WhatsApp member asked for the IP billing
+#: of a circle, got "the company records hold nothing", and the CRM had it.
+#: The words are general (WS-47 follow-up): "circles" and "sites" are one
+#: org's words. Each org's own module names follow, from its catalogue
+#: (:func:`crm_routing_line`).
+CRM_ROUTING_LINE = (
+    "Business figures live in the CRM: billing, invoices, collections, payments, "
+    "revenue and amounts. Read them with the CRM tools: "
+    "crm_list_modules, then crm_aggregate for a total. search_company finds "
+    "documents, not CRM records, so an empty search never means that the CRM "
+    "holds nothing."
+)
+
+#: The most module names that the routing line names, and the longest name.
+ROUTING_MODULES = 8
+ROUTING_NAME_CHARS = 40
+
+#: The meaning of a purpose fact (``gateway/routes/crm/facts.entry_facts``):
+#: "<module label> holds <purpose> records."
+_PURPOSE_MEANING = re.compile(r"^(?P<label>.+?) holds .+ records\.$")
+
+
+def _module_names(rows: list[Any]) -> list[str]:
+    """The org's own CRM module names, from the purpose facts of its
+    catalogue, in the gateway's order, each once. A name is cut to one line
+    of :data:`ROUTING_NAME_CHARS` characters."""
+    names: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("key") != "purpose":
+            continue
+        found = _PURPOSE_MEANING.match(str(row.get("meaning") or ""))
+        if found is None:
+            continue
+        # One label cut to its length, a text and not a list of rows.
+        label = " ".join(found.group("label").split())
+        name = f"{label[:ROUTING_NAME_CHARS]}"
+        if name and name not in names:
+            names.append(name)
+        if len(names) >= ROUTING_MODULES:
+            break
+    return names
+
+
+def crm_routing_line(rows: list[Any]) -> str:
+    """:data:`CRM_ROUTING_LINE`, then this org's own module names, on ONE
+    line, so each org reads its own words: "Its CRM modules: Invoices,
+    Circles." With no purpose fact, the general line alone."""
+    names = _module_names(rows)
+    if not names:
+        return CRM_ROUTING_LINE
+    return f"{CRM_ROUTING_LINE} Its CRM modules: {', '.join(names)}."
+
 #: The keys of a fact that the block keeps: the business rules (CRM-Q33),
-#: the key parts of a money module, the meaning of revenue and each stage
-#: value.
-_BLOCK_KEYS = ("rule", "revenue", "amount", "date", "status", "parent")
+#: the key parts of a money module, the meaning of revenue, the org's own
+#: words and value aliases (WS-53 §18.16), and each stage value.
+_BLOCK_KEYS = ("rule", "revenue", "amount", "date", "status", "parent", "term", "alias")
 
 
 def _line(row: dict[str, Any]) -> str:
@@ -77,7 +135,8 @@ def _kept(row: dict[str, Any]) -> bool:
 
 
 def crm_facts_block(rows: list[Any]) -> str:
-    """The CRM facts block: a heading, then the answered facts of the money
+    """The CRM facts block: a heading, the routing line
+    (:data:`CRM_ROUTING_LINE`), then the answered facts of the money
     modules, the meaning of revenue and the stages, in the order of the
     gateway, at most :data:`BLOCK_LINES` lines in all. When more facts are
     there, the last line names how many, and ``org_facts`` reads them, so no
@@ -85,10 +144,11 @@ def crm_facts_block(rows: list[Any]) -> str:
     kept = [r for r in rows if isinstance(r, dict) and r.get("meaning") and _kept(r)]
     if not kept:
         return ""
-    room = BLOCK_LINES - 1
+    room = BLOCK_LINES - 2
     if len(kept) > room:
         room -= 1  # one line names the rest
-    lines = [f"{BLOCK_MARKER} (fixed answers of this organization; use them as given)"]
+    lines = [f"{BLOCK_MARKER} (fixed answers of this organization; use them as given)",
+             crm_routing_line(rows)]
     lines.extend(f"- {r['meaning']}" for i, r in enumerate(kept) if i < room)
     if len(kept) > room:
         lines.append(f"- {len(kept) - room} more facts: call org_facts to read them.")
@@ -125,11 +185,13 @@ FACTS_GATED_TOOLS = (*ORG_FACTS_TOOLS, *CRM_QUESTION_TOOLS, *CRM_RULE_TOOLS)
 __all__ = [
     "BLOCK_LINES",
     "BLOCK_MARKER",
+    "CRM_ROUTING_LINE",
     "FACTS_GATED_TOOLS",
     "ORG_FACTS_PATH",
     "ORG_FACTS_TOOLS",
     "crm_facts_block",
     "crm_facts_block_for_run",
     "crm_facts_for_run",
+    "crm_routing_line",
     "org_facts",
 ]

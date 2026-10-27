@@ -100,7 +100,9 @@ def _patient(monkeypatch):
 
 
 def test_the_budget_does_not_move() -> None:
-    assert tier_policy.TURN_KIND_TIMEOUT_S == 1.5
+    # The effort item rides the same request, so it adds no wait. The wait
+    # itself moved to 3.0 s on 2026-10-22 (measured timeouts, 51%).
+    assert tier_policy.TURN_KIND_TIMEOUT_S == 3.0
     assert tier_policy.SHORT_MESSAGE_WORDS == 12
 
 

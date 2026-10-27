@@ -30,6 +30,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 import { useState } from "react";
 
 import * as api from "../lib/api";
+import AnalysisRerun from "./AnalysisRerun";
 import {
   PREVIEW_SHOWN,
   PREVIEW_UNREAD,
@@ -383,6 +384,8 @@ export default function SuggestionsCard() {
     <>
       <SuggestionsCardView
         list={list}
+        // CRM-Q32-10: run the analysis now, not after the next sync.
+        tools={<AnalysisRerun />}
         failed={failed && list === null}
         handlers={{
           listLabel: labelOf,

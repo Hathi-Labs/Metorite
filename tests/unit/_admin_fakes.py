@@ -249,6 +249,14 @@ class _FakeDB:
         self.seal_previews: list[str] = []
         #: WS-53 CRM-Q33: each statement of the CRM half of a purge, in order.
         self.crm_purge: list[str] = []
+        self.kb_purge: list[str] = []
+        #: WS-61 KC-1a: the reads of the connection registry by the purge.
+        self.registry_reads: list[str] = []
+        #: The statements on email_scheduled_sends (H-375), in order.
+        self.send_later: list[str] = []
+        #: WS-63 PZ-9: the statements that forget a removed member's
+        #: assistant profile, in order, with the address each one names.
+        self.profile_clears: list[tuple[str, str]] = []
         #: Audit calls, in order, as ``(action, target)``. Ordered because the
         #: purge must record BEFORE it commits, and a set cannot show that.
         self.audit: list[tuple[str, str]] = []
@@ -825,6 +833,35 @@ class _FakeDB:
         # on a real Postgres in `test_crm_answer_first_r8.py` (R8).
         if "crm_business_rules" in s or "crm_sync_cursors" in s:
             self.crm_purge.append(s)
+            return _Rows([], rowcount=0)
+
+        # WS-61 KB-9a: the Knowledge half of a purge takes the address out
+        # of the gaps. What it does to real rows is proven on a real
+        # Postgres in `test_kb_gaps_r8.py` (R8).
+        if "kb_gaps" in s:
+            self.kb_purge.append(s)
+            return _Rows([], rowcount=0)
+
+        # WS-61 KC-1a: the purge lists the connections of the org through
+        # `connections/store.py`, to find the member's Knowledge sources. This
+        # fake holds none. The real delete is proven in `test_kc_sources_r8.py`.
+        if s.startswith("SELECT") and "FROM integration_connections" in s:
+            self.registry_reads.append(s)
+            return _Rows([], rowcount=0)
+
+        # H-375: a removal cancels the member's queued sends, and a purge
+        # deletes them. What the statements do to real rows is proven on a
+        # real Postgres in `test_email_send_later.py` (R8).
+        if "email_scheduled_sends" in s:
+            self.send_later.append(s)
+            return _Rows([], rowcount=0)
+
+        # WS-63 PZ-9: a removal forgets the member's assistant profile. The
+        # fake records the statement and the address. What it does to real
+        # rows is proven on a real Postgres in
+        # `test_assistant_profile_offboarding_r8.py` (R8).
+        if s.startswith("UPDATE user_settings SET assistant_profile = NULL"):
+            self.profile_clears.append((s, str(p.get("email") or "")))
             return _Rows([], rowcount=0)
 
         raise AssertionError(f"unhandled SQL in fake: {s}")

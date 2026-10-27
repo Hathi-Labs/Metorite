@@ -14,6 +14,8 @@ export interface PageChoice {
   title: string;
   spaceName: string;
   updatedAt: string | null;
+  /** The page emoji (KB-2f), or `null`. The chip and the menus draw it. */
+  icon?: string | null;
 }
 
 /** The most rows the picker shows. */
@@ -31,7 +33,7 @@ export async function loadPageChoices(
     if (r.status !== "fulfilled") return;
     for (const p of r.value) {
       if (p.state === "archived") continue;
-      out.push({ id: p.id, title: p.title, spaceName: open[i].name, updatedAt: p.updated_at });
+      out.push({ id: p.id, title: p.title, spaceName: open[i].name, updatedAt: p.updated_at, icon: p.icon ?? null });
     }
   });
   return out;
@@ -103,4 +105,48 @@ export function isAllowedHref(href: string): boolean {
   if (h.startsWith("#")) return true;
   if (h.startsWith("/")) return !h.startsWith("//") && !h.startsWith("/\\");
   return /^(?:https?:\/\/[^/\s]|mailto:|tel:)/i.test(h);
+}
+
+const PAGE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The page id of a link that draws as a mention chip, or `null`. Only a
+ * `/knowledge/pages/<uuid>` path counts. An external link, and a path of
+ * this app that is no page, stay plain links.
+ */
+export function chipPageId(href: string | null | undefined): string | null {
+  const id = linkedPageId(href);
+  return id && PAGE_UUID.test(id) && (href ?? "").startsWith("/") ? id : null;
+}
+
+/** One row of the link popover: a page of the member, or the typed address. */
+export type LinkChoice =
+  | { kind: "page"; key: string; label: string; hint: string; icon: string | null; href: string }
+  | { kind: "url"; key: string; label: string; href: string };
+
+/**
+ * What the link popover offers for the typed words. An address-looking
+ * input offers one row, "Link to <address>". Any other words search the
+ * member's pages with the one matcher (`matchPages`).
+ */
+export function linkChoices(
+  text: string,
+  pages: readonly PageChoice[] | null,
+  opts: { exclude?: string | null; limit?: number } = {},
+): LinkChoice[] {
+  const t = text.trim();
+  if (!t) return [];
+  if (looksLikeAddress(t)) {
+    const href = addressOf(t);
+    return [{ kind: "url", key: `url:${href}`, label: `Link to ${t}`, href }];
+  }
+  if (!pages) return [];
+  return matchPages(pages, t, { exclude: opts.exclude, limit: opts.limit ?? 5 }).map((p) => ({
+    kind: "page" as const,
+    key: p.id,
+    label: p.title,
+    hint: p.spaceName,
+    icon: p.icon ?? null,
+    href: pageLinkHref(p.id),
+  }));
 }

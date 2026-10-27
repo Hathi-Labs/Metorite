@@ -174,9 +174,23 @@ def _exact_to(call: ast.Call) -> object:
 
 def test_only_the_composer_save_passes_exact_to() -> None:
     drafting = _create_draft_calls(_GATEWAY / "email" / "automation" / "drafting.py")
-    # PUT /email/drafts: the update fallback, the reply and the new draft.
-    assert len(drafting["upsert_draft"]) == 3
-    assert [_exact_to(c) for c in drafting["upsert_draft"]] == [True, True, True]
+    # PUT /email/drafts: the reply and the new draft. Its update fallback
+    # moved into the shared in-place update (EM-CR, 2026-10-22).
+    assert len(drafting["upsert_draft"]) == 2
+    assert [_exact_to(c) for c in drafting["upsert_draft"]] == [True, True]
+    assert [_exact_to(c) for c in drafting.pop("_update_provider_draft")] == [True]
+    # The one reply-draft write passes its caller's choice on. Only the
+    # reply card asks for exact_to; the AI draft and the chat save keep the
+    # default, so a Reply-To stays (`_upsert_reply_draft` callers below).
+    one = drafting.pop("_upsert_reply_draft")
+    assert [ast.unparse(_exact_to(c)) for c in one] == ["exact_to"]
+    def helper_calls(path: Path) -> list[object]:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        return [_exact_to(n) for n in ast.walk(tree)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id == "_upsert_reply_draft"]
+    assert helper_calls(_GATEWAY / "email" / "automation" / "drafting.py") == [None, None]
+    assert helper_calls(_GATEWAY / "email" / "automation" / "reply_card.py") == [True]
     reply = [c for c in drafting["upsert_draft"]
              if any(kw.arg == "reply_to_message_id" for kw in c.keywords)]
     assert len(reply) == 1
@@ -203,5 +217,6 @@ def test_only_the_composer_save_passes_exact_to() -> None:
             for call in calls:
                 seen += 1
                 assert _exact_to(call) is None, f"{name}:{fn}"
-    # The AI draft, the chat card, the nudge and Notes.
-    assert seen == 4
+    # The nudge and Notes. The AI draft and the chat save now write through
+    # `_upsert_reply_draft`, held above with no exact_to.
+    assert seen == 2

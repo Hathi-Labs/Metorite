@@ -21,6 +21,9 @@ pipeline, the empty slots and the values of each approved stage field.
 * ``stage_value`` — a value of an approved stage field with no entry. Id
   ``stage:<slot>:<hash of the value>``.
 * ``revenue`` — billed or collected. Id ``revenue``.
+* ``term`` — which field the org's own word for a figure means
+  (§18.16 part 4). Id ``term:<Module>:<slug>``. It opens only when the chat
+  met the word and two fields gave different totals (``crm_sync/terms.py``).
 
 **The gate of ``open``.** A part in ``open`` waits for the AI or for the
 admin. The admin sees it only when the mode of ``crm.map_catalogue`` is
@@ -52,7 +55,10 @@ KIND_KEY = "key_field"
 KIND_SLOT = "slot"
 KIND_STAGE = "stage_value"
 KIND_REVENUE = "revenue"
-KINDS: tuple[str, ...] = (KIND_PURPOSE, KIND_KEY, KIND_SLOT, KIND_STAGE, KIND_REVENUE)
+#: WS-53 §18.16 part 4: what the org's own word for a figure means.
+KIND_TERM = "term"
+KINDS: tuple[str, ...] = (KIND_PURPOSE, KIND_KEY, KIND_SLOT, KIND_STAGE, KIND_REVENUE,
+                          KIND_TERM)
 
 #: Why a question shows. ``answered`` marks a part in use, for a correction
 #: (``GET /crm/questions?all=1``).
@@ -230,6 +236,10 @@ class Inputs:
     names: Mapping[str, Sequence[str]] = field(default_factory=dict)
     #: CRM-Q32-8: question id → its proposals (:func:`proposals_of`).
     proposals: Mapping[str, Sequence[Mapping[str, Any]]] = field(default_factory=dict)
+    #: §18.16 part 4: the terms that the chat asked (question id →
+    #: ``{"module", "word"}``), and an admin's answer of each (id → key).
+    terms: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    term_answers: Mapping[str, str] = field(default_factory=dict)
 
 
 # ── Ids and hashes ───────────────────────────────────────────────────────────
@@ -679,7 +689,7 @@ def _tier(q: Question) -> int:
     then the rest."""
     if q.kind == KIND_REVENUE:
         return 0
-    if q.kind == KIND_KEY or (q.kind in (KIND_SLOT, KIND_STAGE) and q.slot == "deal"):
+    if q.kind in (KIND_KEY, KIND_TERM) or (q.kind in (KIND_SLOT, KIND_STAGE) and q.slot == "deal"):
         return 1
     if q.kind == KIND_PURPOSE:
         return 2
@@ -717,11 +727,53 @@ def module_questions(inputs: Inputs) -> list[Question]:
     return out
 
 
+def term_question(inputs: Inputs, qid: str, *, answered: bool = False) -> Question | None:
+    """The question of one term that the chat asked (§18.16 part 4), or
+    None: the module is gone, fewer than two fields match the word, or the
+    answer state is not the one asked for. Its choices are the matching
+    fields, the most filled first (``terms.candidates``)."""
+    from gateway.crm_sync import terms
+
+    asked = inputs.terms.get(qid)
+    src = inputs.sources.get(str((asked or {}).get("module") or ""))
+    if asked is None or src is None:
+        return None
+    word = str(asked.get("word") or "")
+    cands = terms.candidates(getattr(src, "fields", ()), getattr(src, "fills", None), word)
+    if len(cands) < 2:
+        return None
+    current = inputs.term_answers.get(qid)
+    if (current is not None) != answered:
+        return None
+    entry = next((e for e in inputs.entries if e.module == src.module), None)
+    label = str(getattr(entry, "label", None) or getattr(src, "label", "") or src.module)
+    return Question(
+        id=qid, kind=KIND_TERM, label=label,
+        reason=REASON_ANSWERED if answered else REASON_OPEN,
+        records=int(getattr(src, "records", 0) or 0), money=True,
+        why=(f'"{word}" matches more than one field of {label}, and the fields give '
+             "different totals. Each answer that uses the word reads the field you choose."),
+        choices=tuple(Choice(value=c.key, label=c.label, fill=c.fill, best=i == 0)
+                      for i, c in enumerate(cands)),
+        module=src.module, value=word, current=current,
+        by="admin" if answered else None,
+        hash=_digest(["term", qid, [c.key for c in cands]], 16),
+    )
+
+
+def term_questions(inputs: Inputs, *, answered: bool = False) -> list[Question]:
+    """The term questions of the org: the open ones, or with *answered*
+    each one an admin answered."""
+    out = [term_question(inputs, qid, answered=answered) for qid in sorted(inputs.terms)]
+    return [q for q in out if q is not None]
+
+
 def build(inputs: Inputs) -> list[Question]:
     """The open questions of the org, ranked (§18.14.7)."""
     found: list[Question] = list(module_questions(inputs))
     found += _slot_questions(inputs)
     found += _stage_questions(inputs)
+    found += term_questions(inputs)
     revenue = revenue_question(inputs)
     if revenue is not None:
         found.append(revenue)
@@ -749,6 +801,7 @@ def answered(inputs: Inputs) -> list[Question]:
     revenue = revenue_question(inputs, answered=True)
     if revenue is not None:
         out.append(revenue)
+    out.extend(term_questions(inputs, answered=True))
     return out
 
 
@@ -803,6 +856,8 @@ def answer_problem(q: Question, value: Any, src: Any = None) -> str | None:
         return None if value in STAGE_WORDS else "bad_answer"
     if q.kind == KIND_REVENUE:
         return None if value in cat.REVENUE_VALUES else "bad_answer"
+    if q.kind == KIND_TERM:
+        return None if value in {c.value for c in q.choices} else "bad_answer"
     return "bad_answer"
 
 
@@ -884,7 +939,7 @@ PROPOSALS_KEEP = 5
 #: The kinds that a chat card asks. A ``slot`` or a ``stage_value`` changes
 #: what records mean, so it goes through the approve path with a preview in
 #: the CRM app, never through a chat reply (§18.14.6).
-CHAT_KINDS: tuple[str, ...] = (KIND_PURPOSE, KIND_KEY, KIND_REVENUE)
+CHAT_KINDS: tuple[str, ...] = (KIND_PURPOSE, KIND_KEY, KIND_REVENUE, KIND_TERM)
 
 #: The keys of the two options that each card adds.
 NONE_KEY = "none"
@@ -994,6 +1049,8 @@ def ask_sentence(q: Question) -> str:
         return "When you ask about revenue, what should Metorite count?"
     if q.kind == KIND_PURPOSE:
         return f"What kind of records does {q.label} hold?"
+    if q.kind == KIND_TERM:
+        return f'When you say "{q.value}", which field of {q.label} do you mean?'
     if q.part == "amount":
         return f"Which field holds the amount of each record in {q.label}?"
     if q.part == "date":
@@ -1007,6 +1064,8 @@ def ask_header(q: Question) -> str:
     """The short title of a card: "Collection: amount"."""
     if q.kind == KIND_REVENUE:
         return "Revenue"
+    if q.kind == KIND_TERM:
+        return f"{q.label}: {q.value}"[:50]
     word = "customer" if q.part == "parent" else (q.part or "purpose")
     return f"{q.label}: {word}"
 
@@ -1025,6 +1084,9 @@ def override_of(q: Question, value: str | None, modules: Mapping[str, str]) -> d
                 "modules": sorted(m for m, p in modules.items() if p == value)}
     if q.kind == KIND_PURPOSE:
         return {"purpose": value, "label": value_label(q, value)}
+    if q.kind == KIND_TERM:
+        return {"term": q.value, "field": value, "label": value_label(q, value),
+                "measure": "sum"}
     out: dict[str, Any] = {"part": q.part, "word": f"@{q.part}", "field": value,
                            "label": value_label(q, value)}
     if q.part == "amount" and value is not None:
@@ -1132,6 +1194,8 @@ def wire(q: Question) -> dict[str, Any]:
     has no ``fill``, and a ``stage_value`` question has ``count``."""
     def choice(c: Choice) -> dict[str, Any]:
         out: dict[str, Any] = {"value": c.value, "label": c.label, "best": c.best}
+        if q.kind == KIND_TERM:
+            out["fill"] = c.fill
         if q.kind == KIND_KEY:
             out["fill"] = c.fill
             out["samples"] = list(c.samples)
@@ -1156,6 +1220,8 @@ def wire(q: Question) -> dict[str, Any]:
         body["sums"] = [{"value": c.value, "label": c.label, "fill": c.fill} for c in q.sums]
     if q.kind == KIND_STAGE:
         body.update(count=q.count, slot=q.slot, value=q.value, field=q.field)
+    if q.kind == KIND_TERM:
+        body["value"] = q.value
     if q.kind == KIND_SLOT:
         body["slot"] = q.slot
     if q.other:
@@ -1457,6 +1523,7 @@ __all__ = [
     "KIND_REVENUE",
     "KIND_SLOT",
     "KIND_STAGE",
+    "KIND_TERM",
     "NONE_KEY",
     "PROPOSALS",
     "PROPOSALS_KEEP",
@@ -1532,6 +1599,8 @@ __all__ = [
     "sum_fields",
     "sum_problem",
     "sum_report",
+    "term_question",
+    "term_questions",
     "value_hash",
     "value_label",
     "why_key",

@@ -281,6 +281,16 @@ describe("the stat tile", () => {
     expect(cost).toContain("var(--destructive)");
     expect(churn).toContain("0.4%");
   });
+
+  it("writes a number through the one formatter, in the member's system", () => {
+    // WS-47 follow-up of #1154: `toLocaleString(undefined)` grouped by the
+    // browser's locale, so a member on lakh and crore saw 1,234,567.
+    const src = readFileSync(fileURLToPath(new URL("./genUITemplates.tsx", import.meta.url)), "utf-8");
+    const tile = src.slice(src.indexOf("function StatTile("), src.indexOf("function StatDashboard("));
+    expect(tile).toContain("useNumberSystem()");
+    expect(tile).toContain("groupedNumber(animated, numbering, decimals)");
+    expect(tile).not.toContain("toLocaleString(");
+  });
 });
 
 describe("a report file", () => {

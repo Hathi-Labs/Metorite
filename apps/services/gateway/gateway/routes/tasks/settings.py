@@ -186,14 +186,20 @@ async def calendar_prefs(db: Any, user_id: str) -> dict[str, Any]:
     return out
 
 
-async def _load(db: Any, user_id: str) -> UserSettingsModel:
+async def _load(db: Any, user_id: str, *, any_case: bool = False) -> UserSettingsModel:
     # The row of the BOUND tenant (WS-58 MD-3c fix round 1). Since migration
     # 239 a member has one row for each organization. The predicate is beside
     # RLS, not instead of it: an owner role that bypasses RLS still reads the
     # row of this organization, and never another's.
+    #
+    # `any_case` (WS-66 RM-2, `member_settings`): the address matches in any
+    # case, for a caller with no session spelling. The session's own spelling
+    # wins, then the newest row.
+    match = (" AND lower(user_id) = lower(:uid)"
+             " ORDER BY (user_id = :uid) DESC, updated_at DESC LIMIT 1"
+             if any_case else " AND user_id = :uid")
     row = (await db.execute(text(
-        f"SELECT * FROM user_settings WHERE organization_id = {_BOUND_ORG}"
-        " AND user_id = :uid"),
+        f"SELECT * FROM user_settings WHERE organization_id = {_BOUND_ORG}" + match),
         {"uid": user_id})).fetchone()
     if not row:
         # ── WS-28p / D-PC-16: the calendar SEEDS itself from the People
@@ -409,6 +415,16 @@ def upsert_settings_sql(
         "ON CONFLICT (organization_id, user_id) "
         f"DO UPDATE SET {sets}, updated_at = now()"
     )
+
+
+async def member_settings(db: Any, email: str) -> UserSettingsModel:
+    """The settings of *email* in the bound tenant, read on *db*, for a
+    background unit with no session (WS-66 RM-2, the reminder loop).
+
+    The body of ``GET /tasks/settings``, with one change: the address matches
+    in any case. A row keys on the session's spelling, and the loop knows only
+    the lower case that ``reminders.member_email`` holds."""
+    return await _load(db, email, any_case=True)
 
 
 @router.get("/settings", response_model=UserSettingsModel)

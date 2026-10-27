@@ -29,6 +29,7 @@ import {
   actionOptions, fetchReachStatus, REACH_OFF, type ReachStatus,
 } from "../../../lib/reachStatus";
 import { isPendingReview, PatternRow } from "./SettingsTab";
+import { CopyRulesDialog } from "./CopyRulesDialog";
 import { LabeledToggle, Modal } from "../ui";
 import {
   ACTION_META, ACTION_TYPES, ActionChip, ActionIcon, actionIconColor,
@@ -295,6 +296,9 @@ export function RulesTab({
     onProcessPastOpened?.();
   }, [processPastFrom, onProcessPastOpened]);
   const [showAdd, setShowAdd] = useState(false);
+  // "Copy rules from..." shows for a member with two or more mailboxes.
+  const [showCopy, setShowCopy] = useState(false);
+  const mailboxes = useEmailStore((s) => s.accounts);
   // Learned patterns nested under their rule — the deterministic pre-AI stage
   // shown WHERE the rules live, so "why does mail from X get filed as Y?" has
   // one answer screen. Storage stays separate (approval gate + provenance);
@@ -471,6 +475,14 @@ export function RulesTab({
               Add defaults
             </button>
           )}
+          {mailboxes.length > 1 && (
+            <button
+              onClick={() => setShowCopy(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors whitespace-nowrap"
+            >
+              <Icon name="Copy" size={13} /> Copy rules from…
+            </button>
+          )}
           {rules.length > 0 && (
             <button
               onClick={() => setShowPast(true)}
@@ -496,6 +508,14 @@ export function RulesTab({
             load();
           }}
           onClose={() => setShowAdd(false)}
+        />
+      )}
+      {showCopy && accountId && (
+        <CopyRulesDialog
+          targetId={accountId}
+          mailboxes={mailboxes}
+          onClose={() => setShowCopy(false)}
+          onCopied={load}
         />
       )}
       {showPast && accountId && (

@@ -540,8 +540,13 @@ class TestTheForwardTool:
         # A forward leaves the company and cannot be undone: it fails closed
         # without a human (root AGENTS.md, harness rule 2).
         src = (_AGENT_DIR / "agents.py").read_text(encoding="utf-8")
+        # §21 adds ``card_bound``, which keeps nothing while EMAIL_HELD_CARD_SEND
+        # is off (``egress.HELD_CARD_SEND_TOOLS``).
         assert re.search(
-            r"@_annotate_risk\(destructive=True, open_world=True\)\nasync def forward_email", src)
+            r"@_annotate_risk\(destructive=True, open_world=True(, card_bound=True)?\)\n"
+            r"async def forward_email", src)
+        assert agents.forward_email.__tool_risk__["destructive"] is True
+        assert agents.forward_email.__tool_risk__["open_world"] is True
 
     async def test_the_card_names_each_target_in_context_and_the_files_in_detail(self, chat) -> None:
         out = await agents.forward_email(MAIL, ["geo@fracktal.test"], bcc=["boss@fracktal.test"],

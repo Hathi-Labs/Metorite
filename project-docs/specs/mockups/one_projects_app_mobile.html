@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>One Projects app — phone layout (WS-64)</title>
+<style>
+/* Mockup for specs/one_projects_app.md §5. Dark mode, house-like tokens. Not product code. */
+:root{--bg:#0e0f12;--panel:#16181d;--card:#1b1e24;--line:#2a2e36;--fg:#e8e9ec;--muted:#8b909a;--accent:#4f8cff;
+--feat:#d9b44a;--feat-bg:#2e2814;--ai:#4fbf73;--ai-bg:#16291d;--ux:#4aa3d9;--ux-bg:#14232e;}
+*{box-sizing:border-box}
+body{margin:0;background:#050506;color:var(--fg);font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;gap:40px;justify-content:center;padding:28px;flex-wrap:wrap}
+.col{display:flex;flex-direction:column;align-items:center;gap:10px}
+.col h2{font-size:13px;color:var(--muted);font-weight:600;margin:0}
+.phone{width:390px;height:844px;background:var(--bg);border:1px solid var(--line);border-radius:36px;overflow:hidden;position:relative;display:flex;flex-direction:column}
+.status{height:44px;flex:none}
+.top{height:44px;display:flex;align-items:center;gap:10px;padding:0 12px;border-bottom:1px solid var(--line);background:var(--panel);flex:none}
+.top b{flex:1;font-weight:600}
+.ic{color:var(--muted)}
+.tool{display:flex;gap:8px;padding:8px 12px;align-items:center;flex:none}
+.search{flex:1;height:36px;border:1px solid var(--line);border-radius:10px;display:flex;align-items:center;padding:0 10px;color:var(--muted);gap:6px}
+.btn{height:36px;border:1px solid var(--line);border-radius:10px;padding:0 10px;display:flex;align-items:center;gap:6px;white-space:nowrap}
+.badge{background:var(--accent);color:#fff;border-radius:9px;font-size:11px;padding:0 6px;font-weight:600}
+.chips{display:flex;gap:6px;padding:0 12px 8px;overflow:hidden;white-space:nowrap;flex:none;align-items:center}
+.chip{border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12px}
+.chip.on{background:#1d2a44;border-color:#2f4a7a}
+.chip.agent{color:var(--muted)}
+.clear{color:var(--accent);font-size:12px;margin-left:4px}
+.tabs{display:flex;gap:16px;padding:0 12px;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;flex:none;font-size:13px}
+.tabs span{padding:8px 0;color:var(--muted)}
+.tabs span.cur{color:var(--fg);border-bottom:2px solid var(--accent)}
+.list{flex:1;overflow:hidden;padding:4px 0}
+.row{display:flex;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line)}
+.tick{width:18px;height:18px;border:1.5px solid var(--muted);border-radius:50%;flex:none;margin-top:2px}
+.row .t{flex:1}
+.meta{display:flex;gap:6px;margin-top:4px;font-size:11px;color:var(--muted);align-items:center}
+.tag{border-radius:6px;padding:1px 6px}
+.f{color:var(--feat);background:var(--feat-bg)}.a{color:var(--ai);background:var(--ai-bg)}.u{color:var(--ux);background:var(--ux-bg)}
+.more{color:var(--muted);align-self:center}
+.load{text-align:center;color:var(--accent);padding:12px;font-size:13px}
+.nav{height:74px;border-top:1px solid var(--line);display:flex;justify-content:space-around;align-items:flex-start;padding-top:8px;background:var(--panel);flex:none}
+.nav div{display:flex;flex-direction:column;align-items:center;font-size:11px;color:var(--muted);gap:2px}
+.nav .cur{color:var(--accent)}
+.plus{width:44px;height:44px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-size:24px;margin-top:-4px}
+.fold{position:absolute;left:0;right:0;top:calc(844px/3);border-top:1px dashed #ff6b6b;font-size:10px;color:#ff6b6b;text-align:right;padding-right:8px;pointer-events:none}
+.sheet{position:absolute;left:0;right:0;bottom:0;background:var(--panel);border-top:1px solid var(--line);border-radius:18px 18px 0 0;padding:10px 16px 20px}
+.scrim{position:absolute;inset:0;background:rgba(0,0,0,.55)}
+.grab{width:40px;height:4px;background:var(--line);border-radius:2px;margin:0 auto 12px}
+.sh{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.sh b{font-size:16px}
+.lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:12px 0 6px}
+.sel{border:1px solid var(--line);border-radius:10px;height:40px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;margin-bottom:6px}
+.wrap{display:flex;flex-wrap:wrap;gap:6px}
+.done{margin-top:16px;height:44px;border-radius:12px;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600}
+.side .sec{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:14px 16px 6px}
+.side .it{display:flex;justify-content:space-between;padding:9px 16px}
+.side .it.cur{background:#1d2a44}
+.side .n{color:var(--muted)}
+</style>
+</head>
+<body>
+
+<div class="col"><h2>1 · Board, list view (flag on)</h2>
+<div class="phone">
+  <div class="status"></div>
+  <div class="top"><span class="ic">☰</span><b>Metorite Application</b><span class="ic">↶ ↷ ⋯</span></div>
+  <div class="tool"><div class="search">🔍 Search tasks…</div><div class="btn">⚲ Filters <span class="badge">2</span></div><div class="btn">▤</div></div>
+  <div class="chips"><span class="chip on">Overdue ✕</span><span class="chip on">Feature ✕</span><span class="chip agent">1 waiting · 2 working</span><span class="clear">Clear</span></div>
+  <div class="tabs"><span>Backlog 41</span><span class="cur">To do 22</span><span>Doing 9</span><span>Review 4</span><span>Done 143</span></div>
+  <div class="list">
+    <div class="row"><div class="tick"></div><div class="t">Link artifacts into the agent memory system<div class="meta"><span class="tag a">AI Agent</span><span class="tag f">Feature</span>#137</div></div><span class="more">⋯</span></div>
+    <div class="row"><div class="tick"></div><div class="t">Govern agent memory: access, retention and deletion<div class="meta"><span class="tag a">AI Agent</span><span class="tag f">Feature</span>#136</div></div><span class="more">⋯</span></div>
+    <div class="row"><div class="tick"></div><div class="t">Decide on direct speech in the assistant<div class="meta"><span class="tag a">AI Agent</span>#171 · due today</div></div><span class="more">⋯</span></div>
+    <div class="row"><div class="tick"></div><div class="t">Keep a search index of artifacts current<div class="meta"><span class="tag f">Feature</span>#170</div></div><span class="more">⋯</span></div>
+    <div class="row"><div class="tick"></div><div class="t">Phone layout: filters fold into sheets<div class="meta"><span class="tag u">UX</span><span class="tag f">Feature</span>#212</div></div><span class="more">⋯</span></div>
+    <div class="row"><div class="tick"></div><div class="t">Personal space in the Projects tree<div class="meta"><span class="tag f">Feature</span>#213</div></div><span class="more">⋯</span></div>
+    <div class="row"><div class="tick"></div><div class="t">Redirect /tasks into My work<div class="meta"><span class="tag f">Feature</span>#214</div></div><span class="more">⋯</span></div>
+    <div class="load">Load 100 more · 100 of 219</div>
+  </div>
+  <div class="fold">one third — first row must start above this line</div>
+  <div class="nav"><div>☰<span>Menu</span></div><div>✓<span>My work</span></div><div><span class="plus">＋</span></div><div>🔍<span>Search</span></div><div class="cur">✦<span>Ask</span></div></div>
+</div></div>
+
+<div class="col"><h2>2 · Filters sheet</h2>
+<div class="phone">
+  <div class="status"></div>
+  <div class="top"><span class="ic">☰</span><b>Metorite Application</b><span class="ic">↶ ↷ ⋯</span></div>
+  <div class="scrim"></div>
+  <div class="sheet"><div class="grab"></div>
+    <div class="sh"><b>Filters</b><span class="clear">Clear all</span></div>
+    <div class="lbl">Stage and people</div>
+    <div class="sel">Any stage <span class="ic">⌄</span></div>
+    <div class="sel">Anyone <span class="ic">⌄</span></div>
+    <div class="lbl">Show</div>
+    <div class="wrap"><span class="chip on">Overdue</span><span class="chip">Watching</span><span class="chip">Waiting on me</span><span class="chip">Agent work</span><span class="chip">Archived 15</span></div>
+    <div class="lbl">Tags</div>
+    <div class="wrap"><span class="chip on">Feature 163</span><span class="chip">AI Agent 97</span><span class="chip">UX 69</span><span class="chip">Verification 22</span><span class="chip">Bug 20</span></div>
+    <div class="done">Show 31 tasks</div>
+  </div>
+</div></div>
+
+<div class="col"><h2>3 · View sheet</h2>
+<div class="phone">
+  <div class="status"></div>
+  <div class="top"><span class="ic">☰</span><b>Metorite Application</b><span class="ic">↶ ↷ ⋯</span></div>
+  <div class="scrim"></div>
+  <div class="sheet"><div class="grab"></div>
+    <div class="sh"><b>View</b><span class="ic">✕</span></div>
+    <div class="wrap"><span class="chip">Board</span><span class="chip on">List</span><span class="chip">Table</span><span class="chip">Calendar</span></div>
+    <div class="lbl">Arrange</div>
+    <div class="sel">Group by status <span class="ic">⌄</span></div>
+    <div class="sel">No lanes <span class="ic">⌄</span></div>
+    <div class="sel">Subtasks: separate <span class="ic">⌄</span></div>
+    <div class="sel">Fields <span class="ic">›</span></div>
+    <div class="lbl">Saved views</div>
+    <div class="wrap"><span class="chip">My overdue</span><span class="chip">Agent queue</span><span class="chip">＋ Save this view</span></div>
+    <div class="lbl">Other</div>
+    <div class="sel">Export what is shown <span class="ic">⤓</span></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">Counts and grouping describe the tasks that are loaded.</div>
+  </div>
+</div></div>
+
+<div class="col"><h2>4 · Menu: My work, Personal, Spaces</h2>
+<div class="phone side">
+  <div class="status"></div>
+  <div class="top"><b>Projects</b><span class="ic">✕</span></div>
+  <div class="sec">My work</div>
+  <div class="it cur"><span>📥 Inbox</span><span class="n">12</span></div>
+  <div class="it"><span>☀ Today</span><span class="n">5</span></div>
+  <div class="it"><span>☑ Next actions</span><span class="n">31</span></div>
+  <div class="it"><span>⏱ Waiting for</span><span class="n">4</span></div>
+  <div class="it"><span>💡 Someday / Maybe</span><span class="n">9</span></div>
+  <div class="it"><span>✓ Done</span><span class="n"></span></div>
+  <div class="sec">Personal 🔒</div>
+  <div class="it"><span>Health</span><span class="n">6</span></div>
+  <div class="it"><span>Home</span><span class="n">3</span></div>
+  <div class="it"><span>＋ New folder</span><span></span></div>
+  <div class="sec">Spaces</div>
+  <div class="it"><span>Metorite Application</span><span class="n">219</span></div>
+  <div class="it"><span>Sales</span><span class="n">48</span></div>
+  <div class="sec">App</div>
+  <div class="it"><span>Reports · AI chat · Settings</span><span></span></div>
+</div></div>
+
+</body>
+</html>

@@ -225,15 +225,29 @@ _IN_SUBQUERY = re.compile(
 _TENANT_PROJECTS = re.compile(
     r"SELECT id FROM pm_projects WHERE organization_id\s*=\s*CAST\(:vis_org", re.I
 )
+#: WS-64 OP-9 (D-OP-15): the tenant set leaves out every other member's
+#: personal node. Read off the text, so a route that drops the line stops
+#: being mirrored here.
+_TENANT_PERSONAL = "personal_owner IS NULL OR lower(personal_owner) = :vis_email"
 #: H-304: the unrestricted TASK clause ORs the assignee arm onto that set, so
 #: the D63 hand-over reaches an admin who is the assignee. Read off the text,
 #: so a route that drops the arm stops being mirrored here.
 _TENANT_OR_ASSIGNEE = re.compile(
     r"SELECT id FROM pm_projects\s+WHERE organization_id\s*=\s*CAST\(:vis_org"
-    r"[^()]*\)[^()]*\)\s*OR EXISTS \(SELECT 1 FROM pm_task_assignees a\s+WHERE"
+    r"[^()]*\)[^()]*"
+    # WS-64 OP-9: the personal line may sit before the set closes.
+    r"(?:\(personal_owner IS NULL OR lower\(personal_owner\)\s*=\s*:vis_email\)\s*)?"
+    r"\)\s*OR EXISTS \(SELECT 1 FROM pm_task_assignees a\s+WHERE"
     r"\s+a\.task_id\s*=\s*\w+\.id\s+AND\s+lower\(a\.assignee\)\s*=\s*:vis_email",
     re.I,
 )
+def _personal_me(statement: str, args: dict) -> str | None:
+    """The caller, when *statement* carries the OP-9 personal line, else None."""
+    if _TENANT_PERSONAL not in statement:
+        return None
+    return str(args.get("vis_email") or "").lower()
+
+
 #: The column that subquery restricts: ``t.root_project_id IN ( SELECT id FROM…``
 _IN_TENANT_SUBQUERY = re.compile(
     r"(?:\w+\.)?(\w+)\s+IN\s*\(\s*SELECT id FROM pm_projects WHERE organization_id",
@@ -721,6 +735,25 @@ class FakeProjectsDB:
             )
         return project
 
+    def seed_in_space(
+        self, *, name: str = "Root", subject: str | None = "org",
+        space: str = "Company", **columns: Any,
+    ) -> SimpleNamespace:
+        """A project that sits in a fresh SPACE and keeps its own lanes.
+
+        A space holds projects, not tasks (``core.assert_holds_tasks``,
+        2026-10-26), so a test that creates, moves or captures a task needs a
+        project under a root, not the root itself. The project owns its status
+        set (migration 196), so lanes seeded on it are the lanes it uses. The
+        ROOT is the space, so root-scoped rows (types, fields, the task
+        counter) belong on ``project.parent_project_id``.
+        """
+        root = self.seed_project(name=space, subject=subject)
+        columns.setdefault("owns_statuses", True)
+        return self.seed_project(
+            name=name, parent=root.id, subject=subject, **columns,
+        )
+
     def seed_status(
         self, project_id: str, *, name: str = "To do", category: str = "todo",
         is_default: bool = True, position: int = 10,
@@ -831,6 +864,15 @@ class FakeProjectsDB:
         # `pm_task_attachments`, which several statements name.
         if "count(*) AS files" in statement:
             return _Result(self._attachment_counts(args))
+        # `tree._OWN_LIVE_TASKS_SQL` (2026-10-26): the live tasks on ONE node,
+        # never its subtree. Fingerprinted on its own alias.
+        if "AS own_live_tasks" in statement:
+            pid = str(args.get("pid"))
+            held = sum(
+                1 for row in self.rows("pm_tasks")
+                if str(row.get("project_id")) == pid and row.get("archived_at") is None
+            )
+            return _Result([SimpleNamespace(own_live_tasks=held)])
         # The tree's subtree roll-up (2026-09-23): per project, how many tasks
         # and how many are finished, for the sidebar's completion wheel.
         # `GROUP BY` is not a shape the generic WHERE reader can parse, so it
@@ -1162,7 +1204,8 @@ class FakeProjectsDB:
                 continue
             if parked is not None and str(task.get("status_id")) in parked:
                 continue
-            if tenant_only and str(task.get("project_id")) not in self.tenant_project_ids(org):
+            if tenant_only and str(task.get("project_id")) not in self.tenant_project_ids(
+                    org, _personal_me(statement, args)):
                 continue
             if scoped and str(task.get("project_id")) not in visible:
                 continue
@@ -1305,7 +1348,8 @@ class FakeProjectsDB:
             if tenanted and str(task.get("organization_id")) != org:
                 continue
             if tenant_only and (
-                str(task.get("project_id")) not in self.tenant_project_ids(org)
+                str(task.get("project_id")) not in self.tenant_project_ids(
+                    org, _personal_me(statement, args))
             ):
                 continue
             if scoped and str(task.get("project_id")) not in visible and not (
@@ -1653,6 +1697,17 @@ class FakeProjectsDB:
         # size, asked by the project delete before it destroys anything. It does
         # not start with SELECT, so the generic count path never sees it and the
         # route would have reported zero.
+        # `remove_my_area` asks for the child nodes and the tasks of a whole
+        # subtree in one row (`AS nodes … AS tasks`). Answered explicitly.
+        if re.match(r"^\s*WITH\s+RECURSIVE\s+sub\b", statement, re.I) and "AS nodes" in statement:
+            subtree = self._subtree_ids(str(args.get("aid")))
+            return _Result([SimpleNamespace(
+                nodes=len(subtree) - 1,
+                tasks=sum(
+                    1 for t in self.rows("pm_tasks")
+                    if str(t.get("project_id")) in subtree
+                ),
+            )])
         if re.match(r"^\s*WITH\s+RECURSIVE\s+sub\b", statement, re.I):
             subtree = self._subtree_ids(str(args.get("pid")))
             if re.search(r"SELECT\s+count\(\*\)\s+FROM\s+sub", statement, re.I):
@@ -1765,6 +1820,15 @@ class FakeProjectsDB:
             str(p["id"]) for p in self.rows("pm_projects")
             if p.get("sealed_at") is not None
         }
+        # WS-64 OP-9 fix round 1 (D-OP-15): a personal node of somebody else
+        # leaves the closure on BOTH arms, as the SQL does. A stray grant on
+        # it seeds nothing, and the descent does not enter it.
+        me = (email or "").lower()
+        sealed |= {
+            str(p["id"]) for p in self.rows("pm_projects")
+            if p.get("personal_owner")
+            and str(p.get("personal_owner")).lower() != me
+        }
         seeds = {
             str(g.get("project_id")) for g in self.rows("pm_project_grants")
             if (
@@ -1796,7 +1860,9 @@ class FakeProjectsDB:
                     changed = True
         return out
 
-    def tenant_project_ids(self, organization_id: str | None) -> set[str]:
+    def tenant_project_ids(
+        self, organization_id: str | None, me: str | None = None,
+    ) -> set[str]:
         """Every project in one organization — the `data:org:read` answer.
 
         ⚠️ Sealed projects are excluded HERE TOO, and that is D63's point
@@ -1806,11 +1872,17 @@ class FakeProjectsDB:
         invisible act", and allows one door for it: owner-only and logged. An
         unrestricted answer that included sealed rows would BE that invisible
         act, handed to every HR admin by default.
+
+        With *me* (the statement carries :data:`_TENANT_PERSONAL`), the set
+        also leaves out every personal node whose owner is not *me* (WS-64
+        OP-9, D-OP-15).
         """
         return {
             str(p["id"]) for p in self.rows("pm_projects")
             if str(p.get("organization_id")) == str(organization_id)
             and p.get("sealed_at") is None
+            and (me is None or not p.get("personal_owner")
+                 or str(p.get("personal_owner")).lower() == me)
         }
 
     def _subtree_ids(self, root_id: str) -> set[str]:
@@ -2183,7 +2255,8 @@ class FakeProjectsDB:
             seen = True
             column_match = _IN_TENANT_SUBQUERY.search(where)
             column = column_match.group(1) if column_match else "id"
-            tenant = self.tenant_project_ids(args.get("vis_org"))
+            tenant = self.tenant_project_ids(
+                args.get("vis_org"), _personal_me(where, args))
             # H-304: the assignee arm, ORed onto the set. A second copy of the
             # set is the agent's narrowing (`core._narrow_for_agent`), an AND
             # over both arms, so it still binds the assignee arm.

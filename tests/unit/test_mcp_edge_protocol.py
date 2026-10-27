@@ -116,9 +116,10 @@ HTTPX_DEFAULT_HEADERS = {"host", "accept", "accept-encoding", "connection", "use
 #: §7.3: the edge never sends these.
 NEVER_SENT = {"include_triage", "include_archived", "archived_only", "watching"}
 
-#: The seven tools of EA-3, in the order of ``tools/list`` (§15.1).
+#: The seven tools of EA-3, in the order of ``tools/list`` (§15.1), then the
+#: two reads of EA-15 (§12.4).
 ALL_TOOLS = ["whoami", "list_projects", "get_project", "list_tasks", "get_task",
-             "get_task_timeline", "search_tasks"]
+             "get_task_timeline", "search_tasks", "get_task_context", "my_work"]
 
 
 def _uuid(n: int) -> str:
@@ -846,9 +847,23 @@ class TestTheProtocolRules:
         r = await _post({"jsonrpc": "2.0", "method": "notifications/initialized"}, token=None)
         assert r.status_code == 401
 
-    async def test_no_answer_carries_a_session_id(self, armed):
+    @pytest.mark.parametrize("sessions", [False, True])
+    async def test_only_initialize_carries_a_session_id(self, armed, monkeypatch,
+                                                        sessions):
+        """SW-7 (spec §12.5). With ``agent_mcp_sessions_enabled`` off (the
+        default) no answer carries ``Mcp-Session-Id``, as before. With it on,
+        ``initialize`` starts a session and answers its id, and no other
+        answer carries one."""
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", sessions)
+        first = await _post(_rpc("initialize", {"protocolVersion": "2025-11-25"}),
+                            version=None)
+        if sessions:
+            assert first.headers["mcp-session-id"].startswith("s1.")
+        else:
+            assert "mcp-session-id" not in first.headers
         answers = [
-            await _post(_rpc("initialize", {"protocolVersion": "2025-11-25"}), version=None),
             await _post(_rpc("tools/list")),
             await _post({"jsonrpc": "2.0", "method": "notifications/initialized"}),
             await _post(_rpc("ping"), token=None),
@@ -979,9 +994,21 @@ class TestTheToolResults:
                                    "tag": "bug", "assignee": "a@x.test", "text": "login",
                                    "limit": 7})
         assert armed.gateway.requests[0].path == "/projects/tasks"
+        # WS-64 OP-11 (audit P1-3): a project_id reads its subtree by default.
         assert armed.gateway.requests[0].pairs == {
-            "project_id": _uuid(1), "status_id": _uuid(9000), "tags": "bug",
-            "assignee": "a@x.test", "q": "login", "page": "1", "page_size": "7"}
+            "project_id": _uuid(1), "include_subtree": "true", "status_id": _uuid(9000),
+            "tags": "bug", "assignee": "a@x.test", "q": "login", "page": "1",
+            "page_size": "7"}
+
+    async def test_include_subtree_defaults_true_and_false_reads_the_node(self, armed):
+        """WS-64 OP-11, audit P1-3. list_projects counts a space's subtree, so
+        list_tasks with that space id reads the subtree too. False is the node."""
+        await _tool("list_tasks", {"project_id": _uuid(1)})
+        await _tool("list_tasks", {"project_id": _uuid(1), "include_subtree": False})
+        await _tool("list_tasks", {"text": "login"})
+        sent = [r.pairs.get("include_subtree") for r in armed.gateway.requests
+                if r.path == "/projects/tasks"]
+        assert sent == ["true", "false", None]
 
     async def test_the_edge_never_sends_the_hidden_parameters(self, armed):
         """D11. Over every request of both tools."""
@@ -1421,6 +1448,19 @@ class TestListProjects:
         for dropped in ("clickup", "lead", "about ", "icon", "archived_root_id"):
             assert dropped not in flat
 
+    async def test_each_row_carries_kind_and_level_from_the_tree(self, armed):
+        """WS-64 OP-11, audit P1-4. The edge copies the gateway's level
+        (``core.node_level``) and derives none. A value that is not one of
+        the four levels, or no value, reads as null."""
+        armed.gateway.tree[0]["level"] = "space"
+        armed.gateway.tree[0]["children"][0]["level"] = "project"
+        armed.gateway.tree[1]["level"] = "bogus"
+        rows = {p["id"]: p for p in _structured(await _tool("list_projects"))["projects"]}
+        assert (rows[P_TEAM]["kind"], rows[P_TEAM]["level"]) == ("project", "space")
+        assert rows[P_CHILD]["level"] == "project"
+        assert rows[P_SALES]["level"] is None
+        assert rows[P_UNDER_OLD]["level"] is None
+
     async def test_parent_id_keeps_the_direct_children(self, armed):
         body = _structured(await _tool("list_projects", {"parent_id": P_TEAM}))
         assert [p["id"] for p in body["projects"]] == [P_CHILD]
@@ -1497,6 +1537,12 @@ class TestGetProject:
         flat = json.dumps(body)
         for dropped in ("clickup", "lead", "task_count", "icon", "color", "created_by"):
             assert dropped not in flat, dropped
+
+    async def test_the_project_carries_its_level(self, armed):
+        """WS-64 OP-11, audit P1-4. ``GET /projects/nodes/{id}`` sends ``level``."""
+        armed.gateway.nodes[P_TEAM]["level"] = "space"
+        body = _structured(await _tool("get_project", {"project_id": P_TEAM}))
+        assert (body["project"]["kind"], body["project"]["level"]) == ("project", "space")
 
     async def test_every_free_text_value_is_untrusted(self, armed):
         body = _structured(await _tool("get_project", {"project_id": P_TEAM}))

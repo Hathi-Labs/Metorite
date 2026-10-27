@@ -22,6 +22,7 @@
  * `- #<n> «title» · <facts>` and the NEXT line is `  full_id: <uuid>`.
  */
 
+import ShowMore from "@/components/ui/ShowMore";
 import Button from "@/components/ui/Button";
 import FencedText from "@/components/FencedText";
 import AppIcon from "@/components/Icon";
@@ -74,6 +75,8 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   rebalance: { icon: "Scale", label: "Rebalance" },
   find_conflicts: { icon: "TriangleAlert", label: "Conflicts" },
   report_list: { icon: "FileText", label: "Reports" },
+  report_recipients: { icon: "Users", label: "Report recipients" },
+  waiting_agent_requests: { icon: "Bot", label: "Agent requests" },
   report_render: { icon: "FileText", label: "Report" },
   recurrence: { icon: "Repeat", label: "Repeat rule" },
   // The overlay line is the point of this read, and a list card drops it.
@@ -93,6 +96,7 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   // S6 — navigation. The page usually opens the row itself; this card keeps
   // the link for a member who is not on the Projects page.
   open_in_app: { icon: "ExternalLink", label: "Open in Projects" },
+  show_view: { icon: "Filter", label: "Board view changed" },
   // S7e — the on-the-fly table. It draws as a table (`lib/datasetTable.ts`).
   task_dataset: { icon: "Table2", label: "Task dataset" },
   my_led_projects: { icon: "FolderKanban", label: "Projects you lead" },
@@ -115,6 +119,7 @@ export const OPENS_APP: Record<string, { app: "reports"; label: string }> = {
   team_capacity: { app: "reports", label: "Open Reports" },
   find_conflicts: { app: "reports", label: "Open Reports" },
   report_list: { app: "reports", label: "Open Reports" },
+  report_recipients: { app: "reports", label: "Open Reports" },
   report_render: { app: "reports", label: "Open Reports" },
   render_report: { app: "reports", label: "Open Reports" },
   status_report: { app: "reports", label: "Open Reports" },
@@ -165,7 +170,10 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   archive_project: { icon: "Archive", label: "Project archived" },
   unarchive_project: { icon: "ArchiveRestore", label: "Project restored" },
   move_project: { icon: "FolderInput", label: "Project moved" },
+  convert_folder_to_project: { icon: "FolderKanban", label: "Folder converted to a project" },
   archive_task: { icon: "Archive", label: "Task archived" },
+  delete_project: { icon: "Trash2", label: "Project deleted" },
+  delete_task: { icon: "Trash2", label: "Task deleted" },
   merge_tasks: { icon: "Merge", label: "Tasks merged" },
   bulk_update: { icon: "ListChecks", label: "Tasks changed" },
   delete_comment: { icon: "MessageSquareX", label: "Comment deleted" },
@@ -179,6 +187,24 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   delete_view: { icon: "Trash2", label: "View deleted" },
   report_delete: { icon: "Trash2", label: "Report deleted" },
   delete_attachment: { icon: "Paperclip", label: "File detached" },
+  rename_area: { icon: "Layers", label: "Area renamed" },
+  nudge_task: { icon: "Bell", label: "Person nudged" },
+  attach_to_task: { icon: "Paperclip", label: "File attached" },
+  grant_access: { icon: "UserPlus", label: "Access given" },
+  revoke_access: { icon: "UserMinus", label: "Access removed" },
+  add_report_recipient: { icon: "UserPlus", label: "Recipient added" },
+  remove_report_recipient: { icon: "UserMinus", label: "Recipient removed" },
+  set_report_schedule: { icon: "CalendarClock", label: "Schedule changed" },
+  // WS-66 RM-3: the member's reminders. A reminder is not a task, so its
+  // receipt prints `reminder_id:` and no `full_id:`. Only the promote prints
+  // the `full_id:` of the task it made, which opens in Projects.
+  set_reminder: { icon: "Bell", label: "Reminder set" },
+  update_reminder: { icon: "PenLine", label: "Reminder changed" },
+  resolve_reminder: { icon: "CheckCircle2", label: "Reminder answered" },
+  reopen_reminder: { icon: "Undo2", label: "Reminder reopened" },
+  reschedule_reminder: { icon: "CalendarClock", label: "Reminder moved" },
+  promote_reminder: { icon: "Plus", label: "Reminder made a task" },
+  delete_area: { icon: "Trash2", label: "Area removed" },
   // S4 — the forms. The receipt is the wrapped tool's.
   edit_task: { icon: "PenLine", label: "Task updated" },
   edit_project: { icon: "PenLine", label: "Project updated" },
@@ -193,6 +219,7 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   // S5 — the rest of the writes
   save_view: { icon: "LayoutList", label: "View saved" },
   capture_intake: { icon: "Inbox", label: "Captured into intake" },
+  create_area: { icon: "Layers", label: "Area made" },
   triage_intake: { icon: "Inbox", label: "Intake decided" },
   mark_notifications_read: { icon: "BellOff", label: "Bell cleared" },
 };
@@ -224,7 +251,7 @@ export function isFreshReceipt(e: { endedAt?: number }, now: number = Date.now()
   return age >= 0 && age < FRESH_RECEIPT_MS;
 }
 
-function announceChange(eventId: string): void {
+export function announceChange(eventId: string): void {
   if (announced.has(eventId)) return;
   announced.add(eventId);
   try {
@@ -255,7 +282,10 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "archive_project",
   "unarchive_project",
   "move_project",
+  "convert_folder_to_project",
   "archive_task",
+  "delete_project",
+  "delete_task",
   "merge_tasks",
   "bulk_update",
   "delete_comment",
@@ -269,6 +299,16 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "delete_view",
   "report_delete",
   "delete_attachment",
+  "rename_area",
+  "delete_area",
+  "nudge_task",
+  "attach_to_task",
+  "grant_access",
+  "revoke_access",
+  "add_report_recipient",
+  "remove_report_recipient",
+  "set_report_schedule",
+  "promote_reminder",
 ]);
 
 /**
@@ -454,7 +494,7 @@ function TaskRowView({ row }: { row: ProjectTaskRow }) {
 function listLabel(e: ToolEvent): string {
   const args = (e.args ?? {}) as Record<string, unknown>;
   if (e.name === "find_tasks") return `Search${args.query ? ` · ${String(args.query)}` : ""}`;
-  if (e.name === "my_work") return String(args.view ?? "") === "inbox" ? "My inbox" : "Assigned to me";
+  if (e.name === "my_work") return String(args.view ?? "") === "inbox" ? "My task inbox" : "Assigned to me";
   if (e.name === "calendar") return "Calendar";
   if (e.name === "intake_queue") return "Intake";
   if (e.name === "notifications") return "Notifications";
@@ -510,7 +550,7 @@ function ProjectEvidenceBody({ event: e }: { event: ToolEvent }) {
   const isList = LIST_TOOLS.has(e.name) || !(e.name in INFO_META);
   return (
     <div className="rounded-md border border-border/60 bg-card/60 px-2.5 py-2 min-w-0 text-[11px]">
-      <div className="-mx-1 max-h-72 overflow-y-auto overflow-x-hidden px-1 scrollbar-thin">
+      <ShowMore className="-mx-1 px-1">
         {isList && rows.length > 0 ? (
           <>
             <div className="mb-1 text-[11px] font-medium text-foreground">
@@ -525,7 +565,7 @@ function ProjectEvidenceBody({ event: e }: { event: ToolEvent }) {
         ) : (
           <Readout result={result} legend={LEGEND} />
         )}
-      </div>
+      </ShowMore>
       {link && !opens && (
         <div className="mt-2">
           <Button variant="secondary" size="sm" icon="ExternalLink" onClick={() => router.push(link)}>
@@ -629,7 +669,7 @@ function InfoCard({
     >
       {/* A read draws as UI (`Readout`): no id, no `[key]`, a status as its
           chip. A failure stays one plain message. */}
-      <div className="max-h-80 overflow-y-auto scrollbar-thin">
+      <ShowMore>
         {failed ? (
           <div className="text-[11px] whitespace-pre-wrap text-destructive">
             <FencedText text={shown || "(no result)"} pills={false} />
@@ -637,7 +677,7 @@ function InfoCard({
         ) : (
           <Readout result={e.result || ""} legend={LEGEND} />
         )}
-      </div>
+      </ShowMore>
       {link && !opens && (
         <div className="mt-2">
           <Button variant="secondary" size="sm" icon="ExternalLink" onClick={() => router.push(link)}>
@@ -1025,14 +1065,14 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
             </div>
           )}
           {rows.length > 0 && (
-            <div className={`mt-1 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin ${LIST_ROWS_BOX}`}>
+            <ShowMore className={`mt-1 ${LIST_ROWS_BOX}`}>
               {tasks.map((r, i) => (
                 <TaskRowView key={`${r.id}-${i}`} row={r} />
               ))}
               {words.map((r) => (
                 <VocabRowView key={r.id} row={r} />
               ))}
-            </div>
+            </ShowMore>
           )}
           <ReceiptNotes notes={notes} />
       </RollupBody>

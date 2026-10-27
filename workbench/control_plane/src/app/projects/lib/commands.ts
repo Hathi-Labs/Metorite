@@ -32,6 +32,7 @@ import { PANES } from "@/lib/nav";
 
 import { type PanelMode, narrowerPanel, widerPanel } from "./panelMode";
 import type { Hit } from "./search";
+import { tasksLink } from "./tasksRedirect";
 
 /**
  * The five view modes. Declared HERE rather than in `page.tsx` so the mode
@@ -191,7 +192,9 @@ function goCommands(): Command[] {
       icon: pane.icon,
       sequence: ["g", key],
       href: pane.href,
-      run: (actions) => actions.navigate(pane.href),
+      // WS-64 OP-4 — `href` stays the pane (the tests pin it to the nav). The
+      // jump goes where `/tasks` redirects to when My work is live.
+      run: (actions) => actions.navigate(tasksLink(pane.href)),
     });
   }
   return out;

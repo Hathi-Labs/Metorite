@@ -46,6 +46,7 @@ from gateway.routes.projects.analytics import (
     MAX_WEEKS,
     STALE_BANDS,
     _hours,
+    actor_split_body,
     blocked_body,
     cycle_summary_sql,
     finished_period_sql,
@@ -59,10 +60,19 @@ from gateway.routes.projects.analytics import (
     stale_bands_sql,
     weekly_sql,
 )
+from gateway.routes.projects.analytics_agent_runs import agent_runs_body
+from gateway.routes.projects.analytics_agents import (
+    finished_actor_body,
+    finished_summary,
+    kpis_body,
+    throughput_actor_body,
+)
 from gateway.routes.projects.analytics_capacity import capacity_body
 from gateway.routes.projects.analytics_conflicts import conflicts_body
 from gateway.routes.projects.analytics_pulse import pulse_body
+from gateway.routes.projects.analytics_quality import quality_body
 from gateway.routes.projects.analytics_rebalance import rebalance_body
+from gateway.routes.projects.analytics_waiting import waiting_body
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -121,10 +131,15 @@ from sqlalchemy import text
 #: above it found. R3c adds `hygiene` after `stuck`: both read the open work,
 #: and hygiene says which tasks lack the data the other sections need.
 #: R3d adds `pulse` after `capacity`: both read the same person rows, and
-#: pulse says who needs help today.
+#: pulse says who needs help today. RA-3 adds `waiting` after `stuck`
+#: (`projects_reports.md` §6.8 A, question 3): stuck says what stalls, and
+#: waiting says on whom it waits. RA-4 adds `agent_runs` after `waiting`:
+#: both read the agent runs of the scope, and agent_runs says how they end.
+#: RA-5 adds `quality` after `agent_runs`: runs say how the work ran, and
+#: quality says whether the speed is real (pull requests, rework, CI red).
 SECTIONS: tuple[str, ...] = (
     "finished", "throughput", "outlook", "load", "capacity", "pulse",
-    "stuck", "hygiene", "conflicts", "rebalance",
+    "stuck", "waiting", "agent_runs", "quality", "hygiene", "conflicts", "rebalance",
 )
 
 #: The sections a definition with no `sections` key renders.
@@ -852,15 +867,21 @@ async def delete_report(
         )
 
 
-async def render_body(
+async def render_body(  # noqa: C901 - one branch for each section, which the lockstep test reads
     db: Any,
     vis: Any,
     user: UserContext,
     *,
     project_id: str | None,
     config: dict[str, Any],
+    kpis: bool = False,
 ) -> dict[str, Any]:
     """The period and the sections of one report config, computed NOW.
+
+    WS-27bn RA-2. ``kpis`` adds the ``kpis`` key: the figures of the
+    Overview's KPI strip that no section holds (`analytics_agents.kpis_body`).
+    Only the Overview asks for it, through the preview. A saved report, the
+    email and the chat render no strip, so they run none of its queries.
 
     WS-27bn R1. **The one render function** (`projects_reports.md` §8a). The
     saved-report render and the unsaved preview both call it, and a later
@@ -933,7 +954,14 @@ async def render_body(
     ).one()
 
     sections: dict[str, Any] = {}
+    # WS-27bn RA-1. `finished` and `throughput` read ONE split: the same
+    # predicate, binds and window, so the render runs the query once.
+    actor_split: dict[str, int] | None = None
     for name in config["sections"]:
+        if name in ("finished", "throughput") and actor_split is None:
+            actor_split = await actor_split_body(
+                db, past_where, params, skip_current_week=skip,
+            )
         if name == "finished":
             rows = (
                 await db.execute(
@@ -965,6 +993,14 @@ async def render_body(
                 ],
                 "total_completed": int(totals.completed or 0),
                 "total_cancelled": int(totals.cancelled or 0),
+                # WS-27bn RA-1. Who finished `total_completed`, by label.
+                "actor_split": dict(actor_split or {}),
+                # WS-27bn RA-2. "Who did the work": the sentence, each week
+                # by label, and each agent under its member, for the reader.
+                "actor_summary": finished_summary(actor_split or {}),
+                **await finished_actor_body(
+                    db, past_where, params, skip_current_week=skip, allowed=allowed,
+                ),
             }
         elif name == "throughput":
             # ⚠️ `weekly_sql` has no `skip_current_week` arm, and that is
@@ -1005,6 +1041,13 @@ async def render_body(
                 "p90_hours": _hours(totals.p90_hours),
                 "no_start": int(totals.no_start or 0),
                 "cancelled": int(totals.cancelled or 0),
+                # WS-27bn RA-1. Who finished `completed`, over the same window.
+                "actor_split": dict(actor_split or {}),
+                # WS-27bn RA-2. The median and the p90 of people and of
+                # agents, and the sentence that says them.
+                **await throughput_actor_body(
+                    db, past_where, params, skip_current_week=skip,
+                ),
             }
         elif name == "load":
             # WS-27bn R5a. The Load route's OWN body, imported, as
@@ -1038,6 +1081,11 @@ async def render_body(
                 "total_tasks": found["total_tasks"],
                 "people_total": found["people_total"],
                 "effort": found["effort"],
+                # WS-27bn RA-1. Who holds the open tasks now.
+                "holder_split": found["holder_split"],
+                # WS-27bn RA-6. The open tasks with no assignee and no open
+                # run, and whether they lead the open work (§6.8 B).
+                "needs_owner": found["needs_owner"],
             }
             sections[name] = _with_hidden(section, hidden, allowed)
         elif name == "outlook":
@@ -1163,6 +1211,42 @@ async def render_body(
                 project_id=project_id,
                 include_subtree=bool(config["include_subtree"]),
             )
+        elif name == "waiting":
+            # WS-27bn RA-3. `waiting_body`, imported, as `hygiene` does. The
+            # three lists read the state now, through Load's open-work
+            # predicate. The answer time reads the report period, so the
+            # period goes in, as it does for `finished`.
+            sections[name] = await waiting_body(
+                db, vis,
+                project_id=project_id,
+                include_subtree=bool(config["include_subtree"]),
+                weeks=int(config["weeks"]),
+                skip_current_week=skip,
+            )
+        elif name == "agent_runs":
+            # WS-27bn RA-4. `agent_runs_body`, imported, as `waiting` does.
+            #
+            # ⚠️ **No period here, on purpose.** The outcomes and the sizes
+            # read their own window of 14 days, as the merge rate of RA-2
+            # does, and the silent runs read the state now. A report of one
+            # week would else show a success rate of one week, and the KPI
+            # strip beside it would read 14 days.
+            sections[name] = await agent_runs_body(
+                db, vis,
+                project_id=project_id,
+                include_subtree=bool(config["include_subtree"]),
+            )
+        elif name == "quality":
+            # WS-27bn RA-5. `quality_body`, imported, as `agent_runs` does.
+            #
+            # ⚠️ **No period here, on purpose.** The pull requests and the
+            # rework read their own 14 days back from now, as the merge rate
+            # of RA-2 does, so this panel and the KPI strip agree.
+            sections[name] = await quality_body(
+                db, vis,
+                project_id=project_id,
+                include_subtree=bool(config["include_subtree"]),
+            )
         elif name == "stuck":
             # What is overdue, by project, and (WS-27bn R3a) how long open
             # work has sat untouched, in the route's four bands.
@@ -1211,6 +1295,14 @@ async def render_body(
         "period_start": window.period_start.isoformat(),
         "period_end": window.period_end.isoformat(),
         "sections": sections,
+        # WS-27bn RA-2. The same predicates, binds and reader as the
+        # sections above, so a tile and a panel describe the same tasks.
+        **({
+            "kpis": await kpis_body(
+                db, past_where=past_where, open_where=open_where, params=params,
+                skip_current_week=skip, allowed=allowed,
+            ),
+        } if kpis else {}),
     }
 
 
@@ -1279,6 +1371,9 @@ async def preview_report(
     )
     raw_project = payload.get("project_id")
     project_id = str(raw_project) if raw_project else None
+    # WS-27bn RA-2. The Overview asks for its KPI strip. Only a literal true
+    # asks: the key changes which figures come back, never whose.
+    kpis = payload.get("kpis") is True
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -1286,7 +1381,7 @@ async def preview_report(
             # The same refusal as create: seeing the node is required.
             await load_visible_project(db, vis, project_id)
         body = await render_body(
-            db, vis, user, project_id=project_id, config=config,
+            db, vis, user, project_id=project_id, config=config, kpis=kpis,
         )
         return {
             "report": {
@@ -1327,14 +1422,10 @@ async def preview_report(
 async def _known_member(db: Any, email: str) -> bool:
     """Is this address one the directory already knows?
 
-    ⚠️ The tenant bound is RLS on `pm_reports`, not this lookup. `app_user`
-    is the login directory and its `email` is globally unique, so a match here
-    means "somebody signs in with this address", not "somebody in YOUR
-    organization does". The recipient row is written against a report that RLS
-    has already scoped, and the send renders with the recipient's own grants —
-    so a cross-tenant address would receive an empty report rather than
-    somebody else's numbers. Refusing it here is still right: a report that
-    mails a stranger is a mistake even when the mistake is empty.
+    `app_user` is under FORCE RLS (`app_user_tenant_isolation`), and this
+    runs in the tenant session, so a match means "somebody in THIS
+    organization signs in with this address". An outside address, or a user
+    of another organization, gets no row and the route answers 422.
     """
     row = (await db.execute(
         text("SELECT 1 FROM app_user WHERE lower(email) = :e LIMIT 1"),

@@ -96,11 +96,11 @@ export function ClarifyModal() {
         <div className="shrink-0 border-b border-border">
           <div className="flex items-center justify-between px-4 py-2">
             <span className="text-xs font-medium text-muted-foreground">
-              Processing inbox · {inboxLeft} left
+              Processing my task inbox · {inboxLeft} left
             </span>
             <div className="flex items-center gap-1">
               {inboxLeft > 1 && (
-                <Button variant="ghost" size="none" radius="keep" layout="inline-flex items-center" type="button" onClick={skip} title="Leave it in the inbox to decide later" className="gap-1 rounded-md px-2 py-1 text-[11px]">
+                <Button variant="ghost" size="none" radius="keep" layout="inline-flex items-center" type="button" onClick={skip} title="Leave it in my task inbox to decide later" className="gap-1 rounded-md px-2 py-1 text-[11px]">
                   <Icon name="SkipForward" className="h-3.5 w-3.5" />
                   Skip
                 </Button>

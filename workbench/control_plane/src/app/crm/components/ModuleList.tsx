@@ -19,7 +19,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { CrmError } from "../lib/api";
-import { searchChanges } from "../lib/filterBar";
+import { pickable } from "../lib/fields";
 import { appendPage } from "../lib/filters";
 import {
   MODULE_COLUMNS,
@@ -29,8 +29,11 @@ import {
   moduleListQuery,
   type ModuleFieldDef,
 } from "../lib/modules";
+import { useOwners } from "../lib/useCrmMode";
 import { applySort, type CrmView } from "../lib/urlState";
-import { SearchBox } from "./FilterBar";
+import type { ViewActions } from "../lib/useViewActions";
+import CrmViewBar from "./CrmViewBar";
+import FilterBar from "./FilterBar";
 import RecordList from "./RecordList";
 
 type Row = Record<string, unknown>;
@@ -65,7 +68,8 @@ function message(err: unknown): string {
 function useModuleList(module: string, view: CrmView, reloadToken: number) {
   const [state, setState] = useState<ListState>(START);
   const latest = useRef(0);
-  const key = `${module}|${view.q}|${view.sort ?? ""}|${view.dir}|${reloadToken}`;
+  const filters = JSON.stringify([view.owner, view.ranges, view.custom]);
+  const key = `${module}|${view.q}|${view.sort ?? ""}|${view.dir}|${filters}|${reloadToken}`;
 
   useEffect(() => {
     const asked = ++latest.current;
@@ -125,6 +129,10 @@ export default function ModuleList({
   onChange,
   onOpen,
   reloadToken = 0,
+  actions,
+  isAdmin,
+  me = null,
+  onColumnsPicked,
 }: {
   /** The module's API name (`Products`). */
   module: string;
@@ -135,19 +143,44 @@ export default function ModuleList({
   onOpen: (id: string) => void;
   /** The Refresh button counts it up, and the list reads page 1 again. */
   reloadToken?: number;
+  /**
+   * The saved views of this list, under the scope `module:<api_name>`
+   * (CRM-U8). The page holds the controller, so the views, the URL and the
+   * columns agree.
+   */
+  actions: ViewActions;
+  isAdmin: boolean;
+  me?: string | null;
+  /** The member picked columns. The page tells the view bar. */
+  onColumnsPicked: (keys: string[]) => void;
 }) {
   const list = useModuleList(module, view, reloadToken);
+  const owners = useOwners(true);
+  const [choosing, setChoosing] = useState(false);
+  const canChoose = pickable(list.defs).length > 0;
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      <div className="shrink-0 border-b border-border px-3 py-2 sm:px-4" data-testid="crm-module-bar">
-        <SearchBox
-          label={label.toLowerCase()}
-          value={view.q}
-          onCommit={(q) => {
-            if (searchChanges(q, view.q)) onChange({ ...view, q });
-          }}
-        />
-      </div>
+      {/* Two rows, as every list has them (CRM-U8). The filter bar reads the
+          field definitions of the list (CRM-U9). Export is left out, because
+          the export routes name the four lists. */}
+      <CrmViewBar
+        allLabel={`All ${label.toLowerCase()}`}
+        actions={actions}
+        isAdmin={isAdmin}
+        me={me}
+        onColumns={canChoose ? () => setChoosing(true) : null}
+      />
+      <FilterBar
+        entity={null}
+        noun={label}
+        view={view}
+        onChange={onChange}
+        search
+        owners={owners}
+        mirror
+        fieldDefs={list.defs}
+        count={list.loading ? null : list.total}
+      />
       {list.error && (
         <p className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">
           {list.error}
@@ -158,6 +191,10 @@ export default function ModuleList({
         columns={MODULE_COLUMNS}
         sortKeys={MODULE_SORTS}
         fieldDefs={list.defs}
+        columnKeys={actions.active ? actions.columns : undefined}
+        onColumnsChange={onColumnsPicked}
+        chooserOpen={choosing}
+        onChooserClose={() => setChoosing(false)}
         rows={list.rows}
         total={list.total}
         loading={list.loading}

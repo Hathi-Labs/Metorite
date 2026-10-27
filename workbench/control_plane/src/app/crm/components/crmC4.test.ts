@@ -651,7 +651,7 @@ describe("who sees the studio (done-when 12)", () => {
     );
     expect(html).toContain(FIELDS_READ_FAILED);
     expect(html).toContain(">Retry<");
-    expect(html).not.toContain("Field editing comes later.");
+    expect(html).not.toContain("Only a studio admin can edit fields.");
     expect(SOURCE_OF("./FieldsCard.tsx")).toMatch(
       /if \(shape === "error"\) return <FieldsCardError error=\{probe\.error\} onRetry=\{probe\.refresh\} \/>;/,
     );
@@ -678,7 +678,7 @@ describe("who sees the studio (done-when 12)", () => {
         readOnly: false,
       }),
     );
-    expect(html).toContain("Field editing comes later.");
+    expect(html).toContain("Only a studio admin can edit fields.");
     expect(html).not.toContain("<input");
   });
 });

@@ -225,6 +225,40 @@ _CANONICAL_FOLDERS: dict[str, str] = {
 }
 
 
+#: The folder keys that no move may reach (§21 fix round 1, P1-a). A
+#: provider files mail in Sent and Drafts itself, on a send and on a save.
+MOVE_REFUSED_FOLDERS: frozenset[str] = frozenset({"sent", "drafts"})
+
+
+#: What a member reads when a rule asks for a move into Sent or Drafts (H-395).
+MOVE_REFUSED_SENTENCE = (
+    "A rule cannot move mail into Sent or Drafts. Your mailbox files mail "
+    "there itself. Choose another folder.")
+
+
+_SENT_DRAFT_ALIASES = {"sent messages": "sent"}
+
+
+def move_refusal(name: str | None) -> str | None:
+    """The plain sentence when a move to ``name`` is refused, else ``None``.
+
+    The one check for the rule save (create, update, batch, generate) and the
+    rule run, so a new rule cannot hold the move and an old one fails with
+    the same words (H-395, ``email_app_master_plan.md`` §21.10).
+    """
+    if not name:
+        return None
+    key = canonical_folder(name)
+    if key not in MOVE_REFUSED_FOLDERS:
+        # IMAP and Gmail spell the folder with a path: "[Gmail]/Sent Mail",
+        # "INBOX.Sent", "Sent Messages". Compare the last segment too.
+        last = re.split(r"[/.\\]", name.strip())[-1]
+        key = canonical_folder(_SENT_DRAFT_ALIASES.get(last.strip().lower(), last))
+    if key in MOVE_REFUSED_FOLDERS:
+        return MOVE_REFUSED_SENTENCE
+    return None
+
+
 def canonical_folder(name: str | None) -> str:
     """Normalize a provider folder name/ID to a canonical lowercase key.
 
@@ -583,6 +617,25 @@ class BaseEmailProvider(ABC):
         """Get full email message including body."""
         ...
 
+    async def get_reply_to(
+        self, provider_message_id: str, *,
+        folder: str | None = None, message_id: str | None = None,
+    ) -> list[str]:
+        """The Reply-To addresses of one message, or ``[]`` when it names none.
+
+        The reply card of the chat (EM-CR, ``email_app_master_plan.md`` §18)
+        sends a reply to the Reply-To when the mail has one, as a mail app
+        does. The sync stores no Reply-To, so the card asks the provider for
+        the one message it answers. The default names none, and the reply
+        goes to the sender. Gmail, Outlook and IMAP read the one header.
+
+        *folder* is the stored canonical folder, and *message_id* the stored
+        Message-ID. A provider whose message id is unique in one folder only
+        (IMAP) reads that folder, and names no Reply-To unless the message it
+        read has that Message-ID (security review of #1191).
+        """
+        return []
+
     async def get_message_body(self, provider_message_id: str) -> EmailMessage:
         """The message, for a caller that reads its body only.
 
@@ -693,8 +746,13 @@ class BaseEmailProvider(ABC):
         user label as ``archive`` (O-GM-1). Call it through
         :func:`local_folder_after_move`, because some test fakes do not
         subclass this class.
+
+        §21 fix round 1 (P1-a): a move INTO Sent or Drafts is refused for
+        every provider. Mail cannot be moved into Sent, and a row that a move
+        files there would read as mail the member sent.
         """
-        return canonical_folder(name)
+        key = canonical_folder(name)
+        return None if key in MOVE_REFUSED_FOLDERS else key
 
     # Canonical bulk actions, shared by every provider so callers name them once.
     BULK_ACTIONS = ("archive", "trash", "read", "unread", "star", "unstar")
@@ -1056,6 +1114,10 @@ def local_folder_after_move(provider: Any, name: str) -> str | None:
     ``None`` means that the provider refuses the move, so the caller writes
     nothing.
     """
+    key = canonical_folder(name)
+    if key in MOVE_REFUSED_FOLDERS:
+        # §21 fix round 1 (P1-a): for every provider, before any override.
+        return None
     if isinstance(provider, BaseEmailProvider):
         return provider.folder_after_move(name)
-    return canonical_folder(name)
+    return key

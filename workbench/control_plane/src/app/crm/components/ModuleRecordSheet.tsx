@@ -125,7 +125,7 @@ export default function ModuleRecordSheet({
         </div>
       ) : (
         <p className="p-8 text-center text-xs text-muted-foreground">
-          {state.kind === "missing" ? "This record is not in the mirror." : "Loading…"}
+          {state.kind === "missing" ? "This record has not synced yet." : "Loading…"}
         </p>
       )}
     </RecordModal>

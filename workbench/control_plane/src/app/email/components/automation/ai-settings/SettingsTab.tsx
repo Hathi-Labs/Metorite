@@ -10,6 +10,7 @@ import Icon from "@/components/Icon";
 import { useCallback, useEffect, useState } from "react";
 import {
   approveKnowledge, createKnowledge, deleteKnowledge, deleteLearnedPattern,
+  getAlwaysCopy, saveAlwaysCopy, type AlwaysCopyList, type AlwaysCopyRule,
   deleteRulePattern,
   generateWritingStyle, getAssistantSettings, getVoiceProfile, listColdSenders,
   listKnowledge,
@@ -123,6 +124,133 @@ function OrgDomainsCard({
           <Icon name="Plus" size={12} /> Add
         </button>
       </div>
+    </SettingCard>
+  );
+}
+
+/** The member's "always copy" rules (§21.16). Each rule names a domain or
+ *  an address, and the colleagues that go, ticked, on each matching reply
+ *  and new-mail card. Nothing sends on its own. The server takes only a
+ *  colleague or a person you wrote to before, and says who it refused. */
+function AlwaysCopyCard({ accountId }: { accountId: string }) {
+  // Review P2: `list` stays null until a read succeeds. A failed read shows
+  // its error and offers no write, so a partial list never replaces the
+  // stored one. Each write sends the version it read.
+  const [list, setList] = useState<AlwaysCopyList | null>(null);
+  const rules: AlwaysCopyRule[] | null = list ? list.rules : null;
+  const [match, setMatch] = useState("");
+  const [people, setPeople] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setList(null);
+    setError(null);
+    getAlwaysCopy(accountId)
+      .then((r) => !cancelled && setList(r))
+      .catch((e) => !cancelled && setError((e as Error).message || "Could not load the rules. Reload to try again."));
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId]);
+
+  const save = async (next: AlwaysCopyRule[]) => {
+    if (!list) return false;
+    setBusy(true);
+    setError(null);
+    try {
+      setList(await saveAlwaysCopy(accountId, next, list.version));
+      return true;
+    } catch (e) {
+      setError((e as Error).message || "Could not save the rules. Try again.");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const add = async () => {
+    const m = match.trim().toLowerCase().replace(/^@+/, "");
+    const cc = people.split(/[\s,;]+/).map((a) => a.trim().toLowerCase()).filter(Boolean);
+    if (!m || cc.length === 0 || !rules) return;
+    const next = [...rules.filter((r) => r.match !== m), { match: m, cc }];
+    if (await save(next)) {
+      setMatch("");
+      setPeople("");
+    }
+  };
+
+  return (
+    <SettingCard
+      title="Always copy"
+      description="Name a domain or an address, and the colleagues to copy. They go, ticked, on each reply and new-mail card for that mail, and you can untick them. Nothing sends on its own. Only a colleague or a person you wrote to before can be on a rule."
+    >
+      <div className="space-y-1.5" data-always-copy="">
+        {rules === null && !error && (
+          <span className="text-[11px] text-muted-foreground">Loading the rules…</span>
+        )}
+        {rules !== null && rules.length === 0 && (
+          <span className="text-[11px] text-muted-foreground italic">
+            No rule yet. Add one below, or ask the assistant to always copy someone.
+          </span>
+        )}
+        {(rules ?? []).map((r) => (
+          <div
+            key={r.match}
+            className="flex items-start justify-between gap-2 rounded-md border border-border bg-secondary px-2 py-1.5 text-[11px]"
+            data-always-copy-rule={r.match}
+          >
+            <span className="min-w-0 break-words text-foreground">
+              <span className="font-medium">{r.match}</span>
+              <span className="text-muted-foreground"> → copy </span>
+              {r.cc.join(", ")}
+            </span>
+            <button
+              onClick={() => rules && void save(rules.filter((x) => x.match !== r.match))}
+              disabled={busy}
+              className="text-muted-foreground hover:text-destructive transition-colors disabled:opacity-40"
+              aria-label={`Remove the rule for ${r.match}`}
+            >
+              <Icon name="X" size={11} />
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2.5 flex flex-wrap items-center gap-2">
+        <input
+          value={match}
+          onChange={(e) => setMatch(e.target.value)}
+          placeholder="domain or address, e.g. university.edu"
+          aria-label="Domain or address"
+          className={`${INPUT_BASE} min-w-[10rem] flex-1`}
+        />
+        <input
+          value={people}
+          onChange={(e) => setPeople(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void add();
+            }
+          }}
+          placeholder="colleagues, e.g. kiran@yourco.com, veena@yourco.com"
+          aria-label="Colleagues to copy"
+          className={`${INPUT_BASE} min-w-[12rem] flex-[2]`}
+        />
+        <button
+          onClick={() => void add()}
+          disabled={busy || !match.trim() || !people.trim() || rules === null}
+          className="flex items-center gap-1 px-2.5 py-2 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors disabled:opacity-40"
+        >
+          <Icon name="Plus" size={12} /> {busy ? "Saving…" : "Add rule"}
+        </button>
+      </div>
+      {error && (
+        <p className="mt-1.5 break-words text-[11px] text-destructive" role="alert" data-always-copy-error="">
+          {error}
+        </p>
+      )}
     </SettingCard>
   );
 }
@@ -404,6 +532,7 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
             }
           />
           <ColdSendersList accountId={accountId} />
+          <AlwaysCopyCard accountId={accountId} />
           <OrgDomainsCard
             ownDomain={s.own_domain || ""}
             domains={s.org_domains || []}

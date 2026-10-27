@@ -195,7 +195,7 @@ test.describe("Knowledge search", () => {
     expect(last.searchParams.has("space")).toBe(false);
 
     await company.getByRole("link", { name: /Refund policy/ }).click();
-    await expect(page).toHaveURL(/\/knowledge\/pages\/kp-refund$/, { timeout: 30_000 });
+    await expect(page).toHaveURL(/\/knowledge\/pages\/kp-refund\?q=thirty$/, { timeout: 30_000 });
     await expect(page.getByRole("heading", { level: 2, name: "Refund policy" })).toBeVisible({ timeout: 30_000 });
     expect(kb.writes).toEqual([]);
   });

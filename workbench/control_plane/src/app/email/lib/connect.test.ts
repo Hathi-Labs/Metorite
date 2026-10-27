@@ -1588,3 +1588,13 @@ describe("provider-unavailable-copy", () => {
     expect(CALLBACK_PAGE).toMatch(/provider_unavailable: \{ icon: "Clock", className: "bg-muted text-muted-foreground" \}/);
   });
 });
+
+describe("the mailbox limit (Q-MB-1, owner 2026-10-23)", () => {
+  it("names the limit, offers no retry, and keeps no second copy of the number", () => {
+    const v = callbackView({ error: "mailbox_limit", accountId: null, email: null, provider: "microsoft" });
+    expect(v.kind).toBe("mailbox_limit");
+    expect(v.body).toContain("Disconnect one");
+    expect(v.body).not.toMatch(/\d/);
+    expect(offersTryAgain(v.kind)).toBe(false);
+  });
+});

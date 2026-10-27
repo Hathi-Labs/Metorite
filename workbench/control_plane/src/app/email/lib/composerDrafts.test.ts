@@ -167,11 +167,15 @@ describe("the inline reply owns its draft (email-composer-owns-its-draft)", () =
       expect(detail).not.toContain("messages={thread}");
     });
 
-    it("a send and a discard retire the drafts, and a new reply starts empty", () => {
+    it("a send and a discard retire the drafts, and a new reply holds only the thread's draft", () => {
       expect(detail).toContain("setComposerDrafts((d) => retireDrafts(d));");
       expect(detail).toContain("setComposerDrafts((d) => retireDrafts(d, ids));");
       expect(detail).toContain("setComposerDrafts((d) => markGone(d, ids));");
-      expect(detail).toContain("setComposerDrafts(newReplyDrafts);");
+      // A new reply holds no draft, or the one draft that it continues
+      // (owner, 2026-10-22, `continueDraft.test.ts`).
+      expect(detail).toContain(
+        "setComposerDrafts((d) => (held ? ownDraft(newReplyDrafts(d), held.id) : newReplyDrafts(d)));",
+      );
       expect(detail).toContain("setComposerDrafts(NO_COMPOSER_DRAFTS);");
     });
   });

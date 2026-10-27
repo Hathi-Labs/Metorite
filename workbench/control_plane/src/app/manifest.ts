@@ -10,10 +10,16 @@ import type { MetadataRoute } from "next";
  */
 export default function manifest(): MetadataRoute.Manifest {
   return {
+    // A stable identity: the install survives a later change of `start_url`.
+    id: "/",
     name: "Metorite",
     short_name: "Metorite",
+    description: "Metorite, the AI company operating system.",
     start_url: "/",
+    scope: "/",
     display: "standalone",
+    orientation: "any",
+    categories: ["business", "productivity"],
     // The app's default colour mode is dark (`Providers.tsx`).
     background_color: "#0b1020",
     theme_color: "#0b1020",

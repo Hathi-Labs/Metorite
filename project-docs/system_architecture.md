@@ -214,8 +214,9 @@ Check: mutation_attempts_this_run >= 1?
         │
         ▼
 Work from persistent local clone of agent-<name>
-(already authenticated via GITHUB_TOKEN in remote URL;
- bot git identity already configured)
+(the remote URL holds no token, H-363. The gateway gives
+ the credential to one git process per fetch or push.
+ The bot git identity is already configured.)
         │
         ▼
 Read failure telemetry from Postgres (error trace, inputs, stack)

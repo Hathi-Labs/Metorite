@@ -29,6 +29,8 @@ import { TaskMeta } from "@/components/TaskMeta";
 import type { MetaChip } from "@/lib/taskCard";
 import { useState } from "react";
 import {
+  dealForecastLine,
+  leadForecastLines,
   needsLostReason,
   planMove,
   rotLevel,
@@ -155,7 +157,7 @@ export default function KanbanBoard({
               // only with records, and says so.
               hidden={isRetired(lane.status)}
               empty={lane.rows.length === 0 ? "Nothing here" : undefined}
-              totals={isDeals ? <LaneTotals lane={lane} /> : undefined}
+              totals={<LaneTotals lane={lane} isDeals={isDeals} />}
               onDragOver={(e) => {
                 e.preventDefault();
                 setOver(lane.status.id);
@@ -221,27 +223,31 @@ export default function KanbanBoard({
   );
 }
 
-/** The money line under a deal lane's chip. */
-function LaneTotals({ lane }: { lane: BoardLane | LeadLane }) {
+/**
+ * The stat block under a lane's chip (CRM-U6). A deal lane shows two figures
+ * with labels. The total and the weighted total are always drawn, and zero
+ * reads as zero. A lead lane shows the count and the expected conversions.
+ *
+ * The figures cover the whole lane. The cards below are one page of it. A
+ * header that counted only the cards would understate the busy lane.
+ */
+function LaneTotals({ lane, isDeals }: { lane: BoardLane | LeadLane; isDeals: boolean }) {
   const compact = useCompactMoney();
+  const lines = isDeals
+    ? {
+        first: `${compact(lane.amount)} total`,
+        second: dealForecastLine(lane.status, compact(lane.weighted)),
+      }
+    : (() => {
+        const lead = leadForecastLines(lane);
+        return { first: lead.count, second: lead.expected };
+      })();
   return (
-    <span className="flex items-center gap-1">
-      <Icon name="IndianRupee" className="w-3 h-3" />
-      {/* The lane total covers the whole lane; the cards below are one page
-          of it. A header that counted only what it returned would lie about
-          the busy lane somebody is actually looking at. */}
-      <span>{compact(lane.amount).replace("₹", "")}</span>
-      {/* Weighted ₹ under the raw total (§5.1). Rendered only where it means
-          something — a won lane's revenue is closed and a lost lane forecasts
-          nothing, so the gateway sends 0 and printing "0 weighted" there would
-          read as a bug. */}
-      {lane.weighted > 0 && (
-        <span title="Weighted by probability">
-          · {compact(lane.weighted).replace("₹", "")} wtd
-        </span>
-      )}
+    <span className="flex flex-col gap-0.5 tabular-nums" data-testid="lane-stat-block">
+      <span className="text-xs font-medium text-foreground">{lines.first}</span>
+      <span className="text-muted-foreground">{lines.second}</span>
       {lane.rows.length < lane.count && (
-        <span className="ml-auto">showing {lane.rows.length}</span>
+        <span className="text-muted-foreground">showing {lane.rows.length}</span>
       )}
     </span>
   );

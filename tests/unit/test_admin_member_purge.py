@@ -128,6 +128,10 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     #    retired task store, so the purge names no task table at all (D63).
     fake.seed_rows("pm_tasks", {"id": "t-1", "created_by": PRIYA})
     fake.seed_rows("meeting", {"owner_email": PRIYA})
+    # ── her settings row, and with it her assistant profile (WS-63 PZ-9) ──
+    fake.seed_rows("user_settings", {"user_id": PRIYA})
+    # ── her two private reminders (WS-66 RM-1) ──
+    fake.seed_rows("reminders", {"member_email": PRIYA}, {"member_email": PRIYA})
     return fake
 
 
@@ -460,6 +464,10 @@ async def test_the_response_says_what_happened_table_by_table(
         "room_participations": 1,
         "app_grants": 1,
         "app_tool_grants": 1,
+        # H-375: the fake holds no scheduled send of the member.
+        "scheduled_sends": 0,
+        "mailbox_grants": 0,
+        "mailbox_member_prefs": 0,
         "email_accounts": 1,
         "whatsapp_accounts": 1,
         "task_accounts": 1,
@@ -467,6 +475,14 @@ async def test_the_response_says_what_happened_table_by_table(
         "sign_in_requests": 1,
         # WS-53 CRM-Q33: the fake holds no CRM rule of the member.
         "crm_member_rules": 0,
+        # WS-61 KB-2f: the fake holds no star of the member.
+        "knowledge_favorites": 0,
+        # WS-66 RM-1: her two private reminders. The ledger goes by cascade.
+        "reminders": 2,
+        # WS-63 PZ-9: her settings row of this org, with the profile.
+        "member_settings": 1,
+        # WS-66 PN-1: the fake holds no push device of the member.
+        "push_devices": 0,
         "member_record": 1,
     }
     assert out.kept == {
@@ -477,6 +493,10 @@ async def test_the_response_says_what_happened_table_by_table(
         "apps": 1,
         "workflows": 1,
         "meetings": 1,
+        # WS-61 KB-5a: the fake holds no proposal of the member. It stays.
+        "knowledge_proposals": 0,
+        # WS-55 SW-10a: the fake holds no strand of her agent runs. They stay.
+        "agent_run_strands": 0,
     }
 
 
@@ -596,6 +616,75 @@ def test_the_member_record_is_deleted_last() -> None:
     assert _PURGE_DELETES[-1].table == "app_user"
     assert _PURGE_DELETES[-1].key == "member_record"
     assert [r.table for r in _PURGE_DELETES].count("app_user") == 1
+
+
+def test_the_settings_row_of_this_org_goes_and_no_other() -> None:
+    """WS-63 PZ-9 (``personalization.md`` §7 point 6): the purge deletes the
+    member's ``user_settings`` row, and so the assistant profile.
+
+    A member has one row for each organization (migration 239), so the
+    clause must name the bound org. Without it, the purge of a member in
+    one org deletes the rows of the same address in every org that RLS
+    lets the session see, and an owner role sees all of them.
+
+    ⚠️ Mutation-checked: dropping the org predicate fails here, and
+    ``test_assistant_profile_offboarding_r8.py`` P1 fails on the real
+    database. Dropping the entry fails the count dict above.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "user_settings"]
+    assert rows.key == "member_settings"
+    assert rows.where == f"lower(user_id) = :email AND organization_id = {_BOUND_ORG}"
+    # Before the member record, as every other row of the member.
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("member_settings") < keys.index("member_record")
+
+
+def test_the_push_devices_of_this_org_go_and_no_other() -> None:
+    """WS-66 PN-1: a purged member leaves no web push device behind. A device
+    row would keep a push going to the leaver's browser.
+
+    One browser endpoint can sit in two orgs (one account each), so the
+    clause names the bound org, as the settings row does.
+    ``test_push_subscriptions.py`` runs this clause on a real Postgres (R8).
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "push_subscriptions"]
+    assert rows.key == "push_devices"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("push_devices") < keys.index("member_record")
+
+
+def test_the_reminders_of_this_org_go_and_their_ledger_by_cascade() -> None:
+    """WS-66 RM-1 (D114): the purge deletes the member's private reminders.
+
+    Only the owner reads a reminder, so a reminder that a purge left behind
+    could never be closed. The clause names the member and the bound org,
+    because the same address may hold reminders in another org.
+    ``reminder_events`` is not a row of the list: its foreign key cascades
+    from ``reminders``, and the schema must keep it so.
+
+    ⚠️ Mutation-checked: dropping the org predicate fails here, and
+    ``test_reminders_r8.py`` fails on the real database. Dropping the entry
+    fails the count dict above.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "reminders"]
+    assert rows.key == "reminders"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("reminders") < keys.index("member_record")
+    assert "reminder_events" in cascade_closure("reminders")
+    assert "reminder_events" not in {r.table for r in _PURGE_DELETES}
 
 
 def test_the_two_halves_of_chat_session_partition_it() -> None:
@@ -734,6 +823,50 @@ def test_every_person_keyed_cascade_child_is_reported_on_one_side_or_other(
         f"own person column, so they hold rows the person authored — and they "
         f"appear on neither list: {unreported}"
     )
+
+
+#: WS-61 KC-1a (review P1). The person-keyed tables under the connection
+#: registry, and the one function of the purge that deletes each. The registry
+#: may be named in ``connections/store.py`` only, so the purge reaches it
+#: through ``store.delete`` and never through ``_PURGE_DELETES``.
+_PURGED_THROUGH_THE_REGISTRY = {
+    "integration_connections": "sources.purge_member_sources (store.delete)",
+    "kb_sources": "the cascade of that delete (migration 300)",
+}
+
+
+def test_a_member_keyed_table_under_the_registry_cannot_be_forgotten() -> None:
+    """The sibling of the rule above, for the tables ``_PURGE_DELETES`` cannot name.
+
+    ``_blast_radius`` starts from ``_PURGE_DELETES``, and the connection
+    registry is never on it (``test_crm_connection.py`` keeps its name in the
+    store). So a member-keyed table that hangs off the registry is invisible
+    to the rule above. KC-1a shipped that shape: ``kb_sources`` carries
+    ``owner_email`` under ``integration_connections``, and the first purge
+    left the leaver's Drive token and tree behind.
+
+    This test reads the schema. Each person-keyed table in the cascade of the
+    registry must be named in ``_PURGED_THROUGH_THE_REGISTRY``, and the purge
+    body must reach ``sources.purge_member_sources``. A migration that adds a
+    new one fails here until its author decides how the purge takes it.
+    """
+    import inspect
+
+    from gateway.routes.admin import members
+    from gateway.routes.knowledge import sources
+
+    from tests.unit._schema_cascade import cascade_closure, columns_of
+
+    registry = "integration_" + "connections"
+    person_columns = {"user_id", "owner_email", "user_email", "member_email"}
+    keyed = {t for t in {registry, *cascade_closure(registry)}
+             if columns_of(t) & person_columns}
+    assert keyed == set(_PURGED_THROUGH_THE_REGISTRY), (
+        f"person-keyed tables under the registry: {sorted(keyed)}. Each needs a "
+        "purge path, named in _PURGED_THROUGH_THE_REGISTRY.")
+    assert "purge_member_sources(" in inspect.getsource(members.purge_knowledge_member)
+    assert "purge_knowledge_member(" in inspect.getsource(members.purge_member_rows)
+    assert "store.delete(" in inspect.getsource(sources.purge_member_sources)
 
 
 def test_the_cascade_map_is_the_one_the_schema_declares() -> None:

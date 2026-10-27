@@ -49,6 +49,14 @@ class TestTheTable:
             "digest_ready": 24,
             # WS-53 CRM-Q32-4: the open questions, below the digest.
             "crm_open_questions": 22,
+            # WS-61 KB-9a: a Knowledge gap, below every other kind.
+            "kb_gap": 20,
+            # WS-61 KB-9b: the review above the gap, the new page below it.
+            "doc_needs_review": 21, "doc_shared_with_me": 19,
+            # WS-61 KB-9b slice 2: a source stopped syncing.
+            "source_sync_failed": 31,
+            # WS-66 RM-2: the member's own reminders.
+            "reminder_due": 31, "reminder_check": 29, "reminder_unconfirmed": 25,
         }
 
     def test_the_needs_kinds_start_above_every_other_kind(self):
@@ -181,6 +189,14 @@ class TestTheGroupTable:
         ("crm_open_questions", {"money": True}, "needs_you"),
         ("crm_open_questions", {"money": False}, "fyi"),
         ("crm_open_questions", {}, "fyi"),
+        # WS-61 KB-9a: a Knowledge gap is a thing to know.
+        ("kb_gap", {"askers": 3}, "fyi"),
+        ("doc_needs_review", {}, "fyi"),
+        ("doc_shared_with_me", {}, "fyi"),
+        # WS-66 RM-2: a fired reminder is now. A check-back and a give-up ask.
+        ("reminder_due", {}, "now"),
+        ("reminder_check", {"cycles": 1}, "needs_you"),
+        ("reminder_unconfirmed", {}, "needs_you"),
     ])
     def test_each_row_of_section_4_3(self, kind, facts, group):
         assert feed_rank.group(kind, facts, NOW, TODAY) == group

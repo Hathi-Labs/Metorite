@@ -100,6 +100,10 @@ TOOL_MODULES: tuple[str, ...] = (
 #: ``"<path>::<function>::<slice source>"`` → why the cut is not a lost row.
 #: This list only shrinks. Fix the tool with ``paged`` and delete the line.
 ALLOWED: dict[str, str] = {
+    'apps/agents/agent-email-assistant/agents.py::_reply_form::notices[:4]':
+        "No notice is lost: the card shows four (clean_reply_form refuses more), "
+        "and _reply_form puts notices[4:] into the card's note. Removing the cut "
+        "on 2026-10-24 made a card with five notices fail to show.",
     "packages/acb_skills/acb_skills/crm_tools.py::_card_label::[str(s) for s in choice.get('samples') or [] if str(s).strip()][:_LABEL_SAMPLES]":
         'The masked samples of one option label of a CRM question card (CRM-Q32-8). The read gives 3 at most. Not rows.',
     'apps/agents/agent-email-assistant/agents.py::_card_detail::detail[:limit]':
@@ -140,8 +144,6 @@ ALLOWED: dict[str, str] = {
         'A digest. Each section prints its count, and query_inbox pages the mail.',
     'apps/agents/agent-email-assistant/agents.py::_one::(items or [])[:5]':
         'A digest. Each section prints its count, and query_inbox pages the mail.',
-    "apps/agents/agent-email-assistant/agents.py::get_account_overview::overview.get('top_senders', [])[:5]":
-        "A 'top 5 senders' summary. list_senders pages every sender.",
     'apps/skills/skill-my-tasks/skill_my_tasks/core.py::_fmt_plan::evicted[:5]':
         "A plan receipt. It prints the count and '…', and my_tasks_list(view='next') lists the tasks.",
     'apps/skills/skill-my-tasks/skill_my_tasks/core.py::_fmt_plan::unplaced[:5]':
@@ -158,6 +160,10 @@ ALLOWED: dict[str, str] = {
     'apps/skills/skill-projects/skill_projects/views.py::_card_section::rows[:rows_max]':
         'A chat card (25 rows). The text the model reads carries the count. The kept '
         'report (§14.10.9) passes a rows_max above every list and cuts with paged.',
+    'apps/skills/skill-projects/skill_projects/views.py::_card_section::joined[:rows_max]':
+        'The waiting card (WS-27bn RA-3, 25 rows of three lists). The text the model '
+        'reads beside it (reads._waiting_lines) prints every row the server sent and '
+        'each total. The kept report passes a rows_max above every list.',
     "apps/skills/skill-projects/skill_projects/views.py::status_report::[p for p in people if int(p.get('open_tasks') or 0)][:10]":
         'A written status report. analytics_load pages every person.',
     'apps/skills/skill-projects/skill_projects/views.py::status_report::blocked_rows[:20]':
@@ -233,6 +239,9 @@ ALLOWED: dict[str, str] = {
         'Text: one string with its whitespace collapsed, then cut. A join of words, not of rows.',
     "apps/agents/agent-email-assistant/agents.py::_one_line::' '.join(str(value or '').split())[:limit]":
         'Text: one string with its whitespace collapsed, then cut. A join of words, not of rows.',
+    'apps/skills/skill-projects/skill_projects/guarded.py::_convert_list::names[:CONVERT_LIST_LIMIT]':
+        "A confirm card's list of child names (WS-64 OP-10 fix round 1). It ends with "
+        "'and N more', the card states the full count, and the convert takes every child.",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
@@ -244,8 +253,11 @@ ALLOWED: dict[str, str] = {
 #: `join(...)[:N]`, so the three email entries that collapse one string's
 #: whitespace came back with their reason (64). Part 2 (2026-10-15) added
 #: one: the sandbox read cuts a single line that is longer than its window,
-#: and says so (65).
-ALLOWED_CEILING = 65
+#: and says so (65). WS-64 OP-10 fix round 1 capped the convert card's list
+#: of child names as the app's dialog caps it, and it says "and N more" (66).
+#: WS-27bn RA-3 added the waiting card's cut, the sibling of the card's
+#: `rows[:rows_max]`. Its text prints every row with no cut (67).
+ALLOWED_CEILING = 67
 
 
 def _stringy(node: ast.AST) -> bool:
@@ -485,6 +497,36 @@ def test_my_tasks_list_projects_reaches_every_project(gw: Recorder) -> None:
     assert "id=n59" in rest
     assert "60 company project(s)" in rest
     assert "This is the last page." in rest
+
+
+def test_my_tasks_list_projects_does_not_offer_a_team_space_as_a_home(gw: Recorder) -> None:
+    """A team space holds projects, not tasks (2026-10-26). It is listed, but
+    marked, and its id is not offered as a place a task can live."""
+    base = gw.answer
+    rows = [
+        {"id": "sp", "name": "Company Operations", "kind": "project",
+         "parent_project_id": None},
+        {"id": "pr", "name": "HR", "kind": "project", "parent_project_id": "sp"},
+        # A project whose parent the member cannot see still carries a parent id.
+        {"id": "or", "name": "Shared launch", "kind": "project",
+         "parent_project_id": "hidden"},
+        {"id": "fo", "name": "Print", "kind": "folder", "parent_project_id": "sp"},
+    ]
+
+    def answer(method: str, path: str, kw: dict[str, Any]) -> Any:
+        if path == "/projects/my/areas":
+            return {"rows": [], "total": 0}
+        if path == "/projects/nodes":
+            return {"rows": rows, "total": len(rows)}
+        return base(method, path, kw)
+
+    gw.answer = answer  # type: ignore[method-assign]
+    out = run(core.my_tasks_list_projects())
+    assert "[SPACE – holds projects, not tasks] " in out
+    assert "[PROJECT] " not in out.split("id=sp")[0].splitlines()[-1]
+    assert out.count("[PROJECT]") == 2
+    assert out.count("[FOLDER]") == 1
+    assert out.count("[SPACE") == 1
 
 
 def test_my_tasks_list_projects_offset_past_the_end(gw: Recorder) -> None:
@@ -800,15 +842,19 @@ def test_query_inbox_page_two_holds_items_31_to_35(monkeypatch, ea) -> None:
 
 
 def test_read_thread_pages_the_newest_messages_in(monkeypatch, ea) -> None:
-    """The thread is oldest first. The old read showed the oldest 25 of at
-    most 50, and called the dropped NEWEST ones 'earlier'."""
+    """The old read showed the oldest 25 of at most 50, and called the
+    dropped NEWEST ones 'earlier'. Since 2026-10-22 the first page holds
+    the NEWEST 25, oldest first within the page, and offset pages back."""
     _gw(monkeypatch, ea, _paged_messages(_messages(60)))
     first = asyncio.run(ea.read_thread(thread_id="t1"))
     assert "60 message(s)" in first
-    assert "Showing 1-25 of 60. Call again with offset=25 for the rest." in first
+    assert "[36]" in first and "[60]" in first and "x60@y.io" in first
+    assert "[35]" not in first
+    assert ("Showing messages 36-60 of 60. Call again with offset=25 for the 25 "
+            "messages before these.") in first
     last = asyncio.run(ea.read_thread(thread_id="t1", offset=50))
-    assert "[51]" in last and "[60]" in last and "x60@y.io" in last
-    assert "This is the last page." in last
+    assert "[1]" in last and "[10]" in last and "[11]" not in last
+    assert "These are the oldest messages." in last
 
 
 def test_find_urgent_names_the_total(monkeypatch, ea) -> None:

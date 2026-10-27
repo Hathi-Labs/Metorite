@@ -49,13 +49,12 @@ Fence: ``tests/unit/test_email_webhook_guard.py``.
 from __future__ import annotations
 
 import asyncio
-import errno
-import ipaddress
-import socket
+import socket  # noqa: F401 - tests patch g.socket.socket (same module object)
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+from acb_common import public_address as _pa
 
 #: Seconds to open the connection.
 CONNECT_TIMEOUT_S = 3.0
@@ -65,18 +64,6 @@ TOTAL_TIMEOUT_S = 10.0
 MAX_ANSWER_BYTES = 64 * 1024
 
 _SCHEMES = ("http", "https")
-
-#: IPv6 ranges that carry an IPv4 address in their low bits. A host can reach
-#: the IPv4 address through each one, so the guard refuses the whole range by
-#: name, and does not depend on ``is_reserved`` (review round 1). The mapped
-#: range ``::ffff:0:0/96`` is unwrapped instead, and its IPv4 address is
-#: checked.
-_IPV4_CARRIERS = tuple(ipaddress.IPv6Network(n) for n in (
-    "64:ff9b::/96",      # NAT64, RFC 6052
-    "64:ff9b:1::/48",    # local NAT64, RFC 8215
-    "::/96",             # IPv4-compatible, deprecated
-    "::ffff:0:0:0/96",   # IPv4-translated (SIIT), RFC 2765
-))
 
 #: The longest host that a refusal names. A host name can be 253 characters,
 #: so the guard cuts it and the reason always stays in the record.
@@ -124,71 +111,26 @@ class Answer:
         return 200 <= self.status_code < 300
 
 
-def _resolve(host: str, port: int) -> list[str]:
-    """Every address of ``host``, in the order of the resolver.
+_IPV4_CARRIERS = _pa.IPV4_CARRIERS
+_NOT_LOCAL_ERRNOS = _pa.NOT_LOCAL_ERRNOS
+_NO_FAMILY_ERRNOS = _pa.NO_FAMILY_ERRNOS
 
-    The guard calls this ONCE for each check. A test replaces it."""
-    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    seen: list[str] = []
-    for info in infos:
-        addr = str(info[4][0])
-        if addr not in seen:
-            seen.append(addr)
-    return seen
+
+def _resolve(host: str, port: int) -> list[str]:
+    """Every address of ``host``. The guard calls this ONCE for each check. A
+    test replaces it. The code is ``acb_common.public_address.resolve``."""
+    return _pa.resolve(host, port)
 
 
 def _is_local_address(addr: str) -> bool:
-    """True when ``addr`` is an address of this host.
-
-    A socket can bind only to an address of this host. Any other address fails
-    with EADDRNOTAVAIL. Any other bind failure counts as local, so the check
-    fails closed. A host with no stack for the family (no IPv6, for example)
-    cannot open the socket, and it cannot reach the address either. The socket
-    opens no connection and sends nothing."""
-    ip = ipaddress.ip_address(addr)
-    family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
-    try:
-        sock = socket.socket(family, socket.SOCK_DGRAM)
-    except OSError as exc:
-        # Only a missing stack for the family means "cannot be ours". A full
-        # descriptor table, or any other fault, fails closed (re-check P3).
-        return exc.errno not in _NO_FAMILY_ERRNOS
-    with sock:
-        try:
-            sock.bind((addr, 0))
-        except OSError as exc:
-            return exc.errno not in _NOT_LOCAL_ERRNOS
-    return True
-
-
-_NOT_LOCAL_ERRNOS = frozenset(
-    e for e in (errno.EADDRNOTAVAIL, getattr(errno, "WSAEADDRNOTAVAIL", None))
-    if e is not None)
-
-_NO_FAMILY_ERRNOS = frozenset(
-    e for e in (errno.EAFNOSUPPORT, getattr(errno, "WSAEAFNOSUPPORT", None))
-    if e is not None)
+    """True when ``addr`` is an address of this host (shared code)."""
+    return _pa.is_local_address(addr)
 
 
 def _address_refusal(addresses: list[str]) -> str | None:
-    """A reason to refuse ``addresses``, or None when each one is public."""
-    if not addresses:
-        return "unresolvable"
-    for addr in addresses:
-        try:
-            ip = ipaddress.ip_address(addr)
-        except ValueError:
-            return "unresolvable"
-        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-            ip = ip.ipv4_mapped
-        site_local = isinstance(ip, ipaddress.IPv6Address) and ip.is_site_local
-        if (ip.is_multicast or ip.is_reserved or not ip.is_global or site_local
-                or any(ip in net for net in _IPV4_CARRIERS)):
-            return "not public"
-    for addr in addresses:
-        if _is_local_address(addr):
-            return "local"
-    return None
+    """A reason to refuse ``addresses``, or None when each one is public. The
+    local test goes through this module, so a test can replace it."""
+    return _pa.address_refusal(addresses, is_local=_is_local_address)
 
 
 def _host_is_public(host: str) -> bool:

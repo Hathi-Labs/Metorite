@@ -48,6 +48,7 @@ __all__ = [
     "headers",
     "patch",
     "post",
+    "post_file",
     "put",
     "request",
     "safe_detail",
@@ -166,6 +167,10 @@ async def request(
     # Both refusals come BEFORE the client exists: the manifest's, and the
     # no-acting-user one `headers()` raises. A refused call builds nothing.
     sent = headers()
+    if "files" in kwargs:
+        # A multipart body sets its own Content-Type, with the boundary. The
+        # JSON header would break the upload (WS-64 OP-6c).
+        sent.pop("Content-Type", None)
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.request(
             method.upper(),
@@ -187,6 +192,21 @@ async def post(
     """A POST. ``params`` is the query string, for a route that reads a flag
     there (``include_subtasks`` on archive and complete, WS-46 P6)."""
     resp = await request("POST", path, json=payload or {}, params=params or {})
+    return resp.json() if resp.content else {}
+
+
+async def post_file(
+    path: str,
+    field: str,
+    filename: str,
+    content: bytes,
+    content_type: str = "application/octet-stream",
+) -> Any:
+    """A multipart POST of one file (WS-64 OP-6c, ``attach_to_task``). The
+    manifest check, the acting member and the refusals are ``request``'s."""
+    resp = await request(
+        "POST", path, timeout=60.0, files={field: (filename, content, content_type)}
+    )
     return resp.json() if resp.content else {}
 
 

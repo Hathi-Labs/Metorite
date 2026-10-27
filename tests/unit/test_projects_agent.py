@@ -156,6 +156,12 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "analytics_finished": [{"weeks": 2, "skip_current_week": True}],
     "analytics_outlook": [{"project_id": UUID}],
     "report_list": [{}],
+    # WS-64 OP-6d: who a report goes to, and whether its schedule is on.
+    "report_recipients": [{"report_id": UUID}],
+    # WS-64 OP-6e: the agent requests that wait for the member.
+    "waiting_agent_requests": [{}],
+    # WS-55 SW-11a: what needs a person, for one project, and the member's own.
+    "needs_attention": [{"project_id": UUID}, {"mine": True, "offset": 25}],
     "report_render": [{"report_id": UUID}],
     # S2b — the two reads the overlay and the repeat rule needed
     "recurrence": [{"task_id": UUID}],
@@ -168,6 +174,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     # catalogue and the subjects and then the preview.
     "render_report": [{"report_id": UUID}, {"template": "team pulse", "subject": "Design"}],
     "status_report": [{"project_id": UUID}, {}],
+    # WS-64 OP-6c — the filtered list as a CSV file of the chat.
+    "export_tasks": [{}, {"project_id": UUID, "overdue": True, "shown_fields": "status"}],
     # S5 — the rest of the reads
     "project_access": [{"project_id": UUID}],
     "project_views": [{"project_id": UUID}],
@@ -198,11 +206,20 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
         {"project_id": UUID, "state": "closed", "tags": "bug"},
         {"group_by": "tag", "measure": "cycle_hours_median"},
     ],
+    # WS-66 RM-3 — the member's own reminders: the open ones, and a closed
+    # list in a window with an offset (this fake saves no zone).
+    "list_reminders": [{}, {"state": "done", "start": "2026-10-01T00:00:00+05:30", "limit": 5}],
     # S6 — navigation
     "open_in_app": [
         {"target": "task", "target_id": UUID},
         {"target": "project", "target_id": UUID},
         {"target": "app", "target_id": "analytics"},
+    ],
+    # WS-46 P11 — what the open page shows
+    "show_view": [
+        {"project_id": UUID, "mode": "timeline"},
+        {"project_id": UUID, "view_name": "Board"},
+        {"project_id": UUID, "filters": '{"overdue": true}', "group_by": "assignee"},
     ],
 }
 
@@ -1506,7 +1523,7 @@ async def test_an_inbox_with_no_personal_project_is_empty_not_failed(monkeypatch
     monkeypatch.setattr(c, "current_user_email", lambda: "pm@fracktal.in")
     out = await skill_projects.my_work(view="inbox")
     assert "No personal project yet" in out
-    assert "My inbox: nothing." in out
+    assert "My task inbox: nothing." in out
 
 
 # ── S7a — team_capacity ──────────────────────────────────────────────────────
@@ -1935,7 +1952,8 @@ def test_every_report_card_section_labels_every_key(name: str) -> None:
     for key, _ in spec["stats"]:
         put(section, key, 7)
     if spec.get("rows"):
-        section[spec["rows"]] = [{key: "x" for key, _ in spec["columns"]}]
+        # WS-27bn RA-5. A dotted rows key is a path too (`checks.failing`).
+        put(section, spec["rows"], [{key: "x" for key, _ in spec["columns"]}])
     stats, table = _card_section(name, section)
 
     assert spec["title"] != name and "_" not in spec["title"]
@@ -1968,8 +1986,9 @@ def test_the_outlook_card_reads_its_nested_figures() -> None:
     assert table is not None and table["title"] == "Forecast"
     # H-185 item 1: the card prints a timestamp as its date, as the app does.
     # H-185 item 2: "Slip days" is a tile, and the table does not repeat it.
-    assert table["rows"][0]["cells"] == ["Not converging", "2026-11-02", ""]
-    assert table["columns"] == ["Forecast", "Planned finish", "Forecast finish"]
+    assert table["rows"][0]["cells"] == ["Not converging", "2026-11-02", "", ""]
+    # WS-27bn RA-6: the 85% date of the forecast by count, beside the 50%.
+    assert table["columns"] == ["Forecast", "Planned finish", "Forecast finish", "85% finish"]
     lines = _report_section("outlook", section)
     # H-185 item 2: plain labels, never a dotted key.
     assert lines[0].startswith("outlook: forecast not_converging")

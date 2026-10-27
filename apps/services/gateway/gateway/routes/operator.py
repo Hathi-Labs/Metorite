@@ -1,4 +1,4 @@
-"""The operator door — two acts on the tenant plane, both staff-only.
+"""The operator door — three acts on the tenant plane, all staff-only.
 
 1. **Organization purge (CP-2g).** ``DELETE /internal/operator/organizations/
    {slug}`` destroys every tenant-plane row an organization owns. Since WS-17
@@ -11,6 +11,13 @@
    in-transaction body as the admin routes (``routes/admin/members.py``
    ``remove_member_rows`` / ``purge_member_rows``), so a removal means one
    thing whichever door does it.
+3. **Organization rename (CP-8, owner request, 2026-10-27).** ``PATCH
+   /internal/operator/organizations/{slug}`` sets ``organization.display_name``.
+   It runs the SAME UPDATE body as ``PATCH /admin/organization``
+   (``routes/admin/organization.py`` ``rename_org_row``), after the same
+   ``clean_display_name``. The slug never changes. Like the member door, it
+   does not call the Customer Console: the BFF calls the Console's
+   ``POST /registry/orgs/rename`` itself, after this door answered 200.
 
 The operator console's BFF is the ONLY intended caller. It holds
 ``GATEWAY_OPERATOR_TOKEN`` server-side (the ``CUSTOMER_CONSOLE_OPERATOR_TOKEN``
@@ -73,6 +80,7 @@ from gateway.routes.admin.members import (
     purge_member_rows,
     remove_member_rows,
 )
+from gateway.routes.admin.organization import clean_display_name, rename_org_row
 from gateway.routes.email.memory_purge import RECORD_DETACHED_PURGES_SQL
 from gateway.routes.email.teardown import (
     OrgScope,
@@ -81,6 +89,7 @@ from gateway.routes.email.teardown import (
     finish_teardowns,
     read_teardown_plans,
 )
+from pydantic import BaseModel
 from sqlalchemy import text
 
 _log = get_logger("gateway.routes.operator")
@@ -102,6 +111,19 @@ _MEMBER_MODES = ("remove", "purge")
 #: Who the audit entry names for an operator act. The operator is not a member
 #: of the org, so no member address is the actor.
 _OPERATOR_ACTOR = "operator"
+
+
+class OrganizationRename(BaseModel):
+    """The body of the rename door. It names the new name and nothing else.
+
+    ⚠️ **Extra fields are refused (422).** The tenant comes from the PATH slug
+    (R11). An ``organization_id`` or a ``slug`` here would be a caller who
+    believes the body chose the tenant, or could move the slug.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    name: str
 
 
 def _require_operator_token(presented: str | None) -> None:
@@ -226,6 +248,57 @@ async def purge_organization(
     return receipt
 
 
+@router.patch("/organizations/{slug}")
+async def rename_organization(
+    slug: str,
+    body: OrganizationRename,
+    x_operator_token: Annotated[
+        str | None, Header(alias="X-Operator-Token")
+    ] = None,
+) -> dict[str, Any]:
+    """Set one organization's display name (CP-8, owner request, 2026-10-27).
+
+    **The order of the refusals.** FastAPI validates the body first, so a body
+    with no ``name`` or with an extra field gets its 422 before this runs.
+    Inside the body the operator token comes first: an unconfigured box
+    answers 503 and a wrong token 401. Then :func:`clean_display_name` answers
+    422 for a name that is empty, too long or not printable. Then the slug.
+
+    **The org.** Looked up by the PATH slug, unbound, through
+    ``acb_auth.offboard.organization_id_for_slug``, as the member door does.
+    An unknown slug is 404, because a rename for an org that is not here is a
+    wrong box, and the operator must hear that.
+
+    **The write.** The tenant session is bound to that org, and the one shared
+    body :func:`rename_org_row` runs in it. The slug does not change. The
+    audit entry names ``operator``, because the operator is not a member.
+
+    A repeat with the same name writes the same value, so the BFF may tell
+    the operator that a retry is safe.
+    """
+    _require_operator_token(x_operator_token)
+    name = clean_display_name(body.name)
+
+    from acb_auth.offboard import organization_id_for_slug
+
+    # Whitespace-trim ONLY, never case-fold: the org purge's rule.
+    org_id = await organization_id_for_slug((slug or "").strip())
+    if org_id is None:
+        raise HTTPException(status_code=404, detail=f"no organization {slug!r}")
+
+    async with _tenant_session(org_id) as db:
+        row = await rename_org_row(db, org_id, name)
+    if row is None:
+        # The row went between the lookup and the write: a purge ran.
+        raise HTTPException(status_code=404, detail=f"no organization {slug!r}")
+
+    _log.info("operator_org_renamed", slug=row["slug"], organization_id=org_id)
+    record_admin_change(_OPERATOR_ACTOR, "org.renamed", f"org:{row['slug']}",
+                        display_name=name, via="operator")
+    return {"slug": row["slug"], "organization_id": row["id"],
+            "display_name": row["display_name"]}
+
+
 @router.delete("/organizations/{slug}/members/{email}")
 async def remove_organization_member(
     slug: str,
@@ -294,8 +367,10 @@ async def remove_organization_member(
         if mode == "remove":
             tree_projects = await remove_member_rows(db, org_id, member)
         else:
+            knowledge_revokes: list[Any] = []
             deleted, kept, plans = await purge_member_rows(
                 db, org_id, member, actor_email=_OPERATOR_ACTOR,
+                knowledge_revokes=knowledge_revokes,
             )
 
     if mode == "remove":
@@ -322,5 +397,14 @@ async def remove_organization_member(
     mailboxes = await finish_teardowns(
         org_id, plans, open_session=partial(_tenant_session, org_id),
         stop_loops=True, bump_owners=False)
+
+    # WS-61 KC-1a (review P1): the Google revokes of the leaver's Drive, after
+    # the email teardown. Its check ran with the Drive rows already gone, so
+    # an address that a Gmail plan covers is left to it: one grant, one revoke.
+    from gateway.routes.knowledge import sources as kb_sources
+
+    await kb_sources.finish_purge_revokes(
+        org_id, knowledge_revokes,
+        gmail_addresses={p.email_address or "" for p in plans if p.provider == "gmail"})
     return PurgeResult(email=member["email"], deleted=deleted,
                        kept=kept, mailboxes=mailboxes).model_dump()

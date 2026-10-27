@@ -52,6 +52,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     insert_assignees,
     insert_row,
+    is_transient,
     load_default_status,
     record_activity,
     reserve_task_numbers,
@@ -106,26 +107,12 @@ HEARTBEAT_EVERY = 30.0
 
 _RUNNING: set[asyncio.Task[None]] = set()
 
-#: SQLSTATEs that mean "try this transaction again": a deadlock, a
-#: serialization failure, a lock that timed out. A deploy applies migrations
-#: while an import may be running, and a migration's lock can deadlock a batch.
-#: Each batch is one transaction that skips what exists, so a retry is safe.
-TRANSIENT_SQLSTATES = frozenset({"40P01", "40001", "55P03"})
+#: A deploy applies migrations while an import may be running, and a
+#: migration's lock can deadlock a batch. Each batch is one transaction that
+#: skips what exists, so a retry on a transient SQLSTATE is safe. The set and
+#: ``is_transient`` live in ``core``, because the tree routes map the same
+#: set to a 409.
 RETRIES = 4
-
-
-def is_transient(err: BaseException) -> bool:
-    """True when ``err``, or the driver error under it, carries a transient
-    SQLSTATE. SQLAlchemy wraps asyncpg twice, so walk the chain."""
-    seen: BaseException | None = err
-    for _ in range(5):
-        if seen is None:
-            return False
-        code = getattr(seen, "sqlstate", None) or getattr(seen, "pgcode", None)
-        if code in TRANSIENT_SQLSTATES:
-            return True
-        seen = getattr(seen, "orig", None) or seen.__cause__
-    return False
 
 
 async def _retrying(label: str, run_id: str, attempt_fn: Any) -> Any:

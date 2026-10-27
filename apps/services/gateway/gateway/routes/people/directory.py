@@ -299,7 +299,11 @@ async def get_person_work(
         #
         # `_scope` is imported rather than re-derived: one answer to "what may
         # this viewer see", and the dashboard already owns it.
-        clauses.append(_scope(vis, params, "t.root_project_id"))
+        # WS-64 OP-9 (D-OP-15): scoped on the task's OWN node. A team node under
+        # a personal root is visible, and its tasks carry that root as
+        # ``root_project_id``, so a root scope would hide them. Both arms hold
+        # every visible node at any depth, so this is the task read's own set.
+        clauses.append(_scope(vis, params, "t.project_id"))
         rows = (await db.execute(
             text(
                 "SELECT t.id, t.title, t.task_number, t.due_at, t.project_id, "

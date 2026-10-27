@@ -65,9 +65,13 @@ from gateway.routes.crm.core import (
     _tenant_session,
     checked_uuid,
     current_tenant,
+    custom_pairs,
+    custom_value_clauses,
     from_jsonb,
     is_mirror_mode,
     list_contract,
+    parse_iso_date,
+    resolve_owner,
     router,
     wire,
 )
@@ -410,6 +414,62 @@ async def list_modules(
     return [_summary(row, counts.get(name, 0)) for name, row in mirrored.items()]
 
 
+_KEYS_SQL = (
+    "SELECT key FROM crm_field_defs WHERE entity = :entity "
+    "AND NOT coalesce(is_system, false) AND retired_at IS NULL"
+)
+
+
+async def _field_filters(
+    db: Any,
+    module: str,
+    updated_from: str | None,
+    updated_to: str | None,
+    custom: list[tuple[str, str]],
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    """The updated range and the custom field filters of a module list.
+
+    A bad day is a 422 before any SQL. A custom key with no definition is
+    dropped. Every key and value is a bound parameter.
+    """
+    from gateway.routes.crm.field_sql import ZONE_PARAM, crm_zone, day_start
+
+    clauses: list[str] = []
+    bound: dict[str, Any] = {}
+    start = parse_iso_date("updated_from", updated_from)
+    end = parse_iso_date("updated_to", updated_to)
+    if start is not None or end is not None:
+        bound[ZONE_PARAM] = await crm_zone(db, current_tenant())
+    if start is not None:
+        clauses.append(
+            f"ext_modified_at >= {day_start('CAST(:updated_from AS date)')}"
+        )
+        bound["updated_from"] = start
+    if end is not None:
+        clauses.append(
+            f"ext_modified_at < {day_start('CAST(:updated_to AS date) + 1')}"
+        )
+        bound["updated_to"] = end
+    if custom:
+        known = {
+            str(r.key) for r in (await db.execute(
+                text(_KEYS_SQL), {"entity": _mapping().module_entity(module)},
+            )).fetchall()
+        }
+        grouped: dict[tuple[str, bool], list[str]] = {}
+        for name, value in custom:
+            if name in known:
+                grouped.setdefault((name, False), []).append(value)
+            elif name.endswith(".in") and name[:-3] in known:
+                grouped.setdefault((name[:-3], True), []).extend(
+                    part.strip() for part in value.split(",") if part.strip()
+                )
+        more, more_bound = custom_value_clauses("fields", grouped)
+        clauses.extend(more)
+        bound.update(more_bound)
+    return tuple(clauses), bound
+
+
 @router.get("/modules/{module}/records", response_model=ModuleListResponse)
 async def list_module_records(
     module: str,
@@ -418,21 +478,35 @@ async def list_module_records(
     direction: str = Query("desc", alias="dir"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=MAX_PAGE_SIZE),
+    owner: str | None = None,
+    updated_from: str | None = None,
+    updated_to: str | None = None,
     user: UserContext = Depends(get_current_user),
     request: Request = None,  # type: ignore[assignment]
 ) -> ModuleListResponse:
     """One page of a mirrored module's records. 404 for a module that the
     profile does not mirror. ``q`` matches ``name``, and ``sort`` is one of
     :data:`MODULE_RECORDS` ``sorts``. A NUL in the query is a 422 (CRM-Q25c).
+
+    Field filters (CRM-U9): ``owner`` (``me`` is the caller), the
+    ``updated_from`` and ``updated_to`` days, and ``custom.<key>=<value>`` or
+    ``custom.<key>.in=a,b`` over the ``fields`` JSONB. They are the filters
+    of the four core lists. A key that the module has no definition for is
+    ignored, so a stale link or view still opens the list (CRM-Q8 prune).
     """
     if request is not None:
         refuse_nul(request.query_params.multi_items())
     async with _tenant_session() as db:
         _require_module(await mirrored_modules(db), module)
+        extra_where, extra_params = await _field_filters(
+            db, module, updated_from, updated_to,
+            custom_pairs(request.query_params if request is not None else None),
+        )
         query = list_contract(
             MODULE_RECORDS, q=q, sort=sort, direction=direction,
-            page=page, page_size=page_size,
-            extra_where=("module = :module",), extra_params={"module": module},
+            page=page, page_size=page_size, owner=resolve_owner(owner, user),
+            extra_where=("module = :module", *extra_where),
+            extra_params={"module": module, **extra_params},
         )
         total = (await db.execute(
             text(f"SELECT count(*) FROM crm_module_records{query.where}"), query.params,

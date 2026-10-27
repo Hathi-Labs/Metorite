@@ -66,7 +66,8 @@ describe("the page asks through the shared dialog", () => {
   it("mounts ConfirmDialog with this file's copy, for both delete paths", () => {
     const src = page();
     expect(src).toMatch(/import ConfirmDialog from "@\/components\/ui\/ConfirmDialog";/);
-    expect(src).toMatch(/<ConfirmDialog\s+open=\{Boolean\(confirmingDelete\)\}\s+\{\.\.\.deleteCopy\}/);
+    // OP-7: a task with subtasks goes to DeleteTaskDialog, so `open` has a guard.
+    expect(src).toMatch(/<ConfirmDialog\s+open=\{[^{}]*Boolean\(confirmingDelete\)[\s\S]*?\}\s+\{\.\.\.deleteCopy\}/);
     expect(src).toMatch(/deleteTasksCopy\(confirmingDelete\.ids\.length\)/);
     // Each path only opens the dialog until the dialog calls back.
     expect(src).toMatch(/setConfirmingDelete\(\{ kind: "one", taskId \}\)/);

@@ -87,6 +87,25 @@ BASE: dict[str, int] = {
     # WS-53 CRM-Q32-4: the CRM holds a new question about the data of the
     # org, for a CRM admin. One card a day at most, below `digest_ready`.
     "crm_open_questions": 22,
+    # WS-61 KB-9a: a question that two members asked and Knowledge could
+    # not answer, for a manager of Knowledge. A thing to know, below every
+    # other kind.
+    "kb_gap": 20,
+    # WS-61 KB-9b: a page of the member is past its review date, and a page
+    # that another author published in the last day. Things to know. The
+    # review sits above the gap, and the new page sits below it.
+    "doc_needs_review": 21,
+    "doc_shared_with_me": 19,
+    # WS-61 KB-9b slice 2: a source that the member connected stopped syncing.
+    # Above every kind of Knowledge and the stale task (30), below the
+    # overbooked day (32).
+    "source_sync_failed": 31,
+    # WS-66 RM-2 (calendar_events_reminders.md §5.6): the member's own
+    # reminder. Each one is alone on its entity, so the base orders it
+    # against other cards only. A fired reminder also carries `urgent_at`.
+    "reminder_due": 31,
+    "reminder_check": 29,
+    "reminder_unconfirmed": 25,
 }
 
 #: The urgency terms (§7).
@@ -189,12 +208,13 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
     ``today`` is the member's own date. An unknown kind raises, as ``base``
     does."""
     if kind in ("overdue", "approval", "needs_reply", "no_plan_yet",
-                "waiting_quiet", "absent_on_due", "no_answer", "deal_close_passed",
-                "agent_asks"):
+                "waiting_quiet", "source_sync_failed", "absent_on_due", "no_answer",
+                "deal_close_passed", "agent_asks"):
         return "needs_you"
     if kind == "unblocked":
         return "ready"
-    if kind in ("stale_next", "deal_quiet", "colleague_out", "digest_ready"):
+    if kind in ("stale_next", "deal_quiet", "colleague_out", "digest_ready", "kb_gap",
+                "doc_needs_review", "doc_shared_with_me"):
         return "fyi"
     if kind == "crm_open_questions":
         # CRM-Q32-4: needs you while a question about money is open.
@@ -206,8 +226,11 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
         return "now" if due is not None and due - now <= SOON else "needs_you"
     if kind == "notification":
         return "needs_you" if facts.get("notification") in ASKING_NOTIFICATIONS else "fyi"
-    if kind == "block_soon":
+    if kind in ("block_soon", "reminder_due"):
         return "now"
+    if kind in ("reminder_check", "reminder_unconfirmed"):
+        # WS-66 RM-2: each one asks the member for an answer.
+        return "needs_you"
     if kind == "block_overlap":
         return "now" if _is_day(facts.get("overlap_day"), today) else "needs_you"
     if kind == "day_overbooked":

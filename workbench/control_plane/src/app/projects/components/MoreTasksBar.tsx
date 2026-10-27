@@ -34,9 +34,15 @@ interface Props {
   total: number | null;
   busy: boolean;
   onLoadMore(): void;
+  /**
+   * WS-64 OP-1 (the compact chrome): draw one row at the END of the list, "Load
+   * 100 more (100 of 219)", and no banner above it. The explanatory sentence
+   * moves to the View sheet and the count to the tool row.
+   */
+  atEnd?: boolean;
 }
 
-export function MoreTasksBar({ loaded, total, busy, onLoadMore }: Props) {
+export function MoreTasksBar({ loaded, total, busy, onLoadMore, atEnd = false }: Props) {
   const note = truncationNote(loaded, total);
   // ⚠️ Renders NOTHING on a whole board, which is nearly every board. A bar
   // that always occupied a row would cost every project a line of screen to
@@ -44,6 +50,22 @@ export function MoreTasksBar({ loaded, total, busy, onLoadMore }: Props) {
   if (!note) return null;
 
   const batch = nextBatchSize(loaded, total);
+
+  if (atEnd) {
+    return (
+      <div className="flex justify-center px-3 py-3" data-load-more-end="">
+        <Button
+          variant="secondary"
+          size="sm"
+          icon="ChevronDown"
+          loading={busy}
+          onClick={onLoadMore}
+        >
+          {`Load ${batch} more (${loaded} of ${total})`}
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/40 px-3 py-1.5 text-xs">

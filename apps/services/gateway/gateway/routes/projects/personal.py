@@ -44,8 +44,6 @@ from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.cascade import complete_subtree, emit_all
 from gateway.routes.projects.core import (
-    _MY_GROUPS_SQL,
-    _VISIBLE_PROJECTS_SQL,
     CLOSING_CATEGORIES,
     ListResponse,
     Page,
@@ -55,14 +53,18 @@ from gateway.routes.projects.core import (
     _placeholder,
     _tenant_session,
     actor,
+    assert_not_archived,
     clean_payload,
     coerce_write_values,
     diff_changes,
     emit,
     from_jsonb,
+    grant_personal_owner,
     insert_row,
     load_default_status,
     load_visible_task,
+    mine_binds,
+    mine_clause,
     next_task_number,
     now,
     parent_lane_status,
@@ -496,7 +498,7 @@ async def ensure_personal_project(db: Any, email: str) -> Any:
         "owns_statuses": True,
     })
     project_id = str(project.id)
-    await _grant_owner(db, project_id, email)
+    await grant_personal_owner(db, project_id, email)
     # Ordered, and the order is the whole answer: a capture lands in the FIRST
     # lane. There is no `is_default` on a status any more (2026-09-06) — see
     # `core.load_default_status` — and "Inbox" leads because it is first.
@@ -506,22 +508,6 @@ async def ensure_personal_project(db: Any, email: str) -> Any:
             "position": (position + 1) * 10,
         })
     return project
-
-
-async def _grant_owner(db: Any, project_id: str, email: str) -> None:
-    """The grant every personal node carries — root and child alike.
-
-    The grant is what the visibility model reads; `personal_owner` is only the
-    fast path to finding it. Both, so neither is load-bearing alone.
-    """
-    await db.execute(
-        text(
-            "INSERT INTO pm_project_grants (project_id, subject, created_by) "
-            "VALUES (CAST(:pid AS uuid), :who, :who) "
-            "ON CONFLICT (project_id, subject) DO NOTHING"
-        ),
-        {"pid": project_id, "who": email},
-    )
 
 
 async def find_personal_child(
@@ -585,7 +571,7 @@ async def mint_personal_child(db: Any, email: str, root: Any, name: str) -> Any:
         "organization_id": getattr(root, "organization_id", None),
         "owns_statuses": False,
     })
-    await _grant_owner(db, str(child.id), email)
+    await grant_personal_owner(db, str(child.id), email)
     return child
 
 
@@ -686,6 +672,13 @@ async def create_personal_task(
     not a capture, and gets no default: `POST /projects/tasks` writes none
     either, and the two ways of adding a step must agree.
     """
+    # WS-64. A capture is a NEW placement, so it is refused under an archived
+    # Area (one `archived_at` read by id, since callers hold ids and no row).
+    target = (await db.execute(
+        text("SELECT name, archived_at FROM pm_projects WHERE id = CAST(:p AS uuid)"),
+        {"p": project_id},
+    )).fetchone()
+    assert_not_archived(target, then="Capture into")
     stated = dict(overlay or {})
     if stated.get("disposition") is None and not values.get("parent_task_id"):
         stated["disposition"] = "INBOX"
@@ -1230,6 +1223,10 @@ def waiting_on_for(others: Any, stored: Any) -> dict[str, Any] | None:
 #:   member who reached a task by assignment ALONE and delegates it loses it
 #:   from their lists, because they hold no grant to keep it by.
 #:
+#: ⚠️ **A task of an ARCHIVED project is not in these lists** (WS-64). The
+#: project filter rides the same ``:archived`` bind as the task filter, so the
+#: archive view, which asks for archived rows, still sees them.
+#:
 #: Binds: ``:who`` (lower-cased email), ``:vis_org``, ``:archived``, and the
 #: closure's ``:vis_email`` and ``:vis_groups``. :func:`my_tasks_binds` is
 #: the one place they are assembled, so a composer cannot forget one — a
@@ -1242,14 +1239,9 @@ LEFT JOIN pm_task_personal p
        ON p.task_id = t.id AND lower(p.member_email) = :who
 LEFT JOIN pm_projects proj ON proj.id = t.project_id
 WHERE (t.archived_at IS NULL OR CAST(:archived AS boolean))
+  AND (proj.archived_at IS NULL OR CAST(:archived AS boolean))
   AND t.organization_id = CAST(:vis_org AS uuid)
-  AND (
-        EXISTS (SELECT 1 FROM pm_task_assignees a
-                WHERE a.task_id = t.id AND lower(a.assignee) = :who)
-     OR lower(proj.personal_owner) = :who
-     OR (p.disposition = 'WAITING'
-         AND t.root_project_id IN (""" + _VISIBLE_PROJECTS_SQL + """))
-  )
+  AND """ + mine_clause("t") + """
 """
 
 
@@ -1269,16 +1261,9 @@ async def my_tasks_binds(
     groups; that permission widens the board, and a member's private list is
     not the board (the fragment's docstring).
     """
-    email = (who or "").strip().lower()
-    groups = (await db.execute(text(_MY_GROUPS_SQL), {"email": email})).fetchall()
-    return {
-        "who": email,
-        "vis_org": await resolve_organization_id(db, email),
-        "vis_email": email,
-        "vis_groups": [r.subject for r in groups if getattr(r, "subject", None)],
-        "archived": archived,
-        **extra,
-    }
+    # WS-64 OP-11: `core.mine_binds` is the one assembler of the binds of
+    # `core.mine_clause`, which the arms of the fragment are.
+    return {**await mine_binds(db, who), "archived": archived, **extra}
 
 
 #: D-PM-38 — which children the roll-up counts. The same two rules the Projects
@@ -1577,16 +1562,27 @@ async def my_today(user: UserContext = Depends(get_current_user)) -> dict[str, A
     name, and the date is then the UTC date. It writes nothing, and it reads
     only the caller's own row: the address is the authenticated one, never a
     parameter (R11).
+
+    ``day_start_hour`` (WS-66 RM-3) is the hour the member's day starts, by
+    the one rule of :func:`member_day`, clamped as the shell's feed clamps it
+    (``shell.state._hour``, 7 when none is saved). The reminder tools read it
+    for "tomorrow morning". The zone keeps its own read above, so this field
+    changes no zone answer.
     """
+    # Imported here: `shell.state` reaches the projects routes through the feed.
+    from gateway.routes.shell.state import DEFAULT_DAY_START, _hour
+
     email = actor(user).lower()
     async with _tenant_session() as db:
         stored = await stored_zone(db, email)
+        _day_zone, hour = await member_day(db, user)
     zone = zone_name(stored)
     return {
         "today": local_date(zone, datetime.now(UTC)).isoformat(),
         "timezone": zone,
         "stored": stored is not None,
         "valid": stored is None or zone == str(stored),
+        "day_start_hour": _hour(hour, DEFAULT_DAY_START, 23),
     }
 
 
@@ -2789,6 +2785,7 @@ async def _organize(
     db: Any, vis: Any, email: str, task: Any, payload: OrganizeIn,
     moved_subtasks: list[str] | None = None,
     created_steps: list[tuple[str, list[Saved]]] | None = None,
+    *, user: Any,
 ) -> str:
     """Apply one decision to ``task`` inside the caller's transaction.
 
@@ -2839,7 +2836,9 @@ async def _organize(
         include_subtasks=bool(payload.include_subtasks and dest),
     )
     if move.project_id or move.assignees is not None:
-        shifted = await move_task_in(db, vis, task, move, by=email)
+        shifted = await move_task_in(
+            db, vis, task, move, by=email, user=user,
+        )
         if moved_subtasks is not None:
             # D-PM-38 — the caller emits one "moved" event per subtask.
             moved_subtasks.extend(shifted.get("subtask_ids", []))
@@ -2945,7 +2944,7 @@ async def organize_my_task(
         created_steps: list[tuple[str, list[Saved]]] = []
         disposition = await _organize(
             db, vis, email, task, payload, moved_subtasks=moved_subtasks,
-            created_steps=created_steps,
+            created_steps=created_steps, user=user,
         )
         result = await _read_my_task(db, email, task_id)
     # S6g — a decision that changed the project IS a move, and says so the
@@ -3339,6 +3338,18 @@ async def rename_my_area(
     name = _clean_area_name(payload.name)
     async with _tenant_session() as db:
         area = await _load_my_area(db, email, area_id)
+        # The same lookup as create's 409, but not the area itself, so a
+        # change of case on its own name still goes through.
+        root = await _load_personal_project(db, email)
+        twin = (
+            await find_personal_child(db, email, root, name)
+            if root is not None else None
+        )
+        if twin is not None and str(twin.id) != str(area.id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"You already have an area called {name}.",
+            )
         await db.execute(
             text(
                 "UPDATE pm_projects SET name = :name, updated_at = now() "
@@ -3360,7 +3371,8 @@ async def remove_my_area(
 
     Two outcomes, and the row count decides which:
 
-    - **Empty** — the row goes. A category somebody made by accident should
+    - **Empty** — no child node and no task in the whole subtree (any
+      status, archived too): the row goes. A category somebody made by accident should
       not leave a tombstone in their own sidebar.
     - **Holds tasks** — ARCHIVED, never deleted. `pm_tasks.project_id` is what
       a task lives on, so deleting the project would take the work with it, or
@@ -3382,8 +3394,25 @@ async def remove_my_area(
             ),
             {"aid": str(area.id)},
         )).scalar() or 0)
+        # The whole subtree, because `parent_project_id` and
+        # `pm_tasks.project_id` are ON DELETE CASCADE: a hard delete takes
+        # every child node and every task below it, of any status, archived
+        # too. The area is deletable only when the subtree is just itself
+        # and holds no task.
+        below = (await db.execute(
+            text(
+                "WITH RECURSIVE sub AS ( "
+                "  SELECT id FROM pm_projects WHERE id = CAST(:aid AS uuid) "
+                "  UNION ALL "
+                "  SELECT c.id FROM pm_projects c JOIN sub ON c.parent_project_id = sub.id "
+                ") SELECT (SELECT count(*) FROM sub) - 1 AS nodes, "
+                "         (SELECT count(*) FROM pm_tasks t WHERE t.project_id IN "
+                "            (SELECT id FROM sub)) AS tasks"
+            ),
+            {"aid": str(area.id)},
+        )).fetchone()
 
-        if held == 0:
+        if held == 0 and int(below.nodes or 0) == 0 and int(below.tasks or 0) == 0:
             await db.execute(
                 text("DELETE FROM pm_projects WHERE id = CAST(:aid AS uuid)"),
                 {"aid": str(area.id)},

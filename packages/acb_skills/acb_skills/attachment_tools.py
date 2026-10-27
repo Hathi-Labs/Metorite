@@ -49,8 +49,16 @@ fix round 2).
 route and this tool share the one pool and the :data:`MAX_PARSES` slots. A
 second pool would double the bound on parse threads.
 
-Fences: ``tests/unit/test_read_attachment.py``, ``tests/unit/test_attachment_formats.py`` and
-``tests/unit/test_email_attachment_text.py``.
+**OCR** (WS-67 OA-3, behind ``ATTACHMENT_OCR``, default off). With the flag
+on, :func:`parse_bounded` hands a PDF with no text layer and a ``.png``,
+``.jpg`` or ``.jpeg`` image to :mod:`acb_skills.attachment_ocr`. That module
+reads the file in ONE child process at a time, with the scrubbed env, and
+both callers get it through this one function. This tool then starts a
+process, which H-229 did not. With the flag off it starts none, and its
+answers are byte-identical.
+
+Fences: ``tests/unit/test_read_attachment.py``, ``tests/unit/test_attachment_formats.py``,
+``tests/unit/test_email_attachment_text.py`` and ``tests/unit/test_attachment_ocr.py``.
 """
 from __future__ import annotations
 
@@ -67,7 +75,7 @@ from typing import Any
 
 from acb_common import get_logger
 
-from acb_skills import attachment_text, safe_open
+from acb_skills import attachment_ocr, attachment_text, safe_open
 from acb_skills.agent_paths import state_root, upload_dir_rel
 from acb_skills.attachment_text import (
     KIND_NAMES,
@@ -78,11 +86,18 @@ from acb_skills.attachment_text import (
     AttachmentRefused,
     Extracted,
     extract_text,
+    text_state,
     unsupported_sentence,
 )
 from acb_skills.write_artifact import artifact_context
 
-__all__ = ["MAX_OUTPUT_CHARS", "MAX_PARSES", "parse_bounded", "read_attachment"]
+__all__ = [
+    "MAX_OUTPUT_CHARS",
+    "MAX_PARSES",
+    "parse_bounded",
+    "read_attachment",
+    "read_attachment_bytes",
+]
 
 _log = get_logger("acb_skills.attachment_tools")
 
@@ -264,15 +279,43 @@ def _parse_and_release(data: bytes, suffix: str, slot: _Slot) -> Extracted:
         slot.release()
 
 
-async def parse_bounded(data: bytes, suffix: str) -> Extracted | str:
+async def parse_bounded(
+    data: bytes, suffix: str, *, ocr: bool = True, deadline: float | None = None,
+) -> Extracted | str:
     """The text of *data*, or a sentence that says why there is none.
 
     The ONE bounded parse of the process. :func:`read_attachment` and the
     gateway's email text route (WS-17 EM-T11) both call it. It never raises:
     a refusal, a busy pool, a parse past its deadline and a bug each return
-    one sentence. The answer comes at most ``DEADLINE_SECONDS +
-    _WAIT_MARGIN`` seconds after the call, 22 s by default.
+    one sentence. A busy OCR slot returns ``attachment_text.ReaderBusy``. The
+    answer comes at most ``DEADLINE_SECONDS + _WAIT_MARGIN`` seconds after the
+    call, 22 s by default.
+
+    With ``ATTACHMENT_OCR`` on (WS-67 OA-3), an image of
+    ``attachment_ocr.IMAGE_SUFFIXES`` and a PDF whose text layer gives no
+    words go to :func:`acb_skills.attachment_ocr.ocr_bounded`, after the text
+    parse has freed its slot. That adds at most ``OCR_SLOT_WAIT_S +
+    OCR_TIMEOUT_S + _REAP_S`` seconds, and never past *deadline* (a time of
+    the running loop) when the caller gives one. With the flag off, nothing
+    here changes.
+
+    *ocr* ``False`` is a read with no OCR, whatever the flag says. A caller
+    with a short budget passes it (fix round 2): the reply drafter reads up
+    to six files in 8 to 20 s, and an OCR read would spend that budget.
     """
+    use_ocr = ocr and attachment_ocr.ocr_enabled()
+    if use_ocr and attachment_ocr.image_suffix(suffix):
+        return await attachment_ocr.ocr_bounded(data, suffix, deadline=deadline)
+    got = await _parse_text(data, suffix)
+    if use_ocr and isinstance(got, Extracted) and attachment_ocr.wants_ocr(got):
+        return await attachment_ocr.ocr_bounded(
+            data, ".pdf", text_layer=got, deadline=deadline,
+        )
+    return got
+
+
+async def _parse_text(data: bytes, suffix: str) -> Extracted | str:
+    """The text parse of :func:`parse_bounded`, on the bounded pool."""
     if not _SLOTS.acquire(blocking=False):
         return "Another file is being read now. Try again in a moment."
     slot = _Slot()
@@ -307,6 +350,8 @@ def _render(name: str, got: Extracted, offset: int) -> str:
     end = min(start + MAX_OUTPUT_CHARS, total)
     count = f"{got.read} {got.unit}{'' if got.read == 1 else 's'}"
     kind = _KINDS.get(got.kind, got.kind)
+    if got.ocr:
+        kind = f"{kind}, read by OCR"
     lines = [f"Attachment: {name} ({kind}, {count} read)", _DATA_NOTE, "---"]
     lines.append(got.text[start:end] if total else "(This file holds no text.)")
     lines.append("---")
@@ -361,11 +406,43 @@ async def read_attachment(name: str, offset: int = 0) -> str:
     if isinstance(got, str):
         _log.info("attachment.refused", kind=where.suffix, size=len(found.data))
         return f"I could not read {where.name}. {got}"
+    if got.ocr and text_state(got) != "words":
+        # A capped read says how many pages OCR read (fix round 3, LOW-2).
+        return f"I could not read {where.name}. {attachment_ocr.no_words_sentence(got)}"
     _log.info(
         "attachment.read", kind=where.suffix, size=len(found.data), chars=len(got.text),
         legacy=found.legacy, stopped=got.stopped,
     )
     return _render(where.name, got, offset)
+
+
+async def read_attachment_bytes(name: str) -> tuple[str, bytes] | str:
+    """The name and the bytes of a file the member attached in THIS chat, or
+    one sentence that says why there are none.
+
+    The second caller of the thread-private folder (H-227, H-229), for a tool
+    that hands the file on whole: ``attach_to_task`` of the Projects
+    assistant (WS-64 OP-6c). It takes the same run context, the same safe
+    opener, the same history check for an older flat upload and the same
+    size cap as :func:`read_attachment`. It parses nothing, so it also reads
+    kinds that ``read_attachment`` refuses. The model passes a file NAME
+    only, and the tool keeps the last part of it.
+    """
+    where = _where(name, readable=False)
+    if isinstance(where, str):
+        return where
+    found = await _find(where)
+    if isinstance(found, str):
+        return found
+    if found is None:
+        names = await _on_the_dir(_listing, where.root, where.folder)
+        held = ", ".join(names) if names else "none"
+        return (
+            f"No file named {where.name} was attached in this chat. "
+            f"Files attached here: {held}."
+        )
+    _log.info("attachment.handed_on", kind=where.suffix, size=len(found.data), legacy=found.legacy)
+    return where.name, found.data
 
 
 @dataclass(frozen=True)
@@ -381,7 +458,7 @@ class _Where:
     suffix: str
 
 
-def _where(name: object) -> _Where | str:
+def _where(name: object, *, readable: bool = True) -> _Where | str:
     """This thread's attachment folder and the asked name, or why there is none.
 
     The workspace, the session and the store key come from the run's
@@ -398,10 +475,17 @@ def _where(name: object) -> _Where | str:
     if clean is None:
         return "Give the name of a file that the member attached, for example brief.docx."
     suffix = Path(clean).suffix.lower()
-    if suffix in LEGACY_OFFICE:
+    # `readable=False` is the bytes accessor: a file that a tool hands on
+    # whole needs no parser, so the list of readable kinds does not bind it.
+    if readable and suffix in LEGACY_OFFICE:
         return f"I cannot read {clean}. {unsupported_sentence(suffix)}"
-    if suffix not in SUPPORTED_SUFFIXES:
-        return f"I cannot read {clean}. {SUPPORTED_SENTENCE} Ask the member for one of those."
+    if readable and suffix not in SUPPORTED_SUFFIXES and not attachment_ocr.image_suffix(suffix):
+        # With OCR on (WS-67 OA-3) the sentence names the image kinds too.
+        images = f" {attachment_ocr.IMAGES_SENTENCE}" if attachment_ocr.ocr_enabled() else ""
+        return (
+            f"I cannot read {clean}. {SUPPORTED_SENTENCE}{images} "
+            "Ask the member for one of those."
+        )
     agent, instance = _store_key(Path(str(root)), ctx.get("instance"))
     try:
         folder = upload_dir_rel(instance, session_id)

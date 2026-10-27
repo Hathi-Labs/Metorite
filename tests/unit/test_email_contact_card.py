@@ -20,6 +20,7 @@ from gateway.routes.email.transport.contacts import (
     _preview,
     _signature_block,
 )
+
 from tests.unit._email_fakes import bind_db
 
 
@@ -118,12 +119,13 @@ def test_every_query_is_scoped_to_the_callers_own_accounts():
     email_messages must go through ``_account_scope`` (which resolves
     email_accounts.user_id), and the rollup lookups must filter on :uid too."""
     src = inspect.getsource(C.contact_card)
-    assert "_account_scope(account_id, params)" in src
+    assert '_account_scope(account_id, params, level="read")' in src
     # Three statements read mail/rollups; each must carry a user predicate.
     for fragment in ("FROM email_messages em\n                 WHERE {from_them}",
                      "WHERE {scope}"):
         assert fragment in src, fragment
-    assert src.count("WHERE user_id = :uid") >= 2, (
+    # Since WS-65 SM-2 the predicate comes from the one mailbox seam.
+    assert src.count('mailbox_ids_sql(uid="uid", level="read")') >= 2, (
         "the email_senders / email_newsletters lookups must be scoped to the "
         "caller's accounts, not matched on the address alone"
     )
@@ -258,3 +260,53 @@ async def test_suggest_is_best_effort_on_failure() -> None:
         out = await C.suggest_contacts(
             q="ay", account_id=None, limit=8, user=MagicMock(email="me@x.io"))
     assert out == []
+
+
+async def test_suggest_names_the_source_and_reads_the_org_through_the_seam() -> None:
+    """Owner, 2026-10-22: the chat finds a colleague by name. Each hit names
+    its source, and the org rows name the bound tenant in their own predicate,
+    so an unbound GUC matches no row. The R8 half is
+    ``test_email_contact_suggest_r8.py``."""
+    from unittest.mock import MagicMock, patch
+
+    captured: dict = {}
+    rows = []
+    for email, src in (("kiran@fracktal.in", "org"), ("k@client.test", "sent"),
+                       ("k@x.test", "seen"), ("k@y.test", "bogus")):
+        r = MagicMock()
+        r.email, r.name, r.source = email, "Kiran", src
+        rows.append(r)
+
+    class _DB:
+        async def execute(self, clause, params=None):
+            captured["sql"] = str(clause)
+            captured["params"] = params
+            return MagicMock(fetchall=MagicMock(return_value=rows))
+
+    with patch.object(C, "_tenant_session", bind_db(_DB())):
+        out = await C.suggest_contacts(
+            q="Kiran", account_id=None, limit=8, domain="@Fracktal.IN",
+            user=MagicMock(email="me@fracktal.in"))
+
+    assert [s.source for s in out] == ["org", "sent", "seen", "seen"]
+    sql, params = captured["sql"], captured["params"]
+    assert "FROM app_user au" in sql and "FROM people pp" in sql
+    assert sql.count("current_setting('app.tenant_id', true)") == 2
+    assert params["dom"] == r"(^|\.)fracktal\.in$"
+    assert "c.email <> LOWER(:uid)" in sql
+
+
+async def test_suggest_refuses_a_domain_that_is_not_one() -> None:
+    from unittest.mock import MagicMock
+
+    import pytest
+    from fastapi import HTTPException
+
+    for bad in ("a b", "x;y", "a..b", "fracktal.in)|("):
+        with pytest.raises(HTTPException) as err:
+            await C.suggest_contacts(
+                q="k", account_id=None, limit=8, domain=bad,
+                user=MagicMock(email="me@x.io"))
+        assert err.value.status_code == 422
+    assert C._domain_pattern("fracktal") == r"(^|\.)fracktal(\.|$)"
+    assert C._domain_pattern(None) == ""

@@ -86,8 +86,8 @@ describe("firstOpen (CRM-U5)", () => {
 
 describe("the title bar line (spec 8.1)", () => {
   const now = Date.parse("2026-10-11T12:00:00Z");
-  it("says Native", () => {
-    expect(modeLine({ mode: "native", connection: null, sync: null })).toBe("Native");
+  it("says Metorite", () => {
+    expect(modeLine({ mode: "native", connection: null, sync: null })).toBe("Metorite");
   });
   it("says when Zoho last synced", () => {
     const line = modeLine({

@@ -5,8 +5,17 @@ Spec ``project-docs/specs/external_agent_access.md`` §5.3, §7.1 and §9.6.
 **Written by hand, not the SDK server.** One ``POST /mcp`` that answers in
 ``application/json`` only. It serves ``initialize``, ``ping``, ``tools/list``
 and ``tools/call``. EA-6e adds ``prompts/list`` and ``prompts/get``, and
-:mod:`agent_edge.prompts` holds the prompt. It never sends ``Mcp-Session-Id``
-and it ignores ``Accept``.
+:mod:`agent_edge.prompts` holds the prompt. It ignores ``Accept``.
+
+**The session (SW-7, spec §12.5), dark behind ``agent_mcp_sessions_enabled``.**
+With the flag on, ``initialize`` answers with an
+``Mcp-Session-Id`` that ``agent_signing.mint_mcp_session`` makes: a random
+session key and an HMAC that binds it to the connection. The edge keeps no
+state. Each later request that echoes the id is read back with
+``agent_signing.read_mcp_session``, and the key goes into each gateway call
+as the signed ``X-Agent-Session``. An id that does not verify answers 404,
+so the client starts a new session. A request with no id is served with no
+session.
 
 **The order of the checks (EA3-12, EA3-18).** The first check that fails
 gives the answer, and no later check runs:
@@ -22,6 +31,9 @@ gives the answer, and no later check runs:
    ``Retry-After: 2`` for a database outage (EA3-10).
 7. Version: after ``initialize``, ``MCP-Protocol-Version`` must be absent
    (served as ``2025-03-26``) or one of :data:`SUPPORTED_VERSIONS`, or 400.
+7b. Session (SW-7): after ``initialize``, an ``Mcp-Session-Id`` must be
+   absent or one that this connection's session minted. Two of them are
+   400. One that does not verify is 404.
 8. Scope: a ``tools/call`` of a known tool that the effective scopes do not
    cover is 403 ``insufficient_scope``. ONLY this check sends that error. A
    write tool while the writes flag is off skips it, and the call answers a
@@ -67,6 +79,9 @@ LATEST_VERSION = "2025-11-25"
 #: ``agent_oauth_max_body_bytes``.
 MAX_BODY_BYTES = 1024 * 1024
 
+#: The header of the MCP session (SW-7, spec §12.5).
+SESSION_HEADER = "Mcp-Session-Id"
+
 #: The ``Retry-After`` of a missing signing key (EA3-18).
 NO_KEY_RETRY_AFTER_S = 30
 
@@ -96,7 +111,8 @@ _INSTRUCTIONS = (
 #: The routine of §12 (EA-6e, EA3-39). It shows on the same test as the
 #: prompt ``work_on_task``: the writes flag and ``projects:write``.
 _ROUTINE_INSTRUCTIONS = (
-    " To work on a task, read it with get_task and call claim_task. Report"
+    " To work on a task that you already know, read it with get_task and call"
+    " claim_task. Report"
     " progress with add_comment, and call add_task_reference for each branch"
     " and each pull request. Put the url that get_task gives in the"
     " description of each pull request, and put the short_id in the branch"
@@ -106,14 +122,76 @@ _ROUTINE_INSTRUCTIONS = (
     " GitHub already did. The prompt work_on_task gives the full steps."
 )
 
+#: The protocol of EA-15c (§12.4): one order of steps for each session. The
+#: prompt ``work_on_task`` gives the same steps (``prompts.py``). With the
+#: runs flag off, the steps name no agent-run tool, because those tools do
+#: not show. Fence: ``test_mcp_edge_prompts.py`` ``TestTheProtocol``.
+_PROTOCOL_RUNS_ON = (
+    " Follow these steps in each session."
+    " 1. At the start of a session, call my_work."
+    " 2. Take the top row. For run_stopping, call finish_agent_run at once,"
+    " with no activity before it, and take the next row. For a waiting run"
+    " (reason run_queued or run_answered), read it with get_agent_run. Then"
+    " call claim_task with the task_id and the version of the row."
+    " 3. A 409 task_held means that another session holds the task. Do not try"
+    " it again. Take the next row. A run of another connection, such as one"
+    " on another machine, is never yours, and my_work does not list it."
+    "{terminals}"
+    " Take only a row that my_work lists."
+    " 4. Call get_task_context, then call start_agent_run when the claim"
+    " opened no run."
+    " 5. Post a thought with post_agent_activity at least once a minute."
+    " 6. End with exactly one disposition: the task moves to review or done,"
+    " or a question waits on a named member (ask_on_task), or release_task"
+    " gives the task back. A comment is evidence, never a disposition."
+)
+_PROTOCOL_RUNS_OFF = (
+    " Follow these steps in each session."
+    " 1. At the start of a session, call my_work."
+    " 2. Take the top row, and call claim_task with the task_id and the"
+    " version of the row."
+    " 3. A 409 task_held means that another session holds the task. Do not try"
+    " it again. Take the next row. Take only a row that my_work lists."
+    " 4. Call get_task_context."
+    " 5. Report progress with add_comment."
+    " 6. End with exactly one disposition: the task moves to review or done."
+    " A comment is evidence, never a disposition."
+)
+
+#: SW-7 (spec §12.5). The terminal sentence of step 3 follows
+#: ``agent_mcp_sessions_enabled``, so the text stays true while the flag is
+#: off. Fence: ``test_mcp_edge_prompts.py`` ``TestTheProtocol``.
+TERMINALS_IN_SESSIONS = (
+    " Each terminal is its own session (SW-7), so a run of another terminal"
+    " on your connection is never yours either: the claim refuses it, and the"
+    " refusal names release_task for a session that has ended."
+)
+TERMINALS_SHARED = (
+    " Two terminals on ONE connection share one stamp, and Metorite does not"
+    " tell them apart (SW-7 is off). So a claim does not refuse a task that"
+    " another terminal of your connection holds."
+)
+
+
+def _terminals() -> str:
+    """The terminal sentence of step 3, by the session flag."""
+    return (TERMINALS_IN_SESSIONS if agent_oauth.mcp_sessions_enabled()
+            else TERMINALS_SHARED)
+
+
 #: The agent-run part (WS-55 EA-12, §12.1). It shows only while
 #: ``agent_runs_enabled`` is on, as the six tools do. Fence:
 #: ``test_mcp_edge_agent_runs.py`` ``TestTheInstructions``.
 _RUN_INSTRUCTIONS = (
-    " At the start of every session, call list_agent_runs with needs_agent"
-    " true, and continue each run it gives. When you begin work on a task,"
-    " call start_agent_run. While you work, send a thought with"
-    " post_agent_activity at least once a minute. To ask the member, call"
+    " Only one AI session may hold a task. Never work on a held task: a task"
+    " whose held_by is not stale. The one exception is a my_work row with the"
+    " reason held_by_you, because its run is of your own connection and its"
+    " session went quiet. A waiting run of another connection or another"
+    " machine is never yours. Outside my_work, use list_tasks with unheld true. Call"
+    " claim_task first. While you work,"
+    " the thought that you send at least once a minute is the"
+    " heartbeat of your hold. If you stop and will not finish, call"
+    " release_task. To ask the member, call"
     " ask_on_task, then call get_agent_run with wait_seconds 20 until the"
     " answer arrives. When a run reads stopping, stop the work at once and"
     " call finish_agent_run. To archive a task, call request_task_archive."
@@ -129,14 +207,18 @@ def instructions(scopes: Iterable[str] = ()) -> str:
     when ``prompts/list`` shows ``work_on_task``: the writes flag and
     ``projects:write`` on the connection. So a read-only connection names no
     write tool. The agent-run part shows only when ``tools/list`` shows the
-    run writes: the runs flag too.
+    run writes: the runs flag too. The protocol of EA-15c (§12.4) comes first
+    in the routine, in its form for the runs flag.
     """
     held = frozenset(scopes)
     text = _INSTRUCTIONS + prompts.BRIEF_RULE
     if not prompts.offered(held):
         return text
-    text += _ROUTINE_INSTRUCTIONS
-    if agent_oauth.runs_enabled():
+    runs = agent_oauth.runs_enabled()
+    protocol = _PROTOCOL_RUNS_ON.replace("{terminals}", _terminals()) if runs \
+        else _PROTOCOL_RUNS_OFF
+    text += protocol + _ROUTINE_INSTRUCTIONS
+    if runs:
         text += _RUN_INSTRUCTIONS
     return text
 
@@ -256,6 +338,40 @@ def _kind(message: Any) -> str | None:
     return None
 
 
+def _session_of(request: Request, caller: bearer.Caller,
+                method: str | None) -> tuple[str | None, Response | None]:
+    """Checks 7 and 7b: ``(session key, None)``, or ``(None, refusal)``.
+
+    Check 7, the version: after ``initialize``, ``MCP-Protocol-Version``
+    must be absent or one of :data:`SUPPORTED_VERSIONS`, or 400.
+
+    Check 7b, the session (SW-7). While ``agent_mcp_sessions_enabled`` is
+    off, any id is read as no session and never refused, because a client
+    may hold an id from a time the flag was on. ``initialize`` reads no
+    session, because it starts one. Any other
+    message with no ``Mcp-Session-Id`` has no session. Two ids are 400. An
+    id that no usable key minted for THIS connection is 404, so the client
+    starts a new session (the transport rule of 2025-03-26 and later).
+    """
+    if method == "initialize":
+        return None, None
+    versions = request.headers.getlist("mcp-protocol-version")
+    if len(versions) > 1 or (versions and versions[0] not in SUPPORTED_VERSIONS):
+        return None, http_error(400, INVALID_REQUEST, "Unsupported protocol version")
+    if not agent_oauth.mcp_sessions_enabled():
+        return None, None
+    sent = request.headers.getlist(SESSION_HEADER)
+    if len(sent) > 1:
+        return None, http_error(400, INVALID_REQUEST, "Send one Mcp-Session-Id.")
+    if not sent:
+        return None, None
+    session = agent_signing.read_mcp_session(
+        sent[0], str(caller.lookup.connection_id), agent_signing.usable_keys().values())
+    if session is None:
+        return None, http_error(404, INVALID_REQUEST, "Session not found. Initialize again.")
+    return session, None
+
+
 # ── The endpoint ────────────────────────────────────────────────────────────
 
 
@@ -300,10 +416,10 @@ async def endpoint(request: Request) -> Response:
         return challenge_401(sent=refused.sent)
 
     method = message.get("method") if kind != "response" else None
-    if method != "initialize":
-        versions = request.headers.getlist("mcp-protocol-version")
-        if len(versions) > 1 or (versions and versions[0] not in SUPPORTED_VERSIONS):
-            return http_error(400, INVALID_REQUEST, "Unsupported protocol version")
+    # 7. The version, and 7b. the session (SW-7).
+    session, refused = _session_of(request, caller, method)
+    if refused is not None:
+        return refused
 
     params: dict[str, Any] = message.get("params") or {}
     tool = None
@@ -320,27 +436,40 @@ async def endpoint(request: Request) -> Response:
 
     if kind != "request":
         return Response(status_code=202)
-    return await _dispatch(message["id"], str(method), params, tool, caller, key)
+    return await _dispatch(message["id"], str(method), params, tool, caller, key,
+                           session)
 
 
 async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
                     tool: tools.Tool | None, caller: bearer.Caller,
-                    key: str) -> Response:
+                    key: str, session: str | None = None) -> Response:
     if method not in SERVED_METHODS:
         return _rpc_error(request_id, METHOD_NOT_FOUND, "Method not found")
     if method == "initialize":
         asked = params.get("protocolVersion")
         version = asked if asked in SUPPORTED_VERSIONS else LATEST_VERSION
-        return _result(request_id, {
+        answer = _result(request_id, {
             "protocolVersion": version,
             "capabilities": {name: dict(value) for name, value in CAPABILITIES.items()},
             "serverInfo": dict(SERVER_INFO),
             "instructions": instructions(caller.scopes),
         })
+        # SW-7: each `initialize` starts a new session, with a new key, while
+        # `agent_mcp_sessions_enabled` is on. Off, no id: the transport of
+        # before SW-7.
+        if agent_oauth.mcp_sessions_enabled():
+            answer.headers[SESSION_HEADER] = agent_signing.mint_mcp_session(
+                key, str(caller.lookup.connection_id))
+        return answer
     if method == "ping":
         return _result(request_id, {})
     if method == "tools/list":
-        return _result(request_id, {"tools": tools.listed(caller.scopes)})
+        # EA-6h: one signed read of the member's switch, so `delete_task`
+        # shows only while the member turned it on. The instructions and the
+        # prompt never name a delete, so they need no read.
+        listed = await tools.listed_for(tools.Context(caller=caller, key=key,
+                                                      session=session))
+        return _result(request_id, {"tools": listed})
     if method == "prompts/list":
         return _result(request_id, {"prompts": prompts.listed(caller.scopes)})
     if method == "prompts/get":
@@ -356,8 +485,9 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
     _log.info("agent_edge.tool_call", tool=tool.name,
               connection_id=caller.lookup.connection_id)
     try:
-        result = await tools.call(tool, tools.Context(caller=caller, key=key),
-                                  params.get("arguments"))
+        result = await tools.call(
+            tool, tools.Context(caller=caller, key=key, session=session),
+            params.get("arguments"))
     except tools.GatewayUnauthorized:
         return challenge_401(sent=True)
     return _result(request_id, result)
@@ -370,6 +500,7 @@ __all__ = [
     "MAX_BODY_BYTES",
     "NO_KEY_RETRY_AFTER_S",
     "ROUTE_METHODS",
+    "SESSION_HEADER",
     "SUPPORTED_VERSIONS",
     "challenge_401",
     "challenge_403",

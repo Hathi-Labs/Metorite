@@ -544,7 +544,9 @@ def test_every_spawn_passes_the_one_env() -> None:
 def test_the_scan_sees_the_tree() -> None:
     """A scan that finds nothing passes the fence by finding nothing."""
     report = _tree_report()
-    assert report.spawns >= 50, report.spawns
+    # 45, not 50: H-363 moved the network git spawns of agent.py and
+    # mutation.py into the one spawn of acb_common.git_credentials._run.
+    assert report.spawns >= 45, report.spawns
     # copilot_agent.py (two), main.py and executor.py.
     assert report.copilot >= 4, report.copilot
 

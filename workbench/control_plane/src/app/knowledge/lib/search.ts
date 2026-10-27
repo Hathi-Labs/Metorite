@@ -77,6 +77,8 @@ export interface Snippet {
 export interface PageGroup {
   pageId: string;
   title: string;
+  /** The page icon (KB-2f), or `null`. */
+  icon: string | null;
   best: number;
   snippets: Snippet[];
 }
@@ -109,7 +111,7 @@ export function groupHits(hits: readonly SearchHit[]): SpaceGroup[] {
     space.best = Math.max(space.best, hit.score);
     let page = pages.get(hit.page_id);
     if (!page) {
-      page = { pageId: hit.page_id, title: hit.title, best: hit.score, snippets: [] };
+      page = { pageId: hit.page_id, title: hit.title, icon: hit.icon ?? null, best: hit.score, snippets: [] };
       pages.set(hit.page_id, page);
       space.pages.push(page);
     }

@@ -45,6 +45,7 @@ import {
   type FinishedReport,
   type ViewRow,
   agentRunsApi,
+  attentionApi,
   projectsApi,
   projectsKey,
   projectWatchersApi,
@@ -52,9 +53,12 @@ import {
   PROJECTS_CACHE,
 } from "./lib/api";
 import { FieldManager } from "./components/FieldManager";
+import { ConvertFolderDialog } from "./components/ConvertFolderDialog";
 import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
 import { MoveDialog } from "./components/MoveDialog";
 import { AgentWorkStrip } from "./components/AgentWorkStrip";
+import { NeedsAttentionList } from "./components/NeedsAttentionList";
+import { type AttentionPage, LENS_LABEL, badgeText } from "./lib/needsAttention";
 import { AskAgentDialog } from "./components/AskAgentDialog";
 import { MergeTasksDialog } from "./components/MergeTasksDialog";
 import { MoveTasksDialog } from "./components/MoveTasksDialog";
@@ -68,20 +72,53 @@ import { canImport, importEnabled } from "./lib/importFlow";
 import { useAccess } from "@/components/AccessProvider";
 import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
-import { FilterBar } from "./components/FilterBar";
+import { FilterChrome } from "./components/CompactFilterBar";
+import { compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
+import {
+  isMyTasksApp,
+  isMyWorkId,
+  landingApp,
+  linkKeepsApp,
+  myWorkEnabled,
+  myWorkNavCounts,
+  projectsUndoScope,
+} from "./lib/myWork";
+import { asChip, myTasksHref, phoneMyTasksTap, withoutMyTasks } from "./lib/myTasks";
+import MyTasksSpace, {
+  DEFAULT_MY_TASKS_VIEW,
+  MyTasksActionRow,
+  type MyTasksView,
+  useMyAttention,
+  useMySummary,
+} from "./components/MyTasksSpace";
+import {
+  MIXED_MOVE_HINT,
+  PERSONAL_ARCHIVED_FOLD_ID,
+  PERSONAL_SECTION_HINT,
+  PERSONAL_SECTION_LABEL,
+  isPersonalNode,
+  lookupRoots,
+  moveDestinationRoots,
+  personalRoots,
+  splitPersonal,
+} from "./lib/personalTree";
+import MyWorkHost from "./components/MyWorkHost";
+import { useTaskStore } from "@/app/tasks/lib/taskStore";
 import { NotificationBell } from "./components/NotificationBell";
 import { shellDockOn } from "@/lib/shell/dockFlag";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { useAssistantFacts } from "@/lib/shell/assistant";
 import { projectsAssistantFacts } from "./lib/assistantFacts";
-import { describeFilters } from "./lib/assistantPersona";
+import { assistantLevel, describeFilters } from "./lib/assistantPersona";
 import { type CreatingDraft, ProjectTree } from "./components/ProjectTree";
 import type { ProjectMenuHandlers } from "./lib/projectMenu";
 import { CalendarView } from "./components/CalendarView";
 import { MoreTasksBar } from "./components/MoreTasksBar";
 import { SearchPalette } from "./components/SearchPalette";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import DeleteTaskDialog from "./components/DeleteTaskDialog";
 import { deleteTaskCopy, deleteTasksCopy } from "./lib/deleteCopy";
+import { afterDeleteTitle } from "./lib/deleteSubtasks";
 import { TimelineView } from "./components/TimelineView";
 import { TableView } from "./components/TableView";
 import { TaskBoard } from "./components/TaskBoard";
@@ -108,7 +145,9 @@ import {
   SidePanelFitContext,
   sidePanelFits,
 } from "@/lib/sidePanelFit";
-import { PROJECTS_CHANGED_EVENT } from "@/components/projects/ProjectToolCards";
+import { drawerStep } from "./lib/drawerOwner";
+import { moveFollowUp } from "./lib/moveRefresh";
+import { useLiveRefresh } from "./lib/liveRefresh";
 import { invalidate } from "@/lib/dataCache";
 import { useFrontendTool } from "@/hooks/useFrontendTool";
 import {
@@ -211,13 +250,16 @@ import {
   spaceOf,
   taskWhere,
 } from "./lib/tree";
-import { forgetFold, markHidden, openFolds, resumeFold } from "./lib/treeFold";
+import { forgetFold, markHidden, openFolds, resumeFold, toggleFold, useFoldOpen } from "./lib/treeFold";
+import { ARCHIVED_FOLD_ID, splitArchived } from "./lib/archivedRoots";
+import { lanesAfter, planShowView } from "./lib/chatView";
 import ReportsView from "./components/ReportsView";
 import NodeDashboard from "./components/NodeDashboard";
 import SpaceSettings from "./components/SpaceSettings";
 import {
   chatEnabled,
   projectAppSections,
+  resolveAppChip,
   resolveAppLink,
   type ProjectAppId,
   SPACES_SECTION_LABEL,
@@ -253,6 +295,8 @@ const CHAT_LIVE = chatEnabled() && !ONE_ASSISTANT;
  * Read once, at module scope, for the same reason as the chat flag.
  */
 const IMPORT_LIVE = importEnabled();
+/** WS-64 OP-2 — the My work section (`NEXT_PUBLIC_PROJECTS_MY_WORK`, default off). */
+const MY_WORK_LIVE = myWorkEnabled();
 
 /**
  * Five modes, not Tasks' two, because the domain genuinely has five — the
@@ -374,12 +418,18 @@ function ProjectNav({
   onManageFields,
   onManageTags,
   onManageLifecycle,
+  counts,
+  personal = NO_ROOTS,
 }: {
   roots: ProjectRow[];
+  /** WS-64 OP-3 — the caller's own tree, drawn under "Personal". Empty with the flag off. */
+  personal?: ProjectRow[];
   selectedId: string | null;
   /** The app-level destination, or null when a space/project is selected. */
   app: ProjectAppId | null;
   onApp: (id: ProjectAppId) => void;
+  /** WS-64 OP-2 — the count beside each My work entry (`lib/myWork.ts`). */
+  counts?: Partial<Record<ProjectAppId, number>>;
   onSelect: (project: ProjectRow) => void;
   onAddChild: (parent: ProjectRow, option: ChildOption) => void;
   /** Open Space Settings for a space (migration 194). */
@@ -408,6 +458,47 @@ function ProjectNav({
   onManageTags: (space: ProjectRow) => void;
   onManageLifecycle: (space: ProjectRow) => void;
 }) {
+  // Filed work leaves the live tree and waits in one collapsed section at the
+  // foot (owner, 2026-10-21; ClickUp, Linear and Notion all do this).
+  const split = useMemo(() => splitArchived(roots), [roots]);
+  const archivedOpen = useFoldOpen(ARCHIVED_FOLD_ID);
+  // A personal Area that is archived leaves the live Personal tree and waits in
+  // its own fold inside the Personal section (never in the team fold above).
+  const personalSplit = useMemo(() => splitPersonal(personal), [personal]);
+  const personalArchivedOpen = useFoldOpen(PERSONAL_ARCHIVED_FOLD_ID);
+  const personalArchivedGen = useMemo(
+    () => new Map(personalSplit.archived.map((entry) => [entry.node.id, entry.parentGen])),
+    [personalSplit.archived],
+  );
+  const archivedGen = useMemo(
+    () => new Map(split.archived.map((entry) => [entry.node.id, entry.parentGen])),
+    [split.archived],
+  );
+  // `onDelete` is wrapped for the reason the comment below gives in full: it
+  // RAISES A DIALOG, and on a phone this tree is the drawer sheet. Every other
+  // entry writes and closes its own menu.
+  const navActions = actions
+    ? {
+        ...actions,
+        ...(actions.onDelete
+          ? {
+              onDelete: (project: ProjectRow, level: NodeLevel) => {
+                actions.onDelete?.(project, level);
+                onPicked?.();
+              },
+            }
+          : {}),
+        // WS-64 OP-10 — it raises a dialog too, so it closes the drawer.
+        ...(actions.onConvert
+          ? {
+              onConvert: (project: ProjectRow) => {
+                actions.onConvert?.(project);
+                onPicked?.();
+              },
+            }
+          : {}),
+      }
+    : undefined;
   return (
     <>
       {/* The app's own destinations, in the main sidebar's grammar (owner
@@ -431,7 +522,14 @@ function ProjectNav({
                   type="button"
                   aria-pressed={active}
                   disabled={preview}
-                  title={preview ? `${item.label} — not built yet` : item.note}
+                  // The full label on hover, because the row truncates it (#132).
+                  title={
+                    preview
+                      ? `${item.label} — not built yet`
+                      : item.note
+                        ? `${item.label} — ${item.note}`
+                        : item.label
+                  }
                   onClick={() => {
                     if (preview) return;
                     onApp(item.id);
@@ -447,6 +545,11 @@ function ProjectNav({
                 >
                   <Icon name={item.icon} className="h-4 w-4 shrink-0" />
                   <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  {counts?.[item.id] ? (
+                    <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                      {counts[item.id]}
+                    </span>
+                  ) : null}
                   {/* `preview` is "not built", never "hidden by permission"
                       — so it says so rather than disappearing. */}
                   {preview ? (
@@ -460,6 +563,103 @@ function ProjectNav({
           </div>
         </div>
       ))}
+
+      {/* WS-64 OP-3 — Personal 🔒, between My work and Spaces (D-OP-2). The same
+          tree row and counts as Spaces. No "+" on the heading, because a
+          personal root is not a space, and no drag, so a private node cannot
+          be dropped into a team space. The row menu drops Share and Move-out
+          (`projectMenu.ts`). */}
+      {personal.length > 0 ? (
+        <div className="mb-2" data-testid="personal-section">
+          <p
+            className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
+            title={PERSONAL_SECTION_HINT}
+          >
+            <span className="min-w-0 truncate">{PERSONAL_SECTION_LABEL}</span>
+            <Icon name="Lock" className="h-3 w-3 shrink-0" />
+            <span className="sr-only"> — {PERSONAL_SECTION_HINT}</span>
+          </p>
+          <ProjectTree
+            roots={personalSplit.active}
+            selectedId={app ? null : selectedId}
+            onSelect={(project) => {
+              onSelect(project);
+              onPicked?.();
+            }}
+            onAddChild={onAddChild}
+            onOpenSettings={(space) => {
+              onOpenSettings(space);
+              onPicked?.();
+            }}
+            onMove={(node) => {
+              onMove(node);
+              onPicked?.();
+            }}
+            creating={
+              creating && creating.parentId && pathTo(personal, creating.parentId).length > 0
+                ? creating
+                : null
+            }
+            onCommitCreate={onCommitCreate}
+            onCancelCreate={onCancelCreate}
+            actions={navActions}
+            onManageStatuses={(space) => {
+              onManageStatuses(space);
+              onPicked?.();
+            }}
+            onManageFields={(space) => {
+              onManageFields(space);
+              onPicked?.();
+            }}
+            onManageTags={(space) => {
+              onManageTags(space);
+              onPicked?.();
+            }}
+            onManageLifecycle={(space) => {
+              onManageLifecycle(space);
+              onPicked?.();
+            }}
+          />
+          {personalSplit.count > 0 ? (
+            <div className="mt-1" data-testid="personal-archived-section">
+              <button
+                type="button"
+                aria-expanded={personalArchivedOpen}
+                aria-controls="projects-personal-archived-list"
+                onClick={() => toggleFold(PERSONAL_ARCHIVED_FOLD_ID)}
+                className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-muted-foreground tech-transition hover:bg-muted"
+              >
+                <Icon name={personalArchivedOpen ? "ChevronDown" : "ChevronRight"} className="h-3.5 w-3.5 shrink-0" />
+                <Icon name="Archive" className="h-3.5 w-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider">
+                  Archived
+                </span>
+                <span
+                  className="shrink-0 text-xs tabular-nums"
+                  title="Archived personal projects and areas"
+                >
+                  {personalSplit.count}
+                  <span className="sr-only"> archived personal projects</span>
+                </span>
+              </button>
+              {personalArchivedOpen ? (
+                <div id="projects-personal-archived-list" className="opacity-75">
+                  <ProjectTree
+                    roots={personalSplit.archived.map((entry) => entry.node)}
+                    selectedId={app ? null : selectedId}
+                    onSelect={(project) => {
+                      onSelect(project);
+                      onPicked?.();
+                    }}
+                    actions={navActions}
+                    rootParentGen={(node) => personalArchivedGen.get(node.id) ?? 0}
+                  />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* The Spaces section — its own heading, with the + that creates one. */}
       <div className="mb-1 flex items-center gap-1 px-2 py-1.5">
@@ -481,7 +681,7 @@ function ProjectNav({
       </div>
 
       <ProjectTree
-        roots={roots}
+        roots={split.active}
         selectedId={app ? null : selectedId}
         onSelect={(project) => {
           onSelect(project);
@@ -508,21 +708,7 @@ function ProjectNav({
         // `actions` writes and closes its own menu — those are safe as they
         // are, and wrapping them would close the drawer for a state change
         // somebody wants to make twice in a row.
-        actions={
-          actions
-            ? {
-                ...actions,
-                ...(actions.onDelete
-                  ? {
-                      onDelete: (project: ProjectRow, level: NodeLevel) => {
-                        actions.onDelete?.(project, level);
-                        onPicked?.();
-                      },
-                    }
-                  : {}),
-              }
-            : undefined
-        }
+        actions={navActions}
         // Each closes the phone's drawer, like every other row action here —
         // a dialog opening behind an open drawer is a dialog nobody can see.
         onManageStatuses={(space) => {
@@ -542,6 +728,48 @@ function ProjectNav({
           onPicked?.();
         }}
       />
+
+      {/* Archived — its own section, closed until asked for. No section when
+          nothing is filed. The rows are the same tree rows, so Unarchive and
+          Delete are on the row's menu, and a filed project opens to read. */}
+      {split.count > 0 ? (
+        <div className="mt-2 border-t border-border pt-1" data-testid="archived-section">
+          <button
+            type="button"
+            aria-expanded={archivedOpen}
+            aria-controls="projects-archived-list"
+            onClick={() => toggleFold(ARCHIVED_FOLD_ID)}
+            className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-muted-foreground tech-transition hover:bg-muted"
+          >
+            <Icon name={archivedOpen ? "ChevronDown" : "ChevronRight"} className="h-3.5 w-3.5 shrink-0" />
+            <Icon name="Archive" className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider">
+              Archived
+            </span>
+            <span
+              className="shrink-0 text-xs tabular-nums"
+              title="Archived projects, subprojects and spaces"
+            >
+              {split.count}
+              <span className="sr-only"> archived projects</span>
+            </span>
+          </button>
+          {archivedOpen ? (
+            <div id="projects-archived-list" className="opacity-75">
+              <ProjectTree
+                roots={split.archived.map((entry) => entry.node)}
+                selectedId={app ? null : selectedId}
+                onSelect={(project) => {
+                  onSelect(project);
+                  onPicked?.();
+                }}
+                actions={navActions}
+                rootParentGen={(node) => archivedGen.get(node.id) ?? 0}
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </>
   );
 }
@@ -580,6 +808,8 @@ function ProjectsWorkspace() {
   const [railOpen, setRailOpen] = useState(true);
   /** Phone only: which sheet the bottom bar has pushed into the shell drawer. */
   const [sheet, setSheet] = useState<Sheet>(null);
+  /** The page put a sheet in the shell drawer (WS-64 #8). Only then may it close it. */
+  const ownsDrawer = useRef(false);
 
   /**
    * ── The tree, read through the shared cache ────────────────────────────
@@ -595,6 +825,11 @@ function ProjectsWorkspace() {
    */
   const tree = useCachedResource(projectsKey("tree"), () => projectsApi.tree());
   const roots = useMemo(() => tree.data?.rows ?? NO_ROOTS, [tree.data]);
+  // WS-64 OP-3 — the caller's own tree, empty with the flag off. `roots` stays
+  // the TEAM tree (Spaces, the grants fan-out, the drag). `allRoots` is where a
+  // node is looked up, so a selected personal node resolves like any project.
+  const personal = useMemo(() => personalRoots(tree.data, MY_WORK_LIVE), [tree.data]);
+  const allRoots = useMemo(() => lookupRoots(roots, personal), [roots, personal]);
   const [grants, setGrants] = useState<GrantRow[]>([]);
   const [selected, setSelected] = useState<ProjectRow | null>(null);
   const [statuses, setStatuses] = useState<StatusRow[]>([]);
@@ -671,6 +906,14 @@ function ProjectsWorkspace() {
    * sections now).
    */
   const [app, setApp] = useState<ProjectAppId | null>(null);
+  // WS-64 OP-11 — My tasks: its tab, its lens and its chip, and a counter the
+  // task panel bumps so the roll-up reads its rows again.
+  const [myTasks, setMyTasks] = useState<MyTasksView>(DEFAULT_MY_TASKS_VIEW);
+  const [myTasksVersion, setMyTasksVersion] = useState(0);
+  const appRef = useRef(app);
+  useEffect(() => {
+    appRef.current = app;
+  }, [app]);
   // `null` = nobody has chosen yet, which is a different state from "board":
   // the right default depends on the viewport, and a board of fixed-width
   // columns is the wrong first screen on a 390px one. An explicit pick wins on
@@ -753,6 +996,17 @@ function ProjectsWorkspace() {
     if (id === "settings") setSettingsSeed({});
     setApp(id);
   }, []);
+  // WS-64 OP-11 — the My work counts come from the server summary of mine
+  // (`myWorkNavCounts`), not from the task store, so they show at once and
+  // need no whole-list hydrate. My tasks reads the same cache key.
+  const mySummary = useMySummary(MY_WORK_LIVE);
+  // OP-11 fix round, item 11: the count on the Needs attention lens of My
+  // tasks. The space reads the same cache key for the lens itself.
+  const myAttention = useMyAttention(MY_WORK_LIVE && isMyTasksApp(app));
+  const navCounts = useMemo(
+    () => (MY_WORK_LIVE ? myWorkNavCounts(mySummary.data) : undefined),
+    [mySummary.data],
+  );
   const { access, loading: accessLoading } = useAccess();
   const mayImport = IMPORT_LIVE && canImport(access, accessLoading);
   const [moving, setMoving] = useState(false);
@@ -771,6 +1025,11 @@ function ProjectsWorkspace() {
   //: SAME row leaves the id unchanged, so the id alone would not remount and
   //: the stale-armed frame would survive exactly where it is easiest to hit.
   const [deleteOpenedAt, setDeleteOpenedAt] = useState(0);
+  //: WS-64 OP-10 — the folder whose "Convert to project" dialog is open, the
+  //: call in flight, and the server's refusal, shown in the dialog.
+  const [convertingNode, setConvertingNode] = useState<ProjectRow | null>(null);
+  const [converting, setConverting] = useState(false);
+  const [convertError, setConvertError] = useState<string | null>(null);
   //: WS-27bl — the tasks whose move card is open. One state for both entry
   //: points: a single row from its menu, and the whole bulk selection.
   const [movingTasks, setMovingTasks] = useState<readonly string[] | null>(null);
@@ -834,6 +1093,24 @@ function ProjectsWorkspace() {
     counts: AgentSummary;
   } | null>(null);
   const [askingTasks, setAskingTasks] = useState<string[] | null>(null);
+  /**
+   * WS-55 SW-11a — the "Needs attention" lens (`external_agent_access.md`
+   * §12.7). Page state like "Waiting on me", never a view mode: while it is
+   * on, the list takes the place of the canvas, and a pick in the view switch
+   * turns it off. `attentionFor` is the project the lens is on for, so a new
+   * project opens on its board with no effect to reset it. `attention` holds
+   * the last answer, and the header badge and the toggle read its total.
+   */
+  const [attentionFor, setAttentionFor] = useState<string | null>(null);
+  const [attention, setAttention] = useState<{
+    projectId: string;
+    page: AttentionPage;
+  } | null>(null);
+  const [attentionError, setAttentionError] = useState<{
+    projectId: string;
+    text: string;
+  } | null>(null);
+  const [attentionVersion, setAttentionVersion] = useState(0);
   useEffect(() => {
     let live = true;
     void agentRunsApi.enabled().then((on) => {
@@ -1042,7 +1319,7 @@ function ProjectsWorkspace() {
    * holds the values needed to revert a row in a project you have navigated
    * away from, and pressing Ctrl+Z there must not reach back into it.
    */
-  const undoApi = useUndoScope(`projects:${selected?.id ?? "none"}`);
+  const undoApi = useUndoScope(projectsUndoScope(app, selected?.id));
   // D-PM-38 decision 2 (S5) — the one complete prompt for the board's doors.
   const subtaskComplete = useSubtaskComplete();
   const [zoom, setZoom] = useState<TimelineZoom>("month");
@@ -1064,6 +1341,27 @@ function ProjectsWorkspace() {
       const tab = (event as CustomEvent<string>).detail;
       if (tab === "projects-tree") setSheet((s) => (s === "tree" ? null : "tree"));
       else if (tab === "projects-views") setSheet((s) => (s === "views" ? null : "views"));
+      else if (tab === "projects-mywork") {
+        // WS-64 OP-11 — the phone's "My tasks" tab opens My tasks on its
+        // List. A second tap there opens the Projects sheet (`ProjectNav`:
+        // My work, Personal, Spaces). The shell's "Menu" keeps the drawer.
+        if (phoneMyTasksTap(appRef.current) === "sheet") {
+          setSheet((s) => (s === "tree" ? null : "tree"));
+        } else {
+          setSheet(null);
+          setApp("my-tasks");
+          setMyTasks((v) => ({ ...v, mode: "list", attention: false }));
+        }
+      } else if (tab === "projects-capture") {
+        // WS-64 OP-4 — Capture must work with no My work view open. The quick
+        // capture lives in the task store and `MyWorkHost` mounts it, so open
+        // My task inbox, then set the store's flag. The flag survives until
+        // the host mounts. OP-11: My tasks mounts no capture host, so it
+        // opens the inbox too. The smallest change: no second capture host.
+        setSheet(null);
+        setApp("my-inbox");
+        useTaskStore.getState().openQuickCapture("single");
+      }
       else if (tab === "projects-search") {
         // ⌘K has no phone equivalent, so the palette needs a control. It is a
         // full-screen overlay of its own — the drawer would be a second one.
@@ -1211,7 +1509,7 @@ function ProjectsWorkspace() {
     (open: (node: ProjectRow) => void) => (node: ProjectRow) => {
       setApp(null);
       setSelected(node);
-      open(spaceOf(roots, node));
+      open(spaceOf(allRoots, node));
     };
 
   const projectMenuActions: ProjectMenuHandlers = useMemo(
@@ -1314,6 +1612,11 @@ function ProjectsWorkspace() {
         setDeleteOpenedAt((n) => n + 1);
         setDeletingNode({ project, level });
       },
+      // WS-64 OP-10. Raises the dialog and nothing else. `convertNode` writes.
+      onConvert: (project) => {
+        setConvertError(null);
+        setConvertingNode(project);
+      },
     }),
     [toast]
   );
@@ -1350,12 +1653,22 @@ function ProjectsWorkspace() {
     );
   }
 
-  const visibleRoots = useMemo(
+  const spaceRoots = useMemo(
     // ⚠️ `rootIds` gates the grants, so an empty tree can never be filtered by
     // the PREVIOUS tree's grants while the fan-out below has not run yet.
     () => filterByCenter(roots, rootIds === "" ? NO_GRANTS : grants, center),
     [roots, rootIds, grants, center]
   );
+  // The Spaces section draws `spaceRoots`; every lookup (selection, level,
+  // breadcrumb, deep link) reads this, which adds the personal tree (OP-3).
+  // The Move tasks card offers the side the selection sits on (the server
+  // refuses team to personal). A mixed selection gets none and a sentence.
+  const moveDestinations = useMemo(() => {
+    const byId = new Map(tasks.map((t) => [t.id, t.project_id]));
+    const projectIds = (movingTasks ?? []).map((id) => byId.get(id) ?? "");
+    return moveDestinationRoots(projectIds, roots, personal);
+  }, [movingTasks, tasks, roots, personal]);
+  const visibleRoots = useMemo(() => lookupRoots(spaceRoots, personal), [spaceRoots, personal]);
 
   // Which LEVEL the selection occupies, derived from the tree rather than
   // stored (owner directive 2026-08-31). It decides the whole surface: a
@@ -1385,7 +1698,22 @@ function ProjectsWorkspace() {
   // selected project, so the board's view switcher and project actions go.
   // `ai-chat` was missing here, and the board's tabs sat above the chat.
   const noProjectChrome =
-    dashboardOnly || app === "reports" || app === "ai-chat" || app === "settings";
+    dashboardOnly ||
+    app === "reports" ||
+    app === "ai-chat" ||
+    app === "settings" ||
+    isMyWorkId(app);
+  // WS-55 SW-11a — the project the Needs attention lens reads, and whether the
+  // lens is on for it. A new project opens on its board, never on the lens of
+  // the last one. While the lens is on, the view switch selects no mode.
+  const attentionProject = selected && !dashboardOnly ? selected.id : null;
+  const attentionLens = attentionFor !== null && attentionFor === attentionProject;
+  const shownMode: ViewMode | null = attentionLens ? null : mode;
+  /** A pick of a view mode leaves the lens, from every door. */
+  const pickMode = (next: ViewMode) => {
+    setAttentionFor(null);
+    setChosenMode(next);
+  };
 
   // The roll-up behind the dashboard AND behind a parent project's
   // aggregate header. Fetched for every level: a project with subprojects
@@ -1480,7 +1808,9 @@ function ProjectsWorkspace() {
     const stillVisible =
       selected &&
       JSON.stringify(visibleRoots).includes(`"${selected.id}"`);
-    if (!stillVisible) setSelected(visibleRoots[0]);
+    // WS-64: the default is never a filed space. A member may still open one
+    // from the rail's Archived section, and `stillVisible` lets that stand.
+    if (!stillVisible) setSelected(visibleRoots.find((root) => !root.archived_at) ?? null);
   }, [visibleRoots, selected]);
 
   // The drawer holds a SNAPSHOT — AppShell keeps injected content in its own
@@ -1491,9 +1821,16 @@ function ProjectsWorkspace() {
   useEffect(() => {
     if (!isMobile) return;
     if (!sheet) {
-      closeDrawer();
+      // WS-64 #8 — close the drawer only when THIS page opened it. The shell's
+      // Menu tab opens the same drawer with `sheet` null, and a tree refetch
+      // changes a dependency below: closing then shut the Menu by itself.
+      if (drawerStep(false, ownsDrawer.current) === "close") {
+        ownsDrawer.current = false;
+        closeDrawer();
+      }
       return;
     }
+    ownsDrawer.current = true;
     openDrawer(
       <div className="p-2">
         {/* ⚠️ The tree sheet has NO header of its own (2026-10-10). It drew a
@@ -1509,9 +1846,11 @@ function ProjectsWorkspace() {
         )}
         {sheet === "tree" ? (
           <ProjectNav
-            roots={visibleRoots}
+            roots={spaceRoots}
+            personal={personal}
             selectedId={selected?.id ?? null}
             app={app}
+            counts={navCounts}
             onApp={chooseApp}
             onSelect={(project) => {
               setApp(null);
@@ -1542,9 +1881,11 @@ function ProjectsWorkspace() {
         ) : (
           <ModeSwitch
             modes={MODE_OPTIONS}
-            mode={mode}
+            mode={shownMode}
             layout="sheet"
             onPick={(next) => {
+              // A pick leaves the Needs attention lens, as on a desktop.
+              setAttentionFor(null);
               setChosenMode(next);
               setSheet(null);
             }}
@@ -1555,7 +1896,7 @@ function ProjectsWorkspace() {
     // `creating` is here so the drawer re-injects when a draft opens or
     // closes. Without it, the "+" in the drawer drew nothing: the snapshot
     // kept the tree as it was before the tap (2026-10-10).
-  }, [isMobile, sheet, mode, selected, visibleRoots, creating, openDrawer, closeDrawer]);
+  }, [isMobile, sheet, shownMode, selected, visibleRoots, creating, openDrawer, closeDrawer]);
 
   // Dismissing the drawer from the outside (the backdrop, or the Menu tab
   // replacing the content) has to clear `sheet`, or the effect above reopens
@@ -1567,6 +1908,7 @@ function ProjectsWorkspace() {
   // (a re-tap after a backdrop dismissal sets the same value, so React bails
   // out and the drawer never reopens).
   useEffect(() => {
+    if (!drawerOpen) ownsDrawer.current = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!drawerOpen) setSheet(null);
   }, [drawerOpen]);
@@ -1710,9 +2052,13 @@ function ProjectsWorkspace() {
     [filters, tableSort, boardViewId, taskParamsFor]
   );
 
+  // OP-11 fix round, item 5: My tasks draws no board of `selected`, so the
+  // page does not read one behind it (three requests at first paint). The
+  // read runs when the member leaves My tasks.
+  const onMyTasks = isMyTasksApp(app);
   useEffect(() => {
-    if (selected) void loadProject(selected);
-  }, [selected, loadProject]);
+    if (selected && !onMyTasks) void loadProject(selected);
+  }, [selected, loadProject, onMyTasks]);
 
   /**
    * Fetch the next page of tasks and add it to what is on screen.
@@ -2086,10 +2432,42 @@ function ProjectsWorkspace() {
     };
   }, [agentRunsOn, summaryProject, agentSig]);
 
+  // WS-55 SW-11a — the Needs attention list of the project on screen. One
+  // read when the project changes, when an agent fact of a loaded row changes,
+  // and after an act of the list (`attentionVersion`). It only reads, and it
+  // is live with no flag of its own. A space or a folder has no board, so it
+  // reads nothing there.
+  useEffect(() => {
+    if (!attentionProject) return;
+    let live = true;
+    void attentionApi
+      .list(attentionProject)
+      .then((page) => {
+        if (!live) return;
+        setAttention({ projectId: attentionProject, page });
+        setAttentionError(null);
+      })
+      .catch((err: unknown) => {
+        if (!live) return;
+        setAttentionError({
+          projectId: attentionProject,
+          text: `Could not read the list. ${String((err as Error).message)}`,
+        });
+      });
+    return () => {
+      live = false;
+    };
+  }, [attentionProject, agentSig, attentionVersion]);
+  const attentionHere =
+    attention && attention.projectId === attentionProject ? attention.page : null;
+  const attentionErrorHere =
+    attentionError && attentionError.projectId === attentionProject ? attentionError.text : null;
+  const attentionBadge = badgeText(attentionHere?.total);
+
   const projectName = useCallback(
     (id: string) =>
-      flatten(roots).find((entry) => entry.node.id === id)?.node.name ?? "Project",
-    [roots]
+      flatten(allRoots).find((entry) => entry.node.id === id)?.node.name ?? "Project",
+    [allRoots]
   );
 
   // D-PM-38 — Hidden drops the subtasks here too, not only in SQL. Rows held
@@ -2409,15 +2787,19 @@ function ProjectsWorkspace() {
   // Opening a task always resolves ITS project's statuses. From the board that
   // is the set already loaded; from a deep link it may be any project the
   // member can reach, so it is fetched.
+  // OP-2b — `stay` is an argument, so a failed open cannot leave it armed.
+  // A My work row passes it and the panel opens OVER the My work view. A link
+  // or a bell still leaves the destination for the task's board.
   const openWithStatuses = useCallback(
-    async (task: TaskRow) => {
+    async (task: TaskRow, stay = false) => {
+      const staying = stay && isMyWorkId(app);
       // Opened from one of the app's own destinations — the AI chat slot, most
       // often, where a card's "Open task" landed the panel beside a full-width
       // chat and never showed the project (owner report, 2026-09-23). Leave
       // the destination, select the task's project so its board shows, and
       // carry the conversation into the dock, where it comes back beside the
       // board when the task closes.
-      if (app !== null) {
+      if (app !== null && !staying) {
         const home = flatten(visibleRoots).find((e) => e.node.id === task.project_id);
         if (home) setSelected(home.node as ProjectRow);
         // Only where a dock can draw. Below 80rem, or on a phone, the dock is
@@ -2493,7 +2875,7 @@ function ProjectsWorkspace() {
   }
 
   const openTaskById = useCallback(
-    async (taskId: string) => {
+    async (taskId: string, stay = false) => {
       try {
         let task = await projectsApi.task(taskId);
         // ⚠️ Follow the merge, ONCE. A task folded into another has none of
@@ -2509,7 +2891,7 @@ function ProjectsWorkspace() {
         if (task.merged_into_task_id) {
           task = await projectsApi.task(task.merged_into_task_id);
         }
-        await openWithStatuses(task);
+        await openWithStatuses(task, stay);
       } catch (err) {
         setError(String((err as Error).message));
       }
@@ -2524,6 +2906,30 @@ function ProjectsWorkspace() {
   // Reports. Consumed after the open, like `?task=`, so the same link works
   // twice.
   const appLink = searchParams.get("app");
+  // WS-64 OP-2 (§8 answer 2) — with the flag on, `/projects` with no
+  // `?project=`, `?task=` or `?app=` opens Today. Decided once, at the first
+  // render of the page, from the URL the member arrived on. It sets `app`, which
+  // the main pane obeys over the `selected = visibleRoots[0]` default, so the
+  // two cannot fight. A later click on a project clears `app` as it always did.
+  const landed = useRef(false);
+  useEffect(() => {
+    if (landed.current) return;
+    landed.current = true;
+    const to = landingApp(MY_WORK_LIVE, {
+      project: searchParams.get("project"),
+      task: searchParams.get("task"),
+      app: searchParams.get("app"),
+      assignee: searchParams.get("assignee"),
+      center: searchParams.get("center"),
+    });
+    if (to) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setApp(to);
+      // OP-11: the landing opened Today, so My tasks lands on the Today chip.
+      setMyTasks((v) => ({ ...v, chip: "today" }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useEffect(() => {
     if (!appLink) return;
     const live = resolveAppLink(appLink, PROJECT_APP_SECTIONS);
@@ -2531,12 +2937,67 @@ function ProjectsWorkspace() {
       if (live === "settings") setSettingsSeed({});
       setApp(live);
     }
+    // WS-64 OP-11 — My tasks keeps `?app=my-tasks&chip=…` in the address, so
+    // a reload and a shared link open the same chip. An old list id
+    // (`?app=my-today`) opens My tasks on its List with its chip.
+    if (live === "my-tasks") {
+      const chip = resolveAppChip(appLink, searchParams.get("chip")) ?? "all";
+      const legacy = appLink.trim().toLowerCase() !== "my-tasks";
+      setMyTasks((v) =>
+        legacy ? { ...v, chip, mode: "list", attention: false } : v.chip === chip ? v : { ...v, chip },
+      );
+      const target = myTasksHref(searchParams.toString(), chip);
+      if (legacy) router.replace(target);
+      return;
+    }
+    // WS-64 OP-4 — `/tasks?do=capture&fill.*` arrives as `?app=my-inbox&do=capture&fill.*`.
+    // `do` and `fill.*` stay in the address: the `capture` ShellJob below
+    // reads them, opens the box, and takes them out (the one door). While a
+    // job waits, a My work `app` stays too, so the address ends on the view
+    // the box opened in: `?app=my-inbox` (OP-11 fix round, item 4).
+    if (linkKeepsApp(live, searchParams)) return;
     const rest = new URLSearchParams(searchParams.toString());
     rest.delete("app");
     const qs = rest.toString();
     router.replace(qs ? `/projects?${qs}` : "/projects");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appLink]);
+
+  // WS-64 OP-11 — the address follows My tasks: `?app=my-tasks&chip=next`
+  // while it shows, and neither key once the member leaves it. Only a move
+  // AWAY from My tasks takes the keys out: on the first render `app` is not
+  // yet read from the address, and the link effect above still owns it.
+  //
+  // OP-11 fix round, item 13: a member's chip click PUSHES, so Back and
+  // Forward walk the chips. Entering or leaving My tasks replaces, as an
+  // alias does, so Back never lands on a half-read address.
+  const appBefore = useRef(app);
+  useEffect(() => {
+    const was = appBefore.current;
+    appBefore.current = app;
+    if (!MY_WORK_LIVE) return;
+    const search = window.location.search;
+    const here = `/projects${search}`;
+    const target = isMyTasksApp(app)
+      ? myTasksHref(search, myTasks.chip)
+      : isMyTasksApp(was)
+        ? withoutMyTasks(search)
+        : here;
+    if (target === here) return;
+    const chipMove = isMyTasksApp(app) && isMyTasksApp(was) && searchParams.get("app") === "my-tasks";
+    if (chipMove) router.push(target);
+    else router.replace(target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [app, myTasks.chip]);
+
+  // The other half of item 13: Back or Forward changes `?chip=` under a
+  // mounted page, and the chip follows the address. A link to a legacy id
+  // is the link effect's above, so this reads only `app=my-tasks`.
+  const linkChip = appLink === "my-tasks" ? asChip(searchParams.get("chip")) : null;
+  useEffect(() => {
+    if (!MY_WORK_LIVE || linkChip === null || !isMyTasksApp(appRef.current)) return;
+    setMyTasks((v) => (v.chip === linkChip ? v : { ...v, chip: linkChip }));
+  }, [linkChip]);
 
   // The chat's navigation (WS-27bm S6, H-164). `open_in_app` reads the row,
   // then dispatches one of these through a CUSTOM `frontend_tool` event.
@@ -2566,6 +3027,40 @@ function ProjectsWorkspace() {
       return "opened";
     },
   });
+  // WS-46 P11 (G22) — `show_view` changes what this page draws: the canvas,
+  // a saved view, the filters and the grouping. It writes nothing, as the
+  // filter bar writes nothing. `lib/chatView.ts` holds the rules.
+  useFrontendTool({
+    name: "projects.show_view",
+    description: "Change the canvas, filters, grouping or saved view of the Projects page.",
+    dispatched: true,
+    handler: (args) => {
+      const plan = planShowView(args);
+      if (typeof plan === "string") return plan;
+      const row = flatten(visibleRoots).find((e) => e.node.id === plan.projectId);
+      if (!row) return "not visible";
+      setApp(null);
+      setSelected(row.node as ProjectRow);
+      if (plan.mode) {
+        setAttentionFor(null);
+        setChosenMode(plan.mode);
+      }
+      let nextGroup = groupBy;
+      let nextLanes = lanes;
+      if (plan.view) {
+        setFilters(plan.view.filters);
+        setShownFields(plan.view.shownFields);
+        setActiveViewId(plan.view.id);
+        nextGroup = plan.view.groupBy;
+        nextLanes = plan.view.lanes;
+      }
+      if (plan.filters) setFilters(plan.filters);
+      if (plan.groupBy) nextGroup = plan.groupBy;
+      setGroupBy(nextGroup);
+      setLanes(lanesAfter(nextLanes, nextGroup, plan.subGroupBy));
+      return "shown";
+    },
+  });
   useFrontendTool({
     name: "projects.open_app",
     description: "Open a live Projects app (reports).",
@@ -2584,17 +3079,19 @@ function ProjectsWorkspace() {
   // the board reloads the selected project so the member sees the change
   // without a click. The chat never reaches the page's state; this event
   // is the one seam.
-  useEffect(() => {
-    const onChanged = () => {
-      // The app's own writes invalidate the family in `api.ts`; a chat write
-      // ran server-side, so this is where the same drop happens. It notifies
-      // the tree and the summaries too, not only the selected board.
-      invalidate(PROJECTS_CACHE);
-      if (selected) void loadProject(selected);
-    };
-    window.addEventListener(PROJECTS_CHANGED_EVENT, onChanged);
-    return () => window.removeEventListener(PROJECTS_CHANGED_EVENT, onChanged);
-  }, [selected, loadProject]);
+  // WS-64 #128 — the same reload runs when the tab returns to sight or the
+  // window gets focus (throttled), so a write by an MCP client or an agent
+  // run in another process shows up too. `useLiveRefresh` owns the rule.
+  const myWorkOpen = isMyWorkId(app);
+  useLiveRefresh(() => {
+    // The app's own writes invalidate the family in `api.ts`; a chat write
+    // ran server-side, so this is where the same drop happens. It notifies
+    // the tree and the summaries too, not only the selected board.
+    invalidate(PROJECTS_CACHE);
+    // My work reloads itself (`MyWorkHost`). The board reloads here, in the
+    // mode the member is looking at.
+    if (!myWorkOpen) void refreshRef.current();
+  });
 
   // `?project=<id>` selects a node (WS-27bm S6): the link `open_in_app`
   // returns for a member who is not on this page. Consumed after the select,
@@ -2659,7 +3156,10 @@ function ProjectsWorkspace() {
   const actions: CommandActions = useMemo(
     () => ({
       navigate: (href) => router.push(href),
-      setMode: (next) => setChosenMode(next),
+      setMode: (next) => {
+        setAttentionFor(null);
+        setChosenMode(next);
+      },
       setPanelMode,
       clearFilters: () => setFilters(EMPTY_FILTERS),
       toggleRail: () => setRailOpen((open) => !open),
@@ -2676,11 +3176,11 @@ function ProjectsWorkspace() {
       // Not while it is open: a re-seed remounts the pane and drops an edit.
       openSettings: () => {
         if (app === "settings") return;
-        openSettings(null, selected ? spaceOf(roots, selected).id : null);
+        openSettings(null, selected ? spaceOf(allRoots, selected).id : null);
       },
       showShortcuts: () => setShowingShortcuts(true),
     }),
-    [router, setPanelMode, selected, openSettings, roots, app],
+    [router, setPanelMode, selected, openSettings, allRoots, app],
   );
 
   const commandCtx: CommandContext = {
@@ -2890,7 +3390,7 @@ function ProjectsWorkspace() {
    * Undoable. The inverse is the parent it came from, read before the write.
    */
   async function moveNodeTo(node: ProjectRow, parentId: string | null) {
-    const path = pathTo(roots, node.id);
+    const path = pathTo(allRoots, node.id);
     const from = path.length > 1 ? path[path.length - 2].id : null;
     setMoving(true);
     setError(null);
@@ -2899,7 +3399,7 @@ function ProjectsWorkspace() {
       setMovingNode(null);
       setTreeKey((k) => k + 1);
       // The node lands in view: its new parent and that parent's path open.
-      if (parentId) openFolds(pathTo(roots, parentId).map((n) => n.id));
+      if (parentId) openFolds(pathTo(allRoots, parentId).map((n) => n.id));
       undoApi.record({
         label: `moved ${node.name}`,
         undo: async () => {
@@ -2941,11 +3441,32 @@ function ProjectsWorkspace() {
    * the cascade took every task under the node, so an open panel is closed
    * unconditionally.
    */
+  /**
+   * WS-64 OP-10 (D-OP-16) — a folder becomes a project. The tree refetches,
+   * because the level of every project inside it changed. A refusal stays in
+   * the dialog: the 422 names the projects that are too deep.
+   */
+  async function convertNode(node: ProjectRow) {
+    setConverting(true);
+    setConvertError(null);
+    try {
+      const res = await projectsApi.convertFolder(node.id);
+      setConvertingNode(null);
+      setSelected((prev) => (prev && prev.id === node.id ? { ...prev, ...res } : prev));
+      setTreeKey((k) => k + 1);
+      toast.show({ variant: "success", title: `${node.name} is a project now` });
+    } catch (err) {
+      setConvertError(String((err as Error).message));
+    } finally {
+      setConverting(false);
+    }
+  }
+
   async function deleteNode(node: ProjectRow) {
     const selectionIsInside =
       !!selected &&
       (selected.id === node.id ||
-        pathTo(roots, selected.id).some((row) => row.id === node.id));
+        pathTo(allRoots, selected.id).some((row) => row.id === node.id));
 
     setDeleting(true);
     setDeleteError(null);
@@ -3073,22 +3594,23 @@ function ProjectsWorkspace() {
    *
    * Without `confirmed` this only opens the dialog. Its confirm calls back.
    */
-  async function deleteTaskById(taskId: string, confirmed = false) {
+  async function deleteTaskById(
+    taskId: string,
+    confirmed = false,
+    deleteSubtaskIds: string[] = [],
+    deleteAllSubtasks = false,
+  ) {
     if (!confirmed) {
       setConfirmingDelete({ kind: "one", taskId });
       return;
     }
     try {
-      const done = await projectsApi.deleteTask(taskId);
+      const done = await projectsApi.deleteTask(taskId, { deleteSubtaskIds, deleteAllSubtasks });
       await refreshRef.current();
       setTreeKey((k) => k + 1);
-      const promoted = done.cascaded.subtasks_promoted;
-      toast.show({
-        variant: "success",
-        title: promoted
-          ? `Deleted. ${promoted} subtask${promoted === 1 ? "" : "s"} moved up a level.`
-          : "Task deleted",
-      });
+      // The words come from the route's own counts (D-OP-10), so what the
+      // member was told in the dialog and what happened are one number.
+      toast.show({ variant: "success", title: afterDeleteTitle(done.cascaded) });
     } catch (err) {
       setError(String((err as Error).message));
     }
@@ -3126,6 +3648,24 @@ function ProjectsWorkspace() {
       // cards sitting on the board they had just left.
       setTreeKey((k) => k + 1);
       await refreshRef.current();
+      // WS-64 #11 — in My work nothing is selected, so the line above read no
+      // list. Read the task store again, and point an open panel at the moved
+      // task in its new project (its statuses are the new project's).
+      const follow = moveFollowUp({
+        myWork: isMyWorkId(app),
+        openTaskId: openTask?.id ?? null,
+        movedIds: ids,
+      });
+      if (follow.reloadMyWork && isMyTasksApp(app)) {
+        // OP-11 — My tasks reads the board endpoints, never the store.
+        setMyTasksVersion((v) => v + 1);
+      } else if (follow.reloadMyWork) {
+        const store = useTaskStore.getState();
+        void store.reloadItems().then(() => {
+          if (useTaskStore.getState().selectedView === "done") void store.loadDone();
+        });
+      }
+      if (follow.reopenTaskId) void openTaskById(follow.reopenTaskId, isMyWorkId(app));
       // "Moved 4 tasks to Website relaunch" — the subtasks the move took
       // along are counted, from the server's answer.
       const moved = moveReceipt(
@@ -3431,14 +3971,18 @@ function ProjectsWorkspace() {
   /** Every visible node, for the chat's focus picker (`lib/chatScope.ts`). */
   const chatScopes = useMemo(
     () =>
-      flatten(visibleRoots).map((e) => ({
+      flatten(visibleRoots)
+        // WS-64: a filed node is not offered as a scope. The one the member
+        // has open stays, so its own chat still finds its focus.
+        .filter((e) => !(e.node as ProjectRow).archived_at || e.node.id === selected?.id)
+        .map((e) => ({
         id: e.node.id,
         name: e.node.name,
         level: levelOf(visibleRoots, e.node.id),
         depth: e.depth,
         archived: Boolean((e.node as ProjectRow).archived_at),
       })),
-    [visibleRoots],
+    [visibleRoots, selected?.id],
   );
 
   // WS-27bm S8 visual review — may a document open in the side panel beside
@@ -3486,16 +4030,24 @@ function ProjectsWorkspace() {
       ONE_ASSISTANT
         ? projectsAssistantFacts({
             node: selected
-              ? { id: selected.id, name: selected.name, level: selectedLevel, archived: Boolean(selected.archived_at) }
+              ? {
+                  id: selected.id,
+                  name: selected.name,
+                  level: assistantLevel(selectedLevel, selected),
+                  archived: Boolean(selected.archived_at),
+                  personal: isPersonalNode(selected),
+                }
               : null,
-            view: mode,
+            // OP-11 — on My tasks the facts name its own tab and chip.
+            view: isMyTasksApp(app) ? (myTasks.attention ? "Needs attention" : myTasks.mode) : mode,
             app,
-            filterSummary: describeFilters(filters),
+            chip: isMyTasksApp(app) ? myTasks.chip : null,
+            filterSummary: isMyTasksApp(app) ? undefined : describeFilters(filters),
             openTask: openTask ? { id: openTask.id, title: openTask.title, number: openTask.task_number ?? null } : null,
             selectedTaskIds: Array.from(picked),
           })
         : null,
-    [selected, selectedLevel, mode, app, filters, openTask, picked],
+    [selected, selectedLevel, mode, app, filters, openTask, picked, myTasks],
   );
   useAssistantFacts(assistantFacts);
   if (loading) return renderState("loading", LOADING_COPY, "page");
@@ -3544,7 +4096,11 @@ function ProjectsWorkspace() {
    * WS-39 S1). Metorite is the system of record — nothing to import from.
    */
   const projectActions = (compact: boolean) =>
-    selected ? (
+    // OP-11 fix round, item 12: My tasks is not the selected project. It
+    // offers its own undo scope, and only while a step can be undone.
+    isMyTasksApp(app) ? (
+      <UndoControls hideWhenIdle />
+    ) : selected ? (
       <>
       {/* Undo/redo sits with the VIEW ACTIONS, not in the filter bar: it acts
           on the project, not on what is on screen, and the filter bar is
@@ -3666,7 +4222,7 @@ function ProjectsWorkspace() {
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
               onClick={() => {
                 setManageOpen(false);
-                openSettings("general", spaceOf(roots, selected).id);
+                openSettings("general", spaceOf(allRoots, selected).id);
               }}
             >
               <Icon name="Settings" className="h-3.5 w-3.5 text-muted-foreground" />
@@ -3718,6 +4274,14 @@ function ProjectsWorkspace() {
    */
   const canvasKey = `${selected?.id ?? "none"}:${canvasLabel}`;
 
+  // WS-64 OP-1 — the compact chrome. Off by default: the page then draws the old
+  // filter row, the old strip and the old banner, exactly as before.
+  const compactChrome = compactChromeEnabled();
+  const onAgentFocus = (next: AgentFocus | null) => {
+    setWaitingOnMe(next === "waiting");
+    setAgentFocus(next === "waiting" ? null : next);
+  };
+
   /** Everything between the chrome and the canvas, plus the canvas. */
   /**
    * The member's PLACE, which both chat mounts hand the rail — the node they
@@ -3730,8 +4294,9 @@ function ProjectsWorkspace() {
       ? {
           id: selected.id,
           name: selected.name,
-          level: selectedLevel,
+          level: assistantLevel(selectedLevel, selected),
           archived: Boolean(selected.archived_at),
+          personal: isPersonalNode(selected),
         }
       : null,
     filters,
@@ -3743,13 +4308,53 @@ function ProjectsWorkspace() {
     scopeRoots: visibleRoots,
   };
 
-  const workArea = app === "settings" ? (
+  // WS-64 OP-11 — the three doors of My tasks into the rest of the page.
+  // Capture opens My task inbox, where the capture host lives. A row's chip
+  // names its project's path. An Overview row opens that node, filtered to me.
+  const openInboxCapture = () => {
+    setApp("my-inbox");
+    useTaskStore.getState().openQuickCapture("single");
+  };
+  const myTasksPath = (projectId: string) => taskWhere(allRoots, projectId).map((n) => n.name);
+  const openMineIn = (id: string) => {
+    const row = flatten(visibleRoots).find((e) => e.node.id === id);
+    if (!row) return;
+    setApp(null);
+    setSelected(row.node as ProjectRow);
+    if (me) changeFilters({ ...EMPTY_FILTERS, assignee: me });
+  };
+
+  const workArea = isMyTasksApp(app) ? (
+    // WS-64 OP-11 — My tasks, the roll-up space: a project's canvases over mine.
+    <MyTasksSpace
+      view={myTasks}
+      onView={setMyTasks}
+      phone={isMobile}
+      compactChrome={compactChrome}
+      me={me}
+      people={people}
+      personLabels={personLabels}
+      projectPath={myTasksPath}
+      personalRootId={personal[0]?.id ?? null}
+      onOpenTask={(task) => void openWithStatuses(task, true)}
+      onOpenTaskId={(id) => void openTaskById(id, true)}
+      onOpenProject={openMineIn}
+      onReport={(href) => router.push(href)}
+      version={myTasksVersion}
+    />
+  ) : isMyWorkId(app) ? (
+    // WS-64 OP-2 — a My work view: the task store's views, mounted once.
+    <MyWorkHost
+      app={app}
+      onOpenTask={(id) => void openTaskById(id, true)}
+    />
+  ) : app === "settings" ? (
     // WS-42 (D81) — every setting of the Projects app in one pane.
     <div className="min-w-0 flex-1 overflow-hidden">
       <ProjectsSettings
         key={`${settingsSeed.section ?? ""}:${settingsSeed.spaceId ?? ""}`}
-        spaces={roots}
-        initialSpaceId={settingsSeed.spaceId ?? (selected ? spaceOf(roots, selected).id : null)}
+        spaces={allRoots}
+        initialSpaceId={settingsSeed.spaceId ?? (selected ? spaceOf(allRoots, selected).id : null)}
         initialSection={settingsSeed.section ?? null}
         mayImport={mayImport}
         onStartImport={() => {
@@ -3801,6 +4406,10 @@ function ProjectsWorkspace() {
           setSelected(row.node as ProjectRow);
         }
       }}
+      // WS-27bn RA-3. A row of "Waiting on people" opens its task as a deep
+      // link does: the `?task=` effect below leaves Reports for the task's
+      // board and opens the panel there.
+      onOpenTask={(taskId) => router.push(`/projects?task=${encodeURIComponent(taskId)}`)}
     />
   ) : dashboardOnly ? (
     // A SPACE IS NOT A PROJECT (owner directive 2026-08-31). It shows a
@@ -3829,12 +4438,55 @@ function ProjectsWorkspace() {
         renderState("loading", "Counting the work below…")
       )}
     </>
+  ) : attentionLens && selected ? (
+    // WS-55 SW-11a — the Needs attention lens. It takes the place of the
+    // canvas, and the filter bar, the strip, the bulk bar, the composer and the
+    // triage rail hide, as on the Overview: none of them acts on this list.
+    <>
+      {shownError ? renderState("error", shownError) : null}
+      {/* No second `LayoutBoundary` here: `layoutBoundary.test.ts` holds the
+          one boundary of the page around the canvases. `attentionPage` drops
+          a row it cannot read before the list draws it. */}
+      <NeedsAttentionList
+        page={attentionHere}
+        error={attentionErrorHere}
+        personLabels={personLabels}
+        onOpenTask={(id) => void openTaskById(id)}
+        onBack={() => setAttentionFor(null)}
+        onChanged={() => setAttentionVersion((v) => v + 1)}
+      />
+    </>
   ) : (
     <>
       {shownError ? renderState("error", shownError) : null}
 
+      {/* WS-55 SW-11a — a phone has no project header, so the count of the
+          Needs attention lens sits above the board and opens it. */}
+      {selected && isMobile && attentionBadge ? (
+        <div className="border-b border-border px-3 py-1.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="TriangleAlert"
+            data-attention-open=""
+            onClick={() => setAttentionFor(selected.id)}
+          >
+            {attentionBadge}
+          </Button>
+        </div>
+      ) : null}
+
       {selected && !overview ? (
-        <FilterBar
+        <FilterChrome
+          compact={compactChrome}
+          phone={isMobile}
+          modes={MODE_OPTIONS}
+          onMode={(next) => setChosenMode(next)}
+          resultCount={taskTotal}
+          loadedLabel={loadedOfTotal(tasks.length, taskTotal)}
+          agentSummary={agentSummary?.projectId === selected.id ? agentSummary.counts : null}
+          agentFocus={waitingOnMe ? "waiting" : agentFocus}
+          onAgentFocus={onAgentFocus}
           filters={filters}
           onFilters={changeFilters}
           archivedCount={archivedCount}
@@ -3887,16 +4539,16 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {selected && !overview && agentRunsOn ? (
+      {/* OP-1: on a phone with the compact chrome, the strip folds to one chip
+          in the active-filter row of the tool bar above. */}
+      {selected && !overview && agentRunsOn && !(compactChrome && isMobile) ? (
         <AgentWorkStrip
           summary={agentSummary?.projectId === selected.id ? agentSummary.counts : null}
           // The "waiting" button IS the "Waiting on me" filter, so the two
           // never disagree about what is on.
           focus={waitingOnMe ? "waiting" : agentFocus}
-          onFocus={(next) => {
-            setWaitingOnMe(next === "waiting");
-            setAgentFocus(next === "waiting" ? null : next);
-          }}
+          onFocus={onAgentFocus}
+          hideZero={compactChrome}
         />
       ) : null}
 
@@ -4002,7 +4654,9 @@ function ProjectsWorkspace() {
           over them would be a second way to say one thing (§5), and it would
           disagree, because the two endpoints cap differently. The overview
           counts in SQL and is never short. */}
-      {selected && (mode === "board" || mode === "list" || mode === "table") ? (
+      {selected &&
+      !compactChrome &&
+      (mode === "board" || mode === "list" || mode === "table") ? (
         <MoreTasksBar
           loaded={tasks.length}
           total={taskTotal}
@@ -4116,6 +4770,7 @@ function ProjectsWorkspace() {
           ) : mode === "board" ? (
             <TaskBoard
           personLabels={personLabels}
+              phone={compactChrome && isMobile}
               groups={groups}
               groupBy={groupBy}
               subtasks={subtaskMode}
@@ -4192,6 +4847,19 @@ function ProjectsWorkspace() {
               onSelect={(task) => void openWithStatuses(task)}
             />
           )}
+          {/* OP-1: with the compact chrome the load-more row sits at the END of
+            the list, and the count "100 of 219" sits in the tool row. */}
+          {selected &&
+          compactChrome &&
+          (mode === "board" || mode === "list" || mode === "table") ? (
+            <MoreTasksBar
+              atEnd
+              loaded={tasks.length}
+              total={taskTotal}
+              busy={loadingMore}
+              onLoadMore={() => void loadMoreTasks()}
+            />
+          ) : null}
         </LayoutBoundary>
       </div>
     </>
@@ -4224,7 +4892,7 @@ function ProjectsWorkspace() {
   // node the Center filter hides cannot be selected, so that path is text.
   const openWhere = (task: TaskRow): TaskWhere => {
     const shown = taskWhere(visibleRoots, task.project_id);
-    if (!shown.length) return { path: taskWhere(roots, task.project_id) };
+    if (!shown.length) return { path: taskWhere(allRoots, task.project_id) };
     return {
       path: shown,
       onOpen: (id) => {
@@ -4240,6 +4908,8 @@ function ProjectsWorkspace() {
     <LayoutBoundary key={`panel-${openTask.id}`} layout="task panel">
     <TaskPanel
       where={openWhere(openTask)}
+      myWork={isMyWorkId(app)}
+      serverOverlay={isMyTasksApp(app)}
       personLabels={personLabels}
       me={me}
       /**
@@ -4265,12 +4935,18 @@ function ProjectsWorkspace() {
       onMode={isMobile ? undefined : setPanelMode}
       // WS-27p — opening a subtask or a linked task resolves ITS project's
       // statuses, which the panel has no tree to do.
-      onOpenTask={(id) => void openTaskById(id)}
+      onOpenTask={(id) => void openTaskById(id, isMyWorkId(app))}
       onClose={() => setOpenTask(null)}
       onTaskAdded={() => {
-        if (selected) void loadProject(selected);
+        if (isMyTasksApp(app)) setMyTasksVersion((v) => v + 1);
+        else if (selected) void loadProject(selected);
       }}
       onChanged={(fresh) => {
+        // OP-11 — My tasks reads the board endpoints, so it reads them again.
+        if (isMyTasksApp(app)) setMyTasksVersion((v) => v + 1);
+        // OP-2b — the My work list reads the task store, so a change in the
+        // panel (status, fields) is read back into it. One source, no loop.
+        else if (isMyWorkId(app)) void useTaskStore.getState().refreshItem(fresh.id);
         setOpenTask(fresh);
         setTasks((current) =>
           current.map((t) => (t.id === fresh.id ? { ...t, ...fresh } : t))
@@ -4307,6 +4983,17 @@ function ProjectsWorkspace() {
           }
           askRailSession(PROJECTS_AGENT, f.session);
           chooseApp("ai-chat");
+        }}
+      />
+      {/* WS-64 OP-4 — `/tasks?do=capture` lands here (also with NS-4b `fill.*`),
+          the same door `/tasks` uses. With My work live the box sits on the Inbox. */}
+      <ShellJob
+        id="capture"
+        ready={!loading && mountSettled}
+        onOpen={(f) => {
+          // OP-11: the capture host is My task inbox's, so the box opens there.
+          if (MY_WORK_LIVE) setApp("my-inbox");
+          useTaskStore.getState().openQuickCapture("single", f.title ?? "", true);
         }}
       />
       <ShellJob
@@ -4406,7 +5093,8 @@ function ProjectsWorkspace() {
       <MoveTasksDialog
         key={`move:${movingTasks?.join(",") ?? "none"}`}
         taskIds={movingTasks}
-        roots={roots}
+        roots={moveDestinations.roots}
+        unavailable={moveDestinations.mixed ? MIXED_MOVE_HINT : null}
         busy={movingTasksBusy}
         error={moveTasksError}
         onClose={() => {
@@ -4416,6 +5104,24 @@ function ProjectsWorkspace() {
         onConfirm={(destinationId, statusMap, acceptedDrops, _promote, includeSubtasks) =>
           void moveTasksTo(destinationId, statusMap, acceptedDrops, Boolean(includeSubtasks))
         }
+      />
+
+      <ConvertFolderDialog
+        project={convertingNode}
+        childNames={
+          convertingNode
+            ? (pathTo(roots, convertingNode.id).at(-1)?.children ?? []).map(
+                (child) => child.name,
+              )
+            : []
+        }
+        error={convertError}
+        busy={converting}
+        onClose={() => {
+          setConvertingNode(null);
+          setConvertError(null);
+        }}
+        onConfirm={(project) => void convertNode(project)}
       />
 
       <DeleteProjectDialog
@@ -4433,8 +5139,22 @@ function ProjectsWorkspace() {
 
       {/* One delete confirmation, shared with My Tasks. The words are this
           app's own and true for it: a Projects delete is permanent. */}
+      {confirmingDelete?.kind === "one" ? (
+        <DeleteTaskDialog
+          key={confirmingDelete.taskId}
+          taskId={confirmingDelete.taskId}
+          title={doomedTask?.title ?? null}
+          isMobile={isMobile}
+          onCancel={() => setConfirmingDelete(null)}
+          onConfirm={(ids, all) => {
+            const pending = confirmingDelete;
+            setConfirmingDelete(null);
+            void deleteTaskById(pending.taskId, true, ids, all);
+          }}
+        />
+      ) : null}
       <ConfirmDialog
-        open={Boolean(confirmingDelete)}
+        open={Boolean(confirmingDelete) && confirmingDelete?.kind !== "one"}
         {...deleteCopy}
         onCancel={() => setConfirmingDelete(null)}
         onConfirm={() => {
@@ -4589,7 +5309,7 @@ function ProjectsWorkspace() {
           compact
           title={title}
           actions={projectActions(true)}
-          tools={dockOn ? undefined : <NotificationBell onOpenTask={openTaskById} />}
+          tools={dockOn ? undefined : <NotificationBell onOpenTask={(id) => void openTaskById(id)} />}
         />
 
         {workArea}
@@ -4631,7 +5351,7 @@ function ProjectsWorkspace() {
             <AppSearchButton onOpen={() => setSearching(true)} />
             {/* NS-6: with the shell's one bell on, this app mounts no bell
                 of its own. Off, nothing changes. NS-9 deletes it. */}
-            {dockOn ? null : <NotificationBell onOpenTask={openTaskById} />}
+            {dockOn ? null : <NotificationBell onOpenTask={(id) => void openTaskById(id)} />}
             {/* The assistant sits at the right end of the top bar, where My
                 Tasks puts it (owner ask, 2026-09-24). One component for both
                 apps. It lived in the project header's action row until then,
@@ -4661,9 +5381,11 @@ function ProjectsWorkspace() {
         {railOpen ? (
           <nav ref={navRef} className="w-60 shrink-0 overflow-y-auto border-r border-border bg-card p-2">
             <ProjectNav
-              roots={visibleRoots}
+              roots={spaceRoots}
+              personal={personal}
               selectedId={selected?.id ?? null}
               app={app}
+              counts={navCounts}
               onApp={chooseApp}
               onSelect={(project) => {
                 setApp(null);
@@ -4708,13 +5430,29 @@ function ProjectsWorkspace() {
           <header className="shrink-0 border-b border-border">
             {/* Title row — what you are looking at, and nothing else. */}
             <div className="flex min-w-0 items-baseline gap-2 px-3 pt-2">
-              <h2 className="min-w-0 truncate text-sm font-medium text-foreground">
+              <h2 className="min-w-0 truncate text-sm font-medium text-foreground" title={title}>
                 {title}
               </h2>
               {subtitle ? (
                 <p className="min-w-0 truncate text-xs text-muted-foreground">
                   {subtitle}
                 </p>
+              ) : null}
+              {/* WS-55 SW-11a — the count of the Needs attention lens. It
+                  shows only while something waits, and a click opens the
+                  lens. */}
+              {!noProjectChrome && selected && attentionBadge && !attentionLens ? (
+                <Button
+                  className="shrink-0 self-center"
+                  variant="ghost"
+                  size="sm"
+                  icon="TriangleAlert"
+                  data-attention-badge=""
+                  title="Open the work that stopped and waits for a person"
+                  onClick={() => setAttentionFor(selected.id)}
+                >
+                  {attentionBadge}
+                </Button>
               ) : null}
             </div>
             {/* Action row — how you look at it (left) and what you can do to
@@ -4723,17 +5461,48 @@ function ProjectsWorkspace() {
                 project actions to offer, so the whole action row goes —
                 leaving an empty strip would look like a surface that failed
                 to load. */}
-            {noProjectChrome ? null : (
+            {isMyTasksApp(app) ? (
+              // WS-64 OP-11 — My tasks has a project's tabs in the same row.
+              <MyTasksActionRow
+                view={myTasks}
+                onView={setMyTasks}
+                attentionCount={myAttention.data?.total ?? null}
+                onReport={(href) => router.push(href)}
+                onCapture={openInboxCapture}
+              />
+            ) : noProjectChrome ? null : (
               // `flex-wrap`: with the chat docked the canvas loses 26rem, and
               // an action row that cannot wrap paints its right half over the
               // chat column (measured at 1440, 2026-09-23).
               <div className="flex flex-wrap items-center gap-1 px-3 pb-2 pt-1.5">
                 <ModeSwitch
                   modes={MODE_OPTIONS}
-                  mode={mode}
+                  mode={shownMode}
                   layout="toolbar"
-                  onPick={(next) => setChosenMode(next)}
+                  onPick={pickMode}
                 />
+                {/* WS-55 SW-11a — the lens beside the board's other lenses.
+                    Pressed while the list is on screen. */}
+                {selected ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon="TriangleAlert"
+                    selected={attentionLens}
+                    data-attention-toggle=""
+                    title={
+                      attentionLens
+                        ? "Back to the board"
+                        : "Show the work that stopped and waits for a person"
+                    }
+                    onClick={() => setAttentionFor(attentionLens ? null : selected.id)}
+                  >
+                    {LENS_LABEL}
+                    {attentionHere && attentionHere.total > 0 ? (
+                      <span className="ml-1 tabular-nums opacity-70">{attentionHere.total}</span>
+                    ) : null}
+                  </Button>
+                ) : null}
                 <div className="ml-auto flex shrink-0 items-center gap-1">
                   {projectActions(false)}
                 </div>
@@ -4810,7 +5579,10 @@ function ProjectsWorkspace() {
         <MoveDialog
           open
           moving={movingNode}
-          roots={roots}
+          // OP-3: a personal node picks among the personal tree alone, with
+          // no "Top level" row, so it cannot leave for a team space.
+          roots={movingNode.personal ? personal : roots}
+          topLevel={!movingNode.personal}
           busy={moving}
           onClose={() => setMovingNode(null)}
           onMove={(parentId) => void moveNodeTo(movingNode, parentId)}

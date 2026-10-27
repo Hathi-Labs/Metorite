@@ -17,10 +17,11 @@ from fastapi import Depends, HTTPException, Query, status
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     _assert_account_owner,
-    _tenant_session,
     _log,
+    _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.memory_purge import writable_memory_scope
 from gateway.routes.email.quoting import split_quoted_text
 from pydantic import BaseModel, Field
@@ -280,7 +281,7 @@ async def get_assistant_settings(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         row = (await db.execute(text(
             """SELECT about, signature, auto_run, cold_email_blocker,
                       digest_frequency, personal_instructions, writing_style,
@@ -558,7 +559,7 @@ async def list_knowledge(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         # Suggested entries (voice-profile candidates awaiting review) first,
         # so they surface for approval instead of sinking below the fold.
         rows = (await db.execute(text(
@@ -613,7 +614,8 @@ async def update_knowledge(
         owner = (await db.execute(text(
             """SELECT ek.id FROM email_knowledge ek
                JOIN email_accounts ea ON ek.account_id = ea.id
-               WHERE ek.id = :id AND ea.user_id = :uid"""
+               WHERE ek.id = :id AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"id": kid, "uid": user.email or "anonymous"})).fetchone()
         if not owner:
             raise HTTPException(status_code=404, detail="Not found")
@@ -635,7 +637,8 @@ async def delete_knowledge(
         res = await db.execute(text(
             """DELETE FROM email_knowledge ek USING email_accounts ea
                WHERE ek.id = :id AND ek.account_id = ea.id
-                 AND ea.user_id = :uid"""
+                 AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"id": kid, "uid": user.email or "anonymous"})
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="Not found")
@@ -756,7 +759,7 @@ async def list_learned_patterns(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         rows = (await db.execute(text(
             """SELECT id, pattern, weight, kind, scope_type, scope_value
                FROM email_learned_patterns
@@ -782,7 +785,8 @@ async def delete_learned_pattern(
         res = await db.execute(text(
             """DELETE FROM email_learned_patterns lp USING email_accounts ea
                WHERE lp.id = :id AND lp.account_id = ea.id
-                 AND ea.user_id = :uid"""
+                 AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"id": pid, "uid": user.email or "anonymous"})
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="Not found")

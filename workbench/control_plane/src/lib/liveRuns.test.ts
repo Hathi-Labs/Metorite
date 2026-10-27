@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  AGAIN_GAP_MS,
   HIDDEN_MS,
   LAST_STEP_MAX,
   VISIBLE_MS,
@@ -23,7 +24,9 @@ import {
   getLiveRuns,
   liveRunsDegradedAt,
   pollIntervalMs,
+  refreshLiveRuns,
   subscribeLiveRuns,
+  subscribeLiveRunsPolls,
 } from "./liveRuns";
 import { RUNS_PARTIAL_HEADER } from "./activeSessionsPath";
 import { bindIdentity } from "./dataCache";
@@ -326,13 +329,90 @@ describe("a hidden tab polls slower", () => {
   });
 });
 
+describe("the run state hears every complete poll (§4.10)", () => {
+  it("passes the poll's START time, also when the list did not change", async () => {
+    payload = [{ threadId: "t1", agentName: "orchestrator", state: "needs_input", live: false }];
+    const heard: number[] = [];
+    const off = subscribeLiveRuns(() => {});
+    const offPolls = subscribeLiveRunsPolls((at) => heard.push(at));
+    const before = Date.now();
+    await flush();
+    expect(heard).toHaveLength(1);
+    expect(heard[0]).toBeGreaterThanOrEqual(before);
+    expect(getLiveRuns()[0].live).toBe(false);
+    expect(getLiveRuns()[0].runId).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(VISIBLE_MS);
+    await flush();
+    // Same list, so no publish, but the poll is still heard.
+    expect(heard).toHaveLength(2);
+    offPolls();
+    off();
+  });
+
+  it("does not hear a failed or partial poll", async () => {
+    const heard: number[] = [];
+    fetchMock.mockImplementation(async () => ({
+      ok: true, headers: { get: (h: string) => (h === RUNS_PARTIAL_HEADER ? "1" : null) }, json: async () => [],
+    }));
+    const off = subscribeLiveRuns(() => {});
+    const offPolls = subscribeLiveRunsPolls((at) => heard.push(at));
+    await flush();
+    expect(heard).toHaveLength(0);
+    offPolls();
+    off();
+  });
+
+  it("a refresh at the start of a poll reuses it: one request on mount", async () => {
+    const off = subscribeLiveRuns(() => {});
+    refreshLiveRuns();
+    await flush();
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    off();
+  });
+
+  it("a refresh during an older poll in flight runs one more poll after it, never back to back", async () => {
+    let release: () => void = () => {};
+    fetchMock.mockImplementationOnce(() => new Promise((r) => { release = () => r({ ok: true, json: async () => [] }); }));
+    const off = subscribeLiveRuns(() => {});
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(Date.now() + 1_000);
+    refreshLiveRuns();
+    refreshLiveRuns();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    release();
+    await flush();
+    await flush();
+    // Not at once: a slow server under load meets no chain of polls.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(AGAIN_GAP_MS);
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    off();
+  });
+});
+
+describe("the run id (re-review of #1171)", () => {
+  it("parses runId, and a changed id is a changed list", async () => {
+    payload = [{ threadId: "t1", agentName: "orchestrator", runId: "run-1" }];
+    let heard = 0;
+    const off = subscribeLiveRuns(() => { heard += 1; });
+    await flush();
+    expect(getLiveRuns()[0].runId).toBe("run-1");
+    payload = [{ threadId: "t1", agentName: "orchestrator", runId: "run-2" }];
+    await vi.advanceTimersByTimeAsync(VISIBLE_MS);
+    await flush();
+    expect(getLiveRuns()[0].runId).toBe("run-2");
+    expect(heard).toBe(2);
+    off();
+  });
+});
+
 describe("no surface polls the run list on its own", () => {
   // The structural half: a new loop anywhere in the app fails here.
   const SRC = fileURLToPath(new URL("..", import.meta.url));
   const ALLOWED = new Set([
     "lib/liveRuns.ts",
-    // One read on mount, to decide whether to reattach. Not a loop.
-    "hooks/useAgentChat.ts",
   ]);
 
   function walk(dir: string): string[] {

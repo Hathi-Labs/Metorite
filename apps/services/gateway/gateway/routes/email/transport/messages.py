@@ -4,6 +4,7 @@ hydration, and the full-body endpoint."""
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
@@ -15,18 +16,6 @@ from email_ingestion.body_backfill import _html_to_text
 from email_ingestion.providers.base import local_folder_after_move
 from fastapi import Depends, HTTPException, Query, status
 from gateway.routes.email.account_ref import resolve_account_filter
-from gateway.routes.email.provider_errors import (
-    RETRY_AFTER_MAX_SECS,
-    provider_http_error,
-    sign_in_unchecked,
-)
-# The names that ``transport/inline_images.py`` and the HTML route read.
-from gateway.routes.email.provider_errors import (
-    is_provider_429 as _is_provider_429,
-)
-from gateway.routes.email.provider_errors import (
-    provider_retry_after as _provider_retry_after,
-)
 from gateway.routes.email.core import (
     ATTACHMENT_CACHE_TTL_SECS,
     HUMAN_SENDER_CATEGORIES_LOWER,
@@ -43,18 +32,32 @@ from gateway.routes.email.core import (
     _fetch_attachments,
     _fetch_attachments_batch,
     _html_remote,
-    _tenant_session,
     _instantiate_provider,
     _log,
     _persist_rotated_creds,
     _provider_for_message,
     _row_to_message,
+    _tenant_session,
     _truncate_body,
     folder_scope,
     router,
 )
-from gateway.routes.email.transport.attachments import _canonical_uuid
+from gateway.routes.email.mailbox_access import mailbox_ids_sql, mailbox_predicate
+from gateway.routes.email.provider_errors import (
+    RETRY_AFTER_MAX_SECS,
+    provider_http_error,
+    sign_in_unchecked,
+)
+
+# The names that ``transport/inline_images.py`` and the HTML route read.
+from gateway.routes.email.provider_errors import (
+    is_provider_429 as _is_provider_429,
+)
+from gateway.routes.email.provider_errors import (
+    provider_retry_after as _provider_retry_after,
+)
 from gateway.routes.email.quoting import strip_for_reading
+from gateway.routes.email.transport.attachments import _canonical_uuid
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -141,7 +144,7 @@ async def message_facets(
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous")
         params: dict[str, Any] = {"user_id": user.email or "anonymous"}
-        where = ["ea.user_id = :user_id"]
+        where = [mailbox_predicate("ea", uid="user_id", level="read")]
         # The counts of All inboxes leave out a separate mailbox (EM-T8g-1).
         mailbox_sql = _mailbox_clause(account_id, None, params)
         if mailbox_sql:
@@ -235,12 +238,16 @@ async def list_messages(
     assistant's inbox-query tools leave it off so their counts stay per-message.
     Ignored when ``thread_id`` is set (the conversation view wants every message).
     """
+    # Chat speed (2026-10-25): the assistant's `query_inbox` waited a median
+    # 7.5 s on this route, and the page itself reads in about 0.1 s. One log
+    # line splits the time, so the next fix aims at the slow part.
+    _started = time.monotonic()
     async with _tenant_session() as db:
         # "all", an address or garbage never reach the SQL as a UUID.
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous")
         where_clauses = [
-            "ea.user_id = :user_id"
+            mailbox_predicate("ea", uid="user_id", level="read")
         ]
         params: dict[str, Any] = {
             "user_id": user.email or "anonymous",
@@ -381,6 +388,7 @@ async def list_messages(
         )
         count_result = await db.execute(text(count_sql), params)
         total = count_result.scalar() or 0
+        _counted = time.monotonic()
 
         _COLS = """em.id, em.provider_message_id, em.thread_id,
                    em.account_id, em.folder, em.labels,
@@ -415,6 +423,7 @@ async def list_messages(
                     LIMIT :limit OFFSET :offset""")
         result = await db.execute(text(page_sql), params)
         rows = result.fetchall()
+        _paged = time.monotonic()
 
         messages = [_row_to_message(row) for row in rows]
 
@@ -442,7 +451,8 @@ async def list_messages(
                 "SELECT em.account_id, em.thread_id, COUNT(*) AS c "
                 "FROM email_messages em "
                 "JOIN email_accounts ea ON em.account_id = ea.id "
-                "WHERE ea.user_id = :user_id AND em.thread_id = ANY(:tids)"
+                "WHERE " + mailbox_predicate("ea", uid="user_id", level="read")
+                + " AND em.thread_id = ANY(:tids)"
             )
             if account_id:
                 cnt_sql += " AND em.account_id = :account_id"
@@ -465,6 +475,16 @@ async def list_messages(
             d["also_in"] = also_in.get(str(m.id), [])
             emails_out.append(d)
 
+        _done = time.monotonic()
+        _log.info(
+            "email.list_messages_ms", rows=len(emails_out),
+            # The session, the account filter and the COUNT.
+            count_ms=round((_counted - _started) * 1000),
+            page_ms=round((_paged - _counted) * 1000),
+            # Thread counts, "also in" and the row models.
+            rest_ms=round((_done - _paged) * 1000),
+            total_ms=round((_done - _started) * 1000),
+        )
         return {
             "emails": emails_out,
             "total": total,
@@ -497,7 +517,7 @@ async def priority_inbox(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         rows = (await db.execute(text(
             """WITH latest AS (
                  SELECT DISTINCT ON (em.thread_id)
@@ -647,7 +667,9 @@ async def message_summaries(
                           em.received_at, em.is_read, em.has_attachments
                    FROM email_messages em
                    JOIN email_accounts ea ON em.account_id = ea.id
-                   WHERE ea.user_id = :user_id AND em.id = ANY(:ids)"""
+                   WHERE """
+                + mailbox_predicate("ea", uid="user_id", level="read")
+                + " AND em.id = ANY(:ids)"
             ),
             {"user_id": user.email or "anonymous", "ids": ids},
         )).fetchall()
@@ -709,7 +731,8 @@ async def get_message(
                           ea.stored_bytes
                    FROM email_messages em
                    JOIN email_accounts ea ON em.account_id = ea.id
-                   WHERE em.id = :message_id AND ea.user_id = :user_id"""
+                   WHERE em.id = :message_id AND """
+                + mailbox_predicate("ea", uid="user_id", level="read")
             ),
             {"message_id": message_id, "user_id": user.email or "anonymous"},
         )
@@ -909,7 +932,8 @@ async def update_message(
             text(
                 """SELECT em.id FROM email_messages em
                    JOIN email_accounts ea ON em.account_id = ea.id
-                   WHERE em.id = :id AND ea.user_id = :user_id"""
+                   WHERE em.id = :id AND """
+                + mailbox_predicate("ea", uid="user_id", level="send")
             ),
             {"id": message_id, "user_id": user.email or "anonymous"},
         )
@@ -1054,7 +1078,8 @@ async def snooze_message(
             """SELECT em.account_id, em.thread_id
                FROM email_messages em
                JOIN email_accounts ea ON em.account_id = ea.id
-               WHERE em.id = :id AND ea.user_id = :uid"""
+               WHERE em.id = :id AND """
+            + mailbox_predicate("ea", uid="uid", level="send")
         ), {"id": message_id, "uid": user.email or "anonymous"})).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Message not found")
@@ -1092,7 +1117,9 @@ async def delete_message(
                 """UPDATE email_messages SET folder = 'trash', updated_at = now()
                    WHERE id = :id
                    AND account_id IN (
-                       SELECT id FROM email_accounts WHERE user_id = :user_id
+                       """
+                + mailbox_ids_sql(uid="user_id", level="send")
+                + """
                    )"""
             ),
             {"id": message_id, "user_id": user.email or "anonymous"},
@@ -1166,7 +1193,8 @@ async def get_full_body(
                           p.provider, p.credentials_encrypted
                    FROM email_messages em
                    JOIN email_accounts p ON em.account_id = p.id
-                   WHERE em.id = :mid AND p.user_id = :user_id"""
+                   WHERE em.id = :mid AND """
+                + mailbox_predicate("p", uid="user_id", level="read")
             ),
             {"mid": mid, "user_id": user.email or "anonymous"},
         )).fetchone()
@@ -1341,7 +1369,8 @@ async def get_message_html(
                           em.body_html, ea.provider, ea.credentials_encrypted
                    FROM email_messages em
                    JOIN email_accounts ea ON em.account_id = ea.id
-                   WHERE em.id = :mid AND ea.user_id = :user_id"""
+                   WHERE em.id = :mid AND """
+                + mailbox_predicate("ea", uid="user_id", level="read")
             ),
             {"mid": mid, "user_id": user.email or "anonymous"},
         )).fetchone()

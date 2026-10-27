@@ -65,7 +65,7 @@ const MODEL_FIELDS: {
     title: "Email → task drafting model",
     description:
       "Turns an email into an actionable capture title + context when you " +
-      "use “Add to My Tasks” in the email app.",
+      "use “Add to My work” in the email app.",
     def: "tier-fast",
   },
   {
@@ -235,10 +235,10 @@ function SettingsPanel() {
           {/* ── Next Actions list columns ── */}
           <section>
             <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <Icon name="Columns3" className="h-3.5 w-3.5" /> Next Actions columns
+              <Icon name="Columns3" className="h-3.5 w-3.5" /> My tasks columns
             </h3>
             <p className="mb-2 px-1 text-[11px] text-muted-foreground">
-              In the list view (desktop), Next Actions shows these as aligned
+              In the list view (desktop), My tasks shows these as aligned
               columns. Hide the ones you don&rsquo;t want to see. On mobile the
               pills stay stacked under each task regardless.
             </p>

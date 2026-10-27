@@ -392,8 +392,12 @@ async def _run_and_record(
             # H-201 part 3: the run needs its tenant for its working dir. A
             # shared agent with no tenant is refused. The org is the one the
             # server-side event carries, and the task row was found in it.
+            # WS-63 PZ-2 (personalization.md §5.1): the reply goes to the
+            # task timeline, which other members read. The run is never solo,
+            # whatever context started it, so it gets no profile block.
             run_agent(
                 agent, run_payload(message), organization_id=organization_id,
+                solo_room=False,
             ),
             timeout=AGENT_RUN_TIMEOUT_SECONDS,
         )

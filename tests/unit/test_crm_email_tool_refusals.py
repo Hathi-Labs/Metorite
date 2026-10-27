@@ -344,7 +344,9 @@ async def test_the_aggregate_with_no_group_prints_one_line(monkeypatch) -> None:
         "module:Invoices", measure="sum", field="Total_Invoice_Amount",
         field_filters={"Invoice_Date.from": "2026-10-01", "Invoice_Date.to": "2026-10-31"},
     )
-    assert out == "Invoices, sum of Total_Invoice_Amount: INR 123,456 across 42 matching records."
+    # WS-53 §18.16 part 7: the total, then each filter that it read.
+    assert out == ("Invoices, sum of Total_Invoice_Amount: INR 123,456 across 42 matching "
+                   "records.\nFilters: Invoice_Date from 2026-10-01 to 2026-10-31.")
     sent = next(c["params"] for c in calls if c["path"] == "/crm/aggregate")
     assert "group_by" not in sent and "group_field" not in sent
     assert sent["field.Invoice_Date.from"] == "2026-10-01"

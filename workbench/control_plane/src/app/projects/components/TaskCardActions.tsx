@@ -99,6 +99,7 @@
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 
+import { touchQuickActions } from "../lib/compactChrome";
 import type {
   TaskMenuActions,
   TaskMenuContext,
@@ -173,7 +174,13 @@ export function TaskCardActions({
   actions,
   ctx,
   onMore,
+  touch = false,
 }: {
+  /**
+   * WS-64 OP-1: a touch card shows only the complete tick and the "more"
+   * button, both always visible. A long press opens the same menu.
+   */
+  touch?: boolean;
   items: readonly TaskQuickAction[];
   actions: TaskMenuActions;
   ctx: TaskMenuContext;
@@ -200,8 +207,8 @@ export function TaskCardActions({
       // transparent strip would read as part of the row underneath it.
       className="absolute bottom-1.5 right-1.5 z-10 flex items-center gap-1"
     >
-      <div className={`flex items-center gap-px ${PILL} ${REVEAL}`}>
-        {items
+      <div className={`flex items-center gap-px ${PILL} ${touch ? "" : REVEAL}`}>
+        {(touch ? touchQuickActions(items) : items)
           .filter((item) => !item.trailing)
           .map((item) => (
             <QuickButton
@@ -236,7 +243,7 @@ export function TaskCardActions({
       {/* The MODE, in its own pill. ⚠️ Its reveal is deliberately different:
           hover OR selected, because on a selected card it is the only thing
           saying so besides the border. See the header. */}
-      {items
+      {(touch ? [] : items)
         .filter((item) => item.trailing)
         .map((item) => (
           <div

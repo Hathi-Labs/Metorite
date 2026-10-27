@@ -21,8 +21,10 @@ Classes (§5.3):
     X   not on the chat surface, ``reason`` says why
 
 A row with no tool names the slice that decides its tool in ``planned``.
-KB-4a builds two read tools. Each write waits for KB-5, and an agent never
-publishes (§8.1).
+KB-4a builds two read tools. KB-5a gives ``POST /knowledge/proposals`` to the
+two propose tools, and nothing else. An agent never publishes (§8.1, F2): no
+tool maps to a publish, an accept, a reject, a restore or an archive, and
+``tests/unit/test_kb_proposals.py`` fails if one does.
 """
 
 from __future__ import annotations
@@ -55,6 +57,8 @@ class Route:
     reason: str = ""
     #: Required for a class A, B or C row with no tool: the slice that decides.
     planned: str = ""
+    #: More tools that reach the same route (KB-5a: one route, two tools).
+    also: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.cls not in CLASSES:
@@ -62,9 +66,11 @@ class Route:
         if self.cls == "X":
             if not self.reason:
                 raise ValueError(f"{self.method} {self.path}: an excluded route needs a reason")
-            if self.tool:
+            if self.tool or self.also:
                 raise ValueError(f"{self.method} {self.path}: an excluded route names no tool")
             return
+        if self.also and not self.tool:
+            raise ValueError(f"{self.method} {self.path}: 'also' needs a first tool")
         if not self.tool and not self.planned:
             raise ValueError(
                 f"{self.method} {self.path}: class {self.cls} needs a tool or the slice that plans one"
@@ -77,6 +83,48 @@ class Route:
 _GRANT_REASON = (
     "D-PM-40: the chat does not write grants. Propose the grant in words, "
     "and a person applies it in the app."
+)
+
+#: F2 (§8.1): the agent never publishes. A person decides in the app.
+_DECIDE_REASON = (
+    "D-KB-4 and F2: an agent never publishes. A person accepts or rejects a "
+    "proposal in the Knowledge app, and the route refuses chat and mcp."
+)
+
+#: KB-9a: a gap is closed by a person in the Knowledge app.
+_GAP_DECISION_REASON = (
+    "A person closes a gap in the Knowledge app: Dismiss needs "
+    "knowledge:manage, and \"I wrote it\" links a page the person wrote. The "
+    "chat does not close a gap for the member (knowledge_base.md §8.4)."
+)
+
+#: KB-2f: a favourite is a personal shortcut of the Knowledge app.
+_FAVORITE_REASON = (
+    "A favourite is the member's own shortcut in the Knowledge app, not "
+    "company knowledge. The member stars a page in the app."
+)
+
+#: KC-1a: a consent and a disconnect are the member's own acts, in the browser.
+_SOURCE_CONSENT_REASON = (
+    "A member connects a file source in the browser: the consent page of the "
+    "provider needs the member, and the callback checks the member of the "
+    "session (knowledge_curation.md §7.1). The chat does not connect a drive."
+)
+_SOURCE_DISCONNECT_REASON = (
+    "A disconnect can end the shared Google grant of the member, Gmail "
+    "included (knowledge_base.md §7.4). The member or a manager does it in "
+    "the Knowledge app, never the chat."
+)
+#: KC-8a: the entity registry. No chat tool reads or writes it yet. KC-10 and
+#: KC-13 decide how the chat and an agent reach it (knowledge_curation.md §22).
+_ENTITY_REASON = (
+    "KC-8a builds the entity registry for the Knowledge app only. No chat tool "
+    "maps to it yet, and KC-10 and KC-13 decide that (knowledge_curation.md §22)."
+)
+
+#: KB-AI-4: verifying a page is a person's act.
+_VERIFY_REASON = (
+    "A person verifies a page in the app. An agent never vouches for knowledge."
 )
 
 MANIFEST: tuple[Route, ...] = (
@@ -95,20 +143,63 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/knowledge/pages/{page_id}/archive", "", "C", planned="KB-5"),
     Route("POST", "/knowledge/pages/{page_id}/restore", "", "C", planned="KB-5"),
     Route("POST", "/knowledge/pages/{page_id}/revert", "", "B", planned="KB-5"),
+    # ── Home and favourites (KB-2f, §21.7) ── A favourite is the member's
+    # own shortcut in the app, so the chat neither reads nor writes it.
+    Route("GET", "/knowledge/recent", "", "A", planned="KB-5"),
+    Route("GET", "/knowledge/favorites", "", "X", reason=_FAVORITE_REASON),
+    Route("POST", "/knowledge/pages/{page_id}/favorite", "", "X", reason=_FAVORITE_REASON),
+    Route("DELETE", "/knowledge/pages/{page_id}/favorite", "", "X", reason=_FAVORITE_REASON),
+    # KB-2g: one old version with its body, for the history modal.
+    Route("GET", "/knowledge/pages/{page_id}/versions/{version}", "", "A", planned="KB-5"),
+    # KB-2h: the pages that link here, for the "Linked from" list.
+    Route("GET", "/knowledge/pages/{page_id}/backlinks", "", "A", planned="KB-5"),
+    # ── Proposals (KB-5a, §8.1) ── The two propose tools file a proposal and
+    # nothing else. Accept and reject are a person's, in the app.
+    Route("POST", "/knowledge/proposals", "propose_page", "B", also=("propose_edit",)),
+    Route("GET", "/knowledge/proposals", "", "A", planned="KB-5b"),
+    Route("POST", "/knowledge/proposals/{proposal_id}/accept", "", "X", reason=_DECIDE_REASON),
+    Route("POST", "/knowledge/proposals/{proposal_id}/reject", "", "X", reason=_DECIDE_REASON),
     # ── Search ── `search_company` already asks Knowledge (§20). The
     # Knowledge-only tool waits (§8.1, `search_knowledge` is deferred).
     Route("GET", "/knowledge/search", "", "A", planned="search_knowledge, deferred (§8.1)"),
+    # ── Gaps (KB-9a, §8.4 door 3) ── the questions Knowledge could not
+    # answer. A read may join the chat later. A person decides each close.
+    Route("GET", "/knowledge/gaps", "", "A", planned="KB-AI-3 (§22)"),
+    Route("GET", "/knowledge/maintenance", "", "A", planned="KB-AI-3 (§22)"),
+    Route("POST", "/knowledge/pages/{page_id}/verify", "", "X", reason=_VERIFY_REASON),
+    Route("POST", "/knowledge/gaps/{gap_id}/dismiss", "", "X", reason=_GAP_DECISION_REASON),
+    Route("POST", "/knowledge/gaps/{gap_id}/answered", "", "X", reason=_GAP_DECISION_REASON),
+    Route("POST", "/knowledge/gaps/{gap_id}/reopen", "", "X", reason=_GAP_DECISION_REASON),
+    # ── Sources (KC-1a, knowledge_curation.md §7) ── the tree is names only. A
+    # read may join the chat with `search_knowledge` (knowledge_base.md §7.2).
+    Route("POST", "/knowledge/sources/google_drive/connect", "", "X",
+          reason=_SOURCE_CONSENT_REASON),
+    Route("GET", "/knowledge/sources/google_drive/callback", "", "X",
+          reason=_SOURCE_CONSENT_REASON),
+    Route("GET", "/knowledge/sources", "", "A", planned="search_knowledge, deferred (§8.1)"),
+    Route("GET", "/knowledge/sources/{source_id}/tree", "", "A",
+          planned="search_knowledge, deferred (§8.1)"),
+    Route("DELETE", "/knowledge/sources/{source_id}", "", "X",
+          reason=_SOURCE_DISCONNECT_REASON),
+    # ── Entities (KC-8a, knowledge_curation.md §6) ── the directory under the
+    # owner rule of each type. Not on the chat surface yet.
+    Route("GET", "/knowledge/entity-types", "", "X", reason=_ENTITY_REASON),
+    Route("GET", "/knowledge/entities", "", "X", reason=_ENTITY_REASON),
+    Route("GET", "/knowledge/entities/{entity_id}", "", "X", reason=_ENTITY_REASON),
+    Route("POST", "/knowledge/entities", "", "X", reason=_ENTITY_REASON),
+    Route("POST", "/knowledge/entities/by-ref", "", "X", reason=_ENTITY_REASON),
+    Route("POST", "/knowledge/entities/{entity_id}/page", "", "X", reason=_ENTITY_REASON),
 )
 
 
 def tools() -> set[str]:
     """Every tool the manifest names."""
-    return {r.tool for r in MANIFEST if r.tool}
+    return {name for r in MANIFEST for name in (r.tool, *r.also) if name}
 
 
 def tool_class(name: str) -> str | None:
     """The class a tool acts at, or ``None`` for a tool the table does not name."""
-    classes = {r.cls for r in MANIFEST if r.tool == name}
+    classes = {r.cls for r in MANIFEST if name and name in (r.tool, *r.also)}
     return sorted(classes)[0] if classes else None
 
 
@@ -150,6 +241,6 @@ def allowed(method: str, path: str, tool: str) -> tuple[bool, str]:
         return False, f"{method.upper()} {path} is not on the chat surface: {route.reason}"
     if not route.tool:
         return False, f"{method.upper()} {path} has no chat tool yet ({route.planned})."
-    if route.tool != tool:
+    if tool not in (route.tool, *route.also):
         return False, f"{method.upper()} {path} belongs to {route.tool}, not to {tool}."
     return True, ""

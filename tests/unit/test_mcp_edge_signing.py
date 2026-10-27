@@ -207,10 +207,10 @@ async def _call(method: str, url: str, headers: dict[str, str] | None = None,
 
 def _signed(path: str, query: str = "", *, method: str = "GET", key: str = KEY,
             org: str = ORG_A, conn: str = CONN, via: str = VIA,
-            now: float | None = None) -> dict[str, str]:
+            now: float | None = None, session: str | None = None) -> dict[str, str]:
     return agent_signing.signed_headers(
         key, organization_id=org, connection_id=conn, actor_via=via,
-        method=method, path=path, query=query, now=now,
+        method=method, path=path, query=query, now=now, session=session,
     )
 
 
@@ -243,8 +243,76 @@ async def test_a_valid_signed_request_resolves_to_the_connections_member(world):
         "include_personal": False,
         "client_origin": ORIGIN,
         "actor_via": VIA,
+        # SW-7: no signed X-Agent-Session, so no session key.
+        "session_key": None,
     }
     assert world.reads == [(ORG_A, CONN)], "the connection is read in the SIGNED org"
+
+
+# ── SW-7: the signed MCP session key (spec §12.5) ──────────────────────────
+
+SESSION = "Sess10nKey_of-22chars_"
+
+
+async def test_sw7_a_signed_session_reaches_the_agent_scope(world):
+    """S-G1. Mutation: branch 0 drops ``session_key=session`` from the
+    ``AgentScope``, and this test fails."""
+    assert agent_signing.session_key_is_well_formed(SESSION)
+    r = await _get(TASK, session=SESSION)
+    assert r.status_code == 200, r.text
+    assert r.json()["agent"]["session_key"] == SESSION
+
+
+async def test_sw7_an_unsigned_session_header_refuses(world):
+    """S-G2. The key comes ONLY from the signed header. A session header
+    added after the signing breaks the signature, so a client cannot pick
+    another session's key. Mutation: leave ``session`` out of the canonical
+    string in ``_verify_signed_request``, and this test fails."""
+    r = await _get(TASK, extra={agent_signing.HEADER_SESSION: SESSION})
+    assert r.status_code == 401, r.text
+    signed = _signed(TASK, session=SESSION)
+    signed[agent_signing.HEADER_SESSION] = "Other0Key_of-22chars__"
+    assert (await _call("GET", TASK, signed)).status_code == 401
+
+
+@pytest.mark.parametrize("bad", ["short", "A" * 23, "A" * 21 + ".", "A" * 21 + "\n"])
+async def test_sw7_a_session_of_another_shape_refuses(world, bad):
+    """S-G3."""
+    signed = _signed(TASK)
+    signed[agent_signing.HEADER_SESSION] = bad
+    assert (await _call("GET", TASK, signed)).status_code == 401
+    with pytest.raises(ValueError):
+        _signed(TASK, session=bad)
+
+
+async def test_sw7_two_session_headers_refuse(world):
+    """S-G4. Mutation: read the first of two headers, and this test fails."""
+    signed = _signed(TASK, session=SESSION)
+    headers = [(k, v) for k, v in signed.items()]
+    headers.append((agent_signing.HEADER_SESSION, SESSION))
+
+    async def _go() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=_app()), base_url="http://gateway",
+        ) as client:
+            return await client.request("GET", TASK, headers=headers)
+
+    assert (await asyncio.create_task(_go())).status_code == 401
+
+
+def test_sw7_a_call_with_no_session_signs_the_string_of_before():
+    """S-G5. No session, no line: the string is byte for byte the one
+    before SW-7, so an edge or a gateway of the old release still agrees.
+    With a session, the last line is ``session:<key>``."""
+    base = dict(timestamp="1", organization_id=ORG_A, connection_id=CONN,
+                actor_via=VIA, method="GET", path=TASK)
+    plain = agent_signing.canonical_string(**base)
+    assert len(plain.split("\n")) == 8
+    with_session = agent_signing.canonical_string(**base, session=SESSION)
+    assert with_session == plain + "\nsession:" + SESSION
+    write = agent_signing.canonical_string(
+        **{**base, "method": "POST"}, nonce="N" * 22, session=SESSION)
+    assert write.split("\n")[-2:] == ["N" * 22, "session:" + SESSION]
 
 
 async def test_the_query_is_signed_in_its_sorted_form(world):

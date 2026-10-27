@@ -113,10 +113,11 @@ def _uuid(n: int) -> str:
 
 #: Every write tool, in the order of ``tools/list``: the two of EA-6a, then
 #: the two of EA-6d (``test_mcp_edge_task_writes.py``), then ``add_comment``
-#: of EA-6c (``test_mcp_edge_comments.py``) and ``claim_task`` of EA-6b
-#: (``test_mcp_edge_claim.py``).
+#: of EA-6c (``test_mcp_edge_comments.py``), ``claim_task`` of EA-6b
+#: (``test_mcp_edge_claim.py``) and ``set_assignees`` of MCP-G2
+#: (``test_mcp_edge_assignees.py``).
 WRITE_TOOL_NAMES = ("set_task_status", "add_task_reference", "create_task", "update_task",
-                    "add_comment", "claim_task")
+                    "add_comment", "claim_task", "set_assignees")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -355,7 +356,7 @@ class TestTheWriteToolsAtTheEdge:
         r = await _post(_rpc("tools/list"))
         names = [t["name"] for t in r.json()["result"]["tools"]]
         # EA-6d appends its two tools after the two of EA-6a, EA-6c one more,
-        # and EA-6b `claim_task`.
+        # EA-6b `claim_task`, and MCP-G2 `set_assignees`.
         assert names[-len(WRITE_TOOL_NAMES):] == list(WRITE_TOOL_NAMES)
         edge.tokens[GOOD] = _lookup(scope="projects:read", scopes=("projects:read",))
         r = await _post(_rpc("tools/list"))
@@ -518,7 +519,8 @@ class TestTheWriteToolsAtTheEdge:
         monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", False)
         off = [t["name"] for t in (await _post(_rpc("tools/list"))).json()["result"]["tools"]]
         assert off == [n for n in on if n not in set(WRITE_TOOL_NAMES)]
-        assert len(off) == 7
+        # The seven reads of EA-3 and the two reads of EA-15 (§12.4).
+        assert len(off) == 9
 
     @pytest.mark.parametrize("scope,scopes", [
         ("projects:read projects:write", WRITE_SCOPES),
@@ -689,6 +691,8 @@ class _Seeder:
         self.engine = engine
         self.org = org
         self.number = 0
+        #: project id -> the space it sits in, for a project made `in_space`.
+        self.root_of: dict[str, str] = {}
 
     def one(self, sql: str, **params) -> Any:
         with self.engine.begin() as c:
@@ -696,16 +700,31 @@ class _Seeder:
             row = c.execute(text(sql), params).first()
         return row[0] if row is not None else None
 
-    def project(self, name: str) -> str:
+    def project(self, name: str, *, in_space: bool = False) -> str:
+        """A root project, or with ``in_space`` a project inside a new space.
+
+        A space holds projects, not tasks (``core.assert_holds_tasks``,
+        2026-10-26). So a project that a test creates or moves a task into
+        through the gateway is made ``in_space``. It keeps its own lanes. The
+        space is the ROOT, so root-scoped rows (types, fields) go on
+        :meth:`root`.
+        """
+        parent = self.project(f"{name} space") if in_space else None
         pid = str(self.one(
             "INSERT INTO pm_projects (name, status, source, created_by, organization_id,"
-            " timezone, owns_statuses) VALUES (:n, 'active', 'manual', :a,"
-            " CAST(:o AS uuid), 'Asia/Kolkata', true) RETURNING id",
-            n=name, a=OWNER, o=self.org))
+            " timezone, owns_statuses, parent_project_id) VALUES (:n, 'active', 'manual',"
+            " :a, CAST(:o AS uuid), 'Asia/Kolkata', true, CAST(:par AS uuid)) RETURNING id",
+            n=name, a=OWNER, o=self.org, par=parent))
         self.one("INSERT INTO pm_project_grants (project_id, subject, created_by,"
                  " organization_id) VALUES (CAST(:p AS uuid), :s, :a, CAST(:o AS uuid))"
                  " RETURNING project_id", p=pid, s=MEMBER, a=OWNER, o=self.org)
+        if parent is not None:
+            self.root_of[pid] = parent
         return pid
+
+    def root(self, project: str) -> str:
+        """The root of a seeded project: its space, or the project itself."""
+        return self.root_of.get(project, project)
 
     def status(self, project: str, name: str, category: str, position: int) -> str:
         return str(self.one(
@@ -719,8 +738,9 @@ class _Seeder:
         return str(self.one(
             "INSERT INTO pm_tasks (title, project_id, root_project_id, status_id,"
             " created_by, organization_id, task_number) VALUES (:t, CAST(:p AS uuid),"
-            " CAST(:p AS uuid), CAST(:s AS uuid), :a, CAST(:o AS uuid), :n) RETURNING id",
-            t=title, p=project, s=status, a=OWNER, o=self.org, n=self.number))
+            " CAST(:r AS uuid), CAST(:s AS uuid), :a, CAST(:o AS uuid), :n) RETURNING id",
+            t=title, p=project, r=self.root(project), s=status, a=OWNER, o=self.org,
+            n=self.number))
 
     def member(self, email: str, permissions: list[str]) -> None:
         identity = self.one(

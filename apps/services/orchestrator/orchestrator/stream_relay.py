@@ -620,6 +620,8 @@ async def register_live_run(
     organization_id: str | None,
     actor: str | None,
     token: str,
+    run_id: str | None = None,
+    keep_run_facts: bool = False,
 ) -> None:
     """Record a starting run in its organization's live-run index.
 
@@ -627,6 +629,17 @@ async def register_live_run(
     side. With no organization nothing is written, so the run is never listed.
     That is the fail-closed answer, because a run with no org has no tenant to
     be listed under. Best-effort: Redis trouble never blocks a run.
+
+    *run_id* is the run's own id (the gateway's ``run_id``, which the executor
+    also uses). The entry carries it as ``runId``: the browser keys a run by it
+    (``lib/runStatus.ts`` ``runKeyOf``, chat_run_continuity.md §4.10).
+
+    *keep_run_facts*: the SAME run registers again (the executor, after
+    ``run_detached``). The token is replaced, so the executor's ``finally``
+    removes its own entry, but ``startedAt`` and ``runId`` stay as the first
+    register wrote them. A ``startedAt`` that moved mid-run read as a NEW run
+    in the browser (re-review of #1171). An entry of ANOTHER run (its
+    ``runId`` differs) is never kept.
     """
     if not organization_id or not thread_id:
         return
@@ -638,15 +651,30 @@ async def register_live_run(
             organization_scope,
         )
 
-        value = json.dumps({
-            "actor": (actor or "").strip().lower(),
-            "startedAt": datetime.now(UTC).isoformat(),
-            "token": token,
-        })
         with organization_scope(organization_id):
             r = await _tenant_client()
             k = _live_runs_key(organization_id)
-            await r.hset(k, thread_id, value)
+            started = datetime.now(UTC).isoformat()
+            rid = (run_id or "").strip() or None
+            if keep_run_facts:
+                held: dict = {}
+                with contextlib.suppress(Exception):
+                    raw = await r.hget(k, thread_id)
+                    held = json.loads(raw) if raw else {}
+                    if not isinstance(held, dict):
+                        held = {}
+                held_rid = held.get("runId") or None
+                if held and (held_rid is None or rid is None or held_rid == rid):
+                    started = str(held.get("startedAt") or started)
+                    rid = held_rid or rid
+            fields: dict = {
+                "actor": (actor or "").strip().lower(),
+                "startedAt": started,
+                "token": token,
+            }
+            if rid:
+                fields["runId"] = rid
+            await r.hset(k, thread_id, json.dumps(fields))
             await r.expire(k, LIVE_RUNS_TTL_SECONDS)
             # The run cap's reservation for this thread is done: the entry
             # above holds the slot now (orchestrator.run_cap).
@@ -715,7 +743,7 @@ async def refresh_live_runs(organization_id: str | None) -> None:
 
 
 async def list_live_runs(organization_id: str) -> list[dict[str, str]]:
-    """The live runs of ONE organization: ``threadId``, ``actor``, ``startedAt``.
+    """The live runs of ONE organization: ``threadId``, ``actor``, ``startedAt``, ``runId``.
 
     Reads one hash. It never scans the keyspace. A field whose ``cc:active``
     flag is gone is pruned and left out. Raises on a Redis error, so the caller
@@ -746,6 +774,7 @@ async def list_live_runs(organization_id: str) -> list[dict[str, str]]:
                 "threadId": tid,
                 "actor": str(meta.get("actor") or ""),
                 "startedAt": str(meta.get("startedAt") or ""),
+                "runId": str(meta.get("runId") or ""),
             })
         if dead:
             with contextlib.suppress(Exception):
@@ -1344,6 +1373,9 @@ async def run_detached(
     await register_live_run(
         thread_id, organization_id=organization_id, actor=actor,
         token=_live_token,
+        # The run's own id, written once here. The executor's re-register
+        # keeps it and startedAt (`keep_run_facts`, chat_run_continuity §4.10).
+        run_id=str((record or {}).get("runId") or "") or None,
     )
     # What a later process needs to close this run if THIS process dies
     # (orchestrator.run_liveness, incident 2026-10-09). The executor

@@ -96,7 +96,7 @@ export default function NextActionsCard({
   if (next.data === undefined || !needsSettled) {
     body =
       next.data === undefined && !next.loading ? (
-        <CardError message="Your next actions could not load." onRetry={next.refresh} />
+        <CardError message="Your tasks could not load." onRetry={next.refresh} />
       ) : (
         <SkeletonRows count={3} className="px-2 py-1" />
       );
@@ -108,7 +108,7 @@ export default function NextActionsCard({
     );
     body =
       rows.length === 0 ? (
-        <p className="px-2 py-4 text-sm text-muted-foreground">No next actions. Your list is clear.</p>
+        <p className="px-2 py-4 text-sm text-muted-foreground">No tasks. Your list is clear.</p>
       ) : (
         <ul className="flex flex-col">
           {rows.map((task) => (
@@ -144,15 +144,15 @@ export default function NextActionsCard({
 
   return (
     <HomeCard
-      title="Next actions"
+      title="My tasks"
       icon="ListChecks"
-      source="My Tasks"
+      source="My work"
       testId="next-actions"
       className={className}
       footer={
         <>
           <FooterLink href="/tasks" icon="CheckSquare">
-            Open My Tasks
+            Open My work
           </FooterLink>
           <FooterLink href="/tasks?do=capture" icon="Plus">
             New task

@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { PANES, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
 import {
+  ASSISTANT_LINK,
   CHANGE_LAYOUT_ITEM,
   MY_ACCESS,
   TEAM_GROUPS,
@@ -27,7 +28,7 @@ const shape = (sections: NavSection[]) => sections.map((s) => [s.id, s.items.map
 describe("the sidebar holds places to work, by team", () => {
   it("for a fully granted admin: four groups, Organisation in Admin, and no page about the member", () => {
     expect(shape(shellSidebar(visibleSections(ALL, true)))).toEqual([
-      ["personal", ["/tasks", "/calendar", "/email", "/whatsapp", "/artifacts"]],
+      ["personal", ["/calendar", "/email", "/whatsapp", "/artifacts"]],
       // Knowledge since 2026-10-18 (WS-61 KB-12), when its pane went live.
       ["across", ["/projects", "/crm", "/people", "/knowledge"]],
       ["studio", ["/chat"]],
@@ -53,7 +54,7 @@ describe("the sidebar holds places to work, by team", () => {
     // Integrations is open to every member since D-EA-9 (2026-10-14), for
     // the AI agents view, so Admin holds it and nothing else.
     expect(shape(shellSidebar(visibleSections(["tasks", "email"], false)))).toEqual([
-      ["personal", ["/tasks", "/calendar", "/email"]],
+      ["personal", ["/calendar", "/email"]],
       ["admin", ["/integrations"]],
     ]);
   });
@@ -108,6 +109,53 @@ describe("the account menu holds pages about the member", () => {
       MY_ACCESS.href,
       "/settings/appearance",
     ]);
+  });
+});
+
+// WS-63 PZ-25 and PZ-28 (`personalization.md` §14.2): "Assistant settings" is
+// a static account link in the Settings group, and never a pane. Mutation: add it always, and the
+// "absent when off" test fails. Drop it, and the "shown when on" test fails.
+describe("the Assistant settings row of the account menu (PZ-25, PZ-28)", () => {
+  const member = visibleSections(ALL, false);
+
+  it("is absent with the profile off, and by default", () => {
+    for (const links of [accountLinks(member), accountLinks(member, { assistant: false })]) {
+      expect(links.map((l) => l.href)).not.toContain("/settings/assistant");
+    }
+  });
+
+  it("shows once, after Appearance, with the profile on", () => {
+    expect(accountLinks(member, { assistant: true }).map((l) => l.href)).toEqual([
+      "/people/me",
+      MY_ACCESS.href,
+      "/settings/appearance",
+      "/settings/assistant",
+    ]);
+    expect(ASSISTANT_LINK).toEqual({
+      href: "/settings/assistant",
+      label: "Assistant settings",
+      icon: "SlidersHorizontal",
+    });
+  });
+
+  it("an unresolved viewer gets no row, also with the profile on", () => {
+    expect(accountLinks(visibleSections(null, true), { assistant: true })).toEqual([]);
+  });
+
+  it("sits in Settings, not in You, in the foot menu", () => {
+    const groups = accountMenu(member, { layout: true, switcher: false, others: 0, assistant: true });
+    const hrefs = (id: string) =>
+      (groups.find((g) => g.id === id)?.items ?? []).flatMap((i) => (i.kind === "link" ? [i.href] : []));
+    expect(hrefs("you")).toEqual(["/people/me", "/people/access"]);
+    expect(hrefs("settings")).toEqual(["/settings/appearance", "/settings/assistant"]);
+    const all = groups.flatMap((g) => g.items).filter((i) => i.kind === "link" && i.href === "/settings/assistant");
+    expect(all).toHaveLength(1);
+    const off = accountMenu(member, { layout: true, switcher: false, others: 0 });
+    expect(off.flatMap((g) => g.items).some((i) => i.kind === "link" && i.href === "/settings/assistant")).toBe(false);
+  });
+
+  it("is not a pane, so the live set does not change", () => {
+    expect(PANES.some((p) => p.href === "/settings/assistant")).toBe(false);
   });
 });
 
@@ -227,7 +275,7 @@ describe("accountMenu: the account, You, Settings and sign-out, from one list", 
 describe("All apps lists every app the member holds, never a preference", () => {
   it("for an admin: every held app, Organisation too, and no setting", () => {
     expect(shape(launcherGroups(visibleSections(ALL, true)))).toEqual([
-      ["personal", ["/tasks", "/calendar", "/email", "/whatsapp", "/artifacts"]],
+      ["personal", ["/calendar", "/email", "/whatsapp", "/artifacts"]],
       // Knowledge since 2026-10-18 (WS-61 KB-12), when its pane went live.
       ["across", ["/projects", "/crm", "/people", "/knowledge"]],
       ["studio", ["/chat"]],
@@ -308,13 +356,13 @@ describe("the star model: each category lists only its starred apps (owner, 2026
   });
 
   it("puts Personal Center first, and has no separate group of pins", () => {
-    const groups = shellSidebar(all, starred(["/approvals", "/chat", "/tasks"]));
+    const groups = shellSidebar(all, starred(["/approvals", "/chat", "/calendar"]));
     expect(groups.map((g) => g.id)).toEqual(["personal", "studio", "admin"]);
     expect(groups.map((g) => g.label)).not.toContain("My apps");
   });
 
   it("hides a category with no starred app, and keeps every other one", () => {
-    const groups = shellSidebar(all, starred(["/tasks", "/approvals"]));
+    const groups = shellSidebar(all, starred(["/calendar", "/approvals"]));
     expect(groups.map((g) => g.id)).toEqual(["personal", "admin"]);
   });
 
@@ -324,8 +372,8 @@ describe("the star model: each category lists only its starred apps (owner, 2026
   });
 
   it("draws no star the member does not hold", () => {
-    const groups = shellSidebar(visibleSections(["tasks"], false), starred(["/projects", "/crm", "/tasks"]));
-    expect(shape(groups)).toEqual([["personal", ["/tasks"]]]);
+    const groups = shellSidebar(visibleSections(["tasks"], false), starred(["/projects", "/crm", "/calendar"]));
+    expect(shape(groups)).toEqual([["personal", ["/calendar"]]]);
   });
 
   it("with nothing starred, draws no category at all (Home stays, apart from the groups)", () => {

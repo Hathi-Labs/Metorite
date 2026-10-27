@@ -26,6 +26,7 @@ import { FieldManager } from "./FieldManager";
 import ImportHistory, { type DiscardOutcome, DiscardNotice } from "./ImportHistory";
 import { LifecyclePolicy } from "./LifecyclePolicy";
 import SharedVocabulary from "./SharedVocabulary";
+import { firstTeamSpaceId } from "../lib/personalTree";
 import SpaceSettings from "./SpaceSettings";
 import { StatusStageTip } from "./StageHelp";
 import { StatusManager } from "./StatusManager";
@@ -195,7 +196,7 @@ export default function ProjectsSettings({
 
   const body = (() => {
     if (current.id === "vocabulary")
-      return <SharedVocabulary onChanged={onBoardStale} anchorSpaceId={spaces[0]?.id ?? null} />;
+      return <SharedVocabulary onChanged={onBoardStale} anchorSpaceId={firstTeamSpaceId(spaces)} />;
     if (current.id === "import") {
       return (
         <div className="flex flex-col gap-4">

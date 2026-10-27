@@ -145,7 +145,8 @@ def features_hash(user: Any) -> str:
     held = sorted(f"feature:{f}" for f in FEATURES if user.has_permission(f"feature:{f}"))
     if user.has_permission(ADMIN_PERMISSION):
         held.append(ADMIN_PERMISSION)
-    gates = {p.permission for p in needs.REGISTRY.values() if p.permission}
+    gates = {g for p in needs.REGISTRY.values()
+             for g in (p.permission, p.hash_permission) if g}
     held += sorted(g for g in gates - {ADMIN_PERMISSION} if user.has_permission(g))
     listed = needs.listed_sources()
     if listed:
@@ -158,6 +159,13 @@ def features_hash(user: Any) -> str:
 
         allowed = crm_org_allowed(getattr(user, "organization_id", None))
         held.append(f"crm_org={int(allowed)}")
+    if "knowledge" in listed:
+        # KB-9b: the Knowledge kill switch gates the `knowledge` source per
+        # org, as the CRM one does. Only while `knowledge` is listed.
+        from gateway.routes.knowledge.flags import knowledge_org_allowed
+
+        allowed = knowledge_org_allowed(getattr(user, "organization_id", None))
+        held.append(f"knowledge_org={int(allowed)}")
     return hashlib.sha256(",".join(held).encode("utf-8")).hexdigest()[:16]
 
 

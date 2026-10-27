@@ -11,6 +11,7 @@ import { useAccess } from "@/components/AccessProvider";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { TASK_PANEL_WIDTH } from "@/lib/taskPanel";
 import { useTaskStore } from "./lib/taskStore";
+import { tasksEntryView } from "./lib/today";
 import { ListsSidebar } from "./components/ListsSidebar";
 import { CaptureBar } from "./components/CaptureBar";
 import { ItemList } from "./components/ItemList";
@@ -43,6 +44,9 @@ import { SearchPalette } from "../projects/components/SearchPalette";
 import { NotificationBell } from "../projects/components/NotificationBell";
 import { shellDockOn } from "@/lib/shell/dockFlag";
 import { isOpenShortcut } from "../projects/lib/search";
+import { myWorkEnabled } from "../projects/lib/myWork";
+import { tasksRedirectFor } from "../projects/lib/tasksRedirect";
+import { canSeePath } from "@/lib/access";
 import { MY_DAY, myDayLink, myDayShown } from "../projects/lib/reportEntry";
 import { hitTarget, searchAllowed } from "./lib/searchHit";
 import { ShellJob } from "@/lib/shell/doJob";
@@ -56,7 +60,35 @@ import { askRailSession } from "@/lib/railSessions";
 // philosophy: Lists/Contexts · Item list (+ capture) · Item detail · Assistant.
 // UI-first: runs entirely on mock data (lib/mockData.ts); the gateway `/tasks`
 // API is wired later. See project-docs/specs/task_manager_app.md.
+/**
+ * WS-64 OP-4 — with My work live, `/tasks` is a redirect into Projects. The
+ * redirect reads the address on the client, behind the flag. While the flag is
+ * on and the address is unread, nothing draws, so the page does not flash
+ * before the redirect. A `/tasks` address that stays (the `open-chat` job)
+ * draws the page. With the flag off this wrapper is the page itself.
+ */
 export default function TasksPage() {
+  const router = useRouter();
+  const live = myWorkEnabled();
+  const { access, loading } = useAccess();
+  const [stays, setStays] = useState(!live);
+  // A member without `feature:projects` cannot open the target, so the page
+  // stays and draws My Tasks. The same check `AccessGate` makes.
+  const canProjects = canSeePath(access, "/projects");
+  useEffect(() => {
+    if (!live || loading) return;
+    const to = tasksRedirectFor(
+      { search: window.location.search, hash: window.location.hash },
+      true,
+      canProjects,
+    );
+    if (to) router.replace(to);
+    else setStays(true);
+  }, [live, loading, canProjects, router]);
+  return stays ? <TasksPageBody /> : null;
+}
+
+function TasksPageBody() {
   const { isMobile } = useViewMode();
   // NS-6: with the shell's one bell on, this app mounts no bell of its own.
   // Read once, as the shell reads its flags: the dev override is in
@@ -145,6 +177,13 @@ export default function TasksPage() {
   useEffect(() => {
     void hydrate();
   }, [hydrate]);
+
+  // `today` is a My work view of Projects (WS-64 OP-2). /tasks has no Today
+  // list, so a view left by that host maps to Next actions on mount.
+  useEffect(() => {
+    const now = useTaskStore.getState().selectedView;
+    if (tasksEntryView(now) !== now) selectView(tasksEntryView(now));
+  }, [selectView]);
 
   // Tell the mobile bottom bar which My Tasks section is active (for its highlight).
   useEffect(() => {

@@ -30,6 +30,28 @@ vector, for the embed job and the embed sweep, which apply no member's
 clause. None returns a page or a chunk to a caller. Each is
 listed in ``_INTEGRITY_READS`` with its reason, and the list fails when it
 goes stale.
+
+Favourites (KB-2f, §21.7). Each read of ``kb_favorites`` must JOIN
+``kb_pages`` and put in the clause, so a page that becomes hidden drops out
+of the favourites at once. This rule sweeps the WHOLE gateway package, not
+only the Knowledge modules, because a provider elsewhere (My Day, the
+command bar) could read the table too. No favourites read is an integrity
+read. ``DELETE FROM kb_favorites`` removes the caller's own row, and it is
+not a read.
+
+Documents (KC-4a, ``knowledge_curation.md`` §8.4). A connected document has
+its own predicate, ``visible_documents_clause(user, node_alias, space_expr)``
+in ``core.py``: the viewer reads the document's space AND is a proven reader
+of the node at the provider. A document read is a statement that reads
+``kb_node_access`` or ``kb_documents`` (KC-5). It must put in the result of a
+``visible_documents_clause(...)`` call made in the same function. The page
+clause alone fails, and so does ``document_reader_clause`` alone, because it
+lacks the read of the space. A chunk read passes with either predicate, so
+the document arm of KC-5 can join ``kb_source_nodes`` instead of
+``kb_pages``. A page read still needs the page clause. The writes of the
+access pass (``DELETE FROM kb_node_access``, and an INSERT) are not reads.
+The filing rule reads the readers of one node with no member's clause, and
+it is an integrity read.
 """
 from __future__ import annotations
 
@@ -51,13 +73,50 @@ _READS_CHUNKS = re.compile(r"\b(?:FROM|JOIN)\s+kb_chunks\b", re.IGNORECASE)
 _DELETES_CHUNKS = re.compile(r"\bDELETE\s+FROM\s+kb_chunks\b", re.IGNORECASE)
 
 
-def _reads_kb(sql: str) -> bool:
-    """True when *sql* reads a page or a chunk."""
-    return bool(_READS_PAGES.search(sql)
-                or _READS_CHUNKS.search(_DELETES_CHUNKS.sub("", sql)))
+#: A statement that reads the favourites of a member (KB-2f).
+_READS_FAVORITES = re.compile(r"\b(?:FROM|JOIN)\s+kb_favorites\b", re.IGNORECASE)
 
-#: The one predicate.
+#: The unstar. It names ``FROM kb_favorites`` and reads nothing.
+_DELETES_FAVORITES = re.compile(r"\bDELETE\s+FROM\s+kb_favorites\b", re.IGNORECASE)
+
+#: The join a favourites read must hold.
+_JOINS_PAGES = re.compile(r"\bJOIN\s+kb_pages\b", re.IGNORECASE)
+
+
+#: A statement that reads the readers or the text of a document (KC-4a, KC-5).
+_READS_DOCUMENTS = re.compile(r"\b(?:FROM|JOIN)\s+(?:kb_node_access|kb_documents)\b",
+                              re.IGNORECASE)
+
+#: The writes of the access pass and of KC-5. They name ``FROM`` and read nothing.
+_DELETES_DOCUMENTS = re.compile(r"\bDELETE\s+FROM\s+(?:kb_node_access|kb_documents)\b",
+                                re.IGNORECASE)
+
+
+def _reads_favorites(sql: str) -> bool:
+    """True when *sql* reads ``kb_favorites``. The unstar is no read."""
+    return bool(_READS_FAVORITES.search(_DELETES_FAVORITES.sub("", sql)))
+
+
+def _reads_documents(sql: str) -> bool:
+    """True when *sql* reads a document. The writes of the pass are no read."""
+    return bool(_READS_DOCUMENTS.search(_DELETES_DOCUMENTS.sub("", sql)))
+
+
+def _reads_chunks(sql: str) -> bool:
+    return bool(_READS_CHUNKS.search(_DELETES_CHUNKS.sub("", sql)))
+
+
+def _reads_kb(sql: str) -> bool:
+    """True when *sql* reads a page, a chunk, a favourite or a document."""
+    return bool(_READS_PAGES.search(sql) or _reads_chunks(sql)
+                or _reads_favorites(sql) or _reads_documents(sql))
+
+#: The one predicate of a page.
 _CLAUSE = "visible_pages_clause"
+#: The one predicate of a connected document (KC-4a).
+_DOCS_CLAUSE = "visible_documents_clause"
+#: The bodies of the predicates themselves, which name the tables they test.
+_CLAUSE_BODIES = frozenset({_CLAUSE, _DOCS_CLAUSE, "document_reader_clause"})
 
 #: ``(module file name, function name) -> reason``. A read here returns no
 #: page to the caller. Add an entry only with a reason a reviewer can test.
@@ -83,6 +142,17 @@ _INTEGRITY_READS: dict[tuple[str, str], str] = {
         "carries a stored position: each gives the rank among the siblings "
         "the caller sees (pages._rank, page_dict)."
     ),
+    ("backlinks.py", "backfill_org_links"): (
+        "The operator backfill of kb_links (K-2) reads the source pages of ONE "
+        "org to run the write path's sync_page_links. It returns counts only. "
+        "No row reaches a caller, and the backlinks read keeps the clause."
+    ),
+    ("proposal_expiry.py", "<module>"): (
+        "The KB-5c expiry bounds its archive with a CTE that reads the ids "
+        "of old agent drafts, in the same statement as the UPDATE. It runs "
+        "with no member and returns no page to a caller. Its only answer "
+        "is a count."
+    ),
     ("index.py", "select_pending"): (
         "The embed job of KB-3 reads the chunks of one page, already loaded "
         "and written by the route, that have no vector. It runs after the "
@@ -96,6 +166,13 @@ _INTEGRITY_READS: dict[tuple[str, str], str] = {
         "the text to the embed door only, and it returns no page, no chunk "
         "and no text to a person. The author columns name who pays."
     ),
+    ("resolve.py", "load_node"): (
+        "The filing rule of KC-4a (knowledge_curation.md §8.3) reads the "
+        "provider readers of ONE node, to compare them with the readers of a "
+        "space. No member's clause applies: the question is who the node "
+        "proves, not what the caller sees. It returns the readers to the "
+        "filing rule only, never a document, a chunk or a text."
+    ),
 }
 
 
@@ -108,14 +185,14 @@ def _knowledge_modules() -> list[Path]:
     return found
 
 
-def _clause_names(func: ast.AST) -> set[str]:
-    """The names a function binds from a ``visible_pages_clause(...)`` call."""
+def _clause_names(func: ast.AST, clause: str = _CLAUSE) -> set[str]:
+    """The names a function binds from a ``<clause>(...)`` call."""
     names: set[str] = set()
     for node in ast.walk(func):
         if not isinstance(node, ast.Assign):
             continue
         call = node.value
-        if not (isinstance(call, ast.Call) and _called_name(call) == _CLAUSE):
+        if not (isinstance(call, ast.Call) and _called_name(call) == clause):
             continue
         for target in node.targets:
             if isinstance(target, ast.Name):
@@ -159,8 +236,24 @@ def _uses_clause(node: ast.AST, names: set[str]) -> bool:
     return False
 
 
+def _statement_ok(node: ast.AST, pages: set[str], documents: set[str]) -> bool:
+    """True when the statement *node* puts in the predicate that it needs.
+
+    A page or a favourite needs the page clause. A document needs the
+    document clause. A chunk alone needs one of the two (KC-4a).
+    """
+    sql = _text_of(node)
+    used_pages = _uses_clause(node, pages)
+    used_docs = _uses_clause(node, documents)
+    if (_READS_PAGES.search(sql) or _reads_favorites(sql)) and not used_pages:
+        return False
+    if _reads_documents(sql) and not used_docs:
+        return False
+    return used_pages or used_docs
+
+
 def _page_reads(source: str) -> list[tuple[str, int, bool]]:
-    """``(enclosing function, line, uses the clause)`` for each page read.
+    """``(enclosing function, line, uses the clause)`` for each Knowledge read.
 
     A read at module level has the function name ``<module>``.
     """
@@ -189,12 +282,13 @@ def _page_reads(source: str) -> list[tuple[str, int, bool]]:
             continue
         func = owner.get(id(node))
         name = getattr(func, "name", "<module>")
-        if name == _CLAUSE:
-            # The clause's own body, if it ever names the table.
+        if name in _CLAUSE_BODIES:
+            # A predicate's own body names the tables that it tests.
             reads.append((name, node.lineno, True))
             continue
-        names = _clause_names(func) if func is not None else set()
-        reads.append((name, node.lineno, _uses_clause(node, names)))
+        pages = _clause_names(func) if func is not None else set()
+        documents = _clause_names(func, _DOCS_CLAUSE) if func is not None else set()
+        reads.append((name, node.lineno, _statement_ok(node, pages, documents)))
     return reads
 
 
@@ -325,4 +419,176 @@ def test_a_chunk_read_through_the_clause_passes() -> None:
 
 def test_the_indexer_delete_is_not_a_read() -> None:
     src = "SQL = 'DELETE FROM kb_chunks WHERE source_id = CAST(:p AS uuid)'\n"
+    assert _page_reads(src) == []
+
+
+# ── KB-2f: each read of the favourites joins the pages under the clause ────
+
+def _favorite_reads(source: str) -> list[tuple[str, int, bool]]:
+    """``(function, line, ok)`` for each read of ``kb_favorites`` in *source*.
+
+    ``ok`` holds when the statement JOINs ``kb_pages`` and puts in the
+    clause bound in the same function. :func:`_page_reads` gives the second
+    half. A favourites read with no page join cannot meet the clause.
+    """
+    tree = ast.parse(source)
+    found: list[tuple[str, int, bool]] = []
+    clause_ok = {(func, line): ok for func, line, ok in _page_reads(source)}
+    inside_fstring: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            for part in node.values:
+                inside_fstring.add(id(part))
+    for node in ast.walk(tree):
+        if id(node) in inside_fstring:
+            continue
+        if not isinstance(node, (ast.Constant, ast.JoinedStr)):
+            continue
+        sql = _text_of(node)
+        if not _reads_favorites(sql):
+            continue
+        hits = [k for k in clause_ok if k[1] == node.lineno]
+        func = hits[0][0] if hits else "<module>"
+        ok = bool(_JOINS_PAGES.search(sql)) and bool(hits) and clause_ok[hits[0]]
+        found.append((func, node.lineno, ok))
+    return found
+
+
+def _gateway_favorite_reads() -> dict[tuple[str, str, int], bool]:
+    found: dict[tuple[str, str, int], bool] = {}
+    for path in sorted(_GATEWAY.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        if "kb_favorites" not in source:
+            continue
+        rel = str(path.relative_to(_GATEWAY))
+        for func, line, ok in _favorite_reads(source):
+            found[(rel, func, line)] = ok
+    return found
+
+
+def test_the_favorites_reads_exist() -> None:
+    """Not vacuous: the sweep finds the reads of KB-2f in ``home.py``."""
+    reads = _gateway_favorite_reads()
+    assert any(rel.endswith("home.py") for rel, _f, _l in reads), reads
+
+
+def test_every_favorites_read_joins_the_pages_under_the_clause() -> None:
+    bad = [
+        f"  {rel}:{line} in {func}()"
+        for (rel, func, line), ok in sorted(_gateway_favorite_reads().items())
+        if not ok
+    ]
+    assert not bad, (
+        "These statements read kb_favorites without a JOIN of kb_pages under "
+        "visible_pages_clause. A favourite of a page the member no longer "
+        "sees must drop out (knowledge_base.md §21.7, KB-2f):\n" + "\n".join(bad)
+    )
+
+
+def test_the_fence_flags_a_favorites_read_with_no_page_join() -> None:
+    src = (
+        "async def favorites(db, user):\n"
+        "    vis, params = visible_pages_clause(user, 'p')\n"
+        "    return f'SELECT f.page_id FROM kb_favorites f WHERE {vis}'\n"
+    )
+    assert _favorite_reads(src) == [("favorites", 3, False)]
+
+
+def test_the_fence_flags_a_favorites_join_with_no_clause() -> None:
+    src = (
+        "async def favorites(db, user):\n"
+        "    return 'SELECT p.title FROM kb_favorites f JOIN kb_pages p ON p.id = f.page_id'\n"
+    )
+    assert _favorite_reads(src) == [("favorites", 2, False)]
+
+
+def test_a_favorites_read_through_the_join_and_the_clause_passes() -> None:
+    src = (
+        "async def favorites(db, user):\n"
+        "    vis, params = visible_pages_clause(user, 'p')\n"
+        "    return f'SELECT p.title FROM kb_favorites f JOIN kb_pages p "
+        "ON p.id = f.page_id WHERE {vis}'\n"
+    )
+    assert _favorite_reads(src) == [("favorites", 3, True)]
+
+
+def test_the_unstar_is_not_a_read() -> None:
+    src = "SQL = 'DELETE FROM kb_favorites WHERE page_id = CAST(:p AS uuid)'\n"
+    assert _favorite_reads(src) == []
+    assert _page_reads(src) == []
+
+
+# ── KC-4a: a connected document goes through its own clause ────────────────
+
+def test_the_document_reads_are_in_the_sweep() -> None:
+    """Not vacuous: the reader clause and the filing read are found."""
+    reads = _all_reads()
+    funcs = {(name, func) for name, func, _line in reads}
+    assert ("core.py", "document_reader_clause") in funcs, sorted(funcs)
+    assert ("resolve.py", "load_node") in funcs, sorted(funcs)
+
+
+def test_the_fence_accepts_the_documents_clause_on_a_document_read() -> None:
+    src = (
+        "async def read_doc(db, user, nid):\n"
+        "    vis, params = visible_documents_clause(user, 'n', 'f.space_id')\n"
+        "    return f'SELECT d.text FROM kb_documents d JOIN kb_source_nodes n "
+        "ON n.id = d.node_id JOIN kb_filings f ON f.node_id = n.id WHERE {vis}'\n"
+    )
+    assert _page_reads(src) == [("read_doc", 3, True)]
+
+
+def test_the_fence_flags_a_document_read_with_neither_clause() -> None:
+    src = (
+        "async def read_doc(db, user, nid):\n"
+        "    return 'SELECT a.principal FROM kb_node_access a WHERE a.node_id = :n'\n"
+    )
+    assert _page_reads(src) == [("read_doc", 2, False)]
+
+
+def test_the_fence_flags_a_document_read_with_the_page_clause_only() -> None:
+    src = (
+        "async def read_doc(db, user, nid):\n"
+        "    vis, params = visible_pages_clause(user, 'p')\n"
+        "    return f'SELECT d.text FROM kb_documents d JOIN kb_pages p ON true WHERE {vis}'\n"
+    )
+    assert _page_reads(src) == [("read_doc", 3, False)]
+
+
+def test_the_fence_flags_a_document_read_with_the_reader_clause_only() -> None:
+    """``document_reader_clause`` lacks the read of the space (§8.4)."""
+    src = (
+        "async def read_doc(db, user, nid):\n"
+        "    vis, params = document_reader_clause(user, 'n')\n"
+        "    return f'SELECT d.text FROM kb_documents d JOIN kb_source_nodes n "
+        "ON n.id = d.node_id WHERE {vis}'\n"
+    )
+    assert _page_reads(src) == [("read_doc", 3, False)]
+
+
+def test_a_chunk_read_through_the_documents_clause_passes() -> None:
+    """The document arm of KC-5 joins the node, not the page."""
+    src = (
+        "async def search(db, user, q):\n"
+        "    vis, params = visible_documents_clause(user, 'n', 'f.space_id')\n"
+        "    return f'SELECT c.raw FROM kb_chunks c JOIN kb_source_nodes n "
+        "ON n.id = c.source_id WHERE {vis}'\n"
+    )
+    assert _page_reads(src) == [("search", 3, True)]
+
+
+def test_a_page_read_with_the_documents_clause_only_fails() -> None:
+    src = (
+        "async def get_page(db, user, pid):\n"
+        "    vis, params = visible_documents_clause(user, 'n', 'p.space_id')\n"
+        "    return f'SELECT p.id FROM kb_pages p WHERE {vis}'\n"
+    )
+    assert _page_reads(src) == [("get_page", 3, False)]
+
+
+def test_the_writes_of_the_access_pass_are_not_reads() -> None:
+    src = (
+        "DEL = 'DELETE FROM kb_node_access a USING kb_source_nodes n WHERE a.node_id = n.id'\n"
+        "INS = 'INSERT INTO kb_node_access (node_id) SELECT n.id FROM kb_source_nodes n'\n"
+    )
     assert _page_reads(src) == []

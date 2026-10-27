@@ -73,6 +73,8 @@ function shape(doc: JSONContent): { order: string[]; marks: string[]; text: stri
     if (n.type === "codeBlock") text += `{${n.attrs?.language ?? ""}}`;
     if (n.type === "callout") text += `{${n.attrs?.tone ?? ""}}`;
     if (n.type === "taskItem") text += n.attrs?.checked ? "[x]" : "[ ]";
+    if (n.type === "footnoteReference" || n.type === "footnoteDefinition") text += `{^${n.attrs?.label ?? ""}}`;
+    if (n.type === "tableCell" || n.type === "tableHeader") text += `{${n.attrs?.align ?? "-"}}`;
     for (const m of n.marks ?? []) if (m.type === "link") text += `(${m.attrs?.href ?? ""})`;
     for (const c of n.content ?? []) walk(c);
   };
@@ -100,6 +102,7 @@ describe("the golden set round-trips with no loss", () => {
     for (const node of [
       "heading", "paragraph", "bulletList", "orderedList", "taskList", "blockquote", "callout",
       "details", "codeBlock", "table", "horizontalRule", "image", "hardBreak", "htmlBlock", "htmlInline",
+      "footnoteReference", "footnoteDefinition",
     ]) {
       expect(all.nodes, node).toContain(node);
     }
@@ -113,6 +116,14 @@ describe("the golden set round-trips with no loss", () => {
       "link-destination-space", "link-title-quote", "ordered-child-indent", "ordered-ten",
       "ordered-loose-continuation", "ordered-code", "setext-two-lines", "front-matter", "adjacent-lists",
       "star-bullets-plus", "details-open", "ref-definitions", "task-in-ordered", "footnote",
+    ]) {
+      expect(names, name).toContain(name);
+    }
+    // KB-2i (§21.7): the table menu's alignments and header row, and footnotes.
+    for (const name of [
+      "footnote-named-multi", "footnote-repeat-list", "footnote-middle", "footnote-empty",
+      "footnote-in-table-and-list", "table-align-three", "table-header-off", "table-header-off-only-row",
+      "table-align-mixed-default",
     ]) {
       expect(names, name).toContain(name);
     }

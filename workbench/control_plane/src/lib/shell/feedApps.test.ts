@@ -26,6 +26,7 @@ import {
   sourceApp,
   sourceLine,
 } from "./feed";
+import { NEEDS_APP_HREF } from "./needs";
 
 const PANES = NAV_SECTIONS.flatMap((s) => s.items);
 
@@ -33,6 +34,8 @@ const NEW_APPS = [
   ["crm", "CRM", "/crm", "KanbanSquare"],
   ["people", "People", "/people", "Users"],
   ["chat", "Chat", "/chat", "MessageCircle"],
+  // WS-61 KB-9a: the `kb_gap` card of the Knowledge app (`knowledge_base.md` §9).
+  ["knowledge", "Knowledge", "/knowledge", "BookOpen"],
 ] as const;
 
 describe("the feed apps of MD-3b", () => {
@@ -51,10 +54,16 @@ describe("the feed apps of MD-3b", () => {
 
   it("keeps the apps it knew, and the fallback for an app it does not know", () => {
     expect(feedAppIcon("calendar")).toBe("Calendar");
-    expect(FEED_APP_NAMES.tasks).toBe("My Tasks");
+    expect(FEED_APP_NAMES.tasks).toBe("My work");
     expect(feedAppIcon("unknown")).toBe("Circle");
     expect(feedAppIcon("constructor")).toBe("Circle");
     expect(sourceLine({ app: "unknown" as never, kind: "overdue" })).toBe("unknown · Overdue");
+  });
+
+  it("names every Knowledge kind in its failed-source line (KB-9b)", () => {
+    expect(feedFailedLines({ knowledge: "failed" } as never)).toEqual([
+      "Knowledge did not answer, so its pages to review, new pages and unanswered questions may be missing.",
+    ]);
   });
 
   it("links Show all in CRM to the CRM pane", () => {
@@ -121,8 +130,10 @@ describe("the source map of MD-3b (source_apps, §14.1a)", () => {
       "Calendar did not answer, so its time blocks may be missing.",
     ]);
     expect(cappedLinks(group, ["tasks"])).toEqual([
-      { app: "tasks", label: "Show all in My Tasks", href: expect.any(String) },
+      { app: "tasks", label: "Show all in My work", href: "/projects?app=my-tasks&chip=today" },
     ]);
+    // WS-64: the nav badge still keys on the pane href, so it is not touched.
+    expect(NEEDS_APP_HREF.tasks).toBe("/projects");
     // With no map, an MD-3 source id names no app, so it draws nothing.
     expect(feedFailedLines({ crm_followups: "failed" } as never)).toEqual([]);
   });

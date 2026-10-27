@@ -7,13 +7,14 @@
  * a run on a hidden pane visible on Chat.
  */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { NAV_SECTIONS } from "./nav";
 import {
   CHAT_HREF,
   appForAgent,
   badgeText,
+  chatLink,
   countRunsByApp,
   mergeRuns,
   needsInputLabel,
@@ -178,5 +179,14 @@ describe("the badge's words", () => {
     expect(badgeText(3)).toBe("3");
     expect(badgeText(9)).toBe("9");
     expect(badgeText(10)).toBe("9+");
+  });
+});
+
+describe("chatLink with My work live (WS-64 OP-4)", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it("a task-manager run still opens /tasks?do=open-chat, which is not redirected", () => {
+    vi.stubEnv("NEXT_PUBLIC_PROJECTS_MY_WORK", "1");
+    const href = chatLink("task-manager", "t1", null, NAV_SECTIONS, false);
+    expect(href.startsWith("/tasks?do=open-chat&fill.session=t1")).toBe(true);
   });
 });

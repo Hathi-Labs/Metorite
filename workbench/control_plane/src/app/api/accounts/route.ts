@@ -5,8 +5,10 @@
  * footer. With `?orgs=1`, each other account carries its organization's name,
  * read from the gateway AS that account.
  *
- * ⚠️ That is the one place this tier acts as an email that is not the active
- * session's. The token in the slot is the proof: it is a valid Auth.js session
+ * ⚠️ That is one of two places this tier acts as an email that is not the
+ * active session's. The other is "Remove from this browser", which deletes
+ * the removed account's web push row (`[action]/route.ts`,
+ * `forgetSlotDevice`). The token in the slot is the proof: it is a valid Auth.js session
  * for that email, held by this browser, exactly as strong as the active one.
  * The read is `/auth/me` only, and only the organization's name, slug and id
  * leave it. The id is what an org-aware link names (`lib/orgLink.ts`), so the

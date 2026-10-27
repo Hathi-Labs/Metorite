@@ -529,7 +529,8 @@ class TestTheRoute:
 
         source = inspect.getsource(m.get_message_html)
         assert not _MESSAGE_WRITE.search(source)
-        assert "ea.user_id = :user_id" in source
+        # The owner read goes through the one mailbox seam (WS-65 SM-2).
+        assert 'mailbox_predicate("ea", uid="user_id", level="read")' in source
 
 
 # ── 3b. The provider 429 ────────────────────────────────────────────────────

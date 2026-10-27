@@ -208,6 +208,44 @@ async def deliverable(db: Any, recipients: list[str], task_id: str) -> list[str]
     return allowed
 
 
+async def grant_holders(db: Any, recipients: list[str], task_id: str) -> list[str]:
+    """Of these people, the ones who open this task through a GRANT alone.
+
+    WS-55 MCP-G2, fix round 1. This is NOT a second copy of "who can see a
+    task": :func:`deliverable` answers that, with both arms, and
+    ``test_deliverable_asks_the_one_visibility_predicate_not_a_second_one``
+    holds it there. This asks a different question: who could open the task
+    BEFORE anybody assigned them to it. An outside agent may assign only such
+    a person (``tasks._refuse_agent_assignees``), because an assignment opens
+    the task to its assignee, and an agent that leaned on the assignee arm
+    could show a task to anybody that text in a task named.
+
+    The grant arm is ``Visibility.project_clause``, the same project set that
+    ``task_visibility_clause`` reads, under the task's tenant. So it counts a
+    grant to the person, to an ``org`` subject or to one of the person's
+    ``group:<slug>`` subjects, on the project or on a parent of it. For a
+    ``data:org:read`` holder it counts every project of the tenant that is
+    not sealed and not somebody's personal space. A person with no active
+    ``app_user`` row in this organization resolves no tenant, so the answer
+    leaves them out.
+    """
+    allowed: list[str] = []
+    for who in recipients:
+        vis = await resolve_visibility_for(db, who)
+        row = (await db.execute(
+            text(
+                "SELECT 1 FROM pm_tasks t "
+                "WHERE t.id = CAST(:tid AS uuid) "
+                "AND t.organization_id = CAST(:vis_org AS uuid) "
+                f"AND {vis.project_clause('t.project_id')} LIMIT 1"
+            ),
+            {"tid": task_id, **vis.params},
+        )).fetchone()
+        if row is not None:
+            allowed.append(who)
+    return allowed
+
+
 async def notify(
     db: Any,
     *,
@@ -340,7 +378,11 @@ async def list_notifications(
     me = actor(user).lower()
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        clause = vis.project_clause("t.root_project_id")
+        # WS-64 OP-9 (D-OP-15): scoped on the task's OWN node. A team node under
+        # a personal root is visible, and its tasks carry that root as
+        # ``root_project_id``, so a root scope would hide them. Both arms hold
+        # every visible node at any depth, so this is the task read's own set.
+        clause = vis.project_clause("t.project_id")
         sql = _LIST_SQL.format(
             visible=clause,
             unread="AND n.read_at IS NULL" if unread_only else "",

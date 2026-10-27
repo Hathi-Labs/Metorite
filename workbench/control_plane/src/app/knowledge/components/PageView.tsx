@@ -32,22 +32,22 @@
  * decides "off" from the spaces read alone (`lib/phase.ts`).
  */
 
-import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { useAccess } from "@/components/AccessProvider";
+import { useViewMode } from "@/components/ViewModeProvider";
 import { EmptyState } from "@/components/EmptyState";
+import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
-import { Input, Textarea } from "@/components/ui/Input";
+import { Textarea } from "@/components/ui/Input";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 import { invalidate } from "@/lib/dataCache";
 import { useAssistantFacts } from "@/lib/shell/assistant";
 import { chatScope } from "@/lib/sessions";
-import { relativeTime } from "@/lib/taskCard";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import {
@@ -71,24 +71,30 @@ import {
   type Draft,
   type EditSnapshot,
 } from "../lib/draft";
-import { dayLabel, publishBody, reasonLabel, stateLabel, stateTone, STATE_LABELS } from "../lib/labels";
-import { KNOWLEDGE_HOME, pageHref, spaceHref } from "../lib/links";
+import { useFullWidth } from "../lib/fullWidth";
+import { publishBody, stateLabel, stateTone, STATE_LABELS } from "../lib/labels";
+import { KNOWLEDGE_HOME, pageHref } from "../lib/links";
+import { highlightWords } from "../lib/search";
 import { flushLiveDraft, registerLiveDraft } from "../lib/liveDrafts";
-import { PAGE_NOT_FOUND_BODY, PAGE_NOT_FOUND_TITLE, pageRefusal, type PageRead } from "../lib/phase";
+import { readPage } from "../lib/readPage";
+import { PAGE_NOT_FOUND_BODY, PAGE_NOT_FOUND_TITLE, type PageRead } from "../lib/phase";
 import type { PageDetail, PageVersion } from "../lib/types";
+import ArchivedBanner from "./ArchivedBanner";
 import KnowledgeEditor from "./editor/KnowledgeEditor";
+import HeadingAnchors from "./HeadingAnchors";
+import { FavoriteStar } from "./Favorites";
+import { PageIconControl } from "./PageIcon";
+import PageHistory from "./history/PageHistory";
+import { TitleField, useTitleLink } from "./editor/TitleField";
 import { useKnowledge } from "./KnowledgeContext";
+import PageBreadcrumbs from "./PageBreadcrumbs";
+import PageByline from "./PageByline";
+import PageMenu from "./PageMenu";
+import LinkedFrom from "./LinkedFrom";
+import PageSidePanel from "./PageSidePanel";
+import { AgentDraftBadge, PendingEditNotice } from "./ProposalMarks";
+import { usePageHeadings } from "./usePageHeadings";
 import VersionList from "./VersionList";
-
-async function readPage(id: string): Promise<PageRead<PageDetail>> {
-  try {
-    return { kind: "page", page: await getPage(id) };
-  } catch (err) {
-    const refusal = pageRefusal<PageDetail>(err);
-    if (refusal) return refusal;
-    throw err;
-  }
-}
 
 /** The session store, or `null` on the server and in a blocked browser. */
 function sessionStore(): Storage | null {
@@ -103,6 +109,7 @@ export default function PageView({ pageId }: { pageId: string }) {
   const { spaces, setPageFocus, openNewPage, setLeaveGuard, leaveGuarded, requestLeave } = useKnowledge();
   const { access, loading: accessLoading } = useAccess();
   const scope = accessLoading ? null : chatScope(access.email, access.organization?.id);
+  const { isMobile } = useViewMode();
   const router = useRouter();
   const searchParams = useSearchParams();
   const toast = useToast();
@@ -137,12 +144,16 @@ export default function PageView({ pageId }: { pageId: string }) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [confirmPublish, setConfirmPublish] = useState(false);
   const [reverting, setReverting] = useState<PageVersion | null>(null);
+  // KB-2g: the history modal, open at one version or at the newest (null).
+  const [history, setHistory] = useState<{ at: number | null } | null>(null);
   const [busy, setBusy] = useState(false);
   // The editor writes its Markdown after a pause in the typing, so a key is
   // cheap on a long page. `pending` marks the draft dirty from the first
   // key, and `flushRef` writes the body at once before a save or a switch.
   const [pending, setPending] = useState(false);
   const flushRef = useRef<((opts?: { silent?: boolean }) => string | null) | null>(null);
+  // The title flow joins the title field to the body (KB-2i).
+  const titleLink = useTitleLink();
   const draftRef = useRef(draft);
   useEffect(() => {
     draftRef.current = draft;
@@ -261,6 +272,17 @@ export default function PageView({ pageId }: { pageId: string }) {
   // render, the adjust-state-on-a-prop-change pattern. The address then
   // drops it, so a reload shows the page and not the editor.
   const askEdit = searchParams.get("edit") === "1";
+
+  // KB-3d: a hit opens the page with the words of the search in `?q=`. The
+  // match bar marks them, and its close button drops `q` from the address.
+  const matchQ = searchParams.get("q") ?? "";
+  const matchTerms = useMemo(() => highlightWords(matchQ), [matchQ]);
+  const closeMatches = useCallback(() => {
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("q");
+    const rest = next.toString();
+    router.replace(rest ? `${pageHref(pageId)}?${rest}` : pageHref(pageId), { scroll: false });
+  }, [searchParams, router, pageId]);
   const [editAsked, setEditAsked] = useState<string | null>(null);
   if (askEdit && page && editAsked !== page.id) {
     setEditAsked(page.id);
@@ -269,6 +291,14 @@ export default function PageView({ pageId }: { pageId: string }) {
   useEffect(() => {
     if (askEdit && page) router.replace(pageHref(pageId));
   }, [askEdit, page, pageId, router]);
+
+  // The page chrome (KB-2d): the scroller, its sticky row and the body that
+  // the editor drew. Callback refs, so the outline reads each new element.
+  const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null);
+  const [stickyEl, setStickyEl] = useState<HTMLDivElement | null>(null);
+  const [bodyEl, setBodyEl] = useState<HTMLDivElement | null>(null);
+  const outline = usePageHeadings({ body: bodyEl, scroller: scrollerEl, stickyTop: stickyEl });
+  const [fullWidth] = useFullWidth();
 
   if (read.loading) {
     return (
@@ -365,55 +395,189 @@ export default function PageView({ pageId }: { pageId: string }) {
     }
   }
 
-  const last = page.versions[0] ?? null;
+  /** A crumb's way out of the page, through the leave guard. True: the guard holds it. */
+  function goGuarded(href: string): boolean {
+    if (!leaveGuarded()) return false;
+    requestLeave(() => router.push(href));
+    return true;
+  }
+
   const patch = editing && snapshot ? draftPatch(snapshot, draft) : null;
   const canSave = Boolean(patch) || pending;
 
-  return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-5 sm:px-6 xl:flex-row xl:items-start">
-        <article className="min-w-0 flex-1" aria-label={page.title}>
-          {space ? (
-            <Link
-              href={spaceHref(space.id)}
-              onClick={(e) => {
-                if (!leaveGuarded()) return;
-                e.preventDefault();
-                requestLeave(() => router.push(spaceHref(space.id)));
-              }}
-              className="cc-link text-xs text-muted-foreground hover:text-foreground"
-            >
-              {space.name}
-            </Link>
-          ) : null}
+  const width = fullWidth ? "max-w-none" : "max-w-6xl";
 
-          {editing ? (
-            // ⚠️ A `div`, not a `form`. The editor's own buttons (the code
-            // language, the fold of a toggle) must never submit the page.
-            <div className="mt-1 space-y-3">
-              <Input
-                aria-label="Title"
-                value={draft.title}
-                maxLength={300}
-                onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
-                className="w-full"
-              />
-              <div className="flex justify-end">
+  /** Edit or leave the Markdown field. The editor reads the field's text. */
+  function toggleSource() {
+    if (!source) flushedDraft();
+    setSource((v) => !v);
+    setSession((n) => n + 1);
+  }
+
+  const newSubPage = () => openNewPage({ parent: { id: page.id, title: page.title, spaceId: page.space_id } });
+  const noTitle = !draft.title.trim();
+
+  return (
+    <div
+      ref={setScrollerEl}
+      data-page-scroller=""
+      data-full-width={fullWidth ? "" : undefined}
+      className="min-h-0 flex-1 overflow-y-auto"
+    >
+      {/* The chrome row (KB-2d): the breadcrumbs on the left and the page's
+          tools on the right. It stays at the top of the scroller, as the
+          page scrolls under it. Save and Cancel live here, so no footer
+          covers the body. */}
+      <div ref={setStickyEl} className="sticky top-0 z-20 border-b border-border bg-background">
+        <div className={`mx-auto flex w-full ${width} items-center gap-2 px-4 py-1.5 min-h-11 sm:px-6`}>
+          <PageBreadcrumbs page={page} space={space} onGo={goGuarded} />
+          <div className="flex shrink-0 items-center gap-1" data-page-tools="">
+            {editing ? (
+              <>
+                {/* The page looks the same in both modes, so the bar says
+                    which one is open, and whether a save is owed. A phone
+                    shows the mark alone, and the words stay for a reader. */}
+                <span className="mr-1 inline-flex items-center gap-1 text-xs text-muted-foreground" role="status">
+                  <Icon name={dirty ? "CircleDot" : "Pencil"} size={12} className={dirty ? "text-warning" : undefined} />
+                  <span className={isMobile ? "sr-only" : undefined}>{dirty ? "Unsaved changes" : "Editing"}</span>
+                </span>
                 <Button
                   variant="ghost"
-                  size="sm"
+                  size="icon-sm"
                   icon="FileCode"
                   selected={source}
+                  aria-label="Markdown"
+                  title={source ? "Back to the editor" : "Edit as Markdown"}
+                  onClick={toggleSource}
+                />
+                {isMobile ? (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    icon="X"
+                    aria-label="Cancel"
+                    title="Cancel"
+                    disabled={saving}
+                    onClick={() => requestLeave(endEdit)}
+                  />
+                ) : (
+                  <Button variant="ghost" size="sm" disabled={saving} onClick={() => requestLeave(endEdit)}>
+                    Cancel
+                  </Button>
+                )}
+                <Button size="sm" loading={saving} disabled={saving || !canSave || noTitle} onClick={() => void save()}>
+                  Save changes
+                </Button>
+              </>
+            ) : (
+              <>
+                <FavoriteStar page={page} />
+                {writable ? (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      icon="FilePlus"
+                      aria-label="New sub-page"
+                      title="New sub-page"
+                      onClick={newSubPage}
+                    />
+                    {page.state === "draft" ? (
+                      <Button size="sm" icon="Send" onClick={() => setConfirmPublish(true)}>
+                        Publish
+                      </Button>
+                    ) : null}
+                    {isMobile ? (
+                      <Button
+                        variant="secondary"
+                        size="icon-sm"
+                        icon="Pencil"
+                        aria-label="Edit"
+                        title="Edit"
+                        onClick={() => startEdit(page)}
+                      />
+                    ) : (
+                      <Button variant="secondary" size="sm" icon="Pencil" onClick={() => startEdit(page)}>
+                        Edit
+                      </Button>
+                    )}
+                  </>
+                ) : null}
+              </>
+            )}
+            <PageMenu page={page} spaces={spaces} editing={editing} printBody={bodyEl} />
+          </div>
+        </div>
+      </div>
+      <div className={`mx-auto flex w-full ${width} flex-col gap-6 px-4 py-5 sm:px-6 xl:flex-row xl:items-start`}>
+        <article className="min-w-0 flex-1" aria-label={page.title}>
+          {page.state === "archived" ? (
+            <div className="mb-4">
+              <ArchivedBanner page={page} />
+            </div>
+          ) : null}
+          {editing ? null : <PendingEditNotice pageId={page.id} state={page.state} />}
+
+          {/* One header for the read view and the edit (WS-61, 2026-10-22):
+              the icon, the title and the byline stay where they are when the
+              mode changes. A page with no icon reserves no room for one. */}
+          <header className="group relative pt-8">
+            <PageIconControl page={page} editable={writable} />
+            {editing ? (
+              <TitleField
+                value={draft.title}
+                onChange={(title) => setDraft((d) => ({ ...d, title }))}
+                link={titleLink}
+              />
+            ) : (
+              <h2 className="kb-title">{page.title}</h2>
+            )}
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <Badge tone={stateTone(page.state)} icon={STATE_LABELS[page.state]?.icon}>
+                {stateLabel(page.state)}
+              </Badge>
+              <AgentDraftBadge page={page} />
+              {page.can_write ? null : <Badge icon="Eye">Read only</Badge>}
+              <PageByline versions={page.versions} />
+            </div>
+            {editing && noTitle ? <p className="mt-2 text-xs text-destructive">A page needs a title.</p> : null}
+            {editing && stale ? (
+              <div
+                role="alert"
+                className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-foreground"
+              >
+                <span className="min-w-0 flex-1 basis-full sm:basis-0">
+                  Someone saved a newer version of this page while you edited it. Save anyway
+                  to write your changes over it, or reload to read it first.
+                </span>
+                <Button size="sm" variant="secondary" disabled={saving} onClick={() => void save(true)}>
+                  Save anyway
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={saving}
                   onClick={() => {
-                    if (!source) flushedDraft();
-                    setSource((v) => !v);
-                    setSession((n) => n + 1);
+                    endEdit();
+                    reread();
                   }}
                 >
-                  Markdown
+                  Reload
                 </Button>
               </div>
-              {source ? (
+            ) : null}
+            {editing && saveError ? (
+              <p role="alert" className="mt-3 text-xs text-destructive">
+                {saveError}
+              </p>
+            ) : null}
+          </header>
+
+          <div className="mt-6">
+            {editing ? (
+              // ⚠️ A `div`, not a `form`. The editor's own buttons (the code
+              // language, the fold of a toggle) must never submit the page.
+              source ? (
                 <Textarea
                   aria-label="Page body in Markdown"
                   value={draft.body_md}
@@ -423,7 +587,7 @@ export default function PageView({ pageId }: { pageId: string }) {
                   className="w-full font-mono"
                 />
               ) : (
-                <div className="min-h-64 pt-1">
+                <div ref={setBodyEl} className="min-h-64">
                   <KnowledgeEditor
                     key={`edit-${session}`}
                     mode="edit"
@@ -434,132 +598,71 @@ export default function PageView({ pageId }: { pageId: string }) {
                     flushRef={flushRef}
                     pageId={page.id}
                     spaces={spaces}
+                    spaceId={page.space_id}
+                    canWrite={page.can_write}
                     label="Page body"
+                    titleLink={titleLink}
                   />
                 </div>
-              )}
-              {stale ? (
-                <div
-                  role="alert"
-                  className="flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-foreground"
-                >
-                  <span className="min-w-0 flex-1 basis-full sm:basis-0">
-                    Someone saved a newer version of this page while you edited it. Save anyway
-                    to write your changes over it, or reload to read it first.
-                  </span>
-                  <Button size="sm" variant="secondary" disabled={saving} onClick={() => void save(true)}>
-                    Save anyway
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={saving}
-                    onClick={() => {
-                      endEdit();
-                      reread();
-                    }}
-                  >
-                    Reload
-                  </Button>
-                </div>
-              ) : null}
-              {saveError ? (
-                <p role="alert" className="text-xs text-destructive">
-                  {saveError}
-                </p>
-              ) : null}
-              {/* The save row stays in view at the foot of the scroller, so a
-                  long page does not hide Save below the body. */}
-              <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t border-border bg-background py-2">
-                <Button size="sm" loading={saving} disabled={saving || !canSave || !draft.title.trim()} onClick={() => void save()}>
-                  Save changes
-                </Button>
-                <Button variant="secondary" size="sm" disabled={saving} onClick={() => requestLeave(endEdit)}>
-                  Cancel
-                </Button>
-                {!draft.title.trim() ? (
-                  <span className="text-xs text-destructive">A page needs a title.</span>
-                ) : null}
-              </div>
-            </div>
-          ) : (
-            <>
-              <h2 className="mt-1 break-words text-xl font-semibold text-foreground">{page.title}</h2>
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <Badge tone={stateTone(page.state)} icon={STATE_LABELS[page.state]?.icon}>
-                  {stateLabel(page.state)}
-                </Badge>
-                {page.can_write ? null : <Badge icon="Eye">Read only</Badge>}
-                {last ? (
-                  <span>
-                    {reasonLabel(last.reason)} by {last.author_email}
-                    {last.created_at ? `, ${relativeTime(last.created_at) || "now"}` : ""}
-                  </span>
-                ) : null}
-              </div>
-              {writable ? (
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <Button variant="secondary" size="sm" icon="PenLine" onClick={() => startEdit(page)}>
-                    Edit
-                  </Button>
-                  {page.state === "draft" ? (
-                    <Button size="sm" icon="Send" onClick={() => setConfirmPublish(true)}>
-                      Publish
-                    </Button>
-                  ) : null}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon="FilePlus"
-                    onClick={() =>
-                      openNewPage({ parent: { id: page.id, title: page.title, spaceId: page.space_id } })
-                    }
-                  >
-                    New sub-page
-                  </Button>
-                </div>
-              ) : null}
-              <div className="mt-5">
-                {page.body_md.trim() ? (
+              )
+            ) : page.body_md.trim() ? (
+              <HeadingAnchors pageId={page.id} headings={outline.headings} elements={outline.elements}>
+                <div ref={setBodyEl}>
                   <KnowledgeEditor
                     mode="read"
                     body={page.body_md}
                     label={`${page.title}, the page body`}
                     onNavigate={(href) => router.push(href)}
+                    matchTerms={matchTerms}
+                    onMatchClose={closeMatches}
                   />
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    This page is empty.{writable ? " Choose Edit to write it." : ""}
-                  </p>
-                )}
-              </div>
-            </>
-          )}
+                </div>
+              </HeadingAnchors>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                This page is empty.{writable ? " Choose Edit to write it." : ""}
+              </p>
+            )}
+          </div>
         </article>
 
         <aside
-          className="w-full shrink-0 space-y-4 border-t border-border pt-4 xl:w-64 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0"
+          className="w-full shrink-0 space-y-5 border-t border-border pt-4 xl:sticky xl:top-14 xl:max-h-[calc(100vh-9rem)] xl:w-64 xl:overflow-y-auto xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0"
           aria-label="About this page"
         >
-          <dl className="space-y-2 text-xs">
-            <div>
-              <dt className="text-muted-foreground">Author</dt>
-              <dd className="truncate text-foreground">{page.author_email}</dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">Review date</dt>
-              <dd className="text-foreground">
-                {page.review_at ? dayLabel(page.review_at) : "Set when the page is published"}
-              </dd>
-            </div>
-          </dl>
+          <PageSidePanel
+            page={page}
+            headings={outline.headings}
+            active={outline.active}
+            stats={outline.stats}
+            onJump={(i) => outline.jump(i, { smooth: true })}
+          />
+          <LinkedFrom pageId={pageId} />
           <section>
-            <h3 className="mb-1 text-xs font-medium text-foreground">Versions</h3>
-            <VersionList versions={page.versions} canRevert={writable && !editing} onRevert={setReverting} />
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <h3 className="text-xs font-medium text-foreground">Versions</h3>
+              <Button variant="ghost" size="sm" icon="History" onClick={() => setHistory({ at: null })}>
+                Page history
+              </Button>
+            </div>
+            <VersionList
+              versions={page.versions}
+              canRevert={writable && !editing}
+              onRevert={setReverting}
+              onOpen={(v) => setHistory({ at: v.version })}
+            />
           </section>
         </aside>
       </div>
 
+      <PageHistory
+        open={history !== null}
+        onClose={() => setHistory(null)}
+        page={page}
+        canRestore={writable && !editing}
+        initialVersion={history?.at ?? null}
+        onNavigate={(href) => router.push(href)}
+      />
       <ConfirmDialog
         open={confirmPublish}
         title="Publish this page?"

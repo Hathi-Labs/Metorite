@@ -503,3 +503,55 @@ async def test_cancel_and_any_other_message_close_the_row(writes_bot) -> None:
         w.bot, f"SELECT state FROM {_TABLE} WHERE wa_id = :w", w=phone))
     assert states == ["cancelled", "void"]
     assert not [c for c in w.gateway if c["method"] == "POST" and c["path"] == "/projects/tasks"]
+
+
+# ── WS-47 WAC-P4: an egress act on the real table ───────────────────────────
+
+
+async def test_an_egress_act_parks_settles_to_one_yes_and_closes_on_the_real_table(
+    granted,  # noqa: F811
+) -> None:
+    """The prefixed tool name passes the table's shape check, the Confirm
+    claims the row once and runs no tool, and ``finish`` closes it. Org B
+    sees none of it."""
+    from acb_skills.whatsapp_acts import (
+        EGRESS_DETAIL,
+        ParkedAct,
+        egress_act_name,
+        egress_card_text,
+    )
+    from gateway.routes.whatsapp_channel import acts
+    from gateway.routes.whatsapp_channel.bot_run import RunRequest
+
+    p = granted
+    email, phone = _email(), _phone()
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    sid = _seed_thread(p.admin_engine, org=p.org_a, email=email)
+    req = _req(p.org_a, email, phone, sid)
+    args = {"url": "https://example.com/quote"}
+    act = ParkedAct(tool=egress_act_name("fetch_page"), arguments=args,
+                    card=egress_card_text("fetch_page", args),
+                    title="Run fetch_page? It reaches outside Metorite",
+                    detail=EGRESS_DETAIL, context="fetch_page {}")
+
+    async with tenant_engine_scope(p.app_url.render_as_string(hide_password=False)):
+        act_id = await _bound(p.org_a, lambda: acts.park(req, act))
+        await _bound(p.org_a, lambda: acts.offered(act_id, "wamid.out.buttons"))
+        tap = _seed_message(p.admin_engine, org=p.org_a, email=email, phone=phone,
+                            sid=sid, context="wamid.out.buttons", received="1 minute")
+        confirm = RunRequest(tap, p.org_a, email, phone, "wamid.x", sid)
+        # Org B: no act, so its "Confirm" is a normal message.
+        req_b = RunRequest(tap, p.org_b, email, phone, "wamid.x", sid)
+        assert await _bound(p.org_b, lambda: acts.settle(req_b, "Confirm")) is None
+        approved = await _bound(p.org_a, lambda: acts.settle(confirm, "Confirm"))
+        assert isinstance(approved, acts.Approved)
+        assert (approved.tool, approved.arguments) == ("fetch_page", args)
+        assert approved.card == egress_card_text("fetch_page", args)
+        # Claimed once: the same tap again finds no pending act.
+        assert await _bound(p.org_a, lambda: acts.settle(confirm, "Confirm")) is None
+        await _bound(p.org_a, lambda: acts.finish(approved, True))
+
+    rows = _admin_rows(type("NS", (), {"p": p}),
+                       f"SELECT tool_name, state, close_code FROM {_TABLE} WHERE wa_id = :w",
+                       w=phone)
+    assert [tuple(r) for r in rows] == [("egress__fetch_page", "done", None)]

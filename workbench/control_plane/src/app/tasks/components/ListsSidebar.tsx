@@ -13,6 +13,7 @@ import type { LensArea } from "../lib/api";
 import { inboxCount } from "../lib/inbox";
 import { itemsInArea, useTaskStore, viewCounts } from "../lib/taskStore";
 import { MyTask, ViewKey } from "../lib/types";
+import { VIEW_TITLES } from "../lib/viewTitles";
 
 type NavRow = {
   view: ViewKey;
@@ -25,15 +26,15 @@ type NavRow = {
   soon?: boolean;
 };
 
-// The single flat nav. "My Next Actions" is one destination — its slices
+// The single flat nav. "My tasks" is one destination — its slices
 // (Priority / Suggestion / Context / Energy grouping, list vs board) are
 // configured IN the view (toolbar group-by + column settings), not as separate
 // sidebar entries. Priority and Engage were removed as standalone views for
 // that reason.
 const PRIMARY: NavRow[] = [
-  { view: "inbox", label: "Inbox", icon: "Inbox", showCount: true },
-  { view: "next", label: "My Next Actions", icon: "ListChecks", showCount: true },
-  { view: "waiting", label: "Waiting For", icon: "Clock", showCount: true },
+  { view: "inbox", label: VIEW_TITLES.inbox, icon: "Inbox", showCount: true },
+  { view: "next", label: VIEW_TITLES.next, icon: "ListChecks", showCount: true },
+  { view: "waiting", label: VIEW_TITLES.waiting, icon: "Clock", showCount: true },
   // ⚠️ Calendar left this list 2026-08-24 (D54, board WS-39 S2): it is its own
   // Personal Center app at `/calendar`. It is deliberately NOT re-added here as
   // a link — a sidebar row that navigates OUT of the app it sits in is the kind
@@ -42,7 +43,7 @@ const PRIMARY: NavRow[] = [
   // app is the personal lens. The company's projects live in `/projects` and
   // the directory in `/people`, each a whole app rather than a cramped tab
   // behind a task manager.
-  { view: "someday", label: "Someday / Maybe", icon: "Lightbulb", showCount: true },
+  { view: "someday", label: VIEW_TITLES.someday, icon: "Lightbulb", showCount: true },
   { view: "done", label: "Done", icon: "CheckCircle2", showCount: true },
   { view: "archive", label: "Archive", icon: "Archive" },
 ];
@@ -113,8 +114,8 @@ export function ListsSidebar({
           noticed (S6b, 2026-09-23). Restored as they were. */}
       {PRIMARY.map((row) => {
         const count = counts[row.view];
-        // My Next Actions stays highlighted even when an in-view @context pill is
-        // active (selectedContext set) — it's still the Next Actions view.
+        // My tasks stays highlighted even when an in-view @context pill is
+        // active (selectedContext set) — it's still the My tasks view.
         const active =
           selectedView === row.view &&
           (row.view === "next" ? true : !selectedContext);

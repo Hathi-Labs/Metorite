@@ -19,7 +19,10 @@
  * does nothing is worse than no entry.
  */
 
-export type ProjectAppId = "reports" | "ai-chat" | "settings";
+import { MY_WORK_VIEWS, myWorkEnabled, type MyWorkId } from "./myWork";
+import { LEGACY_CHIP, asChip, chipForApp, type MyTasksChip } from "./myTasks";
+
+export type ProjectAppId = "reports" | "ai-chat" | "settings" | MyWorkId;
 
 export interface ProjectAppItem {
   id: ProjectAppId;
@@ -116,12 +119,32 @@ export function projectAppSections(
   env?: Record<string, string | undefined>,
 ): ProjectAppSection[] {
   const chat = chatEnabled(env);
-  return PROJECT_APP_SECTIONS.map((section) => ({
+  const sections = PROJECT_APP_SECTIONS.map((section) => ({
     ...section,
     items: section.items.map((item) =>
-      item.id === "ai-chat" && chat ? { ...item, launch: "live" } : item,
+      item.id === "ai-chat" && chat ? { ...item, launch: "live" as const } : item,
     ),
   }));
+  // WS-64 OP-2 — the My work section sits first, and only when its flag is on.
+  return myWorkEnabled(env) ? [myWorkSection(), ...sections] : sections;
+}
+
+/** The heading of the section in `one_projects_app.md` §4.1 (D-OP-3). */
+export const MY_WORK_SECTION_LABEL = "My work";
+
+/** The My work section: My task inbox and My tasks, both live (OP-11). */
+function myWorkSection(): ProjectAppSection {
+  return {
+    id: "my-work",
+    label: MY_WORK_SECTION_LABEL,
+    items: MY_WORK_VIEWS.map((v) => ({
+      id: v.id,
+      label: v.label,
+      icon: v.icon,
+      note: v.note,
+      launch: "live" as const,
+    })),
+  };
 }
 
 /**
@@ -130,7 +153,26 @@ export function projectAppSections(
  */
 const APP_ALIASES: Readonly<Record<string, ProjectAppId>> = {
   analytics: "reports",
+  // WS-64 OP-11. The five old My work lists are chips of My tasks now. A feed
+  // link, `/tasks`, the phone tab or a chat card may still name one, and it
+  // opens My tasks with its chip (`resolveAppChip`).
+  ...Object.fromEntries(Object.keys(LEGACY_CHIP).map((id) => [id, "my-tasks" as const])),
 };
+
+/**
+ * The chip an `?app=` id opens My tasks with, or null. An old list id names
+ * its own chip (`LEGACY_CHIP`). For `my-tasks` itself the `?chip=` value of
+ * the same link decides, and the caller passes it as `chip`.
+ */
+export function resolveAppChip(
+  id: string | null | undefined,
+  chip?: string | null,
+): MyTasksChip | null {
+  const legacy = chipForApp(id);
+  if (legacy) return legacy;
+  if (String(id ?? "").trim().toLowerCase() !== "my-tasks") return null;
+  return chip ? asChip(chip) : null;
+}
 
 /**
  * The live app an `?app=` link or a `projects.open_app` call opens, or

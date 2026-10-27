@@ -29,7 +29,7 @@ The owner's amendment of 2026-10-09 (one model per turn, amends §4.4):
 * A hinted tool no longer raises the NEXT request. :class:`ToolHintRecorder`
   logs ``ai_route.hint_ignored`` for tuning, and the tier stays.
 * The turn-kind question of §4.3 (:func:`turn_kind`). It asks the System-1
-  agent once, on ``tier-fast``, and waits at most 1.5 s.
+  agent once, on ``tier-fast``, and waits at most :data:`TURN_KIND_TIMEOUT_S`.
 * :class:`TierPolicyMiddleware`, which sets ``options["model"]`` on each
   model request of ONE run, and :class:`TierPolicyProvider`, which adds it
   to the run's own view of the agent (§4.5). The executor attaches it, the
@@ -136,7 +136,7 @@ TOOL_HINTS: dict[str, str] = {
 
 #: Why a request got its tier. ``ai_route.chosen`` carries one of these.
 #: ``tool_hint`` left on 2026-10-09: a hint no longer sets a tier.
-REASONS: tuple[str, ...] = ("default", "turn_kind", "effort")
+REASONS: tuple[str, ...] = ("default", "turn_kind", "effort", "context")
 
 #: The log line of a hinted tool that the turn did not follow (2026-10-09).
 HINT_IGNORED = "ai_route.hint_ignored"
@@ -144,8 +144,11 @@ HINT_IGNORED = "ai_route.hint_ignored"
 # ── The turn-kind question (§4.3) ───────────────────────────────────────────
 
 #: The longest the executor waits for the turn kind. A slower answer is
-#: ``chat``, so the turn stays on the default.
-TURN_KIND_TIMEOUT_S = 1.5
+#: ``chat``, so the turn stays on the default. 3.0 s since 2026-10-22:
+#: production measured the answers at 1.1 to 1.5 s, so a 1.5 s wait timed out
+#: on 41 of 80 turns (51%), and those turns could never go powerful. A short
+#: message asks no question, so it waits for nothing.
+TURN_KIND_TIMEOUT_S = 3.0
 
 #: A message with fewer words skips the question and reads as ``chat``.
 SHORT_MESSAGE_WORDS = 12
@@ -161,8 +164,34 @@ TURN_QUESTION = (
     "chat: answer, read, look up or summarise. "
     "code: write, run or fix code. "
     "plan: plan many steps, schedule or rebalance work. "
-    "analysis: a hard analysis, a forecast or a conflict read with many parts."
+    "analysis: a hard analysis, a forecast or a conflict read with many parts, "
+    "a comparison of options or offers with a choice, or a reply or a "
+    "document that needs judgement."
 )
+
+# ── The size of the turn (owner, 2026-10-22) ─────────────────────────────────
+
+#: A turn whose history and context hold at least this many tokens starts on
+#: :data:`TIER_POWERFUL` (reason ``context``). The owner asked that a long
+#: thread or a lot of context switch to the powerful tier, and that ordinary
+#: turns stay on fast or balanced. The size is known before the first
+#: request, so the turn still picks ONE model (2026-10-09).
+CONTEXT_POWERFUL_TOKENS = 24_000
+
+#: Characters for each token when the turn's size is counted. 3, not 4, so a
+#: language that tokenizes worse than English still counts as long.
+CONTEXT_CHARS_PER_TOKEN = 3
+
+
+def turn_tokens(message: str | None, history: Iterable[Any] | None = (),
+                extra: str | None = "") -> int:
+    """About how many tokens the turn starts with: the member's message, the
+    earlier messages of the chat and any added context. Never raises."""
+    total = len(str(message or "")) + len(str(extra or ""))
+    for item in history or ():
+        content = item.get("content") if isinstance(item, dict) else item
+        total += len(content) if isinstance(content, str) else len(str(content or ""))
+    return total // CONTEXT_CHARS_PER_TOKEN
 
 # ── The effort from the member's words (owner, 2026-10-07) ───────────────────
 
@@ -247,6 +276,34 @@ def covered_agents() -> frozenset[str]:
     return frozenset(part.strip() for part in raw.split(",") if part.strip())
 
 
+#: The ``reasoning_effort`` that turns a DeepSeek model's thinking off. litellm
+#: sends it as ``thinking: {type: disabled}``. Any other value turns thinking
+#: ON, so "low" is not a shorter think.
+REASONING_OFF = "none"
+
+
+def reasoning_off(agent: str | None, *, kind: str, effort: str | None) -> bool:
+    """True when a turn of *agent* runs with the model's thinking off.
+
+    Only an ``auto`` turn of kind ``chat``, for an agent that
+    ``AI_REASONING_OFF_AGENTS`` names (a comma list, or ``*``). Thinking,
+    Max, and a ``plan``, ``analysis`` or ``code`` turn keep thinking. A
+    pinned turn reads as ``chat``, so do not list an agent whose default
+    tier cannot move until it measures well. Any fault reads as off.
+    """
+    name = str(agent or "").strip()
+    if not name or kind != "chat" or normalise_effort(effort) != "auto":
+        return False
+    try:
+        from acb_common import get_settings
+
+        raw = str(get_settings().ai_reasoning_off_agents or "")
+    except Exception:  # never change a request on a fault
+        return False
+    names = {part.strip() for part in raw.split(",") if part.strip()}
+    return ALL_AGENTS in names or name in names
+
+
 def tier_routing_on(agent: str | None) -> bool:
     """True when the tier policy covers *agent*. ONE reader, and it fails closed.
 
@@ -316,6 +373,18 @@ def tier_for_kind(kind: str, default: str) -> str:
     return default if target is None else _at_least(default, target)
 
 
+def kind_can_move(default: str) -> bool:
+    """True when the turn's kind can change the tier of an agent whose
+    default is *default*.
+
+    :func:`choose` never goes below *default*. So the top rung cannot move,
+    and a tier off the ladder (an admin's ``provider/model``) cannot move
+    either. For such an agent the System-1 question buys nothing.
+    """
+    rank = _rank(default)
+    return rank is not None and rank < len(LADDER) - 1
+
+
 @dataclass(frozen=True)
 class Choice:
     """The tier of one model request, with the kind and the reason."""
@@ -325,7 +394,8 @@ class Choice:
     reason: str
 
 
-def choose(*, default: str, kind: str, effort: str | None) -> Choice:
+def choose(*, default: str, kind: str, effort: str | None,
+           context_tokens: int = 0) -> Choice:
     """The tier of a TURN: every main model request of it (§4.1 and §5).
 
     One model per turn (owner, 2026-10-09, amends §4.4). The tier is set
@@ -350,6 +420,12 @@ def choose(*, default: str, kind: str, effort: str | None) -> Choice:
     if mode == "max":
         return Choice(_at_least(default, MAX_TIER), kind, "effort")
     base = tier_for_kind(kind, default)
+    # A long turn (owner, 2026-10-22): a long thread, many files or a long
+    # chat. The powerful tier reads it whole and keeps it straight.
+    if context_tokens >= CONTEXT_POWERFUL_TOKENS:
+        long = _at_least(base, TIER_POWERFUL)
+        if long != base:
+            return Choice(long, kind, "context")
     if mode == "thinking":
         stepped = _at_least(base, rung_up(default))
         if stepped != base:
@@ -364,9 +440,10 @@ def choose(*, default: str, kind: str, effort: str | None) -> Choice:
 class TurnKind:
     """The kind of one turn, and how it was found.
 
-    ``source`` is ``system_one``, ``short``, ``max``, ``unsure``,
+    ``source`` is ``system_one``, ``short``, ``max``, ``pinned``, ``unsure``,
     ``timeout``, ``unavailable`` or ``error``. ``latency_ms`` is the time of
-    the System-1 question, or ``None`` when no question went out.
+    the System-1 question, or ``None`` when no question went out. ``pinned``
+    means the agent's default tier cannot move (:func:`kind_can_move`).
 
     ``effort`` is :data:`TEXT_EFFORT` when the member's words explicitly ask
     for deep work, else ``None`` (the run keeps its effort). ``effort_source``
@@ -394,6 +471,7 @@ async def turn_kind(
     effort: str | None,
     *,
     read_effort: bool = False,
+    default: str | None = None,
 ) -> TurnKind:
     """Ask System 1 the kind of this turn. ONE ``tier-fast`` request, or none.
 
@@ -413,6 +491,12 @@ async def turn_kind(
     ``effort`` to :data:`TEXT_EFFORT`. A short message sends no request, and
     :func:`asks_for_depth` reads it instead. A timeout or a failure reads as
     no effort.
+
+    *default* is the agent's default tier. When the kind cannot move it
+    (:func:`kind_can_move`) and no effort item is asked, no question goes
+    out, and the source is ``pinned``. A sub-agent run of the email
+    assistant (``tier-powerful``) asked one for 1.4 to 2.6 s in production
+    and could not use the answer (chat speed review, 2026-10-25).
     """
     mode = normalise_effort(effort)
     if mode == "max":
@@ -423,6 +507,8 @@ async def turn_kind(
         if wants_effort and asks_for_depth(message):
             return TurnKind("chat", "short", effort=TEXT_EFFORT, effort_source="keyword")
         return TurnKind("chat", "short")
+    if default is not None and not wants_effort and not kind_can_move(default):
+        return TurnKind("chat", "pinned")
     from acb_skills import system_one
 
     item = system_one.Item(
@@ -435,7 +521,7 @@ async def turn_kind(
             id="effort", question=EFFORT_QUESTION, kind="yes_no",
             options=system_one.YES_NO,
         ))
-    # So the 1.5 s counts the exchange, not an import. An import fault reads
+    # So the wait counts the exchange, not an import. An import fault reads
     # as no answer, below.
     with contextlib.suppress(Exception):
         system_one.warm()
@@ -518,10 +604,13 @@ class RunTierPolicy:
     effort: str
     emit: Emit | None = None
     _requests: int = 0
+    #: The size of the turn at its start (:func:`turn_tokens`).
+    context_tokens: int = 0
 
     def run_choice(self) -> Choice:
         """The choice for the whole turn. No tool call changes it."""
-        return choose(default=self.default, kind=self.kind, effort=self.effort)
+        return choose(default=self.default, kind=self.kind, effort=self.effort,
+                      context_tokens=self.context_tokens)
 
     def run_tier(self) -> str:
         """The tier of the whole run (§4.5).
@@ -574,6 +663,17 @@ class RunTierPolicy:
         """The tier of the next main request: the turn's tier, always."""
         return self.run_choice()
 
+    def reasoning_effort(self) -> str | None:
+        """:data:`REASONING_OFF` for every request of a turn that runs with
+        thinking off (:func:`reasoning_off`), else None. The turn decides
+        once, so no request of it mixes thinking on and off: DeepSeek refused
+        that with a 400 in the probe of 2026-09-24."""
+        if not reasoning_off(self.agent, kind=self.kind, effort=self.effort):
+            return None
+        if self._requests == 0:
+            _log.info("ai_route.reasoning_off", agent=self.agent, run_id=self.run_id)
+        return REASONING_OFF
+
     def record(self, choice: Choice) -> None:
         """Log ``ai_route.chosen`` and emit ``ai.route`` for one request."""
         self._requests += 1
@@ -603,6 +703,11 @@ class TierPolicyMiddleware(ChatMiddleware):
         choice = self._policy.next_choice()
         options = context.options if isinstance(context.options, dict) else {}
         context.options = {**options, "model": choice.tier}
+        # Chat speed: thinking off for the whole turn, never over an effort
+        # that the request already carries.
+        effort = self._policy.reasoning_effort()
+        if effort is not None and "reasoning_effort" not in options:
+            context.options["reasoning_effort"] = effort
         self._policy.record(choice)
         await call_next()
 

@@ -25,14 +25,14 @@ import {
   captureView,
   clearFilters,
   deleteCopy,
-  railViews,
   resolveBareLink,
   stateOf,
   viewDiverges,
   type SavedView,
 } from "../lib/savedViews";
 import { DEFAULT_VIEW, parseView, serializeView, selectTab, type CrmView } from "../lib/urlState";
-import CrmRail, { type RailViewActions } from "./CrmRail";
+import { orderViews } from "@/lib/savedViews";
+import CrmRail from "./CrmRail";
 import FilterBar from "./FilterBar";
 import RecordList from "./RecordList";
 
@@ -181,26 +181,19 @@ describe("the filter bar choices", () => {
         onChange: noop,
         owners: [{ email: "a@x.test", name: null, member: true }],
         fieldDefs: [region],
-        activeView: null,
-        dirty: false,
-        canEdit: false,
-        isAdmin: false,
-        saving: false,
-        onSave: async () => undefined,
-        onUpdate: async () => undefined,
-        onReset: noop,
       }),
     );
-    // CRM-Q17b item 5: Owner and the fullest picklists at rest. Source and
-    // the date ranges sit behind "Filters".
-    for (const word of ["Owner", "Region", "Filters", "Save view"]) {
+    // CRM-U8: Owner and "+ Filter" at rest. The fields sit in the panel, and
+    // the save controls moved to row 1 (`ViewChips`).
+    for (const word of ["Owner", "Filter"]) {
       expect(html).toContain(word);
     }
+    expect(html).not.toContain("Region");
     expect(html).not.toContain("Created from");
-    expect(html).not.toContain("Share with everyone");
+    expect(html).not.toContain("Save view");
   });
 
-  it("opens the filters behind the button when one of them is in force", () => {
+  it("draws a chip for a filter in force, with a remove button", () => {
     const html = renderToStaticMarkup(
       createElement(FilterBar, {
         entity: "deals",
@@ -208,43 +201,11 @@ describe("the filter bar choices", () => {
         onChange: noop,
         owners: [],
         fieldDefs: [region],
-        activeView: null,
-        dirty: false,
-        canEdit: false,
-        isAdmin: false,
-        saving: false,
-        onSave: async () => undefined,
-        onUpdate: async () => undefined,
-        onReset: noop,
       }),
     );
-    for (const word of ["Source", "Created from", "Closing to", "Filters (1)", 'aria-expanded="true"']) {
+    for (const word of ["Source: Email", 'aria-label="Remove Source: Email"', "Clear"]) {
       expect(html).toContain(word);
     }
-  });
-
-  it("offers Update view and Reset when the screen left the saved view", () => {
-    const html = renderToStaticMarkup(
-      createElement(FilterBar, {
-        entity: "deals",
-        view: DEFAULT_VIEW,
-        onChange: noop,
-        owners: [],
-        fieldDefs: null,
-        activeView: saved(),
-        dirty: true,
-        canEdit: true,
-        isAdmin: true,
-        saving: false,
-        onSave: async () => undefined,
-        onUpdate: async () => undefined,
-        onReset: noop,
-      }),
-    );
-    expect(html).toContain("has unsaved changes");
-    expect(html).toContain("Update view");
-    expect(html).toContain("Reset");
-    expect(html).toContain("Save as new");
   });
 });
 
@@ -310,9 +271,9 @@ describe("saving and applying a view", () => {
     expect(resolveBareLink("", views)).toBeNull();
   });
 
-  it("finds the view in effect and orders the rail", () => {
+  it("finds the view in effect and orders the chips", () => {
     const views = [saved({ id: "b", shared: true, position: 0 }), saved({ id: "a", position: 5 })];
-    expect(railViews(views).map((v) => v.id)).toEqual(["a", "b"]);
+    expect(orderViews(views).map((v) => v.id)).toEqual(["a", "b"]);
     expect(activeSavedView(views, "b")?.id).toBe("b");
     expect(activeSavedView(views, "zzz")).toBeNull();
   });
@@ -331,54 +292,20 @@ describe("saving and applying a view", () => {
 
 // ── The rail ───────────────────────────────────────────────────────────────
 
-describe("saved views nest under their entity in the rail", () => {
-  const actions = (over: Partial<RailViewActions> = {}): RailViewActions => ({
-    views: {
-      deals: [saved({ id: "d1", name: "Big deals" }), saved({ id: "d2", name: "Team board", shared: true, mine: false })],
-      leads: [],
-      contacts: [],
-      organizations: [],
-    },
-    activeViewId: null,
-    isAdmin: false,
-    onSelectView: noop,
-    onRenameView: noop,
-    onShareView: noop,
-    onDeleteView: noop,
-    ...over,
-  });
-  const draw = (a: RailViewActions | undefined, tab: CrmView["tab"] = "deals") =>
-    renderToStaticMarkup(createElement(CrmRail, { tab, onSelect: noop, saved: a }));
-
-  it("draws each view under Deals and none under the others", () => {
-    const html = draw(actions());
-    expect(html).toContain("Big deals");
-    expect(html).toContain("Team board");
-    expect(html.indexOf("Deals")).toBeLessThan(html.indexOf("Big deals"));
-    expect(html.indexOf("Big deals")).toBeLessThan(html.indexOf("Reports"));
+describe("the rail no longer nests saved views (CRM-U8)", () => {
+  it("draws the entity rows and no view row, and takes no `saved` prop", () => {
+    const html = renderToStaticMarkup(createElement(CrmRail, { tab: "deals", onSelect: noop }));
+    for (const word of ["Leads", "Contacts", "Companies", "Deals", "Reports", "CRM settings"]) {
+      expect(html).toContain(word);
+    }
+    expect(html).not.toContain("Bookmark");
+    expect(html).not.toContain("Rename");
+    expect(readFileSync(new URL("./CrmRail.tsx", import.meta.url), "utf-8")).not.toContain("onRenameView");
   });
 
-  it("draws no view row when there are no saved views", () => {
-    expect(draw(undefined)).not.toContain("Big deals");
-  });
-
-  it("offers rename and delete on the caller's own view only", () => {
-    const html = draw(actions());
-    expect(html).toContain('aria-label="Delete Big deals"');
-    expect(html).not.toContain('aria-label="Delete Team board"');
-  });
-
-  it("offers an admin delete and share on a view of another member", () => {
-    const html = draw(actions({ isAdmin: true }));
-    expect(html).toContain('aria-label="Delete Team board"');
-    expect(html).toContain("Make Team board private");
-    expect(html).toContain("Share Big deals");
-  });
-
-  it("marks the view in effect and not its entity row", () => {
-    const html = draw(actions({ activeViewId: "d1" }));
+  it("marks the entity row of the tab on screen, even with a view in effect", () => {
+    const html = renderToStaticMarkup(createElement(CrmRail, { tab: "deals", onSelect: noop }));
     expect(html.match(/aria-current="page"/g)?.length).toBe(1);
-    expect(html).toMatch(/aria-current="page"[^>]*>(?:(?!<button)[\s\S])*Big deals/);
   });
 });
 
@@ -462,9 +389,7 @@ describe("a stale filter is dropped before the request", () => {
     const html = renderToStaticMarkup(
       createElement(FilterBar, {
         entity: "deals", view: DEFAULT_VIEW, onChange: noop, owners: [], fieldDefs: null,
-        unchecked: true, activeView: null, dirty: false, canEdit: false, isAdmin: false,
-        saving: false, onSave: async () => undefined, onUpdate: async () => undefined,
-        onReset: noop,
+        unchecked: true,
       }),
     );
     expect(html).toContain("Could not check the custom filters. Reload to try again.");
@@ -497,14 +422,6 @@ describe("a stale filter is dropped before the request", () => {
         fieldDefs: [region],
         mirror: true,
         removed: ["Gone"],
-        activeView: null,
-        dirty: false,
-        canEdit: false,
-        isAdmin: false,
-        saving: false,
-        onSave: async () => undefined,
-        onUpdate: async () => undefined,
-        onReset: noop,
       }),
     );
     expect(html).toContain("A filter was removed: Gone");

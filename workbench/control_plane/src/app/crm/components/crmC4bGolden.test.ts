@@ -22,6 +22,13 @@
 // fields. The flag changes neither. `C4B_GOLDEN_OUT` made `filters.html` and
 // `list.html` again from this tree, and the other two came out the same.
 //
+// A fourth later edit (WS-53 CRM-U8, 2026-10-20). The two-row toolbar moved
+// the Columns button and the saved-view controls out of these surfaces, and
+// the filter row became Owner, the chips and "+ Filter". The list now takes
+// `chooserOpen` from its caller, so the golden call passes it. The flag
+// changes none of it. `C4B_GOLDEN_OUT` made `filters.html` and `list.html`
+// again from this tree, and the other two came out the same.
+//
 // The runner has no DOM. So `Modal` draws its children in a plain `div`, and
 // for the list one `useState(false)` starts true, which opens the Columns
 // chooser. Both sides of the compare run under the same two mocks.
@@ -147,6 +154,8 @@ function draw(surface: Surface, layout: typeof OFF | null): string {
             onOpen: noop,
             fieldDefs: DEFS,
             columnKeys: ["tier"],
+            chooserOpen: true,
+            onChooserClose: noop,
           }),
         );
       case "filters":
@@ -156,14 +165,6 @@ function draw(surface: Surface, layout: typeof OFF | null): string {
             view: { ...DEFAULT_VIEW, tab: "deals", custom: { tier: ["gold"] } },
             onChange: noop,
             fieldDefs: DEFS,
-            activeView: null,
-            dirty: false,
-            canEdit: false,
-            isAdmin: false,
-            saving: false,
-            onSave: async () => undefined,
-            onUpdate: async () => undefined,
-            onReset: noop,
           }),
         );
     }

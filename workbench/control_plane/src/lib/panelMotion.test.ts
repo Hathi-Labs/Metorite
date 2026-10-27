@@ -75,6 +75,8 @@ describe("the phases", () => {
     expect(formDurationMs("dock")).toBe(PANEL_MOTION.durationMs);
     expect(formDurationMs("full")).toBe(PANEL_MOTION.expandMs);
     expect(formDurationMs("sheet")).toBe(PANEL_MOTION.sheetMs);
+    // The phone's peek strip (CF-1) moves on the sheet's short token.
+    expect(formDurationMs("peek")).toBe(PANEL_MOTION.sheetMs);
   });
 
   it("the full-view switch stays in the brief's window, 200 to 280 ms", () => {
@@ -120,6 +122,11 @@ describe("the tokens: one motion for both panels", () => {
     expect(rule(GLOBALS, '.assistant-panel[data-moving][data-panel-form="sheet"]')).toContain(
       "opacity var(--sheet-duration) var(--sheet-easing)",
     );
+    // The peek strip (CF-1) moves on the same tokens, closing and rising.
+    expect(rule(GLOBALS, '.assistant-panel[data-moving][data-panel-form="peek"]')).toContain(
+      "transform var(--sheet-duration) var(--sheet-easing)",
+    );
+    expect(GLOBALS).toContain("animation: assistant-peek-rise var(--sheet-duration) var(--sheet-easing);");
   });
 
   it("the swap's CSS names the same transition name and class as the script", () => {

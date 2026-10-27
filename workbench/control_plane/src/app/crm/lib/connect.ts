@@ -147,7 +147,7 @@ export function modeLine(input: {
   sync: SyncStatus | null;
   nowMs?: number;
 }): string | null {
-  if (input.mode === "native") return "Native";
+  if (input.mode === "native") return "Metorite";
   if (input.mode !== "mirror") return null;
   const last = input.sync?.last_success_at ?? input.connection?.last_sync_at ?? null;
   const when = last ? relativeTime(last, input.nowMs) : "";

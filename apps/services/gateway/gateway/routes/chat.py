@@ -137,6 +137,12 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
                 "       s.user_id, COALESCE(s.visibility, 'private') AS visibility, "
                 "       (SELECT count(*) FROM chat_session_participant p "
                 "          WHERE p.session_id = s.id) AS participant_count, "
+                # WS-62 CF-5 (review of #1216): whether a MEMBER wrote in it.
+                # The brief row is an agent turn, so a chat that holds only
+                # the brief reads false, and the nudge stays (§4.7).
+                "       EXISTS (SELECT 1 FROM chat_message m "
+                "               WHERE m.session_id = s.id AND m.role = 'user') "
+                "         AS has_user_message, "
                 "       me.role AS my_role, s.archived_at "
                 "FROM chat_session s "
                 # One join on the participant key, so no query per row.
@@ -174,6 +180,7 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
             # >1 means somebody else is in here too. The sidebar shows a shared
             # badge on exactly this signal, so it never lies about a solo thread.
             "participantCount": int(r.participant_count or 0),
+            "hasUserMessage": bool(r.has_user_message),
             # D99 (migration 254): an archived chat stays in the list, and
             # the assistant shows it under "Archived".
             "archivedAt": r.archived_at.isoformat() if r.archived_at else None,
@@ -1453,6 +1460,14 @@ async def list_active_sessions(
     when the caller may see its chat. With ``CHAT_DURABLE_ASKS`` OFF every row
     is ``running``. ``askKind`` names the card.
 
+    **§4.10: ``runId``.** Each row carries the run's own id, or None. It is
+    stable for the whole run, and the open chat keys the run by it.
+
+    **§4.10: ``live``.** Each row says whether a run runs for the thread. A
+    ``needs_input`` row with ``live: false`` is parked: no run waits on the
+    card, and an answer starts a new run. The open chat draws "waiting for
+    you" and "parked" differently from it.
+
     **WS-51 S3: ``lastStep``.** With ``?steps=1`` a running row carries the
     run's latest step, for example "Search tasks" or "Writing a reply", read
     from the tail of its own stream (``stream_relay.latest_step``). The step is
@@ -1501,10 +1516,18 @@ async def list_active_sessions(
     ids = list(dict.fromkeys([*by_tid, *asks]))
 
     def _state(tid: str) -> dict:
+        # ``live``: a run runs for the thread. A ``needs_input`` row with no
+        # live run is a PARKED question: an answer starts a new run (owner
+        # report 2026-10-19, ``chat_run_continuity.md`` §4.10).
+        live = tid in by_tid
+        # ``runId``: the run's own id, written once per run in the index. The
+        # browser keys a run by it, so a re-register never reads as a new
+        # run (re-review of #1171). Only for a row this route already lists.
+        run_id = (by_tid.get(tid) or {}).get("runId") or None
         ask = asks.get(tid)
         if ask is None:
-            return {"state": "running", "askKind": None}
-        return {"state": "needs_input", "askKind": ask.get("kind")}
+            return {"state": "running", "askKind": None, "live": live, "runId": run_id}
+        return {"state": "needs_input", "askKind": ask.get("kind"), "live": live, "runId": run_id}
 
     def _own_unknown(tid: str) -> dict:
         return {

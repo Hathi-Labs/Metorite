@@ -197,7 +197,7 @@ export interface MyTask {
   /** the NAME of the task's lane in its own project ("Building", "In progress") */
   workflowStage?: string;
   /** the CATEGORY of that lane (`pm_task_statuses.category`: todo,
-   *  in_progress, done, backlog, triage, cancelled). Next Actions groups by
+   *  in_progress, done, backlog, triage, cancelled). My tasks groups by
    *  it (D73.9); `lib/statusCategory.ts` owns the rule. */
   statusCategory?: string;
   /** the lane's stored colour NAME (`pm_task_statuses.color`). It outranks
@@ -304,6 +304,8 @@ export interface Target {
  */
 export type ViewKey =
   | "inbox"
+  /** WS-64 OP-2 — My work in Projects: my tasks dated today or before (`today.ts`). */
+  | "today"
   | "next"
   | "priority"
   | "waiting"

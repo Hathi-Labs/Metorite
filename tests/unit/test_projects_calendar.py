@@ -209,12 +209,19 @@ NOT_ON_THE_CALENDAR = {
     # The window IS the shape; a calendar has no pages, no sort key and no
     # parent-task drill-down.
     "page", "sort", "direction", "parent_task_id",
+    # MCP-G5. An outside agent reads a subtree in one call. A calendar has no
+    # parent-task drill-down, so it has no subtree either.
+    "include_descendants",
     # ⚠️ **`view_id` is an ORDERING join, not a filter** (H-64). It reads one
     # saved view's hand-arranged `pm_view_task_positions` so a board column can
     # honour a drag. A calendar is laid out by DATE — there is no column for a
     # hand order to be an order OF, so accepting it would declare a parameter
     # the endpoint could not act on. Excluded rather than added, deliberately.
     "view_id",
+    # EA-14a. An AGENT's filter: the MCP `list_tasks` sends it to find a task
+    # no other AI session holds. The board never sends it, so the calendar
+    # cannot drop it silently.
+    "unheld",
 }
 
 

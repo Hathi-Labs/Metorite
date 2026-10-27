@@ -410,9 +410,13 @@ class TestTheIdentityOnARealDatabase:
         [], [1], [2, 3], [1, 2, 4], list(range(1, 13)), [*range(1, 13), 1, 2],
     ])
     async def test_a_new_connect_takes_the_slot_of_the_rule(
-        self, promoted, app_engine, used,  # noqa: F811
+        self, promoted, app_engine, used, monkeypatch,  # noqa: F811
     ):
         _assert_non_priv(app_engine)
+        # This case seeds up to 14 old mailboxes to test the slot rule, which
+        # is past the limit of Q-MB-1. The limit has its own fence.
+        from gateway.routes.email import core
+        monkeypatch.setattr(core, "MAX_MAILBOXES_PER_MEMBER", 99)
         p = promoted
         owner = f"Owner-{uuid.uuid4().hex[:8]}@em-t8b.test"
         for n, slot in enumerate(used):

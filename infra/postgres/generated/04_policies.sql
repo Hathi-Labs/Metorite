@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 180
+-- Tables in this phase: 187
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -768,6 +768,13 @@ CREATE POLICY pm_agent_run_activities_tenant_isolation ON pm_agent_run_activitie
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE pm_agent_run_strands ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_agent_run_strands FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_agent_run_strands_tenant_isolation ON pm_agent_run_strands;
+CREATE POLICY pm_agent_run_strands_tenant_isolation ON pm_agent_run_strands
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE pm_agent_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pm_agent_runs FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS pm_agent_runs_tenant_isolation ON pm_agent_runs;
@@ -1311,5 +1318,124 @@ ALTER TABLE crm_business_rules ENABLE ROW LEVEL SECURITY;
 ALTER TABLE crm_business_rules FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS crm_business_rules_tenant_isolation ON crm_business_rules;
 CREATE POLICY crm_business_rules_tenant_isolation ON crm_business_rules
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE email_scheduled_sends ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_scheduled_sends FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS email_scheduled_sends_tenant_isolation ON email_scheduled_sends;
+CREATE POLICY email_scheduled_sends_tenant_isolation ON email_scheduled_sends
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_favorites ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_favorites FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_favorites_tenant_isolation ON kb_favorites;
+CREATE POLICY kb_favorites_tenant_isolation ON kb_favorites
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_page_proposals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_page_proposals FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_page_proposals_tenant_isolation ON kb_page_proposals;
+CREATE POLICY kb_page_proposals_tenant_isolation ON kb_page_proposals
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_gaps ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_gaps FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_gaps_tenant_isolation ON kb_gaps;
+CREATE POLICY kb_gaps_tenant_isolation ON kb_gaps
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE email_mailbox_grants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_mailbox_grants FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS email_mailbox_grants_tenant_isolation ON email_mailbox_grants;
+CREATE POLICY email_mailbox_grants_tenant_isolation ON email_mailbox_grants
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE email_thread_assignments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_thread_assignments FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS email_thread_assignments_tenant_isolation ON email_thread_assignments;
+CREATE POLICY email_thread_assignments_tenant_isolation ON email_thread_assignments
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE email_send_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_send_log FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS email_send_log_tenant_isolation ON email_send_log;
+CREATE POLICY email_send_log_tenant_isolation ON email_send_log
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE email_mailbox_member_prefs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_mailbox_member_prefs FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS email_mailbox_member_prefs_tenant_isolation ON email_mailbox_member_prefs;
+CREATE POLICY email_mailbox_member_prefs_tenant_isolation ON email_mailbox_member_prefs
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_entities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_entities FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_entities_tenant_isolation ON kb_entities;
+CREATE POLICY kb_entities_tenant_isolation ON kb_entities
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_sources ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_sources FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_sources_tenant_isolation ON kb_sources;
+CREATE POLICY kb_sources_tenant_isolation ON kb_sources
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_source_nodes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_source_nodes FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_source_nodes_tenant_isolation ON kb_source_nodes;
+CREATE POLICY kb_source_nodes_tenant_isolation ON kb_source_nodes
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE push_subscriptions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE push_subscriptions FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS push_subscriptions_tenant_isolation ON push_subscriptions;
+CREATE POLICY push_subscriptions_tenant_isolation ON push_subscriptions
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE reminders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reminders FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS reminders_tenant_isolation ON reminders;
+CREATE POLICY reminders_tenant_isolation ON reminders
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE reminder_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reminder_events FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS reminder_events_tenant_isolation ON reminder_events;
+CREATE POLICY reminder_events_tenant_isolation ON reminder_events
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_sync_cursors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_sync_cursors FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_sync_cursors_tenant_isolation ON kb_sync_cursors;
+CREATE POLICY kb_sync_cursors_tenant_isolation ON kb_sync_cursors
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_sync_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_sync_runs FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_sync_runs_tenant_isolation ON kb_sync_runs;
+CREATE POLICY kb_sync_runs_tenant_isolation ON kb_sync_runs
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_node_access ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_node_access FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_node_access_tenant_isolation ON kb_node_access;
+CREATE POLICY kb_node_access_tenant_isolation ON kb_node_access
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

@@ -15,6 +15,13 @@ import {
   agentRunRows,
   normalizeRunDetail,
 } from "./agentRuns";
+import {
+  ATTENTION_LIMIT,
+  type AttentionPage,
+  type ResumeResult,
+  attentionPage,
+  resumeBody,
+} from "./needsAttention";
 import type { Rule as RecurrenceRule } from "./recurrence";
 
 /**
@@ -158,6 +165,30 @@ export interface ProjectRow {
   description?: string | null;
   parent_project_id?: string | null;
   /**
+   * WS-64 OP-8 (D-OP-12). False when the server will refuse this member's
+   * delete. `/tree` and `/nodes/{id}` carry it, from `authority.py`, the
+   * rule the delete route checks. The menu hides Delete only on `false`, so
+   * a row without the flag still offers it, and the server decides.
+   */
+  can_delete?: boolean;
+  /**
+   * WS-64 OP-3 (D-OP-2, D-OP-15). True on every node of the caller's own
+   * personal tree, which `GET /projects/tree` returns in its separate
+   * `personal` key. The sidebar draws those under "Personal" and the row
+   * menu offers them no access item. Absent on a team node.
+   */
+  personal?: boolean;
+  /** OP-3 — always false on a personal node, with the server's reason beside it. */
+  can_write_grants?: boolean;
+  grant_refusal?: string | null;
+  /**
+   * WS-64 OP-10 (D-OP-16). True when this member may turn this FOLDER into a
+   * project. `/tree` and `/nodes/{id}` carry it, from `authority.py`. A
+   * project row reads false. The menu offers "Convert to project" only on
+   * an explicit `true`.
+   */
+  can_convert?: boolean;
+  /**
    * The SUBTREE roll-up `GET /projects/tree` stamps on every node: how many
    * tasks live at or under it, how many were delivered, and how many were
    * abandoned.
@@ -237,7 +268,8 @@ export interface SummaryChild {
 export interface NodeSummary {
   id: string;
   name: string;
-  level: "portfolio" | "space" | "folder" | "project" | "subproject";
+  /** `mine` is the My tasks roll-up of OP-11 (`GET /projects/my/summary`). */
+  level: "portfolio" | "space" | "folder" | "project" | "subproject" | "mine";
   /** Tasks in the whole subtree, the node's own included. */
   tasks: number;
   overdue: number;
@@ -264,6 +296,20 @@ export interface NodeSummary {
     overdue: number;
     by_category: Record<string, number>;
   };
+  /**
+   * WS-64 OP-11 — the My tasks summary only (`GET /projects/my/summary`).
+   * `due_soon` is open work due in the next `due_soon_days`. `by_disposition`
+   * holds the chip counts, by the rules of `mine.fold_dispositions`. `today`
+   * is the member's date, and `time_zone` the zone the server counted Today
+   * in (the stored zone, else UTC). Absent on a node summary.
+   */
+  due_soon?: number;
+  due_soon_days?: number;
+  by_disposition?: Partial<
+    Record<"inbox" | "today" | "next" | "waiting" | "someday" | "done", number>
+  >;
+  today?: string;
+  time_zone?: string;
 }
 
 /**
@@ -295,15 +341,73 @@ export interface VelocityForecast {
   /** finished minus created. Zero or less and the backlog never empties. */
   net_per_week: number;
   remaining_tasks: number;
+  /** WS-27bn RA-6: the weeks of the 50% figure. */
   weeks_remaining: number | null;
-  /** ISO date, or null. Null is a FINDING — read `verdict` for which one. */
+  /**
+   * ISO date, or null. Null is a FINDING — read `verdict` for which one.
+   * WS-27bn RA-6: the 50% date of the forecast by count.
+   */
   finish_date: string | null;
   verdict:
     | "converging"
-    /** ⚠️ Scope is growing at least as fast as delivery. No date exists. */
+    /**
+     * ⚠️ Scope is growing at least as fast as delivery, or the runs do not
+     * finish within the cap. No date exists. `reason` says which.
+     */
     | "not_converging"
+    /** "Not enough history": too few weeks with a finished task. */
     | "no_history"
     | "nothing_left";
+  /*
+   * WS-27bn RA-6, the forecast by count (`projects_reports.md` §6.8 B). Each
+   * key below is optional: an older server sends none of them, and the panel
+   * then draws the old lines. The server computes each one.
+   */
+  /** The finished tasks of the history weeks. */
+  finished_in_window?: number;
+  weeks_with_finishes?: number;
+  /**
+   * The rule of "Not enough history" (RA-6 fix round 1): fewer than
+   * `min_finished` finished tasks, or fewer than `min_finish_weeks` weeks
+   * with a finish.
+   */
+  min_finished?: number;
+  min_finish_weeks?: number;
+  /** How many runs the forecast made. */
+  trials?: number;
+  /** The most weeks one run simulates. */
+  cap_weeks?: number;
+  /** Why it does not converge: work arrives as fast, or past the cap. */
+  reason?: "arrivals" | "cap" | null;
+  /**
+   * The finished tasks a week that would converge it. Only for reason
+   * `arrivals`. A `cap` verdict names no rate (RA-6 fix round 1).
+   */
+  converge_per_week?: number | null;
+  p50_weeks?: number | null;
+  p50_date?: string | null;
+  p85_weeks?: number | null;
+  p85_date?: string | null;
+  /** The one plain sentence (§6.8 E5). The panel prints it first. */
+  summary?: string;
+}
+
+/**
+ * WS-27bn RA-6 — "Needs an owner" (`projects_reports.md` §6.8 F): the open
+ * tasks with no assignee and no open run. The server names 20 at most.
+ */
+export interface NeedsOwner {
+  total: number;
+  /** True when it is at least the open count of each holder (§6.8 B). */
+  leads: boolean;
+  max_rows: number;
+  tasks: {
+    id: string;
+    task_number: number | null;
+    title: string;
+    project_id: string;
+    due_at: string | null;
+  }[];
 }
 
 export interface CapacityForecast {
@@ -632,6 +736,402 @@ export interface HygieneReport {
   rows: HygieneRow[];
 }
 
+/**
+ * WS-27bn RA-3 — one row of the `waiting` section: a task that waits on a
+ * person, the agent, and the member the agent works for (§6.8 E2).
+ */
+export interface WaitingRow {
+  /** The task. A row opens it. */
+  id: string;
+  task_number: number | null;
+  title: string;
+  project_id: string;
+  project_name: string;
+  parent_task_id?: string | null;
+  parent?: ParentFact | null;
+  /** When the wait began, and its age, from the database clock. */
+  since: string | null;
+  age_hours: number | null;
+  /** The client name, from the one client map of the server. */
+  agent: string;
+  client_via: string | null;
+  /** The member the agent works for. `null` for an in-app agent. */
+  member: string | null;
+  member_name: string | null;
+  /** A question row only: the run that asks. The client keys the row on it. */
+  run_id?: string;
+}
+
+/** A task that an agent put up for a review (§5, "Waiting on a person"). */
+export interface WaitingReview extends WaitingRow {
+  reasons: ("review_lane" | "pull_request")[];
+  pr_url: string | null;
+}
+
+/** An open `blocks` link between a person's task and an agent's task. */
+export interface WaitingHandoff extends WaitingRow {
+  blocker_id: string;
+  blocker_number: number | null;
+  blocker_title: string;
+  /** Which task of the link the agent holds. */
+  agent_side: "blocker" | "blocked";
+  /** The person who holds the other task. */
+  person: string | null;
+  person_name: string | null;
+}
+
+/**
+ * WS-27bn RA-3 — the `waiting` section (`analytics_waiting.py`
+ * `waiting_body`). The three lists read the state now, and each names up to
+ * `max_rows` rows beside a total. The answer time reads the report period.
+ */
+export interface WaitingReport {
+  /** The one plain sentence of the panel (§6.8 E5), from the server. */
+  summary: string;
+  /** RA-4b. False while agent runs are off. Absent before RA-4b. */
+  on?: boolean;
+  /** False when no task of the scope has an agent run. */
+  agent_runs_seen: boolean;
+  questions: WaitingRow[];
+  questions_total: number;
+  reviews: WaitingReview[];
+  reviews_total: number;
+  handoffs: WaitingHandoff[];
+  handoffs_total: number;
+  answer_time: {
+    asked: number;
+    answered: number;
+    unanswered: number;
+    median_hours: number | null;
+    p90_hours: number | null;
+  };
+  max_rows: number;
+  /**
+   * WS-27bn RA-2. The three totals added on the server, for the KPI tile. A
+   * task that waits in two ways counts two times. Absent before RA-2.
+   */
+  waiting_total?: number;
+  /** WS-27bn RA-2. The age of the oldest wait in hours, or null for none. */
+  oldest_hours?: number | null;
+}
+
+/**
+ * WS-27bn RA-4. The outcomes of an agent run, in the panel's order.
+ * `server_closed` (RA-4b) is a run that Metorite closed. It is no success.
+ */
+export type RunOutcome =
+  | "completed"
+  | "failed"
+  | "stopped"
+  | "abandoned"
+  | "released"
+  | "server_closed";
+
+/** WS-27bn RA-4. Each outcome with its count of runs. */
+export type RunOutcomeCounts = Record<RunOutcome, number>;
+
+/** WS-27bn RA-4. One UTC day of the outcome series. */
+export interface RunOutcomeDay extends RunOutcomeCounts {
+  /** The day, as `YYYY-MM-DD`, in UTC. */
+  day: string;
+  total: number;
+}
+
+/** WS-27bn RA-4. The four sizes of a completed run, by agent time. */
+export type RunSize = "under_15m" | "under_1h" | "under_4h" | "over_4h";
+
+/**
+ * WS-27bn RA-4. One run of the `agent_runs` section: the task it works on,
+ * the agent, and the member the agent works for (§6.8 E2).
+ */
+export interface AgentRunRow {
+  /** The task. A row opens it. */
+  id: string;
+  task_number: number | null;
+  title: string;
+  project_id: string;
+  project_name: string;
+  parent_task_id?: string | null;
+  parent?: ParentFact | null;
+  /** The run. The client keys the row on it. */
+  run_id: string;
+  /** The client name, from the one client map of the server. */
+  agent: string;
+  client_via: string | null;
+  member: string | null;
+  member_name: string | null;
+}
+
+/** A silent run: since when the agent said nothing, and for how long. */
+export interface SilentRunRow extends AgentRunRow {
+  since: string | null;
+  age_hours: number | null;
+}
+
+/** A long run: its agent time, and when it ended. */
+export interface LongRunRow extends AgentRunRow {
+  hours: number | null;
+  ended_at: string | null;
+}
+
+/**
+ * WS-27bn RA-4 — the `agent_runs` section (`analytics_agent_runs.py`
+ * `agent_runs_body`). The outcomes and the sizes read the last `days` UTC
+ * days, today included, and never the report period. The silent runs read
+ * the state now.
+ */
+export interface AgentRunsReport {
+  /** The one plain sentence of the panel (§6.8 E5), from the server. */
+  summary: string;
+  /** False while agent runs are off for the organization. */
+  on: boolean;
+  /** False when no task of the scope has an agent run. */
+  agent_runs_seen: boolean;
+  days: number;
+  /** The first UTC day of the window, as `YYYY-MM-DD`. */
+  window_start: string;
+  /** The runs that ended in the window, by outcome. */
+  outcomes: RunOutcomeCounts;
+  ended_total: number;
+  /** The runs that ended in the window before, by outcome. */
+  outcomes_before: RunOutcomeCounts;
+  /** Each UTC day of the window, oldest first. The days add up to `outcomes`. */
+  series: RunOutcomeDay[];
+  success: {
+    /** Completed over completed, failed and abandoned. Null with none. */
+    rate: number | null;
+    completed: number;
+    rated: number;
+    rate_before: number | null;
+    rated_before: number;
+    trend: "up" | "down" | "flat" | null;
+  };
+  silent: SilentRunRow[];
+  silent_total: number;
+  silent_after_minutes: number;
+  /** The completed runs of the window by size, and those with no agent time. */
+  sizes: Record<RunSize | "unmeasured", number>;
+  sized_total: number;
+  /** The longest runs of 4 hours or more, the longest first. */
+  long_runs: LongRunRow[];
+  long_total: number;
+  long_after_hours: number;
+  /** The flag of the long runs, with its count, or null with none. */
+  long_line: string | null;
+  max_rows: number;
+}
+
+/** WS-27bn RA-5. The merged and closed agent pull requests, and the open ones. */
+export interface QualityPrs {
+  merged: number;
+  /** Closed with no merge. */
+  closed: number;
+  /** Merged over merged and closed. Null with none. RA-2's rule, so it equals the KPI tile's. */
+  rate: number | null;
+  merged_before: number;
+  closed_before: number;
+  rate_before: number | null;
+  trend: "up" | "down" | "flat" | null;
+  /** Open and draft agent pull requests on open tasks, now. */
+  open: number;
+}
+
+/** WS-27bn RA-5. An open agent pull request whose checks fail now. */
+export interface QualityFailingRow {
+  /** The task. A row opens it. */
+  id: string;
+  task_number: number | null;
+  title: string;
+  project_id: string;
+  project_name: string;
+  parent_task_id?: string | null;
+  parent?: ParentFact | null;
+  /** When the task linked the pull request. */
+  since: string | null;
+  age_hours: number | null;
+  /** `owner/repo#12`. */
+  ref: string;
+  url: string | null;
+  pr_title: string | null;
+  pr_state: string;
+  agent: string;
+  client_via: string | null;
+  member: string | null;
+  member_name: string | null;
+}
+
+/** WS-27bn RA-5. The CI figures of the agent pull requests. */
+export interface QualityChecks {
+  /** Open agent pull requests whose checks fail now, before the cap. */
+  failing_total: number;
+  /** Up to five, the oldest first. */
+  failing: QualityFailingRow[];
+  /** Merged in the window with a failing state read BEFORE the merge. */
+  merged_red: number;
+  merged_red_before: number;
+}
+
+/** WS-27bn RA-5. The tasks one group finished, and the ones reopened after. */
+export interface QualityReopened {
+  /** The finishes of the window, by this group. */
+  finished: number;
+  /** Of those finishes, the ones that a later reopen undid (the cohort). */
+  undone: number;
+  /** The DISTINCT tasks with a reopen in the window, by the finish it undid. */
+  reopened: number;
+  finished_before: number;
+  undone_before: number;
+  reopened_before: number;
+  /** Undone over finished, so never above 1. Null with no finish. */
+  rate: number | null;
+  rate_before: number | null;
+  trend: "up" | "down" | "flat" | null;
+}
+
+/** WS-27bn RA-5. Failed runs, and the ones that got a later run on the task. */
+export interface QualityRetried {
+  failed: number;
+  retried: number;
+  failed_before: number;
+  retried_before: number;
+  rate: number | null;
+  rate_before: number | null;
+  trend: "up" | "down" | "flat" | null;
+}
+
+/**
+ * WS-27bn RA-5 — the `quality` section (`analytics_quality.py`
+ * `quality_body`). It reads the last `days` days counted back from now, as
+ * the merge rate of the KPI tile does, and never the report period.
+ */
+export interface QualityReport {
+  /** The one plain sentence of the panel (§6.8 E5), from the server. */
+  summary: string;
+  /** False while agent runs are off for the organization. */
+  on: boolean;
+  /** False when the scope has no agent pull request, no reopen and no failed run. */
+  quality_seen: boolean;
+  days: number;
+  prs: QualityPrs;
+  checks: QualityChecks;
+  rework: {
+    /** Agents (agent-finished and agent-assisted) and people. Never one person. */
+    reopened: { agents: QualityReopened; people: QualityReopened };
+    retried: QualityRetried;
+  };
+  max_rows: number;
+}
+
+/** WS-27bn RA-1. The done tasks of a window, by finish label. */
+export interface ActorSplit {
+  agent_finished: number;
+  agent_assisted: number;
+  person: number;
+}
+
+/**
+ * WS-27bn RA-2. One week of `actor_series`: each label, the two groups and
+ * the total, all added on the server. `agents` is `agent_finished` plus
+ * `agent_assisted`, and `people` is `person`.
+ */
+export interface ActorWeek extends ActorSplit {
+  week_start: string;
+  agents: number;
+  people: number;
+  completed: number;
+}
+
+/** WS-27bn RA-2. The cycle time of one group. A median is null, never 0. */
+export interface ActorCycleGroup {
+  completed: number;
+  /** The `agent_assisted` tasks of the group. Always 0 for people. */
+  assisted: number;
+  measured: number;
+  median_hours: number | null;
+  p90_hours: number | null;
+}
+
+/** WS-27bn RA-2. One agent of a member, with its finishes of the window. */
+export interface MemberAgent {
+  agent: string;
+  client_via: string | null;
+  agent_finished: number;
+  agent_assisted: number;
+  total: number;
+}
+
+/**
+ * WS-27bn RA-2. The agent finishes of one member (§6.8 E2). `member` is
+ * null for the in-app agents, which work for no member. The server sorts
+ * the rows by name, never by count (§6.8 E1).
+ */
+export interface AgentMember {
+  member: string | null;
+  member_name: string | null;
+  total: number;
+  agents: MemberAgent[];
+}
+
+/** WS-27bn RA-2. "Who did the work", as `WhoDidTheWorkPanel` takes it. */
+export interface WhoDidTheWorkReport {
+  period_start: string;
+  period_end: string;
+  actor_summary: string;
+  actor_series: ActorWeek[];
+  actor_split: ActorSplit;
+  agent_members: AgentMember[];
+  agent_members_total?: number;
+  hidden_people?: number;
+  /** The last week of the series is the running week. */
+  current_week_partial: boolean;
+}
+
+/**
+ * WS-27bn RA-2. The figures of the Overview's KPI strip that no section
+ * holds (`analytics_agents.kpis_body`). Only a preview with `kpis: true`
+ * carries them.
+ */
+export interface KpisReport {
+  runs: {
+    /** False while `agent_runs_enabled` is off. Then every count is 0. */
+    on: boolean;
+    working: number;
+    silent: number;
+    failed_today: number;
+    silent_after_minutes: number;
+    members: { member: string; member_name: string | null; working: number; silent: number }[];
+    hidden_people?: number;
+  };
+  merge: {
+    days: number;
+    merged: number;
+    closed: number;
+    /** Merged over merged plus closed, 0 to 1, or null when none closed. */
+    rate: number | null;
+    merged_before: number;
+    closed_before: number;
+    rate_before: number | null;
+    trend: "up" | "down" | "flat" | null;
+  };
+  time: {
+    finished: number;
+    run_tasks: number;
+    median_hours: number | null;
+    total_hours: number | null;
+    /** `agent_time_less_waits`: start to the agent's last act, less the waits. */
+    basis: string;
+  };
+  cost: {
+    /** Always null until usage capture (SW-20) exists. Never 0. */
+    per_task: number | null;
+    source: string | null;
+    known_tasks: number;
+    finished: number;
+    share: number | null;
+    reason: string;
+  };
+}
+
 /** WS-27bn R3d — the three reasons a person needs help. */
 export type PulseHelpReason = "blocked" | "stale" | "waiting_overdue";
 
@@ -840,6 +1340,8 @@ export interface LoadReport {
   effort?: EffortReport;
   /** People with a name on open work. Excludes the unassigned bucket. */
   people_named?: number;
+  /** WS-27bn RA-6. Optional: an older server sends none. */
+  needs_owner?: NeedsOwner;
 }
 
 export interface ThroughputWeek {
@@ -870,6 +1372,10 @@ export interface ThroughputReport {
   /** The last bucket is the current week, and the week is not over. */
   current_week_partial: boolean;
   summary: Partial<Omit<ThroughputWeek, "week_start">>;
+  /** WS-27bn RA-2. A report's section only: the split of people and agents. */
+  actor_cycle?: { people: ActorCycleGroup; agents: ActorCycleGroup };
+  /** WS-27bn RA-2. The one sentence of the split (§6.8 E5), from the server. */
+  actor_summary?: string;
 }
 
 export interface FinishedProject {
@@ -1024,6 +1530,11 @@ export interface ReportStub {
 /** What `POST /projects/reports/preview` answers: a render with a stub. */
 export type PreviewReportBody = Omit<RenderedReportBody, "report"> & {
   report: ReportStub;
+  /**
+   * WS-27bn RA-2. The KPI strip's own figures. Only the Overview asks for
+   * them (`kpis: true`), so a saved report and the builder never get them.
+   */
+  kpis?: KpisReport;
 };
 
 /** What `GET /projects/reports/{id}/render` answers. */
@@ -1048,6 +1559,15 @@ export interface RenderedReportBody {
       }[];
       total_completed: number;
       total_cancelled: number;
+      /** WS-27bn RA-1. Who finished `total_completed`, by label. */
+      actor_split?: ActorSplit;
+      /** WS-27bn RA-2. "Who did the work": its sentence, weeks and members. */
+      actor_summary?: string;
+      actor_series?: ActorWeek[];
+      agent_members?: AgentMember[];
+      agent_members_total?: number;
+      /** WS-27bn RA-2. Sent for a reader who is not an admin only. */
+      hidden_people?: number;
     };
     throughput?: {
       /**
@@ -1063,6 +1583,11 @@ export interface RenderedReportBody {
       p90_hours?: number | null;
       no_start?: number;
       cancelled?: number;
+      /** WS-27bn RA-1. Who finished `completed`, by label. */
+      actor_split?: ActorSplit;
+      /** WS-27bn RA-2. The median and the p90 of people and of agents. */
+      actor_cycle?: { people: ActorCycleGroup; agents: ActorCycleGroup };
+      actor_summary?: string;
     };
     /**
      * WS-27bn R3a. Opt-in. The outlook route's own body, for the report's
@@ -1087,6 +1612,8 @@ export interface RenderedReportBody {
       effort?: EffortReport;
       /** WS-27bn R5a. Sent for a reader who is not an admin only. */
       hidden_people?: number;
+      /** WS-27bn RA-6. The open tasks with no assignee and no open run. */
+      needs_owner?: NeedsOwner;
     };
     /** WS-27bm S7a. Opt-in: present only when the report asked for it. */
     capacity?: {
@@ -1117,6 +1644,21 @@ export interface RenderedReportBody {
       blocked?: StuckReport["blocked"];
       blocked_total?: number;
     };
+    /**
+     * WS-27bn RA-3. What waits on a person: agent questions, agent work for
+     * a review and blocked handoffs, with the answer time of the period.
+     */
+    waiting?: WaitingReport;
+    /**
+     * WS-27bn RA-4. How agent runs end: 14 days of outcomes, the success
+     * rate, the silent runs now and the run sizes.
+     */
+    agent_runs?: AgentRunsReport;
+    /**
+     * WS-27bn RA-5. Agent pull request outcomes, rework and CI red, over
+     * the last 14 days and the 14 days before.
+     */
+    quality?: QualityReport;
     /**
      * WS-27bn R3c. Opt-in. Open tasks that lack an assignee, a due date or an
      * estimate, and tasks in progress with no change. It reads the state now.
@@ -1160,10 +1702,26 @@ export interface TaskTypeRow {
   is_epic?: boolean | null;
 }
 
+/** One row of `GET /projects/tasks/{id}/subtree` (D-OP-10). */
+export interface SubtreeRow {
+  id: string;
+  parent_task_id: string | null;
+  title: string;
+  status_name: string | null;
+  status_category: string | null;
+  archived: boolean;
+}
+
 export interface TaskRow {
   id: string;
   project_id: string;
   root_project_id: string;
+  /**
+   * WS-64 OP-8 (D-OP-12). False when the server will refuse this member's
+   * delete. The list, the delta feed and the task read carry it, from
+   * `authority.py`. Only `false` hides Delete, and the server decides.
+   */
+  can_delete?: boolean;
   task_number?: number | null;
   parent_task_id?: string | null;
   type_id?: string | null;
@@ -1271,6 +1829,19 @@ export interface TaskRow {
    * `agent_worked.py`. The "Agent work" filter reads it.
    */
   agent_worked?: boolean | null;
+  /**
+   * WS-64 OP-11 — the CALLER's overlay, on a read with `with_overlay=1`
+   * (`mine.attach_my_overlay`). `disposition` is the effective one (D77).
+   * Absent on every other read.
+   */
+  disposition?: string | null;
+  is_triaged?: boolean;
+  is_mine?: boolean;
+  context?: string | null;
+  energy?: string | null;
+  defer_until?: string | null;
+  /** WS-64 OP-11 — the stage of the row's status, for a board of many projects. */
+  status_category?: string | null;
 }
 
 export interface StatusRow {
@@ -1549,12 +2120,21 @@ export function projectsKey(
  * is not the same thing — FastAPI would read it as a string and answer 404 for
  * a node that cannot exist. So the key is omitted rather than blanked.
  */
-function scopeQuery(nodeId?: string, weeks?: number): string {
+function scopeQuery(nodeId?: string, weeks?: number, subject?: AnalyticsSubject): string {
   const parts: string[] = [];
   if (nodeId) parts.push(`project_id=${encodeURIComponent(nodeId)}`);
   if (weeks) parts.push(`weeks=${weeks}`);
+  if (subject) parts.push(`subject=${subject}`);
   return parts.length ? `?${parts.join("&")}` : "";
 }
+
+/**
+ * WS-64 OP-11 — the one subject an Analytics read takes: `me`, the caller.
+ * A word and never an address (`report_scope.subject_me`). Stuck, Load,
+ * Throughput and Finished take it. ⚠️ The Outlook refuses it with a 422
+ * (`projects_reports.md`), so `outlook` has no subject argument.
+ */
+export type AnalyticsSubject = "me";
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api/projects/${path}`, {
@@ -1646,7 +2226,13 @@ export function isReadOnlyPost(method: string, path: string): boolean {
 export { call as projectsCall };
 
 export const projectsApi = {
-  tree: () => call<{ rows: ProjectRow[]; total: number }>("tree"),
+  tree: () =>
+    call<{
+      rows: ProjectRow[];
+      total: number;
+      /** OP-3 — the caller's own personal tree, nested at every depth. Absent from an older gateway. */
+      personal?: ProjectRow[];
+    }>("tree"),
 
   /** The subtree roll-up behind every dashboard and every aggregate view. */
   summary: (nodeId: string) =>
@@ -1661,16 +2247,22 @@ export const projectsApi = {
    * ⚠️ These return finished numbers. Do not post-process them into other
    * numbers in the browser — see the note on `StuckReport`.
    */
-  stuck: (nodeId?: string) =>
-    call<StuckReport>(`analytics/stuck${scopeQuery(nodeId)}`),
-  load: (nodeId?: string) =>
-    call<LoadReport>(`analytics/load${scopeQuery(nodeId)}`),
-  throughput: (nodeId?: string, weeks?: number) =>
+  stuck: (nodeId?: string, subject?: AnalyticsSubject) =>
+    call<StuckReport>(`analytics/stuck${scopeQuery(nodeId, undefined, subject)}`),
+  load: (nodeId?: string, subject?: AnalyticsSubject) =>
+    call<LoadReport>(`analytics/load${scopeQuery(nodeId, undefined, subject)}`),
+  throughput: (nodeId?: string, weeks?: number, subject?: AnalyticsSubject) =>
     call<ThroughputReport>(
-      `analytics/throughput${scopeQuery(nodeId, weeks)}`
+      `analytics/throughput${scopeQuery(nodeId, weeks, subject)}`
     ),
-  finished: (nodeId?: string, weeks?: number) =>
-    call<FinishedReport>(`analytics/finished${scopeQuery(nodeId, weeks)}`),
+  finished: (nodeId?: string, weeks?: number, subject?: AnalyticsSubject) =>
+    call<FinishedReport>(`analytics/finished${scopeQuery(nodeId, weeks, subject)}`),
+  /**
+   * WS-64 OP-11 — the Overview of My tasks: the `NodeSummary` shape over
+   * mine, with `due_soon` and the chip counts in `by_disposition`. It takes
+   * no parameter: the member is the session's.
+   */
+  mySummary: () => call<NodeSummary>("my/summary"),
   outlook: (nodeId?: string) =>
     call<OutlookReport>(`analytics/outlook${scopeQuery(nodeId)}`),
   /** WS-27bm S7a. The server's default horizon (14 days) unless one is named. */
@@ -1723,6 +2315,8 @@ export const projectsApi = {
     project_id: string | null;
     name: string;
     config: ReportConfig;
+    /** WS-27bn RA-2. The Overview asks for its KPI strip. */
+    kpis?: boolean;
   }) =>
     call<PreviewReportBody>("reports/preview", {
       method: "POST",
@@ -2032,6 +2626,18 @@ export const projectsApi = {
     call<DeleteProjectResult>(`nodes/${projectId}`, { method: "DELETE" }),
 
   /**
+   * WS-64 OP-10 (D-OP-16). A folder becomes a project, and the projects in it
+   * become its subprojects. Callers go through `ConvertFolderDialog`, which
+   * says so before the click. The server refuses a folder whose projects have
+   * subprojects of their own, and names them.
+   */
+  convertFolder: (projectId: string) =>
+    call<ProjectRow>(`nodes/${projectId}/convert`, {
+      method: "POST",
+      body: JSON.stringify({ to: "project" }),
+    }),
+
+  /**
    * The directory-backed assignee picker (WS-28e, people_center_app.md §6.1).
    * People and agents in one response; the HR half (load, skills, contracted)
    * follows the CALLER's grants and `hr_visible` says which emptiness an empty
@@ -2112,21 +2718,44 @@ export const projectsApi = {
   /**
    * Delete a task for good, and say what went with it.
    *
-   * ⚠️ Subtasks are PROMOTED, not destroyed. D-PM-38 moves them up ONE level,
-   * to this task's own parent, so `subtasks_promoted` is not a cascade count
-   * but its opposite. Reporting it
-   * as deleted would reassure in the wrong direction.
+   * ⚠️ Subtasks are PROMOTED unless the member marks them (D-OP-10). With no
+   * `deleteSubtaskIds`, D-PM-38 holds: each subtask moves up ONE level, to
+   * this task's own parent, so `subtasks_promoted` is not a cascade count but
+   * its opposite. Each id of `deleteSubtaskIds` goes with the task. The route
+   * takes it as a repeated query value, because a DELETE here has no body.
+   * `subtasks_kept_hidden` counts the subtasks the caller cannot see. A
+   * delete never removes them.
    */
-  deleteTask: (taskId: string) =>
-    call<{
+  deleteTask: (
+    taskId: string,
+    opts?: { deleteSubtaskIds?: string[]; deleteAllSubtasks?: boolean },
+  ) => {
+    // `deleteAllSubtasks` sends one flag and no list: a long list of ids
+    // overruns the header limit (about 300 ids).
+    const ids = opts?.deleteSubtaskIds ?? [];
+    const query = opts?.deleteAllSubtasks
+      ? "?delete_all_subtasks=true"
+      : ids.length
+        ? `?${ids.map((id) => `delete_subtask_ids=${encodeURIComponent(id)}`).join("&")}`
+        : "";
+    return call<{
       deleted: string;
       cascaded: {
         activities: number;
         assignees: number;
         links: number;
         subtasks_promoted: number;
+        subtasks_deleted?: number;
+        subtasks_kept_hidden?: number;
       };
-    }>(`tasks/${taskId}`, { method: "DELETE" }),
+    }>(`tasks/${taskId}${query}`, { method: "DELETE" });
+  },
+
+  /** D-OP-10 — the subtasks a delete offers: every one the caller can see. */
+  taskSubtree: (taskId: string) =>
+    call<{ task_id: string; subtasks: SubtreeRow[]; hidden: number }>(
+      `tasks/${taskId}/subtree`,
+    ),
 
   setAssignees: (taskId: string, assignees: string[]) =>
     call<{ task_id: string; assignees: string[] }>(`tasks/${taskId}/assignees`, {
@@ -2525,6 +3154,29 @@ export const agentRunsApi = {
     }),
 
   /**
+   * EA-14a. Give a task up: the run becomes `released`. The task keeps its
+   * status and its assignees. 403 for a caller who is not the run's member,
+   * an assignee or an admin.
+   */
+  release: (runId: string) =>
+    call<{ run: AgentRun; released: boolean }>(
+      `agent-runs/${encodeURIComponent(runId)}/release`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+
+  /**
+   * WS-55 SW-11a. Hand a stalled run back to an agent: one member prompt with
+   * the server's text, so the run reads `needs_agent` `answered`. The rule
+   * of Release decides who may. 409 when no open recovery record fits the
+   * run, or when its task is closed. A retry with the same key writes once.
+   */
+  resume: (runId: string, idempotencyKey?: string) =>
+    call<ResumeResult & { run: AgentRun }>(
+      `agent-runs/${encodeURIComponent(runId)}/resume`,
+      { method: "POST", body: JSON.stringify(resumeBody(idempotencyKey)) },
+    ),
+
+  /**
    * EA-6g (EA3-40). The run's member approves or declines an agent's
    * archive request. An approve archives the task, never its subtasks. Any
    * other member gets 403, and a request past its expiry gets 409.
@@ -2554,6 +3206,28 @@ export const agentRunsApi = {
    */
   summary: (projectId: string) =>
     call<AgentSummary>(`${encodeURIComponent(projectId)}/agent-summary`),
+};
+
+/**
+ * WS-55 SW-11a — Needs attention (`external_agent_access.md` §12.7). The
+ * stalled runs, the open runs of closed tasks and the tasks blocked by parked
+ * work of one project and its subprojects, over the tasks the caller can see.
+ * The rules and the words are in `needsAttention.ts`.
+ */
+export const attentionApi = {
+  /** The whole list of one project, the oldest first inside each kind. */
+  list: async (projectId: string): Promise<AttentionPage> =>
+    attentionPage(
+      await call<unknown>(
+        `needs-attention?project_id=${encodeURIComponent(projectId)}&limit=${ATTENTION_LIMIT}`,
+      ),
+    ),
+  /**
+   * WS-64 OP-11 — the list over every project, kept to the rows that are the
+   * caller's (`mine=true`). The Needs attention lens of My tasks reads it.
+   */
+  mine: async (): Promise<AttentionPage> =>
+    attentionPage(await call<unknown>(`needs-attention?mine=true&limit=${ATTENTION_LIMIT}`)),
 };
 
 export interface NotificationRow {

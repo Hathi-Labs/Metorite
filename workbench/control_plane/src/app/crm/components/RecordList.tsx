@@ -154,6 +154,8 @@ export default function RecordList({
   fieldDefs = null,
   columnKeys,
   onColumnsChange,
+  chooserOpen = false,
+  onChooserClose,
   statuses = [],
   onLoadMore,
   loadingMore = false,
@@ -183,6 +185,13 @@ export default function RecordList({
    */
   columnKeys?: string[] | null;
   onColumnsChange?: (keys: string[]) => void;
+  /**
+   * The Columns dialog is open. The toolbar owns the button (CRM-U8), so the
+   * caller holds the state. `onColumnsChange` also runs for the browser's
+   * choice, so the caller can tell that the default view has columns now.
+   */
+  chooserOpen?: boolean;
+  onChooserClose?: () => void;
   /** The stages or statuses of this entity, for the dot of the Stage column. */
   statuses?: ReadonlyArray<Status>;
   /** CRM-X1: read the next page of the same view. */
@@ -205,7 +214,6 @@ export default function RecordList({
   // while rendering when the entity changes, so no frame shows the old list's choice.
   // `null` is "nothing saved", and `[]` is "saved empty" (CRM-Q17a-2 item 2).
   const [picked, setPicked] = useState(() => ({ entity, keys: readColumns(entity) }));
-  const [choosing, setChoosing] = useState(false);
   let saved = picked.keys;
   if (picked.entity !== entity) {
     saved = readColumns(entity);
@@ -235,24 +243,18 @@ export default function RecordList({
     }
     writeColumns(entity, keys);
     setPicked({ entity, keys });
+    onColumnsChange?.(keys);
   }
   const sortable = new Set(sortKeys ?? SORTS[entity as EntitySlug].map((s) => s.key));
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      {available.length > 0 && (
-        <div className="flex shrink-0 justify-end border-b border-border px-4 py-1.5">
-          <Button variant="ghost" size="sm" onClick={() => setChoosing(true)}>
-            Columns
-          </Button>
-        </div>
-      )}
-      {choosing && (
+      {chooserOpen && (
         <ColumnChooser
           groups={groups}
           chosen={chosen}
           onToggle={toggle}
-          onClose={() => setChoosing(false)}
+          onClose={() => onChooserClose?.()}
         />
       )}
       <div className="flex-1 overflow-auto">

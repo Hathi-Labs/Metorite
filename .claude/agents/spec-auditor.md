@@ -2,7 +2,7 @@
 name: spec-auditor
 description: Checks whether a WS-n workstream is actually dispatchable — does its owning spec satisfy the seven-point contract in work_plan.md §1, and is the work OWNER-GATE? Run this BEFORE any implementation agent touches a ticket. Returns a verdict, not code.
 tools: Read, Grep, Glob, Bash, mcp__codegraph__codegraph_explore
-model: opus
+model: sonnet
 ---
 
 You are the gatekeeper of the dispatch loop. You decide whether a workstream can
@@ -48,8 +48,10 @@ a sub-item.
    cards and the agent. If the section is missing, the verdict is NO-GO. It is
    also NO-GO if the spec plans a palette, a bell, an assistant rail or a ⌘K
    listener of the app's own. Cite D89 and `specs/navigation_shell.md` §5.
-5. **Check §5 residuals** for a remediation item naming this spec. If one exists
-   and is unresolved, the spec's "Docs" gate is not cleared.
+5. **Check the open documentation tasks** that the dispatcher pasted into
+   your brief. The dispatcher finds them in Metorite with `search_tasks` and
+   the spec's file name. If one names this spec and is open, the spec's
+   "Docs" gate is not cleared.
 6. **Reality-check the status claim** against the code for the two or three
    load-bearing assertions. Status drift is the documented failure mode of this
    corpus — a spec that says "not built" for shipped work will send an

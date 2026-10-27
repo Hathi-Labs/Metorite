@@ -26,10 +26,7 @@ import { usePathname, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppTopBar } from "@/components/AppTopBar";
 import { useMobileDrawer } from "@/components/AppShell";
-import FilterPills from "@/components/FilterPills";
-import { ModeSwitch } from "@/components/ModeSwitch";
 import Button from "@/components/ui/Button";
-import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import SelectButton from "@/components/ui/SelectButton";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
@@ -54,7 +51,8 @@ import { AccessSection } from "./components/AccessPanel";
 import SetupHubSection from "./components/SetupHub";
 import CrmBoundary from "./components/CrmBoundary";
 import ConvertModal from "./components/ConvertModal";
-import CrmRail, { type RailSettings, type RailViewActions } from "./components/CrmRail";
+import CrmRail, { type RailSettings } from "./components/CrmRail";
+import CrmViewBar from "./components/CrmViewBar";
 import FilterBar from "./components/FilterBar";
 import FirstOpen from "./components/FirstOpen";
 import { ImportProgress, SetupLink, StalledBanner } from "./components/MirrorBanner";
@@ -101,21 +99,17 @@ import {
 import { readShowEmpty, showEmptyStages, visibleLanes, writeShowEmpty } from "./lib/emptyStages";
 import { readCardSort, writeCardSort, type CardSort } from "./lib/nextActivity";
 import { chatScope } from "@/lib/sessions";
-import { activeChip, applyChip, chipsFor } from "./lib/filters";
-import { readColumns } from "./lib/fields";
+import { chipsFor } from "./lib/filters";
+import { pickable, readColumns } from "./lib/fields";
 import { pruneFilters } from "./lib/filterBar";
 import {
-  activeSavedView,
-  applyView,
-  canEditView,
-  captureView,
-  deleteCopy,
   isFiltered,
+  moduleScope,
   resolveBareLink,
-  viewDiverges,
-  type SavedView,
+  type ViewEntity,
 } from "./lib/savedViews";
-import { invalidateViews, useAllSavedViews } from "./lib/useSavedViews";
+import { useAllSavedViews } from "./lib/useSavedViews";
+import { useViewActions } from "./lib/useViewActions";
 import {
   orderedPipelines,
   readRemembered,
@@ -140,7 +134,6 @@ import {
   selectSection,
   selectTab,
   viewHref,
-  type CrmLayout,
   type CrmView,
   type SheetParam,
 } from "./lib/urlState";
@@ -165,6 +158,7 @@ import {
 } from "./lib/settingsSections";
 import { convertSkippedNote } from "./lib/convertMapping";
 import { emptyListLine, landing, landingPlan, railEntries, viewLabel, type Landing } from "./lib/views";
+import { MORE_TAB, moduleOfTab, phoneNav, readNavDetail } from "./lib/phoneNav";
 
 /** Which URL parameter opens a record of each collection. */
 const PARAM_FOR: Record<EntitySlug, SheetParam> = {
@@ -259,16 +253,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // Stable keys for the filters that are objects: the load effect watches them.
   const rangesKey = JSON.stringify(loadView.ranges);
   const customKey = JSON.stringify(loadView.custom);
-  // Saved views (CRM-Q8): nested in the rail, and applied through `?view=`.
+  // Saved views (CRM-Q8, CRM-U8): chips in row 1 of each list. A link that
+  // carries only `?view=<id>` needs the views of all four lists to find its tab.
   const allViews = useAllSavedViews();
   const savedList = useMemo(() => Object.values(allViews).flat(), [allViews]);
-  const activeSaved = activeSavedView(savedList, view.viewId);
-  /** The columns the member picked since the saved view in effect was applied. */
-  const [draftColumns, setDraftColumns] = useState<{ viewId: string; keys: string[] } | null>(
-    null,
-  );
-  const [savingView, setSavingView] = useState(false);
-  const [deletingView, setDeletingView] = useState<SavedView | null>(null);
   const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
   /** The rail of views: open from `lg` up, folded below, the member's call
    *  inside a band. The one rule My Tasks uses (`lib/railFold.ts`). */
@@ -416,6 +404,11 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   /** The collection a LIST is showing. A board is not a list, so it is null there. */
   const listEntity: EntitySlug | null = isEntity(view.tab) && !boardOn ? view.tab : null;
   const listFieldDefs = filterDefs;
+  // How many fields the Columns dialog would offer. The button hides at 0.
+  const { layout: columnLayout } = useFieldLayout(filterEntity);
+  const columnChoices = pickable(
+    columnLayout?.studio === true ? columnLayout.fields : listFieldDefs,
+  ).length;
 
   // A job asked for the search box of a list (CRM-X2). The address may change
   // a render after the ask, so the ask waits here until that list is on screen.
@@ -472,88 +465,32 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   const barDefs = filterDefs;
 
   /**
-   * The custom columns in effect: the view's own, or this browser's. `null`
-   * is "nothing saved", and the list then shows the columns of the fill rank.
-   * `[]` is "saved empty" (CRM-Q17a-2 item 2). A new view keeps the choice,
-   * not the defaults on screen, so it goes on following the fill rank.
+   * The saved views of the list on screen (CRM-U8): one controller for a
+   * core list and for a module list. The scope is the key of the list. The
+   * default view keeps its columns in this browser. A saved view keeps them
+   * on the view (`lib/useViewActions.ts`).
    */
-  const draftOfView = draftColumns?.viewId === view.viewId ? draftColumns?.keys : undefined;
-  const viewColumns: string[] | null = draftOfView ?? activeSaved?.columns ?? null;
-  const currentColumns = (): string[] | null =>
-    activeSaved ? viewColumns : filterEntity ? readColumns(filterEntity) : null;
-  const dirty = activeSaved
-    ? viewDiverges(activeSaved, captureView(view, viewColumns, view.pipelineId))
-    : false;
-
-  async function saveView(name: string, shared: boolean) {
-    if (!filterEntity) return;
-    setSavingView(true);
-    try {
-      const state = captureView(view, currentColumns(), pipelineId);
-      const made = await api.createView({ entity: filterEntity, name, shared, ...state });
-      invalidateViews();
-      setDraftColumns(null);
-      go(applyView(made));
-      toast.show({ key: "crm-view", variant: "success", title: `Saved ${made.name}` });
-    } catch (err) {
-      store.setError(err instanceof CrmError ? err.message : "The view was not saved.");
-    } finally {
-      setSavingView(false);
-    }
-  }
-
-  async function updateView() {
-    if (!activeSaved || !filterEntity) return;
-    setSavingView(true);
-    try {
-      await api.patchView(activeSaved.id, captureView(view, viewColumns, pipelineId));
-      invalidateViews();
-      setDraftColumns(null);
-    } catch (err) {
-      store.setError(err instanceof CrmError ? err.message : "The view was not updated.");
-    } finally {
-      setSavingView(false);
-    }
-  }
-
-  async function changeView(saved: SavedView, body: Parameters<typeof api.patchView>[1]) {
-    try {
-      await api.patchView(saved.id, body);
-      invalidateViews();
-    } catch (err) {
-      store.setError(err instanceof CrmError ? err.message : "The view was not changed.");
-    }
-  }
-
-  async function removeView(saved: SavedView) {
-    setSavingView(true);
-    try {
-      await api.deleteView(saved.id);
-      invalidateViews();
-      // A deleted view in effect leaves its filters on screen but no longer names it.
-      if (view.viewId === saved.id) go({ ...view, viewId: null });
-    } catch (err) {
-      store.setError(err instanceof CrmError ? err.message : "The view was not deleted.");
-    } finally {
-      setSavingView(false);
-      setDeletingView(null);
-    }
-  }
-
-  /** What the rail needs to nest and run the views. */
-  const railSaved: RailViewActions = {
-    views: allViews,
-    activeViewId: view.viewId,
-    isAdmin: ctx.isAdmin,
-    onSelectView: (saved) => {
-      setDraftColumns(null);
-      go(applyView(saved));
-      if (isMobile) closeDrawer();
-    },
-    onRenameView: (saved, name) => void changeView(saved, { name }),
-    onShareView: (saved) => void changeView(saved, { shared: !saved.shared }),
-    onDeleteView: setDeletingView,
+  const viewScope: ViewEntity | null =
+    filterEntity ?? (view.tab === "module" && view.module ? moduleScope(view.module) : null);
+  // A pick of the default view changes this browser's key, so the page draws again.
+  const [, setColumnsTick] = useState(0);
+  const viewActions = useViewActions({
+    scope: viewScope,
+    view,
+    pipelineId,
+    defaultColumns: viewScope ? readColumns(viewScope) : null,
+    go,
+    onError: store.setError,
+    onSaved: (made) =>
+      toast.show({ key: "crm-view", variant: "success", title: `Saved ${made.name}` }),
+  });
+  const activeSaved = viewActions.active;
+  /** The member picked columns: a saved view keeps them, the default view keeps them here. */
+  const onColumnsPicked = (keys: string[]) => {
+    if (activeSaved) viewActions.setColumns(keys);
+    else setColumnsTick((n) => n + 1);
   };
+  const [choosingColumns, setChoosingColumns] = useState(false);
 
   /** The rail rows of the generic modules (CRM-Q6b), and where a lookup opens. */
   const railModules = {
@@ -782,6 +719,61 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     questions: questions.gate === "on" ? railCount(questionsOpen) : null,
   };
 
+  /** The whole rail, in the shell's drawer. The title and "More" both open it. */
+  function openViews(): void {
+    openDrawer(
+      <nav aria-label="CRM views" className="p-2">
+        <CrmRail
+          tab={view.tab}
+          onSelect={chooseView}
+          modules={railModules}
+          settings={railSettings}
+          labels={labels}
+          overlays={overlays}
+          states={coreStates}
+        />
+      </nav>
+    );
+  }
+
+  // CRM-U10: the CRM's tabs in the phone's bottom bar. The page owns the list
+  // (mode, labels, rows the source turned off) and the shell draws it.
+  const navBadge = questions.gate === "on" ? railCount(questionsOpen) : null;
+  useEffect(() => {
+    if (!isMobile) return;
+    const detail = phoneNav(
+      railEntries(modules, labels, overlays, coreStates),
+      { tab: view.tab, module: view.module },
+      navBadge,
+      modules,
+      coreStates
+    );
+    window.dispatchEvent(new CustomEvent("cc-crm-nav", { detail }));
+  }, [isMobile, modules, labels, overlays, coreStates, view.tab, view.module, navBadge]);
+  useEffect(
+    () => () => {
+      window.dispatchEvent(new CustomEvent("cc-crm-nav", { detail: null }));
+    },
+    []
+  );
+  // A tap on a tab. The handler reads the latest closures through a ref, so
+  // the listener stays one for the life of the page.
+  const tabTap = useRef<(id: string) => void>(() => {});
+  tabTap.current = (id: string) => {
+    const module = moduleOfTab(id);
+    if (id === MORE_TAB) openViews();
+    else if (module) railModules.onSelect(module);
+    else chooseView(id as CrmView["tab"]);
+  };
+  useEffect(() => {
+    const h = (e: Event) => {
+      const id = readNavDetail((e as CustomEvent<unknown>).detail);
+      if (id) tabTap.current(id);
+    };
+    window.addEventListener("cc-mobile-nav", h);
+    return () => window.removeEventListener("cc-mobile-nav", h);
+  }, []);
+
   // The app's verb sits next to its name, as Capture does in My Tasks. It is
   // the quick-create entry the old header held, at the bar's size.
   // In Mirror mode a record is made in Zoho, so the verb is gone (spec §3.3).
@@ -813,101 +805,19 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
       />
     ) : null;
 
+  // Since CRM-U8 the app bar keeps Refresh only. The layout switch, the
+  // pipeline picker, the board toggles, Columns and Export are in row 1 of
+  // the toolbar (`CrmViewBar`).
   const tools = (
-    <>
-      {picker}
-      {hasBoard(view.tab) && (
-        // The list or board switch (CRM-Q3). The shared control that Projects
-        // and My Tasks draw, so the CRM adds no second look for one choice.
-        <ModeSwitch<CrmLayout>
-          modes={[
-            { id: "list", icon: "List" },
-            { id: "board", icon: "Kanban" },
-          ]}
-          mode={view.layout}
-          onPick={(next) => go(selectLayout(view, next))}
-          label={`${viewLabel(view.tab, labels)} layout`}
-        />
-      )}
-      {dealBoard && (
-        // Show or hide the stages that hold no deal under the filters on screen.
-        <Button
-          variant="ghost"
-          size={isMobile ? "icon-sm" : "sm"}
-          icon={showEmpty ? "Eye" : "EyeOff"}
-          selected={showEmpty}
-          aria-label="Show empty stages"
-          title={showEmpty ? "Hide the stages that hold no deal" : "Show the stages that hold no deal"}
-          onClick={() => {
-            const next = !showEmpty;
-            writeShowEmpty(memberScope, next);
-            setPickedEmpty({ scope: memberScope, show: next });
-          }}
-        >
-          {isMobile ? null : "Empty stages"}
-        </Button>
-      )}
-      {dealBoard && (
-        // The order of the cards in each lane (CRM-X3). Off: stage age, as
-        // before. On: the soonest next activity first. The gateway sorts,
-        // because a lane returns one page of its cards.
-        <Button
-          variant="ghost"
-          size={isMobile ? "icon-sm" : "sm"}
-          icon="CalendarClock"
-          selected={cardSort === "next_activity"}
-          aria-label="Order cards by next activity"
-          title={
-            cardSort === "next_activity"
-              ? "Cards are in order of next activity. Click to order them by time in stage"
-              : "Cards are in order of time in stage. Click to order them by next activity"
-          }
-          onClick={() => {
-            const next: CardSort = cardSort === "next_activity" ? "stage_age" : "next_activity";
-            writeCardSort(memberScope, next);
-            setPickedSort({ scope: memberScope, sort: next });
-          }}
-        >
-          {isMobile ? null : "Next activity"}
-        </Button>
-      )}
-      {listEntity && (
-        // WS-26i-export — the filter that is on screen, as a CSV.
-        //
-        // ⚠️ Fetched rather than navigated to (see lib/api.exportRecords).
-        // The endpoint REFUSES a filter wider than its row cap, naming the
-        // matched count, and `window.location = …` would turn that refusal
-        // into a tab full of JSON instead of a sentence in the banner below.
-        //
-        // It is on the LISTS only: the board is a page of each lane and
-        // reports are aggregates, so neither has a row set an export could
-        // honestly claim to be "what you were looking at".
-        <Button
-          variant="ghost"
-          size={isMobile ? "icon-sm" : "sm"}
-          icon="Download"
-          loading={exporting}
-          aria-label="Export CSV"
-          title="Export what is on screen as a CSV"
-          onClick={async () => {
-            setExporting(true);
-            await store.exportList(listEntity, loadView);
-            setExporting(false);
-          }}
-        >
-          {isMobile ? null : "Export"}
-        </Button>
-      )}
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        onClick={reload}
-        aria-label="Refresh"
-        title="Refresh"
-      >
-        <Icon name="RefreshCw" size={14} className={store.loading ? "animate-spin" : ""} />
-      </Button>
-    </>
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      onClick={reload}
+      aria-label="Refresh"
+      title="Refresh"
+    >
+      <Icon name="RefreshCw" size={14} className={store.loading ? "animate-spin" : ""} />
+    </Button>
   );
 
   return (
@@ -925,22 +835,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           isMobile ? (
             <button
               type="button"
-              onClick={() =>
-                openDrawer(
-                  <nav aria-label="CRM views" className="p-2">
-                    <CrmRail
-                      tab={view.tab}
-                      onSelect={chooseView}
-                      saved={railSaved}
-                      modules={railModules}
-                      settings={railSettings}
-                      labels={labels}
-                      overlays={overlays}
-                      states={coreStates}
-                    />
-                  </nav>
-                )
-              }
+              onClick={openViews}
               className="inline-flex max-w-full items-center gap-1 align-middle tech-transition hover:opacity-80"
             >
               <span className="truncate">
@@ -969,7 +864,6 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             <CrmRail
               tab={view.tab}
               onSelect={chooseView}
-              saved={railSaved}
               modules={railModules}
               settings={railSettings}
               labels={labels}
@@ -991,39 +885,77 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           {ctx.mode === "mirror" && ctx.sync?.state === "running" && (
             <ImportProgress status={ctx.sync} />
           )}
-          {chips.length > 0 && (
-            <FilterPills
-              items={chips}
-              activeId={activeChip(view)}
-              onChange={(id) => go(applyChip(view, id))}
-            />
-          )}
-
+          {/* The two-row toolbar (CRM-U8). Row 1: which view. Row 2: what is
+              filtered. It serves every list and board, and the module lists. */}
           {filterEntity && !landingPending && (
-            <FilterBar
-              entity={filterEntity}
-              labels={labels}
-              view={view}
-              onChange={go}
-              owners={owners}
-              search={!boardOn}
-              fieldDefs={barDefs}
-              mirror={ctx.mode === "mirror"}
-              removed={waitingForDefs ? [] : pruned.removed}
-              unchecked={unchecked}
-              activeView={activeSaved}
-              dirty={dirty}
-              canEdit={activeSaved ? canEditView(activeSaved, ctx.isAdmin) : false}
-              isAdmin={ctx.isAdmin}
-              saving={savingView}
-              onSave={saveView}
-              onUpdate={updateView}
-              onReset={() => {
-                if (!activeSaved) return;
-                setDraftColumns(null);
-                go(applyView(activeSaved));
-              }}
-            />
+            <>
+              <CrmViewBar
+                allLabel={`All ${viewLabel(filterEntity, labels).toLowerCase()}`}
+                actions={viewActions}
+                isAdmin={ctx.isAdmin}
+                me={access.email}
+                picker={picker}
+                layout={
+                  hasBoard(view.tab)
+                    ? {
+                        mode: view.layout,
+                        label: `${viewLabel(view.tab, labels)} layout`,
+                        onPick: (next) => go(selectLayout(view, next)),
+                      }
+                    : null
+                }
+                board={
+                  dealBoard
+                    ? {
+                        showEmpty,
+                        onToggleEmpty: () => {
+                          const next = !showEmpty;
+                          writeShowEmpty(memberScope, next);
+                          setPickedEmpty({ scope: memberScope, show: next });
+                        },
+                        nextActivity: cardSort === "next_activity",
+                        onToggleNextActivity: () => {
+                          const next: CardSort =
+                            cardSort === "next_activity" ? "stage_age" : "next_activity";
+                          writeCardSort(memberScope, next);
+                          setPickedSort({ scope: memberScope, sort: next });
+                        },
+                      }
+                    : null
+                }
+                onColumns={
+                  listEntity && columnChoices > 0 ? () => setChoosingColumns(true) : null
+                }
+                onExport={
+                  listEntity
+                    ? async () => {
+                        // Fetched rather than navigated to (see lib/api.exportRecords).
+                        // The endpoint REFUSES a filter wider than its row cap, naming
+                        // the matched count, and a navigation would turn that refusal
+                        // into a tab full of JSON instead of a sentence in the banner.
+                        setExporting(true);
+                        await store.exportList(listEntity, loadView);
+                        setExporting(false);
+                      }
+                    : null
+                }
+                exporting={exporting}
+              />
+              <FilterBar
+                entity={filterEntity}
+                labels={labels}
+                view={view}
+                onChange={go}
+                owners={owners}
+                search={!boardOn}
+                stages={boardOn ? [] : chips}
+                fieldDefs={barDefs}
+                mirror={ctx.mode === "mirror"}
+                removed={waitingForDefs ? [] : pruned.removed}
+                unchecked={unchecked}
+                count={boardOn || store.loading ? null : store.total}
+              />
+            </>
           )}
 
           {store.error && (
@@ -1113,6 +1045,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               onChange={go}
               onOpen={(id) => openAlone(openModuleRecord(view, view.module!, id))}
               reloadToken={moduleReload}
+              actions={viewActions}
+              isAdmin={ctx.isAdmin}
+              me={access.email}
+              onColumnsPicked={onColumnsPicked}
             />
           ) : view.tab === "reports" ? (
             <Reports reports={store.reports} loading={store.loading} />
@@ -1161,10 +1097,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               <RecordList
                 entity={listEntity}
                 fieldDefs={listFieldDefs}
-                columnKeys={activeSaved ? viewColumns : undefined}
-                onColumnsChange={(keys) =>
-                  view.viewId && setDraftColumns({ viewId: view.viewId, keys })
-                }
+                columnKeys={activeSaved ? viewActions.columns : undefined}
+                onColumnsChange={onColumnsPicked}
+                chooserOpen={choosingColumns}
+                onChooserClose={() => setChoosingColumns(false)}
                 rows={store.rows}
                 total={store.total}
                 loading={store.loading}
@@ -1189,18 +1125,6 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           </CrmBoundary>
         </main>
       </div>
-
-      {deletingView && (
-        <ConfirmDialog
-          open
-          title={deleteCopy(deletingView).title}
-          body={deleteCopy(deletingView).body}
-          confirmLabel="Delete view"
-          busy={savingView}
-          onCancel={() => setDeletingView(null)}
-          onConfirm={() => void removeView(deletingView)}
-        />
-      )}
 
       {view.record && (
         <RecordSheet

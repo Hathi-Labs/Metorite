@@ -13,7 +13,7 @@
  */
 
 import { dataText, type AssistantFacts } from "@/lib/shell/assistant";
-import type { PersonaInput } from "./assistantPersona";
+import { holdsNoTasksNote, holdsTasksNote, type PersonaInput } from "./assistantPersona";
 
 /** The most selected ids the facts name. */
 const MAX_PICKED = 50;
@@ -26,22 +26,45 @@ function chip(name: string | undefined): string | undefined {
   return clean.length > CHIP_MAX ? `${clean.slice(0, CHIP_MAX - 1)}…` : clean;
 }
 
+/** The app id of the My tasks roll-up (WS-64 OP-11). */
+const MY_TASKS_APP = "my-tasks";
+
+/**
+ * What the assistant is told on My tasks (WS-64 OP-11). The chat tools work
+ * the same on any page. This fact keeps "here" from reading as a project.
+ */
+export const MY_TASKS_FACT =
+  "They are on their My tasks roll-up (everything assigned to them), not a project. " +
+  "Creating a task here goes to their task inbox unless they name a project.";
+
 export function projectsAssistantFacts(input: Omit<PersonaInput, "today" | "timezone"> & {
   /** The Projects destination open instead of a canvas: Reports or Settings. */
   app?: string | null;
+  /** WS-64 OP-11 — the chip of My tasks that is on, when `app` is My tasks. */
+  chip?: string | null;
 }): AssistantFacts {
   const facts: string[] = [];
-  if (input.node) {
+  if (input.app === MY_TASKS_APP) {
+    // WS-64 OP-11. My tasks is a roll-up, not a project, so no node is named
+    // here, even when the page still holds the last project selected.
+    facts.push(MY_TASKS_FACT);
+    if (input.view) facts.push(`They are looking at the ${input.view} view of My tasks.`);
+    if (input.chip && input.chip !== "all") facts.push(`The ${input.chip} chip is on.`);
+  } else if (input.node) {
     const level = input.node.level ?? "node";
     facts.push(
       `They have the ${level} ${dataText(input.node.name)} selected ` +
         `(project_id: ${input.node.id}${input.node.archived ? ", archived" : ""}). ` +
         `"This project" or "here" means it.`,
     );
+    const note = holdsNoTasksNote(input.node) ?? holdsTasksNote(input.node);
+    if (note) facts.push(note);
   } else {
     facts.push("They are looking at every space they can see, with no project selected.");
   }
-  if (input.app) facts.push(`They have the ${input.app} page of Projects open.`);
+  if (input.app === MY_TASKS_APP) {
+    // Said above, with the view and the chip.
+  } else if (input.app) facts.push(`They have the ${input.app} page of Projects open.`);
   else if (input.view) facts.push(`They are looking at the ${input.view} view.`);
   if (input.filterSummary) facts.push(`Active filters: ${input.filterSummary}.`);
   if (input.openTask) {
@@ -60,5 +83,6 @@ export function projectsAssistantFacts(input: Omit<PersonaInput, "today" | "time
         `"These tasks" means that selection.`,
     );
   }
-  return { label: chip(input.openTask?.title) ?? chip(input.node?.name), facts };
+  const place = input.app === MY_TASKS_APP ? "My tasks" : chip(input.node?.name);
+  return { label: chip(input.openTask?.title) ?? place, facts };
 }

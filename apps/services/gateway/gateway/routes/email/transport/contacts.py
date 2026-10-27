@@ -22,9 +22,14 @@ import re
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, Query
+from fastapi import Depends, HTTPException, Query
 from gateway.routes.email.account_ref import resolve_account_filter
-from gateway.routes.email.core import _account_scope, _tenant_session, _log, router
+from gateway.routes.email.core import _account_scope, _log, _tenant_session, router
+from gateway.routes.email.mailbox_access import (
+    mailbox_ids_sql,
+    mailbox_predicate,
+    private_predicate,
+)
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -406,7 +411,7 @@ async def contact_card(
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous")
         params: dict[str, Any] = {"uid": user.email or "anonymous", "addr": address}
-        scope = _account_scope(account_id, params)
+        scope = _account_scope(account_id, params, level="read")
         # Mail FROM this person. Drafts are excluded: an unsent draft of the
         # user's own is not correspondence from them, and a provider that echoes
         # the address would otherwise pad every count.
@@ -462,14 +467,14 @@ async def contact_card(
         # Sender rollups: the category the classifier assigned, and whether the
         # Email Cleaner has a disposition on file.
         rollup = (await db.execute(text(
-            """SELECT (SELECT category FROM email_senders se
+            f"""SELECT (SELECT category FROM email_senders se
                         WHERE se.account_id IN (
-                              SELECT id FROM email_accounts WHERE user_id = :uid)
+                              {mailbox_ids_sql(uid="uid", level="read")})
                           AND LOWER(se.email) = :addr
                         ORDER BY se.updated_at DESC NULLS LAST LIMIT 1) AS category,
                       (SELECT status FROM email_newsletters ne
                         WHERE ne.account_id IN (
-                              SELECT id FROM email_accounts WHERE user_id = :uid)
+                              {mailbox_ids_sql(uid="uid", level="read")})
                           AND LOWER(ne.email) = :addr
                         ORDER BY ne.updated_at DESC NULLS LAST LIMIT 1) AS status"""
         ), {"uid": params["uid"], "addr": address})).fetchone()
@@ -558,6 +563,101 @@ async def contact_card(
 class ContactSuggestion(BaseModel):
     email: str
     name: str = ""
+    #: Where the address comes from, strongest first: ``org`` is a member or a
+    #: directory person of the caller's own organization, ``sent`` is a person
+    #: the caller wrote to, and ``seen`` is only a contact or a sender. The
+    #: chat assistant asks the member before it uses a ``seen`` address.
+    source: str = "seen"
+    #: ``exact`` is a substring hit. ``closest`` came from the trigram
+    #: fallback ("Venna" for "Veena"), so the chat assistant confirms it.
+    match: str = "exact"
+
+
+#: The trigram fallback runs when the substring search finds fewer people.
+FUZZY_BELOW = 3
+#: ``similarity()`` floor for the fallback. "venna" against "veena" scores 0.33.
+FUZZY_THRESHOLD = 0.3
+FUZZY_LIMIT = 5
+
+#: Closest members and People rows of the caller's own organization.
+# The caller's own addresses leave the list. "Self" is the member's
+# private mailboxes only (D-SM-5, WS-65 SM-2).
+_FUZZY_SQL = f"""
+    WITH org AS (
+        SELECT LOWER(au.email) AS email, NULLIF(TRIM(au.display_name), '') AS name
+          FROM app_user au
+         WHERE COALESCE(au.status, 'active') = 'active'
+           AND au.organization_id = CAST(NULLIF(
+                 current_setting('app.tenant_id', true), '') AS uuid)
+        UNION ALL
+        SELECT LOWER(pp.email), NULLIF(TRIM(pp.name), '')
+          FROM people pp
+         WHERE pp.email IS NOT NULL
+           AND COALESCE(pp.status, 'active') = 'active'
+           AND NOT EXISTS (
+               SELECT 1 FROM app_user ux
+                WHERE LOWER(ux.email) = LOWER(pp.email)
+                  AND ux.status IN ('suspended', 'removed'))
+           AND pp.organization_id = CAST(NULLIF(
+                 current_setting('app.tenant_id', true), '') AS uuid)
+    ), scored AS (
+        SELECT o.email, o.name,
+               GREATEST(
+                 similarity(LOWER(COALESCE(o.name, '')), :needle),
+                 similarity(SPLIT_PART(LOWER(COALESCE(o.name, '')), ' ', 1), :needle),
+                 similarity(SPLIT_PART(o.email, '@', 1), :needle)) AS sim
+          FROM org o
+         WHERE o.email IS NOT NULL AND POSITION('@' IN o.email) > 1
+           AND (:dom = '' OR SPLIT_PART(o.email, '@', 2) ~ :dom)
+           AND o.email <> LOWER(:uid)
+           AND o.email NOT IN (SELECT LOWER(email_address) FROM email_accounts
+                                WHERE {private_predicate(uid="uid")})
+    )
+    SELECT email, COALESCE(MAX(name), '') AS name, MAX(sim) AS sim
+      FROM scored WHERE sim >= :thr
+     GROUP BY email ORDER BY MAX(sim) DESC, email LIMIT :lim
+"""
+
+
+async def _fuzzy_org_contacts(db: Any, params: dict[str, Any],
+                              have: set[str]) -> list[ContactSuggestion]:
+    """Trigram fallback over members and People. Best-effort: a missing
+    ``pg_trgm`` (migration 170 creates it) logs and answers [], so the
+    typeahead keeps its old behaviour and never errors."""
+    try:
+        async with db.begin_nested():
+            rows = (await db.execute(text(_FUZZY_SQL), {
+                "needle": params["needle"], "dom": params["dom"],
+                "uid": params["uid"], "thr": FUZZY_THRESHOLD,
+                "lim": FUZZY_LIMIT})).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("email.contact_fuzzy_failed", error=str(exc)[:160])
+        return []
+    return [ContactSuggestion(email=r.email, name=r.name or "", source="org",
+                              match="closest")
+            for r in rows if r.email not in have]
+
+
+#: A domain filter: letters, digits, dots and hyphens only, so the value can
+#: go into a regular expression with only its dots escaped.
+_DOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
+
+
+def _domain_pattern(domain: str | None) -> str:
+    """The POSIX pattern of a domain filter, or ``""`` for no filter.
+
+    ``fracktal.in`` matches ``fracktal.in`` and each subdomain of it. A value
+    with no dot is the name part, so ``fracktal`` matches ``fracktal.in`` and
+    ``fracktal.com`` too. Raises ``ValueError`` for a value that is not a
+    domain. A value that is not a string (an unresolved ``Query`` default on
+    a direct call) is no filter."""
+    d = domain.strip().lower().lstrip("@") if isinstance(domain, str) else ""
+    if not d:
+        return ""
+    if not _DOMAIN_RE.match(d) or ".." in d:
+        raise ValueError(domain)
+    esc = d.replace(".", r"\.")
+    return rf"(^|\.){esc}$" if "." in d else rf"(^|\.){esc}(\.|$)"
 
 
 #: The most addresses one ``/contacts/sent-from`` read takes (EM-T8c).
@@ -588,7 +688,7 @@ async def sent_from(
     try:
         async with _tenant_session() as db:
             rows = (await db.execute(text(
-                """
+                f"""
                 SELECT DISTINCT ON (a.addr) a.addr, em.account_id
                   FROM email_messages em
                   JOIN email_accounts ea ON ea.id = em.account_id
@@ -596,7 +696,7 @@ async def sent_from(
                         COALESCE(em.to_addresses, '[]'::jsonb)
                         || COALESCE(em.cc_addresses, '[]'::jsonb)) AS r
                  CROSS JOIN LATERAL (SELECT LOWER(r->>'email') AS addr) AS a
-                 WHERE ea.user_id = :uid
+                 WHERE {mailbox_predicate("ea", uid="uid", level="send")}
                    AND LOWER(COALESCE(em.folder, '')) = 'sent'
                    AND a.addr = ANY(:wanted)
                  ORDER BY a.addr, em.received_at DESC NULLS LAST
@@ -614,20 +714,33 @@ async def suggest_contacts(
     account_id: str | None = Query(
         None, description="Scope to one mailbox; omit to span the user's accounts"),
     limit: int = Query(8, ge=1, le=20),
+    domain: str | None = Query(
+        None, description="Only addresses at this domain, e.g. fracktal.in"),
     user: UserContext = Depends(get_current_user),
 ) -> list[ContactSuggestion]:
     """People-picker autocomplete for the composers' To/Cc/Bcc fields.
 
-    Candidates, strongest first: addresses the user has SENT mail to (the
-    autofill signal that matters most), the learned ``email_contacts``
+    Candidates, strongest first: the members and the People directory of the
+    caller's own organization, and addresses the user has SENT mail to (the
+    autofill signal that matters most), then the learned ``email_contacts``
     directory, and every known sender. Matched on address OR display name;
     prefix matches rank above substring hits, then by how often the address
     appears and how recently. The user's own connected addresses are excluded.
+    Each hit names its ``source`` (``org``, ``sent`` or ``seen``). ``domain``
+    keeps only the addresses at that domain.
+
+    The organization rows read ``app_user`` and ``people`` through the tenant
+    seam. Each also names the bound tenant in its own predicate, as
+    ``people.core.has_login`` does, so an unbound GUC matches no row.
     Best-effort: any failure returns [] — a typeahead must never error the
     composer."""
     needle = (q or "").strip().lower()
     if not needle:
         return []
+    try:
+        dom_re = _domain_pattern(domain)
+    except ValueError:
+        raise HTTPException(422, "domain must be a domain, e.g. fracktal.in") from None
     # Before the try: the typeahead swallows its own failures, and a bad
     # account_id is the caller's error (422), not a miss.
     account_id = await resolve_account_filter(
@@ -640,17 +753,19 @@ async def suggest_contacts(
                 "any": f"%{needle}%",
                 "pre": f"{needle}%",
                 "lim": limit,
+                "dom": dom_re,
+                "needle": needle,
             }
             rows = (await db.execute(text(
-                """
+                f"""
                 WITH accts AS (
                     SELECT id FROM email_accounts
-                     WHERE user_id = :uid AND (:aid = '' OR id::text = :aid)
+                     WHERE {mailbox_predicate(uid="uid", level="read")} AND (:aid = '' OR id::text = :aid)
                 ),
-                cands (email, name, weight, last_at) AS (
+                cands (email, name, weight, last_at, src) AS (
                     -- People the user has WRITTEN to — the strongest signal.
                     SELECT LOWER(r->>'email'), NULLIF(TRIM(r->>'name'), ''),
-                           3, em.received_at
+                           3, em.received_at, 'sent'
                       FROM email_messages em
                       CROSS JOIN LATERAL jsonb_array_elements(
                         COALESCE(em.to_addresses, '[]'::jsonb)
@@ -658,20 +773,46 @@ async def suggest_contacts(
                      WHERE em.account_id IN (SELECT id FROM accts)
                        AND LOWER(COALESCE(em.folder, '')) = 'sent'
                     UNION ALL
+                    -- The active members of the caller's own organization.
+                    SELECT LOWER(au.email), NULLIF(TRIM(au.display_name), ''),
+                           3, NULL::timestamptz, 'org'
+                      FROM app_user au
+                     WHERE COALESCE(au.status, 'active') = 'active'
+                       AND au.organization_id = CAST(NULLIF(
+                             current_setting('app.tenant_id', true), '') AS uuid)
+                    UNION ALL
+                    -- The People directory of the caller's own organization.
+                    SELECT LOWER(pp.email), NULLIF(TRIM(pp.name), ''),
+                           3, NULL::timestamptz, 'org'
+                      FROM people pp
+                     WHERE pp.email IS NOT NULL
+                       AND COALESCE(pp.status, 'active') = 'active'
+                       -- A removed or suspended member keeps a people row
+                       -- (migration 206 never rewrites one). It is not org.
+                       AND NOT EXISTS (
+                           SELECT 1 FROM app_user ux
+                            WHERE LOWER(ux.email) = LOWER(pp.email)
+                              AND ux.status IN ('suspended', 'removed'))
+                       AND pp.organization_id = CAST(NULLIF(
+                             current_setting('app.tenant_id', true), '') AS uuid)
+                    UNION ALL
                     -- The learned people directory (names parsed from signatures).
                     SELECT LOWER(ec.email), NULLIF(TRIM(ec.display_name), ''),
-                           2, ec.updated_at
+                           2, ec.updated_at, 'seen'
                       FROM email_contacts ec
                      WHERE ec.account_id IN (SELECT id FROM accts)
                     UNION ALL
                     -- Everyone who has mailed the user (the senders rollup).
                     SELECT LOWER(es.email), NULLIF(TRIM(es.name), ''),
-                           1, es.updated_at
+                           1, es.updated_at, 'seen'
                       FROM email_senders es
                      WHERE es.account_id IN (SELECT id FROM accts)
                 )
                 SELECT c.email,
                        COALESCE(MAX(c.name), '') AS name,
+                       CASE WHEN BOOL_OR(c.src = 'org') THEN 'org'
+                            WHEN BOOL_OR(c.src = 'sent') THEN 'sent'
+                            ELSE 'seen' END AS source,
                        (BOOL_OR(c.email LIKE :pre)
                         OR BOOL_OR(COALESCE(c.name, '') ILIKE :pre)) AS prefix_hit,
                        MAX(c.weight)  AS weight,
@@ -680,17 +821,31 @@ async def suggest_contacts(
                   FROM cands c
                  WHERE c.email IS NOT NULL AND POSITION('@' IN c.email) > 1
                    AND (c.email LIKE :any OR COALESCE(c.name, '') ILIKE :any)
+                   AND (:dom = '' OR SPLIT_PART(c.email, '@', 2) ~ :dom)
+                   AND c.email <> LOWER(:uid)
                    AND c.email NOT IN (
                        SELECT LOWER(email_address) FROM email_accounts
-                        WHERE user_id = :uid)
+                        WHERE {private_predicate(uid="uid")})
                  GROUP BY c.email
                  ORDER BY prefix_hit DESC, weight DESC, hits DESC,
                           last_at DESC NULLS LAST
                  LIMIT :lim
                 """
             ), params)).fetchall()
-            return [ContactSuggestion(email=r.email, name=r.name or "")
-                    for r in rows]
+            out = [ContactSuggestion(email=r.email, name=r.name or "",
+                                     source=_source(r))
+                   for r in rows]
+            if len(out) < min(FUZZY_BELOW, limit) and len(needle) >= 3:
+                out += await _fuzzy_org_contacts(
+                    db, params, {s.email for s in out})
+            return out[:limit]
     except Exception as exc:  # noqa: BLE001 — typeahead is best-effort
         _log.warning("email.contact_suggest_failed", error=str(exc)[:160])
         return []
+
+
+def _source(row: Any) -> str:
+    """The ``source`` of a suggestion row. An unknown value reads ``seen``,
+    the weakest, so a fault never makes a stranger look like a colleague."""
+    src = getattr(row, "source", None)
+    return src if src in ("org", "sent", "seen") else "seen"

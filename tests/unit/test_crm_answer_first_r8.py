@@ -386,6 +386,12 @@ def _as(monkeypatch, user: Any) -> None:
     monkeypatch.setattr(deps, "member_context", member_context)
 
 
+def _keys(p):
+    """The Redis keys of the asks, without the GST evidence cache (hotfix
+    2026-10-20), which a read of the questions now fills."""
+    return {k: v for k, v in p.redis.store.items() if ":crm_gst_evidence:" not in str(k)}
+
+
 async def test_a_whatsapp_reply_records_a_member_s_proposal_and_writes_no_plan(
     af, app_engine, monkeypatch,
 ) -> None:
@@ -401,7 +407,7 @@ async def test_a_whatsapp_reply_records_a_member_s_proposal_and_writes_no_plan(
         p.org_a, m1.email, "whatsapp", {"kind": "question", "id": QID}))
     assert "1. IP Basic Amount (excludes GST)" in offered
     assert "3. EB Basic Amount (excludes GST)" in offered and "Reply 1, 2, 3 or 4." in offered
-    (name, (ttl, stored)), = p.redis.store.items()
+    (name, (ttl, stored)), = _keys(p).items()
     assert name == f"cc:{p.org_a}:crm_text_ask:member1@crm-q33.test:whatsapp"
     assert ttl == 24 * 3600 and json.loads(stored)["options"][1] == [
         "Rent", "Rent Basic Amount (excludes GST)"]
@@ -411,7 +417,7 @@ async def test_a_whatsapp_reply_records_a_member_s_proposal_and_writes_no_plan(
     assert versions(p, p.org_a) == before
     props = cursor_state(p, p.org_a, "zoho:questions")["proposals"][QID]
     assert [(x["member"], x["value"]) for x in props] == [("member1@crm-q33.test", "Rent")]
-    assert p.redis.store == {}
+    assert _keys(p) == {}
 
 
 async def test_a_whatsapp_reply_of_an_admin_writes_the_answer(af, app_engine,
@@ -474,7 +480,7 @@ async def test_a_pending_ask_of_org_a_is_never_settled_in_org_b(af, app_engine,
         p.org_a, m1.email, "whatsapp", {"kind": "question", "id": QID}))
     assert await _in_org(p, p.org_b, lambda: text_asks.settle(
         p.org_b, m1.email, "whatsapp", "2")) is None
-    assert len(p.redis.store) == 1
+    assert len(_keys(p)) == 1
     assert (cursor_state(p, p.org_b, "zoho:questions") or {}).get("proposals") is None
 
 
@@ -652,7 +658,7 @@ async def test_a_late_pick_of_a_rule_card_needs_the_server_s_own_words(
     forged = card('Save this business rule? "Report gross revenue"\n\nx')
     assert not await _in_org(p, p.org_a, lambda: questions.record_late_answer(
         p.org_a, m1.email, "questions", forged, "Save the rule"))
-    assert p.redis.store.keys() == {
+    assert _keys(p).keys() == {
         f"cc:{p.org_a}:crm_rule_pending:member1@crm-q33.test:{held.token}"}
     assert await _in_org(p, p.org_a, lambda: questions.record_late_answer(
         p.org_a, m1.email, "questions", card(real), "Save the rule"))

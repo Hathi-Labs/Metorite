@@ -62,6 +62,17 @@ class TestTheClasses:
             assert classes.REACH_CLASS[kind] == "interrupt"
         assert classes.REACH_CLASS["deal_stage_changed"] == "brief"
 
+    def test_the_knowledge_kinds_are_declared(self):
+        # WS-61 KB-9a and KB-9b: a thing to know, so each goes in the brief.
+        for kind in ("doc_needs_review", "doc_shared_with_me", "kb_gap"):
+            assert classes.REACH_CLASS[kind] == "brief"
+
+    def test_a_source_that_stopped_syncing_interrupts(self):
+        # WS-61 KB-9b slice 2 (A4): only the connector gets the card, and the
+        # class is interrupt (knowledge_base.md section 9).
+        assert classes.REACH_CLASS["source_sync_failed"] == "interrupt"
+        assert classes.reach_class({"kind": "source_sync_failed"}) == "interrupt"
+
     def test_an_unknown_kind_reaches_nobody(self):
         assert classes.reach_class({"kind": "something_new"}) == "none"
 
@@ -319,3 +330,10 @@ class TestTheTemplateParameters:
     def test_the_full_brief_key_is_the_brief_key_and_a_suffix(self):
         d = date(2026, 10, 15)
         assert plan.full_brief_key("m@x.test", d) == plan.brief_key("m@x.test", d) + ":full"
+
+
+def test_the_no_plan_line_asks_for_the_act():
+    """A chat pill sends its line as the member's message, so the line is a
+    request, not a bare fact (owner report, 2026-10-22)."""
+    now = datetime(2026, 10, 22, 9, 0, tzinfo=UTC)
+    assert plan.line({"kind": "no_plan_yet"}, now) == "Plan my day: nothing is planned yet"

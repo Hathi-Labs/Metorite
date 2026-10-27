@@ -33,6 +33,26 @@ When the connection can change tasks, Claude Code shows the command `/mcp__metor
 - When the pull request opens, the agent moves the task to an "in progress" status whose name says review. It moves the task to done only after the merge.
 - **Ask an agent** in Metorite gives work to the agent. To continue that work, run the command with no number.
 
+## How the agent finds its next work
+
+Each agent session follows the same six steps. The server instructions and the command `/mcp__metorite__work_on_task` both give them.
+
+1. At the start of a session, the agent calls `my_work`.
+2. The agent takes the top row. When you asked it to stop, it ends that run at once. For another run that waits, it reads the run with `get_agent_run`. For a task, it calls `claim_task`.
+3. A refusal with `409 task_held` means that another session holds the task. The agent does not try that task again. It takes the next row.
+   A run of another connection, such as one on another machine, is never the work of this agent. Two terminals that share one connection also share one client name. Metorite cannot tell them apart until the MCP sessions of spec §12.5 are on. So the agent takes only a row that `my_work` gives.
+4. The agent calls `get_task_context`. Then it calls `start_agent_run` when the claim opened no run.
+5. The agent posts a progress line at least once a minute.
+6. The agent ends with exactly one result. The task moves to review or done. Or a question waits for a named member. Or the agent gives the task back with `release_task`. A comment is a record of the work, and it is never a result.
+
+`my_work` gives the rows in this order:
+
+1. The runs of this connection that wait. You queued work for it, you answered its question, or you asked it to stop.
+2. The tasks of a run of this connection whose session went quiet for five minutes. The agent can take that work back. A run that another session of this connection works on now does not show.
+3. The tasks assigned to you that no AI session holds and that no open task blocks.
+
+It never gives a task that is not assigned to you and that this connection does not hold. A run of another client or of another connection does not show. Each computer that you connect gets its own connection, so the work of your other computer stays with it. Two terminals on one connection share it, so `my_work` cannot tell them apart until the MCP sessions of spec §12.5 are on.
+
 The description of the task is the brief of the agent. Metorite limits what the connection can reach. It cannot limit the tools of the agent on your computer, such as the shell and `git push`. Your Claude Code permission settings control those tools.
 
 ## The choices on the consent page
@@ -43,7 +63,7 @@ The description of the task is the brief of the agent. Metorite limits what the 
 
 ## What the agent can do
 
-Seven tools read:
+Nine tools read:
 
 | Tool | What it reads |
 |---|---|
@@ -54,19 +74,24 @@ Seven tools read:
 | `get_task` | One task, with its references |
 | `get_task_timeline` | The history of one task |
 | `search_tasks` | A search of the tasks you see, at most 50 hits |
+| `get_task_context` | One task, with its parent tasks, its project, the tasks that block it and the newest 20 comments. A parent task that you cannot see shows as hidden, with no title |
+| `my_work` | The next work of this agent, at most 25 rows. "How the agent finds its next work" above tells the order |
 
-Six tools make or change a task:
+Seven tools make or change a task:
 
 | Tool | What it does |
 |---|---|
-| `create_task` | It makes a task in a project or a sub-project that you can see, and it can make a subtask. In Projects, the task shows the source "AI agent". With the same `idempotency_key`, a second call gives back the first task and makes no second task |
-| `update_task` | It changes the title, the description, the tags, the due date or the custom fields of a task |
+| `create_task` | It makes a task in a project or a sub-project that you can see, and it can make a subtask. It can set the `important` flag, the `leveraged` flag, the estimate, the start date and the first assignees. In Projects, the task shows the source "AI agent". With the same `idempotency_key`, a second call gives back the first task and makes no second task |
+| `update_task` | It changes the title, the description, the tags, the due date, the custom fields, the `important` flag, the `leveraged` flag, the estimate or the start date of a task. It can also move a task under another task of the same project, or to the top level |
 | `claim_task` | It makes you an assignee of a task, and the other assignees stay. A task in a backlog or to do status moves to the first in progress status. The agent calls it when it starts the work |
+| `set_assignees` | It replaces the assignees of a task. Each new person must already be able to open the task through a project grant or an admin read right. When Metorite refuses one person, nothing changes. Any change to the task after the agent read it refuses the call |
 | `set_task_status` | It moves a task to another status. It can move a task to a done status when the agent finishes the work. It never moves a task to a cancelled status. A person does that step |
 | `add_task_reference` | It links a pull request, a commit or a branch to a task |
 | `add_comment` | It writes a comment on a task, such as a short progress note while it works. You are the author of the comment. It can reply to a top-level comment. A comment holds at most 20,000 characters. With the same `idempotency_key`, a second call gives back the first comment and adds no second comment |
 
 Each change shows in the task history, with the agent as `mcp:<host>`. A status change of the agent can start a workflow of your organization that runs on a status change, as your own change does. A move to done is a status change too. A connection makes at most 120 changes in 10 minutes.
+
+**An assignment notifies people.** Each person that the agent adds gets one notification in the bell. It shows your name, and on a second line the name of the agent, such as `via Claude Code`. The agent can assign only a person who can already open the task, so an assignment never shows a task to somebody new. To assign anybody else, do it in Metorite.
 
 **A comment notifies people.** Each comment that the agent writes notifies the watchers and the assignees of the task, as your own comment does. An `@` followed by the address of a member who can see the task notifies that member too. These notifications go to the bell and the inbox in Metorite. Metorite does not send them by email.
 
@@ -85,7 +110,7 @@ The agent can also do these two things:
 2. Choose one of your connected agents. Only an agent that may make changes shows in the list.
 3. Write what the agent must do, then send it. The task shows "Queued for" and the name of the agent.
 
-Your agent finds the work when it next starts a session, because it looks for queued runs first. It does not start by itself.
+Your agent finds the work when it next starts a session, because `my_work` gives the queued runs first. It does not start by itself.
 
 While the agent works, it can ask you a question on the task. The task then shows "Waiting for" and your name, and the bell tells you. Answer on the task. The agent reads your answer, also in a later session. You can stop the agent from the same place.
 
@@ -97,13 +122,13 @@ Six tools work with these runs:
 | `post_agent_activity` | It posts a progress line, a result or a question in the run |
 | `ask_on_task` | It asks you a question on a task, with choices or free text |
 | `get_agent_run` | It reads a run and your answers |
-| `list_agent_runs` | It lists your runs, such as the runs that wait for the agent |
+| `list_agent_runs` | It lists all your runs, from each agent, for the full history |
 | `finish_agent_run` | It ends a run |
 
 ## What the agent cannot do
 
 - It cannot cancel a task, and it cannot make a task in a done or cancelled status. A move to done does not close the subtasks.
-- It cannot assign a task to another person, move a task to another project, or delete a task. It can claim a task for you only.
+- It cannot move a task to another project, delete a task, or assign a person who cannot already open the task. Do those steps in Metorite.
 - It cannot see what you cannot see. If an admin removes your access to a project, the agent loses it on the next call.
 - It cannot act after you revoke it.
 

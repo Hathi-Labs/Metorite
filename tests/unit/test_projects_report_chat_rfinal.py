@@ -320,11 +320,19 @@ def test_the_preview_stays_a_read_only_post() -> None:
     assert ("POST", "/projects/reports/preview") in m.READ_ONLY_POSTS
 
 
-def test_every_delivery_row_stays_excluded() -> None:
+def test_every_delivery_row_has_its_op6d_tool() -> None:
+    """WS-64 OP-6d (D-OP-9) moved the four delivery rows out of class X. The list is
+    a read, and the three writes take a card. The send switch is no tool's, and
+    ``test_projects_report_delivery_tools.py`` fences that."""
     rows = [r for r in m.MANIFEST if "recipients" in r.path or r.path.endswith("/schedule")]
     assert len(rows) == 4
-    for row in rows:
-        assert row.cls == "X" and row.reason == m._DELIVERY_REASON, row.path
+    assert {(r.method, r.tool, r.cls) for r in rows} == {
+        ("GET", "report_recipients", "A"),
+        ("POST", "add_report_recipient", "C"),
+        ("DELETE", "remove_report_recipient", "C"),
+        ("PATCH", "set_report_schedule", "C"),
+    }
+    assert not hasattr(m, "_DELIVERY_REASON")
 
 
 # ── R8: a real Postgres, the tool through the real routes ───────────────────

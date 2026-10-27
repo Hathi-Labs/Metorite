@@ -13,12 +13,19 @@
  * page to is a card nobody read (the Projects writes rule, MAX_BATCH). A
  * batch tool with ONE card is the answer to many cards of one kind.
  *
+ * The stack (owner, 2026-10-24): with two cards or more, a banner counts
+ * them, the edges of the cards behind peek out under the shown one, a
+ * sideways swipe on a touch screen moves between them, and the first stack
+ * of a page nudges once to show the swipe. The member could miss "1 of 2" in
+ * the corner. The nudge stops for a member who asked for less motion.
+ *
  * The queue itself is `lib/confirmationQueue.ts`.
  */
 
 import { useReducer, useState } from "react";
 
 import ConfirmationCard from "@/components/ConfirmationCard";
+import CardStack from "@/components/ui/CardStack";
 import {
   NO_TICKS,
   rowTicksReducer,
@@ -26,10 +33,12 @@ import {
   type PendingConfirmation,
   type RowsApproval,
 } from "@/lib/confirmationQueue";
+import type { ReplyApproval } from "@/lib/replyCard";
 
-/** A plain answer, or an Approve that names the ticked rows of a card with
- *  rows (WS-46 P13 one-card). Both go in ONE respond-input. */
-export type ConfirmationAnswer = "APPROVE" | "REJECT" | RowsApproval;
+/** A plain answer, an Approve that names the ticked rows of a card with
+ *  rows (WS-46 P13 one-card), or the Send or Save of a reply card (EM-CR).
+ *  Each goes in ONE respond-input. */
+export type ConfirmationAnswer = "APPROVE" | "REJECT" | RowsApproval | ReplyApproval;
 
 interface ConfirmationQueueProps {
   cards: PendingConfirmation[];
@@ -78,7 +87,7 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
   }
   const go = (to: number) => setShown({ key: cards[to].key, index: to });
   const view = rowsView(card, ticks);
-  return (
+  const shownCard = (
     <ConfirmationCard
       // A new key per card: a long body scrolled on one card does not stay
       // scrolled on the next, and the buttons arm again (ConfirmationCard).
@@ -102,6 +111,15 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
         if (view.approved) onAnswer(view.approved.card, view.approved.answer);
       }}
       onReject={() => onAnswer(card, "REJECT")}
+      // EM-CR: a reply card answers with the member's choice and body.
+      {...(card.reply !== undefined ? { reply: card.reply, onReply: (a: ReplyApproval) => onAnswer(card, a) } : {})}
     />
+  );
+  // The stack's banner, deck edges, swipe and spring (owner, 2026-10-24)
+  // are the shared `CardStack`; a single card draws as it is.
+  return (
+    <CardStack total={cards.length} index={at} onGo={go} keys={cards.map((c) => c.key)}>
+      {shownCard}
+    </CardStack>
   );
 }

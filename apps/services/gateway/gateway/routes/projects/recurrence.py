@@ -355,7 +355,10 @@ async def spawn_successor(db: Any, task: Any, *, actor_id: str) -> str | None:
     }
     values["due_at"] = when
     values["recurrence_id"] = rule["id"]
-    values["created_by"] = actor_id
+    # WS-64 OP-8 (D-OP-12). The successor keeps the series' creator. The
+    # completer is in the activity row below, and nowhere else: a stamp of
+    # the completer would give them the delete authority of a creator.
+    values["created_by"] = getattr(task, "created_by", None) or actor_id
     # `core`'s own helpers, not copies. `next_task_number` allocates in ONE
     # statement so two concurrent creates cannot be handed the same number, and
     # `load_default_status` is the same "which lane does a new task start in"

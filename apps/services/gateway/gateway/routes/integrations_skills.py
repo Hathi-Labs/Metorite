@@ -13,6 +13,11 @@ Toggles (settings table + PUT) are S2. Gated exactly like the sibling
 ``/integrations`` endpoints: router-level ``require_feature_router
 ("integrations")`` + the app-wide default-deny auth, ``get_current_user`` on
 the endpoint.
+
+WS-67 OA-7a: a tool pack (a family with an ``owner``) is priced from its
+owner's own tools, which ``_platform_tools_by_name`` never sees, so
+:func:`_pack_tools_by_name` adds them. The matrix shows no pack for any
+agent, because no run is injected with one.
 """
 from __future__ import annotations
 
@@ -58,6 +63,53 @@ def _platform_tools_by_name() -> dict[str, Any]:
             out[fn.__name__] = fn
     except Exception:  # noqa: BLE001
         pass
+    out.pop("", None)
+    return out
+
+
+def _owner_module(owner: str) -> Any | None:
+    """The ``agents.py`` module of in-repo agent *owner*, or None.
+
+    WS-67 OA-7b: the ONE loader of a pack owner is
+    ``orchestrator._tool_injection._pack_owner_module``, which the run
+    builder uses too. It imports the module once for this process, from the
+    STATIC ``_AGENT_REGISTRY`` only. It keeps a failed import as None, so a
+    catalog GET does not import a broken owner again (OA-7a verifier F2).
+    An owner that raises ``SystemExit`` at import gives None and cannot stop
+    the process (F3). The catalog reads the signature and the docstring of
+    each tool for the price, and it calls no tool.
+    """
+    from orchestrator._tool_injection import _pack_owner_module
+
+    return _pack_owner_module(owner)
+
+
+def _pack_tools_by_name() -> dict[str, Any]:
+    """name → callable for the tools of each tool pack (WS-67 OA-7a).
+
+    A pack holds its owner's own tools, which injection never offers. The
+    tools are the ones the owner builds (``tool_packs.owner_tools``), so the
+    price follows the owner's real signatures and docstrings. Best-effort:
+    an owner that does not load prices nothing, as an unimportable platform
+    tool does in :func:`_platform_tools_by_name`.
+    """
+    from acb_skills import skill_families, tool_packs
+
+    out: dict[str, Any] = {}
+    for slug in skill_families.pack_slugs():
+        owner = str(skill_families.SKILL_FAMILIES[slug]["owner"])
+        try:
+            module = _owner_module(owner)
+            if module is None:
+                _log.warning("skills.pack_owner_unavailable", pack=slug, owner=owner)
+                continue
+            for fn in tool_packs.owner_tools(slug, module):
+                out[getattr(fn, "__name__", "")] = fn
+        except Exception as exc:  # a price never breaks the catalog
+            _log.warning(
+                "skills.pack_tools_unavailable", pack=slug, owner=owner,
+                error_type=type(exc).__name__,
+            )
     out.pop("", None)
     return out
 
@@ -170,8 +222,11 @@ async def skills_catalog(
         _resolve_injected_scope,
     )
 
+    # A pack is priced from its owner's tools (WS-67 OA-7a). A pack name
+    # never shadows a platform tool: the drift gate keeps each name in one
+    # family.
     catalog = skill_families.build_catalog(
-        tools_by_name=_platform_tools_by_name(),
+        tools_by_name={**_pack_tools_by_name(), **_platform_tools_by_name()},
         addendum_for_scope=_addendum_for_scope,
         count_tokens=_count_tokens,
         core_tool_names=_core_tool_names(),

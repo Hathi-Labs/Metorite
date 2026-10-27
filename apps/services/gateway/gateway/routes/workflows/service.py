@@ -264,7 +264,13 @@ def _agent_runner(workflow_id: str) -> Any:
         # VERIFIED, so the Router names it and a cap may key on it.
         member = await _workflow_billing_member(workflow_id)
         try:
-            result = await run_agent(agent, payload, model=model, session_user=member)
+            # WS-63 PZ-2 (personalization.md §5.1): a workflow's output is
+            # not one member's solo chat, so the node is never solo. The run
+            # copies the context of what started it, and an explicit False
+            # stops a solo chat's bit from reaching the node.
+            result = await run_agent(
+                agent, payload, model=model, session_user=member, solo_room=False,
+            )
         except AgentRunError as exc:
             raise NodeExecutionError(f"agent '{agent}' failed: {exc}") from exc
         text_out = str(result.get("result") or result.get("answer") or "")

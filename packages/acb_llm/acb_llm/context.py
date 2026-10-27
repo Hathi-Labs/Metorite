@@ -686,6 +686,7 @@ def assemble_run_context(
     max_output_tokens: int = 1024,
     history_loader: Callable[[], list[dict[str, Any]]] | None = None,
     max_turns: int = 50,
+    reserve_tokens: int = 0,
 ) -> list[dict[str, Any]]:
     """Assemble a token-budgeted OpenAI-format ``messages`` list for a run.
 
@@ -704,10 +705,16 @@ def assemble_run_context(
        fitting REPLACES the old blind count caps (``max_turns`` remains only as
        a cheap upper bound applied before the token pass).
 
+    ``reserve_tokens`` is input room that the caller sends outside these
+    messages: the agent's instructions and its tool schemas. The fit takes it
+    off the budget, so the request still fits when those are added.
+    Fence: tests/unit/test_context_assembly.py.
+
     Pure function: DB access is injected via ``history_loader`` so ``acb_llm``
     keeps no dependency on the gateway. Never raises for empty inputs — returns
     at least the current user turn (and system, if any).
     """
+    reserve_tokens = max(0, int(reserve_tokens or 0))
     src = list(history or [])
     if not src and history_loader is not None:
         try:
@@ -753,7 +760,7 @@ def assemble_run_context(
     # fits, THEN let fit_messages_to_context handle any remaining oversized
     # single message (e.g. one giant pasted block). System context + the
     # current turn are never dropped — only historical turns.
-    budget = context_window_for(model) - max_output_tokens - 512
+    budget = context_window_for(model) - max_output_tokens - 512 - reserve_tokens
     budget = max(1024, budget)
     dropped = 0
     while hist_turns:
@@ -765,7 +772,7 @@ def assemble_run_context(
 
     assembled = messages + hist_turns + ([current_turn] if current_turn else [])
     fitted, truncated = fit_messages_to_context(
-        assembled, model, max_output_tokens=max_output_tokens,
+        assembled, model, max_output_tokens=max_output_tokens + reserve_tokens,
     )
     last_fit_stats.set({"dropped_turns": dropped, "char_truncated": truncated})
     if truncated or dropped:

@@ -59,7 +59,11 @@ export const AGENT_STATE_VALUES: readonly AgentState[] = [
  */
 export type AgentRunState = AgentState | "completed" | "stopped";
 
-/** The eight run statuses, as Plane names them. */
+/**
+ * The run statuses: Plane's eight, and `abandoned` and `released` of EA-14a.
+ * `abandoned`: another session took the task over after the lease.
+ * `released`: the holder gave the task up.
+ */
 export type AgentRunStatus =
   | "created"
   | "in_progress"
@@ -68,7 +72,9 @@ export type AgentRunStatus =
   | "stopping"
   | "stopped"
   | "failed"
-  | "stale";
+  | "stale"
+  | "abandoned"
+  | "released";
 
 /** A run is open while it can still take an agent write (EA12-6). */
 export const OPEN_RUN_STATUSES: readonly AgentRunStatus[] = [
@@ -145,6 +151,13 @@ export interface AgentRun {
   client_name?: string | null;
   /** EA-13d. The host that the gateway verified, "claude.ai". Never self-declared. */
   client_host?: string | null;
+  /** EA-14a. The display name of the run's member, for "Held by <name>". */
+  member_name?: string | null;
+  /**
+   * EA-14a. True when an OPEN run has had no activity for longer than the
+   * lease, so the next claim may take the task over. The gateway decides it.
+   */
+  lease_expired?: boolean;
   status: AgentRunStatus;
   /** The derived state (`AGENT_RUN_STATE_SQL`). A closed run reads its status. */
   state?: AgentRunState | null;
@@ -933,6 +946,57 @@ export function archiveRequestOf(activity?: AgentActivity | null): ArchiveReques
 export function archiveExpired(request: ArchiveRequest, now: number = Date.now()): boolean {
   const at = Date.parse(request.expires_at ?? "");
   return Number.isNaN(at) || now >= at;
+}
+
+/* ── One AI for each task: held by, and release (EA-14a) ──────────────────── */
+
+/** The words of the release control and its confirm. One place, so a test reads them. */
+export const RELEASE_COPY = {
+  button: "Release",
+  title: "Release this task?",
+  confirm: "Release task",
+  failure: "Could not release the task.",
+} as const;
+
+/** The confirm text. It names the client, and says what stays. */
+export function releaseBody(clientLabel: string): string {
+  return `${clientLabel} gives this task up. The task keeps its status and its assignees. Another AI session can then claim it.`;
+}
+
+/**
+ * "Held by Priya via Claude Code", the one line of the card. *labels* maps an
+ * address to a display name, as the pill does. The run's own `member_name`
+ * comes next, then the address.
+ */
+export function heldByLine(
+  run: Pick<AgentRun, "member_email" | "member_name" | "client_via" | "client_name" | "client_host">,
+  labels?: ReadonlyMap<string, string>,
+): string {
+  const who =
+    labels?.get(run.member_email.trim().toLowerCase()) ||
+    run.member_name?.trim() ||
+    run.member_email;
+  const client = run.client_name?.trim() || clientName(run.client_via);
+  return `Held by ${who} via ${client}`;
+}
+
+/** The word beside the line when the lease ended. */
+export const STALE_HOLD_TEXT = "stale";
+
+/**
+ * May the caller release this run? The run's member, an assignee of the
+ * task, or an admin, as the gateway checks. The server decides in the end.
+ */
+export function canReleaseRun(
+  run: Pick<AgentRun, "member_email" | "status">,
+  opts: { me?: string | null; isAdmin?: boolean; assignees?: readonly string[] | null },
+): boolean {
+  if (!(OPEN_RUN_STATUSES as readonly string[]).includes(run.status)) return false;
+  if (opts.isAdmin) return true;
+  const who = (opts.me ?? "").trim().toLowerCase();
+  if (!who) return false;
+  if (run.member_email.trim().toLowerCase() === who) return true;
+  return (opts.assignees ?? []).some((a) => a.trim().toLowerCase() === who);
 }
 
 /** Is *me* the run's member? Only that member answers an archive request. */

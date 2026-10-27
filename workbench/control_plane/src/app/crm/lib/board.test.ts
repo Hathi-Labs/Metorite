@@ -4,6 +4,10 @@ import { describe, expect, it } from "vitest";
 import {
   applyMove,
   boardTotals,
+  dealForecastLine,
+  expectedLeads,
+  formatExpected,
+  leadForecastLines,
   missingRequiredFields,
   moveRequest,
   needsLostReason,
@@ -668,12 +672,12 @@ describe("orderLanes with an admin order", () => {
     expect(names(orderLanes(lanes, "mirror"))).toEqual(["High", "Low"]);
   });
 
-  it("sorts by the effective probability in Mirror mode with no admin order", () => {
+  it("sorts by the source position in Mirror mode with no admin order, not by probability", () => {
     const lanes = [
-      lane("High", "open", 0, null, { admin_order: false, probability: 90 }),
       lane("Low", "open", 1, null, { admin_order: false, probability: 5 }),
+      lane("High", "open", 0, null, { admin_order: false, probability: 90 }),
     ];
-    expect(names(orderLanes(lanes, "mirror"))).toEqual(["Low", "High"]);
+    expect(names(orderLanes(lanes, "mirror"))).toEqual(["High", "Low"]);
   });
 
   it("sorts a Native board by position, which the gateway already made effective", () => {
@@ -693,5 +697,60 @@ describe("orderLanes with an admin order", () => {
       lane("Won", "won", 3, 20),
     ];
     expect(names(orderLanes(lanes, "mirror"))).toEqual(["Open", "Hidden", "Gone", "Won"]);
+  });
+});
+
+// ── CRM-U6: the lane stat block ───────────────────────────────────────────
+
+describe("expectedLeads", () => {
+  const lane = (count: number, probability: number | null) => ({
+    count,
+    status: status({ id: "l", name: "Lead", probability }),
+  });
+
+  it("is count x win chance / 100", () => {
+    expect(expectedLeads(lane(14, 25))).toBe(3.5);
+    expect(expectedLeads(lane(10, 100))).toBe(10);
+  });
+
+  it("is 0 for a missing or zero win chance, and clamps a wild one", () => {
+    expect(expectedLeads(lane(14, null))).toBe(0);
+    expect(expectedLeads(lane(14, 0))).toBe(0);
+    expect(expectedLeads(lane(10, 250))).toBe(10);
+  });
+
+  it("is written with one decimal and no trailing .0", () => {
+    expect(formatExpected(3.5)).toBe("3.5");
+    expect(formatExpected(4)).toBe("4");
+    expect(formatExpected(0)).toBe("0");
+    expect(formatExpected(1.26)).toBe("1.3");
+  });
+
+  it("reads as the lane header lines", () => {
+    expect(leadForecastLines(lane(14, 25))).toEqual({
+      count: "14 leads",
+      expected: "~3.5 expected · 25%",
+    });
+    expect(leadForecastLines(lane(1, 0))).toEqual({
+      count: "1 lead",
+      expected: "0 expected · 0%",
+    });
+  });
+});
+
+describe("dealForecastLine", () => {
+  it("shows the weighted total and the win chance on an open lane", () => {
+    expect(dealForecastLine({ type: "open", probability: 10 }, "₹10.3 L")).toBe(
+      "₹10.3 L weighted · 10%"
+    );
+    expect(dealForecastLine({ type: "ongoing", probability: 0 }, "₹0")).toBe(
+      "₹0 weighted · 0%"
+    );
+  });
+
+  it("says why a closed or parked lane has no forecast", () => {
+    expect(dealForecastLine({ type: "won", probability: 100 }, "₹0")).toBe("booked, not forecast");
+    expect(dealForecastLine({ type: "lost", probability: 0 }, "₹0")).toBe("no forecast");
+    expect(dealForecastLine({ type: "on_hold", probability: 5 }, "₹0")).toBe("on hold");
   });
 });

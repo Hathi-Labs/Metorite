@@ -13,14 +13,17 @@ import ArtifactCard, { type ArtifactMeta } from "@/components/ArtifactCard";
 import { fileCardsOf } from "@/lib/artifactCards";
 import { ArtifactOpenContext, type ArtifactOpeners } from "@/components/ArtifactLink";
 import EmailToolCards, { emailEvidence } from "@/components/email/EmailToolCards";
+import { EMAIL_AGENT, delegatedSteps, withEmailSteps } from "@/lib/delegatedSteps";
 import TaskToolCards, { taskEvidence } from "@/components/tasks/TaskToolCards";
 import ProjectToolCards, { projectEvidence } from "@/components/projects/ProjectToolCards";
+import ProfileToolCards from "@/components/profile/ProfileToolCards";
 import { crmEvidence } from "@/components/crm/CrmEvidence";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { genUiFlow, genUiPlacement, genUiTitle, type FlowBlock } from "@/lib/chatPlacement";
 import { unfenced } from "@/lib/fencedText";
 import RollupCard from "@/components/RollupCard";
 import { answersFromTools } from "@/lib/askAnswers";
+import { askOutcome } from "@/lib/askOutcome";
 import { genUiTarget } from "@/lib/askPin";
 import GenerativeUINode, { genUiRootOwnsHead } from "@/components/GenerativeUINode";
 import ErrorCard from "@/components/ChatErrorCard";
@@ -33,6 +36,7 @@ import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import { capabilityLabel, type RoomParticipant } from "@/lib/rooms";
 import { EntityIndexContext } from "@/components/ChatEntityPill";
 import { buildEntityIndex } from "@/lib/entityIndex";
+import { buildLinkChipIndex } from "@/lib/linkChips";
 import { pillsForTurn, taskRefModeForTurn } from "@/lib/projectsAgent";
 import { useRevalidateOnTools } from "@/lib/taskRefs";
 import AnswerDetails from "@/components/AnswerDetails";
@@ -262,6 +266,12 @@ function MessageBubble({
     () => (pills ? buildEntityIndex(dedupedToolEvents) : null),
     [pills, dedupedToolEvents],
   );
+  // The hrefs this turn's tools printed (KB-4b). A link in the answer to one
+  // of them draws as a chip. An assistant turn only, and not tied to pills.
+  const linkChips = useMemo(
+    () => (isUser || isSystem ? undefined : buildLinkChipIndex(dedupedToolEvents)),
+    [isUser, isSystem, dedupedToolEvents],
+  );
 
   // A READ's receipt draws in its step, inside the trail, and never after the
   // answer (spec `projects_ai_chat.md` §24 rule 2, owner 2026-10-08). Each
@@ -269,10 +279,26 @@ function MessageBubble({
   // the one map behind all four.
   const accountId = emailContext?.accountId;
   const evidenceFor = useCallback(
-    (e: ToolEvent) =>
-      projectEvidence(e) ?? taskEvidence(e) ?? emailEvidence(e, accountId) ?? crmEvidence(e),
+    (e: ToolEvent) => {
+      const own = projectEvidence(e) ?? taskEvidence(e) ?? emailEvidence(e, accountId) ?? crmEvidence(e);
+      if (own) return own;
+      // A hand-off to email-assistant holds the reads of its sub-run, so
+      // they draw in that step (navigation_shell.md §7.1.1 rule 5).
+      const reads = delegatedSteps([e], EMAIL_AGENT)
+        .map((st) => ({ id: st.id, node: emailEvidence(st, accountId) }))
+        .filter((r) => r.node != null);
+      if (reads.length === 0) return null;
+      return (
+        <div className="space-y-2 min-w-0">
+          {reads.map((r) => <div key={r.id}>{r.node}</div>)}
+        </div>
+      );
+    },
     [accountId],
   );
+  // The steps of a delegated email run, after the turn's own events, so the
+  // draft, thread and rule cards draw in the one assistant (§7.1.1 rule 5).
+  const emailCardEvents = useMemo(() => withEmailSteps(dedupedToolEvents), [dedupedToolEvents]);
 
   // Dismissed tool/artifact cards (persisted) — filter them out of every card
   // surface so closing a card sticks across reloads.
@@ -652,17 +678,21 @@ function MessageBubble({
     const header = genUiRootOwnsHead(spec) ? "own" : "frame";
     const icon = header === "own" ? undefined : "LayoutTemplate";
     if (ask) {
+      // An answered card folds to one line that says what happened (§29
+      // rule 1, owner report 2026-10-19). It never folds to a bare title.
       return (
         <RollupCard key={i} id={target} title={title} icon={icon} header={header}
-          askTarget={answered === undefined ? target : undefined}>
+          askTarget={answered === undefined ? target : undefined}
+          answered={answered !== undefined} summary={askOutcome(spec, answered) || undefined}>
           <div {...askAttr} className="min-w-0 outline-none">
             <GenerativeUINode spec={spec} onAction={act} answered={answered} onDecline={decline} />
           </div>
         </RollupCard>
       );
     }
+    // A result card: a long one opens cut, with "Show all" (§29 rule 2).
     return (
-      <RollupCard key={i} id={target} title={title} icon={icon} header={header}>
+      <RollupCard key={i} id={target} title={title} icon={icon} header={header} clamp>
         <GenerativeUINode spec={spec} onAction={act} answered={answered} onDecline={decline} />
       </RollupCard>
     );
@@ -694,6 +724,7 @@ function MessageBubble({
         entityIndex={entityIndex ?? undefined}
         fences
         taskRefs={refs}
+        linkChips={linkChips}
         evidenceFor={evidenceFor}
       />
       {/* Inline artifact cards — dismissable (persisted), keyed by sha/path. */}
@@ -749,6 +780,7 @@ function MessageBubble({
                   entityIndex={entityIndex ?? undefined}
                   fences
                   taskRefs={refs}
+                  linkChips={linkChips}
                   caret={!!message.streaming && flow!.indexOf(b) === lastTextIdx}
                 />
               </div>
@@ -760,7 +792,7 @@ function MessageBubble({
           Inert unless the message contains email-assistant tool calls, so this
           renders in both the chat app and the email app. */}
       <EmailToolCards
-        toolEvents={dedupedToolEvents}
+        toolEvents={emailCardEvents}
         accountId={emailContext?.accountId}
         emailId={emailContext?.emailId}
       />
@@ -773,6 +805,9 @@ function MessageBubble({
           calls, so this renders in both the chat app and the Projects app's
           AI chat (WS-27bm). */}
       <ProjectToolCards toolEvents={dedupedToolEvents} />
+      {/* The receipts of the assistant profile writes, each with Undo (WS-63
+          PZ-6a). Inert unless the message holds a profile_* tool call. */}
+      <ProfileToolCards toolEvents={dedupedToolEvents} />
       <GenerativeUIPanel
         agentState={message.agentState}
         customEvents={message.customEvents}

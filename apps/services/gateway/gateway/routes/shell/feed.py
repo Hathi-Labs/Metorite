@@ -1012,6 +1012,214 @@ register(Provider("people", ("people", "tasks", "projects"), _people, PEOPLE_KIN
 register(Provider("chat", ("chat",), _chat, CHAT_KINDS, needs=False, gated=True))
 
 
+# ── Knowledge (WS-61 KB-9a and KB-9b, knowledge_base.md §9, feed only, gated) ─
+#
+# Three kinds, one source. `kb_gap` keys on `knowledge:gap:<id>`: a question
+# that two members or more asked inside 30 days, that Knowledge could not
+# answer, and that nobody closed. `doc_needs_review` and `doc_shared_with_me`
+# key on `knowledge:page:<id>`, so one page makes one card. The first is a
+# page of the member past its review date. The second is a page that another
+# author published in the last 24 hours, in a space the member reads.
+#
+# The source names no `permission`. A plain member gets the page cards, and
+# only a manager gets `kb_gap`. So the gates live HERE: a closed Knowledge
+# switch raises `SourceAbsent` before any read, and the gap read runs only
+# with `KNOWLEDGE_GAPS` open and `knowledge:manage` held. `hash_permission`
+# keeps `knowledge:manage` in the read cache key (`cache.features_hash`).
+# `my_day.read` opens ONE tenant session, and this file opens none.
+# `source_sync_failed` (KB-9b slice 2) keys on `knowledge:source:<id>` and is
+# for the member who connected the Drive. It reads only with `KNOWLEDGE_SOURCES`
+# open, in the same session. Fences: `tests/unit/test_kb_my_day.py`,
+# `tests/unit/test_kb_gaps.py` and the `_r8` twins (R8).
+
+#: The kinds of the source.
+KNOWLEDGE_KINDS = frozenset({"kb_gap", "doc_needs_review", "doc_shared_with_me",
+                             "source_sync_failed"})
+
+#: The one act of ``source_sync_failed`` opens the Sources view.
+SOURCES_HREF = "/knowledge/sources"
+#: What the card calls a provider. No account address, no error text.
+_PROVIDER_NAMES = {"google_drive": "Google Drive"}
+
+
+def _gap_signal(row: dict[str, Any]) -> Signal:
+    """``kb_gap``: one open question with no page. The title is the first
+    wording a member typed. The facts are a count and a time."""
+    from gateway.routes.knowledge.gaps import GAPS_HREF, write_href
+
+    gap_id = str(row["id"])
+    question = str(row.get("question") or "").strip() or "(no words)"
+    href = write_href(gap_id)
+    return Signal(
+        signal_id=f"knowledge:gap:{gap_id}", app="knowledge", kind="kb_gap",
+        entity={"type": "gap", "id": gap_id, "label": question}, title=question,
+        facts={"askers": int(row.get("ask_count") or 0),
+               "last_asked_at": _iso(row.get("last_asked_at"))},
+        href=href,
+        acts=(link("write-page", "Write a page", href),
+              link("open-gaps", "See all gaps", GAPS_HREF)),
+        at=_iso(row.get("last_asked_at")),
+    )
+
+
+def _page_signal(row: dict[str, Any], kind: str) -> Signal:
+    """``doc_needs_review`` or ``doc_shared_with_me``: one page. The title is
+    the page title. The facts are the space and one time. No person name and
+    no read count (KB-9b OQ2 to OQ4)."""
+    from gateway.routes.knowledge import my_day
+
+    page_id = str(row["id"])
+    title = str(row.get("title") or "").strip() or "(untitled)"
+    href = f"/knowledge/pages/{page_id}"
+    space = str(row.get("space") or "").strip()
+    if kind == "doc_needs_review":
+        review_at = _iso(row.get("review_at"))
+        return Signal(
+            signal_id=f"knowledge:page:{page_id}", app="knowledge", kind=kind,
+            entity={"type": "page", "id": page_id, "label": title}, title=title,
+            facts={"space": space, "review_at": review_at}, href=href,
+            acts=(link("review", "Review", href),), at=review_at,
+        )
+    published = row.get("published_at")
+    expires = published + timedelta(hours=my_day.NEW_HOURS) if published else None
+    return Signal(
+        signal_id=f"knowledge:page:{page_id}", app="knowledge", kind=kind,
+        entity={"type": "page", "id": page_id, "label": title}, title=title,
+        facts={"space": space, "published_at": _iso(published)}, href=href,
+        acts=(link("read-page", "Read", href),), at=_iso(published),
+        expires_at=_iso(expires),
+    )
+
+
+def _source_signal(row: dict[str, Any]) -> Signal:
+    """``source_sync_failed``: a source that the member connected stopped
+    syncing (KB-9b slice 2). The facts are the reason and nothing else: no
+    provider error, no token and no account address."""
+    source_id = str(row["id"])
+    name = _PROVIDER_NAMES.get(str(row.get("provider") or ""), "A source")
+    reconnect = row.get("state") == "needs_reconnect"
+    since = _iso(row.get("failed_since"))
+    return Signal(
+        signal_id=f"knowledge:source:{source_id}", app="knowledge",
+        kind="source_sync_failed",
+        entity={"type": "source", "id": source_id, "label": name}, title=name,
+        facts={"reason": "reconnect" if reconnect else "runs", "provider": name,
+               "failed_since": since},
+        href=SOURCES_HREF, at=since,
+        acts=(link("open-sources", "Reconnect" if reconnect else "Open Sources",
+                   SOURCES_HREF),),
+    )
+
+
+async def _knowledge(user: UserContext) -> Found:
+    from gateway.routes.knowledge import flags as kb_flags
+    from gateway.routes.knowledge import my_day
+
+    if not kb_flags.knowledge_org_allowed(user.organization_id):
+        raise needs.SourceAbsent("Knowledge does not name the org")
+    found = await my_day.read(
+        user, gaps_on=kb_flags.knowledge_gaps_allowed(user.organization_id),
+        limit=PER_APP + 1,
+        sources_on=kb_flags.knowledge_sources_allowed(user.organization_id),
+    )
+    # The order before the cut of PER_APP: source failures (the connector's
+    # own, and urgent), then review, gaps and shared.
+    signals = ([_source_signal(r) for r in found.sources]
+               + [_page_signal(r, "doc_needs_review") for r in found.review]
+               + [_gap_signal(r) for r in found.gaps]
+               + [_page_signal(r, "doc_shared_with_me") for r in found.shared])
+    return Found([], 0, capped=len(signals) > PER_APP,
+                 signals=lambda: signals[:PER_APP])
+
+
+# The gate (§9): `feature:knowledge` holds the source. The rest is in
+# `_knowledge`. Gated, so it runs only while MY_DAY_PROVIDERS lists
+# `knowledge` (§5.8 item 1). The source id is the app id, and it has no
+# Handled read.
+register(Provider("knowledge", ("knowledge",), _knowledge, KNOWLEDGE_KINDS, needs=False,
+                  gated=True, hash_permission="knowledge:manage"))
+
+
+# ── Reminders (WS-66 RM-2, calendar_events_reminders.md §5.6, feed only, gated) ─
+#
+# One card for each of my reminders that fired and is still open, computed on
+# read from the row. No card is stored. It keys on `reminders:<id>`, so the
+# card changes its kind in place: `reminder_due` after the fire,
+# `reminder_check` after the check-back, `reminder_unconfirmed` after the
+# loop gave up. A `scheduled` row has no card: it has not fired, or the loop
+# moved it to a new slot. The app is the Calendar. `reminders.my_open_cards`
+# opens ONE tenant session, and this file opens none. With CALENDAR_REMINDERS
+# off the source is absent before any read. The act is a link that opens a new
+# chat now and carries the `reminder` id of §5.7 for RM-4 (`reminder_href`).
+# The acts in place of §5.6 wait for the client (D101). Fence:
+# `tests/unit/test_reminder_loop.py`.
+
+#: The kinds of the source (§5.6).
+REMINDER_KINDS = frozenset({"reminder_due", "reminder_check", "reminder_unconfirmed"})
+
+
+def reminder_href(reminder_id: str) -> str:
+    """The link of a reminder card (§5.7 item 1).
+
+    ``do=new-chat`` is the chat's own door to a fresh chat
+    (``app/chat/page.tsx`` ``ChatFullView``), so the link works before RM-4:
+    it opens a new chat, and never the chat that was open last. Today the
+    page drops the rest of the address. RM-4 makes it read ``reminder`` and
+    write the first message."""
+    return f"/chat?do=new-chat&reminder={quote(reminder_id, safe='')}"
+
+
+def _reminder_kind(row: dict[str, Any]) -> str:
+    """The card kind of one row: its state, then its last ladder step."""
+    if row.get("state") == "unconfirmed":
+        return "reminder_unconfirmed"
+    if row.get("step") == "check_back":
+        return "reminder_check"
+    return "reminder_due"
+
+
+def _reminder_signal(row: dict[str, Any]) -> Signal:
+    """One reminder card. The facts are times and counts only. The title is
+    the member's own line of text."""
+    rid = str(row["id"])
+    kind = _reminder_kind(row)
+    title = str(row.get("title") or "").strip() or "(untitled)"
+    fire_at = _iso(row.get("fire_at"))
+    href = reminder_href(rid)
+    return Signal(
+        signal_id=f"reminders:{rid}", app="calendar", kind=kind,
+        entity={"type": "reminder", "id": rid, "label": title}, title=title,
+        # `waiting_since` is the instant of the last step, so a dismissed
+        # card comes back at the check-back and after a new fire (§6.8 item 1).
+        facts={"fire_at": fire_at,
+               "waiting_since": _iso(row.get("step_at")) or fire_at,
+               "cycles": int(row.get("cycles") or 0),
+               "notice": row.get("kind") == "notice"},
+        href=href, acts=(link("open-reminder", "Open", href),),
+        at=fire_at, urgent_at=fire_at if kind == "reminder_due" else None,
+    )
+
+
+async def _reminders(user: UserContext) -> Found:
+    from gateway.routes.projects.reminders import my_open_cards, reminders_enabled
+
+    if not reminders_enabled():
+        raise needs.SourceAbsent("CALENDAR_REMINDERS is off")
+    rows, edge = await my_open_cards(user, now=needs._now(), limit=PER_APP + 1)
+    signals = [_reminder_signal(r) for r in rows]
+    # The next fire or step of the loop is when the card set changes next,
+    # so the read cache keeps the answer until then (§8.4 item 2).
+    return Found([], 0, capped=len(signals) > PER_APP,
+                 signals=lambda: signals[:PER_APP], next_edge=_iso(edge))
+
+
+# The gate: `feature:projects`, the gate of the reminder routes. Gated, so it
+# runs only while MY_DAY_PROVIDERS lists `reminders` (§5.8 item 1), and with
+# no Handled read. The cards are the Calendar's.
+register(Provider("reminders", ("projects",), _reminders, REMINDER_KINDS, needs=False,
+                  gated=True, app="calendar"))
+
+
 # ── The templates (§4.2): code writes every why line ────────────────────────
 
 
@@ -1120,6 +1328,8 @@ def why(kind: str, facts: dict[str, Any], at: Any, now: datetime, tz: ZoneInfo,
     if kind == "no_plan_yet":
         return "no_plan", (f"Your day started at {_clock(facts.get('day_start'), tz)}, "
                            "and nothing is on the calendar.")
+    if kind in REMINDER_KINDS:
+        return _reminder_line(kind, facts, tz, today)
     return _md3_why(kind, facts, tz, today)
 
 
@@ -1188,10 +1398,50 @@ def _colleague_line(facts: dict[str, Any]) -> str:
     return f"{names[0] if names else 'A colleague'} is away today. You share {task} with them."
 
 
-#: The why line of each CRM card of the org: its template id and its line.
+def _gap_line(facts: dict[str, Any]) -> str:
+    """The why line of ``kb_gap`` (WS-61 KB-9a, ``knowledge_base.md`` §9). A
+    code template over a count. The question is the card's title."""
+    raw = facts.get("askers")
+    n = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
+    who = f"{n} people asked this" if n > 1 else "People asked this"
+    return f"{who} in the last 30 days. Nobody has written it down in Knowledge."
+
+
+def _source_line(facts: dict[str, Any]) -> str:
+    """The why line of ``source_sync_failed`` (KB-9b slice 2). A code
+    template over the reason: never an error text, a token or an address."""
+    if facts.get("reason") == "reconnect":
+        name = facts.get("provider") or "source"
+        return f"Your {name} stopped syncing. Reconnect it in Knowledge."
+    return "The last three syncs failed."
+
+
+def _review_line(facts: dict[str, Any], tz: ZoneInfo, today: date) -> str:
+    """The why line of ``doc_needs_review`` (KB-9b). It names the review date
+    and nothing else: no person."""
+    when = _when(facts.get("review_at"), tz, today)
+    return f"The review date was {when}. Check that the page is still right."
+
+
+def _shared_line(facts: dict[str, Any]) -> str:
+    """The why line of ``doc_shared_with_me`` (KB-9b). It names the space and
+    nothing else: no person and no read count."""
+    space = facts.get("space")
+    where = f"in {space}" if space else "in a space you read"
+    return f"A new page went live {where} in the last day."
+
+
+#: The why line of each card of the org, a CRM card or a Knowledge card
+#: (KB-9a): its template id and its line.
 _ORG_CARD_LINES: dict[str, tuple[str, Any]] = {
-    "digest_ready": ("digest_ready", _digest_line),
-    "crm_open_questions": ("open_questions", _questions_line),
+    "digest_ready": ("digest_ready", lambda f, _tz, _today: _digest_line(f)),
+    "crm_open_questions": ("open_questions", lambda f, _tz, _today: _questions_line(f)),
+    "kb_gap": ("gap", lambda f, _tz, _today: _gap_line(f)),
+    # KB-9b: the two page cards.
+    "doc_needs_review": ("review_due", _review_line),
+    "doc_shared_with_me": ("shared", lambda f, _tz, _today: _shared_line(f)),
+    # KB-9b slice 2: a source that the member connected stopped syncing.
+    "source_sync_failed": ("source_failed", lambda f, _tz, _today: _source_line(f)),
 }
 
 
@@ -1236,15 +1486,36 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
     if kind == "colleague_out":
         return "colleague_out", _colleague_line(facts)
     if kind in _ORG_CARD_LINES:
-        # The two CRM cards of the org (CRM-Q28 and CRM-Q32-4): one template
-        # each over the facts, never a word of a model.
+        # The two CRM cards of the org (CRM-Q28 and CRM-Q32-4) and the
+        # Knowledge gap (KB-9a): one template each over the facts, never a
+        # word of a model.
         template, line = _ORG_CARD_LINES[kind]
-        return template, line(facts)
+        return template, line(facts, tz, today)
     if kind == "agent_asks":
         at = facts.get("waiting_since")
         return "asks", (f"Asked {_when(at, tz, today)} at {_clock(at, tz)}. "
                         "The run waits for your answer.")
     raise KeyError(kind)
+
+
+def _reminder_line(kind: str, facts: dict[str, Any], tz: ZoneInfo,
+                   today: date) -> tuple[str, str]:
+    """The why line of a reminder card (§5.4 "Words", WS-66 RM-2). A code
+    template over the time: no guilt and no "you missed". A check-back names
+    every exit, and after a move it uses other words than the first one."""
+    at = facts.get("fire_at")
+    when = f"{_clock(at, tz)} {_when(at, tz, today)}".strip()
+    exits = "Mark it done, move it, or drop it."
+    if kind == "reminder_unconfirmed":
+        return "reminder_stopped", ("I stopped checking on this. Make it a task, "
+                                    "pick a time, or drop it.")
+    if kind == "reminder_check":
+        if not when:
+            return "reminder_check", f"It is still open. {exits}"
+        if int(facts.get("cycles") or 0) > 0:
+            return "reminder_moved", f"It is still open after the move to {when}. {exits}"
+        return "reminder_check", f"It was set for {when}. {exits}"
+    return "reminder_set", f"Reminder for {when}." if when else "A reminder you set."
 
 
 def _folded_clause(kind: str, facts: dict[str, Any], tz: ZoneInfo, today: date) -> str:

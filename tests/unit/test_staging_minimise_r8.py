@@ -162,6 +162,25 @@ def test_the_named_credentials_are_blanked(clone) -> None:
             assert c.execute(text(f"SELECT count(*) FROM public.{table}")).scalar_one() == 0, table
 
 
+def test_the_assistant_profile_is_blanked(clone) -> None:
+    """WS-63 PZ-9 (``personalization.md`` §7 point 5): the member's profile
+    is their own words, and no copy holds it. The row and its other columns
+    stay. Mutation: drop the UPDATE in ``minimise.sql``."""
+    with clone.begin() as c:
+        c.execute(text(
+            "INSERT INTO user_settings (organization_id, user_id, assistant_profile, "
+            "number_system) VALUES (:o, 'pz9@h3rls.test', "
+            "CAST(:p AS jsonb), 'international')"),
+            {"o": clone.org_a, "p": '{"v": 1, "facts": [{"id": "f1", "text": "x"}]}'})
+    res = _run(clone, "h3rls-a")
+    assert res.returncode == 0, res.stdout + res.stderr
+    with clone.connect() as c:
+        row = c.execute(text(
+            "SELECT assistant_profile, number_system FROM user_settings "
+            "WHERE user_id = 'pz9@h3rls.test'")).one()
+    assert row == (None, "international")
+
+
 def test_a_varchar_credential_refuses(clone) -> None:
     """format_type prints `character varying(255)`, so a type-name match missed it."""
     with clone.begin() as c:

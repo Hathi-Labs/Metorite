@@ -44,6 +44,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.projects.authority import assert_may_move_task
 from gateway.routes.projects.bulk import MAX_BULK, dedupe_ids
 from gateway.routes.projects.cascade import (
     load_subtree,
@@ -55,13 +56,14 @@ from gateway.routes.projects.core import (
     TRIAGE_CATEGORY,
     _tenant_session,
     actor,
+    assert_holds_tasks,
+    assert_not_archived,
     assert_move_keeps_privacy,
     emit,
     from_jsonb,
     load_visible_project,
     load_visible_task,
     next_task_number,
-    node_kind,
     record_activity,
     remap_one_type,
     require_status_in_project,
@@ -222,15 +224,13 @@ async def _selection(db: Any, vis: Any, raw_ids: list[str]) -> list[Any]:
 
 
 async def _destination(db: Any, vis: Any, project_id: str) -> Any:
-    dest = await load_visible_project(db, vis, project_id)
+    # FOR SHARE: a concurrent move of the destination to the top waits for
+    # this move (`core.load_visible_project`).
+    dest = await load_visible_project(db, vis, project_id, lock_share=True)
     # After the visibility load, so a caller who cannot see the folder still
     # gets 404 and never learns from a 422 that it exists (R5).
-    if node_kind(getattr(dest, "kind", None)) == "folder":
-        raise HTTPException(
-            status_code=422,
-            detail="A folder holds projects, not tasks. Move into a project "
-                   "inside it.",
-        )
+    assert_holds_tasks(dest, then="Move into")
+    assert_not_archived(dest, then="Move into")
     return dest
 
 
@@ -313,7 +313,9 @@ async def _type_proposal(
     return out
 
 
-async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
+async def _plan(
+    db: Any, vis: Any, payload: MoveIn, user: Any,
+) -> dict[str, Any]:
     """Everything both endpoints need to agree about, computed once.
 
     The preview returns it. The move applies it. Sharing one function is what
@@ -338,6 +340,12 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
     # the apply would reject.
     for task in tasks:
         await assert_move_keeps_privacy(db, task, dest_id)
+    # WS-64 OP-8 (D-OP-14). Each named task needs the member's move
+    # authority, in the preview too, so a card never offers a refused move.
+    # A task already in the destination does not move, so it is not checked.
+    for task in tasks:
+        if str(task.project_id) != dest_id:
+            await assert_may_move_task(db, user, task)
 
     # D-PM-38 decision 4 — the descendants a move WITH its subtasks would
     # take, for the dialog's "Include N subtasks" box. Every depth, and not
@@ -600,7 +608,7 @@ async def preview_move(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        return _public(await _plan(db, vis, payload))
+        return _public(await _plan(db, vis, payload, user))
 
 
 def _refuse_unless_agreed(plan: dict[str, Any], payload: MoveIn) -> None:
@@ -662,7 +670,7 @@ async def move_tasks(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        plan = await _plan(db, vis, payload)
+        plan = await _plan(db, vis, payload, user)
 
         _refuse_unless_agreed(plan, payload)
         # Before any write: a hidden descendant refuses the whole move (409),
@@ -817,6 +825,8 @@ async def move_tasks(
                 continue
             await move_task_in(
                 db, vis, child, MoveTask(project_id=dest_id), by=actor(user),
+                # Carried by the checked selection (D-OP-14).
+                user=None,
                 field_map=plan["subtree_maps"].get(str(child.root_project_id)),
             )
             carried.append(str(child.id))

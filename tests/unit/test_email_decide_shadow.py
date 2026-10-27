@@ -70,6 +70,8 @@ ALL_SHADOW = ",".join(f"{f}=shadow" for f in df.FEATURES)
 
 #: A hang guard, never a budget (#947). No fence here reads the runner's clock.
 HANG_S = 30.0
+#: The module's own bound, read before ``_clean`` replaces it for each test.
+_DEFAULT_SHADOW_BOUND_S = df.SHADOW_BOUND_S
 
 
 class _Meet:
@@ -152,9 +154,14 @@ class FakeDecide:
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    """No mode, no tenant, no run context, and fresh caches."""
+    """No mode, no tenant, no run context, and fresh caches.
+
+    The shadow bound is the hang guard. The real 5 s bound is a budget on
+    the runner's clock, and a stalled runner turned an instant fake answer
+    into ``decide.fallback``. A test of the bound sets its own value."""
     monkeypatch.setenv("DECIDE_FEATURE_MODES", "")
     monkeypatch.setenv("DECIDE_FEATURE_ORGS", "")
+    monkeypatch.setattr(df, "SHADOW_BOUND_S", HANG_S)
     _clear_caches()
     with run_context_scope():
         clear_run_context()
@@ -745,7 +752,7 @@ async def test_a_status_call_with_no_messages_is_skipped(monkeypatch, tenant) ->
 
 
 async def test_the_default_bound_is_five_seconds() -> None:
-    assert df.SHADOW_BOUND_S == 5.0
+    assert _DEFAULT_SHADOW_BOUND_S == 5.0
 
 
 @pytest.mark.parametrize("feature", list(SITES))

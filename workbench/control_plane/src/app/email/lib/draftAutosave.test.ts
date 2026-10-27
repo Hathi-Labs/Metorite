@@ -654,7 +654,8 @@ describe("email-autosave-flush: each composer flushes on a close, a switch and a
       /onClick=\{\(\) => \{\s*autosave\.flush\(\);\s*setReplyMode\(null\);\s*ai\.reset\(\);\s*\}\}/,
     );
     const start = between(detail, "const startReply = (", "const switchReplyMode");
-    comesBefore(start, "autosave.flush();", "draftIdRef.current = null;");
+    // The new reply names no draft, or the draft that it continues.
+    comesBefore(start, "autosave.flush();", "draftIdRef.current = held?.id ?? null;");
   });
 
   it("flushes on a switch to another mail, while the draft id still names its draft", () => {

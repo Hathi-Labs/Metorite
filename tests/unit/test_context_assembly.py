@@ -181,3 +181,98 @@ def test_max_turns_upper_bound_applied_before_fit():
     assert len(out) == 11
     assert out[0]["content"] == "turn 190"  # only the last 10 kept
     assert out[-1]["content"] == "last"
+
+
+# ── Room for the agent's instructions and tool schemas (2026-10-22) ─────────
+
+
+def _fixed_window(monkeypatch, window: int = 20_000) -> None:
+    import acb_llm.context as ctx
+
+    monkeypatch.setattr(ctx, "context_window_for", lambda _m: window)
+    monkeypatch.setattr(
+        ctx, "count_message_tokens",
+        lambda msgs, _m="": sum(len(str(m.get("content") or "")) // 4 + 8 for m in msgs),
+    )
+
+
+def test_reserve_tokens_leave_room_for_instructions_and_tools(monkeypatch):
+    """The fit takes ``reserve_tokens`` off the history budget.
+
+    Mutation: drop ``- reserve_tokens`` from the budget in
+    ``assemble_run_context``. The history then fills the window that the
+    agent's instructions and tools need, and this test fails.
+    """
+    import acb_llm.context as ctx
+
+    _fixed_window(monkeypatch)
+    history = [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"t{i} " + "x" * 4000}
+        for i in range(16)
+    ]
+    # Each call runs in a copy of the context, so the pressure stats that it
+    # sets (`last_fit_stats`) never reach a later test in this thread.
+    import contextvars
+
+    plain = contextvars.copy_context().run(
+        assemble_run_context,
+        history=history, current_message="now", model="m", max_output_tokens=2000,
+    )
+    reserved = contextvars.copy_context().run(
+        assemble_run_context,
+        history=history, current_message="now", model="m", max_output_tokens=2000,
+        reserve_tokens=8000,
+    )
+    assert len(reserved) < len(plain)
+    assert ctx.count_message_tokens(reserved) + 8000 + 2000 + 512 <= 20_000
+    assert reserved[-1]["content"] == "now"
+
+
+def test_agent_reserve_reads_maf_instructions_and_tools():
+    """The executor measures a MAF agent's instructions and tool schemas.
+
+    Mutation: return 0 from ``_agent_prompt_reserve_tokens``. Then the
+    reserve stays 0 and this test fails.
+    """
+    from agent_framework import tool
+    from orchestrator.executor import _agent_prompt_reserve_tokens
+
+    @tool
+    def lookup(order_id: str) -> str:
+        """Look up one order by its id and return its status line."""
+        return order_id
+
+    from types import SimpleNamespace
+
+    agent = SimpleNamespace(default_options={"instructions": "i" * 4000, "tools": [lookup]})
+    tokens = _agent_prompt_reserve_tokens(agent)
+    assert tokens >= 1000 + 20  # 4000 chars of instructions + one schema
+    assert _agent_prompt_reserve_tokens(None) == 0
+
+
+def test_agent_reserve_reads_copilot_system_message():
+    """A Copilot SDK agent holds its persona in ``system_message``.
+
+    Mutation: read only ``instructions``. This agent then measures 0.
+    """
+    from types import SimpleNamespace
+
+    from orchestrator.executor import _agent_prompt_reserve_tokens
+
+    copilot = SimpleNamespace(
+        _default_options={"system_message": {"mode": "append", "content": "p" * 8000}})
+    assert _agent_prompt_reserve_tokens(copilot) == 2000
+
+
+def test_compose_maf_run_passes_the_agent_reserve():
+    """Each executor call of the assembler passes the agent's reserve.
+
+    Mutation: remove ``reserve_tokens=_agent_prompt_reserve_tokens(agent)``
+    from any call site. The count below then drops under 3.
+    """
+    import inspect
+
+    from orchestrator import executor
+
+    src = inspect.getsource(executor)
+    assert src.count("reserve_tokens=_agent_prompt_reserve_tokens(agent)") >= 3

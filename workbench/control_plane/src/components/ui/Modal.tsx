@@ -117,7 +117,7 @@ import Button from "@/components/ui/Button";
  * and a 340 px fields column side by side, and it was `max-w-4xl` before it
  * moved onto this primitive.
  */
-export type ModalSize = "sm" | "md" | "lg" | "xl" | "2xl" | "3xl" | "4xl";
+export type ModalSize = "sm" | "md" | "lg" | "xl" | "2xl" | "3xl" | "4xl" | "6xl";
 
 const SIZES: Record<ModalSize, string> = {
   sm: "max-w-sm",
@@ -127,6 +127,9 @@ const SIZES: Record<ModalSize, string> = {
   "2xl": "max-w-2xl",
   "3xl": "max-w-3xl",
   "4xl": "max-w-4xl",
+  // A reader with a list beside it, such as the page history of Knowledge
+  // (WS-61 KB-2g).
+  "6xl": "max-w-6xl",
 };
 
 /**

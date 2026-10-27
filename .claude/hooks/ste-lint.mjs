@@ -46,6 +46,28 @@ import { fileURLToPath } from 'node:url'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = process.env.CLAUDE_PROJECT_DIR || path.resolve(HERE, '..', '..')
 
+// The checkout the caller stands in, for `--staged` and `--baseline`. They read
+// a git index, so they must read the index of the checkout the commit is made
+// in. CLAUDE_PROJECT_DIR names the SESSION's checkout, which is the main one
+// even when the session works in a worktree. Measured 2026-10-25 (Metorite
+// #460): in a worktree, `--staged` read the main checkout's index and reported
+// nothing. Falls back to ROOT when the caller stands in no repo.
+let gitRootMemo
+function gitRoot() {
+  if (gitRootMemo !== undefined) return gitRootMemo
+  try {
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      encoding: 'utf-8',
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    gitRootMemo = top || ROOT
+  } catch {
+    gitRootMemo = ROOT
+  }
+  return gitRootMemo
+}
+
 // ---------------------------------------------------------------- limits ----
 // ASD-STE100 Part 1. Procedural sentences are held shorter than descriptive
 // ones because a step is read while the reader's hands are busy.
@@ -117,10 +139,11 @@ const STRICT_PATH = [
 /**
  * Files this repo does not own.
  *
- * `skills/upstream/` is rewritten every week by skills-upstream-sync.yml from
- * anthropics/skills and VoltAgent/awesome-agent-skills. A rewrite there is undone
- * by the next sync, and failing a sync pull request on somebody else's prose
- * stops the sync. A vendored file is not a style problem, it is a copy.
+ * `skills/upstream/` held a weekly mirror of anthropics/skills and
+ * VoltAgent/awesome-agent-skills. The cleanup of 2026-10-27 deleted the mirror
+ * and its sync workflow. The entry stays: a vendored copy that comes back is
+ * still not ours, and ste-lint.test.mjs pins that case. A vendored file is not
+ * a style problem, it is a copy.
  *
  * `.github/skills/` is NOT on this list. Nothing syncs it, so it is ours.
  */
@@ -129,7 +152,7 @@ const NOT_OURS = [
   // Vendored verbatim from github.com/dickwu/apple-design-skill @ d0bac1e.
   // A refresh re-copies the upstream files, so a rewrite here is undone too.
   /^\.claude\/skills\/apple-design\//,
-  // Adopted verbatim from skills/upstream/anthropics/ at SHA 53048666.
+  // Adopted verbatim from github.com/anthropics/skills at SHA 53048666.
   //
   // ⚠️ THE PATH CANNOT CARRY THE PROVENANCE, so this list carries it. Claude
   // Code reads `.claude/skills/<name>/SKILL.md` and finds nothing one level
@@ -528,7 +551,7 @@ function report(file, tier, findings, { showWarnings, json }) {
 function stagedAddedLines() {
   const diff = execFileSync('git', ['diff', '--cached', '-U0', '--', '*.md'], {
     encoding: 'utf-8',
-    cwd: ROOT,
+    cwd: gitRoot(),
     maxBuffer: 32 * 1024 * 1024,
   })
   const files = new Map()
@@ -587,6 +610,24 @@ async function main() {
     const errors = findings.filter((f) => f.severity === 'error')
     const warns = findings.filter((f) => f.severity === 'warning')
 
+    // Two-speed delivery (owner directive, 2026-10-19): while a feature is in
+    // build, an error is ADVISORY. The agent sees it and goes on. The hardening
+    // pass sets STE_LINT_BLOCK=1, and then an error is exit 2 and forces the
+    // rewrite. Contract: project-docs/specs/engineering_practice.md §7a.
+    if (errors.length && process.env.STE_LINT_BLOCK !== '1') {
+      process.stdout.write(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PostToolUse',
+            additionalContext:
+              `STE (${tier}) advisory, ${errors.length} error${errors.length === 1 ? '' : 's'} on ${file} ` +
+              `(fix at the hardening pass, not now): ` +
+              errors.slice(0, 6).map((f) => `${f.rule} — ${f.message}`).join('; '),
+          },
+        }),
+      )
+      process.exit(0)
+    }
     if (errors.length) {
       process.stderr.write(
         `STE (${tier}) — ${errors.length} error${errors.length === 1 ? '' : 's'} in the text just written to ${file}:\n` +
@@ -616,15 +657,17 @@ async function main() {
   if (flags.has('--staged')) {
     let errors = 0
     for (const [file, added] of stagedAddedLines()) {
-      if (added.length === 0 || !ours(file)) continue
+      // Judge the file in the checkout whose index it came from, not ROOT.
+      const abs = path.join(gitRoot(), file)
+      if (added.length === 0 || !ours(abs)) continue
       const full = (() => {
         try {
-          return readFileSync(path.join(ROOT, file), 'utf-8')
+          return readFileSync(abs, 'utf-8')
         } catch {
           return ''
         }
       })()
-      const tier = tierFor(file, full)
+      const tier = tierFor(abs, full)
       // Rebuild a sparse document so line numbers stay the file's own.
       const maxLine = added[added.length - 1].n
       const sparse = new Array(maxLine).fill('')
@@ -643,16 +686,17 @@ async function main() {
 
   // ---- baseline: the whole repo, never fails ----
   if (flags.has('--baseline')) {
-    const list = execFileSync('git', ['ls-files', '*.md'], { encoding: 'utf-8', cwd: ROOT })
+    const list = execFileSync('git', ['ls-files', '*.md'], { encoding: 'utf-8', cwd: gitRoot() })
       .split(/\r?\n/)
       .filter(Boolean)
     const rows = []
     let totals = { error: 0, warning: 0 }
     for (const rel of list) {
-      if (!ours(rel)) continue
+      const abs = path.join(gitRoot(), rel)
+      if (!ours(abs)) continue
       let res
       try {
-        res = lintFile(path.join(ROOT, rel))
+        res = lintFile(abs)
       } catch {
         continue
       }

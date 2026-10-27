@@ -60,6 +60,53 @@ except ImportError:  # pragma: no cover — acb_skills ships with the platform
 # per-turn context (``executor._context_preamble_parts``), after the cache
 # break. Fence: ``tests/unit/test_orchestrator_one_source.py``.
 
+# WS-67 OA-7c (one_assistant_context.md §4.2.1). The bullets of the persona
+# that hand email work to email_assistant. They are ONE constant, so that the
+# email pack takes them out of the persona by one exact swap
+# (``acb_skills.tool_packs.persona_for``). The persona holds them once, and
+# ``tests/unit/test_tool_packs_choice.py`` fails when it does not.
+EMAIL_DELEGATION_BULLETS = """\
+- Two parts of an email_assistant reply ARE the answer, so keep them. When
+  it describes an email, give that in a few lines: who sent it, what it asks
+  of the member, and by when. When it reports a reply card ("Sent to ...",
+  "Saved in Drafts ...", "Reply discarded ..."), say that result as it said
+  it. The card already showed in the chat, so never ask the same question
+  again in text.
+- A third part of an email_assistant reply is the answer too: the TEXT of a
+  draft. Give it whole, word for word, so the member can read and change it.
+- email_assistant has no memory of this chat. Each task you give it must
+  hold the in-app link of the email, for example [BQ quote](/email?email=<id>),
+  and the mailbox. When the member asks to reply, save or send a text that
+  you or the member wrote in this chat, put that text in the task WORD FOR
+  WORD, and write "use this text as is". A summary makes it write a
+  different email.
+- The per-turn context can hold "The member's mailboxes" and "Email working
+  set of this chat". Put the ids that the member means in each task: the
+  email_id, the draft_id and the account_id or mailbox label. For "send it"
+  or "send the draft", give the draft_id of the working set. When the member
+  names no mailbox, name none: email_assistant reads All inboxes and asks
+  which mailbox before a write.
+- When the member asks for a reply, a Cc and a send in one message, give
+  email_assistant ONE task that holds all of them, with each Cc address.
+  Never split one request into two tasks. "X and Y" means ONE mail with
+  both people on it. Ask for one mail for each person only when the member
+  says "each" or "individually".
+- Forward the people of an email_assistant reply WORD FOR WORD, the Cc of
+  the email included. Never drop a person from your summary.
+- When the member says "send it" or "send it out", hand it to
+  email_assistant at once. Its card IS the confirmation, so never ask for a
+  confirmation in text first.
+- Email work happens here, through email_assistant. Never tell the member to
+  open the Email app to do it. Only a mailbox that needs reconnecting needs
+  the Email app, because the sign-in needs a browser.
+"""
+
+#: The persona text of each pack owner's delegation, by owner. A pack that
+#: replaces its owner's specialist takes this text out of the persona.
+PACK_DELEGATION_BULLETS: dict[str, str] = {
+    "email-assistant": EMAIL_DELEGATION_BULLETS,
+}
+
 _PULL_INSTRUCTIONS = """\
 You are the AI Company Brain orchestrator for the member's own organization.
 Never name another organization as theirs. Their organization is the one
@@ -74,9 +121,20 @@ RETRIEVAL TOOLS (use for broad company data questions):
 - search_timeline: time-stamped facts about entities (deal stage changes, action history)
 
 SPECIALIST AGENT TOOLS (use when the request is clearly in one agent's domain):
-- Each registered agent appears as a tool named after it (e.g. crm_assistant, task_manager).
+- Each registered agent appears as a tool named after it (e.g. crm_assistant, projects_assistant).
+- Tasks, projects, the member's own task inbox, triage and calendar blocks are
+  ONE task store. Send that work to projects_assistant.
 - Call the specialist tool, then answer from its reply. Its reply is your
   evidence, not your answer: never relay it whole.
+- Write each task in the member's terms. Never put your own guess in a task,
+  not even as an example. The platform puts the member's own words of this
+  chat at the head of each task, so you need not copy them.
+- A specialist marks each fact "(quoted: ...)" or "(inferred)". Say a quoted
+  fact plainly. Say an inferred fact as a guess ("it looks like"), never as
+  a fact, and never make a hedge firmer. Do not copy the marks.
+- A file name is a label, not content. A file that the member calls a
+  sample or a reference is never the subject of the request.
+""" + EMAIL_DELEGATION_BULLETS + """\
 - Keep each in-app link in the response verbatim, for example
   [BQ quote](/email?email=<id>). An in-app link starts with ONE "/" and then a
   letter. A link that starts with "//" or "/\\" is not in-app. Do not drop an
@@ -126,6 +184,10 @@ Rules:
 10. Never put «» around a name. Write the name in bold, or plain. A reply
     of another agent can hold the marks, and WhatsApp shows them raw.
 11. Ask the member for one decision at a time.
+12. A correction is not a request. When the member only corrects a fact,
+    use the corrected fact from now on and say what changed. Do not draft,
+    send or change a record that the member did not ask for. When the
+    member corrects an open draft, change that draft only.
 
 THE SHAPE OF A ROUTINE REPLY. The chief-of-staff rules in your voice set it.
 Two examples follow. Their facts are made up, so never repeat them.
@@ -166,7 +228,15 @@ _COMPANY_SEARCH_SWAPS: tuple[tuple[str, str], ...] = (
         "1. When the member asks about the company, its work, its customers, its\n"
         "   mail or its policies, call search_company first. Answer from what it\n"
         "   returns, and cite each item you used. When it returns nothing, say\n"
-        "   that the company's records hold nothing on it.\n",
+        "   that the company's records hold nothing on it.\n"
+        # Chat speed (2026-10-25): a write searched first and then delegated,
+        # and the specialist searched again. That cost one model round and a
+        # search, about 8.7 s, before the work began (knowledge_base.md §8.2).
+        "   A request to change something in one app, such as an email to write\n"
+        "   or send, a task to make or a record to update, is work in that app.\n"
+        "   Give it at once to that app's specialist, or to your own tool for it,\n"
+        "   with no search first. The specialist or the tool finds the email, the\n"
+        "   contact or the record itself.\n",
     ),
     (
         "5. Every factual claim from retrieval must cite [entity:uuid] tokens exactly as returned.\n",
@@ -192,16 +262,107 @@ _RECENCY_SWAP: tuple[str, str] = (
 )
 
 
-def _orchestrator_instructions(company_search: bool, recency: bool = False) -> str:
+# WS-61 KB-5a (knowledge_base.md §8.1 and §13). With KNOWLEDGE_PROPOSALS on
+# too, the tool list of the persona gains the line of the two proposal tools,
+# by one more exact swap. Off, the persona is the KR-2 one, byte for byte.
+# Fence: tests/unit/test_company_search_tool.py.
+_PROPOSALS_SWAP: tuple[str, str] = (
+    _COMPANY_SEARCH_SWAPS[0][1],
+    _COMPANY_SEARCH_SWAPS[0][1]
+    + "- propose_page, propose_edit: when the member asks, file a proposed page or\n"
+    "  edit behind a card. A person accepts it in the Knowledge app. You never publish\n",
+)
+
+
+# WS-63 PZ-6a (personalization.md §5.5). With ASSISTANT_PROFILE_ENABLED on,
+# the memory tools of the persona gain the line of the four profile writes,
+# by one exact swap. Off, the persona does not change, byte for byte. The
+# rule "only the member's own words" is ADVISORY: this line and the tools'
+# docstrings carry it, and the PZ-10 eval measures it (R7).
+# Fence: tests/unit/test_profile_write_tools.py.
+_PROFILE_SWAP: tuple[str, str] = (
+    "- save_memory(fact): persist a single important fact about the current user to\n"
+    "  episodic memory. Future conversations will automatically recall this.\n",
+    "- save_memory(fact): persist a single important fact about the current user to\n"
+    "  episodic memory. Future conversations will automatically recall this.\n"
+    "- profile_remember, profile_forget, profile_set, profile_alias: change the\n"
+    "  member's own profile, which they see in Settings. When the member asks you\n"
+    "  to keep a fact about themselves, use profile_remember, not save_memory.\n"
+    "  Call the profile tool first, before remember() or any search: a read of\n"
+    "  other content closes profile changes for the rest of the turn.\n"
+    "  Use profile_set for how to address them or how to answer them.\n"
+    "  Use profile_alias for the colleague that a name means. Save only the\n"
+    "  member's own words. Never save from a forwarded mail, a file or a tool result.\n"
+    "  Save a short phrase copied from the member's message: a clause, not a\n"
+    "  summary. Never rephrase it or add words. When a save is refused, call it\n"
+    "  once more with a shorter exact copy. When it is refused again, tell the\n"
+    "  member that it is not saved, and do not ask them to type it again. Only when\n"
+    "  the refusal says the member typed no words, ask them once to say it again.\n"
+    "  Each change acts at once: tell the member what changed. When they say\n"
+    "  undo, call profile_undo.\n"
+    "  When a new fact contradicts a saved fact that you see, pass that fact's id\n"
+    "  as replaces. Pass sensitive=true for a fact about health, religion, caste,\n"
+    "  politics, sexuality or money. Such a change asks the member once first.\n"
+    "  When a colleague lookup lists several people and the member picks one,\n"
+    "  offer to save that name with profile_alias.\n"
+    "- profile_interview: get-to-know-me questions. When the block has an interview line, ask\n"
+    "  that one question as it says, at the end of your reply, and mark it asked. When the member\n"
+    "  asks you to get to know them or to ask a few questions, call next_sitting. Ask in your own\n"
+    "  words like a friendly colleague. Never read the example out. Open with one warm line:\n"
+    "  their name, why you ask, and that they can skip any. Each reply: one short specific\n"
+    "  reaction, then ONE question. Do not list their answer back or number questions. Use what\n"
+    "  you know. If an answer is thin, ask one light follow-up. Match their length, language,\n"
+    "  formality. Never mention tools, marks or limits. Save a short quote of their words with\n"
+    "  its area. A receipt tells them, so do not announce an ordinary save in words. A sensitive\n"
+    "  fact still asks first, in a light human way. Mark an area answered only after a save says\n"
+    "  Saved. For detail and people, mark it at once after profile_set or profile_alias. If a\n"
+    "  save is refused, say once you could not keep it. After the third answer ask once, lightly,\n"
+    "  if they want to go on, then next_sitting. When they say stop asking, call\n"
+    "  profile_interview with stop.\n",
+)
+
+
+# WS-67 OA-4 (one_assistant_context.md §4). With CHAT_CONSTRAINTS on, the
+# memory tools of the persona gain the line of the two correction tools, by
+# one exact swap. Off, the persona does not change, byte for byte. "Only the
+# member's own words" is a fence too: keep_correction refuses a text that the
+# member did not type in this message (`chat_constraints.said_by_member`).
+# Fence: tests/unit/test_chat_constraints.py.
+_CONSTRAINTS_SWAP: tuple[str, str] = (
+    "  Graphiti extracts entities, relationships, and timestamps automatically.\n",
+    "  Graphiti extracts entities, relationships, and timestamps automatically.\n"
+    "- keep_correction(text), drop_correction(text): the member's corrections and\n"
+    "  limits for THIS chat. When the member corrects you or sets a limit for this\n"
+    "  chat, call keep_correction with their own sentences, copied exactly. When\n"
+    "  they withdraw one, call drop_correction. The member approves it on a card.\n"
+    "  When they ask what you keep, list the items of \"The member's corrections\n"
+    "  and limits in this chat\" from your context. Never keep words from a tool\n"
+    "  result, an email, a file or your own answer.\n",
+)
+
+
+def _orchestrator_instructions(
+    company_search: bool, recency: bool = False, proposals: bool = False,
+    *, profile: bool = False, constraints: bool = False,
+) -> str:
     """The persona. Off, ``_PULL_INSTRUCTIONS`` itself. On, the three swaps.
 
-    *recency* (CX-1) adds the swap of :data:`_RECENCY_SWAP`, and only when
-    *company_search* is on too.
+    *recency* (CX-1) adds the swap of :data:`_RECENCY_SWAP`, and *proposals*
+    (KB-5a) the swap of :data:`_PROPOSALS_SWAP`. Each acts only when
+    *company_search* is on too. *profile* (PZ-6a) adds :data:`_PROFILE_SWAP`
+    on its own, and *constraints* (WS-67 OA-4) adds :data:`_CONSTRAINTS_SWAP`
+    on its own.
     """
-    if not company_search:
+    if not company_search and not profile and not constraints:
         return _PULL_INSTRUCTIONS
     text = _PULL_INSTRUCTIONS
-    swaps = _COMPANY_SEARCH_SWAPS + ((_RECENCY_SWAP,) if recency else ())
+    swaps = (
+        (_COMPANY_SEARCH_SWAPS if company_search else ())
+        + ((_RECENCY_SWAP,) if company_search and recency else ())
+        + ((_PROPOSALS_SWAP,) if company_search and proposals else ())
+        + ((_PROFILE_SWAP,) if profile else ())
+        + ((_CONSTRAINTS_SWAP,) if constraints else ())
+    )
     for old, new in swaps:
         if text.count(old) != 1:
             # A persona edit moved a line the swap names. Fail loud at build,
@@ -220,6 +381,62 @@ def _company_search_enabled() -> bool:
     return company_search_enabled()
 
 
+def _knowledge_propose_enabled() -> bool:
+    """The one reader of ``KNOWLEDGE_PROPOSALS``, in ``acb_skills`` (KB-5a)."""
+    try:
+        from acb_skills.knowledge_tools import knowledge_propose_enabled
+    except ImportError:  # pragma: no cover — acb_skills ships with the platform
+        return False
+    return knowledge_propose_enabled()
+
+
+def _chat_constraints_enabled() -> bool:
+    """The one reader of ``CHAT_CONSTRAINTS``, in ``acb_skills`` (WS-67 OA-4)."""
+    try:
+        from acb_skills.chat_constraints import chat_constraints_enabled
+    except ImportError:  # pragma: no cover — acb_skills ships with the platform
+        return False
+    return chat_constraints_enabled()
+
+
+def _close_profile_writes() -> None:
+    """Close the run's profile writes (``assistant_profile.close_writes``).
+    Never raises (WS-63 PZ-6a fix round 2)."""
+    try:
+        from acb_common.assistant_profile import close_writes
+
+        close_writes()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _assistant_profile_enabled(org: str | None = None) -> bool:
+    """True when the profile is on for this agent's organization (PZ-25).
+
+    The rule is ``acb_common.assistant_profile.enabled_for``. *org* is the
+    organization that the caller holds from the server-side ``UserContext``.
+    With no *org*, the bound tenant (``acb_common.db.current_tenant``) and
+    then the run's org (``executor._current_run_org``) answer. A caller with
+    none of them fails closed, so a build at startup gets no profile tools.
+    Never raises. Fence: ``tests/unit/test_assistant_profile_org_rollout.py``.
+    """
+    try:
+        from acb_common.assistant_profile import enabled_for
+
+        if not org:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        if not org:
+            # Lazy, so a build at import does not load the executor.
+            from orchestrator.executor import _current_run_org
+
+            org = _current_run_org()
+        return enabled_for(org)
+    except Exception:
+        return False
+
+
 def _context_recency_enabled() -> bool:
     """The one reader of ``CONTEXT_RECENCY``, in ``acb_skills`` (CX-1)."""
     try:
@@ -236,6 +453,9 @@ def _context_recency_enabled() -> bool:
 @_annotate_risk(open_world=False)
 async def retrieve_entity_context(query: str) -> str:
     """Search the entity graph for projects, tasks, deals, and people relevant to the query."""
+    # WS-63 PZ-6a fix round 2: the answer holds text of other people, so
+    # the run's profile writes close for the rest of the run.
+    _close_profile_writes()
     # WS-29 acb_graph slice 7: resolve the run's tenant HERE, on the event-loop
     # frame, BEFORE the asyncio.to_thread hop — _RUN_ORG is a plain dict and
     # contextvars do not cross the hop, so the opener must be captured on this
@@ -258,6 +478,9 @@ async def retrieve_entity_context(query: str) -> str:
 @_annotate_risk(open_world=False)
 async def retrieve_sales_context(query: str) -> str:
     """Search the sales entity graph for customer 360 summaries and deal pipeline data."""
+    # WS-63 PZ-6a fix round 2: the answer holds text of other people, so
+    # the run's profile writes close for the rest of the run.
+    _close_profile_writes()
     # Same before-the-hop tenant capture as retrieve_entity_context (WS-29
     # acb_graph slice 7). sales_context() reads customer/deal/person through the
     # session passed to it, so binding the opener here binds sales_views.py's
@@ -294,7 +517,81 @@ async def search_timeline(entity_name: str, query: str) -> str:
         Formatted string with timestamped facts, or empty string if Graphiti
         is not enabled or no facts found.
     """
+    # WS-63 PZ-6a fix round 2: the answer holds text of other people, so
+    # the run's profile writes close for the rest of the run.
+    _close_profile_writes()
     return await search_entity_timeline(entity_name, query)
+
+
+# WS-62 CF-3 (chat_first_surface.md §4.4). The one tool that moves the page.
+# Only the orchestrator holds it (§9.2 Q3), so the page moves once and from
+# one place. read_only: it changes no data, it only tells the client where to
+# look. open_world=False: nothing leaves the platform.
+# Fence: tests/unit/test_show_in_app.py.
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def show_in_app(path: str, why: str) -> dict:
+    """Open a page of the app for the member, and say why in one sentence.
+
+    Use it when the member asks to see a page, a list or a record. The
+    page opens beside the chat. Then tell the member what they will see, in
+    one sentence. Call it at most once per reply.
+
+    Args:
+        path: An in-app path. It starts with one "/" and names a pane:
+            /projects, /projects?project=<id>, /projects?task=<id>, /tasks,
+            /calendar, /email, /email?email=<id>, /crm, /people, /knowledge,
+            /notes, /artifacts, /whatsapp, /dashboard, /chat. Never a full
+            URL, and never another site.
+        why: One short sentence the member reads, such as "Here is the
+            board for Website relaunch."
+
+    Returns:
+        ``{"opened": path}`` when the page opens. ``{"error": reason}`` when
+        it does not: a bad path, a pane the member does not hold, or a
+        second call in the same reply. Then say so in words and move on.
+    """
+    from orchestrator import in_app_path as _iap
+    from orchestrator.executor import resolve_run_queue
+
+    path = str(path or "").strip()
+    why = str(why or "").strip()
+    # Review of #1197, P2: a specialist that holds call_agent can call the
+    # orchestrator, and that nested run sees the parent's queue. Only the
+    # member's own run, the one with no ancestor, moves the page.
+    try:
+        from acb_skills.agent_tools import _delegation_chain
+
+        nested = bool(_delegation_chain.get())
+    except ImportError:  # pragma: no cover — acb_skills ships with the platform
+        nested = False
+    if nested:
+        return {"error": "only the member's own assistant opens a page"}
+    if not _iap.is_in_app_path(path):
+        return {"error": "not a path inside this app"}
+    # The queue IS the run's state: one queue per turn, made by the run
+    # frame. MAF runs each tool call in a COPY of the context
+    # (agent_framework/_tools.py, copy_context().run(create_task)), so a
+    # ContextVar set here never reaches the next call. A mark on the queue
+    # does, and it dies with the turn. No module state is needed.
+    queue = resolve_run_queue()
+    if queue is None:
+        return {"error": "no page to open from here"}
+    if getattr(queue, "_show_in_app_done", False):
+        return {"error": "already opened a page this turn"}
+    reason = _iap.refusal(path, await _iap.member_features())
+    if reason is not None:
+        return {"error": reason}
+    queue._show_in_app_done = True  # type: ignore[attr-defined]
+    # The same channel artifact_created uses. The client's live loop acts on
+    # it, and the replay loop does not (useAgentChat.ts).
+    await queue.put({
+        "type": "CUSTOM",
+        "name": "navigate",
+        "value": {"path": path, "why": why},
+    })
+    # The note makes the model hedge: a closed assistant, or another chat
+    # in front, moves nothing on the client.
+    return {"opened": path, "note": "the page opens only while the member watches this chat"}
 
 
 # H-236: open_world, because the container it starts has a network and a
@@ -391,14 +688,16 @@ async def delegate_to_agent(agent_name: str, message: str) -> str:
 
     When to delegate (examples):
     - CRM records, pipeline and deal questions → "crm-assistant"
-    - Task management, sprint status, workload queries → "task-manager"
+    - Tasks, projects, the member's own task inbox and its triage, workload,
+      status and calendar blocks → "projects-assistant". Projects, My Tasks
+      and Calendar are one task store (D52, D53, D54).
 
     Do NOT delegate:
     - Broad company data questions that span multiple agents (use your own retrieval tools)
     - Questions you can already answer from the entity graph
 
     Args:
-        agent_name: Exact registered name, e.g. "crm-assistant", "task-manager".
+        agent_name: Exact registered name, e.g. "crm-assistant", "projects-assistant".
         message:    The user's full request, reworded if needed to be self-contained.
 
     Returns:
@@ -429,10 +728,12 @@ async def delegate_to_agent(agent_name: str, message: str) -> str:
             return f"Agent {agent_name!r} failed: {exc}"
 
     try:
+        from acb_skills.handoff import head_task
         from orchestrator.executor import run_agent  # noqa: PLC0415
         result = await run_agent(
             agent_name,
-            {"message": message, "mode": "chat"},
+            # WS-67 OA-1: the batch path heads the task as the stream does.
+            {"message": head_task(message), "mode": "chat"},
             run_id=run_id,
             model=_parent_model,
         )
@@ -483,11 +784,22 @@ def _load_specialist_agents_as_tools() -> list[Any]:
 
     settings = get_settings()
     skip_names = {"orchestrator", "strategy"}  # avoid circular delegation
+    from acb_skills.loader import may_delegate_to
 
     for entry in all_agents:
         name: str = entry.get("name", "")
         description: str = entry.get("description", "")
         if not name or name in skip_names or not description:
+            continue
+        if not may_delegate_to(name, entry.get("agent_runtime")):
+            # D84, D92: a Copilot agent does not run as a specialist
+            # (loader.refuse_copilot_specialist), so the model is not offered
+            # it. It returns here when its port labels it "maf" (WS-8i).
+            # app-builder stays, by owner call (loader.COPILOT_SPECIALIST_ALLOWED).
+            _log.info(
+                "orchestrator.specialist_tool_skipped",
+                agent=name, reason="copilot_runtime",
+            )
             continue
         try:
             # Enrich the tool description with tags and integrations from config
@@ -555,7 +867,12 @@ def _load_specialist_agents_as_tools() -> list[Any]:
                 input_model={
                     "type": "object",
                     "properties": {
-                        "task": {"type": "string", "description": f"Task for {name}. Include all context needed — this agent has no memory of the current conversation."}
+                        "task": {"type": "string", "description": (
+                            f"Task for {name}. Include all context needed — this agent "
+                            "has no memory of the current conversation. Name each record "
+                            "by its in-app link or id. Copy any text that the member "
+                            "agreed (an email, a message) WORD FOR WORD, and say to use "
+                            "it as is.")}
                     },
                     "required": ["task"],
                     "additionalProperties": False,
@@ -612,12 +929,17 @@ def _make_openai_client(
 def build_orchestrator_agent(
     *,
     with_history: bool = True,
+    organization_id: str | None = None,
 ) -> Agent:
     """Build the core orchestrator MAF agent with dynamic specialist agent tools.
 
     Loads every registered agent as a native MAF tool via agent.as_tool().
     The orchestrator LLM sees each specialist's description and routes to the
     right one automatically — no hard-coded routing table needed.
+
+    *organization_id* is the org of the caller's server-side ``UserContext``,
+    for a caller that builds the agent before it binds the run (PZ-25). With
+    none, :func:`_assistant_profile_enabled` reads the bound run.
     """
     settings = get_settings()
     client = _make_openai_client()
@@ -638,9 +960,19 @@ def build_orchestrator_agent(
     # WS-61 CX-1: read once too, so the persona and the tool agree. It acts
     # only with company search on.
     recency = company_search and _context_recency_enabled()
+    # WS-61 KB-5a: read once too, so the persona line and the two tools agree.
+    # Off until KB-5b ships the Review view, where a person accepts.
+    proposals = company_search and _knowledge_propose_enabled()
+    # WS-63 PZ-5: read once, so the tool list follows one reading of the flag.
+    # PZ-25: per organization, so read it on the bound run, never at import.
+    profile_on = _assistant_profile_enabled(organization_id)
+    # WS-67 OA-4: read once, so the persona line and the two tools agree.
+    constraints_on = _chat_constraints_enabled()
 
     # Build the instructions; append memory context when present.
-    instructions = _orchestrator_instructions(company_search, recency)
+    instructions = _orchestrator_instructions(company_search, recency, proposals,
+                                              profile=profile_on,
+                                              constraints=constraints_on)
 
     # Memory tools — active read/write to Mem0 + Graphiti knowledge graph.
     # Gives the orchestrator the same memory capabilities that injected
@@ -664,19 +996,59 @@ def build_orchestrator_agent(
     # `search_company` takes the place of the two legacy retrievers. This is
     # the ONE path of the tool: not config.json tool_scope, not the floor.
     # KB-4a: the two Knowledge reads join it on the same path, and only then.
+    # KB-5a: the two proposals too, and only with KNOWLEDGE_PROPOSALS on. Each
+    # asks with a card and never publishes.
     if company_search:
         from acb_skills.company_search_tools import search_company, search_company_dated
-        from acb_skills.knowledge_tools import list_spaces, read_page
+        from acb_skills.knowledge_tools import (
+            list_spaces,
+            propose_edit,
+            propose_page,
+            read_page,
+        )
 
         # CX-1: with CONTEXT_RECENCY on, the tool of the same name that takes
         # `after` and prints the stamp.
         company_tool = search_company_dated if recency else search_company
         retrieval_tools: list[Any] = [company_tool, read_page, list_spaces]
+        if proposals:
+            retrieval_tools += [propose_page, propose_edit]
     else:
         retrieval_tools = [retrieve_entity_context, retrieve_sales_context]
+    # WS-63 PZ-5: `resolve_person`, only with the profile on for the org (PZ-25).
+    # The ONE path of the tool, as for `search_company`: not config.json
+    # tool_scope, not the floor, not the injection chain.
+    # Fence: tests/unit/test_resolve_person.py.
+    # WS-63 PZ-6a: the four profile writes, on the same one path, with the
+    # persona line of `_PROFILE_SWAP`. Each refuses outside the member's own
+    # chat. Fence: tests/unit/test_profile_write_tools.py.
+    if profile_on:
+        from acb_skills.profile_tools import WRITE_TOOLS, resolve_person
+
+        profile_tools: list[Any] = [resolve_person, *WRITE_TOOLS]
+    else:
+        profile_tools = []
+    # WS-67 OA-4 (one_assistant_context.md §4): the member's corrections and
+    # limits of this chat. The orchestrator's own two tools, on this one path
+    # (not config.json tool_scope, not the floor), dark behind
+    # CHAT_CONSTRAINTS. Fence: tests/unit/test_chat_constraints.py.
+    if constraints_on:
+        from acb_skills.chat_constraints import TOOLS as _CONSTRAINT_TOOLS
+
+        constraint_tools: list[Any] = list(_CONSTRAINT_TOOLS)
+    else:
+        constraint_tools = []
+    # WS-62 CF-3: the orchestrator's own, never a specialist's (§9.2 Q3).
+    # Dark until CHAT_FIRST_TOOLS is on (review of #1197, P1). Fence:
+    # tests/unit/test_show_in_app.py, test_company_search_tool.py.
+    from orchestrator.in_app_path import chat_first_tools_enabled
+    page_tools: list[Any] = [show_in_app] if chat_first_tools_enabled() else []
     core_tools: list[Any] = [
         *retrieval_tools,
+        *profile_tools,
+        *constraint_tools,
         search_timeline,
+        *page_tools,
         spawn_copilot_agent,
         delegate_to_agent,
         *_memory_tools,
@@ -787,6 +1159,7 @@ __all__ = [
     "retrieve_entity_context",
     "retrieve_sales_context",
     "search_timeline",
+    "show_in_app",
     "spawn_copilot_agent",
     "delegate_to_agent",
 ]

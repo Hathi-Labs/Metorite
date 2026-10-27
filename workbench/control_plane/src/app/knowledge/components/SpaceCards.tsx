@@ -3,7 +3,8 @@
 /**
  * The spaces as cards (WS-61 KB-2a, `knowledge_base.md` §11.1): the first
  * screen of Knowledge. Each card names the space, its purpose, its count of
- * pages and what the member may do there. A card opens the space.
+ * pages and what the member may do there. A card opens the space. Under the
+ * cards, the home lists of KB-2f (`KnowledgeHome`).
  */
 
 import Link from "next/link";
@@ -14,6 +15,7 @@ import Badge from "@/components/ui/Badge";
 import { LEVEL_LABELS, pageCount, spaceIcon } from "../lib/labels";
 import { spaceHref } from "../lib/links";
 import { useKnowledge } from "./KnowledgeContext";
+import KnowledgeHome from "./KnowledgeHome";
 
 export default function SpaceCards() {
   const { spaces, openNewPage } = useKnowledge();
@@ -71,6 +73,8 @@ export default function SpaceCards() {
             </li>
           )}
         </ul>
+        {/* KB-2f: Recently updated, Favourites and Created by me. */}
+        <KnowledgeHome />
       </div>
     </div>
   );

@@ -215,8 +215,10 @@ describe("the hosts render each control through reportEntry", () => {
   });
 
   it("NodeDashboard draws 'Report on this', and both page renders pass onReport", () => {
-    expect(dashboard).toContain("onReport(nodeReportLink(summary.id))");
-    expect(page.match(/onReport=\{\(href\) => router\.push\(href\)\}/g)?.length).toBe(2);
+    // WS-64 OP-11: My tasks is no node, so its report is "My day" (`myDayLink`).
+    expect(dashboard).toContain('onReport(level === "mine" ? myDayLink() : nodeReportLink(summary.id))');
+    // The two node renders, and the My tasks action row and space.
+    expect(page.match(/onReport=\{\(href\) => router\.push\(href\)\}/g)?.length).toBe(4);
   });
 
   it("(18) the chat's report card links through reportLink", () => {

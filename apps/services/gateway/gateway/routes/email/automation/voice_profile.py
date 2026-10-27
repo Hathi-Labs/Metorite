@@ -29,12 +29,13 @@ from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.jobs import JobTracker
 from gateway.routes.email.core import (
     _assert_account_owner,
-    _tenant_session,
     _llm_json,
     _log,
     _parse_iso_date,
+    _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.quoting import split_quoted_text
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -484,7 +485,7 @@ async def get_voice_profile(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         row = (await db.execute(text(
             """SELECT enabled, status, style_guide, traits, sources,
                       range_start, range_end, analyzed_count, last_error,
@@ -511,7 +512,7 @@ async def preview_voice_profile(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         counts: dict[str, int] = {}
         for folder in _VALID_SOURCES:
             if folder not in src:
@@ -741,7 +742,8 @@ async def approve_knowledge(
                       updated_at = now()
                FROM email_accounts ea
                WHERE ek.id = :id AND ek.account_id = ea.id
-                 AND ea.user_id = :uid"""
+                 AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"id": kid, "uid": user.email or "anonymous"})
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="Not found")

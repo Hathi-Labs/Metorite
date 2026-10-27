@@ -277,6 +277,16 @@ NOT_ON_THE_EXPORT = {
     # a second would make the file's row order depend on who last dragged a
     # card. Excluded rather than added, deliberately.
     "view_id",
+    # WS-64 OP-11. `with_overlay` adds the caller's own GTD columns to the
+    # list rows for the My tasks screen. A CSV has fixed columns of its own.
+    "with_overlay",
+    # MCP-G5. An outside agent reads a subtree in one call. The export reads
+    # subtasks through task_detail, and no screen sends this.
+    "include_descendants",
+    # EA-14a. An AGENT's filter: the MCP `list_tasks` sends it to find a task
+    # no other AI session holds. The board never sends it, and a file of
+    # "tasks no agent holds" is a snapshot that is stale on download.
+    "unheld",
 }
 
 
@@ -558,3 +568,12 @@ def test_the_cap_is_a_stated_number_not_a_magic_literal() -> None:
     assert f"{MAX_EXPORT_ROWS}" not in SOURCE.read_text(encoding="utf-8").split(
         "MAX_EXPORT_ROWS = ", 1,
     )[1].split("\n", 1)[1]
+
+
+def test_the_export_takes_the_mine_scope_like_the_list() -> None:
+    """⚠️ WS-64 OP-11. An export of My tasks that dropped `scope=mine` would
+    hand over every task the member can read."""
+    source = SOURCE.read_text(encoding="utf-8")
+    assert "scope: str | None = None" in source
+    assert "check_scope(scope)" in source
+    assert "mine_scope(db, vis)" in source

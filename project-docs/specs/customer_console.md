@@ -34,6 +34,11 @@ amendment under CP-2g's non-goals holds the contract. When the removal takes
 the last registry owner, the acting admin inherits (P1-b, the owner's
 decision of 2026-10-15).
 
+🆕 **Org rename on both planes: BUILT on branch `org-rename` (2026-10-27,
+owner request), not merged.** One rename sets the tenant display name and the
+Console name. The block "CP-8 · Rename an organization", under the CP-8 ticket
+in §6, holds the contract.
+
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · 🆕 **CP-10 MINTED 2026-08-26 (D56) — the operator
 model-management plane; CP-5 is re-scoped as its removal half · 🆕 **CP-11 MINTED
 2026-08-26 (D57)** — the SERVING HOP, the first-caller ticket §6 (d) has waited for
@@ -1858,6 +1863,127 @@ workbench can reach a cross-org read.
 > **OWNER-GATE go-live:** deploy the app · set the operator-token env · set
 > `OPERATOR_CONSOLE_DEFAULT_DEPLOYMENT_LABEL` on the box · provision a REAL
 > customer through the finished UI.
+
+**CP-8 · Rename an organization (owner request, 2026-10-27).**
+
+**Status: BUILT 2026-10-27 on branch `org-rename`, not merged.** The two
+gateway doors, the Console door, the admin mirror and the operator panel are
+built. The rename of the live DEWiN organization is not done. It waits for the
+merge and the deploy.
+
+**Non-goals.** No slug change. No `legal_name` column. No drift sweep. No logo
+change.
+
+**Gate: AGENT-SAFE to build.** The act on a live organization is not. Renaming
+the live DEWiN organization is a production write. Section 3a of `CLAUDE.md`
+allows it, because it is neither membership nor credit. The session reports it
+in the same message.
+
+**Why.** The DEWiN customer renamed its organization to "Shaurrya Tele" in the
+app. The Operator Console still shows "Dewin". The two planes each keep a name,
+and nothing connects them. The tenant name is `organization.display_name`
+(`infra/postgres/130_org_access_control.sql`). The Console name is
+`organization.name` (`infra/customer_console/001`, line 53).
+
+**Owner call, 2026-10-27.** One rename changes the display name on both planes.
+The slug does not change. A customer admin rename also updates the Console name.
+
+**Names.**
+- The Console `organization.name` is the only name the Console stores. It has no
+  legal-name column.
+- No invoice exists yet, so no printed document changes today.
+- When SC-5 builds the invoice, it adds a `legal_name` column and copies it onto
+  each invoice. A later rename then never changes a past invoice.
+
+**The operator path.** The operator BFF `POST /api/operator/orgs/rename`
+takes `{org_slug, name}`.
+- The Console session gives the rank. Rename needs EDITOR.
+- The route checks the tenant door first. If the door is not configured, it
+  answers 503 and changes nothing.
+- The tenant act runs before the Console act, as in member removal. The gateway
+  door is `PATCH /internal/operator/organizations/{slug}`. It uses the two tokens
+  of the org purge, and the slug comes from the path.
+- The Console act is the operator arm of one Console door,
+  `POST /registry/orgs/rename`. It writes `organization.name`.
+- A tenant refusal is relayed with its own status and `refused_by: "tenant"`.
+  If the Console gives no answer or a 5xx, the route answers 502 and the caller
+  can retry. A retry is safe, because both writes set the same value.
+
+**The admin path.** `PATCH /admin/organization` commits first. A post-commit
+mirror then calls the same Console door, deployment arm. The mirror is
+best-effort, like `apps/services/gateway/gateway/routes/admin/members.py:575`.
+- The deployment arm uses `_MEMBER_ADMIN_ROLES`. An admin with two organizations
+  on one deployment gets 409, and the mirror logs the refusal.
+- The gateway validates with `clean_display_name` on both paths, before any
+  write. The Console door checks only that the name is not empty and is 80
+  characters or fewer. The Console has no gateway dependency.
+- Both gateway doors call one shared UPDATE body.
+- The Console door reuses the `member_admin` capability. It adds no new one.
+
+**The drift rule.** A Console outage during an admin rename leaves the two names
+different. `reconcile()` sweeps only `console_mirrored_at IS NULL`, so it does
+not repair this. The rule is:
+- The admin mirror logs `org_rename_mirror_failed` with the slug and the name.
+  It logs only when the Console is wired and the call fails. When `is_wired()`
+  is false, it stays silent, so a dev box logs nothing.
+- The Console derives the org from the actor. An admin who is an active Console
+  member of a different org on the same deployment renames THAT org. So a 200
+  must name the slug that the tenant renamed. A different slug logs
+  `org_rename_mirror_wrong_org` at error, with both slugs, the name and the
+  name that the Console replaced (review round 2, 2026-10-27).
+- An operator rename repairs the drift, because it writes both planes.
+- A drift sweep is not built. Build it only if the log line ever fires.
+
+**The audit actor.** The Console half names the staff member (`staff.actor`).
+The gateway door writes the literal `operator`, as member removal does. The admin
+half calls `record_admin_change(admin.email, "org.renamed")`.
+
+**Tenancy.** No new connection site and no new HTTP client. The tenant comes
+from the path slug, never from the body. D64.5 allows the act: the organization
+name is a commercial-record field, and the purge and member-removal doors
+already write the tenant plane.
+
+**No migration.** Both columns exist (R6).
+
+**Done when.**
+1. In a test, an operator rename sets `organization.name` (Console R8) and
+   `organization.display_name` (gateway R8). The BFF test shows the tenant call
+   goes first.
+2. A customer admin rename updates both. With the Console down, it logs
+   `org_rename_mirror_failed` and the tenant rename still succeeds.
+3. The slug is the same before and after.
+4. A name that is empty, over the limit or not printable gets 422 on both paths.
+5. A viewer gets 403. An unknown slug gets 404.
+
+**Fences.**
+- Add `gateway/routes/admin/organization.py` to `_ALLOWED_CALLERS` in
+  `test_console_dependency_boundary.py`, with a reason.
+- Add an EDITOR row for the rename in `operator_roles.py`. The matrix fails
+  closed, and `test_operator_role_matrix_source.py` checks it.
+- Add the R8 suite `tests/unit/test_customer_console_org_rename.py` for the
+  Console door. It uses `_DB_GATE`. Add it to the `pr-check.yml` hand-list.
+- Add an order fence in the BFF `route.test.ts`: the tenant call comes first.
+
+**Verify with.**
+```
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_operator_door.py tests/unit/test_admin_organization_rename.py tests/unit/test_console_dependency_boundary.py tests/unit/test_operator_role_matrix_source.py tests/unit/test_customer_console_org_rename.py -q
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
+cd workbench/operator_console && npx tsc --noEmit && npx vitest run src/lib/tenantDoor.test.ts src/app/api/operator/orgs/rename/route.test.ts
+```
+
+**Files.** All under `apps/services/` unless a path says otherwise.
+- `gateway/gateway/routes/operator.py`: the new tenant door.
+- `gateway/gateway/routes/admin/organization.py`: the admin path and the mirror.
+- `customer_console/customer_console/main.py` and `store.py`: the Console door.
+- `customer_console/customer_console/operator_roles.py`: the EDITOR row.
+- `packages/acb_auth/acb_auth/console_resolve.py`: the mirror call.
+- `workbench/operator_console/src/lib/tenantDoor.ts` and `src/lib/console.ts`.
+- `workbench/operator_console/src/app/api/operator/orgs/rename/route.ts`: the BFF.
+- `workbench/operator_console/src/app/customers/[slug]/Actions.tsx`: the button.
+- The model to copy is `src/app/api/operator/members/remove/route.ts`.
+
+**Board.** WS-31, CP-8. `organization_identity.md` OI-4 links here.
 
 **CP-9 · The payment-provider seam (Razorpay), and the money→entitlement path.**
 ◐ **SUBSTRATE HALF BUILT 2026-08-18** (minted the same day) — the ticket three

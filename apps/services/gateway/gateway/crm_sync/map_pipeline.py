@@ -898,6 +898,8 @@ class Result:
     #: CRM-Q32-1 item 6: the doubts of the roles that this run asked, or
     #: ``None`` when it asked none (a cache hit keeps the cached doubts).
     doubts: dict[str, list[str]] | None = None
+    #: WS-53 §18.16 part 5: the amounts that the evidence of GST moved.
+    ex_gst_amounts: int = 0
 
     def agree(self, feature: str, asked: int, agreed: int) -> None:
         row = self.shadow.setdefault(feature, [0, 0])
@@ -917,6 +919,7 @@ class Result:
             "catalogue_requests": self.catalogue_requests,
             "catalogue_items": len(self.catalogue_items),
             "catalogue_reason": self.catalogue_reason,
+            "ex_gst_amounts": self.ex_gst_amounts,
         }
 
 
@@ -1867,10 +1870,47 @@ class _CatalogueWork(_CatalogueAsk):
                 p.result.done[key] = (digest, items)
                 self._keep(items, working)
                 self._keep(items, fresh)
+            await self._ex_gst_amounts(approved, working, fresh)
         finally:
             p.result.catalogue_items = [fresh[m] for m in sorted(fresh)]
             p.result.catalogue_entries = cat.build(
                 sources, self.roles, _view(approved, working))
+
+    async def _ex_gst_amounts(self, approved: Sequence[Mapping[str, Any]],
+                              working: dict[str, dict[str, Any]],
+                              fresh: dict[str, dict[str, Any]]) -> None:
+        """WS-53 §18.16 part 5: the amount of each money module is, of its
+        currency fields, the most filled one that the evidence of GST marks
+        as excluding GST (``catalogue.code_amount_ex_gst``). It runs at each
+        sync, at 0 tokens, so a pick of the AI or of code moves to it on the
+        next sync. An admin's answer is never replaced, and a sum of fields
+        stays. A source with no read of the evidence (a test double) skips."""
+        read = getattr(self.p.source, "amount_evidence", None)
+        if read is None:
+            return
+        entries = cat.build(list(self.sources.values()), self.roles, _view(approved, working))
+        for entry in sorted(entries, key=lambda e: e.module):
+            if entry.kind != "module" or entry.purpose not in cat.MONEY_PURPOSES:
+                continue
+            current = entry.fields.get("amount")
+            if entry.by.get("amount") == "admin" or getattr(current, "parts", ()):
+                continue
+            src = self.sources[entry.module]
+            if not cat.amount_evidence_fields(src):
+                continue
+            try:
+                pick = cat.code_amount_ex_gst(src, await read(src))
+            except Exception as exc:  # the evidence is advice: the plan stays
+                _log.warning("crm.map_pipeline.amount_evidence_failed",
+                             error_type=type(exc).__name__)
+                continue
+            if pick is None or (current is not None and current.key == pick.key):
+                continue
+            item = {**self._item(entry.module), "amount": pick.key,
+                    "by": {"amount": cat.BY_CODE}}
+            self.p.result.ex_gst_amounts += 1
+            self._keep([item], working)
+            self._keep([item], fresh)
 
     async def _purposes(self, entries: Sequence[Any], mode: str,
                         working: dict[str, dict[str, Any]],
@@ -2265,6 +2305,14 @@ class DbSource:
         return detail_module(module, [_jsonish(r.fields) or {} for r in rows],
                              fills=shares, distinct=distinct,
                              counts={k: v.distinct for k, v in (fills or {}).items()})
+
+    async def amount_evidence(self, src: Any) -> dict[str, tuple[str, ...]]:
+        """The GST evidence of the amount fields of *src* (WS-53 §18.16
+        part 5): one bounded statement in a tenant session of the org."""
+        from gateway.routes.crm.questions import module_evidence
+
+        async with tenant_session(self.org) as db:
+            return await module_evidence(db, self.org, src, cat.amount_evidence_fields(src))
 
     async def slot_detail(self, slot: SlotShape) -> SlotShape:
         if slot.detailed:

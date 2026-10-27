@@ -104,6 +104,14 @@ def test_the_root_copy_carries_the_script_and_its_sql() -> None:
     assert "infra/staging/minimise.sql staging_minimise.sql" in lines
 
 
+def test_the_minimise_step_blanks_the_assistant_profile() -> None:
+    """WS-63 PZ-9: the export carries no member's assistant profile. The
+    behaviour is proven in ``test_staging_minimise_r8.py`` (R8)."""
+    sql = (_ROOT / "infra/staging/minimise.sql").read_text(encoding="utf-8")
+    body = sql.split("-- 6. Nothing credential-shaped is left.", 1)[0]
+    assert "UPDATE public.user_settings           SET assistant_profile = NULL;" in body
+
+
 def test_a_tenant_cannot_set_the_slugs() -> None:
     """The name decides whose data leaves the production box."""
     from acb_common.env_guard import is_platform_env

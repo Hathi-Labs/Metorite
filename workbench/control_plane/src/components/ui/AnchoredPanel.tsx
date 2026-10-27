@@ -137,7 +137,17 @@ export interface AnchoredPanelProps {
 export interface PanelBox {
   left: number;
   right: number;
+  /**
+   * Below the anchor: the panel's top edge. Above it: the HIGHEST the panel's
+   * top may reach, which a full-height panel uses. The style pins a flipped
+   * panel by `bottom`, so a short one does not sit at this line.
+   */
   top: number;
+  /**
+   * Set when the panel opens ABOVE the anchor: its bottom edge, measured from
+   * the window's bottom, 2px clear of the anchor. `null` when it opens below.
+   */
+  bottom: number | null;
   width: number;
   /**
    * The tallest the panel may be on the side it opens to, 8px clear of the
@@ -162,6 +172,12 @@ export function panelBox(
     // Never off the top either: a flipped panel taller than the space above
     // it is the same defect upside down.
     top: up ? Math.max(8, rect.top - height - 2) : rect.bottom + 2,
+    // ⚠️ A flipped panel hangs from its BOTTOM edge (2026-10-25, Metorite
+    // #412). `top` above assumes the panel is `height` tall, which is the
+    // most it MAY take. A 120px tip with a 480px limit then opened 360px
+    // above its icon, at the top of the Statuses dialog. Pinning the bottom
+    // puts any height right on the anchor, with no measure after render.
+    bottom: up ? viewport.height - rect.top + 2 : null,
     width: rect.width,
     height,
   };
@@ -175,7 +191,7 @@ export function panelStyle(
 ): React.CSSProperties {
   return {
     ...(align === "end" ? { right: box.right } : { left: box.left }),
-    top: box.top,
+    ...(box.bottom === null ? { top: box.top } : { bottom: box.bottom }),
     minWidth: box.width,
     maxHeight: Math.min(maxHeight, box.height),
   };

@@ -20,6 +20,22 @@ import { IN_APP_LINK_EVENT, externalHost, isInAppPath as isInAppPathOfLinks } fr
 const md = (content: string) => renderToStaticMarkup(createElement(MarkdownBody, { content }));
 const read = (p: string) => readFileSync(new URL(p, import.meta.url), "utf-8");
 
+describe("isInAppPath and the server's is_in_app_path agree (WS-62 CF-3)", () => {
+  // One table, two readers: this test and tests/unit/test_in_app_path_twin.py.
+  const table = JSON.parse(read("./inAppPaths.cases.json")) as {
+    cases: { path: string; ok: boolean; why: string }[];
+  };
+
+  it("the table holds both verdicts", () => {
+    expect(table.cases.length).toBeGreaterThanOrEqual(20);
+    expect(new Set(table.cases.map((c) => c.ok))).toEqual(new Set([true, false]));
+  });
+
+  it.each(table.cases)("$path → $ok ($why)", ({ path, ok }) => {
+    expect(isInAppPathOfLinks(path)).toBe(ok);
+  });
+});
+
 describe("externalHost", () => {
   it("names the host of an http(s) link only", () => {
     expect(externalHost("https://evil.example/x?y=1")).toBe("evil.example");

@@ -137,11 +137,13 @@ class TestTheFiveCounts:
 
     async def test_s1_the_strip_and_the_card_read_one_state(self, w):
         """An open `awaiting` run of the member and a newer run of another
-        member: the card reads the question, and so does the strip."""
+        member: the card reads the question, and so does the strip. EA-14a: a
+        task has one OPEN run, so the newer run of the other member is a
+        closed one. A closed run never hides the question."""
         org = w.p.org_a
         t = _t(w)
         b.run(w.p, org, t, A_EMAIL, "awaiting", created="now() - interval '1 hour'")
-        b.run(w.p, org, t, OTHER, "in_progress", created="now()")
+        b.run(w.p, org, t, OTHER, "completed", created="now()")
         got = await _counts(w)
         assert got["waiting_on_you"] == 1 and got["working"] == 0
         async with b._session(w.p) as call:

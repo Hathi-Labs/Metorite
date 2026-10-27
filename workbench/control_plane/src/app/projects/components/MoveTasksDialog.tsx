@@ -62,6 +62,8 @@ interface Props {
   taskIds: readonly string[] | null;
   /** Every node the member can see, for the destination picker. */
   roots: readonly ProjectNode[];
+  /** A sentence shown when the selection has no destination (a mixed personal and team pick). */
+  unavailable?: string | null;
   onClose: () => void;
   /** Confirmed. The page owns the call, the toast and the refetch. */
   onConfirm: (
@@ -105,6 +107,7 @@ interface Props {
 export function MoveTasksDialog({
   taskIds,
   roots,
+  unavailable = null,
   onClose,
   onConfirm,
   busy,
@@ -167,7 +170,9 @@ export function MoveTasksDialog({
       size="md"
       initialFocus={picking ? searchRef : undefined}
       description={
-        promote
+        unavailable
+          ? unavailable
+          : promote
           ? `${PROMOTE_HINT} Statuses and fields are mapped into the project's own vocabulary.`
           : "Statuses and custom fields are mapped into the destination's own vocabulary."
       }

@@ -407,7 +407,8 @@ def world():
     a.member(MEMBER, ["feature:projects"])
     a.member(PEER, ["feature:projects"])
     a.member(STRANGER, ["feature:projects"])
-    team = a.project("Team")
+    # In a space: a space holds no tasks (`core.assert_holds_tasks`).
+    team = a.project("Team", in_space=True)
     a.one("INSERT INTO pm_project_grants (project_id, subject, created_by, organization_id)"
           " VALUES (CAST(:p AS uuid), :s, :a, CAST(:o AS uuid)) RETURNING project_id",
           p=team, s=PEER, a=w.OWNER, o=org)

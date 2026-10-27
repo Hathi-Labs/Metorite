@@ -48,6 +48,18 @@ export function moveItem<T>(items: T[], from: number, to: number): T[] {
   return next;
 }
 
+/**
+ * The plain words of a stage type (CRM-U6). A settings row and the board-order
+ * strip show these. The raw value (`on_hold`) is for the wire only.
+ */
+export const STATUS_TYPE_LABELS: Record<StatusType, string> = {
+  open: "Open",
+  ongoing: "In progress",
+  on_hold: "On hold",
+  won: "Won",
+  lost: "Lost",
+};
+
 /** Positions for a whole list, in tens, from its current order. */
 export function renumber<T extends Reorderable>(items: T[]): T[] {
   return items.map((item, index) => ({
@@ -155,7 +167,7 @@ export type StatusDraft = {
   name: string;
   type: StatusType;
   color?: string;
-  /** Deal statuses only — a lead status has no win probability. */
+  /** The win chance in percent. Both kinds carry it since migration 288. */
   probability?: number | null;
   /** Deal statuses only (WS-26h) — entry requirements. */
   required_fields?: string[];
@@ -178,7 +190,6 @@ export function validateStatusDraft(
   kind: "deal" | "lead"
 ): string | null {
   if (!draft.name.trim()) return "A status needs a name.";
-  if (kind !== "deal") return null;
 
   // An emptied probability box means "take the column default", which is 0 —
   // the same value the server would land on, so it is judged as 0 here too.
@@ -197,6 +208,9 @@ export function validateStatusDraft(
       `stage a different type.`
     );
   }
+
+  // The two checks below are for deal stages. A lead status has neither.
+  if (kind !== "deal") return null;
 
   // WS-26h. Same division of labour as the clamp above: the gateway is the
   // boundary and re-checks every PATCH, and this is the sentence that explains
@@ -274,7 +288,7 @@ function sameValue(before: unknown, after: unknown): boolean {
 /** The overlay fields a Mirror admin edits on one row, by kind. */
 export const OVERLAY_FIELDS: Record<StatusKind, readonly string[]> = {
   deal: ["hidden", "ui_probability", "ui_color", "max_dwell_days"],
-  lead: ["hidden", "ui_color"],
+  lead: ["hidden", "ui_probability", "ui_color"],
 };
 
 /** What changed in the overlay of one row. Only these fields. */
@@ -294,11 +308,12 @@ export function overlayPatch(
 
 /**
  * "Reset to Zoho" on a row: the Metorite probability and colour go, so the
- * Zoho values apply again. `hidden` and `max_dwell_days` stay. A lead status
- * has no probability, and the gateway refuses a field it has not got.
+ * Zoho values apply again. `hidden` and `max_dwell_days` stay. Both kinds
+ * carry a probability since migration 288.
  */
 export function resetToSource(kind: StatusKind): Record<string, null> {
-  return kind === "deal" ? { ui_probability: null, ui_color: null } : { ui_color: null };
+  void kind;
+  return { ui_probability: null, ui_color: null };
 }
 
 /** True when the row carries a Metorite value that "Reset to Zoho" clears. */

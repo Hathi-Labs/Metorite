@@ -410,8 +410,11 @@ class TestTheAdminDoesNotReadTheSealedTree:
         t = armed.t
         assert rows & armed.sealed == {t["handover_admin"]}, (
             "the admin reads the sealed tree, or lost its own hand-over")
-        assert {t["team"], t["peer_private"]} <= rows, (
-            "a live tree must stay readable to the admin")
+        assert t["team"] in rows, "a team project must stay readable to the admin"
+        # WS-64 OP-9, D-OP-15: a live personal tree is its owner's only. The
+        # admin no longer reads it. `test_personal_privacy_r8.py` holds the rule.
+        assert t["peer_private"] not in rows, (
+            "the admin reads another member's live personal tree")
         assert t["b"] not in rows, "never another tenant's task"
 
     @pytest.mark.parametrize("key", ["sealed_private", "sealed_area", "handover"])

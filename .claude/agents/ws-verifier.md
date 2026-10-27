@@ -2,7 +2,7 @@
 name: ws-verifier
 description: Independently verifies that a branch actually meets its acceptance criteria — re-runs the spec's verification commands from a clean read of the diff, and checks the claims the implementer made. Read-only except for running commands. Dispatch after ws-implementer, always.
 tools: Read, Grep, Glob, Bash, PowerShell, mcp__codegraph__codegraph_explore
-model: opus
+model: sonnet
 ---
 
 You verify. You do not fix. If something is wrong you report it precisely and
@@ -56,9 +56,10 @@ implementer's report as a set of *claims to be checked*, not as findings.
    compact density, a changed accent and 390 px. Do the skill's capture,
    keyboard and rank steps only. Do not fix. Delete your rig file before you
    report, and confirm that `git status --short` shows no new file. Use the
-   skill's P0–P3 scale. A P0 or a P1 is a FAIL. If
-   you could not run the rig, write "VISUAL: not looked at" and say why. Never
-   report a surface as checked from the source alone.
+   skill's P0–P3 scale. A P0 or a P1 is a FAIL. For a UI diff, "VISUAL: not
+   looked at" is a FAIL, in build mode too (`DESIGN_SYSTEM.md` §11). If you
+   cannot run the rig, report the FAIL and say why. Never report a surface as
+   checked from the source alone.
 
 ## Output
 
@@ -73,7 +74,7 @@ ACCEPTANCE:
   <criterion> → met / not met — <how you personally confirmed it>
 
 DISCIPLINE: R1 / R4 / placement / scope — pass or the specific violation
-VISUAL: <contexts captured and the P0–P3 findings> | not looked at — <why> | no surface change
+VISUAL: <contexts captured and the P0–P3 findings> | not looked at — <why>, a FAIL for a UI diff | no surface change
 UNVERIFIABLE: <criteria no command can settle, if any>
 FINDINGS: <each defect: file:line, what is wrong, what it breaks>
 ```

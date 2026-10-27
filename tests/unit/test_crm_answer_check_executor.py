@@ -153,11 +153,15 @@ def test_a_slow_held_answer_outlives_the_idle_watchdog(monkeypatch) -> None:
     from orchestrator import executor
     from orchestrator.watchdog import WatchdogPolicy
 
-    monkeypatch.setattr(executor, "_WATCHDOG", WatchdogPolicy(idle=0.6))
+    # Widened (CI flake, 2026-10-15 to 19). The watchdog is real time, so a
+    # stalled runner that holds the loop longer than ``idle`` fails the run.
+    # The bound was 0.6 s with 0.4 s to spare after each 0.2 s gap. Now it is
+    # 2 s with 1.7 s to spare, and the held answer still runs past it.
+    monkeypatch.setattr(executor, "_WATCHDOG", WatchdogPolicy(idle=2.0))
     monkeypatch.setattr(answer_check, "HEARTBEAT_S", 0.1)
     answer = "Open deals hold INR 12,34,567, and won deals hold INR 5,00,000."
-    # Eight chunks, 0.2 s apart: 1.6 s in all, far past the 0.6 s bound.
-    model = SlowModel([_CALL, answer], pieces=8, gap=0.2)
+    # Sixteen chunks, 0.3 s apart: 4.8 s in all, far past the 2 s bound.
+    model = SlowModel([_CALL, answer], pieces=16, gap=0.3)
     events, _ = drive_native(*AGENT, monkeypatch, model, message="What is open?")
     assert _text(events) == answer
     assert not [e for e in events if e.get("type") == "RUN_ERROR"]

@@ -594,7 +594,9 @@ class TestTheRoutePinsItsScope:
             " AND ((t.organization_id = CAST(:vis_org AS uuid)"
             " AND (t.project_id IN (\nSELECT id FROM pm_projects\n"
             "WHERE organization_id = CAST(:vis_org AS uuid)\n"
-            "  AND sealed_at IS NULL\n)"
+            "  AND sealed_at IS NULL\n"
+            # WS-64 OP-9 (D-OP-15): another member's personal node is out.
+            "  AND (personal_owner IS NULL OR lower(personal_owner) = :vis_email)\n)"
             "      OR EXISTS (SELECT 1 FROM pm_task_assignees a"
             "                 WHERE a.task_id = t.id"
             "                   AND lower(a.assignee) = :vis_email))))"

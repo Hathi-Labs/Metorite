@@ -115,6 +115,16 @@ class Settings(BaseSettings):
     db_pool_size: int = 7
     db_max_overflow: int = 2
 
+    # H-390: how many of the connections above BACKGROUND work may hold at one
+    # time (acb_common.db.mark_background). Sync, rule, classify and embed jobs
+    # share the ONE pool with member reads. On 2026-10-22 they filled it
+    # ("QueuePool limit of size 7 overflow 2") and a member read answered 503.
+    # The pooler budget is full, so a second pool is not possible. This cap
+    # keeps (pool + overflow - cap) connections for members: 9 - 4 = 5.
+    # The cap counts tasks that hold a slot, not connections: one task may
+    # hold several sessions. Fence: tests/unit/test_db_background_lane.py.
+    db_background_max: int = 4
+
     # The pool of the sync `acb_graph` engine. It counts against the SAME
     # pooler budget as the async pool above (see the note there).
     db_sync_pool_size: int = 2
@@ -381,6 +391,49 @@ class Settings(BaseSettings):
     # §11 AM-1. Fence: tests/unit/test_artifact_registry.py.
     artifact_registry_enabled: bool = False
 
+    # ── The object store (MT-1g-1, D108, 2026-10-20) ─────────────────────────
+    #
+    # `object_store_enabled` turns on the one seam to object storage,
+    # `acb_common.object_store`, default OFF. Off, every caller keeps its old
+    # place (a column or the box's disk). The store is Supabase Storage
+    # through its S3 endpoint, one private bucket for each environment.
+    #
+    # Two ways to sign in, and the seam picks by what is set:
+    #   * Supabase (production, staging): `object_store_supabase_url`,
+    #     `object_store_auth_email` and `object_store_auth_password` name the
+    #     files user. The seam asks Supabase Auth for a JWT and sends it as
+    #     the S3 session token. `object_store_access_key_id` holds the project
+    #     ref and `object_store_secret_access_key` the anon key, as BH-4 does.
+    #   * A plain key pair (a local MinIO, the tests): only the two key
+    #     fields. The seam refuses this on a `*.supabase.co` endpoint,
+    #     because a Supabase S3 key opens every bucket, backups too (D108).
+    # The password and the keys are secrets: `scripts/secrets.sh`, never chat.
+    # Spec: project-docs/specs/saas_multitenancy.md MT-1g. Fence:
+    # tests/unit/test_object_store.py.
+    object_store_enabled: bool = False
+    object_store_endpoint: str = ""
+    object_store_region: str = "us-east-1"
+    object_store_bucket: str = ""
+    object_store_access_key_id: str = ""
+    object_store_secret_access_key: str = ""
+    object_store_supabase_url: str = ""
+    object_store_auth_email: str = ""
+    object_store_auth_password: str = ""
+    # The largest object one put accepts. A caller may set a lower cap.
+    object_store_max_object_mb: int = 512
+
+    # ── Calendar reminders (WS-66 RM-1, D114, 2026-10-25) ───────────────────
+    #
+    # `calendar_reminders` is the switch of the reminder store, default OFF.
+    # With it off, each route under `/projects/my/reminders` answers 404 and
+    # writes nothing. `/version` carries the value as `calendar_reminders`.
+    # The one reader is `reminders_enabled()` in
+    # gateway/routes/projects/reminders.py. The browser half is
+    # `NEXT_PUBLIC_CALENDAR_REMINDERS` (RM-5). Spec
+    # project-docs/specs/calendar_events_reminders.md §9. A flip on a box is
+    # gate `enforcement-flip`. Fence: tests/unit/test_reminders_r8.py.
+    calendar_reminders: bool = False
+
     # ── The Knowledge app (WS-61 KB-1, 2026-10-15) ──────────────────────────
     #
     # `/knowledge` serves an organization only when both settings allow it.
@@ -411,6 +464,52 @@ class Settings(BaseSettings):
     # sweep reads it inside its start function. Fence:
     # tests/unit/test_kb_embed_sweep.py.
     knowledge_embed_sweep: bool = True
+    # WS-61 KB-5c (knowledge_base.md §8.4 and §13). The kill switch of the
+    # proposal expiry, `gateway/routes/knowledge/proposal_expiry.py`. Default
+    # ON, because the loop does nothing for an org that Knowledge does not
+    # serve. Off, the loop does not start. The one reader is
+    # `gateway.routes.knowledge.flags`. Fence:
+    # tests/unit/test_kb_proposal_expiry.py.
+    knowledge_proposal_expiry: bool = True
+    # WS-61 KB-5a (knowledge_base.md §8.1 and §13). The assistant's proposals,
+    # default OFF. ON gives the orchestrator `propose_page`, `propose_edit` and
+    # their persona line, and opens `POST /knowledge/proposals`. OFF keeps the
+    # tools out and the POST answers 404. It stays off until KB-5b ships the
+    # Review view, where a person accepts. The one reader is
+    # `acb_skills.knowledge_tools.knowledge_propose_enabled`, and the gateway
+    # calls it through `gateway.routes.knowledge.flags`. AGENT-SAFE: it spends
+    # nothing. Fences: tests/unit/test_kb_flags.py, test_company_search_tool.py.
+    knowledge_proposals: bool = False
+    # WS-61 KB-9a (knowledge_base.md §8.4 door 3 and §13). The organization
+    # ids whose `search_company` reads with no Knowledge hit write a
+    # `kb_gaps` row, in the grammar of `knowledge_orgs`. `*` is each org.
+    # Empty, the default, means no organization: nothing writes a gap, the
+    # gap routes answer 404 and the `kb_gap` card stays dark. The one reader
+    # is `gateway.routes.knowledge.flags`. It spends no credit. A flip for an
+    # org is the owner's, gate `enforcement-flip`.
+    # Fence: tests/unit/test_kb_gaps.py.
+    knowledge_gaps: str = ""
+    # WS-61 KC-1a (knowledge_curation.md §17). The organization ids that may
+    # connect a company file source, in the grammar of `knowledge_orgs`. `*`
+    # is each org. Empty, the default, means no organization: every
+    # `/knowledge/sources` route answers 404. The one reader is
+    # `gateway.routes.knowledge.flags`. A flip on production is the owner's.
+    # Fence: tests/unit/test_kb_flags.py.
+    knowledge_sources: str = ""
+    # WS-61 KC-1a (knowledge_curation.md §17 and §21 Q1). The organization
+    # ids that may connect Google Drive, in the same grammar. It needs
+    # `knowledge_sources` too. Empty, the default, means no organization: the
+    # Drive connect and callback answer 404. `drive.readonly` is a restricted
+    # Google scope, so outside the test users a flip waits for the Google
+    # verification. A flip is the owner's. Fence: tests/unit/test_kb_flags.py.
+    knowledge_source_google: str = ""
+    # WS-61 KC-3 (knowledge_curation.md §17). The organization ids whose ready
+    # file sources the sync loop reads, in the grammar of `knowledge_orgs`.
+    # `*` is each org. It needs `knowledge_sources` too. Empty, the default,
+    # means no organization: `start_kb_sync()` starts no task. The one reader
+    # is `gateway.routes.knowledge.flags`. A flip on production is the owner's.
+    # Fence: tests/unit/test_kb_flags.py.
+    knowledge_sync: str = ""
 
     reach_enabled: bool = False
     reach_orgs: str = ""
@@ -419,6 +518,26 @@ class Settings(BaseSettings):
     reach_brief_template: str = ""
     reach_needs_you_template: str = ""
     reach_template_language: str = "en"
+
+    # ── Web push (WS-66 PN-1, 2026-10-25) ───────────────────────────────────
+    #
+    # `web_push_enabled` is the switch of the `/push` routes and the sender,
+    # default OFF. Off, each `/push` route answers 404 and nothing sends.
+    # `vapid_public_key` is the base64url of the uncompressed P-256 public
+    # point (65 bytes), the `applicationServerKey` that a browser subscribes
+    # with. `vapid_private_key` is the base64url of the raw 32-byte private
+    # scalar. `vapid_subject` is the `mailto:` or `https:` contact that the
+    # push services read from the VAPID claim. The private key is a secret:
+    # `scripts/secrets.sh`, never chat, never the tree.
+    # The one reader is `gateway.push.flags`. A flip on a box is gate
+    # `enforcement-flip`, and a flip for a real member in production is the
+    # owner's (calendar_events_reminders.md §9). Spec:
+    # calendar_events_reminders.md §5.9 and §10.2. Fence:
+    # tests/unit/test_push_subscriptions.py.
+    web_push_enabled: bool = False
+    vapid_public_key: str = ""
+    vapid_private_key: str = ""
+    vapid_subject: str = ""
     crm_zoho_client_id: str = ""
     crm_zoho_client_secret: str = ""
 
@@ -551,6 +670,30 @@ class Settings(BaseSettings):
     # §13). Fence: tests/unit/test_company_search_tool.py.
     company_search_enabled: bool = False
 
+    # ── The chat opens a page (WS-62 CF-3, chat_first_surface.md §4.4) ──────
+    #
+    # ON gives the orchestrator `show_in_app` in its core tools. OFF leaves
+    # the tool list byte-identical. The client side is `NEXT_PUBLIC_CHAT_FIRST`
+    # (`chatFlag.ts`), and both must be on for the page to move. The one
+    # reader is `orchestrator.in_app_path.chat_first_tools_enabled`. Fence:
+    # tests/unit/test_show_in_app.py.
+    chat_first_tools: bool = False
+
+    # ── The member's assistant profile in the chat (WS-63 PZ-2) ─────────────
+    #
+    # ON adds the member's own profile block to the orchestrator's per-turn
+    # context, for a solo run with a verified member
+    # (`personalization.md` §5.1). OFF leaves the context byte-identical.
+    # `assistant_profile_orgs` (PZ-25, §14.2) is a list of organization ids,
+    # separated by commas. Empty means each organization while the switch is
+    # on. A list means only those organizations. The switch off wins.
+    # The one reader of both is `acb_common.assistant_profile.enabled_for`,
+    # and it takes the bound organization. Restart after a change. Fences:
+    # tests/unit/test_executor_profile_block.py and
+    # tests/unit/test_assistant_profile_org_rollout.py.
+    assistant_profile_enabled: bool = False
+    assistant_profile_orgs: str = ""
+
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #
     # ON makes `GET /search/company` rank newer records first inside each app,
@@ -563,6 +706,53 @@ class Settings(BaseSettings):
     # it spends nothing (company_context.md §11). Fence:
     # tests/unit/test_company_search_recency.py.
     context_recency: bool = False
+
+    # ── OCR of a scanned file (WS-67 OA-3, D116) ────────────────────────────
+    #
+    # ON lets the one attachment reader read a PDF with no text layer, and a
+    # .png, .jpg or .jpeg image, by OCR in a child process. The chat tool
+    # `read_attachment` and the email text route both get it, because both
+    # call `acb_skills.attachment_tools.parse_bounded`. OFF leaves both paths
+    # byte-identical: a scan answers "no text" and an image is refused. The
+    # one reader is `acb_skills.attachment_ocr.ocr_enabled`. The flip is the
+    # agent's under the dev-phase `enforcement-flip` grant. It spends CPU on
+    # the box and no money, and it sends nothing to a third party. ⚠️ Before
+    # the flip, meet the three conditions of `one_assistant_context.md` §4.1:
+    # a share of the one OCR slot for each organization (or the owner accepts
+    # one slot in writing), the three prompt texts that still say "no image",
+    # and a review of the seccomp deny list against an allow list from a
+    # syscall trace of a real OCR read on the box. Fence:
+    # tests/unit/test_attachment_ocr.py.
+    attachment_ocr: bool = False
+
+    # ── The member's corrections and limits in a chat (WS-67 OA-4) ──────────
+    #
+    # ON gives the orchestrator `keep_correction` and `drop_correction` and
+    # their persona line. Each turn of the member's own chat then lists the
+    # corrections and limits that the member set in it, and each delegated
+    # task carries them. OFF leaves the tool list, the persona and every
+    # prompt byte-identical. The one reader is
+    # `acb_skills.chat_constraints.chat_constraints_enabled`. AGENT-SAFE: it
+    # spends nothing and sends nothing out (one_assistant_context.md §4).
+    # Fence: tests/unit/test_chat_constraints.py.
+    chat_constraints: bool = False
+
+    # ── The tool packs of the one assistant (WS-67 OA-7a, D117) ─────────────
+    #
+    # `tool_packs` is a comma list of pack slugs (`email`, `email-setup`), or
+    # `*` for each pack. `tool_packs_orgs` lists the organization ids that may
+    # use packs, or `*` for each one. Empty means off, and an empty list
+    # allows no organization. The one reader of both is
+    # `acb_skills.tool_packs.packs_on`, and it fails closed. OA-7a ships no
+    # caller, so neither value changes a run yet (one_assistant_context.md
+    # §4.2.7).
+    #
+    # 🔴 OWNER-ONLY on a box: any value other than empty (`work_plan.md` §6
+    # D4). The dev-phase window does not open it, because a pack moves the
+    # egress guards and spends model tokens (one_assistant_context.md §4.5).
+    # Fence: tests/unit/test_tool_packs_registry.py.
+    tool_packs: str = ""
+    tool_packs_orgs: str = ""
 
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #
@@ -623,6 +813,13 @@ class Settings(BaseSettings):
     # 🔴 OWNER-GATE on production: to add an agent changes what a live
     # organization pays (spec §13.1). Fence: tests/unit/test_tier_policy.py.
     ai_tier_routing: str = ""
+    # The covered agents whose `auto` chat turns run with the model's thinking
+    # OFF (`reasoning_effort: "none"`, chat speed 2026-10-25). A comma list of
+    # agent names, or `*`. Empty means OFF. A Thinking or Max turn, and a
+    # `plan`, `analysis` or `code` turn, keep thinking. The one reader is
+    # `acb_skills.tier_policy.reasoning_off`, and it fails closed. Fence:
+    # tests/unit/test_reasoning_off.py.
+    ai_reasoning_off_agents: str = ""
 
     # ── The data narrowing pipeline (WS-48, D93) ────────────────────────────
     #
@@ -886,12 +1083,48 @@ class Settings(BaseSettings):
     email_insights: bool = False
     email_insights_orgs: str = ""
 
+    # ── A reply draft reads the images of a mail (owner, 2026-10-20) ────────
+    #
+    # False is the default: the drafter names an image as not read, and never
+    # writes that it could not open it. True sends the images of a mail to the
+    # model with `task: "vision"`, but only when the AI Router serves the call,
+    # because only the Router picks a model that reads images (D-AI-2). Turn it
+    # on when a tier reads images. The one reader is `draft_files.images_on()`.
+    # Fence: tests/unit/test_email_draft_files.py.
+    email_draft_reads_images: bool = False
+
+    # ── Send later (H-375, email_app_master_plan.md §19) ─────────────────────
+    #
+    # False is the default, so the feature ships dark: the schedule routes
+    # answer 404 and the send-later job starts no task. True turns on both.
+    # The one reader is `send_later_enabled()` in
+    # gateway/routes/email/automation/send_later.py. Fence:
+    # tests/unit/test_email_send_later.py.
+    email_send_later: bool = False
+
+    # ── Held chat: you confirm new people (email_app_master_plan.md §21) ─────
+    #
+    # False is the default, so the feature ships dark. Then a held chat holds
+    # exactly the tools of H-374, and each `/email/held-card` route answers
+    # 404. True lets a held chat send, schedule, forward and unsubscribe, and
+    # change closed settings, each through one recorded card that classifies
+    # each person. The flag moves mail to real people, so the owner flips it
+    # (CLAUDE.md §3a rule 3). The one reader is `held_card_send_enabled()` in
+    # packages/acb_skills/acb_skills/held_card.py. Fence:
+    # tests/unit/test_egress_card_bound_pin.py.
+    email_held_card_send: bool = False
+
     # Dynamic Agent Loader (v2 — ADR-013)
     # Repos are cloned ONCE into agents_clone_dir/repos/ and refreshed with
     # git pull on each event (no full re-clone per run).
 
     # -- Auth: PAT (simple, use for dev / small teams) --
-    github_token: str = ""                    # PAT with `repo` scope; used in clone URL + remote set-url
+    # H-363: no token is ever written into a clone URL. acb_common.git_credentials
+    # gives a token to ONE git process at a time, through a credential helper.
+    github_token: str = ""                    # PAT with `repo` scope; the PUSH credential (gated)
+    # A read-only token for clone, fetch and ls-remote of private agent and
+    # skill repos. Blank falls back to github_token. A public repo needs none.
+    github_read_token: str = ""
 
     # -- OAuth App (used by Control Plane Device Flow UI only) --
     # Register at: github.com/settings/applications/new  (Callback URL: http://localhost)
@@ -1304,6 +1537,21 @@ class Settings(BaseSettings):
     email_html_from_provider: bool = False
     email_html_hot_only: bool = False
 
+    # ── The shared mailbox (WS-65 SM-2, 2026-10-23) ─────────────────────────
+    #
+    # `email_shared_mailbox` opens the shared arm of the one mailbox access
+    # seam, `gateway.routes.email.mailbox_access`, which is its one reader.
+    # With it false, each owner check reads the private arm only, with the
+    # same SQL text as before WS-65, so a grant row gives no access to anyone.
+    # With it true, a member reaches a shared mailbox through a grant of
+    # `email_mailbox_grants` at the level that the act needs, and the
+    # connector loses the access that `user_id` gave (D-SM-3).
+    #
+    # 🔴 The value `true` on a box is gate `enforcement-flip`, and in
+    # production it waits for SM-10 and the owner's word (shared_mailbox.md
+    # §10). Fence: tests/unit/test_email_shared_mailbox_r8.py.
+    email_shared_mailbox: bool = False
+
     # Task-manager semantic capability matching (spec §5, Phase 2) — embed each
     # person's capability text (role · skills · résumé) into people
     # .capability_embedding and blend cosine similarity with the keyword match
@@ -1423,6 +1671,19 @@ class Settings(BaseSettings):
     # `acb_auth.agent_oauth.runs_enabled` is the one reader. 🔴 A flip on a
     # box is gate `enforcement-flip`.
     agent_runs_enabled: bool = False
+    # SW-7 (spec §12.5): MCP sessions at the edge. Default OFF. While it is
+    # false, `initialize` answers no `Mcp-Session-Id`, an id that a client
+    # still sends is read as no session (never a 404), and no
+    # `X-Agent-Session` is signed, so every call behaves as before SW-7.
+    # Only the edge reads it. `acb_auth.agent_oauth.mcp_sessions_enabled` is
+    # the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
+    agent_mcp_sessions_enabled: bool = False
+    # SW-10a (spec §12.6): the sweep of stranded agent runs. Default OFF.
+    # While it is false, the gateway starts no sweep task, so no fingerprint
+    # and no recovery record exist, and no member gets a nudge. Only the
+    # gateway reads it. `gateway.agent_run_sweep.sweep_enabled`
+    # is the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
+    agent_run_sweep_enabled: bool = False
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
     agent_code_ttl_s: int = 60

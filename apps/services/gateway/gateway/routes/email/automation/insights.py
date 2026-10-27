@@ -168,7 +168,7 @@ async def list_insights(
     params: dict[str, Any] = {"uid": user.email or "anonymous"}
     # The owner scope of the member (D-EM-4). ``pooled_only`` keeps a
     # separate mailbox out of All inboxes (D-EM-28). It reads ``em``.
-    scope = _account_scope(account_id or None, params, pooled_only=True)
+    scope = _account_scope(account_id or None, params, pooled_only=True, level="read")
 
     where = [scope]
     if domain is not None:

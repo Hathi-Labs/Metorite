@@ -30,6 +30,7 @@ export default function ChatSendButton({
   type = "submit",
   label,
   title,
+  large = false,
 }: {
   /** `stop` draws the Stop face. It is never a submit, so Enter cannot stop. */
   action?: "send" | "stop";
@@ -39,6 +40,8 @@ export default function ChatSendButton({
   type?: "submit" | "button";
   label?: string;
   title?: string;
+  /** The phone's tap size, 44 px (WS-62 CF-8). The desktop keeps 32 px. */
+  large?: boolean;
 }) {
   const stop = action === "stop";
   const name = label ?? (stop ? "Stop the reply" : "Send");
@@ -54,7 +57,7 @@ export default function ChatSendButton({
       aria-label={name}
       title={title ?? (stop ? "Stop the reply (Esc)" : "Send (Ctrl+Enter)")}
       data-chat-primary={action}
-      className="shrink-0 h-8 w-8 rounded-full"
+      className={`shrink-0 rounded-full ${large ? "h-11 w-11" : "h-8 w-8"}`}
     >
       {loading ? null : stop ? (
         <Icon name="Square" size={12} strokeWidth={2.5} fill="currentColor" />

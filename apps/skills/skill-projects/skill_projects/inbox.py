@@ -39,6 +39,8 @@ from skill_projects.writes import (
     _resolve_status,
     _split,
     _task,
+    mailbox_line,
+    space_refusal,
 )
 
 try:
@@ -85,19 +87,29 @@ INTAKE_ACTIONS = ("accept", "decline", "duplicate", "snooze")
 
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def project_access(project_id: str) -> str:
-    """Who may see a project: its grants, each a member address or a
-    `group:<slug>`. Reading only; a grant write is not on the chat surface
-    (spec §12, question 2)."""
+    """Who may see a project: its grants, each org, a `group:<slug>` or a
+    member address, with its grant_id. grant_access adds a grant and
+    revoke_access removes one, each behind a card (WS-64 OP-6b)."""
     pid, node = await _node(project_id)
     rows = ((await get(f"/projects/nodes/{pid}/grants")) or {}).get("rows") or []
     out = [legend(), f"Access to {data(node.get('name'))} ({len(rows)} grants):"]
     for row in rows:
         out.append(
-            f"- {data(row.get('subject'))} · granted by {data(row.get('created_by') or '?')}"
+            f"- {subject_words(str(row.get('subject') or ''))} ({data(row.get('subject'))})"
+            f" · granted by {data(row.get('created_by') or '?')} · grant_id {row.get('id')}"
         )
     if not rows:
         out.append("(no grants of its own; visibility comes from its Center or the org)")
     return "\n".join(out)
+
+
+def subject_words(subject: str) -> str:
+    """A grant subject in plain words, for a card, a receipt and a read."""
+    if subject == "org":
+        return "everyone in the organization"
+    if subject.startswith("group:"):
+        return f"every member of the group {data(subject[len('group:'):])}"
+    return data(subject)
 
 
 @_annotate(read_only=True, idempotent=True, open_world=False)
@@ -105,12 +117,12 @@ async def my_areas(include_archived: bool = False) -> str:
     """The member's own areas: the categories of their private tasks in My
     Tasks, such as Home or Finance, with how much open work each holds and
     its project_id. Read this before you file a private task under an area.
-    include_archived=true lists archived areas too. Nobody else sees them,
-    and the chat does not create, rename or delete an area."""
+    include_archived=true lists archived areas too. Nobody else sees them.
+    create_area, rename_area and delete_area change them."""
     params = {"include_archived": True} if include_archived else None
     rows = ((await get("/projects/my/areas", params)) or {}).get("rows") or []
     if not rows:
-        return "You have no areas yet. A person makes one in My Tasks."
+        return "You have no areas yet. create_area makes one."
     out = [legend(), f"My areas ({len(rows)}):"]
     for row in rows:
         tail = " · archived" if row.get("archived") else ""
@@ -119,6 +131,85 @@ async def my_areas(include_archived: bool = False) -> str:
             f" · project_id {row.get('id')}"
         )
     return "\n".join(out)
+
+
+AREA_NAME_MAX = 120
+
+
+def _area_key(name: Any) -> str:
+    """A name with case, spacing and punctuation removed. Two areas that
+    share a key are near-equal, and the chat does not pick between them."""
+    return "".join(ch for ch in str(name or "").casefold() if ch.isalnum())
+
+
+async def _my_area(area: str) -> dict[str, Any]:
+    """The one live area of the member that ``area`` means, or a refusal.
+
+    ``area`` is an id from ``my_areas`` or an exact name. The route finds an
+    area only among the member's own, so this list is the member's list. A name
+    that is near-equal to another area ("Home" and "home!") is a question for
+    the member, not a coin toss.
+    """
+    wanted = str(area or "").strip()
+    if not wanted:
+        raise GatewayRefusal("Name the area, or pass its project_id from my_areas.")
+    rows = ((await get("/projects/my/areas")) or {}).get("rows") or []
+    live = [r for r in rows if not r.get("archived")]
+    try:
+        aid = uuid_of(wanted, "area")
+    except GatewayRefusal:
+        aid = ""
+    if aid:
+        hit = next((r for r in live if str(r.get("id")) == aid), None)
+        if hit is None:
+            raise GatewayRefusal("You have no live area with that id. my_areas lists them.")
+        return hit
+    key = _area_key(wanted)
+    near = [r for r in live if key and _area_key(r.get("name")) == key]
+    if len(near) > 1:
+        quoted = ", ".join(data(r.get("name")) for r in near)
+        raise GatewayRefusal(
+            f"{data(wanted)} matches more than one area ({quoted}). "
+            "Ask the member which one they mean, then pass its project_id."
+        )
+    if not near:
+        names = ", ".join(data(r.get("name")) for r in live) or "(none yet)"
+        raise GatewayRefusal(f"No area is called {data(wanted)}. Your areas are: {names}.")
+    return near[0]
+
+
+def _clean_area_name(name: str) -> str:
+    """The route's rule, said before the card: a name, at most 120 characters."""
+    clean = " ".join(str(name or "").split())
+    if not clean:
+        raise GatewayRefusal("An area needs a name.")
+    if len(clean) > AREA_NAME_MAX:
+        raise GatewayRefusal(f"An area name is at most {AREA_NAME_MAX} characters.")
+    return clean
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+async def create_area(name: str) -> str:
+    """Make a new area: a category for the member's private tasks in My
+    Tasks, such as Home or Finance. Nobody else sees it. The card shows the
+    name. rename_area and delete_area change an area later."""
+    clean = _clean_area_name(name)
+    rows = ((await get("/projects/my/areas")) or {}).get("rows") or []
+    key = _area_key(clean)
+    twin = next((r for r in rows if not r.get("archived") and _area_key(r.get("name")) == key), None)
+    if twin is not None:
+        return (
+            f"You already have an area called {data(twin.get('name'))}. "
+            f"Use it, or choose a different name.\n  area_id: {twin.get('id')}"
+        )
+    if not await _confirm(
+        title="Make this area?",
+        detail=data(clean),
+        context=_fields_block({"area": data(clean), "visible to": "you only"}),
+    ):
+        return CANCELLED
+    row = (await post("/projects/my/areas", {"name": clean})) or {}
+    return f"Made the area {data(row.get('name') or clean)}.\n  area_id: {row.get('id')}"
 
 
 @_annotate(read_only=True, idempotent=True, open_world=False)
@@ -512,12 +603,16 @@ async def capture_intake(
     important: str = "",
     leveraged: str = "",
     importance: Removed = None,
+    source: str = "",
+    source_ref: str = "",
 ) -> str:
     """Capture a task into a project's intake queue for someone to triage,
     rather than straight onto its board. project_id empty captures into
     the member's own personal project, when they have one. The card shows
     the title, the priority and where it lands. Omit every priority argument
-    to leave the task unjudged."""
+    to leave the task unjudged. source says where the capture came from, such
+    as email, and source_ref is the reference there, such as the message id.
+    For a mail, the card then says that the text leaves the mailbox."""
     label = str(title or "").strip()
     if not label:
         return "A task needs a title."
@@ -530,6 +625,9 @@ async def capture_intake(
     payload: dict[str, Any] = {"title": label}
     if project_id.strip():
         pid, node = await _node(project_id)
+        stop = await space_refusal(pid, node)
+        if stop:
+            return stop
         payload["project_id"] = pid
         where = data(node.get("name"))
     else:
@@ -554,11 +652,26 @@ async def capture_intake(
             return "due is a date, YYYY-MM-DD."
         payload["due_at"] = due.strip()
     payload.update(flags)
+    # WS-46 P9 (G11): the route keeps both words on the capture. They are
+    # free text there, so the card shows them whole.
+    card: dict[str, Any] = {}
+    origin = source.strip()[:80]
+    reference = source_ref.strip()[:200]
+    if origin:
+        payload["source"] = origin
+        if origin.lower() == "email":
+            card["mailbox"] = mailbox_line(where)
+    if reference:
+        payload["source_ref"] = reference
     if not await _confirm(
         title="Capture this into intake?",
         detail=f"{data(label)} → {where}",
         context=_fields_block(
-            {**_priority_card(payload), "lands in": f"the intake queue of {where}"}
+            {
+                **card,
+                **_priority_card(payload),
+                "lands in": f"the intake queue of {where}",
+            }
         ),
     ):
         return CANCELLED

@@ -146,7 +146,8 @@ class TestTheInputs:
     def test_the_handler_reads_through_the_owner_scope(self):
         """The handler names ``_account_scope`` with ``pooled_only=True``."""
         src = Path(route.__file__).read_text(encoding="utf-8")
-        assert "_account_scope(account_id or None, params, pooled_only=True)" in src
+        assert ("_account_scope(account_id or None, params, pooled_only=True, level=\"read\")"
+                in src)
 
 
 # ── hermetic: the tool ───────────────────────────────────────────────────────
@@ -321,7 +322,7 @@ class TestTheTool:
         risk = getattr(agents.query_insights, "__tool_risk__", {})
         assert risk.get("open_world") is False and risk.get("destructive") is False
 
-    def test_the_two_tool_lists_agree_with_45_names(self):
+    def test_the_two_tool_lists_agree_with_58_names(self):
         config = json.loads((_AGENT_DIR / "config.json").read_text(encoding="utf-8"))
         # WS-48 N2: ``narrow_and_read`` is in the scope, and only a build
         # with ``NARROWING_AGENTS`` on holds it (test_own_tool_scope_parity.py).
@@ -330,7 +331,16 @@ class TestTheTool:
         built = [fn.__name__ for fn in agents._TOOLS]
         assert sorted(scope) == sorted(built)
         # 45 since ``forward_email`` (2026-10-09, test_email_forward.py).
-        assert len(scope) == len(set(scope)) == 45
+        # 46 since ``compose_reply`` (EM-CR, 2026-10-20, test_email_chat_reply.py).
+        # 50 since the chat assistant tools (owner, 2026-10-20): edit_draft,
+        # snooze_email, find_contact and bulk_manage_inbox
+        # (test_email_chat_assistant_tools.py).
+        # 53 since send later (H-375): schedule_send, list_scheduled_sends
+        # and cancel_scheduled_send (test_email_send_later.py).
+        # 57 since chat parity wave 1 (§22): copy_rules, rule_guidance,
+        # voice_profile and update_account (test_email_chat_parity.py).
+        # 58 since apply_settings_to_mailboxes (multi-inbox chat wave).
+        assert len(scope) == len(set(scope)) == 58
         assert "query_insights" in scope
 
 

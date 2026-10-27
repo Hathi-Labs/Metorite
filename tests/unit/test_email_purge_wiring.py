@@ -316,6 +316,65 @@ class TestTheMemberPurgeTearsDownEachMailbox:
         finally:
             wipe(p.admin_engine, keeper, gone, stay)
 
+    async def test_a_shared_mailbox_survives_the_purge_of_its_connector(
+        self, promoted, app_engine, recorder,  # noqa: F811
+    ):
+        """WS-65 fix P2-2 (D-SM-8, ``shared_mailbox.md`` §4.2). The purge of
+        the member who connected a shared mailbox keeps the mailbox, its
+        mail, the grants of the other members and its send log. It removes
+        the grants whose subject is the leaver's address, and nothing else."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        _grant_check_to_app_role(p.admin_engine)
+        tag = uuid.uuid4().hex[:8]
+        keeper = f"keeper-{tag}@em-sm2.test"
+        gone = f"gone-{tag}@em-sm2.test"
+        stay = f"stay-{tag}@em-sm2.test"
+        seed_member(p.admin_engine, p.org_b, keeper, owner=True)
+        seed_member(p.admin_engine, p.org_b, gone)
+        seed_member(p.admin_engine, p.org_b, stay)
+        private = seed_mailbox(p.admin_engine, p.org_b, gone, provider="microsoft")
+        shared = seed_mailbox(p.admin_engine, p.org_b, gone, provider="microsoft")
+        other = seed_mailbox(p.admin_engine, p.org_b, stay, provider="microsoft")
+        with p.admin_engine.begin() as c:
+            c.execute(text("UPDATE email_accounts SET shared_since = now() "
+                           "WHERE id = ANY(CAST(:a AS uuid[]))"), {"a": [shared, other]})
+            for acc, subject, level in ((shared, gone, "manage"), (shared, stay, "manage"),
+                                        (shared, "org", "read"), (other, gone, "send")):
+                c.execute(text(
+                    "INSERT INTO email_mailbox_grants (organization_id, account_id, "
+                    "subject, level, created_by) VALUES (CAST(:o AS uuid), "
+                    "CAST(:a AS uuid), :s, :l, :s)"),
+                    {"o": p.org_b, "a": acc, "s": subject, "l": level})
+            c.execute(text(
+                "INSERT INTO email_send_log (organization_id, account_id, sent_by, "
+                "channel) VALUES (CAST(:o AS uuid), CAST(:a AS uuid), :s, 'web')"),
+                {"o": p.org_b, "a": shared, "s": gone})
+        try:
+            out = await member_purge(p, gone)
+            assert recorder.gone(private), "the private mailbox of the leaver stays"
+            assert not recorder.gone(shared), "the purge deleted a shared mailbox"
+            assert not recorder.gone(other)
+            grants = {(r.account_id, r.subject) for r in _admin_read(
+                p.admin_engine, "SELECT account_id::text AS account_id, subject "
+                "FROM email_mailbox_grants WHERE account_id = ANY(CAST(:a AS uuid[]))",
+                a=[shared, other])}
+            assert grants == {(shared, stay), (shared, "org")}
+            assert len(_admin_read(p.admin_engine, "SELECT 1 FROM email_send_log "
+                                   "WHERE account_id = CAST(:a AS uuid)", a=shared)) == 1
+            assert len(_admin_read(p.admin_engine, "SELECT 1 FROM email_messages "
+                                   "WHERE account_id = CAST(:a AS uuid)", a=shared)) == 1
+            assert out["deleted"]["email_accounts"] == 1
+            assert out["deleted"]["mailbox_grants"] == 2
+        finally:
+            with p.admin_engine.begin() as c:
+                for acc in (shared, other):
+                    c.execute(text("DELETE FROM email_send_log WHERE account_id = "
+                                   "CAST(:a AS uuid)"), {"a": acc})
+                    c.execute(text("DELETE FROM email_mailbox_grants WHERE account_id = "
+                                   "CAST(:a AS uuid)"), {"a": acc})
+            wipe(p.admin_engine, keeper, gone, stay)
+
     async def test_a_purge_that_rolls_back_leaves_no_purge_row(
         self, promoted, app_engine, recorder,  # noqa: F811
     ):

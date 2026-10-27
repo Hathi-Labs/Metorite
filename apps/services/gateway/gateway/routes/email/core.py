@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+from acb_auth import require_feature_router
 from acb_common import get_logger
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
@@ -46,9 +47,16 @@ from gateway.db import get_session_factory as _get_session_factory
 # `_get_db` site left in the package is the discovery read of
 # `scheduler_hooks.mailbox_owner` (fence: test_email_request_jobs_tenancy.py).
 from gateway.db import tenant_session as _tenant_session
+
+# The ONE mailbox access seam (WS-65 SM-2). A leaf too: it imports nothing
+# from this package.
+from gateway.routes.email.mailbox_access import (
+    assert_mailbox_access,
+    mailbox_ids_sql,
+    mailbox_predicate,
+)
 from pydantic import BaseModel
 from sqlalchemy import text
-from acb_auth import require_feature_router
 
 _log = get_logger("gateway.email")
 
@@ -182,6 +190,9 @@ async def _provider_for_message(db: Any, message_id: str, user_email: str):
     Returns (provider, provider_message_id, account_id, store) or raises 404.
     Persisting rotated OAuth tokens is the caller's responsibility via
     ``_persist_rotated_creds``.
+
+    The owner check is the seam at its default level, ``manage``, so a
+    shared mailbox fails closed until SM-4 names the level of each write.
     """
     result = await db.execute(
         text(
@@ -189,7 +200,8 @@ async def _provider_for_message(db: Any, message_id: str, user_email: str):
                       ea.provider, ea.credentials_encrypted
                FROM email_messages em
                JOIN email_accounts ea ON em.account_id = ea.id
-               WHERE em.id = :mid AND ea.user_id = :user_id"""
+               WHERE em.id = :mid AND """
+            + mailbox_predicate("ea", uid="user_id")
         ),
         {"mid": message_id, "user_id": user_email},
     )
@@ -207,11 +219,13 @@ async def _provider_for_account(db: Any, account_id: str, user_email: str):
     Returns (provider, store, owner_email) or raises 404. Used by the draft
     write-path, which creates/updates/sends provider drafts that aren't tied to
     a single stored message. Persisting rotated creds is the caller's job.
+    The owner check is the seam at ``manage``, as in ``_provider_for_message``.
     """
     row = (await db.execute(
         text(
             """SELECT provider, credentials_encrypted, email_address
-               FROM email_accounts WHERE id = :id AND user_id = :uid"""
+               FROM email_accounts WHERE id = :id AND """
+            + mailbox_predicate(uid="uid")
         ),
         {"id": account_id, "uid": user_email},
     )).fetchone()
@@ -670,6 +684,7 @@ IN_ALL_INBOXES_SQL = "in_all_inboxes"
 
 def _owned_accounts_sql(
     account_id: str | None, params: dict[str, Any], *, pooled_only: bool = False,
+    level: str = "manage",
 ) -> str:
     """The ids of the mailboxes of ``:uid``, as a subquery with no alias.
 
@@ -677,8 +692,12 @@ def _owned_accounts_sql(
     ``pooled_only`` and no ``account_id``, the subquery leaves out each
     separate mailbox (EM-T8g-1, D-EM-30). A named mailbox is never left out,
     so a read by its ``account_id`` still gets its rows.
+
+    ``level`` is the level of the act (WS-65 SM-2), and the default
+    ``manage`` fails closed for a shared mailbox. With the flag off the text
+    is ``SELECT id FROM email_accounts WHERE user_id = :uid``, as before.
     """
-    frag = "SELECT id FROM email_accounts WHERE user_id = :uid"
+    frag = mailbox_ids_sql(uid="uid", level=level)
     if account_id:
         frag += " AND id = :aid"
         params["aid"] = account_id
@@ -689,6 +708,7 @@ def _owned_accounts_sql(
 
 def _account_scope(
     account_id: str | None, params: dict[str, Any], *, pooled_only: bool = False,
+    level: str = "manage",
 ) -> str:
     """Return a SQL fragment scoping email_messages `em` to the user's accounts.
 
@@ -704,7 +724,7 @@ def _account_scope(
     """
     return (
         "em.account_id IN ("
-        + _owned_accounts_sql(account_id, params, pooled_only=pooled_only)
+        + _owned_accounts_sql(account_id, params, pooled_only=pooled_only, level=level)
         + ")"
     )
 
@@ -869,21 +889,23 @@ def _bound_org() -> str:
 
 async def _assert_account_owner(
     db: Any, account_id: str, user_email: str, *, this_tenant: bool = False,
+    level: str = "manage",
 ) -> None:
-    """Raise 404 if the account isn't owned by the user.
+    """Raise 404 if the user may not act on the account at ``level``.
 
     ``this_tenant`` also names the session's bound tenant in the SQL (WS-58
     MD-3d). A member may own one mailbox in each of two organizations. RLS
     keeps the other one out for production's role ``acb_app``, so the
     predicate is defence in depth (R5): it holds also for a role that
     bypasses RLS. Off by default, so the statement of every other caller does
-    not change (HANDOFF H-334)."""
-    sql = "SELECT 1 FROM email_accounts WHERE id = :id AND user_id = :uid"
-    if this_tenant:
-        sql += f" AND organization_id = {_bound_org()}"
-    res = await db.execute(text(sql), {"id": account_id, "uid": user_email})
-    if not res.fetchone():
-        raise HTTPException(status_code=404, detail="Account not found")
+    not change (HANDOFF H-334).
+
+    ``level`` is ``read``, ``send`` or ``manage`` (WS-65 SM-2). The default
+    ``manage`` fails closed for a shared mailbox. The check is
+    ``mailbox_access.assert_mailbox_access``, and with the flag off its SQL
+    is the text of before WS-65."""
+    await assert_mailbox_access(
+        db, account_id, user_email, level, this_tenant=this_tenant)
 
 
 #: A mail of the mailbox ``:aid`` has the thread ``:tid`` (D-EM-19).
@@ -1135,6 +1157,45 @@ def _date_range_clause(
     if unprocessed_only:
         clause += " AND em.rules_processed_at IS NULL"
     return clause, params
+
+
+#: Q-MB-1 (``email_app_master_plan.md`` §11.8), owner, 2026-10-23: the most
+#: mailboxes that one member connects. The ONE copy of the number. The chat
+#: agent reads it from ``GET /email/accounts`` (``mailbox_limit``) and never
+#: keeps its own.
+MAX_MAILBOXES_PER_MEMBER = 5
+MAILBOX_LIMIT_DETAIL = (
+    f"You have {MAX_MAILBOXES_PER_MEMBER} mailboxes connected, the most one "
+    "member can have. Disconnect one first."
+)
+
+
+async def member_mailbox_count(db: Any, member: str) -> int:
+    """How many mailboxes ``member`` has in the bound tenant.
+
+    A disconnect deletes the row (``DELETE /email/accounts/{id}``), so every
+    row counts. The caller holds the ``tenant_session``.
+    """
+    return int((await db.execute(
+        # private-only: the cap of Q-MB-1 counts the member's own rows. SM-3
+        # leaves a shared row out of the count (Q-SM-5, WS-65).
+        text("SELECT count(*) FROM email_accounts WHERE lower(user_id) = :m"),
+        {"m": (member or "").strip().lower()},
+    )).scalar() or 0)
+
+
+async def enforce_mailbox_limit(db: Any, member: str) -> None:
+    """Raise 409 when ``member`` already has the most mailboxes.
+
+    Call it inside the block that inserts the new row, and never for a
+    reconnect. A transaction lock on the member serializes two tabs that race,
+    so both cannot pass the count (Q-MB-1).
+    """
+    key = (member or "").strip().lower()
+    await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+                     {"k": f"email-mailbox-limit:{key}"})
+    if await member_mailbox_count(db, key) >= MAX_MAILBOXES_PER_MEMBER:
+        raise HTTPException(status_code=409, detail=MAILBOX_LIMIT_DETAIL)
 
 
 def _default_label(provider: str) -> str:

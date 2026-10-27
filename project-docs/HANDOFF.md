@@ -11,7 +11,7 @@ remember what was in flight.
 > ⚠️ **Never restate state here. Point at it, and carry the command that
 > re-derives it.**
 
-`work_plan.md` §2 is **the only current-state authority** (CLAUDE.md §1). A
+**Metorite holds the current state** (D118, CLAUDE.md §1). A
 handoff file that also described state would be a second board, and a second
 board is the CLAUDE.md §5 defect by construction: two descriptions of one truth,
 one of which stops being updated first, and the stale one is trusted because it
@@ -49,6 +49,41 @@ nothing; the thing nobody wrote down costs a session.
 ## The shape of an entry
 
 ```
+### H-416 · Install the new staging flag tool as root, so the assistant profile can turn on in staging · [OWNER]
+- **Check:** on the dev box (srv1747539), run
+  `cmp /opt/acb/app/deploy/hostinger/staging/acb-staging-flag /usr/local/sbin/acb-staging-flag`.
+  If it exits 0, and
+  `sudo -n /usr/local/sbin/acb-staging-flag --list` shows
+  `ASSISTANT_PROFILE_ENABLED=true`, delete this entry.
+- **Why:** PZ-25 (#1330) put `ASSISTANT_PROFILE_ENABLED` and
+  `ASSISTANT_PROFILE_ORGS` on the allowlist of the tool. The copy in
+  `/usr/local/sbin` is the copy of 2026-10-18, so it refuses both names. On
+  2026-10-25 an agent got "refused: ASSISTANT_PROFILE_ENABLED is not on the
+  feature-flag allowlist". Production is on since 2026-10-25 by the owner's
+  word, and staging stays off until this step.
+- **Do this (owner):** open a root shell on srv1747539, in the hPanel browser
+  terminal or with `sudo -i`. Run this one line:
+
+      install -o root -g root -m 755 /opt/acb/app/deploy/hostinger/staging/acb-staging-flag /usr/local/sbin/acb-staging-flag
+
+  The sudoers line `/etc/sudoers.d/acb-staging-flag` is already there, so the
+  one line is enough. Then tell the agent.
+- **Then (agent):** run
+  `sudo -n /usr/local/sbin/acb-staging-flag set ASSISTANT_PROFILE_ENABLED true`.
+  Leave `ASSISTANT_PROFILE_ORGS` empty, so each organization gets it, as in
+  production. Check that `/version` and `/health` answer on
+  `api.dev.metorite.com`. Report the act and the evidence.
+- **Decide (owner), once:** each change to the allowlist needs this root step
+  again. One way to remove it: the root staging apply of `vps_apply.sh`
+  installs the tool when the file in the checkout differs (`cmp`, then
+  `install`). The cost: root then copies a file that `acb` can write. `acb` is
+  already root-equivalent through the `docker` group (see the README of
+  `deploy/hostinger/staging/`), so the cost is small today. It grows when
+  `acb` leaves `docker`. Say yes or no, and an agent builds it.
+- **Authority:** owner, 2026-10-25, in chat: turn the profile on in staging
+  for all organizations, then in production.
+- **Added:** 2026-10-26
+
 ### H-335 · Finish the staging box: DNS, two OAuth clients, one sudo run · [OWNER]
 - **Check:** `curl -s https://api.dev.metorite.com/version` answers a `sha` equal
   to `git rev-parse origin/staging`. If it does, delete this entry.
@@ -69,6 +104,19 @@ nothing; the thing nobody wrote down costs a session.
   production act in the same message (CLAUDE.md §3a rule 2).
 - **Authority:** `specs/staging_and_daily_release.md` §5.10 and §5.11
 - **Added:** 2026-10-16 · WS-38 staging session
+
+### H-361 · Raise the WSL2 CPU cap, so local CI runs in about 10 minutes · [OWNER]
+- **Check:** `grep -E "^processors=" ~/.wslconfig` on the owner's PC reads 16
+  or more. If it does, delete this entry.
+- **Why:** local CI (`bash scripts/ci_local.sh`) passed in 17.7 minutes on
+  2026-10-19. Each of the six shards took about 16 minutes, because
+  `.wslconfig` caps ALL of WSL2 at 8 processors and 16 GB. The PC has 28
+  cores and 64 GB.
+- **Do this (owner):** in `C:\Users\<you>\.wslconfig`, set `processors=20`
+  and `memory=32GB`. Then run `wsl --shutdown` at a quiet moment, because it
+  stops Docker Desktop and every WSL window for a few seconds.
+- **Authority:** `specs/engineering_practice.md` §7a
+- **Added:** 2026-10-19 · CI speed-up session
 
 ### H-283 · Prove the first `credit_draw` row on production · [AGENT]
 - **Check:** on the box, query the Console database:
@@ -144,6 +192,84 @@ line — never reclaim a number by deleting the other entry.
 ---
 
 # OPEN
+
+### H-417 · Build WS-67 OA-7b to OA-10: one chat, tool packs, dynamic sub-agents · [AGENT]
+- **Check:** the WS-67 row of `project-docs/work_plan.md` says OA-10 is BUILT. Then delete this entry. OA-1 to OA-5, OA-6 (D117), OA-7a, OA-7g and the design are done.
+- **Why:** D117. The owner chose one chat for the whole app, tools loaded per turn, and dynamic sub-agents for parallel work (2026-10-26). OA-5 measured the pack at 2.3 times faster and half the cost, with the same accuracy.
+- **Do this:**
+  1. PR #1378 merged OA-7b (`3a06ed097`, dark). The owner confirmed the strict hold within a turn on 2026-10-27.
+  2. PR #1383 merged OA-7c (`4d73d66c0`, dark). OA-7e (`load_skill_tools`, layer (b)) is BUILT, dark (PR #1389). Spec §4.2 "As built, OA-7e" says how it keeps the guards and the caps. OA-7d (the `surface` field from the dock) is BUILT, dark: spec §4.2 "As built, OA-7d". Next: OA-7f and OA-7h. The OA-7h measure must install the in-memory mark store. It must also narrow the check `_no_email_delegation`, as spec §4.2.8 OA-7h says.
+  3. The OA-9a parser is BUILT, dark, and PR #1388 merged it. Spec "As built, OA-9a parser" says what it holds. Nothing calls it. The OA-9a worker and OA-9b stay NO-GO until the §4.5 edits land in the spec.
+  4. OA-8a to OA-8e, then OA-8e passes before OA-10. OA-10 also moves the Email and Projects rails to the one assistant, with their pack pinned.
+  5. `TOOL_PACKS`, `TOOL_PACKS_ORGS` and `SPAWN_SUBAGENTS_ORGS` are owner-only (`work_plan.md` §6 D4). Do not flip them.
+  6. After a release, confirm in the logs that `AI_REASONING_OFF_AGENTS=orchestrator` works (`ai_route.reasoning_off`), and read `agent.run_timing` and `email.list_messages_ms`.
+  7. OCR (`ATTACHMENT_OCR`) stays off. Spec §4.1 lists three conditions before the flip.
+- **Authority:** `specs/one_assistant_context.md` · D116 · D117 · board WS-67. Metorite epic #445, slices #452 to #455.
+- **Added:** 2026-10-26 · chat-speed session
+
+### H-415 · After single mailbox: the shared mailbox SM-3 to SM-9, then multiple mailboxes · [AGENT]
+- **Check:** the WS-65 row of `work_plan.md` says SM-9 is BUILT. Then delete this entry.
+- **Why:** the owner's order on 2026-10-24: single mailbox first (done 2026-10-25), then shared, then multiple. H-337 (shared-room identity, security) can go first if the owner says so.
+- **Do this:** build SM-3 to SM-9 of `specs/shared_mailbox.md`. SM-10 and SM-11 are owner gates. The cleaner across several inboxes needs an owner decision.
+- **Authority:** `specs/shared_mailbox.md` · board WS-65.
+- **Added:** 2026-10-25 · email single-mailbox session
+
+### H-412 · The chat-speed work: build the delegated-path slices for the paths that stay after WS-67 · [AGENT]
+- **Check:** the next chat-speed PR after #1323 names WS-67 and `specs/one_assistant_context.md` §7. When it does, delete this entry.
+- **Why:** WS-67 (D116) may remove delegation for email conversation (OA-7). #1323 lists two next slices on the delegated path: "a delegated agent still loads twice and streams no text", and "skip the orchestrator rewrite of a delegated answer". Built for email conversation, that work can be thrown away after OA-7.
+- **Do this:**
+  1. Build those two slices for the paths that stay: the dynamic sub-agents of OA-9, scheduled jobs and workflows. OA-6 is decided (D117, 2026-10-26), so do not build them for conversational turns. A dynamic sub-agent that streams its text and loads once makes a parallel fan-out faster.
+  2. "Fewer model rounds per email run" needs evals first. Use the OA-5 harness, and do not build a second one.
+  3. Keep the names and fields of `agent.run_timing` and `executor.run_setup_ms` stable. OA-5 reads them.
+  4. Expect OA-1 to add input tokens to a delegated run, and OA-3 (OCR) to add time to `read_attachment`.
+- **Authority:** `specs/one_assistant_context.md` §7 · D116 · board WS-67.
+- **Added:** 2026-10-25 · email single-mailbox session
+
+### H-366 · Harden the CRM UX batch of 2026-10-20 (CRM-U6 to U9) · [AGENT] · security
+- **Check:** `git log --oneline origin/main | grep -c "harden.*CRM-U[6-9]"` is 0. Then this is open.
+- **Why:** owner rule of 2026-10-19, build first and harden later. Four PRs
+  shipped on product tests only. They are #1181 (settings polish), #1180
+  (two-row toolbar and view chips, migration 287) and #1182 (lane stat block
+  and lead win chance, migration 288). The fourth is CRM-U9, the module field
+  filters. No diff-reviewer pass ran on any of them.
+- **Do this:** one PR labelled `harden`. Run diff-reviewer over the four
+  diffs. Then close these known gaps:
+  1. A stale `cf.<key>` chip on a module list stays visible and narrows
+     nothing. Run `pruneFilters` on module lists, as the core lists do.
+  2. The lane total adds amounts across currencies under one rupee icon.
+     Show "N in USD, not added".
+  3. The field-map retry re-reads every failed entity. The error text puts
+     the raw error string inside the sentence.
+  4. A bare `?view=<id>` link to a module view does not resolve, because a
+     module link needs its tab in the URL.
+  5. Module lists have no Export. The export route names the four lists.
+  6. The dead exports of `lib/savedViews.ts` (`activeSavedView`, `deleteCopy`,
+     `viewDiverges`) and the stale comments "v1 has no saved-views table" in
+     `page.tsx` and `urlState.ts`.
+  7. Projects onto the shared view seam (`src/lib/savedViews/`,
+     `src/components/ViewChips.tsx`) when its board is next touched.
+  8. `scripts/ci_local.sh` with no flags exits 2 ("unknown option:"), because
+     an empty flag list becomes one empty argument. Build `args` only when the
+     list has an item.
+- **Authority:** `specs/crm_platform.md` §20.12 and §20.13, review artifact of 2026-10-20
+- **Added:** 2026-10-20 · `crm-module-filters`
+
+### H-365 · Replay the CRM answer check on stored answers, then decide `on` · [OWNER]
+- **Check:** on the production box, `grep -E '^CRM_ANSWER_CHECK=' /opt/acb/app/.env`
+  reads `shadow`, and no replay result is in the round 8 PR. Then this is open.
+- **Why:** WS-53 CRM-Q29 round 8 changed the note and the check. The journal
+  holds counts only, so it gives an upper bound and no true rate. The true rate
+  needs the stored answers of the armed runs, and those rows hold the chat of
+  another org. An agent does not read them.
+- **Do this (owner):** run `uv run python scripts/crm_answer_check_replay.py
+  --print-sql`. Export those rows of the thread ids of the journal to a JSON
+  lines file off the repo. Then run the script with `--rows <file>`. Set `on`
+  only when "any note" is under 5 percent.
+- **Then (agent):** the hardening list of the PR. Send the question of an
+  empty group through the CRM-Q32 store, the web card and `text_asks`. Then
+  measure the invented-figure rate of the table units with a seeded corpus.
+- **Authority:** `specs/crm_platform.md` §18.11.2, CRM-Q29 fix round 8
+- **Added:** 2026-10-20 · `crm-check-explain`
 
 ### H-294 · BH-6 moved the root units to /usr/local/lib/acb, and the runbooks still name the checkout · [AGENT]
 - **Check:** run `rg -n "opt/acb/app/scripts/backup_db.sh|compose -f infra/docker-compose.yml" deploy/hostinger/README.md project-docs/specs/backup_and_restore.md README.md project-docs/specs/development_and_delivery_framework.md`. A hit means this is open.
@@ -275,19 +401,17 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/chat_run_continuity.md` §4 S2
 - **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
 
-### H-289 · Build WS-51 S7, browser push for "needs your answer" and "finished" · [AGENT]
-- **Check:** run `rg -n "pushManager|serviceWorker.register" workbench/control_plane/src`.
-  No hit means S7 is not built.
-- **Why.** The owner called web push "a good idea" on 2026-10-10. D-2 is
-  decided: push is opt-in, per member. It is not built. The spec holds the
-  acceptance criteria and the fence:
-  - Our VAPID keys, through the secrets path.
-  - A service worker, a settings toggle, and a permission prompt only on a
-    click.
-  - Two events, for the member's own runs only, with no content in the
-    payload.
-  - Subscriptions under RLS, and an unsubscribe at sign-out.
-- **Do this:** build S7 as one slice behind a flag, default OFF.
+### H-289 · Send WS-51 S7's two chat events, "needs your answer" and "finished", over web push · [AGENT]
+- **Check:** run `rg -n "send_to_member" apps/services/gateway/gateway --glob '!gateway/push/**'`.
+  No hit outside `gateway/push/` means no chat event sends a push yet.
+- **Why.** The owner called web push "a good idea" on 2026-10-10 (D-2: opt-in,
+  per member). **The transport is built** (WS-66 PN-1, 2026-10-25): VAPID keys,
+  `public/sw.js`, the toggle on `/people/me`, `push_subscriptions` under RLS,
+  and the sign-out paths. What is left of S7 is item 4: the two events, for the
+  member's own runs only, with no content in the payload.
+- **Do this:** call `gateway.push.sender` with a `PushMessage` from the S2
+  "needs your answer" and the S5 "finished" points, behind `WEB_PUSH_ENABLED`.
+  A tap opens the S3 `open-chat` link.
 - **Authority:** `specs/chat_run_continuity.md` §4 S7, board row WS-51
 - **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
 
@@ -322,23 +446,6 @@ line — never reclaim a number by deleting the other entry.
   `acompletion_stream_text` already takes `feature=`, so its name is ready.
 - **Authority:** `customer_console.md` §4.3a, H-171
 - **Added:** 2026-10-10 · branch `ai-call-attribution`
-
-### H-286 · Reply Zero lists snoozed and junk threads as needing a reply, and the digest and My Day do not · [AGENT]
-- **Check:** run `rg -n "excluded = " apps/services/gateway/gateway/routes/email/automation/replyzero.py`.
-  If the active buckets still exclude only `'trash', 'archive'`, this is open.
-- **Why.** The email app has two rules for "needs a reply". The digest's
-  `_LIVE_THREAD` (`routes/email/digest.py`) leaves out a thread when its last
-  message is in trash, junk or the archive, or the member snoozed it. The shell's needs
-  feed reads the same rule (`needs_reply_threads`, WS-44 NS-3). Reply Zero
-  (`replyzero.reply_zero`) leaves out only trash and archive. So a member sees
-  a snoozed or junk thread in the Reply list, and not in the digest count or
-  on My Day.
-- **Do this:** the email app decides which rule is right. If Reply Zero
-  should match, make its active buckets read `digest._LIVE_THREAD`, and do
-  not write a third copy. Fence it with a snoozed and a junk case in the
-  Reply Zero suite.
-- **Authority:** `email_app_master_plan.md` (Reply Zero), `navigation_shell.md` §7.2
-- **Added:** 2026-10-09 · WS-44 NS-3 slice A
 
 ### H-285 · Stop the webhook classify from running beside the scheduler classify · [AGENT]
 - **Check:** run `rg -n "H-285" apps/services/email_ingestion apps/services/gateway/gateway/routes/email`.
@@ -562,34 +669,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `project-docs/specs/backup_and_restore.md` §4.2, the trade-offs ·
   H-123 · H-270
 - **Added:** 2026-10-08 · off-box backup, security review of fix round 2
-
-### H-270 · The gateway's in-process Copilot CLI inherits every secret in `.env` · [AGENT] · security
-- **Check:** `grep -nE "\benv\b|environment" apps/services/orchestrator/orchestrator/copilot_agent.py`.
-  No `env` in the `CopilotClient` options means the CLI still gets the whole gateway
-  environment, and this is open. To confirm the fallback in the SDK, run
-  `grep -n "effective_env = os.environ" .venv/lib/python3.12/site-packages/copilot/client.py`.
-- **Why.** `copilot_agent.py` lines 220 to 226 build `client_options` with a token, a CLI
-  path and a log level. They pass no `env`. The SDK then sets
-  `effective_env = os.environ` (`copilot/client.py` line 1601). The CLI has a shell tool.
-  So a prompt that reaches that tool can read every secret that `acb-gateway.service`
-  loads from `/opt/acb/app/.env`. That includes the database URLs, the OAuth client
-  secrets and the provider API keys.
-- **The partial guard is OFF.** `copilot_sandbox_scope` moves some calls into a
-  container. It is empty by default (`settings.py` line 673), so every call runs in the
-  gateway process.
-- **Do.**
-  1. Give the client an env built from an allow list: `PATH`, `HOME`, the Copilot token
-     and the proxy names that the CLI needs. Give it nothing else.
-  2. Add a test that starts the client with a stub CLI. Make it fail when a secret from
-     `.env` reaches the child env.
-  3. Decide if `copilot_sandbox_scope` must be ON by default.
-- **Not in the off-box PR, on purpose.** This is its own change. H-123 moved the backup
-  key out of `.env` for this reason. WS-43 (D84) removes the Copilot SDK. Until that
-  ships, this stays open.
-- **Spec:** `specs/box_hardening.md` (WS-49), slice BH-1, owns the fix.
-- **Authority:** `apps/services/orchestrator/orchestrator/copilot_agent.py` ·
-  `copilot/client.py` in the SDK · H-123
-- **Added:** 2026-10-08 · off-box backup, security review of fix round 1
 
 ### H-269 · Make the long-header test of the data engine pass on a busy CI runner · [AGENT]
 - **Check:** run `gh run list --workflow pr-check.yml --limit 50 --json databaseId,conclusion`,
@@ -1203,26 +1282,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_ai_chat.md` §22.9 (fix round 3, the
   residuals) · D12
 - **Added:** 2026-10-05 · the round 3 review of PR #616 (approved with nits).
-
-### H-218 · Take the GitHub token out of each clone's remote URL · [AGENT]
-- **Check:** `rg -n 'x-token:\{token\}@github.com' packages/acb_skills/acb_skills/loader.py`.
-  A hit means this is open.
-- **What happens.** `_build_github_url` (`loader.py:75-79`) puts
-  `GITHUB_TOKEN` in the clone URL, so the token lands in each clone's
-  `.git/config`. The token has `repo` scope (`loader.py:16`). The mutation
-  container mounts the clone at `/workspace/repo`, and it has a network. So
-  code that the model writes in that container can read the token and send
-  it out.
-- **Do.**
-  1. Clone and pull with a credential helper or `GIT_ASKPASS` that reads the
-     token from the environment. Then `.git/config` holds a URL with no
-     token.
-  2. Rewrite the remote URL of each existing clone once, in the loader.
-  3. Add the token probe of `specs/maf_coding_engine.md` WS-43l.
-- ⚠️ **A wrong fix stops every pull of a private agent repo.** Test a pull of
-  a private repo on a dev box before the merge.
-- **Authority:** `specs/maf_coding_engine.md` §15.3 and §7.1 rule 5
-- **Added:** 2026-10-03 · the D84 spec session
 
 ### H-214 · Add a plan-guard rule `ws43-sandbox-flip` for the three WS-43 flags · [OWNER]
 - **Check:** `rg -n "ws43-sandbox-flip|MAF_CODING_SCOPE|SANDBOX_EGRESS_ENABLED|MAF_NATIVE_SESSIONS" .claude/hooks/plan-guard.mjs`.
@@ -1851,33 +1910,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `saas_multitenancy.md` §11 MT-1j · the headers of migrations 200, 201 and 202
 - **Added:** 2026-09-06, from the WS-27 status-sets deploy · **narrowed
   2026-09-15** when the provisioning half was fixed.
-### H-101 · The weekly skills sync cannot open its PR, and has failed since 2026-08-24 · [OWNER]
-- **Check:** `gh run list --workflow=skills-upstream-sync.yml --limit 3`. A
-  `failure` on the most recent scheduled run means this is still open. The log
-  line to look for is `GitHub Actions is not permitted to create or approve
-  pull requests`.
-- **Why:** `.github/workflows/skills-upstream-sync.yml` mirrors
-  anthropics/skills into `skills/upstream/` every Monday, then opens a PR. The
-  repository setting that lets a workflow open a PR is off, so the job dies
-  after 15 seconds. It last succeeded on 2026-08-10.
-- **What it costs:** the mirror froze at SHA `f17010c9` for 24 days. Two new
-  upstream skills, `academy-guide` and `discernment-nudge`, never arrived. This
-  PR refreshed the mirror by hand to `53048666`. **A hand refresh is not a
-  fix.** The next Monday fails the same way.
-- **The fix, and it is yours:** GitHub → repository **Settings → Actions →
-  General → Workflow permissions** → turn on *Allow GitHub Actions to create
-  and approve pull requests*. Then run the workflow once with
-  `gh workflow run skills-upstream-sync.yml` and watch it to green.
-- **⚠️ A workflow that fails reports nothing.** The schedule is weekly and no
-  alert fires, so this stayed silent for three weeks. Whoever flips the setting
-  must also decide whether a sync that fails tells anybody.
-- **If you prefer not to grant that permission:** change the job to push a
-  branch and stop there. A person then opens the PR. That edit is an agent job,
-  and it needs your word first, because it changes CI.
-- **Authority:** `.github/workflows/skills-upstream-sync.yml` ·
-  `skills/upstream/README.md`
-- **Added:** 2026-09-03 · skills-adopt PR (the adoption found the dead sync)
-
 ### H-99 · ⏳ `bypassPermissions` has NO EXPIRY, and everything around it does · [OWNER]
 - **Check:** `grep defaultMode .claude/settings.local.json` on the owner's
   machine. `bypassPermissions` means this is live. **Due 2026-09-30**, with the
@@ -2289,23 +2321,6 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-31 · WS-31 H-46 review round 2 · **renumbered from H-84 on
   2026-08-31**. The router-guards slice took that id first.
 
-### H-86 · One serving prelude for all FOUR Router doors · [AGENT]
-- **Check:** `rg -c '_serving_prelude' apps/services/customer_console/customer_console/main.py`.
-  A count under 5 means fewer than four doors share it, and this entry is still
-  real. One definition plus four call sites reads 5.
-- **Why:** `main._serving_prelude` resolves the chain, loads the keys and the
-  verbs, and stands the three customer walls. H-46 built it for the image door
-  and the speak door. The transcribe route keeps its own copy of the same body,
-  and the chat route wrote the shape first. Three implementations of one gate
-  is root `CLAUDE.md` §5's defect by name, and the copy nobody edits is the one
-  that drifts.
-- 📌 **The fix shape:** move the transcribe route and the chat route onto the
-  prelude. The chat route needs one extra return, because it resolves a vision
-  chain (D-AI-2). Do it as its own slice, and not inside a feature diff.
-- **Authority:** `specs/customer_console.md` §6A.10c · root `CLAUDE.md` §5
-  · board row WS-31
-- **Added:** 2026-08-31 · WS-31 H-46 review round 2
-
 ### H-81 · Decide the TWO open resolution rules for the vision chain · [OWNER]
 - **Check:** `grep -n "def resolve_vision_chain" -A3 apps/services/customer_console/customer_console/router.py`
   and `grep -n "if not attempts:" -A7 apps/services/customer_console/customer_console/main.py`
@@ -2427,19 +2442,6 @@ line — never reclaim a number by deleting the other entry.
   · PR #115 · PR #116
 - **Added:** 2026-08-26 · STE harness session
 
-### H-19 · WS-34: theme-switch the new Organisation surface by eye · [AGENT]
-- **Check:** nothing in the repo can answer this — that is the point. Ask whether
-  anybody has switched the org theme to Fluent → Material → Graphite and LOOKED at
-  **Organisation → Seat assignments** and at a neighbouring app. Unanswered → pending.
-- **Why:** `workbench/control_plane/AGENTS.md` is explicit that the conformance
-  suite checks eight regexes and **nothing in this tree tests layout or cross-app
-  continuity**, so the theme switch is the real gate. WS-34 added two surfaces
-  (the seat roster, the four-tab strip) and moved a third (branding into a tab).
-  The suite is green and that proves no hardcoded colour, not that the surface
-  looks like the product beside it.
-- **Authority:** `specs/launch_surface.md` §10 · `workbench/control_plane/AGENTS.md`
-- **Added:** 2026-08-24 · WS-34 build session
-
 ### H-20 · WS-34 LS-11: decide the fate of seats held on plans D49 retired · [OWNER]
 - **Check:** `SELECT o.slug, sa.plan_slug, count(*) FROM seat_assignment sa
   JOIN organization o ON o.id = sa.organization_id
@@ -2454,50 +2456,6 @@ line — never reclaim a number by deleting the other entry.
   ₹0 onboarding) today, which is why 008 could land as data now.
 - **Authority:** `specs/launch_surface.md` §4.4 · LS-11 · `work_plan.md` §6
 - **Added:** 2026-08-24 · WS-34 build session
-
-### H-21 · Promoting a `preview` app to `live` is an owner decision, not a code change · [OWNER]
-- **Check:** compare `specs/launch_surface.md` §2's live table against
-  `rg -c 'launch: "live"' workbench/control_plane/src/lib/nav.ts` → **9** means
-  nothing has been promoted. ⚠️ **Corrected 2026-08-26: this said `8`.** D54 added the
-  Calendar pane on 2026-08-24 — the same day this entry was written — so the Check
-  was born wrong and would have read *"something was promoted"* on every future run.
-  The number to compare against is `nav.test.ts`'s own fence, never a remembered one. This entry never "completes"; it is the standing rule
-  for the next person who finishes an app.
-- **Why:** Sixteen panes are `preview` — routes, API and tests intact, nav entry
-  absent. Turning one on is the judgement "this is finished enough to sell", which
-  is the owner's; the registry edit plus its `nav.test.ts` line is trivial once the
-  call is made. ⚠️ **Never promote an app by granting its feature** — `preview` is
-  not a permission (§3.4), and confusing the two makes a product decision into a
-  data migration and makes `/access` lie about why a pane is missing.
-- **2026-10-02:** the owner promoted Email on 2026-10-01, and WS-17 EM-T3b
-  ships it. The live set is now **11**. `nav.test.ts` and §2 moved in the same
-  change. The `rg` count of the Check reads 11 on that tree.
-- **2026-10-11:** the owner answered for the CRM in chat: "Promote CRM to
-  live now." CRM-L2 ships it, so the live set is **12**. The `rg` count of the
-  Check reads 12 on that tree. The owner also chose to build the Integrations
-  console (WS-54 IN-1 to IN-7) only after the CRM is in use. The CRM half of
-  this entry is decided, and the entry stays for the other `preview` apps.
-- **Authority:** `specs/launch_surface.md` §2 · §3 · §11 item 4
-- **Added:** 2026-08-24 · WS-34 build session
-
-
-### H-2 · Count archived projects on prod BEFORE migration 171 applies · [OWNER]
-- **Check:** `SELECT count(*) FROM pm_projects WHERE status = 'archived';` on
-  prod. If 171 has already applied, this number is no longer recoverable this
-  way and the query becomes `WHERE archived_root_id = id` — which answers a
-  *different* question. Unanswered → still pending.
-- **Why:** ⚠️ **Time-sensitive.** 171 changes what "archived" means; the
-  pre-migration count is the only baseline that can tell us whether the lifecycle
-  sweep behaved.
-  🔴 **Corrected 2026-08-26 — this said "ordered against H-1", and H-1 no longer
-  exists** (its Check passed and the entry was deleted, correctly). Worse, its
-  premise is now false: the 2026-08-25 deploy reported *"0 applied, 186 already
-  recorded"*, so the box is current with `main` and **171 has almost certainly
-  already applied**. Treat the baseline as **probably lost**: run the count, and if
-  171 is on the box, record that it was lost rather than substituting
-  `WHERE archived_root_id = id`, which answers a different question.
-- **Authority:** `work_plan.md` §2 WS-27 row
-- **Added:** 2026-08-14 · session that built WS-27bj
 
 ### H-3 · Rotate the production SSH credentials pasted into a session · [OWNER]
 - **Check:** can the old password still authenticate? If nobody has rotated it,
@@ -2760,18 +2718,6 @@ line — never reclaim a number by deleting the other entry.
   separate: without it the gateway's agent warm-clones fail on every restart
   and account for most of the ~90 s cold start.
 - **Authority:** `work_plan.md` §6 (credentials) · `specs/engineering_practice.md`
-- **Added:** 2026-08-19 · VPS bring-up session
-
-### H-18 · Verify the first production sign-in by evidence (session → owner chain) · [AGENT]
-- **Check:** on the box, `journalctl -u acb-gateway | grep -i "owner bootstrap"`
-  plus a session row for `vjvarada@gmail.com` after a real browser sign-in at
-  `app.metorite.com` → both present means done. Needs box reach, i.e. a dated
-  D45 `ALLOW <date> deploy` grant or the owner running it.
-- **Why:** `ensure_owner_bootstrap()` fired at startup (log-verified), but no
-  one has verified the full chain — Google OAuth → NextAuth session →
-  gateway identity → owner of `default` — from a real browser. CLAUDE.md §3.8:
-  verify by evidence, never by a green job.
-- **Authority:** `work_plan.md` §2 WS-31 row (CP-2b) · CLAUDE.md §3.8
 - **Added:** 2026-08-19 · VPS bring-up session
 
 ### H-32 · Revoke the ClickUp tokens at ClickUp · [OWNER]
@@ -3189,71 +3135,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `work_plan.md` §3 **D58** · §6 (f) · `specs/customer_console.md` §4
 - **Added:** 2026-08-26 · AI architecture session
 
-### H-171 · The product's OWN AI is never metered, so it is free forever · [AGENT+OWNER]
-- **Check:** `rg -c "console_resolve|customer_console" packages/acb_llm/` → a
-  zero means `acb_llm` still reaches no meter, and this is open.
-- 🔴 **MEASURED 2026-09-23.** `acb_llm.acompletion_with_fallback` imports
-  litellm and calls `acompletion` directly. `acb_llm` holds **zero**
-  references to the Console. The only litellm callback registered anywhere is
-  `"otel"`, which is a trace and not a bill.
-- **So there are TWO AI paths and only one is metered.**
-  `POST /v1/chat/completions` reaches the Console Router behind
-  `ROUTER_SERVING_ENABLED`. Every in-product feature — the apps runtime, the
-  email automation, the assistants, the agents, **29 files** — takes the other
-  path and is billed to nobody.
-- 🔴 **What it costs.** A customer uses the AI inside the product for free, on
-  our vendor account, for ever. Turning the Router on does not change that,
-  because the Router is not on that path. It is a larger hole than the blank
-  cached-input box, and it does not close itself.
-- **The spec reads against it.** `launch_surface.md` §4.1: *"AI usage is
-  metered separately in credits"*. Not API usage. AI usage.
-- ⚠️ **It also empties the feature the owner asked for.** Per-app, per-agent
-  and per-person credit reporting all read `usage_event`. The apps and agents
-  people use write no row there, so those screens would be honest and
-  blank.
-- **Two shapes, and the choice is the owner's because it trades money against
-  latency and failure.**
-  1. **Proxy.** Send `acompletion_with_fallback` through the Console Router.
-     One path, one meter, the balance gate applies BEFORE spending. Costs a
-     Console round trip on every internal call, and D57.7 says a routed call
-     that fails, fails.
-  2. **Report.** Keep litellm serving and POST the result to
-     `/usage/record`, which exists, takes the internal token and is idempotent
-     on `(organization_id, request_id)`. No latency change and no new failure
-     mode. The balance gate cannot refuse before the spend, so a customer can
-     overrun by one call.
-- ⚠️ **Attribution is the real work in either shape.** The meter needs the
-  member, the agent and the module at 29 call sites. H-73 landed the identity
-  seam. H-44 records the same 80+ sites for tier selection, so sweep the two
-  together and not twice.
-- 📌 **THE OWNER CHOSE SHAPE 1 (proxy), 2026-09-24, and it is built.**
-  `acb_llm/routed.py` is the seam. `acompletion_with_fallback`,
-  `client.complete` and `client.complete_with_tools` all route when
-  `routing_is_on()`. The TIER travels, never a resolved model, so the
-  operator's ranked `tier_binding` chain decides. Attribution comes from
-  `get_run_context()`, so none of the call sites changed.
-- 🔴 **Two mistakes worth keeping, because both were caught by a fence and
-  not by me.** The first payload sent `{"tier": ...}` and spread the caller's
-  `**extra`. `CompletionRequest` forbids extras, and its field is called
-  `model`. So EVERY routed call would have been a 422. The suite stayed green,
-  because it stubbed the client. The second left tool-calling on the
-  direct path, on the belief that the Router had no `tools` field. It has,
-  with `tool_choice` beside it. A test that validates against the REAL
-  pydantic model caught both, and it is the fence to keep.
-- ⚠️ **STILL UNROUTED, and each for a reason.**
-  `context.acompletion_stream_text` — the Console streams through a different
-  client (`stream_completion_on_console`) with a different contract, so it is
-  its own slice. `gateway.main._prewarm_prompt_cache` — a startup warm-up with
-  no tenant and no member to bill, so routing it would invent a payer.
-- ⚠️ **It ships DARK.** `routing_is_on()` needs `ROUTER_SERVING_ENABLED` AND a
-  reachable Console. Every box that has not turned billing on behaves exactly
-  as before, and a test pins that for both the completion and the agent paths.
-- **Fences:** `tests/unit/test_internal_ai_is_routed.py` (20) ·
-  `test_console_dependency_boundary.py` gained the seventh allowed caller,
-  which is the same KIND as the `v1_compat` Router hop.
-- **Authority:** `launch_surface.md` §4.1 · D19.2 · D57.7 · CP-6 · H-73 · H-44
-- **Added:** 2026-09-23 · the H-73 session. **Renumbered from H-170 to H-171** the same day (R1): another branch minted the same next free id against a different base and merged first. An id is never reused.
-
 ### H-44 · Feature→tier binding is hardcoded at 80+ call sites · [AGENT]
 - **Check:** `rg -c '"tier-(fast|balanced|powerful|stt)"' --glob '*.py' --glob '*.ts' apps/ packages/ workbench/`
   → any file with a count means that feature's tier is still a literal, not a
@@ -3276,98 +3157,6 @@ line — never reclaim a number by deleting the other entry.
   **D60.10**) · `specs/customer_console.md` **§6A.9**
 - **Added:** 2026-08-26 · AI architecture session
 
-
-### H-46 · Build the Router's non-chat endpoints — shape DECIDED (D61.1) · [AGENT]
-- ✅ **The `transcribe` half is BUILT, 2026-08-31.**
-  `POST /v1/audio/transcriptions` serves the second of D60's six tasks, and
-  `customer_console.md` §6A.10a is now BUILT.
-- ✅ **The image half and the speak half are BUILT too, 2026-08-31.**
-  `POST /v1/images/generations` and `POST /v1/audio/speech` serve the third
-  task and the fourth, and §6A.10c is now BUILT. H-47's handler seam is what
-  is left. Keep this entry until it lands.
-- 📌 **Both media routes are BUILT to `customer_console.md` §6A.10c.** An
-  audit minted that section on 2026-08-31, and the build answered it the same
-  day. It holds twelve clauses and a fence table.
-  ⚠️ **§6A.10c seeds NO `tier_binding` row.** The choice of the vendor model
-  we resell for pictures and for speech is a commercial act, and it belongs to
-  the owner. So each route answers 400 `tier_unknown` until the owner binds
-  `tier-image` and `tier-tts`. Arming each route is ONE `tier_binding` INSERT,
-  beside the three prerequisites H-69 lists.
-  📌 **§6A.10c gave H-47 no first caller.** `aimage_generation` and `aspeech`
-  are litellm verbs already, so neither route needed a native handler.
-- ✅ **REPAIRED 2026-08-31, review round 2.** An adversarial review returned
-  REQUEST-CHANGES on one P1 and four P2s, and the same branch answered all
-  five. The P1 was a revenue defect: the image body forwarded a caller-chosen
-  `size`, and the vendor prices a picture by size. **H-87** now carries the
-  real follow-up. **H-85** carries the unmeasured-call log, and **H-86**
-  carries the one prelude for four doors. §6A.10c holds each answer.
-- ✅ **The mixed-lift-chain finding is CLOSED, 2026-08-31.** It rode here from
-  WS-31 slice 4, and the router-guards slice filtered the chain.
-  `resolve_vision_chain` now keeps only the steps that set `reads_images`, and
-  an empty result falls to `tier-vision`. `ai_metering_and_analytics.md` §3.2
-  step 3b holds the rule under a D16 marker, and §8.5 clauses 7 and 8 hold the
-  done-when.
-- **⚠️ Three review findings are still OPEN, and they ride with H-47
-  (recorded 2026-08-31):**
-  1. The Router sends `verbose_json` to EVERY transcribe model. The precedent
-     (`acb_stt/litellm_provider.py:252`) sends it to the whisper family alone.
-     A tier repointed at Deepgram or `gpt-4o-transcribe` gets a vendor 400,
-     which reads as "upstream provider error". The family branch belongs in
-     H-47's handler seam.
-  2. An unmeasured transcription writes `quantity` 0, and a silent file also
-     writes 0. Cost gets the NULL-means-unknown rule (D-AI-7) and quantity
-     does not. Decide one way when a reader of `quantity` exists.
-  3. A capability row with a wrong verb (for example `aspeech` on a
-     transcribe pair) burns the failover walk and answers 502 "upstream
-     provider error" for OUR configuration error. `_nothing_to_try` shows the
-     precise-503 shape the refusal should copy.
-- **Check:** `rg -n '@app\.post\("/v1/' apps/services/customer_console/customer_console/main.py`
-  → four routes means every endpoint D61.1 named is built. A tree missing
-  `/v1/images/generations` or `/v1/audio/speech` means this half regressed.
-- **Why:** D60's catalog can **describe** `transcribe` / `image` / `speak`; the Router has
-  **nowhere to serve them**. The fork is real and is an owner call because it is a public
-  wire-protocol commitment: **(a)** per-task OpenAI-shaped endpoints
-  (`/v1/audio/transcriptions`, `/v1/images/generations`, `/v1/audio/speech`) — every SDK
-  already speaks them, but each needs its own upload/streaming story; or **(b)** one
-  generic `/v1/invoke` taking `(task, tier, payload)` — one route, but we invent a
-  protocol nothing speaks and file upload gets awkward.
-  ✅ **DECIDED 2026-08-26 by D61.1: (a), one task at a time, starting with `transcribe`.**
-  ⚠️ **And the [OWNER] label on this entry was wrong** — the Router is an **internal seam**
-  (our gateway → our Console, on a credential we issue), not a public API, so its shape
-  commits us to nobody outside. OpenAI's shapes are also what litellm implements on *both*
-  sides, so following them costs nothing and keeps the option of exposing the Router
-  publicly later. Re-labelled [AGENT].
-  📌 **Build `transcribe` only when a caller needs it.** An endpoint nobody calls is CP-4's
-  mistake repeated — which is the entire lesson of the first-caller ticket (D57.3).
-  ✅ **Not blocking:** CP-10 slice 1 and CP-11 both proceed — chat is **96 of the 110**
-  measured call sites. This bounds the multimodal reach, not the next two tickets.
-- **Done when:** `customer_console.md` **§6A.10a** holds the transcribe
-  clauses, and **§6A.10c** holds the twelve clauses for the image endpoint and
-  the speak endpoint. Build to those two sections, and to nothing written in
-  this entry.
-  ✅ **H-78 landed on 2026-08-31, and this change removes its entry.** Clause 5 reads
-  `model_profile.vendor_per_minute_usd`, and H-78 built that column and the
-  seam that fills it. A profile with no price still leaves
-  `provider_cost_usd` NULL (D-AI-7 rule 3), because only a staff save writes
-  the profile.
-  📌 **H-47 folds in as this entry's dispatch clause.** The handler seam lands
-  WITH its first caller (D57.3). §6A.10b clause 7 says so.
-  📌 **The `video` verb is H-78's one handover, and it rides here.** A map of
-  litellm's `video_generation` mode needs a sixth verb in
-  `KNOWN_INVOCATIONS` (`catalog.py`). `check_invocation` (`catalog.py`) is the
-  refuser, and it rejects a video capability until that verb lands. This slice
-  of H-46 adds no verb. Check: `rg -n "KNOWN_INVOCATIONS" -A8
-  apps/services/customer_console/customer_console/catalog.py` — five verbs
-  means the follow-up is open.
-- **Authority:** `customer_console.md` **§6A.10a** and **§6A.10c** (the
-  done-when) ·
-  `work_plan.md` §3 **D61.1** (the decision) · D60.11(b) · `specs/customer_console.md` **§6A.10 G-1**
-- **Added:** 2026-08-26 · AI design audit · **amended 2026-08-30** with a
-  done-when section and the H-78 order · **amended 2026-08-31** with the
-  mixed-lift-chain finding from WS-31 slice 4. **Amended again 2026-08-31**
-  with H-78's `video` follow-up, after H-78 closed. **Amended a third time
-  2026-08-31** with §6A.10c, the contract for the two routes that are left.
-  **Amended a fourth time 2026-08-31**, after the build closed §6A.10c
 
 ### H-47 · Widen `acb_stt`'s provider pattern instead of inventing a handler abstraction (G-2) · [AGENT]
 - **Check:** `rg -n "class SttProvider|resolve_stt_provider" packages/acb_stt/` → present
@@ -4293,27 +4082,6 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-19 · operator console session, after the backup repair.
   Rewritten 2026-10-08, when the off-box copy was built.
 
-### H-140 · `POST /tasks/people` has no caller. Decide whether it stays · [OWNER]
-- **Check:** `rg -n "peopleWriteApi.create|createPerson" workbench/control_plane/src`
-  → no hit means nothing in the product calls it, and this is open.
-- **Why:** the owner removed the People app's "Add person" control on
-  2026-09-21. One door into the organization, and it is Organisation. The
-  endpoint behind the old form is now unreachable from the product.
-- **Kept instead of deleted, on purpose.** It is the door an importer or a
-  re-enabled form would use. A working admin endpoint with no UI is not the
-  same defect as a second door in the product. Its docstring says so, so
-  nobody "restores" the button by accident.
-- **The decision to take:** delete it with its tests and spec sections, or
-  keep it as the seam a future importer uses. Deleting is tidier. Keeping is
-  reversible. Neither is urgent, and both are the owner's call because the
-  question is product shape.
-- 📌 `PATCH /people/{id}` is untouched and still reachable. An administrator
-  still corrects a colleague's title or department from the person page.
-- **Authority:** owner directive 2026-09-21 · `people_center_app.md` §2
-- **Added:** 2026-09-21 · the one-door session · **minted as H-133 and
-  renumbered to H-140** — another branch merged H-133 first, and
-  `test_handoff_queue` caught the reuse. Ids are never reclaimed.
-
 ### H-141 · An admin cannot hide an app from a ROLE · [AGENT]
 - **Check:** `rg -n "is a system role and cannot be edited" apps/services/gateway/gateway/routes/admin/roles.py`
   → a hit means `PATCH /admin/roles/{slug}` still refuses every built-in
@@ -4491,23 +4259,6 @@ line — never reclaim a number by deleting the other entry.
   `scripts/dev_db.sh` · `tests/live/README.md`
 - **Added:** 2026-09-20 · the task lifecycle session
 
-### H-155 · WS-27bm: build the Projects chat slices S2 to S5 · [AGENT]
-- **Check:** `uv run python -c "import skill_projects.manifest as m; print(sorted(m.PLANNED))"`
-  → a non-empty list means at least one slice is still open. The value is
-  the slice each tool belongs to.
-- **Why:** S1 shipped the reads, S2 the fifteen daily writes, S2b the
-  rest of class B, S3 the seventeen guarded acts and S4 the workflows, the
-  views and the forms, and S5 the rest of the manifest (2026-09-23).
-  `PLANNED` is empty of WS-27bm names. Left: the visual review after the
-  flag flip (H-157), and the frontend-tool dispatcher (H-164). Delete
-  this entry when both are closed. `specs/projects_ai_chat.md` §10 is the
-  order and §10.2 the acceptance. `writes.py` is the shape to copy, and it
-  copied the CRM's. Move a tool out of `PLANNED` when it ships. The fence
-  refuses a tool that is both built and planned.
-- **Authority:** `specs/projects_ai_chat.md` §3.2, §3.3, §5, §10 ·
-  `skill_projects/manifest.py`
-- **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
-
 ### H-168 · The gateway refuses the LLM key on `/v1/embeddings` · [AGENT]
 - **Check:** `grep -n '"/v1/embeddings"' apps/services/gateway/gateway/main.py`
   → one hit, on the route only, and not in `PUBLIC_ROUTES`, means this is open.
@@ -4587,21 +4338,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_reports.md` §8 R2b · the R2b review and
   verification, 2026-09-24
 - **Added:** 2026-09-24 · the WS-27bn R2b session
-
-### H-187 · Make the apply reset to the ref that the caller names, not to origin/main · [AGENT]
-- **Check:** `grep -n "git fetch origin main\|git reset --hard origin/main" scripts/vps_apply.sh`
-  → a hit means this is still open.
-- **Why:** `vps_pull.sh` applies the `release` ref and passes
-  `DEPLOY_REF=<release sha>`. `vps_apply.sh` ignores `DEPLOY_REF` and resets
-  to `origin/main`. So the pull path applies the tip of main, and CI gating
-  on `release` does not hold. A commit that failed CI can reach the box
-  through the pull path when it is the tip of main.
-  - The fix must keep the skip check on the sha that the apply resets to.
-  - It must also keep the CI path on main, because CI passes no DEPLOY_REF.
-- **Authority:** `specs/deploy_delivery_path.md` · `scripts/vps_pull.sh`
-  header, "Why it polls `release` and NOT `main`"
-- **Added:** 2026-09-26 · the deploy-serialize review of PR #484. Kept out of
-  that PR on purpose, because it changes what the pull path deploys.
 
 ### H-199 · A lead who left a team cannot remove their old report through the chat · [AGENT]
 - **Check:** `grep -n "refusal=" apps/skills/skill-projects/skill_projects/guarded.py apps/skills/skill-projects/skill_projects/writes.py`
@@ -5853,21 +5589,54 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/email_app_master_plan.md`, R7
 - **Added:** 2026-10-18 · PR #1128 and its review
 
-### H-356 · Remove the legacy arms of the EA-13a client stamp · [AGENT]
-- **Check:** `grep -n "legacy_via" packages/acb_auth/acb_auth/deps.py` and
-  `grep -n ":legacy" apps/services/gateway/gateway/routes/projects/agent_runs.py`.
-  When both find nothing, delete this entry.
-- **Why.** EA-13a changed the stamp from `mcp:<host>` to `mcp:<host>:<slug>`.
-  For one release, branch 0 accepts the legacy host stamp of the same row,
-  because the deploy restarts the gateway before the edge. The open-run read
-  of `agent_runs.py` (`_OPEN_RUN_SQL`) also matches a legacy run of the same
-  connection. Both arms are only for the deploy of EA-13a.
-- **Do this:** wait for the next production release after EA-13a. Then
-  remove both arms. Remove their tests in `test_agent_client_stamp.py`: N4
-  legacy, N5 and the two-run read. Refresh the branch-0 digests in the same
-  commit, and get the review of §10.1.
-- **Authority:** `specs/external_agent_access.md` §10.1 and §12.2 item 1
-- **Added:** 2026-10-18 · EA-13a fix round 1
+### H-367 · No R8 test drives a connection with no slug through branch 0 · [AGENT]
+- **Check:** `grep -n "slugless\|no_slug" tests/unit/test_agent_client_stamp.py`.
+  When an R8 test there signs a call for a DCR connection row and gets 200,
+  delete this entry.
+- **Why.** For a row whose client id gives no slug, the stamp is
+  `mcp:<host>`. The edge and branch 0 must both compute that same value. Until
+  H-356 the legacy arm hid a drift between them. Now a drift gives every DCR
+  client a 401, and no R8 test would catch it. N3 does not touch the database,
+  and the edge-test world uses a client id that gives a slug.
+- **Do this:** add an R8 test in `test_agent_client_stamp.py`. Use a DCR
+  connection row, sign through the real edge client, and check that the call
+  gets 200. Name the mutation (branch 0 computes the stamp with
+  `client_id=None` dropped, or with a forced slug) and show it goes red.
+- **Authority:** `specs/external_agent_access.md` §10.1 step 5, R7
+- **Added:** 2026-10-20 · PR #1184 review, P3
+
+### H-409 · Harden EA-14a: a task that closes, and two small gaps · [AGENT]
+- **Check:** `grep -n "organization_id" apps/services/gateway/gateway/routes/projects/filters.py`
+  near `unheld_clause`. When the clause, `_HOLDER_SQL` and `_RUN_SELECT` all
+  carry the org predicate, item 3 is done. Read items 1 and 2 against the code.
+- **Why.** The review of PR #1192 found no blocker. It left four items. The
+  landing of #1192 fixed a fifth, the reopen race (two prompts at once gave
+  a 500), with `test_x13b`.
+- **Do this:**
+  1. A task that goes to done, cancelled or archived keeps its open run until
+     the lease ends. End the run on that status change, or let a closed task
+     not hold. **SW-10a (spec §12.6, step 2) covers the run side:** the sweep
+     closes a run of a closed task once its lease ended, while `agent_run_sweep_enabled` is
+     on. The task side stays open here: an end of the run at the moment the
+     task closes, with the flag off too.
+  2. The Release button uses `access.is_admin`. The server uses
+     `admin:members:read`. Make them the same rule, and ask whether a read
+     permission should release another member's run.
+  3. Add `organization_id` to `_HOLDER_SQL`, `_RUN_SELECT` and
+     `unheld_clause` (R5). Add a cross-org test for `held_by`. Decide whether
+     a released or abandoned run counts as "agent worked" in `agent_worked.py`.
+  4. **A delete ignores the hold, and it can deadlock** (review of the landing,
+     2026-10-25, P2). `agent_delete_task` (`routes/projects/tasks.py`, about
+     L1475) reads no run. Another session can delete a task that a live run
+     holds, and the cascade removes the run. The delete also locks the task
+     row first and the runs second, through the cascade. A holder's activity
+     takes the run first and the task row second. The two can deadlock, and
+     that was on main before EA-14a. Fix both doors (`DELETE` and
+     `agent-delete`): lock the task's open runs `FOR UPDATE` before
+     `lock_task`, and answer 409 `task_held` when another member or client
+     holds a fresh run. Or write in §12.3 that a delete overrides a hold.
+- **Authority:** `specs/external_agent_access.md` §12.3
+- **Added:** 2026-10-20 · PR #1192 review, P2 and P3
 
 ### H-357 · 🔴 A key that a chat saw must be rotated, and old rows scrubbed · [OWNER] · security
 - **Check:** ask each org whose chats set up a key, a GitHub token first.
@@ -5922,6 +5691,28 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `deploy/hostinger/staging/README.md`, HANDOFF H-358
 - **Added:** 2026-10-18 · H-358 security review
 
+### H-370 · Set the date the repo takes AGPL-3.0, as ported Docmost code ships · [OWNER]
+- **Check:** the repo root holds a `LICENSE` file that names AGPL-3.0, or the
+  owner has written the date in `work_plan.md` D107. If either holds, delete
+  this entry.
+- **Why.** On 2026-10-19 the owner said the product will release under AGPL
+  and that builders may port Docmost core code (D107). AGPL-3.0 section 13
+  gives each user of a network service the right to the Corresponding Source
+  of the modified AGPL code. That duty starts with the first release that
+  carries a ported file. The repo has no `LICENSE` today.
+- **Decide.** The date of the licence change. On 2026-10-19 the owner ruled
+  that ported code may merge to staging, and that production waits for the
+  owner's test (D107 part 5). The licence date still binds the production
+  release. Ask counsel about the build tooling and the parts of the repo
+  that join the ported code.
+- **⚠️ Now urgent (2026-10-22).** Production serves ported Docmost files
+  since `44ade7130` (wave 1, #1210) and `1429df4a9` (#1217). The agent
+  shipped them on the owner's word to deploy, before this date was set. Two
+  ways out: set the date now (add `LICENSE` and the source offer), or revert
+  the ported files from production. `THIRD_PARTY_NOTICES.md` lists them.
+- **Authority:** owner, 2026-10-19. `specs/knowledge_base.md` §21.1
+- **Added:** 2026-10-19
+
 ### H-360 · Widen acb-staging-flag: NEXT_PUBLIC_ rebuilds, a production mode, and an unset that lasts · [AGENT]
 - **Check:** `deploy/hostinger/staging/acb-staging-flag` (or its successor) can set a
   `NEXT_PUBLIC_*` flag on staging and start a rebuild, and can set a flag on
@@ -5950,8 +5741,305 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner, 2026-10-18. `specs/staging_and_daily_release.md`, CLAUDE.md §3a
 - **Added:** 2026-10-18
 
-# DONE — deleted, not archived
+### H-364 · Harden the CRM consistency batch of §18.16 · [AGENT] · security
+- **Check:** each item below has its own test or review record, or a later
+  entry owns it. If all hold, delete this entry.
+- **Why.** The owner asked to ship §18.16 fast on 2026-10-19, and to
+  harden it later. No adversarial review and no mutation test ran.
+- **Do this:**
+  1. Run a mutation round on `crm_sync/terms.py`, `crm_tools._term_total`
+     and the early park of `executor.wait_user_future`.
+  2. Review `GET /crm/terms/resolve`. It writes the asked term on a GET.
+     Bound the count of asked terms of one org.
+  3. Review `aggregate._seed_aliases`. It writes the alias fact on a GET.
+     Bound the count of alias sets, and let an admin remove a set.
+  4. Check that a figure of a WhatsApp option comes only from the tool
+     (`text_asks.figures_of` takes a shape, not a source).
+  5. Check the late pick of a term card across a parked run.
+  6. Give a batch run off `CRM_ANSWER_FIRST_ORGS` a holder, so the read
+     budget covers it.
+  7. Add an org zone, and read it in `acb_common.today`.
+- **Authority:** `specs/crm_platform.md` §18.16.10, owner 2026-10-19
+- **Added:** 2026-10-19
 
-Nothing lives here. When an entry's Check passes, **delete the block**. Git
-history is the archive; a "done" section in a loaded-into-context file is just
-tokens that make the open items harder to find.
+### H-368 · A host shell can still reach a GitHub token outside the clone · [OWNER] · security
+- **Check:** on the box, run
+  `grep -cE '^(GITHUB_READ_TOKEN|COPILOT_GITHUB_TOKEN)=.' /opt/acb/app/.env`.
+  A count below 2 means steps 1 and 2 are open.
+- **Why.** H-363 took the token out of each clone's `.git/config`, and out of
+  the env of every agent child. Three paths stay. They are not in the clone,
+  so H-363 could not close them.
+  1. A read falls back to `GITHUB_TOKEN`, which has `repo` scope, when
+     `GITHUB_READ_TOKEN` is not set. The read runs in a gateway temp dir,
+     but the token in that one process can push.
+  2. The Copilot CLI holds `COPILOT_SDK_AUTH_TOKEN`. The SDK reads
+     `COPILOT_GITHUB_TOKEN` first, then `GITHUB_TOKEN`. So with no
+     `COPILOT_GITHUB_TOKEN`, a shell under the CLI can read the `repo` token
+     (the BH-1 residual in `specs/box_hardening.md` §5).
+  3. A host shell runs as `acb`. It can read `/opt/acb/app/.env` and
+     `/proc/<gateway pid>/environ`. H-271, H-225 and BH-5 own that path.
+- **Do this:**
+  1. [OWNER] Make a fine-grained token with read access to the agent and
+     skill repos only. An agent adds `GITHUB_READ_TOKEN` to `allowed_keys`
+     of the `app-env` entry in `deploy/secrets/manifest.json`, and pushes it
+     with `scripts/secrets.sh`.
+  2. [OWNER] Make a token with the Copilot permission only, and push it as
+     `COPILOT_GITHUB_TOKEN` in the same way.
+  3. After 1 and 2, the gateway uses `GITHUB_TOKEN` for a gated push only
+     (`acb_common/git_credentials.py`, rule 5). Path 3 still reaches it, so
+     this entry stays open until H-271 or BH-5 closes that path.
+- **A reviewer's push can carry a commit of a concurrent run.** The scenario:
+  a reviewer's turn starts on a shared clone at HEAD `A`. During the turn, a
+  second run of the same agent commits `B` in the same clone. The reviewer's
+  turn commits `C` and asks for a push. At the end of the turn, the push step
+  sees `A..C`, which holds `B` and `C`, and it pushes both. So `B` goes out
+  with no reviewer. The push step cannot tell the two runs apart. The
+  post-commit hook writes only `git rev-parse HEAD` to `.git/cc-commits-queue`,
+  with no run id, and any shell of any run can write that file. To close it,
+  tag each commit with its run, from a source that a run cannot forge (for
+  example, the gateway makes the commit, or a per-run work tree), and refuse
+  any commit in the window that does not carry this run's tag. A partial
+  fix that reads the queue file would trust a file that a run can write.
+- **The mutation container is closed.** It gets `COPILOT_GITHUB_TOKEN` only,
+  by name, and never `GITHUB_TOKEN` (`mutation._copilot_only_token`). With no
+  Copilot-only token and no `GATEWAY_API_KEY`, it does not start.
+- **Authority:** H-363 · `specs/box_hardening.md` §5 BH-1 · H-271
+- **Added:** 2026-10-20 · H-363
+
+### H-372 · Move file bytes out of Postgres and off the box's disk (MT-1g) · [AGENT] · data
+- **Check:** `git grep -l "object_store" origin/main -- packages/acb_common`
+  prints a file, and `git grep -n "BYTEA" origin/main -- infra/postgres/*.sql`
+  shows `agent_blob.content` dropped or unused. If both hold, delete this entry.
+- **Why:** the owner asked on 2026-10-20 that every place Metorite stores file
+  bytes in Postgres, or keeps the only copy on the box's disk, be written down
+  to pick up later. `saas_multitenancy.md` MT-1g holds the inventory of that
+  day. Task files, meeting audio, project imports and Custom App binaries exist
+  only on one disk, and two of them are outside the off-box backup.
+- **Do this:** build the seam `acb_common.object_store` on the Supabase
+  Storage S3 endpoint that the backup already uses. Then move class B, then
+  `agent_blob`, as the MT-1g inventory orders them. Each move adds a nullable
+  key column, reads the store first and the old place second, and backfills.
+- **Decided (D108, 2026-10-20):** Supabase Storage, one bucket for each
+  environment, and the app signs in as its own Auth user (the BH-4 pattern).
+  MT-1g now lists the slices MT-1g-1 to MT-1g-6.
+- **Authority:** `specs/saas_multitenancy.md` MT-1g · `specs/backup_and_restore.md`
+- **Added:** 2026-10-20 · artifacts session
+
+### H-373 · Try the email chat fixes of #1201, #1202 and #1203 on real mail · [OWNER]
+- **Check:** an agent cannot run this. It cannot sign in as the owner. The
+  entry stays open until the owner says in a session that the three tries
+  below worked, or names the one that failed.
+- **Why:** the three PRs reached production on 2026-10-21 with green tests
+  and an Opus review each. No person has tried them on real mail.
+- **Do this (owner):** in the chat, try these:
+  - Agree a reply, and check that the card shows that text.
+  - While the card is open, type "make it shorter", and check that a new card
+    shows the shorter text.
+  - Reply to a mail that has a PDF, and check that the draft uses the PDF.
+  - Say "snooze this till tomorrow 9am", and say "add Priya to the cc of my
+    draft".
+- **Authority:** `email_app_master_plan.md` §18 · PRs #1201, #1202, #1203
+- **Added:** 2026-10-21 · email chat collaboration session
+
+### H-376 · Turn on images in reply drafts when a tier reads images · [OWNER]
+- **Check:** an agent cannot read the box's settings without the `secrets`
+  grant. The owner confirms that `EMAIL_DRAFT_READS_IMAGES` is on in the
+  gateway's environment, and that the AI Router serves the email calls.
+- **Why:** `draft_files.images_on()` sends the images of a mail to the model
+  only when the switch is on AND the Router serves the call with
+  `task: "vision"`. Until then, the card names each image that the draft did
+  not read.
+- **Authority:** `acb_common/settings.py` `email_draft_reads_images` ·
+  `gateway/routes/email/automation/draft_files.py`
+- **Added:** 2026-10-21 · email chat collaboration session
+
+### H-379 · Turn on send later: staging first, then production · [OWNER]
+- **Check:** an agent cannot read the box's settings without the `secrets`
+  grant. The owner confirms that `EMAIL_SEND_LATER` is `true` in the gateway's
+  environment on production. Until then, the chat says that send later is
+  not on.
+- **Why:** #1209 built send later dark (H-375, `email_app_master_plan.md` §19).
+  It sends mail at a later time, so a person turns it on and watches the
+  first send.
+- **Do this (owner):** set `EMAIL_SEND_LATER=true` on staging and restart the
+  gateway. In the chat, schedule a draft for two minutes ahead, and check
+  Sent. Then do the same on production.
+- **Authority:** `email_app_master_plan.md` §19 · `acb_common/settings.py`
+  `email_send_later`
+- **Added:** 2026-10-21 · email chat collaboration session
+
+### H-381 · A chat plan cannot make subprojects or repeat rules (WS-46 P8, G19, G20) · [AGENT]
+- **Check:** `uv run python -m evals.projects_ops.run --scripted`. PO-3 reads
+  `xfail` while P8 and P9 are open.
+- **Why:** `propose_plan` writes one node, and `capture_intake` and
+  `create_personal_task` take no repeat rule.
+- **Do this:** build slice P8 of `projects_agent_parity.md` §12.
+- **Authority:** `projects_agent_parity.md` §3.3 G19 and G20, §12 P8
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-383 · The Projects chat has no agent-run tools (WS-55 EA-12e, G23) · [AGENT]
+- **Check:** `grep -n "EA-12e" apps/skills/skill-projects/skill_projects/manifest.py`.
+  A hit in `PLANNED` means the four tools are not built.
+- **Why:** an outside agent can start, report and finish a run on a task over
+  MCP. The in-product chat cannot.
+- **Do this:** build `agent_runs`, `start_agent_run`, `post_agent_activity` and
+  `finish_agent_run` as chat tools. Clear their `PLANNED` and `FIELD_PLANNED`
+  rows. `approve_task_archive` stays out: only the member answers it.
+- **Authority:** `external_agent_access.md` §12.1 · `projects_agent_parity.md` §3.3 G23
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-384 · Run the Projects eval with the live model, and add tasks for delete and show_view · [OWNER]
+- **Check:** `ls evals/projects_ops/results/`. No run made with `--tier` means
+  the sweep has never run. `grep -n "show_view\|delete_task" evals/projects_ops/tasks.py`
+  shows whether the new tasks exist.
+- **Why:** the scripted run proves the tools. Only the model sweep proves that
+  the model picks them. The spec makes the sweep on the production Router
+  owner-gated, because it costs money.
+- **Do this (agent):** add eval tasks for "delete this task" (one card, one
+  `DELETE`), "remove it" (asks archive or delete) and "show overdue by owner"
+  (one `show_view`, no write). **Do this (owner):** choose the tier, then run
+  `uv run python -m evals.projects_ops.run --tier <chosen> --repeat 3`.
+- **Authority:** `evals/projects_ops/README.md` · `projects_agent_parity.md` §11
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-385 · Decide which excluded Projects acts move into the chat · [OWNER]
+- **Check:** `uv run python -c "import skill_projects.manifest as m; print(sum(r.cls=='X' for r in m.MANIFEST))"`
+  from `apps/skills/skill-projects`. It printed 38 on 2026-10-22.
+- **Why:** the owner wants the chat to do all that the screens do. Some acts
+  are left out of the chat by a past decision. Each one needs the owner's
+  answer before an agent builds it.
+- **Do this (owner):** answer yes or no for each. Grant writes (D-PM-40).
+  Report recipients and schedule (§9.12.8). The nudge (Q3). The CSV export.
+  The file import. The day planner (Calendar's). Your own areas in My Tasks:
+  create, rename, delete. Bulk delete.
+- **Authority:** `skill_projects/manifest.py` class X rows · `projects_agent_parity.md` §3.3
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-386 · Try the three Projects chat changes of 2026-10-22 in a browser · [OWNER]
+- **Check:** the owner confirms each item below on `app.metorite.com`. An agent
+  cannot sign in with Google or Microsoft.
+- **Why:** #1218, #1223 and #1234 shipped with green tests, but nobody looked
+  at them on a real page.
+- **Do this (owner):** (1) archive a project. It leaves the tree and shows
+  under Archived at the foot of the rail. (2) Ask the chat to delete a task. An
+  approval card shows, and Approve deletes it. (3) Ask "show overdue tasks
+  grouped by owner on the board". The page switches.
+- **Authority:** PRs #1218, #1223 and #1234
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-387 · Check that the Projects tools run from the assistant outside /projects · [AGENT]
+- **Check:** nobody has measured it. Delete this entry when the answer is
+  recorded in `projects_agent_parity.md`.
+- **Why:** the one assistant sits in the top bar of every app (D99). A member
+  on `/tasks` or `/calendar` may not reach the Projects tools, and
+  `show_view` only acts on an open Projects page.
+- **Do this:** find which agent the top-bar assistant runs on each page, and
+  whether it holds the `skill_projects` tools. Record the answer, and open a
+  slice for any gap.
+- **Authority:** D99 in `work_plan.md` §3 · `projects_agent_parity.md` §1
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-390 · Email reads answer 503 when the gateway's database pool is full · [AGENT]
+- **Check:** `ssh metorite "sudo journalctl -u acb-gateway --since -24h -o cat
+  | grep -c 'QueuePool limit'"` prints 0. If it does for a week, delete this
+  entry.
+- **Why:** on 2026-10-22 the logs held `QueuePool limit of size 7 overflow 2
+  reached`. `query_inbox` and `get_account_overview` answered 503 to a
+  member. Sync, rule, classify and embed jobs share the same pool
+  (`packages/acb_common/acb_common/db.py` near line 153).
+- **Do this:** measure which jobs hold the connections. Then raise the pool
+  size, or cap the jobs' concurrency. Check the Postgres connection limit
+  first.
+- **Built (2026-10-24, branch `email-single-mailbox-b`):** the pooler has no
+  spare slot, so there is no second pool. A task marked background (the
+  mailbox sync loop, and each post-sync job through `as_mailbox_owner`) holds
+  at most `DB_BACKGROUND_MAX` (default 4) of the 9 connections. Members keep
+  5. Fence: `tests/unit/test_db_background_lane.py`. Not measured on
+  production. Keep this entry until the Check holds for a week.
+- **Authority:** `engineering_practice.md` §1
+- **Added:** 2026-10-23 · email chat session
+
+### H-391 · An email write over WhatsApp says "ask in the app" · [AGENT]
+- **Check:** in a WhatsApp chat, ask the assistant to archive one mail. If it
+  does so after a confirm, delete this entry.
+- **Why:** WhatsApp had no card channel, so each email write answered
+  `_NO_CARD_CHANNEL`. The branch `email-whatsapp-confirm` builds the reply
+  code flow (`whatsapp_assistant_channel.md` §18). It is dark behind
+  `WHATSAPP_ASSISTANT_WRITES`.
+- **Do this:** after the merge, check that migration 298 is in the ledger.
+  Then the owner turns on `WHATSAPP_ASSISTANT_WRITES` for one org (WAC-9).
+  Run the Check from a linked phone, and reply with the code.
+- **Authority:** `whatsapp_assistant_channel.md` §18 ·
+  `email_app_master_plan.md` §21.13 · the owner rule "a channel changes
+  delivery, not function"
+- **Added:** 2026-10-23 · email chat session
+
+- **Added:** 2026-10-23 · email chat session
+
+### H-396 · Try the chat fixes of 2026-10-22 on a phone · [OWNER]
+- **Check:** the owner says each item below works. Then delete this entry.
+- **Why:** these shipped without a phone test:
+  - #1222: the reply card stays above the message box, and the status line
+    shows once.
+  - #1228: the chat stays open while a run works in an app.
+  - #1226: one draft for each email in Drafts.
+  - #1229: Cc and Bcc in the chat.
+  - #1237: send a saved draft from any chat.
+- **Do this (owner):** use the assistant on a phone for a real reply with a
+  Cc. Report each step that leaves the chat.
+- **Added:** 2026-10-23 · email chat session
+### H-397 · Turn on AI proposals in Knowledge once the Review view is live · [OWNER]
+- **Check:** `ssh metorite 'sudo grep -c "^KNOWLEDGE_PROPOSALS=true" /opt/acb/app/.env'` prints 1, and so does the staging `.env`. If both print 1, delete this entry.
+- **Why:** KB-5a (#1236) and KB-5b (the Review view) let the assistant file a page or an edit as a proposal, and a person accepts it. The tools and `POST /knowledge/proposals` stay dark behind `KNOWLEDGE_PROPOSALS`, default off.
+- **Do this:** when KB-5b is merged, turn the flag on in staging first, with `sudo acb-staging-flag` or the staging `.env`. Test a proposal in the chat. Then accept it in Knowledge → Review. Production waits for the owner's word.
+- **Authority:** owner, 2026-10-22. `specs/knowledge_base.md` §8.1 (F1, F2), §13
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-398 · Turn on knowledge gaps and the kb_gap My Day card · [OWNER]
+- **Check:** `KNOWLEDGE_GAPS` names the org and `MY_DAY_PROVIDERS` holds `knowledge` in the production `.env`. If both hold, delete this entry.
+- **Why:** KB-9a (branch `kb-gaps`, migration 293) writes a `kb_gaps` row when the assistant's company search finds no Knowledge page. A question that two members ask within 30 days shows a "Write a page" card to a Knowledge manager. It is dark by default.
+- **Do this:** after KB-9a merges, set both on staging and check the Gaps view in Knowledge. Production waits for the owner's word.
+- **Authority:** `specs/knowledge_base.md` §8.4 door 3, §9, §13
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-399 · Build the next Knowledge AI slices of §22 · [AGENT]
+- **Check:** `grep -nE "KB-AI-2|KB-AI-3|KB-AI-4|KB-AI-6" project-docs/specs/knowledge_base.md`. Delete this entry when each row reads BUILT.
+- **Why:** §22 of `knowledge_base.md` is the AI roadmap of 2026-10-22. It ranks the slices by value and names the tier of each.
+- **Do this, in order:**
+  1. KB-AI-2: "Tidy with AI" on `tier-fast`. It files the result as a KB-5a edit proposal, never a direct write.
+  2. KB-AI-3: "Draft with AI" from a gap, on `tier-balanced`, as a proposal.
+  3. KB-AI-4: verified sources (owner, review interval, demote or flag an expired page in AI answers).
+  4. CX-3 page digests (`KNOWLEDGE_DISTILL`), then KB-AI-6 rerank and "Ask this space".
+  5. KB-10 `kb:read` on MCP (KB-4b is built).
+  Each paid pass has its own flag, default off, which the owner turns on.
+- **Authority:** owner request, 2026-10-22. `specs/knowledge_base.md` §22
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-400 · Finish the Notion and Confluence parity of wave 2 · [AGENT]
+- **Check:** the wave 2 table of `knowledge_base.md` §21.7 marks KB-2j, KB-2o and KB-2c BUILT. If all three are BUILT, delete this entry.
+- **Why:** KB-2h, KB-2k, KB-3d and KB-2m are built. Three rows remain.
+- **Do this:** KB-2j (math, mermaid, image resize and captions, allowlisted embeds), then KB-2o (labels). KB-2c (files) waits for Artifacts AM-5 and H-322. The `kb_links` row for a person mention (KB-2k1) waits for a reader that needs it.
+- **Authority:** `specs/knowledge_base.md` §21.7
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-401 · Run the hardening pass of the Knowledge build · [AGENT]
+- **Check:** `grep -c "^| K-" project-docs/hardening_backlog.md` prints 0. If it prints 0, delete this entry.
+- **Why:** many WS-61 slices landed in build mode with the verifier only (engineering_practice.md §7a). The backlog holds K-1 to K-8.
+- **Do this:** open one `harden` PR. Run `diff-reviewer` on the whole wave 2 diff. Add the fences that K-4 to K-8 name. Run the visual review. Then close each K row.
+- **Authority:** owner directive, 2026-10-19. `specs/engineering_practice.md` §7a
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-403 · Check that the last two Knowledge PRs of 2026-10-23 merged and reached staging · [AGENT]
+- **Check:** `gh pr view 1241 --json state` reads MERGED, and `curl -s https://api.dev.metorite.com/version` shows a SHA at or after its merge. If both hold, delete this entry.
+- **Why:** the session closed while PR #1241 (KB-9a, migration 293) waited on CI with auto-merge on. PR #1240 (KB-5b) had merged.
+- **Do this:** if #1241 is still open, read its failed checks, fix forward, and merge it. Re-check that migration 293 is free on main first (R1). Then confirm staging serves it and the staging log shows `293_kb_gaps.sql ... ok`.
+- **Authority:** `specs/knowledge_base.md` §17 KB-9a
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-407 · Mem0 memory reads a member's private facts into an org-visible room of one · [AGENT] · security
+- **Check:** `grep -n "shared=_room_is_shared\|_clearance.write if _room_is_shared" apps/services/gateway/gateway/routes/agent.py` prints nothing, because the memory pre-read and the extraction use `not room_is_solo(room)` from `gateway/rooms.py`. If it holds, delete this entry.
+- **Why:** `_room_is_shared` is `room.is_shared`, which counts participants only. A room of one with visibility `org` or `people` is readable by other members, but it reads the owner's private Mem0 facts and writes its turns to the owner's store. Mem0 is off in production, so nothing leaks today. Found by the WS-63 PZ-2 review on 2026-10-24. PZ-2 fixed the same rule for the profile block with `room_is_solo`.
+- **Do this:** before anyone turns Mem0 on (task #250, WS-7), pass `shared=not room_is_solo(room)` to `resolve_clearance` and `memory_preread`, and use it for `_extract_user`. Add a route test for an org-visible room of one, after the shape of `tests/unit/test_profile_block_room_route.py`.
+- **Authority:** `docs/multiplayer/memory-clearance.md` · `specs/personalization.md` §5.1
+- **Added:** 2026-10-24 · WS-63 PZ-2 repair round
+

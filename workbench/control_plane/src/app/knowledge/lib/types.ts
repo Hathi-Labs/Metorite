@@ -35,6 +35,9 @@ export interface PageSummary {
   parent_id: string | null;
   position: number;
   title: string;
+  /** One emoji, or `null` (KB-2f). Not the icon name of a space. Absent
+   *  only in a test fixture written before KB-2f. */
+  icon?: string | null;
   state: PageState;
   author_email: string;
   reviewers: string[];
@@ -85,6 +88,10 @@ export interface PageLink {
 export interface PageDetail extends PageSummary {
   body_md: string;
   origin: string | null;
+  /** Who vouches for the page (KB-AI-4). Not the space owner of `Space.owner_email`. */
+  owner_email?: string | null;
+  /** The days from a publish or a verify to the next review. Null: the default. */
+  review_every_days?: number | null;
   level: SpaceLevel | null;
   can_write: boolean;
   versions: PageVersion[];
@@ -113,6 +120,10 @@ export interface PageCreateBody {
 export interface PagePatchBody {
   title?: string;
   body_md?: string;
+  /** An org member's address, or null to clear (KB-AI-4). */
+  owner_email?: string | null;
+  /** 1 to 3650, or null to use the default (KB-AI-4). */
+  review_every_days?: number | null;
 }
 
 /**
@@ -146,12 +157,18 @@ export interface SearchHit {
   score: number;
   updated_at: string | null;
   href: string;
+  /** The page icon (KB-2f), or `null`. */
+  icon?: string | null;
+  /** The page author (KB-3d), for the Creator chip. */
+  author_email?: string | null;
 }
 
 /** `GET /knowledge/search`. `query` is the words the gateway searched. */
 export interface SearchAnswer {
   query: string;
   hits: SearchHit[];
+  /** The plain words of the query, to mark in a snippet (KB-3d). */
+  terms?: string[];
   /** True when only the lexical half ran. The view shows nothing for it. */
   degraded: boolean;
 }

@@ -74,7 +74,7 @@ the thing that used to EXPOSE a breach for free: one theme switch and every
 hardcoded value announced itself. The breach is still a breach. Nothing shows
 it to you now.
 
-Ten rules on top of the three above. Each one exists because it was broken:
+Eleven rules on top of the three above. Each one exists because somebody broke it:
 
 4. **One vocabulary per concept, in `src/lib/` or `src/components/`, consumed by
    every app.** Status and lane colour is `src/lib/statusAccent.ts` — the single
@@ -114,6 +114,38 @@ Ten rules on top of the three above. Each one exists because it was broken:
    `app/projects/lib/reportPanels.ts` maps a section to the panel's props
    and computes nothing. `Stat` in `AnalyticsPanels.tsx` is the one tile.
    Fence: `app/projects/components/reportVisuals.test.ts`.
+   **The KPI strip of the Overview has one home** (WS-27bn RA-2).
+   `app/projects/lib/kpiStrip.ts` holds the words and the rule of each of
+   its six tiles, and `Stat` draws each tile with its `detail` lines. The
+   tooltip of a tile is its rule. Fence: `app/projects/lib/kpiStrip.test.ts`.
+   **A report row opens its task through `OpenTaskContext`** in
+   `AnalyticsPanels.tsx` (WS-27bn RA-3). `ReportsView` provides the opener of
+   the page. A row is a `ControlLink` to `/projects?task=<id>`. Do not add a
+   second way for a panel to open a task. Fence:
+   `app/projects/components/waitingPanel.test.ts`.
+   **The "Agent runs" panel has one home** (WS-27bn RA-4).
+   `app/projects/lib/agentRunsReport.ts` holds its words, the rule of each
+   figure and the explicit ramp slot of each outcome. `AgentRunsPanel` draws
+   the server's figures, and an `InfoTip` gives each rule to a keyboard and
+   a touch. `overviewShown` hides the panel when the scope has no agent run,
+   by RA-3's rule. Fences: `app/projects/lib/agentRunsReport.test.ts` and
+   `app/projects/components/agentRunsPanel.test.ts`.
+   **The "Quality" panel has one home** (WS-27bn RA-5).
+   `app/projects/lib/qualityReport.ts` holds its words, the rule of each
+   figure and the explicit ramp slot of each mark. Agents and People keep the
+   slots of RA-2. `QualityPanel` draws the server's figures, and an `InfoTip`
+   gives each rule to a keyboard and a touch. `overviewShown` hides the panel
+   when the scope has no agent pull request, no reopen and no failed run.
+   No text calls 100% the goal, and `qualityCopy` lets a test scan the words.
+   Fences: `app/projects/lib/qualityReport.test.ts` and
+   `app/projects/components/qualityPanel.test.ts`.
+   **The forecast by count has one home** (WS-27bn RA-6).
+   `app/projects/lib/outlook.ts` holds its words, the rule of each verdict
+   (`forecastRule`), the band (`forecastBand`) and its explicit ramp slot
+   (`FORECAST_SLOT`). `app/projects/lib/needsOwner.ts` holds the words of
+   "Needs an owner". The server decides each figure and the order. Fences:
+   `app/projects/lib/outlook.test.ts`, `app/projects/lib/needsOwner.test.ts`
+   and `app/projects/components/forecastPanel.test.ts`.
    Since WS-27bn R5f round 1, `app/projects/lib/sectionIcons.ts` is the one
    icon map of the report sections. `app/projects/lib/sectionEmpty.ts` holds
    the one friendly line of a clear section, and the app, the email and the
@@ -189,6 +221,11 @@ Ten rules on top of the three above. Each one exists because it was broken:
    The rule of record is `projects_ai_chat.md` §24.
    - An element that needs the member stays in the flow, and `AskPin` keeps
      it in view.
+   - **No card pins above the message box** (owner, 2026-10-23). Only a
+     one-line status sits outside the thread. A card holds no scroll box.
+     A long body uses `components/ui/ShowMore.tsx`. A typed message answers
+     the one waiting question. The rules are C1 to C8 in
+     `projects_ai_chat.md` §24.10. Fence: `src/lib/chatCardScroll.test.ts`.
    - A read draws inside its step in the trail, closed, and never after the
      answer.
    - A write's receipt draws compact after the text. An answer card is one
@@ -366,7 +403,8 @@ Ten rules on top of the three above. Each one exists because it was broken:
    ⚠️ **The cache is memory-only, and bound to the signed-in member.** Keys are
    request paths, and a path says nothing about who asked — so two members on
    one browser share every key. `bindIdentity` (called in `AppShell`) empties it
-   when the member changes. Never persist it to `localStorage`,
+   when the member changes, or when the org of the session changes (WS-53,
+   2026-10-19). An unknown org changes nothing. Never persist it to `localStorage`,
    `sessionStorage` or IndexedDB: that puts one member's tenant rows on the
    device for whoever opens the browser next, below the gateway, where no
    row-level security reaches.
@@ -507,11 +545,20 @@ Ten rules on top of the three above. Each one exists because it was broken:
 
    **Fence.** `src/lib/theme/motion.test.ts` fails when an `@keyframes` in
    `globals.css` has no reduced-motion answer. Put an exception in its
-   `MOTION_EXEMPT`, with the reason. Two kinds of motion are outside the
-   test, so they are review: a `<style>` string in a component, and
-   Tailwind's `animate-pulse` and `animate-ping`. Write a new one with the
-   `motion-safe:` prefix. `DESIGN_SYSTEM.md` §4 holds the
+   `MOTION_EXEMPT`, with the reason. `DESIGN_SYSTEM.md` §4 holds the
    rules, and §9 and §10 hold the advisory rules for states and words.
+14. **Every UI change passes the UI gate** (owner directive, 2026-10-27).
+   State the interaction in one sentence. Pass the ratchets. Put the four
+   captures on a "Visual review:" line of the PR body. The gate blocks in
+   build mode too. `DESIGN_SYSTEM.md` §11 holds the order and the rules.
+
+   **Fences.** `src/lib/theme/motion.test.ts` holds the motion gates G1 to
+   G4. `src/lib/uiGates.test.ts` holds G5 to G8: focus, drag, height and
+   images. Each gate keeps today's count of each file, and a new violation
+   fails.
+   The "Visual review line" step of the Frontend job in `pr-check.yml` fails
+   a PR body with no such line. `tests/unit/test_fence_lists.py` keeps that
+   step in the required job.
 
 **What CI cannot catch, and you must.** There is no structural or layout test in
 this tree: nothing asserts panel counts, shell adoption, mobile branches, or that

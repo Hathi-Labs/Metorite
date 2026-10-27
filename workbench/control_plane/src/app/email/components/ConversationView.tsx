@@ -253,12 +253,13 @@ export function ConversationView({
             {isOpen && (
               <div className="px-3 pb-3">
                 <div className="flex items-start justify-between gap-2 mb-2">
-                  <div className="min-w-0 truncate text-[11px]">
-                    <RecipientList
-                      label="To"
-                      people={m.to}
-                      accountId={m.accountId}
-                    />
+                  {/* Every recipient of each mail of a thread: To, Cc and the
+                      Bcc of a mail the member sent. One cut line hid the Cc
+                      (owner report, 2026-10-24). */}
+                  <div className="min-w-0 space-y-0.5 text-[11px]">
+                    <RecipientList label="To" people={m.to} accountId={m.accountId} />
+                    <RecipientList label="Cc" people={m.cc ?? []} accountId={m.accountId} />
+                    <RecipientList label="Bcc" people={m.bcc ?? []} accountId={m.accountId} />
                   </div>
                   {/* A direct child: the row measures this line for its width. */}
                   {renderActions?.(view)}

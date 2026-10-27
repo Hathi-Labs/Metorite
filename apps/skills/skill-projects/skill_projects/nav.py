@@ -99,4 +99,91 @@ def _result(label: str, link: str, sent: bool) -> str:
     return f"{head}\n  link: {link}"
 
 
-__all__ = ["open_in_app"]
+# ── WS-46 P11 (G22) — what the member's board shows ──────────────────────────
+#
+# Owner, 2026-10-22: "We should be able to also set up different filters,
+# views, etc. as needed from the chat interface." This reverses Q4 of
+# 2026-10-06. The tool changes what the OPEN page draws, the way the filter
+# bar and the canvas switch do. It writes nothing: a filter is browser state,
+# so there is no card. A view that must last is `save_view`.
+
+#: The page's canvases, `VIEW_MODES` in `app/projects/lib/commands.ts`.
+#: `tests/unit/test_projects_show_view.py` holds the two lists equal.
+CANVASES = ("overview", "board", "list", "table", "calendar", "timeline")
+
+
+async def _saved_view(pid: str, name: str) -> dict[str, Any]:
+    from skill_projects.writes import _one_named
+
+    rows = ((await get(f"/projects/nodes/{pid}/views")) or {}).get("rows") or []
+    return _one_named(rows, name, "view")
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def show_view(
+    project_id: str,
+    mode: str = "",
+    view_name: str = "",
+    filters: str = "",
+    group_by: str = "",
+    sub_group_by: str = "",
+) -> str:
+    """Change what the member's open Projects page shows, for one project.
+    Nothing is saved. mode is overview, board, list, table, calendar or
+    timeline. view_name opens a saved view of the project by name, with its
+    filters and grouping. filters is a JSON object in save_view's words:
+    query, status_category, assignee, unassigned, overdue, watching, archived
+    and tags. It REPLACES the filters on screen, and {} clears them. group_by
+    is status, category, assignee, project, importance, tag, agent or none.
+    sub_group_by puts the board in lanes by a second axis, or none. Use
+    save_view when the member wants the view kept. The result carries a
+    link for a member who is not on the Projects page."""
+    from skill_projects.inbox import GROUP_BY, _view_filters
+
+    headers()
+    pid = uuid_of(project_id, "project_id")
+    canvas = str(mode or "").strip().lower()
+    if canvas and canvas not in CANVASES:
+        return f"mode is one of {', '.join(CANVASES)}."
+    axis = str(group_by or "").strip().lower()
+    if axis and axis not in GROUP_BY:
+        return f"group_by is one of {', '.join(GROUP_BY)}."
+    lane = str(sub_group_by or "").strip().lower()
+    if lane and lane not in GROUP_BY:
+        return f"sub_group_by is one of {', '.join(GROUP_BY)}."
+    if lane and lane != "none" and lane == axis:
+        return "sub_group_by must differ from group_by. A board cannot lane by its own columns."
+    asked_filters = bool(str(filters or "").strip())
+    if not (canvas or view_name.strip() or asked_filters or axis or lane):
+        return "Say what to show: a mode, a view_name, filters, group_by or sub_group_by."
+    # The read decides whether the member may see the project, as every
+    # navigation does.
+    node = await get(f"/projects/nodes/{pid}")
+    args: dict[str, Any] = {"project_id": pid}
+    said: list[str] = []
+    if canvas:
+        args["mode"] = canvas
+        said.append(f"the {canvas}")
+    if view_name.strip():
+        view = await _saved_view(pid, view_name)
+        args["view_id"] = str(view.get("id"))
+        args["view_config"] = view.get("config") or {}
+        said.append(f"saved view {data(view.get('name'))}")
+    if asked_filters:
+        found = await _view_filters(filters)
+        if isinstance(found, str):
+            return found
+        args["filters"] = found
+        said.append("filters " + (", ".join(f"{k}={v}" for k, v in found.items()) or "cleared"))
+    if axis:
+        args["group_by"] = axis
+        said.append(f"grouped by {axis}")
+    if lane:
+        args["sub_group_by"] = lane
+        said.append("no lanes" if lane == "none" else f"in lanes by {lane}")
+    sent = await _dispatch("projects.show_view", args)
+    label = f"{data(node.get('name'))}, {'; '.join(said)}"
+    return _result(label, f"/projects?project={pid}", sent) + f"\n  project_id: {pid}"
+
+
+__all__ = ["CANVASES", "open_in_app", "show_view"]

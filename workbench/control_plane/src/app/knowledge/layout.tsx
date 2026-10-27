@@ -22,12 +22,28 @@
  * shell owns those (`AGENTS.md` rule 10, `seams.test.ts`). The job
  * "Write a page" (KB-12) arrives as `?do=write-page`, and `ShellJob` opens
  * the New page form through the leave guard. The form saves nothing by itself.
+ *
+ * KC-8b: the rail gets a Directories group, one row for each type that
+ * `GET /knowledge/entity-types` answers. A 404, a 403 or a network error
+ * hides the group and shows nothing else. The open directory keeps its row,
+ * even when its type has emptied.
+ *
+ * KB-9a: a manager of Knowledge (`knowledge:manage`) gets the Gaps row in the
+ * rail when the gaps read answers. A New page made from a gap marks the gap
+ * answered with the new page, after the page is made.
+ *
+ * KC-1b: every member gets the Sources row when the sources read answers (a
+ * 404 hides it). The Google return lands HERE, on `/knowledge`, with
+ * `?source_connected=google_drive` or `?source_error=<code>`. The layout shows
+ * one toast, then replaces the address with `/knowledge/sources`, so a reload
+ * does not show the toast again.
  */
 
-import { Suspense, useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { AppTopBar } from "@/components/AppTopBar";
+import { useAccess } from "@/components/AccessProvider";
 import { useMobileDrawer } from "@/components/AppShell";
 import { EmptyState } from "@/components/EmptyState";
 import Icon from "@/components/Icon";
@@ -36,6 +52,7 @@ import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 import { useViewMode } from "@/components/ViewModeProvider";
+import { hasCapability } from "@/lib/access";
 import { invalidate } from "@/lib/dataCache";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { ShellJob } from "@/lib/shell/doJob";
@@ -48,10 +65,48 @@ import {
   type PageFocus,
 } from "./components/KnowledgeContext";
 import KnowledgeRail, { type SubPageParent } from "./components/KnowledgeRail";
+import AddEntityDialog from "./components/AddEntityDialog";
 import NewPageDialog from "./components/NewPageDialog";
+import { usePendingCount } from "./components/useProposals";
 import { KNOWLEDGE_CACHE, KnowledgeError, SPACES_KEY, archivePage, listSpaces } from "./lib/api";
+import {
+  ENTITY_TYPES,
+  ENTITY_TYPES_KEY,
+  directoryHref,
+  directoryTypeOf,
+  listEntityTypes,
+  type CreatableType,
+  type EntityType,
+} from "./lib/entities";
+import { canAddEntity } from "./lib/entityForm";
+import {
+  GAPS_KEY,
+  KNOWLEDGE_GAPS,
+  MANAGE_CAPABILITY,
+  gapCount,
+  listGaps,
+  markGapAnswered,
+  type GapList,
+} from "./lib/gaps";
+import {
+  KNOWLEDGE_SOURCES,
+  SOURCES_KEY,
+  SOURCE_CONNECTED_PARAM,
+  SOURCE_ERROR_PARAM,
+  listSources,
+  returnMessage,
+  sourceCount,
+  type SourceList,
+} from "./lib/sources";
+import {
+  KNOWLEDGE_MAINTENANCE,
+  MAINTENANCE_KEY,
+  expiredCount,
+  listMaintenance,
+  type MaintenanceList,
+} from "./lib/maintenance";
 import type { PageSummary, Space } from "./lib/types";
-import { KNOWLEDGE_HOME, KNOWLEDGE_SEARCH, pageHref, pageIdOf, spaceHref } from "./lib/links";
+import { KNOWLEDGE_HOME, KNOWLEDGE_REVIEW, KNOWLEDGE_SEARCH, pageHref, pageIdOf, spaceHref } from "./lib/links";
 import {
   KNOWLEDGE_OFF_TITLE,
   LOAD_FAILED_BODY,
@@ -172,6 +227,7 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
 
   const [focus, setFocus] = useState<PageFocus | null>(null);
   const [ask, setAsk] = useState<NewPageAsk | null>(null);
+  const [adding, setAdding] = useState<CreatableType | null>(null);
   const [archiving, setArchiving] = useState<PageSummary | null>(null);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const toast = useToast();
@@ -179,12 +235,77 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
   const pageId = pageIdOf(pathname);
   const atHomePath = pathname === KNOWLEDGE_HOME;
   const atSearch = pathname === KNOWLEDGE_SEARCH;
+  const atReview = pathname === KNOWLEDGE_REVIEW;
+  const reviewCount = usePendingCount();
+
+  const atGaps = pathname === KNOWLEDGE_GAPS;
+
+  // KB-9a: the Gaps row, for a manager of Knowledge. The read is the Gaps
+  // view's own key, so the view and the count share one answer. Gaps off for
+  // the org (`off`, a 404) hide the row.
+  const { access } = useAccess();
+  const manager = hasCapability(access, MANAGE_CAPABILITY);
+  const gapsRead = useCachedResource<GapList>(manager ? GAPS_KEY : null, listGaps);
+  const showGaps = (manager && gapsRead.data?.scope === "org" && !gapsRead.data.off) || atGaps;
+  // KB-AI-4: the Maintenance row, for a manager. It has no flag, so the row
+  // shows when the read answers. A refusal or an error hides it.
+  const atMaintenance = pathname === KNOWLEDGE_MAINTENANCE;
+  const maintenanceRead = useCachedResource<MaintenanceList>(manager ? MAINTENANCE_KEY : null, listMaintenance);
+  const showMaintenance = (manager && Boolean(maintenanceRead.data)) || atMaintenance;
+
+
+  // KC-1b: the Sources row, for every member, when the sources read answers.
+  // The Sources view reads the same key, so the row and the view share one answer.
+  const atSources = pathname === KNOWLEDGE_SOURCES;
+  const sourcesRead = useCachedResource<SourceList>(SOURCES_KEY, listSources);
+  const showSources = (sourcesRead.data !== undefined && !sourcesRead.data.off) || atSources;
+
+  // KC-1b: the return of the Google consent. Once: the toast, a fresh read,
+  // and the address of the Sources view without the query.
+  const connectedParam = searchParams.get(SOURCE_CONNECTED_PARAM);
+  const errorParam = searchParams.get(SOURCE_ERROR_PARAM);
+  const returnHandled = useRef(false);
+  useEffect(() => {
+    if (returnHandled.current || (!connectedParam && errorParam === null)) return;
+    returnHandled.current = true;
+    if (connectedParam === "google_drive") {
+      toast.show({
+        key: "kb-source-return",
+        title: "Google Drive connected. Metorite is reading your folders.",
+      });
+    } else {
+      toast.show({
+        key: "kb-source-return",
+        variant: "error",
+        title: returnMessage(errorParam),
+      });
+    }
+    invalidate(KNOWLEDGE_CACHE);
+    router.replace(KNOWLEDGE_SOURCES);
+  }, [connectedParam, errorParam, router, toast]);
   const spaceParam = atHomePath ? searchParams.get("space") : null;
   const selectedSpaceId = pageId ? (focus?.pageId === pageId ? focus.spaceId : null) : spaceParam;
   const selectedSpace = spaces.find((s) => s.id === selectedSpaceId) ?? null;
 
+  // KC-8b: the Directories group. Any failure of the read hides it.
+  const typesRead = useCachedResource<EntityType[]>(ENTITY_TYPES_KEY, listEntityTypes);
+  const openType = directoryTypeOf(pathname);
+  const directoryTypes = useMemo(() => {
+    const seen = new Set<EntityType>(typesRead.data ?? []);
+    if (openType) seen.add(openType);
+    return ENTITY_TYPES.filter((t) => seen.has(t));
+  }, [typesRead.data, openType]);
+
   const setPageFocus = useCallback((next: PageFocus | null) => setFocus(next), []);
   const openNewPage = useCallback((next?: NewPageAsk) => setAsk(next ?? {}), []);
+  // KC-8d: the Add a product / Add a topic acts. A member with no writable
+  // space gets none of them: not in the rail, not in a directory.
+  // A refused types read (404, 403, a network error) means the entity feature
+  // is not there for this member, so a POST would fail: every act hides with
+  // the group (KC-8b). An EMPTY answer is a success, and the acts show.
+  const typesAnswered = typesRead.data !== undefined;
+  const canAdd = useMemo(() => canAddEntity(spaces) && typesAnswered, [spaces, typesAnswered]);
+  const openAddEntity = useCallback((type: CreatableType) => setAdding(type), []);
 
   // The one leave guard (fix round 1, P1). A dirty page registers it, and
   // every way out of the page asks through `requestLeave` first.
@@ -213,8 +334,17 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
   );
 
   const context = useMemo(
-    () => ({ spaces, setPageFocus, openNewPage, setLeaveGuard, leaveGuarded, requestLeave }),
-    [spaces, setPageFocus, openNewPage, setLeaveGuard, leaveGuarded, requestLeave],
+    () => ({
+      spaces,
+      setPageFocus,
+      openNewPage,
+      openAddEntity,
+      canAddEntity: canAdd,
+      setLeaveGuard,
+      leaveGuarded,
+      requestLeave,
+    }),
+    [spaces, setPageFocus, openNewPage, openAddEntity, canAdd, setLeaveGuard, leaveGuarded, requestLeave],
   );
 
   // A row's `+` and New sub-page (KB-2e). The form opens through the guard.
@@ -255,7 +385,16 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
     selectedPageId: pageId,
     atHome: atHomePath && !spaceParam,
     atSearch,
+    atReview,
+    reviewCount,
+    directories: { types: directoryTypes, selected: openType },
+    gaps: showGaps ? { selected: atGaps, count: gapCount(gapsRead.data) } : null,
+    sources: showSources ? { selected: atSources, count: sourceCount(sourcesRead.data) } : null,
+    maintenance: showMaintenance
+      ? { selected: atMaintenance, count: expiredCount(maintenanceRead.data) }
+      : null,
     onArchive: setArchiving,
+    onAddEntity: canAdd ? (type: CreatableType) => requestLeave(() => openAddEntity(type)) : undefined,
   };
 
   const title = isMobile ? (
@@ -278,6 +417,14 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
                 closeDrawer();
                 setArchiving(page);
               }}
+              onAddEntity={
+                railProps.onAddEntity
+                  ? (type) => {
+                      closeDrawer();
+                      railProps.onAddEntity?.(type);
+                    }
+                  : undefined
+              }
             />
           </nav>,
         )
@@ -294,6 +441,9 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
   return (
     <KnowledgeContext.Provider value={context}>
       <ShellJob id="write-page" onOpen={() => requestLeave(() => openNewPage({ spaceId: selectedSpaceId }))} />
+      {/* KC-8e: the two entity jobs. No writable space, or a refused types read: nothing opens. */}
+      <ShellJob id="add-product" onOpen={() => canAdd && requestLeave(() => openAddEntity("product"))} />
+      <ShellJob id="add-topic" onOpen={() => canAdd && requestLeave(() => openAddEntity("topic"))} />
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
         <AppTopBar
           rail={{ open: rail.open, onToggle: rail.toggle, noun: "the spaces" }}
@@ -367,12 +517,41 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
         onCancel={() => setArchiving(null)}
         onConfirm={() => void archive()}
       />
+      <AddEntityDialog
+        type={canAdd ? adding : null}
+        spaces={spaces}
+        onClose={() => setAdding(null)}
+        onCreated={(entity) => {
+          setAdding(null);
+          invalidate(KNOWLEDGE_CACHE);
+          router.push(directoryHref(entity.type));
+        }}
+      />
       <NewPageDialog
         ask={ask}
         spaces={spaces}
         onClose={() => setAsk(null)}
         onCreated={(page) => {
+          const answering = ask?.gap ?? null;
           setAsk(null);
+          if (answering) {
+            // KB-9a: the page answers a gap. The page stands even when this
+            // fails, so a failure is a toast and never a lost page.
+            void markGapAnswered(answering.id, page.id)
+              .then(() => {
+                invalidate(KNOWLEDGE_CACHE);
+                toast.show({ key: `kb-gap:${answering.id}`, title: "The question is answered with this page" });
+              })
+              .catch((err) => {
+                const reason = err instanceof KnowledgeError ? err.message : String(err);
+                toast.show({
+                  key: `kb-gap:${answering.id}`,
+                  variant: "error",
+                  title: "The page is made, but the question stays open",
+                  description: reason,
+                });
+              });
+          }
           invalidate(KNOWLEDGE_CACHE);
           router.push(pageHref(page.id, { edit: true }));
         }}

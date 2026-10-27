@@ -160,7 +160,10 @@ class InboundHandler:
         bcc_addrs = _parse_address_list(str(parsed.get("Bcc", "")))
         thread_id = str(parsed.get("Message-ID", "")).strip() or None
         in_reply_to = str(parsed.get("In-Reply-To", "")).strip() or None
-        received_at = _parse_date(str(parsed.get("Date", "")))
+        # The server arrival time, never the Date header: a sender writes the
+        # Date header, and the held card trusts the first received mail of a
+        # thread (``held_card.trusted_thread_senders``, §21.12).
+        received_at = datetime.now(timezone.utc)
 
         # Body + attachments
         body_text = ""

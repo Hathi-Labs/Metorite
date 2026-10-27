@@ -41,7 +41,7 @@ import type {
   ReportTemplate,
 } from "./api";
 import { shortDate } from "./outlook";
-import { flatten } from "./tree";
+import { flatten, flattenActive } from "./tree";
 import { personDisplayName, realName } from "@/lib/personName";
 
 /**
@@ -62,6 +62,9 @@ export const REPORT_SECTIONS: readonly { key: string; label: string }[] = [
   { key: "capacity", label: "Who has the hours" },
   { key: "pulse", label: "Team pulse" },
   { key: "stuck", label: "Stuck work" },
+  { key: "waiting", label: "Waiting on people" },
+  { key: "agent_runs", label: "Agent runs" },
+  { key: "quality", label: "Quality" },
   { key: "hygiene", label: "Data hygiene" },
   { key: "conflicts", label: "Where the plan conflicts" },
   { key: "rebalance", label: "Who could help" },
@@ -75,7 +78,7 @@ export function sectionName(key: string): string {
 /**
  * The sections a new report starts with: the server's `DEFAULT_SECTIONS`.
  * The same lockstep test pins it. `outlook`, `capacity`, `pulse`,
- * `hygiene`, `conflicts` and `rebalance` are opt-in.
+ * `waiting`, `agent_runs`, `quality`, `hygiene`, `conflicts` and `rebalance` are opt-in.
  */
 export const DEFAULT_REPORT_SECTIONS: readonly string[] = [
   "finished",
@@ -136,15 +139,35 @@ export interface ScopeOption {
  *
  * Only nodes the caller can see arrive in `/tree`, so the picker never
  * offers a node that the server then refuses.
+ *
+ * `keep` names scopes a saved report already holds. One that sits under an
+ * ARCHIVED node is not in the active list, so it joins the end as
+ * "<name> (archived)". The report keeps its label, and the picker still
+ * offers no archived node for a new choice (WS-64).
  */
-export function scopeOptions(roots: readonly ProjectRow[]): ScopeOption[] {
+export function scopeOptions(
+  roots: readonly ProjectRow[],
+  keep: ReadonlyArray<string | null | undefined> = []
+): ScopeOption[] {
+  const active = flattenActive(roots).map(({ node, depth }) => ({
+    value: node.id,
+    label: node.name,
+    depth,
+  }));
+  const have = new Set(active.map((o) => o.value));
+  const extra: ScopeOption[] = [];
+  const wanted = new Set(keep.filter((id): id is string => Boolean(id)));
+  if (wanted.size > 0) {
+    for (const { node } of flatten(roots)) {
+      if (wanted.has(node.id) && !have.has(node.id)) {
+        extra.push({ value: node.id, label: `${node.name} (archived)`, depth: 0 });
+      }
+    }
+  }
   return [
     { value: WHOLE_ORGANIZATION, label: "Whole organization", depth: 0 },
-    ...flatten(roots).map(({ node, depth }) => ({
-      value: node.id,
-      label: node.name,
-      depth,
-    })),
+    ...active,
+    ...extra,
   ];
 }
 
@@ -199,10 +222,14 @@ export function newBuilderState(): BuilderState {
 // ── WS-27bn R5f: Overview, the start of the one Reports app ────────────────
 
 /**
- * The seven sections of Overview, in `SECTIONS` order. The Analytics app
- * drew these seven, with the route defaults that `overviewState` copies, so
- * Overview shows the same numbers (§8 R5f rule 4). `pulse`, `hygiene` and
- * `rebalance` start off. A reader turns them on in the section list.
+ * The ten sections of Overview, in `SECTIONS` order. The Analytics app
+ * drew the first seven, with the route defaults that `overviewState` copies,
+ * so Overview shows the same numbers (§8 R5f rule 4). WS-27bn RA-3 adds
+ * `waiting`, the coordination panel of §6.8 C, RA-4 adds `agent_runs`, and RA-5 adds `quality`.
+ * Overview hides `waiting` and `agent_runs` when the scope has no agent run,
+ * and `quality` when it has no agent pull request, reopen or failed run
+ * (`overviewShown`). `pulse`, `hygiene` and `rebalance` start off. A reader
+ * turns them on in the section list.
  */
 export const OVERVIEW_SECTIONS: readonly string[] = [
   "finished",
@@ -211,6 +238,9 @@ export const OVERVIEW_SECTIONS: readonly string[] = [
   "load",
   "capacity",
   "stuck",
+  "waiting",
+  "agent_runs",
+  "quality",
   "conflicts",
 ];
 
@@ -432,11 +462,17 @@ export function configFor(state: BuilderState): ReportConfig {
  * `NO_SUBJECT_SECTIONS`. `test_projects_report_sections_lockstep.py` reads
  * this list as text and fails when the two differ.
  */
-export const NO_SUBJECT_SECTIONS: readonly string[] = ["outlook", "hygiene"];
+export const NO_SUBJECT_SECTIONS: readonly string[] = [
+  "outlook",
+  "waiting",
+  "agent_runs",
+  "quality",
+  "hygiene",
+];
 
 /** The line under the sections when a subject turns sections off. */
 export const NO_SUBJECT_NOTE =
-  "Forecast and Data hygiene cover a whole project, so they are off for a person or team.";
+  "Forecast, Waiting on people, Agent runs, Quality and Data hygiene cover a whole project, so they are off for a person or team.";
 
 /** The subject chip's value for "Everyone": no subject. */
 export const EVERYONE = "";
@@ -962,8 +998,10 @@ export function hiddenTeamHint(
 
 /**
  * §6.5 item 3. The sections that ignore the period: `render_body` reads each of
- * them as the state now. `finished` and `throughput` are the only sections
- * that read `weeks` and `skip_current_week`.
+ * them as the state now. `finished`, `throughput` and `waiting` are the only
+ * sections that read `weeks` and `skip_current_week`. WS-27bn RA-4's
+ * `agent_runs` reads its own 14 days back from today, so it is "as of today". RA-5's
+ * `quality` reads its own 14 days back from now, and it is "as of today" too.
  *
  * ⚠️ `test_projects_report_sections_lockstep.py` reads this list as text,
  * and fails when it differs from the branches of `render_body`.
@@ -974,6 +1012,8 @@ export const PERIOD_FREE_SECTIONS: readonly string[] = [
   "capacity",
   "pulse",
   "stuck",
+  "agent_runs",
+  "quality",
   "hygiene",
   "conflicts",
   "rebalance",
@@ -1074,6 +1114,9 @@ const SECTION_GROUP_OF: Readonly<Record<string, string>> = {
   load: "Where things stand",
   capacity: "Where things stand",
   stuck: "Where things stand",
+  waiting: "Where things stand",
+  agent_runs: "Where things stand",
+  quality: "Where things stand",
   hygiene: "Where things stand",
   pulse: "Who needs help",
   conflicts: "Who needs help",

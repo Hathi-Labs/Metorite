@@ -25,6 +25,11 @@ import FileUploadButton from "@/components/FileUploadButton";
 import { uploadNote } from "@/lib/chatUpload";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import SuggestionPills from "@/components/SuggestionPills";
+import InterviewOffer from "@/components/profile/InterviewOffer";
+import { starterPills } from "@/lib/starterPills";
+import { chatFirstOn } from "@/lib/shell/chatFlag";
+import { type FeedAnswer, feedKey, fetchFeed } from "@/lib/shell/feed";
+import { useCachedResource } from "@/lib/useCachedResource";
 import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
 import AskPin from "@/components/AskPin";
 import { scrollToEnd } from "@/lib/scrollWithin";
@@ -38,6 +43,12 @@ import {
   type ResendOutcome,
 } from "@/lib/cardAnswer";
 import RollupCard, { RollupContext, type RollupScope } from "@/components/RollupCard";
+import { noActionOf } from "@/components/email/EmailToolCards";
+import { DraftPinContext, draftPin, draftsOf } from "@/lib/pinnedDraft";
+import { withEmailSteps } from "@/lib/delegatedSteps";
+import { mailboxMarksOf } from "@/lib/mailboxMark";
+import MailboxMark from "@/components/MailboxMark";
+import { ANSWER_CAPTION, typedAnswers, typedAnswerTarget } from "@/lib/typedAnswer";
 import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
 import { attachStickToBottom, nearAfterScroll } from "@/lib/stickToBottom";
 import { segmentsForCache } from "@/lib/chatPlacement";
@@ -49,7 +60,8 @@ import {
   type PendingConfirmation,
 } from "@/lib/confirmationQueue";
 import { sendRespondInputResult } from "@/lib/respondInput";
-import { cardsToRestore, fetchPendingAsks } from "@/lib/pendingAsks";
+import { cardsToRestore, cardsToSettle, fetchPendingAsksOrNull } from "@/lib/pendingAsks";
+import { planCardRedraw } from "@/lib/cardReplay";
 import { identity as boundIdentity } from "@/lib/dataCache";
 import { useChatOpen, useThreadNeedsInput } from "@/hooks/useActiveSessions";
 import { CONTINUE_TEXT, interruptedTurn } from "@/lib/chatRecovery";
@@ -67,10 +79,14 @@ import {
 import { DECLINED_ANSWER, declineBody } from "@/lib/declineAnswer";
 import TodoPanel from "@/components/TodoPanel";
 import ContextRing from "@/components/ContextRing";
+import RunStatusRow, { useSteadyRunView } from "@/components/RunStatusRow";
+import { isLivePhase, isRunActiveForUi } from "@/lib/runStatus";
+import { dispatchRun, getCardLog, getSessionState, noteCardAnswered } from "@/lib/chatStore";
 import { PHONE_MAX_WIDTH, composerCap, composerHeight, offerExpand } from "@/lib/composerHeight";
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
 import MessageBubble from "@/components/MessageBubble";
+import ChatMoreMenu from "@/components/ChatMoreMenu";
 import ChatSendButton from "@/components/ChatSendButton";
 import {
   STEER_CAPTION,
@@ -87,6 +103,7 @@ import { mergeCappedText } from "@/lib/chatTurnFailure";
 import { editableLastUserId, submitEdit, withoutSuperseded, type EditOutcome } from "@/lib/chatEdit";
 import { describeToolStep } from "@/lib/toolSteps";
 import { RoomHeader } from "@/components/room/RoomHeader";
+import { ShareSheet } from "@/components/room/ShareSheet";
 import { PresenceRail } from "@/components/room/PresenceRail";
 import { useRoom } from "@/hooks/useRoom";
 import { peopleOf } from "@/lib/rooms";
@@ -128,6 +145,12 @@ const MODELS_FALLBACK: UnifiedModel[] = [
 // scroll-up.
 const HISTORY_PAGE_SIZE = 30;
 const HISTORY_LOADER_DELAY_MS = 300;
+/**
+ * CF-8: on a phone the context ring joins the composer from this share of
+ * the window. It is the floor of the auto-compaction band (75 to 80 %), so
+ * the ring shows where the member may want to act on it, and nowhere else.
+ */
+export const PHONE_RING_PCT = 75;
 
 // ── Suggestion pills (CopilotKit-style starter prompts) ─────────────────
 
@@ -189,6 +212,9 @@ interface AgentChatProps {
   availableAgents?: AgentEntry[];
   /** Persona / system prompt injected as system context (e.g. Metorite brain). */
   persona?: string;
+  /** WS-67 OA-7d: the app slug of the pane (`email`). Only the assistant dock
+   *  sets it. It goes in the request as `surface`, a hint for the tool packs. */
+  surface?: string | null;
   /** Persistent memory lines (Mem0) injected as system context. */
   memories?: string[];
   /** When set, the conversation is saved to Mem0 on unmount under this userId. */
@@ -264,6 +290,20 @@ interface AgentChatProps {
    */
   compact?: boolean;
   /**
+   * The chat's chrome on a phone (WS-62 CF-8, `chat_first_surface.md` §4.8).
+   * The host draws the one header row, so the agent row and the Share row
+   * go. The composer keeps the field, Attach and Send, and the effort
+   * choice, the context ring and the model picker move into one "…" control
+   * (`ChatMoreMenu`). Share and the status live there too. Unlike `compact`,
+   * it keeps the room on, because Share is a room act.
+   */
+  phoneChrome?: boolean;
+  /**
+   * CF-8: acts the host lends to the phone's "…" control, such as the
+   * dock's "This chat's files". Read only with `phoneChrome`.
+   */
+  moreActs?: readonly { icon: string; label: string; onClick: () => void }[];
+  /**
    * One-shot text to drop into the composer (not auto-sent) — used by the email
    * Assistant's "Fix" flow to hand a correction prompt to the user for review.
    * Changing this value injects it; `onPendingInputConsumed` fires once applied.
@@ -305,6 +345,7 @@ export default function AgentChat({
   integrationStatuses: externalStatuses,
   availableAgents: externalAgents,
   persona,
+  surface,
   memories,
   memoryUserId,
   onActivity,
@@ -318,6 +359,8 @@ export default function AgentChat({
   model: forcedModel,
   lockModel,
   compact,
+  phoneChrome = false,
+  moreActs,
   pendingInput,
   onPendingInputConsumed,
   autoSend,
@@ -541,8 +584,8 @@ export default function AgentChat({
   const restoreCappedRef = useRef<(text: string) => void>(() => {});
   const restoreCappedText = useCallback((text: string) => restoreCappedRef.current(text), []);
   const {
-    messages, isLoading, error, sendMessage, steerMessage, stopGeneration, setMessages, recovering,
-    runStatus, outage, retryHeld,
+    messages, isLoading, error, sendMessage, steerMessage, stopGeneration, setMessages,
+    outage, retryHeld, run,
   } = useAgentChat({
     agentName: currentAgentName,
     threadId: sessionId,
@@ -550,6 +593,7 @@ export default function AgentChat({
     model: modelPlan.sendModel ? currentModel : null,
     mode: effectiveRuntime,
     systemContext,
+    surface,
     // A covered agent sends "auto", and the executor reads the effort from
     // the member's words (`tier_policy.turn_kind`).
     thinkMode: sentThinkMode(modelPlan.covered, thinkMode),
@@ -603,6 +647,32 @@ export default function AgentChat({
     return () => clearTimeout(t);
   }, [loadingHistory]);
 
+  // ── The starter pills (WS-62 CF-4, chat_first_surface.md §4.6) ──────────
+  // With the chat-first flag on, the empty chat of the one assistant draws
+  // its three pills from the member's My Day feed, through the feed's OWN
+  // cache key. My Day reads the same key (`useFeed` in FeedCard.tsx), so a
+  // feed the page already loaded costs the chat no request, and a feed the
+  // chat loaded first answers My Day. The key is null until the empty state
+  // shows, so a chat with messages, or another agent's chat, never reads the
+  // feed. The flag is read once, as the dock reads it. No model writes a
+  // starter pill: `starterPills` is the one pure rule. My Day owns the poll
+  // and the focus read, so the chat only looks.
+  const [chatFirst] = useState(() => chatFirstOn());
+  const starterFeedWanted = chatFirst && isOrchestrator && !loadingHistory && messages.length === 0;
+  const starterFeed = useCachedResource<FeedAnswer>(starterFeedWanted ? feedKey() : null, () => fetchFeed(), {
+    revalidateOnFocus: false,
+  });
+  const starterFeedCards = starterFeed.data?.cards;
+  const starters = useMemo(
+    () =>
+      starterPills({
+        chatFirst: starterFeedWanted,
+        cards: starterFeedCards,
+        fallback: AGENT_SUGGESTIONS[currentAgentName] ?? DEFAULT_SUGGESTIONS,
+      }),
+    [starterFeedWanted, starterFeedCards, currentAgentName],
+  );
+
   // On mount, fetch the authoritative FULL message history from Postgres and
   // sync into memory if it's richer than the local cache (more messages OR
   // longer content — refresh-recovery where persistAssistantMessage grew the
@@ -621,10 +691,24 @@ export default function AgentChat({
         (m) => !(m.role === "system" && m.content?.startsWith("__ERROR__")),
       ));
       if (remote.length === 0) return;
-      const local = messages;
+      // The store NOW, not the render that started this load: that render
+      // held no messages yet, so every load replaced the thread, and a reply
+      // that had re-attached meanwhile vanished (owner report, 2026-10-19:
+      // "a thinking container for a fleeting moment before it disappears").
+      const cur = getSessionState(sessionId);
+      const local = cur.messages;
+      // The reply of a live run is the stream's own: the saved row lags it.
+      const liveId = isLivePhase(cur.run.phase) ? cur.run.messageId : null;
+      const mine = liveId ? local.find((m) => m.id === liveId) : undefined;
+      const withLive = (rows: ChatMessage[]): ChatMessage[] => {
+        if (!mine) return rows;
+        return rows.some((m) => m.id === mine.id)
+          ? rows.map((m) => (m.id === mine.id ? mine : m))
+          : [...rows, mine];
+      };
       // Quick check: more messages → definitely use DB.
       if (remote.length > local.length) {
-        setMessages(remote as ChatMessage[]);
+        setMessages(withLive(remote as ChatMessage[]));
         return;
       }
       // Same count but maybe richer content?  Compare total content length,
@@ -644,7 +728,7 @@ export default function AgentChat({
         remoteToolCount > localToolCount ||
         remoteCustomCount > localCustomCount
       ) {
-        setMessages(remote as ChatMessage[]);
+        setMessages(withLive(remote as ChatMessage[]));
       }
     }).catch(() => {}).finally(() => {
       if (!cancelled) setLoadingHistory(false);
@@ -706,50 +790,18 @@ export default function AgentChat({
     setSendKeys(sendShortcut(nav.userAgentData?.platform || nav.platform || ""));
   }, []);
 
-  // A run is "active" whenever the agent is streaming, recovering after a page
-  // reload, or the server run is still going.  The Stop control must appear in
-  // ALL of these — gating only on isLoading hid Stop during recovery (isLoading
-  // is false then), which is why the Stop button sometimes never showed up and
-  // appeared to vanish when the input was cleared (it fell back to the idle
-  // Send button, which greys out without text).
-  const isRunActive =
-    isLoading || recovering || (!!runStatus && runStatus !== "idle");
+  // A run is "active" while the ONE run state says it may still run
+  // (`lib/runStatus.ts`, owner report 2026-10-19): starting, working, waiting
+  // for the member, or finishing while the server answers. The server is the
+  // source of truth, so a long silent tool call, a delegation, a reload and a
+  // stream the proxy cut all keep it active until the run really ends. The
+  // composer's Stop, the placeholder, the header dot and the status row all
+  // read this one value. No indicator decides on its own.
+  // A remount's "checking" offers no Stop and no "working…" until the
+  // server lists the run (`isRunActiveForUi`, re-review of #1171).
+  const isRunActive = isRunActiveForUi(run);
+  const runView = useSteadyRunView(run);
 
-  // ── Live working message (rotates at the bottom of the chat) ──────────
-  // Mirrors VS Code Copilot / Claude: the "thinking" indicator is always
-  // visible at the bottom of the output, not buried inside the thinking
-  // container where it disappears when the container is collapsed.
-  const _WM = [
-    "Working on it", "Thinking it through", "Processing",
-    "Crunching the details", "Pulling the data", "Putting it together",
-  ];
-  const _FM = ["Bribing the hamster", "Reticulating splines", "Summoning Clippy"];
-  const [liveWorkingMsg, setLiveWorkingMsg] = useState<string>(() =>
-    Math.random() < 1 / 12 ? _FM[Math.floor(Math.random() * _FM.length)] : _WM[Math.floor(Math.random() * _WM.length)]
-  );
-  useEffect(() => {
-    if (!isRunActive) return;
-    const t = setInterval(() => {
-      const pool = Math.random() < 1 / 12 ? _FM : _WM;
-      setLiveWorkingMsg(pool[Math.floor(Math.random() * pool.length)]);
-    }, 3000);
-    return () => clearInterval(t);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRunActive]);
-
-  // The step in flight, in words ("Running a script in the sandbox"), for the
-  // live indicator while a tool runs. `lib/toolSteps.ts` is the one
-  // vocabulary, so this line and the trail above it never disagree.
-  const liveToolName = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      if (isSteered(m)) continue; // a steer sits below the reply it joins
-      if (m.role !== "assistant" || !m.streaming) break;
-      const running = m.toolEvents?.find((t) => t.status === "running");
-      if (running) return describeToolStep(running).label;
-    }
-    return null;
-  }, [messages]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // ── The composer's height (owner request, 2026-10-09) ─────────────────────
@@ -1115,6 +1167,47 @@ export default function AgentChat({
   const hitlRef = useRef(hitlSubscriber);
   useEffect(() => { hitlRef.current = hitlSubscriber; });
 
+  // A chat that mounts again (the Email pane, a rail, the dock) draws the
+  // cards of the run in flight again (`getCardLog`, CI regression of
+  // #1171). The run still waits on them, and the stream that read them may
+  // still read the run, so no replay comes. The queue keys each card by its
+  // request id, so a card never draws twice.
+  //
+  // A card redraws as WAITING only when nothing says it is settled
+  // (`planCardRedraw`, review of #1171, P1). An answered card draws as
+  // answered, with the answer. A question the run moved past draws nothing:
+  // another tab answered it. And where the server keeps pending asks, a card
+  // it does not list settles (the effect below).
+  const redrawnRef = useRef<{ all: Set<string>; waiting: Set<string> }>({ all: new Set(), waiting: new Set() });
+  useEffect(() => {
+    const all = new Set<string>();
+    const waiting = new Set<string>();
+    redrawnRef.current = { all, waiting };
+    const emit = (name: string, value: unknown) =>
+      hitlRef.current.onCustomEvent?.({ name, value, threadId: sessionId });
+    for (const c of planCardRedraw(getCardLog(sessionId))) {
+      if (c.kind === "confirmation") {
+        all.add(c.requestId);
+        emit("confirmation_requested", c.value);
+        if (c.waiting) waiting.add(c.requestId);
+        else emit(CONFIRMATION_RESOLVED, { request_id: c.requestId, ...(c.answer ? { answer: c.answer } : {}) });
+        continue;
+      }
+      // Settled elsewhere, with no answer of this tab to show: nothing waits.
+      if (!c.waiting && c.answer === undefined && !c.declined) continue;
+      all.add(c.requestId);
+      if (c.waiting) waiting.add(c.requestId);
+      emit(c.kind === "elicitation" ? "elicitation_requested" : "user_input_requested", c.value);
+      if (c.waiting) continue;
+      const settled = { answered: c.declined ? undefined : c.answer, declined: c.declined || undefined };
+      if (c.kind === "elicitation") {
+        setElicitation((prev) => (prev?.requestId === c.requestId ? { ...prev, ...settled } : prev));
+      } else {
+        setUserInput((prev) => (prev?.requestId === c.requestId ? { ...prev, ...settled } : prev));
+      }
+    }
+  }, [sessionId]);
+
   // ── A durable "needs input" (WS-51 S2, `lib/pendingAsks.ts`) ─────────
   // The cards of this chat that still wait on the server: a run that parked,
   // a run a restart killed, or a reload. Fetched ONLY while the shared poller
@@ -1132,10 +1225,18 @@ export default function AgentChat({
     if (!sessionId || !threadNeedsInput) return;
     let stale = false;
     const forSession = sessionId;
-    void fetchPendingAsks(forSession).then((asks) => {
+    void fetchPendingAsksOrNull(forSession).then((asks) => {
       if (stale || sessionIdRef.current !== forSession) return;
-      for (const card of cardsToRestore(asks)) {
+      for (const card of cardsToRestore(asks ?? [])) {
         hitlRef.current.onCustomEvent?.({ name: card.name, value: card.value, threadId: forSession });
+      }
+      // The server is the authority on what waits: a card redrawn from the
+      // log as waiting that its real list does not hold settles.
+      for (const id of cardsToSettle(asks, redrawnRef.current.waiting)) {
+        redrawnRef.current.waiting.delete(id);
+        dispatchConfirmation({ type: "resolved", requestId: id });
+        setElicitation((prev) => (prev?.requestId === id && prev.answered === undefined ? null : prev));
+        setUserInput((prev) => (prev?.requestId === id && prev.answered === undefined ? null : prev));
       }
     });
     return () => { stale = true; };
@@ -1596,7 +1697,9 @@ export default function AgentChat({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || loadingHistory) return;
-    if (submitText(input)) setInput("");
+    // `answerTyped` is defined below, where the question state is read. A
+    // submit runs after the render, so it is in scope.
+    if (answerTyped(input) || submitText(input)) setInput("");
     inputRef.current?.focus();
   };
 
@@ -1807,6 +1910,7 @@ export default function AgentChat({
       return;
     }
     dispatchConfirmation({ type: "answering", key: card.key });
+    noteCardAnswered(sessionId, card.requestId, answer);
     postRespondInput(
       { request_id: card.requestId, answer, was_freeform: false },
       () => dispatchConfirmation(settleAnswer(card, "retry")),
@@ -1816,11 +1920,81 @@ export default function AgentChat({
     );
   };
   const hasConfirmations = confirmations.cards.length > 0;
+  // No card pins above the composer (owner report, 2026-10-23). A reply
+  // card, a draft and a question card each draw in the thread, at the foot
+  // of the live turn, and scroll with it. A pin above the box hid the chat
+  // on a phone, and an answered card stayed stuck there. `AskPin` brings a
+  // waiting card back into view, and `hitlAnchorId` keeps the newest card
+  // below the member's latest message.
 
   // A question card that the run took an answer for waits no more. It
   // stays in view with its answer until the run ends (owner, 2026-10-13).
   const elicitationWaits = !!elicitation && elicitation.answered === undefined && !elicitation.declined;
   const userInputWaits = !!userInput && userInput.answered === undefined && !userInput.declined;
+  // A card's answer, from its own Submit or from the composer.
+  // `giveBack` puts typed words back in the box when the answer did not
+  // reach the run, so they are never lost (review of this change, P2).
+  const answerElicitation = (answers: ElicitationAnswers, giveBack?: () => void) => {
+    if (!elicitation) return;
+    if (elicitation.requestId) {
+      // The wire shape is `lib/elicitationAnswer.ts`, unchanged.
+      const { answer, wasFreeform } = blockingAnswer(elicitation.questions, answers);
+      const card = elicitation;
+      const reqId = card.requestId!;
+      const summary = answerSummary(card.questions, answers);
+      setElicitation({ ...card, answered: summary });
+      noteCardAnswered(sessionId, reqId, summary);
+      postRespondInput(
+        { request_id: reqId, answer, was_freeform: wasFreeform },
+        () => { setElicitation(card); giveBack?.(); },
+        // A 4xx says no question waits on this id (a stale card).
+        // The answer goes out as a message, as the genUI path
+        // does, so it is never lost (2026-10-09). The message
+        // carries the answer, so the card leaves.
+        (outcome) => {
+          if (outcome === "ok") return;
+          setElicitation((prev) => (prev?.requestId === reqId ? null : prev));
+          // A card redrawn from the log may be one the run already
+          // took an answer for: a refusal then is no lost answer,
+          // and a steer would send it twice (review of #1171, P1).
+          if (outcome !== "drop") return;
+          if (!redrawnRef.current.all.has(reqId)) submitText(answer);
+          else giveBack?.();
+        },
+      );
+    } else {
+      submitText(formattedAnswers(answers));
+      setElicitation(null);
+    }
+  };
+  const answerUserInput = (answers: ElicitationAnswers, giveBack?: () => void) => {
+    if (!userInput) return;
+    const { answer, wasFreeform } = userInputAnswer(answers);
+    const card = userInput;
+    setUserInput({ ...card, answered: answer });
+    noteCardAnswered(sessionId, card.requestId, answer);
+    postRespondInput(
+      { request_id: card.requestId, answer, was_freeform: wasFreeform },
+      () => { setUserInput(card); giveBack?.(); },
+      (outcome) => {
+        if (outcome === "ok") return;
+        setUserInput((prev) => (prev?.requestId === card.requestId ? null : prev));
+        if (outcome !== "drop" || !answer) return;
+        if (!redrawnRef.current.all.has(card.requestId)) submitText(answer);
+        else giveBack?.();
+      },
+    );
+  };
+  // A message typed while one question waits answers it
+  // (`lib/typedAnswer.ts`, owner report 2026-10-23). Else it steers.
+  const typedTarget = typedAnswerTarget({ userInput, elicitation });
+  const answerTyped = (text: string): boolean => {
+    const giveBack = () => setInput((prev) => (prev.trim() ? prev : text));
+    if (typedTarget === "userInput") answerUserInput(typedAnswers("userInput", text), giveBack);
+    else if (typedTarget === "elicitation") answerElicitation(typedAnswers("elicitation", text, elicitation?.questions), giveBack);
+    else return false;
+    return true;
+  };
   const renderHitlCards = (): React.ReactNode => {
     if (!hasConfirmations && !elicitation && !userInput) return null;
     // One mark for the group: the pin above the composer scrolls here
@@ -1852,33 +2026,10 @@ export default function AgentChat({
             onDecline={elicitation.requestId ? () => {
               const card = elicitation;
               setElicitation({ ...card, declined: true });
+              noteCardAnswered(sessionId, card.requestId!, "", true);
               postRespondInput(declineBody(card.requestId!), () => setElicitation(card));
             } : undefined}
-            onSubmit={(answers: ElicitationAnswers) => {
-              if (elicitation.requestId) {
-                // The wire shape is `lib/elicitationAnswer.ts`, unchanged.
-                const { answer, wasFreeform } = blockingAnswer(elicitation.questions, answers);
-                const card = elicitation;
-                const reqId = card.requestId!;
-                setElicitation({ ...card, answered: answerSummary(card.questions, answers) });
-                postRespondInput(
-                  { request_id: reqId, answer, was_freeform: wasFreeform },
-                  () => setElicitation(card),
-                  // A 4xx says no question waits on this id (a stale card).
-                  // The answer goes out as a message, as the genUI path
-                  // does, so it is never lost (2026-10-09). The message
-                  // carries the answer, so the card leaves.
-                  (outcome) => {
-                    if (outcome === "ok") return;
-                    setElicitation((prev) => (prev?.requestId === reqId ? null : prev));
-                    if (outcome === "drop") submitText(answer);
-                  },
-                );
-              } else {
-                submitText(formattedAnswers(answers));
-                setElicitation(null);
-              }
-            }}
+            onSubmit={answerElicitation}
           />
         )}
 
@@ -1900,22 +2051,10 @@ export default function AgentChat({
             onDecline={() => {
               const card = userInput;
               setUserInput({ ...card, declined: true });
+              noteCardAnswered(sessionId, card.requestId, "", true);
               postRespondInput(declineBody(card.requestId), () => setUserInput(card));
             }}
-            onSubmit={(answers: ElicitationAnswers) => {
-              const { answer, wasFreeform } = userInputAnswer(answers);
-              const card = userInput;
-              setUserInput({ ...card, answered: answer });
-              postRespondInput(
-                { request_id: card.requestId, answer, was_freeform: wasFreeform },
-                () => setUserInput(card),
-                (outcome) => {
-                  if (outcome === "ok") return;
-                  setUserInput((prev) => (prev?.requestId === card.requestId ? null : prev));
-                  if (outcome === "drop" && answer) submitText(answer);
-                },
-              );
-            }}
+            onSubmit={answerUserInput}
           />
         )}
       </div>
@@ -1952,6 +2091,12 @@ export default function AgentChat({
       : new Set([...answeredAsks, ...cardAskAnswers.keys()]),
   };
   const waiting = pendingAsk(askSources);
+  // A card that waits on the member is the run's "waiting for you"
+  // (`lib/runStatus.ts`). The run state, not the card, decides the status.
+  const cardWaits = !!waiting;
+  useEffect(() => {
+    dispatchRun(sessionId, { type: "card", at: Date.now(), open: cardWaits });
+  }, [sessionId, cardWaits]);
 
   // The transcript's cards, for the roll-up (`lib/cardRollup.ts`): which one
   // is the newest, and which ones wait. Keyed on the targets' text, so the
@@ -1961,6 +2106,19 @@ export default function AgentChat({
   const onManualToggle = useCallback(() => {
     lastManualToggleRef.current = performance.now();
   }, []);
+  // The newest email draft draws in full in the thread, and a draft that a
+  // revision replaced folds to one line (`lib/pinnedDraft.ts`). No draft
+  // pins above the composer (owner report, 2026-10-23).
+  // A draft of a delegated email run counts too (§7.1.1 rule 5).
+  const drafts = useMemo(
+    () => draftsOf(messages.map((m) => ({ toolEvents: withEmailSteps(m.toolEvents) })), (e) => !noActionOf(e.result)),
+    [messages],
+  );
+  const pinScope = useMemo(
+    () => ({ pinnedId: null, superseded: draftPin(drafts, null).superseded }),
+    [drafts],
+  );
+
   const rollupScope = useMemo<RollupScope>(
     () => ({
       registry: rollupRegistry,
@@ -1972,12 +2130,12 @@ export default function AgentChat({
 
   // The assistant turn the HITL card anchors to = the last assistant message
   // (the parked run streams into it). Used to render the card inline there.
+  // The cards draw after the LAST message of the thread, so a steer the
+  // member sent while a card waits sits above it, never below it (owner
+  // report, 2026-10-22). Before any message, they draw at the list tail.
   const hitlAnchorId = (() => {
     if (!hasConfirmations && !elicitation && !userInput) return null;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "assistant") return messages[i].id;
-    }
-    return null;
+    return visibleMessages.length ? visibleMessages[visibleMessages.length - 1].id : null;
   })();
 
   // ── The room layer ────────────────────────────────────────────────────
@@ -1987,6 +2145,9 @@ export default function AgentChat({
   // object, so solo chat is exactly the surface it has always been.
   // `viewerEmail` and `isRoom` are read above, by the card answers.
   const [railOpen, setRailOpen] = useState(false);
+  // CF-8: Share from the phone's "…" control. The Share row's own sheet
+  // is gone on a phone, so the chat raises the same sheet here.
+  const [sharing, setSharing] = useState(false);
   const roomPeople = useMemo(() => (room ? peopleOf(room) : []), [room]);
   // Only the member's OWN last user message offers Edit (lib/chatEdit.ts).
   // An earlier one would fork, and another person's is not theirs to edit.
@@ -2006,19 +2167,28 @@ export default function AgentChat({
     (mailboxes?.length ?? 0) > 0 ||
     (!lockModel && modelPlan.showPicker) ||
     controls.showEffort;
+  // CF-8: on the phone the ring shows in the composer only once it matters,
+  // at 75 %, where the compaction band begins. Below that it waits in the
+  // "…" control. The row above the box goes when it has nothing to say.
+  const ringInComposer = !phoneChrome || contextUsage.pct >= PHONE_RING_PCT;
+  const steerShown = primary === "send" && isRunActive && !!input.trim();
+  const composerRowShown = !phoneChrome || !!runView || ringInComposer || composerOverflow || steerShown;
+  // The phone's tap size, on Attach and on Send (CF-8).
+  const tap = phoneChrome ? "h-11 w-11" : "h-8 w-8";
 
   return (
     <div className="flex h-full bg-background">
     <div className="flex flex-col h-full flex-1 min-w-0 bg-background">
       {/* Agent header — VS Code-style minimal bar (hidden in compact embeds,
-          where the host provides its own toolbar). */}
-      {!compact && (
-      <div className="flex items-center gap-2 h-9 px-4 border-b border-border bg-card/40 shrink-0">
-        <div className={`w-2 h-2 rounded-full shrink-0 ${isLoading ? "bg-warning animate-pulse" : "bg-success"}`} />
+          where the host provides its own toolbar, and on a phone with the
+          chat-first flag on, where the "…" control carries the status). */}
+      {!compact && !phoneChrome && (
+      <div data-chat-agent-row="" className="flex items-center gap-2 h-9 px-4 border-b border-border bg-card/40 shrink-0">
+        <div className={`w-2 h-2 rounded-full shrink-0 ${isRunActive ? "bg-warning motion-safe:animate-pulse" : "bg-success"}`} />
         <AgentAvatar libraryId={agentAvatars[currentAgentName]} size={20} fallback={null} />
         <span className="text-xs font-medium text-foreground truncate">{currentAgentLabel}</span>
-        {isLoading && (
-          <span className="hidden sm:inline text-[10px] text-warning animate-pulse">thinking…</span>
+        {isRunActive && (
+          <span className="hidden sm:inline text-[10px] text-warning">working…</span>
         )}
         {agentRuntime === "github-copilot" && currentAgentEntry?.repo_url && (
           <a href={currentAgentEntry.repo_url} target="_blank" rel="noopener noreferrer"
@@ -2039,8 +2209,8 @@ export default function AgentChat({
 
       {/* Who is in this conversation, and what it costs the agents. Renders a
           lone Share button while you are alone — see RoomHeader. */}
-      {!compact && (
-        <div className="shrink-0 border-b border-border bg-card/20 px-4 py-2">
+      {!compact && !phoneChrome && (
+        <div data-chat-room-row="" className="shrink-0 border-b border-border bg-card/20 px-4 py-2">
           <RoomHeader room={room} presence={presence} onChanged={refreshRoom} />
         </div>
       )}
@@ -2055,7 +2225,8 @@ export default function AgentChat({
       )}
 
       {/* Message thread */}
-      <div ref={threadRef} className="flex-1 overflow-y-auto px-3 sm:px-4 py-4 relative scrollbar-thin">
+      {/* CF-8: a 16 px gutter on the phone sheet, the full width between. */}
+      <div ref={threadRef} className={`flex-1 overflow-y-auto ${phoneChrome ? "px-4" : "px-3 sm:px-4"} py-4 relative scrollbar-thin`}>
         {/* Scroll-to-bottom floating button */}
         {showScrollBtn && (
           <button onClick={scrollToBottom}
@@ -2067,35 +2238,13 @@ export default function AgentChat({
           </button>
         )}
 
+        <DraftPinContext.Provider value={pinScope}>
         <RollupContext.Provider value={rollupScope}>
         <div ref={contentRef} className="max-w-3xl mx-auto space-y-5">
-          {/* Stream recovery / agent status indicator */}
-          {recovering || runStatus === "running" ? (
-            <div role="status" aria-live="polite" className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-[12px] text-primary/90 flex items-center gap-2">
-              <span className={[
-                "w-2.5 h-2.5 rounded-full shrink-0",
-                runStatus === "running" ? "bg-success motion-safe:animate-pulse" : "bg-primary motion-safe:animate-pulse",
-              ].join(" ")} />
-              <span className="font-medium">
-                {runStatus === "running" ? "Agent running…" : "Reconnecting…"}
-              </span>
-              <span className="text-primary/60">
-                {runStatus === "running"
-                  ? "The agent is still working. Content will appear as it's produced."
-                  : runStatus === "recovering"
-                    ? "Recovering your stream from the server"
-                    : "Checking agent status…"}
-              </span>
-            </div>
-          ) : !isLoading && messages.length > 0 && (() => {
-            const last = messages[messages.length - 1];
-            const wasInterrupted = isInterruptedReply(last) && !!last?.content;
-            return wasInterrupted ? (
-              <div className="rounded-lg border border-warning/20 bg-warning/5 px-3 py-2 text-[11px] text-warning">
-                ⚡ Stream was interrupted. Messages are saved — you can continue chatting below.
-              </div>
-            ) : null;
-          })()}
+          {/* The old "Agent running… / Reconnecting…" banner sat at the TOP of
+              the thread and read its own flags. The one run state draws the
+              status now: in the thread where the reply will appear (below),
+              and above the composer. */}
           {/* One indicator only: skeleton bubbles in the shape of a thread,
               with one caption. It used to stack a spinner, two lines of text
               and the bubbles, centred in half the viewport, beside a second
@@ -2135,8 +2284,11 @@ export default function AgentChat({
               {agentDescription && currentAgentName === agentName && (
                 <div className="text-muted-foreground/60 text-xs max-w-sm leading-relaxed">{agentDescription}</div>
               )}
+              {/* PZ-27: the "Get to know me" offer. It shows only when its own rule holds. */}
+              <InterviewOffer isOrchestrator={isOrchestrator} messageCount={messages.length} isRoom={isRoom} />
+              {/* CF-4: the feed's headlines with the flag on, else the fixed list (`starters`). */}
               <SuggestionPills
-                suggestions={AGENT_SUGGESTIONS[currentAgentName] ?? DEFAULT_SUGGESTIONS}
+                suggestions={starters}
                 onPick={handleChoice}
               />
             </div>
@@ -2178,6 +2330,13 @@ export default function AgentChat({
                     <div className="flex-1 h-px bg-secondary" />
                   </div>
                 )}
+                {/* The one assistant's mailbox mark (§7.1.1 rule 6): the email
+                    work of this turn moved to another mailbox. Saved with the
+                    turn, so a reload draws it in the same place. */}
+                {msg.role === "assistant" &&
+                  mailboxMarksOf(msg.customEvents).map((label, k) => (
+                    <MailboxMark key={`mbx-run-${msg.id}-${k}`} label={label} />
+                  ))}
                 <MessageBubble message={msg} sessionId={sessionId} onChoice={handleChoice}
                   onHitlRespond={handleGenUiHitl}
                   onHitlDecline={handleGenUiDecline}
@@ -2198,13 +2357,7 @@ export default function AgentChat({
                 {mailboxMarks
                   .filter((mk) => mk.afterId === msg.id)
                   .map((mk, k) => (
-                    <div key={`mbx-${msg.id}-${k}`} className="flex items-center gap-2 my-3">
-                      <div className="flex-1 h-px bg-primary/25" />
-                      <span className="flex items-center gap-1 text-[10px] text-primary/80 font-medium shrink-0">
-                        <Icon name="Mail" size={10} /> Now working on {mk.label}
-                      </span>
-                      <div className="flex-1 h-px bg-primary/25" />
-                    </div>
+                    <MailboxMark key={`mbx-${msg.id}-${k}`} label={mk.label} />
                   ))}
                 {/* Inline HITL card — anchored to the asking assistant turn. */}
                 {msg.id === hitlAnchorId && renderHitlCards()}
@@ -2252,16 +2405,17 @@ export default function AgentChat({
           ) : null}
         </div>
         </RollupContext.Provider>
+        </DraftPinContext.Provider>
       </div>
 
       {/* ── Input area + VS Code-style bottom bar ─────────────────────── */}
-      <form onSubmit={handleSubmit} className="shrink-0 border-t border-border bg-card/40 px-3 sm:px-4 pt-2 pb-safe-full">
+      <form onSubmit={handleSubmit} className={`shrink-0 border-t border-border bg-card/40 ${phoneChrome ? "px-4" : "px-3 sm:px-4"} pt-2 pb-safe-full`}>
         {/* VS Code-style Todos panel — latest assistant turn's todo list */}
         {(() => {
           for (let i = messages.length - 1; i >= 0; i--) {
             const m = messages[i];
             if (m.role === "assistant" && m.todos && m.todos.length > 0) {
-              return <TodoPanel todos={m.todos} running={!!m.streaming} />;
+              return <TodoPanel todos={m.todos} running={!!m.streaming} startOpen={!phoneChrome} />;
             }
             if (isSteered(m)) continue; // a steer is part of the live turn
             if (m.role === "user") break; // only the current turn's todos
@@ -2278,30 +2432,22 @@ export default function AgentChat({
             status on the left, and the context ring always on the right, in
             one place. It used to sit in a second row INSIDE the message box,
             and took its bottom from the message. */}
+        {composerRowShown && (
         <div className="max-w-3xl mx-auto mb-1.5 flex min-h-5 items-center gap-2 text-[11px] text-muted-foreground">
           <div className="flex min-w-0 flex-1 items-center gap-2">
-            {isRunActive ? (
-              <span className="flex min-w-0 items-center gap-2 chat-fade-in">
-                <Icon name="LoaderCircle" className="text-primary animate-spin shrink-0" size={12} strokeWidth={1.5} />
-                <span className="italic truncate">
-                  {liveToolName ? `${liveToolName}…` : `${liveWorkingMsg}…`}
-                </span>
-                <span className="flex items-center gap-0.5 shrink-0" aria-hidden="true">
-                  <span className="chat-typing-dot" />
-                  <span className="chat-typing-dot" />
-                  <span className="chat-typing-dot" />
-                </span>
-              </span>
-            ) : !compact ? (
+            {runView ? (
+              <RunStatusRow view={runView} placement="composer" />
+            ) : !compact && !phoneChrome ? (
               <span className="hidden sm:inline text-[10px]">
                 <kbd className="text-muted-foreground">{sendKeys}</kbd> send · <kbd className="text-muted-foreground">⏎</kbd> new line
               </span>
             ) : null}
           </div>
-          {/* A send during a run adds to the reply. Said once, short. */}
-          {primary === "send" && isRunActive && !!input.trim() && (
+          {/* A send during a run adds to the reply, or answers the one
+              question that waits (`lib/typedAnswer.ts`). Said once, short. */}
+          {steerShown && (
             <span data-steer-caption className="shrink-0 text-[10px] text-primary">
-              {STEER_CAPTION}
+              {typedTarget ? ANSWER_CAPTION : STEER_CAPTION}
             </span>
           )}
           {composerOverflow && (
@@ -2319,7 +2465,8 @@ export default function AgentChat({
               className="shrink-0"
             />
           )}
-          <span className="shrink-0">
+          {ringInComposer && (
+          <span className="shrink-0" data-chat-composer-ring="">
             <ContextRing
               pct={contextUsage.pct}
               usedTokens={contextUsage.usedTokens}
@@ -2327,10 +2474,11 @@ export default function AgentChat({
               compacting={compacting}
               onCompact={handleCompact}
               modelId={modelPlan.covered ? undefined : currentModel}
-              isLoading={isLoading}
             />
           </span>
+          )}
         </div>
+        )}
 
         <div className="max-w-3xl mx-auto">
           {/* One note from the parent, for example the email chat after the
@@ -2405,9 +2553,9 @@ export default function AgentChat({
                   setInput((prev) => prev.trim() ? `${prev}\n\n${ctx}` : ctx);
                   inputRef.current?.focus();
                 }}
-                className="shrink-0 flex h-8 w-8 items-center justify-center" />
-            {hasComposerControls && (
-            <div className="order-first flex min-w-0 basis-full flex-wrap items-center gap-1 text-[11px] text-muted-foreground sm:order-none sm:basis-auto sm:flex-initial sm:self-center" ref={modelMenuRef}>
+                className={`shrink-0 flex ${tap} items-center justify-center`} />
+            {hasComposerControls && !phoneChrome && (
+            <div data-chat-pickers="" className="order-first flex min-w-0 basis-full flex-wrap items-center gap-1 text-[11px] text-muted-foreground sm:order-none sm:basis-auto sm:flex-initial sm:self-center" ref={modelMenuRef}>
             <>
               {/* Agent selector — only the orchestrator can switch agents mid-session.
                   Specialised agents lock you into their session for clean history. */}
@@ -2607,6 +2755,29 @@ export default function AgentChat({
             </div>
             )}
               <span className="flex-1" aria-hidden="true" />
+              {/* CF-8: the phone's one "…" control, at the composer's end.
+                  The status, Share, the effort choice, the context window
+                  and the model picker live in it. */}
+              {phoneChrome && (
+                <ChatMoreMenu
+                  status={{ label: currentAgentLabel, active: isRunActive }}
+                  acts={moreActs}
+                  share={room ? { shared: isRoom, onOpen: () => setSharing(true) } : null}
+                  roomRail={isRoom ? { open: railOpen, onToggle: () => setRailOpen((v) => !v) } : null}
+                  effort={controls.showEffort ? { current: thinkMode, options: THINK_MODES, onPick: setThinkMode } : null}
+                  context={{
+                    pct: contextUsage.pct,
+                    usedTokens: contextUsage.usedTokens,
+                    totalTokens: contextUsage.totalTokens,
+                    compacting,
+                    onCompact: handleCompact,
+                    modelId: modelPlan.covered ? undefined : currentModel,
+                  }}
+                  model={!lockModel && modelPlan.showPicker
+                    ? { label: currentModelLabel, current: currentModel, groups: modelGroups, models: sortedModels, onPick: setCurrentModel }
+                    : null}
+                />
+              )}
               {/* While history loads, the button stays in place and is
                   disabled. It showed a second spinner, beside the one in the
                   thread, which read as two separate things loading. */}
@@ -2614,6 +2785,7 @@ export default function AgentChat({
                 action={primary}
                 onClick={primary === "stop" ? handleStop : undefined}
                 disabled={primary === "send" ? !input.trim() || loadingHistory : false}
+                large={phoneChrome}
               />
             </div>
           </div>
@@ -2641,6 +2813,12 @@ export default function AgentChat({
         <ArtifactViewerModal origin="workspace" sessionId={sessionId} entry={viewerEntry}
           onClose={() => setViewerEntry(null)} onDelete={() => setViewerEntry(null)} />
       )}
+
+      {/* CF-8: the Share sheet, raised from the phone's "…" control. The
+          Share row raises the same sheet on a desktop (RoomHeader). */}
+      {phoneChrome && sharing && room && (
+        <ShareSheet room={room} onClose={() => setSharing(false)} onChanged={refreshRoom} />
+      )}
     </div>
 
     {/* The room's own side — people, agents, what just happened. Present on
@@ -2664,4 +2842,3 @@ export default function AgentChat({
     </div>
   );
 }
-

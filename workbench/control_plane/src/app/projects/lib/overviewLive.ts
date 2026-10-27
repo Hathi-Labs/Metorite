@@ -15,7 +15,7 @@
  * Overview state and its key (`previewNeeded`, `initialShownKey`). A refresh
  * that changed the key would make a return to Home ask again.
  */
-import type { ReportConfig } from "./api";
+import type { RenderedReportBody, ReportConfig } from "./api";
 import {
   type BuilderState,
   OVERVIEW_SECTIONS,
@@ -23,6 +23,9 @@ import {
   overviewState,
   previewNeeded,
 } from "./reportBuilder";
+import { agentRunsHidden } from "./agentRunsReport";
+import { qualityHidden } from "./qualityReport";
+import { waitingHidden } from "./waiting";
 
 /** A return to the tab refreshes an answer older than this. */
 export const LIVE_STALE_MS = 60_000;
@@ -176,6 +179,9 @@ export const BODY_ORDER: readonly string[] = [
   "throughput",
   "outlook",
   "stuck",
+  "waiting",
+  "agent_runs",
+  "quality",
   "load",
   "capacity",
   "pulse",
@@ -183,6 +189,29 @@ export const BODY_ORDER: readonly string[] = [
   "conflicts",
   "rebalance",
 ];
+
+/**
+ * WS-27bn RA-3. The sections the live Overview draws: every section, less
+ * `waiting` when the scope has no agent run and nothing waits
+ * (`waitingHidden`). WS-27bn RA-4 hides `agent_runs` by the same rule
+ * (`agentRunsHidden`, the done-when of RA-4). A body of the hidden panels
+ * alone keeps them, so the page never draws nothing. A saved report and the
+ * builder draw every section.
+ */
+export function overviewShown(
+  sections: RenderedReportBody["sections"]
+): RenderedReportBody["sections"] {
+  const hideWaiting = waitingHidden(sections.waiting);
+  const hideRuns = agentRunsHidden(sections.agent_runs);
+  const hideQuality = qualityHidden(sections.quality);
+  if (!hideWaiting && !hideRuns && !hideQuality) return sections;
+  const rest = { ...sections };
+  if (hideWaiting) delete rest.waiting;
+  if (hideRuns) delete rest.agent_runs;
+  if (hideQuality) delete rest.quality;
+  const others = Object.values(rest).some((s) => s !== undefined && s !== null);
+  return others ? rest : sections;
+}
 
 /** The panels that read better across both columns, when a row is free. */
 const PREFERS_WIDE: ReadonlySet<string> = new Set(["outlook", "throughput"]);

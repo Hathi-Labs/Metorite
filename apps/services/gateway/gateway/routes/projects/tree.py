@@ -9,6 +9,7 @@ Spec: ``project-docs/specs/project_management_app.md`` §4 (``tree.py`` row).
     PATCH  /projects/nodes/{id}
     DELETE /projects/nodes/{id}                  → what cascaded
     POST   /projects/nodes/{id}/move
+    POST   /projects/nodes/{id}/convert          → a folder becomes a project
     GET    /projects/nodes/{id}/grants
     POST   /projects/nodes/{id}/grants
     DELETE /projects/nodes/{id}/grants/{grant_id}
@@ -22,10 +23,24 @@ tree.
 
 from __future__ import annotations
 
+import functools
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.projects.authority import (
+    assert_may_change_lead,
+    assert_may_convert_node,
+    assert_may_delete_project,
+    assert_may_move_project,
+    assert_may_name_lead,
+    assert_may_revoke_grant,
+    assert_may_write_grant,
+    attach_can_convert,
+    attach_can_delete,
+    attach_can_write_grants,
+)
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -36,20 +51,28 @@ from gateway.routes.projects.core import (
     GrantModel,
     ProjectIn,
     ProjectModel,
+    _narrow_for_agent,
     _tenant_session,
     actor,
+    assert_folder_converts,
+    assert_grant_group_exists,
     assert_no_project_cycle,
     assert_node_grammar,
+    assert_not_archived,
     assert_project_move_keeps_privacy,
     assert_run_state_allowed,
     clean_payload,
     count_where,
     diff_changes,
     emit,
+    grant_personal_owner,
     insert_row,
+    is_transient,
     load_visible_project,
     node_kind,
     node_level,
+    org_groups,
+    personal_tree_owner,
     record_activity,
     record_field_change,
     remap_task_statuses,
@@ -153,6 +176,115 @@ async def _project_generation(db, node_id: str) -> int:
     )).scalar() or 0)
 
 
+#: WS-64 OP-11 (audit P1-4). The PROJECT generations of many nodes in one
+#: read: the batch form of :func:`_project_generation`, with the same count.
+#: The walk goes UP each node's ancestry over ``pm_projects``, because the
+#: generation is a structural fact. A node whose parent the caller cannot
+#: see is still a project or a subproject, not a space.
+_GENERATIONS_SQL = (
+    "WITH RECURSIVE lineage AS ("
+    "  SELECT id AS node_id, id, parent_project_id, kind FROM pm_projects"
+    "    WHERE id = ANY(CAST(:ids AS uuid[]))"
+    "  UNION ALL"
+    "  SELECT l.node_id, p.id, p.parent_project_id, p.kind FROM pm_projects p"
+    "    JOIN lineage l ON p.id = l.parent_project_id"
+    ") SELECT node_id, count(*) FILTER ("
+    "    WHERE coalesce(kind, 'project') = 'project') AS generation"
+    "  FROM lineage GROUP BY node_id"
+)
+
+
+async def attach_levels(db: Any, nodes: list[dict[str, Any]]) -> None:
+    """Stamp ``level`` on each node, by the one rule ``core.node_level``.
+
+    One read for every node. A node the read does not answer keeps
+    ``level`` null: the client then falls back to the kind, as before.
+    """
+    ids = [str(n["id"]) for n in nodes if n.get("id")]
+    gens: dict[str, int] = {}
+    if ids:
+        rows = (await db.execute(text(_GENERATIONS_SQL), {"ids": ids})).fetchall()
+        gens = {str(r.node_id): int(r.generation or 0) for r in rows}
+    for node in nodes:
+        gen = gens.get(str(node.get("id")))
+        node["level"] = (
+            None if gen is None else node_level(node_kind(node.get("kind")), gen)
+        )
+
+
+#: WS-64 OP-10, fix round 1. A share lock on each node of the ancestor
+#: chain of ``:pid``, itself included. The CTE finds the ids, and the outer
+#: select locks them, because Postgres refuses ``FOR SHARE`` in a recursive
+#: term.
+_LOCK_ANCESTORS_SQL = (
+    "WITH RECURSIVE anc AS ("
+    "  SELECT id, parent_project_id FROM pm_projects"
+    "    WHERE id = CAST(:pid AS uuid)"
+    "  UNION ALL"
+    "  SELECT p.id, p.parent_project_id FROM pm_projects p"
+    "    JOIN anc a ON p.id = a.parent_project_id"
+    ") SELECT id FROM pm_projects WHERE id IN (SELECT id FROM anc) FOR SHARE"
+)
+
+
+async def _lock_ancestor_chain(db, node_id: str) -> None:
+    """Hold a share lock on *node_id* and every node above it.
+
+    ``convert_node`` locks its folder ``FOR UPDATE`` and then reads the
+    depth of the children. A create or a move that reads the generation of
+    its destination takes this lock first. So each waits for the other,
+    and the second one reads the first one's result. Without it, a new
+    subproject under a child project and a convert of the folder above it
+    both pass, and the tree holds four project generations.
+
+    ⚠️ **The one lock order of the tree writes** (OP-10, fix round 2).
+    Each route locks its OWN row exclusive first, then the other rows
+    shared, and it reads the grammar inputs only after both.
+
+    * ``move_node``: the moved row ``FOR UPDATE``, then this chain above
+      the destination.
+    * ``convert_node``: the folder ``FOR UPDATE``, then this chain above
+      the folder's parent, read from the locked row.
+    * ``create_node``: it has no own row yet, so only this chain.
+
+    A route holds at most one exclusive lock and takes it first, so two of
+    these routes cannot wait on each other in a cycle. A deadlock is still
+    possible against some other writer, and ``_tree_race_as_409`` answers it.
+    """
+    await db.execute(text(_LOCK_ANCESTORS_SQL), {"pid": node_id})
+
+
+#: The words of the 409 when the database refuses a tree write for a race.
+TREE_RACE_DETAIL = (
+    "Someone else changed this part of the tree at the same moment. Try again."
+)
+
+
+def _tree_race_as_409(
+    route: Callable[..., Awaitable[Any]],
+) -> Callable[..., Awaitable[Any]]:
+    """Answer a deadlock or a lock timeout in *route* with a 409, not a 500.
+
+    Postgres rolled the transaction back, so nothing was written and the
+    caller may send the same request again. The SQLSTATE set is
+    ``core.TRANSIENT_SQLSTATES``, which the import writer retries on.
+    ``functools.wraps`` keeps the signature that FastAPI reads.
+    """
+
+    @functools.wraps(route)
+    async def guarded(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await route(*args, **kwargs)
+        except HTTPException:
+            raise
+        except Exception as err:
+            if is_transient(err):
+                raise HTTPException(status_code=409, detail=TREE_RACE_DETAIL) from err
+            raise
+
+    return guarded
+
+
 async def _subtree_project_depth(db, node_id: str) -> int:
     """The longest PROJECT chain inside *node_id*'s subtree, itself included.
 
@@ -175,6 +307,20 @@ async def _subtree_project_depth(db, node_id: str) -> int:
         ),
         {"pid": node_id},
     )).scalar() or 0)
+
+
+async def _locked_kind(db, node_id: str, *, exclusive: bool = False) -> Any:
+    """The kind of *node_id*, read after its lock.
+
+    With ``exclusive`` the read takes the row ``FOR UPDATE``. That is the
+    own-row lock of a move. Without it, the caller already holds a share
+    lock through ``_lock_ancestor_chain``, so a plain read is current.
+    """
+    lock = " FOR UPDATE" if exclusive else ""
+    return (await db.execute(
+        text(f"SELECT kind FROM pm_projects WHERE id = CAST(:pid AS uuid){lock}"),
+        {"pid": node_id},
+    )).scalar()
 
 
 #: Seeded on every ROOT project. The owner reshapes these in the app; they exist
@@ -218,6 +364,12 @@ class GrantIn(BaseModel):
     subject: str
 
 
+class ConvertNode(BaseModel):
+    """WS-64 OP-10. The one direction a node converts today."""
+
+    to: str
+
+
 class DeleteResponse(BaseModel):
     """R7/R8 — a destructive route says what it destroyed, per table."""
 
@@ -251,6 +403,52 @@ async def _visible_projects(
     )).fetchall()
 
 
+#: WS-64 OP-3 (D-OP-2, D-OP-15). The caller's OWN personal tree, at every
+#: depth. Migration 297 and ``create_node`` stamp ``personal_owner`` on each
+#: node of the tree, so the node's own column is the whole test.
+#:
+#: ⚠️ **This is NOT ``vis.project_clause``, on purpose.** That clause is
+#: everything the caller may read. The personal space is what the caller
+#: OWNS. A ``data:org:read`` holder, a Projects admin and a stray grantee
+#: get nothing here, because the owner line names the caller alone. The
+#: tenant and the seal still bind, as in ``_TENANT_PROJECTS_SQL``.
+#: Fence: ``tests/unit/test_personal_privacy_r8.py`` (TestThePersonalSpace).
+_OWN_PERSONAL_CLAUSE = (
+    "organization_id = CAST(:vis_org AS uuid)"
+    " AND sealed_at IS NULL"
+    " AND lower(personal_owner) = :vis_email"
+)
+
+
+async def _own_personal_projects(db: Any, vis: Any) -> list[Any]:
+    """The rows of the caller's own personal tree, flat.
+
+    An outside agent is narrowed by the one seam (``_narrow_for_agent``). A
+    connection without ``include_personal`` (D-EA-4) gets no row, and a
+    pinned connection gets its pins only.
+    """
+    clause = _narrow_for_agent(_OWN_PERSONAL_CLAUSE, "id", vis.agent)
+    # `vis_groups` has no place in this statement. The other binds do.
+    params = {k: v for k, v in vis.params.items() if k != "vis_groups"}
+    return (await db.execute(
+        text(
+            f"SELECT * FROM pm_projects WHERE {clause} "
+            f"ORDER BY position NULLS LAST, name, id"
+        ),
+        params,
+    )).fetchall()
+
+
+def _nest(nodes: dict[str, dict]) -> list[dict]:
+    """The roots of *nodes*, each with its children. A node whose parent is
+    not in *nodes* is a root."""
+    roots: list[dict] = []
+    for node in nodes.values():
+        parent = nodes.get(str(node.get("parent_project_id") or ""))
+        (parent["children"] if parent else roots).append(node)
+    return roots
+
+
 @router.get("/tree")
 async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
     """The caller's forest, nested.
@@ -260,20 +458,50 @@ async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
     what came back costs nothing. A node whose parent is *not* visible surfaces
     as a root here — that is not a bug to fix by hiding it, it is the shape of a
     subtree granted to a Center without its parent department.
+
+    WS-64 OP-3. ``personal`` holds the caller's own personal tree, nested,
+    with the same counts. ``rows`` does not change (R6), so an old client
+    sees no change. Each personal node carries ``personal: true``, and
+    ``can_write_grants`` false with the words of the 403 (OP-6b).
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         rows = await _visible_projects(db, user, vis)
         counts = await _open_and_done(db, vis)
+        nodes = {str(r.id): {**row_to_dict(r, ProjectModel), "children": []} for r in rows}
+        own = await _own_personal_projects(db, vis)
+        personal = {
+            str(r.id): {
+                **row_to_dict(r, ProjectModel),
+                "children": [],
+                "personal": True,
+                # The caller's own address. The grant flag below reads it,
+                # so it answers without a walk.
+                "personal_owner": r.personal_owner,
+            }
+            for r in own
+        }
+        # WS-64 OP-8 — the app hides Delete on a node where this is false.
+        await attach_can_delete(
+            db, user, [*nodes.values(), *personal.values()], kind="project",
+        )
+        # WS-64 OP-10 — the app offers "Convert to project" where this is true.
+        # Every node here carries its own `personal_owner` answer (a team row
+        # is NULL by the read, a personal row says the caller), so no walk.
+        await attach_can_convert(
+            db, user, [*nodes.values(), *personal.values()], walk=False,
+        )
+        # WS-64 OP-6b — a personal space is not shared (D-OP-2).
+        for node in personal.values():
+            await attach_can_write_grants(db, user, node)
+        # WS-64 OP-11 (audit P1-4) — the level of each node, additive (R6).
+        await attach_levels(db, [*nodes.values(), *personal.values()])
 
-    nodes = {str(r.id): {**row_to_dict(r, ProjectModel), "children": []} for r in rows}
-    roots: list[dict] = []
-    for node in nodes.values():
-        parent = nodes.get(str(node.get("parent_project_id") or ""))
-        (parent["children"] if parent else roots).append(node)
-
+    roots = _nest(nodes)
     _attach_progress(roots, counts)
-    return {"rows": roots, "total": len(nodes)}
+    personal_roots = _nest(personal)
+    _attach_progress(personal_roots, counts)
+    return {"rows": roots, "total": len(nodes), "personal": personal_roots}
 
 
 #: The categories that close a task WITHOUT delivering it.
@@ -400,7 +628,23 @@ async def get_node(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         row = await load_visible_project(db, vis, project_id)
-        return row_to_dict(row, ProjectModel)
+        result = row_to_dict(row, ProjectModel)
+        # The chat tells a team space from a personal root with this flag. A
+        # team space holds no tasks (`core.assert_holds_tasks`), and the
+        # member's own root holds the Inbox. Additive (R6).
+        result["personal"] = bool(getattr(row, "personal_owner", None))
+        # WS-64 OP-11 (audit P1-4) — the level, by `core.node_level`. Additive.
+        result["level"] = node_level(
+            node_kind(getattr(row, "kind", None)),
+            await _project_generation(db, project_id),
+        )
+        # WS-64 OP-8 — the chat refuses before its card where this is false.
+        await attach_can_delete(db, user, [result], kind="project")
+        # WS-64 OP-6b — the chat refuses before its grant card where this is false.
+        await attach_can_write_grants(db, user, result)
+        # WS-64 OP-10 — the chat refuses before its convert card where this is false.
+        await attach_can_convert(db, user, [result])
+        return result
 
 
 @router.get("/summary")
@@ -420,7 +664,13 @@ async def get_portfolio_summary(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        rows = await _visible_projects(db, user)
+        # WS-64: an archived project is out of the portfolio — its row, its
+        # count and its tasks. The sidebar tree still returns archived rows
+        # on purpose (it splits them out), so the filter lives here.
+        rows = [
+            r for r in await _visible_projects(db, user)
+            if getattr(r, "archived_at", None) is None
+        ]
 
         by_parent: dict[str, list] = {}
         for row in rows:
@@ -519,6 +769,9 @@ async def get_portfolio_summary(
 #: that node it sits under. ``branch_id`` rides down the recursion so the
 #: dashboard can group a grandchild's tasks onto the row a user clicks.
 #:
+#: ⚠️ An ARCHIVED project, and everything below it, is not walked (WS-64): the
+#: dashboard neither lists nor counts it.
+#:
 #: ⚠️ The walk starts BELOW ``:pid`` — the node is never among its own
 #: descendants. :func:`fold_node_summary` carries the consequence.
 NODE_DESCENDANTS_SQL = (
@@ -527,13 +780,22 @@ NODE_DESCENDANTS_SQL = (
     "         archived_at, id AS branch_id"
     "    FROM pm_projects WHERE parent_project_id ="
     "         CAST(:pid AS uuid)"
+    "     AND archived_at IS NULL"
     "  UNION ALL"
     "  SELECT p.id, p.parent_project_id, p.name, p.kind,"
     "         p.status, p.archived_at, s.branch_id"
     "    FROM pm_projects p JOIN sub s"
     "      ON p.parent_project_id = s.id"
+    "   WHERE p.archived_at IS NULL"
     ") SELECT * FROM sub"
 )
+
+#: The same walk for a node that is ITSELF archived. Archiving stamps the whole
+#: subtree, so the filter above would hide every child of a node opened from
+#: the sidebar's Archived section. Here the filter is dropped.
+NODE_DESCENDANTS_ARCHIVED_SQL = NODE_DESCENDANTS_SQL.replace(
+    "     AND archived_at IS NULL", "",
+).replace("   WHERE p.archived_at IS NULL", "")
 
 
 def node_counts_sql(visibility_clause: str) -> str:
@@ -681,7 +943,12 @@ async def get_node_summary(
         # hold no work), each with the id of the child of `project_id` it
         # sits under, so the dashboard can group by the row a user clicks.
         descendants = (await db.execute(
-            text(NODE_DESCENDANTS_SQL), {"pid": project_id},
+            text(
+                NODE_DESCENDANTS_ARCHIVED_SQL
+                if getattr(node, "archived_at", None) is not None
+                else NODE_DESCENDANTS_SQL
+            ),
+            {"pid": project_id},
         )).fetchall()
 
         # The node itself counts too: a project that carries subprojects
@@ -756,6 +1023,7 @@ async def _seed_root(db: Any, project_id: str, created_by: str) -> None:
 
 
 @router.post("/nodes", status_code=201)
+@_tree_race_as_409
 async def create_node(
     payload: ProjectIn, user: UserContext = Depends(get_current_user),
 ) -> dict:
@@ -788,19 +1056,50 @@ async def create_node(
             # could graft a subtree onto another department by guessing an id,
             # and inherit that department's grants for it.
             parent_row = await load_visible_project(db, vis, str(parent_id))
+            # WS-64: nothing is filed under an archived project.
+            assert_not_archived(parent_row, then="Create it in")
+
+        # WS-64, task #304. A child of a private tree is private too, so it
+        # takes the tree owner's `personal_owner`. Every read tests the node's
+        # OWN column (`_visible_projects`, `_AGENT_NOT_PERSONAL_SQL`, the move
+        # checks), so an unstamped child read as a team node: an orphan root
+        # in each `data:org:read` tree, open to an agent with
+        # `include_personal=false`, and free to move into a team space.
+        #
+        # Only the tree owner may add a node here. `/projects/my/areas` is
+        # the personal seam, but the Projects app's Personal space (OP-3)
+        # files through this route, so the owner is allowed. Anyone else,
+        # an org reader too, gets the same 404 as an unseen parent: a node
+        # filed in another member's private tree is a taking act, and a
+        # different answer would confirm that the tree exists.
+        #
+        # Fix round 2. `personal_tree_owner` is the one walk, with the stop
+        # rule of migration 297. A team node that 297 kept under a private
+        # tree answers None, so its team files nodes under it as team work.
+        tree_owner = (
+            await personal_tree_owner(db, str(parent_id)) if parent_id else None
+        )
+        if tree_owner is not None:
+            if tree_owner != actor(user).lower():
+                raise HTTPException(status_code=404, detail="Project not found")
+            values["personal_owner"] = tree_owner
 
         # The tree grammar (migration 193): space → [folder] → project →
         # [folder] → subproject, and stop. Checked before the org resolve so
         # a bad shape is refused as a shape, not as a permission.
+        parent_kind = None
+        if parent_id:
+            # OP-10 fix round 1: serialize with a convert above the parent.
+            await _lock_ancestor_chain(db, str(parent_id))
+            # Fix round 2: the parent's kind from after the lock. A convert
+            # of the parent that committed while this waited changed it.
+            parent_kind = node_kind(await _locked_kind(db, str(parent_id)))
         parent_gen = (
             await _project_generation(db, str(parent_id)) if parent_id else 0
         )
         assert_node_grammar(
             kind=kind,
-            parent_kind=(
-                node_kind(getattr(parent_row, "kind", None))
-                if parent_row is not None else None
-            ),
+            parent_kind=parent_kind,
             parent_generation=parent_gen,
             subtree_depth=1 if kind == "project" else 0,
         )
@@ -812,6 +1111,9 @@ async def create_node(
         if values.get("status") is not None:
             assert_run_state_allowed(level)
         _refuse_identity_off_a_space(values, level)
+        # WS-64 OP-8 (D-OP-11). The lead IS delete and grant authority, so
+        # naming one is a grant write. After the parent's 404.
+        await assert_may_name_lead(db, user, parent_row, values.get("lead"))
 
         # WS-29a. This is the ONE place in the package that decides a tenant:
         # `pm_projects` is the root of every other `pm_*` row, and migration
@@ -834,6 +1136,9 @@ async def create_node(
 
         row = await insert_row(db, "pm_projects", values)
         project_id = str(row.id)
+        if tree_owner is not None:
+            # The grant every personal node carries (`mint_personal_child`).
+            await grant_personal_owner(db, project_id, tree_owner)
 
         if parent_id is None:
             await _seed_root(db, project_id, actor(user))
@@ -891,6 +1196,8 @@ async def patch_node(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         before = await load_visible_project(db, vis, project_id)
+        # WS-64 OP-8 (D-OP-11). A change of lead is a grant write.
+        await assert_may_change_lead(db, user, before, values)
         _refuse_lifecycle_on_child(
             values, getattr(before, "parent_project_id", None),
         )
@@ -927,7 +1234,34 @@ async def patch_node(
     return result
 
 
+#: The live tasks that sit on one node itself, not on its subtree. An archived
+#: task is out of every view, so it does not hold a move back.
+_OWN_LIVE_TASKS_SQL = (
+    "SELECT count(*) AS own_live_tasks FROM pm_tasks"
+    " WHERE project_id = CAST(:pid AS uuid) AND archived_at IS NULL"
+)
+
+
+async def _refuse_space_with_tasks(db: Any, project_id: str, moved: Any) -> None:
+    """422 when a move to the top would make a space that holds tasks."""
+    row = (await db.execute(
+        text(_OWN_LIVE_TASKS_SQL), {"pid": project_id},
+    )).first()
+    held = int(getattr(row, "own_live_tasks", 0) or 0) if row is not None else 0
+    if held:
+        name = str(getattr(moved, "name", "") or "").strip() or "This project"
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{name} holds {held} task{'s' if held != 1 else ''} of its "
+                f"own. At the top it would be a space, and a space holds "
+                f"projects, not tasks. Move its tasks into a project first."
+            ),
+        )
+
+
 @router.post("/nodes/{project_id}/move")
+@_tree_race_as_409
 async def move_node(
     project_id: str, payload: MoveProject,
     user: UserContext = Depends(get_current_user),
@@ -954,30 +1288,59 @@ async def move_node(
         vis = await resolve_visibility(db, user)
         moved = await load_visible_project(db, vis, project_id)
         new_parent = payload.parent_project_id
-        parent_row = None
         if new_parent:
-            parent_row = await load_visible_project(db, vis, str(new_parent))
+            # The 404 for a destination the caller cannot see. Its kind is
+            # read after the lock, below.
+            destination = await load_visible_project(db, vis, str(new_parent))
+            # WS-64: nothing is moved under an archived project. Moving
+            # OUT of one, and a reorder under the same parent, still work.
+            if str(new_parent) != str(getattr(moved, "parent_project_id", None) or ""):
+                assert_not_archived(destination, then="Move it into")
         await assert_no_project_cycle(db, project_id, new_parent)
         # WS-39 S6b. The line between the company tree and a private one is
         # not crossable in either direction, and nothing checked it before the
         # Areas routes made a personal tree more than one node deep.
         await assert_project_move_keeps_privacy(db, project_id, new_parent)
+        # WS-64 OP-8 (D-OP-14). A re-parent changes who sees the subtree, so
+        # it needs the lead's authority. A reorder under the same parent
+        # does not. After the 404s and the shape refusals, before any write.
+        if str(new_parent or "") != str(getattr(moved, "parent_project_id", None) or ""):
+            await assert_may_move_project(db, user, moved)
 
         # The grammar holds through a move, with the subtree's own shape in
         # the sum: a project that carries subprojects cannot land under a
         # project, and a folder cannot land under a folder (migration 193).
+        #
+        # OP-10 fix round 2. The moved row first, exclusive, and its kind
+        # read from the locked row. A convert of this node that committed
+        # while the move waited made it a project, and the grammar must see
+        # that. Then the chain above the destination, shared. The lock order
+        # is the one at ``_lock_ancestor_chain``.
+        moved_kind = node_kind(await _locked_kind(db, project_id, exclusive=True))
+        parent_kind = None
+        if new_parent:
+            # OP-10 fix round 1: serialize with a convert above the parent.
+            await _lock_ancestor_chain(db, str(new_parent))
+            parent_kind = node_kind(await _locked_kind(db, str(new_parent)))
         assert_node_grammar(
-            kind=node_kind(getattr(moved, "kind", None)),
-            parent_kind=(
-                node_kind(getattr(parent_row, "kind", None))
-                if parent_row is not None else None
-            ),
+            kind=moved_kind,
+            parent_kind=parent_kind,
             parent_generation=(
                 await _project_generation(db, str(new_parent))
                 if new_parent else 0
             ),
             subtree_depth=await _subtree_project_depth(db, project_id),
         )
+        # A team project moved to the top becomes a SPACE, and a space holds
+        # no tasks (`core.assert_holds_tasks`). So a project that still holds
+        # live tasks of its own stays where it is. Its subprojects' tasks are
+        # fine: they stay on projects. A personal node is not a team space.
+        if (
+            new_parent is None
+            and getattr(moved, "parent_project_id", None) is not None
+            and not getattr(moved, "personal_owner", None)
+        ):
+            await _refuse_space_with_tasks(db, project_id, moved)
 
         # ⚠️ Read BEFORE the re-parent — afterwards the walk gives the new
         # answer, and the promotion below needs the lanes this node had.
@@ -1057,6 +1420,128 @@ async def move_node(
     return result
 
 
+#: WS-64 OP-10. Each project directly inside a node, with the longest project
+#: chain in its subtree, the child included. One read for every child, so the
+#: refusal can name each child that is too deep.
+_CHILD_DEPTHS_SQL = (
+    "WITH RECURSIVE sub AS ("
+    "  SELECT id, id AS branch, name AS branch_name,"
+    "         personal_owner IS NULL AS branch_team,"
+    "         CASE WHEN coalesce(kind, 'project') = 'project'"
+    "           THEN 1 ELSE 0 END AS d"
+    "    FROM pm_projects WHERE parent_project_id = CAST(:pid AS uuid)"
+    "  UNION ALL"
+    "  SELECT p.id, s.branch, s.branch_name, s.branch_team,"
+    "         s.d + CASE WHEN coalesce(p.kind, 'project') = 'project'"
+    "           THEN 1 ELSE 0 END"
+    "    FROM pm_projects p JOIN sub s ON p.parent_project_id = s.id"
+    ") SELECT branch, branch_name, bool_and(branch_team) AS branch_team,"
+    "   max(d) AS depth FROM sub"
+    "   GROUP BY branch, branch_name"
+)
+
+#: The timeline words of a conversion.
+CONVERTED_BODY = "Converted from a folder to a project"
+
+
+@router.post("/nodes/{project_id}/convert")
+@_tree_race_as_409
+async def convert_node(
+    project_id: str, payload: ConvertNode,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Turn a folder into a project (WS-64 OP-10, D-OP-16).
+
+    One transaction, and only the kind changes. The projects inside the
+    folder become subprojects, because a level is derived from the kind and
+    the place (``node_level``), and nothing stored moves.
+
+    ⚠️ **A project below a space needs nothing that a folder lacks.** A
+    space owns the status set, the types and the task counter, and every
+    node below it reads them from there (migration 196). ``create_node``
+    seeds a set only for a new root, and a folder is never a root. So the
+    children keep their statuses and their tasks with no write, and the
+    new project reads the same set. The run state is the column default
+    ``active``. A value outside ``RUN_STATES`` becomes ``active``.
+
+    The grammar decides through :func:`core.assert_folder_converts`, which
+    calls ``assert_node_grammar``. The authority is the grant rule
+    (``authority.may_convert_node``). The kind is locked first, so two
+    calls cannot both convert.
+    """
+    if payload.to != "project":
+        raise HTTPException(
+            status_code=422,
+            detail="A folder converts only to a project. Send {\"to\": \"project\"}.",
+        )
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        node = await load_visible_project(db, vis, project_id)
+        await assert_may_convert_node(db, user, node)
+        locked = (await db.execute(
+            text(
+                "SELECT kind, status, parent_project_id FROM pm_projects"
+                " WHERE id = CAST(:pid AS uuid) FOR UPDATE"
+            ),
+            {"pid": project_id},
+        )).fetchone()
+        if locked is None or node_kind(locked.kind) != "folder":
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{node.name}' is already a project. Only a folder "
+                       f"converts to a project.",
+            )
+        parent_id = locked.parent_project_id
+        parent = None
+        if parent_id is not None:
+            # Fix round 2. The chain above the folder, shared, after the
+            # folder's own lock (the order at `_lock_ancestor_chain`). A move
+            # of an ancestor holds that ancestor exclusive, so this waits for
+            # it and reads the generation it left.
+            await _lock_ancestor_chain(db, str(parent_id))
+            # The parent's kind, read without the caller's visibility: the
+            # shape is a structural fact, as in `_project_generation`.
+            parent = (await db.execute(
+                text("SELECT kind FROM pm_projects WHERE id = CAST(:pid AS uuid)"),
+                {"pid": str(parent_id)},
+            )).fetchone()
+        children = (await db.execute(
+            text(_CHILD_DEPTHS_SQL), {"pid": project_id},
+        )).fetchall()
+        assert_folder_converts(
+            parent_kind=(
+                node_kind(getattr(parent, "kind", None))
+                if parent_id is not None else None
+            ),
+            parent_generation=(
+                await _project_generation(db, str(parent_id))
+                if parent_id is not None else 0
+            ),
+            children=[(str(c.branch_name), int(c.depth or 0)) for c in children],
+            # A team child that migration 297 kept under a personal tree.
+            # The owner cannot move it, so the 422 says who can.
+            kept=frozenset(
+                str(c.branch_name) for c in children
+                if getattr(node, "personal_owner", None) and c.branch_team
+            ),
+        )
+
+        values: dict[str, Any] = {"kind": "project"}
+        if locked.status not in RUN_STATES:
+            values["status"] = "active"
+        after = await update_row(db, "pm_projects", project_id, values)
+        await record_activity(
+            db, activity_type="system", created_by=actor(user),
+            project_id=project_id, body=CONVERTED_BODY,
+        )
+        result = row_to_dict(after, ProjectModel)
+        await attach_can_delete(db, user, [result], kind="project")
+        await attach_can_convert(db, user, [result])
+
+    await emit("pm.project.updated", {"project_id": project_id})
+    return result
+
+
 @router.delete("/nodes/{project_id}")
 async def delete_node(
     project_id: str, user: UserContext = Depends(get_current_user),
@@ -1069,7 +1554,10 @@ async def delete_node(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, project_id)
+        node = await load_visible_project(db, vis, project_id)
+        # WS-64 OP-8 (D-OP-12). Checked on the project the member names. The
+        # sub-projects and the tasks inside it, other members' too, follow.
+        await assert_may_delete_project(db, user, node)
 
         subtree = (await db.execute(
             text(
@@ -1190,6 +1678,10 @@ async def archive_node(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         row = await load_visible_project(db, vis, project_id)
+        if getattr(row, "personal_owner", None) and not getattr(row, "parent_project_id", None):
+            raise HTTPException(
+                status_code=422, detail="Your own task root cannot be archived.",
+            )
 
         # Counted BEFORE the write, for `delete_node`'s reason: afterwards the
         # honest number is unobtainable and a destructive-ish route ends up
@@ -1292,9 +1784,17 @@ async def unarchive_node(
 async def list_grants(
     project_id: str, user: UserContext = Depends(get_current_user),
 ) -> dict:
+    """The grants on one project, and what the chat needs before a grant card.
+
+    WS-64 OP-6b, fix round 1. Each row carries ``yours``: the grant names the
+    caller, ``org``, or a group of the caller. ``you_see_all`` is true for a
+    caller who sees every project (``data:org:read``). ``groups`` lists the
+    groups of the organization, so the chat refuses an unknown group before
+    its card. The routes decide, and these fields only describe.
+    """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, project_id)
+        node = await load_visible_project(db, vis, project_id)
         rows = (await db.execute(
             text(
                 "SELECT * FROM pm_project_grants "
@@ -1302,8 +1802,16 @@ async def list_grants(
             ),
             {"pid": project_id},
         )).fetchall()
+        mine = {"org", (vis.email or "").lower(), *(g.lower() for g in vis.groups)}
+        out = []
+        for r in rows:
+            item = row_to_dict(r, GrantModel)
+            item["yours"] = str(item.get("subject") or "").lower() in mine
+            out.append(item)
         return {
-            "rows": [row_to_dict(r, GrantModel) for r in rows], "total": len(rows),
+            "rows": out, "total": len(rows),
+            "you_see_all": bool(vis.unrestricted),
+            "groups": await org_groups(db, getattr(node, "organization_id", None)),
         }
 
 
@@ -1322,7 +1830,14 @@ async def create_grant(
     subject = validate_grant_subject(payload.subject)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, project_id)
+        node = await load_visible_project(db, vis, project_id)
+        # WS-64 OP-8 (D-OP-11). A lead or a Projects admin, nobody else.
+        # OP-6b fix round 1: never on a personal tree, for anyone.
+        await assert_may_write_grant(db, user, node)
+        # OP-6b fix round 1: a group that does not exist lets nobody in.
+        await assert_grant_group_exists(
+            db, getattr(node, "organization_id", None), subject,
+        )
         row = (await db.execute(
             text(
                 "INSERT INTO pm_project_grants (project_id, subject, created_by) "
@@ -1346,7 +1861,20 @@ async def delete_grant(
 ) -> dict:
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, project_id)
+        node = await load_visible_project(db, vis, project_id)
+        # WS-64 OP-8 (D-OP-11) and OP-6b. The owner's own grant on a
+        # personal tree never goes; a stray grant there may be removed,
+        # because a revoke only makes the tree more private.
+        found = (await db.execute(
+            text(
+                "SELECT subject FROM pm_project_grants "
+                "WHERE id = CAST(:gid AS uuid) AND project_id = CAST(:pid AS uuid)"
+            ),
+            {"gid": grant_id, "pid": project_id},
+        )).fetchone()
+        if found is None:
+            raise HTTPException(status_code=404, detail="Grant not found")
+        await assert_may_revoke_grant(db, user, node, found.subject)
         row = (await db.execute(
             text(
                 "DELETE FROM pm_project_grants "
