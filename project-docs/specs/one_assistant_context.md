@@ -1098,7 +1098,7 @@ The orchestrator offers each registry agent as a tool (`orchestrator/agents.py:7
 - `crm-records` is last in `PACKS`. The base is 55 tools. Base, `email` and `crm-records` give 95. All three packs give 123, past 110, so `choose` drops `crm-records` first.
 - The words are whole words: `crm`, `zoho`, `sales pipeline`, `deal pipeline`, `pipeline stage`, `deals`, `leads`, `new lead`, `create a lead`, `convert the lead`, `log a call`, `lost reason`. The surface is `crm`.
 - The hand-off is refused whenever the pack loads, because it is the only pack of the owner. `call_agent_background`, scheduled jobs, workflows, the CRM app rail, registry quick actions and an OA-9 child stay delegated.
-- A held CRM pack gives the sandbox hold text and not the mail text, because `crm-assistant` is not in `UNTRUSTED_INPUT_AGENTS`. The hold is correct. The reason in the words is generic.
+- A held CRM pack names its real reason. The hold note takes the session of the run, so a chat that read mail gets the mail reason, in the persona and in the answer of a load. `egress.py` holds the CRM wording (`EGRESS_HOLD_NOTE_PACK_OTHER`, `EGRESS_HELD_PACK_ANSWER_OTHER`) for an owner that does not read mail itself. The email wording stays for the email owner. `NO_PERSONA_BULLETS` names the owners with no persona text, and any other owner with no bullet raises.
 - Redis can mark a chat after the pack built open. The gate of the pack then asks the untrusted card besides the card of the write, because the CRM owner does not read mail itself. This fails safe. A chat marked before the build holds the pack, with no write tool.
 
 **OA-8b. Projects.**
