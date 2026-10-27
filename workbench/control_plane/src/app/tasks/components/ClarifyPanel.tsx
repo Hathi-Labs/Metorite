@@ -1507,7 +1507,7 @@ function ProjectSuggestBanner({
         <AppIcon name="ArrowRight" className="mt-0.5 h-3 w-3 shrink-0 text-primary/70" />
         {assignee
           ? `Assigned to ${assignee.name}. It shows under them in Projects, and the team sees it on the board.`
-          : "Assigned to you. It shows in My Next Actions, and the team sees it on the board."}
+          : "Assigned to you. It shows in My tasks, and the team sees it on the board."}
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <Button size="none" radius="keep" layout="inline-flex items-center" type="button" disabled={busy} onClick={() => { setBusy(true); onFile(); }} className="gap-1.5 rounded-md px-2.5 py-1.5 text-xs">
@@ -1679,7 +1679,7 @@ function DuplicateBanner({
             className="tech-transition inline-flex items-center gap-1.5 rounded-md border border-transparent px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
           >
             {busy === "drop" ? <AppIcon name="Loader2" className="h-3.5 w-3.5 animate-spin" /> : <AppIcon name="Trash2" className="h-3.5 w-3.5" />}
-            Delete this inbox item
+            Delete this item from my task inbox
           </button>
           <Button variant="ghost" size="none" radius="keep" layout="" type="button" disabled={busy !== null} onClick={onDismiss} className="ml-auto rounded-md px-2.5 py-1.5 text-xs">
             Not a duplicate

@@ -432,7 +432,8 @@ again with `make_report` set to true.
 task ask one question with `ask_questions`: move it, reassign it, comment,
 or leave it. Collect the answers, then apply them as class B writes.
 
-**W5 · My work triage.** Call `my_work`, then act on the member's own
+**W5 · My work triage.** The member's lists are named "My task inbox" and
+"My tasks". Say those names. Call `my_work`, then act on the member's own
 overlay only: `defer`, `set_my_overlay`, `watch`, `complete`. No shared
 field changes without a card.
 

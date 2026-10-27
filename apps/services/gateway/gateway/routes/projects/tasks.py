@@ -64,6 +64,7 @@ from gateway.routes.projects.core import (
     assert_assignable_here,
     assert_epic_has_no_parent,
     assert_holds_tasks,
+    assert_not_archived,
     assert_move_keeps_privacy,
     assert_no_task_cycle,
     clean_payload,
@@ -827,6 +828,7 @@ async def create_task(
         # summarises. Tasks live on projects. A task filed on either would
         # sit outside every board (`core.assert_holds_tasks`).
         assert_holds_tasks(target, then="Create the task in")
+        assert_not_archived(target, then="Create the task in")
         root = await root_project_id(db, str(project_id))
         values["root_project_id"] = root
         # The values pass the gate a PATCH puts them through
@@ -1182,6 +1184,7 @@ async def move_task_in(
         # as the privacy guard below: a caller who cannot see the folder or
         # the space still gets 404.
         assert_holds_tasks(dest, then="Move the task into")
+        assert_not_archived(dest, then="Move the task into")
         # Before anything is computed: a task may only move INTO a personal
         # project it already lives in. Checked after the visibility load so
         # a caller who cannot see the destination still gets 404 and never

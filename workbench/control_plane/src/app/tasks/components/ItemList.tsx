@@ -63,7 +63,7 @@ const VIEW_META: Record<
   { title: string; icon: ThemedIcon; hint: string }
 > = {
   inbox: { title: VIEW_TITLES.inbox, icon: themedIcon("Inbox"), hint: "Capture, then clarify each item to zero." },
-  today: { title: VIEW_TITLES.today, icon: themedIcon("CalendarDays"), hint: "Your next actions dated today or before, in your time zone." },
+  today: { title: VIEW_TITLES.today, icon: themedIcon("CalendarDays"), hint: "Your tasks dated today or before, in your time zone." },
   next: { title: VIEW_TITLES.next, icon: themedIcon("ListChecks"), hint: "Tasks assigned to you, grouped by stage and sorted by priority — the very next physical step for each." },
   // D78: one priority system, the matrix, in both apps.
   priority: { title: "Priority", icon: themedIcon("Target"), hint: "Your open work by priority level — Critical first, Low Priority last." },

@@ -58,6 +58,7 @@ from gateway.routes.projects.core import (
     assert_grant_group_exists,
     assert_no_project_cycle,
     assert_node_grammar,
+    assert_not_archived,
     assert_project_move_keeps_privacy,
     assert_run_state_allowed,
     clean_payload,
@@ -620,7 +621,13 @@ async def get_portfolio_summary(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        rows = await _visible_projects(db, user)
+        # WS-64: an archived project is out of the portfolio — its row, its
+        # count and its tasks. The sidebar tree still returns archived rows
+        # on purpose (it splits them out), so the filter lives here.
+        rows = [
+            r for r in await _visible_projects(db, user)
+            if getattr(r, "archived_at", None) is None
+        ]
 
         by_parent: dict[str, list] = {}
         for row in rows:
@@ -719,6 +726,9 @@ async def get_portfolio_summary(
 #: that node it sits under. ``branch_id`` rides down the recursion so the
 #: dashboard can group a grandchild's tasks onto the row a user clicks.
 #:
+#: ⚠️ An ARCHIVED project, and everything below it, is not walked (WS-64): the
+#: dashboard neither lists nor counts it.
+#:
 #: ⚠️ The walk starts BELOW ``:pid`` — the node is never among its own
 #: descendants. :func:`fold_node_summary` carries the consequence.
 NODE_DESCENDANTS_SQL = (
@@ -727,13 +737,22 @@ NODE_DESCENDANTS_SQL = (
     "         archived_at, id AS branch_id"
     "    FROM pm_projects WHERE parent_project_id ="
     "         CAST(:pid AS uuid)"
+    "     AND archived_at IS NULL"
     "  UNION ALL"
     "  SELECT p.id, p.parent_project_id, p.name, p.kind,"
     "         p.status, p.archived_at, s.branch_id"
     "    FROM pm_projects p JOIN sub s"
     "      ON p.parent_project_id = s.id"
+    "   WHERE p.archived_at IS NULL"
     ") SELECT * FROM sub"
 )
+
+#: The same walk for a node that is ITSELF archived. Archiving stamps the whole
+#: subtree, so the filter above would hide every child of a node opened from
+#: the sidebar's Archived section. Here the filter is dropped.
+NODE_DESCENDANTS_ARCHIVED_SQL = NODE_DESCENDANTS_SQL.replace(
+    "     AND archived_at IS NULL", "",
+).replace("   WHERE p.archived_at IS NULL", "")
 
 
 def node_counts_sql(visibility_clause: str) -> str:
@@ -881,7 +900,12 @@ async def get_node_summary(
         # hold no work), each with the id of the child of `project_id` it
         # sits under, so the dashboard can group by the row a user clicks.
         descendants = (await db.execute(
-            text(NODE_DESCENDANTS_SQL), {"pid": project_id},
+            text(
+                NODE_DESCENDANTS_ARCHIVED_SQL
+                if getattr(node, "archived_at", None) is not None
+                else NODE_DESCENDANTS_SQL
+            ),
+            {"pid": project_id},
         )).fetchall()
 
         # The node itself counts too: a project that carries subprojects
@@ -989,6 +1013,8 @@ async def create_node(
             # could graft a subtree onto another department by guessing an id,
             # and inherit that department's grants for it.
             parent_row = await load_visible_project(db, vis, str(parent_id))
+            # WS-64: nothing is filed under an archived project.
+            assert_not_archived(parent_row, then="Create it in")
 
         # WS-64, task #304. A child of a private tree is private too, so it
         # takes the tree owner's `personal_owner`. Every read tests the node's
@@ -1222,7 +1248,11 @@ async def move_node(
         if new_parent:
             # The 404 for a destination the caller cannot see. Its kind is
             # read after the lock, below.
-            await load_visible_project(db, vis, str(new_parent))
+            destination = await load_visible_project(db, vis, str(new_parent))
+            # WS-64: nothing is moved under an archived project. Moving
+            # OUT of one, and a reorder under the same parent, still work.
+            if str(new_parent) != str(getattr(moved, "parent_project_id", None) or ""):
+                assert_not_archived(destination, then="Move it into")
         await assert_no_project_cycle(db, project_id, new_parent)
         # WS-39 S6b. The line between the company tree and a private one is
         # not crossable in either direction, and nothing checked it before the
@@ -1605,6 +1635,10 @@ async def archive_node(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         row = await load_visible_project(db, vis, project_id)
+        if getattr(row, "personal_owner", None) and not getattr(row, "parent_project_id", None):
+            raise HTTPException(
+                status_code=422, detail="Your own task root cannot be archived.",
+            )
 
         # Counted BEFORE the write, for `delete_node`'s reason: afterwards the
         # honest number is unobtainable and a destructive-ish route ends up

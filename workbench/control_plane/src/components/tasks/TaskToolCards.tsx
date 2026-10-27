@@ -102,7 +102,7 @@ const PLAN_META: Record<string, { label: string; kind: "plan-today" | "replan-to
 
 /** Read-only tools that return a titled text blob. */
 const INFO_META: Record<string, { icon: string; label: string }> = {
-  my_tasks_inbox_insights: { icon: "Inbox", label: "Inbox health" },
+  my_tasks_inbox_insights: { icon: "Inbox", label: "My task inbox health" },
   my_tasks_day_digest: { icon: "CalendarDays", label: "Day summary" },
   my_tasks_estimate_stats: { icon: "Timer", label: "Estimate accuracy" },
   my_tasks_accounts: { icon: "Milestone", label: "No connected tool" },
@@ -116,8 +116,8 @@ const INFO_TOOLS = new Set(Object.keys(INFO_META));
 
 /** Friendly label + icon for the generic confirmation card (mutating tools). */
 const ACTION_META: Record<string, { icon: string; label: string; danger?: boolean }> = {
-  my_tasks_capture: { icon: "Inbox", label: "Captured to inbox" },
-  my_tasks_capture_many: { icon: "Inbox", label: "Captured to inbox" },
+  my_tasks_capture: { icon: "Inbox", label: "Captured to my task inbox" },
+  my_tasks_capture_many: { icon: "Inbox", label: "Captured to my task inbox" },
   my_tasks_organize: { icon: "ListChecks", label: "Organized" },
   my_tasks_update: { icon: "PenLine", label: "Task updated" },
   my_tasks_complete: { icon: "CheckCircle2", label: "Task completed" },

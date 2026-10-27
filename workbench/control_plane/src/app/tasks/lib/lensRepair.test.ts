@@ -92,6 +92,11 @@ describe("mapProject reads a node", () => {
     expect(mapProject({ id: "p2", name: "Old", status: "archived" }).status).toBe("DONE");
     expect(mapProject({ id: "p3", name: "Closed", status: "closed" }).status).toBe("DONE");
   });
+
+  it("reads a FILED project (archived_at set, run state active) as DONE", () => {
+    const p = mapProject({ id: "p4", name: "Filed", status: "active", archived_at: "2026-10-01T00:00:00Z" });
+    expect(p.status).toBe("DONE");
+  });
 });
 
 // ── 3. The refused write ────────────────────────────────────────────────────

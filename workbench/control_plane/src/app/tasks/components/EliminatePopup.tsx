@@ -53,7 +53,7 @@ export function EliminatePopup() {
                 Move to Someday / Maybe
               </span>
               <span className="block text-[11px] text-muted-foreground">
-                Park it out of your next actions — you can pull it back anytime.
+                Park it out of My tasks — you can pull it back anytime.
               </span>
             </span>
           </button>

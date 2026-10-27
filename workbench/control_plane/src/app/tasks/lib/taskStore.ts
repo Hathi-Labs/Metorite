@@ -292,7 +292,7 @@ function removalScope(s: { personalRootId: string | null; areas: { id: string }[
 }
 
 /** Sentinel @context for tasks that have none yet — the "@no context" bucket
- *  under My Next Actions. Synced ClickUp tasks arrive here (Clarify never ran),
+ *  under My tasks. Synced ClickUp tasks arrive here (Clarify never ran),
  *  where they can be re-clarified or have their context auto-assigned. */
 export const NO_CONTEXT = "@no context";
 
@@ -376,7 +376,7 @@ export interface ItemMetaPatch {
   /** the full owner set — [] unassigns everyone; takes precedence over assignee
    *  and keeps the primary `assignee` (= assignees[0]) in step. */
   assignees?: Person[] | null;
-  /** personal "My Next Actions" membership (My Next Actions = NEXT & isMine).
+  /** personal "My tasks" membership (My tasks = NEXT & isMine).
    *  false drops a handed-off/unassigned task from my list without deleting it
    *  on ClickUp; a LOCAL overlay only — never back-synced. */
   isMine?: boolean;
@@ -1767,7 +1767,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       get().reportSyncFailure(
         `Couldn't move it to ${dest.name}: ${
           err instanceof Error && err.message ? err.message : "the move was refused"
-        }. It stays in your Inbox.`,
+        }. It stays in My task inbox.`,
       );
     if (dest.kind === "area") {
       // Inside my own tree, which D62 allows. Nothing is published, so it
@@ -2185,7 +2185,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       await refetchAfterFailure(set);
       throw err;
     }
-    // The row is now WAITING (no longer in My Next Actions). Swap in the
+    // The row is now WAITING (no longer in My tasks). Swap in the
     // authoritative server row rather than patching locally: the server is
     // what stamped `delegated_at`, and a local guess at it would be the one
     // field the Waiting-For list sorts and ages by.
@@ -4017,7 +4017,7 @@ export function itemsForView(
       // WS-64 OP-2 — one rule (`today.ts`). No date yet means no rows.
       return today ? items.filter((i) => isInToday(i, today, timeZone ?? undefined)) : [];
     case "next":
-      // "My Next Actions" = only tasks assigned to ME (isMine). This excludes
+      // "My tasks" = only tasks assigned to ME (isMine). This excludes
       // unassigned "team pool" tasks (synced as NEXT but is_mine=false) and, of
       // course, anything delegated to someone else (which is WAITING anyway).
       // Co-assigned tasks (me + others) keep is_mine=true, so they stay.
@@ -4096,7 +4096,7 @@ export function viewCounts(
   for (const i of items) {
     if (i.archivedAt) continue; // archived rows never count toward active views
     if (i.disposition === "INBOX" && !isTickled(i)) c.inbox++;
-    else if (i.disposition === "NEXT" && i.isMine) c.next++; // My Next Actions only
+    else if (i.disposition === "NEXT" && i.isMine) c.next++; // My tasks only
     else if (i.disposition === "WAITING") c.waiting++;
     else if (i.disposition === "SOMEDAY") c.someday++;
     else if (i.disposition === "REFERENCE") c.reference++;
@@ -4114,13 +4114,13 @@ export function viewCounts(
 }
 
 /** Count of MY NEXT items per context (for the expandable @context sub-list).
- *  Mirrors the "My Next Actions" filter — only tasks assigned to me count, so
+ *  Mirrors the "My tasks" filter — only tasks assigned to me count, so
  *  the subfolder badges match what the view actually shows. */
 export function contextCounts(items: MyTask[]): Record<string, number> {
   const out: Record<string, number> = {};
   for (const i of items) {
     if (i.disposition !== "NEXT" || !i.isMine) continue;
-    // Context-less "My Next Actions" (unprocessed synced tasks) fall into the
+    // Context-less "My tasks" (unprocessed synced tasks) fall into the
     // "@no context" bucket so they're visible and can be clarified/backfilled.
     const key = i.context || NO_CONTEXT;
     out[key] = (out[key] ?? 0) + 1;

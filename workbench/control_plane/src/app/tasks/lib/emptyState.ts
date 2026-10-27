@@ -35,13 +35,13 @@ export function tasksEmptyCopy(view: ViewKey, filtered: boolean): TasksEmptyCopy
   }
   const message =
     view === "inbox"
-      ? "Inbox zero. Mind like water."
+      ? "Task inbox zero. Mind like water."
       : view === "today"
         ? "Nothing is due today."
         : view === "waiting"
         ? "Nothing on your Waiting-For list."
         : view === "next"
-          ? "No next actions assigned to you."
+          ? "No tasks assigned to you."
           : "Nothing here yet.";
   return { icon: "CheckCircle2", message, tone: "success", filtered: false };
 }
@@ -56,14 +56,14 @@ export function inboxEmptyCopy(input: {
   if (!input.empty) {
     return {
       icon: "SearchX",
-      message: "Nothing in the inbox matches this filter.",
+      message: "Nothing in my task inbox matches this filter.",
       tone: "muted",
       filtered: true,
     };
   }
   return {
     icon: "CheckCircle2",
-    message: "Inbox zero. Mind like water.",
+    message: "Task inbox zero. Mind like water.",
     hint:
       input.processed > 0
         ? `You processed ${input.processed} item${input.processed === 1 ? "" : "s"} this session. 🎉`
