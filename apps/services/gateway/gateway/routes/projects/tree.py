@@ -1635,6 +1635,10 @@ async def archive_node(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         row = await load_visible_project(db, vis, project_id)
+        if getattr(row, "personal_owner", None) and not getattr(row, "parent_project_id", None):
+            raise HTTPException(
+                status_code=422, detail="Your own task root cannot be archived.",
+            )
 
         # Counted BEFORE the write, for `delete_node`'s reason: afterwards the
         # honest number is unobtainable and a destructive-ish route ends up

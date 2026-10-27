@@ -104,6 +104,43 @@ async def test_a_task_can_still_move_out_of_an_archived_project(db: FakeProjects
     assert moved["project_id"] == str(new.id)
 
 
+async def test_a_recurring_task_in_an_archived_project_spawns_no_successor(
+    db: FakeProjectsDB, monkeypatch: pytest.MonkeyPatch,
+):
+    """``spawn_successor`` asks ``is_runnable_with_ancestors``, whose SQL tests
+    ``archived_at`` up the chain (R8 in ``test_projects_archived_filters_r8``).
+    Here the wiring: a False answer returns None before any read or write."""
+    from gateway.routes.projects import recurrence
+
+    async def archived(_db, _pid):
+        return False
+
+    monkeypatch.setattr(recurrence, "is_runnable_with_ancestors", archived)
+    task = SimpleNamespace(
+        id="t1", project_id="p1", recurrence_id="r1", recurrence_spawned_at=None,
+    )
+    assert await recurrence.spawn_successor(db, task, actor_id="a@x.io") is None
+    assert db.rows("pm_tasks") == []
+    assert "archived_at IS NULL" in core._ANCESTOR_RUNNABLE_SQL
+
+
+async def test_a_members_own_task_root_cannot_be_archived(db: FakeProjectsDB):
+    mine = db.seed_project(name="My tasks", personal_owner=USER.email)
+    with pytest.raises(HTTPException) as err:
+        await tree.archive_node(str(mine.id), user=USER)
+    assert err.value.status_code == 422
+    assert "own task root cannot be archived" in err.value.detail
+
+
+def test_the_personal_capture_helper_guards_an_archived_target():
+    from gateway.routes.projects import personal
+
+    src = (ROUTES / "personal.py").read_text(encoding="utf-8")
+    at = src.index("async def create_personal_task(")
+    assert 'assert_not_archived(target, then="Capture into")' in src[at:at + 4500]
+    assert personal.assert_not_archived is assert_not_archived
+
+
 def test_the_portfolio_and_node_summaries_skip_archived_projects():
     assert "archived_at IS NULL" in tree.NODE_DESCENDANTS_SQL
     # Both arms of the recursive walk carry the filter.

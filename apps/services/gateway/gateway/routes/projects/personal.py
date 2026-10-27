@@ -55,6 +55,7 @@ from gateway.routes.projects.core import (
     _placeholder,
     _tenant_session,
     actor,
+    assert_not_archived,
     clean_payload,
     coerce_write_values,
     diff_changes,
@@ -671,6 +672,13 @@ async def create_personal_task(
     not a capture, and gets no default: `POST /projects/tasks` writes none
     either, and the two ways of adding a step must agree.
     """
+    # WS-64. A capture is a NEW placement, so it is refused under an archived
+    # Area (one `archived_at` read by id, since callers hold ids and no row).
+    target = (await db.execute(
+        text("SELECT name, archived_at FROM pm_projects WHERE id = CAST(:p AS uuid)"),
+        {"p": project_id},
+    )).fetchone()
+    assert_not_archived(target, then="Capture into")
     stated = dict(overlay or {})
     if stated.get("disposition") is None and not values.get("parent_task_id"):
         stated["disposition"] = "INBOX"

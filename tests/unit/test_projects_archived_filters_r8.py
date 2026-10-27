@@ -212,6 +212,18 @@ def test_my_work_leaves_out_tasks_of_an_archived_project(db, world):
     assert world["mine_gone"] in projects(True)
 
 
+def test_recurrence_runnable_walk_refuses_an_archived_project(db, world):
+    from gateway.routes.projects.core import _ANCESTOR_RUNNABLE_SQL
+
+    def runnable(pid: str) -> bool:
+        with db.begin() as c:
+            return bool(c.execute(text(_ANCESTOR_RUNNABLE_SQL), {"pid": pid}).scalar())
+
+    assert runnable(world["live"]) is True
+    assert runnable(world["gone"]) is False
+    assert runnable(world["under"]) is False
+
+
 def test_reports_analytics_leave_out_an_archived_projects_overdue_work(db, world):
     """``load_open_where`` carries ``reportable_with_ancestors_clause``, and that
     walk drops an archived project. Overdue-by-project and workload both run on
