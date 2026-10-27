@@ -21,6 +21,7 @@ import type { ToolEvent } from "@/components/MarkdownMessage";
 import { placementOf } from "@/lib/chatPlacement";
 import ProfileToolCards, {
   PROFILE_CARD_TOOLS,
+  drawsReceipt,
   parseUndo,
   performUndo,
   readProfileResult,
@@ -124,7 +125,7 @@ describe("the four states", () => {
     expect(readProfileResult(REFUSED)).toMatchObject({ status: "refused", reason: "not_your_words" });
     const out = html(REFUSED);
     expect(out).toContain("Not saved");
-    expect(out).not.toContain("Saved to your profile");
+    expect(out).not.toContain("Noted");
     expect(out).toContain("I could not save that. I save only your own words.");
     // The line for the model never reaches the member (incident 2026-10-27).
     expect(out).not.toContain("For the assistant");
@@ -140,7 +141,7 @@ describe("the four states", () => {
     for (const reason of ["learning_off", "not_your_turn", "marked", "invalid"]) {
       const r = `profile: {"reason":"${reason}","status":"refused","v":1}\nNothing saved.`;
       expect(html(r)).toContain("Not saved");
-      expect(html(r)).not.toContain("Saved to your profile");
+      expect(html(r)).not.toContain("Noted");
     }
   });
 
@@ -150,13 +151,13 @@ describe("the four states", () => {
     expect(out).toContain("Already saved");
     expect(out).not.toContain("Not saved");
     expect(out).not.toContain("text-destructive");
-    expect(out).not.toContain("Saved to your profile");
+    expect(out).not.toContain("Noted");
     expect(out).not.toContain("profile:");
   });
 
   it("a success is the receipt, with Undo", () => {
     const out = html(REMEMBER);
-    expect(out).toContain("Saved to your profile");
+    expect(out).toContain("Noted");
     expect(out).toContain("text-success");
     expect(out).toContain("Undo");
   });
@@ -174,7 +175,7 @@ describe("the four states", () => {
     });
     const out = html(REPLACED);
     expect(out).toContain("Replaced in your profile");
-    expect(out).not.toContain("Saved to your profile");
+    expect(out).not.toContain("Noted");
     expect(out).toContain("text-success");
     expect(out).toContain("Undo");
     expect(out).not.toContain("profile_undo");
@@ -265,12 +266,10 @@ describe("profile_interview (PZ-27)", () => {
   it("parseStatus reads a saved line", () => {
     expect(readProfileResult(SAVED)).toMatchObject({ status: "saved", reason: "" });
   });
-  it("a saved write draws the Interview updated receipt, with no Undo and no machine line", () => {
-    const out = html(SAVED);
-    expect(out).toContain("Interview updated");
-    expect(out).toContain("Marked role as answered.");
-    expect(out).not.toContain("profile:");
-    expect(out).not.toContain("Undo");
+  it("a saved mark draws no card at all (PZ-30)", () => {
+    expect(html(SAVED)).toBe("");
+    expect(html('profile: {"status":"saved","v":1}\nStopped. 4 areas will not come back.')).toBe("");
+    expect(drawsReceipt({ ...ev("profile_interview", SAVED), status: "done" })).toBe(false);
   });
   it("a read (next, next_sitting) has no machine line and draws nothing", () => {
     expect(html("Ask about: role. Question: What is your role?")).toBe("");

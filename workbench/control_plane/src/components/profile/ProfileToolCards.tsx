@@ -44,14 +44,15 @@ import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 
 /** Each profile write, by the label of its receipt. */
 const ACTION_META: Record<string, { icon: string; label: string }> = {
-  profile_remember: { icon: "Bookmark", label: "Saved to your profile" },
+  profile_remember: { icon: "Bookmark", label: "Noted" },
   profile_forget: { icon: "Trash2", label: "Forgot from your profile" },
   profile_set: { icon: "SlidersHorizontal", label: "Profile preference set" },
   profile_alias: { icon: "Users", label: "Profile alias changed" },
   profile_undo: { icon: "Undo2", label: "Undid your last profile change" },
-  // PZ-27. Only a write has a machine line. The reads (`next`, `next_sitting`)
-  // have none, so `ProfileToolCards` draws nothing for them.
-  profile_interview: { icon: "ClipboardList", label: "Interview updated" },
+  // PZ-27, PZ-30. The tool is routed so a FAILED call still draws "Not saved".
+  // A mark (`profile: saved`) and a read draw no card: the interview is a
+  // conversation, and a receipt for each mark made it read as a form.
+  profile_interview: { icon: "ClipboardList", label: "Get to know me" },
 };
 
 /** Every tool name this file routes. The placement fence reads it. */
@@ -59,15 +60,16 @@ export const PROFILE_CARD_TOOLS: readonly string[] = Object.keys(ACTION_META);
 
 /**
  * True when this event draws a receipt. A `profile_interview` read has no
- * machine line, so its result is "unknown" and the card draws nothing. An
- * error still draws, so a failed write is not silent.
+ * machine line, so its result is "unknown" and the card draws nothing. A
+ * saved mark draws nothing either (PZ-30). A refusal other than `no_answer`
+ * and an error still draw, so a failed write is not silent.
  */
 export function drawsReceipt(e: ToolEvent): boolean {
   if (!isProfileCardTool(e.name)) return false;
   if (e.name !== "profile_interview" || e.status === "error") return true;
   const { status, reason } = readProfileResult(e.result || "");
   if (status === "refused" && reason === NO_ANSWER) return false;
-  return status !== "unknown";
+  return status === "refused";
 }
 
 /** The reason of a mark `answered` with nothing saved. `assistant_profile.NO_ANSWER`. */
