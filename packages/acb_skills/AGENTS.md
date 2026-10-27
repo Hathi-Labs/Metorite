@@ -30,6 +30,13 @@ not write a second copy of that seam. A bare test file name is under
    - A family with an `owner` key is a TOOL PACK (D117). Injection never offers a pack, so a reader of the injected surface calls `injected_families()` or `injected_tool_names()`.
 5a-1. tool_packs.py -- what a tool pack adds to its family.
    - `owner_tools(slug, module)` is the ONE rule for the tools of a pack. `packs_on(org)` is the ONE reader of `TOOL_PACKS` and `TOOL_PACKS_ORGS`, and it fails closed.
+   - `packs_on`'s one caller is `orchestrator.executor._start_pack_turn` (OA-7c). `test_one_caller_reads_the_flag` names it. Any value of the flags on a box is OWNER-ONLY (`work_plan.md` §6 D4).
+   - `begin_turn` counts the member turn and reads the sticky packs from tenant Redis at `cc:<org>:tool-packs:<session>:<member hash>`. A Redis fault gives no sticky pack and writes nothing.
+   - `choose` takes the sticky packs, a reference and the words of the turn. It applies a decay of 8 member turns and a cap of 3 packs, 110 tools, and 35 tools a pack. An email word needs an email context: a bare "draft" or "unread" loads no pack.
+   - `note_used` makes a pack sticky after one of its tools ran. It writes one hash field, so two calls at once lose no update.
+   - `persona_for` swaps the owner's delegation text for the rules, in load order. It raises when the persona does not hold that text once. A held pack adds `egress.EGRESS_HOLD_NOTE_PACK`.
+   - `delegation_refusal` is the ONE refusal rule. A hand-off to an owner gets the pack text only while the run holds every pack of that owner (`owner_packs`). `call_agent_background` does not ask it.
+   - Fences: `test_tool_packs_choice.py`, `test_tool_packs_off.py`.
    - `owner_scope(owner, held)` binds `no_egress` for any value of `held` but `False`. Fences: `test_tool_packs_registry.py`, `test_pack_guards.py`.
 5b. decide_tools.py -- the `decide` core-floor tool (spec `customer_console.md` §6A.14). It sends no member and never logs `context`.
    - `decide_tool_enabled()` is its ONE switch. `decide_tool_for(agent_name)` is the one place that picks `system_one_decide` or the Jev `decide`.
