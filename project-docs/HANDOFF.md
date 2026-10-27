@@ -6043,3 +6043,88 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `docs/multiplayer/memory-clearance.md` · `specs/personalization.md` §5.1
 - **Added:** 2026-10-24 · WS-63 PZ-2 repair round
 
+
+### H-418 · Finish PR #1400, the chat wave 2 of WS-64 · [AGENT]
+- **Check:** `gh pr view 1400 --json state -q .state` prints OPEN. If it prints MERGED, check that staging and production serve its SHA, then delete this entry.
+- **Why:** the build is done and pushed on branch `ws64-chat-wave2`. The verifier and the reviewer were stopped before they reported. CI failed one job: the PR body has no `Visual review:` line.
+- **Do this:** run `ws-verifier` and `diff-reviewer` on the branch. Fix what they find. Take the four captures of the new `move_projects` card (light, compact, accent, 390 px). Add the `Visual review:` line to the PR body and push a commit. Merge. Wait for staging to serve it. Then release to production.
+- **Decision to confirm:** a member's re-parent that names no project now moves the task into the parent's project (`carry_to_parent`). Clarify "file under" needs this. The owner may choose a plain refusal.
+- **Authority:** `specs/one_projects_app.md` §9 "Chat wave 2" · owner word, 2026-10-27, "go next"
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-419 · Merge PR #1399, the manifest decisions for the OP-11 routes · [AGENT]
+- **Check:** `gh pr view 1399 --json state -q .state` prints OPEN.
+- **Why:** four parity tests are red on main. They are `test_projects_field_parity.py` (two) and `test_projects_ui_actions.py` (two). The PR adds the three missing manifest rows and passes all 350 parity tests. These tests warn and do not block.
+- **Do this:** wait for CI. Merge. Run `uv run pytest tests/unit/test_projects_field_parity.py tests/unit/test_projects_ui_actions.py -q` on main to see green.
+- **Authority:** `engineering_practice.md` §7a
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-420 · Build wave 3: task ids with a space prefix, such as OPS-447 · [AGENT]
+- **Check:** `git log origin/main --oneline -i --grep "prefixed task id"` prints nothing.
+- **Why:** a task number is unique inside one space only. On 2026-10-27 Fracktal held 3091 tasks and 1305 distinct numbers. A move gives the task a new number. So a bare "#447" can name two tasks, and an old mention stops pointing at its task.
+- **Do this:** give each space an automatic prefix that an admin can edit (`pm_projects.task_prefix` exists and is empty). Show `OPS-447` everywhere. Keep the old number as an alias after a move. Make the chat and the MCP accept the prefixed id. When a bare number matches several tasks, make them ask. The migration must be expand-only (R6). Take a backup first.
+- **Authority:** owner word, 2026-10-27, "go ahead with your recommendations" · `project_management_app.md`
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-421 · Finish the My tasks leftovers of OP-11 · [AGENT]
+- **Check:** `git grep -n "MY_TASKS_MAX_ROWS" origin/main -- workbench/control_plane/src/app/projects/lib/myTasks.ts` prints a line. The 2000-row cap still exists.
+- **Why:** the UI half is live (`6c0f5a8`). These parts were left out on purpose.
+- **Do this:** build the Timeline tab. Add the disposition, context, energy and defer facets and columns. Add the bulk selection bar. Add the project chip to Calendar pills. Add a server `disposition=` filter on `/projects/tasks?scope=mine`. Put its rule in SQL, equal to `fold_dispositions` in `mine.py`, and cover it with an R8 test. Then the chips page on the server and the cap goes. `/my/inbox` takes 1.5 to 2.3 s at 5000 tasks. Add keyset paging and an index on `lower(member_email)`. The phone View sheet clips the Calendar tab.
+- **Authority:** `specs/one_projects_app.md` OP-11 slice table, "Not built in U"
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-422 · OP-5: retire the old Tasks code and merge the backend · [AGENT]
+- **Check:** `test -d apps/services/gateway/gateway/routes/tasks && echo PENDING`
+- **Why:** the Tasks rows are merged into `pm_tasks`. The old Tasks backend, the old store and two empty tables remain. The nav flip was on 2026-10-25, so this may start.
+- **Do this:** move the `/tasks` routes (`ai`, `attachments`, `calendar`, `capture_email`, `people`, `capability`, `planning`, `settings`) to `/projects/my/*` and `/people/*`. Delete the second day planner. Retire `skill-my-tasks` into `skill-projects`. Drop `my_tasks_horizons` and `my_tasks_reviews` in a migration. Drop `task_accounts` when email capture reads the email accounts. Remove the mock fallback in `taskStore.ts`. Delete `app/tasks/page.tsx` and `TaskToolbar`. Keep `InboxView` and Clarify. A tasks-only member still needs the old page until their grants change. Back up before the migration.
+- **Authority:** `specs/one_projects_app.md` OP-5 · owner default of 2026-10-27, drop the unused tables
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-423 · Decide how a space summary counts what a member cannot see · [OWNER]
+- **Check:** read `fold_node_summary` in `apps/services/gateway/gateway/routes/projects/tree.py`. If its child walk has no `project_clause`, this is pending.
+- **Why:** a space dashboard can name a sibling project the member cannot open. Filtering the children breaks `own + children == tasks`.
+- **Recommend:** filter the children by visibility. Count the hidden tasks under `own`, as `GET /projects/my/summary` does. Then build it.
+- **Authority:** the audit of 2026-10-26, finding P1-8 · `specs/one_projects_app.md` OP-11
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-424 · Two loose ends of the chat timeout fix · [AGENT]
+- **Check:** `git grep -n "run_task = asyncio.create_task" origin/main -- apps/services/orchestrator` prints `executor.py`. The Tier-2 fallback still starts a task that nothing cancels.
+- **Why:** on 2026-10-26 a chat run hung for 10 minutes and saved an empty reply. Wave 2 saves a notice. The Next route (`route.ts`) can still persist empty content over it, because the gateway upsert writes `content = EXCLUDED.content` with no condition. The Tier-2 task may outlive its parent.
+- **Do this:** make the upsert refuse an empty write over a non-empty message. Cancel the Tier-2 task when its generator closes. Add a test for each.
+- **Authority:** the incident of 2026-10-26 · `specs/one_projects_app.md` §9
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-425 · Move six Fracktal tasks out of the space Company Operations · [OWNER]
+- **Check:** ask the chat in Fracktal to list the tasks of the space Company Operations. Six tasks (#447 to #452) mean it is pending. An admin may read `pm_tasks` through the ap-south-1 pooler instead.
+- **Why:** the chat filed them on the space on 2026-10-26. The server now refuses new ones. The owner approved the move. My Metorite connection reaches the Hathi Labs organisation and not Fracktal, so an agent could not do it.
+- **Do this:** the owner asks the chat to move them, or uses Move. Suggested: #447 to Operations, #448 and #451 to Founders Office, #449 and #450 to Finance & Accounting, #452 to HR.
+- **Authority:** owner approval, 2026-10-26
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-426 · Decide how a repeating task behaves when it leaves Done · [OWNER]
+- **Check:** Metorite task #49 is not Done.
+- **Why:** closing a repeating task makes the next copy. Reopening the old task leaves both, and the old one keeps its old date.
+- **Recommend:** give the reopened task the new date and delete the copy, but only when nobody has touched the copy. Otherwise keep both and link them.
+- **Authority:** the audit of 2026-10-25
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-427 · Find the cause of the duplicate board names, and look at the chat task table · [AGENT]
+- **Check:** Metorite tasks #48 and #50 are not Done.
+- **Why:** nothing stops two sibling projects from sharing a name. The report of #48 has no example. #50 is fixed in code and only needs a look in the browser.
+- **Do this:** ask the member for a real example of #48. It may come from an import or a folder conversion. A server refusal of a duplicate sibling name is small. Look at #50 in the chat and in the Projects rail.
+- **Authority:** the audit of 2026-10-25
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-428 · Pin the other CI jobs to ubuntu-24.04, and look at one flaky browser test · [AGENT]
+- **Check:** `git grep -n "ubuntu-latest" origin/main -- .github/workflows` prints lines.
+- **Why:** `ubuntu-latest` became Ubuntu 26.04 and Playwright cannot install Chromium there. PR #1382 pinned `pr-check.yml` only. `deploy.yml` and the other workflows still use `ubuntu-latest`. `shell-bar.spec.ts` "the shell bar is the same on every app" fails with the My work flag on, and it failed on main.
+- **Do this:** pin every workflow, or unpin when Playwright supports the image. Find why the shell-bar test fails with the flag on.
+- **Authority:** PR #1382
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-429 · Small gaps that wave 2 left · [AGENT]
+- **Check:** `git grep -n "no-offset\|without an offset" origin/main -- apps/services/gateway/gateway/routes/projects/due.py` prints nothing.
+- **Why:** a due time with no zone offset, such as `2026-10-31T17:00`, is read as UTC. A subtask that moves to a new project keeps its parent in the old one, and neither the app nor the chat checks it. `move_projects` reads the tree once for each row. The `fold_node_summary` leak is H-423.
+- **Do this:** read a no-offset time in the member's zone. Refuse a subtask move that splits it from its parent, or carry the parent. Read the tree once in `move_projects`.
+- **Authority:** the wave 2 report, 2026-10-27
+- **Added:** 2026-10-27 · WS-64 session
