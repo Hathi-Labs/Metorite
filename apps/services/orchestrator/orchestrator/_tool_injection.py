@@ -3290,6 +3290,7 @@ async def _apply_tool_packs(
     tool_scope: list[str] | None,
     agent_config: dict[str, Any] | None,
     bullets: Mapping[str, str],
+    offer_loader: bool = False,
 ) -> PackApply | None:
     """Put the packs of this turn in the run (layer (a), §4.2.2).
 
@@ -3312,6 +3313,12 @@ async def _apply_tool_packs(
     changes nothing, when no pack loads, when the agent is not a native MAF
     ``Agent``, or when the persona does not hold the owner's text exactly
     once.
+
+    OA-7e: *offer_loader* also offers layer (b), ``load_skill_tools``, for
+    the allowed packs that the run does not hold (:func:`_offer_pack_loader`).
+    Then a turn that loads no pack still returns a ``PackApply``, with no
+    build, so that the executor binds the run key and the record that a load
+    needs. The executor passes True. With False the apply is layer (a) only.
     """
     import secrets
 
@@ -3333,10 +3340,19 @@ async def _apply_tool_packs(
                             agent_config=agent_config, disabled=disabled)
     choice = tool_packs.choose(turn, allowed=allow, base_tools=base)
     await tool_packs.drop_sticky(turn, choice.evicted)
+
+    def _loader_only() -> PackApply | None:
+        """The apply of a turn that loads no pack: layer (b) only, or None."""
+        if not offer_loader:
+            return None
+        bare = PackApply(builds=(), record=tool_packs.PackRun.of(turn, choice, []),
+                         run_key=secrets.token_urlsafe(24))
+        return bare if _offer_pack_loader(agents, bare, allow) else None
+
     if not choice.slugs:
         _log.info("executor.packs_chosen", packs=[], evicted=list(choice.evicted),
                   skipped=list(choice.skipped), base_tools=base)
-        return None
+        return _loader_only()
     run_key = secrets.token_urlsafe(24)
     build_ctx = {**dict(run_ctx), tool_packs.PACK_RUN_KEY: run_key}
     holds = {_tool_name(t) for t in pool}
@@ -3348,7 +3364,7 @@ async def _apply_tool_packs(
         builds.append(build)
         holds |= {_tool_name(t) for t in build.tools}
     if not builds:
-        return None
+        return _loader_only()
     loaded = [(build.slug, build.held) for build in builds]
     try:
         persona = tool_packs.persona_for(str(opts.get("instructions") or ""), loaded, bullets)
@@ -3373,7 +3389,67 @@ async def _apply_tool_packs(
         evicted=list(choice.evicted), skipped=list(choice.skipped),
         base_tools=base, pack_tools=sum(len(b.tools) for b in builds),
     )
-    return PackApply(builds=tuple(builds), record=record, run_key=run_key)
+    applied = PackApply(builds=tuple(builds), record=record, run_key=run_key)
+    if offer_loader:
+        _offer_pack_loader(agents, applied, allow)
+    return applied
+
+
+# ── Tool packs in the middle of a turn: layer (b) (WS-67 OA-7e, D117) ───────
+# ``one_assistant_context.md`` §4.2.2 and §4.2.8. ``load_skill_tools`` lets the
+# model load a pack that layer (a) missed. Its tool, its middleware and its
+# provider live in ``acb_skills.tool_packs``. This seam puts the provider on
+# the view of the run, and gives the middleware :func:`_pack_tools`, the SAME
+# guarded builder as layer (a). Only :func:`_apply_tool_packs` with
+# ``offer_loader`` calls it, and only ``executor._apply_pack_turn`` passes
+# that, so rooms, WhatsApp and delegated runs never get the tool. Fence:
+# ``tests/unit/test_load_skill_tools.py``.
+
+
+async def _build_pack_for_load(
+    slug: str, run_ctx: Mapping[str, Any], holds: frozenset[str],
+) -> PackBuild | None:
+    """The build of one pack for a load in the middle of a turn: the guarded
+    builder of layer (a) (:func:`_pack_tools`). *run_ctx* is the run context
+    of the call, which the server bound, with this run's key. *holds* names
+    each tool of the live list, so the build skips each of them."""
+    return await _pack_tools(slug, run_ctx, holds=holds)
+
+
+def _offer_pack_loader(agents: list[Any], applied: PackApply, allow: Iterable[str]) -> bool:
+    """Put ``load_skill_tools`` on the view of the run (layer (b), OA-7e).
+
+    It offers each pack of *allow* that the run does not hold
+    (``tool_packs.loadable``). *allow* is ``packs_on`` of the bound tenant
+    less the admin's toggles, so the catalog never lists a pack that the
+    flag stops. The provider goes on a per-run view (``agent_with_providers``)
+    that takes the place of ``agents[0]``, so the agent object of another run
+    never changes. Each later step reads ``agents`` again, and each view that
+    the injection makes keeps the provider. True when the run offers a load.
+    """
+    from acb_skills import tool_packs
+
+    offered = tool_packs.loadable(allow, applied.record.slugs)
+    if not offered:
+        return False
+    try:
+        from agent_framework import Agent
+    except ImportError:  # pragma: no cover - MAF ships with the platform
+        return False
+    agent = agents[0] if agents else None
+    if not isinstance(agent, Agent):
+        _log.warning("executor.pack_loader_refused", reason="agent_shape")
+        return False
+    from orchestrator._native_run_context import agent_with_providers
+
+    loader = tool_packs.LoadSkillTools(
+        offered=offered, run_key=applied.run_key, record=applied.record,
+        build=_build_pack_for_load,
+    )
+    agents[0] = agent_with_providers(agent, [tool_packs.LoadSkillToolsProvider(loader)])
+    _log.info("executor.pack_loader_offered", packs=list(offered),
+              loaded=list(applied.record.slugs))
+    return True
 
 
 def _holds_untrusted_pack(agent: Any) -> bool:
