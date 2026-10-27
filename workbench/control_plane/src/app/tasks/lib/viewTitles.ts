@@ -5,9 +5,9 @@
  * Fence: `viewTitles.test.ts`.
  */
 export const VIEW_TITLES = {
-  inbox: "Inbox",
+  inbox: "My task inbox",
   today: "Today",
-  next: "My Next Actions",
+  next: "My tasks",
   waiting: "Waiting For",
   someday: "Someday / Maybe",
   done: "Done",

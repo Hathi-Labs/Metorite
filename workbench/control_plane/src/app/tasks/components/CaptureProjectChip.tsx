@@ -91,7 +91,7 @@ export function CaptureProjectChip({
     onOpenChange(false);
   };
 
-  const label = value ? value.name : "Inbox";
+  const label = value ? value.name : "My task inbox";
   return (
     <div ref={rootRef} className="relative shrink-0">
       <button
@@ -103,7 +103,7 @@ export function CaptureProjectChip({
         title={
           value
             ? `Captures go to ${value.name}. Click to change. Type # in the box to pick one.`
-            : "Captures go to your Inbox. Pick a project or an Area, or type # in the box."
+            : "Captures go to your task inbox. Pick a project or an Area, or type # in the box."
         }
         className={[
           "tech-transition inline-flex max-w-[12rem] items-center gap-1 rounded-md border px-2 py-1 text-xs",
@@ -143,7 +143,7 @@ export function CaptureProjectChip({
               chip?.focus();
             }}
             value={value?.id}
-            noProjectLabel="Inbox"
+            noProjectLabel="My task inbox"
             onChange={pick}
             onCreateArea={onCreateArea}
           />

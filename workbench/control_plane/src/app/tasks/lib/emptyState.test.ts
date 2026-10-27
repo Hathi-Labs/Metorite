@@ -19,9 +19,9 @@ const read = (rel: string) =>
 
 describe("tasksEmptyCopy", () => {
   it("keeps each view's own sentence", () => {
-    expect(tasksEmptyCopy("inbox", false).message).toBe("Inbox zero. Mind like water.");
+    expect(tasksEmptyCopy("inbox", false).message).toBe("Task inbox zero. Mind like water.");
     expect(tasksEmptyCopy("waiting", false).message).toBe("Nothing on your Waiting-For list.");
-    expect(tasksEmptyCopy("next", false).message).toBe("No next actions assigned to you.");
+    expect(tasksEmptyCopy("next", false).message).toBe("No tasks assigned to you.");
     expect(tasksEmptyCopy("done", false).message).toBe("Nothing here yet.");
   });
 
@@ -48,7 +48,7 @@ describe("tasksEmptyCopy", () => {
 describe("inboxEmptyCopy", () => {
   it("inbox zero keeps its words and counts the session", () => {
     expect(inboxEmptyCopy({ empty: true, processed: 0 })).toMatchObject({
-      message: "Inbox zero. Mind like water.",
+      message: "Task inbox zero. Mind like water.",
       hint: "Nothing left to process. Capture the next thing above.",
       tone: "success",
     });
@@ -58,7 +58,7 @@ describe("inboxEmptyCopy", () => {
 
   it("a filter that hid everything says so", () => {
     expect(inboxEmptyCopy({ empty: false, processed: 0 })).toMatchObject({
-      message: "Nothing in the inbox matches this filter.",
+      message: "Nothing in my task inbox matches this filter.",
       filtered: true,
     });
   });

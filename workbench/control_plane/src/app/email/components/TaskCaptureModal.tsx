@@ -42,8 +42,8 @@ export interface CommitmentContext {
 
 // Capture-time dispositions the backend accepts (_CAPTURE_DISPOSITIONS).
 const DISPOSITIONS: { value: string; label: string; hint: string }[] = [
-  { value: "INBOX", label: "Inbox", hint: "Clarify later" },
-  { value: "NEXT", label: "Next action", hint: "I'll do this" },
+  { value: "INBOX", label: "My task inbox", hint: "Clarify later" },
+  { value: "NEXT", label: "My tasks", hint: "I'll do this" },
   { value: "WAITING", label: "Waiting / delegate", hint: "On someone else" },
   { value: "CALENDAR", label: "Scheduled", hint: "Date-specific" },
   { value: "SOMEDAY", label: "Someday", hint: "No action now" },

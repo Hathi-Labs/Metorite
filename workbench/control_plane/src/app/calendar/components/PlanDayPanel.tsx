@@ -464,7 +464,7 @@ export function PlanDayPanel({
                   <p className="py-4 text-center text-xs text-muted-foreground">
                     {isReplan
                       ? "Nothing to reshuffle — the rest of your day is clear."
-                      : "Nothing to schedule — no unscheduled next actions."}
+                      : "Nothing to schedule — no unscheduled tasks."}
                   </p>
                 )}
             </>

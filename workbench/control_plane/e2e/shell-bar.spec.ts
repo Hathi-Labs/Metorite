@@ -213,7 +213,7 @@ test.describe("desktop", () => {
     await page.keyboard.press("Enter");
     await page.waitForURL((u) => u.pathname === "/projects");
     if (!MY_WORK_ON) return; // the box below needs My work (see `MY_WORK_ON`)
-    await expect(page.getByRole("textbox", { name: "Capture to inbox" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Capture to my task inbox" })).toBeVisible();
     // The job left the address, so a reload does not open Capture again.
     await expect.poll(() => new URL(page.url()).search).toBe("");
   });
@@ -287,7 +287,7 @@ test.describe("desktop", () => {
     await stub(page);
     await stubProjects(page);
     await page.goto("/projects");
-    const capture = page.getByRole("textbox", { name: "Capture to inbox" });
+    const capture = page.getByRole("textbox", { name: "Capture to my task inbox" });
     for (let round = 0; round < 2; round++) {
       await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
       await field(page).fill("new task");
@@ -306,11 +306,11 @@ test.describe("desktop", () => {
     await stub(page);
     await stubProjects(page);
     await page.goto("/projects?app=my-inbox");
-    const filter = page.locator('[data-page-filter="the inbox"]');
+    const filter = page.locator('[data-page-filter="my task inbox"]');
     await expect(filter).toBeVisible();
     await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
     await field(page).fill("vendor review");
-    await commandBar(page).getByRole("option", { name: /Show all in the inbox/ }).click();
+    await commandBar(page).getByRole("option", { name: /Show all in my task inbox/ }).click();
     await expect(filter).toHaveValue("vendor review");
   });
 });
@@ -404,7 +404,7 @@ test.describe("the coordinator (NS-4b)", () => {
     await expect(row).toContainText("Suggested by AI");
     await row.click();
     await page.waitForURL((u) => u.pathname === "/tasks");
-    await expect(page.getByRole("textbox", { name: "Capture to inbox" })).toHaveValue("call the vendor");
+    await expect(page.getByRole("textbox", { name: "Capture to my task inbox" })).toHaveValue("call the vendor");
     // §6.4 rule 2: the box says the AI filled it.
     await expect(page.getByText("Filled by AI. Check it, then press Enter to add it.")).toBeVisible();
     // The job and its fields left the address.

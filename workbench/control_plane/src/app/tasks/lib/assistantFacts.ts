@@ -28,7 +28,7 @@ export function tasksAssistantFacts(input: {
     );
   }
   const count = (d: string) => input.items.filter((i) => i.disposition === d).length;
-  facts.push(`Their inbox holds ${count("INBOX")}, next actions ${count("NEXT")}, waiting-for ${count("WAITING")}.`);
+  facts.push(`Their task inbox holds ${count("INBOX")}, my tasks ${count("NEXT")}, waiting-for ${count("WAITING")}.`);
   const title = open?.title.replace(/\s+/g, " ").trim();
   return {
     label: title ? (title.length > CHIP_MAX ? `${title.slice(0, CHIP_MAX - 1)}…` : title) : undefined,

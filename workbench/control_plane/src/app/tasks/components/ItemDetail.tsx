@@ -626,11 +626,11 @@ export function TaskDetail({
             <div className="flex flex-wrap items-center gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
               <AppIcon name="AlertTriangle" className="h-4 w-4 shrink-0 text-warning" />
               <span className="min-w-0 flex-1 text-[12.5px] text-foreground">
-                No longer your action? Remove it from My Next Actions — it stays on its project board.
+                No longer your action? Remove it from My tasks — it stays on its project board.
               </span>
               <Button size="none" radius="keep" layout="inline-flex items-center" type="button" onClick={() => { updateItem(item.id, { isMine: false }); setOfferDropFromNext(false); }} className="gap-1.5 rounded-md px-2.5 py-1.5 text-xs">
                 <AppIcon name="UserMinus" className="h-3.5 w-3.5" />
-                Remove from My Next Actions
+                Remove from My tasks
               </Button>
               <Button variant="ghost" size="none" radius="keep" layout="" type="button" onClick={() => setOfferDropFromNext(false)} className="rounded-md px-2.5 py-1.5 text-xs">
                 Keep

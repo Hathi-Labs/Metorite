@@ -101,7 +101,7 @@ describe("My Tasks", () => {
     const text = f.facts.join("\n");
     expect(text).toContain('"next" view');
     expect(text).toContain("«Ship v2» open (item_id: i-2, disposition: NEXT)");
-    expect(text).toContain("inbox holds 1, next actions 1, waiting-for 0");
+    expect(text).toContain("task inbox holds 1, my tasks 1, waiting-for 0");
     expect(f.label).toBe("Ship v2");
   });
 

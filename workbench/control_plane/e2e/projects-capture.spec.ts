@@ -79,7 +79,7 @@ async function mock(page: Page): Promise<string[]> {
   return written;
 }
 
-const CAPTURE_INPUT = (page: Page) => page.getByRole("textbox", { name: "Capture to inbox" });
+const CAPTURE_INPUT = (page: Page) => page.getByRole("textbox", { name: "Capture to my task inbox" });
 
 test("at 390 the bar reads Menu, My work, Capture, Search, Ask", async ({ page }) => {
   test.setTimeout(120_000);

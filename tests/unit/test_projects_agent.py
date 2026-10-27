@@ -1523,7 +1523,7 @@ async def test_an_inbox_with_no_personal_project_is_empty_not_failed(monkeypatch
     monkeypatch.setattr(c, "current_user_email", lambda: "pm@fracktal.in")
     out = await skill_projects.my_work(view="inbox")
     assert "No personal project yet" in out
-    assert "My inbox: nothing." in out
+    assert "My task inbox: nothing." in out
 
 
 # ── S7a — team_capacity ──────────────────────────────────────────────────────

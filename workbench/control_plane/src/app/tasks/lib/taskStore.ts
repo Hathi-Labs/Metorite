@@ -1767,7 +1767,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       get().reportSyncFailure(
         `Couldn't move it to ${dest.name}: ${
           err instanceof Error && err.message ? err.message : "the move was refused"
-        }. It stays in your Inbox.`,
+        }. It stays in My task inbox.`,
       );
     if (dest.kind === "area") {
       // Inside my own tree, which D62 allows. Nothing is published, so it
