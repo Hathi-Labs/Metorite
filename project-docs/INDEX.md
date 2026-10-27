@@ -13,8 +13,7 @@ would confuse exactly the agents this cleanup serves.)*
 **How an agent navigates:** the repo root **`CLAUDE.md`** is loaded into every
 session (D30) and routes you here; then start at **`work_plan.md` §1** (the spec contract and
 the standing rules **R1–R9** — R6/R7/R8 are the engineering-practice rules from
-D28 and bind every PR), then **§2** (the dispatch board — ordering, states,
-gates). ⚠️ **Start at §2.0 if you want the shape of the work rather than a ticket** — it is the product roadmap (M0…M4) over the same rows, added 2026-08-26. The board row names the **owning spec**; build
+D28 and bind every PR), then **§2** (the workstream index). **Metorite holds the state (D118):** call `my_work` through the Metorite MCP for the next item. ⚠️ **Start at §2.0 if you want the shape of the work rather than a ticket** — it is the product roadmap (M0 to M4). The §2 row names the **owning spec** and the Metorite epic. Build
 only from owning specs listed **ACTIVE** here. Anything in DEFERRED or
 HISTORICAL is banner-marked and dispatches nothing. `work_plan.md` §6 is the
 owner-gate registry an agent must refuse by name. Decisions (**D1–D93**, current 2026-10-07, with D74 reserved by `credit_pricing.md` — this read "D1–D91" until then) live in
@@ -32,8 +31,8 @@ limitations). Do not add product specs to `docs/`.
 
 | Spec | Board row(s) |
 |---|---|
-| `work_plan.md` | THE BOARD — §1 contract · §2 rows · §3 decisions · §4 owners · §6 gates |
-| `HANDOFF.md` | THE QUEUE (D39) — what the last session left unfinished, injected at session start by `.claude/hooks/session-handoff.mjs`. ⚠️ **Actions, never state**: `work_plan.md` §2 stays the only current-state authority, and every entry carries a **Check** that re-derives whether it is still real. Sessions delete entries whose Check passes; `/handoff` is the workflow. |
+| `work_plan.md` | THE RULES — §1 contract · §2 workstream index · §3 decisions · §4 owners · §6 gates. Metorite holds the state (D118). |
+| `HANDOFF.md` | THE QUEUE (D39) — what the last session left unfinished, injected at session start by `.claude/hooks/session-handoff.mjs`. ⚠️ **Actions, never state**: Metorite holds the state (D118), and every entry carries a **Check** that re-derives whether it is still real. Sessions delete entries whose Check passes. `/handoff` is the workflow. |
 | `STAGING_SETUP_RUNBOOK.md` | ACTIVE (2026-10-16) — the owner's steps that turn the dev box into `dev.metorite.com` (WS-38, HANDOFF H-335). Written for a browser session on the owner's PC: DNS in hPanel, a Google client, a Microsoft app, a Router key, and the setup run in the hPanel browser terminal. Part F is the agent's production side and the check. Owning spec: `specs/staging_and_daily_release.md` §5.11. |
 | `work_plan.md` §2 (the board row itself) | WS-1 · WS-4 · WS-5 |
 | `specs/saas_multitenancy.md` · `specs/saas_multitenancy_implementation.md` · `specs/saas_multitenancy_handover.md` | WS-29 — hand the **handover** to the executing agent. *(All three named in full: the shorthand `(+ _implementation, _handover)` read as complete to a human and as a gap to `test_index_completeness.py`, which is the one reader that cannot ask.)* |

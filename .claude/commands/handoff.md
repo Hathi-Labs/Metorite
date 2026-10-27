@@ -18,7 +18,7 @@ Argument: `$ARGUMENTS` (default: `check`).
 > **Never restate state in HANDOFF.md. Point at it, and carry the command that
 > re-derives it.**
 
-`work_plan.md` §2 is the only current-state authority (CLAUDE.md §1). If this
+Metorite holds the current state (D118, CLAUDE.md §1). If this
 file also described state it would be a second board — two descriptions of one
 truth, the stale one trusted precisely because it is the one loaded into the
 prompt. Every entry therefore carries a **Check**, and no entry is believed

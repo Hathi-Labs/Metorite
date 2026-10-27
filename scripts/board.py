@@ -1,16 +1,12 @@
-"""Print the dispatch board (work_plan.md section 2) as a short index.
+"""Print the workstream index (work_plan.md section 2) as a short list.
 
     uv run python scripts/board.py                 # one line per workstream
     uv run python scripts/board.py --open          # only rows not done
-    uv run python scripts/board.py --row WS-39     # one row, notes capped
+    uv run python scripts/board.py --row WS-CZ     # one row, notes capped
 
-Section 2 is about 470 KB, near 117,000 tokens, because each row's notes cell
-keeps its whole history (one cell is 83 KB). `/next-ticket` read all of it on
-every cycle only to pick one row. This prints the same rows in about 6,000
-tokens, and `--row` prints one row with its notes capped.
-
-The board stays the only current-state authority. This reads it and writes
-nothing, so it cannot drift from it.
+Metorite holds the state of each work item (D118). Section 2 keeps one short
+row per workstream, with its owning spec and its Metorite epic. This reads the
+rows and writes nothing, so it cannot drift from them.
 
 Fence: tests/unit/test_board_index.py.
 """
