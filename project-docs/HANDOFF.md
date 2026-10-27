@@ -197,8 +197,8 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** the WS-67 row of `project-docs/work_plan.md` says OA-10 is BUILT. Then delete this entry. OA-1 to OA-5, OA-6 (D117), OA-7a, OA-7g and the design are done.
 - **Why:** D117. The owner chose one chat for the whole app, tools loaded per turn, and dynamic sub-agents for parallel work (2026-10-26). OA-5 measured the pack at 2.3 times faster and half the cost, with the same accuracy.
 - **Do this:**
-  1. OA-7b is MERGED (PR #1378, `3a06ed097`, dark, no live caller). A verifier and a reviewer passed round 1. The strict hold within a turn is a default, awaiting the owner's confirmation. Ask the owner if it stays strict.
-  2. OA-7c (sticky packs and layer (a)) is next. Follow spec §4.2.8 and §4.5, and the six OA-7c conditions at the head of §4.2.8: never cache a `PackBuild` across runs, build packs after the tenant bind, key the run check on a value the server mints, two parallel pack calls can lose a working-set update, the mailbox event is lost on a relay-only run, and the hold note names no other assistant. The OA-7h measure must install the in-memory mark store. Then OA-7d to OA-7f and OA-7h.
+  1. PR #1378 merged OA-7b (`3a06ed097`, dark). The owner confirmed the strict hold within a turn on 2026-10-27.
+  2. OA-7c (sticky packs and layer (a)) is BUILT, dark, on branch `ws67-oa7c-sticky-packs`, with no PR yet. Spec §4.2 "As built, OA-7c" says how it meets the six conditions. Next: a verifier and a reviewer, then the PR. Then OA-7d to OA-7f and OA-7h. The OA-7h measure must install the in-memory mark store.
   3. OA-9a parser: build beside OA-7. The OA-9a worker and OA-9b stay NO-GO until the §4.5 edits land in the spec.
   4. OA-8a to OA-8e, then OA-8e passes before OA-10. OA-10 also moves the Email and Projects rails to the one assistant, with their pack pinned.
   5. `TOOL_PACKS`, `TOOL_PACKS_ORGS` and `SPAWN_SUBAGENTS_ORGS` are owner-only (`work_plan.md` §6 D4). Do not flip them.

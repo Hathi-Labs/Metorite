@@ -87,9 +87,10 @@ clone cache.
 
    `packs_on(org)` is the ONE reader of `TOOL_PACKS` and `TOOL_PACKS_ORGS`,
    and it fails closed. The caller passes the bound tenant, never request
-   input. Any value on a box is OWNER-ONLY (`work_plan.md` §6 D4). OA-7a
-   ships no caller. `test_no_caller_reads_the_flag_yet` names the files
-   that may read it. Fence: `tests/unit/test_tool_packs_registry.py`.
+   input. Any value on a box is OWNER-ONLY (`work_plan.md` §6 D4). Its one
+   caller is `orchestrator.executor._start_pack_turn` (OA-7c), and
+   `test_one_caller_reads_the_flag` names it. Fence:
+   `tests/unit/test_tool_packs_registry.py`.
 
    OA-7b: `owner_scope(owner, held)` is the scope of the owner for ONE
    pack call. It binds `agent_name`, `no_egress` and
@@ -102,6 +103,27 @@ clone cache.
    `EGRESS_HELD_PACK_ANSWER` or its cards form, which names no other
    assistant. The `email` rules name `artifact:orchestrator:<path>` for a
    file of the chat. Fence: `tests/unit/test_pack_guards.py`.
+
+   OA-7c: layer (a) and the sticky state (`one_assistant_context.md`
+   §4.2.2).
+   - `begin_turn` counts the member turn and reads the sticky packs of the
+     chat from tenant Redis, at
+     `cc:<org>:tool-packs:<session>:<member hash>`. A Redis fault gives no
+     sticky pack and writes nothing for the turn.
+   - `choose` takes three inputs: the sticky packs, a reference and the
+     words of the turn. It applies the decay of 8 member turns and the cap
+     of 3 packs, 110 tools and 35 tools a pack.
+   - `note_used` makes a pack sticky after one of its tools ran. It writes
+     one hash field, so two calls at once lose no update.
+   - `persona_for` swaps the owner's delegation text for the rules, in load
+     order. It raises when the persona does not hold that text once. A held
+     pack adds `egress.EGRESS_HOLD_NOTE_PACK`, which names no other
+     assistant.
+   - `delegation_refusal` is the ONE rule of the pack refusal. A hand-off to
+     an owner that a pack of the calling run replaces gets the pack text.
+     `call_agent_background` does not ask it.
+   - Fences: `tests/unit/test_tool_packs_choice.py` and
+     `tests/unit/test_tool_packs_off.py`.
 
 5b. decide_tools.py -- the `decide` core-floor tool (WS-31 CP-13d, spec:
    project-docs/specs/customer_console.md §6A.14). It asks one typed question
