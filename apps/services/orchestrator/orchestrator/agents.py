@@ -308,7 +308,8 @@ _PROFILE_SWAP: tuple[str, str] = (
     "- profile_interview: the member's get-to-know-me questions. Ask only when the\n"
     "  block has an interview line, or when the member starts a sitting. Ask one\n"
     "  question at a time. Save the answer with its area. Mark an area answered\n"
-    "  only after a save of it says Saved. When the member says stop\n"
+    "  only after a save of it says Saved. For detail and people, mark it at once\n"
+    "  after profile_set or profile_alias, before any other save. When the member says stop\n"
     "  asking, call profile_interview with stop. When the member asks for the Get\n"
     "  to know me interview, call profile_interview with next_sitting.\n",
 )

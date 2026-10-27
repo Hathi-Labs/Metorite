@@ -1005,6 +1005,14 @@ NO_OPEN_AREA = "No area is open. Ask nothing from the interview now."
 NOT_MARKED_TEXT = (f"Not marked. {NO_ANSWER_TEXT} Call profile_remember with the area "
                    "and a short phrase copied from the member's message. Mark the area "
                    "answered only after the save says Saved.")
+#: The same refusal for the two areas that another tool answers. The gateway
+#: reads only the LAST chat change for them, so the mark comes at once.
+NOT_MARKED_BY_AREA = {
+    "detail": (f"Not marked. {NO_ANSWER_TEXT} Call profile_set for the answer length "
+               "first, then mark again."),
+    "people": (f"Not marked. {NO_ANSWER_TEXT} Call profile_alias for the colleague "
+               "first, then mark again. Do not save a fact about another person."),
+}
 #: What the model reads when it asks with no sitting and no question due.
 NO_SITTING_TEXT = ("No sitting is under way and no question is due. "
                    "Do not ask an interview question now.")
@@ -1024,8 +1032,8 @@ async def profile_interview(action: str, area: str = "") -> str:
     Save an answer with profile_remember and the area, which marks the
     area answered. Do not call this tool with answered after it. For the
     area detail use profile_set, and for the area people use profile_alias.
-    Then call this tool with answered and the area, and only after the save
-    says Saved or Set. A mark answered with no saved answer is refused, and
+    Then call this tool with answered and the area at once, before any other
+    save, and only after the change says Set or Saved. A mark answered with no saved answer is refused, and
     the area stays open.
 
     Args:
@@ -1085,7 +1093,7 @@ async def profile_interview(action: str, area: str = "") -> str:
     if status == 422 and isinstance(detail, dict) and detail.get("reason") == NO_ANSWER:
         # The gateway holds no saved answer for the area (incident
         # 2026-10-27). The area stays open, and the model saves first.
-        raise _Refused(NOT_MARKED_TEXT, NO_ANSWER)
+        raise _Refused(NOT_MARKED_BY_AREA.get(area_id, NOT_MARKED_TEXT), NO_ANSWER)
     if status >= 400:
         raise _Refused(f"The profile refused that mark: {_detail(data)}. Nothing changed.")
     return "\n".join([_status("saved"), f"Marked {area_id} as {act}."])

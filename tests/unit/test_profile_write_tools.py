@@ -2028,5 +2028,22 @@ class TestInterviewIncident:
         assert "ask them to say it again in a new message" in pt.NO_TYPED_TEXT
         assert "Mark an area answered\n  only after a save of it says Saved." in line
         assert "Do not rephrase" in (pt.profile_remember.__doc__ or "")
-        assert "only after the save" in (pt.profile_interview.__doc__ or "")
+        assert "only after the change says" in (pt.profile_interview.__doc__ or "")
         assert ap.NO_ANSWER in pt.REASONS
+
+
+@pytest.mark.parametrize("area,tool", [("detail", "profile_set"), ("people", "profile_alias"),
+                                       ("goals", "profile_remember")])
+def test_a_refused_mark_names_the_tool_of_its_area(own_chat, area, tool) -> None:
+    own_chat.profile["interview"] = {"started_at": "2026-10-01T00:00:00Z"}
+    out = _refused(_run(pt.profile_interview("answered", area)), ap.NO_ANSWER)
+    assert f"Call {tool}" in out
+    assert ("profile_remember" in out) is (area == "goals")
+    if area == "people":
+        assert "Do not save a fact about another person." in out
+
+
+def test_the_persona_marks_detail_and_people_at_once() -> None:
+    line = _orchestrator_module()._PROFILE_SWAP[1]
+    assert "For detail and people, mark it at once" in line
+    assert "before any other\n    save" in (pt.profile_interview.__doc__ or "")
