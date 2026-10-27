@@ -4444,6 +4444,7 @@ Owner decision, 2026-10-25, in chat: "Go ahead with your recommendation". Board:
 3. **The assistant interviews the member** (PZ-26, PZ-27). Ten areas: role, goals, a good day, decisions, detail, rhythm, channels, energy, peeves and people. The first sitting asks up to three questions, one at a time. After it, one question a day at most.
 4. **The limits of D-PZ-13 apply.** A skip waits 14 days. "Don't ask again" stops an area. No question goes to a shared room, and none goes out on WhatsApp.
 5. **Each answer is an explicit write with Undo** (D-PZ-2). The second yes of D-PZ-16 stays for a sensitive answer.
+6. **Amended by the owner, 2026-10-25, in chat: the first release is for every organization, not for Hathi Labs only.** The owner said "turn on for all" and then "move it to production as well". On 2026-10-25 production got `ASSISTANT_PROFILE_ENABLED=true` and an empty `ASSISTANT_PROFILE_ORGS`. The build flag `NEXT_PUBLIC_ASSISTANT_PROFILE` is retired, so the server switch is the only switch. Point 1 stays true for the list: it can still limit the switch to some organizations.
 
 **Why.** The profile of §4 holds how to talk to the member, and nothing about what the member works toward or enjoys. The owner wants to use the feature now, on one organization, before PZ-10 and phase 2.
 

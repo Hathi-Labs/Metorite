@@ -49,40 +49,54 @@ nothing; the thing nobody wrote down costs a session.
 ## The shape of an entry
 
 ```
-### H-416 · Install the new staging flag tool as root, so the assistant profile can turn on in staging · [OWNER]
+### H-416 · Decide whether the staging apply installs the staging flag tool itself · [OWNER]
 - **Check:** on the dev box (srv1747539), run
   `cmp /opt/acb/app/deploy/hostinger/staging/acb-staging-flag /usr/local/sbin/acb-staging-flag`.
-  If it exits 0, and
-  `sudo -n /usr/local/sbin/acb-staging-flag --list` shows
-  `ASSISTANT_PROFILE_ENABLED=true`, delete this entry.
-- **Why:** PZ-25 (#1330) put `ASSISTANT_PROFILE_ENABLED` and
-  `ASSISTANT_PROFILE_ORGS` on the allowlist of the tool. The copy in
-  `/usr/local/sbin` is the copy of 2026-10-18, so it refuses both names. On
-  2026-10-25 an agent got "refused: ASSISTANT_PROFILE_ENABLED is not on the
-  feature-flag allowlist". Production is on since 2026-10-25 by the owner's
-  word, and staging stays off until this step.
-- **Do this (owner):** open a root shell on srv1747539, in the hPanel browser
-  terminal or with `sudo -i`. Run this one line:
-
-      install -o root -g root -m 755 /opt/acb/app/deploy/hostinger/staging/acb-staging-flag /usr/local/sbin/acb-staging-flag
-
-  The sudoers line `/etc/sudoers.d/acb-staging-flag` is already there, so the
-  one line is enough. Then tell the agent.
-- **Then (agent):** run
-  `sudo -n /usr/local/sbin/acb-staging-flag set ASSISTANT_PROFILE_ENABLED true`.
-  Leave `ASSISTANT_PROFILE_ORGS` empty, so each organization gets it, as in
-  production. Check that `/version` and `/health` answer on
-  `api.dev.metorite.com`. Report the act and the evidence.
-- **Decide (owner), once:** each change to the allowlist needs this root step
-  again. One way to remove it: the root staging apply of `vps_apply.sh`
-  installs the tool when the file in the checkout differs (`cmp`, then
+  If it exits 0, or the owner has said no, delete this entry.
+- **Why:** each change to the allowlist of the tool needs a root `install` by
+  the owner. On 2026-10-25 the profile switch had to wait for that step. On
+  2026-10-27 the `cmp` shows a difference again, so the drift comes back with
+  each change. The installed copy still takes `ASSISTANT_PROFILE_ENABLED`.
+- **Decide (owner), once:** let the root staging apply of `vps_apply.sh`
+  install the tool when the file in the checkout differs (`cmp`, then
   `install`). The cost: root then copies a file that `acb` can write. `acb` is
   already root-equivalent through the `docker` group (see the README of
   `deploy/hostinger/staging/`), so the cost is small today. It grows when
   `acb` leaves `docker`. Say yes or no, and an agent builds it.
-- **Authority:** owner, 2026-10-25, in chat: turn the profile on in staging
-  for all organizations, then in production.
+- **Authority:** owner, 2026-10-25, in chat.
 - **Added:** 2026-10-26
+
+### H-418 · Build PZ-31: a member answer that becomes a steer cannot be saved · [AGENT] · security
+- **Check:** `grep -n '_typed = ""' apps/services/gateway/gateway/routes/agent.py`
+  still shows the steer follow-up binding empty typed words (about line 2856),
+  and Metorite task #832 is not Done. If either fails, delete this entry.
+- **Why:** a message that arrives while a run streams becomes a steer. The
+  follow-up run binds no typed words, so every profile save in it refuses
+  with `NO_TYPED_TEXT`. In the interview this loses an answer. The review of
+  the save fix of 2026-10-27 found it. It touches the steer store and the
+  grounding seam, so it is HIGH tier.
+- **Do this:** follow task #832. `send_steer` stores a `typed` flag. After the
+  drain, `_typed` is the joined text of the steers of the same author with
+  the flag set. Keep `grounded()` and `CONTENT_SHARE` as they are. Full loop:
+  Opus build, Opus verifier, Opus reviewer.
+- **Authority:** none needed. `specs/personalization.md` §5.5.
+- **Added:** 2026-10-27
+
+### H-419 · Look at Settings → Assistant settings, and say what still feels stiff · [OWNER]
+- **Check:** Metorite task #261 (PZ-11) is Done. If it is, delete this entry.
+- **Why:** the first release is on in production for every org since
+  2026-10-25. No agent has seen the pages in a browser, because the build box
+  has no dev server. The tone work of 2026-10-27 (PZ-30) ships at the nightly
+  release.
+- **Do this (owner):** on app.metorite.com, reload, then open the account menu
+  and choose Settings → Assistant settings. Look at the page in light mode,
+  at compact density, with a changed accent and at 390 px. Start a new empty
+  chat, press "Yes, start", and answer the three questions. Tell the agent
+  what feels stiff, and what looks wrong.
+- **Then (agent):** tune the wording in a small slice. Add the findings to
+  PZ-10 (#260), which holds the tone cases.
+- **Authority:** owner, 2026-10-26 and 2026-10-27.
+- **Added:** 2026-10-27
 
 ### H-335 · Finish the staging box: DNS, two OAuth clients, one sudo run · [OWNER]
 - **Check:** `curl -s https://api.dev.metorite.com/version` answers a `sha` equal
