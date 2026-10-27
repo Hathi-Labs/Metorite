@@ -1,34 +1,46 @@
-# The OA-5 measure: an email tool pack against delegation (WS-67)
+# The email measure: the real tool pack against delegation (WS-67, OA-5 and OA-7h)
 
 This folder compares two shapes of the one assistant on the same email
 chats. The owning spec is `project-docs/specs/one_assistant_context.md`,
-§4 and §5, slice OA-5 (D116). The report of the first live run is
+§4 and §5, slices OA-5 (D116) and OA-7h. The report of the first live run is
 `docs/one_assistant_measure_2026-10-25.md`.
 
-**Status.** Built on 2026-10-25. The scripted run passes on both arms. The
-results of the live run of 2026-10-25 are in git history only. Commit
-`63550a052` (#1348) added `results_2026-10-25.json`, and the cleanup of
-2026-10-27 deleted it.
+**Status.** OA-5 was built on 2026-10-25. OA-7h phase 1 was built on
+2026-10-27: the `pack` arm runs the real pack, and the scripted run passes on
+both arms. The live run of OA-7h waits for OA-7f. The results of the live run
+of 2026-10-25 are in git history only. Commit `63550a052` (#1348) added
+`results_2026-10-25.json`, and the cleanup of 2026-10-27 deleted it.
 
 ## The two arms
 
 | Arm | What the orchestrator holds |
 |---|---|
 | `delegation` | Today's code. The orchestrator gives each email task to the real email assistant, which runs as a sub-agent. |
-| `pack` | An eval fixture (`pack.py`). The orchestrator holds the email assistant's own tools and a short rules block, and it has no email delegation. |
+| `pack` | The REAL `email` pack. `run.pack_flag()` sets `TOOL_PACKS=email` and `TOOL_PACKS_ORGS=<the eval org>` in the eval process, and the real run loads the pack. |
 
-The pack is an eval fixture, and no production code changes. `pack.py`
-changes the agents that the real factory built, through the
-`after_build` hook of the routing harness. It does these five things:
+OA-5 faked the pack with `pack.install`. OA-7h removed that fixture. The
+real code now does the work: `tool_packs.choose` (layers a and b),
+`_apply_tool_packs`, `load_skill_tools`, the held answer and the persona
+swap. `pack.py` keeps only the names that the other files share, and the
+constant `REFUSED`, which `tests/unit/test_tool_packs_choice.py` pins.
 
-1. It takes away the `email_assistant` tool.
-2. It adds the email assistant's own tools, kept to `own_tool_scope`.
-3. It removes each persona bullet that names `email_assistant`, and it adds
-   `RULES`.
-4. It refuses each delegation to the email assistant, and the check
-   `no_email_delegation` fails that turn.
-5. It records each email tool call in the chat's working set, through the
-   executor's own two functions.
+Both arms run with the settings of production, set in the eval process
+only (`run.PRODUCTION`): `EMAIL_HELD_CARD_SEND`, `AI_TIER_ROUTING=orchestrator`,
+`AI_REASONING_OFF_AGENTS=orchestrator`, `MAF_NATIVE_SESSIONS=true` and
+`NARROWING_AGENTS=email-assistant`. The runner never writes them on a box,
+and never flips `TOOL_PACKS`, `TOOL_PACKS_ORGS` or `SPAWN_SUBAGENTS_ORGS`
+anywhere.
+
+The measure installs the in-memory mark store
+(`tests/unit/_egress_mark_store.py`). A chat that read mail is then marked,
+and the next turn holds the pack, as in production. Without the store, the
+mark read fails closed and the held-card check proves nothing. The run stops
+when the store does not install.
+
+With the `email` pack alone, the `email-setup` pack is not loaded. A rule, a
+setting, the knowledge and the writing style go to the email assistant by a
+hand-off. This is legal on the `pack` arm, and it costs one delegated run.
+The report counts these turns as the setup gap.
 
 ## What it reuses
 
@@ -66,6 +78,22 @@ Each turn has machine checks (`checks.py`) and a known-good plan. Four
 checks read prose, and they are heuristics: `no_name_claim`,
 `no_reference_subject`, `admits_unreadable` and `no_content_claim`.
 
+Four checks apply to every turn, with no entry in the scenario:
+
+| Check | Passes when |
+|---|---|
+| `no_email_delegation` | Pack arm only. No hand-off of mail work (read, search, reply, send) and no refusal of the pack. A hand-off for a rule, a setting, the knowledge or the writing style passes. |
+| `held_card` | From turn 2, each send goes through `/email/held-card/act`. A plain send fails. Turn 1 and a turn with no send give None. |
+| `one_card` | The turn shows at most one card for each write. A send that shows the gate card and then the held card fails. |
+| `ran` | The turn ended with no error. |
+
+The report adds these rows: the cache share (cache-read tokens over input
+tokens), the turns that hand off for setup work with their cost, the turns
+that hand off mail work, the turn-kind request time with and without pack
+items, and the turns where a pack loaded before the first model call. The
+last two read the log events of the pack code, which `run.LogTap` keeps in
+each row as `pack_events`.
+
 ## Run it with no model
 
 ```bash
@@ -74,12 +102,25 @@ uv run python -m evals.one_assistant_measure.run --scripted --scenarios five_tur
 ```
 
 Each plan plays on both arms, and every check must pass. A scripted run
-proves the path and the checks. It does not prove the model's choice.
+proves the path and the checks. It does not prove the model's choice. On the
+`pack` arm, the plan loads the pack with `load_skill_tools` when the words
+of the turn do not, and it hands a setup call to the email assistant.
 
 ## Run it live
 
 A live run spends credits on the Router. Open the tunnel to the Console
-first, and close it after the run.
+first, and close it after the run. The tunnel maps local port 18090 to the
+Router on port 8090 of the production box (`staging_and_daily_release.md`
+holds the same mapping for staging). It needs the grant `deploy` in
+`.claude/OWNER_GRANTS.md`. The runner refuses a Router that is not on this
+machine.
+
+```bash
+ssh -N -L 127.0.0.1:18090:127.0.0.1:8090 metorite
+```
+
+`~/.metorite/secrets/eval.env` holds `LITELLM_BASE_URL=http://127.0.0.1:18090`
+and the key. Close the tunnel with Ctrl+C in that shell.
 
 1. Put `LITELLM_BASE_URL` and `LITELLM_API_KEY` in the environment or in
    `~/.metorite/secrets/eval.env`. The runner never prints the key.
@@ -137,8 +178,12 @@ probe of 2026-10-25 within 1 percent.
 
 `tests/unit/test_one_assistant_measure.py` is the fence (R7). It runs every
 plan on both arms. It makes each checker fail with one mutation. It also
-proves three more facts:
+proves these facts:
 
-- The pack holds the email tools and no delegation.
+- The pack arm sets the real flag, and the real run loads the real pack.
+- A hand-off for setup work passes `no_email_delegation`, and a hand-off of
+  mail work fails it.
+- A send from turn 2 goes through the held card, with one card.
+- The measure installs the mark store.
 - The live mode refuses a send that is not the Router.
 - The card reproduces the Router's figures.

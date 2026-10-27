@@ -24,6 +24,12 @@ below, PR #1383). The flag is off on each box, so no run loads a pack yet.
 OA-7e is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7e"
 below, PR #1389). It adds layer (b), the meta tool `load_skill_tools`.
 
+OA-7h is PARTLY BUILT (2026-10-27, phase 1): the harness in
+`evals/one_assistant_measure` runs the real `email` pack, with the checks
+`held_card` and `one_card` and the narrowed `no_email_delegation`. The
+scripted run passes. The live run, which is the gate of the flag, waits for
+OA-7f.
+
 OA-7d is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7d"
 below). The dock sends `surface`, and a turn from `/email` loads the `email`
 pack with no email word.
