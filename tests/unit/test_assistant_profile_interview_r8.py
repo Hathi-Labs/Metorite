@@ -600,3 +600,17 @@ async def test_the_undo_route_of_a_replace_with_an_area_opens_the_area(db) -> No
     assert [f["text"] for f in read["facts"]] == ["I want to hire"]
     assert "area" not in read["facts"][0]
     assert set(read["interview"]["areas"]) == {"role"}
+
+
+async def test_a_chat_asked_keeps_an_answered_area(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
+        await _add_area_fact(db.org_a, user, "ship the CRM import", "goals")
+        done = await _mark(db.org_a, user, "goals", "answered", "chat")
+        again = await _mark(db.org_a, user, "goals", "asked", "chat")
+        settings = await _mark(db.org_a, user, "goals", "asked")  # Settings is not limited
+    assert again["areas"]["goals"] == done["areas"]["goals"]
+    assert settings["areas"]["goals"]["state"] == "asked"

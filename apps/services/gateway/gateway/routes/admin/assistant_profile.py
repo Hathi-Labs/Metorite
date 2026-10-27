@@ -1179,6 +1179,11 @@ async def mark_assistant_interview(
         # member who declined has neither. Settings is not limited.
         if via is not None and mark.state == "asked" and not may_ask(cur, now):
             raise _refuse(NO_SITTING)
+        # A chat `asked` never takes an `answered` area back: only a reset
+        # in Settings opens it (second review, 2026-10-27).
+        entry = ((cur or {}).get("areas") or {}).get(area) or {}
+        if via is not None and mark.state == "asked" and entry.get("state") == "answered":
+            return dict(cur)
         return apply_interview_mark(cur, area, mark.state, now)
 
     return await _interview_write(uid, via, _build, _check)
