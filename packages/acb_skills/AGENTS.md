@@ -666,6 +666,18 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
      `tests/unit/test_handoff_words.py` and the two trajectories
      `test_chat_constraints_trajectory.py` and
      `test_handoff_words_trajectory.py`.
+5n-b. subagent_contract.py -- the contract of a dynamic sub-agent (WS-67
+   OA-9a, spec `project-docs/specs/one_assistant_context.md` §6). It does
+   no I/O, and nothing calls it until OA-9b.
+   - `parse_items` reads the JSON object that a child gives back. Any other
+     output becomes one `inferred` item with the source `unstructured`.
+   - `parse_jobs` checks the jobs of `spawn_subagents` against the
+     `run_tools` of the parent. It refuses a pack, a delegation tool, the
+     spawn tool and a tool that is not read-only. A job after `MAX_JOBS`
+     gets its name and does not run.
+   - The caps of §6.2 live here. `MAX_JOBS` equals
+     `agent_tools._PARALLEL_MAX`. Do not write a second copy of a cap.
+   - Fence: `tests/unit/test_subagent_contract.py`.
 5n-0. profile_tools.py -- `resolve_person`, the assistant's lookup of a
    colleague by name (WS-63 PZ-5, `project-docs/specs/personalization.md`
    §5.4). It reads `GET /auth/me/assistant-profile/resolve-person` as the
