@@ -209,8 +209,8 @@ export function TaskCaptureModal({
   const showAssignee = disp === "WAITING";
   const showDue = disp === "NEXT" || disp === "CALENDAR" || disp === "WAITING";
   // For an actionable capture (I'll do this), the AI also clarifies the energy,
-  // time estimate and any subtasks — mirror the inbox Clarify flow so the task
-  // lands complete. These fields are meaningless for WAITING/SOMEDAY/Inbox.
+  // time estimate and any subtasks — mirror the My task inbox Clarify flow so the task
+  // lands complete. These fields are meaningless for WAITING/SOMEDAY/My task inbox.
   const showDetails = disp === "NEXT" || disp === "CALENDAR";
 
   return (

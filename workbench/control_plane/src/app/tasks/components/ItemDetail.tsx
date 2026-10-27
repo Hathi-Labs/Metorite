@@ -373,7 +373,7 @@ export function TaskDetail({
   // directory alone — which is the correct answer under one store, and worth
   // saying rather than leaving as an unexplained simplification.
   const memberPeople: Person[] = people;
-  // The local Kanban stage (the workflow-stage axis of My Next Actions). Used to
+  // The local Kanban stage (the workflow-stage axis of My tasks). Used to
   // show/change the task's status category in the detail, like the card.
   const stageActions = useCardActions(item);
   // The full owner set (falls back to the single assignee for older rows / mock).
@@ -467,7 +467,7 @@ export function TaskDetail({
               </MetaEdit>
 
               {/* Stage — for a SYNCED task the raw ClickUp status (back-syncs on
-                  change); for a LOCAL task the workflow stage (the My Next Actions
+                  change); for a LOCAL task the workflow stage (the My tasks
                   column). Local tasks always show one now, so their stage is
                   visible/changeable here too, not just on the board. */}
               {isSynced ? (
@@ -619,7 +619,7 @@ export function TaskDetail({
             </section>
           )}
 
-          {/* Offer to drop a just-reassigned/unassigned task from My Next Actions.
+          {/* Offer to drop a just-reassigned/unassigned task from My tasks.
               It stays on ClickUp — only the personal list changes. The regular
               delete/two-way sync is untouched. */}
           {offerDropFromNext && (

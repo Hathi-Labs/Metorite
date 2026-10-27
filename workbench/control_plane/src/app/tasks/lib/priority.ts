@@ -13,7 +13,7 @@
 //   • The 8 cells are a projection of the three booleans (the user's Notion
 //     formula, verbatim). Never persisted.
 //   • The cells collapse into ACTION MODES: do / delegate / schedule / drop.
-//     Delegate/Schedule are SUGGESTIONS layered on My Next Actions, never a
+//     Delegate/Schedule are SUGGESTIONS layered on My tasks, never a
 //     forced move — dismissible via keptMine.
 
 import { MyTask } from "./types";
