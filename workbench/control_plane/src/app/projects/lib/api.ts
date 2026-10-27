@@ -300,7 +300,8 @@ export interface NodeSummary {
    * WS-64 OP-11 — the My tasks summary only (`GET /projects/my/summary`).
    * `due_soon` is open work due in the next `due_soon_days`. `by_disposition`
    * holds the chip counts, by the rules of `mine.fold_dispositions`. `today`
-   * is the member's date. Absent on a node summary.
+   * is the member's date, and `time_zone` the zone the server counted Today
+   * in (the stored zone, else UTC). Absent on a node summary.
    */
   due_soon?: number;
   due_soon_days?: number;
@@ -308,6 +309,7 @@ export interface NodeSummary {
     Record<"inbox" | "today" | "next" | "waiting" | "someday" | "done", number>
   >;
   today?: string;
+  time_zone?: string;
 }
 
 /**

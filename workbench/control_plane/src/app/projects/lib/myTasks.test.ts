@@ -34,10 +34,17 @@ import {
   myTasksHref,
   myTasksQuery,
   openCount,
+  MY_TASKS_MAX_PAGES,
+  MY_TASKS_MAX_ROWS,
+  MY_TASKS_PAGE,
+  STATUS_READ_FAILED,
   phoneMyTasksTap,
+  planMineDrop,
   projectChipText,
+  quickAddHome,
   stageDrop,
   stageGroups,
+  truncationNotice,
   withoutMyTasks,
 } from "./myTasks";
 import { projectAppSections, resolveAppChip, resolveAppLink } from "./projectApps";
@@ -378,5 +385,135 @@ describe("the reads", () => {
     expect(doneThisWeek({ series: [{ week_start: "a", completed: 1 }, { week_start: "b", completed: 4 }], current_week_partial: true })).toBe(4);
     expect(doneThisWeek({ series: [], current_week_partial: false })).toBeNull();
     expect(doneThisWeek(null)).toBeNull();
+  });
+});
+
+// ── OP-11 fix round ─────────────────────────────────────────────────────────
+
+describe("one write of the My tasks board (items 1 to 3)", () => {
+  const own = { rows: A, failed: false };
+  const t = task({ status_id: "a-todo", status_category: "todo" });
+
+  it("the Mark-done tick and the Status menu write their patch (item 1)", () => {
+    // TaskBoard sends a tick and a menu pick with NO position writes. The old
+    // drop read only the stage of a position write, so it sent nothing.
+    expect(planMineDrop(t, [], { status_id: "a-done" }, "category", own)).toEqual({
+      kind: "write",
+      patch: { status_id: "a-done" },
+      stage: "done",
+    });
+    expect(planMineDrop(t, [], { status_id: "a-todo" }, "category", own)).toEqual({ kind: "none" });
+  });
+
+  it("a drag sends the stage half from the task's OWN project and the lane half, in one patch (item 3)", () => {
+    const writes = [{ task_id: "t1", position: 1, group_key: "in_progress" }];
+    // The board's own status_id came from the merged set: B's, so wrong here.
+    const plan = planMineDrop(t, writes, { status_id: "b-todo", type_id: "ty2" }, "category", own);
+    expect(plan).toEqual({
+      kind: "write",
+      patch: { status_id: "a-doing", type_id: "ty2" },
+      stage: "in_progress",
+    });
+  });
+
+  it("a drag inside the same stage still sends the lane half (item 3)", () => {
+    const writes = [{ task_id: "t1", position: 1, group_key: "todo" }];
+    expect(planMineDrop(t, writes, { type_id: "ty2" }, "category", own)).toEqual({
+      kind: "write",
+      patch: { type_id: "ty2" },
+      stage: null,
+    });
+    expect(planMineDrop(t, writes, null, "category", own)).toEqual({ kind: "none" });
+  });
+
+  it("says a failed status read failed, not that the status is missing (item 7)", () => {
+    const writes = [{ task_id: "t1", position: 1, group_key: "in_progress" }];
+    const plan = planMineDrop(t, writes, null, "category", { rows: [], failed: true });
+    expect(plan).toEqual({ kind: "refuse", reason: STATUS_READ_FAILED });
+    expect(STATUS_READ_FAILED).not.toMatch(/has no/);
+  });
+
+  it("another axis sends the board's patch as a project board does", () => {
+    expect(planMineDrop(t, [], { project_id: "pb" }, "project", own)).toEqual({
+      kind: "write",
+      patch: { project_id: "pb" },
+      stage: null,
+    });
+  });
+
+  it("the space routes a status write through the subtask question (item 2)", () => {
+    const space = code("components/MyTasksSpace.tsx");
+    expect(space).toContain("planMineDrop(");
+    expect(space).toContain("subtaskComplete.changeStatus(task, status, own.rows");
+    expect(space).toContain("{subtaskComplete.dialog}");
+    // The board's menu and tick read the card's own statuses.
+    expect(space).toMatch(/<TaskBoard[\s\S]*statusesFor=\{statusesFor\}/);
+    const table = code("components/TableView.tsx");
+    expect(table).toContain("statusesFor?.(task) ?? statuses, () => onReload?.()");
+  });
+});
+
+describe("the cap of a chip read (item 5)", () => {
+  it("is one constant", () => {
+    expect(MY_TASKS_MAX_ROWS).toBe(MY_TASKS_PAGE * MY_TASKS_MAX_PAGES);
+    expect(MY_TASKS_MAX_ROWS).toBe(2000);
+  });
+
+  it("says so past the cap, and says nothing for a whole read", () => {
+    expect(truncationNotice(2000, 2500)).toBe("Showing the first 2,000 of 2,500. Narrow the filter or use All.");
+    expect(truncationNotice(300, 300)).toBeNull();
+    expect(truncationNotice(0, null)).toBeNull();
+  });
+});
+
+describe("a quick add of My tasks (item 10)", () => {
+  it("files to the personal root, never to an id no server row has", () => {
+    expect(quickAddHome("root-1")).toBe("root-1");
+    for (const bad of ["", "  ", "mine", "my-tasks", null, undefined]) {
+      expect(quickAddHome(bad)).toBeNull();
+    }
+  });
+
+  it("draws no per-group add on List, Board or Table, and a day add only with a home", () => {
+    const space = code("components/MyTasksSpace.tsx");
+    expect(space.match(/canQuickAdd=\{false\}/g)).toHaveLength(3);
+    expect(space).toContain("canQuickAdd={home !== null}");
+    expect(space).not.toContain('personalRootId ?? ""');
+  });
+});
+
+describe("Today in the member's stored zone (item 8)", () => {
+  // Stored zone IST, browser UTC. Due 2026-10-27T20:00Z is 28 October
+  // 01:30 in IST, so on the server's 27 October it is NOT in Today. The UTC
+  // day of the same instant is the 27th, which said it was.
+  const r = row({ disposition: "NEXT", is_mine: true, due_at: "2026-10-27T20:00:00Z" });
+
+  it("the chip agrees with the server when the browser sits in another zone", () => {
+    expect(inChip(r, "today", TODAY, "Asia/Kolkata")).toBe(false);
+    expect(inChip(r, "today", TODAY, "UTC")).toBe(true);
+    expect(chipRows([r], "today", TODAY, "Asia/Kolkata")).toEqual([]);
+  });
+
+  it("the space passes the summary's zone to every chip filter", () => {
+    const space = code("components/MyTasksSpace.tsx");
+    expect(space).toContain("summary.data?.time_zone");
+    expect(space).toContain("chipRows(list.rows, chip, today, zone)");
+    expect(space).toContain("chipRows(month.rows, chip, today, zone)");
+  });
+});
+
+describe("errors of My tasks (items 6 and 7)", () => {
+  const space = code("components/MyTasksSpace.tsx");
+
+  it("a successful read clears only a READ error", () => {
+    expect(space).not.toMatch(/setError\(/);
+    expect(space).toContain("setReadError(null)");
+    // The write error clears at the start of a write, or on Dismiss.
+    expect(space).toContain("setWriteError(null)");
+  });
+
+  it("the Overview offers Retry when the summary read failed", () => {
+    expect(space).toContain("!summary.data && summary.error");
+    expect(space).toContain("onClick: summary.refresh");
   });
 });

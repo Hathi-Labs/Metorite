@@ -115,8 +115,13 @@ export function landingApp(
 /**
  * The undo scope of the Projects page (§9 OP-2). My work has its own scope, so
  * entering it clears the board history, and Ctrl+Z reaches one store only.
+ *
+ * My tasks has a scope of its own (OP-11 fix round, item 12). Its writes go
+ * to the server and the inbox writes through the task store, so a card move
+ * in My tasks must not be undone from My task inbox, nor the reverse.
  */
 export function projectsUndoScope(app: string | null | undefined, projectId: string | null | undefined): string {
+  if (isMyTasksApp(app)) return "projects:my-tasks";
   return isMyWorkId(app) ? "projects:my-work" : `projects:${projectId ?? "none"}`;
 }
 
@@ -147,7 +152,14 @@ export function showMyWorkStrip(o: {
   stored: boolean;
   myWork: boolean;
   filedByMe: boolean;
+  /**
+   * OP-11 fix round, item 9: the panel opened from My tasks. My tasks reads
+   * the server, never the store, so the store strip must not draw there even
+   * when an inbox visit hydrated the store. The server strip draws instead.
+   */
+  serverOverlay?: boolean;
 }): boolean {
+  if (o.serverOverlay) return false;
   return o.enabled && o.stored && (o.myWork || o.filedByMe);
 }
 
@@ -161,7 +173,10 @@ export function pickMine<T>(o: {
   stored: unknown;
   mine: T | null;
   fromStore: () => T;
+  /** OP-11 fix round, item 9: My tasks shows the server's overlay. */
+  serverOverlay?: boolean;
 }): T | null {
+  if (o.serverOverlay) return o.mine;
   return o.enabled && o.myWork && o.mine && o.stored ? o.fromStore() : o.mine;
 }
 

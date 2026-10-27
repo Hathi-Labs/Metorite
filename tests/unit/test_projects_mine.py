@@ -255,6 +255,8 @@ async def test_the_overview_reads_the_list_predicate(db: _RecordingDB) -> None:
     assert body["level"] == "mine" and body["tasks"] == 0
     assert body["own"] == {"tasks": 0, "overdue": 0, "due_soon": 0, "by_category": {}}
     assert set(body["by_disposition"]) == set(pm_mine.DISPOSITION_KEYS)
+    # The zone of the Today count. No settings row reads as UTC (item 8).
+    assert body["time_zone"] == "UTC"
 
 
 def test_the_overview_where_carries_the_visibility_clause() -> None:

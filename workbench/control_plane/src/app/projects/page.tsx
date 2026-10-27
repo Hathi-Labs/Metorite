@@ -82,11 +82,12 @@ import {
   myWorkNavCounts,
   projectsUndoScope,
 } from "./lib/myWork";
-import { myTasksHref, phoneMyTasksTap, withoutMyTasks } from "./lib/myTasks";
+import { asChip, myTasksHref, phoneMyTasksTap, withoutMyTasks } from "./lib/myTasks";
 import MyTasksSpace, {
   DEFAULT_MY_TASKS_VIEW,
   MyTasksActionRow,
   type MyTasksView,
+  useMyAttention,
   useMySummary,
 } from "./components/MyTasksSpace";
 import {
@@ -998,6 +999,9 @@ function ProjectsWorkspace() {
   // (`myWorkNavCounts`), not from the task store, so they show at once and
   // need no whole-list hydrate. My tasks reads the same cache key.
   const mySummary = useMySummary(MY_WORK_LIVE);
+  // OP-11 fix round, item 11: the count on the Needs attention lens of My
+  // tasks. The space reads the same cache key for the lens itself.
+  const myAttention = useMyAttention(MY_WORK_LIVE && isMyTasksApp(app));
   const navCounts = useMemo(
     () => (MY_WORK_LIVE ? myWorkNavCounts(mySummary.data) : undefined),
     [mySummary.data],
@@ -2941,11 +2945,14 @@ function ProjectsWorkspace() {
       if (legacy) router.replace(target);
       return;
     }
-    const rest = new URLSearchParams(searchParams.toString());
-    rest.delete("app");
     // WS-64 OP-4 — `/tasks?do=capture&fill.*` arrives as `?app=my-inbox&do=capture&fill.*`.
     // `do` and `fill.*` stay in the address: the `capture` ShellJob below
-    // reads them, opens the box, and takes them out (the one door).
+    // reads them, opens the box, and takes them out (the one door). While a
+    // job waits, a My work `app` stays too, so the address ends on the view
+    // the box opened in: `?app=my-inbox` (OP-11 fix round, item 4).
+    if (live && isMyWorkId(live) && searchParams.has("do")) return;
+    const rest = new URLSearchParams(searchParams.toString());
+    rest.delete("app");
     const qs = rest.toString();
     router.replace(qs ? `/projects?${qs}` : "/projects");
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2955,6 +2962,10 @@ function ProjectsWorkspace() {
   // while it shows, and neither key once the member leaves it. Only a move
   // AWAY from My tasks takes the keys out: on the first render `app` is not
   // yet read from the address, and the link effect above still owns it.
+  //
+  // OP-11 fix round, item 13: a member's chip click PUSHES, so Back and
+  // Forward walk the chips. Entering or leaving My tasks replaces, as an
+  // alias does, so Back never lands on a half-read address.
   const appBefore = useRef(app);
   useEffect(() => {
     const was = appBefore.current;
@@ -2967,9 +2978,21 @@ function ProjectsWorkspace() {
       : isMyTasksApp(was)
         ? withoutMyTasks(search)
         : here;
-    if (target !== here) router.replace(target);
+    if (target === here) return;
+    const chipMove = isMyTasksApp(app) && isMyTasksApp(was) && searchParams.get("app") === "my-tasks";
+    if (chipMove) router.push(target);
+    else router.replace(target);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [app, myTasks.chip]);
+
+  // The other half of item 13: Back or Forward changes `?chip=` under a
+  // mounted page, and the chip follows the address. A link to a legacy id
+  // is the link effect's above, so this reads only `app=my-tasks`.
+  const linkChip = appLink === "my-tasks" ? asChip(searchParams.get("chip")) : null;
+  useEffect(() => {
+    if (!MY_WORK_LIVE || linkChip === null || !isMyTasksApp(appRef.current)) return;
+    setMyTasks((v) => (v.chip === linkChip ? v : { ...v, chip: linkChip }));
+  }, [linkChip]);
 
   // The chat's navigation (WS-27bm S6, H-164). `open_in_app` reads the row,
   // then dispatches one of these through a CUSTOM `frontend_tool` event.
@@ -4068,7 +4091,11 @@ function ProjectsWorkspace() {
    * WS-39 S1). Metorite is the system of record — nothing to import from.
    */
   const projectActions = (compact: boolean) =>
-    selected ? (
+    // OP-11 fix round, item 12: My tasks is not the selected project. It
+    // offers its own undo scope, and only while a step can be undone.
+    isMyTasksApp(app) ? (
+      <UndoControls hideWhenIdle />
+    ) : selected ? (
       <>
       {/* Undo/redo sits with the VIEW ACTIONS, not in the filter bar: it acts
           on the project, not on what is on screen, and the filter bar is
@@ -4877,6 +4904,7 @@ function ProjectsWorkspace() {
     <TaskPanel
       where={openWhere(openTask)}
       myWork={isMyWorkId(app)}
+      serverOverlay={isMyTasksApp(app)}
       personLabels={personLabels}
       me={me}
       /**
@@ -5433,7 +5461,7 @@ function ProjectsWorkspace() {
               <MyTasksActionRow
                 view={myTasks}
                 onView={setMyTasks}
-                attentionCount={null}
+                attentionCount={myAttention.data?.total ?? null}
                 onReport={(href) => router.push(href)}
                 onCapture={openInboxCapture}
               />

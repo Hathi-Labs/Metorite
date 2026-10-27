@@ -229,6 +229,18 @@ interface Props {
    * because its cards come from many projects. Absent, no card draws a chip.
    */
   projectPath?: (task: TaskRow) => readonly string[] | null;
+  /**
+   * WS-64 OP-11 fix round. The statuses a card's menu and its Mark-done tick
+   * pick from: the card's OWN project. My tasks passes it, because its cards
+   * come from many projects. Absent, every card reads `statuses`.
+   */
+  statusesFor?: (task: TaskRow) => readonly StatusRow[];
+  /**
+   * WS-64 OP-11 fix round. False hides the per-column quick add: My tasks
+   * spans many projects, so a column names no home for a new task. Its one
+   * add is the top Capture. Default true.
+   */
+  canQuickAdd?: boolean;
 }
 
 export function TaskBoard({
@@ -264,6 +276,8 @@ export function TaskBoard({
   onDrop,
   personLabels,
   projectPath,
+  statusesFor,
+  canQuickAdd = true,
 }: Props) {
   // A copied link names this organization, so it opens in the right account.
   const orgId = useAccess().access.organization?.id ?? null;
@@ -655,7 +669,9 @@ export function TaskBoard({
 
   const menuFor = (task: TaskRow): TaskMenuContext => ({
     task,
-    statuses,
+    // OP-11 fix round: the card's OWN project's lanes, where the page knows
+    // them, so the tick and the Status block name statuses this task can take.
+    statuses: statusesFor?.(task) ?? statuses,
     // The checkbox and the menu row agree by construction: both are the
     // presence of `onToggle`, so a surface that cannot select cannot offer it.
     canSelect: Boolean(onToggle),
@@ -1131,7 +1147,7 @@ export function TaskBoard({
                             : "Nothing here"
                   }
                   addLabel={`Add to ${column.label}`}
-                  onAdd={shelf ? undefined : (title) => quickAdd(title, column.key, null)}
+                  onAdd={shelf || !canQuickAdd ? undefined : (title) => quickAdd(title, column.key, null)}
                 >
                   {cellCards(column.key, column.tasks, null)}
                 </BoardColumn>
@@ -1171,7 +1187,7 @@ export function TaskBoard({
               }
               // No composer on the shelf — see `shelf` above.
               addLabel={`Add to ${column.label}`}
-              onAdd={shelf ? undefined : (title) => quickAdd(title, column.key, null)}
+              onAdd={shelf || !canQuickAdd ? undefined : (title) => quickAdd(title, column.key, null)}
             >
               {cellCards(column.key, column.tasks, null)}
             </BoardColumn>
@@ -1239,7 +1255,7 @@ export function TaskBoard({
                             }
                             addLabel={`Add to ${column.label} · ${lane.label}`}
                             onAdd={
-                              shelf
+                              shelf || !canQuickAdd
                                 ? undefined
                                 : (title) => quickAdd(title, column.key, lane.key)
                             }

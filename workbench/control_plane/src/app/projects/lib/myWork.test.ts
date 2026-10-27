@@ -212,7 +212,9 @@ describe("My work is a mount, not a copy", () => {
 
 describe("My work and the shared stores (fix round 1)", () => {
   it("My work has its own undo scope, and the board scope returns after it", () => {
-    expect(projectsUndoScope("my-tasks", "p1")).toBe("projects:my-work");
+    // OP-11 fix round, item 12: My tasks does not share the inbox's history.
+    expect(projectsUndoScope("my-tasks", "p1")).toBe("projects:my-tasks");
+    expect(projectsUndoScope("my-tasks", null)).not.toBe(projectsUndoScope("my-inbox", null));
     expect(projectsUndoScope("my-inbox", null)).toBe("projects:my-work");
     expect(projectsUndoScope(null, "p1")).toBe("projects:p1");
     expect(projectsUndoScope("reports", "p1")).toBe("projects:p1");

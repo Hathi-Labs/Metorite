@@ -58,15 +58,18 @@ import {
   MY_TASKS_MODES,
   type MyTasksChip,
   type MyTasksMode,
+  type OwnStatuses,
   chipCount,
   chipNeedsEveryPage,
   chipRows,
-  droppedStage,
   mineStatuses,
   myTasksQuery,
-  stageDrop,
+  planMineDrop,
+  quickAddHome,
   stageGroups,
+  truncationNotice,
 } from "../lib/myTasks";
+import { useSubtaskComplete } from "./useSubtaskComplete";
 import { myDayLink } from "../lib/reportEntry";
 import { FilterChrome } from "./CompactFilterBar";
 import { CalendarView } from "./CalendarView";
@@ -98,6 +101,39 @@ export function useMySummary(enabled: boolean) {
     enabled ? projectsKey("my/summary") : null,
     () => projectsApi.mySummary(),
   );
+}
+
+/**
+ * The Needs attention read over mine. The page reads it for the count on the
+ * lens button and this space reads it for the lens. One cache key, so the two
+ * share one request.
+ */
+export function useMyAttention(enabled: boolean) {
+  return useCachedResource<AttentionPage>(
+    enabled ? projectsKey("needs-attention", { mine: "true" }) : null,
+    () => attentionApi.mine(),
+  );
+}
+
+/**
+ * One read of every page a chip needs, as one promise. The load effect keeps
+ * it by its key, so a second run of the effect for the same key (React's
+ * StrictMode, a cleanup and a remount) waits for the SAME requests and sends
+ * none of its own.
+ */
+async function readMine(
+  filterQuery: Record<string, string>,
+  wantsAll: boolean,
+): Promise<{ rows: TaskRow[]; total: number | null }> {
+  let rows: TaskRow[] = [];
+  let total: number | null = null;
+  for (let page = 1; page <= (wantsAll ? MY_TASKS_MAX_PAGES : 1); page++) {
+    const res = await projectsApi.tasks(myTasksQuery(filterQuery, page));
+    rows = appendTasks(rows, res.rows ?? []);
+    total = res.total ?? rows.length;
+    if (rows.length >= total || (res.rows ?? []).length === 0) break;
+  }
+  return { rows, total };
 }
 
 /**
@@ -238,14 +274,23 @@ export default function MyTasksSpace({
   const [lanes, setLanes] = useState<BoardLanes>(NO_LANES);
   const [subtasks, setSubtasks] = useState<SubtaskMode>("separate");
   const [shownFields, setShownFields] = useState<string[]>([...DEFAULT_SHOWN]);
-  const [error, setError] = useState<string | null>(null);
+  // Two errors, because they end differently. A READ error clears when the
+  // next read succeeds. A WRITE error (a drop, a move, an export) stays
+  // through the reload after it, and clears only on the member's next write
+  // or on Dismiss (fix round item 7).
+  const [readError, setReadError] = useState<string | null>(null);
+  const [writeError, setWriteError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const again = useCallback(() => setReload((n) => n + 1), []);
   useLiveRefresh(again);
+  const subtaskComplete = useSubtaskComplete();
 
   // ── The summary, the Overview and the chips ────────────────────────────
   const summary = useMySummary(true);
   const today = summary.data?.today ?? dayKey(new Date());
+  // The zone the server counted Today in, so a chip and its count agree when
+  // the browser sits in another zone (fix round item 8).
+  const zone = summary.data?.time_zone || undefined;
   const overview = mode === "overview" && !attention;
   const stuck = useCachedResource(overview ? projectsKey("analytics/stuck", { subject: "me" }) : null, () =>
     projectsApi.stuck(undefined, "me"),
@@ -273,30 +318,32 @@ export default function MyTasksSpace({
     total: null,
   });
   const [loadingMore, setLoadingMore] = useState(false);
-  const readSeq = useRef(0);
+  // The read in flight, by its key. The effect is idempotent on mount: a
+  // second run for the same key waits for this read and sends no request.
+  const inflight = useRef<{ key: string; read: ReturnType<typeof readMine> } | null>(null);
+  const readKey = `${queryKey}|${wantsAll}|${reload}|${version}`;
   useEffect(() => {
     if (!listMode) return;
-    const seq = ++readSeq.current;
-    void (async () => {
-      try {
-        let rows: TaskRow[] = [];
-        let total: number | null = null;
-        for (let page = 1; page <= (wantsAll ? MY_TASKS_MAX_PAGES : 1); page++) {
-          const res = await projectsApi.tasks(myTasksQuery(filterQuery, page));
-          if (seq !== readSeq.current) return;
-          rows = appendTasks(rows, res.rows ?? []);
-          total = res.total ?? rows.length;
-          if (rows.length >= total || (res.rows ?? []).length === 0) break;
-        }
+    if (inflight.current?.key !== readKey) {
+      inflight.current = { key: readKey, read: readMine(filterQuery, wantsAll) };
+    }
+    let live = true;
+    inflight.current.read.then(
+      ({ rows, total }) => {
+        if (!live) return;
         setList({ key: queryKey, rows, total });
-        setError(null);
-      } catch (err) {
-        if (seq === readSeq.current) setError(String((err as Error).message));
-      }
-    })();
-    // `filterQuery` is keyed by `queryKey`.
+        setReadError(null);
+      },
+      (err: unknown) => {
+        if (live) setReadError(String((err as Error).message));
+      },
+    );
+    return () => {
+      live = false;
+    };
+    // `filterQuery` and `wantsAll` are inside `readKey`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listMode, queryKey, wantsAll, reload, version]);
+  }, [listMode, readKey]);
 
   const loadMore = async () => {
     setLoadingMore(true);
@@ -308,7 +355,7 @@ export default function MyTasksSpace({
         total: res.total ?? current.total,
       }));
     } catch (err) {
-      setError(String((err as Error).message));
+      setReadError(String((err as Error).message));
     } finally {
       setLoadingMore(false);
     }
@@ -316,19 +363,21 @@ export default function MyTasksSpace({
 
   // ── The statuses of each project a row sits in ─────────────────────────
   // A cell, a drop and a lane read the statuses of the row's OWN project. One
-  // read for each project, kept while My tasks is open. A project the member
-  // may not open answers no statuses, and its rows keep the server's stage.
+  // read for each project, kept while My tasks is open. A failed read is not
+  // kept, so the next drop asks again, and it says "could not be read", never
+  // "this project has no such status" (fix round item 7).
   const [statusSets, setStatusSets] = useState<Readonly<Record<string, StatusRow[]>>>({});
   const asked = useRef(new Set<string>());
   const ownStatuses = useCallback(
-    async (projectId: string): Promise<StatusRow[]> => {
-      if (statusSets[projectId]) return statusSets[projectId];
+    async (projectId: string): Promise<OwnStatuses> => {
+      if (statusSets[projectId]) return { rows: statusSets[projectId], failed: false };
       try {
         const res = await projectsApi.statuses(projectId);
         setStatusSets((current) => ({ ...current, [projectId]: res.rows ?? [] }));
-        return res.rows ?? [];
+        return { rows: res.rows ?? [], failed: false };
       } catch {
-        return [];
+        asked.current.delete(projectId);
+        return { rows: [], failed: true };
       }
     },
     [statusSets],
@@ -367,7 +416,7 @@ export default function MyTasksSpace({
         setMonth({ rows: res.rows ?? [], undated: res.undated ?? 0, truncated: res.truncated ?? false });
       })
       .catch((err: unknown) => {
-        if (live) setError(String((err as Error).message));
+        if (live) setReadError(String((err as Error).message));
       });
     return () => {
       live = false;
@@ -376,31 +425,30 @@ export default function MyTasksSpace({
   }, [calendarOn, grid, queryKey, reload, version]);
 
   // ── Needs attention, over mine ─────────────────────────────────────────
-  const [attentionPage, setAttentionPage] = useState<AttentionPage | null>(null);
-  const [attentionError, setAttentionError] = useState<string | null>(null);
+  // The page reads the same key for the count on the lens button.
+  const attentionRead = useMyAttention(true);
+  const refreshAttention = attentionRead.refresh;
+  const firstAttention = useRef(true);
   useEffect(() => {
-    if (!attention) return;
-    let live = true;
-    attentionApi
-      .mine()
-      .then((page) => {
-        if (!live) return;
-        setAttentionPage(page);
-        setAttentionError(null);
-      })
-      .catch((err: unknown) => {
-        if (live) setAttentionError(`Could not read the list. ${String((err as Error).message)}`);
-      });
-    return () => {
-      live = false;
-    };
-  }, [attention, reload, version]);
+    // The mount read is the hook's own. A later reload or version reads again.
+    if (firstAttention.current) {
+      firstAttention.current = false;
+      return;
+    }
+    if (attention) refreshAttention();
+  }, [attention, reload, version, refreshAttention]);
+  const attentionPage = attentionRead.data ?? null;
+  const attentionError =
+    attentionRead.error && !attentionRead.data ? `Could not read the list. ${attentionRead.error}` : null;
 
   // ── What the canvases draw ──────────────────────────────────────────────
-  const shown = useMemo(() => chipRows(list.rows, chip, today), [list.rows, chip, today]);
+  const shown = useMemo(() => chipRows(list.rows, chip, today, zone), [list.rows, chip, today, zone]);
   const statuses = useMemo(() => mineStatuses(list.rows, known), [list.rows, known]);
   // A status is a lane of ONE project, so the roll-up groups by stage instead.
+  // The same holds for the lanes: a status lane would name one project's
+  // status for cards of every project.
   const axis: GroupBy = groupBy === "status" ? "category" : groupBy;
+  const shownLanes: BoardLanes = lanes.subGroupBy === "status" ? { ...lanes, subGroupBy: "none" } : lanes;
   const groups = useMemo(
     () => (axis === "category" ? stageGroups(shown, knownById) : groupTasks(shown, axis, { statuses })),
     [axis, shown, knownById, statuses],
@@ -410,59 +458,87 @@ export default function MyTasksSpace({
     (task: TaskRow) => statusSets[task.project_id] ?? statuses.filter((s) => s.id === task.status_id),
     [statusSets, statuses],
   );
-  const calendarRows = useMemo(() => chipRows(month.rows, chip, today), [month.rows, chip, today]);
+  const calendarRows = useMemo(
+    () => chipRows(month.rows, chip, today, zone),
+    [month.rows, chip, today, zone],
+  );
 
-  const quickAddHome = personalRootId ?? "";
+  // A quick add files to the personal root, or nowhere: never "" (item 10).
+  const home = quickAddHome(personalRootId);
   const reloadAll = () => {
     again();
     summary.refresh();
   };
 
+  /**
+   * Every write of the board: a drag, the Mark-done tick and the Status menu
+   * (`planMineDrop`). A move that completes a parent with open subtasks asks
+   * first, and its receipt carries Undo and a Ctrl+Z entry, through the SAME
+   * `useSubtaskComplete` path the project board takes (D-PM-38).
+   */
   async function drop(task: TaskRow, writes: readonly PositionWrite[], patch: Record<string, string | number | null> | null) {
-    setError(null);
+    setWriteError(null);
     try {
-      if (axis === "category") {
-        const plan = stageDrop(task, droppedStage(task.id, writes), await ownStatuses(task.project_id));
-        if (plan.kind === "refuse") {
-          setError(plan.reason);
-          return;
-        }
-        if (plan.kind === "none") return;
-        setList((current) => ({
-          ...current,
-          rows: current.rows.map((r) =>
-            r.id === task.id ? { ...r, status_id: plan.patch.status_id, status_category: plan.stage } : r,
-          ),
-        }));
-        await projectsApi.patchTask(task.id, plan.patch);
-      } else if (patch) {
-        await projectsApi.patchTask(task.id, patch);
+      const own = await ownStatuses(task.project_id);
+      const plan = planMineDrop(task, writes, patch, axis, own);
+      if (plan.kind === "refuse") {
+        setWriteError(plan.reason);
+        return;
       }
+      if (plan.kind === "none") return;
+      setList((current) => ({
+        ...current,
+        rows: current.rows.map((r) =>
+          r.id === task.id
+            ? { ...r, ...plan.patch, ...(plan.stage ? { status_category: plan.stage } : {}) }
+            : r,
+        ),
+      }));
+      const status = typeof plan.patch.status_id === "string" ? plan.patch.status_id : null;
+      if (status && Object.keys(plan.patch).length === 1) {
+        const asked = await subtaskComplete.changeStatus(task, status, own.rows, () => reloadAll());
+        if (asked) return;
+      }
+      await projectsApi.patchTask(task.id, plan.patch);
     } catch (err) {
-      setError(String((err as Error).message));
+      setWriteError(String((err as Error).message));
     }
     reloadAll();
   }
 
   async function exportCsv() {
-    setError(null);
+    setWriteError(null);
     try {
       const res = await fetch(`${exportPath({ projectId: null, filters, shownFields, sort: null })}&scope=mine`);
       if (!res.ok) {
-        setError(`Export failed (${res.status})`);
+        setWriteError(`Export failed (${res.status})`);
         return;
       }
       saveCsv(await res.blob(), filenameFromDisposition(res.headers.get("content-disposition"), EXPORT_FILENAME));
     } catch (err) {
-      setError(String((err as Error).message));
+      setWriteError(String((err as Error).message));
     }
   }
 
-  const errorLine = error ? (
-    <p role="alert" className="border-b border-border bg-destructive/10 px-3 py-2 text-xs text-destructive">
-      {error}
-    </p>
-  ) : null;
+  const errorLine =
+    writeError || readError ? (
+      <div
+        role="alert"
+        className="flex items-center gap-2 border-b border-border bg-destructive/10 px-3 py-2 text-xs text-destructive"
+        data-my-tasks-error={writeError ? "write" : "read"}
+      >
+        <span className="min-w-0 flex-1">{writeError ?? readError}</span>
+        {writeError ? (
+          <Button variant="ghost" size="sm" onClick={() => setWriteError(null)}>
+            Dismiss
+          </Button>
+        ) : (
+          <Button variant="ghost" size="sm" icon="RotateCcw" onClick={again}>
+            Retry
+          </Button>
+        )}
+      </div>
+    ) : null;
 
   if (attention) {
     return (
@@ -481,6 +557,9 @@ export default function MyTasksSpace({
 
   const chips = <MyTasksChips chip={chip} summary={summary.data} onChip={(next) => onView({ ...view, chip: next })} />;
   const listLoaded = list.key === queryKey;
+  // A chip other than All reads at most MY_TASKS_MAX_ROWS rows. Past that it
+  // says so, in the place of the board's "Load more" bar (item 5).
+  const truncated = wantsAll && listMode && listLoaded ? truncationNotice(list.rows.length, list.total) : null;
   const emptyChip =
     chip !== "all" && listLoaded && shown.length === 0 ? (
       <EmptyState
@@ -493,6 +572,8 @@ export default function MyTasksSpace({
   return (
     <div className="flex min-w-0 flex-1 flex-col overflow-hidden" data-testid="my-tasks-space" data-mode={mode}>
       {errorLine}
+      {/* D-PM-38: the "close the subtasks too?" question of a board write. */}
+      {subtaskComplete.dialog}
       {mode === "overview" ? null : (
         <>
           {chips}
@@ -503,7 +584,7 @@ export default function MyTasksSpace({
             modes={MODE_OPTIONS}
             onMode={(next) => onView({ ...view, mode: next as MyTasksMode })}
             resultCount={list.total}
-            loadedLabel={wantsAll ? null : loadedOfTotal(list.rows.length, list.total)}
+            loadedLabel={loadedOfTotal(list.rows.length, list.total)}
             agentSummary={null}
             agentFocus={null}
             onAgentFocus={() => undefined}
@@ -515,7 +596,7 @@ export default function MyTasksSpace({
             spansProjects
             groupBy={axis}
             onGroupBy={setGroupBy}
-            lanes={lanes}
+            lanes={shownLanes}
             onSubGroupBy={(next) => setLanes((current) => ({ ...current, subGroupBy: next, collapsedLanes: [] }))}
             subtasks={subtasks}
             onSubtasks={setSubtasks}
@@ -533,6 +614,30 @@ export default function MyTasksSpace({
             onDeleteView={() => undefined}
             onUpdateView={() => undefined}
             canSave={false}
+            savedViews={false}
+            // On a phone the action row does not draw, so its two other
+            // doors sit beside the tabs in the View sheet (item 11).
+            sheetLenses={
+              phone
+                ? [
+                    {
+                      id: "attention",
+                      label: LENS_LABEL,
+                      icon: "TriangleAlert",
+                      count: attentionPage?.total ?? null,
+                      title: "Show my work that stopped and waits for a person",
+                      onPick: () => onView({ ...view, attention: true }),
+                    },
+                    {
+                      id: "reports",
+                      label: "Reports",
+                      icon: "FileText",
+                      title: "My day: the report about my own work",
+                      onPick: () => onReport(myDayLink()),
+                    },
+                  ]
+                : undefined
+            }
             onExport={exportCsv}
           />
         </>
@@ -540,10 +645,29 @@ export default function MyTasksSpace({
       {!compactChrome && !wantsAll && listMode ? (
         <MoreTasksBar loaded={list.rows.length} total={list.total} busy={loadingMore} onLoadMore={() => void loadMore()} />
       ) : null}
+      {truncated ? (
+        // The banner of `MoreTasksBar`, with no button: past the cap a chip
+        // cannot load more, so it names the two ways out.
+        <div
+          className="border-b border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground"
+          data-my-tasks-truncated=""
+        >
+          {truncated}
+        </div>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-auto">
         <LayoutBoundary key={`my-tasks:${mode}`} layout={`My tasks ${mode}`}>
           {mode === "overview" ? (
-            summary.data ? (
+            !summary.data && summary.error ? (
+              // The read failed: say so, and offer it again. The other tabs
+              // do not read the summary, so they stay usable (item 6).
+              <EmptyState
+                icon="TriangleAlert"
+                message="My tasks could not be loaded just now."
+                hint="The List, Board and Table read the tasks on their own, so they still work."
+                action={{ label: "Retry", icon: "RotateCcw", onClick: summary.refresh }}
+              />
+            ) : summary.data ? (
               <NodeDashboard
                 summary={summary.data}
                 onOpen={onOpenProject}
@@ -564,23 +688,27 @@ export default function MyTasksSpace({
               undated={month.undated}
               truncated={month.truncated}
               today={dayKey(new Date())}
-              projectId={quickAddHome}
+              // A day add files to the personal root with that due date. With
+              // no root yet there is no home, so the add is not drawn.
+              projectId={home ?? ""}
+              canQuickAdd={home !== null}
               shownFields={shownFields}
               onCreated={reloadAll}
               onSelect={onOpenTask}
               onMove={(task, patch) => {
+                setWriteError(null);
                 void projectsApi
                   .patchTask(task.id, patch)
-                  .catch((err: unknown) => setError(String((err as Error).message)))
+                  .catch((err: unknown) => setWriteError(String((err as Error).message)))
                   .finally(reloadAll);
               }}
               onStep={(steps) => setMonthAnchor(shiftGrid(grid, steps))}
               onToday={() => setMonthAnchor(new Date())}
               onLayout={setCalLayout}
-              onRefuse={setError}
+              onRefuse={setWriteError}
             />
           ) : !listLoaded ? (
-            mode === "board" ? <SkeletonBoard columns={4} /> : <SkeletonRows count={8} />
+            readError ? null : mode === "board" ? <SkeletonBoard columns={4} /> : <SkeletonRows count={8} />
           ) : emptyChip ? (
             emptyChip
           ) : mode === "table" ? (
@@ -595,7 +723,8 @@ export default function MyTasksSpace({
               shownFields={shownFields}
               sort={null}
               onSort={() => undefined}
-              projectId={quickAddHome}
+              projectId={home ?? ""}
+              canQuickAdd={false}
               onCreated={reloadAll}
               onSaved={(fresh) =>
                 setList((current) => ({
@@ -618,7 +747,7 @@ export default function MyTasksSpace({
               filters={filters}
               onClearFilters={() => setFilters(EMPTY_FILTERS)}
               me={me}
-              lanes={lanes}
+              lanes={shownLanes}
               onToggleLane={(key) =>
                 setLanes((current) => ({
                   ...current,
@@ -629,13 +758,15 @@ export default function MyTasksSpace({
               }
               onShowEmptyLanes={(show) => setLanes((current) => ({ ...current, showEmptyLanes: show }))}
               statuses={statuses}
-              projectId={quickAddHome}
+              projectId={home ?? ""}
+              canQuickAdd={false}
               shownFields={shownFields}
               onCreated={reloadAll}
               onRenamed={reloadAll}
               onSelect={onOpenTask}
               onDrop={(task, writes, patch) => void drop(task, writes, patch)}
               projectPath={pathOf}
+              statusesFor={statusesFor}
             />
           ) : (
             <TaskList
@@ -647,7 +778,8 @@ export default function MyTasksSpace({
               onClearFilters={() => setFilters(EMPTY_FILTERS)}
               me={me}
               statuses={statuses}
-              projectId={quickAddHome}
+              projectId={home ?? ""}
+              canQuickAdd={false}
               shownFields={shownFields}
               onCreated={reloadAll}
               onSelect={onOpenTask}

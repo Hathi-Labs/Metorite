@@ -139,6 +139,12 @@ interface Props {
    * it shows only when I hold an overlay row.
    */
   myWork?: boolean;
+  /**
+   * WS-64 OP-11 fix round, item 9: the panel opened from My tasks. Its strip
+   * then writes to the server (`MineDispositionStrip`), never the store, so
+   * the My tasks rows move to the new chip after a pick.
+   */
+  serverOverlay?: boolean;
 }
 
 /** The viewer's own overlay on this task, or null when they hold none. */
@@ -160,6 +166,7 @@ export function TaskPanel({
   onPeopleSeen,
   where,
   myWork = false,
+  serverOverlay = false,
 }: Props) {
   // A copied link names this organization, so it opens in the right account.
   const orgId = useAccess().access.organization?.id ?? null;
@@ -185,6 +192,7 @@ export function TaskPanel({
     stored: !!stored,
     myWork,
     filedByMe: filedByMe(mine),
+    serverOverlay,
   }) ? (
     <MyWorkStrip taskId={task.id} />
   ) : null;
@@ -203,7 +211,12 @@ export function TaskPanel({
               return projectsApi.task(task.id);
             })
             .then((fresh) => onChanged(fresh))
-            .catch(() => {
+            .catch((err: unknown) => {
+              // Say so, then show what the server holds (item 9).
+              toast.show({
+                variant: "error",
+                title: `Could not change the disposition. ${String((err as Error).message)}`,
+              });
               void lensMyOverlay(task.id).then(setMine);
             });
         }}
@@ -211,6 +224,7 @@ export function TaskPanel({
     ) : null;
   const shownMine = pickMine({
     myWork,
+    serverOverlay,
     enabled,
     stored,
     mine,

@@ -77,7 +77,26 @@ export type ViewSheetProps = Pick<
 > & {
   modes: readonly ModeOption<ViewMode>[];
   onMode: (next: ViewMode) => void;
+  /**
+   * WS-64 OP-11 fix round, item 11: more doors in the row of the tabs. My
+   * tasks puts Needs attention and Reports here, because on a phone its
+   * action row does not draw. Absent, the row is the tabs alone.
+   */
+  lenses?: readonly SheetLens[];
+  /** False hides the Saved views block. My tasks has no saved views. Default true. */
+  savedViews?: boolean;
 };
+
+/** One door beside the tabs of the View sheet (`ViewSheetProps.lenses`). */
+export interface SheetLens {
+  id: string;
+  label: string;
+  icon: string;
+  selected?: boolean;
+  count?: number | null;
+  title?: string;
+  onPick: () => void;
+}
 
 export function ViewSheetBody({
   filters,
@@ -103,6 +122,8 @@ export function ViewSheetBody({
   onUpdateView,
   canSave,
   onExport,
+  lenses,
+  savedViews = true,
 }: ViewSheetProps) {
   const subGroupBy = lanes.subGroupBy;
   const [naming, setNaming] = useState(false);
@@ -126,7 +147,28 @@ export function ViewSheetBody({
 
   return (
     <div className="flex flex-col gap-3" data-view-sheet="">
-      <ModeSwitch modes={modes} mode={mode} layout="toolbar" onPick={onMode} />
+      {lenses && lenses.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-1" data-sheet-lenses="">
+          <ModeSwitch modes={modes} mode={mode} layout="toolbar" onPick={onMode} />
+          {lenses.map((lens) => (
+            <Button
+              key={lens.id}
+              variant="ghost"
+              size="sm"
+              icon={lens.icon}
+              selected={lens.selected}
+              title={lens.title}
+              data-sheet-lens={lens.id}
+              onClick={lens.onPick}
+            >
+              {lens.label}
+              {lens.count ? <span className="ml-1 tabular-nums opacity-70">{lens.count}</span> : null}
+            </Button>
+          ))}
+        </div>
+      ) : (
+        <ModeSwitch modes={modes} mode={mode} layout="toolbar" onPick={onMode} />
+      )}
 
       {honoursGroupBy(mode) ? (
         <SelectButton
@@ -237,6 +279,7 @@ export function ViewSheetBody({
         {exporting ? "Exporting…" : "Export"}
       </Button>
 
+      {savedViews ? (
       <div className="flex flex-col gap-1.5 border-t border-border pt-3">
         <span className="text-[11px] font-medium text-muted-foreground">Saved views</span>
         <div className="flex flex-wrap items-center gap-1">
@@ -353,6 +396,7 @@ export function ViewSheetBody({
           </div>
         ) : null}
       </div>
+      ) : null}
 
       <p className="text-[11px] text-muted-foreground">{LOADED_NOTE}</p>
     </div>

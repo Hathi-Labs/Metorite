@@ -301,10 +301,13 @@ export function stageDrop(
   task: Pick<TaskRow, "status_id" | "status_category">,
   stage: string | null,
   ownStatuses: readonly StatusRow[],
+  /** True when the read of the project's statuses failed (no answer, not "none"). */
+  readFailed = false,
 ): StageDrop {
   if (!stage) return { kind: "none" };
   const current = stageOf(task, new Map(ownStatuses.map((s) => [s.id, s])));
   if (current === stage) return { kind: "none" };
+  if (readFailed) return { kind: "refuse", reason: STATUS_READ_FAILED };
   const lane = landingLane(ownStatuses, stage);
   if (!lane) {
     return {
@@ -313,6 +316,67 @@ export function stageDrop(
     };
   }
   return { kind: "write", patch: { status_id: lane.id }, stage };
+}
+
+/** What a drop says when the statuses of the task's project could not be read. */
+export const STATUS_READ_FAILED =
+  "The statuses of this task's project could not be read just now. Try again.";
+
+/** The statuses of one project, and whether the read of them failed. */
+export interface OwnStatuses {
+  rows: readonly StatusRow[];
+  failed: boolean;
+}
+
+/** What one write of the My tasks board sends, or why it sends nothing. */
+export type MineDrop =
+  | { kind: "write"; patch: Record<string, string | number | null>; stage: string | null }
+  | { kind: "none" }
+  | { kind: "refuse"; reason: string };
+
+/**
+ * The ONE patch a write of the My tasks board sends. A drag, the Mark-done
+ * tick and the Status menu all arrive here (`TaskBoard.onDrop`).
+ *
+ * - A drag (`writes` not empty) on the stage axis. The stage half is the
+ *   landing lane of the TASK'S OWN project (`stageDrop`). The board's own
+ *   `status_id` came from the merged set, so this never sends it. Every other
+ *   key of the board's patch is the lane half, and it goes in the same PATCH.
+ * - A tick or a menu pick (`writes` empty). The patch names a status of the
+ *   card's own project (`statusesFor`), and it goes as it is.
+ * - Any other axis. The board's patch, as a project board sends it.
+ */
+export function planMineDrop(
+  task: Pick<TaskRow, "id" | "status_id" | "status_category">,
+  writes: readonly PositionWrite[],
+  patch: Record<string, string | number | null> | null,
+  axis: string,
+  own: OwnStatuses,
+): MineDrop {
+  if (axis !== "category") {
+    return patch && Object.keys(patch).length
+      ? { kind: "write", patch: { ...patch }, stage: null }
+      : { kind: "none" };
+  }
+  const out: Record<string, string | number | null> = {};
+  let stage: string | null = null;
+  if (writes.length > 0) {
+    const plan = stageDrop(task, droppedStage(task.id, writes), own.rows, own.failed);
+    if (plan.kind === "refuse") return plan;
+    if (plan.kind === "write") {
+      out.status_id = plan.patch.status_id;
+      stage = plan.stage;
+    }
+    for (const [key, value] of Object.entries(patch ?? {})) {
+      if (key !== "status_id") out[key] = value;
+    }
+  } else if (patch) {
+    Object.assign(out, patch);
+    const picked = typeof patch.status_id === "string" ? patch.status_id : null;
+    if (picked === task.status_id) delete out.status_id;
+    else if (picked) stage = own.rows.find((s) => s.id === picked)?.category ?? null;
+  }
+  return Object.keys(out).length ? { kind: "write", patch: out, stage } : { kind: "none" };
 }
 
 // ── The project chip ────────────────────────────────────────────────────────
@@ -337,6 +401,31 @@ export const MY_TASKS_PAGE = 100;
 
 /** A chip reads every page, up to this many, because it filters on the client. */
 export const MY_TASKS_MAX_PAGES = 20;
+
+/** The most rows a chip other than All holds. The one cap, in one place. */
+export const MY_TASKS_MAX_ROWS = MY_TASKS_PAGE * MY_TASKS_MAX_PAGES;
+
+/**
+ * The notice of a chip read that stopped at the cap, or null when it read
+ * every row. A chip other than All filters on the client, so past the cap it
+ * cannot say how many of the rest are in it. It says so in place.
+ */
+export function truncationNotice(loaded: number, total: number | null): string | null {
+  if (total === null || total <= loaded) return null;
+  const n = (v: number) => v.toLocaleString("en-US");
+  return `Showing the first ${n(loaded)} of ${n(total)}. Narrow the filter or use All.`;
+}
+
+/**
+ * Where a quick add of My tasks files: the member's personal root, or null
+ * when the member has none yet. Never "", "mine" or "my-tasks", which no
+ * server row has (My tasks is a virtual node).
+ */
+export function quickAddHome(personalRootId: string | null | undefined): string | null {
+  const id = String(personalRootId ?? "").trim();
+  if (!id || id === "mine" || id === "my-tasks") return null;
+  return id;
+}
 
 /** The query of one page of the list over mine. */
 export function myTasksQuery(

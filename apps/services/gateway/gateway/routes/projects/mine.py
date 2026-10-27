@@ -411,6 +411,10 @@ async def my_summary(user: UserContext = Depends(get_current_user)) -> dict[str,
         "due_soon_days": DUE_SOON_DAYS,
         "by_disposition": fold_dispositions(rows, at=clock, today=today, zone=zone),
         "today": today.isoformat(),
+        # The zone the Today count used (`stored_zone`, else UTC). The client
+        # reads Today in this zone too, so a chip and its count agree when the
+        # browser sits in another zone (WS-64 OP-11 fix round, item 8).
+        "time_zone": zone,
     }
 
 

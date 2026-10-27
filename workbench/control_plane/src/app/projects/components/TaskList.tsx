@@ -148,6 +148,12 @@ interface Props {
    * because its rows come from many projects. Absent, no row draws a chip.
    */
   projectPath?: (task: TaskRow) => readonly string[] | null;
+  /**
+   * WS-64 OP-11 fix round. False hides the per-group quick add: My tasks spans
+   * many projects, so a group names no home for a new task. Its one add is
+   * the top Capture. Default true.
+   */
+  canQuickAdd?: boolean;
 }
 
 export function TaskList({
@@ -172,6 +178,7 @@ export function TaskList({
   onSelect,
   personLabels,
   projectPath,
+  canQuickAdd = true,
 }: Props) {
   const [cursor, setCursor] = useState(-1);
   const [anchor, setAnchor] = useState<number | null>(null);
@@ -543,7 +550,7 @@ export function TaskList({
             {/* WS-27y — the group's own capture box: a task added here lands
                 in THIS group, pre-filled by `quickAddPrefill`. Folded away
                 with the rows, exactly as /tasks folds its sections. */}
-            {isFolded ? null : (
+            {isFolded || !canQuickAdd ? null : (
               <tr>
                 <td colSpan={columnCount} className="px-3 py-1">
                   <QuickAdd

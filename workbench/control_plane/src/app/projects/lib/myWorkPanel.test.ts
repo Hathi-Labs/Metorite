@@ -127,6 +127,24 @@ describe("fix round 1", () => {
     expect(pickMine({ myWork: true, enabled: true, stored: {}, mine: "server", fromStore })).toBe("store");
   });
 
+  it("OP-11 fix round 9: opened from My tasks, the panel shows the server strip even with a hydrated store", () => {
+    // My task inbox hydrated the store once, so the store holds the task.
+    const base = { enabled: true, stored: true, myWork: true, filedByMe: true };
+    expect(showMyWorkStrip({ ...base, serverOverlay: true })).toBe(false);
+    expect(showMyWorkStrip({ ...base, serverOverlay: false })).toBe(true);
+    const fromStore = () => "store";
+    expect(
+      pickMine({ myWork: true, enabled: true, stored: {}, mine: "server", fromStore, serverOverlay: true }),
+    ).toBe("server");
+    const panel = fs
+      .readFileSync(path.join(PROJECTS, "components", "TaskPanel.tsx"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "");
+    // The page says where the panel opened, and a failed pick says so.
+    expect(fs.readFileSync(path.join(PROJECTS, "page.tsx"), "utf8")).toContain("serverOverlay={isMyTasksApp(app)}");
+    expect(panel).toMatch(/serverOverlay,\n\s*\}\) \? \(/);
+    expect(panel).toContain("Could not change the disposition.");
+  });
+
   it("2: a chat card on /projects opens the panel and never raises the store focus", () => {
     expect(chatTaskTarget("/projects", true, "a b")).toEqual({
       kind: "panel",
