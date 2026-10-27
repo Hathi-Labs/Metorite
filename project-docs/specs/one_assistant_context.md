@@ -19,7 +19,130 @@ OA-7b is BUILT, dark (2026-10-26, "As built, OA-7b" below). OA-7c gives the
 guarded builder its live caller.
 
 OA-7c is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7c"
-below). The flag is off on each box, so no run loads a pack yet.
+below, PR #1383). The flag is off on each box, so no run loads a pack yet.
+
+OA-7e is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7e"
+below, PR #1389). It adds layer (b), the meta tool `load_skill_tools`.
+
+**As built, OA-7e.** Layer (b) loads a pack that layer (a) missed, in the
+middle of a turn.
+- **The parts.** `acb_skills/tool_packs.py` holds the tool (`load_tool`),
+  its `FunctionMiddleware` (`LoadSkillTools`) and its provider
+  (`LoadSkillToolsProvider`). Each provider of the egress guard and the tier
+  policy lives in `acb_skills` too. `_tool_injection._offer_pack_loader`
+  puts the provider on a view of the run (`agent_with_providers`).
+- **The MAF hook.** The middleware calls
+  `FunctionInvocationContext.add_tools`. The model sees the new tools on its
+  next request. The middleware catches `ValueError` and `RuntimeError`
+  (§4.5, "OA-7e facts"), and then the call loads nothing.
+- **Where it acts.** `_apply_tool_packs` with `offer_loader` attaches it.
+  Only `executor._apply_pack_turn` passes that, so only the run that layer
+  (a) serves holds the tool. A shared room, WhatsApp and a delegated run get
+  none. With the flag off, no tool and no pack state change.
+- **The catalog.** The description of the tool lists each pack that the
+  flag allows, that no toggle stops and that the run does not hold. Each
+  line is the `summary` of the family. A run that holds each such pack gets
+  no tool.
+- **A turn that loads no pack.** It still binds a run key and a record of
+  the packs, with no pack in it. A load needs both.
+- **The same guards.** The load builds through `_pack_tools`, with the run
+  context of the call. The build skips each name of the live tool list. A
+  load answers the rules of the pack, through the one text of
+  `persona_for` (`_rules_block`). A held pack adds its hold note.
+- **The same caps.** A load refuses past 3 packs, past 35 tools a pack, or
+  past 110 tools on the live list. The live count holds the load tool too.
+  A refusal past a cap names `spawn_subagents` with the slug of the pack.
+  The cap of layer (a) counts the load tool too, when the run offers it.
+  The catalog offers a pack only if it can load. The live count is the
+  base, the load tool and the packs of layer (a), less the specialists
+  that left. That count plus the pack tools must stay within 110. The run
+  must also hold fewer than 3 packs.
+- **The run check.** A load refuses unless the frame holds the run key and
+  the record of the run that offered the tool. The middleware matches its
+  own tool by identity, never by name. One load runs at a time in a run.
+- **A pack that the run holds.** A second load of it builds nothing, and
+  its answer tells the model to call the tools.
+- **Not sticky on load.** A mere load is not use. A pack becomes sticky
+  only after one of its tools runs (`note_used` in the pack call). So a
+  wrong pack never becomes sticky. A pack that the model loads and calls
+  is sticky from the next turn on. The tool list then stays stable for the
+  prompt cache.
+- **The held answer.** The build reads it once, as layer (a) does. The
+  strict hold within a turn stays.
+- **Mail beside an MCP server.** A load of a pack of the email assistant
+  refuses when the live list holds an MCP tool. A load cannot take the
+  server away, and the answer sends the task to the email assistant. This
+  keeps the OA-7b rule: a run with a mail pack holds no MCP tool. The
+  offer cannot see an MCP server that attaches later, so the catalog line
+  of a mail pack says that a connected server stops it. Precedence differs
+  by layer. In layer (a) the email pack wins and the MCP server stays out.
+  In layer (b) the MCP tool wins and the pack stays out.
+- **The refusal acts live.** A load of `email-setup` after `email` gives
+  the run every email pack. From that call on, a hand-off to the email
+  assistant gets the pack refusal (`PackRun.refusal`). The answer gives the
+  line "No email agent exists to hand a task to." back.
+- **What stays for the turn.** A load is monotonic, so the
+  `email_assistant` tool, the persona and its "Delegatable agents" block
+  stay as they are. `PackRun.replaced` does not change. The next turn holds
+  the pack by layer (a), and that turn swaps them.
+- **Where both email packs load.** The verifier measured 52 tools in the
+  live request of a flag-off run. With `email`, the load tool and
+  `email-setup`, that request holds 111 tools or more, so the cap refuses
+  the second load there. A smaller base can load both.
+- **OA-9c.** It must read `PackRun.holds()`, which holds the packs of a
+  load too, and not `PackRun.slugs`.
+- Fence: `tests/unit/test_load_skill_tools.py`. It runs on
+  `tests/unit/_native_maf_harness.py`, and a pin fails when MAF removes or
+  renames `add_tools`.
+
+The OA-9a parser is BUILT, dark (2026-10-27, "As built, OA-9a parser"
+below). Nothing calls it yet. The OA-9a worker and OA-9b stay NO-GO until
+the edits of §4.5 land.
+
+**As built, OA-9a parser.** `acb_skills/subagent_contract.py` holds the two
+parsers of the contract of §6. No module calls them, and no flag reads them.
+OA-9b builds `spawn_subagents` on them.
+- **The items out (§6.4).** `parse_items` reads the one JSON object of a
+  child. That object has the one key `items`. Each item has exactly the
+  keys `value`, `kind` and `source`. Any other output becomes one item of
+  kind `inferred`, with the source `unstructured` and the whole text.
+- **The parse is strict.** An extra key, a code fence or one bad item makes
+  the whole answer into that one item. So the parser loses no text of a
+  child. No `quoted` mark stays beside text that the parse dropped.
+- **The jobs in (§6.2 and §6.5).** `parse_jobs` checks the `jobs` argument
+  against the `run_tools` of the parent. It checks the first 5 jobs. Each
+  job after the fifth gets its name in one line and does not run.
+- **The refusals.** A job does not run when it names a pack (§4.5, OA-9b
+  item 3). It also does not run when it names a delegation tool or the
+  spawn tool. A tool that the parent does not have stops it too, and so
+  does a tool that is not read-only. Each refusal is one line that tells
+  the model why.
+- **Fix round 1 (verifier).** A repeated key in the JSON of a child makes
+  the answer another shape. `json.loads` keeps the last value, and that
+  would drop a quoted fact. `packs` must be absent or an empty list. So
+  `0`, `false` and `{}` get a refusal. Bytes decode, and no value is stored as
+  a `repr`. A call past the cap names 10 jobs and counts the rest.
+- **The member tools.** `ask_questions`, `ask_user`, `request_confirmation`
+  and `share_artifact` say `read_only=True`, but a child has no member to
+  ask. The parser refuses them (`MEMBER_TOOLS`). `remember` stays a read.
+- **The specialist tools.** `parse_jobs` takes `delegating`, the names of
+  the specialist tools of the parent. They get the hand-off reason.
+- **OA-9b must enforce the child tool set.** The parser only checks the
+  request. Floor tools reach every run, so OA-9b must withhold and refuse
+  all other tools at `tool_guard.WithholdTools` and `RefuseTools`.
+- **Read-only.** The default check reads `tool_annotations`. A tool with no
+  entry is not read-only. OA-9b can give its own check. §4.5 OA-9b item 1
+  stays open: how a child gets read tools only.
+- **The caps.** The module holds the caps of §6.2 as constants. A fence
+  makes sure that `MAX_JOBS` equals `agent_tools._PARALLEL_MAX`, the cap of
+  the one fan-out.
+- **The fence.** `tests/unit/test_subagent_contract.py` holds 58 cases, and
+  16 mutations each made it fail. One case fails when a module of the
+  platform imports the contract. OA-9b replaces that case with its one
+  caller.
+- **§4.5, OA-9a item 1.** `test_tool_packs_off.py` holds no OA-9a case, so
+  no case moved. The worker cases wait for the worker half: the refusal with
+  no job, and the worker out of the picker.
 
 **As built, OA-7c.** Layer (a) and the sticky state put packs in a live run.
 Three inputs choose the packs: the sticky packs of the chat, a reference in
@@ -713,7 +836,7 @@ Each slice merges alone, in this order.
 | OA-7b | The guarded pack builder, with no live caller. BUILT, dark, 2026-10-26 | HIGH |
 | OA-7c | Layer (a) and sticky state: packs in live runs. BUILT, dark, 2026-10-27 | HIGH |
 | OA-7d | The structured `surface` field from the dock | LOW |
-| OA-7e | Layer (b): `load_skill_tools` | MEDIUM |
+| OA-7e | Layer (b): `load_skill_tools`. BUILT, dark, 2026-10-27 | MEDIUM |
 | OA-7f | Layer (c): pack items in the turn-kind request | MEDIUM |
 | OA-7h | The email measure on real code, with the tier flags of production | LOW (eval only) |
 

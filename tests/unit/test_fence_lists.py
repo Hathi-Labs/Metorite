@@ -140,6 +140,24 @@ def test_the_frontend_unit_job_is_never_skipped_by_path():
     assert "if" not in _jobs()["frontend"]
 
 
+def test_the_visual_review_line_runs_in_a_required_job():
+    # The UI gate (DESIGN_SYSTEM.md §11). "Changed areas" is not a required
+    # check, and a red `changes` job fails open, so the step lives in the
+    # Frontend job. The body comes from the event FILE: an expression would
+    # paste the body into the script, and the local CI cannot render one.
+    step = _step("frontend", "Visual review line")
+    run = step["run"]
+    assert step["if"] == "!cancelled()"
+    assert "${{" not in run
+    assert "GITHUB_EVENT_PATH" in run
+    assert "git fetch" in run and "--depth=1" in run
+    assert "frontend=true" in run, "an unreadable diff must require the line"
+    assert "^workbench/control_plane/src/" in run
+    assert "^Visual review:" in run
+    assert "github.event.pull_request.body" not in _PR_CHECK.read_text(encoding="utf-8")
+    assert not any(s.get("name", "").startswith("Visual review") for s in _jobs()["changes"]["steps"])
+
+
 _BASH = shutil.which("bash")
 
 

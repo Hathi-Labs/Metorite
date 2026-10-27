@@ -288,6 +288,32 @@ boundary, and the UI is a courtesy.
 | Native | Mirror | Only while the org has 0 native records | A mirror over native data is a merge, and v1 has no merge |
 | Native or Mirror | no mode | Yes, with 0 records and no live connection | Change CRM setup (CRM-U5b) |
 
+**The cutover, measured in the code on 2026-10-27 (owner ask: leave Zoho and keep every record).** Mirror to Native is not built. Today an org that synced from Zoho has three paths, and none keeps its data writable:
+
+1. **Disconnect** keeps the records read only, and the org stays in Mirror mode (`routes/crm/connection.py:578`).
+2. **Start over** (`POST /crm/reset`) deletes the records.
+3. **No mode change** exists from Mirror to Native. `ALLOWED_MODE_CHANGES` holds none to Native, Native to none, and Mirror to none (`routes/crm/settings.py:106`).
+
+A flip of the mode alone would also lose four things:
+
+- **Custom modules.** A Native org gets an empty module list (`routes/crm/modules.py:17`), and a generic record has no native writer (`app/crm/lib/modules.ts:14`).
+- **Editable imported records.** The UI locks a field and a card drag on `ext_source`, in every mode.
+- **Settings.** Zoho owns the fields, stages, lost reasons and the conversion mapping in Mirror mode.
+- **Attachments.** The mirror syncs none.
+
+The slices, in Metorite under sub-epic CRM-Z10 of epic #477:
+
+| Slice | What | Fence |
+|---|---|---|
+| CRM-Z10a | The preview: counts in Zoho and in Metorite, what does not move, unmapped owners, labels and fields. No write | A test proves no row is written |
+| CRM-Z10c | The lock follows the mode, not `ext_source`. An imported record shows "Imported from Zoho on <date>" | vitest: editable in Native, locked in Mirror |
+| CRM-Z10d | Custom modules stay visible in Native mode, with a native writer through the one write guard | R8: the counts match after a cutover |
+| CRM-Z10e | The Zoho attachments are copied into Metorite storage before the cutover | Count and bytes match Zoho |
+| CRM-Z10b | The switch: the export, a final sync, the mode flip and the disconnect in one transaction, `ext_source` and `ext_id` kept as provenance, Zoho settings made native, `processed_watermark` rewound, one audit line. One-way | R8: counts equal before and after, and a second click changes nothing |
+| CRM-Z10f | Owner decision: a cutover org keeps its source labels. It amends D95.2 for cutover orgs | Recorded in `work_plan.md` §3 |
+
+The production runs for Fracktal and Shaurrya Tele are the owner's (CRM-Z10-run).
+
 ### 3.5 The architecture: one store, two writers
 
 **Both modes use one store.** The `crm_*` tables hold the records in Native
