@@ -226,10 +226,15 @@ wait.
 **⚠️ A merge is NOT a production deploy (WS-38).** A merge runs lint and tests,
 then moves the `staging` ref. Staging (`https://dev.metorite.com`) serves that
 ref within about 15 minutes. **Production moves once a day, at 21:30 UTC
-(03:00 IST)**, to the tip of `main` if its tests pass. A fix that cannot wait
-is a manual dispatch of `deploy.yml`. `next-ticket.md` step 7 holds the
-commands. `specs/staging_and_daily_release.md` owns the design, and
+(03:00 IST)**, to the tip of `main` if its tests pass.
+`specs/staging_and_daily_release.md` owns the design, and
 `tests/unit/test_daily_release.py` is the fence.
+
+**⚠️ Do not push to production yourself** *(owner directive, 2026-10-27)*. Do
+not run `gh workflow run deploy.yml`. Production takes the 21:30 UTC release.
+Run a manual dispatch only when the owner asks for it in your session, or when
+production is down. A dark feature never needs one. If you think a change
+cannot wait, ask the owner.
 
 **⚠️ TEST ON STAGING BEFORE PRODUCTION** *(owner directive, 2026-10-17)*.
 Staging holds a reduced copy of four organizations. Every outbound switch is
