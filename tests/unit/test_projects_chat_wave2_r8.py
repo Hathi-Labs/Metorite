@@ -21,7 +21,7 @@ R7, the mutations (run after a commit, because ``git checkout`` restores HEAD):
 * **M1** ``tasks.refuse_foreign_parent`` returns at once
   -> ``test_a_member_create_under_a_parent_of_another_project_is_422``.
 * **M2** ``move_task_in`` checks the parent against ``task.project_id`` only
-  -> ``test_a_move_that_names_another_project_than_the_parent_is_422``.
+  -> ``test_a_move_out_of_the_parents_project_under_that_parent_is_422``.
 * **M3** ``due.due_instant`` returns the value as it is
   -> every test of ``TestADueDay``.
 * **M4** ``tasks.carry_to_parent`` returns the payload as it is
@@ -145,6 +145,19 @@ class TestTheParentsProject:
         assert r.json()["detail"]["error"] == "parent_other_project"
         row = _row(w.p, task)
         assert (str(row.project_id), row.parent_task_id) == (w.b["id"], None)
+
+    async def test_a_move_out_of_the_parents_project_under_that_parent_is_422(self, world):
+        """The task and the parent sit in A, and the move names B. The check
+        reads the project the task ends in, not the one it leaves."""
+        w = world
+        parent = b.task(w.p, w.p.org_a, OWNER, w.a, title="w2 stay parent")
+        task = b.task(w.p, w.p.org_a, OWNER, w.a, title="w2 leave child")
+        r = await _send(w, w.owner, "POST", f"/projects/tasks/{task}/move", {
+            "parent_task_id": parent, "project_id": w.b["id"]})
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["error"] == "parent_other_project"
+        row = _row(w.p, task)
+        assert (str(row.project_id), row.parent_task_id) == (w.a["id"], None)
 
     async def test_a_member_reparent_with_no_project_goes_to_the_parents_project(self, world):
         """The Tasks app's "file under" sends ``{parent_task_id}`` only."""
