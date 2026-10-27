@@ -237,25 +237,33 @@ async def test_an_admin_toggle_stops_a_pack(store, orchestrator, monkeypatch) ->
 # ── 2. Sticky on use ────────────────────────────────────────────────────────
 
 
-async def test_a_pack_becomes_sticky_only_after_one_of_its_tools_ran(store) -> None:
+async def test_a_pack_becomes_sticky_only_after_one_of_its_tools_ran(
+    store, orchestrator, monkeypatch,
+) -> None:
     """A wrong pack costs tokens only: it never becomes sticky, because none
-    of its tools ran. Mutation: write the sticky state when the pack loads →
-    the next turn holds a pack whose tools never ran → red."""
-    ran: list[str] = []
+    of its tools ran. The run goes through the real apply, and a real tool
+    of the pack runs. Mutation: write the sticky state when the pack loads
+    → the next turn holds a pack whose tools never ran → red."""
+
+    async def get(path: str, params: Any = None) -> Any:
+        if path == "/email/accounts":
+            return [{"id": BOX, "email_address": MEMBER, "display_label": "Work"}]
+        return {}
+
     with _tenant():
-        t1 = await tp.begin_turn(ORG, SESSION, MEMBER, "check my inbox")
-        choice = tp.choose(t1, allowed=ALL, base_tools=40)
-        record = tp.PackRun.of(t1, choice, [("email", False)])
-        t2 = await tp.begin_turn(ORG, SESSION, MEMBER, "")
-        assert t2.sticky == (), "a load alone makes no pack sticky"
-        with _bound(**_run_ctx(), **{tp.PACK_RUN_KEY: "k-1", tp.PACKS_KEY: record}):
-            build = await ti._pack_tools("email", artifact_context(),
-                                         module=_stub(_probe("read_email", ran)))
-            await build.tools[0](email_id="m-1")
-        t3 = await tp.begin_turn(ORG, SESSION, MEMBER, "")
-    assert ran == ["read_email"]
-    assert [(s.slug, s.used) for s in t3.sticky] == [("email", t1.turn)]
-    assert t3.turn == t1.turn + 2
+        applied = await _apply(orchestrator, "check my inbox")
+        assert applied is not None and applied.record.slugs == ("email",)
+        later = await tp.begin_turn(ORG, SESSION, MEMBER, "")
+        assert later.sticky == (), "a load alone makes no pack sticky"
+        monkeypatch.setattr(ti._PACK_OWNER_MODULES[EA], "_get", get)
+        tool = next(t for t in orchestrator[0].default_options["tools"]
+                    if _name(t) == "list_accounts")
+        with _bound(**_run_ctx(), **applied.context()):
+            out = await tool.func()
+        assert out != ti.PACK_CALL_REFUSED.format(tool="list_accounts"), out
+        after = await tp.begin_turn(ORG, SESSION, MEMBER, "")
+    assert [(s.slug, s.used) for s in after.sticky] == [("email", applied.record.turn)]
+    assert after.turn == applied.record.turn + 2
 
 
 async def test_two_pack_calls_at_once_lose_no_sticky_update(store) -> None:
@@ -809,20 +817,22 @@ async def test_two_pack_calls_at_once_lose_no_working_set_update(store, monkeypa
         return None
 
     monkeypatch.setattr(ecc, "prime_mailboxes", no_mailboxes)
-    real_load = ecc.load_working_set
+    real_save = ecc.save_working_set
 
-    async def slow_load(ctx: Any = None) -> dict[str, str]:
-        await asyncio.sleep(0.01)
-        return await real_load(ctx)
+    async def slow_save(ws: Any, ctx: Any = None) -> bool:
+        # The wait sits between the read and the write of one call, so the
+        # other call reads before this one writes, unless the lock holds it.
+        await asyncio.sleep(0.02)
+        return await real_save(ws, ctx)
 
-    monkeypatch.setattr(ecc, "load_working_set", slow_load)
+    monkeypatch.setattr(ecc, "save_working_set", slow_save)
     module = _stub(_probe("read_email"), _probe("edit_draft"))
     with _tenant(), _bound(**_run_ctx(), **{tp.PACK_RUN_KEY: "k-ws"}):
         build = await ti._pack_tools("email", artifact_context(), module=module)
         tools = {t.__name__: t for t in build.tools}
         await asyncio.gather(tools["read_email"](email_id="m-1"),
                              tools["edit_draft"](draft_id="d-1"))
-        ws = await real_load()
+        ws = await ecc.load_working_set()
     assert ws.get("email_id") == "m-1" and ws.get("draft_id") == "d-1", ws
 
 
