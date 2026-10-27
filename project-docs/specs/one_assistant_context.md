@@ -34,9 +34,10 @@ System-1 request that already runs. It adds no model call.
   stays one request. The two items of before keep their ids, and a request
   holds at most 20 items. A slug that is no pack gives no item.
 - **What the items name.** `executor._pack_loader_offer` gives the packs. They are
-  `LoadSkillTools.offered`, so the items name only a pack that layer (a) did
-  not load, that the flag and the admin toggles allow, and that fits the
-  caps. A run with no loader asks for none: a shared room, WhatsApp, a
+  `LoadSkillTools.offered`. The items name a pack only when four things
+  hold. Layer (a) did not load it. The flag allows it. No admin toggle stops
+  it. It fits the caps.
+  A run with no loader asks for none. That covers a shared room, WhatsApp, a
   delegated run, a sub-agent, the batch path and a run with the flag off.
   With the flag off the call to `turn_kind` has no `packs` argument, so the
   request is byte for byte the request of before. No pack state is read.
@@ -47,8 +48,8 @@ System-1 request that already runs. It adds no model call.
   slug in `TurnKind.packs`, in the order asked. A timeout, a failure, a
   garbled reply, an unknown id, an off-scale confidence and a choice outside
   the options load nothing. The pack items never change the kind, its source,
-  the effort or the tier: `RunTierPolicy.packs` only carries the slugs and
-  nothing reads them in the tier choice.
+  the effort or the tier. `RunTierPolicy.packs` only carries the slugs. The
+  tier choice does not read them.
 - **The apply.** The executor hands the answer to the loader after the tier
   wait (`executor._apply_turn_pack_items`). The line numbers `:5874-5877` in
   the design moved, and the call now sits right after
@@ -62,6 +63,13 @@ System-1 request that already runs. It adds no model call.
   adds the same tools and builds nothing again.
 - **Sticky.** Unchanged. A load by the turn kind is not sticky. The pack
   becomes sticky when one of its tools runs.
+- **The MCP rule.** MAF keeps an MCP server in `agent.mcp_tools` and adds
+  its functions after `before_run`. So `load_early` passes `mcp_tools` to
+  `_admit` as `extra_live`, for the MCP rule only. The email packs never load
+  beside a server. The run key in the build context comes from the loader.
+  A frame without the key gives the same build.
+- **MAF import.** `_agent_shape` uses the private `normalize_tools`. If the
+  import fails, the pack does not load. A pin test fails when MAF renames it.
 - **Open.** The persona does not swap the specialist text in layer (c), as
   in layer (b), because a load adds no owner to `PackRun.replaced`. The
   cost of a longer System-1 request (a few answer tokens for each item) is
