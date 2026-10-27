@@ -869,6 +869,82 @@ def test_only_the_stream_run_starts_and_applies_packs() -> None:
     assert _callers_of("_apply_pack_turn") == {"run_agent_stream"}
 
 
+def _main_try_of_run_agent_stream() -> ast.Try:
+    """The try of ``run_agent_stream`` whose finally cancels the pack read."""
+    tree = ast.parse((REPO / "apps/services/orchestrator/orchestrator/executor.py")
+                     .read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "run_agent_stream")
+    for node in fn.body:
+        if isinstance(node, ast.Try) and "_pack_task" in ast.unparse(ast.Module(
+                body=node.finalbody, type_ignores=[])):
+            return node
+    raise AssertionError("no try of run_agent_stream cancels _pack_task in its finally")
+
+
+def test_the_pack_read_starts_inside_the_try_whose_finally_cancels_it() -> None:
+    """Fix round 2: the read of layer (a) is a task. A task that starts
+    before the main try of the run outlives a raise between the two, because
+    no finally cancels it. Mutation: start the read before the main try
+    again → red."""
+    main = _main_try_of_run_agent_stream()
+    first = main.body[0]
+    assert isinstance(first, ast.Assign) and "_start_pack_turn(" in ast.unparse(first), (
+        "the read must be the first statement of the main try")
+    fn_src = (REPO / "apps/services/orchestrator/orchestrator/executor.py").read_text(
+        encoding="utf-8")
+    assert fn_src.count("_pack_task = _start_pack_turn(") == 1
+
+
+async def test_a_raise_before_the_main_try_leaves_no_pack_read_running(
+    store, monkeypatch,
+) -> None:
+    """Fix round 2, the behaviour: an eligible run with the flag on raises
+    before its main try. No read of the sticky packs may keep running.
+    Mutation: start the read before ``_bind_solo_room`` again → the read
+    task is still pending after the run ended → red."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "tool_packs", "*", raising=False)
+    monkeypatch.setattr(get_settings(), "tool_packs_orgs", "*", raising=False)
+    monkeypatch.setattr(ex, "_verified_run_member", lambda: MEMBER)
+    started: list[Any] = []
+    real_start = ex._start_pack_turn
+
+    def spy(*a: Any, **k: Any) -> Any:
+        task = real_start(*a, **k)
+        started.append(task)
+        return task
+
+    async def slow_read(*_a: Any, **_k: Any) -> Any:
+        await asyncio.sleep(30)
+
+    def early_raise(_solo: Any) -> Any:
+        raise RuntimeError("a raise before the main try")
+
+    monkeypatch.setattr(ex, "_start_pack_turn", spy)
+    monkeypatch.setattr(tp, "begin_turn", slow_read)
+    monkeypatch.setattr(ex, "_bind_solo_room", early_raise)
+    with pytest.raises(RuntimeError, match="before the main try"):
+        async for _line in ex.run_agent_stream(
+            "orchestrator", {"message": "check my inbox"}, run_id="r-early",
+            thread_id=SESSION, organization_id=ORG, session_user=MEMBER,
+            shows_cards=True, solo_room=True,
+        ):
+            pass
+    await asyncio.sleep(0)
+    assert all(task is None or task.done() for task in started), started
+
+
+def test_the_orchestrator_has_no_own_tool_scope() -> None:
+    """Fix round 2, a latent hazard: ``_apply_pack_turn`` runs before
+    ``_apply_own_tool_scope``. An ``own_tool_scope`` on the orchestrator would
+    strip each pack tool, because no pack tool is in that list. Mutation: add
+    an ``own_tool_scope`` to the orchestrator's ``config.json`` → red, so the
+    change must move the apply after ``_apply_own_tool_scope`` too."""
+    assert "own_tool_scope" not in CONFIG
+
+
 # ── 6b. One card through the real assembly ──────────────────────────────────
 
 

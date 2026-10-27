@@ -5617,15 +5617,11 @@ async def run_agent_stream(
     _derive_ctx(no_egress=_stream_no_egress)
     if _stream_no_egress:
         _remember_no_egress_run(run_id)
-    # WS-67 OA-7c (§4.2.2): layer (a) of the tool packs. The tenant is bound
-    # above. The read of the sticky packs runs beside the load, and the apply
-    # below awaits it. None when packs are off, so no pack state is read. The
-    # finally cancels it when the run ends first.
-    _pack_task = _start_pack_turn(
-        agent_name, organization_id, thread_id, member=_corr_user,
-        delegated=_delegated_run, solo_room=solo_room,
-        batch_thread=_batch_thread, shows_cards=shows_cards,
-    )
+    # WS-67 OA-7c (§4.2.2): layer (a) of the tool packs. The read of the
+    # sticky packs starts as the FIRST statement of the main try below, so its
+    # finally cancels it on every early end (fix round 2). The tenant is bound
+    # above. None when packs are off, so no pack state is read.
+    _pack_task: asyncio.Future[Any] | None = None
     _pack_apply: Any = None
     # Expose the run's model so sub-agents inherit the parent tier. Seed with the
     # raw requested model now; refined to the fully-resolved tier once known.
@@ -5699,6 +5695,13 @@ async def run_agent_stream(
     _tier_task: asyncio.Future[Any] | None = None
 
     try:
+        # WS-67 OA-7c: the read of layer (a) runs beside the load, and the
+        # apply awaits it. Inside the try, so a raise cannot leave it running.
+        _pack_task = _start_pack_turn(
+            agent_name, organization_id, thread_id, member=_corr_user,
+            delegated=_delegated_run, solo_room=solo_room,
+            batch_thread=_batch_thread, shows_cards=shows_cards,
+        )
         if _relay_mark_active is not None:
             with contextlib.suppress(Exception):
                 # The SAME run that run_detached just marked: keep the actor,
