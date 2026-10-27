@@ -276,7 +276,7 @@ def _row(**kw: Any) -> SimpleNamespace:
         id="t", project_id="p1", root_project_id="r1", category="todo",
         start_date=None, due_at=None, completed_at=None, p_disposition=None,
         p_defer_until=None, is_mine=True, has_assignee=True, is_overdue=False,
-        is_due_soon=False,
+        is_due_soon=False, on_board=True,
     )
     base.update(kw)
     return SimpleNamespace(**base)
@@ -322,10 +322,15 @@ def test_the_disposition_fold_follows_the_client_rules() -> None:
         _row(id="done", category="done"),
         _row(id="trash", p_disposition="TRASH"),
         _row(id="not-mine-next", p_disposition="NEXT", is_mine=False),
+        _row(id="personal-next", on_board=False),
+        _row(id="untriaged-deferred", p_defer_until=now + timedelta(days=2)),
     ]
     counts = pm_mine.fold_dispositions(rows, at=now, today=today, zone="UTC")
+    # inbox: the INBOX row, plus the untriaged board rows (next-today,
+    # next-later, someday). A personal project, a stated overlay, a deferred
+    # row and a DONE row are not in `inboxCount`.
     assert counts == {
-        "inbox": 1, "today": 1, "next": 2, "waiting": 1, "someday": 1, "done": 1,
+        "inbox": 4, "today": 1, "next": 4, "waiting": 1, "someday": 1, "done": 1,
     }
 
 

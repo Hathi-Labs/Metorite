@@ -81,8 +81,9 @@ B = f"bob@{DOMAIN}"
 C = f"carol@{DOMAIN}"
 
 #: A's own tasks, by key. The parity tests compare every read to this set.
-MINE_A = ("a_open", "a_done", "a_waits", "a_secret", "a_personal")
-MINE_B = ("b_open", "b_blocked", "a_waits", "secret_waits", "b_personal")
+MINE_A = ("a_open", "a_done", "a_waits", "a_secret", "a_personal", "both", "both2")
+MINE_B = ("b_open", "b_blocked", "a_waits", "secret_waits", "b_personal", "b_waits",
+          "both", "both2")
 
 
 def _exec_sql_file(conn, sql: str) -> None:
@@ -165,6 +166,21 @@ class _Seeder:
             " delegated_at, organization_id) VALUES (CAST(:t AS uuid), :m,"
             " 'WAITING', now(), CAST(:o AS uuid)) RETURNING task_id",
             t=task, m=member, o=self.org)
+
+    def overlay(self, task: str, member: str, disposition: str) -> None:
+        """A stated disposition of one member on a task (the triage)."""
+        self.one(
+            "INSERT INTO pm_task_personal (task_id, member_email, disposition,"
+            " organization_id) VALUES (CAST(:t AS uuid), :m, :d,"
+            " CAST(:o AS uuid)) RETURNING task_id",
+            t=task, m=member, d=disposition, o=self.org)
+
+    def assign(self, task: str, assignee: str, *, by: str) -> None:
+        self.one(
+            "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by,"
+            " organization_id) VALUES (CAST(:t AS uuid), :e, :a,"
+            " CAST(:o AS uuid)) RETURNING task_id",
+            t=task, e=assignee, a=by, o=self.org)
 
     def blocks(self, blocker: str, blocked: str) -> None:
         self.one(
@@ -282,6 +298,21 @@ def world():
     t["a_personal"] = s.task("a_personal", a_root.id, a_root.todo, by=A)
     t["b_personal"] = s.task("b_personal", b_root.id, b_root.todo, by=B)
 
+    # B holds a WAITING overlay on a task that A can read and does not hold.
+    # Dropping the member test of the WAITING arm would hand it to A.
+    t["b_waits"] = s.task("b_waits", team.id, team.todo, by=B)
+    s.waiting(t["b_waits"], B)
+    # Two tasks assigned to BOTH members, each with an overlay of B. A join on
+    # the overlay without the member test would give A B's disposition, or a
+    # second row for `both`, where A holds an overlay of their own.
+    t["both"] = s.task("both", team.id, team.todo, by=B, assignee=A)
+    s.assign(t["both"], B, by=B)
+    s.overlay(t["both"], A, "NEXT")
+    s.overlay(t["both"], B, "SOMEDAY")
+    t["both2"] = s.task("both2", team.id, team.todo, by=B, assignee=A)
+    s.assign(t["both2"], B, by=B)
+    s.overlay(t["both2"], B, "SOMEDAY")
+
     # The second organization: C types A's address onto a task of their own.
     sc = _Seeder(eng, org_c, "op11c")
     sc.member(C, ["feature:projects"])
@@ -388,7 +419,7 @@ class TestTheOneMine:
     async def test_include_subtree_narrows_to_mine_inside_the_node(self, armed):
         got = {r["id"] for r in await _list_mine(
             armed, A, project_id=armed.p.team.id, include_subtree="true")}
-        assert _named(armed, got) == {"a_open", "a_done", "a_waits"}
+        assert _named(armed, got) == {"a_open", "a_done", "a_waits", "both", "both2"}
 
     async def test_the_board_filters_still_apply(self, armed):
         got = {r["id"] for r in await _list_mine(armed, A, status_category="done")}
@@ -438,7 +469,7 @@ class TestTheReadsAgree:
         body = await _ok(armed, A, "/projects/assigned-to-me",
                          {"include_done": "true", "page_size": 100})
         assert _named(armed, {r["id"] for r in body["rows"]}) == {
-            "a_open", "a_done", "a_secret"}
+            "a_open", "a_done", "a_secret", "both", "both2"}
 
     async def test_needs_attention_mine_is_inside_scope_mine(self, armed):
         """``/needs-attention?mine=true`` with no project. Its ``yours`` is the
@@ -471,8 +502,12 @@ class TestTheOverview:
         dispositions = Counter(r["disposition"] for r in rows)
         assert summary["by_disposition"]["waiting"] == dispositions["WAITING"] == 1
         assert summary["by_disposition"]["done"] == dispositions["DONE"] == 1
-        assert summary["by_disposition"]["inbox"] == dispositions["INBOX"] == 1
-        assert summary["by_disposition"]["next"] == 2
+        assert dispositions["INBOX"] == 1
+        # "My task inbox" counts the INBOX row AND the untriaged board rows a
+        # colleague assigned to me: a_open, a_secret and both2 (P2 of the review).
+        assert summary["by_disposition"]["inbox"] == 4
+        assert summary["by_disposition"]["next"] == 4
+        assert summary["by_disposition"]["someday"] == 0
         assert summary["by_disposition"]["today"] == 1
 
     async def test_no_row_names_a_project_i_cannot_see(self, armed):
@@ -487,7 +522,7 @@ class TestTheOverview:
         assert summary["own"]["tasks"] + sum(
             c["tasks"] for c in summary["children"]) == summary["tasks"]
         team = next(c for c in summary["children"] if c["name"] == "Team")
-        assert team["tasks"] == 3 and team["overdue"] == 1
+        assert team["tasks"] == 5 and team["overdue"] == 1
 
     async def test_b_reads_b_numbers(self, armed):
         summary = await _ok(armed, B, "/projects/my/summary")
@@ -496,14 +531,102 @@ class TestTheOverview:
         assert names == {"Team", "Secret", "Bob root"}
 
 
+async def _fold(world, email: str) -> tuple[list[dict], dict]:
+    rows = await _list_mine(world, email, with_overlay="1")
+    summary = await _ok(world, email, "/projects/my/summary")
+    return rows, summary
+
+
+class TestTheMemberTestsAreFenced:
+    """Mutation fences: each member test in `mine_clause` and the summary join."""
+
+    async def test_another_members_waiting_overlay_is_not_mine(self, armed):
+        """B waits on `b_waits`, a task A can read and does not hold. It is in
+        none of A's reads, and it is in B's. Kills the removal of
+        ``lower(p.member_email) = :who`` from the WAITING arm."""
+        b_waits = armed.t["b_waits"]
+        listed = {r["id"] for r in await _list_mine(armed, A)}
+        cal = await _ok(armed, A, "/projects/calendar",
+                        {"scope": "mine", "include_undated": "true", **_window()})
+        on_calendar = {r["id"] for r in cal["rows"]} | {r["id"] for r in cal["unscheduled"]}
+        inbox = await _ok(armed, A, "/projects/my/inbox",
+                          {"include_done": "true", "include_deferred": "true",
+                           "page_size": 100})
+        in_inbox = {r["id"] for r in inbox["rows"]}
+        summary = await _ok(armed, A, "/projects/my/summary")
+        assert b_waits not in listed
+        assert b_waits not in on_calendar
+        assert b_waits not in in_inbox
+        assert summary["tasks"] == len(MINE_A)
+        assert summary["by_disposition"]["waiting"] == 1  # a_waits only
+        # B reads it in every view, and A can read the task on the board.
+        assert b_waits in {r["id"] for r in await _list_mine(armed, B)}
+        b_cal = await _ok(armed, B, "/projects/calendar",
+                          {"scope": "mine", "include_undated": "true", **_window()})
+        assert b_waits in ({r["id"] for r in b_cal["rows"]}
+                           | {r["id"] for r in b_cal["unscheduled"]})
+        b_inbox = await _ok(armed, B, "/projects/my/inbox",
+                            {"include_deferred": "true", "page_size": 100})
+        assert b_waits in {r["id"] for r in b_inbox["rows"]}
+        b_summary = await _ok(armed, B, "/projects/my/summary")
+        assert b_summary["by_disposition"]["waiting"] == 1
+        board = await _ok(armed, A, "/projects/tasks", {"page_size": 100})
+        assert b_waits in {r["id"] for r in board["rows"]}
+
+    async def test_the_summary_reads_my_overlay_and_no_row_twice(self, armed):
+        """`both` and `both2` have an overlay of B (SOMEDAY). A's numbers come
+        from A's overlay alone, and the totals equal the list counted here.
+        Kills the removal of ``lower(po.member_email) = :who`` in the join."""
+        rows_a, sum_a = await _fold(armed, A)
+        assert len({r["id"] for r in rows_a}) == len(rows_a) == len(MINE_A)
+        assert sum_a["tasks"] == len(rows_a)
+        assert sum(sum_a["by_category"].values()) == len(rows_a)
+        assert sum_a["by_disposition"] == {
+            "inbox": 4, "today": 1, "next": 4, "waiting": 1, "someday": 0, "done": 1,
+        }
+        by_id = {r["id"]: r for r in rows_a}
+        assert by_id[armed.t["both"]]["disposition"] == "NEXT"
+        assert by_id[armed.t["both2"]]["disposition"] == "NEXT"
+        rows_b, sum_b = await _fold(armed, B)
+        assert len({r["id"] for r in rows_b}) == len(rows_b) == len(MINE_B)
+        assert sum_b["tasks"] == len(rows_b)
+        assert sum_b["by_disposition"] == {
+            "inbox": 5, "today": 0, "next": 4, "waiting": 1, "someday": 2, "done": 0,
+        }
+        by_id_b = {r["id"]: r for r in rows_b}
+        assert by_id_b[armed.t["both"]]["disposition"] == "SOMEDAY"
+        assert by_id_b[armed.t["both2"]]["disposition"] == "SOMEDAY"
+
+
+class TestTheInboxBadge:
+    async def test_the_inbox_count_is_what_the_badge_counts(self, armed):
+        """A colleague assigned `a_open`, `a_secret` and `both2` to A, and A
+        never triaged them. The badge (`inboxCount`) counts the INBOX rows plus
+        those rows, and `/my/inbox` lists them, so the numbers agree."""
+        for email in (A, B):
+            summary = await _ok(armed, email, "/projects/my/summary")
+            untriaged = await _ok(armed, email, "/projects/my/inbox",
+                                  {"untriaged": "true", "page_size": 100})
+            stated = await _ok(armed, email, "/projects/my/inbox",
+                               {"disposition": "INBOX", "page_size": 100})
+            assert summary["by_disposition"]["inbox"] == (
+                len(untriaged["rows"]) + len(stated["rows"])), email
+        got = await _ok(armed, A, "/projects/my/inbox",
+                        {"untriaged": "true", "page_size": 100})
+        assert _named(armed, {r["id"] for r in got["rows"]}) == {
+            "a_open", "a_secret", "both2"}
+
+
 class TestSubjectMe:
     async def test_load_reads_the_callers_rows_only(self, armed):
         a = await _ok(armed, A, "/projects/analytics/load", {"subject": "me"})
         assert {p["assignee"] for p in a["people"]} == {A}
-        assert a["total_tasks"] == 2  # a_open and a_secret; the archive is out
+        # a_open, a_secret, both and both2; the archive is out
+        assert a["total_tasks"] == 4
         b = await _ok(armed, B, "/projects/analytics/load", {"subject": "me"})
         assert {p["assignee"] for p in b["people"]} == {B}
-        assert b["total_tasks"] == 4  # b_open, b_blocked, a_waits, secret_waits
+        # b_open, b_blocked, a_waits, secret_waits, both and both2
+        assert b["total_tasks"] == 6
 
     async def test_stuck_throughput_and_finished_answer_for_me(self, armed):
         stuck = await _ok(armed, A, "/projects/analytics/stuck", {"subject": "me"})

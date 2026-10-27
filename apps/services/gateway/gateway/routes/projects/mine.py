@@ -177,6 +177,9 @@ def _summary_sql(where: str) -> str:
         "                                                   AS is_mine,"
         "       EXISTS (SELECT 1 FROM pm_task_assignees a4"
         "                WHERE a4.task_id = t.id)           AS has_assignee,"
+        "       NOT EXISTS (SELECT 1 FROM pm_projects pj"
+        "                    WHERE pj.id = t.project_id"
+        "                      AND pj.personal_owner IS NOT NULL)  AS on_board,"
         "       (t.due_at IS NOT NULL AND t.due_at < now()"
         "        AND s.category <> ALL(CAST(:closed AS text[])))  AS is_overdue,"
         "       (t.due_at IS NOT NULL AND t.due_at >= now()"
@@ -246,15 +249,34 @@ def in_today(
     return bool((start is not None and start <= today) or (due is not None and due <= today))
 
 
+def _untriaged_board(row: Any, effective: str) -> bool:
+    """A board row I never triaged: ``personal.UNTRIAGED_CLAUSE`` on a summary row.
+
+    No stated disposition of mine, a company board (not a personal project),
+    and open (``/my/inbox?untriaged=true`` drops DONE and TRASH). It is the
+    set the client holds as ``fromProjectIds``.
+    """
+    return (
+        row.p_disposition is None
+        and bool(getattr(row, "on_board", True))
+        and effective not in ("DONE", "TRASH")
+    )
+
+
 def fold_dispositions(
     rows: list[Any], *, at: datetime, today: date, zone: str,
 ) -> dict[str, int]:
-    """The chip counts, with the rules of ``taskStore.viewCounts``.
+    """The chip counts, with the rules of ``taskStore.viewCounts`` and ``inboxCount``.
 
-    ``inbox`` is INBOX and not waiting for its date (``personal.not_yet``).
-    ``next`` is NEXT and assigned to me. ``waiting``, ``someday`` and ``done``
-    are the effective disposition. ``today`` is :func:`in_today`. TRASH is in
-    no chip. The disposition is ``effective_disposition``, the one rule (D77).
+    ``inbox`` is what the "My task inbox" badge counts (``inbox.ts``
+    ``inboxCount``): the INBOX rows that do not wait for their date, PLUS the
+    untriaged board rows (:func:`_untriaged_board`), which a colleague
+    assigned to me and which I have not triaged. Their derived disposition is
+    NEXT (or SOMEDAY), so ``next`` and ``someday`` count them too, as
+    ``viewCounts`` does: the two client counters are independent. ``next`` is
+    NEXT and assigned to me. ``waiting``, ``someday`` and ``done`` are the
+    effective disposition. ``today`` is :func:`in_today`. TRASH is in no chip.
+    The disposition is ``effective_disposition``, the one rule (D77).
     """
     from gateway.routes.projects.personal import effective_disposition, not_yet
 
@@ -275,6 +297,12 @@ def fold_dispositions(
             counts["someday"] += 1
         elif effective == "DONE":
             counts["done"] += 1
+        if (
+            effective != "INBOX"
+            and _untriaged_board(row, effective)
+            and not not_yet(row.p_defer_until, row.start_date, at, today)
+        ):
+            counts["inbox"] += 1
         if in_today(
             effective=effective, is_mine=mine, completed_at=row.completed_at,
             defer_until=row.p_defer_until, start_date=row.start_date,
