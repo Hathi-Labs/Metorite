@@ -50,12 +50,13 @@ import { Input } from "@/components/ui/Input";
 import SelectButton, { type SelectOption } from "@/components/ui/SelectButton";
 import { useState } from "react";
 import {
-  laneGroup,
+  orderLanes,
   REQUIREABLE_FIELD_LABELS,
   REQUIREABLE_FIELDS,
   stageAccent,
 } from "../lib/board";
 import { colorOptions } from "../lib/colorOptions";
+import type { CrmMode } from "../lib/connect";
 import { useCrmModeValue } from "../lib/modeContext";
 import { showPicker } from "../lib/pipelines";
 import {
@@ -121,21 +122,17 @@ const TYPE_OPTIONS: SelectOption[] = STATUS_TYPES.map((type) => ({
 
 /**
  * The stages in board order, as small chips with their win chance (CRM-U6).
- * It re-renders from the rows of the grid, so a move shows here at once. The
- * deal board draws open work, then on hold, won and lost, and the strip does
- * the same. A hidden stage has no lane unless it holds records, so it is not
- * drawn here.
+ * It orders the rows of the grid with `orderLanes`, the board's own rule
+ * (D130), so no type group moves a chip. A hidden stage has no lane unless it
+ * holds records, so it is not drawn here.
  */
-function OrderStrip({ kind, statuses }: { kind: StatusKind; statuses: Status[] }) {
-  const shown = statuses
-    .map((status, index) => ({ status, index }))
-    .filter(({ status }) => !status.hidden)
-    .sort((a, b) =>
-      kind === "deal"
-        ? laneGroup(a.status.type) - laneGroup(b.status.type) || a.index - b.index
-        : a.index - b.index
-    )
-    .map(({ status }) => status);
+function OrderStrip({ statuses, mode }: { statuses: Status[]; mode: CrmMode }) {
+  const shown = orderLanes(
+    statuses
+      .filter((status) => !status.hidden)
+      .map((status) => ({ status, pipeline_position: null })),
+    mode
+  ).map(({ status }) => status);
   if (shown.length === 0) return null;
   return (
     <ol
@@ -450,6 +447,7 @@ function StatusGrid({
   onRemove: (kind: StatusKind, statusId: string) => Promise<boolean>;
   onReorder: (kind: StatusKind, patches: PositionPatch[]) => Promise<void>;
 }) {
+  const mode = useCrmModeValue();
   const [rows, setRows] = useState<Status[]>(statuses);
   const [served, setServed] = useState<Status[]>(statuses);
   const [dragging, setDragging] = useState<number | null>(null);
@@ -540,7 +538,7 @@ function StatusGrid({
           {error}
         </p>
       )}
-      <OrderStrip kind={kind} statuses={rows} />
+      <OrderStrip mode={mode} statuses={rows} />
 
       <ul>
         {rows.map((status, index) => (
@@ -952,7 +950,7 @@ export function MirrorStatusGrid({
           Reset order to Zoho
         </Button>
       </header>
-      <OrderStrip kind={kind} statuses={rows} />
+      <OrderStrip mode="mirror" statuses={rows} />
       <ul>
         {rows.map((status, index) => (
           <li

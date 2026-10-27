@@ -62,20 +62,6 @@ export function stageIcon(type: StatusType): string | null {
   return STAGE_ICONS[type] ?? null;
 }
 
-/** The group of a stage type on the board: open work, then won, then lost. */
-const LANE_GROUP: Record<StatusType, number> = {
-  open: 0,
-  ongoing: 0,
-  on_hold: 1,
-  won: 2,
-  lost: 3,
-};
-
-/** The board group of a stage type: open work, on hold, won, then lost. */
-export function laneGroup(type: StatusType): number {
-  return LANE_GROUP[type] ?? 0;
-}
-
 /** Two pipeline places. A missing place sorts after every stated place. */
 function comparePlaces(
   a: number | null | undefined,
@@ -94,7 +80,7 @@ function comparePlaces(
  * `(ui_position IS NULL, ui_position, source position)`: each ordered row by
  * its `ui_position`, then each row with none, in Zoho order. The order route
  * writes `ui_position` on every row, so only a stage that Zoho adds later has
- * none, and it goes to the end of its group.
+ * none, and it goes after the ordered rows.
  */
 function compareAdminOrder(a: Status, b: Status): number {
   const left = typeof a.ui_position === "number" ? a.ui_position : null;
@@ -106,55 +92,59 @@ function compareAdminOrder(a: Status, b: Status): number {
 }
 
 /**
- * THE order of the Deals board columns (owner decision, 2026-10-12). This is
- * the one place that decides it, and the mode is a parameter.
+ * THE order of the board columns (D130, owner decision 2026-10-27). This is
+ * the one place that decides it. The Deals board and the stage list in CRM
+ * settings both call it, with the same input, so the list is the board.
  *
- * The groups, in both modes: open and ongoing stages, then `on_hold`, then
- * won, then lost at the far end. A hidden stage, and one that Zoho no longer
- * lists, goes to the end of its group (CRM-C3).
+ * **No type group.** An open, an on-hold, a won and a lost stage sort by the
+ * same key. A won stage that Zoho lists in the middle stays in the middle. A
+ * hidden stage, and one that Zoho no longer lists, goes to the end (CRM-C3).
  *
  * **The order never follows the probability** (owner rule, 2026-10-20). The
  * board order and the win chance are two separate settings. A stage at 90%
- * can sit before a stage at 10%. `board.test.ts` fences this.
+ * can sit before a stage at 10%. `crmU6.test.ts` fences this.
  *
- * - **Mirror mode, after an admin order** (`admin_order`). The admin order
- *   key of `compareAdminOrder`, in each group. The pipeline place does not
- *   apply: a pipeline is an ordered subset of the one stage list.
- * - **Mirror mode, no admin order.** The source `position`, then the place in
- *   the chosen pipeline.
- * - **Native mode, and a mode not yet known.** The admin's stage order, the
- *   global `position`, then the pipeline place.
+ * - **Mirror mode, a saved order** (`admin_order`). The key of
+ *   `compareAdminOrder`: `ui_position`, then each row with none by its source
+ *   position. A saved order wins until the admin picks "Same as Zoho".
+ * - **Mirror mode, no saved order.** The place in the pipeline on screen
+ *   first. The stages that the pipeline does not list follow, by the source
+ *   position, which is the order of the Zoho picklist.
+ * - **Native mode, and a mode not yet known.** The admin's order, `position`.
+ * - Last, the name.
  *
- * A stage with no pipeline place (no pipeline chosen, or a stage that only
- * holds deals) sorts after the stated places of its tie. The stage editor in
- * CRM settings keeps its own order.
+ * `places` maps a status id to its place in the pipeline on screen: the
+ * chosen pipeline, or the default pipeline when the board shows every deal
+ * (`placesOf` in `lib/pipelines.ts`). A lane's own `pipeline_position` wins
+ * over the map, because the payload of one pipeline carries it.
  */
 export function orderLanes<T extends Pick<PipelineLane, "status" | "pipeline_position">>(
   lanes: readonly T[],
-  mode: CrmMode
+  mode: CrmMode,
+  places?: ReadonlyMap<string, number>
 ): T[] {
   const mirror = mode === "mirror";
   const adminOrder = mirror && lanes.some((lane) => lane.status.admin_order);
+  const placeOf = (lane: T) =>
+    typeof lane.pipeline_position === "number"
+      ? lane.pipeline_position
+      : places?.get(lane.status.id);
   return [...lanes].sort((a, b) => {
-    const group = (LANE_GROUP[a.status.type] ?? 0) - (LANE_GROUP[b.status.type] ?? 0);
-    if (group !== 0) return group;
     const retired = Number(isRetired(a.status)) - Number(isRetired(b.status));
     if (retired !== 0) return retired;
     if (adminOrder) {
       const key = compareAdminOrder(a.status, b.status);
       if (key !== 0) return key;
     } else if (mirror) {
+      const inPipeline = comparePlaces(placeOf(a), placeOf(b));
+      if (inPipeline !== 0) return inPipeline;
       const source =
         (a.status.source_position ?? a.status.position) -
         (b.status.source_position ?? b.status.position);
       if (source !== 0) return source;
-      const inPipeline = comparePlaces(a.pipeline_position, b.pipeline_position);
-      if (inPipeline !== 0) return inPipeline;
     } else {
-      const global = a.status.position - b.status.position;
-      if (global !== 0) return global;
-      const inPipeline = comparePlaces(a.pipeline_position, b.pipeline_position);
-      if (inPipeline !== 0) return inPipeline;
+      const own = a.status.position - b.status.position;
+      if (own !== 0) return own;
     }
     return a.status.name.localeCompare(b.status.name);
   });
@@ -162,8 +152,8 @@ export function orderLanes<T extends Pick<PipelineLane, "status" | "pipeline_pos
 
 /**
  * Lanes in the Native order of `orderLanes`, empty ones included. The page
- * orders them again for its mode, and decides which empty lanes to hide
- * (`lib/emptyStages.ts`). The store does not know the mode.
+ * orders them again for its mode and its pipeline, and decides which empty
+ * lanes to hide (`lib/emptyStages.ts`). The store does not know the mode.
  *
  * The board must not depend on a payload's ordering to be correct, so it
  * sorts here and does not trust the order of the payload.

@@ -92,7 +92,7 @@ describe("the pickers", () => {
   });
 });
 
-// ── Done when 13: a hidden lane shows only with records, last in its group ──
+// ── Done when 13: a hidden lane shows only with records, last on the board ──
 
 describe("a hidden lane on a board", () => {
   const lane = (s: Status, count: number): PipelineLane => ({
@@ -112,13 +112,14 @@ describe("a hidden lane on a board", () => {
     expect(visibleLanes(orderLanes(lanes, "mirror"), false)).toEqual([]);
   });
 
-  it("sits at the end of its group when it holds records", () => {
+  it("sits at the end of the board when it holds records", () => {
+    // D130: the old rule put it at the end of its group, before Won.
     const lanes = [lane(HIDDEN, 2), lane(OPEN, 1), lane(WON, 0), lane(GONE, 1)];
     expect(visibleLanes(orderLanes(lanes, "native"), true).map((l) => l.status.id)).toEqual([
       "Open",
+      "Won",
       "Hidden",
       "Gone",
-      "Won",
     ]);
   });
 
@@ -140,7 +141,7 @@ describe("a hidden lane on a board", () => {
 
   it("keeps the Leads board in Zoho order with no overlay: no groups by type", () => {
     // Fracktal's Lead Status list, in Zoho order. A lost or won status stays
-    // where Zoho puts it. The deal board groups by type, and leads do not.
+    // where Zoho puts it. Since D130 the deal board has no type group either.
     const zoho = [
       status("Not Contacted", { position: 0, probability: null }),
       status("Junk Lead", { position: 1, type: "lost", probability: null }),

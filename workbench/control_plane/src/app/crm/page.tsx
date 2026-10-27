@@ -112,6 +112,7 @@ import { useAllSavedViews } from "./lib/useSavedViews";
 import { useViewActions } from "./lib/useViewActions";
 import {
   orderedPipelines,
+  placesOf,
   readRemembered,
   remember,
   resolvePipeline,
@@ -540,8 +541,11 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     ctx.mode,
     pickedEmpty && pickedEmpty.scope === memberScope ? pickedEmpty.show : savedEmpty
   );
-  // The one column order, for this mode (lib/board.ts `orderLanes`).
-  const dealLanes = visibleLanes(orderLanes(store.lanes, ctx.mode), showEmpty);
+  // The one column order, for this mode (lib/board.ts `orderLanes`, D130).
+  // The places come from the pipeline on screen, or from the default one when
+  // the board sends no `pipeline_id`. CRM settings orders its list the same way.
+  const places = useMemo(() => placesOf(pipelines, pipelineId), [pipelines, pipelineId]);
+  const dealLanes = visibleLanes(orderLanes(store.lanes, ctx.mode, places), showEmpty);
   const dealBoard = boardOn && view.tab === "deals";
   const mayCreate = canCreate(ctx.mode);
 
