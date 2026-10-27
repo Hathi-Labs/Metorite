@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import functools
 import hashlib
 import json
@@ -67,6 +68,8 @@ __all__ = [
     "PACKS",
     "PACKS_KEY",
     "PACK_RUN_KEY",
+    "SURFACE",
+    "SURFACE_MAX",
     "Choice",
     "LoadSkillTools",
     "LoadSkillToolsProvider",
@@ -77,6 +80,8 @@ __all__ = [
     "begin_turn",
     "catalog",
     "choose",
+    "clean_surface",
+    "current_surface",
     "delegation_refusal",
     "drop_sticky",
     "load_tool",
@@ -90,6 +95,8 @@ __all__ = [
     "packs_on",
     "persona_for",
     "rules_for",
+    "surface_scope",
+    "surfaces",
 ]
 
 #: The most tools that one pack may hold (§4.2.2, "The cap"). OA-5 measured
@@ -123,6 +130,10 @@ class Pack:
     #: but not every pack of its owner, the rules swap *old* for *new*, the
     #: line that sends the rest of the owner's work to the owner.
     handoff_swap: tuple[str, str] = ()
+    #: OA-7d. The app slug whose CORE pack this is, or "". A turn from that
+    #: app loads the pack with no word of the member (layer (a), input 2).
+    #: Only the core pack of an app names it. The setup pack names none.
+    surface: str = ""
 
     @property
     def owner(self) -> str:
@@ -245,6 +256,7 @@ PACKS: dict[str, Pack] = {
         ),
         delegation_refusal=_EMAIL_DELEGATION_REFUSED,
         handoff_swap=(_EMAIL_NO_AGENT_LINE, _EMAIL_SETUP_ROUTE_LINE),
+        surface="email",
     ),
     "email-setup": Pack(
         slug="email-setup",
@@ -457,6 +469,8 @@ class PackTurn:
     sticky: tuple[Sticky, ...] = ()
     words: str = ""
     stored: bool = True
+    #: OA-7d. The cleaned surface of the turn (:func:`clean_surface`), or "".
+    surface: str = ""
 
 
 @dataclass(frozen=True)
@@ -592,6 +606,58 @@ def _word_re(word: str) -> re.Pattern[str]:
     return re.compile(r"(?<![\w-])" + re.escape(_plain(word)) + r"(?![\w-])")
 
 
+# ── The surface (OA-7d, layer (a), input 2) ─────────────────────────────────
+
+#: The longest surface slug. The dock sends the first segment of a path.
+SURFACE_MAX = 32
+
+#: The app that the member is in, for THIS run. The gateway binds it from the
+#: ``surface`` field of the request, after :func:`clean_surface`, in the one
+#: place that binds the typed words. Every other run reads "": a room, the
+#: WhatsApp path, a delegated run, a scheduled run. It is a hint. It names a
+#: pack and never a tenant or a member (R5).
+SURFACE: contextvars.ContextVar[str] = contextvars.ContextVar("tool_packs_surface", default="")
+
+_SURFACE_SLUG = re.compile(r"[a-z][a-z0-9-]*")
+
+
+def surfaces() -> frozenset[str]:
+    """The app slugs that name a core pack. It is the whole allow-list."""
+    return frozenset(found.surface for found in PACKS.values() if found.surface)
+
+
+def clean_surface(raw: Any) -> str:
+    """*raw* as a surface that names a core pack, else "". It never raises.
+
+    A value that is no string, is longer than :data:`SURFACE_MAX`, is no
+    slug, or names no app with a pack gives "" and is ignored.
+    """
+    if not isinstance(raw, str):
+        return ""
+    slug = raw.strip().lower()
+    if not slug or len(slug) > SURFACE_MAX or not _SURFACE_SLUG.fullmatch(slug):
+        return ""
+    return slug if slug in surfaces() else ""
+
+
+@contextlib.contextmanager
+def surface_scope(raw: Any) -> Iterator[None]:
+    """Bind the cleaned surface of one turn. Closing restores the old value."""
+    token = SURFACE.set(clean_surface(raw))
+    try:
+        yield
+    finally:
+        try:
+            SURFACE.reset(token)
+        except (ValueError, RuntimeError):
+            SURFACE.set("")
+
+
+def current_surface() -> str:
+    """The surface that the gateway bound for this run, or ""."""
+    return clean_surface(SURFACE.get())
+
+
 def matched_layer(slug: str, words: str) -> str | None:
     """The layer that a member's *words* load pack *slug* by, or None.
 
@@ -659,7 +725,11 @@ def choose(turn: PackTurn, *, allowed: Iterable[str], base_tools: int) -> Choice
     order = [entry.slug for entry in live]
     for slug in PACKS:
         if slug in allow and slug not in layers:
-            hit = matched_layer(slug, turn.words)
+            found = pack(slug)
+            on_surface = bool(
+                found is not None and found.surface
+                and found.surface == clean_surface(turn.surface))
+            hit = "surface" if on_surface else matched_layer(slug, turn.words)
             if hit is not None:
                 layers[slug] = hit
                 order.append(slug)
@@ -728,7 +798,9 @@ def _sticky_of(raw: Any) -> tuple[Sticky, ...]:
     return tuple(sorted(out, key=lambda e: e.first))
 
 
-async def begin_turn(org: Any, session: Any, member: Any, words: Any) -> PackTurn:
+async def begin_turn(
+    org: Any, session: Any, member: Any, words: Any, surface: Any = "",
+) -> PackTurn:
     """Count this member turn of the chat and read its sticky packs.
 
     *org* is the bound tenant, *session* the chat, *member* the verified
@@ -736,12 +808,15 @@ async def begin_turn(org: Any, session: Any, member: Any, words: Any) -> PackTur
     the run boundary, never from a request field or a tool argument (R5).
     The count is one ``HINCRBY``, so two turns never take one number. Never
     raises: a fault gives a turn with no sticky pack that writes nothing.
+    *surface* is the app slug that the gateway bound (OA-7d). It is cleaned
+    here again, so a value that names no pack gives "".
     """
     org_id, chat = str(org or ""), str(session or "")
     part = _member_part(member)
     text = str(words or "")
+    where = clean_surface(surface)
     if not (org_id and chat and str(member or "").strip()):
-        return PackTurn(org_id, chat, part, 0, (), text, stored=False)
+        return PackTurn(org_id, chat, part, 0, (), text, stored=False, surface=where)
     try:
         from acb_common.tenant_redis import key, organization_scope
 
@@ -754,8 +829,9 @@ async def begin_turn(org: Any, session: Any, member: Any, words: Any) -> PackTur
             await asyncio.wait_for(client.expire(state, TTL_S), timeout=REDIS_TIMEOUT_S)
     except Exception as exc:  # the class only: a value never reaches a log
         _log.warning("tool_packs.state_read_failed", error=type(exc).__name__)
-        return PackTurn(org_id, chat, part, 0, (), text, stored=False)
-    return PackTurn(org_id, chat, part, int(turn), _sticky_of(raw), text, stored=True)
+        return PackTurn(org_id, chat, part, 0, (), text, stored=False, surface=where)
+    return PackTurn(
+        org_id, chat, part, int(turn), _sticky_of(raw), text, stored=True, surface=where)
 
 
 async def drop_sticky(turn: PackTurn, slugs: Iterable[str]) -> None:

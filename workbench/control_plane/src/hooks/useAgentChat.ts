@@ -67,6 +67,7 @@ import {
   type SendOutcome,
 } from "@/lib/chatRecovery";
 import { chatModelField } from "@/lib/tierRouting";
+import { surfaceField } from "@/lib/shell/surface";
 import {
   cancelFollowUp, followUpDue, owedAfterSteer, scheduleFollowUpRetry, sendSteer,
   settleFollowUpAnswer, type SteerOutcome,
@@ -187,6 +188,10 @@ interface UseAgentChatOptions {
   model?: string | null;
   mode?: "copilot" | "litellm";
   systemContext?: string;
+  /** WS-67 OA-7d: the app slug of the pane that the member is in. The dock
+   *  alone sets it. It goes in the request as `surface`, a hint for the
+   *  tool packs (`lib/shell/surface.ts`). */
+  surface?: string | null;
   /** Thinking mode: "auto" | "thinking" | "max" */
   thinkMode?: string;
   onArtifact?: (entry: ArtifactEntry) => void;
@@ -250,6 +255,7 @@ export function useAgentChat({
   model,
   mode = "litellm",
   systemContext,
+  surface,
   thinkMode,
   onArtifact,
   onSessionRefused,
@@ -273,6 +279,8 @@ export function useAgentChat({
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { agentNameRef.current = agentName; }, [agentName]);
   useEffect(() => { systemContextRef.current = systemContext; }, [systemContext]);
+  const surfaceRef = useRef(surface);
+  useEffect(() => { surfaceRef.current = surface; }, [surface]);
   useEffect(() => { thinkModeRef.current = thinkMode; }, [thinkMode]);
 
   // Subscribe to the module-level store (survives navigation/unmount).
@@ -557,6 +565,7 @@ export function useAgentChat({
             mode: modeRef.current,
             ...chatModelField(modelRef.current),
             context: systemContextRef.current ?? undefined,
+            ...surfaceField(surfaceRef.current),
             thinkMode: thinkModeRef.current ?? "auto",
             // Pass the assistant message ID so the server-side proxy persists
             // content to the SAME row the frontend renders.  Without this the
@@ -958,6 +967,7 @@ export function useAgentChat({
         mode: modeRef.current,
         ...chatModelField(modelRef.current),
         context: systemContextRef.current ?? undefined,
+        ...surfaceField(surfaceRef.current),
         thinkMode: thinkModeRef.current ?? "auto",
         assistantMessageId: replyId,
         userMessageId,
