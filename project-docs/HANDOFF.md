@@ -82,40 +82,23 @@ line — never reclaim a number by deleting the other entry.
 ---
 
 # OPEN
-### H-416 · Install the new staging flag tool as root, so the assistant profile can turn on in staging · [OWNER]
+### H-416 · Decide whether the staging apply installs the staging flag tool itself · [OWNER]
 - **Check:** on the dev box (srv1747539), run
   `cmp /opt/acb/app/deploy/hostinger/staging/acb-staging-flag /usr/local/sbin/acb-staging-flag`.
-  If it exits 0, and
-  `sudo -n /usr/local/sbin/acb-staging-flag --list` shows
-  `ASSISTANT_PROFILE_ENABLED=true`, delete this entry.
-- **Why:** PZ-25 (#1330) put `ASSISTANT_PROFILE_ENABLED` and
-  `ASSISTANT_PROFILE_ORGS` on the allowlist of the tool. The copy in
-  `/usr/local/sbin` is the copy of 2026-10-18, so it refuses both names. On
-  2026-10-25 an agent got "refused: ASSISTANT_PROFILE_ENABLED is not on the
-  feature-flag allowlist". Production is on since 2026-10-25 by the owner's
-  word, and staging stays off until this step.
-- **Do this (owner):** open a root shell on srv1747539, in the hPanel browser
-  terminal or with `sudo -i`. Run this one line:
+  A difference means the installed tool is behind the repo copy. If it exits 0, or the owner has said no, delete this entry.
+- **Why:** each change to the allowlist needs a root `install` by the owner. On 2026-10-25 the profile switch waited for that step, and on 2026-10-27 the copy differs again. The installed copy still takes `ASSISTANT_PROFILE_ENABLED`.
+- **Decide (owner), once:** let the root staging apply of `vps_apply.sh` install the tool when the file in the checkout differs (`cmp`, then `install`). The cost: root then copies a file that `acb` can write. `acb` is already root-equivalent through the `docker` group (see the README of `deploy/hostinger/staging/`), so the cost is small today. Say yes or no, and an agent builds it.
+- **Added:** 2026-10-26 · owner, in chat, 2026-10-25
 
-      install -o root -g root -m 755 /opt/acb/app/deploy/hostinger/staging/acb-staging-flag /usr/local/sbin/acb-staging-flag
+### H-430 · Build PZ-31: a member answer that becomes a steer cannot be saved · [AGENT] · security
+- **Metorite:** #832. The task holds the full entry.
+- **Check:** `grep -n '_typed = ""' apps/services/gateway/gateway/routes/agent.py` → still shows the steer follow-up binding empty typed words (about line 2856), and task #832 is not Done
+- **Added:** 2026-10-27 · found by the review of the interview save fix (first minted as H-418, renumbered: main took it)
 
-  The sudoers line `/etc/sudoers.d/acb-staging-flag` is already there, so the
-  one line is enough. Then tell the agent.
-- **Then (agent):** run
-  `sudo -n /usr/local/sbin/acb-staging-flag set ASSISTANT_PROFILE_ENABLED true`.
-  Leave `ASSISTANT_PROFILE_ORGS` empty, so each organization gets it, as in
-  production. Check that `/version` and `/health` answer on
-  `api.dev.metorite.com`. Report the act and the evidence.
-- **Decide (owner), once:** each change to the allowlist needs this root step
-  again. One way to remove it: the root staging apply of `vps_apply.sh`
-  installs the tool when the file in the checkout differs (`cmp`, then
-  `install`). The cost: root then copies a file that `acb` can write. `acb` is
-  already root-equivalent through the `docker` group (see the README of
-  `deploy/hostinger/staging/`), so the cost is small today. It grows when
-  `acb` leaves `docker`. Say yes or no, and an agent builds it.
-- **Authority:** owner, 2026-10-25, in chat: turn the profile on in staging
-  for all organizations, then in production.
-- **Added:** 2026-10-26
+### H-431 · Look at Settings → Assistant settings, and say what still feels stiff · [OWNER]
+- **Metorite:** #261 (PZ-11). The task holds the checks and the state.
+- **Check:** task #261 is not Done → still pending. On app.metorite.com: reload, open the account menu, choose Settings → Assistant settings, then start an empty chat and press "Yes, start". Tell the agent what looks wrong and what feels stiff.
+- **Added:** 2026-10-27 · WS-63 session end (first minted as H-419, renumbered: main took it)
 
 ### H-335 · Finish the staging box: DNS, two OAuth clients, one sudo run · [OWNER]
 - **Check:** `curl -s https://api.dev.metorite.com/version` answers a `sha` equal
