@@ -28,12 +28,15 @@ state (§4.2.2): :func:`begin_turn` reads the sticky packs of the chat,
 :func:`choose` picks the packs of the turn, :func:`persona_for` swaps the
 owner's delegation text for the rules, :func:`note_used` makes a pack sticky
 and :func:`delegation_refusal` refuses a hand-off to an owner that a pack
-replaces. OA-7e adds ``load_skill_tools`` and OA-7f the pack items of the
-turn-kind question. This module never imports the orchestrator or the
-gateway. It reaches Redis only through the tenant wrapper (R5). Fences:
-``tests/unit/test_tool_packs_registry.py``, ``tests/unit/test_pack_guards.py``,
-``tests/unit/test_tool_packs_choice.py`` and
-``tests/unit/test_tool_packs_off.py``.
+replaces. OA-7e adds layer (b): the meta tool ``load_skill_tools``
+(:func:`load_tool`), its :class:`LoadSkillTools` middleware and the
+:class:`LoadSkillToolsProvider` that ``_tool_injection`` puts on the view of
+the run. OA-7f adds the pack items of the turn-kind question. This module
+never imports the orchestrator or the gateway. It reaches Redis only through
+the tenant wrapper (R5). Fences: ``tests/unit/test_tool_packs_registry.py``,
+``tests/unit/test_pack_guards.py``, ``tests/unit/test_tool_packs_choice.py``,
+``tests/unit/test_tool_packs_off.py`` and
+``tests/unit/test_load_skill_tools.py``.
 """
 from __future__ import annotations
 
@@ -43,11 +46,12 @@ import functools
 import hashlib
 import json
 import re
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from acb_common import get_logger
+from agent_framework import ContextProvider, FunctionMiddleware, tool
 
 from acb_skills.skill_families import SKILL_FAMILIES, is_pack
 
@@ -56,6 +60,7 @@ _log = get_logger("acb_skills.tool_packs")
 __all__ = [
     "ALL",
     "DECAY_TURNS",
+    "LOAD_TOOL",
     "MAX_PACKS",
     "MAX_PACK_TOOLS",
     "MAX_REQUEST_TOOLS",
@@ -63,14 +68,19 @@ __all__ = [
     "PACKS_KEY",
     "PACK_RUN_KEY",
     "Choice",
+    "LoadSkillTools",
+    "LoadSkillToolsProvider",
     "Pack",
     "PackRun",
     "PackTurn",
     "Sticky",
     "begin_turn",
+    "catalog",
     "choose",
     "delegation_refusal",
     "drop_sticky",
+    "load_tool",
+    "loadable",
     "matched_layer",
     "note_used",
     "owner_packs",
@@ -487,32 +497,86 @@ class PackRun:
     refusals: Mapping[str, str]
     #: The owners whose specialist tool and persona text left the run. A
     #: hand-off by ``call_agent`` still reaches such an owner unless it is in
-    #: :attr:`refusals` too.
+    #: :attr:`refusals` too. A load in the middle of the turn (OA-7e) never
+    #: adds an owner here, because no tool and no persona text leaves a run.
     replaced: frozenset[str] = frozenset()
     #: The packs that this run already made sticky.
     noted: set[str] = field(default_factory=set, compare=False, repr=False)
+    #: OA-7e. The packs that ``load_skill_tools`` added in this run, in load
+    #: order, each with its held answer. Only :meth:`add` writes it.
+    later: dict[str, bool] = field(default_factory=dict, compare=False, repr=False)
 
     @classmethod
     def of(cls, turn: PackTurn, choice: Choice, loaded: Sequence[tuple[str, bool]]) -> PackRun:
         """The record of a run that loaded *loaded*, pairs of a slug and its
         held answer, in load order."""
         slugs = tuple(slug for slug, _held in loaded)
-        refusals: dict[str, str] = {}
         replaced: set[str] = set()
         for slug in slugs:
             found = pack(slug)
-            if found is None or not found.delegation_refusal:
-                continue
-            replaced.add(found.owner)
-            if set(owner_packs(found.owner)) <= set(slugs):
-                refusals.setdefault(found.owner, found.delegation_refusal)
+            if found is not None and found.delegation_refusal:
+                replaced.add(found.owner)
         return cls(
             org=turn.org, session=turn.session, member_part=turn.member_part,
             turn=turn.turn, stored=turn.stored, slugs=slugs,
             first={slug: choice.first.get(slug, (turn.turn, i)) for i, slug in enumerate(slugs)},
             held={slug: bool(held) for slug, held in loaded},
-            refusals=refusals, replaced=frozenset(replaced),
+            refusals=_refusals_for(slugs), replaced=frozenset(replaced),
         )
+
+    def holds(self) -> tuple[str, ...]:
+        """Each pack that the run holds now: the packs of layer (a), then the
+        packs that ``load_skill_tools`` added, in load order (OA-7e)."""
+        return self.slugs + tuple(slug for slug in self.later if slug not in self.slugs)
+
+    def first_of(self, slug: str) -> tuple[int, int]:
+        """The first load of *slug*: its place in the load order of this turn,
+        for the sticky state. A pack that a load added comes after each pack
+        of layer (a)."""
+        if slug in self.first:
+            first = self.first[slug]
+            return (int(first[0]), int(first[1]))
+        held = self.holds()
+        return (self.turn, held.index(slug) if slug in held else len(held))
+
+    def refusal(self, agent_name: str) -> str | None:
+        """The pack refusal of a hand-off to *agent_name*, or None.
+
+        :attr:`refusals` holds the answer at the start of the run. A load in
+        the middle of the turn can complete the packs of an owner, and from
+        that call on the hand-off to that owner is refused too. The rule is
+        the one of :meth:`of` (:func:`_refusals_for`)."""
+        name = str(agent_name or "")
+        found = self.refusals.get(name)
+        if found or not self.later:
+            return found or None
+        return _refusals_for(self.holds()).get(name) or None
+
+    def add(self, slug: str, held: bool) -> None:
+        """Record that ``load_skill_tools`` added pack *slug* in this run.
+
+        The record is shared by each frame of the run, so the hand-off rule
+        (:meth:`refusal`) and the sticky write (:func:`note_used`) read the
+        load at once. A delegated run never holds the record."""
+        if slug not in self.slugs:
+            self.later.setdefault(slug, bool(held))
+
+
+def _refusals_for(slugs: Iterable[str]) -> dict[str, str]:
+    """The refusal text of each owner whose every pack is in *slugs*.
+
+    THE one rule of the pack refusal (OA-7c fix round 1, P1-A): a hand-off
+    to an owner is refused only while the run holds every pack of that owner
+    (:func:`owner_packs`), and only for a pack with a refusal text."""
+    held = list(dict.fromkeys(slugs))
+    refusals: dict[str, str] = {}
+    for slug in held:
+        found = pack(slug)
+        if found is None or not found.delegation_refusal:
+            continue
+        if set(owner_packs(found.owner)) <= set(held):
+            refusals.setdefault(found.owner, found.delegation_refusal)
+    return refusals
 
 
 def _plain(text: Any) -> str:
@@ -716,8 +780,10 @@ async def note_used(slug: str, ctx: Mapping[str, Any] | None = None) -> bool:
     It writes ONE field of the state hash (``HSET``), so two pack calls at
     once lose no update, and two calls of one pack write the same value. It
     reads the :class:`PackRun` of the run context, which the server bound, and
-    writes for a pack that this run loaded only. A run with no record (a
-    test, or a run that loaded no pack) writes nothing. Never raises.
+    writes for a pack that this run holds only: a pack of layer (a), or a
+    pack that ``load_skill_tools`` added (OA-7e), once one of its tools ran. A run
+    with no record (a test, or a run that loaded no pack) writes nothing.
+    Never raises.
     """
     if ctx is None:
         try:
@@ -727,12 +793,12 @@ async def note_used(slug: str, ctx: Mapping[str, Any] | None = None) -> bool:
         except Exception:
             return False
     run = (ctx or {}).get(PACKS_KEY)
-    if not isinstance(run, PackRun) or slug not in run.slugs or not run.stored:
+    if not isinstance(run, PackRun) or slug not in run.holds() or not run.stored:
         return False
     if slug in run.noted:
         return True
     run.noted.add(slug)
-    value = json.dumps({"first": list(run.first.get(slug, (run.turn, 0))), "used": run.turn})
+    value = json.dumps({"first": list(run.first_of(slug)), "used": run.turn})
     try:
         from acb_common.tenant_redis import key, organization_scope
 
@@ -797,18 +863,30 @@ def persona_for(
                     f"orchestrator persona has no single delegation text of {found.owner!r}")
             text = text.replace(old, "", 1)
             swapped.add(found.owner)
-        block = found.rules.rstrip("\n")
-        if found.handoff_swap and not set(owner_packs(found.owner)) <= held_slugs:
-            line, route = found.handoff_swap
-            if block.count(line) != 1:
-                raise RuntimeError(f"pack {slug!r} rules have no single {line[:40]!r}")
-            block = block.replace(line, route, 1)
-        if held:
-            block += "\n\n" + _hold_note(found.owner)
-        blocks.append(block)
+        blocks.append(_rules_block(found, held, held_slugs))
     if not blocks:
         return str(persona)
     return text.rstrip("\n") + "\n\n" + "\n\n".join(blocks) + "\n"
+
+
+def _rules_block(found: Pack, held: bool, held_slugs: Iterable[str]) -> str:
+    """The rules of pack *found* in a run that holds the packs *held_slugs*.
+
+    ONE text for both layers: :func:`persona_for` puts it after the persona,
+    and ``load_skill_tools`` gives it as the answer of a load (OA-7e). While
+    the run does not hold every pack of the owner, the :attr:`Pack.handoff_swap`
+    line takes the place of its old line. A held pack adds its hold note,
+    which names no other assistant. Raises ``RuntimeError`` when the rules do
+    not hold the old line exactly once."""
+    block = found.rules.rstrip("\n")
+    if found.handoff_swap and not set(owner_packs(found.owner)) <= set(held_slugs):
+        line, route = found.handoff_swap
+        if block.count(line) != 1:
+            raise RuntimeError(f"pack {found.slug!r} rules have no single {line[:40]!r}")
+        block = block.replace(line, route, 1)
+    if held:
+        block += "\n\n" + _hold_note(found.owner)
+    return block
 
 
 def delegation_refusal(agent_name: Any, ctx: Mapping[str, Any] | None = None) -> str | None:
@@ -826,6 +904,10 @@ def delegation_refusal(agent_name: Any, ctx: Mapping[str, Any] | None = None) ->
     chat. ``call_agent_background`` does not ask it, because a background run
     keeps delegation (§4.3.1). A delegated run never holds the record, so a
     hand-off from a child is never refused here.
+
+    OA-7e: a load in the middle of the turn can complete the packs of an
+    owner (``email-setup`` after ``email``). From that call on, the hand-off
+    to the owner is refused in this run too (:meth:`PackRun.refusal`).
     """
     if ctx is None:
         try:
@@ -837,4 +919,326 @@ def delegation_refusal(agent_name: Any, ctx: Mapping[str, Any] | None = None) ->
     run = (ctx or {}).get(PACKS_KEY)
     if not isinstance(run, PackRun):
         return None
-    return run.refusals.get(str(agent_name or "")) or None
+    return run.refusal(str(agent_name or ""))
+
+
+# ── OA-7e: layer (b), the meta tool ``load_skill_tools`` (§4.2.2) ───────────
+#
+# Layer (a) decides almost every turn before the first request. When it
+# missed, the model reads the catalog of the packs that it can still load,
+# one index line for each, in the description of ``load_skill_tools``. A call
+# adds the tools of ONE pack to the live tool list of the run, through MAF's
+# ``FunctionInvocationContext.add_tools`` (``PROGRESSIVE_TOOLS``, an
+# experimental feature), and answers the rules of the pack. The model sees
+# the new tools on its next request. A load is monotonic: no tool leaves the
+# run, and the persona does not change in the turn. The next turn holds the
+# pack by layer (a) only after one of its tools ran (:func:`note_used`, in the
+# pack call). A mere load is not sticky: a wrong pack never becomes sticky.
+#
+# The pack goes through the SAME guarded builder as layer (a)
+# (``_tool_injection._pack_tools``) and the same caps. The build skips each
+# name that the live list holds. ``_tool_injection._offer_pack_loader`` puts
+# :class:`LoadSkillToolsProvider` on the view of the run, and only a run that
+# layer (a) serves gets it. Fence: ``tests/unit/test_load_skill_tools.py``.
+
+#: The name of the meta tool of layer (b).
+LOAD_TOOL = "load_skill_tools"
+#: The ``source_id`` of :class:`LoadSkillToolsProvider`.
+LOAD_SOURCE_ID = "metorite-tool-packs"
+
+#: The risk of the meta tool. It reads the registry and changes the tool list
+#: of this run only, so a held run keeps it (``egress.is_egress_tool``).
+_LOAD_RISK = {"read_only": True, "destructive": False, "idempotent": True, "open_world": False}
+
+_LOAD_DESCRIPTION = (
+    "Load the tools of one pack into this chat. Use it when the member asks "
+    "for work that the tools that you hold cannot do, and a pack below can do "
+    "it. Pass the slug of one pack. Its tools join from your next step, and "
+    "the answer gives the rules of the pack. The packs that you can load:\n"
+    "{catalog}"
+)
+
+#: The answers of a load. A refusal changes nothing in the run.
+LOADED = "Loaded the {label} tools ({count} tools). Call them from your next step.\n\n{rules}"
+LOAD_ALREADY = "The {label} tools are loaded already. Call them."
+LOAD_UNKNOWN = (
+    "Not loaded. \"{slug}\" is not a pack that you can load in this chat. "
+    "You can load: {offered}."
+)
+#: §4.2.2, "The cap": in the middle of a turn, a load past the cap refuses,
+#: and the answer names ``spawn_subagents`` with that pack (§6).
+LOAD_PAST_CAP = (
+    "Not loaded. The {label} tools do not fit in this request: a request "
+    "holds at most {packs} packs and {tools} tools. Give that work to a "
+    "sub-agent: call spawn_subagents with a job that names the pack "
+    "\"{slug}\". If spawn_subagents is not in your tools, hand the task to "
+    "{owner}, or answer with the tools that you hold."
+)
+#: A pack of an owner that reads stranger text never joins a run that holds
+#: a tool of a registry MCP server (``_inject_mcp_servers``, OA-7b).
+LOAD_BESIDE_MCP = (
+    "Not loaded. The {label} tools read mail from outside senders, and this "
+    "run holds tools of a connected server, so they cannot join it. Hand "
+    "the task to {owner}."
+)
+LOAD_UNAVAILABLE = (
+    "Not loaded. The {label} tools are not available now. Answer with the "
+    "tools that you hold."
+)
+LOAD_REFUSED = "Not loaded. load_skill_tools acts only in the run that offered it."
+#: The line before the old lines of :attr:`Pack.handoff_swap`, when a load
+#: completes the packs of an owner.
+LOAD_COMPLETES = "Each tool of {owner} is now yours."
+
+#: Builds ONE pack for ONE run: ``_tool_injection._pack_tools`` with the run
+#: context of the call and the names that the live list holds. It gives a
+#: ``PackBuild`` (``tools`` and ``held``), or None.
+PackBuilder = Callable[[str, Mapping[str, Any], frozenset[str]], Awaitable[Any]]
+
+
+def loadable(allowed: Iterable[str], loaded: Iterable[str] = ()) -> tuple[str, ...]:
+    """The packs that ``load_skill_tools`` can offer, in the order of :data:`PACKS`.
+
+    Each pack of *allowed* that *loaded* does not name, and that holds
+    :data:`MAX_PACK_TOOLS` tools or fewer. *allowed* is :func:`packs_on` of
+    the bound tenant less the families that an admin turned off, so the
+    catalog never lists a pack that the flag or a toggle stops.
+    """
+    allow = frozenset(allowed)
+    held = frozenset(loaded)
+    return tuple(
+        slug for slug in PACKS
+        if slug in allow and slug not in held and is_pack(slug)
+        and _tool_count(slug) <= MAX_PACK_TOOLS
+    )
+
+
+def catalog(slugs: Iterable[str]) -> str:
+    """One index line for each pack of *slugs*: the slug and the ``summary``
+    of its family, the line that ``build_catalog`` prices."""
+    return "\n".join(
+        f"- {slug}: {SKILL_FAMILIES[slug]['summary']}" + (LOAD_MCP_NOTE if _reads_strangers(slug) else "")
+        for slug in slugs if pack(slug) is not None
+    )
+
+
+#: Added to the catalog line of a pack of an owner that reads stranger text.
+#: The offer cannot see an MCP server that attaches later, so the line says it.
+LOAD_MCP_NOTE = " Cannot load while this chat holds tools of a connected server."
+
+
+def _reads_strangers(slug: str) -> bool:
+    found = pack(slug)
+    if found is None:
+        return False
+    try:
+        from acb_skills.egress import UNTRUSTED_INPUT_AGENTS
+    except ImportError:
+        return True
+    return found.owner in UNTRUSTED_INPUT_AGENTS
+
+
+def load_tool(offered: Sequence[str]) -> Any:
+    """The ``load_skill_tools`` tool of ONE run, with the catalog of *offered*.
+
+    Its body runs only when no :class:`LoadSkillTools` middleware took the
+    call, and then it loads nothing (fail closed). The middleware matches the
+    call by the identity of this function, never by the name alone."""
+
+    async def load_skill_tools(pack: str) -> str:
+        _log.warning("tool_packs.load_refused", pack=str(pack)[:40], reason="no_middleware")
+        return LOAD_REFUSED
+
+    load_skill_tools.__tool_risk__ = dict(_LOAD_RISK)  # type: ignore[attr-defined]
+    return tool(
+        load_skill_tools, name=LOAD_TOOL,
+        description=_LOAD_DESCRIPTION.format(catalog=catalog(offered)),
+        approval_mode="never_require",
+    )
+
+
+def _label(slug: str) -> str:
+    return str(SKILL_FAMILIES.get(slug, {}).get("label") or slug)
+
+
+def _pack_argument(arguments: Any) -> str:
+    """The ``pack`` argument of a call, as a slug. A mapping or a model."""
+    if isinstance(arguments, Mapping):
+        value = arguments.get("pack")
+    else:
+        value = getattr(arguments, "pack", None)
+    return str(value or "").strip().lower()
+
+
+def _past_cap(found: Pack) -> str:
+    return LOAD_PAST_CAP.format(
+        label=_label(found.slug), packs=MAX_PACKS, tools=MAX_REQUEST_TOOLS,
+        slug=found.slug, owner=found.owner,
+    )
+
+
+def _completed_lines(found: Pack, before: Iterable[str]) -> list[str]:
+    """The lines that close the hand-off, when this load of *found* completes
+    the packs of its owner.
+
+    Before the load, each earlier pack of the owner showed its
+    :attr:`Pack.handoff_swap` route line, which sends work to the owner. From
+    this load on, the run refuses that hand-off (:meth:`PackRun.refusal`), so
+    the answer gives the old lines back. Empty when the load completes no
+    owner."""
+    held = set(before)
+    every = set(owner_packs(found.owner))
+    if not every or every <= held or not every <= held | {found.slug}:
+        return []
+    lines = [
+        other.handoff_swap[0] for slug in owner_packs(found.owner)
+        if slug in held and (other := pack(slug)) is not None and other.handoff_swap
+    ]
+    if not lines:
+        return []
+    return [LOAD_COMPLETES.format(owner=found.owner), *dict.fromkeys(lines)]
+
+
+def _run_context() -> Mapping[str, Any]:
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        return artifact_context() or {}
+    except Exception:
+        return {}
+
+
+def _beside_mcp(owner: str, live: Sequence[Any]) -> bool:
+    """True when *live* holds a tool of an MCP server and *owner* reads text
+    from strangers (``egress.UNTRUSTED_INPUT_AGENTS``). Fails closed."""
+    try:
+        from acb_skills.egress import UNTRUSTED_INPUT_AGENTS, _from_mcp
+    except ImportError:
+        return True
+    return owner in UNTRUSTED_INPUT_AGENTS and any(_from_mcp(item) for item in live)
+
+
+def _refused(slug: str, reason: str, text: str) -> str:
+    _log.info("tool_packs.load_refused", pack=slug[:40], reason=reason)
+    return text
+
+
+class LoadSkillTools(FunctionMiddleware):
+    """The middleware of ``load_skill_tools`` for ONE run (WS-67 OA-7e).
+
+    It takes a call of :attr:`tool` and lets each other call pass. In order:
+
+    1. The run check: the frame holds the run key that the server minted for
+       this run (:data:`PACK_RUN_KEY`) and this run's :class:`PackRun`.
+    2. A pack that the run holds already answers :data:`LOAD_ALREADY`.
+    3. A pack that the run did not offer answers :data:`LOAD_UNKNOWN`.
+    4. The caps: at most :data:`MAX_PACKS` packs, :data:`MAX_PACK_TOOLS`
+       tools a pack and :data:`MAX_REQUEST_TOOLS` tools in the live list.
+       A load past a cap answers :data:`LOAD_PAST_CAP`, which names
+       ``spawn_subagents``.
+    5. A pack of an owner that reads stranger text never joins a run that
+       holds an MCP tool (:data:`LOAD_BESIDE_MCP`).
+    6. The build: *build*, the guarded builder of layer (a), with the names
+       of the live list, so a pack tool never shadows a tool of the run.
+    7. ``context.add_tools``. It raises ``ValueError`` for another object of
+       a name in the list, and ``RuntimeError`` with no live list. Either
+       loads nothing.
+    8. The record: :meth:`PackRun.add`. A load makes no pack sticky. The pack
+       becomes sticky when one of its tools runs (:func:`note_used`).
+
+    One load at a time in a run, so two loads at once see each other.
+    """
+
+    def __init__(
+        self, *, offered: Sequence[str], run_key: str, record: PackRun, build: PackBuilder,
+    ) -> None:
+        self.offered = tuple(offered)
+        self.run_key = str(run_key or "")
+        self.record = record
+        self._build = build
+        self.tool = load_tool(self.offered)
+        self._lock = asyncio.Lock()
+
+    def takes(self, function: Any) -> bool:
+        """True for a call of this run's own :attr:`tool`, by identity."""
+        if function is None:
+            return False
+        return function is self.tool or getattr(function, "func", None) is self.tool.func
+
+    async def process(self, context: Any, call_next: Callable[[], Awaitable[None]]) -> None:
+        if not self.takes(getattr(context, "function", None)):
+            await call_next()
+            return
+        async with self._lock:
+            context.result = await self._load(context)
+
+    async def _load(self, context: Any) -> str:
+        slug = _pack_argument(getattr(context, "arguments", None))
+        ctx = _run_context()
+        run = ctx.get(PACKS_KEY)
+        if (not self.run_key or str(ctx.get(PACK_RUN_KEY) or "") != self.run_key
+                or run is not self.record or not isinstance(run, PackRun)):
+            return _refused(slug, "run", LOAD_REFUSED)
+        found = pack(slug)
+        if found is not None and slug in run.holds():
+            return _refused(slug, "already", LOAD_ALREADY.format(label=_label(slug)))
+        if found is None or slug not in self.offered:
+            rest = [s for s in self.offered if s not in run.holds()]
+            return _refused(slug, "unknown", LOAD_UNKNOWN.format(
+                slug=slug[:60], offered=", ".join(rest) or "none"))
+        live = getattr(context, "tools", None)
+        if not isinstance(live, list):
+            return _refused(slug, "no_live_list", LOAD_UNAVAILABLE.format(label=_label(slug)))
+        if len(run.holds()) >= MAX_PACKS or _tool_count(slug) > MAX_PACK_TOOLS:
+            return _refused(slug, "cap_packs", _past_cap(found))
+        if _beside_mcp(found.owner, live):
+            return _refused(slug, "beside_mcp", LOAD_BESIDE_MCP.format(
+                label=_label(slug), owner=found.owner))
+        from acb_skills.tool_guard import tool_name
+
+        build = await self._build(slug, dict(ctx), frozenset(tool_name(t) for t in live))
+        tools = tuple(getattr(build, "tools", None) or ())
+        if build is None or not tools:
+            return _refused(slug, "unavailable", LOAD_UNAVAILABLE.format(label=_label(slug)))
+        if len(live) + len(tools) > MAX_REQUEST_TOOLS:
+            return _refused(slug, "cap_tools", _past_cap(found))
+        held = getattr(build, "held", True) is not False
+        before = run.holds()
+        try:
+            rules = _rules_block(found, held, (*before, slug))
+            context.add_tools(list(tools))
+        except Exception as exc:  # ValueError, RuntimeError: nothing loads
+            _log.warning("tool_packs.load_refused", pack=slug, reason="add_tools",
+                         error=type(exc).__name__)
+            return LOAD_UNAVAILABLE.format(label=_label(slug))
+        run.add(slug, held)
+        answer = LOADED.format(label=_label(slug), count=len(tools), rules=rules)
+        closing = _completed_lines(found, before)
+        if closing:
+            answer += "\n\n" + " ".join(closing)
+        _log.info(
+            "tool_packs.loaded", pack=slug, tools=len(tools), held=held,
+            live_tools=len(live), packs=list(run.holds()),
+            refused=sorted(_refusals_for(run.holds())),
+        )
+        return answer
+
+
+class LoadSkillToolsProvider(ContextProvider):
+    """Adds ``load_skill_tools`` and its middleware to ONE run (OA-7e).
+
+    ``_tool_injection._offer_pack_loader`` attaches it to the run's own view
+    of the agent (``agent_with_providers``), never to a shared agent object,
+    as the providers of the egress guard and the tier policy are attached.
+    It adds no instruction, so the persona and the per-turn context stay as
+    they are. The catalog rides in the description of the tool."""
+
+    def __init__(self, loader: LoadSkillTools) -> None:
+        super().__init__(LOAD_SOURCE_ID)
+        self.loader = loader
+
+    async def before_run(
+        self, *, agent: Any, session: Any, context: Any, state: dict[str, Any],
+    ) -> None:
+        context.extend_tools(LOAD_SOURCE_ID, [self.loader.tool])
+        context.extend_middleware(LOAD_SOURCE_ID, [self.loader])

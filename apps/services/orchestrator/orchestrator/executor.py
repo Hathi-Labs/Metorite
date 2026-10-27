@@ -1254,8 +1254,14 @@ async def _apply_pack_turn(
     """Await the read of :func:`_start_pack_turn` and apply layer (a).
 
     Returns the ``_tool_injection.PackApply`` of the run, or None when no pack
-    loads. A fault loads no pack and never fails the turn: the run then has
-    the tools and the persona of a run with the flag off.
+    loads and no pack is left to offer. A fault loads no pack and never fails
+    the turn: the run then has the tools and the persona of a run with the
+    flag off.
+
+    WS-67 OA-7e: it offers layer (b) too (``offer_loader``). The run then
+    holds ``load_skill_tools`` for each allowed pack that layer (a) did not
+    load. This is the one caller that passes it, so only the run that layer
+    (a) serves gets the tool.
     """
     if task is None:
         return None
@@ -1267,7 +1273,7 @@ async def _apply_pack_turn(
         return await _apply_tool_packs(
             agents, turn, run_ctx, allowed=allowed, agent_name=agent_name,
             tool_scope=tool_scope, agent_config=agent_config,
-            bullets=PACK_DELEGATION_BULLETS,
+            bullets=PACK_DELEGATION_BULLETS, offer_loader=True,
         )
     except asyncio.CancelledError:
         raise
