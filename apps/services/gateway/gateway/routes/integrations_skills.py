@@ -94,6 +94,7 @@ def _pack_tools_by_name() -> dict[str, Any]:
     tool does in :func:`_platform_tools_by_name`.
     """
     from acb_skills import skill_families, tool_packs
+    from acb_skills.tool_guard import tool_name
 
     out: dict[str, Any] = {}
     for slug in skill_families.pack_slugs():
@@ -104,7 +105,9 @@ def _pack_tools_by_name() -> dict[str, Any]:
                 _log.warning("skills.pack_owner_unavailable", pack=slug, owner=owner)
                 continue
             for fn in tool_packs.owner_tools(slug, module):
-                out[getattr(fn, "__name__", "")] = fn
+                # OA-8b: a MAF ``FunctionTool`` (the Projects tools) has a
+                # ``name`` and no ``__name__``, so ``tool_name`` reads both.
+                out[tool_name(fn)] = fn
         except Exception as exc:  # a price never breaks the catalog
             _log.warning(
                 "skills.pack_tools_unavailable", pack=slug, owner=owner,

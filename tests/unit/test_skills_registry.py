@@ -117,7 +117,10 @@ def _owner_universe(owner: str) -> set[str]:
     rel = str(entry["local_path"])
     cfg = json.loads((Path(REPO_ROOT) / rel / "config.json").read_text(encoding="utf-8"))
     module = load_agent_module(rel)
-    built = {fn.__name__ for fn in module._agent_tools()}
+    # OA-8b: a MAF ``FunctionTool`` (the Projects tools) has no ``__name__``.
+    from acb_skills.tool_guard import tool_name
+
+    built = {tool_name(fn) for fn in module._agent_tools()}
     if callable(getattr(module, "_narrow_tool", None)):
         built.add(NARROW)
     return set(cfg.get("own_tool_scope") or ()) & built

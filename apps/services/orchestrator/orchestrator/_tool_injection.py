@@ -3023,9 +3023,11 @@ async def _pack_tools(
     tools: list[Any] = []
     dropped: list[str] = []
     skipped: list[str] = []
-    for fn in tool_packs.owner_tools(slug, source):
+    for fn in _owner_pack_tools(slug, owner, source):
         name = _tool_name(fn)
-        if name in taken or not inspect.iscoroutinefunction(fn):
+        # OA-8b: a tool is a coroutine function or a MAF ``FunctionTool`` whose
+        # ``func`` is one (the Projects ``_StrictTool``). Any other shape skips.
+        if name in taken or not inspect.iscoroutinefunction(_pack_func(fn)):
             skipped.append(name)
         elif held and _is_egress(fn):
             dropped.append(name)
@@ -3071,13 +3073,71 @@ async def _drop_pack_mirror_writes(
     return kept, [*dropped, *gone]
 
 
+async def _drop_pack_covered(
+    tools: list[Any], dropped: list[str], *, held: bool = False,
+) -> tuple[list[Any], list[str]]:
+    """Give a covered organization no Projects pack (WS-67 OA-8b, audit
+    narrowing 6).
+
+    For a covered organization (H-236, ``_run_covered``), the Projects
+    assistant's own run is the one path that is pinned to a tool list
+    (``COVERED_PROJECTS_TOOLS`` in ``tests/unit/test_delegation_no_egress.py``)
+    and fenced by the sandbox broker. The pack would give the one assistant
+    those tools outside that pin. So a covered run builds an empty pack, and
+    the specialist keeps the work. The check reads the run binding, never a
+    request field (R5), and ``_run_covered`` fails closed. It runs for the
+    builds of every layer, as the Mirror filter does."""
+    if not tools or not _run_covered("projects-assistant"):
+        return tools, dropped
+    _log.info("executor.projects_pack_covered", tools=len(tools), source="pack")
+    return [], dropped
+
+
 #: The one pre-filter slot of :func:`_pack_tools`, by owner. A filter takes the
 #: built tools, the dropped names and the held answer, and gives both lists
 #: back, less what the owner's rules take out. It runs for the builds of every
 #: layer (a, b and c), so a rule of an owner lives here and nowhere else.
 _PACK_OWNER_FILTERS: dict[str, Callable[..., Awaitable[tuple[list[Any], list[str]]]]] = {
     "crm-assistant": _drop_pack_mirror_writes,
+    "projects-assistant": _drop_pack_covered,
 }
+
+#: The tools that an owner built, by owner: ``(module, its _agent_tools, {slug:
+#: tools})``. The Projects owner builds 120 ``FunctionTool`` objects, each with
+#: an input model, so a build for each run would pay for 120 models again
+#: (OA-8b). The entry holds only while the owner's module and builder are the
+#: same objects, so a patched or reloaded owner builds again. An owner with a
+#: ``_narrow_tool`` is not cached, because that tool depends on a setting.
+_PACK_OWNER_TOOLS: dict[str, tuple[Any, Any, dict[str, list[Any]]]] = {}
+
+
+def _owner_pack_tools(slug: str, owner: str, source: Any) -> list[Any]:
+    """The tools of pack *slug* from *source* (``tool_packs.owner_tools``),
+    built once for each owner module (:data:`_PACK_OWNER_TOOLS`)."""
+    from acb_skills import tool_packs
+
+    if callable(getattr(source, "_narrow_tool", None)):
+        return tool_packs.owner_tools(slug, source)
+    builder = getattr(source, "_agent_tools", None)
+    entry = _PACK_OWNER_TOOLS.get(owner)
+    if entry is None or entry[0] is not source or entry[1] is not builder:
+        entry = (source, builder, {})
+        _PACK_OWNER_TOOLS[owner] = entry
+    if slug not in entry[2]:
+        entry[2][slug] = tool_packs.owner_tools(slug, source)
+    return list(entry[2][slug])
+
+
+def _pack_func(fn: Any) -> Any:
+    """The callable that a pack tool runs: ``fn.func`` for a MAF
+    ``FunctionTool`` (WS-67 OA-8b, the Projects ``_StrictTool``), else *fn*.
+
+    ``_gate_own_maf_tools`` reads ``func`` the same way."""
+    try:
+        from agent_framework import FunctionTool
+    except ImportError:  # pragma: no cover - MAF ships with the platform
+        return fn
+    return fn.func if isinstance(fn, FunctionTool) else fn
 
 
 def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") -> Any:
@@ -3107,7 +3167,21 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
     own function. The wrapper carries ``__cc_gated__``, so a later assembly
     (``_gate_own_maf_tools``) never gates it a second time and never shows a
     second card. :data:`PACK_OWNER_ATTR` names the owner.
+
+    OA-8b: *fn* may be a MAF ``FunctionTool`` (the Projects ``_StrictTool``).
+    Its function takes the steps above, and the tool comes back as a shallow
+    copy with that function swapped, the idiom of :func:`_gate_own_maf_tools`.
+    The class, the input model and so ``additionalProperties: false`` and the
+    unknown-argument answer stay as the owner built them, and a copy leaves
+    the cached tool of the owner as it was.
     """
+    inner = _pack_func(fn)
+    if inner is not fn:
+        import copy  # noqa: PLC0415
+
+        clone = copy.copy(fn)
+        clone.func = _pack_call(inner, owner, held, run_key, slug)
+        return clone
     from acb_skills.egress import _register_platform_wrapper
     from acb_skills.tool_packs import PACK_RUN_KEY, note_used, owner_scope
 

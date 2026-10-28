@@ -1185,7 +1185,8 @@ def test_the_surface_adds_the_core_pack_and_nothing_else() -> None:
     names ``surface="email"`` too -> ``email-setup`` loads -> red."""
     turn = tp.PackTurn(ORG, SESSION, tp._member_part(MEMBER), 1, (), "", True, surface="email")
     assert tp.choose(turn, allowed=ALL, base_tools=40).slugs == ("email",)
-    assert tp.surfaces() == {"email", "crm"}
+    # OA-8b: the Projects core pack serves three apps over one task store.
+    assert tp.surfaces() == {"email", "crm", "projects", "tasks", "calendar"}
     assert tp.PACKS["email-setup"].surface == ""
 
 
@@ -1392,7 +1393,10 @@ def test_the_crm_pack_words_leave_out_the_bare_words() -> None:
 def test_the_crm_pack_is_last_in_the_order_so_the_cap_drops_it_first() -> None:
     """Mutation: put ``crm-records`` before an email pack in ``PACKS`` -> an
     email pack leaves first -> red."""
-    assert list(tp.PACKS)[-1] == "crm-records"
+    # OA-8b: the four Projects packs follow it, so the order ends with them.
+    assert list(tp.PACKS)[-5:] == [
+        "crm-records", "projects", "projects-plan", "projects-structure", "projects-bulk"]
+    assert list(tp.PACKS).index("crm-records") > list(tp.PACKS).index("email-setup")
     # Email 31 and CRM 9 beside a base of 75 is over 110: the CRM pack leaves,
     # and the email pack stays.
     words = "check my inbox and the crm deals"
@@ -1672,7 +1676,9 @@ def test_a_missing_persona_bullet_raises_unless_the_owner_has_none_by_design(
     the swap for any absent owner (the old rule) -> the second case does not
     raise -> red. Mutation: drop ``crm-assistant`` from the set -> the first
     case raises -> red."""
-    assert CRM in tp.NO_PERSONA_BULLETS and len(tp.NO_PERSONA_BULLETS) == 1
+    # OA-8b: the Projects assistant joins it. No bullet joins PACK_DELEGATION_BULLETS.
+    assert {CRM, "projects-assistant"} == tp.NO_PERSONA_BULLETS
+    assert set(_bullets()) == {EA}
     persona = _agents_mod()._orchestrator_instructions(False)
     text = tp.persona_for(persona, [("crm-records", False)], _bullets())
     assert text.startswith(persona.rstrip("\n") + "\n\n")
