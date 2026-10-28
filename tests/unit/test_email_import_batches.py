@@ -730,6 +730,15 @@ class _Res:
         return None
 
 
+class _Rows(_Res):
+    def __init__(self, rows) -> None:
+        super().__init__(rows[0] if rows else None)
+        self.rows = rows
+
+    def fetchall(self):
+        return self.rows
+
+
 def _row(**over) -> SimpleNamespace:
     now = _now()
     base = dict(id="log-1", provider="microsoft", credentials_encrypted="x",
@@ -753,6 +762,11 @@ def _sessions(row, log: list, state: dict):
         class _Db:
             async def execute(self, stmt, params=None, *_a, **_k):
                 log.append((block, _flat(stmt), dict(params or {})))
+                if "categories" in _flat(stmt) and "ANY(:pids)" in _flat(stmt):
+                    # The batch read of stored categories: every row exists.
+                    return _Rows([SimpleNamespace(provider_message_id=p,
+                                                  categories=row.categories)
+                                  for p in params["pids"]])
                 return _Res(row)
 
         try:
