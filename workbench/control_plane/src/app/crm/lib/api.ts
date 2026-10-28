@@ -479,6 +479,23 @@ export function getModuleRecord(module: string, id: string): Promise<ModuleRecor
 }
 
 /**
+ * Edit one generic record (CRM-Z10d). Native mode only: Mirror mode answers
+ * 409 `mirrored_record`. The body holds `name`, `owner_email` and `fields`,
+ * and names only the keys that change. A refusal is a `CrmError` with the
+ * `code` and the `field` of the 422.
+ */
+export function patchModuleRecord(
+  module: string,
+  id: string,
+  body: Record<string, unknown>,
+): Promise<ModuleRecordPage> {
+  return call<ModuleRecordPage>(
+    `/modules/${encodeURIComponent(module)}/records/${encodeURIComponent(id)}`,
+    { method: "PATCH", body: JSON.stringify(body) },
+  );
+}
+
+/**
  * The activities of one module record, newest first (CRM-Q23a). Read only:
  * no route writes an activity on a module record. An unknown module or
  * record is a 404.

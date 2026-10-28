@@ -348,12 +348,29 @@ export function isLocked(record: Row | null | undefined, mode: CrmMode): boolean
 
 /** "Imported from Zoho on 12 Oct 2026": Native mode, imported record, else null. */
 export function importedLine(record: Row | null | undefined, mode: CrmMode): string | null {
+  return zohoDateLine(record, mode, record?.created_at, "Imported from Zoho on");
+}
+
+/**
+ * "From Zoho, created there on 12 Oct 2026": a module record keeps only the
+ * date Zoho created it (`ext_created_at`), not the date of its import, so the
+ * line says what the date is.
+ */
+export function zohoCreatedLine(record: Row | null | undefined, mode: CrmMode): string | null {
+  return zohoDateLine(record, mode, record?.ext_created_at, "From Zoho, created there on");
+}
+
+function zohoDateLine(
+  record: Row | null | undefined,
+  mode: CrmMode,
+  value: unknown,
+  words: string,
+): string | null {
   if (mode !== "native" || !isMirrored(record)) return null;
-  const value = record?.created_at;
   const at = typeof value === "string" ? new Date(value) : null;
   if (!at || Number.isNaN(at.getTime())) return null;
   const date = at.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
-  return `Imported from Zoho on ${date}`;
+  return `${words} ${date}`;
 }
 
 /**
