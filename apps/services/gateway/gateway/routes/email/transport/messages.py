@@ -37,6 +37,7 @@ from gateway.routes.email.core import (
     _persist_rotated_creds,
     _provider_for_message,
     _row_to_message,
+    _savepoint,
     _tenant_session,
     _truncate_body,
     folder_scope,
@@ -612,6 +613,34 @@ async def _insert_attachments(db: Any, message_id: str, attachments: Any) -> Non
         )
 
 
+async def _rekey(db: Any, message_id: str, old: str, new: str) -> None:
+    """Store the new provider id of a re-keyed mail (Outlook /move).
+
+    The push runs after the local write committed (2026-10-28), so another
+    writer can change the row first. The write runs only while the row still
+    holds ``old``. It runs in a savepoint: a sweep that stored ``new`` first
+    makes the unique key refuse it, and the rest of the block, a rotated
+    token too, still commits.
+    """
+    try:
+        async with _savepoint(db):
+            res = await db.execute(
+                text(
+                    """UPDATE email_messages
+                       SET provider_message_id = :pid, updated_at = now()
+                       WHERE id = :id AND provider_message_id = :old"""
+                ),
+                {"pid": new, "id": message_id, "old": old},
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("email.rekey_skipped", message_id=message_id,
+                     reason=type(exc).__name__)
+        return
+    if getattr(res, "rowcount", 1) == 0:
+        _log.warning("email.rekey_skipped", message_id=message_id,
+                     reason="row_changed")
+
+
 async def _hydrate_attachments(message_id: str, user_email: str) -> list[AttachmentModel]:
     """Fetch a message from its provider and persist its attachment metadata,
     then return it.
@@ -1070,14 +1099,7 @@ async def update_message(
             try:
                 async with _tenant_session() as db:
                     if new_pid:
-                        await db.execute(
-                            text(
-                                """UPDATE email_messages
-                                   SET provider_message_id = :pid, updated_at = now()
-                                   WHERE id = :id"""
-                            ),
-                            {"pid": new_pid, "id": message_id},
-                        )
+                        await _rekey(db, message_id, built[1], new_pid)
                     await _persist_rotated_creds(db, store, account_id, provider)
             except Exception as exc:  # noqa: BLE001
                 push_error = push_error or exc
@@ -1092,8 +1114,10 @@ async def update_message(
 
     # Return updated message. It runs after the local write committed. Inside
     # that block its mark-read waited on the block's own row lock, until the
-    # statement timeout (production, 2026-10-28).
-    return await get_message(message_id, user)
+    # statement timeout (production, 2026-10-28). It reads with no mark-read:
+    # after the commit, a mark-read would undo a "Mark as unread", and a star
+    # or a move of an unread mail would mark it read with no push.
+    return await get_message(message_id, user, mark_read=False)
 
 
 class SnoozeRequest(BaseModel):
@@ -1205,14 +1229,7 @@ async def delete_message(
                     # Outlook trash = /move to Deleted Items, which re-keys the
                     # message; persist the new id so it stays addressable.
                     elif rekeyed:
-                        await db.execute(
-                            text(
-                                """UPDATE email_messages
-                                   SET provider_message_id = :pid, updated_at = now()
-                                   WHERE id = :id"""
-                            ),
-                            {"pid": new_pid, "id": message_id},
-                        )
+                        await _rekey(db, message_id, provider_msg_id, new_pid)
                     await _persist_rotated_creds(db, store, account_id, provider)
             except Exception as exc:  # noqa: BLE001
                 push_error = push_error or exc

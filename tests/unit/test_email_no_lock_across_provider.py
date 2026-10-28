@@ -138,7 +138,8 @@ async def test_the_open_fetches_with_no_session_open(monkeypatch) -> None:
 
     assert msg.body_text == "the text"
     names = [n for n, _ in provider.calls]
-    # The body fetch, then the attachment fetch: the row lists no stored file.
+    # The body fetch, then the attachment fetch. The fake stores no file, so
+    # the open also runs `_hydrate_attachments`. A real database fetches once.
     assert names.count("get_message") == 2, provider.calls
     assert {at for _, at in provider.calls} == {0}, provider.calls
     assert db.has("SET is_read = true"), "the open still marks the mail read"
@@ -148,10 +149,10 @@ async def test_the_open_fetches_with_no_session_open(monkeypatch) -> None:
 
 async def test_the_patch_pushes_and_reads_with_no_session_open(monkeypatch) -> None:
     db, provider, open_now = _wire(monkeypatch, SimpleNamespace(id=MID, categories=[]))
-    read_at: list[int] = []
+    read_at: list[tuple[int, Any]] = []
 
-    async def _get(mid: str, user: Any) -> str:
-        read_at.append(open_now[0])
+    async def _get(mid: str, user: Any, **kw: Any) -> str:
+        read_at.append((open_now[0], kw.get("mark_read")))
         return "the mail"
 
     monkeypatch.setattr(m, "get_message", _get)
@@ -160,12 +161,13 @@ async def test_the_patch_pushes_and_reads_with_no_session_open(monkeypatch) -> N
         user=USER)
 
     assert got == "the mail"
-    assert read_at == [0], "the PATCH read the mail inside its own open session"
+    # After the commit, and with no mark-read (review round 1).
+    assert read_at == [(0, False)], "the PATCH read the mail in its own open session"
     assert [n for n, _ in provider.calls] == [
         "authenticate", "apply_flags", "move_to_folder", "set_labels"]
     assert {at for _, at in provider.calls} == {0}, provider.calls
     [rekey] = db.has("provider_message_id = :pid")
-    assert rekey["pid"] == "NEW_PID"
+    assert (rekey["pid"], rekey["old"]) == ("NEW_PID", "pm-1")
 
 
 async def test_the_trash_pushes_with_no_session_open(monkeypatch) -> None:
@@ -176,7 +178,21 @@ async def test_the_trash_pushes_with_no_session_open(monkeypatch) -> None:
     assert {at for _, at in provider.calls} == {0}, provider.calls
     assert db.has("SET folder = 'trash'")
     [rekey] = db.has("provider_message_id = :pid")
-    assert rekey["pid"] == "NEW_PID"
+    assert (rekey["pid"], rekey["old"]) == ("NEW_PID", "pm-1")
+
+
+async def test_a_patch_to_unread_never_marks_the_mail_read_again(monkeypatch) -> None:
+    """Review round 1, P1. The PATCH answers with an open. After the commit,
+    a mark-read there undid "Mark as unread" at once."""
+    row = _open_row()
+    row.body_text, row.is_read = "the body", True
+    db, _provider, _open = _wire(monkeypatch, row)
+
+    msg = await m.update_message(MID, m.MessageUpdateModel(is_read=False), user=USER)
+
+    assert db.has("is_read = :is_read") == [{"id": MID, "is_read": False}]
+    assert not db.has("SET is_read = true"), "the answer marked the mail read again"
+    assert msg.id == MID
 
 
 async def test_a_failed_push_keeps_the_local_write_and_skips_the_rekey(monkeypatch) -> None:
@@ -187,7 +203,7 @@ async def test_a_failed_push_keeps_the_local_write_and_skips_the_rekey(monkeypat
 
     provider.move_to_folder = _boom  # type: ignore[method-assign]
 
-    async def _get(mid: str, user: Any) -> str:
+    async def _get(mid: str, user: Any, **_k: Any) -> str:
         return "the mail"
 
     monkeypatch.setattr(m, "get_message", _get)
@@ -207,22 +223,41 @@ def _flags_of(admin, message_id: str) -> tuple[Any, ...]:
             "WHERE id = CAST(:m AS uuid)"), {"m": message_id}).one())
 
 
+def _seed(w, *, is_read: bool) -> str:
+    """A mail with a stored body, so the open fetches nothing."""
+    mid = _seed_message(w.admin, org=w.org, account=w.account,
+                        received_at=datetime.now(UTC), body_text="b")
+    with w.admin.begin() as c:
+        c.execute(text("UPDATE email_messages SET is_read = :r "
+                       "WHERE id = CAST(:m AS uuid)"), {"m": mid, "r": is_read})
+    return mid
+
+
+async def _patch(w, mid: str, update: Any) -> Any:
+    async with tenant_engine_scope(w.dsn):
+        with _bound(w.org):
+            return await asyncio.wait_for(m.update_message(
+                mid, update, user=_user(w.owner, w.org)), timeout=20)
+
+
 @_DB_GATE
 async def test_a_patch_of_an_unread_mail_answers_at_once(world) -> None:
     """The case that production logged. The old route waited on its own row
-    lock here, so ``wait_for`` timed out. A stored body means no fetch."""
-    mid = _seed_message(world.admin, org=world.org, account=world.account,
-                        received_at=datetime.now(UTC), body_text="b")
-    with world.admin.begin() as c:
-        c.execute(text("UPDATE email_messages SET is_read = false "
-                       "WHERE id = CAST(:m AS uuid)"), {"m": mid})
-
-    async with tenant_engine_scope(world.dsn):
-        with _bound(world.org):
-            msg = await asyncio.wait_for(m.update_message(
-                mid, m.MessageUpdateModel(is_starred=True),
-                user=_user(world.owner, world.org)), timeout=20)
+    lock here, so ``wait_for`` timed out."""
+    mid = _seed(world, is_read=False)
+    msg = await _patch(world, mid, m.MessageUpdateModel(is_starred=True))
 
     assert msg.is_starred is True
-    # The answer is an open, so it marks the mail read, as before.
-    assert _flags_of(world.admin, mid) == (True, True)
+    # A star is no open: the mail stays unread (review round 1).
+    assert _flags_of(world.admin, mid) == (True, False)
+
+
+@_DB_GATE
+async def test_mark_as_unread_sticks(world) -> None:
+    """Review round 1, P1, on a real database: the answer of the PATCH must not
+    mark the mail read again after the write committed."""
+    mid = _seed(world, is_read=True)
+    msg = await _patch(world, mid, m.MessageUpdateModel(is_read=False))
+
+    assert msg.is_read is False
+    assert _flags_of(world.admin, mid) == (False, False)
