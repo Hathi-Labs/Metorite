@@ -57,11 +57,13 @@ RESET_NAME = "reset_crm_from_admin"
 MERGE_NAME = "merge_status_from_source"
 #: CRM-Q7a adds the field-rule door, which only ``gateway/crm_sync/`` calls.
 RULE_NAME = "apply_field_rule_from_source"
+#: CRM-U14 adds the stage-time repair door. Only ``gateway/crm_sync/`` names it.
+RESTAMP_NAME = "restamp_deal_stage_from_source"
 NAMES = (
     NAME, "delete_from_source", "set_pipeline_stages_from_source",
     "set_deal_contacts_from_source",
     "upsert_module_records_from_source", "delete_module_records_from_source",
-    RESET_NAME, MERGE_NAME, RULE_NAME,
+    RESET_NAME, MERGE_NAME, RULE_NAME, RESTAMP_NAME,
 )
 
 GATEWAY = ROOT / "apps" / "services" / "gateway" / "gateway"
@@ -79,6 +81,7 @@ ALLOWED_CALLERS: dict[str, frozenset[Path]] = {
 #: folder is the sync package, so no route, agent or skill can merge stages.
 ALLOWED_DIRS: dict[str, Path] = {
     MERGE_NAME: GATEWAY / "crm_sync",
+    RESTAMP_NAME: GATEWAY / "crm_sync",
 }
 
 #: Where the start over may never be named: the whole gateway package (the
@@ -227,6 +230,7 @@ def test_the_definer_and_the_scan_roots_exist() -> None:
     assert "async def reset_crm_from_admin" in definer_text
     assert "async def merge_status_from_source" in definer_text
     assert "async def apply_field_rule_from_source" in definer_text
+    assert "async def restamp_deal_stage_from_source" in definer_text
     assert SYNC.is_dir() and ALLOWED_CALLERS[RULE_NAME]
     assert GATEWAY.is_dir() and (GATEWAY / "crm_sync").is_dir()
     assert any(r.is_dir() for r in SCAN_ROOTS)

@@ -385,11 +385,26 @@ class PipelineResponse(BaseModel):
 #: ``Literal`` on the route is the allowlist, so any other value is a 422.
 #: Each value names the inner order and the outer one that
 #: :func:`core.project_joined` re-applies over ``base``.
-CardSort = Literal["stage_age", "next_activity"]
+CardSort = Literal[
+    "stage_age", "recently_changed", "close_date", "amount", "next_activity",
+]
 _CARD_ORDERS: dict[str, tuple[str, str]] = {
     "stage_age": (
         "status_changed_at DESC NULLS LAST, id DESC",
         "base.status_changed_at DESC NULLS LAST, base.id DESC",
+    ),
+    # CRM-U14: "Recently changed" is the provider's edit time, else our own.
+    "recently_changed": (
+        "COALESCE(ext_modified_at, updated_at) DESC NULLS LAST, id DESC",
+        "COALESCE(base.ext_modified_at, base.updated_at) DESC NULLS LAST, base.id DESC",
+    ),
+    "close_date": (
+        "expected_close_date ASC NULLS LAST, id DESC",
+        "base.expected_close_date ASC NULLS LAST, base.id DESC",
+    ),
+    "amount": (
+        "amount DESC NULLS LAST, id DESC",
+        "base.amount DESC NULLS LAST, base.id DESC",
     ),
     "next_activity": (
         "next_at ASC NULLS LAST, crm_deals.id DESC",
