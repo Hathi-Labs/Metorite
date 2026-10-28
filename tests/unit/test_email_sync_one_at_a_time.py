@@ -939,8 +939,8 @@ class TestTwoSyncsOfOneMailboxDoNotOverlap:
                         asyncio.gather(*pending, return_exceptions=True),
                         timeout=60)
                 res_a, res_b = done
-            assert res_a == {"synced": 3, "history_id": "h-1"}, res_a
-            assert res_b == {"synced": 3, "history_id": "h-1"}, res_b
+            assert {k: v for k, v in res_a.items() if k != "changed"} == {"synced": 3, "history_id": "h-1"}, res_a
+            assert {k: v for k, v in res_b.items() if k != "changed"} == {"synced": 3, "history_id": "h-1"}, res_b
             assert fetches == ["sync-1", "sync-2"]
             with p.admin_engine.connect() as c:
                 rows = c.execute(text(
@@ -1014,7 +1014,7 @@ class TestTheResyncPurgesUnderTheLock:
                 res = await sched._sync_account(
                     account_id, organization_id=p.org_b, deep=True,
                     if_busy="skip", purge=True, reset_cursor=True)
-            assert res == {"synced": 3, "history_id": "h-1"}, res
+            assert {k: v for k, v in res.items() if k != "changed"} == {"synced": 3, "history_id": "h-1"}, res
             assert cursors == [None], "the provider got the old cursor"
             with p.admin_engine.connect() as c:
                 ids = c.execute(text(

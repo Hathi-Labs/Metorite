@@ -1594,13 +1594,18 @@ async def _store_evidence(org: str, module: str, ev: dict[str, tuple[str, ...]],
 CANDS_EVIDENCE_TTL_S = 6 * 3600
 
 
-def _cands_entry(module: str, cands: Sequence[Any]) -> str:
-    """The cache entry of *module* for own *cands*: the module and a hash of
-    the field keys in their order, so it never shares the per-module entry."""
+def _cands_entry(src: Any, cands: Sequence[Any]) -> str:
+    """The cache entry of the module *src* for own *cands*: the module and a
+    hash of the field keys in their order, then the GST and TDS siblings that
+    the check also reads. A new tax field so makes a new entry."""
     import hashlib
 
-    keys = "\x1f".join(str(getattr(c, "key", c)) for c in cands)
-    return f"{module}:cands:{hashlib.sha1(keys.encode()).hexdigest()[:16]}"
+    gst, tds = qs.gst_siblings(src)
+    parts = [str(getattr(c, "key", c)) for c in cands]
+    parts += ["|gst"] + [str(getattr(f, "key", f)) for f in gst]
+    parts += ["|tds"] + [str(getattr(f, "key", f)) for f in tds]
+    digest = hashlib.sha1("\x1f".join(parts).encode()).hexdigest()[:16]
+    return f"{src.module}:cands:{digest}"
 
 
 async def module_evidence(db: Any, org: str, src: Any,
@@ -1613,7 +1618,7 @@ async def module_evidence(db: Any, org: str, src: Any,
     module = str(src.module)
     if cands is not None:
         cands = list(cands)
-        entry = _cands_entry(module, cands)
+        entry = _cands_entry(src, cands)
         cached, _left = await _cached_evidence(org, entry)
         if cached is not None:
             return cached

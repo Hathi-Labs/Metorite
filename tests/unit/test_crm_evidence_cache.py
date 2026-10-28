@@ -75,6 +75,8 @@ def test_own_cands_get_their_own_cached_entry(monkeypatch: pytest.MonkeyPatch,
         return {"IP": ("Excludes GST",)} if cands is None else {"Amt": ("Includes GST",)}
 
     monkeypatch.setattr(q, "_gst_evidence", _check)
+    siblings: list[Any] = [(), ()]
+    monkeypatch.setattr(q.qs, "gst_siblings", lambda _src: tuple(siblings))
     a = [SimpleNamespace(key="Amount"), SimpleNamespace(key="Total")]
     b = [SimpleNamespace(key="Total")]
     src = _src("Invoices")
@@ -90,6 +92,12 @@ def test_own_cands_get_their_own_cached_entry(monkeypatch: pytest.MonkeyPatch,
                      ("Invoices", None)]
     ttls = sorted(ttl for _v, ttl in redis.data.values())
     assert ttls == [q.CANDS_EVIDENCE_TTL_S] * 2 + [q.EVIDENCE_TTL_S]
+
+    # A new GST sibling is a new entry, so it never reads the old evidence.
+    siblings[0] = (SimpleNamespace(key="GST_Amount"),)
+    asyncio.run(q.module_evidence(None, ORG, src, a))
+    assert calls[-1] == ("Invoices", ("Amount", "Total"))
+    assert len(calls) == 4
 
 
 def test_a_redis_fault_still_answers(monkeypatch: pytest.MonkeyPatch, checks: list[str]) -> None:

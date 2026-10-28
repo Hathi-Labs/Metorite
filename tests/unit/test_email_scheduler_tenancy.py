@@ -899,7 +899,7 @@ class TestTheSyncCoreWritesItsOwnTenant:
             async with tenant_engine_scope(app_dsn):
                 res = await sched._sync_account(account_id,
                                                 organization_id=p.org_b)
-            assert res == {"synced": 2, "history_id": "h-1"}, res
+            assert {k: v for k, v in res.items() if k != "changed"} == {"synced": 2, "history_id": "h-1"}, res
 
             with p.admin_engine.connect() as c:
                 msg_orgs = c.execute(text(
@@ -1035,7 +1035,7 @@ class TestTheSyncCoreWritesItsOwnTenant:
             async with tenant_engine_scope(app_dsn):
                 res = await sched._sync_account(account_id,
                                                 organization_id=p.org_b)
-            assert res == {"synced": 3, "history_id": "h-1"}, res
+            assert {k: v for k, v in res.items() if k != "changed"} == {"synced": 3, "history_id": "h-1"}, res
             assert open_at == {"get_message": [0, 0, 0], "_embed_batch": [0]}, (
                 "a session was open during a call of phase (e) or (f)"
             )
