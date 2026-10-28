@@ -252,6 +252,72 @@ async def test_a_patch_of_an_unread_mail_answers_at_once(world) -> None:
     assert _flags_of(world.admin, mid) == (True, False)
 
 
+def _pmid_and_folder(admin, message_id: str) -> tuple[Any, ...]:
+    with admin.connect() as c:
+        return tuple(c.execute(text(
+            "SELECT provider_message_id, folder FROM email_messages "
+            "WHERE id = CAST(:m AS uuid)"), {"m": message_id}).one())
+
+
+def _mover(monkeypatch: pytest.MonkeyPatch, new_pid: str, *, rotates: bool = False) -> None:
+    """An Outlook-like provider whose /move re-keys the mail to ``new_pid``.
+    With ``rotates``, its sign-in refreshed the token, so the block stores it."""
+    from gateway.routes.email import core
+
+    class _Moves:
+        async def authenticate(self) -> bool:
+            return True
+
+        async def move_to_folder(self, _pmid: str, _name: str) -> str:
+            return new_pid
+
+        def credentials_dirty(self) -> bool:
+            return rotates
+
+        def export_credentials(self) -> dict[str, str]:
+            return {"token": "rotated"}
+
+    class _Store:
+        def encrypt(self, value: str) -> str:
+            return "enc:" + value
+
+    monkeypatch.setattr(core, "_instantiate_provider", lambda _n, _c: _Moves())
+    monkeypatch.setattr(core, "_decrypt_credentials", lambda _blob: ({}, _Store()))
+
+
+def _creds(admin, account: str) -> str:
+    with admin.connect() as c:
+        return c.execute(text(
+            "SELECT credentials_encrypted FROM email_accounts "
+            "WHERE id = CAST(:a AS uuid)"), {"a": account}).scalar_one()
+
+
+@_DB_GATE
+async def test_a_move_stores_the_new_provider_id(world, monkeypatch) -> None:
+    mid = _seed(world, is_read=True)
+    _mover(monkeypatch, "pm-after-move")
+    await _patch(world, mid, m.MessageUpdateModel(folder="archive"))
+    assert _pmid_and_folder(world.admin, mid) == ("pm-after-move", "archive")
+
+
+@_DB_GATE
+async def test_a_refused_rekey_keeps_the_move_and_answers(world, monkeypatch) -> None:
+    """Review round 1, P2. A sweep stored the new id first, so the unique key
+    refuses the re-key. The savepoint keeps the rest of the block: here, the
+    token that the sign-in rotated. Without it, the block rolled back."""
+    mid = _seed(world, is_read=True)
+    taken = _seed(world, is_read=True)
+    taken_pid, _folder = _pmid_and_folder(world.admin, taken)
+    old_pid, _folder = _pmid_and_folder(world.admin, mid)
+    _mover(monkeypatch, taken_pid, rotates=True)
+
+    msg = await _patch(world, mid, m.MessageUpdateModel(folder="archive"))
+
+    assert msg.folder == "archive"
+    assert _pmid_and_folder(world.admin, mid) == (old_pid, "archive")
+    assert _creds(world.admin, world.account) == 'enc:{"token": "rotated"}'
+
+
 @_DB_GATE
 async def test_mark_as_unread_sticks(world) -> None:
     """Review round 1, P1, on a real database: the answer of the PATCH must not
