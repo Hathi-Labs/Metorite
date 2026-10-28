@@ -12,7 +12,7 @@ of the phase-4 rehearsal (NOSUPERUSER, NOBYPASSRLS).
 * (b) The trigger fills the vector on an insert and on a change of the subject,
   the body or the sender. An update of another column keeps it.
 * (c) The Email app gets the same rows, ranks, snippets and total with the
-  vector filled and with it NULL.
+  vector filled and with it NULL, in its search and in its list search.
 * (d) The backfill is idempotent and resumable, and it fills no row of
   another org.
 
@@ -80,6 +80,16 @@ _SEARCH: dict[str, Any] = {
     "is_starred": None, "has_attachments": None, "sender_category": None,
     "importance": None, "hybrid": False, "light": False, "page": 1,
     "page_size": 25, "with_total": True,
+}
+
+
+_LIST: dict[str, Any] = {
+    "account_id": None, "folder": "INBOX", "label": None, "uncategorized": False,
+    "query": None, "thread_id": None, "received_after": None,
+    "received_before": None, "is_read": None, "is_starred": None,
+    "has_attachments": None, "importance": None, "from_email": None,
+    "sender_category": None, "sort": "newest", "collapse": False,
+    "page": 1, "page_size": 25,
 }
 
 
@@ -205,19 +215,27 @@ def test_the_trigger_fills_on_insert_and_on_a_change_of_its_text(seeded, app_eng
 # ── (c) the same answer, filled or NULL ─────────────────────────────────────
 
 async def test_the_email_app_gets_the_same_answer_filled_or_null(seeded, app_engine) -> None:  # noqa: F811
+    from gateway.routes.email.transport import messages as messages_mod
     from gateway.routes.email.transport import search as search_mod
 
     _assert_non_priv(app_engine)
     p = seeded["ns"]
     queries = [RARE, "nozzle calibration", '"spare cable"', "firmware OR kingfisher", "Sender 17"]
 
-    async def answers() -> list[tuple[Any, list[tuple[str, float, str]]]]:
-        out = []
+    async def answers() -> list[tuple[Any, ...]]:
+        out: list[tuple[Any, ...]] = []
         async with _as_member(p, p.org_a):
             for q in queries:
                 got = await search_mod.search_messages(user=_member(p.org_a), q=q, **_SEARCH)
-                out.append((got["total"], [(e["id"], round(e["rank"], 6), e["highlight"])
-                                           for e in got["emails"]]))
+                out.append(("search", got["total"],
+                            [(e["id"], round(e["rank"], 6), e["highlight"])
+                             for e in got["emails"]]))
+                # The list search of the Email app (`list_messages` with `query`).
+                for folder in ("INBOX", "all"):
+                    listed = await messages_mod.list_messages(
+                        user=_member(p.org_a), **{**_LIST, "query": q, "folder": folder})
+                    out.append(("list", folder, listed["total"],
+                                [str(e["id"]) for e in listed["emails"]]))
         return out
 
     filled = await answers()
@@ -231,8 +249,11 @@ async def test_the_email_app_gets_the_same_answer_filled_or_null(seeded, app_eng
             await search_mod.backfill_fts(p.org_a, pause_s=0)
     assert filled == unfilled
     # Non-vacuity: each query found mail, and the rare word found its 1 in 100.
-    assert all(total and rows for total, rows in filled)
-    assert filled[0][0] == ROWS // 100
+    # The rare word is only in sent mail (g % 100), which the list leaves out.
+    # Each other query finds mail in the search and in both list scopes.
+    assert filled[0][1] == ROWS // 100
+    assert [row[2] for row in filled[1:3]] == [0, 0]
+    assert all(row[-2] and row[-1] for row in filled[3:])
 
 
 # ── (d) the backfill ────────────────────────────────────────────────────────

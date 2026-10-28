@@ -300,17 +300,14 @@ async def list_messages(
             # AND-ed, but "OR" and quoted phrases are honoured. plainto_tsquery
             # (the old call here) AND-s EVERYTHING, so the agent's find_urgent
             # ("urgent OR deadline OR ASAP OR action required") could only match
-            # a message containing every one of those words — i.e. never. The
-            # vector below is byte-identical to search._FTS_VECTOR and the GIN
-            # index (72_email_search_fts.sql); keep the three in lock-step.
+            # a message containing every one of those words — i.e. never.
+            # The match is search._FTS_MATCH, the stored vector of migration
+            # 314 first (WS-KG KG-3a), so the list and the search cannot drift.
+            # Imported here: search.py imports this module.
+            from gateway.routes.email.transport.search import _FTS_MATCH
+
             where_clauses.append(
-                """to_tsvector('english',
-                   coalesce(em.subject,'') || ' ' ||
-                   coalesce(em.body_text,'') || ' ' ||
-                   coalesce(em.from_address->>'name','') || ' ' ||
-                   coalesce(em.from_address->>'email',''))
-                   @@ websearch_to_tsquery('english', :query)"""
-            )
+                f"{_FTS_MATCH} @@ websearch_to_tsquery('english', :query)")
             params["query"] = query
         # Date range (received_at).
         dt_after, dt_before = _parse_dt(received_after), _parse_dt(received_before)
