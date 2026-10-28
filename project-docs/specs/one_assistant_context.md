@@ -26,15 +26,16 @@ below, PR #1383). The flag is off on each box, so no run loads a pack yet.
 OA-7e is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7e"
 below, PR #1389). It adds layer (b), the meta tool `load_skill_tools`.
 
-OA-7h is PARTLY BUILT (2026-10-28): the gate is NOT met, by a small margin.
-Run 3 (`docs/one_assistant_measure_2026-10-28.md`, with
-`TOOL_PACKS=email,email-setup`) passed pack 46 of 54 and delegation 47 of 54.
-`no_write` on `reply_correction` turn 1 passed 2 of 3 on the pack arm. The pack
-arm handed off no mail work, the model called `load_skill_tools` in 25 turns, and
-the pack arm ran in a median of 11.2 s against 27.3 s. Run 2 failed because
-`TOOL_PACKS=email` left `email-setup` out, so OA-7i did nothing. Next: a rules
-edit (find the email before `compose_reply`, and "send it" means `send_draft`),
-then a larger repeat. Run 1 is `docs/one_assistant_measure_2026-10-27.md`.
+OA-7h is PARTLY BUILT (2026-10-28): the gate is NOT met, by one turn.
+Run 4 (`docs/one_assistant_measure_2026-10-28.md`, with the OA-7j rules and 5
+repeats) passed pack 78 of 90 and delegation 79 of 90. Without the hand-off
+check, both passed 79 of 90. `no_write` on `reply_correction` turn 1 passed 5 of
+5 on both arms. The pack arm handed off mail work in 1 of 90 turns, and it ran in
+a median of 12.3 s against 33.9 s. The three run-3 failure kinds are fixed
+(2 of 3, 2 of 3 and 1 of 3 became 0 of 5, 1 of 5 and 0 of 5). The owner decides
+whether one mail hand-off after a pack load fails the gate. Run 3 (46 of 54
+against 47 of 54) and run 2 (the flag `email` alone) are in the same report.
+Run 1 is `docs/one_assistant_measure_2026-10-27.md`.
 
 OA-7d is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7d"
 below). The dock sends `surface`, and a turn from `/email` loads the `email`
