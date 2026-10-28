@@ -5,6 +5,8 @@ OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-4 is
 built, dark behind `CHAT_CONSTRAINTS` (2026-10-25, "As built" below). OA-5
 is BUILT (2026-10-25): the report is `docs/one_assistant_measure_2026-10-25.md`.
 
+OA-8a is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-8a" in §4.3.2). The flag flip is OWNER-GATE.
+
 OA-3 is built, dark behind `ATTACHMENT_OCR`, and §4.1 holds three conditions
 for the flip. OA-6 is DECIDED (D117,
 2026-10-26): yes, for all apps. §4.2 (OA-7), §4.3 (OA-8) and §6 (OA-9) hold
@@ -863,7 +865,7 @@ In this table, `_tool_injection.py` and `executor.py` are in `orchestrator/`. `e
 | Confirmation cards | `request_confirmation`, the one card seam (`agents.py:138-198`) | The card is an event of the stream of the orchestrator. That is one hop less than today (`navigation_shell.md:1237-1248`) |
 | Profile writes close after a read | Reads call `close_writes()` (`acb_skills/memory_tools.py:224`, `executor.py:2525-2528`) | The wrapper calls it after each pack call |
 | Narrowing | `narrow_tool_for(AGENT_NAME, ...)` (`acb_skills/narrowing.py:1276-1286`) | The tool keeps the name of the owner. `NARROWING_AGENTS=email-assistant` keeps its meaning |
-| CRM Mirror mode | `_drop_mirror_record_writes` (`_tool_injection.py:1575-1611`) | The CRM pack builder runs the same drop (OA-8a) |
+| CRM Mirror mode | `_drop_mirror_record_writes` and `MIRROR_RECORD_WRITES` (`_tool_injection.py`, about :1586-1625) | The CRM pack builder runs the same drop inside `_pack_tools`, so each layer gets it (OA-8a) |
 | The CRM number check | `AnswerCheckProvider` (`acb_skills/answer_check.py:10-14`) | The orchestrator already holds CRM tools. In a pack, the check reads raw CRM results, not the relay of a model (`:23-27`) |
 
 **The email working set.** The wrapper writes the working set after each email call. It uses `_email_working_set_for` and `_record_email_working_set` (`orchestrator/executor.py:1872-1979`). The OA-5 fixture does the same (`evals/one_assistant_measure/pack.py:147-179`).
@@ -1062,7 +1064,7 @@ The orchestrator offers each registry agent as a tool (`orchestrator/agents.py:7
 | Agent | Today | Target |
 |---|---|---|
 | `email-assistant` | 59 own tools, on `tier-powerful` | The packs `email` and `email-setup` (OA-7) |
-| `crm-assistant` | 21 own tools. The orchestrator already holds 13 of them (`agent-orchestrator/config.json`, `tool_scope`) | The pack `crm-records`: the other 8 tools, 4 reads and 4 writes (OA-8a) |
+| `crm-assistant` | 21 own tools. The orchestrator already holds 12 of the 13 shared `crm_*` reads (`agent-orchestrator/config.json`, `tool_scope`). It lacks `crm_search_notes` (`tests/unit/test_crm_agent.py:1405-1412`) | The pack `crm-records`: 9 tools. They are 4 reads, 4 writes and `crm_search_notes` (OA-8a) |
 | `projects-assistant` | 113 own tools (`agent-projects/config.json`) | The core pack `projects`, with about 27 tools. More packs of 35 tools or fewer: planning, structure and bulk acts (OA-8b) |
 | `whatsapp-assistant` | 14 own tools. It writes drafts only | The pack `whatsapp` (OA-8c) |
 | `apis-config` | No own tools | A rules-only pack `integrations`, if the measure supports it (OA-8d). `install_dependency` stays out (D85) |
@@ -1084,17 +1086,29 @@ The orchestrator offers each registry agent as a tool (`orchestrator/agents.py:7
 | OA-8d | The `integrations` rules pack (optional) | LOW |
 | OA-8e | The measure before OA-10 | LOW (eval only) |
 
-**OA-8a. CRM.**
+**OA-8a. CRM.** Build AGENT-SAFE. The flag flip is OWNER-GATE.
 - **Files.**
-  - `acb_skills/skill_families.py`: the family `crm-records`, with the owner `crm-assistant`
-  - `acb_skills/tool_packs.py`: the rules, from `agent-crm/instructions.md`
-  - `orchestrator/agents.py`: the `crm_assistant` tool leaves when the pack is on
+  - `acb_skills/skill_families.py`: the family `crm-records`, with the owner `crm-assistant` and 9 tools
+  - `acb_skills/tool_packs.py`: the rules, from `agent-crm/instructions.md`. The `persona_for` skip for an owner with no bullets
+  - `orchestrator/_tool_injection.py`: the per-owner pre-filter slot of `_pack_tools`, with the Mirror drop
+  - The `crm_assistant` tool leaves through the generic `delegation_refusal` path. `orchestrator/agents.py` does not change
 - **Acceptance.**
-  - Each write asks its card in the stream of the orchestrator (`agent-crm/agents.py:653-660`).
-  - Mirror mode drops the 3 record writes (`orchestrator/_tool_injection.py:1575-1577`).
+  - Each write asks its card in the stream of the orchestrator (`agent-crm/agents.py` :812, :897, :963, :1023).
+  - Mirror mode drops the 3 record writes, in each layer (`_tool_injection.py`, `MIRROR_RECORD_WRITES`, about :1586-1625).
   - A held pack drops the 4 writes, as the held run of the CRM agent does (`tests/unit/test_no_egress_tool_audit.py:77-82`).
   - A pack read arms the number check.
-- **Fence.** CRM cases in `tests/unit/test_pack_guards.py`.
+- **Fence.** CRM cases in `tests/unit/test_pack_guards.py`, `test_tool_packs_choice.py`, `test_tool_packs_registry.py`, `test_turn_kind_pack_items.py` and `test_crm_answer_check.py`.
+- **Verify.** `uv run pytest tests/unit/test_pack_guards.py tests/unit/test_tool_packs_registry.py tests/unit/test_tool_packs_choice.py tests/unit/test_tool_packs_off.py tests/unit/test_load_skill_tools.py tests/unit/test_turn_kind_pack_items.py tests/unit/test_tier_policy.py tests/unit/test_skills_registry.py tests/unit/test_crm_agent.py tests/unit/test_crm_answer_check.py tests/unit/test_no_egress_tool_audit.py -q`.
+
+**As built, OA-8a (2026-10-27).**
+- The pack has 9 tools: `search_crm`, `get_pipeline`, `get_record`, `get_timeline`, `create_lead`, `update_deal_status`, `log_activity`, `convert_lead` and `crm_search_notes`. `crm_search_notes` is also in the injected `crm` family. `_pack_tools` skips a name that the run holds already, so the overlap is safe. The drift gate `test_every_injected_tool_registered_in_exactly_one_family` now counts the families with no `owner`, because a pack has its own gate (`test_an_owner_tool_is_in_one_pack_only`).
+- The Mirror drop lives in `_pack_tools`, in a map of pre-filters by owner (`_PACK_OWNER_FILTERS`). Layer (a) is covered by order alone, but layers (b) and (c) build after the executor drop, so each reads `crm_mode()` as the member. A held build reads nothing. A failed read keeps the tools.
+- The base persona has no CRM text. `persona_for` skips the swap for an owner that is absent from `PACK_DELEGATION_BULLETS`, and still raises for an owner that is present and moved. The CRM rules carry the useful rules of `agent-crm/instructions.md`. They leave out the `call_agent` line about email and WhatsApp.
+- `crm-records` is last in `PACKS`. The base is 55 tools. Base, `email` and `crm-records` give 95. All three packs give 123, past 110, so `choose` drops `crm-records` first.
+- The words are whole words: `crm`, `zoho`, `sales pipeline`, `deal pipeline`, `pipeline stage`, `deals`, `leads`, `new lead`, `create a lead`, `convert the lead`, `log a call`, `lost reason`. The surface is `crm`.
+- The hand-off is refused whenever the pack loads, because it is the only pack of the owner. `call_agent_background`, scheduled jobs, workflows, the CRM app rail, registry quick actions and an OA-9 child stay delegated.
+- A held CRM pack names its real reason. The hold note takes the session of the run. So a chat that read mail gets the mail reason, in the persona and in the answer of a load. `egress.py` holds the CRM wording for an owner that does not read mail itself: `EGRESS_HOLD_NOTE_PACK_OTHER` and `EGRESS_HELD_PACK_ANSWER_OTHER`. The email owner keeps the email wording. `NO_PERSONA_BULLETS` names the owners with no persona text, and any other owner with no bullet raises.
+- Redis can mark a chat after the pack built open. The gate of the pack then asks the untrusted card besides the card of the write, because the CRM owner does not read mail itself. This fails safe. A chat marked before the build holds the pack, with no write tool.
 
 **OA-8b. Projects.**
 - **Files.** `acb_skills/skill_families.py`, `acb_skills/tool_packs.py` and `tests/unit/test_projects_agent.py`.
@@ -1245,6 +1259,26 @@ tokens. OA-7g shipped live (PR #1356, `344cad4fc`).
   tests/unit/test_tool_packs_off.py tests/unit/test_chat_constraints.py
   tests/unit/test_handoff_words.py tests/unit/test_orchestrator_one_source.py
   tests/unit/test_native_session_persistence.py -q`.
+
+**OA-8a. GO, narrowed.**
+- The count is 9, not 8. The orchestrator `tool_scope` holds 12 of the 13
+  shared `crm_*` reads. Add `crm_search_notes` to the pack. Do not add it
+  to the orchestrator `tool_scope`, because that changes the tool list
+  with the flag off.
+- Put no CRM text in the base persona. `persona_for` raises unless the
+  persona holds the owner's text once. A new line breaks the byte-identical
+  fence of `test_tool_packs_off.py`. Skip the swap for an owner with no
+  bullets. Keep the raise for an owner that is present and moved. Put
+  the "no CRM agent" line in the CRM rules.
+- Run the Mirror drop inside `_pack_tools`. Layers (b) and (c) build after
+  the executor drop. Reuse `MIRROR_RECORD_WRITES`.
+- Words are whole words. Leave out bare `pipeline`, `deal`, `lead` and `stage`.
+- Put `crm-records` after the email packs in `PACKS`, so the cap drops it first.
+- The hand-off is refused when the pack loads. Background runs, workflows and
+  the CRM app rail stay delegated. The CRM rules carry the specialist's rules.
+- Test helpers keyed on `agent-{owner}` map the owner to its directory through
+  the registry `local_path`.
+- Verify: the command in §4.3.2, "OA-8a".
 
 **OA-9a. The parser is BUILT (PR #1388). The `worker` half is GO,
 narrowed (2026-10-27).** The parser files are `subagent_contract.py` and

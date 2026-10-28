@@ -34,6 +34,8 @@ from tests.unit._native_maf_harness import load_agent_module
 REPO = Path(__file__).resolve().parents[2]
 EA = "email-assistant"
 EA_DIR = "apps/agents/agent-email-assistant"
+CRM = "crm-assistant"
+CRM_DIR = "apps/agents/agent-crm"
 
 
 def _own_tool_scope() -> set[str]:
@@ -94,10 +96,12 @@ def test_narrow_and_read_is_in_exactly_one_family() -> None:
 def test_both_email_families_name_the_email_assistant_as_owner() -> None:
     """Mutation: drop the ``owner`` key, which turns a pack into an injected
     family that the drift gate then refuses."""
-    assert sf.pack_slugs() == ("email", "email-setup")
-    for slug in sf.pack_slugs():
+    assert sf.pack_slugs() == ("email", "email-setup", "crm-records")
+    for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
         assert sf.is_pack(slug)
+    assert sf.SKILL_FAMILIES["crm-records"]["owner"] == CRM
+    assert sf.is_pack("crm-records")
     assert not sf.is_pack("core") and not sf.is_pack("no-such-family")
 
 
@@ -240,11 +244,12 @@ def test_packs_on_needs_the_org_on_the_list(_flag) -> None:
     """Mutation: the reader ignores ``TOOL_PACKS_ORGS``, or an empty org
     matches ``*``."""
     _flag("*", ORG_A)
-    assert tp.packs_on(ORG_A) == frozenset({"email", "email-setup"})
-    assert tp.packs_on(ORG_A.upper()) == frozenset({"email", "email-setup"})
+    every = frozenset({"email", "email-setup", "crm-records"})
+    assert tp.packs_on(ORG_A) == every
+    assert tp.packs_on(ORG_A.upper()) == every
     assert tp.packs_on(ORG_B) == frozenset()
     _flag("*", "*")
-    assert tp.packs_on(ORG_B) == frozenset({"email", "email-setup"})
+    assert tp.packs_on(ORG_B) == every
     assert tp.packs_on("") == frozenset()
     assert tp.packs_on(None) == frozenset()
 
@@ -358,12 +363,18 @@ def test_no_pack_tool_is_on_the_injected_surface() -> None:
     """Mutation: ``_registered_platform_surface`` reads every family, so an
     unscoped agent with a withheld tool gets the 59 email names in its
     scope (and in the skill index, with the index on)."""
-    pack_tools = {n for slug in sf.pack_slugs() for n in sf.SKILL_FAMILIES[slug]["tools"]}
+    every = {n for slug in sf.pack_slugs() for n in sf.SKILL_FAMILIES[slug]["tools"]}
+    # OA-8a: ``crm_search_notes`` is a tool of the injected ``crm`` family too.
+    # It is the only name that a pack shares with an injected family.
+    shared = every & sf.injected_tool_names()
+    assert shared == {"crm_search_notes"}, shared
+    pack_tools = every - shared
+    assert pack_tools, "non-vacuity: the packs hold tools of their own"
     assert not pack_tools & ti._registered_platform_surface()
     withheld = ti._resolve_injected_scope(None, withheld=frozenset({"run_script"}))
     assert withheld is not None and not pack_tools & withheld
     assert not pack_tools & sf.injected_tool_names()
-    assert pack_tools <= sf.all_registered_tool_names()
+    assert every <= sf.all_registered_tool_names()
     assert not pack_tools & sf.default_profile_tools()
 
 
@@ -399,10 +410,10 @@ def test_build_catalog_prices_a_pack_from_its_owner_tools() -> None:
     """Mutation: ``build_catalog`` prices a pack by the addendum delta (it has
     no section, so the rules block goes unpriced), or puts the pack tools in
     ``total_injected_tokens``."""
-    module = _email_module()
+    modules = {EA: _email_module(), CRM: load_agent_module(CRM_DIR)}
     owner = {fn.__name__: fn for slug in sf.pack_slugs()
-             for fn in tp.owner_tools(slug, module)}
-    assert len(owner) >= 58, "non-vacuity: the owner builds its tools"
+             for fn in tp.owner_tools(slug, modules[sf.SKILL_FAMILIES[slug]["owner"]])}
+    assert len(owner) >= 58 + 8, "non-vacuity: the owners build their tools"
 
     def _mk(name: str):
         def fn(query: str) -> str:
@@ -423,7 +434,7 @@ def test_build_catalog_prices_a_pack_from_its_owner_tools() -> None:
         priced = [owner[n] for n in sf.SKILL_FAMILIES[slug]["tools"] if n in owner]
         assert by_slug[slug]["token_cost"] == len(tp.rules_for(slug)) + _schema_len(priced)
         assert by_slug[slug]["token_cost"] > len(tp.rules_for(slug))
-        assert by_slug[slug]["owner"] == EA
+        assert by_slug[slug]["owner"] == sf.SKILL_FAMILIES[slug]["owner"]
         assert by_slug[slug]["tool_count"] == len(sf.SKILL_FAMILIES[slug]["tools"])
     assert "owner" not in by_slug["memory"]
     injected = [tools[n] for n in sf.injected_tool_names()]
@@ -457,3 +468,82 @@ async def test_the_catalog_route_prices_a_pack_from_its_owner(monkeypatch) -> No
     by_slug = {f["slug"]: f for f in out["families"]}
     for slug in sf.pack_slugs():
         assert by_slug[slug]["token_cost"] > len(tp.rules_for(slug)) + 1000, slug
+
+
+# ── 7. The CRM pack (WS-67 OA-8a, §4.3.2) ──────────────────────────────────
+
+CRM_TOOLS = (
+    "convert_lead", "create_lead", "crm_search_notes", "get_pipeline", "get_record",
+    "get_timeline", "log_activity", "search_crm", "update_deal_status",
+)
+
+
+def _crm_module() -> Any:
+    return load_agent_module(CRM_DIR)
+
+
+def _crm_own_tool_scope() -> set[str]:
+    cfg = json.loads((REPO / CRM_DIR / "config.json").read_text(encoding="utf-8"))
+    return set(cfg["own_tool_scope"])
+
+
+def test_the_crm_pack_holds_nine_tools_of_the_crm_assistant() -> None:
+    """The pack is a subset of ``own_tool_scope`` (21 tools): the 4 reads, the
+    4 writes and ``crm_search_notes``. The other 12 are the shared ``crm_*``
+    reads that the orchestrator holds already. Mutation: add a tool the owner
+    lacks, or drop one of the 9 -> red."""
+    scope = _crm_own_tool_scope()
+    assert len(scope) == 21, "non-vacuity: the owner still declares 21 tools"
+    family = sf.SKILL_FAMILIES["crm-records"]
+    assert tuple(family["tools"]) == CRM_TOOLS and family["owner"] == CRM
+    assert set(family["tools"]) <= scope
+    assert len(scope - set(family["tools"])) == 12
+
+
+def test_no_crm_pack_tool_is_in_another_pack() -> None:
+    """Mutation: copy one CRM tool into an email pack, or the reverse."""
+    crm = set(sf.SKILL_FAMILIES["crm-records"]["tools"])
+    for slug in ("email", "email-setup"):
+        assert not crm & set(sf.SKILL_FAMILIES[slug]["tools"]), slug
+
+
+def test_one_crm_tool_is_also_an_injected_tool_and_the_orchestrator_lacks_it() -> None:
+    """``crm_search_notes`` is in the injected ``crm`` family and in the pack.
+    The orchestrator ``tool_scope`` does not hold it, so adding the pack
+    changes nothing with the flag off. Mutation: add it to the orchestrator
+    ``config.json`` -> the tool list changes with the flag off -> red."""
+    shared = set(sf.SKILL_FAMILIES["crm-records"]["tools"]) & set(sf.SKILL_FAMILIES["crm"]["tools"])
+    assert shared == {"crm_search_notes"}
+    assert "crm_search_notes" not in _orchestrator_scope()
+    assert sf.family_of("crm_search_notes") == "crm"
+
+
+def test_the_built_crm_pack_is_exactly_the_nine_tools_as_coroutines() -> None:
+    """The builder skips a tool that is no coroutine function and indexes by
+    ``__name__``, so a tool of another shape would leave the pack empty and
+    nobody would see it. Mutation: wrap a CRM tool in a ``FunctionTool`` ->
+    red."""
+    import inspect
+
+    tools = tp.owner_tools("crm-records", _crm_module())
+    assert tuple(fn.__name__ for fn in tools) == CRM_TOOLS
+    assert all(inspect.iscoroutinefunction(fn) for fn in tools)
+
+
+def test_no_crm_pack_tool_takes_an_organization_or_a_member_argument() -> None:
+    """R5: the tenant and the member come from the bound run, never from an
+    argument. The ``email`` and ``organization_name`` of ``create_lead`` are
+    the contact data of a new lead, not the caller. Mutation: add an
+    ``organization_id`` or a ``user_email`` parameter to a pack tool -> red."""
+    import inspect
+
+    identity = {"organization_id", "org_id", "organization", "org", "tenant", "tenant_id",
+                "member", "member_email", "user", "user_email", "acting_user", "actor",
+                "email_address", "owner_email", "as_user", "impersonate"}
+    tools = tp.owner_tools("crm-records", _crm_module())
+    assert len(tools) == 9
+    for fn in tools:
+        params = set(inspect.signature(inspect.unwrap(fn)).parameters)
+        assert not params & identity, (fn.__name__, sorted(params & identity))
+    create = set(inspect.signature(inspect.unwrap(tools[1])).parameters)
+    assert {"email", "organization_name"} <= create, "non-vacuity: the lead data is not identity"
