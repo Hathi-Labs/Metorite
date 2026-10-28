@@ -425,12 +425,14 @@ async def test_the_timeline_keeps_tenant_isolation(rt) -> None:
     assert "A-note" not in own.text
 
 
-async def test_a_native_org_has_no_module_timeline(rt) -> None:
+async def test_a_native_org_keeps_the_timeline_of_a_module_it_holds(rt) -> None:
+    """CRM-Z10d: after a switch, a module that holds records stays listed and
+    readable in Native mode, its timeline too."""
     a = rt.org_a
     _seed_org(rt, a, mode="native", modules=PROFILE)
     record = _module_record(rt, a, "Install_Base", "i1", "Pump 7")
     res = await _call(rt, a, "GET", f"/crm/modules/Install_Base/records/{record}/timeline")
-    assert res.status_code == 404
+    assert res.status_code == 200, res.text
 
 
 # ── 6. The readers that assume a core parent ─────────────────────────────────
