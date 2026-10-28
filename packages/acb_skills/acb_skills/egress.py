@@ -14,7 +14,7 @@ or hand it to another agent and ask that agent to send it.
 delegates to at any depth, binds ``no_egress=True`` in its artifact context.
 Such a run holds only:
 
-1. the four :data:`DELEGATION_TOOLS`, because the flag travels with them;
+1. the five :data:`DELEGATION_TOOLS`, because the flag travels with them;
 2. the sandbox tools (``run_command``, the file tools and the skill tools),
    which say ``open_world=False`` because the container has no network;
 3. tools whose risk annotation says ``open_world=False`` EXPLICITLY;
@@ -115,9 +115,12 @@ SOURCE_ID = "metorite-no-egress"
 
 #: The tools that hand a task to another agent. The owner kept them in a
 #: covered run on 2026-10-03, so they are never egress tools. The run they
-#: start inherits ``no_egress`` instead.
+#: start inherits ``no_egress`` instead. ``spawn_subagents`` (WS-67 OA-9b) is
+#: the fifth: without the entry, the fail-closed rule would withhold it in a
+#: held chat, and each child that it starts binds ``no_egress`` like any other.
 DELEGATION_TOOLS: frozenset[str] = frozenset({
     "call_agent", "call_agents_parallel", "call_agent_background", "delegate_to_agent",
+    "spawn_subagents",
 })
 
 #: The tool writes to a store that later runs read: the four memory writes,

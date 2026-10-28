@@ -155,6 +155,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # only the owner writes them (work_plan.md §6 D4). The `TOOL_` prefix
     # covers both too.
     "TOOL_PACKS", "TOOL_PACKS_ORGS",
+    # WS-67 OA-9b: the orgs whose main assistant may spawn sub-agents. Each
+    # child spends model tokens at the org's cost, so only the owner writes it
+    # (work_plan.md §6 D4).
+    "SPAWN_SUBAGENTS_ORGS",
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",

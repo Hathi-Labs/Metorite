@@ -26,6 +26,7 @@ members = [
     "agent-projects",
     "agent-task-manager",
     "agent-whatsapp-assistant",
+    "agent-worker",
     "customer-console",
     "email-ingestion",
     "gateway",
@@ -505,6 +506,27 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "acb-common", editable = "packages/acb_common" },
+    { name = "acb-skills", editable = "packages/acb_skills" },
+    { name = "agent-framework-core", specifier = ">=1.19.0" },
+    { name = "agent-framework-openai", specifier = ">=1.14.4" },
+]
+
+[[package]]
+name = "agent-worker"
+version = "0.1.0"
+source = { editable = "apps/agents/agent-worker" }
+dependencies = [
+    { name = "acb-common" },
+    { name = "acb-llm" },
+    { name = "acb-skills" },
+    { name = "agent-framework-core" },
+    { name = "agent-framework-openai" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "acb-common", editable = "packages/acb_common" },
+    { name = "acb-llm", editable = "packages/acb_llm" },
     { name = "acb-skills", editable = "packages/acb_skills" },
     { name = "agent-framework-core", specifier = ">=1.19.0" },
     { name = "agent-framework-openai", specifier = ">=1.14.4" },

@@ -103,6 +103,7 @@ They run *inside* the orchestrator or gateway process, with no server of their o
   - The rules for code live in `acb_skills.addendum.RUN_SECTIONS`, never in `instructions.md`. D85 withholds `code_task`, `run_script` and `install_dependency`. Fences: `test_projects_agent.py`, `test_projects_sandbox_tools.py`.
   - In a `no_egress` run, a write refuses an `agent:` assignee before any write (`skill_projects.writes._refuse_agent_assignee`). Fence: `test_delegation_no_egress.py`.
   - A `GatewayRefusal` reaches the model as text through `skill_projects.refusals.refusals_as_text`, with a strict input model (`extra="forbid"`). Fence: `test_projects_agent_refusals.py`.
+- agent-worker/ -- The internal sub-agent of `spawn_subagents` (WS-67 OA-9, spec `one_assistant_context.md` §6). It is in `_INTERNAL_AGENTS` and in no picker list. It refuses a run with no job, at run and never at build. A child holds only the tools of its job, through `subagent_contract.child_pin`. Fences: `test_subagent_worker.py`, `test_subagent_blocked_tools.py`.
 - agent-app-builder/ -- App Workshop builder (Custom Apps), on the Copilot SDK engine. It enforces the platform contract (window.cc only, see docs/app-workshop/README.md §4.0). ⚠️ D85 refuses its Copilot CLI shell, so its build stops until WS-43h runs it in the sandbox.
 
 ## `skills/` — importable tool packages
