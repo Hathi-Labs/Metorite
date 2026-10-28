@@ -280,6 +280,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-66 RM-1: reminders. CALENDAR_REMINDERS is the switch of the reminder
     # routes, so a tenant that set it could turn them on for every org.
     "CALENDAR_REMINDERS",
+    # WS-BRIEF BR-1a: the shared job queue. JOB_QUEUE is the switch of the job
+    # worker, so a tenant that set it could start the worker for every org.
+    "JOB_QUEUE",
     # Agent runtime, sandbox and models.
     "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",
