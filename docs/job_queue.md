@@ -2,7 +2,8 @@
 
 **Status:** BR-1a is BUILT and dark (WS-BRIEF, Metorite #582, epic #479).
 The switch `JOB_QUEUE` is OFF. No producer exists yet. BR-1b adds the first
-producers.
+producers. AUTO-2 (Metorite #814) adds the ledger of unattended runs in
+section 9. It is BUILT and dark, and its switch `UNATTENDED_LEDGER` is OFF.
 
 This page is the engineering reference of the queue. It is not a product
 spec, so `project-docs/INDEX.md` does not list it.
@@ -170,7 +171,154 @@ The review round adds these tests:
 
 - BR-1b: move the reminder loop, send-later and the agent-run sweeps onto the
   queue.
-- AUTO-2: at-most-once unattended runs.
+- AUTO-2: at-most-once unattended runs. Section 9 has it.
 - The 07:30 brief and the 18:30 close-out.
 - Any change to the apscheduler uses, any producer and any UI.
 - A production deploy and the flip of `JOB_QUEUE`.
+
+## 9. The ledger of unattended runs (AUTO-2)
+
+A run with nobody watching must happen at most once for each slot. A brief
+that a crash cut must not go to the member a second time. The ledger gives
+that rule. AUTO-2 is the first slice (Metorite #814).
+
+| Part | Path |
+|---|---|
+| The tables | `infra/postgres/313_unattended_ledger.sql` (the number can change at merge, R1) |
+| The one writer | `apps/services/gateway/gateway/jobs/unattended.py` |
+| The first user | `apps/services/gateway/gateway/reach/loop.py`, the brief send |
+| The fence | `tests/unit/test_unattended_ledger.py` (R8 and a fake clock) |
+
+### 9.1 The tables
+
+- `unattended_runs` holds one row for each job, slot and org. The unique key
+  is `(organization_id, job, slot)`. The state is `started`, `ok`, `failed`,
+  `unknown` or `stalled`. The row keeps the error class and the incident.
+- `unattended_incidents` holds the failures of one job and one error class.
+  One `open` row stays for each pair, with a count and `last_seen`. A
+  partial unique index holds this rule.
+
+Both tables are tenant-scoped with FORCE RLS. No statement names an org. The
+column DEFAULT writes the bound tenant (R5).
+
+### 9.2 How a run moves
+
+1. `begin(org, job, slot)` inserts the row. Its session commits BEFORE the
+   work starts.
+2. When another run holds the slot, `begin` answers `fresh=False` with the state of
+   the earlier run. The caller does not run the job.
+3. The caller does the work. Then `finish(org, run, state=...)` ends the
+   row. A state other than `ok` counts a failure in its incident.
+4. A send that possibly reached the provider ends `unknown`. Nobody retries
+   it.
+
+`once(org, job, slot, work)` joins the four steps. Work that raises
+`OutcomeUnknown` ends `unknown`. Another error ends `failed`, and `once`
+raises it again.
+
+### 9.3 A run with no end
+
+A `started` row is an orphan in two cases:
+
+- Another process began it. Each process has its own `RUNNER` token, so a
+  restart reads the rows of the earlier process as orphans.
+- Its `progress_at` is older than 10 minutes (`STALL_AFTER`).
+
+`recover` and `begin` mark an orphan `unknown`, and nothing runs it again.
+Call `recover` before any other check that can skip the slot. A crash after
+the intent mark of a send leaves the domain row half done. The other check
+skips that row, so only `recover` can mark the run.
+
+### 9.4 The stall guard
+
+`run_guarded(org, run, work)` gives the work a `StallGuard`. The work calls
+`guard.progress()` as it moves. When no progress comes for 10 minutes, the
+guard cancels the work and the row turns `stalled`. A poll that saw
+progress writes `progress_at`.
+
+### 9.5 Incidents and the signals
+
+`record_failure(org, job, error)` adds 1 to the open incident of the job and
+the error class. The error class is an exception type name or a short
+reason. The text of a failure never reaches a row.
+
+| Event | Level | When |
+|---|---|---|
+| `unattended.incident_opened` | error | The first failure of a job and an error class. One line for each incident |
+| `unattended.incident_repeat` | debug | A later failure of an open incident |
+| `unattended.run_unknown` | warning | An orphan turned `unknown` |
+| `unattended.run_stalled` | warning | The stall guard stopped a run |
+| `unattended.finish_lost` | warning | `finish` changed no row, because the run already ended |
+| `unattended.slot_taken` | info | `begin` found the slot taken |
+
+Until alert delivery exists, `unattended.incident_opened` is the one alert
+of an incident. Nothing closes an incident yet.
+
+### 9.6 Reach
+
+With `UNATTENDED_LEDGER` on, the Reach loop uses the ledger in two places:
+
+- **The brief send.** The free text brief, the template brief and the full
+  brief each commit a run of job `reach.brief` before the send. The slot is
+  the outbox key of the brief (`plan.brief_key`), so the ledger key and the
+  outbox key agree.
+- **The member pass.** A pass that times out or fails counts in an incident
+  of job `reach.member`. A pass writes no run row, because it runs each
+  minute.
+
+A brief send that ends `failed:send_unsure` is `unknown`. Then the full
+brief does not follow it as a retry. Reach does not run on the queue in this
+slice.
+
+### 9.7 How to use it from a job
+
+A job that sends must run at most once. Enqueue it with `max_attempts=1`,
+so a lost lease fails the job and does not run it again. The handler that
+calls a provider needs the detached mode of section 5a (BR-1b). The ledger
+row is its intent mark:
+
+```python
+from acb_common.db import current_tenant
+from gateway.jobs import unattended
+
+async def send_brief(db, payload: dict) -> None:
+    org = current_tenant()  # run_org binds the org of the job
+    run = await unattended.begin(org, "brief.send", payload["slot"])
+    if not run.fresh:
+        return  # the slot ran, or its outcome is unknown
+    ...  # the send, with no session open (section 5a, detached mode)
+    await unattended.finish(org, run, state="ok")
+
+# The producer, inside its own tenant_session(org):
+await queue.enqueue(db, "brief.send", {"slot": slot}, max_attempts=1,
+                    dedupe_key=slot)
+```
+
+Work that touches only the database needs no ledger. The queue commits its
+writes and `done` together.
+
+### 9.8 The switch
+
+`UNATTENDED_LEDGER` (setting `unattended_ledger`) is default OFF. With it
+off, `begin` answers a run with no id and writes nothing, and each other
+function does nothing. Reach behaves as before. The one reader is
+`unattended.ledger_enabled()`. A flip on a box is the gate
+`enforcement-flip`. `env_guard` refuses the key from a tenant.
+
+### 9.9 Acceptance of AUTO-2
+
+| Item | Test |
+|---|---|
+| 1. A run killed after `begin` does not run again, and one row stays | `test_r8_1_a_run_killed_after_begin_does_not_run_again` |
+| 2. A send killed after the intent mark is `unknown`, and sends no more | `test_r8_2_a_send_killed_after_the_intent_mark_is_unknown` |
+| 3. Five failures give one incident with count 5, and another org sees none | `test_r8_3_failures_group_into_one_incident_for_each_class` |
+| 4. No progress for 10 minutes is `stalled`, and progress is not | `test_4_no_progress_for_10_minutes_is_stalled`, `test_4_a_run_that_calls_progress_is_not_stalled`, `test_r8_4_a_run_with_no_progress_is_stopped_and_stalled` |
+| 5. A Reach brief on one day gives one ledger row | `test_r8_5_a_reach_brief_on_one_day_gives_one_ledger_row` |
+| 6. With the switch off, no write, and Reach as before | `test_r8_6_with_the_switch_off_reach_writes_no_ledger_row`, `test_the_ledger_is_dark_by_default`, and `tests/unit/test_reach_loop.py` |
+
+### 9.10 Out of scope of AUTO-2
+
+- The delivery of an alert to an admin, and the bell. These stay owner-only.
+- A UI, a retry of a send, a new queue, and a change to `reach_outbox`.
+- The workflows scheduler (after H4), My Day and the BR-2a brief wiring.
+- A production deploy and the flip of `UNATTENDED_LEDGER`.
