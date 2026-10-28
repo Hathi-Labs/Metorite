@@ -829,6 +829,8 @@ class TestLayerBRefusesPlatformKeys:
         "SKILLS_INDEX_ONLY", "V1_ALLOW_CALLER_ENDPOINT_OVERRIDE",
         # WS-67 OA-7a: the tool packs. Owner-only (work_plan.md §6 D4).
         "TOOL_PACKS", "TOOL_PACKS_ORGS",
+        # WS-67 OA-9b: the sub-agent orgs. Owner-only (work_plan.md §6 D4).
+        "SPAWN_SUBAGENTS_ORGS",
         "FORWARDED_ALLOW_IPS", "MEET_GOOGLE_PASSWORD", "SHERPA_SEG_MODEL",
         "GODEBUG", "CC", "GO",
         # The operator-only family.

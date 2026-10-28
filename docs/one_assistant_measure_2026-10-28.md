@@ -193,3 +193,92 @@ The `reply_card` count in run 3 is 5/6 on both arms. The run 2 gap (3/6) was two
 | `no_write` on `reply_correction` turn 1 | 3/3 | 2/3 | **No** |
 
 **Not met.** The design now works: the pack arm hands off no mail work, the model finds the loader, and the early load is confirmed. The two misses are model choices on a small sample. Next steps are a rules edit for the two gaps above, and a larger repeat count. A gap of one turn is inside the noise of three runs.
+
+
+---
+
+# Run 4 (2026-10-28): with the rules of OA-7j, 5 repeats
+
+**Verdict: the gate is NOT met, by one turn.** The pack arm passes 78 of 90 turns, and delegation passes 79 of 90. `no_write` on `reply_correction` turn 1 passes 5 of 5 repeats on both arms. Without the hand-off check, both arms pass 79 of 90. The one turn that the pack arm lost handed mail work to the email assistant after it had loaded the pack and read the mail.
+
+Code: `00c7583c3` on main (runs 2 and 3, the `pack_flag` fix and the OA-7j rules). The pack arm set `TOOL_PACKS=email,email-setup` and `TOOL_PACKS_ORGS` for the eval org, in the eval process only. The eval-only System-1 seam was on. No flag changed on any box.
+
+**How the run went.** The Router tunnel dropped three times, and the harness dropped the chat in flight each time. A first try (`live4.json`) stopped after 5 turns, and I left it out. I resumed the second try from its partial file. Each finished chat is kept, and each dropped chat was run again as a whole chat. The merged file holds 180 rows (90 for each arm), with no duplicate. A resume script ran each missing chat alone, so the order of the arms differs a little from a single run. The cost was USD 1.60. The tunnel is closed, and port 18090 is free.
+
+## R4.1 Run 4 against run 3
+
+| Measure | Run 3 delegation | Run 3 pack | Run 4 delegation | Run 4 pack |
+|---|---|---|---|---|
+| Turns | 54 | 54 | 90 | 90 |
+| Turns that pass every check | 47 | 46 | 79 | 78 |
+| Pass count without the hand-off check | 47 | 46 | 79 | 79 |
+| `held_card` | 3/3 | 1/1 | 4/4 | 3/3 |
+| `one_card` | 12/12 | 13/13 | 18/18 | 20/20 |
+| `no_write`, `reply_correction` turn 1 | 3/3 | 2/3 | 5/5 | **5/5** |
+| First text, median / mean / p90 s | 3.1 / 8.4 / 23.1 | 3.6 / 4.2 / 7.8 | 4.5 / 17.8 / 39.9 | 4.3 / 5.4 / 9.5 |
+| Turn total, median / mean / p90 s | 27.3 / 29.2 / 48.9 | 11.2 / 11.9 / 18.6 | 33.9 / 43.0 / 99.2 | 12.3 / 14.9 / 19.7 |
+| Cache share | 0.985 | 0.940 | 0.990 | 0.959 |
+| Cost per turn, USD | 0.0096 | 0.0129 | 0.0091 | 0.0100 |
+| Cost of the arm, USD | 0.517 | 0.695 | 0.819 | 0.904 |
+| Turns that hand off mail work | 45 | 0 | 74 | 1 |
+| Turns that hand off setup work | 2 | 1 | 3 | 2 |
+| Turns where `plan_loader` reached the owner | - | 35 | - | 60 |
+| Turns where the model called `load_skill_tools` | - | 25 | - | 48 |
+| `via_failed` fallbacks | - | 0 | - | 0 |
+| Turn-kind time with pack items, mean ms | - | 2,108 | - | 2,271 (5 turns) |
+| Turn-kind time without pack items, mean ms | 1,631 | 2,124 | 2,236 | 2,653 |
+
+The delegation arm was slower in run 4 than in run 3 (a median of 33.9 s against 27.3 s). Compare the arms inside a run. The pack arm took a median of 12.3 s against 33.9 s, which is 2.8 times faster. A direct pack turn took a median of 13.2 s (70 turns). A delegation hand-off took a median of 36.7 s (77 turns). The pack arm costs USD 0.0009 more per turn, because its cache share is lower (0.959 against 0.990).
+
+## R4.2 How the pack loaded (90 pack turns)
+
+| Path | Turns |
+|---|---|
+| The model called `load_skill_tools` | 48 |
+| Layer (c), the turn-kind pack item, before the first model call | 5 |
+| Layer (a), the member's words | 10 |
+| Layer (a), sticky from an earlier turn | 20 |
+| No pack | 7 |
+
+`plan_loader` reached `email-assistant` in the 60 turns that began with no pack. The other 30 began with a sticky or word-matched pack.
+
+## R4.3 The gate of §4.2.8 OA-7h
+
+| Line | Delegation | Pack | Met |
+|---|---|---|---|
+| The pack arm passes at least as many turns | 79/90 | 78/90 | **No** (one turn short) |
+| Same count without the hand-off check | 79/90 | 79/90 | Equal |
+| `held_card` from turn 2 | 4/4 | 3/3 | Yes |
+| `one_card` | 18/18 | 20/20 | Yes |
+| `no_write` on `reply_correction` turn 1, every repeat | 5/5 | 5/5 | Yes |
+
+**Not met on the written rule, by one turn.** The one turn is `read_invoice` repeat 1. The pack loaded, the model read the invoice with its own tools, and then it also handed a task to the email assistant. The answer was right, but the hand-off check failed. If a mail hand-off after a load is a harmless extra, the arms tie at 79 of 90. That choice belongs to the owner.
+
+## R4.4 The failing pack turns
+
+| Turn | Failed check | Pack loaded | What the model did | Cause |
+|---|---|---|---|---|
+| `scanned_file` r1, r2 | `tried_the_file` | no | Said it had no drawing, and called no mail tool | Model |
+| `scanned_file` r3, r5 | `no_content_claim` | yes | Read the file with the tool, then stated the model or the content from the name. Delegation fails this turn 4 of 5 times. | Model |
+| `five_turns` 2 r2 | `reply_card`, `kiran_in_cc` | yes | Found the mail, then asked for the quote text and the address and made no reply. Delegation fails this turn the same way (r4, r5). | Model |
+| `five_turns` 3 r2 | `sent_draft` | yes | No draft existed (turn 2 made none), and the model asked for the amount | Follow-on of turn 2 |
+| `five_turns` 3 r1 | `sent_draft` | yes | Called `find_contact` twice, then `compose_reply`, so it drafted again | Model |
+| `five_turns` 4 r3, r4, r5 | `rule_in` | yes | Said it would make the rule, asked which mailbox, or stopped at the Personal mailbox that needs reconnecting. It made no rule. Delegation fails this turn in 2 of 5 repeats. | Scenario and model |
+| `read_invoice` r3 | `the_amount`, `the_due_date` | no | Said it had no email tools and looked in the entity graph | Model (the loader was on offer) |
+| `read_invoice` r1 | `no_email_delegation` | yes | Read the mail itself, then handed a task to the email assistant | Model |
+
+## R4.5 Did the three run-3 failure kinds come back?
+
+| Kind | Run 3 | Run 4 |
+|---|---|---|
+| `exact_reply` with no search for the person | 2 of 3 repeats failed | **No.** 5 of 5 repeats searched (`query_inbox`, once `find_contact`) before `compose_reply`, and all 5 passed. |
+| "Send it" as a new draft | 2 of 3 repeats of `five_turns` 3 | **Once of 5** (r1: `compose_reply` instead of `send_draft`). Three repeats called `send_draft` and passed. One had no draft to send. |
+| An unasked draft in `reply_correction` turn 1 | 1 of 3 repeats | **No.** 0 of 5 repeats called a write tool. `no_write` passed 5 of 5. |
+
+The rules of OA-7j fixed the first and the third kind. The second kind fell from 2 of 3 to 1 of 5.
+
+## R4.6 What this shows
+
+- The design works. The pack arm is 2.8 times faster at the median, hands off mail work in 1 of 90 turns, and the model loads the pack by itself.
+- The pack arm and delegation fail the same turns for the most part: `scanned_file`, `five_turns` 2 to 4. These are model choices that neither arm's rules fix.
+- The gate is short by one turn. A larger repeat count will not remove noise of this size. The owner needs to decide whether to read the gate as "no worse than delegation, within one turn", or to add a rule that forbids a hand-off of mail work after a pack load.

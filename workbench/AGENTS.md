@@ -61,6 +61,7 @@ The native CRM (spec `crm_app.md` §5). Everything server-shaped is pure and liv
 - A non-collection tab (`settings`, `reports`) must join `NON_ENTITY_TABS`, the `page.tsx` branch chain, the load effect and `refreshCollection()`. `isEntity()` is the guard. `store.test.ts` pins which request each write issues.
 - The reports surface computes nothing. Weighted ₹ is never recomputed from `lane.rows`, and `tests/fixtures/crm_weighted_parity.json` holds `board.ts` to the gateway SQL.
 - Every CRM dialog is a `Modal` or a `ConfirmDialog`. `components/SetupHub.tsx` is the ONE place where the setup changes. An in-app `<a href>` calls `pushOnPlainClick`, never `next/link` (`lib/history.test.ts`).
+- The names of the record types come from `GET /crm/mode` in both modes (CRM-Z10g). `lib/recordNames.ts` holds the rules of "Record names". ⚠️ `useRecordNames` keeps its own key, and a failed read stays a failure. Empty boxes after a failed read would let a Save clear the stored names. Fence: `components/crmZ10g.test.ts`.
 - Fences: the `components/crm*.test.ts` files. `components/crmX4.test.ts` fails a raw `<input>`, `<textarea>` or `<select>`.
 
 ### Knowledge (`app/knowledge/`)

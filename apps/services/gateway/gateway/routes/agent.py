@@ -806,6 +806,26 @@ _AGENT_REGISTRY: list[dict] = [
     },
 ]
 
+# Agents the platform runs for itself, and no person or model picks (WS-67
+# OA-9a, one_assistant_context.md §4.5 narrowing 5). They are in NO list that
+# a picker, a specialist tool, the workflow catalog or a route reads: not in
+# `_AGENT_REGISTRY`, not in `_KNOWN_AGENTS`. Only the executor reads this list,
+# in the lookups that load an agent by name (`_run_sub_agent_streaming`,
+# `_run_agent_inner`), and it reads it FIRST, so a dynamic agent that is
+# named like one cannot take its place. `worker` runs one job of
+# `spawn_subagents` and refuses to run with no job
+# (`subagent_contract.worker_refusal`). Fence: tests/unit/test_subagent_worker.py.
+_INTERNAL_AGENTS: list[dict] = [
+    {
+        "name": "worker",
+        "description": "Runs one read-only job of spawn_subagents and ends with items.",
+        "agent_runtime": "maf",
+        "local_path": "apps/agents/agent-worker",
+        "integrations": [],
+        "optional_integrations": [],
+    },
+]
+
 
 # ---------------------------------------------------------------------------
 # Dynamic (user-registered) agent persistence — Postgres-backed.

@@ -479,6 +479,23 @@ export function getModuleRecord(module: string, id: string): Promise<ModuleRecor
 }
 
 /**
+ * Edit one generic record (CRM-Z10d). Native mode only: Mirror mode answers
+ * 409 `mirrored_record`. The body holds `name`, `owner_email` and `fields`,
+ * and names only the keys that change. A refusal is a `CrmError` with the
+ * `code` and the `field` of the 422.
+ */
+export function patchModuleRecord(
+  module: string,
+  id: string,
+  body: Record<string, unknown>,
+): Promise<ModuleRecordPage> {
+  return call<ModuleRecordPage>(
+    `/modules/${encodeURIComponent(module)}/records/${encodeURIComponent(id)}`,
+    { method: "PATCH", body: JSON.stringify(body) },
+  );
+}
+
+/**
  * The activities of one module record, newest first (CRM-Q23a). Read only:
  * no route writes an activity on a module record. An unknown module or
  * record is a 404.
@@ -542,11 +559,26 @@ export type CrmModeBody = {
 /**
  * `GET /crm/mode`, for each member the access rule admits. In Mirror mode,
  * for an org on `CRM_FILL_RANK_ORGS`, it also holds the source's names of the
- * core entities (CRM-Q17a-1 item 6). Each other body has no `labels` key.
+ * core entities (CRM-Q17a-1 item 6). In Native mode it holds the names that
+ * an admin stored (CRM-Z10g). Each other body has no `labels` key.
  * CRM-Q20-2: with an approved role, `overlays` names the module of each slot.
  */
 export function getCrmMode(): Promise<CrmModeBody> {
   return call<CrmModeBody>("/mode");
+}
+
+/**
+ * Admin only, Native mode only (CRM-Z10g). The map replaces the stored names,
+ * and a type that is left out takes the default name again. Mirror mode is a
+ * 409. The write wakes every CRM read, so the rail and the headings follow.
+ */
+export function saveRecordNames(labels: SourceLabels): Promise<{ labels: SourceLabels }> {
+  return writeAndWake(() =>
+    call<{ labels: SourceLabels }>("/settings/labels", {
+      method: "PUT",
+      body: JSON.stringify({ labels }),
+    }),
+  );
 }
 
 /** Admin only. Choose who may open the CRM (CRM-T5). Each group is `group:<slug>`. */

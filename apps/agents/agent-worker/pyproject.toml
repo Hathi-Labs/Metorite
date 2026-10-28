@@ -1,0 +1,19 @@
+[project]
+name = "agent-worker"
+version = "0.1.0"
+description = "Internal sub-agent (worker): runs one read-only job of spawn_subagents"
+requires-python = ">=3.12"
+dependencies = [
+    "acb-common",
+    "acb-llm",
+    "acb-skills",
+    "agent-framework-core>=1.19.0",
+    "agent-framework-openai>=1.14.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = []

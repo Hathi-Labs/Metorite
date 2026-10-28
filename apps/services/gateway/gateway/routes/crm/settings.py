@@ -5,6 +5,7 @@ Spec: ``project-docs/specs/crm_platform.md`` §3.1, §3.4, §10 items 5 and 6,
 
     GET    /crm/settings
     PATCH  /crm/settings
+    PUT    /crm/settings/labels
 
 **Admin only.** Both routes need ``admin:access:manage`` (§10 item 5: only an
 org admin changes the mode). The router's access rule passes an admin too, so
@@ -18,7 +19,9 @@ back to NULL (CRM-U5b, "Change CRM setup"): allowed only with 0 rows in the
 five record tables and no Zoho connection that is ``connected``, else a 409
 (``crm_has_records``, ``crm_connected``). The reset clears ``mode`` and
 ``connection_id`` and deletes the stages and lost reasons, in the same
-transaction, and keeps ``access`` and ``access_groups``. Each other change of
+transaction, and keeps ``access`` and ``access_groups``. It also clears
+``labels``, ``cutover_at`` and ``cutover_by`` (CRM-Z10g), as the start over
+does. Each other change of
 mode is a 422. Only the Zoho callback of ``connection.py`` (CRM-Z2) sets
 ``mirror``. A
 ``mode`` equal to the stored one is not a change, so it is a 200 that writes no
@@ -52,11 +55,30 @@ records, and it does four things in this order:
    stages in the same transaction.
 4. One audit line through ``acb_audit``: the admin, the time and the counts.
 
+The same transaction also sets ``labels``, ``cutover_at`` and ``cutover_by``
+back to NULL (CRM-Z10g), so a new setup starts with the names of the CRM. It
+keeps ``access`` and ``access_groups``.
+
 ``GET /crm/settings/counts`` reads the same counts for the hub, admin only.
+
+**The names of the core records (WS-53 CRM-Z10g, D133.1).**
+``PUT /crm/settings/labels`` with ``{"labels": {<slug>: {"label",
+"singular_label"}}}``. Admin only, and Native mode only: Mirror mode is a 409
+``mirror_mode_labels``, because Zoho owns its names there. No mode is a 409
+``not_native``. The body replaces the whole map. An entity that the body
+leaves out, or sends as ``null``, takes the name of the CRM again, so ``{}``
+clears every name. A key that is not a core API slug, an empty name, a name
+of more than :data:`LABEL_MAX` characters after the trim, and a NUL
+(``records.refuse_nul``) are each a 422. The write is one ``UPDATE`` guarded
+on ``mode = 'native'`` in its own WHERE, so a mode change between a read and
+the write cannot land a name on a Mirror CRM. ``GET /crm/mode`` serves the
+stored names in Native mode, with no ``CRM_FILL_RANK_ORGS`` gate. It writes
+no audit line, as ``PATCH /crm/settings`` writes none.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any, Literal
 
@@ -78,8 +100,10 @@ from gateway.routes.crm.connection import (
     disconnect_zoho,
 )
 from gateway.routes.crm.core import (
+    ENTITIES,
     _tenant_session,
     count_records,
+    from_jsonb,
     reset_crm_from_admin,
     router,
 )
@@ -90,6 +114,7 @@ from gateway.routes.crm.fill_rank import (
     source_labels,
 )
 from gateway.routes.crm.flags import crm_mirror_allowed
+from gateway.routes.crm.records import refuse_nul
 from gateway.routes.crm.seed import seed_native_pipeline
 from gateway.routes.projects.core import validate_grant_subject
 from pydantic import BaseModel, ConfigDict, Field
@@ -252,11 +277,17 @@ async def _check_reset_allowed(db: Any, org: str) -> None:
 
 
 async def _reset_setup(db: Any, org: str) -> None:
-    """Clear the mode, the connection pointer and the seeded pipeline."""
+    """Clear the mode, the connection pointer and the seeded pipeline.
+
+    CRM-Z10g: the names of the records and the cutover stamps go too, as in
+    the start over (``_CLEAR_SETUP_SQL``). Else Native → none → Native shows
+    the old names again, and a stale ``cutover_at`` stays on a new setup.
+    """
     from gateway.crm_sync import holds
 
     await db.execute(text(
-        "UPDATE crm_settings SET connection_id = NULL "
+        "UPDATE crm_settings SET connection_id = NULL, "
+        "labels = NULL, cutover_at = NULL, cutover_by = NULL "
         "WHERE organization_id = CAST(:o AS uuid)"), {"o": org})
     await holds.clear(db, org)  # CRM-Q16: the next import decides again
     try:
@@ -325,9 +356,12 @@ class CrmModeModel(BaseModel):
     mode: str | None = None
     #: CRM-Q17a-1 (§18.9.1, D95.2 as amended 2026-10-15): in Mirror mode, the
     #: source's plural and singular label of each core entity, by API slug
-    #: (``contacts`` → "Existing Sites"). Left OUT of the body in Native mode,
-    #: with no source profile, or outside ``CRM_FILL_RANK_ORGS``, so such an
-    #: org reads ``{"mode": …}`` as before (``test_crm_aggregate_r8.py``).
+    #: (``contacts`` → "Existing Sites"). Left OUT of the body with no source
+    #: profile, or outside ``CRM_FILL_RANK_ORGS``, so such an org reads
+    #: ``{"mode": …}`` as before (``test_crm_aggregate_r8.py``).
+    #: CRM-Z10g (D133.1): in Native mode, the names in ``crm_settings.labels``,
+    #: in the same shape, for every org. A Native CRM with no stored name, and
+    #: a CRM with no mode, leave it OUT.
     labels: dict[str, EntityLabel] | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
@@ -359,7 +393,8 @@ async def get_crm_mode(
     write tools in Mirror mode. No row reads as mode NULL. It is also the one
     route of the source labels (CRM-Q17a-1 item 6), and of the overlays of
     the approved roles (CRM-Q20-2), which only a Mirror CRM can hold, and
-    of the state of each core entity (CRM-Q17b).
+    of the state of each core entity (CRM-Q17b). In Native mode it serves
+    the names that an admin stored (CRM-Z10g).
     """
     from gateway.routes.crm.mapping_plans import approved_overlays
 
@@ -367,12 +402,195 @@ async def get_crm_mode(
     async with _tenant_session() as db:
         row = await read_settings(db, org)
         mode = getattr(row, "mode", None) if row is not None else None
-        labels = await source_labels(db, org)
+        labels = (
+            await native_labels(db, org) if mode == "native"
+            else await source_labels(db, org)
+        )
         overlays = await approved_overlays(db, org) if mode == "mirror" else {}
         entities = await entity_states(db, org)
     return CrmModeModel(
         mode=mode, labels=labels, overlays=overlays or None, entities=entities,
     )
+
+
+# ── The names of the core records (WS-53 CRM-Z10g, D133.1) ──────────────────
+
+#: The longest name an admin may give, counted after the trim.
+LABEL_MAX = 60
+
+#: The stored names of a Native CRM. A Mirror CRM serves the source's names.
+_NATIVE_LABELS_SQL = (
+    "SELECT labels FROM crm_settings "
+    "WHERE organization_id = CAST(:o AS uuid) AND mode = 'native'"
+)
+
+#: The one write of the names. The mode guard is in its own WHERE, so a CRM
+#: that is not Native when the write runs gets no row back, and a 409.
+_SAVE_LABELS_SQL = (
+    "UPDATE crm_settings SET labels = CAST(:labels AS jsonb), "
+    "updated_by = :updated_by, updated_at = now() "
+    "WHERE organization_id = CAST(:o AS uuid) AND mode = 'native' "
+    "RETURNING labels"
+)
+
+_MIRROR_LABELS = {
+    "code": "mirror_mode_labels",
+    "message": (
+        "Zoho names these records. You can rename them after you switch to "
+        "Metorite."
+    ),
+}
+
+_NOT_NATIVE = {
+    "code": "not_native",
+    "message": "Choose a CRM setup first. Then you can rename the records.",
+}
+
+
+class LabelIn(BaseModel):
+    """The names of one core entity. No other field is allowed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The plural name, for the rail and the list ("Existing Sites").
+    label: str
+    #: The name of one record ("Existing Site"). With none, the record page
+    #: uses the plural name, as in Mirror mode.
+    singular_label: str | None = None
+
+
+class LabelsIn(BaseModel):
+    """The body of ``PUT /crm/settings/labels``. No other field (R11).
+
+    The map replaces the stored one. An entity that is left out, or sent as
+    ``null``, takes the name of the CRM again.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    labels: dict[str, LabelIn | None] = Field(default_factory=dict)
+
+
+class LabelsOut(BaseModel):
+    #: The stored names, by API slug. ``{}`` means the names of the CRM.
+    labels: dict[str, EntityLabel]
+
+
+def stored_labels(value: Any) -> dict[str, EntityLabel]:
+    """The names in ``crm_settings.labels``, in the order of ``ENTITIES``.
+
+    Lenient on read: a key that is not a core API slug, and an entry with no
+    plural name, are left out. The write path refuses both.
+    """
+    out: dict[str, EntityLabel] = {}
+    if not isinstance(value, dict):
+        return out
+    for slug in ENTITIES:
+        entry = value.get(slug)
+        if not isinstance(entry, dict):
+            continue
+        label = entry.get("label")
+        if not isinstance(label, str) or not label.strip():
+            continue
+        singular = entry.get("singular_label")
+        out[slug] = EntityLabel(
+            label=label.strip(),
+            singular_label=(
+                singular.strip()
+                if isinstance(singular, str) and singular.strip() else None
+            ),
+        )
+    return out
+
+
+async def native_labels(db: Any, org: str) -> dict[str, EntityLabel] | None:
+    """The stored names of a Native CRM, or None when it stores none."""
+    row = (await db.execute(text(_NATIVE_LABELS_SQL), {"o": org})).first()
+    if row is None:
+        return None
+    return stored_labels(from_jsonb(row.labels)) or None
+
+
+def _name(slug: str, part: str, value: str) -> str:
+    """One name, trimmed. Empty or longer than :data:`LABEL_MAX` is a 422."""
+    name = value.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail=(
+            f"The {part} name of '{slug}' is empty. Leave '{slug}' out to use "
+            "the default name."
+        ))
+    if len(name) > LABEL_MAX:
+        raise HTTPException(status_code=422, detail=(
+            f"The {part} name of '{slug}' has {len(name)} characters. The "
+            f"limit is {LABEL_MAX}."
+        ))
+    return name
+
+
+def clean_labels(raw: dict[str, LabelIn | None]) -> dict[str, EntityLabel]:
+    """The names to store, in the order of ``ENTITIES``. A bad one is a 422.
+
+    A NUL goes to the one guard, ``records.refuse_nul``, before any other
+    check. A key that is not a core API slug is refused, never dropped.
+    """
+    refuse_nul(
+        pair
+        for key, entry in raw.items()
+        for pair in (
+            (key, entry.label if entry else ""),
+            (key, (entry.singular_label or "") if entry else ""),
+        )
+    )
+    unknown = sorted(set(raw) - set(ENTITIES))
+    if unknown:
+        raise HTTPException(status_code=422, detail=(
+            f"Unknown record type {unknown}. One of: {list(ENTITIES)}."
+        ))
+    out: dict[str, EntityLabel] = {}
+    for slug in ENTITIES:
+        entry = raw.get(slug)
+        if entry is None:
+            continue
+        out[slug] = EntityLabel(
+            label=_name(slug, "plural", entry.label),
+            singular_label=(
+                None if entry.singular_label is None
+                else _name(slug, "singular", entry.singular_label)
+            ),
+        )
+    return out
+
+
+@router.put(
+    "/settings/labels", response_model=LabelsOut,
+    dependencies=[require_permission(ADMIN_PERMISSION)],
+)
+async def put_crm_labels(
+    payload: LabelsIn | None = None,
+    user: UserContext = Depends(get_current_user),
+) -> LabelsOut:
+    """Rename the core records of a Native CRM. See the module doc."""
+    org = _organization(user)
+    cleaned = clean_labels(payload.labels if payload is not None else {})
+    stored = (
+        json.dumps({slug: name.model_dump() for slug, name in cleaned.items()})
+        if cleaned else None
+    )
+    async with _tenant_session() as db:
+        row = (await db.execute(text(_SAVE_LABELS_SQL), {
+            "o": org,
+            "labels": stored,
+            "updated_by": (user.email or "").strip().lower() or None,
+        })).first()
+        if row is None:
+            current = await read_settings(db, org)
+            mirror = getattr(current, "mode", None) == "mirror"
+            raise HTTPException(
+                status_code=409,
+                detail=dict(_MIRROR_LABELS if mirror else _NOT_NATIVE),
+            )
+        result = stored_labels(from_jsonb(row.labels))
+    return LabelsOut(labels=result)
 
 
 @router.patch(
@@ -455,9 +673,12 @@ _LOCK_SETTINGS_SQL = (
 )
 
 #: No connection, and the time of this start over. The sync reads only the
-#: runs after ``reset_at`` (``crm_sync/runs.py``, migration 252).
-_CLEAR_CONNECTION_SQL = (
-    "UPDATE crm_settings SET connection_id = NULL, reset_at = now() "
+#: runs after ``reset_at`` (``crm_sync/runs.py``, migration 252). CRM-Z10g:
+#: the names of the records and the cutover stamps go too, so a new setup
+#: starts with the names of the CRM.
+_CLEAR_SETUP_SQL = (
+    "UPDATE crm_settings SET connection_id = NULL, reset_at = now(), "
+    "labels = NULL, cutover_at = NULL, cutover_by = NULL "
     "WHERE organization_id = CAST(:o AS uuid)"
 )
 
@@ -591,7 +812,7 @@ async def _start_over(*, mode: str | None, org: str, user: UserContext) -> dict[
             raise HTTPException(status_code=409, detail=(
                 "The CRM mode changed while this request ran. Nothing was removed."
             ))
-        await db.execute(text(_CLEAR_CONNECTION_SQL), {"o": org})
+        await db.execute(text(_CLEAR_SETUP_SQL), {"o": org})
         from gateway.crm_sync import holds
 
         await holds.clear(db, org)  # CRM-Q16: the next import decides again

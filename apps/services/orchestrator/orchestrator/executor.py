@@ -1371,6 +1371,51 @@ def _without_pack_keys() -> dict[str, Any]:
     return {PACK_RUN_KEY: None, PACKS_KEY: None}
 
 
+def _worker_refusal(agent_name: str) -> str | None:
+    """Why the internal agent *agent_name* cannot run on this frame, or None.
+
+    WS-67 OA-9a: the ``worker`` runs only for the job that ``spawn_subagents``
+    binds. ``subagent_contract.worker_refusal`` is the rule. It is asked at
+    run time, never at build time (the folder fences build every agent with no
+    job). Never raises."""
+    try:
+        from acb_skills.subagent_contract import worker_refusal
+
+        return worker_refusal(agent_name)
+    except ImportError:
+        return None
+
+
+def _without_job_key(agent_name: str) -> dict[str, Any]:
+    """The change that takes the job out of a derived run context, unless the
+    run IS the worker. So a run that a child starts never inherits the job."""
+    try:
+        from acb_skills.subagent_contract import INTERNAL_AGENTS, JOB_KEY
+    except ImportError:
+        return {}
+    return {} if agent_name in INTERNAL_AGENTS else {JOB_KEY: None}
+
+
+def _job_tool_scope(agent_name: str, scope: list[str] | None) -> list[str] | None:
+    """The injection scope of a run: the tools of the job for the worker,
+    *scope* for any other agent (``subagent_contract.child_tool_scope``)."""
+    try:
+        from acb_skills.subagent_contract import child_tool_scope
+    except ImportError:
+        return scope
+    return child_tool_scope(agent_name, scope)
+
+
+def _registry_entries() -> list[dict[str, Any]]:
+    """The agents that a lookup by name searches, the internal ones FIRST.
+
+    So a dynamic agent that is named like an internal agent cannot take its
+    place (WS-67 OA-9a, ``routes.agent._INTERNAL_AGENTS``)."""
+    from gateway.routes.agent import _AGENT_REGISTRY, _INTERNAL_AGENTS, _load_dynamic_agents
+
+    return [*_INTERNAL_AGENTS, *_load_dynamic_agents(), *_AGENT_REGISTRY]
+
+
 def _resolve_sub_agent_org() -> str | None:
     """The tenant a delegated sub-run must act in: its PARENT run's org.
 
@@ -2231,6 +2276,11 @@ async def _run_sub_agent_streaming(
     _pack_refused = _pack_delegation_refusal(agent_name)
     if _pack_refused is not None:
         return _pack_refused
+    # WS-67 OA-9a: the worker runs only for a bound job (the second of three
+    # callers that ask; `call_agent` and `run_agent` are the others).
+    _worker_refused = _worker_refusal(agent_name)
+    if _worker_refused is not None:
+        return _worker_refused
     settings = get_settings()
     # WS-67 OA-1 and OA-2: the member's own words, verbatim, and the reply
     # rules (quoted or inferred) head every delegated task. The executor adds
@@ -2243,9 +2293,7 @@ async def _run_sub_agent_streaming(
     _local_path: str | None = None
     _runtime: str = "maf"
     try:
-        from gateway.routes.agent import _AGENT_REGISTRY
-        from gateway.routes.agent import _load_dynamic_agents
-        _all = _load_dynamic_agents() + _AGENT_REGISTRY
+        _all = _registry_entries()
         entry = next((e for e in _all if e["name"] == agent_name), None)
         if entry:
             raw = entry.get("repo_name") or ""
@@ -2283,7 +2331,9 @@ async def _run_sub_agent_streaming(
     _sub_no_egress = _run_no_egress(agent_name, _parent_ctx_sub)
     # WS-67 OA-7c: a delegated run never inherits the run key or the record of
     # its parent's packs, so its own hand-offs are never refused for them.
-    derive_artifact_context(no_egress=_sub_no_egress, **_without_pack_keys())
+    derive_artifact_context(
+        no_egress=_sub_no_egress, **_without_pack_keys(), **_without_job_key(agent_name),
+    )
     # WS-17 EM-G11f3: a run of an agent that reads mail marks the CALLING
     # session now, before it does any work, so a cancel or an error cannot
     # skip the mark. After the no_egress decision, so the sub-run's tools do
@@ -2376,6 +2426,8 @@ async def _run_sub_agent_streaming(
                 else None,
                 _agent_md_spec,
             )
+            # WS-67 OA-9b: the worker's scope is the tools of its job.
+            _sub_tool_scope = _job_tool_scope(agent_name, _sub_tool_scope)
             _apply_own_tool_scope(
                 agents,
                 loaded.config.get("own_tool_scope") or None
@@ -4409,7 +4461,9 @@ async def _assemble_batch_agents(
     own_tools = _count_agent_tools(agents)  # WS-8o
     run_tools = _inject_agent_tools(
         agents,
-        tool_scope=loaded.config.get("tool_scope") or None,
+        # WS-67 OA-9b: the worker's scope is the tools of its job.
+        tool_scope=_job_tool_scope(
+            agent_name, loaded.config.get("tool_scope") or None),
         agent_name=agent_name,
         agent_config=loaded.config,  # D85: the sharing block
         no_egress=no_egress,  # H-236: from the run's own binding
@@ -4476,6 +4530,15 @@ async def run_agent(
     Raises:
         :class:`AgentRunError` on failure (includes mutation PR URL if one was opened).
     """
+    # WS-67 OA-9a: the third of three callers that ask `worker_refusal`. The
+    # batch fallback of `call_agent` goes straight here, so the streaming seam
+    # alone is not enough. Before any binding, so a refusal binds nothing.
+    _worker_refused = _worker_refusal(agent_name)
+    if _worker_refused is not None:
+        raise AgentRunError(
+            _worker_refused, agent_name=agent_name, run_id=run_id or "",
+            original=ValueError(_worker_refused),
+        )
     _identity = _bind_run_identity(event_payload, agent_name)
     # WS-63 PZ-2: closed in the same finally as the identity.
     _solo_token = _bind_solo_room(solo_room)
@@ -4713,9 +4776,7 @@ async def _run_agent_inner(
         _registry_local_path: str | None = None
         _registry_runtime: str | None = None
         try:
-            from gateway.routes.agent import _AGENT_REGISTRY
-            from gateway.routes.agent import _load_dynamic_agents
-            _all_entries = _load_dynamic_agents() + _AGENT_REGISTRY
+            _all_entries = _registry_entries()
             _registry_entry = next(
                 (e for e in _all_entries if e["name"] == agent_name), None
             )
@@ -4798,11 +4859,8 @@ async def _run_agent_inner(
             _head_before: str = ""
             _is_copilot_agent = False
             try:
-                from gateway.routes.agent import _AGENT_REGISTRY
-                from gateway.routes.agent import \
-                    _load_dynamic_agents as _lda
                 _ea = next(
-                    (e for e in _lda() + _AGENT_REGISTRY if e["name"] == agent_name),
+                    (e for e in _registry_entries() if e["name"] == agent_name),
                     None,
                 )
                 if _ea and _ea.get("agent_runtime") == "github-copilot":
@@ -4963,7 +5021,8 @@ async def _run_agent_inner(
             # No-op (and no filesystem touch at all) while the switch is off.
             materialize_skill_bodies_for_agent(
                 agent_name, _effective_agent_dir,
-                tool_scope=loaded.config.get("tool_scope") or None,
+                tool_scope=_job_tool_scope(
+                    agent_name, loaded.config.get("tool_scope") or None),
                 agent_config=loaded.config,
             )
 
@@ -5069,10 +5128,8 @@ async def _run_agent_inner(
         # Post-run: detect commits the agent made during this run (ALL agents)
         _registry_runtime = "maf"
         try:
-            from gateway.routes.agent import _AGENT_REGISTRY
-            from gateway.routes.agent import _load_dynamic_agents
             _e = next(
-                (e for e in _load_dynamic_agents() + _AGENT_REGISTRY if e["name"] == agent_name),
+                (e for e in _registry_entries() if e["name"] == agent_name),
                 None,
             )
             if _e:

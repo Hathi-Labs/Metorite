@@ -11,6 +11,8 @@ OA-8b is BUILT, dark behind `TOOL_PACKS` (2026-10-28, "As built, OA-8b" in §4.3
 
 OA-8e RAN LIVE and is NOT MET (2026-10-28, `docs/one_assistant_measure_oa8e_2026-10-28.md`, harness at `9912eee5a`). On the app turns that are not email, the pack arm passed 38 of 70 and delegation 52 of 70 (CRM 14 of 24 against 19 of 24, Projects 21 of 38 against 29 of 38). Stop results 1, 2 and 11 occur. The pack arm is 2.6 times faster per turn and 32 percent cheaper. Causes: the model loads a pack it lacks only 3 times in 70 turns and never in the miss chats, it skips the bulk pack for several new tasks, it hands off after it loaded the plan or structure pack, and on a Projects page the plan and structure packs do not fit beside the core pack. The run also shows harness defects to repair first: fixture gaps, checks that count a refused call, the `crm_report` annotation, and dev-database reach through the memory tools. The fan-out chats and the `packs+spawn` arm were skipped. OA-10 must not start.
 
+OA-9b and the OA-9a worker half are BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-28, "As built, OA-9b" in §4.5). The flag flip is OWNER-GATE.
+
 OA-3 is built, dark behind `ATTACHMENT_OCR`, and §4.1 holds three conditions
 for the flip. OA-6 is DECIDED (D117,
 2026-10-26): yes, for all apps. §4.2 (OA-7), §4.3 (OA-8) and §6 (OA-9) hold
@@ -30,15 +32,16 @@ below, PR #1383). The flag is off on each box, so no run loads a pack yet.
 OA-7e is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7e"
 below, PR #1389). It adds layer (b), the meta tool `load_skill_tools`.
 
-OA-7h is PARTLY BUILT (2026-10-28): the gate is NOT met, by a small margin.
-Run 3 (`docs/one_assistant_measure_2026-10-28.md`, with
-`TOOL_PACKS=email,email-setup`) passed pack 46 of 54 and delegation 47 of 54.
-`no_write` on `reply_correction` turn 1 passed 2 of 3 on the pack arm. The pack
-arm handed off no mail work, the model called `load_skill_tools` in 25 turns, and
-the pack arm ran in a median of 11.2 s against 27.3 s. Run 2 failed because
-`TOOL_PACKS=email` left `email-setup` out, so OA-7i did nothing. Next: a rules
-edit (find the email before `compose_reply`, and "send it" means `send_draft`),
-then a larger repeat. Run 1 is `docs/one_assistant_measure_2026-10-27.md`.
+OA-7h is PARTLY BUILT (2026-10-28): the gate is NOT met, by one turn.
+Run 4 (`docs/one_assistant_measure_2026-10-28.md`, with the OA-7j rules and 5
+repeats) passed pack 78 of 90 and delegation 79 of 90. Without the hand-off
+check, both passed 79 of 90. `no_write` on `reply_correction` turn 1 passed 5 of
+5 on both arms. The pack arm handed off mail work in 1 of 90 turns, and it ran in
+a median of 12.3 s against 33.9 s. The three run-3 failure kinds are fixed
+(2 of 3, 2 of 3 and 1 of 3 became 0 of 5, 1 of 5 and 0 of 5). The owner decides
+whether one mail hand-off after a pack load fails the gate. Run 3 (46 of 54
+against 47 of 54) and run 2 (the flag `email` alone) are in the same report.
+Run 1 is `docs/one_assistant_measure_2026-10-27.md`.
 
 OA-7d is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7d"
 below). The dock sends `surface`, and a turn from `/email` loads the `email`
@@ -270,8 +273,8 @@ middle of a turn.
   renames `add_tools`.
 
 The OA-9a parser is BUILT, dark (2026-10-27, "As built, OA-9a parser"
-below). Nothing calls it yet. The OA-9a worker and OA-9b are GO, narrowed
-(2026-10-27, §4.5). The policy SUB-1 (Metorite #822) is in §6.8.
+below). `spawn_subagents` calls it since OA-9b ("As built, OA-9b" below).
+The narrowings of §4.5 stay as the record. The policy SUB-1 (Metorite #822) is in §6.8.
 
 **As built, OA-9a parser.** `acb_skills/subagent_contract.py` holds the two
 parsers of the contract of §6. No module calls them, and no flag reads them.
@@ -317,6 +320,57 @@ OA-9b builds `spawn_subagents` on them.
 - **§4.5, OA-9a item 1.** `test_tool_packs_off.py` holds no OA-9a case, so
   no case moved. The worker cases wait for the worker half: the refusal with
   no job, and the worker out of the picker.
+
+**As built, OA-9b.** The OA-9a worker half and OA-9b are BUILT, dark behind
+`SPAWN_SUBAGENTS_ORGS` (2026-10-28). Nothing sets the flag. The flip is
+OWNER-GATE.
+- **The worker.** `apps/agents/agent-worker/` holds `agents.py`,
+  `config.json`, `instructions.md` and `pyproject.toml`. The worker is in
+  `gateway.routes.agent._INTERNAL_AGENTS`, and in no other list. The executor
+  reads `_registry_entries()`, which puts the internal list first. The
+  worker refuses a run with no job at three callers: `call_agent`,
+  `_run_sub_agent_streaming` and `run_agent`. `build_agents()` never raises.
+- **The pair.** `subagent_contract.child_pin(allowed)` returns the
+  `WithholdTools` and `RefuseTools` pair. The worker passes it as
+  `middleware=`. `allowed` is the tools of the job. This is the layer that
+  counts. A model call has 4 rounds at most: `max_iterations` 3 and the final
+  call with `tool_choice` `none`.
+- **The tool.** `agent_tools.spawn_subagents` is an own tool of the
+  orchestrator. `build_orchestrator_agent` adds it for an org on the flag.
+  `_tool_injection._drop_spawn_tool` drops it at the injection seam for any
+  other org. It joined `egress.DELEGATION_TOOLS`, and the orchestrator
+  registers it as a platform callable. `call_agents_parallel` and
+  `spawn_subagents` share `_run_branch` and `_fan_out`.
+- **The caps.** 5 jobs at once, 2 spawn calls for each run (`take_spawn`,
+  keyed by the `run_id` of the run binding), a job clock of 120 s and a
+  fan-out clock of 180 s. Stop cancels every child, and each child has ended
+  before the Stop goes on. The parent reads `parse_items` output only.
+- **Where the job lives.** `bind_job` puts the `Job` on the frame of one
+  child task. `executor._without_job_key` takes it out of any sub-run that
+  is not the worker. `executor._job_tool_scope` makes the tools of the job
+  the injection scope of the worker.
+- **How a child meets OA-7i, the packs and CTX-1.** A child is a sub-run, so
+  it never goes through `_apply_pack_turn`. It gets no pack, no
+  `load_skill_tools` and no loader, and `PackRun.via_failed` is never read
+  for it. The sub-run drops the pack keys from its context. A pack tool is not
+  in `run_tools`, so a job cannot name one, and a job that names `packs` waits
+  for OA-9c. CTX-1 (`tool_result_spill`) is a function middleware that
+  attaches to the native agent. With `TOOL_RESULT_SPILL` `on`, it attaches
+  only to an agent that holds `read_tool_result`. A child never holds it, so
+  its results do not spill. The result of `spawn_subagents` never spills,
+  because the tool is a delegation tool.
+- **Spec drift found.** `profile_tools.WRITE_TOOLS` holds six tools since
+  `profile_interview`, not five. §6.8 now says so, and the memory table has 11
+  tools. A held chat that asks the untrusted-answer card also asks it for
+  `spawn_subagents`, as for `call_agents_parallel`.
+- **Not built.** The persona lines (OA-9e), the packs in a child (OA-9c) and
+  the writes in a child (OA-9d).
+- **Fences.** `test_subagent_worker.py`, `test_spawn_subagents.py` and
+  `test_subagent_blocked_tools.py`. The pin
+  `test_nothing_calls_the_contract_before_oa_9b` is gone on purpose. A pin on
+  the known callers replaces it. 19 of 20 mutations fail the fences. The
+  survivor takes out the egress filter of the injection only, and
+  `_apply_no_egress` holds the same set as a second layer.
 
 **As built, OA-7c.** Layer (a) and the sticky state put packs in a live run.
 Three inputs choose the packs: the sticky packs of the chat, a reference in
@@ -1875,7 +1929,7 @@ SUB-1 is the policy that a child obeys in every fan-out. It has three rules. Rul
 | 3. A fan-out cap of 5, one shared step budget, an idle timeout | `MAX_JOBS` 5 (equal to `_PARALLEL_MAX`), `MAX_SPAWNS_PER_TURN` 2, `MAX_CHILD_ROUNDS` 4, `JOB_TIMEOUT_S` 120 and `FANOUT_TIMEOUT_S` 180 | The enforcement of each cap: the spawn counter on the parent frame, `max_iterations` of 3 plus the final call, and `asyncio.wait_for` |
 
 **What each blocked class covers.** The tools below come from the code of `6c0f5a83a`. A child cannot call any of them, in any chat.
-- **Memory writes.** The five store writes of `egress.STORE_WRITES` (`egress.py:132`): `save_memory`, `save_episode`, `save_agent_memory`, `save_org_memory` and `save_note`. Also the five profile writes of `profile_tools.WRITE_TOOLS` (`:1111`): `profile_remember`, `profile_forget`, `profile_set`, `profile_alias` and `profile_undo`. A read such as `remember` or `recall_timeline` stays open.
+- **Memory writes.** The five store writes of `egress.STORE_WRITES` (`egress.py:132`): `save_memory`, `save_episode`, `save_agent_memory`, `save_org_memory` and `save_note`. Also the six profile writes of `profile_tools.WRITE_TOOLS` (`:1111`): `profile_remember`, `profile_forget`, `profile_set`, `profile_alias`, `profile_undo` and `profile_interview`. A read such as `remember` or `recall_timeline` stays open.
 - **Egress.** Any tool that sends or writes outside Metorite. The email sends `send_email`, `forward_email`, `unsubscribe_sender`, `send_draft` and `schedule_send`. The CRM writes `create_lead`, `update_deal_status`, `log_activity` and `convert_lead`. The web reads `web_search` and `fetch_page` are not in this class, because they only read. A held chat still withholds them from a child (§6.5).
 - **Automation.** `run_workflow` (`workflow_tools.py:94`). The email rule tools `create_rule`, `update_rule`, `create_rules_from_prompt`, `install_default_rules`, `learn_rule_pattern`, `run_rules` and `delete_rule`. The CRM tool `crm_propose_rule`. The Projects tools `set_report_schedule` and `set_recurrence`.
 - **Ask the member.** The four tools of `MEMBER_TOOLS`: `ask_questions`, `ask_user`, `request_confirmation` and `share_artifact`. Also `emit_generative_ui`, which blocks the run when it sets `hitl`.
@@ -1887,7 +1941,7 @@ SUB-1 is the policy that a child obeys in every fan-out. It has three rules. Rul
 - **Idle timeout.** The wall clock of the job (120 s) and of the fan-out (180 s). A child is a batch run and streams no event (`executor.py:2587-2622`), so an idle timer would measure the same time. A fan-out that streams its children needs a new timer, and OA-9b does not build it.
 
 **Fence (R7).** `tests/unit/test_subagent_blocked_tools.py`. The file gives a child each blocked tool through the real worker pair, and the child cannot call it. Each case counts the runs of the tool body and asserts the count is 0.
-- `test_a_child_cannot_call_a_memory_write`: one case for each of the 10 tools above.
+- `test_a_child_cannot_call_a_memory_write`: one case for each of the 11 tools above.
 - `test_a_child_cannot_call_a_send`: one case for each of the 9 tools above.
 - `test_a_child_cannot_call_an_automation_tool`: one case for each of the 11 tools above.
 - `test_a_child_cannot_ask_the_member`: one case for each of the 5 tools above.

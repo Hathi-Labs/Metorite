@@ -205,9 +205,10 @@ export function useSyncHealth(enabled: boolean): SyncHealthState {
 }
 
 /**
- * The body of `GET /crm/mode`, in Mirror mode only. One read and one cache
- * key serve the labels and the overlays, so the two never disagree about the
- * shape under the key. A failure gives `null`, and the CRM draws as before.
+ * The body of `GET /crm/mode`. One read and one cache key serve the labels,
+ * the overlays and the entity states, so they never disagree about the shape
+ * under the key. A failure, such as the 403 or 404 of a member, gives `null`,
+ * and the CRM draws as before.
  */
 function useModeRead(enabled: boolean): { body: CrmModeBody | null; loading: boolean } {
   const res = useCachedResource<CrmModeBody | null>(
@@ -239,14 +240,53 @@ export function useCoreStates(enabled: boolean): CoreStatesState {
 }
 
 /**
- * The source's names of the core entities (CRM-Q17a-2 item 7), from
- * `GET /crm/mode`. Only Mirror mode reads it. A failure, a Native CRM and an
- * org off `CRM_FILL_RANK_ORGS` each give `null`, and the CRM keeps its own
- * names. A label that fails to load must not stop the CRM.
+ * The names of the core entities, from `GET /crm/mode`. In Mirror mode they
+ * are the source's names (CRM-Q17a-2 item 7). In Native mode they are the
+ * names that an admin stored (CRM-Z10g). A failure, a CRM with no stored
+ * name and a Mirror org off `CRM_FILL_RANK_ORGS` each give `null`, and the
+ * CRM keeps its own names. A label that fails to load must not stop the CRM.
  */
 export function useSourceLabels(enabled: boolean): SourceLabels | null {
   const body = useModeBody(enabled);
+  return labelsOfBody(body);
+}
+
+function labelsOfBody(body: CrmModeBody | null | undefined): SourceLabels | null {
   return body?.labels && typeof body.labels === "object" ? body.labels : null;
+}
+
+export type RecordNamesState = {
+  /** The stored names, or `null` when the CRM stores none. */
+  labels: SourceLabels | null;
+  /** True until the first answer. */
+  loading: boolean;
+  /** The message of the last failed read, or null. */
+  error: string | null;
+  /** True once a read has answered, so `labels` is the stored value. */
+  known: boolean;
+  refresh: () => void;
+};
+
+/**
+ * The stored names, for the "Record names" card of an admin (CRM-Z10g).
+ *
+ * ⚠️ Its own cache key, and a read that THROWS on a failure. The page's read
+ * turns a failure into "no names", which is right for a heading and wrong
+ * here: the card would show empty boxes, and a Save would then clear the
+ * names that an admin stored. `invalidate("crm:")` wakes both reads.
+ */
+export function useRecordNames(enabled: boolean): RecordNamesState {
+  const res = useCachedResource<SourceLabels | null>(
+    enabled ? "crm:record-names" : null,
+    () => api.getCrmMode().then(labelsOfBody),
+  );
+  return {
+    labels: res.data ?? null,
+    loading: enabled && res.loading,
+    error: res.error,
+    known: res.data !== undefined,
+    refresh: res.refresh,
+  };
 }
 
 /**

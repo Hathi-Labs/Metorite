@@ -767,6 +767,18 @@ class Settings(BaseSettings):
     tool_packs: str = ""
     tool_packs_orgs: str = ""
 
+    # ── Dynamic sub-agents of the one assistant (WS-67 OA-9b, D117) ─────────
+    #
+    # `spawn_subagents_orgs` lists the organization ids whose main assistant
+    # holds `spawn_subagents`, or `*` for each one. Empty means off. The one
+    # reader is `acb_skills.subagent_contract.spawn_subagents_on`, and it fails
+    # closed. A child only reads, but it runs model calls at the org's cost.
+    #
+    # 🔴 OWNER-ONLY on a box: any value other than empty (`work_plan.md` §6
+    # D4). The dev-phase window does not open it.
+    # Fence: tests/unit/test_spawn_subagents.py.
+    spawn_subagents_orgs: str = ""
+
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #
     # `decide_feature_modes` holds `feature=mode` pairs with a comma between

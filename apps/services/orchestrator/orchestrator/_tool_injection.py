@@ -1838,6 +1838,27 @@ def _drop_own_tools(agents: list[Any], names: frozenset[str]) -> None:
             lst[:] = [t for t in lst if _tool_name(t) not in names]
 
 
+def _drop_spawn_tool(agents: list[Any]) -> None:
+    """Take ``spawn_subagents`` out of every agent of a run of an org that
+    ``SPAWN_SUBAGENTS_ORGS`` does not name (WS-67 OA-9b).
+
+    The tool is the orchestrator's own and joins at build time for a named org
+    only. This is the second layer, at the one injection seam: a run with no
+    org, or with another org, holds no spawn tool whatever built the agent.
+    The tool is in no injected set, so the drop looks at each agent's OWN tool
+    pools (:func:`_drop_own_tools`). It fails closed on a fault.
+    """
+    try:
+        from acb_skills.subagent_contract import SPAWN_TOOL, spawn_subagents_on
+
+        if spawn_subagents_on(_run_org()):
+            return
+        names = frozenset({SPAWN_TOOL})
+    except Exception:
+        names = frozenset({"spawn_subagents"})
+    _drop_own_tools(agents, names)
+
+
 def _own_tool_pools(agent: Any) -> list[tuple[str, list[Any]]]:
     """The tool lists of ONE agent, each list once, with a label for the log.
 
@@ -2244,6 +2265,7 @@ def _inject_agent_tools(
     sub-agent gets the core with no overlay.
     """
     _apply_voice(agents, is_sub_agent=is_sub_agent, agent_name=agent_name)
+    _drop_spawn_tool(agents)
     _all_tools = _collect_injectable_platform_tools(agent_name)
     if not _all_tools:
         if no_egress:  # H-236 holds even when nothing else is injected
