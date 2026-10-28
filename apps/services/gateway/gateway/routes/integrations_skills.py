@@ -93,8 +93,9 @@ def _pack_tools_by_name() -> dict[str, Any]:
     an owner that does not load prices nothing, as an unimportable platform
     tool does in :func:`_platform_tools_by_name`.
     """
-    from acb_skills import skill_families, tool_packs
+    from acb_skills import skill_families
     from acb_skills.tool_guard import tool_name
+    from orchestrator._tool_injection import _owner_pack_tools
 
     out: dict[str, Any] = {}
     for slug in skill_families.pack_slugs():
@@ -104,7 +105,9 @@ def _pack_tools_by_name() -> dict[str, Any]:
             if module is None:
                 _log.warning("skills.pack_owner_unavailable", pack=slug, owner=owner)
                 continue
-            for fn in tool_packs.owner_tools(slug, module):
+            # OA-8b: the run path's per-owner cache, so a catalog read does
+            # not build the 120 Projects tools again for each pack.
+            for fn in _owner_pack_tools(slug, owner, module):
                 # OA-8b: a MAF ``FunctionTool`` (the Projects tools) has a
                 # ``name`` and no ``__name__``, so ``tool_name`` reads both.
                 out[tool_name(fn)] = fn

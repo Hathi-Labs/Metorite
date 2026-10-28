@@ -508,7 +508,10 @@ def test_each_persona_holds_the_email_delegation_text_exactly_once(
     text = agents._orchestrator_instructions(
         company_search, company_search, company_search, profile=profile, constraints=constraints)
     assert text.count(agents.EMAIL_DELEGATION_BULLETS) == 1
-    assert _bullets() == {EA: agents.EMAIL_DELEGATION_BULLETS}
+    assert _bullets() == {
+        EA: agents.EMAIL_DELEGATION_BULLETS,
+        "projects-assistant": agents.PROJECTS_DELEGATION_BULLETS,
+    }
 
 
 def test_a_persona_without_the_owners_text_refuses_the_swap() -> None:
@@ -1677,8 +1680,8 @@ def test_a_missing_persona_bullet_raises_unless_the_owner_has_none_by_design(
     raise -> red. Mutation: drop ``crm-assistant`` from the set -> the first
     case raises -> red."""
     # OA-8b: the Projects assistant joins it. No bullet joins PACK_DELEGATION_BULLETS.
-    assert {CRM, "projects-assistant"} == tp.NO_PERSONA_BULLETS
-    assert set(_bullets()) == {EA}
+    assert {CRM} == tp.NO_PERSONA_BULLETS
+    assert set(_bullets()) == {EA, "projects-assistant"}
     persona = _agents_mod()._orchestrator_instructions(False)
     text = tp.persona_for(persona, [("crm-records", False)], _bullets())
     assert text.startswith(persona.rstrip("\n") + "\n\n")

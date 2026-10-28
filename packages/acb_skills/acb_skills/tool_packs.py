@@ -151,6 +151,11 @@ class Pack:
     #: hand-off to the owner is then refused, so the rules send the rest of
     #: the work to ``load_skill_tools``, never to the owner.
     loader_route: str = ""
+    #: OA-8b fix round 1 (P2-2). The slug of the core pack of the same owner
+    #: that this specific pack takes the place of in ONE turn, when both
+    #: matched and the request cannot hold both (:func:`choose`). Empty for a
+    #: pack with no such core pack.
+    replaces_core: str = ""
 
     @property
     def owner(self) -> str:
@@ -332,7 +337,10 @@ _CRM_DELEGATION_REFUSED = (
 #: owner has four, so the run never holds every pack of the owner at layer
 #: (a), and the swap applies to a pack of layer (a).
 _PROJECTS_NO_AGENT_LINE = "No Projects agent exists to hand a task to."
-_PROJECTS_ROUTE_LINE = "When a pack does not load, hand the task to the Projects assistant."
+_PROJECTS_ROUTE_LINE = (
+    "For the work of a Projects pack that did not load, call call_agent with "
+    "agent_name \"projects-assistant\" and the task."
+)
 #: OA-7i. While the loader reaches the owner, the hand-off is refused, so the
 #: line stays true and names the loader.
 _PROJECTS_LOAD_LINE = (
@@ -586,6 +594,7 @@ PACKS: dict[str, Pack] = {
         slug="projects-plan",
         rules=_PROJECTS_PLAN_RULES,
         words=_PROJECTS_PLAN_WORDS,
+        replaces_core="projects",
         delegation_refusal=_PROJECTS_DELEGATION_REFUSED,
         handoff_swap=(_PROJECTS_NO_AGENT_LINE, _PROJECTS_ROUTE_LINE),
         loader_route=_PROJECTS_LOAD_LINE,
@@ -594,6 +603,7 @@ PACKS: dict[str, Pack] = {
         slug="projects-structure",
         rules=_PROJECTS_STRUCTURE_RULES,
         words=_PROJECTS_STRUCTURE_WORDS,
+        replaces_core="projects",
         delegation_refusal=_PROJECTS_DELEGATION_REFUSED,
         handoff_swap=(_PROJECTS_NO_AGENT_LINE, _PROJECTS_ROUTE_LINE),
         loader_route=_PROJECTS_LOAD_LINE,
@@ -602,6 +612,7 @@ PACKS: dict[str, Pack] = {
         slug="projects-bulk",
         rules=_PROJECTS_BULK_RULES,
         words=_PROJECTS_BULK_WORDS,
+        replaces_core="projects",
         delegation_refusal=_PROJECTS_DELEGATION_REFUSED,
         handoff_swap=(_PROJECTS_NO_AGENT_LINE, _PROJECTS_ROUTE_LINE),
         loader_route=_PROJECTS_LOAD_LINE,
@@ -888,7 +899,8 @@ class PackRun:
         replaced: set[str] = set(via)
         for slug in slugs:
             found = pack(slug)
-            if found is not None and found.delegation_refusal:
+            if (found is not None and found.delegation_refusal
+                    and _specialist_leaves(found.owner, slugs, via)):
                 replaced.add(found.owner)
         return cls(
             org=turn.org, session=turn.session, member_part=turn.member_part,
@@ -1111,6 +1123,18 @@ def choose(turn: PackTurn, *, allowed: Iterable[str], base_tools: int) -> Choice
                 order.append(slug)
     sticky = {entry.slug: entry for entry in live}
     skipped: list[str] = []
+    # OA-8b fix round 1 (P2-2): a specific pack that the words matched takes the
+    # place of its owner's core pack when the request cannot hold both. The core
+    # pack matched by a word ("tasks") or by the surface, and the member asked
+    # for the work of the specific pack. A sticky core pack stays: the cap
+    # below decides about it.
+    for slug in list(order):
+        found = pack(slug)
+        core = found.replaces_core if found is not None else ""
+        if (core and core in order and core not in sticky and slug not in sticky
+                and base_tools + sum(_tool_count(s) for s in order) > MAX_REQUEST_TOOLS):
+            order.remove(core)
+            layers.pop(core, None)
 
     def _over() -> bool:
         return len(order) > MAX_PACKS or (
@@ -1292,7 +1316,24 @@ def _hold_note(owner: str, ctx: Mapping[str, Any] | None = None) -> str:
 #: Any other owner that a pack replaces must have a bullet, or ``persona_for``
 #: raises: a forgotten entry would keep a persona line that sends work to a
 #: tool that has left. Fence: ``tests/unit/test_tool_packs_choice.py``.
-NO_PERSONA_BULLETS: frozenset[str] = frozenset({"crm-assistant", "projects-assistant"})
+NO_PERSONA_BULLETS: frozenset[str] = frozenset({"crm-assistant"})
+
+#: OA-8b fix round 1 (P2-2). The owners whose specialist tool STAYS beside a
+#: loaded pack, unless the loader reaches the owner (``via_loader``) or the run
+#: holds every pack of the owner. The Projects core pack cannot be joined by
+#: ``projects-plan`` or ``projects-structure`` at the real base (113 and 114
+#: tools), so a core load alone would strand their work with no tool and no
+#: path. Email and CRM keep the older rule: a loaded pack removes the
+#: specialist. Fence: ``tests/unit/test_projects_packs.py``.
+SPECIALIST_STAYS_UNTIL_REACHED: frozenset[str] = frozenset({"projects-assistant"})
+
+
+def _specialist_leaves(owner: str, held_slugs: Iterable[str], via: Iterable[str]) -> bool:
+    """True when the specialist tool and persona text of *owner* leave the run
+    that holds the packs *held_slugs* and reaches the owners *via*."""
+    if owner in set(via) or owner not in SPECIALIST_STAYS_UNTIL_REACHED:
+        return True
+    return set(owner_packs(owner)) <= set(held_slugs)
 
 
 def persona_for(
@@ -1344,7 +1385,8 @@ def persona_for(
         found = pack(slug)
         if found is None:
             continue
-        if found.delegation_refusal and found.owner not in swapped:
+        if (found.delegation_refusal and found.owner not in swapped
+                and _specialist_leaves(found.owner, held_slugs, via)):
             # An owner in NO_PERSONA_BULLETS has no persona text to swap out
             # (the CRM assistant, OA-8a): the swap is skipped. Any other owner
             # must match exactly once, so a moved line, or an owner with no
@@ -1626,6 +1668,14 @@ def plan_loader(
     offered: list[str] = []
     for slug in pool:
         owner = SKILL_FAMILIES[slug].get("owner")
+        # OA-8b: an owner that the run holds no pack of, and that cannot load
+        # (a covered org, no module), offers nothing: its load would only
+        # answer "not available".
+        holds_owner = any(SKILL_FAMILIES[h].get("owner") == owner for h in held_set
+                          if h in SKILL_FAMILIES)
+        if (available is not None and owner in SPECIALIST_STAYS_UNTIL_REACHED
+                and not holds_owner and not available(str(owner))):
+            continue
         if _fits(slug, cut.get(str(owner), 0) if owner in via else 0):
             offered.append(slug)
     return LoaderPlan(offered=tuple(offered), via_loader=frozenset(via))

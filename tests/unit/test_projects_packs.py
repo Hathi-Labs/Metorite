@@ -453,13 +453,21 @@ def test_make_a_task_from_this_email_loads_both_packs() -> None:
 # ── 6. The persona, the refusal, the rules ──────────────────────────────────
 
 
-def test_no_bullet_joins_the_persona_set_and_the_owner_is_marked() -> None:
-    """The flag-off persona stays byte for byte what it was. Mutation: add a
-    ``projects-assistant`` bullet -> red. Mutation: drop the owner from
-    ``NO_PERSONA_BULLETS`` -> ``persona_for`` raises -> red."""
-    assert set(_bullets()) == {EA}
-    assert PA in tp.NO_PERSONA_BULLETS
-    assert "projects_assistant" in _agents_mod()._orchestrator_instructions(False)
+def test_the_persona_lines_are_one_constant_that_a_pack_can_take_out() -> None:
+    """P2-1. The two lines that send task work to ``projects_assistant`` are
+    ``PROJECTS_DELEGATION_BULLETS``, once in the persona, so a Projects pack
+    that removes the specialist takes them out by one exact swap. The flag-off
+    persona is unchanged (``test_tool_packs_off.py``). Mutation: leave the
+    owner out of ``PACK_DELEGATION_BULLETS`` -> the persona keeps a line that
+    names a tool that has left -> red."""
+    mod = _agents_mod()
+    persona = mod._orchestrator_instructions(False)
+    assert persona.count(mod.PROJECTS_DELEGATION_BULLETS) == 1
+    assert _bullets()[PA] == mod.PROJECTS_DELEGATION_BULLETS
+    assert PA not in tp.NO_PERSONA_BULLETS
+    left = tp.persona_for(persona, [(s, False) for s in SLUGS], _bullets())
+    assert mod.PROJECTS_DELEGATION_BULLETS not in left
+    assert tp.persona_for(persona, [], _bullets()) == persona
 
 
 def test_the_projects_persona_swaps_nothing_and_adds_the_rules_in_load_order() -> None:
@@ -499,9 +507,10 @@ def test_every_projects_pack_says_no_agent_exists_and_refuses_the_hand_off() -> 
         assert found.handoff_swap[0] == tp._PROJECTS_NO_AGENT_LINE, slug
     turn = _turn(words="")
     some = tp.PackRun.of(turn, tp.Choice((), {}, {}), [("projects", False)])
-    assert some.replaced == {PA} and some.refusal(PA) is None
+    assert some.replaced == frozenset() and some.refusal(PA) is None
     allp = tp.PackRun.of(turn, tp.Choice((), {}, {}), [(s, False) for s in SLUGS])
     assert allp.refusal(PA) == tp.PACKS["projects"].delegation_refusal
+    assert allp.replaced == {PA}
 
 
 def test_the_core_rules_name_the_other_packs_and_no_tool_of_them() -> None:
@@ -622,7 +631,7 @@ async def test_a_batch_tool_shows_one_card_through_the_real_assembly(
     assert len(tc._posts(calls)) == 3
     assert str(answer).startswith("Created 3 tasks"), answer
     names = set(_names(orchestrator))
-    assert "projects_assistant" not in names, "the specialist left"
+    assert "projects_assistant" in names, "two of four packs: the specialist stays"
     assert names >= set(_family("projects")) | set(_family("projects-bulk"))
     assert len([n for n in _names(orchestrator)]) == len(names), "no tool twice"
 
@@ -756,7 +765,9 @@ async def test_projects_is_reached_with_no_pack_held_and_the_texts_agree(
     assert applied is not None and applied.builds == ()
     assert applied.record.via_loader == {PA} and PA in applied.record.replaced
     assert not _specialist(agents[0])
-    assert agents[0].default_options["instructions"] == persona
+    bullet = _agents_mod().PROJECTS_DELEGATION_BULLETS
+    assert persona.count(bullet) == 1, "non-vacuity"
+    assert agents[0].default_options["instructions"] == persona.replace(bullet, "", 1)
     provider = L._provider(agents[0])
     assert provider is not None and provider.loader.offered == SLUGS
     with L._in_run(applied):
@@ -830,3 +841,150 @@ async def test_in_a_covered_org_the_owner_is_not_reached_and_no_pack_loads(
     covered = await L._apply(agents, "Show my overdue tasks", allowed=PROJ)
     assert _specialist(agents[0])
     assert covered is None or covered.builds == ()
+
+
+# ── 11. OA-8b fix round 1: routing at the MEASURED base ─────────────────────
+
+CORE_WORDS = set(tp.PACKS["projects"].words)
+COMPOUND = [
+    (slug, word) for slug in SLUGS[1:] for word in tp.PACKS[slug].words
+    if tp.matched_layer("projects", word) is not None
+]
+
+
+def _real_base(orchestrator: list[Any]) -> int:
+    """The measured base of the real orchestrator, plus the loader (1)."""
+    return _measured_base(orchestrator) + 1
+
+
+def _surface_turn(words: str, surface: str = "") -> tp.PackTurn:
+    return tp.PackTurn(
+        ORG, SESSION, tp._member_part(MEMBER), 1, (), words, True, surface=surface)
+
+
+def test_there_are_compound_words_that_also_match_the_core_word() -> None:
+    """Non-vacuity of the cases below: the plan, structure and bulk lists hold
+    words that the core word "task" or "tasks" matches too."""
+    assert len([c for c in COMPOUND if c[0] != "projects-bulk"]) >= 10, COMPOUND
+    assert {slug for slug, _w in COMPOUND} >= {"projects-plan", "projects-structure"}
+
+
+@pytest.mark.parametrize(("slug", "word"), COMPOUND)
+def test_a_compound_word_loads_its_specific_pack_at_the_measured_base(
+    slug: str, word: str, orchestrator,
+) -> None:
+    """The word also matches the core word, and the two cannot fit at the real
+    base (56). The specific pack takes the place of the core pack. Mutation:
+    drop ``replaces_core`` from the choice -> the core pack stays, the specific
+    pack is skipped, and its word loads nothing it names -> red."""
+    base = _real_base(orchestrator)
+    n = len(_family("projects")) + len(_family(slug))
+    choice = tp.choose(_surface_turn(f"Show the {word}"), allowed=EVERY, base_tools=base)
+    if base + n > tp.MAX_REQUEST_TOOLS:  # plan (35) and structure (34)
+        assert choice.slugs == (slug,), (word, choice)
+    else:  # bulk (28) fits beside the core pack at the real base
+        assert slug == "projects-bulk" and choice.slugs == ("projects", slug), (word, choice)
+
+
+def test_a_capacity_question_on_the_projects_page_loads_the_planning_pack(
+    orchestrator,
+) -> None:
+    """Surface ``projects`` loads the core pack. "team capacity" matches the
+    planning pack. Both cannot fit at the real base, so the planning pack
+    stays. Mutation: drop ``replaces_core`` -> only the core pack loads and
+    the capacity tools are missing -> red."""
+    base = _real_base(orchestrator)
+    for surface in ("projects", "tasks", "calendar"):
+        choice = tp.choose(
+            _surface_turn("Who has spare team capacity?", surface),
+            allowed=EVERY, base_tools=base)
+        assert choice.slugs == ("projects-plan",), (surface, choice)
+    only = tp.choose(_surface_turn("", "projects"), allowed=EVERY, base_tools=base)
+    assert only.slugs == ("projects",), "the surface alone still loads the core pack"
+
+
+def test_a_specific_pack_leaves_the_core_pack_where_both_fit() -> None:
+    """Where the two fit, the core pack stays. Mutation: drop the cap test
+    from the replacement -> the core pack leaves at a small base -> red."""
+    choice = tp.choose(
+        _surface_turn("Show the stuck tasks"), allowed=EVERY, base_tools=20)
+    assert choice.slugs == ("projects", "projects-plan")
+
+
+async def _apply_on(agents: list[Any], words: str, surface: str, allowed: frozenset[str]) -> Any:
+    from orchestrator.agents import PACK_DELEGATION_BULLETS
+
+    with L._tenant():
+        turn = await tp.begin_turn(ORG, SESSION, MEMBER, words, surface)
+        return await ti._apply_tool_packs(
+            agents, turn, L._run_ctx(), allowed=allowed, agent_name="orchestrator",
+            tool_scope=list(CONFIG["tool_scope"]), agent_config=CONFIG,
+            bullets=PACK_DELEGATION_BULLETS, offer_loader=True)
+
+
+async def test_an_access_request_on_the_projects_page_keeps_the_specialist(
+    store, agents,
+) -> None:
+    """"Grant Priya access to this project" on /projects loads the core pack.
+    The structure pack cannot join it (113 tools), so the specialist tool
+    stays, the persona keeps its line, and the rules route the work to
+    ``call_agent``. Mutation: drop ``_specialist_leaves`` from
+    ``PackRun.of`` -> the specialist leaves and the access work has no tool
+    and no path -> red."""
+    persona = agents[0].default_options["instructions"]
+    applied = await _apply_on(
+        agents, "Grant Priya access to this project", "projects", PROJ)
+    assert applied is not None and applied.record.slugs == ("projects",)
+    assert applied.record.replaced == frozenset() and applied.record.via_loader == frozenset()
+    assert _specialist(agents[0]), "the specialist stays"
+    text = agents[0].default_options["instructions"]
+    assert _agents_mod().PROJECTS_DELEGATION_BULLETS in text
+    assert text.startswith(persona.rstrip("\n"))
+    assert tp._PROJECTS_ROUTE_LINE in text and tp._PROJECTS_NO_AGENT_LINE not in text
+    assert "call_agent" in tp._PROJECTS_ROUTE_LINE and PA in tp._PROJECTS_ROUTE_LINE
+    with L._in_run(applied):
+        assert tp.delegation_refusal(PA) is None
+
+
+async def test_the_specialist_leaves_when_the_run_holds_every_projects_pack() -> None:
+    """The per-owner rule: the specialist leaves for the owner that the loader
+    reaches or when every pack is held. Email keeps the older rule. Mutation:
+    apply the Projects rule to email -> ``email`` alone keeps the specialist
+    -> red."""
+    turn = _turn(words="")
+    empty = tp.Choice((), {}, {})
+    assert tp.PackRun.of(turn, empty, [(s, False) for s in SLUGS]).replaced == {PA}
+    assert tp.PackRun.of(turn, empty, [("projects", False)], via_loader={PA}).replaced == {PA}
+    assert tp.PackRun.of(turn, empty, [("projects", False)]).replaced == frozenset()
+    assert tp.PackRun.of(turn, empty, [("email", False)]).replaced == {EA}
+    assert {PA} == tp.SPECIALIST_STAYS_UNTIL_REACHED
+
+
+def test_the_catalog_offers_no_projects_pack_to_an_owner_that_cannot_load() -> None:
+    """P3. A covered org (or a missing module) makes ``available`` false, and
+    the loader offers none of the owner's packs. Mutation: drop the filter ->
+    four packs that always answer "not available" -> red."""
+    plan = tp.plan_loader(PROJ, (), current=56, removable={PA: 1}, available=lambda _o: False)
+    assert plan.offered == () and plan.via_loader == frozenset()
+    ok = tp.plan_loader(PROJ, (), current=56, removable={PA: 1}, available=lambda _o: True)
+    assert ok.offered == SLUGS and ok.via_loader == {PA}
+
+
+async def test_a_covered_org_is_offered_no_projects_pack(store, agents, _broker) -> None:
+    """The same, through the run. Mutation: drop the filter -> the catalog of
+    ``load_skill_tools`` lists the four packs -> red."""
+    _broker(True)
+    await L._apply(agents, NO_WORDS, allowed=PROJ)
+    provider = L._provider(agents[0])
+    assert provider is None or not set(provider.loader.offered) & set(SLUGS)
+
+
+def test_the_skills_catalog_builds_the_projects_tools_once() -> None:
+    """P3. ``GET /skills`` used to build 4 x 120 tools for each request. It
+    reads the per-owner cache of the run path. Mutation: call
+    ``owner_tools`` again -> the objects differ between calls -> red."""
+    import gateway.routes.integrations_skills as sk
+
+    one = sk._pack_tools_by_name()
+    two = sk._pack_tools_by_name()
+    assert one["task_detail"] is two["task_detail"] and one["delete_task"] is two["delete_task"]
