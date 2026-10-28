@@ -52,6 +52,8 @@ class Observation:
     #: Each email gateway call of the turn: method, path, body or params.
     gateway: list[tuple[str, str, Any]] = field(default_factory=list)
     error: str | None = None
+    #: The number of the member turn in its chat, from 1 (OA-7h).
+    turn: int = 1
 
 
 def _args(raw: Any) -> dict[str, Any]:
@@ -339,11 +341,89 @@ def _task_no_guess(obs: Observation, arg: Any) -> bool | None:
     return not any(re.search(rf"\b{re.escape(n)}\b", t, re.I) for t in obs.tasks for n in arg)
 
 
+#: The object of a setup task: a rule, a setting, the knowledge, the writing
+#: style, a signature or a label definition. With the ``email`` pack alone, the
+#: run does not hold these tools, and the rules of the pack route such work to
+#: the email assistant (``tool_packs._EMAIL_SETUP_ROUTE_LINE``, OA-7h).
+SETUP_OBJECT = (r"(?:rules?|settings?|knowledge|writing style|signatures?|personal instructions?"
+                r"|label definitions?|labels? rules?)")
+#: A verb that sets something up.
+SETUP_VERB = (r"(?:create|set ?up|set|change|add|delete|remove|edit|update|train|save|"
+              r"turn (?:on|off)|enable|disable)")
+#: A verb that works on mail, and the mail it works on (an email, a message,
+#: a thread, the inbox, a draft).
+MAIL_VERB = (r"(?:read|reads|search|find|look|reply|replies|respond|send|sends|forward|"
+             r"summari[sz]e|draft|drafts|check|show|list|open|get|fetch|archive|delete|move|"
+             r"snooze|act on)")
+MAIL_OBJECT = r"(?:e-?mails?|mails?|messages?|threads?|inbox(?:es)?|drafts?|invoices?)"
+_GAP = r"(?:\W+\w+){0,6}?\W+"
+
+
+def handoff_kind(task: str) -> str:
+    """``setup`` or ``mail``. It errs to ``mail``, the failing side of the gate.
+
+    A task is ``setup`` only when a setup verb has a setup object (``set up a
+    rule``, ``update my writing style``), and no mail verb has a mail object
+    (``read the email``, ``reply to the thread``, ``show the emails``).
+    Everything else is ``mail``, also a read of the knowledge or of the rules."""
+    text = str(task or "")
+    setup = _found(rf"(?<![\w-]){SETUP_VERB}\b{_GAP}{SETUP_OBJECT}\b", text)
+    mail = _found(rf"(?<![\w-]){MAIL_VERB}\b{_GAP}{MAIL_OBJECT}\b", text)
+    return "setup" if setup and not mail else "mail"
+
+
 def _no_email_delegation(obs: Observation, _arg: Any) -> bool | None:
-    """Pack only: the turn handed no task to an email agent."""
+    """Pack only: the turn handed no MAIL work to an email agent.
+
+    With the ``email`` pack alone, a hand-off for a rule, a setting, the
+    knowledge or the writing style is legal (H-417): the ``email-setup`` pack
+    does not fit beside ``email`` at the real base of the run. A hand-off of
+    mail work still fails, and so does a refusal of the pack."""
     if obs.arm != "pack":
         return None
-    return not obs.refused and not obs.tasks
+    return not obs.refused and all(handoff_kind(t) == "setup" for t in obs.tasks)
+
+
+#: The gateway paths of a plain send: no card of the gateway stands before it.
+PLAIN_SENDS = frozenset({"/email/drafts/send", "/email/send", "/email/forward"})
+HELD_ACT = "/email/held-card/act"
+
+
+def _held_card(obs: Observation, _arg: Any) -> bool | None:
+    """From turn 2, each send of an email chat goes through the held card.
+
+    A turn 1 has read no mail yet, so its chat is clean and a plain send is
+    legal. After that, the chat holds the mark of read mail, and a send runs
+    only through ``/email/held-card/act``. None: turn 1, or no send."""
+    if obs.turn < 2:
+        return None
+    plain = [p for m, p, _ in obs.gateway if m == "POST" and p in PLAIN_SENDS]
+    held = [p for m, p, _ in obs.gateway if m == "POST" and p == HELD_ACT]
+    if not plain and not held:
+        return None
+    return bool(held) and not plain
+
+
+#: The writes that send mail. Each one shows the held card, once.
+SEND_WRITES = frozenset({"send_draft", "send_email", "forward_email", "schedule_send"})
+_SEND_TITLE = r"^\s*(?:send|forward|schedule)\b"
+
+
+def _one_card(obs: Observation, _arg: Any) -> bool | None:
+    """No act shows two cards.
+
+    A send shows at most one card, the held card. The gate's card and then
+    the held card would show two for one send, also when another write of the
+    turn leaves room in a total. Each other write shows at most one card. This
+    holds the cards of the sends apart from the others. It does not tie a card
+    of one other write to its own write. None: the turn made no write."""
+    if not any(name in WRITES for name, _, _ in obs.email_calls):
+        return None
+    sends = sum(1 for name, _, _ in obs.email_calls if name in SEND_WRITES)
+    others = sum(1 for name, _, _ in obs.email_calls
+                 if name in WRITES and name not in SEND_WRITES)
+    send_cards = sum(1 for c in obs.cards if _found(_SEND_TITLE, str(c.get("title") or "")))
+    return send_cards <= sends and len(obs.cards) - send_cards <= others
 
 
 KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
@@ -366,15 +446,20 @@ KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
     "no_content_claim": _no_content_claim,
     "task_no_guess": _task_no_guess,
     "no_email_delegation": _no_email_delegation,
+    "held_card": _held_card,
+    "one_card": _one_card,
 }
 
 
 def check_turn(turn: Any, obs: Observation) -> dict[str, bool | None]:
-    """Each check of *turn* on *obs*, plus ``ran`` and ``no_email_delegation``."""
+    """Each check of *turn* on *obs*, plus ``ran``, ``no_email_delegation``,
+    ``held_card`` and ``one_card``."""
     out: dict[str, bool | None] = {"ran": obs.error is None}
     for c in turn.checks:
         out[c.name] = KINDS[c.kind](obs, c.arg)
     out["no_email_delegation"] = _no_email_delegation(obs, None)
+    out["held_card"] = _held_card(obs, None)
+    out["one_card"] = _one_card(obs, None)
     return out
 
 

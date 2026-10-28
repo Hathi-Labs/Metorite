@@ -373,7 +373,7 @@ export function largeUnheld(health: SyncHealth | null | undefined, entity: Healt
 
 /** The suggestion for a large row that is not held. */
 export function largeSentence(label: string, count: number): string {
-  return `${label} has ${recordCount(count)} records. Hold it, and sync it on its own when Metorite is quiet`;
+  return `${label} has ${recordCount(count)} records. Pause syncing it, and sync it on its own when Metorite is quiet`;
 }
 
 // ── "Needs you" (CRM-Q17b item 8, spec section 18.9.6) ─────────────────────
@@ -388,7 +388,7 @@ export const NEEDS_YOU_ACTIONS: Record<NeedsYouAction, string> = {
   // A missing scope clears only with a new consent, in Setup and sync.
   reconnect: "Connect again",
   "sync-alone": "Sync it on its own",
-  hold: "Hold it",
+  hold: "Pause syncing this",
   answer: "Answer",
 };
 
@@ -418,7 +418,7 @@ export type NeedsYouItem = {
  * The block at the top of Sync health (CRM-Q17b item 8): the modules that
  * need the admin, each with one action. A module that Zoho refuses comes
  * first (`unavailableAction`), then a held module ("Sync it on its own"), then a
- * large module that nobody decided on ("Hold it"). A key shows once, by
+ * large module that nobody decided on ("Pause syncing this"). A key shows once, by
  * that order.
  *
  * CRM-Q32-4 (§18.14.5): the open questions about the data give one more
