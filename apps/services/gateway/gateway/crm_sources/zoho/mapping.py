@@ -492,6 +492,12 @@ def map_record(
                 )
         elif entity == "deal":
             status_name = text_value(fields.get("Stage"))
+            # CRM-U14: Zoho's own stage time is the card order and the age
+            # clock. A deal with none keeps the stored value. The raw value
+            # also stays in ``custom``, which the repair step reads.
+            staged = instant(fields.get("Stage_Modified_Time"))
+            if staged is not None:
+                values["status_changed_at"] = staged
             pipeline = pipeline_ref(fields)
             account = lookup_id(fields.get("Account_Name"))
             if account:

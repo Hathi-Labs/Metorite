@@ -2583,6 +2583,50 @@ async def apply_field_rule_from_source(
     return written
 
 
+#: Rows one call of :func:`restamp_deal_stage_from_source` repairs at most.
+STAGE_RESTAMP_BATCH = 500
+
+#: A Zoho instant as ``Stage_Modified_Time`` sends it. The guard keeps a
+#: malformed value from failing the cast for the whole batch.
+_STAGE_TIME_SHAPE = "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}[:][0-9]{2}[:][0-9]{2}"
+
+
+async def restamp_deal_stage_from_source(
+    db: Any, ext_source: str, *, organization_id: str,
+) -> int:
+    """Set ``status_changed_at`` from the provider's stage time on stored deals.
+
+    The eighth door of the mirror write path (CRM-U14). Only
+    ``gateway/crm_sync/`` may name it (the fence test). A deal that was read
+    before the mapping took ``Stage_Modified_Time`` holds the import time in
+    ``status_changed_at``, and the provider's own time sits in
+    ``custom->>'Stage_Modified_Time'``. This copies it over, for rows of
+    *ext_source* only, at most :data:`STAGE_RESTAMP_BATCH` rows a call. It
+    selects the rows that still differ, so a repeat writes nothing, and the
+    caller repeats it until it gives 0. It leaves ``zoho_dirty`` and
+    ``updated_at`` alone, because a repair is not a native edit.
+    """
+    if not ext_source:
+        raise ValueError("stage restamp: 'ext_source' is required")
+    if not organization_id:
+        raise ValueError("stage restamp: 'organization_id' is required")
+    result = await db.execute(
+        text(
+            "UPDATE crm_deals d SET status_changed_at = "
+            "CAST(d.custom->>'Stage_Modified_Time' AS timestamptz) "
+            "WHERE d.organization_id = CAST(:org AS uuid) AND d.id IN ("
+            "SELECT id FROM crm_deals WHERE organization_id = CAST(:org AS uuid) "
+            "AND ext_source = :src "
+            f"AND custom->>'Stage_Modified_Time' ~ '{_STAGE_TIME_SHAPE}' "
+            "AND status_changed_at IS DISTINCT FROM "
+            "CAST(custom->>'Stage_Modified_Time' AS timestamptz) "
+            f"ORDER BY id LIMIT {STAGE_RESTAMP_BATCH})"
+        ),
+        {"src": ext_source, "org": str(organization_id)},
+    )
+    return int(result.rowcount or 0)
+
+
 # ── The start over (WS-53 CRM-X0, crm_platform.md §19.11 item 6) ────────────
 
 #: The records, as the setup hub and the start-over dialog count them:
