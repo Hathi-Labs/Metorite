@@ -349,8 +349,8 @@ def test_the_work_gateway_leaves_the_other_requests_to_the_transport_guard() -> 
 @pytest.mark.parametrize("arm", ["delegation", "pack"])
 def test_mirror_mode_takes_the_record_writes_from_the_request(arm: str) -> None:
     """In Mirror mode the request holds no tool that creates a lead, moves a deal
-    or converts a lead, and ``log_activity`` stays. Mutation: set the fake's mode
-    to ``native`` for this chat → the tools stay → red."""
+    or converts a lead, and ``log_activity`` stays. Mutation: make the ``crm_mode``
+    read of ``run_chat`` answer ``native`` → the tools stay → red."""
     sc = scenario("crm_mirror")
     models = run.scripted_models(sc, arm)
     rows = run.run_chat(sc, arm, models=models)
