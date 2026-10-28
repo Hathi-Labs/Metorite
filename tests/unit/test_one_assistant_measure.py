@@ -97,16 +97,14 @@ def test_the_pack_arm_sets_the_real_flag_and_loads_the_real_pack() -> None:
     assert tool_packs.LOAD_TOOL in first and "query_inbox" not in first
     own = set(tool_packs.SKILL_FAMILIES["email"]["tools"])
     assert own <= second, sorted(own - second)
-    # A load in the middle of a turn keeps the specialist tool for that turn.
-    # The next turns of the chat start with the pack (sticky), and the pack
-    # replaces the tool: see the five-turn chat in the test below.
-    assert pack.DELEGATE_TOOL in second
+    # OA-7i: the loader replaces the specialist, from the first request on.
+    assert pack.DELEGATE_TOOL not in first and pack.DELEGATE_TOOL not in second
     # A load by the tool brings the rules in its answer (layer (b)).
     seen = json.dumps(models[ORCHESTRATOR].bodies[1]["messages"], ensure_ascii=False)
     assert tool_packs.rules_for("email").splitlines()[0] in seen
     # The flag lives in the eval process only, for one chat.
     assert get_settings().tool_packs == "" and get_settings().tool_packs_orgs == ""
-    assert run.pack_flag() == {"tool_packs": "email", "tool_packs_orgs": run.ds.ORG}
+    assert run.pack_flag() == {"tool_packs": "email,email-setup", "tool_packs_orgs": run.ds.ORG}
 
 
 def test_a_chat_that_holds_the_pack_has_no_specialist_tool_for_email() -> None:
@@ -115,6 +113,20 @@ def test_a_chat_that_holds_the_pack_has_no_specialist_tool_for_email() -> None:
     run.run_chat(sc, "pack", models=models)
     later = [_names(b) for b in models[ORCHESTRATOR].bodies[3:]]
     assert later and all("compose_reply" in n and pack.DELEGATE_TOOL not in n for n in later)
+
+
+def test_the_pack_arm_turns_on_every_pack_of_the_email_assistant() -> None:
+    """OA-7i drops the specialist only when the loader reaches EVERY pack of the
+    owner. Run 2 set ``email`` alone, and ``via_loader`` stayed empty. The first
+    scripted turn must log a plan that reaches ``email-assistant``. Mutation:
+    ``pack_flag`` gives only ``email`` → ``via_loader`` is empty → red."""
+    from acb_skills import tool_packs
+
+    slugs = set(run.pack_flag()["tool_packs"].split(","))
+    assert slugs == set(tool_packs.owner_packs(pack.EA)) and len(slugs) >= 2
+    (row,) = run.run_chat(scenario("read_invoice"), "pack")
+    plan = next(e for e in row["pack_events"] if e["event"] == "executor.pack_plan")
+    assert "email-assistant" in plan["via_loader"], plan
 
 
 def test_the_delegation_arm_holds_no_pack() -> None:
