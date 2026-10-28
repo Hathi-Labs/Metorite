@@ -663,6 +663,23 @@ async def _check_owner(db: Any, owner: str | None, kept: str | None) -> str | No
     return wanted
 
 
+def _nul_pairs(node: Any):
+    """Every string key and value of a JSON tree, as ``refuse_nul`` pairs.
+
+    ``json.dumps`` writes a NUL as the six characters ``\u0000``, so a dump
+    cannot show one. The walk reads the raw strings.
+    """
+    if isinstance(node, str):
+        yield ("", node)
+    elif isinstance(node, dict):
+        for key, val in node.items():
+            yield (str(key), "")
+            yield from _nul_pairs(val)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            yield from _nul_pairs(item)
+
+
 @router.patch("/modules/{module}/records/{record_id}", response_model=ModuleRecordPage)
 async def patch_module_record(
     module: str,
@@ -684,7 +701,7 @@ async def patch_module_record(
     given = values.pop("fields", None)
     refuse_nul([(k, v) for k, v in values.items() if isinstance(v, str)])
     if given:
-        refuse_nul([("fields", json.dumps(given))])
+        refuse_nul(list(_nul_pairs(given)))
     async with _tenant_session() as db:
         mirrored = await mirrored_modules(db)
         row = _require_module(mirrored, module)

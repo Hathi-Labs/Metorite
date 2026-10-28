@@ -659,13 +659,24 @@ async def custom_for_create(
 def _module_lookup(field: CustomField, value: Any) -> dict[str, str]:
     """A lookup value of a generic module: ``{"id", "name"}`` as Zoho sends it.
 
-    The target is a record of the provider, so no local row is read.
+    EXCEPTION to "reuse ``check_value``": a generic module has no Native
+    target table, so no local row can verify the id. This function checks the
+    shape and the text instead: no control character (``_CONTROL_RE``, as
+    ``_text`` does), ``id`` at most 64 and ``name`` at most 500 characters.
     """
     ident = value.get("id") if isinstance(value, dict) else value
     if not isinstance(ident, str) or not ident.strip():
         raise _bad(field, "give the id of a record.")
+    ident = ident.strip()
     name = value.get("name") if isinstance(value, dict) else None
-    return {"id": ident.strip(), "name": str(name) if name else ""}
+    name = str(name) if name else ""
+    if _CONTROL_RE.search(ident) or _CONTROL_RE.search(name):
+        raise _bad(field, "use no control character.")
+    if len(ident) > 64:
+        raise _bad(field, "use an id of at most 64 characters.")
+    if len(name) > 500:
+        raise _bad(field, "use a name of at most 500 characters.")
+    return {"id": ident, "name": name}
 
 
 async def custom_for_patch(

@@ -225,6 +225,69 @@ async def test_fields_merge_per_key_a_null_removes_and_a_lookup_keeps_id_and_nam
     assert fields["Site_Count"] == 0 and fields["Name"] == "Site 0"
 
 
+# ── 4b. NUL and size refusals, the owner rule, concurrent keys ───────────────
+
+
+@pytest.mark.parametrize("case", [
+    "lookup_name_nul", "lookup_id_nul", "text_value_nul", "key_nul",
+    "lookup_name_long", "lookup_id_long", "name_nul",
+])
+async def test_nul_and_over_long_values_are_422_and_write_nothing(ns, case) -> None:
+    a = ns.org_a
+    _seed_org(ns, a, mode="native", modules=PROFILE_A)
+    ids = _seed_install_base(ns, a, 1)
+    path = f"/crm/modules/Install_Base/records/{ids[0]}"
+    before = _row(ns, ids[0])
+    bodies = {
+        "lookup_name_nul": {"fields": {"Vendor": {"id": "x", "name": "\x00"}}},
+        "lookup_id_nul": {"fields": {"Vendor": {"id": "x\x00", "name": "ok"}}},
+        "text_value_nul": {"fields": {"Notes": "a\x00b"}},
+        "key_nul": {"fields": {"Notes\x00": "v"}},
+        "lookup_name_long": {"fields": {"Vendor": {"id": "x", "name": "n" * 501}}},
+        "lookup_id_long": {"fields": {"Vendor": {"id": "i" * 65, "name": "ok"}}},
+        "name_nul": {"name": "a\x00b"},
+    }
+    res = await _patch(ns, a, path, bodies[case])
+    assert res.status_code == 422, res.text
+    after = _row(ns, ids[0])
+    assert (after.name, after.owner_email, after.fields) == (
+        before.name, before.owner_email, before.fields)
+
+
+async def test_an_unchanged_non_member_owner_stays_and_a_change_to_one_is_422(ns) -> None:
+    a = ns.org_a
+    _seed_org(ns, a, mode="native", modules=PROFILE_A)
+    ids = _seed_install_base(ns, a, 1)  # the seed owner is REP, who is no member
+    path = f"/crm/modules/Install_Base/records/{ids[0]}"
+
+    res = await _patch(ns, a, path, {"owner_email": REP, "name": "Kept owner"})
+    assert res.status_code == 200, res.text
+    assert _row(ns, ids[0]).owner_email == REP
+
+    res = await _patch(ns, a, path, {"owner_email": "stranger@elsewhere.test"})
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"]["code"] == "owner_not_member"
+    assert _row(ns, ids[0]).owner_email == REP
+
+
+async def test_two_concurrent_patches_of_different_keys_both_land(ns) -> None:
+    import asyncio
+
+    a = ns.org_a
+    _seed_org(ns, a, mode="native", modules=PROFILE_A)
+    ids = _seed_install_base(ns, a, 1)
+    path = f"/crm/modules/Install_Base/records/{ids[0]}"
+
+    first, second = await asyncio.gather(
+        _patch(ns, a, path, {"fields": {"Site_Count": 7}}),
+        _patch(ns, a, path, {"fields": {"Notes": "changed"}}),
+    )
+    assert (first.status_code, second.status_code) == (200, 200), (first.text, second.text)
+    fields = _row(ns, ids[0]).fields
+    assert fields["Site_Count"] == 7 and fields["Notes"] == "changed"
+    assert fields["Name"] == "Site 0"
+
+
 # ── 5. The module list and the AI catalogue in Native mode ───────────────────
 
 
