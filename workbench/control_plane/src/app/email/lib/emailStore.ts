@@ -2016,7 +2016,9 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         // The composer closed before the send, so a failure must give the
         // message back. Else the member's text is lost (UXD-2).
         const reason = err?.message || "Failed to send email";
-        if (!get().composeOpen) {
+        // The composer has no Bcc field, so a message with Bcc goes to
+        // Drafts, which keeps it. Else a retry drops the Bcc in silence.
+        if (!get().composeOpen && !p.bcc?.length) {
           set({
             composeOpen: true,
             composeDraftId: null,
@@ -2024,8 +2026,8 @@ export const useEmailStore = create<EmailState>((set, get) => ({
           });
           return;
         }
-        // The member opened another message in the wait. Do not overwrite
-        // it: keep the failed one in Drafts. The draft takes no reply id:
+        // The member opened another message in the wait, or the message has
+        // Bcc. Do not overwrite the composer: keep the failed one in Drafts. The draft takes no reply id:
         // a send can carry the provider's id, and the draft wants ours.
         try {
           await api.saveDraft({

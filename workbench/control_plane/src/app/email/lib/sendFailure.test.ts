@@ -6,7 +6,8 @@
 //     opens the composer again with the whole message and the reason.
 //   * `email-send-failure-busy-composer`: when the member opened another
 //     message in the wait, the failed one goes to Drafts, and the open
-//     composer keeps its own text.
+//     composer keeps its own text. A message with Bcc goes to Drafts too,
+//     because the composer has no Bcc field.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
@@ -120,6 +121,18 @@ describe("email-send-failure-busy-composer", () => {
       body: message.bodyText,
       attachments: message.attachments,
     }));
+    expect(s.error).toBe("Mailbox offline. The message is in Drafts.");
+  });
+
+  it("keeps a message with Bcc in Drafts, since the composer has no Bcc field", async () => {
+    api.sendEmail.mockRejectedValue(new Error("Mailbox offline"));
+    api.saveDraft.mockResolvedValue({ id: "draft-10", hasAttachments: false });
+    useEmailStore.setState({ composeOpen: false });
+    await useEmailStore.getState().sendEmail({ ...message, bcc: ["hidden@x.test"] });
+    await vi.runAllTimersAsync();
+    const s = useEmailStore.getState();
+    expect(s.composeOpen).toBe(false);
+    expect(api.saveDraft).toHaveBeenCalledWith(expect.objectContaining({ bcc: ["hidden@x.test"] }));
     expect(s.error).toBe("Mailbox offline. The message is in Drafts.");
   });
 
