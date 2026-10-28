@@ -253,7 +253,7 @@ export interface ConfirmationReceipt {
   key: string;
   /** The card's summary, or its title. */
   label: string;
-  kind: "applying" | "approved" | "rejected" | "refused";
+  kind: "applying" | "approved" | "rejected" | "refused" | "closed";
   /** What the member answered. "applying" becomes this once the server took it. */
   intent: "approved" | "rejected";
   /** Why a refused answer did not land. */
@@ -294,6 +294,8 @@ export function receiptText(r: ConfirmationReceipt): string {
       return `Rejected · ${r.label}`;
     case "refused":
       return `Not applied · ${r.label}${r.reason ? `. ${r.reason}` : ""}`;
+    case "closed":
+      return `Closed · ${r.label}. The assistant has moved on. Its reply says what happened.`;
   }
 }
 
@@ -399,9 +401,8 @@ export function confirmationReducer(
         resolved: withAdded(state.resolved, key),
         answering: withRemoved(state.answering, key),
         errors: withoutError(state.errors, key),
-        // The server closed it: an answer in flight landed.
-        receipts: settleReceipt(state.receipts, key, (r) =>
-          r.kind === "applying" ? { ...r, kind: r.intent } : r),
+        // The server closed it. An answer in flight keeps "Applying" until
+        // its own POST says what became of it: the close can be a timeout.
       };
     }
     case "answering": {
@@ -443,9 +444,15 @@ export function confirmationReducer(
     case "restore": {
       const key = action.card.key;
       const answering = withRemoved(state.answering, key);
+      if (state.resolved.has(key)) {
+        // The server closed the card, so it cannot come back. The line says
+        // so, and a line that already settled stays as it is.
+        const receipts = settleReceipt(state.receipts, key, (r) =>
+          r.kind === "applying" ? { ...r, kind: "closed" } : r);
+        return { ...state, answering, receipts };
+      }
       // The card comes back, so its "Applying" line goes.
-      const receipts = settleReceipt(state.receipts, key, () => null);
-      if (state.resolved.has(key)) return { ...state, answering, receipts };
+      const receipts = settleReceipt(state.receipts, key, (r) => (r.kind === "applying" ? null : r));
       const errors = action.reason ? new Map(state.errors).set(key, action.reason) : state.errors;
       if (state.cards.some((c) => c.key === key)) return { ...state, answering, receipts, errors };
       // First, so the member sees the card they tried to answer.

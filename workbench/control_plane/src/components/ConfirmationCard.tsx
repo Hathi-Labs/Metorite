@@ -535,7 +535,7 @@ export default function ConfirmationCard({
           aria-disabled={!armed || undefined}
           data-confirmation-approve=""
         >
-          Approve
+          {error ? "Retry" : "Approve"}
         </Button>
         <Button
           variant="secondary"

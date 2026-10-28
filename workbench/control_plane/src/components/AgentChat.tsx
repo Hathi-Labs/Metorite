@@ -2385,7 +2385,14 @@ export default function AgentChat({
           {/* Fallback: a HITL prompt arrived before any assistant bubble exists
               (rare — e.g. a tool asks before any text streamed). Render at the
               list tail so the card is never lost. */}
-          <ConfirmationReceipts receipts={confirmations.receipts.filter((r) => !r.afterId)} />
+          {/* A line whose message is gone (a reload or a checkpoint swap gave
+              it a new id) draws at the tail, so it is never lost (UXD-3). A
+              message above the shown slice keeps its line in the history. */}
+          <ConfirmationReceipts
+            receipts={confirmations.receipts.filter(
+              (r) => !r.afterId || !messages.some((m) => m.id === r.afterId),
+            )}
+          />
           {hitlAnchorId === null && renderHitlCards()}
 
           {/* No follow-up pills under a cut answer or during an update: the

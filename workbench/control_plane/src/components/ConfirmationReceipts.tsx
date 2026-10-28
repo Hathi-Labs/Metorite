@@ -18,6 +18,7 @@ const LOOK: Record<ConfirmationReceipt["kind"], { icon: string; tone: string }> 
   approved: { icon: "Check", tone: "text-success" },
   rejected: { icon: "X", tone: "text-muted-foreground" },
   refused: { icon: "AlertCircle", tone: "text-destructive" },
+  closed: { icon: "Info", tone: "text-muted-foreground" },
 };
 
 export default function ConfirmationReceipts({ receipts }: { receipts: readonly ConfirmationReceipt[] }) {

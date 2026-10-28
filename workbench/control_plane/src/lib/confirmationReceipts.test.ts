@@ -70,9 +70,19 @@ describe("approve-card-receipt", () => {
     expect(lines(done)).toEqual(['Rejected · Create task "Call the supplier"']);
   });
 
-  it("a server close while in flight settles the line too", () => {
-    const done = run([answering("approved"), { type: "resolved", requestId: "r1" }], asked);
-    expect(done.receipts[0].kind).toBe("approved");
+  it("a server close waits for the POST, so a timeout never reads Approved", () => {
+    const closed = run([answering("approved"), { type: "resolved", requestId: "r1" }], asked);
+    expect(closed.receipts[0].kind).toBe("applying");
+    expect(run([settleAnswer(card, "ok")], closed).receipts[0].kind).toBe("approved");
+    // The POST failed after the close: the card cannot come back, so the line says so.
+    const lost = run([settleAnswer(card, "retry", "x")], closed);
+    expect(lost.cards).toEqual([]);
+    expect(lines(lost)[0]).toMatch(/^Closed · /);
+  });
+
+  it("a late retry never deletes a line that settled", () => {
+    const done = run([answering("approved"), settleAnswer(card, "ok"), settleAnswer(card, "retry", "x")], asked);
+    expect(lines(done)).toEqual(['Approved · Create task "Call the supplier"']);
   });
 
   it("draws one line per answer, with its look", () => {
@@ -103,6 +113,7 @@ describe("approve-card-retry-reason", () => {
     );
     expect(html).toContain("data-confirmation-error");
     expect(html).toContain("The server could not take the answer. Try again.");
+    expect(html).toMatch(/data-confirmation-approve=""[^>]*>[\s\S]*?Retry/);
 
     const again = run([answering("approved")], back);
     expect(again.errors.has("r1")).toBe(false);
