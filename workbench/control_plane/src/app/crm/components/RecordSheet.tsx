@@ -35,7 +35,7 @@ import type { FieldLayout } from "../lib/fieldLayout";
 import { useCrmStore, type CrmRefusal } from "../lib/store";
 import { recordTabsFor, shownRecordTab, type RecordTab } from "../lib/urlState";
 import { useFieldDefs, useFieldLayout } from "../lib/useCrmMode";
-import { sourceSingular, type SourceLabels } from "../lib/views";
+import { ENTITY_NOUN, sourceSingular, type SourceLabels } from "../lib/views";
 import FieldsPanel from "./FieldsPanel";
 import { RecordFacts, RecordModal, RecordTabBar } from "./RecordShell";
 import StatusPill from "./StatusPill";
@@ -43,14 +43,6 @@ import Timeline, { TimelineItem } from "./Timeline";
 import type { DealContact, EntitySlug, Status, TimelineEntry } from "../lib/types";
 
 type Row = Record<string, unknown>;
-
-/** What the sheet holds, said under its title. */
-const ENTITY_NOUN: Record<EntitySlug, string> = {
-  deals: "Deal",
-  leads: "Lead",
-  contacts: "Contact",
-  organizations: "Company",
-};
 
 const TITLE_KEY: Record<EntitySlug, string[]> = {
   deals: ["name"],

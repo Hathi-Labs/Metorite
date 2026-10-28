@@ -102,7 +102,9 @@ A view is not a CRM record, so the routes work in Mirror mode as well.
 ``aggregate.py`` is WS-53 CRM-C7 — ``GET /crm/aggregate`` and
 ``GET /crm/aggregate/stage-dwell``, the totals that an agent reads. Read only.
 It builds its filters with ``records.list_query``, the one list builder.
-``settings.py`` also holds ``GET /crm/mode``, the mode for any admitted member.
+``settings.py`` also holds ``GET /crm/mode``, the mode for any admitted member,
+and ``PUT /crm/settings/labels`` (CRM-Z10g), the names of the core records in
+a Native CRM, admin only.
 
 ``convert_mapping.py`` is WS-53 CRM-C6a — ``GET`` and ``PUT
 /crm/conversion-mapping``, the lead-conversion mapping of a Native CRM (table

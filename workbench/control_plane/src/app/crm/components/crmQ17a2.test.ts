@@ -637,9 +637,10 @@ describe("a core entity shows the source's label in Mirror mode (item 7)", () =>
     expect(native).toContain("Companies");
   });
 
-  it("reads the labels in Mirror mode only, and hands them to the rail, the heading and the record", () => {
+  it("reads the labels in Mirror and Native mode, and hands them to the rail, the heading and the record", () => {
     const page = source("page.tsx");
-    expect(page).toContain('useSourceLabels(ctx.mode === "mirror")');
+    // CRM-Z10g: a Native CRM reads the names an admin stored. No mode reads none.
+    expect(page).toContain("useSourceLabels(ctx.mode !== null)");
     // The rail (twice), the record and, since CRM-Q17b, the filter bar.
     expect(page.match(/labels=\{labels\}/g)?.length).toBe(4);
     expect(page).toContain("viewLabel(view.tab, labels)");
