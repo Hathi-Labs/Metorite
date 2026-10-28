@@ -323,10 +323,17 @@ _CUSTOM_FIELDS_SQL = (
 )
 
 
-async def load_custom_fields(db: Any, slug: str) -> dict[str, CustomField]:
-    """The custom fields of *slug*, by key. A system row is not one."""
+async def load_custom_fields(
+    db: Any, slug: str, *, entity: str | None = None,
+) -> dict[str, CustomField]:
+    """The custom fields of *slug*, by key. A system row is not one.
+
+    *entity* names the ``crm_field_defs`` entity directly. A generic module
+    passes ``module:<ApiName>`` (CRM-Z10d), because it has no entry in
+    ``ENTITY_BY_SLUG``.
+    """
     rows = (await db.execute(
-        text(_CUSTOM_FIELDS_SQL), {"entity": ENTITY_BY_SLUG[slug]},
+        text(_CUSTOM_FIELDS_SQL), {"entity": entity or ENTITY_BY_SLUG[slug]},
     )).fetchall()
     return {
         r.key: CustomField.from_row(r) for r in rows if not getattr(r, "is_system", False)
@@ -649,8 +656,21 @@ async def custom_for_create(
     return out
 
 
+def _module_lookup(field: CustomField, value: Any) -> dict[str, str]:
+    """A lookup value of a generic module: ``{"id", "name"}`` as Zoho sends it.
+
+    The target is a record of the provider, so no local row is read.
+    """
+    ident = value.get("id") if isinstance(value, dict) else value
+    if not isinstance(ident, str) or not ident.strip():
+        raise _bad(field, "give the id of a record.")
+    name = value.get("name") if isinstance(value, dict) else None
+    return {"id": ident.strip(), "name": str(name) if name else ""}
+
+
 async def custom_for_patch(
     db: Any, slug: str, given: dict[str, Any], stored: dict[str, Any],
+    *, entity: str | None = None,
 ) -> tuple[dict[str, Any], tuple[str, ...]]:
     """``(put, drop)`` of a PATCH of ``custom``, or 422.
 
@@ -658,7 +678,7 @@ async def custom_for_patch(
     empty value removes its key, and a required field refuses that. A retired
     key gives 422, and the stored value stays.
     """
-    fields = await load_custom_fields(db, slug)
+    fields = await load_custom_fields(db, slug, entity=entity)
     put: dict[str, Any] = {}
     drop: list[str] = []
     for key, value in given.items():
@@ -667,6 +687,9 @@ async def custom_for_patch(
             if field.required:
                 raise _required(field)
             drop.append(key)
+            continue
+        if entity is not None and field.type == "lookup":
+            put[key] = _module_lookup(field, value)
             continue
         put[key] = await check_value(db, field, value, stored.get(key))
     return put, tuple(drop)

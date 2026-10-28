@@ -1808,9 +1808,12 @@ def mark_dirty_on_update(
 
 # ── The mirror write guard (WS-53 CRM-Z6) ──────────────────────────────────
 
-#: The four record tables. In Mirror mode a provider owns their rows.
+#: The record tables. In Mirror mode a provider owns their rows.
+#: ``crm_module_records`` joins them (CRM-Z10d): the generic-module edit route
+#: calls the guard, and the sync writes through its own door and never does.
 MIRROR_RECORD_TABLES: frozenset[str] = frozenset({
     "crm_companies", "crm_contacts", "crm_leads", "crm_deals",
+    "crm_module_records",
 })
 
 #: Pipeline settings. In Mirror mode the provider owns the stage picklist and

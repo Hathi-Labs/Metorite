@@ -825,9 +825,14 @@ async def approved_overlays(db: Any, org: str) -> dict[str, str]:
     It names only a module that the bound org mirrors now
     (``modules.mirrored_modules``), so a rail row never points at a list
     that answers 404. Empty in Native mode and with no approved role.
+    ``mirrored_modules`` lists the kept modules of a Native org (CRM-Z10d),
+    and a role is a Mirror-only mapping, so Native mode answers first.
     """
+    from gateway.routes.crm.core import is_mirror_mode
     from gateway.routes.crm.modules import mirrored_modules
 
+    if not await is_mirror_mode(db, org):
+        return {}
     roles = roles_of(await approved_others(db, org))
     if not roles:
         return {}
