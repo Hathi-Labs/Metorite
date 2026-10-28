@@ -510,7 +510,8 @@ export function StageList({
   }
 
   async function drop(to: number) {
-    if (dragging === null) return;
+    // A drop while a save runs would send a second order call (verifier F1).
+    if (dragging === null || saving) return;
     const from = dragging;
     setDragging(null);
     await move(from, to);
@@ -678,7 +679,7 @@ function StageRow({
   return (
     <div className="flex items-center gap-2 px-4 py-2">
       <span
-        draggable
+        draggable={!saving}
         onDragStart={onDragStart}
         onDragEnd={onDragEnd}
         className="shrink-0 cursor-grab text-muted-foreground hover:text-foreground"
