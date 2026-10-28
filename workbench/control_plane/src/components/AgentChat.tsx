@@ -31,6 +31,7 @@ import { chatFirstOn } from "@/lib/shell/chatFlag";
 import { type FeedAnswer, feedKey, fetchFeed } from "@/lib/shell/feed";
 import { useCachedResource } from "@/lib/useCachedResource";
 import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
+import ConfirmationReceipts from "@/components/ConfirmationReceipts";
 import AskPin from "@/components/AskPin";
 import { scrollToEnd } from "@/lib/scrollWithin";
 import { HITL_TARGET, pendingAsk, waitingTargets } from "@/lib/askPin";
@@ -1279,14 +1280,14 @@ export default function AgentChat({
   const postRespondInput = useCallback(
     (
       payload: { request_id: string; answer: string; was_freeform: boolean; declined?: boolean },
-      restoreCard: () => void,
-      settle?: (outcome: "ok" | "drop" | "resent") => void,
+      restoreCard: (reason?: string) => void,
+      settle?: (outcome: "ok" | "drop" | "resent", reason?: string) => void,
     ) => {
       const forSession = sessionIdRef.current;
       // The account this tab drew the card for. The route refuses the answer
       // when the browser is signed in to another account now (WS-51 S2).
       const drawnFor = boundIdentity();
-      void sendRespondInputResult({ ...payload, thread_id: forSession, as: drawnFor }).then(({ outcome, resend, display, otherAccount }) => {
+      void sendRespondInputResult({ ...payload, thread_id: forSession, as: drawnFor }).then(({ outcome, resend, display, otherAccount, reason }) => {
         // Only touch the cards if the user is still on the session that asked.
         if (sessionIdRef.current !== forSession) return;
         if (otherAccount) {
@@ -1297,7 +1298,9 @@ export default function AgentChat({
             timestamp: Date.now(),
           }]);
         }
-        if (outcome === "retry") { restoreCard(); return; }
+        // The card says why, beside its buttons (UXD-3). An other-account
+        // refusal has its own notice above.
+        if (outcome === "retry") { restoreCard(otherAccount ? undefined : reason); return; }
         if (resend) {
           // The model reads the envelope. The member reads the answered
           // card (owner report, 2026-10-13, `lib/cardAnswer.ts`). An old
@@ -1345,7 +1348,7 @@ export default function AgentChat({
           });
           return;
         }
-        settle?.(outcome);
+        settle?.(outcome, reason);
       });
     },
     [setMessages],
@@ -1909,14 +1912,24 @@ export default function AgentChat({
       submitText(`${answer}: ${card.key}`);
       return;
     }
-    dispatchConfirmation({ type: "answering", key: card.key });
+    // The card leaves with a word: one line says "Applying", then what
+    // became of the answer (UXD-3). It draws under the newest message.
+    dispatchConfirmation({
+      type: "answering",
+      key: card.key,
+      label: card.detail || card.title,
+      intent: answer === "REJECT" ? "rejected" : "approved",
+      afterId: visibleMessages.length ? visibleMessages[visibleMessages.length - 1].id : null,
+    });
     noteCardAnswered(sessionId, card.requestId, answer);
     postRespondInput(
       { request_id: card.requestId, answer, was_freeform: false },
-      () => dispatchConfirmation(settleAnswer(card, "retry")),
+      (reason) => dispatchConfirmation(settleAnswer(card, "retry", reason)),
       // "resent": the run died with an update and the answer went out as a
-      // message. The card leaves, as on any answer no run can take.
-      (outcome) => dispatchConfirmation(settleAnswer(card, outcome === "resent" ? "drop" : outcome)),
+      // message. The card leaves, as on any answer no run can take, and its
+      // line goes with it: the notice of the resend says what happened.
+      (outcome, reason) => dispatchConfirmation(
+        outcome === "resent" ? settleAnswer(card, "drop") : settleAnswer(card, outcome, reason)),
     );
   };
   const hasConfirmations = confirmations.cards.length > 0;
@@ -2007,7 +2020,7 @@ export default function AgentChat({
       <RollupCard id={HITL_TARGET} title="Waiting for you" pending>
       <div data-chat-ask={HITL_TARGET} className="space-y-2 outline-none">
         {hasConfirmations && (
-          <ConfirmationQueue cards={confirmations.cards} onAnswer={answerConfirmation} />
+          <ConfirmationQueue cards={confirmations.cards} errors={confirmations.errors} onAnswer={answerConfirmation} />
         )}
 
         {elicitation && (
@@ -2359,6 +2372,10 @@ export default function AgentChat({
                   .map((mk, k) => (
                     <MailboxMark key={`mbx-${msg.id}-${k}`} label={mk.label} />
                   ))}
+                {/* What became of each answered approval card (UXD-3). */}
+                <ConfirmationReceipts
+                  receipts={confirmations.receipts.filter((r) => r.afterId === msg.id)}
+                />
                 {/* Inline HITL card — anchored to the asking assistant turn. */}
                 {msg.id === hitlAnchorId && renderHitlCards()}
               </div>
@@ -2368,6 +2385,14 @@ export default function AgentChat({
           {/* Fallback: a HITL prompt arrived before any assistant bubble exists
               (rare — e.g. a tool asks before any text streamed). Render at the
               list tail so the card is never lost. */}
+          {/* A line whose message is gone (a reload or a checkpoint swap gave
+              it a new id) draws at the tail, so it is never lost (UXD-3). A
+              message above the shown slice keeps its line in the history. */}
+          <ConfirmationReceipts
+            receipts={confirmations.receipts.filter(
+              (r) => !r.afterId || !messages.some((m) => m.id === r.afterId),
+            )}
+          />
           {hitlAnchorId === null && renderHitlCards()}
 
           {/* No follow-up pills under a cut answer or during an update: the
