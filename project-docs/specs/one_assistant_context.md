@@ -381,12 +381,12 @@ and the flag stays off. Fences: `tests/unit/test_spawn_hardening.py`,
   `chatStream.isHandoffTool` and `takeHandoff` decide it, for the live
   reducer and for the checkpoint that `route.ts` saves. The gateway fold
   writes the final stored row at the run end, and it replaces the checkpoint.
-  So `gateway/chat_fold.py` holds the same rule (`take_handoff`), and the
-  unit test reads the names out of `isHandoffTool` and compares them with
+  So `gateway/chat_fold.py` holds the same rule (`take_handoff`). A unit test
+  reads the names out of `isHandoffTool` and compares them with
   `HANDOFF_TOOLS`, as sets, in both directions. Each child step stays on its
   own spawn row. The spawn row keeps no child text, because that text is item
   JSON for the parent model. A later specialist row or `call_agent` row gets
-  its own steps, and none that are labelled `worker`. In the live view, an
+  its own steps. None of them are labelled `worker`. In the live view, an
   error of one spawn child adds a failed step for that child (keyed by its
   run id) and keeps the row active. The stored row does not hold that step.
   The spawn result holds the failure as an item.
