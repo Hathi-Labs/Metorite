@@ -8,7 +8,8 @@
  * Sync health. A card heading is the label of its rail row (CRM-C1). The page passes Setup and Access in for an admin. Fields is for an
  * admin. The Field map (CRM-Q7a) and Sync health (CRM-Q9) are for an admin in
  * Mirror mode. In Native mode the Field mapping section holds the
- * lead-conversion mapping (CRM-C6a), for a studio admin only.
+ * lead-conversion mapping (CRM-C6a), for a studio admin only. The Fields
+ * section also holds Record names (CRM-Z10g), under the Fields card.
  *
  * **Sections** (WS-53 CRM-C1, crm_platform.md §20.4). With a `section`, the
  * component draws the cards of that section only, and the rail opens one
@@ -82,6 +83,7 @@ import { useCrmStore } from "../lib/store";
 import ConvertMappingCard from "./ConvertMappingCard";
 import FieldMapCard from "./FieldMapCard";
 import FieldsCard from "./FieldsCard";
+import RecordNamesCard from "./RecordNamesCard";
 import { Card, NameList, PipelineSections } from "./SettingsCards";
 import SuggestionsCard from "./Suggestions";
 import SyncHealthCard from "./SyncHealthCard";
@@ -351,6 +353,9 @@ export default function PipelineSettings({
       {showAdminCards && (
         <>
           {show("fields") && <FieldsCard readOnly={readOnly} />}
+          {/* CRM-Z10g: the names of the record types. Editable in Native
+              mode, one line in Mirror mode. */}
+          {show("fields") && <RecordNamesCard isAdmin={showAdminCards} />}
           {/* The Field map and Sync health read the mirror, so Native mode
               does not draw them. */}
           {readOnly && show("field-mapping") && <FieldMapCard />}
