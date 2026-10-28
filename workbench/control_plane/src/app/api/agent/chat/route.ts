@@ -49,7 +49,7 @@ import {
 import { assistantCheckpointRow, checkpointAgent, checkpointIsEmpty } from "@/lib/assistantCheckpoint";
 import { isDefaultAgent } from "@/lib/chatMemorySave";
 import { wholeToolArgs } from "@/lib/toolArgs";
-import { isSpecialistTool } from "@/lib/chatStream";
+import { takeHandoff } from "@/lib/chatStream";
 import { codeForGatewayRefusal, codeForStatus } from "@/lib/runErrors";
 import { githubSetupNote, splitSetupVars, UNREACHABLE_NOTE } from "@/lib/setupTokens";
 import { cleanSurface, surfaceField } from "@/lib/shell/surface";
@@ -405,11 +405,12 @@ async function translateAndPersistStream(
           // tool's start and end).  Same shape the frontend live loop builds.
           // The orchestrator's own tool for an agent is a hand-off too
           // (navigation_shell.md §7.1.1 rule 5), so its steps stay on it.
-          const isDelegate = name.toLowerCase().includes("call_agent") || isSpecialistTool(name, subAgent.name);
-          const subAgentFields = isDelegate && (subAgent.name || subAgent.text || subAgent.tools.length > 0)
-            ? { subAgentName: subAgent.name, subAgentText: subAgent.text, subAgentTools: subAgent.tools }
-            : {};
-          if (isDelegate) subAgent = { name: "", text: "", tools: [] };
+          // `delegate_to_agent` and `spawn_subagents` are hand-offs too (OA-9b
+          // hardening). A spawn row keeps its children's steps and no text.
+          // `takeHandoff` (chatStream.ts) owns the rule, and its test fences it.
+          const taken = takeHandoff(name, subAgent);
+          const subAgentFields = taken.fields;
+          subAgent = taken.rest;
           toolEvents.push({
             id, name,
             args: parseToolArgs(toolArgs[id]),
