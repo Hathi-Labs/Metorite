@@ -1,0 +1,228 @@
+"""No session is open across a provider call of the message routes (2026-10-28).
+
+Production logged a lock queue on one email row. ``update_message`` wrote the
+row, then called ``get_message`` inside its own open session. The second
+session's mark-read waited on the first session's row lock, until the
+statement timeout. ``get_message`` and ``delete_message`` also held the row
+lock and one pooled connection across the provider fetch or push.
+
+1. Hermetic: each provider call sees no open session, and the PATCH reads the
+   mail after its write committed.
+2. R8: a PATCH of an unread mail on a real database answers at once.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+from gateway.routes.email.transport import messages as m
+from sqlalchemy import text
+
+from tests.unit._tenant_ladder import tenant_engine_scope
+
+# ``world``, ``promoted`` and ``app_engine`` are used by name for fixture
+# injection, so the imports are load-bearing even though they read as unused.
+from tests.unit.test_email_html_hot_only import (  # noqa: F401
+    _bound,
+    _seed_message,
+    _user,
+    world,
+)
+from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
+    _DB_GATE,
+    app_engine,
+    promoted,
+)
+
+MID = "55555555-5555-4555-8555-555555555555"
+USER = SimpleNamespace(email="u@example.com", organization_id=None)
+
+
+class _Db:
+    """One fake session for each block. Records each statement."""
+
+    def __init__(self, row: Any) -> None:
+        self.row = row
+        self.sql: list[tuple[str, dict[str, Any]]] = []
+
+    async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> Any:
+        self.sql.append((str(stmt), dict(params or {})))
+        return SimpleNamespace(fetchone=lambda: self.row, fetchall=lambda: [], rowcount=1)
+
+    def has(self, fragment: str) -> list[dict[str, Any]]:
+        return [p for s, p in self.sql if fragment in s]
+
+
+class _Provider:
+    """Records the open sessions at each network call."""
+
+    def __init__(self, open_now: list[int]) -> None:
+        self.open_now = open_now
+        self.calls: list[tuple[str, int]] = []
+
+    def _at(self, name: str) -> None:
+        self.calls.append((name, self.open_now[0]))
+
+    async def authenticate(self) -> bool:
+        self._at("authenticate")
+        return True
+
+    async def get_message(self, _pmid: str) -> Any:
+        self._at("get_message")
+        att = SimpleNamespace(filename="a.pdf", mime_type="application/pdf",
+                              size_bytes=1, provider_attachment_id="att-1")
+        return SimpleNamespace(body_text="the text", body_html=None,
+                               has_attachments=True, attachments=[att])
+
+    async def apply_flags(self, *_a: Any, **_k: Any) -> None:
+        self._at("apply_flags")
+
+    async def move_to_folder(self, *_a: Any) -> str:
+        self._at("move_to_folder")
+        return "NEW_PID"
+
+    async def set_labels(self, *_a: Any, **_k: Any) -> None:
+        self._at("set_labels")
+
+    async def trash_message(self, *_a: Any) -> str:
+        self._at("trash_message")
+        return "NEW_PID"
+
+    def credentials_dirty(self) -> bool:
+        return False
+
+
+def _wire(monkeypatch: pytest.MonkeyPatch, row: Any) -> tuple[_Db, _Provider, list[int]]:
+    db = _Db(row)
+    open_now = [0]
+
+    @asynccontextmanager
+    async def _session(*_a: Any, **_k: Any):
+        open_now[0] += 1
+        try:
+            yield db
+        finally:
+            open_now[0] -= 1
+
+    provider = _Provider(open_now)
+
+    async def _for_message(*_a: Any, **_k: Any) -> Any:
+        return provider, "pm-1", "acc-1", object()
+
+    monkeypatch.setattr(m, "_tenant_session", _session)
+    monkeypatch.setattr(m, "_provider_for_message", _for_message)
+    return db, provider, open_now
+
+
+def _open_row() -> SimpleNamespace:
+    """A headers-only mail, so the open fetches its body."""
+    return SimpleNamespace(
+        id=MID, provider_message_id="pm-1", thread_id="t", account_id="acc-1",
+        folder="inbox", labels=[], from_address=None, to_addresses=[],
+        cc_addresses=[], bcc_addresses=[], subject="s", body_text="",
+        body_html=None, snippet="", has_attachments=False, is_read=False,
+        is_starred=False, is_flagged=False, importance="normal", categories=[],
+        received_at=datetime.now(UTC), synced_at=None, snoozed_until=None,
+        stored_bytes=0,
+    )
+
+
+async def test_the_open_fetches_with_no_session_open(monkeypatch) -> None:
+    db, provider, _open = _wire(monkeypatch, _open_row())
+    msg = await m.get_message(MID, user=USER)
+
+    assert msg.body_text == "the text"
+    names = [n for n, _ in provider.calls]
+    # The body fetch, then the attachment fetch: the row lists no stored file.
+    assert names.count("get_message") == 2, provider.calls
+    assert {at for _, at in provider.calls} == {0}, provider.calls
+    assert db.has("SET is_read = true"), "the open still marks the mail read"
+    assert db.has("SET body_text"), "the open still stores the fetched body"
+    assert db.has("INSERT INTO email_attachments")
+
+
+async def test_the_patch_pushes_and_reads_with_no_session_open(monkeypatch) -> None:
+    db, provider, open_now = _wire(monkeypatch, SimpleNamespace(id=MID, categories=[]))
+    read_at: list[int] = []
+
+    async def _get(mid: str, user: Any) -> str:
+        read_at.append(open_now[0])
+        return "the mail"
+
+    monkeypatch.setattr(m, "get_message", _get)
+    got = await m.update_message(
+        MID, m.MessageUpdateModel(is_starred=True, folder="archive", add_labels=["X"]),
+        user=USER)
+
+    assert got == "the mail"
+    assert read_at == [0], "the PATCH read the mail inside its own open session"
+    assert [n for n, _ in provider.calls] == [
+        "authenticate", "apply_flags", "move_to_folder", "set_labels"]
+    assert {at for _, at in provider.calls} == {0}, provider.calls
+    [rekey] = db.has("provider_message_id = :pid")
+    assert rekey["pid"] == "NEW_PID"
+
+
+async def test_the_trash_pushes_with_no_session_open(monkeypatch) -> None:
+    db, provider, _open = _wire(monkeypatch, SimpleNamespace())
+    await m.delete_message(MID, user=USER)
+
+    assert [n for n, _ in provider.calls] == ["authenticate", "trash_message"]
+    assert {at for _, at in provider.calls} == {0}, provider.calls
+    assert db.has("SET folder = 'trash'")
+    [rekey] = db.has("provider_message_id = :pid")
+    assert rekey["pid"] == "NEW_PID"
+
+
+async def test_a_failed_push_keeps_the_local_write_and_skips_the_rekey(monkeypatch) -> None:
+    db, provider, _open = _wire(monkeypatch, SimpleNamespace(id=MID, categories=[]))
+
+    async def _boom(*_a: Any) -> str:
+        raise RuntimeError("graph is down")
+
+    provider.move_to_folder = _boom  # type: ignore[method-assign]
+
+    async def _get(mid: str, user: Any) -> str:
+        return "the mail"
+
+    monkeypatch.setattr(m, "get_message", _get)
+    assert await m.update_message(
+        MID, m.MessageUpdateModel(folder="archive"), user=USER) == "the mail"
+    assert db.has("folder = :folder"), "the local move still lands"
+    assert not db.has("provider_message_id = :pid")
+
+
+# ── R8: the PATCH on a real database ────────────────────────────────────────
+
+
+def _flags_of(admin, message_id: str) -> tuple[Any, ...]:
+    with admin.connect() as c:
+        return tuple(c.execute(text(
+            "SELECT is_starred, is_read FROM email_messages "
+            "WHERE id = CAST(:m AS uuid)"), {"m": message_id}).one())
+
+
+@_DB_GATE
+async def test_a_patch_of_an_unread_mail_answers_at_once(world) -> None:
+    """The case that production logged. The old route waited on its own row
+    lock here, so ``wait_for`` timed out. A stored body means no fetch."""
+    mid = _seed_message(world.admin, org=world.org, account=world.account,
+                        received_at=datetime.now(UTC), body_text="b")
+    with world.admin.begin() as c:
+        c.execute(text("UPDATE email_messages SET is_read = false "
+                       "WHERE id = CAST(:m AS uuid)"), {"m": mid})
+
+    async with tenant_engine_scope(world.dsn):
+        with _bound(world.org):
+            msg = await asyncio.wait_for(m.update_message(
+                mid, m.MessageUpdateModel(is_starred=True),
+                user=_user(world.owner, world.org)), timeout=20)
+
+    assert msg.is_starred is True
+    # The answer is an open, so it marks the mail read, as before.
+    assert _flags_of(world.admin, mid) == (True, True)
