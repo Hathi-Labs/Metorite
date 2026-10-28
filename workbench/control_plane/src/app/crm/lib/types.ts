@@ -138,19 +138,35 @@ export type StageMetadataReport = {
 // rather than one bundled payload: they answer four different questions, and a
 // single endpoint would make the slowest one decide when any of them renders.
 
-export type StageTotals = {
-  status: Status;
-  count: number;
+/**
+ * The figures of ONE currency. The report routes never add two currencies
+ * (HANDOFF H-333): a scalar is in the `currency` beside it, and the rest sit
+ * in `others`, each with its own code. `others` is empty for one currency.
+ */
+export type MoneyTotals = {
+  currency: string;
   amount: number;
   weighted: number;
+};
+
+export type StageTotals = {
+  status: Status;
+  /** Deals of every currency. */
+  count: number;
+  currency: string;
+  amount: number;
+  weighted: number;
+  others: MoneyTotals[];
 };
 
 /** Only open/ongoing stages appear — won is booked, lost is nothing. */
 export type PipelineReport = {
   stages: StageTotals[];
   count: number;
+  currency: string;
   amount: number;
   weighted: number;
+  others: MoneyTotals[];
 };
 
 export type FunnelStage = {
@@ -189,7 +205,9 @@ export type FunnelReport = {
 export type LostReasonShare = {
   label: string;
   deals: number;
+  currency: string;
   amount: number;
+  others: { currency: string; amount: number }[];
   /** False for the unattributed bucket — missing data, not a chosen reason. */
   attributed: boolean;
 };
@@ -200,8 +218,10 @@ export type WinLossReport = {
   won: number;
   lost: number;
   win_rate: number;
+  currency: string;
   won_amount: number;
   lost_amount: number;
+  others: { currency: string; won_amount: number; lost_amount: number }[];
   average_cycle_days: number | null;
   /**
    * Deals in a won/lost lane with NO `closed_at` — every imported closed deal,
@@ -216,8 +236,10 @@ export type OwnerRow = {
   /** `null` (or blank) is the unassigned bucket — see `ownerLabel`. */
   owner_email: string | null;
   open_deals: number;
+  currency: string;
   weighted: number;
   won_amount: number;
+  others: { currency: string; weighted: number; won_amount: number }[];
 };
 
 export type OwnerLeaderboard = {

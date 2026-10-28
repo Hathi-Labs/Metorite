@@ -1657,12 +1657,6 @@ line — never reclaim a number by deleting the other entry.
   this is open.
 - **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
 
-### H-333 · The CRM report routes add amounts of different currencies into one figure · [AGENT]
-- **Metorite:** #737. The task holds the full entry (moved 2026-10-28, D118).
-- **Check:** `rg -n "SUM\(amount\)" apps/services/gateway/gateway/routes/crm/reports.py`.
-  A hit with no `currency` in the same statement means this is open.
-- **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
-
 ### H-334 · The email owner check names no tenant by default · [AGENT]
 - **Metorite:** #563. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** `git grep -n "this_tenant: bool = False" -- apps/services/gateway/gateway/routes/email/core.py`.
