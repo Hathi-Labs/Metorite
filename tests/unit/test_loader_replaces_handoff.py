@@ -358,7 +358,7 @@ async def test_beside_an_mcp_server_the_specialist_stays(
             raise RuntimeError("registry down")
         return rows
 
-    monkeypatch.setattr(mcp_registry, "list_servers", list_servers)
+    monkeypatch.setattr(mcp_registry, "enabled_meta", list_servers)
     before = _names(agents[0].default_options["tools"])
     persona = agents[0].default_options["instructions"]
     applied = await _apply(agents)
@@ -397,7 +397,7 @@ async def test_the_mcp_lookahead_reads_the_rule_of_the_injection(
     async def list_servers(_org: str) -> list[Any]:
         return [types.SimpleNamespace(**{**base, **row})]
 
-    monkeypatch.setattr(mcp_registry, "list_servers", list_servers)
+    monkeypatch.setattr(mcp_registry, "enabled_meta", list_servers)
 
     def grant(_service: str) -> bool:
         return authorized
@@ -426,7 +426,7 @@ async def test_the_mcp_lookahead_is_false_where_the_injection_adds_no_server(
     async def boom(_org: str) -> list[Any]:
         raise AssertionError("the registry must not be read")
 
-    monkeypatch.setattr(mcp_registry, "list_servers", boom)
+    monkeypatch.setattr(mcp_registry, "enabled_meta", boom)
     with _tenant():
         assert await ti._mcp_may_attach(
             agents[0], "orchestrator", no_egress=no_egress, is_authorized=None,
@@ -565,12 +565,13 @@ async def test_the_load_of_email_leaves_no_room_for_setup_and_the_next_turn_keep
     """Acceptance 8. Turn 1: both packs fit on their own, so the specialist
     leaves. The model loads ``email``. ``email-setup`` then passes 110, and
     its refusal says to finish the mail work and to ask in the next message.
-    The hand-off is still refused in turn 1 and names ``email-setup``. A mail
-    tool runs, so ``email`` is sticky. Turn 2: ``email`` is held, ``email-setup``
+    The refusal sends the model to ``call_agent`` for the setup work, and the
+    hand-off is open from then on (fix round 1). A mail tool runs, so ``email``
+    is sticky. Turn 2: ``email`` is held, ``email-setup``
     cannot fit, so the plan reaches no owner. The hand-off is open, the rules
     route the setup work to the email assistant, and the run is the run of
-    OA-7c. Mutation: refuse the setup load with the old text → it sends the
-    model to a hand-off that the run refuses → red. Mutation: reach the owner
+    OA-7c. Mutation: refuse the setup load with the old text, or keep the
+    hand-off closed after it → the two texts point at each other → red. Mutation: reach the owner
     in turn 2 → the setup work has no path → red."""
     ran = _fake_run_agent(monkeypatch)
     _base(monkeypatch, 60)
@@ -584,14 +585,17 @@ async def test_the_load_of_email_leaves_no_room_for_setup_and_the_next_turn_keep
         loaded = await _call(provider.loader, "email", live)
         assert loaded.startswith("Loaded the Email tools (31 tools).")
         assert tp._EMAIL_SETUP_LOAD_LINE in loaded
+        assert tp.delegation_refusal(EA) is not None, "non-vacuity: closed before the refusal"
         setup = await _call(provider.loader, "email-setup", live)
         refusal = tp.delegation_refusal(EA)
+        handed = await agent_tools.call_agent(EA, "Make a rule that files newsletters.")
         reader = next(t for t in live[61:] if ti._tool_name(t) == "read_email")
         await reader.func(email_id="m-1")
     assert len(live) + len(SETUP_TOOLS) > tp.MAX_REQUEST_TOOLS, "non-vacuity of the cap"
-    assert setup == tp.LOAD_NO_PATH.format(label="Email setup", slug="email-setup")
-    assert "Finish the work" in setup and "next message" in setup and EA not in setup
-    assert refusal == tp.LOADER_HANDOFF_REFUSED.format(owner=EA, packs="email-setup")
+    assert setup == tp.LOAD_NO_PATH.format(label="Email setup", slug="email-setup", owner=EA)
+    assert "call_agent" in setup and EA in setup
+    assert refusal is None and ran == [EA] and "ran" in handed
+    ran.clear()
     # Turn 2.
     two = _fresh()
     applied2 = await _apply(two, "")
@@ -630,3 +634,90 @@ def test_plan_loader_on_its_own(kwargs: dict[str, Any], via: bool, offered: tupl
     plan = tp.plan_loader(allow, held, removable={EA: 1}, **args)
     assert plan.offered == offered
     assert (plan.via_loader == {EA}) is via
+
+
+# ── 8. Fix round 1: a reached owner is never stranded ───────────────────────
+
+
+@pytest.mark.parametrize("slug", ["email", "email-setup"])
+async def test_a_load_that_refuses_opens_the_hand_off_to_the_owner(
+    slug: str, store, agents, monkeypatch,
+) -> None:
+    """The plan counts no granted Custom App action (they join later, with no
+    cap), so it can reach an owner whose pack the live list cannot take. The
+    load then refuses, and the refusal must not point at a hand-off that is
+    refused. A refusal for a via owner marks it (``PackRun.via_failed``), the
+    answer names ``call_agent`` and the owner, and the hand-off runs for the
+    rest of the run. Mutation: drop the mark → the hand-off still answers
+    ``LOADER_HANDOFF_REFUSED``, and no mail work is possible → red."""
+    ran = _fake_run_agent(monkeypatch)
+    _base(monkeypatch, 55)
+    applied = await _apply(agents)
+    assert applied is not None and applied.record.via_loader == {EA}
+    provider = _provider(agents[0])
+    assert provider is not None
+    live = _dummies(100)  # the true count: granted actions that the estimate missed
+    with _in_run(applied):
+        before = await agent_tools.call_agent(EA, "Read my mail.")
+        assert before.startswith("Not run."), "non-vacuity: closed before the load"
+        answer = await _call(provider.loader, slug, live)
+        after = tp.delegation_refusal(EA)
+        out = await agent_tools.call_agent(EA, "Read my mail.")
+    assert len(live) + len(sf.SKILL_FAMILIES[slug]["tools"]) > tp.MAX_REQUEST_TOOLS
+    assert answer == tp.LOAD_NO_PATH.format(label=tp._label(slug), slug=slug, owner=EA)
+    assert "call_agent" in answer and EA in answer
+    assert after is None and ran == [EA] and "ran" in out
+    assert applied.record.via_failed == {EA}
+
+
+async def test_an_offered_turn_with_no_pack_logs_no_packs_loaded(store, agents) -> None:
+    """The OA-7h eval counts each ``executor.packs_loaded`` line before the
+    first model call as a pack load. A turn that offers the loader and builds
+    no pack logs the plan on ``executor.pack_plan`` instead. Mutation: log
+    ``packs_loaded`` whenever the plan runs → red."""
+    from structlog.testing import capture_logs
+
+    with capture_logs() as seen:
+        applied = await _apply(agents)
+    events = [e["event"] for e in seen]
+    assert applied is not None and applied.builds == ()
+    assert "executor.packs_loaded" not in events
+    plan = [e for e in seen if e["event"] == "executor.pack_plan"]
+    assert len(plan) == 1 and plan[0]["via_loader"] == [EA]
+    assert plan[0]["offered"] == ["email", "email-setup"]
+    with capture_logs() as seen2:
+        await _apply(_fresh(), "check my inbox")
+    assert "executor.packs_loaded" in [e["event"] for e in seen2], "non-vacuity"
+
+
+async def test_the_mcp_lookahead_reads_metadata_only(monkeypatch) -> None:
+    """``enabled_meta`` opens no header blob and refreshes no token. Mutation:
+    read the headers again (``load_headers_by_prefix``) → red."""
+    import contextlib as cl
+
+    from gateway.connections import mcp as mcp_registry
+
+    called: list[str] = []
+
+    @cl.asynccontextmanager
+    async def fake_session(_org: str):
+        yield object()
+
+    async def migrate(_db: Any, _org: str) -> int:
+        called.append("migrate")
+        return 0
+
+    async def listing(*_a: Any, **_k: Any) -> list[Any]:
+        called.append("list")
+        return []
+
+    async def headers(*_a: Any, **_k: Any) -> dict[str, Any]:
+        called.append("headers")
+        return {}
+
+    monkeypatch.setattr(mcp_registry, "tenant_session", fake_session)
+    monkeypatch.setattr(mcp_registry, "migrate_legacy", migrate)
+    monkeypatch.setattr(mcp_registry.store, "list_by_prefix", listing)
+    monkeypatch.setattr(mcp_registry.store, "load_headers_by_prefix", headers)
+    assert await mcp_registry.enabled_meta(ORG) == []
+    assert called == ["migrate", "list"]

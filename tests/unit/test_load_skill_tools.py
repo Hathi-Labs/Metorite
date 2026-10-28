@@ -953,9 +953,9 @@ def test_a_scripted_load_past_the_cap_refuses_and_names_spawn_subagents(
     assert len(names) + len(SETUP_TOOLS) > 90 >= len(names), "non-vacuity of the cap"
     refused = _tool_result(model.bodies[2], "c-2")
     # OA-7i: the run offered the loader in place of the hand-off, so the
-    # refusal sends the model to finish the work, not to the owner.
-    assert refused == tp.LOAD_NO_PATH.format(label="Email setup", slug="email-setup")
-    assert "spawn_subagents" in refused and EA not in refused
+    # refusal opens the hand-off again and names the owner (fix round 1).
+    assert refused == tp.LOAD_NO_PATH.format(label="Email setup", slug="email-setup", owner=EA)
+    assert "spawn_subagents" in refused and "call_agent" in refused and EA in refused
 
 
 @pytest.mark.parametrize("why", ["flag off", "a shared room", "no card channel"])

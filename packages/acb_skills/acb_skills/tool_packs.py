@@ -534,6 +534,11 @@ class PackRun:
     #: A hand-off to such an owner answers :data:`LOADER_HANDOFF_REFUSED`. It
     #: is a subset of :attr:`replaced`.
     via_loader: frozenset[str] = frozenset()
+    #: OA-7i fix round 1. The via owners whose load refused in this run (a cap,
+    #: an MCP tool, no build). The plan counted fewer tools than the run holds,
+    #: so the loader cannot serve the owner. From then on the hand-off to such
+    #: an owner is open again for the rest of the run (:meth:`refusal`).
+    via_failed: set[str] = field(default_factory=set, compare=False, repr=False)
     #: The packs that this run already made sticky.
     noted: set[str] = field(default_factory=set, compare=False, repr=False)
     #: OA-7e. The packs that ``load_skill_tools`` added in this run, in load
@@ -593,7 +598,7 @@ class PackRun:
             found = _refusals_for(self.holds()).get(name)
         if found:
             return found
-        if name in self.via_loader:
+        if name in self.via_loader and name not in self.via_failed:
             return _loader_handoff_refusal(name, self.holds())
         return None
 
@@ -1139,8 +1144,8 @@ LOADER_HANDOFF_REFUSED = (
 #: next message.
 LOAD_NO_PATH = (
     "Not loaded. The {label} tools do not fit with the tools that you hold in "
-    "this request. Finish the work with the tools that you hold. Tell the "
-    "member to ask for the {label} work in the next message. If "
+    "this request. Hand the {label} work to {owner}: call call_agent with "
+    "agent_name \"{owner}\" and the task. That hand-off is open now. If "
     "spawn_subagents is in your tools, you may call it with a job that names "
     "the pack \"{slug}\"."
 )
@@ -1301,7 +1306,7 @@ def _pack_argument(arguments: Any) -> str:
 
 def _past_cap(found: Pack, run: PackRun | None = None) -> str:
     if run is not None and found.owner in run.via_loader:
-        return LOAD_NO_PATH.format(label=_label(found.slug), slug=found.slug)
+        return LOAD_NO_PATH.format(label=_label(found.slug), slug=found.slug, owner=found.owner)
     return LOAD_PAST_CAP.format(
         label=_label(found.slug), packs=MAX_PACKS, tools=MAX_REQUEST_TOOLS,
         slug=found.slug, owner=found.owner,
@@ -1427,14 +1432,28 @@ class LoadSkillTools(FunctionMiddleware):
         (c) (:meth:`load_early`). THE one builder and THE one set of caps.
 
         Gives a refusal text, or ``(tools, held, rules, closing)``. It adds
-        nothing to the run: the caller adds the tools and the record."""
+        nothing to the run: the caller adds the tools and the record.
+
+        OA-7i fix round 1: a refusal for a pack of a ``via_loader`` owner marks
+        the owner in ``run.via_failed`` and answers :data:`LOAD_NO_PATH`, so the
+        hand-off to the owner opens again for the rest of the run."""
+        admitted = await self._admit_pack(found, ctx, live, run, extra_live)
+        if isinstance(admitted, str) and found.owner in run.via_loader:
+            run.via_failed.add(found.owner)
+            return LOAD_NO_PATH.format(
+                label=_label(found.slug), slug=found.slug, owner=found.owner)
+        return admitted
+
+    async def _admit_pack(
+        self, found: Pack, ctx: dict[str, Any], live: Sequence[Any], run: PackRun,
+        extra_live: Sequence[Any] = (),
+    ) -> str | tuple[tuple[Any, ...], bool, str, list[str]]:
         slug = found.slug
         if len(run.holds()) >= MAX_PACKS or _tool_count(slug) > MAX_PACK_TOOLS:
             return _refused(slug, "cap_packs", _past_cap(found, run))
         if _beside_mcp(found.owner, [*live, *extra_live]):
-            text = (LOAD_NO_PATH.format(label=_label(slug), slug=slug) if found.owner in run.via_loader
-                    else LOAD_BESIDE_MCP.format(label=_label(slug), owner=found.owner))
-            return _refused(slug, "beside_mcp", text)
+            return _refused(slug, "beside_mcp", LOAD_BESIDE_MCP.format(
+                label=_label(slug), owner=found.owner))
         from acb_skills.tool_guard import tool_name
 
         build = await self._build(slug, ctx, frozenset(tool_name(t) for t in live))
@@ -1546,6 +1565,9 @@ class LoadSkillTools(FunctionMiddleware):
         except Exception as exc:  # ValueError, RuntimeError: nothing loads
             _log.warning("tool_packs.load_refused", pack=slug, reason="add_tools",
                          error=type(exc).__name__)
+            if found.owner in run.via_loader:
+                run.via_failed.add(found.owner)
+                return LOAD_NO_PATH.format(label=_label(slug), slug=slug, owner=found.owner)
             return LOAD_UNAVAILABLE.format(label=_label(slug))
         run.add(slug, held)
         answer = LOADED.format(label=_label(slug), count=len(tools), rules=rules)

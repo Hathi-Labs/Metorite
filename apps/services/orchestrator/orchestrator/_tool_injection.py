@@ -3398,13 +3398,21 @@ async def _apply_tool_packs(
     # OA-7i: an owner that the loader replaces is one of them.
     with contextlib.suppress(Exception):
         setattr(agent, PACK_REFUSED_ATTR, frozenset(record.refusals) | via)
+    # OA-7h counts each ``executor.packs_loaded`` line before the first model
+    # call as a pack load, so only a turn that built a pack logs it. The facts
+    # of the plan ride on their own event (OA-7i fix round 1).
+    if builds:
+        _log.info(
+            "executor.packs_loaded", packs=list(record.slugs),
+            layers={slug: choice.layers.get(slug, "") for slug in record.slugs},
+            held=dict(record.held), replaced=sorted(replaced), via_loader=sorted(via),
+            refused=sorted(record.refusals),
+            evicted=list(choice.evicted), skipped=list(choice.skipped),
+            base_tools=base, pack_tools=sum(len(b.tools) for b in builds),
+        )
     _log.info(
-        "executor.packs_loaded", packs=list(record.slugs),
-        layers={slug: choice.layers.get(slug, "") for slug in record.slugs},
-        held=dict(record.held), replaced=sorted(replaced), via_loader=sorted(via),
-        refused=sorted(record.refusals),
-        evicted=list(choice.evicted), skipped=list(choice.skipped),
-        base_tools=base, pack_tools=sum(len(b.tools) for b in builds),
+        "executor.pack_plan", offered=list(plan.offered), via_loader=sorted(via),
+        packs=list(record.slugs), base_tools=base, current_tools=current,
     )
     applied = PackApply(builds=tuple(builds), record=record, run_key=run_key)
     if offer_loader and not _offer_pack_loader(agents, applied, plan) and via:
@@ -3428,7 +3436,7 @@ async def _mcp_may_attach(
     """True when :func:`_inject_mcp_servers` can put an MCP tool in this run
     (OA-7i lookahead). The injection runs AFTER the packs, so the plan of the
     loader asks first. The same early exits, then the registry rows, listed
-    with no token refresh. A row that the run could use counts, so the answer
+    with no token refresh and no header read (``enabled_meta``). A row that the run could use counts, so the answer
     errs toward True. A fault reads as True (fail closed): then the
     specialist of a mail owner stays, as it did before OA-7i."""
     from acb_common.db import current_tenant
@@ -3445,7 +3453,7 @@ async def _mcp_may_attach(
     try:
         from gateway.connections import mcp as mcp_registry
 
-        rows = await mcp_registry.list_servers(str(org))
+        rows = await mcp_registry.enabled_meta(str(org))
     except Exception as exc:  # the class only: a DB message can echo a value
         _log.warning("executor.pack_mcp_lookahead_failed", error=type(exc).__name__)
         return True
