@@ -310,9 +310,9 @@ The slices, in Metorite under sub-epic CRM-Z10 of epic #477:
 | CRM-Z10d | Custom modules stay visible in Native mode, with a native writer through the one write guard | R8: the counts match after a cutover |
 | CRM-Z10e | The Zoho attachments are copied into Metorite storage before the cutover | Count and bytes match Zoho |
 | CRM-Z10b | The switch: the export, a final sync, the mode flip and the disconnect in one transaction, `ext_source` and `ext_id` kept as provenance, Zoho settings made native, `processed_watermark` rewound, one audit line. One-way | R8: counts equal before and after, and a second click changes nothing |
-| CRM-Z10f | Owner decision: a cutover org keeps its source labels. It amends D95.2 for cutover orgs | Recorded in `work_plan.md` §3 |
+| CRM-Z10f | ✅ Decided 2026-10-27 (D133). A cutover org keeps its source labels. The admin can rename them. It amends D95.2 for cutover orgs | Recorded in `work_plan.md` §3 |
 
-The production runs for Fracktal and Shaurrya Tele are the owner's (CRM-Z10-run).
+The production runs for Fracktal and Shaurrya Tele are the owner's (CRM-Z10-run). Fracktal goes first. Shaurrya Tele goes second, because its custom modules also need CRM-Z10d (D133).
 
 ### 3.5 The architecture: one store, two writers
 
@@ -11713,13 +11713,13 @@ fence file is needed (`engineering_practice.md` §7a).
 
 ### 20.17 CRM-U13: five sections, one list for the AI, one-step Field map (2026-10-27)
 
-**Status.** 📝 Specified 2026-10-27. Decision D131. Waits for CRM-U11 and CRM-U12 to merge, because it changes the same screens. Not yet audited.
+**Status.** 📝 Specified 2026-10-27. Decision D134. Waits for CRM-U11 and CRM-U12 to merge, because it changes the same screens. Not yet audited.
 
 **Gate.** AGENT-SAFE. No flag and no migration. A gateway change is not expected. The audit confirms it per slice.
 
 **Evidence.** The read-only audit of the CRM setup screens, 2026-10-27. It counted 11 rail rows for a Mirror admin and five or six places where the AI asks for an approval, with no "done" signal.
 
-#### The sections (D131.1)
+#### The sections (D134.1)
 
 | Section | Who | What it holds | From today |
 |---|---|---|---|
@@ -11736,7 +11736,7 @@ fence file is needed (`engineering_practice.md` §7a).
 - Until the setup is done, Connection opens first and shows three steps with a done mark on each: Connect Zoho, Review what the AI found, Choose who can open the CRM. After that, an admin lands on "Needs your input" when it holds an item, else on Pipeline.
 - `lib/settingsSections.ts` keeps each old id as an alias of its new section (`crmC1.test.ts` fences the ids).
 
-#### Needs your input (D131.2)
+#### Needs your input (D134.2)
 
 1. One list. Each item is one card: one question in one line, the AI's suggestion as the highlighted choice, "Other…" and a "Why?" fold that holds the reason and what the answer changes.
 2. The list shows three items, then "Show more".
@@ -11747,7 +11747,7 @@ fence file is needed (`engineering_practice.md` §7a).
 7. A member's choice in chat waits here for an admin, with Confirm and Change.
 8. "Run the AI analysis again" sits once, in a "More" menu of the section.
 
-#### Fields and the Field map (D131.3)
+#### Fields and the Field map (D134.3)
 
 1. A pick applies at once. The client sends the draft and its approval as one action, through the routes that exist (`POST /crm/mapping/plans`, then the approve). The toast says "Saved. The next sync fills it."
 2. The Draft box, its words and the second press go. The rule-by-rule Approve and Reject go too, because "Needs your input" holds the proposals.

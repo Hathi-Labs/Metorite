@@ -49,15 +49,19 @@ doing it is the refusal §6 exists for.
 Write it when you create it, not at the end when context is short. The entry
 written while you still remember why is worth five reconstructed later.
 
-Append to the `# OPEN` section, next free id, ids never reused:
+First create the Metorite task (`create_task`). Put the why, the steps and the
+authority in its description. Then append the four-line entry to the `# OPEN`
+section, next free id, ids never reused:
 
 ```
 ### H-<n> · <one line, imperative> · [AGENT|OWNER]
+- **Metorite:** #<task number>. The task holds the full entry.
 - **Check:** `<command>` → <what output means STILL PENDING>
-- **Why:** <one or two sentences — the reason, not the status>
-- **Authority:** <file §section, or board row>
 - **Added:** <today> · <session or PR>
 ```
+
+The details live on the task, so this file stays short (D118). An old entry
+with no task keeps its full text until a session gives it one.
 
 Getting the **Check** right is the whole job. It must be:
 
@@ -73,8 +77,9 @@ you have not yet decided what "done" is. Both are worth finding out now.
 
 ## `done <H-n>` — close one
 
-Run its Check first. If it passes, delete the block and say so in the commit
-body. If it does not pass, do not delete it — say what is still outstanding.
+Run its Check first. If it passes, delete the block. Move its Metorite task to
+done, with a comment that names the evidence. Say so in the commit body. If
+it does not pass, do not delete it — say what is still outstanding.
 
 ## `end` — the close-out sweep, before finishing a session
 
