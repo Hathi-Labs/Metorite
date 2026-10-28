@@ -879,6 +879,12 @@ def _load_dynamic_agents() -> list[dict]:
         from acb_graph import get_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
+        # A session with no tenant bound sees no rows (RLS) and cannot insert
+        # (the organization_id default casts '' to uuid and fails). Read the
+        # file and stop: the DB path only ever errored here, once per call.
+        if not _tenant_is_bound():
+            return _read_agents_file()
+
         # ── Always sync agents.json → DB for missing agents ─────────────
         _sync_file_into_db()
 
@@ -921,6 +927,31 @@ def _load_dynamic_agents() -> list[dict]:
         return _migrate_from_file()
     except Exception:  # noqa: BLE001
         return _migrate_from_file()
+
+
+def _tenant_is_bound() -> bool:
+    """True when the session binds ``app.tenant_id`` to a non-empty value."""
+    from acb_graph import get_session  # noqa: PLC0415
+    from sqlalchemy import text  # noqa: PLC0415
+
+    with get_session() as s:
+        return bool(
+            s.execute(
+                text("SELECT NULLIF(current_setting('app.tenant_id', true), '')")
+            ).scalar()
+        )
+
+
+def _read_agents_file() -> list[dict]:
+    """Return the stripped agents.json entries, or [] when absent or bad."""
+    try:
+        path = _get_agents_file()
+        if not path.exists():
+            return []
+        agents: list[dict] = json.loads(path.read_text(encoding="utf-8"))
+        return [_strip_agent_strings(a) for a in agents]
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _sync_file_into_db() -> None:
