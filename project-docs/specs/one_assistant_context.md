@@ -387,8 +387,8 @@ and the flag stays off. Fences: `tests/unit/test_spawn_hardening.py`,
   own spawn row. The spawn row keeps no child text, because that text is item
   JSON for the parent model. A later specialist row or `call_agent` row gets
   its own steps. None of them are labelled `worker`. In the live view, an
-  error of one spawn child adds a failed step for that child (keyed by its
-  run id) and keeps the row active. The stored row does not hold that step.
+  error of one spawn child adds a failed step for that child. The step key is
+  its run id. The row stays active. The stored row does not hold that step.
   The spawn result holds the failure as an item.
 - **2. Nested spawns.** A run that is a sub-run never spawns, at any depth.
   The test reads `_delegation_chain` and the `sub_run` key that the executor
