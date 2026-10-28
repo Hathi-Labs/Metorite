@@ -6,7 +6,7 @@ The preview comes before the switch from Zoho to Metorite (CRM-Z10b). An admin
 reads it, and the owner reads it with a customer.
 
 ⚠️ **It writes nothing, and it calls no source.** The R8 test hashes every
-``crm_*`` table and ``integration_connections`` before and after the call, and
+``crm_*`` table and the connections table before and after the call, and
 a fake source records no call. The counts in Zoho come from the last good sync
 run (``crm_sync_runs.counts`` and ``estimate``), shown "as of <time>". A live
 Zoho count would read a credential, and a token refresh is a write.
