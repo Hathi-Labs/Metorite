@@ -29,8 +29,8 @@
 -- The `<app>:<ref>` shape of `source_id` has no validator in code. The CHECK
 -- `brief_claims_source_id_shape` is the fence of the shape (core_brief.md
 -- §3.3). A reader splits it on the first colon only (my_day_feed.md §4.1).
--- Retention: runs older than 90 days go, by `jobs.prune` of BR-1b
--- (core_brief.md §9 Q6). This file deletes nothing.
+-- Retention: runs older than 90 days go, by `jobs.prune` of BR-1b, which
+-- calls store.prune_runs (core_brief.md §9 Q6). This file deletes nothing.
 -- The number is taken at build time (R1). On 2026-10-28 origin/main held 312,
 -- one open branch claimed 313 and PR #1439 claimed 314. Check it again at
 -- merge. Pinned by tests/unit/test_brief_store_r8.py, which finds this file by
@@ -125,8 +125,9 @@ CREATE TABLE IF NOT EXISTS brief_claims (
     CONSTRAINT brief_claims_value_path CHECK (value IS NULL OR value_path IS NOT NULL)
 );
 
--- The claims of a run, in order.
-CREATE INDEX IF NOT EXISTS brief_claims_run_idx
+-- The claims of a run, in order. UNIQUE, so a retry of the same positions
+-- makes no second set (store.add_claims uses ON CONFLICT DO NOTHING).
+CREATE UNIQUE INDEX IF NOT EXISTS brief_claims_run_position_key
     ON brief_claims (organization_id, run_id, position);
 
 DO $rls$

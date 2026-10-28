@@ -27,6 +27,11 @@ d. A claim with an empty ``source_app``, ``source_kind``, ``source_id`` or
    ``href`` fails its CHECK. ``source_id`` has the ``<app>:<ref>`` shape.
    ``source_ids`` holds at most 50. The foreign key on the run cascades.
 g. Org B reads nothing of org A, and a member reads only their own runs.
+h. A retry of ``add_claims`` with the same positions makes one set, not two.
+i. ``prune_runs`` deletes the runs of the bound org before the cut-off, and
+   their claims. A later run and a run of another org stay.
+j. The member purge deletes the member's runs and claims of this org. The
+   runs of another member and of another org stay, also as the superuser.
 
 **The mutations (R7).** Commit before each, and restore with git after.
 
@@ -38,6 +43,10 @@ g. Org B reads nothing of org A, and a member reads only their own runs.
   ``test_r8_a_claim_with_no_source_is_refused`` goes red.
 * M3. The migration: drop the UNIQUE ``brief_runs_slot_key``.
   ``test_r8_a_second_create_answers_the_same_row`` goes red.
+* M4. The migration: make ``brief_claims_run_position_key`` a plain index.
+  ``test_r8_a_retry_of_the_same_claims_makes_one_set`` goes red.
+* M5. ``routes/admin/members.py``: drop the org predicate of ``brief_runs``.
+  ``test_r8_a_member_purge_leaves_no_brief_behind[superuser]`` goes red.
 """
 
 from __future__ import annotations
@@ -449,3 +458,125 @@ def test_r8_a_member_reads_and_writes_only_their_own_runs(world) -> None:
     assert out["set"] is False and out["add"] == []
     assert out["own"] is not None and out["own"].state == "planned"
     assert len(out["own_claims"]) == 1
+
+
+# ── h. A retry ─────────────────────────────────────────────────────────────
+
+
+def test_r8_a_retry_of_the_same_claims_makes_one_set(world) -> None:
+    claims = [_claim(), _claim(position=1, text="Call the bank.")]
+
+    async def go() -> tuple[list[str], list[str], list[store.Claim]]:
+        run = (await _create(world.p.org_a)).run
+        async with tenant_session(world.p.org_a) as db:
+            first = await store.add_claims(db, ANA, run.id, claims)
+        async with tenant_session(world.p.org_a) as db:
+            second = await store.add_claims(db, ANA, run.id, [*claims, _claim(position=2)])
+            got = await store.read_claims(db, ANA, run.id)
+        return first, second, got
+
+    first, second, got = _go(world, go)
+    assert len(first) == 2
+    # Only the new position takes a row. The two old ones give no id.
+    assert len(second) == 1 and second[0] not in first
+    assert [c.position for c in got] == [0, 1, 2]
+    assert _count(world, "brief_claims") == 3
+
+
+# ── i. Retention ───────────────────────────────────────────────────────────
+
+
+def test_r8_prune_runs_deletes_old_runs_of_the_bound_org_only(world) -> None:
+    from datetime import timedelta
+
+    old, cut, kept = D - timedelta(days=100), D - timedelta(days=90), D - timedelta(days=89)
+
+    async def make(org: str, member: str, day: date) -> str:
+        async with tenant_session(org) as db:
+            run = (await store.create_run(db, member, kind="brief", local_date=day,
+                                          slot_at=T)).run
+            await store.add_claims(db, member, run.id, [_claim()])
+            return run.id
+
+    async def go() -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "a_old": await make(world.p.org_a, ANA, old),
+            "a_ben_old": await make(world.p.org_a, BEN, old),
+            "a_edge": await make(world.p.org_a, ANA, cut),
+            "a_new": await make(world.p.org_a, ANA, kept),
+            "b_old": await make(world.p.org_b, ANA, old),
+        }
+        async with tenant_session(world.p.org_a) as db:
+            out["n"] = await store.prune_runs(db, cut)
+        return out
+
+    out = _go(world, go)
+    assert out["n"] == 2
+    with world.p.admin_engine.connect() as c:
+        runs = set(c.execute(text(
+            "SELECT id::text FROM brief_runs WHERE member_email LIKE :t"),
+            {"t": f"%.{TAG}@br4.test"}).scalars().all())
+        claims = set(c.execute(text(
+            "SELECT run_id::text FROM brief_claims WHERE run_id = ANY(CAST(:ids AS uuid[]))"),
+            {"ids": [out[k] for k in ("a_old", "a_ben_old", "a_edge", "a_new", "b_old")]},
+        ).scalars().all())
+    assert runs == {out["a_edge"], out["a_new"], out["b_old"]}
+    assert claims == runs
+
+
+def test_the_store_refuses_a_prune_with_no_date_before_the_db() -> None:
+    async def go() -> None:
+        with pytest.raises(store.BriefStoreError):
+            await store.prune_runs(None, T)
+        with pytest.raises(store.BriefStoreError):
+            await store.prune_runs(None, "2099-01-01")
+
+    asyncio.run(go())
+
+
+# ── j. The member purge ────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("role", ["app", "superuser"])
+def test_r8_a_member_purge_leaves_no_brief_behind(world, role: str) -> None:
+    """The purge clause of ``brief_runs`` deletes the member's runs of THIS
+    org, and their claims by cascade. A colleague's runs stay, and so do the
+    runs of the same address in another org. The superuser run bypasses RLS,
+    so only the clause's own org predicate keeps org B's row safe there."""
+    from gateway.routes.admin.members import _PURGE_DELETES, _purge_params
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "brief_runs"]
+    a, b = world.p.org_a, world.p.org_b
+
+    async def make(org: str, member: str) -> str:
+        run = (await _create(org, member=member)).run
+        async with tenant_session(org) as db:
+            await store.add_claims(db, member, run.id, [_claim(), _claim(position=1)])
+        return run.id
+
+    async def seed() -> dict[str, str]:
+        return {"mine": await make(a, ANA), "bens": await make(a, BEN),
+                "theirs": await make(b, ANA)}
+
+    ids = _go(world, seed)
+    engine = world.p.app_url if role == "app" else world.p.admin_engine.url
+
+    async def purge() -> tuple[int, int]:
+        params = _purge_params(rows, uid=str(uuid.uuid4()), email=ANA)
+        async with tenant_engine_scope(_dsn(engine)), tenant_session(a) as db:
+            n = (await db.execute(text(rows.count_sql), params)).scalar_one()
+            gone = await db.execute(text(rows.delete_sql), params)
+            return int(n), int(gone.rowcount)
+
+    counted, deleted = asyncio.run(purge())
+    assert counted == deleted == 1
+    with world.p.admin_engine.connect() as c:
+        runs = set(c.execute(text(
+            "SELECT id::text FROM brief_runs WHERE id = ANY(CAST(:i AS uuid[]))"),
+            {"i": list(ids.values())}).scalars().all())
+        claims = c.execute(text(
+            "SELECT run_id::text, count(*) FROM brief_claims "
+            "WHERE run_id = ANY(CAST(:i AS uuid[])) GROUP BY run_id"),
+            {"i": list(ids.values())}).all()
+    assert runs == {ids["bens"], ids["theirs"]}
+    assert dict(claims) == {ids["bens"]: 2, ids["theirs"]: 2}

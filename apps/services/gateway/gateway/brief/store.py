@@ -24,8 +24,13 @@ owns the builder.
 fence of ``<app>:<ref>``. This module adds no second grammar. A reader splits
 the id on the first colon only (``my_day_feed.md`` §4.1).
 
-**Retention.** ``jobs.prune`` of BR-1b deletes runs older than 90 days
-(``core_brief.md`` §9 Q6). This module deletes nothing.
+**Retention.** :func:`prune_runs` deletes the runs of the bound org before a
+date, and their claims by cascade. ``jobs.prune`` of BR-1b calls it with a
+90-day cut-off (``core_brief.md`` §9 Q6). This slice adds no caller.
+
+**A retry.** The UNIQUE index ``brief_claims_run_position_key`` holds one
+claim for each position of a run. :func:`add_claims` skips a position that
+has a claim, so a retry of the same claims makes no second set.
 """
 
 from __future__ import annotations
@@ -79,6 +84,7 @@ _SET_STATE_SQL = (
 )
 
 #: The run must be of the bound org and of the member, or no row goes in.
+#: A position that has a claim takes no second one (a retry).
 _ADD_CLAIM_SQL = (
     "INSERT INTO brief_claims (run_id, position, section, text, source_app, "
     "source_kind, source_id, source_ids, href, value, value_path, fingerprint) "
@@ -86,6 +92,7 @@ _ADD_CLAIM_SQL = (
     "CAST(:val AS numeric), :vp, :fp FROM brief_runs r "
     f"WHERE r.organization_id = {_BOUND_ORG} AND r.member_email = :m "
     "AND r.id = CAST(:run AS uuid) "
+    "ON CONFLICT (organization_id, run_id, position) DO NOTHING "
     "RETURNING id::text"
 )
 
@@ -96,6 +103,12 @@ _READ_CLAIMS_SQL = (
     "JOIN brief_runs r ON r.organization_id = c.organization_id AND r.id = c.run_id "
     f"WHERE c.organization_id = {_BOUND_ORG} AND r.member_email = :m "
     "AND c.run_id = CAST(:run AS uuid) ORDER BY c.position, c.id"
+)
+
+#: The claims go by the ``ON DELETE CASCADE`` of ``brief_claims_run_fk``.
+_PRUNE_SQL = (
+    f"DELETE FROM brief_runs WHERE organization_id = {_BOUND_ORG} "
+    "AND local_date < :before"
 )
 
 
@@ -237,7 +250,9 @@ async def add_claims(db: Any, member: str, run_id: str, claims: list[ClaimIn]) -
 
     Each ``href`` is a string that code built. The store never takes one from
     a model. A run of another member or of another org takes no claim, and
-    the answer is then empty. A claim with no source fails its CHECK.
+    the answer is then empty. A claim with no source fails its CHECK. A
+    position that has a claim takes no second one, and gives no id, so a
+    retry of the same claims makes no second set.
     """
     m = _member(member)
     ids: list[str] = []
@@ -250,9 +265,8 @@ async def add_claims(db: Any, member: str, run_id: str, claims: list[ClaimIn]) -
             "sids": list(c.source_ids), "href": c.href,
             "val": None if c.value is None else str(c.value), "vp": c.value_path,
             "fp": c.fingerprint})).first()
-        if row is None:
-            return ids
-        ids.append(str(row[0]))
+        if row is not None:
+            ids.append(str(row[0]))
     return ids
 
 
@@ -265,3 +279,16 @@ async def read_claims(db: Any, member: str, run_id: str) -> list[Claim]:
         text=str(r[4]), source_app=str(r[5]), source_kind=str(r[6]),
         source_id=str(r[7]), source_ids=tuple(r[8] or ()), href=str(r[9]),
         value=r[10], value_path=r[11], fingerprint=r[12]) for r in rows]
+
+
+async def prune_runs(db: Any, older_than: date) -> int:
+    """Delete the runs of the bound org with a ``local_date`` before
+    *older_than*. Their claims go by cascade. Answers the count of runs.
+
+    The caller picks the cut-off. ``jobs.prune`` of BR-1b passes 90 days
+    before today (``core_brief.md`` §9 Q6).
+    """
+    if not isinstance(older_than, date) or isinstance(older_than, datetime):
+        raise BriefStoreError("older_than must be a date")
+    result: Any = await db.execute(text(_PRUNE_SQL), {"before": older_than})
+    return int(getattr(result, "rowcount", 0) or 0)
