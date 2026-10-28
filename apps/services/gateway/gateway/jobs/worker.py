@@ -14,7 +14,8 @@ does not know it.
 ``handler(session, payload)``. It runs inside the session of the run. A
 ``detached`` handler is ``handler(org, payload, claim)``. It runs with NO
 session open, so it may call a provider or a model. Use it for any work
-that waits on a party outside the database (``docs/job_queue.md`` §5a).
+that waits on a party outside the database (``docs/job_queue.md`` §5a). A
+detached kind gets one try, unless it registers with ``idempotent=True``.
 
 **A session job: one job, two transactions.**
 
@@ -42,6 +43,11 @@ mark on its domain row, calls the provider with no session, and then runs
 session. After the handler returns, the worker reads the row. A row that is
 still ``running`` with this claim's token fails the attempt with
 ``Unsettled``. A handler that raises fails the attempt in a new session.
+A handler that must not try again calls :func:`queue.give_up`.
+
+**The settle clock.** The claim reads the clock, and each settle of the
+worker reads it again after the handler returns. So the backoff of a slow
+try starts at its end, and a try of 240 s does not come back at once.
 
 **Retention.** The kind ``jobs.prune`` (:data:`PRUNE_KIND`) deletes the
 ``done`` and ``failed`` rows of one org that finished more than
@@ -125,10 +131,12 @@ MODES: tuple[str, ...] = ("session", "detached")
 
 @dataclass(frozen=True)
 class _Entry:
-    """One registered kind: its handler and its mode."""
+    """One registered kind: its handler, its mode, and whether a second try
+    of a detached handler is safe."""
 
     handler: Any
     mode: str
+    idempotent: bool = False
 
 
 _HANDLERS: dict[str, _Entry] = {}
@@ -157,16 +165,24 @@ async def _orgs() -> list[str]:
 
 
 def register(kind: str, handler: Handler | DetachedHandler, *, mode: str = "session",
-             replace: bool = False) -> None:
+             idempotent: bool = False, replace: bool = False) -> None:
     """Run *handler* for each job of *kind*, in *mode* (``session`` or
     ``detached``). A second handler of one kind is an error, unless *replace*
-    is True."""
+    is True.
+
+    *idempotent* binds the ``detached`` mode only, and it fails closed. When
+    it is False, the worker gives up a claim of a second or later try before
+    the handler runs (:data:`NOT_IDEMPOTENT`). Set it True only when a second
+    try is safe, for example when the handler reads an intent mark first. A
+    ``session`` handler needs no flag: a failed try rolls back its writes."""
     queue.check_kind(kind)
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
+    if not isinstance(idempotent, bool):
+        raise ValueError("idempotent must be a bool")
     if kind in _HANDLERS and not replace:
         raise ValueError(f"a handler of kind {kind!r} is already registered")
-    _HANDLERS[kind] = _Entry(handler, mode)
+    _HANDLERS[kind] = _Entry(handler, mode, idempotent)
 
 
 def unregister(kind: str) -> None:
@@ -177,6 +193,11 @@ def unregister(kind: str) -> None:
 def kinds() -> list[str]:
     """The kinds that this worker claims, in name order."""
     return sorted(_HANDLERS)
+
+
+#: The ``last_error`` of a detached job that the worker gave up before a
+#: second try, because its kind is not idempotent.
+NOT_IDEMPOTENT = "not idempotent: refusing a second try"
 
 
 class HandlerTimeout(Exception):
@@ -248,10 +269,16 @@ async def _settle_failure(db: Any, job: queue.Claim, exc: BaseException, org: st
 # ── One job ─────────────────────────────────────────────────────────────────
 
 
-async def run_one(org: str, now: datetime) -> str | None:
+async def run_one(org: str, now: datetime, *,
+                  clock: Callable[[], datetime] | None = None) -> str | None:
     """Claim one job of *org* and run it. Answers the outcome: ``done``,
     ``retry``, ``failed``, ``lost`` (the claim was gone), ``refused`` (a row
-    of another org), or None when no job is due."""
+    of another org), or None when no job is due.
+
+    *now* is the time of the claim. The settle reads *clock* again after the
+    handler returns, so a slow try gets its backoff from the end of the try,
+    and not from its start. With no *clock*, the settle uses *now*."""
+    settled = clock if clock is not None else (lambda: now)
     held = kinds()
     async with tenant_session(org) as db:
         job = await queue.claim(db, held, now=now)
@@ -263,7 +290,7 @@ async def run_one(org: str, now: datetime) -> str | None:
         return "refused"
     entry = _HANDLERS.get(job.kind)
     if entry is not None and entry.mode == "detached":
-        return await _run_detached(org, job, entry.handler, now)
+        return await _run_detached(org, job, entry, settled)
     attempt = _Attempt()
     try:
         async with tenant_session(org) as db:
@@ -277,8 +304,9 @@ async def run_one(org: str, now: datetime) -> str | None:
                 async with db.begin_nested():
                     await _call(lambda: handler(db, payload), attempt)
             except Exception as exc:
-                return await _settle_failure(db, job, attempt.timeout or exc, org, now)
-            if await queue.complete(db, job, now=now) != 1:
+                return await _settle_failure(
+                    db, job, attempt.timeout or exc, org, settled())
+            if await queue.complete(db, job, now=settled()) != 1:
                 # Raise inside the session, so the writes of the handler roll back.
                 raise _ClaimGone(job.id)
             return "done"
@@ -290,32 +318,43 @@ async def run_one(org: str, now: datetime) -> str | None:
         # timeout that broke the session stays the error of the attempt.
         _log.warning("jobs.run_failed", job_id=job.id, error=type(exc).__name__)
         async with tenant_session(org) as db:
-            return await _settle_failure(db, job, attempt.timeout or exc, org, now)
+            return await _settle_failure(db, job, attempt.timeout or exc, org, settled())
 
 
 #: The outcome of a detached job that the handler settled, by the row state.
 _SETTLED = {"done": "done", "queued": "retry", "failed": "failed"}
 
 
-async def _run_detached(org: str, job: queue.Claim, handler: DetachedHandler,
-                        now: datetime) -> str:
-    """Run a detached *handler* with no session open, then check the row.
+async def _run_detached(org: str, job: queue.Claim, entry: _Entry,
+                        settled: Callable[[], datetime]) -> str:
+    """Run a detached handler with no session open, then check the row.
 
-    The handler settles the job in its own session. A handler that raises
-    fails the attempt in a new session. A handler that returns and leaves
-    the row ``running`` with this token fails the attempt as ``Unsettled``.
-    A row that another claim holds is ``lost``."""
+    A kind that is not idempotent gets one try only. A claim of a later try
+    (a retry, or a claim after a lost lease) fails for good with
+    :data:`NOT_IDEMPOTENT`, and the handler does not run. The handler settles
+    the job in its own session. A handler that raises fails the attempt in a
+    new session. A handler that returns and leaves the row ``running`` with
+    this token fails the attempt as ``Unsettled``. A row that another claim
+    holds is ``lost``. Each settle of the worker reads *settled* at its own
+    time, after the handler."""
+    if not entry.idempotent and job.attempts > 1:
+        async with tenant_session(org) as db:
+            if await queue.give_up(db, job, NOT_IDEMPOTENT, now=settled()):
+                return "failed"
+        _log.info("jobs.lease_lost", job_id=job.id, kind=job.kind)
+        return "lost"
+    handler: DetachedHandler = entry.handler
     attempt = _Attempt()
     try:
         await _call(lambda: handler(org, dict(job.payload), job), attempt)
     except Exception as exc:
         async with tenant_session(org) as db:
-            return await _settle_failure(db, job, attempt.timeout or exc, org, now)
+            return await _settle_failure(db, job, attempt.timeout or exc, org, settled())
     async with tenant_session(org) as db:
         row = await queue.get_job(db, job.id)
         if row is not None and row.state == "running" and str(row.locked_by) == job.token:
             return await _settle_failure(
-                db, job, Unsettled("the handler returned without settling"), org, now)
+                db, job, Unsettled("the handler returned without settling"), org, settled())
     if row is None or row.state not in _SETTLED:
         _log.info("jobs.lease_lost", job_id=job.id, kind=job.kind)
         return "lost"
@@ -371,12 +410,18 @@ async def run_org(org: str, now: datetime | None = None, *,
     """Up to :data:`BATCH` due jobs of *org*. Answers the count of each
     outcome. Opens no session when no handler is registered.
 
-    The worker reads the clock again for each job, because a batch can run
-    for minutes. *clock* replaces :func:`_now`. A fixed *now* freezes it.
+    The cost of one call: one session for the daily prune seed, on the first
+    tick of a UTC day only (``jobs.prune`` is registered at import). Then one
+    claim session, and for each job that it claims, the sessions of the run.
+    A call with no due job opens the one claim session only.
 
-    The org is bound for the whole call. A handler gets its session as an
-    argument and must use only that session (a second session is a second
-    transaction, outside the settle)."""
+    The worker reads the clock for each claim, and again for each settle,
+    because a try can run for minutes. *clock* replaces :func:`_now`. A fixed
+    *now* freezes it.
+
+    The org is bound for the whole call. A ``session`` handler gets its
+    session as an argument and must use only that session. A ``detached``
+    handler gets the org, and opens its own sessions."""
     if clock is None:
         clock = (lambda: now) if now is not None else _now
     counts: Counter[str] = Counter()
@@ -393,7 +438,7 @@ async def run_org(org: str, now: datetime | None = None, *,
             if _stopping.is_set():
                 break
             try:
-                outcome = await run_one(org, clock())
+                outcome = await run_one(org, clock(), clock=clock)
             except Exception as exc:
                 _log.warning("jobs.claim_failed", error=type(exc).__name__)
                 counts["error"] += 1
