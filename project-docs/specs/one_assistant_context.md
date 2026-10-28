@@ -9,6 +9,8 @@ OA-8a is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-8a" in §4.3
 
 OA-8b is BUILT, dark behind `TOOL_PACKS` (2026-10-28, "As built, OA-8b" in §4.3.2). The flag flip is OWNER-GATE.
 
+OA-8e is PARTLY BUILT (2026-10-28). Phase 1 is the harness: the CRM, Projects and mixed chats, the fake gateway, the checks and the scripted run, all in `evals/one_assistant_measure` (README section "OA-8e"). The fan-out chats and the `packs+spawn` arm are listed and skipped, because `spawn_subagents` (OA-9b) does not exist. Phase 2 is the live run and the report in `docs/`. It waits for the Router tunnel and for the `general` and `miss` sets. OA-10 still waits for the report.
+
 OA-3 is built, dark behind `ATTACHMENT_OCR`, and §4.1 holds three conditions
 for the flip. OA-6 is DECIDED (D117,
 2026-10-26): yes, for all apps. §4.2 (OA-7), §4.3 (OA-8) and §6 (OA-9) hold
@@ -1649,7 +1651,7 @@ context has no live tool list. The decorator emits `ExperimentalWarning`.
 - **OA-8b.** The four Projects families together equal `skill_projects.__all__`, and each holds 35 tools or fewer. A pack tool keeps its strict arguments. In a covered org, no Projects pack loads. A batch tool shows one card with its counts. The core pack fits beside the `email` pack at the measured base. Fences: `tests/unit/test_projects_packs.py` and `tests/unit/test_tool_packs_registry.py`.
 - **OA-8c.** The held set of the `whatsapp` pack equals the held set of its owner. Fence: `tests/unit/test_pack_guards.py`.
 - **OA-8d.** Optional. OA-8e shows that the turns of the `integrations` pack lose nothing.
-- **OA-8e.** A report in `docs/` gives the numbers of §4.3.3 for the three arms. None of the stop results of §4.3.3 occurs. OA-10 starts only then.
+- **OA-8e.** A report in `docs/` gives the numbers of §4.3.3 for the three arms. None of the stop results of §4.3.3 occurs. OA-10 starts only then. Phase 1 (the harness) is built: fence `tests/unit/test_one_assistant_measure_oa8e.py`. The live run is phase 2.
 - **OA-9a.** The contract parser accepts good items, and it turns other output into one `inferred` item. The `worker` refuses with no job, and the picker and the specialist list do not show it. Its open set is its job, and its held set is the job without the egress tools. Fences: `tests/unit/test_subagent_contract.py` for the parser, and `tests/unit/test_subagent_worker.py` for the worker.
 - **OA-9b.** Five jobs run at once, and a sixth gets a name and does not run. Stop during a fan-out of 3 cancels all 3. A child holds only read tools, no tool that its parent lacks, and it is held in a marked chat. A child stops after 4 model calls. Only the main assistant holds `spawn_subagents`. Fence: `tests/unit/test_spawn_subagents.py`.
 - **SUB-1.** A child cannot call a memory write, a send, an automation tool, a tool that asks the member or a delegation tool. Each of them gets its own case. Fence: `tests/unit/test_subagent_blocked_tools.py` (§6.8). It is part of the OA-9b gate.

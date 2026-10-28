@@ -32,9 +32,11 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import statistics
 import subprocess
 import sys
+import time
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,7 +45,8 @@ from typing import Any
 from evals.one_assistant_measure import checks as ck
 from evals.one_assistant_measure import mailbox as mb
 from evals.one_assistant_measure import pack
-from evals.one_assistant_measure.scenarios import SCENARIOS, Scenario
+from evals.one_assistant_measure import workgateway as wg
+from evals.one_assistant_measure.scenarios import SCENARIOS, Scenario, all_scenarios
 from evals.routing import dataset as ds
 from evals.routing.harness import (
     ORCHESTRATOR,
@@ -59,7 +62,12 @@ from tests.unit._egress_mark_store import install_memory_mark_store
 HERE = Path(__file__).resolve().parent
 EXIT_PASS, EXIT_FAIL, EXIT_NO_GO = 0, 1, 2
 ARMS = ("delegation", "pack")
+#: The third arm of the spec (OA-8e): the packs with ``spawn_subagents`` on
+#: (OA-9). It waits for OA-9b, so it is listed and never run (:func:`spawn_built`).
+SPAWN_ARM = "packs+spawn"
 EA = pack.EA
+CRM = pack.CRM
+PROJECTS = pack.PROJECTS
 #: The settings of production that the measure sets in its own process (OA-7h).
 #: They change how the run behaves, so both arms get them. The measure never
 #: writes them on a box.
@@ -72,17 +80,37 @@ PRODUCTION: dict[str, Any] = {
 }
 
 
-def pack_flag() -> dict[str, Any]:
+def pack_flag(owners: tuple[str, ...] = (pack.EA,)) -> dict[str, Any]:
     """The real flag of the ``pack`` arm: ``TOOL_PACKS`` and ``TOOL_PACKS_ORGS``.
 
-    EVERY pack of ``email-assistant``, for the eval org only. OA-7i removes the
-    specialist tool only when the loader can reach every pack of the owner
+    EVERY pack of each owner in *owners*, for the eval org only. OA-7i removes
+    the specialist tool only when the loader can reach every pack of the owner
     (``tool_packs.plan_loader``). With ``email`` alone, run 2 of 2026-10-28
-    kept ``email_assistant`` in the run and handed off mail work in 31 turns."""
+    kept ``email_assistant`` in the run and handed off mail work in 31 turns.
+    The email chats turn on the email owner alone, as before. The CRM,
+    Projects and mixed chats turn on all three owners (:func:`owners_of`):
+    ``crm-records`` for the CRM assistant, and the four packs of the Projects
+    assistant. A pack left out keeps its specialist in the run (OA-8e)."""
     from acb_skills import tool_packs
 
-    return {"tool_packs": ",".join(tool_packs.owner_packs(pack.EA)),
-            "tool_packs_orgs": ds.ORG}
+    slugs = [slug for owner in owners for slug in tool_packs.owner_packs(owner)]
+    return {"tool_packs": ",".join(slugs), "tool_packs_orgs": ds.ORG}
+
+
+def owners_of(sc: Scenario) -> tuple[str, ...]:
+    """The owners whose packs the ``pack`` arm turns on for *sc*."""
+    return (EA,) if sc.set == "email" else pack.OWNERS
+
+
+def spawn_built() -> bool:
+    """True once ``spawn_subagents`` exists as a tool (OA-9b). A test pins this
+    to False, and fails when OA-9b lands, so the fan-out arm gets built."""
+    root = Path(__file__).resolve().parents[2]
+    for base in (root / "apps" / "services" / "orchestrator", root / "packages" / "acb_skills"):
+        for path in base.rglob("*.py"):
+            if "async def spawn_subagents" in path.read_text(encoding="utf-8", errors="ignore"):
+                return True
+    return False
 EVAL_ENV = Path.home() / ".metorite" / "secrets" / "eval.env"
 RATE_CARD = json.loads((HERE / "rate_card.json").read_text(encoding="utf-8"))
 
@@ -136,6 +164,26 @@ def pack_tool_names() -> frozenset[str]:
     return frozenset(SKILL_FAMILIES["email"]["tools"])
 
 
+def owner_of_tool(name: str) -> str:
+    """The owner of tool *name*: the CRM or the Projects assistant, else email."""
+    if name in pack.owner_tool_names(CRM):
+        return CRM
+    if name in pack.owner_tool_names(PROJECTS):
+        return PROJECTS
+    return EA
+
+
+def pack_of_tool(name: str) -> str:
+    """The slug of the pack of a CRM or Projects tool."""
+    from acb_skills import tool_packs
+
+    owner = owner_of_tool(name)
+    for slug in tool_packs.owner_packs(owner):
+        if name in tool_packs.PACKS[slug].tools:
+            return slug
+    raise KeyError(name)
+
+
 def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:
     """The known-good models of *sc* on *arm*, from the plan of each turn.
 
@@ -143,30 +191,63 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:
     own run. A call that the pack does not hold (a rule, a setting) goes to the
     email assistant by ``call_agent``, as the rules of the pack say (H-417).
     The model loads the pack first when the member's words do not (layer (b)).
+    A CRM or Projects call runs in the orchestrator's own run too: its pack
+    loads by the surface (layer a), by a word of the pack (layer a), because it
+    is sticky from an earlier turn, or by the model's own load (layer b).
+    On the ``delegation`` arm each owner gets one hand-off for its calls.
     """
     from acb_skills import tool_packs
 
     in_pack = pack_tool_names()
     orch: list[Any] = []
-    email: list[Any] = []
+    subs: dict[str, list[Any]] = {}
     n = 0
     used = False
+    held: set[str] = set()
     for turn in sc.turns:
         plan = turn.plan
-        if arm == "delegation" and plan.calls:
-            n += 1
-            orch.append(tool_turn(pack.DELEGATE_TOOL, {"task": turn.words}, call_id=f"call_{n}"))
-            for name, args in plan.calls:
+        if arm == "delegation":
+            by_owner: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+            for call in plan.calls:
+                by_owner.setdefault(owner_of_tool(call[0]), []).append(call)
+            for owner, calls in by_owner.items():
                 n += 1
-                email.append(tool_turn(name, args, call_id=f"call_{n}"))
-            email.append(text_turn(plan.answer))
+                orch.append(tool_turn(pack.DELEGATE_TOOLS[owner], {"task": turn.words},
+                                      call_id=f"call_{n}"))
+                for name, args in calls:
+                    n += 1
+                    subs.setdefault(owner, []).append(tool_turn(name, args, call_id=f"call_{n}"))
+                subs[owner].append(text_turn(plan.answer))
         elif arm == "pack":
             mine = [c for c in plan.calls if c[0] in in_pack]
-            setup = [c for c in plan.calls if c[0] not in in_pack]
+            setup = [c for c in plan.calls
+                     if c[0] not in in_pack and owner_of_tool(c[0]) == EA]
+            work = [c for c in plan.calls if owner_of_tool(c[0]) != EA]
             if mine and not (used or tool_packs.matched_layer("email", turn.words)):
                 n += 1
                 orch.append(tool_turn(tool_packs.LOAD_TOOL, {"pack": "email"}, call_id=f"call_{n}"))
             for name, args in mine:
+                n += 1
+                orch.append(tool_turn(name, args, call_id=f"call_{n}"))
+            if work and plan.handoff:
+                owner = owner_of_tool(work[0][0])
+                n += 1
+                orch.append(tool_turn("call_agent", {"agent_name": owner, "message": turn.words},
+                                      call_id=f"call_{n}"))
+                for name, args in work:
+                    n += 1
+                    subs.setdefault(owner, []).append(tool_turn(name, args, call_id=f"call_{n}"))
+                subs[owner].append(text_turn(plan.answer))
+                work = []
+            for name, args in work:
+                slug = pack_of_tool(name)
+                if slug not in held and not (
+                        tool_packs.matched_layer(slug, turn.words)
+                        or sc.surface in tool_packs.PACKS[slug].surface_slugs):
+                    n += 1
+                    orch.append(tool_turn(tool_packs.LOAD_TOOL, {"pack": slug},
+                                          call_id=f"call_{n}"))
+                held.add(slug)
                 n += 1
                 orch.append(tool_turn(name, args, call_id=f"call_{n}"))
             if setup:
@@ -175,13 +256,12 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:
                                       call_id=f"call_{n}"))
                 for name, args in setup:
                     n += 1
-                    email.append(tool_turn(name, args, call_id=f"call_{n}"))
-                email.append(text_turn(plan.answer))
+                    subs.setdefault(EA, []).append(tool_turn(name, args, call_id=f"call_{n}"))
+                subs[EA].append(text_turn(plan.answer))
             used = used or bool(mine)
         orch.append(text_turn(plan.answer))
     models = {ORCHESTRATOR: ReplyModel(orch)}
-    if email:
-        models[EA] = ReplyModel(email)
+    models.update({owner: ReplyModel(turns) for owner, turns in subs.items()})
     return models
 
 
@@ -191,6 +271,8 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:
 #: the turn-kind request with its time, and each load of a pack, with the
 #: number of model calls that came before it in the turn.
 WATCHED = ("ai_route.turn_kind", "tool_packs.", "executor.pack")
+#: The event that the measure itself adds: the time of layer (a) in ms.
+LAYER_A_EVENT = "measure.layer_a"
 _DROPPED_FIELDS = frozenset({"run_id", "thread_id", "user", "member_verified", "instance", "app",
                              "agent", "source_id"})
 
@@ -240,6 +322,19 @@ class LogTap:
 
         for module in (executor, ti, tool_packs):
             mp.setattr(module, "_log", _TappedLog(module._log, self))
+        real = ti._apply_tool_packs
+        tap = self
+
+        async def timed(*args: Any, **kwargs: Any) -> Any:
+            started = time.monotonic()
+            try:
+                return await real(*args, **kwargs)
+            finally:
+                tap.events.append({"event": LAYER_A_EVENT, "level": "info",
+                                   "calls_before": len(tap.calls),
+                                   "ms": round((time.monotonic() - started) * 1000, 2)})
+
+        mp.setattr(ti, "_apply_tool_packs", timed)
 
 
 # ── the cards ────────────────────────────────────────────────────────────────
@@ -366,8 +461,20 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
         owner_module = ti._pack_owner_module(EA)
         if owner_module is not None and owner_module is not module:
             mb.install(harness._mp, owner_module, gateway)
+        # OA-8e: the CRM and Projects tools reach the gateway through httpx,
+        # so a fake answers at the transport. CRM Mirror mode is read from
+        # ``crm_mode``, which the harness pins to ``native``.
+        work = wg.WorkGateway(mode=sc.mode)
+        work.install(harness._mp)
+        from acb_skills import crm_tools, tool_packs
+
+        async def crm_mode() -> str:
+            return sc.mode
+
+        harness._mp.setattr(crm_tools, "crm_mode", crm_mode)
         settings = get_settings()
-        for name, value in {**PRODUCTION, **(pack_flag() if arm == "pack" else {})}.items():
+        flag = pack_flag(owners_of(sc)) if arm == "pack" else {}
+        for name, value in {**PRODUCTION, **flag}.items():
             harness._mp.setattr(settings, name, value, raising=False)
         # OA-7h duty 1: the mark of a chat that read mail lives in Redis. The
         # harness installs the in-memory store, and the measure installs it
@@ -385,19 +492,33 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
         for index, turn in enumerate(sc.turns):
             marks = (len(gateway.calls), len(member.cards), len(harness.model_calls),
                      len(tap.events), len(harness.sent), len(harness.passed),
-                     len(store.calls))
-            record = asyncio.run(harness.drive(
-                turn.words, sc.page, member=ds.MEMBER, org=ds.ORG, tier=tier,
-                on_card=member, timeout=timeout, thread_id=thread,
-                history=history or None, typed=turn.words,
-            ))
+                     len(store.calls), len(work.calls))
+            # The gateway binds the app that the member is in, for this turn.
+            with tool_packs.surface_scope(sc.surface):
+                record = asyncio.run(harness.drive(
+                    turn.words, sc.page, member=ds.MEMBER, org=ds.ORG, tier=tier,
+                    on_card=member, timeout=timeout, thread_id=thread,
+                    history=history or None, typed=turn.words,
+                ))
             thread = record.thread_id
+            main_calls, sub_calls = ck.work_calls_of(record.events, ck.work_tool_names())
+            used_calls = harness.model_calls[marks[2]:]
             obs = ck.Observation(
                 arm=arm, answer=record.answer, email_calls=ck.email_calls_of(record.events),
                 tasks=ck.tasks_of(record.tool_calls),
                 refused=[],
                 cards=member.cards[marks[1]:], gateway=gateway.calls[marks[0]:],
                 error=record.error, turn=index + 1,
+                work_calls=main_calls, sub_work_calls=sub_calls,
+                work_writes=work.writes(marks[7]), handoffs=ck.handoffs_of(record.tool_calls),
+                loaded=ck.loads_of(record.tool_calls),
+                owners=owners_of(sc) if arm == "pack" and sc.set != "email" else (),
+                mirror=sc.mode == "mirror",
+                max_tools=max((c.tools for c in used_calls if c.agent == ORCHESTRATOR),
+                              default=0) if arm == "pack" else 0,
+                spawned=sum(1 for name, _ in record.tool_calls if name == "spawn_subagents"),
+                needs=next((str(c.arg) for c in turn.checks if c.kind == "right_pack"), ""),
+                reachable=reachable_of(tap.events[marks[3]:]),
             )
             result = ck.check_turn(turn, obs)
             calls = [call_row(c) for c in harness.model_calls[marks[2]:]]
@@ -414,6 +535,14 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 "sent": harness.sent[marks[4]:],
                 "router_sends": len(harness.passed) - marks[5],
                 "handoffs": [ck.handoff_kind(t) for t in obs.tasks],
+                "set": sc.set, "surface": sc.surface,
+                "work_tools": [n for n, _, _ in [*obs.work_calls, *obs.sub_work_calls]],
+                "specialist_handoffs": {k: len(v) for k, v in obs.handoffs.items()},
+                "loaded_by_model": obs.loaded,
+                "work_writes": [f"{m} {p}" for m, p, _ in obs.work_writes],
+                "unknown_routes": work.unknown[:],
+                "max_tools": max((c["tools"] for c in calls if c["agent"] == ORCHESTRATOR),
+                                 default=0),
                 "pack_events": events,
                 "mark_writes": sum(1 for kind, _ in store.calls[marks[6]:] if kind == "setex"),
             }
@@ -423,6 +552,25 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
             history += [{"role": "user", "content": turn.words},
                         {"role": "assistant", "content": record.answer}]
     return rows
+
+
+def reachable_of(events: list[dict[str, Any]]) -> frozenset[str]:
+    """The packs that the run held or could load in a turn, from the log of the
+    pack code: the packs it loaded (layer a), the packs it offered to the loader,
+    and the packs that the model loaded (layer b)."""
+    from acb_skills import tool_packs
+
+    known = {slug for slug in tool_packs.PACKS}
+    out: set[str] = set()
+    for e in events:
+        if e["event"] == "executor.pack_plan":
+            for key in ("offered", "packs"):
+                out |= set(re.findall(r"[a-z][a-z0-9-]*", str(e.get(key) or ""))) & known
+        elif e["event"] == "executor.packs_loaded":
+            out |= set(re.findall(r"[a-z][a-z0-9-]*", str(e.get("packs") or ""))) & known
+        elif e["event"] == "tool_packs.loaded" and e.get("pack") in known:
+            out.add(str(e["pack"]))
+    return frozenset(out)
 
 
 def _r(value: float | None) -> float | None:
@@ -444,13 +592,20 @@ def scripted_problems(rows: list[dict[str, Any]]) -> list[str]:
             out.append(f"{where}: reached the network {r['sent']}")
         if not r["model_calls"]:
             out.append(f"{where}: the tap recorded no model call")
+        if r.get("unknown_routes"):
+            out.append(f"{where}: a route has no fixture {r['unknown_routes']}")
     return out
+
+
+def runnable(scenarios: tuple[Scenario, ...]) -> tuple[Scenario, ...]:
+    """*scenarios* without the chats that wait on something (``Scenario.skip``)."""
+    return tuple(sc for sc in scenarios if not sc.skip)
 
 
 def run_scripted(scenarios: tuple[Scenario, ...] = SCENARIOS,
                  arms: tuple[str, ...] = ARMS) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
-    for sc in scenarios:
+    for sc in runnable(scenarios):
         for arm in arms:
             rows += run_chat(sc, arm)
     return rows, scripted_problems(rows)
@@ -579,8 +734,149 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "cost_usd": round(sum(t["cost_usd"] for t in totals), 4),
             "per_check": {k: f"{p}/{n}" for k, (p, n) in sorted(per_check.items())},
             "by_scenario": {k: f"{p}/{n}" for k, (p, n) in by_scenario.items()},
+            **extra_summary(rs),
         }
     return out
+
+
+# ── the OA-8e columns ────────────────────────────────────────────────────────
+
+#: The checks that guard a rule. Stop result 1 of §4.3.3: one failure on any
+#: arm, in any run, stops OA-10.
+GUARD_CHECKS = frozenset({
+    "held_card", "one_card", "one_card_per_write", "mirror_respected",
+    "no_unasked_write", "tools_per_call",
+})
+
+
+def _pct(part: int, whole: int) -> float | None:
+    return round(100.0 * part / whole, 1) if whole else None
+
+
+def _layers_of(row: dict[str, Any]) -> dict[str, str]:
+    """``{slug: layer}`` of the packs that the run loaded before the model (a, c)."""
+    out: dict[str, str] = {}
+    for e in row.get("pack_events") or []:
+        if e["event"] == "executor.packs_loaded":
+            out.update(dict(re.findall(r"'([a-z][a-z0-9-]*)': '([a-z_]*)'", str(e.get("layers")))))
+    return out
+
+
+def _unused_pack(row: dict[str, Any]) -> bool:
+    """True when a pack loaded before the model and no tool of it ran."""
+    from acb_skills import tool_packs
+
+    ran = set(row.get("work_tools") or []) | set(row.get("email_tools") or [])
+    return any(not (set(tool_packs.PACKS[slug].tools) & ran)
+               for slug in _layers_of(row) if slug in tool_packs.PACKS)
+
+
+def _is_app_turn(row: dict[str, Any]) -> bool:
+    """A turn that needed a pack: it has a ``right_pack`` check (any value)."""
+    return "right_pack" in row["checks"]
+
+
+def extra_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
+    """The columns that OA-8e adds to the summary of one arm."""
+    app = [r for r in rs if _is_app_turn(r)]
+    layer_b = [r for r in app if r.get("loaded_by_model")]
+    packed = [r for r in rs if _layers_of(r)]
+    load_ms = [e["ms"] for r in rs for e in r.get("pack_events") or []
+               if e["event"] == LAYER_A_EVENT]
+    per_call = [c["tools"] for r in rs for c in r["model_calls"]
+                if c["agent"] == ORCHESTRATOR and c.get("tools")]
+    loaded_turns = [turn_totals(r) for r in rs if r.get("loaded_by_model")]
+    other_turns = [turn_totals(r) for r in rs if not r.get("loaded_by_model")]
+
+    def share(ts: list[dict[str, Any]]) -> float | None:
+        prompt = sum(t["prompt"] for t in ts)
+        return round(sum(t["cached"] for t in ts) / prompt, 4) if prompt else None
+
+    kinds: dict[str, int] = defaultdict(int)
+    for r in rs:
+        for agent, n in (r.get("specialist_handoffs") or {}).items():
+            kinds[agent] += n
+    return {
+        "app_turns": len(app),
+        "layer_b_turns": len(layer_b),
+        "layer_b_share_pct": _pct(len(layer_b), len(app)),
+        "pack_turns": len(packed),
+        "unused_pack_turns": sum(1 for r in packed if _unused_pack(r)),
+        "unused_pack_share_pct": _pct(sum(1 for r in packed if _unused_pack(r)), len(rs)),
+        "layer_a_ms_mean": _mean(load_ms), "layer_a_ms_p90": _p90(load_ms),
+        "tools_per_call_max": max(per_call, default=None),
+        "tools_per_call_mean": _mean([float(n) for n in per_call]),
+        "cache_share_load_turns": share(loaded_turns),
+        "cache_share_other_turns": share(other_turns),
+        "specialist_handoffs": dict(kinds),
+        "guard_failures": sorted({f"{r['scenario']}#{r['turn']} {k}" for r in rs
+                                  for k in GUARD_CHECKS if r["checks"].get(k) is False}),
+        "by_set": {name: set_summary([r for r in rs if r.get("set", "email") == name])
+                   for name in sorted({r.get("set", "email") for r in rs})},
+    }
+
+
+def set_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
+    """The numbers of one set of chats on one arm (spec §4.3.3, "Numbers to report")."""
+    totals = [turn_totals(r) for r in rs]
+    first = [r["first_text_s"] for r in rs if r["first_text_s"] is not None]
+    total = [r["total_s"] for r in rs if r["total_s"] is not None]
+    prompt = sum(t["prompt"] for t in totals)
+    return {
+        "turns": len(rs), "turns_passed": sum(int(r["passed"]) for r in rs),
+        "pass_pct": _pct(sum(int(r["passed"]) for r in rs), len(rs)),
+        "first_text_median": _median(first), "first_text_p90": _p90(first),
+        "total_median": _median(total), "total_p90": _p90(total),
+        "calls_per_turn": _mean([t["calls"] for t in totals]),
+        "prompt_per_turn": _mean([t["prompt"] for t in totals]),
+        "cache_share": round(sum(t["cached"] for t in totals) / prompt, 4) if prompt else None,
+        "cost_per_turn_usd": round(statistics.fmean([t["cost_usd"] for t in totals]), 5)
+        if totals else None,
+    }
+
+
+def stop_results(summary: dict[str, Any]) -> list[tuple[int, str, str]]:
+    """The ten stop results of §4.3.3 that one results file can show, as
+    ``(number, state, why)``. State: ``STOP``, ``ok`` or ``n/a``. Results 3, 4 and
+    9 need the ``general`` set, a run with no packs, and the spawn arm. Result 10
+    needs the spawn arm. They show ``n/a`` until those exist."""
+    out: list[tuple[int, str, str]] = []
+    guards = sorted({g for v in summary.values() for g in v.get("guard_failures", [])})
+    out.append((1, "STOP" if guards else "ok", ", ".join(guards) or "no guard check failed"))
+    dele, packs = summary.get("delegation"), summary.get("pack")
+    if dele and packs:
+        def app_rate(v: dict[str, Any]) -> float | None:
+            sets = [s for n, s in v["by_set"].items() if n != "email"]
+            turns = sum(s["turns"] for s in sets)
+            return 100.0 * sum(s["turns_passed"] for s in sets) / turns if turns else None
+
+        a, b = app_rate(dele), app_rate(packs)
+        if a is None or b is None:
+            out.append((2, "n/a", "no app turn outside email"))
+        else:
+            out.append((2, "STOP" if b < a - 2 else "ok", f"packs {b:.1f}% vs delegation {a:.1f}%"))
+        cost = [v["by_set"][n]["cost_per_turn_usd"] for v in (dele, packs)
+                for n in v["by_set"] if n != "email"]
+        out.append((7, "n/a" if None in cost else (
+            "STOP" if packs["cost_per_turn_usd"] > dele["cost_per_turn_usd"] else "ok"),
+            f"packs USD {packs['cost_per_turn_usd']} vs delegation {dele['cost_per_turn_usd']}"))
+    if packs:
+        share = packs.get("layer_b_share_pct")
+        out.append((5, "n/a" if share is None else ("STOP" if share > 15 else "ok"),
+                    f"layer (b) on {share}% of app turns"))
+        unused = packs.get("unused_pack_share_pct")
+        out.append((6, "n/a" if unused is None else ("STOP" if unused > 20 else "ok"),
+                    f"an unused pack on {unused}% of turns"))
+        from acb_skills.tool_packs import MAX_REQUEST_TOOLS
+
+        top = packs.get("tools_per_call_max")
+        out.append((8, "n/a" if top is None else ("STOP" if top > MAX_REQUEST_TOOLS else "ok"),
+                    f"at most {top} tools in a request, cap {MAX_REQUEST_TOOLS}"))
+    for n, why in ((3, "needs the general set and a run with no packs"),
+                   (4, "needs the general set"), (9, "needs the spawn arm (OA-9b)"),
+                   (10, "needs the spawn arm (OA-9b)")):
+        out.append((n, "n/a", why))
+    return sorted(out)
 
 
 def report(data: dict[str, Any]) -> str:
@@ -630,6 +926,38 @@ def report(data: dict[str, Any]) -> str:
     lines += ["", "| Check | " + " | ".join(arms) + " |", "|---" + "|---" * len(arms) + "|"]
     for k in names:
         lines.append(f"| `{k}` | " + " | ".join(s[a]["per_check"].get(k, "-") for a in arms) + " |")
+    if any("by_set" in s[a] for a in arms):
+        lines += ["", "OA-8e: the numbers of each set, on each arm.", "",
+                  "| Set | Arm | Pass | First text median / p90 s | Total median / p90 s "
+                  "| Calls | Input tokens | Cache share | USD a turn |",
+                  "|---|---|---|---|---|---|---|---|---|"]
+        for name in sorted({n for a in arms for n in s[a].get("by_set", {})}):
+            for a in arms:
+                v = s[a].get("by_set", {}).get(name)
+                if v:
+                    lines.append(
+                        f"| {name} | {a} | {v['turns_passed']}/{v['turns']} "
+                        f"| {v['first_text_median']} / {v['first_text_p90']} "
+                        f"| {v['total_median']} / {v['total_p90']} | {v['calls_per_turn']} "
+                        f"| {v['prompt_per_turn']} | {v['cache_share']} | {v['cost_per_turn_usd']} |")
+        lines += ["", "| Loader and cap | " + " | ".join(arms) + " |",
+                  "|---" + "|---" * len(arms) + "|"]
+        for label, key in (
+                ("Turns that needed a pack", "app_turns"),
+                ("Layer (b) turns (the model loaded a pack)", "layer_b_turns"),
+                ("Layer (b), percent of those turns", "layer_b_share_pct"),
+                ("Turns with a pack loaded before the model", "pack_turns"),
+                ("Of them, a pack no tool of which ran", "unused_pack_turns"),
+                ("Layer (a) time, mean ms", "layer_a_ms_mean"),
+                ("Layer (a) time, p90 ms", "layer_a_ms_p90"),
+                ("Tools in a request, mean", "tools_per_call_mean"),
+                ("Tools in a request, most", "tools_per_call_max"),
+                ("Cache share, turns with a model load", "cache_share_load_turns"),
+                ("Cache share, other turns", "cache_share_other_turns"),
+                ("Hand-offs to an owner", "specialist_handoffs")):
+            lines.append(f"| {label} | " + " | ".join(str(s[a].get(key)) for a in arms) + " |")
+        lines += ["", "| Stop result of §4.3.3 | State | Why |", "|---|---|---|"]
+        lines += [f"| {n} | {state} | {why} |" for n, state, why in stop_results(s)]
     return "\n".join(lines)
 
 
@@ -770,7 +1098,7 @@ def merge(paths: list[Path], out: Path) -> dict[str, Any]:
 #: because a results file keeps no tool arguments, cards or gateway calls.
 RESCORED = frozenset({
     "answer_all", "answer_some", "no_name_claim", "no_reference_subject",
-    "admits_unreadable", "no_content_claim", "task_no_guess",
+    "admits_unreadable", "no_content_claim", "task_no_guess", "answer_none",
 })
 
 
@@ -854,9 +1182,16 @@ def main(argv: list[str] | None = None) -> int:
     if reconfigure is not None:
         reconfigure(encoding="utf-8", errors="replace")
 
-    arms = tuple(a for a in args.arms.split(",") if a in ARMS)
+    asked = [a.strip() for a in args.arms.split(",") if a.strip()]
+    if SPAWN_ARM in asked and not spawn_built():
+        print(f"SKIP: the arm {SPAWN_ARM} waits for OA-9b (spawn_subagents is not built)")
+    arms = tuple(a for a in asked if a in ARMS)
     wanted = {s.strip() for s in args.scenarios.split(",") if s.strip()}
-    scenarios = tuple(s for s in SCENARIOS if not wanted or s.id in wanted)
+    chosen = tuple(sc for sc in all_scenarios() if not wanted or sc.id in wanted)
+    for sc in chosen:
+        if sc.skip:
+            print(f"SKIP: {sc.id} ({sc.set}): {sc.skip}")
+    scenarios = runnable(chosen)
     out = Path(args.out)
 
     if args.report:

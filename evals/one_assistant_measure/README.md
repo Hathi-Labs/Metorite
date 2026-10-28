@@ -1,11 +1,12 @@
-# The email measure: the real tool pack against delegation (WS-67, OA-5 and OA-7h)
+# The measure: the real tool packs against delegation (WS-67, OA-5, OA-7h and OA-8e)
 
 This folder compares two shapes of the one assistant on the same email
 chats. The owning spec is `project-docs/specs/one_assistant_context.md`,
 §4 and §5, slices OA-5 (D116) and OA-7h. The report of the first live run is
 `docs/one_assistant_measure_2026-10-25.md`.
 
-**Status.** OA-5 was built on 2026-10-25. OA-7h phase 1 was built on
+**Status.** OA-8e phase 1 (the CRM and Projects chats) was built on
+2026-10-28. See the section "OA-8e" below. OA-5 was built on 2026-10-25. OA-7h phase 1 was built on
 2026-10-27: the `pack` arm runs the real pack, and the scripted run passes on
 both arms. The live run of OA-7h waits for OA-7f. The results of the live run
 of 2026-10-25 are in git history only. Commit `63550a052` (#1348) added
@@ -93,6 +94,133 @@ that hand off mail work, the turn-kind request time with and without pack
 items, and the turns where a pack loaded before the first model call. The
 last two read the log events of the pack code, which `run.LogTap` keeps in
 each row as `pack_events`.
+
+## OA-8e: the CRM and Projects chats
+
+**Status.** Phase 1 of OA-8e was built on 2026-10-28: the harness, the
+chats, the checks and the scripted run. No live run exists yet. The live run
+is phase 2. It waits for the owner to open the Router tunnel. OA-10 waits for
+the report of that run (`one_assistant_context.md` §4.3.3 and §5, OA-8e).
+
+The owner turns on `TOOL_PACKS` for each pack only after a measure shows that
+the pack is as good as delegation. Email has its measure above. This section
+adds the same measure for `crm-records` (OA-8a) and for the four Projects
+packs (OA-8b). It extends this folder and builds no second harness (§7
+item 2).
+
+### The arms
+
+| Arm | State | What it holds |
+|---|---|---|
+| `delegation` | Runs | Today's code. The orchestrator hands each CRM or Projects task to the real specialist. |
+| `pack` | Runs | The spec calls it `packs`. `run.pack_flag(owners)` turns on EVERY pack of the email, CRM and Projects owners for the eval org. |
+| `packs+spawn` | Listed, skipped | OA-9 on too. It waits for OA-9b, because `spawn_subagents` does not exist. |
+
+The key `pack` stays, so the stored results of the email measure still read.
+`run --arms delegation,pack,packs+spawn` prints `SKIP` for the third arm.
+`run.spawn_built()` looks for `async def spawn_subagents` in the code.
+`test_spawn_subagents_is_not_built` fails when it finds one. Then the arm
+and the fan-out plans must be built.
+
+### The chats
+
+`scenarios_work.py` holds the chats. `scenarios.py` holds the `Scenario`
+fields `set`, `surface`, `mode` and `skip`. Each turn has fewer than 12
+words (`SHORT_MESSAGE_WORDS`), so no turn-kind request goes out. The pack
+loads by the surface (layer a), by a word of the pack (layer a), or by the
+model (layer b). A test holds the words of each chat against the word lists.
+
+| Set | Chats | Turns | What it covers |
+|---|---|---|---|
+| `crm` | 9 | 12 | The pipeline, a deal's history, a find and a move, a logged call, a new lead, a converted lead, Mirror mode, a word of the pack with no surface, and a miss with no word and no surface. |
+| `projects` | 14 | 19 | My work, a project view, an overdue list, a find, a capacity question (`projects-plan`), a stuck-work report, a status change and a tag batch (`projects-structure`), an archive and three new tasks (`projects-bulk`), the Calendar and Tasks pages, a private task, and two misses. |
+| `mixed` | 2 | 4 | "Make a task from it" after a mail read. "Log this call on Orbit", then "Make a task to send the new quote". |
+| `fanout` | 3 | 3 | Five companies, five tasks, ten invoices. Listed and skipped until OA-9b. |
+
+Each chat has a `surface`: `crm`, `projects`, `tasks`, `calendar` or
+`email`. Four chats have none. A chat has at most one write, and the card is
+its question. The `mode` of one CRM chat is `mirror`.
+
+### The fake gateway
+
+`workgateway.py` answers the `/crm` and `/projects` routes from fixtures: 4
+deals, a lead, a contact, two organizations, 8 tasks in two projects, 4
+statuses. The email chats keep `mailbox.py`. The CRM and Projects tools
+reach the gateway through `httpx`, so the fake sits at the transport. A
+request to any other URL goes to the guard that the harness installed
+first. A route with no fixture answers 404 and shows in
+`unknown_routes`. The scripted run fails on it. No real CRM, no real
+mail and no member data are in the run.
+
+### The checks
+
+The checks that read a turn by name:
+
+| Check | Passes when |
+|---|---|
+| `ran_tool` | A tool of the list ran, in the orchestrator or in a sub-run. A call that answers "Requested function not found" did not run. |
+| `work_write` | A write of the method and path reached the gateway, and its body holds the text. |
+| `no_unasked_write` | At most N write tools ran. With N = 0, no write reached the gateway. |
+| `right_pack` | Pack arm. A tool of the pack ran in the orchestrator's own run, or the route went to the owner. None on the delegation arm. |
+| `answer_all`, `answer_some`, `answer_none` | The answer holds, or lacks, the facts. |
+
+The checks that run on every turn, and give None when they do not apply:
+
+| Check | Passes when |
+|---|---|
+| `no_crm_delegation`, `no_projects_delegation` | Pack arm. No hand-off to the owner. A hand-off passes only when the pack that the turn needed was neither loaded nor offered by the loader in that turn. A hand-off with an unread log fails. |
+| `mirror_respected` | In Mirror mode, no record write ran and none reached the gateway. A note that the run logs stays legal. |
+| `one_card_per_write` | A write tool ran, and the turn shows at least one card and no more cards than write calls. |
+| `tools_per_call` | No request of the orchestrator carries more than 110 tools. |
+| `held_card`, `one_card`, `no_email_delegation` | The email checks, as above. |
+| `spawned`, `not_spawned` | `spawn_subagents` ran, or did not. The fan-out chats use `spawned`. |
+
+The row counts hand-offs by owner (`specialist_handoffs`) and, for email, by
+kind (`handoffs`). The timing and cache columns are the email
+ones, and the report adds them for each set.
+
+### What the report adds
+
+`run --report` prints one table per set and arm: pass, first text and total
+(median and 90th percentile), calls, input tokens, cache share and cost. It
+adds the loader table: the turns that needed a pack, the layer (b) turns,
+the packs that loaded and were not used, the time of layer (a) in
+milliseconds, the tools in a request, and the cache share of the turns with
+a model load. Last, it prints the ten stop results of §4.3.3. Results 3, 4,
+9 and 10 show `n/a`, because they need the `general` set, a run with no
+packs and the spawn arm.
+
+### Findings of the first scripted run
+
+- On a Projects, Tasks or Calendar page the core Projects pack (23 tools)
+  stands in the request. The plan pack (35) and the structure pack (34) do
+  not fit beside it under the cap of 110. The loader does not offer them,
+  and the Projects specialist stays. A plan or a status turn on those pages
+  goes to the specialist, and the plan of `pm_capacity` and `pm_status`
+  says so (`Plan.handoff`). A word of the pack ("task tags", "stuck
+  tasks") loads the pack in place of the core pack. `pm_tags` and
+  `pm_stuck` show it. `pm_capacity_open` has no surface, so the pack fits.
+  The base of this harness is 58 tools. At that base the email pack (31
+  tools) does not fit beside the core Projects pack either. The live run
+  reads the real count in the line `executor.pack_request_tools`.
+- After a read of mail, the CRM pack is held and drops its four writes
+  (OA-8a). The delegated CRM run is held the same way. So no chat here logs
+  a mail on a deal. This is a known limit, not a result of the measure.
+- The first draft of `ran_tool` passed a tool that was not in the request.
+  The run answered "Requested function not found", and the call still
+  showed in the events. The check now ignores such a call.
+
+### Run the new chats with no model
+
+```bash
+uv run python -m evals.one_assistant_measure.run --scripted
+uv run python -m evals.one_assistant_measure.run --scripted --scenarios crm_pipeline,pm_status
+```
+
+With no `--scenarios`, the run takes the email chats, the CRM chats, the
+Projects chats and the mixed chats, and it lists the fan-out chats as
+skipped. The scripted plan loads the pack with `load_skill_tools` when
+neither the surface nor a word of the turn does.
 
 ## Run it with no model
 
@@ -183,9 +311,36 @@ probe of 2026-10-25 within 1 percent.
 | 1 | A scripted check failed |
 | 2 | The live run cannot start |
 
+## The live run of OA-8e (phase 2, not run)
+
+The live run needs the tunnel and the grant `deploy`, as above. Run each
+chunk in less than 10 minutes. The runner alternates the order of the arms,
+as before. `--repeat 2` gives two runs of each chat on each arm.
+
+```bash
+R="uv run python -m evals.one_assistant_measure.run --live --repeat 2 --timeout 200 --budget-usd 8"
+$R --scenarios crm_pipeline,crm_deal_story,crm_move_deal,crm_log_call --out chunk_crm_a.json
+$R --scenarios crm_new_lead,crm_convert,crm_mirror,crm_open_deals,crm_miss --spent-before <USD of chunk a> --out chunk_crm_b.json
+$R --scenarios pm_my_day,pm_project_view,pm_find_task,pm_capacity,pm_capacity_open --out chunk_pm_a.json
+$R --scenarios pm_stuck,pm_status,pm_tags,pm_archive,pm_new_tasks --out chunk_pm_b.json
+$R --scenarios pm_calendar,pm_private_task,pm_no_surface,pm_miss,mix_task_from_mail,mix_call_then_task --out chunk_pm_c.json
+uv run python -m evals.one_assistant_measure.run --merge chunk_crm_a.json,chunk_crm_b.json,chunk_pm_a.json,chunk_pm_b.json,chunk_pm_c.json --out evals/one_assistant_measure/results_oa8e_<date>.json
+```
+
+The runner never sets `TOOL_PACKS`, `TOOL_PACKS_ORGS` or
+`SPAWN_SUBAGENTS_ORGS` on a box. It sets the flag in the eval process only.
+The report in `docs/` for OA-8e also needs a run of the `general` and `miss`
+sets and a run with no packs. Those are not in this phase.
+
 ## The fence
 
-`tests/unit/test_one_assistant_measure.py` is the fence (R7). It runs every
+`tests/unit/test_one_assistant_measure_oa8e.py` is the fence of OA-8e (R7). It
+runs every CRM, Projects and mixed plan on both arms, proves that
+`pack_flag` turns on every pack of each owner, and gives each new check one
+case that passes, one that fails and one named mutation. It also pins the
+skip of the fan-out chats.
+
+`tests/unit/test_one_assistant_measure.py` is the fence of the email measure (R7). It runs every
 plan on both arms. It makes each checker fail with one mutation. It also
 proves these facts:
 
