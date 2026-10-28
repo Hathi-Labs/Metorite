@@ -154,6 +154,46 @@ async def test_preview_counts_and_writes_nothing(x0, app_engine) -> None:  # noq
     assert body["stays_in_zoho"] == ["Attachments", "Quotes"]
 
 
+async def test_incremental_run_does_not_replace_the_zoho_count(x0, app_engine) -> None:  # noqa: F811
+    """An import holds the estimate. A newer good incremental run holds only the
+    changed records. The card keeps the import's estimate, with the import's age,
+    and an old good run is found even when 30 newer runs failed."""
+    _assert_non_priv(app_engine)
+    _seed_both(x0)
+    _shape_org_a(x0)
+    with x0.admin_engine.begin() as c:
+        conn = c.execute(text(
+            "SELECT connection_id FROM crm_sync_runs WHERE organization_id = "
+            "CAST(:o AS uuid) LIMIT 1"), {"o": x0.org_a}).scalar()
+        c.execute(text(
+            "INSERT INTO crm_sync_runs (organization_id, connection_id, kind, "
+            "status, started_at, finished_at, counts) VALUES (CAST(:o AS uuid), "
+            "CAST(:c AS uuid), 'incremental', 'ok', now() - interval '1 hour', "
+            "now() - interval '59 minutes', CAST(:k AS jsonb))"),
+            {"o": x0.org_a, "c": conn,
+             "k": json.dumps({"deals": {"seen": 3}, "leads": {"seen": 3}})})
+        for n in range(30):
+            c.execute(text(
+                "INSERT INTO crm_sync_runs (organization_id, connection_id, kind, "
+                "status, started_at, finished_at) VALUES (CAST(:o AS uuid), "
+                "CAST(:c AS uuid), 'incremental', 'failed', "
+                "now() - make_interval(mins => :m), now() - make_interval(mins => :m))"),
+                {"o": x0.org_a, "c": conn, "m": 1 + n})
+    res = await _call(x0, _admin(x0.org_a), "GET", PATH)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    rows = {r["key"]: r for r in body["records"]}
+    # The import's estimate, never the 3 changed records of the newer run.
+    assert rows["deals"]["zoho"] == 550
+    assert rows["leads"]["zoho"] == 1
+    # The age is the import's (2 days), not the incremental run's (1 hour).
+    assert rows["deals"]["zoho_age_seconds"] >= 2 * 86400 - 60
+    # No run holds an estimate for contacts: a dash, not a guess.
+    assert rows["contacts"]["zoho"] is None and rows["contacts"]["zoho_age_seconds"] is None
+    # The last good run is the incremental one, 59 minutes ago.
+    assert body["sync"]["age_seconds"] < 3600
+
+
 async def test_no_good_run_says_so(x0, app_engine) -> None:  # noqa: F811
     _assert_non_priv(app_engine)
     _seed_both(x0)

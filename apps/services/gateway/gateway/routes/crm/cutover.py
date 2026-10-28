@@ -16,8 +16,16 @@ Zoho count would read a credential, and a token refresh is a write.
 (403 otherwise). An organization in another mode gets 409 ``not_mirror``.
 
 A module is **not complete** when it is held (CRM-Q16), unavailable (CRM-Q15),
-or the last good run counted records as ``failed`` or ``refused``. The switch
-waits for such a module unless the admin leaves it out (D133 amendment).
+or the run that counted it in Zoho wrote records as ``failed`` or ``refused``.
+The switch waits for such a module unless the admin leaves it out (D133).
+
+⚠️ **The Zoho count of a key is its own.** An incremental run carries no core
+estimate, and its ``seen`` is the number of changed records. So the count of a
+key comes from the newest good run that HAS an estimate for it, with that run's
+time. It never falls back to ``seen``. When no good run has an estimate for the
+key, the count is ``None`` and the card shows a dash. ``failed`` and ``refused``
+come from that same run. When no run counted the key, they come from the newest
+good run.
 """
 
 from __future__ import annotations
@@ -116,6 +124,20 @@ _FIELDS_SQL = (
 _VIEWS_SQL = (
     "SELECT count(*) AS n FROM crm_views WHERE organization_id = CAST(:org AS uuid)"
 )
+_COLUMNS = "id, kind, status, started_at, finished_at, heartbeat_at, counts, estimate, credits_used, error"
+#: The newest good run, however old.
+_NEWEST_OK_SQL = (
+    f"SELECT {_COLUMNS} FROM crm_sync_runs "
+    "WHERE organization_id = CAST(:org AS uuid) AND status = 'ok' "
+    "ORDER BY started_at DESC LIMIT 1"
+)
+#: The newest good run that holds an estimate for one key.
+_NEWEST_ESTIMATE_SQL = (
+    f"SELECT {_COLUMNS} FROM crm_sync_runs "
+    "WHERE organization_id = CAST(:org AS uuid) AND status = 'ok' "
+    "AND estimate ->> CAST(:key AS text) IS NOT NULL "
+    "ORDER BY started_at DESC LIMIT 1"
+)
 _PROFILE_SQL = (
     "SELECT profile -> 'modules' AS modules FROM crm_source_profiles "
     "WHERE organization_id = CAST(:org AS uuid) "
@@ -138,15 +160,18 @@ class PartRow(BaseModel):
 class RecordRow(BaseModel):
     key: str
     label: str
-    #: Zoho's count at the time of the last good sync. ``None`` when unknown.
+    #: Zoho's count in the newest good run that counted this key. ``None`` when
+    #: no good run did.
     zoho: int | None = None
+    #: The age of that run, in seconds. ``None`` with ``zoho``.
+    zoho_age_seconds: int | None = None
     metorite: Split
     #: The parts of the row, for the activities (notes, calls …).
     parts: list[PartRow] = []
     #: ``complete`` or the reason the module is not: ``held``, ``unavailable``,
     #: ``failed`` or ``refused``.
     state: Literal["complete", "held", "unavailable", "failed", "refused"] = "complete"
-    #: The records that the last good run did not write (``failed``).
+    #: The records that the run behind ``zoho`` did not write (``failed``).
     failed: int = 0
     refused: int = 0
 
@@ -207,14 +232,19 @@ def _step(entry: Any) -> dict[str, int]:
     return {"seen": value} if value is not None else {}
 
 
+async def _counting_run(db: Any, org: str, key: str) -> Any:
+    """The newest good run with an estimate for *key*, or ``None``."""
+    from gateway.crm_sync import runs
+
+    row = (await db.execute(text(_NEWEST_ESTIMATE_SQL), {"org": org, "key": key})).first()
+    return runs._row(row) if row is not None else None
+
+
 def _zoho_count(key: str, run: Any) -> int | None:
+    """Zoho's count from a run that holds an estimate. Never ``seen``."""
     if run is None:
         return None
-    estimate = _int((run.estimate or {}).get(key))
-    if estimate is not None:
-        return estimate
-    seen = _step(run.counts.get(key)).get("seen")
-    return seen
+    return _int((run.estimate or {}).get(key))
 
 
 def _state(key: str, run: Any, held: frozenset[str]) -> tuple[str, int, int]:
@@ -236,6 +266,22 @@ def _split(row: Any) -> Split:
     return Split(from_zoho=int(row.from_zoho or 0), native=int(row.native or 0))
 
 
+async def _record(
+    db: Any, org: str, key: str, good: Any, held: frozenset[str], now: datetime,
+) -> dict[str, Any]:
+    """The Zoho count, its age and the state of one key."""
+    counting = await _counting_run(db, org, key)
+    state, failed, refused = _state(key, counting or good, held)
+    age = None
+    if counting is not None and counting.finished_at is not None:
+        age = max(int((now - counting.finished_at).total_seconds()), 0)
+    zoho = _zoho_count(key, counting)
+    return {
+        "zoho": zoho, "zoho_age_seconds": age if zoho is not None else None,
+        "state": state, "failed": failed, "refused": refused,
+    }
+
+
 async def _one(db: Any, sql: str, org: str) -> Any:
     return (await db.execute(text(sql), {"org": org})).first()
 
@@ -245,9 +291,9 @@ async def preview(db: Any, org: str) -> CutoverPreview:
     from gateway.crm_sync import holds, runs
 
     due = await runs.due_info(db, org)
-    # The last good run: the newest run that ended well.
-    recent = await runs.recent(db, org, 25)
-    good = next((r for r in recent if r.status == runs.STATUS_OK), None)
+    # The newest run that ended well, however far back it is.
+    good_row = (await db.execute(text(_NEWEST_OK_SQL), {"org": org})).first()
+    good = runs._row(good_row) if good_row is not None else None
     held = holds.held_keys(await holds.read(db, org))
     profile = await _one(db, _PROFILE_SQL, org)
     modules_body = from_jsonb(profile.modules) if profile is not None else None
@@ -261,7 +307,7 @@ async def preview(db: Any, org: str) -> CutoverPreview:
     activity_rows = (await db.execute(text(_ACTIVITY_SQL), {"org": org})).fetchall()
     records: list[RecordRow] = []
     for key, table, fallback, slug in _CORE:
-        state, failed, refused = _state(key, good, held)
+        facts = await _record(db, org, key, good, held, due.db_now)
         if key == "activities":
             parts = [
                 PartRow(label=_ACTIVITY_LABELS.get(str(r.type), str(r.type).title()),
@@ -277,8 +323,7 @@ async def preview(db: Any, org: str) -> CutoverPreview:
             split = _split(await _one(db, _SPLIT_SQL.format(table=table), org))
         label = labels[slug].label if slug in labels else fallback
         records.append(RecordRow(
-            key=key, label=label, zoho=_zoho_count(key, good), metorite=split,
-            parts=parts, state=state, failed=failed, refused=refused,  # type: ignore[arg-type]
+            key=key, label=label, metorite=split, parts=parts, **facts,
         ))
 
     module_rows = {
@@ -292,11 +337,10 @@ async def preview(db: Any, org: str) -> CutoverPreview:
         if k.startswith(MODULE_KEY_PREFIX)
     }
     for key in sorted(module_keys):
-        state, failed, refused = _state(key, good, held)
+        facts = await _record(db, org, key, good, held, due.db_now)
         records.append(RecordRow(
             key=key, label=module_labels.get(key, key[len(MODULE_KEY_PREFIX):]),
-            zoho=_zoho_count(key, good), metorite=module_rows.get(key, Split()),
-            state=state, failed=failed, refused=refused,  # type: ignore[arg-type]
+            metorite=module_rows.get(key, Split()), **facts,
         ))
 
     stages = await _one(db, _STAGES_SQL, org)
@@ -328,6 +372,7 @@ async def preview(db: Any, org: str) -> CutoverPreview:
         str(m.get("label") or m["api_name"])
         for m in (modules_body if isinstance(modules_body, list) else [])
         if isinstance(m, dict) and m.get("api_name") and m.get("api_supported")
+        and m.get("visible") is not False
         and m["api_name"] not in core_modules
         and f"{MODULE_KEY_PREFIX}{m['api_name']}" not in mirrored
     )

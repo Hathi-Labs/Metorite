@@ -10,6 +10,8 @@ import {
   SWITCH_LATER,
   ageWords,
   attention,
+  isPreview,
+  staysShort,
   leadSentence,
   movingTotal,
   type CutoverPreview,
@@ -21,11 +23,11 @@ function preview(over: Partial<CutoverPreview> = {}): CutoverPreview {
     sync: { last_good_at: "2026-10-28T01:00:00Z", age_seconds: 7200, running: false },
     records: [
       {
-        key: "deals", label: "Projects", zoho: 550,
+        key: "deals", label: "Projects", zoho: 550, zoho_age_seconds: 7200,
         metorite: { from_zoho: 547, native: 3 }, parts: [], state: "complete", failed: 0, refused: 0,
       },
       {
-        key: "module:Products", label: "Products", zoho: null,
+        key: "module:Products", label: "Products", zoho: null, zoho_age_seconds: null,
         metorite: { from_zoho: 10, native: 0 }, parts: [], state: "held", failed: 0, refused: 0,
       },
     ],
@@ -41,9 +43,9 @@ function preview(over: Partial<CutoverPreview> = {}): CutoverPreview {
 
 describe("CRM-Z10a cutover words", () => {
   it("leads with what moves and what stays", () => {
-    expect(movingTotal(preview())).toBe(560);
+    expect(movingTotal(preview())).toBe(557);
     expect(leadSentence(preview())).toBe(
-      "560 records move to Metorite with their links and fields. Attachments stay in Zoho.",
+      "557 records from Zoho are in Metorite. Not complete: Products. Attachments stay in Zoho.",
     );
   });
 
@@ -57,6 +59,21 @@ describe("CRM-Z10a cutover words", () => {
     expect(lines.some((l) => l.startsWith("A sync is running"))).toBe(true);
     expect(lines.some((l) => l.startsWith("Products: Held back"))).toBe(true);
     expect(lines.some((l) => l.includes("1 Zoho owner with no Metorite member"))).toBe(true);
+  });
+
+  it("shows at most 3 names that stay in Zoho", () => {
+    expect(staysShort(["A", "B", "C", "D", "E"])).toBe("A, B, C and 2 more");
+    expect(staysShort(["A", "B"])).toBe("A, B");
+  });
+
+  it("draws nothing for a body that is not a preview", () => {
+    expect(isPreview({})).toBe(false);
+    expect(isPreview({ rows: [], total: 0 })).toBe(false);
+    expect(isPreview(null)).toBe(false);
+    const { sync, ...noSync } = preview();
+    void sync;
+    expect(isPreview(noSync)).toBe(false);
+    expect(isPreview(preview())).toBe(true);
   });
 
   it("writes the age in plain words", () => {

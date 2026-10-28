@@ -12,6 +12,8 @@
  * `CutoverCardView` only draws, so a test can render it.
  */
 
+import { Component, type ReactNode } from "react";
+
 import Badge from "@/components/ui/Badge";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
 import { useCachedResource } from "@/lib/useCachedResource";
@@ -24,6 +26,7 @@ import {
   attention,
   formatNumber,
   getCutoverPreview,
+  isPreview,
   leadSentence,
   total,
   zohoCell,
@@ -49,7 +52,7 @@ function Heading({ children }: { children: React.ReactNode }) {
 export function CutoverCardView({ preview }: { preview: CutoverPreview }) {
   const lines = attention(preview);
   const asOf = preview.sync.last_good_at
-    ? `Last good sync ${ageWords(preview.sync.age_seconds)}. The Zoho counts are as of then.`
+    ? `Last good sync ${ageWords(preview.sync.age_seconds)}. Each Zoho count shows when it was taken.`
     : null;
 
   return (
@@ -98,7 +101,14 @@ export function CutoverCardView({ preview }: { preview: CutoverPreview }) {
                         </span>
                       )}
                     </th>
-                    <td className={CELL}>{zohoCell(row)}</td>
+                    <td className={CELL}>
+                      {zohoCell(row)}
+                      {row.zoho !== null && row.zoho_age_seconds !== null && (
+                        <span className="block text-[10px] text-muted-foreground">
+                          as of {ageWords(row.zoho_age_seconds)}
+                        </span>
+                      )}
+                    </td>
                     <Counts split={row.metorite} />
                   </tr>
                 ))}
@@ -123,6 +133,12 @@ export function CutoverCardView({ preview }: { preview: CutoverPreview }) {
               .join(" · ") || "none"}
           </p>
         </CollapsibleSection>
+
+        {preview.stays_in_zoho.length > 0 && (
+          <CollapsibleSection label="Stays in Zoho" defaultOpen={false}>
+            <p className="px-4 pt-2 text-xs text-foreground">{preview.stays_in_zoho.join(", ")}.</p>
+          </CollapsibleSection>
+        )}
 
         {preview.labels_kept.length > 0 && (
           <div>
@@ -157,8 +173,29 @@ export function CutoverCardView({ preview }: { preview: CutoverPreview }) {
   );
 }
 
-/** The card with its read. It draws nothing until Zoho counts exist, or when the read is refused. */
-export default function CutoverCard() {
+/** Nothing in the card may take Setup down. A throw draws nothing. */
+export class CutoverBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
+
+function CutoverRead() {
   const { data } = useCachedResource<CutoverPreview>("crm:cutover-preview", getCutoverPreview);
-  return data ? <CutoverCardView preview={data} /> : null;
+  return isPreview(data) ? <CutoverCardView preview={data} /> : null;
+}
+
+/** The card with its read. It draws nothing until Zoho counts exist, when the read is refused, or when the body is not a preview. */
+export default function CutoverCard() {
+  return (
+    <CutoverBoundary>
+      <CutoverRead />
+    </CutoverBoundary>
+  );
 }

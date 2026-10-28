@@ -17,6 +17,8 @@ export type RecordRow = {
   key: string;
   label: string;
   zoho: number | null;
+  /** The age of the run that gave `zoho`. Null with `zoho`. */
+  zoho_age_seconds: number | null;
   metorite: Split;
   parts: Array<{ label: string; metorite: Split }>;
   state: ModuleState;
@@ -74,24 +76,51 @@ export function ageWords(seconds: number | null): string {
   return `${days} days ago`;
 }
 
-/** The records that move: every row of the core entities and the modules. */
+/** The records in Metorite that came from Zoho. Records that members made here are not in it. */
 export function movingTotal(preview: CutoverPreview): number {
-  return preview.records.reduce((sum, row) => sum + total(row.metorite), 0);
+  return preview.records.reduce((sum, row) => sum + row.metorite.from_zoho, 0);
+}
+
+/** The most names of Zoho-only modules that the lead sentence shows. */
+export const STAYS_SHOWN = 3;
+
+/** "Attachments, Quotes, Leads and 4 more". The full list sits behind the fold. */
+export function staysShort(names: string[]): string {
+  if (names.length <= STAYS_SHOWN) return names.join(", ");
+  return `${names.slice(0, STAYS_SHOWN).join(", ")} and ${names.length - STAYS_SHOWN} more`;
 }
 
 /**
- * The one sentence that opens the card: what moves, what does not.
- * A module that is not complete is named after it, since the switch waits.
+ * The one sentence that opens the card: what is in Metorite from Zoho, what is
+ * not complete, and what stays in Zoho.
  */
 export function leadSentence(preview: CutoverPreview): string {
   if (preview.sync.last_good_at === null) {
     return "Zoho has not finished a sync yet, so there is nothing to compare. Finish a sync first.";
   }
-  const moving = `${formatNumber(movingTotal(preview))} records move to Metorite with their links and fields.`;
-  const stays = preview.stays_in_zoho.length > 0
-    ? ` ${preview.stays_in_zoho.join(", ")} stay in Zoho.`
+  const moving = `${formatNumber(movingTotal(preview))} records from Zoho are in Metorite.`;
+  const incomplete = preview.not_complete.length > 0
+    ? ` Not complete: ${preview.not_complete.join(", ")}.`
     : "";
-  return moving + stays;
+  const stays = preview.stays_in_zoho.length > 0
+    ? ` ${staysShort(preview.stays_in_zoho)} stay in Zoho.`
+    : "";
+  return moving + incomplete + stays;
+}
+
+/** True when a body has the shape of a preview. Any other 200 body draws nothing. */
+export function isPreview(x: unknown): x is CutoverPreview {
+  const p = x as Partial<CutoverPreview> | null | undefined;
+  if (!p || typeof p !== "object") return false;
+  if (!p.sync || typeof p.sync !== "object") return false;
+  return (
+    Array.isArray(p.records) &&
+    Array.isArray(p.other) &&
+    Array.isArray(p.unmatched_owners) &&
+    Array.isArray(p.labels_kept) &&
+    Array.isArray(p.stays_in_zoho) &&
+    Array.isArray(p.not_complete)
+  );
 }
 
 /** A line for each thing that needs the admin's eye. Empty when all is clear. */
@@ -100,18 +129,19 @@ export function attention(preview: CutoverPreview): string[] {
   if (preview.sync.running) lines.push("A sync is running now. Wait for it to finish.");
   for (const row of preview.records) {
     if (row.state === "complete") continue;
-    lines.push(`${row.label}: ${STATE_WORDS[row.state]}. The switch waits for it, unless you leave it out.`);
+    lines.push(`${row.label}: ${STATE_WORDS[row.state]}. Fix this before the switch.`);
   }
   if (preview.unmatched_owners.length > 0) {
     lines.push(
       `${formatNumber(preview.unmatched_owner_names)} Zoho owner${preview.unmatched_owner_names === 1 ? "" : "s"} ` +
-        "with no Metorite member. Their records keep the name and stay without an owner.",
+        "with no Metorite member, on your companies, contacts, leads and deals. " +
+        "Their records keep the name and stay without an owner.",
     );
   }
   return lines;
 }
 
-/** The count of a row in Zoho, or a dash when the last sync did not give one. */
+/** The count of a row in Zoho, or a dash when no good sync gave one. */
 export function zohoCell(row: { zoho: number | null }): string {
   return row.zoho === null ? "—" : formatNumber(row.zoho);
 }
