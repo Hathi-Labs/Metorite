@@ -1575,28 +1575,56 @@ async def _cached_evidence(org: str, module: str) -> tuple[dict[str, tuple[str, 
         return None, 0
 
 
-async def _store_evidence(org: str, module: str, ev: dict[str, tuple[str, ...]]) -> None:
+async def _store_evidence(org: str, module: str, ev: dict[str, tuple[str, ...]],
+                          *, ttl: int = EVIDENCE_TTL_S) -> None:
     import json
 
     from acb_common.tenant_redis import key, organization_scope
 
     try:
         with organization_scope(org):
-            await _redis().setex(key(EVIDENCE_NAMESPACE, module), EVIDENCE_TTL_S,
+            await _redis().setex(key(EVIDENCE_NAMESPACE, module), ttl,
                                  json.dumps({k: list(v) for k, v in ev.items()}))
     except Exception as exc:
         _log.warning("crm.questions.evidence_store_failed", organization_id=org,
                      error_type=type(exc).__name__)
 
 
+#: The life of an entry for own *cands*. No step warms it, so it is shorter.
+CANDS_EVIDENCE_TTL_S = 6 * 3600
+
+
+def _cands_entry(src: Any, cands: Sequence[Any]) -> str:
+    """The cache entry of the module *src* for own *cands*: the module and a
+    hash of the field keys in their order, then the GST and TDS siblings that
+    the check also reads. A new tax field so makes a new entry."""
+    import hashlib
+
+    gst, tds = qs.gst_siblings(src)
+    parts = [str(getattr(c, "key", c)) for c in cands]
+    parts += ["|gst"] + [str(getattr(f, "key", f)) for f in gst]
+    parts += ["|tds"] + [str(getattr(f, "key", f)) for f in tds]
+    digest = hashlib.sha1("\x1f".join(parts).encode()).hexdigest()[:16]
+    return f"{src.module}:cands:{digest}"
+
+
 async def module_evidence(db: Any, org: str, src: Any,
                           cands: Sequence[Any] | None = None) -> dict[str, tuple[str, ...]]:
     """The evidence of the module *src*: the cache, else one fresh check,
     which then fills the cache. Own *cands* (the amount pick, §18.16 part 5)
-    weigh other fields, so they skip the per-module cache."""
-    if cands is not None:
-        return await _gst_evidence(db, org, src, cands)
+    weigh other fields, so they get their own entry (:func:`_cands_entry`).
+    They skipped the cache before, and production ran the check 1,751 times
+    in nine days, at 27 s each (2026-10-28)."""
     module = str(src.module)
+    if cands is not None:
+        cands = list(cands)
+        entry = _cands_entry(src, cands)
+        cached, _left = await _cached_evidence(org, entry)
+        if cached is not None:
+            return cached
+        ev = await _gst_evidence(db, org, src, cands)
+        await _store_evidence(org, entry, ev, ttl=CANDS_EVIDENCE_TTL_S)
+        return ev
     cached, _left = await _cached_evidence(org, module)
     if cached is not None:
         return cached

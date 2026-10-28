@@ -16,26 +16,30 @@
  * section at a time. `lib/settingsSections.ts` holds the list of sections.
  * With no `section`, it draws every card in one column, as before.
  *
- * The grids drive the EXISTING admin API: deal stages, lead statuses, lost
+ * The cards drive the EXISTING admin API: deal stages, lead statuses, lost
  * reasons. Before this existed the API was headless — every stage rename,
  * reorder or probability was a curl, which is the second half of why the live
  * board was wrong (§5.1's delivery gap 2).
+ *
+ * **The stage list is the board** (WS-53 CRM-U11, D137, §20.15). Deal stages
+ * and Lead statuses are each one `StageList`: one row for each stage, in the
+ * order of `orderLanes`, the function the board calls. A move saves at once
+ * through the order route. Edit opens one `Modal` for the rest.
  *
  * Gated on `feature:crm` like the rest of the app (D-CRM-3 — the sales team
  * manages its own pipeline). The one control that needs more is the Zoho pull,
  * which is floored on `admin:access:manage` server-side; hiding it here is the
  * courtesy half.
  *
- * Several pipelines (CRM-Q2) show one read-only section each. The stage routes
- * for a second pipeline are not in this build, so the grid edits the stages of
- * the one implicit pipeline only.
+ * Native mode with several pipelines (CRM-Q2) shows one read-only section for
+ * each. The stage routes for a second pipeline are not in this build. Mirror
+ * mode takes any count of pipelines, with a picker over the list.
  *
  * **Mirror mode** (WS-53 CRM-C3, crm_platform.md §20.6 item 14). Zoho owns the
- * stages, and an admin edits the Metorite overlay beside them: the order, the
- * probability, the colour, hide and the rot threshold. Each row shows the Zoho
- * value beside the Metorite value. A drag calls the order route. The sync never
- * writes the overlay, and nothing here writes Zoho (D95). A member who is not an
- * admin still reads the lists.
+ * stages, and an admin edits the Metorite overlay: the order, the win chance,
+ * the colour, hide and the warning days. The sync never writes the overlay,
+ * and nothing here writes Zoho (D95). A member who is not an admin still reads
+ * the lists.
  *
  * Everything server-shaped is pure and lives in ../lib/settings.ts: what a
  * drop renumbers, which rows that actually PATCHes, and the client half of
@@ -48,26 +52,26 @@ import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Input } from "@/components/ui/Input";
+import Modal from "@/components/ui/Modal";
 import SelectButton, { type SelectOption } from "@/components/ui/SelectButton";
-import { useState } from "react";
+import Tabs, { type TabDef } from "@/components/Tabs";
+import { useId, useState } from "react";
 import {
-  laneGroup,
+  orderLanes,
   REQUIREABLE_FIELD_LABELS,
   REQUIREABLE_FIELDS,
   stageAccent,
+  stageIcon,
 } from "../lib/board";
 import { colorOptions } from "../lib/colorOptions";
-import { useCrmModeValue } from "../lib/modeContext";
-import { showPicker } from "../lib/pipelines";
+import { orderedPipelines, placesOf, showPicker } from "../lib/pipelines";
 import {
   CLAMPED_PROBABILITY,
   changedFields,
   draftOf,
-  hasOverlay,
-  orderAfterDrop,
+  orderAfterMove,
   overlayPatch,
   reorder,
-  resetToSource,
   STATUS_TYPE_LABELS,
   validateLostReasonDraft,
   validateOverlayProbability,
@@ -91,8 +95,6 @@ import type {
   StatusType,
 } from "../lib/types";
 
-const STATUS_TYPES: StatusType[] = ["open", "ongoing", "on_hold", "won", "lost"];
-
 /**
  * The draft of one row, kept in the CRM store under `key` (CRM-C1 review).
  * A section change unmounts the row, and the draft stays for its return. A
@@ -112,54 +114,6 @@ function useSettingsDraft<T>(
     // overwrite their newer value (CRM-C1 re-review).
     () => setDraft(key, null),
   ];
-}
-
-/** The type picker of a status row, as `SelectButton` options (CRM-U2). The
- *  colour picker is `colorOptions` (`lib/colorOptions.ts`). */
-const TYPE_OPTIONS: SelectOption[] = STATUS_TYPES.map((type) => ({
-  value: type,
-  label: STATUS_TYPE_LABELS[type],
-}));
-
-/**
- * The stages in board order, as small chips with their win chance (CRM-U6).
- * It re-renders from the rows of the grid, so a move shows here at once. The
- * deal board draws open work, then on hold, won and lost, and the strip does
- * the same. A hidden stage has no lane unless it holds records, so it is not
- * drawn here.
- */
-function OrderStrip({ kind, statuses }: { kind: StatusKind; statuses: Status[] }) {
-  const shown = statuses
-    .map((status, index) => ({ status, index }))
-    .filter(({ status }) => !status.hidden)
-    .sort((a, b) =>
-      kind === "deal"
-        ? laneGroup(a.status.type) - laneGroup(b.status.type) || a.index - b.index
-        : a.index - b.index
-    )
-    .map(({ status }) => status);
-  if (shown.length === 0) return null;
-  return (
-    <ol
-      aria-label="Board order"
-      className="flex flex-wrap items-center gap-1 border-b border-border px-4 py-2"
-    >
-      {shown.map((status, index) => (
-        <li key={status.id} className="flex items-center gap-1">
-          {index > 0 && (
-            <Icon name="ChevronRight" className="w-3 h-3 text-muted-foreground" />
-          )}
-          <Badge tone="neutral" size="xs" title={`${status.name}: ${status.probability ?? 0}% win chance`}>
-            {status.name}
-            <span className="text-muted-foreground tabular-nums">
-              {" "}
-              {status.probability ?? 0}%
-            </span>
-          </Badge>
-        </li>
-      ))}
-    </ol>
-  );
 }
 
 /** Up and Down for one row. They write the same order as a drag does. */
@@ -223,13 +177,13 @@ export default function PipelineSettings({
   saving,
   onSaveStatus,
   onRemoveStatus,
-  onReorderStatuses,
   onSaveLostReason,
   onRemoveLostReason,
   onReorderLostReasons,
   setup,
   access,
   pipelines = null,
+  pipelineId = null,
   showAdminCards = false,
   readOnly = false,
   studioAdmin = false,
@@ -266,35 +220,31 @@ export default function PipelineSettings({
   access?: React.ReactNode;
   /** The deal pipelines (CRM-Q2). `null` while the gateway has no such route. */
   pipelines?: DealPipeline[] | null;
+  /** The pipeline the Deals board shows (CRM-U11). The stage list opens on it. */
+  pipelineId?: string | null;
   /** The Fields and Sync health cards are for an admin. */
   showAdminCards?: boolean;
   dealStatuses: Status[];
   leadStatuses: Status[];
   lostReasons: LostReason[];
   saving: boolean;
-  /** Retired: the legacy stage repair is no longer drawn (CRM-L2). */
-  canPullStages?: boolean;
   onSaveStatus: (
     kind: StatusKind,
     statusId: string | null,
     body: Record<string, unknown>
   ) => Promise<boolean>;
   onRemoveStatus: (kind: StatusKind, statusId: string) => Promise<boolean>;
-  onReorderStatuses: (
-    kind: StatusKind,
-    patches: PositionPatch[]
-  ) => Promise<void>;
   onSaveLostReason: (
     reasonId: string | null,
     body: Record<string, unknown>
   ) => Promise<boolean>;
   onRemoveLostReason: (reasonId: string) => Promise<boolean>;
   onReorderLostReasons: (patches: PositionPatch[]) => Promise<void>;
-  onPullStages?: unknown;
 }) {
   const several = showPicker(pipelines);
   const orderStatuses = useCrmStore((state) => state.orderStatuses);
   const resetStatusOrder = useCrmStore((state) => state.resetStatusOrder);
+  const addStage = useCrmStore((state) => state.addStageBeforeClosed);
   /** Does the section on screen hold this card? With no section, each does. */
   const show = (id: SettingsSectionId) => !section || section === id;
   return (
@@ -306,31 +256,22 @@ export default function PipelineSettings({
       {readOnly && showAdminCards ? (
         <>
           {show("stages") && (
-            <>
-              {/* The editor below is "Deal stages", so this list is the pipelines. */}
-              <PipelineSections
-                title="Pipelines"
-                pipelines={pipelines}
-                fallback={dealStatuses}
-                note="Stages come from Zoho."
-              />
-              <MirrorStatusGrid
-                kind="deal"
-                title="Deal stages"
-                blurb="Zoho owns the stages. The Metorite order, probability, colour and hide stay in Metorite, and the sync never changes them. A Metorite probability moves the forecast only of a deal with no probability of its own, and most Zoho deals have one."
-                statuses={dealStatuses}
-                saving={saving}
-                onSave={onSaveStatus}
-                onOrder={orderStatuses}
-                onResetOrder={resetStatusOrder}
-              />
-            </>
+            <StageList
+              kind="deal"
+              mode="mirror"
+              statuses={dealStatuses}
+              pipelines={pipelines}
+              pipelineId={pipelineId}
+              saving={saving}
+              onSave={onSaveStatus}
+              onOrder={orderStatuses}
+              onResetOrder={resetStatusOrder}
+            />
           )}
           {show("lead-statuses") && (
-            <MirrorStatusGrid
+            <StageList
               kind="lead"
-              title="Lead statuses"
-              blurb="Zoho owns the Lead Status values. The Metorite order, win chance, colour and hide stay in Metorite."
+              mode="mirror"
               statuses={leadStatuses}
               saving={saving}
               onSave={onSaveStatus}
@@ -372,28 +313,29 @@ export default function PipelineSettings({
                 note="Stage editing for several pipelines is not available yet."
               />
             ) : (
-              <StatusGrid
+              <StageList
                 kind="deal"
-                title="Deal stages"
-                blurb="Board order, colour and the win chance the forecast reads. The order and the win chance are separate settings. A won stage always forecasts 100%, a lost stage 0%. The type closes a deal. The win chance feeds the pipeline number."
+                mode="native"
                 statuses={dealStatuses}
+                pipelines={pipelines}
                 saving={saving}
                 onSave={onSaveStatus}
+                onOrder={orderStatuses}
                 onRemove={onRemoveStatus}
-                onReorder={onReorderStatuses}
+                onAdd={addStage}
               />
             ))}
 
           {show("lead-statuses") && (
-            <StatusGrid
+            <StageList
               kind="lead"
-              title="Lead statuses"
-              blurb="The funnel before a deal exists. The win chance tells the board how many leads in a status you expect to convert. It does not move the money forecast."
+              mode="native"
               statuses={leadStatuses}
               saving={saving}
               onSave={onSaveStatus}
+              onOrder={orderStatuses}
               onRemove={onRemoveStatus}
-              onReorder={onReorderStatuses}
+              onAdd={addStage}
             />
           )}
 
@@ -430,125 +372,205 @@ export default function PipelineSettings({
   );
 }
 
-// ── f2 · the status grids ───────────────────────────────────────────────────
+// ── CRM-U11 · the stage list is the board (D137, crm_platform.md §20.15) ────
 
-function StatusGrid({
+/** The words of one list: the deal stages or the lead statuses. */
+const LIST_WORDS: Record<
+  StatusKind,
+  { title: string; line: string; zoho: string; add: string; empty: Record<"mirror" | "native", string> }
+> = {
+  deal: {
+    title: "Deal stages",
+    line: "These are the columns of your Deals board, left to right. Drag a stage, or use its arrows, to move its column.",
+    zoho: "Zoho owns the stage names. Your order, colours and win chances stay in Metorite. Nothing here changes Zoho.",
+    add: "Add stage",
+    empty: {
+      mirror: "No stages from Zoho yet. The next sync brings them.",
+      native: "No stages yet. Add the first one.",
+    },
+  },
+  lead: {
+    title: "Lead statuses",
+    line: "These are the columns of your Leads board, left to right. Drag a status, or use its arrows, to move its column.",
+    zoho: "Zoho owns the status names. Your order, colours and win chances stay in Metorite. Nothing here changes Zoho.",
+    add: "Add status",
+    empty: {
+      mirror: "No statuses from Zoho yet. The next sync brings them.",
+      native: "No statuses yet. Add the first one.",
+    },
+  },
+};
+
+/** The two choices of "Column order" (Mirror mode). */
+const ORDER_TABS: TabDef[] = [
+  { id: "zoho", label: "Same as Zoho" },
+  { id: "custom", label: "Custom" },
+];
+
+/** The Edit dialog of a stage that does not exist yet. */
+const NEW = "new";
+
+const NO_PLACES: ReadonlyMap<string, number> = new Map();
+
+/** A status as a lane of `orderLanes`, the board's one order. */
+const laneOf = (status: Status) => ({ status, pipeline_position: null });
+
+/**
+ * The stage list of one kind: the columns of its board, left to right.
+ *
+ * The list orders the stages with `orderLanes`, the function the board calls,
+ * with the places of the pipeline on screen. So a move here shows the same
+ * order on the board. A move saves at once, every id of the kind, through the
+ * order route. On a failure the row goes back and the page shows the error.
+ *
+ * Mirror mode serves any count of pipelines. Native mode serves one pipeline
+ * or none, and `PipelineSections` keeps the read-only list for more.
+ */
+export function StageList({
   kind,
-  title,
-  blurb,
+  mode,
   statuses,
+  pipelines = null,
+  pipelineId = null,
   saving,
   onSave,
+  onOrder,
+  onResetOrder,
   onRemove,
-  onReorder,
+  onAdd,
 }: {
   kind: StatusKind;
-  title: string;
-  blurb: string;
+  mode: "mirror" | "native";
+  /** Every row of the kind, hidden and gone ones included. */
   statuses: Status[];
+  /** `GET /crm/pipelines`, or null with no such route. */
+  pipelines?: DealPipeline[] | null;
+  /** The pipeline the list opens on. Null: the default pipeline. */
+  pipelineId?: string | null;
   saving: boolean;
   onSave: (
     kind: StatusKind,
     statusId: string | null,
     body: Record<string, unknown>
   ) => Promise<boolean>;
-  onRemove: (kind: StatusKind, statusId: string) => Promise<boolean>;
-  onReorder: (kind: StatusKind, patches: PositionPatch[]) => Promise<void>;
+  /** Every id of the kind, in the new order. */
+  onOrder: (kind: StatusKind, ids: string[]) => Promise<boolean>;
+  /** Mirror mode: "Same as Zoho" clears the saved order. */
+  onResetOrder?: (kind: StatusKind) => Promise<boolean>;
+  /** Native mode: Delete in the Edit dialog. */
+  onRemove?: (kind: StatusKind, statusId: string) => Promise<boolean>;
+  /** Native mode: "Add stage". The id of the new stage, or null. */
+  onAdd?: (kind: StatusKind, body: Record<string, unknown>) => Promise<string | null>;
 }) {
-  const [rows, setRows] = useState<Status[]>(statuses);
+  const words = LIST_WORDS[kind];
+  const mirror = mode === "mirror";
   const [served, setServed] = useState<Status[]>(statuses);
+  // The full order after a move, until the re-read brings the server's.
+  const [moved, setMoved] = useState<string[] | null>(null);
   const [dragging, setDragging] = useState<number | null>(null);
-  const [newName, setNewName] = useSettingsDraft(`new-status:${kind}`, "");
-  const [adding, setAdding] = useState(newName !== "");
-  const [error, setError] = useState<string | null>(null);
-
-  // The server's answer is the truth; the local order exists only for the
-  // instant between a drop and the re-read it triggers. Adjusted DURING render
-  // rather than in an effect (React's "you might not need an effect"): an
-  // effect would paint the stale order once and then correct it, which on a
-  // reorder is a visible flicker back to where the row came from.
+  const [picked, setPicked] = useState<string | null>(pipelineId);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  // The server's answer is the truth, as in the lost reasons grid. Adjusted
+  // during render, so a re-read never paints the stale order once.
   if (served !== statuses) {
     setServed(statuses);
-    setRows(statuses);
+    setMoved(null);
   }
 
-  async function moveTo(from: number, to: number) {
-    const plan = reorder(rows, from, to);
-    if (plan.patches.length === 0) return;
-    setRows(plan.items);
-    await onReorder(kind, plan.patches);
+  const several = mirror && kind === "deal" && showPicker(pipelines);
+  const onScreen =
+    several && pipelines
+      ? (pipelines.find((p) => p.id === picked) ??
+        pipelines.find((p) => p.is_default) ??
+        orderedPipelines(pipelines)[0])
+      : null;
+  const places = kind === "deal" ? placesOf(pipelines, onScreen?.id ?? picked) : NO_PLACES;
+  // Every stage that some pipeline lists. Null with no pipeline list.
+  const listed =
+    kind === "deal" && pipelines && pipelines.length > 0
+      ? new Set(pipelines.flatMap((p) => p.stages.map((stage) => stage.id)))
+      : null;
+  const fullIds = moved ?? orderLanes(statuses.map(laneOf), mode, places).map((l) => l.status.id);
+  const byId = new Map(statuses.map((status) => [status.id, status]));
+  // With two pipelines the list is a part: the stages of the pipeline on
+  // screen, and the stages that no pipeline lists.
+  const shown = fullIds
+    .map((id) => byId.get(id))
+    .filter(
+      (status): status is Status =>
+        !!status && (!several || places.has(status.id) || !listed?.has(status.id))
+    );
+  const saved = statuses.some((status) => status.admin_order);
+  const custom = saved || moved !== null;
+
+  async function saveOrder(ids: string[]) {
+    setMoved(ids);
+    if (!(await onOrder(kind, ids))) setMoved(null);
+  }
+
+  async function move(from: number, to: number) {
+    const ids = orderAfterMove(fullIds, shown.map((status) => status.id), from, to);
+    if (ids) await saveOrder(ids);
   }
 
   async function drop(to: number) {
-    if (dragging === null) return;
+    // A drop while a save runs would send a second order call (verifier F1).
+    if (dragging === null || saving) return;
     const from = dragging;
     setDragging(null);
-    await moveTo(from, to);
+    await move(from, to);
   }
 
-  async function add() {
-    const draft = {
-      name: newName,
-      type: "open" as StatusType,
-      probability: 0,
-    };
-    const invalid = validateStatusDraft(draft, kind);
-    if (invalid) {
-      setError(invalid);
+  function chooseOrder(choice: string) {
+    if (saving) return;
+    if (choice === "zoho") {
+      // With no saved order the list is the Zoho order already.
+      if (saved) setConfirmingReset(true);
       return;
     }
-    setError(null);
-    const body: Record<string, unknown> = { name: newName.trim(), type: "open" };
-    if (await onSave(kind, null, body)) {
-      setNewName("");
-      setAdding(false);
-    }
+    // "Custom" keeps the order on screen as the saved order.
+    if (!custom) void saveOrder(fullIds);
   }
 
+  const close = () => setEditing(null);
+
   return (
-    <section className="rounded-xl border border-border bg-card/40">
-      <header className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
-        <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">{blurb}</p>
+    <section className="rounded-xl border border-border bg-card/40" aria-label={words.title}>
+      <header className="space-y-3 border-b border-border px-4 py-3">
+        <div>
+          <h2 className="text-sm font-semibold text-foreground">{words.title}</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">{words.line}</p>
         </div>
-        <Button
-          variant="secondary"
-          size="sm"
-          icon="Plus"
-          onClick={() => setAdding((v) => !v)}
-        >
-          Add
-        </Button>
-      </header>
-
-      {adding && (
-        <div className="flex items-center gap-2 border-b border-border px-4 py-2">
-          <Input
-            autoFocus
-            inputSize="sm"
-            value={newName}
-            placeholder="Stage name"
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void add();
-              if (e.key === "Escape") setAdding(false);
-            }}
+        {mirror && (
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium text-foreground">Column order</span>
+              <Tabs
+                tabs={ORDER_TABS}
+                activeTab={custom ? "custom" : "zoho"}
+                onTabChange={chooseOrder}
+                variant="segmented"
+                chrome="inline"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">{words.zoho}</p>
+          </div>
+        )}
+        {several && pipelines && onScreen && (
+          <SelectButton
+            label="Pipeline"
+            prefix="Pipeline:"
+            value={onScreen.id}
+            options={orderedPipelines(pipelines).map((p) => ({ value: p.id, label: p.name }))}
+            defaultValue={onScreen.id}
+            onChange={setPicked}
+            widthClass="w-64 max-w-full"
           />
-          <Button size="sm" loading={saving} onClick={() => void add()}>
-            Create
-          </Button>
-        </div>
-      )}
-      {error && (
-        <p className="border-b border-border px-4 py-2 text-xs text-destructive">
-          {error}
-        </p>
-      )}
-      <OrderStrip kind={kind} statuses={rows} />
-
+        )}
+      </header>
       <ul>
-        {rows.map((status, index) => (
+        {shown.map((status, index) => (
           <li
             key={status.id}
             onDragOver={(e) => e.preventDefault()}
@@ -558,82 +580,453 @@ function StatusGrid({
             }}
             className="border-b border-border/60 last:border-b-0"
           >
-            <StatusRow
-              kind={kind}
+            <StageRow
+              mode={mode}
               status={status}
-              saving={saving}
               index={index}
-              count={rows.length}
-              onMove={(to) => void moveTo(index, to)}
+              count={shown.length}
+              saving={saving}
+              notInPipeline={mirror && listed !== null && !places.has(status.id)}
+              onMove={(to) => void move(index, to)}
               onDragStart={(e) => {
                 e.dataTransfer.setData("text/plain", status.id);
                 e.dataTransfer.effectAllowed = "move";
                 setDragging(index);
               }}
               onDragEnd={() => setDragging(null)}
-              onSave={(body) => onSave(kind, status.id, body)}
-              onRemove={() => onRemove(kind, status.id)}
+              onEdit={() => setEditing(status.id)}
             />
           </li>
         ))}
-        {rows.length === 0 && (
+        {shown.length === 0 && (
           <li className="px-4 py-6 text-center text-xs text-muted-foreground">
-            No statuses yet.
+            {words.empty[mode]}
           </li>
         )}
       </ul>
+      {!mirror && onAdd && (
+        <div className="border-t border-border px-4 py-3">
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="Plus"
+            disabled={saving}
+            onClick={() => setEditing(NEW)}
+          >
+            {words.add}
+          </Button>
+        </div>
+      )}
+      <ConfirmDialog
+        open={confirmingReset}
+        title="Use the Zoho order again?"
+        body="Your custom order will be lost."
+        confirmLabel="Use the Zoho order"
+        busy={saving}
+        onCancel={() => setConfirmingReset(false)}
+        onConfirm={async () => {
+          setConfirmingReset(false);
+          await onResetOrder?.(kind);
+        }}
+      />
+      <StageEditModal
+        kind={kind}
+        mode={mode}
+        editing={editing}
+        statuses={statuses}
+        saving={saving}
+        onClose={close}
+        onSave={async (statusId, body) => {
+          const ok = await onSave(kind, statusId, body);
+          if (ok) close();
+          return ok;
+        }}
+        onRemove={async (statusId) => {
+          const ok = onRemove ? await onRemove(kind, statusId) : false;
+          if (ok) close();
+          return ok;
+        }}
+        onAdd={async (body) => {
+          const id = onAdd ? await onAdd(kind, body) : null;
+          if (id) close();
+          return id !== null;
+        }}
+      />
     </section>
   );
 }
 
-function StatusRow({
-  kind,
+/** One row: one line. No input, Save, Cancel or Reset sits on a row. */
+function StageRow({
+  mode,
   status,
-  saving,
   index,
   count,
+  saving,
+  notInPipeline,
   onMove,
   onDragStart,
   onDragEnd,
-  onSave,
-  onRemove,
+  onEdit,
 }: {
-  kind: StatusKind;
+  mode: "mirror" | "native";
   status: Status;
-  saving: boolean;
   index: number;
   count: number;
+  saving: boolean;
+  notInPipeline: boolean;
   onMove: (to: number) => void;
   onDragStart: (e: React.DragEvent<HTMLElement>) => void;
   onDragEnd: () => void;
-  onSave: (body: Record<string, unknown>) => Promise<boolean>;
-  onRemove: () => Promise<boolean>;
+  onEdit: () => void;
 }) {
-  // A re-read replaces the draft: every write here re-reads the vocabulary,
-  // and a row that kept showing what was typed after the server answered
-  // something else is the stale-row-reads-as-success lie in miniature. The
-  // draft lives in the store, so a section change keeps it (CRM-C1).
-  const [draft, setDraft, clearDraft] = useSettingsDraft(`status:${kind}:${status.id}`, status);
-  // CRM-C2: the dot shows the colour the board shows, so it reads the mode.
-  const mode = useCrmModeValue();
-  const [invalid, setInvalid] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState(false);
-  const [rulesOpen, setRulesOpen] = useState(false);
-  const pinned = CLAMPED_PROBABILITY[draft.type];
-  const ruleCount = (draft.required_fields ?? []).length + (draft.max_dwell_days ? 1 : 0);
-
-  const patch = changedFields(
-    status as unknown as Record<string, unknown>,
-    draft as unknown as Record<string, unknown>
+  const chance = CLAMPED_PROBABILITY[status.type] ?? status.probability ?? 0;
+  return (
+    <div className="flex items-center gap-2 px-4 py-2">
+      <span
+        draggable={!saving}
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
+        className="shrink-0 cursor-grab text-muted-foreground hover:text-foreground"
+        title="Drag to move this column"
+      >
+        <Icon name="GripVertical" className="w-4 h-4" />
+      </span>
+      <MoveButtons name={status.name} index={index} count={count} disabled={saving} onMove={onMove} />
+      <span
+        aria-hidden="true"
+        className={`h-2 w-2 shrink-0 rounded-full ${stageAccent(status, mode).dot}`}
+      />
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="min-w-0 max-w-full truncate text-sm text-foreground">{status.name}</span>
+        <StageTags status={status} notInPipeline={notInPipeline} />
+      </div>
+      <span className="shrink-0 text-xs tabular-nums text-muted-foreground" title="Win chance">
+        {chance}%
+      </span>
+      <Button size="sm" variant="ghost" aria-label={`Edit ${status.name}`} onClick={onEdit}>
+        Edit
+      </Button>
+    </div>
   );
-  const dirty = Object.keys(patch).length > 0;
+}
+
+/** The tags of a row, only where one applies. */
+function StageTags({ status, notInPipeline }: { status: Status; notInPipeline: boolean }) {
+  const icon = stageIcon(status.type) ?? undefined;
+  return (
+    <>
+      {status.type === "won" && <Badge icon={icon}>Won</Badge>}
+      {status.type === "lost" && <Badge icon={icon}>Lost</Badge>}
+      {status.type === "on_hold" && <Badge icon={icon}>On hold</Badge>}
+      {status.hidden && (
+        <Badge icon="EyeOff" title="The board shows this column only while it holds records.">
+          Hidden
+        </Badge>
+      )}
+      {notInPipeline && (
+        <Badge title="The Zoho pipeline does not list this stage.">Not in the Zoho pipeline</Badge>
+      )}
+      {status.source_gone_at && (
+        <Badge tone="warning" title="The Zoho picklist no longer lists this value. Its records keep it.">
+          Removed in Zoho
+        </Badge>
+      )}
+    </>
+  );
+}
+
+/** The Edit dialog of a stage, and the empty one of "Add stage". */
+function StageEditModal({
+  kind,
+  mode,
+  editing,
+  statuses,
+  saving,
+  onClose,
+  onSave,
+  onRemove,
+  onAdd,
+}: {
+  kind: StatusKind;
+  mode: "mirror" | "native";
+  /** The id of the stage, `NEW`, or null when closed. */
+  editing: string | null;
+  statuses: Status[];
+  saving: boolean;
+  onClose: () => void;
+  onSave: (statusId: string, body: Record<string, unknown>) => Promise<boolean>;
+  onRemove: (statusId: string) => Promise<boolean>;
+  onAdd: (body: Record<string, unknown>) => Promise<boolean>;
+}) {
+  const status = editing && editing !== NEW ? (statuses.find((s) => s.id === editing) ?? null) : null;
+  const adding = editing === NEW && mode === "native";
+  const open = adding || status !== null;
+  return (
+    <Modal
+      open={open}
+      // While a write runs, Escape and the scrim do not close the dialog, so
+      // its refusal keeps a place to show.
+      onClose={saving ? () => undefined : onClose}
+      title={adding ? LIST_WORDS[kind].add : status?.name}
+      size="md"
+      className="max-h-[85vh]"
+    >
+      {status && mode === "mirror" ? (
+        <MirrorStageForm
+          key={status.id}
+          kind={kind}
+          status={status}
+          saving={saving}
+          onSave={(body) => onSave(status.id, body)}
+          onCancel={onClose}
+        />
+      ) : open ? (
+        <NativeStageForm
+          key={status?.id ?? NEW}
+          kind={kind}
+          status={status}
+          saving={saving}
+          onSave={(body) => (status ? onSave(status.id, body) : Promise.resolve(false))}
+          onAdd={onAdd}
+          onRemove={() => (status ? onRemove(status.id) : Promise.resolve(false))}
+          onCancel={onClose}
+        />
+      ) : null}
+    </Modal>
+  );
+}
+
+/** One field of the Edit dialog: a label, the control, and a help line. */
+function Field({
+  label,
+  htmlFor,
+  help,
+  children,
+}: {
+  label: string;
+  htmlFor?: string;
+  help?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1">
+      <label htmlFor={htmlFor} className="block text-xs font-medium text-foreground">
+        {label}
+      </label>
+      {children}
+      {help && <p className="text-[11px] text-muted-foreground">{help}</p>}
+    </div>
+  );
+}
+
+/** "Show this column on the board": the inverse of hide (CRM-C3). */
+function ShowOnBoardField({
+  kind,
+  hidden,
+  onChange,
+}: {
+  kind: StatusKind;
+  hidden: boolean;
+  onChange: (hidden: boolean) => void;
+}) {
+  return (
+    <div className="space-y-1">
+      <label className="flex items-center gap-2 text-xs text-foreground">
+        <Checkbox size="sm" checked={!hidden} onChange={(e) => onChange(!e.target.checked)} />
+        Show this column on the board
+      </label>
+      <p className="pl-5 text-[11px] text-muted-foreground">
+        {kind === "deal"
+          ? "Off: the column shows only while it holds deals, and no picker offers the stage."
+          : "Off: the column shows only while it holds leads, and no picker offers the status."}
+      </p>
+    </div>
+  );
+}
+
+/** "Warn when a deal stays more than N days" (WS-26h). Empty: never warn. */
+function DwellField({
+  id,
+  days,
+  onChange,
+}: {
+  id: string;
+  days: number | null | undefined;
+  onChange: (days: number | null) => void;
+}) {
+  return (
+    <div className="space-y-1">
+      <label htmlFor={id} className="flex flex-wrap items-center gap-2 text-xs text-foreground">
+        Warn when a deal stays more than
+        <Input
+          id={id}
+          inputSize="sm"
+          type="number"
+          min={1}
+          max={32767}
+          value={days ?? ""}
+          // An emptied box is "never", which is null. The gateway refuses 0.
+          onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))}
+          className="w-20"
+        />
+        days
+      </label>
+      <p className="text-[11px] text-muted-foreground">Leave it empty to never warn.</p>
+    </div>
+  );
+}
+
+/** "Fields a deal needs to enter this stage" (WS-26h). The move gate reads them. */
+function RequiredFieldsField({
+  value,
+  onChange,
+}: {
+  value: string[];
+  onChange: (fields: string[]) => void;
+}) {
+  return (
+    <fieldset className="space-y-1">
+      <legend className="text-xs font-medium text-foreground">
+        Fields a deal needs to enter this stage
+      </legend>
+      <div className="flex flex-wrap gap-x-4 gap-y-1">
+        {REQUIREABLE_FIELDS.map((field) => {
+          const on = value.includes(field);
+          return (
+            <label key={field} className="flex items-center gap-1.5 text-xs text-foreground">
+              <Checkbox
+                size="sm"
+                checked={on}
+                // Rebuilt from the allowlist, so the stored order is always
+                // the allowlist's, whatever the order of the clicks.
+                onChange={() =>
+                  onChange(
+                    REQUIREABLE_FIELDS.filter((name) => (name === field ? !on : value.includes(name)))
+                  )
+                }
+              />
+              {REQUIREABLE_FIELD_LABELS[field]}
+            </label>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
+/** The error of the dialog: the client rule, or the refusal of the server. */
+function FormError({ text }: { text: string | null }) {
+  if (!text) return null;
+  return (
+    <p role="alert" className="px-4 pb-2 text-xs text-destructive">
+      {text}
+    </p>
+  );
+}
+
+/** One line of help for each stage type (CRM-U11 item 6). */
+const TYPE_HELP: Record<StatusKind, Record<StatusType, string>> = {
+  deal: {
+    open: "Work in progress. Its deals count in the forecast.",
+    ongoing: "Work in progress, as Open.",
+    on_hold: "Paused. Its deals stay out of the forecast.",
+    won: "A deal here is won. It always forecasts 100%.",
+    lost: "A deal here is lost. A move here asks for a lost reason.",
+  },
+  lead: {
+    open: "A lead that is still in work.",
+    ongoing: "A lead that is still in work, as Open.",
+    on_hold: "A lead that waits.",
+    won: "The funnel ends here, with a win.",
+    lost: "The funnel ends here, with a loss.",
+  },
+};
+
+/**
+ * The type choices: Open, On hold, Won and Lost. "In progress" shows only for
+ * a stage that has it already, so an old stage keeps its type.
+ */
+function typeOptions(kind: StatusKind, current: StatusType): SelectOption[] {
+  const types: StatusType[] = ["open", "on_hold", "won", "lost"];
+  if (current === "ongoing") types.splice(1, 0, "ongoing");
+  return types.map((type) => ({
+    value: type,
+    label: STATUS_TYPE_LABELS[type],
+    description: TYPE_HELP[kind][type],
+  }));
+}
+
+/** The empty draft of "Add stage". One object, so the draft store can see it. */
+const NEW_STAGE: Status = {
+  id: "",
+  name: "",
+  color: "gray",
+  position: 0,
+  type: "open",
+  is_default: false,
+  probability: 0,
+  required_fields: [],
+  max_dwell_days: null,
+  hidden: false,
+};
+
+/** The create body of "Add stage": the name, the type, and what was set. */
+function newStageBody(kind: StatusKind, draft: Status): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    name: draft.name.trim(),
+    type: draft.type,
+    probability: CLAMPED_PROBABILITY[draft.type] ?? draft.probability ?? 0,
+  };
+  if (draft.color && draft.color !== "gray") body.color = draft.color;
+  if (draft.hidden) body.hidden = true;
+  if (draft.is_default) body.is_default = true;
+  if (kind === "deal") {
+    if ((draft.required_fields ?? []).length > 0) body.required_fields = draft.required_fields;
+    if (draft.max_dwell_days != null) body.max_dwell_days = draft.max_dwell_days;
+  }
+  return body;
+}
+
+/**
+ * The Edit dialog of a Native stage, and of "Add stage". The admin owns every
+ * field: the name, the type, the colour, the win chance, show, the default,
+ * and for a deal stage the warning and the required fields.
+ */
+export function NativeStageForm({
+  kind,
+  status,
+  saving,
+  onSave,
+  onAdd,
+  onRemove,
+  onCancel,
+}: {
+  kind: StatusKind;
+  /** Null for "Add stage". */
+  status: Status | null;
+  saving: boolean;
+  onSave: (body: Record<string, unknown>) => Promise<boolean>;
+  onAdd: (body: Record<string, unknown>) => Promise<boolean>;
+  onRemove: () => Promise<boolean>;
+  onCancel: () => void;
+}) {
+  // In the store, as each settings draft is (CRM-C1), so a closed dialog
+  // keeps an edit for its return. A re-read of the stage drops it.
+  const [draft, setDraft, clearDraft] = useSettingsDraft(`status:${kind}:${status?.id ?? NEW}`, status ?? NEW_STAGE);
+  const [invalid, setInvalid] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const storeError = useCrmStore((state) => state.error);
+  const id = useId();
+  const pinned = CLAMPED_PROBABILITY[draft.type];
 
   async function save() {
     const message = validateStatusDraft(
       {
         name: draft.name,
         type: draft.type,
-        probability: draft.probability,
+        probability: pinned ?? draft.probability,
         color: draft.color,
         required_fields: draft.required_fields,
         max_dwell_days: draft.max_dwell_days,
@@ -641,220 +1034,313 @@ function StatusRow({
       kind
     );
     setInvalid(message);
+    setFailed(false);
     if (message) return;
+    if (!status) {
+      if (await onAdd(newStageBody(kind, draft))) clearDraft();
+      else setFailed(true);
+      return;
+    }
     // Only what moved. `type` and `probability` are judged TOGETHER by the
-    // server's clamp, so resending an unchanged one alongside a changed one is
-    // the difference between a 422 the editor caused and one the data did.
+    // server's clamp, so an unchanged one is never sent with a changed one.
+    const patch = changedFields(
+      status as unknown as Record<string, unknown>,
+      draft as unknown as Record<string, unknown>
+    );
+    if (typeof patch.name === "string") patch.name = patch.name.trim();
+    if (Object.keys(patch).length === 0) {
+      onCancel();
+      return;
+    }
     if (await onSave(patch)) clearDraft();
+    else setFailed(true);
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2 px-4 py-2">
-      <span
-        draggable
-        onDragStart={onDragStart}
-        onDragEnd={onDragEnd}
-        className="cursor-grab text-muted-foreground hover:text-foreground"
-        title="Drag to reorder"
-      >
-        <Icon name="GripVertical" className="w-4 h-4" />
-      </span>
-      <MoveButtons name={status.name} index={index} count={count} disabled={saving} onMove={onMove} />
-      <span className={`w-2 h-2 shrink-0 rounded-full ${stageAccent(draft, mode).dot}`} />
-
-      <Input
-        inputSize="sm"
-        value={draft.name}
-        onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-        // Narrow enough that a deal row with Rules and Delete holds one
-        // line at 1440 (seen in the browser rig). The name still grows.
-        className="min-w-24 flex-1"
-      />
-
-      <SelectButton
-        label="Colour"
-        value={draft.color || "gray"}
-        options={colorOptions(draft.color)}
-        defaultValue="gray"
-        onChange={(color) => setDraft({ ...draft, color })}
-        widthClass="w-20"
-      />
-
-      <SelectButton
-        label="Type"
-        value={draft.type}
-        options={TYPE_OPTIONS}
-        defaultValue="open"
-        onChange={(type) => {
-          // A won or lost type fixes the win chance, so the draft follows it
-          // and the server never sees a contradiction.
-          const fixed = CLAMPED_PROBABILITY[type as StatusType];
-          setDraft({
-            ...draft,
-            type: type as StatusType,
-            ...(fixed !== undefined ? { probability: fixed } : {}),
-          });
-        }}
-        widthClass="w-28"
-      />
-
-      <label
-        className="flex items-center gap-1 text-xs text-muted-foreground"
-        title={pinnedReason(draft.type)}
-      >
-        Win chance
-        <Input
-          inputSize="sm"
-          type="number"
-          min={0}
-          max={100}
-          value={pinned ?? draft.probability ?? 0}
-          disabled={pinned !== undefined}
-          onChange={(e) =>
-            setDraft({ ...draft, probability: Number(e.target.value) })
-          }
-          className="w-16"
-          aria-label="Win chance"
+    <form
+      noValidate
+      className="flex min-h-0 flex-1 flex-col"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save();
+      }}
+    >
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
+        <Field label="Name" htmlFor={`${id}-name`}>
+          <Input
+            id={`${id}-name`}
+            inputSize="sm"
+            autoFocus={!status}
+            value={draft.name}
+            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+          />
+        </Field>
+        <Field label="Type" htmlFor={`${id}-type`} help={TYPE_HELP[kind][draft.type]}>
+          <SelectButton
+            id={`${id}-type`}
+            label="Type"
+            value={draft.type}
+            options={typeOptions(kind, status?.type ?? draft.type)}
+            defaultValue={draft.type}
+            onChange={(type) => {
+              // A won or lost type fixes the win chance, so the draft follows
+              // it and the server never sees a contradiction.
+              const fixed = CLAMPED_PROBABILITY[type as StatusType];
+              setDraft({
+                ...draft,
+                type: type as StatusType,
+                ...(fixed !== undefined ? { probability: fixed } : {}),
+              });
+            }}
+            widthClass="w-full sm:w-56"
+          />
+        </Field>
+        <Field label="Colour" htmlFor={`${id}-colour`}>
+          <SelectButton
+            id={`${id}-colour`}
+            label="Colour"
+            value={draft.color || "gray"}
+            options={colorOptions(draft.color)}
+            defaultValue={draft.color || "gray"}
+            onChange={(color) => setDraft({ ...draft, color })}
+            widthClass="w-full sm:w-56"
+          />
+        </Field>
+        <Field label="Win chance" htmlFor={`${id}-chance`} help={pinnedReason(draft.type)}>
+          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            <Input
+              id={`${id}-chance`}
+              inputSize="sm"
+              type="number"
+              min={0}
+              max={100}
+              value={pinned ?? draft.probability ?? 0}
+              disabled={pinned !== undefined}
+              onChange={(e) => setDraft({ ...draft, probability: Number(e.target.value) })}
+              className="w-20"
+            />
+            %
+          </span>
+        </Field>
+        <ShowOnBoardField
+          kind={kind}
+          hidden={Boolean(draft.hidden)}
+          onChange={(hidden) => setDraft({ ...draft, hidden })}
         />
-        %
-      </label>
-
-      <label
-        className="flex items-center gap-1 text-xs text-muted-foreground"
-        title="New records land here"
-      >
-        <Checkbox
-          size="sm"
-          checked={draft.is_default}
-          onChange={(e) => setDraft({ ...draft, is_default: e.target.checked })}
+        <label className="flex items-center gap-2 text-xs text-foreground">
+          <Checkbox
+            size="sm"
+            checked={draft.is_default}
+            onChange={(e) => setDraft({ ...draft, is_default: e.target.checked })}
+          />
+          {kind === "deal" ? "New deals start in this stage" : "New leads start in this status"}
+        </label>
+        {kind === "deal" && (
+          <>
+            <DwellField
+              id={`${id}-dwell`}
+              days={draft.max_dwell_days}
+              onChange={(days) => setDraft({ ...draft, max_dwell_days: days })}
+            />
+            <RequiredFieldsField
+              value={draft.required_fields ?? []}
+              onChange={(fields) => setDraft({ ...draft, required_fields: fields })}
+            />
+          </>
+        )}
+      </div>
+      <FormError text={invalid ?? (failed ? (storeError ?? "The save did not go through. Try again.") : null)} />
+      <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-3">
+        {status && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            icon="Trash2"
+            disabled={saving}
+            onClick={() => setConfirming(true)}
+          >
+            {kind === "deal" ? "Delete stage" : "Delete status"}
+          </Button>
+        )}
+        <div className="ml-auto flex items-center gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            disabled={saving}
+            onClick={() => {
+              clearDraft();
+              onCancel();
+            }}
+          >
+            Cancel
+          </Button>
+          <Button type="submit" size="sm" loading={saving}>
+            {status ? "Save" : LIST_WORDS[kind].add}
+          </Button>
+        </div>
+      </div>
+      {status && (
+        <ConfirmDialog
+          open={confirming}
+          title={`Delete “${status.name}”?`}
+          body="The stage leaves the settings and the board. The server refuses the delete while any record is still in it."
+          confirmLabel="Delete"
+          busy={saving}
+          onCancel={() => setConfirming(false)}
+          onConfirm={async () => {
+            setConfirming(false);
+            if (await onRemove()) clearDraft();
+            else setFailed(true);
+          }}
         />
-        default
-      </label>
+      )}
+    </form>
+  );
+}
 
-      <HideBox
-        checked={Boolean(draft.hidden)}
-        onChange={(hidden) => setDraft({ ...draft, hidden })}
-      />
+/**
+ * The Edit dialog of a Mirror stage (CRM-C3 overlay). Zoho owns the name and
+ * the type. The admin sets the Metorite colour, win chance, show, and for a
+ * deal stage the warning. Nothing here writes Zoho (D95).
+ */
+export function MirrorStageForm({
+  kind,
+  status,
+  saving,
+  onSave,
+  onCancel,
+}: {
+  kind: StatusKind;
+  status: Status;
+  saving: boolean;
+  onSave: (body: Record<string, unknown>) => Promise<boolean>;
+  onCancel: () => void;
+}) {
+  // In the store, as each settings draft is (CRM-C1).
+  const [draft, setDraft, clearDraft] = useSettingsDraft(`overlay:${kind}:${status.id}`, status);
+  const [invalid, setInvalid] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const storeError = useCrmStore((state) => state.error);
+  const id = useId();
+  const pinned = CLAMPED_PROBABILITY[status.type];
+  const zoho = status.source_probability ?? 0;
 
-      <Button size="sm" disabled={!dirty || saving} onClick={() => void save()}>
-        Save
-      </Button>
-      {dirty && (
+  async function save() {
+    const message = validateOverlayProbability(draft.ui_probability);
+    setInvalid(message);
+    setFailed(false);
+    if (message) return;
+    const patch = overlayPatch(
+      kind,
+      status as unknown as Record<string, unknown>,
+      draft as unknown as Record<string, unknown>
+    );
+    if (Object.keys(patch).length === 0) {
+      onCancel();
+      return;
+    }
+    if (await onSave(patch)) clearDraft();
+    else setFailed(true);
+  }
+
+  return (
+    <form
+      noValidate
+      className="flex min-h-0 flex-1 flex-col"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save();
+      }}
+    >
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
+        <Field
+          label="Colour"
+          htmlFor={`${id}-colour`}
+          help="Zoho has no stage colour. With none, the type picks it."
+        >
+          <SelectButton
+            id={`${id}-colour`}
+            label="Colour"
+            value={draft.ui_color ?? ""}
+            options={overlayColorOptions(draft.ui_color)}
+            defaultValue={draft.ui_color ?? ""}
+            onChange={(color) => setDraft({ ...draft, ui_color: color || null })}
+            widthClass="w-full sm:w-56"
+          />
+        </Field>
+        <Field label="Win chance" htmlFor={`${id}-chance`} help={pinnedReason(status.type)}>
+          <span className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1">
+              <Input
+                id={`${id}-chance`}
+                inputSize="sm"
+                type="number"
+                min={0}
+                max={100}
+                value={pinned ?? draft.ui_probability ?? ""}
+                // Empty: the Zoho value applies, and the placeholder shows it.
+                placeholder={String(zoho)}
+                disabled={pinned !== undefined}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    ui_probability: e.target.value === "" ? null : Number(e.target.value),
+                  })
+                }
+                className="w-20"
+              />
+              %
+            </span>
+            {pinned === undefined && (
+              <>
+                <span>Zoho: {zoho}%</span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={draft.ui_probability == null}
+                  onClick={() => setDraft({ ...draft, ui_probability: null })}
+                >
+                  Use Zoho&apos;s value
+                </Button>
+              </>
+            )}
+          </span>
+        </Field>
+        <ShowOnBoardField
+          kind={kind}
+          hidden={Boolean(draft.hidden)}
+          onChange={(hidden) => setDraft({ ...draft, hidden })}
+        />
+        {kind === "deal" && (
+          <DwellField
+            id={`${id}-dwell`}
+            days={draft.max_dwell_days}
+            onChange={(days) => setDraft({ ...draft, max_dwell_days: days })}
+          />
+        )}
+      </div>
+      <FormError text={invalid ?? (failed ? (storeError ?? "The save did not go through. Try again.") : null)} />
+      <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-3">
         <Button
+          type="button"
+          variant="secondary"
           size="sm"
-          variant="ghost"
           disabled={saving}
           onClick={() => {
             clearDraft();
-            setInvalid(null);
+            onCancel();
           }}
         >
           Cancel
         </Button>
-      )}
-      {kind === "deal" && (
-        <Button
-          size="sm"
-          variant="ghost"
-          aria-expanded={rulesOpen}
-          onClick={() => setRulesOpen((open) => !open)}
-        >
-          {ruleCount > 0 ? `Rules (${ruleCount})` : "Rules"}
+        <Button type="submit" size="sm" loading={saving}>
+          Save
         </Button>
-      )}
-      <Button
-        size="icon-sm"
-        variant="ghost"
-        icon="Trash2"
-        aria-label="Delete"
-        disabled={saving}
-        onClick={() => setConfirming(true)}
-      />
-      <ConfirmDialog
-        open={confirming}
-        title={`Delete \u201c${status.name}\u201d?`}
-        body="The stage leaves the settings and the board. The server refuses the delete while any record is still in it."
-        confirmLabel="Delete"
-        busy={saving}
-        onCancel={() => setConfirming(false)}
-        onConfirm={async () => {
-          setConfirming(false);
-          await onRemove();
-        }}
-      />
-
-      {/* WS-26h — on its own line, because it is a sentence rather than a
-          field: the lane above says what this stage IS, and this says what it
-          demands and how long it tolerates a deal sitting in it. CRM-U6: it
-          folds behind "Rules", so the grid reads one line per stage. */}
-      {kind === "deal" && rulesOpen && (
-        <div className="flex w-full flex-wrap items-center gap-3 pl-6">
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-            Requires
-          </span>
-          {REQUIREABLE_FIELDS.map((field) => {
-            const on = (draft.required_fields ?? []).includes(field);
-            return (
-              <label
-                key={field}
-                className="flex items-center gap-1 text-xs text-muted-foreground"
-              >
-                <Checkbox
-                  size="sm"
-                  checked={on}
-                  onChange={() =>
-                    setDraft({
-                      ...draft,
-                      // Rebuilt from the allowlist rather than pushed/spliced,
-                      // so the stored order is always the allowlist's — the
-                      // blocked-move 422 lists these, and an order that
-                      // depended on click sequence would make the same stage
-                      // read differently to two people who set it up.
-                      required_fields: REQUIREABLE_FIELDS.filter((name) =>
-                        name === field
-                          ? !on
-                          : (draft.required_fields ?? []).includes(name)
-                      ),
-                    })
-                  }
-                />
-                {REQUIREABLE_FIELD_LABELS[field]}
-              </label>
-            );
-          })}
-          <label
-            className="flex items-center gap-1 text-xs text-muted-foreground"
-            title="Days in this stage before a card's age badge warns. Empty = never rots."
-          >
-            rots after
-            <Input
-              inputSize="sm"
-              type="number"
-              min={1}
-              max={32767}
-              value={draft.max_dwell_days ?? ""}
-              onChange={(e) =>
-                setDraft({
-                  ...draft,
-                  // An emptied box is "never", which is NULL — not 0, which
-                  // the gateway refuses precisely because it would paint every
-                  // card in the stage amber the moment it arrived.
-                  max_dwell_days:
-                    e.target.value === "" ? null : Number(e.target.value),
-                })
-              }
-              className="w-16"
-              aria-label="Rot threshold in days"
-            />
-            days
-          </label>
-        </div>
-      )}
-
-      {invalid && (
-        <p className="w-full text-xs text-destructive">{invalid}</p>
-      )}
-    </div>
+      </div>
+    </form>
   );
 }
 
@@ -881,296 +1367,6 @@ function HideBox({
       />
       hidden
     </label>
-  );
-}
-
-// ── CRM-C3 · the Mirror editor ──────────────────────────────────────────────
-
-/**
- * The stages or the Lead Status values of a Mirror org, for an admin.
- *
- * A drag sends every id of the kind, in the new order, to the order route,
- * which writes the Metorite order in one transaction. "Reset order to Zoho"
- * clears that order, so the Zoho order applies again.
- */
-export function MirrorStatusGrid({
-  kind,
-  title,
-  blurb,
-  statuses,
-  saving,
-  onSave,
-  onOrder,
-  onResetOrder,
-}: {
-  kind: StatusKind;
-  title: string;
-  blurb: string;
-  statuses: Status[];
-  saving: boolean;
-  onSave: (
-    kind: StatusKind,
-    statusId: string | null,
-    body: Record<string, unknown>
-  ) => Promise<boolean>;
-  onOrder: (kind: StatusKind, ids: string[]) => Promise<boolean>;
-  onResetOrder: (kind: StatusKind) => Promise<boolean>;
-}) {
-  const [rows, setRows] = useState<Status[]>(statuses);
-  const [served, setServed] = useState<Status[]>(statuses);
-  const [dragging, setDragging] = useState<number | null>(null);
-  // The server's answer is the truth, as in `StatusGrid`.
-  if (served !== statuses) {
-    setServed(statuses);
-    setRows(statuses);
-  }
-  const ordered = statuses.some((status) => status.admin_order);
-
-  async function moveTo(from: number, to: number) {
-    const ids = orderAfterDrop(rows, from, to);
-    if (!ids) return;
-    setRows(ids.map((id) => rows.find((row) => row.id === id)!));
-    await onOrder(kind, ids);
-  }
-
-  async function drop(to: number) {
-    if (dragging === null) return;
-    const from = dragging;
-    setDragging(null);
-    await moveTo(from, to);
-  }
-
-  return (
-    <section className="rounded-xl border border-border bg-card/40" aria-label={title}>
-      <header className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
-        <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">{blurb}</p>
-        </div>
-        <Button
-          variant="secondary"
-          size="sm"
-          icon="RotateCcw"
-          disabled={!ordered || saving}
-          onClick={() => void onResetOrder(kind)}
-        >
-          Reset order to Zoho
-        </Button>
-      </header>
-      <OrderStrip kind={kind} statuses={rows} />
-      <ul>
-        {rows.map((status, index) => (
-          <li
-            key={status.id}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              void drop(index);
-            }}
-            className="border-b border-border/60 last:border-b-0"
-          >
-            <MirrorStatusRow
-              kind={kind}
-              status={status}
-              saving={saving}
-              index={index}
-              count={rows.length}
-              onMove={(to) => void moveTo(index, to)}
-              onDragStart={(e) => {
-                e.dataTransfer.setData("text/plain", status.id);
-                e.dataTransfer.effectAllowed = "move";
-                setDragging(index);
-              }}
-              onDragEnd={() => setDragging(null)}
-              onSave={(body) => onSave(kind, status.id, body)}
-            />
-          </li>
-        ))}
-        {rows.length === 0 && (
-          <li className="px-4 py-6 text-center text-xs text-muted-foreground">
-            No values from Zoho yet. The next sync brings them.
-          </li>
-        )}
-      </ul>
-    </section>
-  );
-}
-
-function MirrorStatusRow({
-  kind,
-  status,
-  saving,
-  index,
-  count,
-  onMove,
-  onDragStart,
-  onDragEnd,
-  onSave,
-}: {
-  kind: StatusKind;
-  status: Status;
-  saving: boolean;
-  index: number;
-  count: number;
-  onMove: (to: number) => void;
-  onDragStart: (e: React.DragEvent<HTMLElement>) => void;
-  onDragEnd: () => void;
-  onSave: (body: Record<string, unknown>) => Promise<boolean>;
-}) {
-  // In the store, as in `StatusRow`, so a section change keeps it (CRM-C1).
-  const [draft, setDraft, clearDraft] = useSettingsDraft(`overlay:${kind}:${status.id}`, status);
-  const [invalid, setInvalid] = useState<string | null>(null);
-  const [rulesOpen, setRulesOpen] = useState(false);
-  const pinned = CLAMPED_PROBABILITY[status.type];
-  const patch = overlayPatch(
-    kind,
-    status as unknown as Record<string, unknown>,
-    draft as unknown as Record<string, unknown>
-  );
-  const dirty = Object.keys(patch).length > 0;
-  const gone = Boolean(status.source_gone_at);
-
-  async function save() {
-    const message = validateOverlayProbability(draft.ui_probability);
-    setInvalid(message);
-    if (message) return;
-    if (await onSave(patch)) clearDraft();
-  }
-
-  return (
-    <div className="flex flex-wrap items-center gap-2 px-4 py-2">
-      <span
-        draggable
-        onDragStart={onDragStart}
-        onDragEnd={onDragEnd}
-        className="cursor-grab text-muted-foreground hover:text-foreground"
-        title="Drag to set the Metorite order"
-      >
-        <Icon name="GripVertical" className="w-4 h-4" />
-      </span>
-      <MoveButtons name={status.name} index={index} count={count} disabled={saving} onMove={onMove} />
-      <span
-        className={`w-2 h-2 shrink-0 rounded-full ${stageAccent(draft, "mirror").dot}`}
-      />
-      <span className="min-w-32 flex-1 truncate text-sm text-foreground">{status.name}</span>
-      {gone && (
-        <Badge tone="warning" title="The Zoho picklist no longer lists this value. Its records keep it.">
-          Removed in Zoho
-        </Badge>
-      )}
-
-      <label
-        className="flex items-center gap-1 text-xs text-muted-foreground"
-        title={pinnedReason(status.type)}
-      >
-        Win chance
-        {kind === "deal" && (
-          <>
-            <span title="The probability in Zoho">Zoho {status.source_probability ?? 0}%</span>
-            <span aria-hidden>·</span>
-            Metorite
-          </>
-        )}
-        <Input
-          inputSize="sm"
-          type="number"
-          min={0}
-          max={100}
-          value={pinned ?? draft.ui_probability ?? ""}
-          disabled={pinned !== undefined}
-          placeholder={String(status.source_probability ?? 0)}
-          onChange={(e) =>
-            setDraft({
-              ...draft,
-              ui_probability: e.target.value === "" ? null : Number(e.target.value),
-            })
-          }
-          className="w-16"
-          aria-label="Metorite probability"
-        />
-        %
-      </label>
-
-      <SelectButton
-        label="Colour"
-        value={draft.ui_color ?? ""}
-        options={overlayColorOptions(draft.ui_color)}
-        defaultValue=""
-        onChange={(color) => setDraft({ ...draft, ui_color: color || null })}
-        widthClass="w-24"
-      />
-
-      <HideBox
-        checked={Boolean(draft.hidden)}
-        onChange={(hidden) => setDraft({ ...draft, hidden })}
-      />
-
-      {kind === "deal" && (
-        <Button
-          size="sm"
-          variant="ghost"
-          aria-expanded={rulesOpen}
-          onClick={() => setRulesOpen((open) => !open)}
-        >
-          {draft.max_dwell_days ? "Rules (1)" : "Rules"}
-        </Button>
-      )}
-
-      <Button size="sm" disabled={!dirty || saving} onClick={() => void save()}>
-        Save
-      </Button>
-      {dirty && (
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={saving}
-          onClick={() => {
-            clearDraft();
-            setInvalid(null);
-          }}
-        >
-          Cancel
-        </Button>
-      )}
-      <Button
-        size="sm"
-        variant="ghost"
-        icon="RotateCcw"
-        disabled={!hasOverlay(kind, status as unknown as Record<string, unknown>) || saving}
-        onClick={() => void onSave(resetToSource(kind))}
-      >
-        Reset to Zoho
-      </Button>
-
-      {kind === "deal" && rulesOpen && (
-        <div className="flex w-full flex-wrap items-center gap-3 pl-6">
-          <label
-            className="flex items-center gap-1 text-xs text-muted-foreground"
-            title="Days in this stage before a card's age badge warns. Empty = never rots."
-          >
-            rots after
-            <Input
-              inputSize="sm"
-              type="number"
-              min={1}
-              max={32767}
-              value={draft.max_dwell_days ?? ""}
-              onChange={(e) =>
-                setDraft({
-                  ...draft,
-                  max_dwell_days: e.target.value === "" ? null : Number(e.target.value),
-                })
-              }
-              className="w-16"
-              aria-label="Rot threshold in days"
-            />
-            days
-          </label>
-        </div>
-      )}
-
-      {invalid && <p className="w-full text-xs text-destructive">{invalid}</p>}
-    </div>
   );
 }
 
@@ -1265,9 +1461,7 @@ function ReasonGrid({
       <header className="border-b border-border px-4 py-3">
         <h2 className="text-sm font-semibold text-foreground">Lost reasons</h2>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          Required on every deal that enters a lost stage, which is why this
-          list is worth curating — a nullable column with no gate collects
-          blanks.
+          A member must pick one of these when a deal is lost.
         </p>
       </header>
 

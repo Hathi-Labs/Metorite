@@ -962,7 +962,9 @@ async def test_a_deal_cannot_sit_in_a_stage_its_pipeline_lacks(q) -> None:
     assert ok.status_code == 200, ok.text
 
 
-async def test_native_writes_refuse_a_pipeline_that_a_provider_owns(q) -> None:
+async def test_native_writes_allow_a_pipeline_that_a_provider_owned(q) -> None:
+    """CRM-Z10c: the lock follows the mode. A Zoho-origin pipeline is editable in
+    Native mode and refused in Mirror mode."""
     admin = _admin(q.org_a)
     assert (await _req(admin, "PATCH", "/crm/settings", {"mode": "native"})).status_code == 200
     with q.p.admin_engine.begin() as c:  # left over from an org that was in Mirror mode
@@ -970,15 +972,14 @@ async def test_native_writes_refuse_a_pipeline_that_a_provider_owns(q) -> None:
             "INSERT INTO crm_pipelines (organization_id, name, ext_source, ext_id) "
             "VALUES (CAST(:o AS uuid), 'Zoho one', 'zoho', 'zz') RETURNING id"),
             {"o": q.org_a}).scalar())
-    status = (await _req(admin, "GET", "/crm/pipelines")).json()[0]["stages"][0]["id"]
-    for method, path, body in (
-        ("PATCH", f"/crm/pipelines/{pid}", {"name": "Mine"}),
-        ("POST", f"/crm/pipelines/{pid}/stages", {"status_id": status}),
-        ("DELETE", f"/crm/pipelines/{pid}/stages/{status}", None),
-    ):
-        r = await _req(admin, method, path, body)
-        assert r.status_code == 409, (method, r.text)
-        assert r.json()["detail"]["code"] == "mirrored_pipeline"
+    ok = await _req(admin, "PATCH", f"/crm/pipelines/{pid}", {"name": "Mine"})
+    assert ok.status_code == 200, ok.text
+    with q.p.admin_engine.begin() as c:  # the org goes back to Mirror mode
+        c.execute(text("UPDATE crm_settings SET mode = 'mirror' WHERE "
+                       "organization_id = CAST(:o AS uuid)"), {"o": q.org_a})
+    refused = await _req(admin, "PATCH", f"/crm/pipelines/{pid}", {"name": "Again"})
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["code"] == "mirror_mode_settings"
 
 
 # ── 7. Deals board stages (owner report, 2026-10-12) ─────────────────────────

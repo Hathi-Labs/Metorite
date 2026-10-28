@@ -194,7 +194,6 @@ describe("the settings page", () => {
         saving: false,
         onSaveStatus: async () => true,
         onRemoveStatus: async () => true,
-        onReorderStatuses: async () => undefined,
         onSaveLostReason: async () => true,
         onRemoveLostReason: async () => true,
         onReorderLostReasons: async () => undefined,

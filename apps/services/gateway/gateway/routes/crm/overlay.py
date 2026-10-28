@@ -76,6 +76,7 @@ def lanes(options: Mapping[str, str], values: Mapping[str, str]) -> list[tuple[s
 async def overlay_of(db: Any, org: str | None, slot: str | None) -> Overlay | None:
     """The approved overlay of *slot* for *org*, or ``None``, in the
     caller's tenant session."""
+    from gateway.routes.crm.core import is_mirror_mode
     from gateway.routes.crm.mapping_plans import (
         KIND_STAGE,
         KIND_TARGET,
@@ -85,6 +86,10 @@ async def overlay_of(db: Any, org: str | None, slot: str | None) -> Overlay | No
     from gateway.routes.crm.modules import mirrored_modules
 
     if not org or not slot:
+        return None
+    # An overlay is a Mirror-only mapping. A Native org keeps its module
+    # records (CRM-Z10d), and an overlay must not read them.
+    if not await is_mirror_mode(db, str(org)):
         return None
     others = await approved_others(db, str(org))
     module = roles_of(others).get(slot)

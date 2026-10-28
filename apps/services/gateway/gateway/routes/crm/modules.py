@@ -6,16 +6,27 @@ Spec: ``project-docs/specs/crm_platform.md`` §18.7 "CRM-Q6b: the views".
     GET  /crm/modules/{module}/records         one page of a module's records
     GET  /crm/modules/{module}/records/{id}    one record, its fields and links
     GET  /crm/modules/{module}/records/{id}/timeline   its activities (CRM-Q23a)
+    PATCH /crm/modules/{module}/records/{id}   edit one record (CRM-Z10d, Native)
 
 CRM-Q6a mirrors each Zoho module that has no table of its own into
 ``crm_module_records`` (Products, Quotes, each custom module). These routes
-read that table. They are read only, and the sync is the only writer.
+read that table. In Mirror mode they are read only, and the sync is the only
+writer. In Native mode one PATCH edits a record (CRM-Z10d, below).
 
 **Which modules.** The latest source profile names them: a row with
 ``generic`` and ``mirrored`` true. The order is the profile order of
 ``generic_modules``: the standard modules of §18.7, then each custom module in
-alphabetical order. A Native org gets an empty list, and so does an org that
-has no profile yet.
+alphabetical order. An org that has no profile yet gets an empty list. A
+Native org keeps the modules that still hold records (CRM-Z10d, D133.2).
+
+**The edit** (CRM-Z10d). ``PATCH`` takes ``name``, ``owner_email`` and
+``fields``. It goes through ``core.assert_writable``, and ``crm_module_records``
+is in ``MIRROR_RECORD_TABLES``, so a Mirror org gets 409 ``mirrored_record``.
+The sync writes with raw SQL (``upsert_module_records_from_source``) and never
+calls the guard. Each key of ``fields`` must be a live field definition of
+``module:<ApiName>`` (else 422), and its value follows the CRM-C4a check
+(``field_studio.custom_for_patch``). ``owner_email`` must be an active member.
+There is no create, no delete and no field definition edit in v1.
 
 **The module name never reaches SQL text (R5).** Each route checks the name in
 the path against the mirrored set of the profile FIRST. A name outside the set
@@ -46,6 +57,7 @@ session that the router binds, never from the request. Each read runs in one
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -77,8 +89,8 @@ from gateway.routes.crm.core import (
 )
 from gateway.routes.crm.fields import FieldDef
 from gateway.routes.crm.fill_rank import annotate, fills_for
-from gateway.routes.crm.records import refuse_nul
-from pydantic import BaseModel, Field
+from gateway.routes.crm.records import refuse_nul, refuse_nul_tree
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 
 #: The provider whose profile names the modules. One provider today.
@@ -184,6 +196,9 @@ _COUNTS_SQL = (
     "WHERE module = ANY(CAST(:modules AS text[])) GROUP BY module"
 )
 
+#: The modules that hold a record. Row level security keeps it in the tenant.
+_HELD_SQL = "SELECT DISTINCT module FROM crm_module_records"
+
 _ONE_SQL = (
     f"SELECT {_COLUMNS} FROM crm_module_records "
     "WHERE id = CAST(:id AS uuid) AND module = :module"
@@ -220,8 +235,13 @@ def _mapping() -> Any:
 
 
 async def mirrored_modules(db: Any) -> dict[str, dict[str, Any]]:
-    """The mirrored generic modules of the caller's org, by API name, in the
-    profile order. Empty in Native mode and before the first discovery.
+    """The generic modules of the caller's org, by API name, in the profile
+    order. Empty before the first discovery.
+
+    In Mirror mode: each module that the profile mirrors. In Native mode
+    (CRM-Z10d): each such module that still holds a row in
+    ``crm_module_records``, because a switch keeps every record (D133.2). An
+    org without module records lists none.
 
     The organization is the bound tenant. Row level security binds the read
     too.
@@ -229,12 +249,19 @@ async def mirrored_modules(db: Any) -> dict[str, dict[str, Any]]:
     from gateway.crm_sync import profiles
 
     org = current_tenant()
-    if not org or not await is_mirror_mode(db, str(org)):
+    if not org:
         return {}
+    mirror = await is_mirror_mode(db, str(org))
     latest = await profiles.latest(db, str(org))
     if latest is None:
         return {}
-    return mirrored_of(latest.profile)
+    found = mirrored_of(latest.profile)
+    if mirror or not found:
+        return found
+    held = {
+        str(r.module) for r in (await db.execute(text(_HELD_SQL))).fetchall()
+    }
+    return {name: row for name, row in found.items() if name in held}
 
 
 def mirrored_of(profile: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
@@ -590,3 +617,119 @@ async def get_module_record_timeline(
         return TimelineResponse(entries=page, has_more=more)
     entries.sort(key=lambda e: (e.at or ""), reverse=True)
     return TimelineResponse(entries=entries[:limit])
+
+
+# ── The edit (CRM-Z10d) ─────────────────────────────────────────────────────
+
+
+class ModuleRecordPatch(BaseModel):
+    """``PATCH /crm/modules/{module}/records/{id}``. Only the keys sent change.
+
+    A JSON ``null`` in ``name`` or ``owner_email`` clears it. ``fields``
+    merges per key: a key that the body does not name keeps its value, and a
+    ``null`` removes its key. The body names no tenant, no source and no id.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=500)
+    owner_email: str | None = Field(default=None, max_length=320)
+    fields: dict[str, Any] | None = None
+
+
+_PATCH_SQL = (
+    "UPDATE crm_module_records SET {assignments} "
+    "WHERE id = CAST(:id AS uuid) AND module = :module RETURNING " + _COLUMNS
+)
+
+
+async def _check_owner(db: Any, owner: str | None, kept: str | None) -> str | None:
+    """*owner* as stored, or 422 ``owner_not_member``. The owner that the
+    record holds already may stay. ``None`` clears it."""
+    if owner is None or not owner.strip():
+        return None
+    wanted = owner.strip().lower()
+    if kept is not None and wanted == kept.strip().lower():
+        return kept
+    # The one member rule: the sync keeps a Zoho owner only when this holds.
+    from gateway.crm_sync import runs
+
+    if wanted not in await runs.member_emails(db, str(current_tenant())):
+        raise HTTPException(status_code=422, detail={
+            "code": "owner_not_member",
+            "message": "The owner must be an active member of the organization.",
+            "field": "owner_email",
+        })
+    return wanted
+
+
+@router.patch("/modules/{module}/records/{record_id}", response_model=ModuleRecordPage)
+async def patch_module_record(
+    module: str,
+    record_id: str,
+    payload: ModuleRecordPatch,
+    user: UserContext = Depends(get_current_user),
+) -> ModuleRecordPage:
+    """Edit one record of a module in Native mode (CRM-Z10d).
+
+    The order: the module (404), the record (404, and a record of another
+    organization is invisible to row level security), the mirror guard (409
+    ``mirrored_record`` in Mirror mode), then the values (422). A Native edit
+    sets no ``zoho_dirty``: this table has none, and no push reads it.
+    """
+    from gateway.routes.crm.core import assert_writable
+    from gateway.routes.crm.field_studio import custom_for_patch
+
+    values = payload.model_dump(exclude_unset=True)
+    given = values.pop("fields", None)
+    refuse_nul([(k, v) for k, v in values.items() if isinstance(v, str)])
+    if given:
+        refuse_nul_tree(given)
+    async with _tenant_session() as db:
+        mirrored = await mirrored_modules(db)
+        row = _require_module(mirrored, module)
+        wanted = checked_uuid(record_id, "id")
+        found = (await db.execute(
+            text(_ONE_SQL), {"id": wanted, "module": module},
+        )).first()
+        if found is None:
+            raise HTTPException(status_code=404, detail="Record not found")
+        await assert_writable(
+            db, current_tenant(), "crm_module_records", values, row=found,
+        )
+        put: dict[str, Any] = {}
+        drop: tuple[str, ...] = ()
+        if given:
+            stored = from_jsonb(found.fields)
+            put, drop = await custom_for_patch(
+                db, module, given, stored if isinstance(stored, dict) else {},
+                entity=_mapping().module_entity(module),
+            )
+        if "owner_email" in values:
+            values["owner_email"] = await _check_owner(
+                db, values["owner_email"], found.owner_email,
+            )
+        if isinstance(values.get("name"), str):
+            values["name"] = values["name"].strip() or None
+        assignments = [f"{c} = :{c}" for c in values]
+        bound: dict[str, Any] = dict(values)
+        if put or drop:
+            assignments.append(
+                "fields = (COALESCE(fields, '{}'::jsonb) || CAST(:put AS jsonb)) "
+                "- CAST(:drop AS text[])"
+            )
+            bound["put"] = json.dumps(put)
+            bound["drop"] = list(drop)
+        updated = found
+        if assignments:
+            assignments.append("updated_at = now()")
+            updated = (await db.execute(
+                text(_PATCH_SQL.format(assignments=", ".join(assignments))),
+                {**bound, "id": wanted, "module": module},
+            )).first()
+        record = _record(updated)
+        defs = await _field_defs(db, module, user.organization_id)
+        links = await resolve_links(db, record, defs, mirrored)
+    return ModuleRecordPage(
+        module=_summary(row), record=record, field_defs=defs, links=links,
+    )

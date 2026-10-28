@@ -12,7 +12,7 @@ What this proves, one test for each "Done when" item of §18.7 Q6b:
 1. org isolation: org B reads none of org A's modules or records, also with
    the same Zoho ids, and a lookup never resolves into the other org;
 2. the 404 for a module that the profile does not mirror, before any read;
-3. the empty list for a Native org;
+3. a Native org lists the modules that hold records, and none otherwise;
 4. the lookup links: a known record, a mirrored generic record, and plain text
    for any other target.
 
@@ -269,19 +269,29 @@ async def test_a_record_of_another_module_is_404(ns) -> None:
     assert (await _get(ns, a, "/crm/modules/Products/records/not-a-uuid")).status_code == 422
 
 
-# ── 3. The empty list for a Native org ───────────────────────────────────────
+# ── 3. A Native org keeps the modules that hold records (CRM-Z10d) ───────────
 
 
-async def test_a_native_org_gets_an_empty_list(ns) -> None:
+async def test_a_native_org_lists_the_modules_that_hold_records(ns) -> None:
     a = ns.org_a
-    # A profile and records left from an earlier mirror do not show.
+    # A profile and records left from the mirror stay (D133.2).
     _seed_org(ns, a, mode="native", modules=PROFILE_A)
     record = _record(ns, a, "Products", "p1", "Widget")
     res = await _get(ns, a, "/crm/modules")
     assert res.status_code == 200, res.text
+    assert [(m["api_name"], m["count"]) for m in res.json()] == [("Products", 1)]
+    assert (await _get(ns, a, "/crm/modules/Products/records")).status_code == 200
+    assert (await _get(ns, a, f"/crm/modules/Products/records/{record}")).status_code == 200
+    # A module with no record is not listed, and its path is 404.
+    assert (await _get(ns, a, "/crm/modules/Quotes/records")).status_code == 404
+
+
+async def test_a_native_org_with_no_module_record_gets_an_empty_list(ns) -> None:
+    a = ns.org_a
+    _seed_org(ns, a, mode="native", modules=PROFILE_A)
+    res = await _get(ns, a, "/crm/modules")
+    assert res.status_code == 200, res.text
     assert res.json() == []
-    assert (await _get(ns, a, "/crm/modules/Products/records")).status_code == 404
-    assert (await _get(ns, a, f"/crm/modules/Products/records/{record}")).status_code == 404
 
 
 async def test_a_mirror_org_with_no_profile_gets_an_empty_list(ns) -> None:

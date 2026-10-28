@@ -112,6 +112,7 @@ import { useAllSavedViews } from "./lib/useSavedViews";
 import { useViewActions } from "./lib/useViewActions";
 import {
   orderedPipelines,
+  placesOf,
   readRemembered,
   remember,
   resolvePipeline,
@@ -234,7 +235,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // `lib/nextActivity.ts`). Each is kept per member and organization.
   const { access } = useAccess();
   const memberScope = chatScope(access.email, access.organization?.id);
-  // The order of the cards in a deal lane (CRM-X3): stage age or next activity.
+  // The order of the cards in a deal lane (CRM-X3): five orders (Board options, Sort cards).
   const savedSort = useMemo(() => readCardSort(memberScope), [memberScope]);
   const [pickedSort, setPickedSort] = useState<{ scope: string | null; sort: CardSort } | null>(
     null
@@ -541,8 +542,11 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     ctx.mode,
     pickedEmpty && pickedEmpty.scope === memberScope ? pickedEmpty.show : savedEmpty
   );
-  // The one column order, for this mode (lib/board.ts `orderLanes`).
-  const dealLanes = visibleLanes(orderLanes(store.lanes, ctx.mode), showEmpty);
+  // The one column order, for this mode (lib/board.ts `orderLanes`, D137).
+  // The places come from the pipeline on screen, or from the default one when
+  // the board sends no `pipeline_id`. CRM settings orders its list the same way.
+  const places = useMemo(() => placesOf(pipelines, pipelineId), [pipelines, pipelineId]);
+  const dealLanes = visibleLanes(orderLanes(store.lanes, ctx.mode, places), showEmpty);
   const dealBoard = boardOn && view.tab === "deals";
   const mayCreate = canCreate(ctx.mode);
 
@@ -914,10 +918,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                           writeShowEmpty(memberScope, next);
                           setPickedEmpty({ scope: memberScope, show: next });
                         },
-                        nextActivity: cardSort === "next_activity",
-                        onToggleNextActivity: () => {
-                          const next: CardSort =
-                            cardSort === "next_activity" ? "stage_age" : "next_activity";
+                        cardSort,
+                        onPickCardSort: (next) => {
                           writeCardSort(memberScope, next);
                           setPickedSort({ scope: memberScope, sort: next });
                         },
@@ -1075,6 +1077,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               questions={questions.gate === "on" ? <OpenQuestionsCard /> : undefined}
               rules={rules.gate === "on" ? <BusinessRulesCard /> : undefined}
               pipelines={pipelines}
+              pipelineId={pipelineId}
               showAdminCards={ctx.isAdmin}
               dealStatuses={store.dealStatuses}
               leadStatuses={store.leadStatuses}
@@ -1084,7 +1087,6 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               studioAdmin={studioAdmin}
               onSaveStatus={store.saveStatus}
               onRemoveStatus={store.removeStatus}
-              onReorderStatuses={store.reorderStatuses}
               onSaveLostReason={store.saveLostReason}
               onRemoveLostReason={store.removeLostReason}
               onReorderLostReasons={store.reorderLostReasons}

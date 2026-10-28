@@ -26,7 +26,7 @@ import Button from "@/components/ui/Button";
 import { useCachedResource } from "@/lib/useCachedResource";
 import { useEffect } from "react";
 import * as api from "../lib/api";
-import { isMirrored, zohoLink } from "../lib/connect";
+import { importedLine, isLocked, zohoLink } from "../lib/connect";
 import { summaryFacts, type FieldDef } from "../lib/fields";
 import { NO_RELATED, type RelatedLists } from "../lib/related";
 import { navLabel, navStep, neighbour, RECORD_PAGE_ATTR } from "../lib/recordNav";
@@ -34,6 +34,7 @@ import { nextOpenActivities } from "../lib/timeline";
 import type { FieldLayout } from "../lib/fieldLayout";
 import { useCrmStore, type CrmRefusal } from "../lib/store";
 import { recordTabsFor, shownRecordTab, type RecordTab } from "../lib/urlState";
+import { useCrmModeValue } from "../lib/modeContext";
 import { useFieldDefs, useFieldLayout } from "../lib/useCrmMode";
 import { ENTITY_NOUN, sourceSingular, type SourceLabels } from "../lib/views";
 import FieldsPanel from "./FieldsPanel";
@@ -252,7 +253,9 @@ export function RecordPage({
   now?: Date;
 } & RecordActions &
   RecordOrder) {
-  const mirrored = isMirrored(record);
+  const mode = useCrmModeValue();
+  const mirrored = isLocked(record, mode);
+  const imported = importedLine(record, mode);
   const shown = shownRecordTab(entity, tab);
   const status = statuses.find((s) => s.id === record.status_id) ?? null;
   const facts = summaryFacts(entity, record, companyName);
@@ -299,6 +302,7 @@ export function RecordPage({
           />
         )}
         <RecordFacts facts={facts} />
+        {imported && <span className="text-[11px] text-muted-foreground">{imported}</span>}
         {order && (
           // The place in the list, and the two steps for a mouse or a touch.
           // `j` and `k` do the same from the keyboard.

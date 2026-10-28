@@ -1255,6 +1255,7 @@ async def _apply_pack_turn(
     agent_name: str,
     tool_scope: list[str] | None,
     agent_config: dict[str, Any] | None,
+    is_authorized: Any = None,
 ) -> Any:
     """Await the read of :func:`_start_pack_turn` and apply layer (a).
 
@@ -1266,7 +1267,8 @@ async def _apply_pack_turn(
     WS-67 OA-7e: it offers layer (b) too (``offer_loader``). The run then
     holds ``load_skill_tools`` for each allowed pack that layer (a) did not
     load. This is the one caller that passes it, so only the run that layer
-    (a) serves gets the tool.
+    (a) serves gets the tool. WS-67 OA-7i: *is_authorized* is the run's grant
+    check, which the MCP lookahead of the loader plan reads.
     """
     if task is None:
         return None
@@ -1279,6 +1281,7 @@ async def _apply_pack_turn(
             agents, turn, run_ctx, allowed=allowed, agent_name=agent_name,
             tool_scope=tool_scope, agent_config=agent_config,
             bullets=PACK_DELEGATION_BULLETS, offer_loader=True,
+            is_authorized=is_authorized,
         )
     except asyncio.CancelledError:
         raise
@@ -5825,6 +5828,7 @@ async def run_agent_stream(
                     loaded.config.get("tool_scope") or None, _agent_md_spec,
                 ),
                 agent_config=loaded.config,
+                is_authorized=_authorizer,
             )
             _apply_own_tool_scope(
                 agents, loaded.config.get("own_tool_scope") or None,

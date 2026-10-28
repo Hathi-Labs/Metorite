@@ -111,6 +111,10 @@ a Native CRM, admin only.
 ``crm_convert_mappings``). Admin only, behind ``CRM_FIELD_STUDIO_ORGS``, and
 409 in Mirror mode. ``pipeline.convert_lead`` applies the map.
 
+``cutover.py`` is WS-53 CRM-Z10a — ``GET /crm/cutover/preview``, what moves to
+Metorite when the org leaves Zoho and what does not. Read only, with no source
+call. Admin only, behind ``CRM_MIRROR``, and Mirror mode only.
+
 ``note_search.py`` is WS-53 CRM-Q27 — ``GET /crm/notes/search``, the notes
 nearest to a query by meaning (table ``crm_note_vectors``). Read only. An org
 outside ``CRM_NOTE_SEARCH_ORGS`` gets ``degraded`` with no embed call. Its
@@ -143,6 +147,7 @@ from gateway.routes.crm import analysis as _analysis  # noqa: F401
 from gateway.routes.crm import catalogue as _catalogue  # noqa: F401
 from gateway.routes.crm import connection as _connection  # noqa: F401
 from gateway.routes.crm import convert_mapping as _convert_mapping  # noqa: F401
+from gateway.routes.crm import cutover as _cutover  # noqa: F401
 from gateway.routes.crm import deal_contacts as _deal_contacts  # noqa: F401
 from gateway.routes.crm import digests as _digests  # noqa: F401
 from gateway.routes.crm import export as _export  # noqa: F401

@@ -387,5 +387,5 @@ async def test_card_sort_next_activity_orders_a_lane_soonest_first(ns, app_engin
     assert _totals(sorted_.json()) == _totals(default.json())
     assert (await _call(ns, a, "GET", "/crm/pipeline?card_sort=stage_age")).status_code == 200
 
-    refused = await _call(ns, a, "GET", "/crm/pipeline?card_sort=amount")
+    refused = await _call(ns, a, "GET", "/crm/pipeline?card_sort=bogus")
     assert refused.status_code == 422, refused.text
