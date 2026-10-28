@@ -1014,3 +1014,151 @@ def test_a_good_owner_loads_once_for_the_process(owner_dir) -> None:
     assert first is not None and sk._owner_module("probe-owner") is first
     assert ti._pack_owner_module("probe-owner") is first
     assert (owner_dir / "imports.txt").read_text(encoding="utf-8") == "x"
+
+
+# ── 11. The CRM pack (WS-67 OA-8a, §4.3.2) ──────────────────────────────────
+
+CRM = "crm-assistant"
+CRM_DIR = "apps/agents/agent-crm"
+CRM_NINE = frozenset({
+    "convert_lead", "create_lead", "crm_search_notes", "get_pipeline", "get_record",
+    "get_timeline", "log_activity", "search_crm", "update_deal_status",
+})
+CRM_WRITES = frozenset({"create_lead", "update_deal_status", "log_activity", "convert_lead"})
+
+
+def _crm_module() -> Any:
+    return load_agent_module(CRM_DIR)
+
+
+def _mode(monkeypatch, mode: str | None, calls: list[str] | None = None) -> None:
+    """Patch the Mirror-mode read (``GET /crm/mode``). None makes it fail."""
+    async def crm_mode() -> str | None:
+        if calls is not None:
+            calls.append("read")
+        if mode is None:
+            raise RuntimeError("gateway down")
+        return mode
+
+    monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+
+
+async def test_the_built_crm_pack_holds_exactly_the_nine_tools(monkeypatch) -> None:
+    """An empty or short pack must fail loudly: the builder skips a tool that
+    is no coroutine function. Mutation: wrap one CRM tool in a ``FunctionTool``
+    or rename it -> the pack holds 8 tools -> red."""
+    _mode(monkeypatch, "live")
+    with _run():
+        build = await _build("crm-records", _crm_module())
+    assert {t.__name__ for t in build.tools} == CRM_NINE and len(build.tools) == 9
+    assert build.owner == CRM and build.held is False and build.skipped == ()
+
+
+@pytest.mark.parametrize("layer", ["a-build", "b-load", "c-holds"])
+async def test_mirror_mode_takes_the_three_record_writes_from_every_layer(
+    monkeypatch, layer: str,
+) -> None:
+    """The drop lives in the builder, because a pack that ``load_skill_tools``
+    (layer b) or a turn-kind item (layer c) loads builds AFTER the executor's
+    ``_drop_mirror_record_writes``. Layer (a) is covered by order alone, but
+    runs the same builder. ``log_activity`` stays. The three cases call the
+    builder as each layer does: with the owner module, through
+    ``_build_pack_for_load``, and with the names of a live list. Mutation:
+    take the drop out of ``_pack_tools`` -> all 9 tools remain -> red."""
+    _mode(monkeypatch, "mirror")
+    with _run():
+        if layer == "a-build":
+            build = await _build("crm-records", _crm_module())
+        elif layer == "b-load":
+            build = await ti._build_pack_for_load("crm-records", artifact_context(), frozenset())
+        else:
+            build = await _build("crm-records", _crm_module(),
+                                 holds=frozenset({"web_search", "read_attachment"}))
+    names = {t.__name__ for t in build.tools}
+    assert names == CRM_NINE - ti.MIRROR_RECORD_WRITES
+    assert "log_activity" in names and not names & ti.MIRROR_RECORD_WRITES
+    assert set(build.dropped) == ti.MIRROR_RECORD_WRITES
+
+
+async def test_the_mirror_drop_reuses_the_executor_set(monkeypatch) -> None:
+    """Mutation: copy the three names into a second set -> the set that the
+    builder drops differs from ``MIRROR_RECORD_WRITES`` when that set grows."""
+    _mode(monkeypatch, "mirror")
+    monkeypatch.setattr(ti, "MIRROR_RECORD_WRITES", frozenset({"create_lead"}))
+    with _run():
+        build = await _build("crm-records", _crm_module())
+    assert build.dropped == ("create_lead",)
+    assert len(build.tools) == 8
+
+
+@pytest.mark.parametrize("mode", ["live", None])
+async def test_a_live_org_or_a_failed_mode_read_keeps_the_writes(monkeypatch, mode) -> None:
+    """A failed read keeps the tools: the 409 relay of the write tools is the
+    fallback, as in ``_drop_mirror_record_writes``. Mutation: drop on a failed
+    read -> red for ``None``."""
+    _mode(monkeypatch, mode)
+    with _run():
+        build = await _build("crm-records", _crm_module())
+    assert {t.__name__ for t in build.tools} == CRM_NINE and build.dropped == ()
+
+
+async def test_a_held_crm_pack_drops_the_four_writes_and_reads_no_mode(monkeypatch) -> None:
+    """A held pack (the chat read mail) drops each egress tool: the four
+    writes. It reads nothing for the Mirror drop. Mutation: read the mode in a
+    held build -> ``calls`` is not empty -> red."""
+    calls: list[str] = []
+    _mode(monkeypatch, "mirror", calls)
+    with _run():
+        await eg.mark_untrusted_answer()  # the chat read mail on an earlier turn
+        build = await _build("crm-records", _crm_module())
+    assert build.held is True and calls == []
+    assert set(build.dropped) == CRM_WRITES
+    assert {t.__name__ for t in build.tools} == CRM_NINE - CRM_WRITES
+
+
+async def test_the_crm_held_drop_follows_is_egress(monkeypatch) -> None:
+    """The pack drop is the one seam ``_is_egress``. Mutation: test the
+    annotation in the builder -> the patched rule is not followed -> red."""
+    _mode(monkeypatch, "live")
+    module = _crm_module()
+    with _run(no_egress=True):
+        assert set((await _build("crm-records", module)).dropped) == CRM_WRITES
+        monkeypatch.setattr(ti, "_is_egress", lambda t: ti._tool_name(t) == "get_record")
+        assert (await _build("crm-records", module)).dropped == ("get_record",)
+        monkeypatch.setattr(ti, "_is_egress", lambda t: False)
+        open_build = await _build("crm-records", module)
+    assert open_build.dropped == () and len(open_build.tools) == 9
+
+
+async def test_a_marked_mail_chat_holds_the_crm_pack_and_shows_no_card(monkeypatch) -> None:
+    """The chat read mail (``email`` pack), then the member asks for a CRM
+    write. The CRM pack builds held: no write tool is on the list, so no card
+    shows, the owner's or the untrusted one. Mutation: build the pack open in
+    a marked chat -> ``create_lead`` is on the list -> red."""
+    _mode(monkeypatch, "live")
+    cards: list[str] = []
+
+    async def card(**kw: Any) -> bool:
+        cards.append(str(kw.get("title")))
+        return True
+
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", card)
+    with _run():
+        await eg.mark_untrusted_session(EA)  # what an email pack call does first
+        build = await _build("crm-records", _crm_module())
+    assert build.held is True and "create_lead" not in {t.__name__ for t in build.tools}
+    assert cards == []
+
+
+async def test_a_crm_pack_run_with_no_user_refuses() -> None:
+    """R5: the identity comes from the bound run. With none, the owner's
+    ``_headers`` refuses before any request. Mutation: fall back to a default
+    user in a pack call -> the call goes out -> red."""
+    from acb_skills.memory_tools import _get_memory_user_id
+
+    with _run():
+        assert not _get_memory_user_id(), "non-vacuity: this run binds no user"
+        build = await _build("crm-records", _crm_module())
+        search = _named(build, "search_crm")
+        with pytest.raises(RuntimeError, match="No acting user"):
+            await search("Acme")
