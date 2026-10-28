@@ -128,6 +128,9 @@ describe("chat-stop-ui", () => {
     expect(idle).toBeGreaterThan(asked);
     // The local stream is aborted only after the server answered.
     expect(body.indexOf(".abort()")).toBeGreaterThan(asked);
+    // A late answer never stops a newer run's stream.
+    expect(body).toMatch(/if \(streamNow && streamNow !== stoppedStream\) \{/);
+    expect(body.indexOf("streamNow !== stoppedStream")).toBeLessThan(body.indexOf(".abort()"));
   });
 
   it("the composer shows Stopping, the reason and Retry; Esc uses the same handler", () => {

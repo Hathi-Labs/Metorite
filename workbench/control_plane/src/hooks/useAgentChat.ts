@@ -1514,12 +1514,20 @@ export function useAgentChat({
     //    for a cancel that failed (UXD-4, `lib/chatStop.ts`). An edit awaits
     //    the returned promise, so the new run starts only after the old one
     //    stopped. It resolves with the reason of a failure, else null.
+    // The stream this Stop is for. A run that ends by itself in the wait,
+    // and a new send after it, must not be stopped by this late answer.
+    const stoppedStream = getSessionState(threadId).abortController;
     setSessionState(threadId, stopStarted);
     return cancelRun(threadId).then((out) => {
       if (!out.ok) {
         // The run stays live: its stream keeps reading, and Stop tries again.
         setSessionState(threadId, (prev) => stopFailed(prev, out.reason));
         return out.reason;
+      }
+      const streamNow = getSessionState(threadId).abortController;
+      if (streamNow && streamNow !== stoppedStream) {
+        setSessionState(threadId, (prev) => ({ ...prev, stopping: false }));
+        return null;
       }
       // 2. Abort the local SSE fetch (stops the browser reading the stream).
       getSessionState(threadId).abortController?.abort();
