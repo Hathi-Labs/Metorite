@@ -310,9 +310,9 @@ The slices, in Metorite under sub-epic CRM-Z10 of epic #477:
 | CRM-Z10d | Custom modules stay visible in Native mode, with a native writer through the one write guard | R8: the counts match after a cutover |
 | CRM-Z10e | The Zoho attachments are copied into Metorite storage before the cutover | Count and bytes match Zoho |
 | CRM-Z10b | The switch: the export, a final sync, the mode flip and the disconnect in one transaction, `ext_source` and `ext_id` kept as provenance, Zoho settings made native, `processed_watermark` rewound, one audit line. One-way | R8: counts equal before and after, and a second click changes nothing |
-| CRM-Z10f | Owner decision: a cutover org keeps its source labels. It amends D95.2 for cutover orgs | Recorded in `work_plan.md` §3 |
+| CRM-Z10f | ✅ Decided 2026-10-27 (D133). A cutover org keeps its source labels. The admin can rename them. It amends D95.2 for cutover orgs | Recorded in `work_plan.md` §3 |
 
-The production runs for Fracktal and Shaurrya Tele are the owner's (CRM-Z10-run).
+The production runs for Fracktal and Shaurrya Tele are the owner's (CRM-Z10-run). Fracktal goes first. Shaurrya Tele goes second, because its custom modules also need CRM-Z10d (D133).
 
 ### 3.5 The architecture: one store, two writers
 
@@ -11638,3 +11638,135 @@ the drawer, and tap again.
 
 Fences (R7): `crmU10.test.ts` holds the tab rule, the wire and the three
 source fences. It checks that `AppShell` draws only what the page emits.
+
+### 20.16 CRM-U12: plain words and no dead ends in CRM setup (2026-10-27)
+
+**Status.** ✅ Built 2026-10-27 on branch `crm-u12-plain-words` (PR pending). Visual-review captures not taken. Metorite: under epic #477.
+
+**Gate.** AGENT-SAFE. No flag, no migration and no gateway change. Copy and
+small UI changes only. The layout of the settings sections does not change
+here. The owner decides that layout first.
+
+**Why.** Owner, 2026-10-27: the CRM setup must be "straightforward and easy
+to understand for the person setting things up", and "not complex to
+understand or overloaded". A read-only audit of the setup screens on
+2026-10-27 found the items below in the code, with file and line evidence.
+
+**Not in this slice.** `PipelineSettings.tsx` (CRM-U11 owns it), the field
+studio words that copy Zoho on purpose (Picklist, Lookup), the merge of
+sections, the one inbox for AI proposals, and the draft of the Field map.
+
+#### The changes
+
+1. **First open (`FirstOpen.tsx`).** Remove the three disabled provider rows
+   (HubSpot, Salesforce, Pipedrive) and their "Coming soon" badges. Put one
+   muted line in their place: "HubSpot, Salesforce and Pipedrive come later."
+   Replace "You can change this later in Settings" with the truth: "To change
+   this later, you start over, and the CRM records are removed."
+2. **The Native conversion card (`ConvertMappingCard.tsx`).** Its title is
+   "When a lead converts", not "Field mapping". The Mirror Field map keeps its
+   title.
+3. **Fields, read only (`FieldsCard.tsx`).** Show the type with the labels of
+   `lib/fieldStudio.ts` `TYPE_LABELS`, so one word names one type. Remove the
+   "Zoho" tag that shows on every row. Make "Edit fields in Zoho" a link when
+   the Zoho address is known (the helper the record page uses). A Native admin
+   with no field editing reads: "Field editing is not on for your
+   organization yet." No other dead end stays.
+4. **Sync health (`SyncHealthCard.tsx`, `lib/syncHealth.ts`).** Business
+   words in place of engine words:
+
+   | Now | New |
+   |---|---|
+   | Entity | Records |
+   | Skipped | Left out |
+   | Not linked | No matching record |
+   | Failed | Could not save |
+   | Not mapped | Did not fit |
+   | Partial read | Some missing |
+   | Hold it | Pause syncing this |
+
+   The details table shows five columns by default: Records, In Zoho, In
+   Metorite, Difference and Sync. The other counts move into an expand on
+   each row.
+5. **The Field map (`FieldMapCard.tsx`, `lib/fieldMap.ts`).** "Stale" reads
+   "Zoho changed this". "Target column" reads "Metorite field". The "Map"
+   button reads "Add to draft", because it adds to a draft and applies
+   nothing. CRM-U13 may remove the draft. Until then the label tells the
+   truth.
+6. **Dead code.** Delete `ComingSoonCard` (`SettingsCards.tsx`) and its
+   tests.
+
+#### Done when
+
+1. Each change above is on screen, and no test asserts an old word.
+2. `npx tsc --noEmit` passes, and `npx vitest run src/app/crm` passes, except
+   the six known CRLF failures (layoutBoundary ×2, railSessions, emailLink,
+   reportsLiveOverview ×2).
+3. A grep of `src/app/crm` for the old words of item 4 and item 5 finds none
+   in a string that a user reads.
+4. The `visual-review` captures (light mode, compact density, a changed
+   accent, 375 px) of First open, Fields and Sync health. If a screen cannot
+   draw without a Zoho-mirrored org, the PR says so and shows what it could.
+
+Fences (R7): the tests that hold each changed string. In build mode no new
+fence file is needed (`engineering_practice.md` §7a).
+
+### 20.17 CRM-U13: five sections, one list for the AI, one-step Field map (2026-10-27)
+
+**Status.** 📝 Specified 2026-10-27. Decision D134. Waits for CRM-U11 and CRM-U12 to merge, because it changes the same screens. Not yet audited.
+
+**Gate.** AGENT-SAFE. No flag and no migration. A gateway change is not expected. The audit confirms it per slice.
+
+**Evidence.** The read-only audit of the CRM setup screens, 2026-10-27. It counted 11 rail rows for a Mirror admin and five or six places where the AI asks for an approval, with no "done" signal.
+
+#### The sections (D134.1)
+
+| Section | Who | What it holds | From today |
+|---|---|---|---|
+| Connection | admin | The Zoho link and its state, Sync now, sync trouble, and who can open the CRM. "Advanced" folds the record counts, the module table and holds, the runs, the credits, Disconnect, Switch to Metorite and Start over | Setup and sync, Sync health, Access |
+| Needs your input | admin | Each thing the AI asks, in one list, with a count on the rail | Open questions, Suggestions, the Field map proposals, "Your choices in the chat" |
+| Fields | admin | Mirror: each Zoho field and where it shows in Metorite, one row each, with one control. Native: the field studio, and a tab "When a lead converts" | Fields, Field mapping |
+| Pipeline | each member reads, an admin changes | Three tabs: Deal stages, Lead statuses, Lost reasons | three sections |
+| AI rules | each member | Today's Business rules, renamed | Business rules |
+
+- A member sees Pipeline and AI rules.
+- A Native admin sees Connection (the mode and the access), Fields, Pipeline and AI rules.
+- The main view of Connection drops the rows "Mode", "Data centre" and "Connected by". They move into "Advanced".
+- "Sync now" and the last sync show once, in Connection.
+- Until the setup is done, Connection opens first and shows three steps with a done mark on each: Connect Zoho, Review what the AI found, Choose who can open the CRM. After that, an admin lands on "Needs your input" when it holds an item, else on Pipeline.
+- `lib/settingsSections.ts` keeps each old id as an alias of its new section (`crmC1.test.ts` fences the ids).
+
+#### Needs your input (D134.2)
+
+1. One list. Each item is one card: one question in one line, the AI's suggestion as the highlighted choice, "Other…" and a "Why?" fold that holds the reason and what the answer changes.
+2. The list shows three items, then "Show more".
+3. The main button "Accept the AI's suggestions" accepts the suggestion of each item in the list, through the existing routes. It reports how many it accepted and how many need a person, because they have no suggestion.
+4. Each accepted item shows in "Your answers", where an admin can change it or undo it.
+5. A suggestion of a module (CRM-Q20-2) is a card of the same list, with its preview.
+6. A Field map proposal is one line: "Zoho field X fills Y", with Accept and Change.
+7. A member's choice in chat waits here for an admin, with Confirm and Change.
+8. "Run the AI analysis again" sits once, in a "More" menu of the section.
+
+#### Fields and the Field map (D134.3)
+
+1. A pick applies at once. The client sends the draft and its approval as one action, through the routes that exist (`POST /crm/mapping/plans`, then the approve). The toast says "Saved. The next sync fills it."
+2. The Draft box, its words and the second press go. The rule-by-rule Approve and Reject go too, because "Needs your input" holds the proposals.
+3. "Change history" opens the versions. "Go back" restores one, and asks first.
+4. Mirror rows: the unmapped fields first, then the mapped ones. Each row shows the Zoho field, where it shows in Metorite, a status in plain words, and one control.
+
+#### Slices
+
+| Slice | What | Size |
+|---|---|---|
+| CRM-U13a | The five sections, the aliases, Connection with "Advanced", the setup steps, Pipeline tabs, AI rules | L |
+| CRM-U13b | Needs your input, with accept-all and "Your answers" | L |
+| CRM-U13c | The Field map in one step, and Fields merged | M to L |
+
+U13a goes first. U13b and U13c can run side by side after it.
+
+#### Done when (each slice adds its own after the audit)
+
+1. A Mirror admin sees five rail rows, a member two, and a Native admin four. Each old `?section=` link opens the new section.
+2. One press of "Accept the AI's suggestions" accepts each item that has a suggestion, and the count on the rail falls to the items that need a person.
+3. One pick on the Field map saves it, and "Change history" lists it as a new version.
+4. The four `visual-review` captures (light mode, compact density, a changed accent, 390 px) of each new section.

@@ -631,7 +631,7 @@ describe("item 8: Sync health opens with a 'Needs you' block", () => {
     const html = draw();
     expect(html).toContain('aria-label="Needs you"');
     expect(html.indexOf("Needs you")).toBeLessThan(html.indexOf("Credits used"));
-    for (const word of ["Check again", "Sync it on its own", "Hold it", HIDDEN_SENTENCE]) {
+    for (const word of ["Check again", "Sync it on its own", "Pause syncing this", HIDDEN_SENTENCE]) {
       expect(html).toContain(word);
     }
   });

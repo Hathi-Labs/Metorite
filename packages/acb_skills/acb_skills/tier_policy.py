@@ -455,6 +455,43 @@ class TurnKind:
     latency_ms: int | None = None
     effort: str | None = None
     effort_source: str | None = None
+    #: OA-7f. The slugs of the tool packs that System 1 said this turn needs,
+    #: at or above the threshold, in the order asked. Empty when the request
+    #: held no pack item, and after a timeout or a failure.
+    packs: tuple[str, ...] = ()
+
+
+#: The id of a pack item is this prefix and the slug of the pack. The ids
+#: ``turn`` and ``effort`` never start with it.
+PACK_ITEM_PREFIX = "pack:"
+
+PACK_QUESTION = (
+    "Does the member's message need the {label} tools ({summary})? "
+    "Answer yes only when the message asks to read, look up, change or send "
+    "something with them. Answer no for a question that needs none of them."
+)
+
+
+def pack_items(slugs: Iterable[str]) -> list[Any]:
+    """One ``yes_no`` System-1 item for each pack of *slugs* (OA-7f).
+
+    A slug that is no pack, or twice named, gives no item. The caller keeps
+    the room for the two items that the request holds already."""
+    from acb_skills import system_one
+    from acb_skills.skill_families import SKILL_FAMILIES, is_pack
+
+    items: list[Any] = []
+    for slug in dict.fromkeys(str(s) for s in slugs or ()):
+        if not is_pack(slug):
+            continue
+        family = SKILL_FAMILIES[slug]
+        items.append(system_one.Item(
+            id=PACK_ITEM_PREFIX + slug,
+            question=PACK_QUESTION.format(
+                label=family.get("label") or slug, summary=family.get("summary") or slug),
+            kind="yes_no", options=system_one.YES_NO,
+        ))
+    return items
 
 
 def _turn_context(message: str, tools: Iterable[str]) -> str:
@@ -472,6 +509,7 @@ async def turn_kind(
     *,
     read_effort: bool = False,
     default: str | None = None,
+    packs: Iterable[str] = (),
 ) -> TurnKind:
     """Ask System 1 the kind of this turn. ONE ``tier-fast`` request, or none.
 
@@ -497,6 +535,15 @@ async def turn_kind(
     out, and the source is ``pinned``. A sub-agent run of the email
     assistant (``tier-powerful``) asked one for 1.4 to 2.6 s in production
     and could not use the answer (chat speed review, 2026-10-25).
+
+    *packs* (OA-7f) names the tool packs that the run can still load. The
+    same request then holds one ``yes_no`` item for each (:func:`pack_items`).
+    A ``yes`` at or above the threshold puts the slug in
+    :attr:`TurnKind.packs`. The items ride in the request that goes out
+    anyway: a short turn, a Max turn and a pinned turn send none, and a
+    timeout, a failure or a garbled answer loads nothing. A pack item never
+    changes the kind, the effort or the source. With no *packs* the request
+    is the one of before.
     """
     mode = normalise_effort(effort)
     if mode == "max":
@@ -521,6 +568,8 @@ async def turn_kind(
             id="effort", question=EFFORT_QUESTION, kind="yes_no",
             options=system_one.YES_NO,
         ))
+    extra = pack_items(packs)[: system_one.MAX_ITEMS - len(items)] if packs else []
+    items.extend(extra)
     # So the wait counts the exchange, not an import. An import fault reads
     # as no answer, below.
     with contextlib.suppress(Exception):
@@ -549,13 +598,20 @@ async def turn_kind(
     by_id = {a.id: a for a in answers or []}
     answer = by_id.get("turn")
     deep = by_id.get("effort")
-    # The two items stand alone: an unsure kind keeps a sure effort.
-    text_effort: dict[str, str] = {}
+    # The items stand alone: an unsure kind keeps a sure effort.
+    text_effort: dict[str, Any] = {}
+    said = tuple(
+        item.id[len(PACK_ITEM_PREFIX):] for item in extra
+        if (a := by_id.get(item.id)) is not None and a.choice == "yes"
+        and a.confidence is not None and a.confidence >= threshold
+    )
+    if said:
+        text_effort["packs"] = said
     if (
         wants_effort and deep is not None and deep.choice == "yes"
         and deep.confidence is not None and deep.confidence >= threshold
     ):
-        text_effort = {"effort": TEXT_EFFORT, "effort_source": "system_one"}
+        text_effort.update(effort=TEXT_EFFORT, effort_source="system_one")
     if (
         answer is None
         or answer.choice not in TURN_KINDS
@@ -606,6 +662,10 @@ class RunTierPolicy:
     _requests: int = 0
     #: The size of the turn at its start (:func:`turn_tokens`).
     context_tokens: int = 0
+    #: OA-7f. The packs that the turn-kind answer asked for (:attr:`TurnKind.packs`).
+    #: The policy only carries them. It reads them nowhere, so they cannot
+    #: move the tier.
+    packs: tuple[str, ...] = ()
 
     def run_choice(self) -> Choice:
         """The choice for the whole turn. No tool call changes it."""

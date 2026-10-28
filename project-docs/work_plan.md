@@ -137,7 +137,7 @@ The core function brief sets the phases (D119). Customer zero comes first inside
 6. **The owner answers**: WS-40-Q (D121) and H3.2 (D120). Both gate P0 work.
 7. **Branch protection**: WS-38a, then WS-5a and WS-38b.
 8. **Secrets**: H-97, H-207 and H-3, then WS-24b.
-9. **Enforce the designed controls** (brief tasks 6 and 7): WS-1e, WS-3, BH-3, BH-4, BR-6a to BR-6c, BR-7a and WS-40. Agent code runs in a sandbox off the box: SBX-0 (the owner picks the vendor), then SBX-1.
+9. **Enforce the designed controls** (brief tasks 6 and 7): WS-1e, WS-3, BH-3, BH-4, BR-6a to BR-6c, BR-7a and WS-40. Agent code runs in a sandbox: D130 answers SBX-0, so SBX-1 of `specs/agent_sandbox.md` is next.
 10. **The daily promise** (brief tasks 2, 4 and 5): BR-4, BR-2a to BR-2d, BR-5 and WS-58. The brief reads across every app, so fast retrieval comes with it: KG-1 to KG-3 (D128). The brief runs unattended, so AUTO-2 makes each run happen at most once.
 11. **Email and calendar out of preview** (brief task 3): E-05, E-09, E-11, E-07, WS-21-P4 and CE-0.
 12. **A real second organization**: MT-1j-exec provisions it and runs the smoke. E-58 and BR-14 follow.
@@ -155,7 +155,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-CZ | **Customer Zero**: Fracktal and Shaurrya Tele (DEWiN) | 🟢 active · M0 | none yet | Metorite: epic 519 (Metorite Application) · next H-259, BO-23b, CP-8-act, H-326 |
 | WS-TS | **Tenancy and Security**: a second organization is safe | 🟢 active · M1 | `specs/saas_multitenancy.md` · `specs/saas_multitenancy_handover.md` | Metorite: epic 520 · gates H3.2 (D120) and WS-40-Q (D121) · next AX-0, H-249, H-312, H2 |
 | WS-CM | **Console and Money**: seats, credits, invoices | 🟡 gated · M2 | `specs/customer_console.md` | Metorite: epic 478 (Billing & Accounts) · gates H-14 and the rate card (D123) · next H-170, CP-10 |
-| WS-TO | **Trust and Operations**: enforced controls, restore, compliance | 🟢 active · M1 | `specs/box_hardening.md` | Metorite: epic 521 (Platform & CI/CD) · gate SBX-0 (the sandbox vendor) · next WS-1e, WS-3, BH-3 with SBX-1, the WS-37 spec (D119.4) |
+| WS-TO | **Trust and Operations**: enforced controls, restore, compliance | 🟢 active · M1 | `specs/box_hardening.md` | Metorite: epic 521 (Platform & CI/CD) · SBX-0 decided (D130, `specs/agent_sandbox.md`) · next WS-1e, WS-3, BH-3 with SBX-1, the WS-37 spec (D119.4) |
 | WS-PL | **Platform and CI**: delivery, staging, branch protection | 🟢 active · M1 | `specs/development_and_delivery_framework.md` | Metorite: project Platform & CI/CD · next WS-38a, WS-38e, WS-5a |
 | WS-PT | **Projects and Tasks** | 🟢 active · M1 | `specs/project_management_app.md` · `specs/one_projects_app.md` | Metorite: project Projects/Tasks App · no P0 or P1 · next H-257, H-387 |
 | WS-CAL | **Calendar**: events, reminders, external sync | 🟢 active · M1 | `specs/calendar_focus_os.md` · `specs/calendar_events_reminders.md` | Metorite: project Calendar App · next CE-0, WS-21-P4 (read-only first, D119.6) |
@@ -4444,6 +4444,7 @@ Owner decision, 2026-10-25, in chat: "Go ahead with your recommendation". Board:
 3. **The assistant interviews the member** (PZ-26, PZ-27). Ten areas: role, goals, a good day, decisions, detail, rhythm, channels, energy, peeves and people. The first sitting asks up to three questions, one at a time. After it, one question a day at most.
 4. **The limits of D-PZ-13 apply.** A skip waits 14 days. "Don't ask again" stops an area. No question goes to a shared room, and none goes out on WhatsApp.
 5. **Each answer is an explicit write with Undo** (D-PZ-2). The second yes of D-PZ-16 stays for a sensitive answer.
+6. **Amended by the owner, 2026-10-25, in chat: the first release is for every organization, not for Hathi Labs only.** The owner said "turn on for all" and then "move it to production as well". On 2026-10-25 production got `ASSISTANT_PROFILE_ENABLED=true` and an empty `ASSISTANT_PROFILE_ORGS`. The build flag `NEXT_PUBLIC_ASSISTANT_PROFILE` is retired, so the server switch is the only switch. Point 1 stays true for the list: it can still limit the switch to some organizations.
 
 **Why.** The profile of §4 holds how to talk to the member, and nothing about what the member works toward or enjoys. The owner wants to use the feature now, on one organization, before PZ-10 and phase 2.
 
@@ -4675,6 +4676,73 @@ Owner directive, 2026-10-27, in chat: a knowledge graph like Graphify, so that M
 7. **Memory is tenant-scoped first.** No memory flag (`MEM0_ENABLED`, `GRAPHITI_ENABLED`) turns on while its store has no organization scope (KG-9). Today the Mem0 org key is the one value `org:global` for every tenant (`acb_memory/compartments.py:36`).
 
 **The owner may overrule it.** It is an engineering shape under the owner's directive, as D105 was.
+
+**Confirmed, 2026-10-27.** D132 takes item 6, so Graphiti, Mem0 and the empty `acb_graph` tables retire after KG-6.
+
+### D129 — D85 covers personal agents too. Only the root dev agent keeps the host shell tools (2026-10-27)
+
+Owner decision, 2026-10-27, in chat: "for the decisions, I defer to your judgment and recommendations." The answer applies to five calls: AX-0, SBX-0, AUTO-3, MEM-3 and CRM-Z10f. D129 to D133 record the agent's recommendations, and the owner may overrule any of them. D129 is Metorite #808, and it amends D85.
+
+1. **The scope grows.** `code_task`, `run_script` and `install_dependency` leave every agent that a member reaches, including a `personal` agent. D85 left personal agents out on 2026-10-03, and D129 closes that gap.
+2. **One exception.** The root `metorite` dev agent for first-party admins keeps the three tools.
+3. **The way back.** A tool returns to an agent only when the sandbox broker covers that agent (D85, D130).
+4. **Why.** These tools run on the host, and `run_script` has the network and the agent's credentials. A prompt injection in an inbound message can then run code beside the data of every tenant.
+5. **Fence.** `test_shared_agent_shell_tools.py` covers a personal agent too. A run of `whatsapp-assistant` holds none of the three tools.
+
+### D130 — The sandbox: the broker under gVisor first, a hosted E2B backend at scale (2026-10-27)
+
+Owner decision, 2026-10-27 (see D129). Metorite #809. It answers the seven owner calls of `specs/agent_sandbox.md` §14 (PR #1165), and it takes each recommendation.
+
+1. **SBX-Q1, the runtime.** Slice 1 runs on the WS-43 broker under gVisor (`runsc`), at USD 0. At scale, the broker gets an `e2b` backend, a hosted microVM service. SPACE can replace it later through its E2B wrapper, when §4.5 holds.
+2. **SBX-Q2, egress.** Only the `build` and `run` profiles. A `web:` host needs the member's approval. A step that can read Metorite data never gets one.
+3. **SBX-Q3, sharing.** A person with `tools:approve` reads the code of a stored tool and approves one version. Then the owner of the tool may share that version with the organization.
+4. **SBX-Q4, the price.** Sandbox time costs the vendor's cost plus the tier margin of `credit_pricing.md`. The floor is 1 credit for each step. It meters through AI credits, under the hard cap of D19.3.
+5. **SBX-Q5, no chat.** A stored tool may run in a workflow with no chat for reads only, and only in an org-approved version.
+6. **SBX-Q6, the run capability.** The container may hold a short-lived run capability that opens only the door. This amends D83 for the `tools` target only.
+7. **SBX-Q7, data at a vendor.** Member data goes to a hosted vendor only after a data processing agreement and a region check (WS-37). Until then, the `e2b` backend runs no tenant data.
+8. **The spend.** Slice 1 spends nothing. The `e2b` backend gets a cap of USD 200 a month, the estimated Pro fee plus use. The broker refuses a run past the cap. The owner opens the account and adds the card (SBX-G3).
+
+### D131 — Automations climb a trust ladder of three levels (2026-10-27)
+
+Owner decision, 2026-10-27 (see D129). Metorite #815.
+
+1. **Suggest.** Mira puts a card in My Day, and nothing changes.
+2. **Ask each run.** Mira prepares the change. The member approves it with one tap, on a card that shows the exact payload.
+3. **Act and report.** Mira makes the change inside a scope and a spend cap that the member approved once. Each run reports what changed, with Undo.
+4. **The start.** An automation that Mira proposes starts at Suggest. An automation that a member makes starts at Ask each run.
+5. **Up a level.** Only the member moves an automation up. After five approved runs in a row with no edit, Mira may offer the next level once.
+6. **Down a level.** An Undo, a failed run or a change of scope sets the automation back to Ask each run. Mira tells the member why.
+7. **Never above Ask each run.** Five acts always ask: money, a member or role write, a delete and a bulk change. The fifth is a send to an outside person that the scope does not name. D124.2 asks about each of these acts too.
+8. **The admin cap.** An admin can set the highest level for the organization.
+
+### D132 — Mira remembers through three stores. Mem0 and Graphiti retire (2026-10-27)
+
+Owner decision, 2026-10-27 (see D129). Metorite #820. It clears the WS-7 gate on Mem0 and Graphiti, and it confirms item 6 of D128.
+
+1. **The member profile** (PZ) holds what Mira knows about one member. It is live for all organizations.
+2. **Org knowledge** is Knowledge plus the graph of D128.
+3. **Chat history.** Mira searches it with full text (MEM-2).
+4. **Mem0 retires** with Graphiti and the empty `acb_graph` tables, after KG-6 (KG-11). Until then, `MEM0_ENABLED` and `GRAPHITI_ENABLED` stay off (D128.7).
+5. **The `NOTES.md` of a shared agent** moves into org knowledge (H-237).
+
+### D133 — A cutover org keeps its CRM labels. Fracktal cuts over first (2026-10-27)
+
+Owner decision, 2026-10-27 (see D129). Metorite #805 and #806. It amends D95.2 for a cutover org only. `crm_platform.md` §18.9.1 already amended D95.2 for Mirror mode.
+
+1. **Labels.** An org that moves from Mirror to Native keeps the labels that it had in Mirror mode, for example "Existing Sites". They become native labels, and the admin can rename them. A new Native org still starts with "Companies".
+2. **The order.** Fracktal cuts over first, after CRM-Z10a, c, e and b pass on staging. Shaurrya Tele goes second, because its custom modules also need CRM-Z10d.
+3. **The ask.** The owner asks each customer and runs each production cutover (CRM-Z10-run). The agent prepares the preview and the counts for that talk.
+
+*Amended 2026-10-27 (owner, in chat): "we keep the ZOHO labels, but we should be able to edit them later on. Possibly have the AI suggest improvements to the way in which the CRM is set up." So the AI may propose a better setup, and an admin approves each change, as with the mapping suggestions (CRM-Q20-2). It never applies a change by itself. That is a later slice, not part of CRM-Z10. The owner puts the CRM bug fixes and the setup UX before the cutover, and both customers cut over later.*
+
+### D134 — CRM settings fold into five sections, the AI's questions sit in one list, and a Field map pick applies at once (2026-10-27)
+
+Owner answers, 2026-10-27, in chat, to three questions after the audit of the CRM setup screens. Workstream: **WS-CRM**. Owning spec: `specs/crm_platform.md` §20.17 (CRM-U13).
+
+1. **Five sections for an admin of a Zoho mirror:** Connection, Needs your input, Fields, Pipeline and AI rules. Today there are eleven. Each old `?section=` id stays as an alias, so no link breaks.
+2. **One list holds what the AI asks.** "Needs your input" holds the open questions, the suggestions, the Field map proposals and the choices that members made in chat. Its main button accepts each suggestion of the AI. An admin can change or undo each one later.
+3. **A Field map pick applies at once.** The draft step goes. The change history keeps each version, and an admin can go back to any of them.
+
 
 ## 4. Single-owner registry (who owns duplicated work)
 

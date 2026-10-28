@@ -34,7 +34,7 @@
 > join, `CRM_AUTO_LEAD`, and every write tool are explicitly NOT in it — see §9.
 > **Report currencies (H-333, built on branch `crm-h333-currency`, 2026-10-28)** — the four report
 > routes in `routes/crm/reports.py` never add two currencies. Each money figure has a `currency`
-> and an `others` list. The board lane totals and `GET /crm/aggregate` are not yet fixed (H-418, H-419).
+> and an `others` list. The board lane totals and `GET /crm/aggregate` are not yet fixed (Metorite #887 and #888).
 >
 > **Deployment state, measured 2026-08-06:** migrations **144 and 145 are applied on prod**
 > and `/crm` is **live**. The Zoho backfill has been **run and is complete** — 737
