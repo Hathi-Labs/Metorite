@@ -187,8 +187,8 @@ middle of a turn.
   renames `add_tools`.
 
 The OA-9a parser is BUILT, dark (2026-10-27, "As built, OA-9a parser"
-below). Nothing calls it yet. The OA-9a worker and OA-9b stay NO-GO until
-the edits of §4.5 land.
+below). Nothing calls it yet. The OA-9a worker and OA-9b are GO, narrowed
+(2026-10-27, §4.5). The policy SUB-1 (Metorite #822) is in §6.8.
 
 **As built, OA-9a parser.** `acb_skills/subagent_contract.py` holds the two
 parsers of the contract of §6. No module calls them, and no flag reads them.
@@ -220,10 +220,10 @@ OA-9b builds `spawn_subagents` on them.
   the specialist tools of the parent. They get the hand-off reason.
 - **OA-9b must enforce the child tool set.** The parser only checks the
   request. Floor tools reach every run, so OA-9b must withhold and refuse
-  all other tools at `tool_guard.WithholdTools` and `RefuseTools`.
+  all other tools at `tool_guard.WithholdTools` and `RefuseTools`. §4.5,
+  OA-9b narrowing 1 names the mechanism: an allow-list pair.
 - **Read-only.** The default check reads `tool_annotations`. A tool with no
-  entry is not read-only. OA-9b can give its own check. §4.5 OA-9b item 1
-  stays open: how a child gets read tools only.
+  entry is not read-only. OA-9b can give its own check.
 - **The caps.** The module holds the caps of §6.2 as constants. A fence
   makes sure that `MAX_JOBS` equals `agent_tools._PARALLEL_MAX`, the cap of
   the one fan-out.
@@ -1271,34 +1271,150 @@ tokens. OA-7g shipped live (PR #1356, `344cad4fc`).
   the registry `local_path`.
 - Verify: the command in §4.3.2, "OA-8a".
 
-**OA-9a. GO for the parser only.** Build `subagent_contract.py` and
-`tests/unit/test_subagent_contract.py`. The `worker` half is NO-GO until
-these edits land in this spec:
-1. Move the OA-9a fence case from `test_tool_packs_off.py` to
-   `test_subagent_contract.py`.
-2. Name the open and held tool sets of the worker. A `worker` entry turns
-   `test_no_egress_tool_audit.py` red until they are pinned.
-3. Say if the no-job refusal happens at build or at run. A raise at build
-   turns `test_egress_card_bound_pin.py` red.
-4. Name the worker `config.json`: `tool_scope`, `floor_opt_out`, `sharing`
-   and the tier. Without opt-outs, the worker gets the whole core floor.
-5. Say how the picker hides the worker. `_AGENT_REGISTRY` has no internal
-   key.
+**OA-9a. The parser is BUILT (PR #1388). The `worker` half is GO,
+narrowed (2026-10-27).** The parser files are `subagent_contract.py` and
+`tests/unit/test_subagent_contract.py`. The first audit held the worker half
+back until five items had an answer. Each narrowing below answers the item
+of the same number. The code anchors are those of `6c0f5a83a`.
+1. **The fence file.** PR #1388 moved no case. `test_tool_packs_off.py`
+   holds no OA-9a case, and a search of it for `OA-9`, `worker` and `spawn`
+   finds nothing. The worker cases go in a new file,
+   `tests/unit/test_subagent_worker.py`. §6.7 no longer names
+   `test_tool_packs_off.py`.
+2. **The open and held sets of the worker.** The worker has no tool of its
+   own. Its open set is exactly the tools of its job. Each of them is a
+   read tool of the parent run (§6.2). Its held set is the open set minus
+   every egress tool. So a held child loses `web_search` and `fetch_page`
+   and keeps the rest (`_tool_injection._is_egress`, `:436`). The worker is
+   not in `_AGENT_REGISTRY` (narrowing 5). So `_in_repo_agents()` in
+   `test_no_egress_tool_audit.py` does not list it, and `EXPECTED_WITHHELD`
+   gets no `worker` row. The pin is a case in `test_subagent_worker.py`. It
+   builds the worker with jobs of `web_search`, `fetch_page`, `remember` and
+   `recall_timeline`. It runs the worker open and held. It asserts that the
+   held set equals the open set minus `{web_search, fetch_page}`, and that
+   the open set equals the job.
+3. **The no-job refusal happens at run, never at build.** `build_agents()`
+   of the worker never raises. With no job on the frame it returns an agent
+   that has no tool. Two folder fences build every agent of `apps/agents/`
+   with no job: `test_agent_voice.py:262` and
+   `test_chat_upload_every_agent.py:161`. A raise at build turns both red.
+   Each of them also lists the folders of `apps/agents/`, so each gets one
+   `worker` row. The refusal is `subagent_contract.worker_refusal(name)`. It
+   returns text when the name is internal and the frame binds no job. Three
+   callers ask it before any load: `agent_tools.call_agent` (as
+   `_pack_refusal` does, `:79`), `_run_sub_agent_streaming`
+   (`executor.py:2190`) and `run_agent` (`executor.py:4397`). The batch
+   fallback of `call_agent` goes straight to `run_agent` (`agent_tools.py:206-213`).
+   So the streaming seam alone is not enough.
+4. **The `config.json` of the worker.**
+   - `"name": "worker"`, `"runtime": "maf"` and `"model_tier": "tier-fast"`.
+   - `"app": "chat"`. `test_usage_attribution.py:366` needs a slug that
+     the navigation shows, and the orchestrator uses `chat`.
+   - `"sharing"`: `shared`, `organization`, not shareable, outputs at the
+     instance. As for `projects-assistant`. D85 then withholds the shell
+     tools (`_withheld_shell_tools`, `_tool_injection.py:239`).
+   - `"floor_opt_out"`: 20 names. These are `FLOOR_OPT_OUT_ALLOWED` (22
+     names) without `web_search` and `fetch_page`. The two web tools stay
+     in the floor. An opted-out name leaves the scope even when the job
+     names it (`_tool_injection.py:2315`). The 20: `call_agent`,
+     `call_agent_background`, `call_agents_parallel`, `code_task`, `decide`,
+     `get_errors`, `get_workflow_run`, `list_integrations`,
+     `list_workflows`, `load_artifact_kit`, `load_design_system`,
+     `manage_todo_list`, `package_artifacts`, `recall_notes`,
+     `run_diagnostics`, `run_script`, `run_workflow`, `save_note`,
+     `share_artifact` and `write_artifact`.
+   - `"tool_scope"`: `["web_search", "fetch_page"]` as the safe default.
+     The scope that counts is the job's tools. The executor reads the job
+     at each place that reads `tool_scope` for a sub-run or a batch run
+     (`executor.py:2333`, `:4371` and `:4925`). ⚠️ An empty list does not
+     work, because `loaded.config.get("tool_scope") or None` reads `[]` as
+     "inject every tool".
+   - No `own_tool_scope`.
+   - Three floor tools stay in every run: `ask_questions`,
+     `emit_generative_ui` and `read_attachment` (`_FLOOR_KEEP`,
+     `_tool_injection.py:115-126`). No opt-out removes them. OA-9b
+     narrowing 1 removes them.
+5. **How the picker hides the worker.** The worker is in a new list,
+   `_INTERNAL_AGENTS`, beside `_AGENT_REGISTRY` in
+   `gateway/routes/agent.py:610`. It is in no other list. A flag on the
+   registry entry would need a filter in each reader. There are more than
+   14 readers, among them `list_agents` (`:1640`), the specialist tools
+   (`orchestrator/agents.py:775-781`), `observability.py`, `workspace.py`
+   and the workflow catalog. A reader that forgets the filter would show the
+   worker. A list that no reader reads cannot do that. Only the three
+   executor lookups that load an agent by name read it: `executor.py:2205`,
+   `:4675` and `:4760`. They search `_INTERNAL_AGENTS` first. So a dynamic
+   agent named `worker` cannot take its place. `_KNOWN_AGENTS` does not
+   name it. §6.7 needs no skip in the specialist list.
+   Fence: `test_subagent_worker.py`. It asserts that the name is in none of
+   `_AGENT_REGISTRY`, `_KNOWN_AGENTS`, the output of `list_agents` and the
+   specialist tools. It also asserts that a dynamic `worker` entry does not win.
 
-**OA-9b. NO-GO** until the worker half is cleared and these are fixed:
-1. `emit_generative_ui` stays in every run, and it is not read-only. Name
-   the mechanism that gives a child read tools only. The seam is
-   `tool_guard.WithholdTools` and `RefuseTools`.
-2. Name how a child stops at 4 model rounds.
-3. A job that names `packs` is refused until OA-9c.
-4. `spawn_subagents` goes to the main assistant only, not to every agent.
-5. The batch-write acceptance line waits for OA-8b. Today the main assistant
-   holds no batch write tool.
-6. Keep these tests green: `test_delegation_no_egress.py`,
+**OA-9b. GO, narrowed (2026-10-27). Start after the worker half.** Each
+narrowing answers the item of the same number.
+1. **Read tools only, by an allow-list pair.** `emit_generative_ui` says
+   `read_only=False` (`tool_annotations.py:124`). `ask_questions` says
+   `read_only=True` (`:60`), but it asks the member. Neither can leave the
+   floor (`_FLOOR_KEEP`). The pair of `tool_guard` keeps them out:
+   `WithholdTools(foreign)` and `RefuseTools(foreign, answer)`. The test
+   `foreign` is "the tool name is not in the job's tools". The model never
+   sees such a tool, and a call to it gets the answer and does not run.
+   The code session uses the same shape (`code_session.py:349-366`,
+   `_session_tool_pin`). The worker's `build_agents()` passes the pair as
+   `middleware=` to its agent, as `build_code_task_agent` does (`:381`).
+   The pair is the control that counts. It does not depend on the parser or
+   on the opt-out. It also covers what arrives after both. Examples are a
+   granted app tool (`agents:*`), an MCP tool and a tool that `add_tools` adds. The
+   parser (`parse_jobs`) and the opt-out stay as the first and second
+   layer. `read_attachment` is also outside the allow-list. A child has no
+   attachment, and its job is self-contained.
+2. **Four model rounds.** The worker's client takes
+   `function_invocation_configuration={"max_iterations": 3,
+   "max_duration_seconds": 120.0}` (the same argument as
+   `code_session.py:345`). MAF defaults to 40 rounds
+   (`DEFAULT_MAX_ITERATIONS`, `agent_framework/_tools.py:104`). After
+   `max_iterations` rounds, MAF makes one more call with `tool_choice` set to
+   `none` (`_tools.py:4990-5010`). So 3 rounds and the final call make 4
+   model calls. The constant is `MAX_CHILD_ROUNDS - 1`. The hard stop is
+   `asyncio.wait_for(..., JOB_TIMEOUT_S)`, because MAF checks the duration only
+   after a batch of tool calls. Fence: a scripted child that always calls a
+   tool makes 4 model calls, and the fourth has no tools.
+3. **A job that names `packs`.** `parse_jobs` already refuses it
+   (`subagent_contract.py:251-254`), with the case
+   `test_a_job_that_names_a_pack_does_not_run_until_oa_9c`. OA-9b calls
+   `parse_jobs`, runs only `plan.jobs` and adds `plan.notes()` to its
+   answer. The worker ignores `packs`. The case stays green.
+4. **The main assistant only.** `spawn_subagents` is an own tool of the
+   orchestrator, in `core_tools` (`orchestrator/agents.py:1046`). The
+   precedent is `show_in_app` (`:1045`). It is not in
+   `_collect_injectable_platform_tools`, which feeds every agent. So §6.7
+   does not list `_tool_injection.py` for the injection.
+   `SPAWN_SUBAGENTS_ORGS` is a list of orgs. So the executor drops the tool
+   from a run of another org, with `_drop_own_tools`
+   (`_tool_injection.py:1830`). The tool joins `egress.DELEGATION_TOOLS`.
+   `orchestrator/agents.py:757` also registers it as a platform callable,
+   as it does for `delegate_to_agent`. Then a held chat
+   keeps it, and each child it starts binds `no_egress`. Without the entry,
+   the fail-closed rule would withhold it in a held chat
+   (`egress.is_egress_tool`, `:1158`). Fence: no file of
+   `apps/agents/*/agents.py` names `spawn_subagents`. The orchestrator
+   held set of `test_no_egress_tool_audit.py` is the same with the flag on.
+5. **The batch-write line waits for OA-8b.** The orchestrator holds no
+   batch write tool today (`core_tools`, `orchestrator/agents.py:1046-1056`).
+   Its batch tools are in `projects-assistant` and `email-assistant`. The
+   line "A batch write goes through the batch tool of the app, in the main
+   assistant" moves to OA-8b. OA-9b asserts only that a child cannot write.
+6. **Keep these tests green:** `test_delegation_no_egress.py`,
    `test_read_tool_paging.py`, `test_chat_hardening.py`,
    `test_core_tool_floor.py`, `test_floor_opt_out.py`,
    `test_copilot_specialist_refused.py`, `test_background_ai_member.py` and
-   `test_tool_schema_diet.py`.
+   `test_tool_schema_diet.py`. Add `test_no_egress_tool_audit.py`,
+   `test_egress_card_bound_pin.py`, `test_show_in_app.py`,
+   `test_agent_voice.py`, `test_chat_upload_every_agent.py` and
+   `test_usage_attribution.py`.
+7. **SUB-1.** A child cannot write memory, send out, create an automation,
+   ask the member or delegate. §6.8 holds the policy and its fence,
+   `tests/unit/test_subagent_blocked_tools.py`.
 
 **Build order.** The slices share files: `settings.py`, `_tool_injection.py`
 and `orchestrator/agents.py`. Build OA-7a, then OA-7b, then OA-7c. OA-9a
@@ -1337,8 +1453,9 @@ context has no live tool list. The decorator emits `ExperimentalWarning`.
 - **OA-8c.** The held set of the `whatsapp` pack equals the held set of its owner. Fence: `tests/unit/test_pack_guards.py`.
 - **OA-8d.** Optional. OA-8e shows that the turns of the `integrations` pack lose nothing.
 - **OA-8e.** A report in `docs/` gives the numbers of §4.3.3 for the three arms. None of the stop results of §4.3.3 occurs. OA-10 starts only then.
-- **OA-9a.** The contract parser accepts good items, and it turns other output into one `inferred` item. The `worker` refuses with no job, and the picker and the specialist list do not show it. Fence: `tests/unit/test_subagent_contract.py`.
-- **OA-9b.** Five jobs run at once, and a sixth gets a name and does not run. Stop during a fan-out of 3 cancels all 3. A child holds only read tools, no tool that its parent lacks, and it is held in a marked chat. Fence: `tests/unit/test_spawn_subagents.py`.
+- **OA-9a.** The contract parser accepts good items, and it turns other output into one `inferred` item. The `worker` refuses with no job, and the picker and the specialist list do not show it. Its open set is its job, and its held set is the job without the egress tools. Fences: `tests/unit/test_subagent_contract.py` for the parser, and `tests/unit/test_subagent_worker.py` for the worker.
+- **OA-9b.** Five jobs run at once, and a sixth gets a name and does not run. Stop during a fan-out of 3 cancels all 3. A child holds only read tools, no tool that its parent lacks, and it is held in a marked chat. A child stops after 4 model calls. Only the main assistant holds `spawn_subagents`. Fence: `tests/unit/test_spawn_subagents.py`.
+- **SUB-1.** A child cannot call a memory write, a send, an automation tool, a tool that asks the member or a delegation tool. Each of them gets its own case. Fence: `tests/unit/test_subagent_blocked_tools.py` (§6.8). It is part of the OA-9b gate.
 - **OA-9c.** A child with the `email` pack gets the same held or open set as the main assistant. Fence: `tests/unit/test_pack_guards.py`.
 - **OA-9d.** Three children that write show one card with three rows. A rejected row writes nothing, and Stop writes nothing. Fence: a test in the style of `tests/unit/test_delegated_confirmation_card.py`.
 - **OA-9e.** The persona lines of §6.3 show with the flag on, and not with it off. In OA-8e, the main assistant spawns for multi-step research, and not for one read, one task or three searches.
@@ -1361,7 +1478,7 @@ D117 item 5 keeps dynamic sub-agents. The owner wrote on 2026-10-26: "dont loose
 
 **The fix, with no second seam.** One internal agent, `worker`, is new in `apps/agents/agent-worker/`. The spawn tool binds a job spec on the frame of the parent. The `build_agents()` of the worker reads that spec. It builds the agent from the packs, the tools and the tier of the job, with the contract of §6.4. Each guard of a sub-run then applies, because the worker runs as a sub-run.
 
-The registry marks the worker as internal, so it is never a specialist tool or a chat agent. A call of `call_agent("worker", ...)` refuses, because no job spec is bound.
+The registry marks the worker as internal, so it is never a specialist tool or a chat agent. A call of `call_agent("worker", ...)` refuses, because no job spec is bound. §4.5, OA-9a narrowings 3 and 5 say how. The worker sits in `_INTERNAL_AGENTS` and not in `_AGENT_REGISTRY`, and `worker_refusal` answers at run. Several line anchors in §6.1 to §6.6 have moved since 2026-10-26. §6.9 lists the current ones.
 
 ### 6.2 The spawn tool
 
@@ -1426,6 +1543,8 @@ The child gets no summary of the chat. Each child of one fan-out shares the same
 - Output in any other shape becomes one item of kind `inferred`, with the source `unstructured`.
 - The main assistant writes its answer from the items. It states each `inferred` item as a guess.
 
+**The schema check (SUB-1 rule 2).** The parent never reads the raw text of a child. It reads the output of `parse_items`. That parser accepts only the keys `value`, `kind` and `source`, with a `kind` of `quoted` or `inferred`. Any other output becomes one `inferred` item. `SUB_AGENT_MAX_RESULT_CHARS` caps the length of one result (`executor.py:2481`).
+
 **The contract and `head_task`.** `head_task` does not change. Its "(quoted: ...)" marks are the prose form of `kind`. The persona of the worker asks for the JSON form.
 
 ### 6.5 Guards inside a child: read first, writes after
@@ -1440,7 +1559,12 @@ The child gets no summary of the chat. Each child of one fan-out shares the same
 
 **Cards.** Each write of a child asks the card of the member. The card shows the exact payload (`agent-crm/agents.py:699-720` gives the rule).
 
-**Batch writes in OA-9b.** A child holds only tools that say `read_only=True`, plus `web_search` and `fetch_page`. The main assistant sends a batch write through the batch tool of the app. That tool already shows one card with the counts (`routes/agent.py:758-762`).
+**Batch writes in OA-9b.** A child holds only tools that say `read_only=True`, plus `web_search` and `fetch_page`. Three layers enforce that, and the third is the one that counts:
+1. `parse_jobs` refuses a job that names any other tool.
+2. The injection gives the worker the tools of the job. The worker config removes the rest of the floor (§4.5, OA-9a narrowing 4).
+3. An allow-list pair, `tool_guard.WithholdTools` and `RefuseTools`, takes each tool that is not in the job out of every model request. It answers a call to one and does not run it (§4.5, OA-9b narrowing 1). Three floor tools stay in every run, and the pair holds them back. They are `emit_generative_ui`, `ask_questions` and `read_attachment`.
+
+The main assistant sends a batch write through the batch tool of the app. That tool already shows one card with the counts (`routes/agent.py:758-762`). The main assistant holds no such tool today, so the line waits for OA-8b (§4.5, OA-9b narrowing 5).
 
 **Batch writes in OA-9d.** Children may write. D117 item 5 asks that their writes ask the member once, on one batch card:
 - All cards of one fan-out join into ONE card, with one row for each act and its exact payload.
@@ -1487,23 +1611,29 @@ The child gets no summary of the chat. Each child of one fan-out shares the same
 | OA-9e | The persona lines and the `fanout` scenarios | LOW | With OA-9b |
 
 **OA-9a.**
-- **Files.**
-  - `acb_skills/subagent_contract.py`
+- **Files.** The parser is built (PR #1388). The worker half is:
+  - `acb_skills/subagent_contract.py`: add `worker_refusal`
   - `apps/agents/agent-worker/`: `agents.py`, `config.json` and `instructions.md`
-  - `routes/agent.py`: an internal entry
-  - `orchestrator/agents.py:753`: skip the worker
+  - `routes/agent.py:610`: the new `_INTERNAL_AGENTS` list, with the one `worker` entry
+  - `orchestrator/executor.py`: the three lookups by name search `_INTERNAL_AGENTS` first, and the refusal runs in `_run_sub_agent_streaming` and `run_agent`
+  - `acb_skills/agent_tools.py`: `call_agent` asks `worker_refusal`
+  - `tests/unit/test_agent_voice.py` and `tests/unit/test_chat_upload_every_agent.py`: one `worker` row each
 - **Acceptance.**
   - The parser accepts good output, and it turns bad output into one `inferred` item.
-  - The worker refuses when no job is bound.
-  - The picker and the specialist list do not show the worker.
+  - The worker refuses when no job is bound, at run and not at build.
+  - The picker and the specialist list do not show the worker, because it is in no list that they read.
+  - The open set of the worker is its job. The held set is the job without the egress tools.
 - **Fence.**
-  - `tests/unit/test_subagent_contract.py`
-  - a case in `tests/unit/test_tool_packs_off.py`
+  - `tests/unit/test_subagent_contract.py` (the parser)
+  - `tests/unit/test_subagent_worker.py` (new). It checks the refusal with no job, the picker lists, the pinned sets and the `config.json`
+  - No case in `tests/unit/test_tool_packs_off.py`. It holds no OA-9a case.
 
 **OA-9b.**
 - **Files.**
   - `acb_skills/agent_tools.py`: `spawn_subagents` and `_fan_out`
-  - `orchestrator/_tool_injection.py`: inject the tool when the flag is on
+  - `orchestrator/agents.py:1046`: the tool joins `core_tools` of the orchestrator only. `_tool_injection.py` gets no edit for the injection. The executor drops the tool from a run of an org that the flag does not name.
+  - `acb_skills/egress.py`: `spawn_subagents` joins `DELEGATION_TOOLS`
+  - `apps/agents/agent-worker/agents.py`: the allow-list pair and the round cap
   - `acb_common/settings.py`: the flag
 - **Acceptance.**
   - Five jobs run at once. The tool names a sixth job, and does not run it.
@@ -1511,10 +1641,14 @@ The child gets no summary of the chat. Each child of one fan-out shares the same
   - Stop during a fan-out of 3 cancels all 3, and no child writes after the Stop.
   - A child holds only read tools, and no tool that its parent lacks.
   - A child of a marked chat is held.
-  - A batch write goes through the batch tool of the app, in the main assistant.
+  - A child stops after 4 model calls, and the fourth has no tools.
+  - A child cannot call a memory write, a send, an automation tool, a tool that asks the member or a delegation tool (SUB-1, §6.8).
+  - No line about a batch write. That line moves to OA-8b, because the main assistant holds no batch write tool today.
 - **Fence.**
   - `tests/unit/test_spawn_subagents.py`
-  - The tests of `call_agents_parallel` that exist today stay green.
+  - `tests/unit/test_subagent_blocked_tools.py` (SUB-1, §6.8)
+  - The existing tests of `call_agents_parallel` stay green.
+  - The test `test_nothing_calls_the_contract_before_oa_9b` in `test_subagent_contract.py` becomes a pin on the one caller, `spawn_subagents`.
 
 **OA-9c.**
 - **Acceptance.** A child with `packs=["email"]` gets the held or open set that the main assistant would get.
@@ -1529,6 +1663,59 @@ The child gets no summary of the chat. Each child of one fan-out shares the same
 - **Fence.** A test in the style of `tests/unit/test_delegated_confirmation_card.py`.
 
 **OA-9e.** The persona lines and the OA-8e scenarios of §6.3.
+
+### 6.8 SUB-1: the sub-agent policy (Metorite #822)
+
+SUB-1 is the policy that a child obeys in every fan-out. It has three rules. Rules 1 and 2 bind each child. Rule 3 binds a fan-out. The rules sit on the layers of §6.5 and on the caps of the parser. The table says which rule uses which existing part, and which part is new.
+
+| SUB-1 rule | Existing part | New in OA-9b |
+|---|---|---|
+| 1. A child never writes memory, sends out, creates an automation, asks the member or delegates | `parse_jobs` refuses a tool that is not read-only (`annotated_read_only`), a `MEMBER_TOOLS` name and a delegation name. A delegated run closes the profile writes (`executor.py:2230`) | The allow-list pair of §4.5, OA-9b narrowing 1. It stops the tools that the parser cannot see |
+| 2. The parent gets a summary that validates against a schema | `parse_items` (`subagent_contract.py:396`) and the keys `value`, `kind` and `source` | None. `spawn_subagents` returns only parsed items |
+| 3. A fan-out cap of 5, one shared step budget, an idle timeout | `MAX_JOBS` 5 (equal to `_PARALLEL_MAX`), `MAX_SPAWNS_PER_TURN` 2, `MAX_CHILD_ROUNDS` 4, `JOB_TIMEOUT_S` 120 and `FANOUT_TIMEOUT_S` 180 | The enforcement of each cap: the spawn counter on the parent frame, `max_iterations` of 3 plus the final call, and `asyncio.wait_for` |
+
+**What each blocked class covers.** The tools below come from the code of `6c0f5a83a`. A child cannot call any of them, in any chat.
+- **Memory writes.** The five store writes of `egress.STORE_WRITES` (`egress.py:132`): `save_memory`, `save_episode`, `save_agent_memory`, `save_org_memory` and `save_note`. Also the five profile writes of `profile_tools.WRITE_TOOLS` (`:1111`): `profile_remember`, `profile_forget`, `profile_set`, `profile_alias` and `profile_undo`. A read such as `remember` or `recall_timeline` stays open.
+- **Egress.** Any tool that sends or writes outside Metorite. The email sends `send_email`, `forward_email`, `unsubscribe_sender`, `send_draft` and `schedule_send`. The CRM writes `create_lead`, `update_deal_status`, `log_activity` and `convert_lead`. The web reads `web_search` and `fetch_page` are not in this class, because they only read. A held chat still withholds them from a child (§6.5).
+- **Automation.** `run_workflow` (`workflow_tools.py:94`). The email rule tools `create_rule`, `update_rule`, `create_rules_from_prompt`, `install_default_rules`, `learn_rule_pattern`, `run_rules` and `delete_rule`. The CRM tool `crm_propose_rule`. The Projects tools `set_report_schedule` and `set_recurrence`.
+- **Ask the member.** The four tools of `MEMBER_TOOLS`: `ask_questions`, `ask_user`, `request_confirmation` and `share_artifact`. Also `emit_generative_ui`, which blocks the run when it sets `hitl`.
+- **Delegation.** The four tools of `egress.DELEGATION_TOOLS`, and `spawn_subagents`. Also `spawn_copilot_agent` and the specialist tools of the orchestrator: `apis_config`, `app_builder`, `crm_assistant`, `email_assistant`, `projects_assistant` and `whatsapp_assistant`.
+
+**Rule 3, as decided.**
+- **Fan-out cap.** 5 jobs for each call. This is the cap of `call_agents_parallel` today.
+- **Shared step budget.** A bound and not a counter. One child makes at most 4 model calls. One call makes at most 20. One turn makes at most 40, because a turn makes at most 2 spawn calls. No counter pools the steps across children. Each child can use all 4 of its calls.
+- **Idle timeout.** The wall clock of the job (120 s) and of the fan-out (180 s). A child is a batch run and streams no event (`executor.py:2587-2622`), so an idle timer would measure the same time. A fan-out that streams its children needs a new timer, and OA-9b does not build it.
+
+**Fence (R7).** `tests/unit/test_subagent_blocked_tools.py`. The file gives a child each blocked tool through the real worker pair, and the child cannot call it. Each case counts the runs of the tool body and asserts the count is 0.
+- `test_a_child_cannot_call_a_memory_write`: one case for each of the 10 tools above.
+- `test_a_child_cannot_call_a_send`: one case for each of the 9 tools above.
+- `test_a_child_cannot_call_an_automation_tool`: one case for each of the 11 tools above.
+- `test_a_child_cannot_ask_the_member`: one case for each of the 5 tools above.
+- `test_a_child_cannot_delegate`: one case for each of the 12 tools above.
+- `test_the_parser_refuses_each_blocked_tool`: layer 1 alone, with the same tool lists.
+- `test_the_pair_stops_each_blocked_tool_with_the_parser_off`: layer 3 alone. The parser accepts the tool, the parent holds it, and the pair still answers the call.
+- `test_the_floor_tools_that_cannot_be_opted_out_are_withheld`: `ask_questions`, `emit_generative_ui` and `read_attachment` are in the injected set, and the pair takes them out of the request.
+- `test_a_job_tool_still_runs`: the control case. `remember` runs, so the pair does not block everything.
+- Four mutations must fail the file. The first removes the pair from the worker. The second adds a floor tool to the allow-list. The third empties `MEMBER_TOOLS`. The fourth drops one name from a tool table.
+
+### 6.9 Anchors checked on 2026-10-27
+
+The anchors of §6.1 to §6.6 were set on 2026-10-26, and some have moved. Each one names a symbol, so search by the symbol. These are the current lines at `6c0f5a83a`.
+
+| Symbol | Was | Now |
+|---|---|---|
+| `_run_sub_agent_streaming` | `executor.py:2012-2530` | `executor.py:2161-2686` |
+| The registry lookup by name | `:2048-2060` | `:2204-2216` |
+| `head_task` in the sub-run | `:2043-2044` | `:2199-2200` |
+| The `finally` of the sub-run | `:2505-2530` | `:2664-2686` |
+| `_sub_agent_tier` | `:8743-8764` | `:8945-8966` |
+| `run_tools` bound on the parent | `:5743-5745` | `:5938` |
+| `call_agents_parallel` | `agent_tools.py:280-435` | `:296-457` |
+| `_delegate_held` | `:230-243` | `:246-259` |
+| `_answer_of` | `:256-277` | `:272-293` |
+| The batch fallback with `head_task` | `:191-207` | `:206-213` |
+
+The cite `orchestrator/agents.py:159`, "rule 3" in §6.3, matches no text in that file now. Look for the rule that says to call independent tools in one step before OA-9e pins the persona lines.
 
 ## 7. Coordination with the chat-speed work
 
