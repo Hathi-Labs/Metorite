@@ -197,9 +197,9 @@ describe("the board", () => {
         weighted: 0,
       },
     ] as unknown as BoardLane[];
-  const draw = (ext: string | null, onCreate?: () => void) =>
+  const draw = (ext: string | null, onCreate?: () => void, mode: "native" | "mirror" | null = null) =>
     renderToStaticMarkup(
-      createElement(KanbanBoard, { lanes: lanes(ext), loading: false, onMove: noop, onOpen: noop, onCreate }),
+      createElement(KanbanBoard, { lanes: lanes(ext), loading: false, onMove: noop, onOpen: noop, onCreate, mode }),
     );
 
   it("drops the New deal button when no create handler is given", () => {
@@ -209,6 +209,11 @@ describe("the board", () => {
   it("does not let a mirrored deal be dragged", () => {
     expect(draw("zoho")).toContain('draggable="false"');
     expect(draw(null)).toContain('draggable="true"');
+  });
+  it("lets an imported deal be dragged in Native mode only (CRM-Z10c)", () => {
+    expect(draw("zoho", undefined, "native")).toContain('draggable="true"');
+    expect(draw("zoho", undefined, "mirror")).toContain('draggable="false"');
+    expect(draw("zoho", undefined, null)).toContain('draggable="false"');
   });
 });
 
