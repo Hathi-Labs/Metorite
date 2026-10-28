@@ -10,6 +10,8 @@ import {
   effectiveMode,
   firstOpen,
   humanizeKey,
+  importedLine,
+  isLocked,
   isMirrored,
   modeLine,
   needsReconnect,
@@ -199,6 +201,21 @@ describe("the mirror marks (spec 3.3)", () => {
     expect(isMirrored({ ext_source: null })).toBe(false);
     expect(isMirrored({})).toBe(false);
     expect(isMirrored(null)).toBe(false);
+  });
+  it("locks by the mode, not by ext_source alone (CRM-Z10c)", () => {
+    const zoho = { ext_source: "zoho" };
+    expect(isLocked(zoho, "native")).toBe(false);
+    expect(isLocked(zoho, "mirror")).toBe(true);
+    expect(isLocked(zoho, null)).toBe(true);
+    expect(isLocked({ ext_source: null }, "mirror")).toBe(false);
+    expect(isLocked(null, null)).toBe(false);
+  });
+  it("says when an imported record came in, in Native mode only", () => {
+    const zoho = { ext_source: "zoho", created_at: "2026-10-12T10:00:00Z" };
+    expect(importedLine(zoho, "native")).toBe("Imported from Zoho on 12 Oct 2026");
+    expect(importedLine(zoho, "mirror")).toBeNull();
+    expect(importedLine(zoho, null)).toBeNull();
+    expect(importedLine({ created_at: zoho.created_at }, "native")).toBeNull();
   });
   it("badges a Metorite-only activity under a mirrored record", () => {
     expect(onlyInMetorite({ ext_source: null }, true)).toBe(true);

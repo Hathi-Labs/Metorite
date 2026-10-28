@@ -37,7 +37,8 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useEffect, useId, useRef, useState } from "react";
-import { isMirrored, LOCK_TIP } from "../lib/connect";
+import { isLocked, LOCK_TIP } from "../lib/connect";
+import { useCrmModeValue } from "../lib/modeContext";
 import { formValue, type FieldLayout } from "../lib/fieldLayout";
 import {
   contactValue,
@@ -245,7 +246,7 @@ export default function FieldsPanel({
   const converted = Boolean(record.converted_deal_id);
   // A record that Zoho owns (CRM-Z7, spec §3.3): its fields, its stage and its
   // people are read-only here. Notes and calls stay open, in the timeline.
-  const mirrored = isMirrored(record);
+  const mirrored = isLocked(record, useCrmModeValue());
 
   if (part === "related") {
     return (
