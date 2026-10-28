@@ -424,6 +424,9 @@ interface EmailState {
     cc?: string;
     attachments?: api.SendAttachment[];
     artifacts?: api.ArtifactAttachmentRef[];
+    /** Why the last send of this message failed. The composer shows it next
+     *  to Send, and Send tries again (UXD-2). */
+    sendError?: string;
   } | null;
   /** A message queued to send, shown with an "Undo" toast until the timer fires. */
   pendingSend: api.SendEmailParams | null;
@@ -696,6 +699,24 @@ let _folderSumsAfterSync: ReturnType<typeof setTimeout> | undefined;
 let _listGen = 0;
 /** How long the user has to undo a send. */
 const UNDO_SEND_MS = 5000;
+
+/** The composer fields that give a queued message back in full: Undo and a
+ *  failed send both use it (UXD-2). The body splits back into the text that
+ *  the member wrote and the quoted chain, as the composer keeps them. */
+function reopenDefaults(p: api.SendEmailParams) {
+  const { main, quoted } = splitQuotedText(p.bodyText || "");
+  return {
+    accountId: p.accountId,
+    to: p.to.join(", "),
+    subject: p.subject,
+    replyToBody: main,
+    quote: quoted || undefined,
+    replyToMessageId: p.replyToMessageId,
+    cc: p.cc?.length ? p.cc.join(", ") : undefined,
+    attachments: p.attachments,
+    artifacts: p.artifacts,
+  };
+}
 
 /** The set of pooled mailbox ids, as one key. A read that started under
  *  another pool drops its answer (EM-T8g-2 review F4). */
@@ -1992,7 +2013,35 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         await api.sendEmail(p);
         get().fetchEmails(); // surface the sent item
       } catch (err: any) {
-        set({ error: err.message || "Failed to send email" });
+        // The composer closed before the send, so a failure must give the
+        // message back. Else the member's text is lost (UXD-2).
+        const reason = err?.message || "Failed to send email";
+        if (!get().composeOpen) {
+          set({
+            composeOpen: true,
+            composeDraftId: null,
+            composeDefaults: { ...reopenDefaults(p), sendError: reason },
+          });
+          return;
+        }
+        // The member opened another message in the wait. Do not overwrite
+        // it: keep the failed one in Drafts. The draft takes no reply id:
+        // a send can carry the provider's id, and the draft wants ours.
+        try {
+          await api.saveDraft({
+            accountId: p.accountId,
+            to: p.to,
+            cc: p.cc ?? [],
+            bcc: p.bcc ?? [],
+            subject: p.subject,
+            body: p.bodyText,
+            attachments: p.attachments,
+            artifacts: p.artifacts,
+          });
+          set({ error: `${reason}. The message is in Drafts.` });
+        } catch {
+          set({ error: `${reason}. The message could not be saved.` });
+        }
       }
     }, UNDO_SEND_MS);
   },
@@ -2010,22 +2059,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     // reach (matching how the composer keeps them separate). Cc, attachments and
     // artifacts are restored too — dropping them was a silent data loss.
     if (p) {
-      const { main, quoted } = splitQuotedText(p.bodyText || "");
-      set({
-        composeOpen: true,
-        composeDraftId: null,
-        composeDefaults: {
-          accountId: p.accountId,
-          to: p.to.join(", "),
-          subject: p.subject,
-          replyToBody: main,
-          quote: quoted || undefined,
-          replyToMessageId: p.replyToMessageId,
-          cc: p.cc?.length ? p.cc.join(", ") : undefined,
-          attachments: p.attachments,
-          artifacts: p.artifacts,
-        },
-      });
+      set({ composeOpen: true, composeDraftId: null, composeDefaults: reopenDefaults(p) });
     }
   },
 
