@@ -776,6 +776,23 @@ async def servers_for_org(
                        oauth_wanted=oauth_wanted)
 
 
+async def enabled_meta(org: str) -> list[StoredServer]:
+    """The connected servers of *org*, as metadata only (WS-67 OA-7i).
+
+    The orchestrator's lookahead asks whether a registry server may attach to
+    a run. It needs the name, scope, transport and url, and nothing else. So
+    this read opens no header blob and refreshes no OAuth token. It opens
+    ``tenant_session(org)`` as :func:`_read` does, so row level security and an
+    org predicate bind it, and it moves an old row first, as :func:`_read` does.
+    ``headers`` is empty on every row."""
+    org = _org(org)
+    async with tenant_session(org) as db:
+        await migrate_legacy(db, org)
+        conns = await store.list_by_prefix(db, org, PREFIX, OWNING_APP)
+    return [_server(conn, {}, with_headers=False) for conn in conns
+            if conn.status == store.STATUS_CONNECTED]
+
+
 async def list_servers(org: str) -> list[StoredServer]:
     """Every server of *org*, enabled and disabled. Header NAMES only."""
     return await _read(org, enabled_only=False, with_headers=False)

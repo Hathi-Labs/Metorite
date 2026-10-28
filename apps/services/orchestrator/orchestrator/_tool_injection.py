@@ -24,7 +24,7 @@ import dataclasses
 import functools
 import os
 import weakref
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 from acb_common import get_logger
@@ -3408,6 +3408,7 @@ async def _apply_tool_packs(
     agent_config: dict[str, Any] | None,
     bullets: Mapping[str, str],
     offer_loader: bool = False,
+    is_authorized: Any = None,
 ) -> PackApply | None:
     """Put the packs of this turn in the run (layer (a), §4.2.2).
 
@@ -3419,9 +3420,10 @@ async def _apply_tool_packs(
     In order: the choice and the cap (``tool_packs.choose``), the eviction of
     the decayed and capped sticky packs, a fresh run key, the build of each
     pack (:func:`_pack_tools`, with the run's own tool names as *holds*), the
-    persona (``tool_packs.persona_for``), and last the change of the agent:
-    the persona, the specialist tool of each owner that a pack replaces, and
-    the pack tools after the core tools, in load order.
+    plan of the loader (``tool_packs.plan_loader``, OA-7i), the persona
+    (``tool_packs.persona_for``), and last the change of the agent: the
+    persona, the specialist tool of each owner that a pack or the loader
+    replaces, and the pack tools after the core tools, in load order.
 
     *run_ctx* is the server-side run context: the tenant is bound, and it
     names the session, the member and ``no_egress`` (condition 2). A run with
@@ -3436,6 +3438,10 @@ async def _apply_tool_packs(
     Then a turn that loads no pack still returns a ``PackApply``, with no
     build, so that the executor binds the run key and the record that a load
     needs. The executor passes True. With False the apply is layer (a) only.
+
+    OA-7i: with the loader offered, ONE plan decides the offer and the
+    replacement of a specialist (:func:`_plan_pack_loader`). *is_authorized*
+    is the run's grant check, which the MCP lookahead reads.
     """
     import secrets
 
@@ -3462,19 +3468,11 @@ async def _apply_tool_packs(
         base += 1
     choice = tool_packs.choose(turn, allowed=allow, base_tools=base)
     await tool_packs.drop_sticky(turn, choice.evicted)
-
-    def _loader_only() -> PackApply | None:
-        """The apply of a turn that loads no pack: layer (b) only, or None."""
-        if not offer_loader:
-            return None
-        bare = PackApply(builds=(), record=tool_packs.PackRun.of(turn, choice, []),
-                         run_key=secrets.token_urlsafe(24))
-        return bare if _offer_pack_loader(agents, bare, allow, current=base) else None
-
     if not choice.slugs:
         _log.info("executor.packs_chosen", packs=[], evicted=list(choice.evicted),
                   skipped=list(choice.skipped), base_tools=base)
-        return _loader_only()
+        if not offer_loader:
+            return None
     run_key = secrets.token_urlsafe(24)
     build_ctx = {**dict(run_ctx), tool_packs.PACK_RUN_KEY: run_key}
     holds = {_tool_name(t) for t in pool}
@@ -3485,39 +3483,157 @@ async def _apply_tool_packs(
             continue
         builds.append(build)
         holds |= {_tool_name(t) for t in build.tools}
-    if not builds:
-        return _loader_only()
+    if not builds and not offer_loader:
+        return None
     loaded = [(build.slug, build.held) for build in builds]
+    added = _as_agent_tools([tool for build in builds for tool in build.tools])
+    kept = [t for t in pool if _delegates_to(t) not in tool_packs.PackRun.of(
+        turn, choice, loaded).replaced]
+    current = base + len(added) - (len(pool) - len(kept))
+    plan = tool_packs.LoaderPlan()
+    if offer_loader:
+        plan = await _plan_pack_loader(
+            agent, allow, [b.slug for b in builds], builds=builds, current=current,
+            pool=kept, persona=str(opts.get("instructions") or ""), bullets=bullets,
+            agent_name=agent_name, no_egress=bool(run_ctx.get("no_egress")),
+            is_authorized=is_authorized)
+    if not builds and not plan.offered:
+        return None
+    via = plan.via_loader
     try:
         persona = tool_packs.persona_for(
-            str(opts.get("instructions") or ""), loaded, bullets, build_ctx)
+            str(opts.get("instructions") or ""), loaded, bullets, via, build_ctx)
     except RuntimeError as exc:
         _log.error("executor.packs_refused", reason="persona_swap", error=str(exc)[:200])
         return None
-    record = tool_packs.PackRun.of(turn, choice, loaded)
+    record = tool_packs.PackRun.of(turn, choice, loaded, via)
     replaced = frozenset(record.replaced)
-    added = _as_agent_tools([tool for build in builds for tool in build.tools])
     opts["instructions"] = persona
-    size = len(pool)
     pool[:] = [t for t in pool if _delegates_to(t) not in replaced]
     pool.extend(added)
-    current = base + len(pool) - size
     # Fix round 1: the "Delegatable agents" block of the injection leaves out
     # an owner that the run may not hand off to, and only such an owner.
+    # OA-7i: an owner that the loader replaces is one of them.
     with contextlib.suppress(Exception):
-        setattr(agent, PACK_REFUSED_ATTR, frozenset(record.refusals))
+        setattr(agent, PACK_REFUSED_ATTR, frozenset(record.refusals) | via)
+    # OA-7h counts each ``executor.packs_loaded`` line before the first model
+    # call as a pack load, so only a turn that built a pack logs it. The facts
+    # of the plan ride on their own event (OA-7i fix round 1).
+    if builds:
+        _log.info(
+            "executor.packs_loaded", packs=list(record.slugs),
+            layers={slug: choice.layers.get(slug, "") for slug in record.slugs},
+            held=dict(record.held), replaced=sorted(replaced), via_loader=sorted(via),
+            refused=sorted(record.refusals),
+            evicted=list(choice.evicted), skipped=list(choice.skipped),
+            base_tools=base, pack_tools=sum(len(b.tools) for b in builds),
+        )
     _log.info(
-        "executor.packs_loaded", packs=list(record.slugs),
-        layers={slug: choice.layers.get(slug, "") for slug in record.slugs},
-        held=dict(record.held), replaced=sorted(replaced),
-        refused=sorted(record.refusals),
-        evicted=list(choice.evicted), skipped=list(choice.skipped),
-        base_tools=base, pack_tools=sum(len(b.tools) for b in builds),
+        "executor.pack_plan", offered=list(plan.offered), via_loader=sorted(via),
+        packs=list(record.slugs), base_tools=base, current_tools=current,
     )
     applied = PackApply(builds=tuple(builds), record=record, run_key=run_key)
-    if offer_loader:
-        _offer_pack_loader(agents, applied, allow, current=current)
-    return applied
+    if offer_loader and not _offer_pack_loader(agents, applied, plan) and via:
+        _log.error("executor.pack_loader_stranded", owners=sorted(via))
+    return applied if builds or plan.offered else None
+
+
+def _loader_agent_ok(agent: Any) -> bool:
+    """True when *agent* is a native MAF ``Agent``, the only shape that
+    :func:`_offer_pack_loader` serves."""
+    try:
+        from agent_framework import Agent
+    except ImportError:  # pragma: no cover - MAF ships with the platform
+        return False
+    return isinstance(agent, Agent)
+
+
+async def _mcp_may_attach(
+    agent: Any, agent_name: str, *, no_egress: bool, is_authorized: Any, held_untrusted: bool,
+) -> bool:
+    """True when :func:`_inject_mcp_servers` can put an MCP tool in this run
+    (OA-7i lookahead). The injection runs AFTER the packs, so the plan of the
+    loader asks first. The same early exits, then the registry rows, listed
+    with no token refresh and no header read (``enabled_meta``). A row that the run could use counts, so the answer
+    errs toward True. A fault reads as True (fail closed): then the
+    specialist of a mail owner stays, as it did before OA-7i."""
+    from acb_common.db import current_tenant
+
+    from orchestrator import _maf_mcp
+
+    if no_egress or held_untrusted or agent_name in UNTRUSTED_INPUT_AGENTS:
+        return False
+    org = current_tenant()
+    if not org or not _maf_mcp.is_native_maf_agent(agent):
+        return False
+    if not _maf_mcp.maf_mcp_org_allowed(org):
+        return False
+    try:
+        from gateway.connections import mcp as mcp_registry
+
+        rows = await mcp_registry.enabled_meta(str(org))
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("executor.pack_mcp_lookahead_failed", error=type(exc).__name__)
+        return True
+    for srv in rows:
+        if not srv.enabled or not _in_scope(list(srv.agent_scope), agent_name):
+            continue
+        if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
+            continue
+        if is_authorized is not None and not is_authorized(_maf_mcp.mcp_service(str(srv.name))):
+            continue
+        return True
+    return False
+
+
+async def _plan_pack_loader(
+    agent: Any, allow: frozenset[str], held: list[str], *, builds: Sequence[PackBuild],
+    current: int, pool: Sequence[Any], persona: str, bullets: Mapping[str, str],
+    agent_name: str, no_egress: bool, is_authorized: Any,
+) -> Any:
+    """THE one plan of the loader in a run (OA-7i): ``tool_packs.plan_loader``
+    with the facts of this run. Its answer drives the offer
+    (:func:`_offer_pack_loader`) AND the removal of a specialist tool and of
+    its persona text, so the two cannot disagree.
+
+    An owner can be reached only when the agent is a native MAF ``Agent``, the
+    owner's module loads (:func:`_pack_owner_module`), and the persona holds
+    the owner's delegation text exactly once. The MCP rule reads the registry
+    (:func:`_mcp_may_attach`) and only for a pack of an owner that reads
+    stranger text, and only while the run holds none of them."""
+    from acb_skills import tool_packs
+
+    if not _loader_agent_ok(agent):
+        return tool_packs.LoaderPlan()
+    removable: dict[str, int] = {}
+    for item in pool:
+        target = _delegates_to(item)
+        if target:
+            removable[target] = removable.get(target, 0) + 1
+    unheld = tool_packs.loadable(allow, held)
+    mcp = False
+    reads_mail = any(
+        str(tool_packs.SKILL_FAMILIES[slug].get("owner")) in UNTRUSTED_INPUT_AGENTS
+        for slug in unheld)
+    if len(held) < tool_packs.MAX_PACKS and reads_mail:
+        mcp = await _mcp_may_attach(
+            agent, agent_name, no_egress=no_egress, is_authorized=is_authorized,
+            held_untrusted=any(b.owner in UNTRUSTED_INPUT_AGENTS for b in builds))
+
+    def _available(owner: str) -> bool:
+        if _pack_owner_module(owner) is None:
+            return False
+        # OA-8b: a covered org loads no Projects pack, so the loader cannot
+        # reach the owner and the specialist stays (``_drop_pack_covered``).
+        if owner == "projects-assistant" and _run_covered(owner):
+            return False
+        if owner in tool_packs.NO_PERSONA_BULLETS and owner not in bullets:
+            return True  # by design the persona has no text of this owner (OA-8a)
+        old = str(bullets.get(owner) or "")
+        return bool(old) and persona.count(old) == 1
+
+    return tool_packs.plan_loader(
+        allow, held, current=current, removable=removable, mcp=mcp, available=_available)
 
 
 # ── Tool packs in the middle of a turn: layer (b) (WS-67 OA-7e, D117) ───────
@@ -3541,30 +3657,21 @@ async def _build_pack_for_load(
     return await _pack_tools(slug, run_ctx, holds=holds)
 
 
-def _offer_pack_loader(
-    agents: list[Any], applied: PackApply, allow: Iterable[str], *, current: int = 0,
-) -> bool:
+def _offer_pack_loader(agents: list[Any], applied: PackApply, plan: Any) -> bool:
     """Put ``load_skill_tools`` on the view of the run (layer (b), OA-7e).
 
-    It offers each pack of *allow* that the run does not hold
-    (``tool_packs.loadable``). *allow* is ``packs_on`` of the bound tenant
-    less the admin's toggles, so the catalog never lists a pack that the
-    flag stops. The provider goes on a per-run view (``agent_with_providers``)
-    that takes the place of ``agents[0]``, so the agent object of another run
-    never changes. Each later step reads ``agents`` again, and each view that
-    the injection makes keeps the provider. True when the run offers a load.
+    It offers the packs of *plan* (``tool_packs.LoaderPlan``, from
+    :func:`_plan_pack_loader`, OA-7i): each allowed pack that the run does not
+    hold and that fits the caps, so the catalog never lists a pack that the
+    flag, a toggle or a cap stops. The provider goes on a per-run view
+    (``agent_with_providers``) that takes the place of ``agents[0]``, so the
+    agent object of another run never changes. Each later step reads
+    ``agents`` again, and each view that the injection makes keeps the
+    provider. True when the run offers a load.
     """
     from acb_skills import tool_packs
 
-    offered = tool_packs.loadable(allow, applied.record.slugs)
-    # A pack that cannot fit is not offered: the live count is *current*
-    # (the base, the load tool, the packs of layer (a), less the specialists
-    # that left) and a load adds the pack's tools.
-    if len(applied.record.slugs) >= tool_packs.MAX_PACKS:
-        offered = ()
-    offered = tuple(
-        slug for slug in offered
-        if current + len(tool_packs.SKILL_FAMILIES[slug]["tools"]) <= tool_packs.MAX_REQUEST_TOOLS)
+    offered = tuple(plan.offered)
     if not offered:
         return False
     try:
