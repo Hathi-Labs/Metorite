@@ -72,13 +72,43 @@ function findQuoteBoundary(body: HTMLElement): Element | null {
     }
   }
 
-  // A bare blockquote — only when it isn't the very first node (so we don't hide
-  // a forward that is itself just a quote). The empty-main guard below is the
-  // real backstop.
-  const bq = body.querySelector("blockquote");
-  if (bq && bq !== body.firstElementChild) return bq;
+  // A bare blockquote counts as a quote only when an attribution line comes
+  // directly before it ("On … wrote:", or a From and Sent header). Many
+  // newsletters and advisories indent with plain blockquotes and carry no
+  // reply marker at all. The old fallback took the first one as a quote and
+  // hid the whole body behind the toggle (owner report, 2026-10-28, #891).
+  for (const bq of Array.from(body.querySelectorAll("blockquote"))) {
+    if (bq === body.firstElementChild) continue;
+    if (isAttribution(textBefore(bq))) return bq;
+  }
 
   return null;
+}
+
+/** Up to `max` characters of the text that comes just before `el` in document
+ *  order: its preceding siblings, then its parents' preceding siblings. */
+function textBefore(el: Element, max = 400): string {
+  let out = "";
+  let node: Node | null = el;
+  while (node && out.length < max) {
+    let prev: Node | null = node.previousSibling;
+    while (prev && out.length < max) {
+      out = (prev.textContent ?? "") + out;
+      prev = prev.previousSibling;
+    }
+    node = node.parentNode;
+    if (!node || node.nodeName === "BODY") break;
+  }
+  return out.slice(-max);
+}
+
+/** Does `text` end with a reply attribution? */
+export function isAttribution(text: string): boolean {
+  const t = text.replace(/\u00a0/g, " ").trim();
+  if (!t) return false;
+  if (/\bwrote:\s*$/i.test(t)) return true;
+  const tail = t.slice(-300);
+  return /\bFrom:\s/i.test(tail) && /\b(Sent|Date):/i.test(tail);
 }
 
 /** Split raw HTML into the new content and the quoted trailing chain. Returns
