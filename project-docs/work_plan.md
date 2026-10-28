@@ -4730,10 +4730,12 @@ Owner decision, 2026-10-27 (see D129). Metorite #820. It clears the WS-7 gate on
 Owner decision, 2026-10-27 (see D129). Metorite #805 and #806. It amends D95.2 for a cutover org only. `crm_platform.md` §18.9.1 already amended D95.2 for Mirror mode.
 
 1. **Labels.** An org that moves from Mirror to Native keeps the labels that it had in Mirror mode, for example "Existing Sites". They become native labels, and the admin can rename them. A new Native org still starts with "Companies".
-2. **The order.** Fracktal cuts over first, after CRM-Z10a, c, e and b pass on staging. Shaurrya Tele goes second, because its custom modules also need CRM-Z10d.
+2. **The order.** Fracktal cuts over first, after CRM-Z10a, c, g and b pass on staging (amended 2026-10-28: attachments, CRM-Z10e, are not a gate). Shaurrya Tele goes second, because its custom modules also need CRM-Z10d.
 3. **The ask.** The owner asks each customer and runs each production cutover (CRM-Z10-run). The agent prepares the preview and the counts for that talk.
 
 *Amended 2026-10-27 (owner, in chat): "we keep the ZOHO labels, but we should be able to edit them later on. Possibly have the AI suggest improvements to the way in which the CRM is set up." So the AI may propose a better setup, and an admin approves each change, as with the mapping suggestions (CRM-Q20-2). It never applies a change by itself. That is a later slice, not part of CRM-Z10. The owner puts the CRM bug fixes and the setup UX before the cutover, and both customers cut over later.*
+
+*Amended 2026-10-28 (owner, in chat, three answers after the audit of CRM-Z10):* (a) Attachments are not a gate. The preview says that they stay in Zoho, and the customer keeps Zoho open for a while to fetch a file. Copying them is a later slice (CRM-Z10e). (b) A Zoho owner with no Metorite member: the preview lists each name and the number of its records. The switch keeps the name on the record and leaves the owner empty. A step that matches names to members comes later. (c) A module that is held, unavailable or incomplete blocks the switch, unless the admin ticks it in "Leave out". The agent's defaults, which the owner may overrule: the sync history stays, read only. The switch revokes the Zoho tokens. A record that Zoho deletes later stays in Metorite. The admin types `SWITCH` to confirm.*
 
 ### D134 — CRM settings fold into five sections, the AI's questions sit in one list, and a Field map pick applies at once (2026-10-27)
 
