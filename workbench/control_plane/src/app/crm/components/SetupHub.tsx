@@ -261,7 +261,8 @@ export default function SetupHubSection({
         busy={{ syncing: syncing || choosing, connecting }}
         onAction={act}
       />
-      {mode === "mirror" && <CutoverCard />}
+      {/* CRM-Z10b: in Native mode too, for "Finish closing Zoho". */}
+      {(mode === "mirror" || mode === "native") && <CutoverCard mode={mode} />}
       <ConfirmDialog
         open={disconnecting !== null}
         title="Disconnect Zoho?"

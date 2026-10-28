@@ -62,6 +62,7 @@ The native CRM (spec `crm_app.md` §5). Everything server-shaped is pure and liv
 - The reports surface computes nothing. Weighted ₹ is never recomputed from `lane.rows`, and `tests/fixtures/crm_weighted_parity.json` holds `board.ts` to the gateway SQL.
 - Every CRM dialog is a `Modal` or a `ConfirmDialog`. `components/SetupHub.tsx` is the ONE place where the setup changes. An in-app `<a href>` calls `pushOnPlainClick`, never `next/link` (`lib/history.test.ts`).
 - The names of the record types come from `GET /crm/mode` in both modes (CRM-Z10g). `lib/recordNames.ts` holds the rules of "Record names". ⚠️ `useRecordNames` keeps its own key, and a failed read stays a failure. Empty boxes after a failed read would let a Save clear the stored names. Fence: `components/crmZ10g.test.ts`.
+- The switch from Zoho (CRM-Z10b) keeps its steps in `lib/cutoverSwitch.ts`, and `CutoverDialog` draws them. The card holds the dialog, so a change of mode does not close it. `tests/fixtures/crm_cutover_board_order.json` holds the board to the gateway's fold. Fences: `lib/cutoverSwitch.test.ts`, `components/crmZ10b.test.ts`.
 - Fences: the `components/crm*.test.ts` files. `components/crmX4.test.ts` fails a raw `<input>`, `<textarea>` or `<select>`.
 
 ### Knowledge (`app/knowledge/`)

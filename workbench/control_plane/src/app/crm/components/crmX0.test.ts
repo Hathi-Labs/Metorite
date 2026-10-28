@@ -207,6 +207,11 @@ describe("only the hub offers a change of setup", () => {
       "lib/api.ts",
       "components/SetupHub.tsx",
       "components/StartOverDialog.tsx",
+      // CRM-Z10b: the switch that keeps the records. The hub mounts its card,
+      // and the card opens its dialog. None of the three calls the reset.
+      "components/CutoverCard.tsx",
+      "components/CutoverDialog.tsx",
+      "lib/cutoverSwitch.ts",
     ]);
     for (const file of crmSources()) {
       if (allowed.has(file)) continue;
