@@ -156,14 +156,17 @@ def integer(value: Any, ceiling: int = _INT_CEILING) -> int | None:
     return int(parsed)
 
 
-def instant(value: Any) -> datetime | None:
+def instant(value: Any, *, zoned: bool = False) -> datetime | None:
+    """A Zoho instant. With *zoned*, a value with no offset or ``Z`` gives None."""
     if not isinstance(value, str) or not value.strip():
         return None
     try:
         parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    if parsed.tzinfo:
+        return parsed
+    return None if zoned else parsed.replace(tzinfo=UTC)
 
 
 def day(value: Any) -> date | None:
@@ -495,7 +498,7 @@ def map_record(
             # CRM-U14: Zoho's own stage time is the card order and the age
             # clock. A deal with none keeps the stored value. The raw value
             # also stays in ``custom``, which the repair step reads.
-            staged = instant(fields.get("Stage_Modified_Time"))
+            staged = instant(fields.get("Stage_Modified_Time"), zoned=True)
             if staged is not None:
                 values["status_changed_at"] = staged
             pipeline = pipeline_ref(fields)

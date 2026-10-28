@@ -2587,12 +2587,16 @@ async def _restamp_stages(ctx: _Ctx) -> None:
     Idempotent and bounded: the door selects only the rows that differ, and the
     step stops after :data:`_RESTAMP_BATCHES` batches. Each batch is one page.
     """
+    after: str | None = None
     for _ in range(_RESTAMP_BATCHES):
         async with ctx.page() as db:
-            written = await restamp_deal_stage_from_source(
-                db, EXT_SOURCE, organization_id=ctx.org,
+            batch = await restamp_deal_stage_from_source(
+                db, EXT_SOURCE, organization_id=ctx.org, after_id=after,
             )
-        if written < STAGE_RESTAMP_BATCH:
+        if batch.skipped_bad:
+            _log.warning("crm.sync.stage_restamp_skipped_bad count=%s", batch.skipped_bad)
+        after = batch.last_id
+        if batch.scanned < STAGE_RESTAMP_BATCH:
             return
 
 

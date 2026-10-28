@@ -40,7 +40,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import UUID
 
 from acb_auth import require_feature_router
@@ -2586,45 +2586,82 @@ async def apply_field_rule_from_source(
 #: Rows one call of :func:`restamp_deal_stage_from_source` repairs at most.
 STAGE_RESTAMP_BATCH = 500
 
-#: A Zoho instant as ``Stage_Modified_Time`` sends it. The guard keeps a
-#: malformed value from failing the cast for the whole batch.
-_STAGE_TIME_SHAPE = "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}[:][0-9]{2}[:][0-9]{2}"
+class StageRestamp(NamedTuple):
+    """One batch of :func:`restamp_deal_stage_from_source`."""
+
+    written: int
+    scanned: int
+    skipped_bad: int
+    last_id: str | None
+
+
+def _stage_instant(value: Any) -> datetime | None:
+    """A Zoho stage time with an explicit offset or ``Z``, else ``None``."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 async def restamp_deal_stage_from_source(
-    db: Any, ext_source: str, *, organization_id: str,
-) -> int:
+    db: Any, ext_source: str, *, organization_id: str, after_id: str | None = None,
+) -> StageRestamp:
     """Set ``status_changed_at`` from the provider's stage time on stored deals.
 
     The eighth door of the mirror write path (CRM-U14). Only
     ``gateway/crm_sync/`` may name it (the fence test). A deal that was read
     before the mapping took ``Stage_Modified_Time`` holds the import time in
     ``status_changed_at``, and the provider's own time sits in
-    ``custom->>'Stage_Modified_Time'``. This copies it over, for rows of
-    *ext_source* only, at most :data:`STAGE_RESTAMP_BATCH` rows a call. It
-    selects the rows that still differ, so a repeat writes nothing, and the
-    caller repeats it until it gives 0. It leaves ``zoho_dirty`` and
+    ``custom->>'Stage_Modified_Time'``. This reads at most
+    :data:`STAGE_RESTAMP_BATCH` rows of *ext_source* after *after_id*, in id
+    order, and parses each value in Python. A value with no offset, or one
+    that does not parse, is skipped and counted, and never raises. The
+    UPDATE per row writes only ``status_changed_at``, and only when it
+    differs, so a repeat writes nothing. The caller passes ``last_id`` back
+    until ``scanned`` is under the batch size. It leaves ``zoho_dirty`` and
     ``updated_at`` alone, because a repair is not a native edit.
     """
     if not ext_source:
         raise ValueError("stage restamp: 'ext_source' is required")
     if not organization_id:
         raise ValueError("stage restamp: 'organization_id' is required")
-    result = await db.execute(
+    org = str(organization_id)
+    rows = (await db.execute(
         text(
-            "UPDATE crm_deals d SET status_changed_at = "
-            "CAST(d.custom->>'Stage_Modified_Time' AS timestamptz) "
-            "WHERE d.organization_id = CAST(:org AS uuid) AND d.id IN ("
-            "SELECT id FROM crm_deals WHERE organization_id = CAST(:org AS uuid) "
+            "SELECT id, custom->>'Stage_Modified_Time' AS stage_time "
+            "FROM crm_deals WHERE organization_id = CAST(:org AS uuid) "
             "AND ext_source = :src "
-            f"AND custom->>'Stage_Modified_Time' ~ '{_STAGE_TIME_SHAPE}' "
-            "AND status_changed_at IS DISTINCT FROM "
-            "CAST(custom->>'Stage_Modified_Time' AS timestamptz) "
-            f"ORDER BY id LIMIT {STAGE_RESTAMP_BATCH})"
+            # A deal with a native edit still to push is not the provider's.
+            "AND zoho_dirty IS NOT TRUE "
+            "AND custom->>'Stage_Modified_Time' IS NOT NULL "
+            "AND (CAST(:after AS uuid) IS NULL OR id > CAST(:after AS uuid)) "
+            f"ORDER BY id LIMIT {STAGE_RESTAMP_BATCH}"
         ),
-        {"src": ext_source, "org": str(organization_id)},
+        {"src": ext_source, "org": org, "after": after_id},
+    )).fetchall()
+    written = skipped = 0
+    for row in rows:
+        parsed = _stage_instant(row.stage_time)
+        if parsed is None:
+            skipped += 1
+            continue
+        result = await db.execute(
+            text(
+                "UPDATE crm_deals SET status_changed_at = :t "
+                "WHERE id = CAST(:id AS uuid) "
+                "AND organization_id = CAST(:org AS uuid) "
+                "AND ext_source = :src AND zoho_dirty IS NOT TRUE "
+                "AND status_changed_at IS DISTINCT FROM :t"
+            ),
+            {"t": parsed, "id": str(row.id), "org": org, "src": ext_source},
+        )
+        written += int(result.rowcount or 0)
+    return StageRestamp(
+        written, len(rows), skipped, str(rows[-1].id) if rows else after_id,
     )
-    return int(result.rowcount or 0)
 
 
 # ── The start over (WS-53 CRM-X0, crm_platform.md §19.11 item 6) ────────────

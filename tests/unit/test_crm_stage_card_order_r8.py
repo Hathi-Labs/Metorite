@@ -4,7 +4,7 @@ Two things are proved on a REAL Postgres. First, ``GET /crm/pipeline`` orders
 the cards of a lane by each ``card_sort`` value and never changes the lane
 totals. Second, ``core.restamp_deal_stage_from_source`` copies the provider's
 stage time into ``status_changed_at`` for mirrored deals only, in one
-organization only, in bounded batches, and a repeat writes nothing.
+organization only, in bounded batches, skips a bad stored value, and a repeat writes nothing.
 """
 
 from __future__ import annotations
@@ -202,15 +202,67 @@ async def test_restamp_copies_the_stage_time_for_mirrored_deals_only(ns, app_eng
                 "SELECT status_changed_at FROM crm_deals WHERE id = CAST(:i AS uuid)"),
                 {"i": deal}).scalar()
 
-    async with tenant_engine_scope(_dsn(ns)), tenant_session(a) as db:
-        first = await core.restamp_deal_stage_from_source(db, "zoho", organization_id=a)
-    assert first == 1
+    async def run(after: str | None = None) -> Any:
+        async with tenant_engine_scope(_dsn(ns)), tenant_session(a) as db:
+            return await core.restamp_deal_stage_from_source(
+                db, "zoho", organization_id=a, after_id=after)
+
+    first = await run()
+    assert first.written == 1
+    assert first.skipped_bad == 1  # "not a time"; the deal with no key is not read
     assert stamp(ids["z1"]) == datetime(2026, 10, 26, 9, 40, 59, tzinfo=UTC)
     for key in ("z2", "z3", "native", "other"):
         assert stamp(ids[key]) == IMPORTED, key
+    assert (await run()).written == 0
+
+
+@pytest.mark.parametrize("bad", [
+    "2026-13-45T25:61:61+05:30", "2026-10-26T15:10:59", "",
+])
+async def test_restamp_skips_a_bad_stored_value_and_finishes(ns, app_engine, bad) -> None:  # noqa: F811
+    from acb_common.db import tenant_session
+    from gateway.routes.crm import core
+
+    a = ns.org_a
+    lane = (await _native(ns, a))["Proposal"]
+    good1 = _mirrored(ns, a, "G1", lane, "g-1", "2026-10-26T15:10:59+05:30")
+    broken = _mirrored(ns, a, "Bad", lane, "b-1", bad)
+    good2 = _mirrored(ns, a, "G2", lane, "g-2", "2026-10-27T01:00:00Z")
+
+    def stamp(deal: str) -> datetime:
+        with ns.admin_engine.begin() as c:
+            return c.execute(text(
+                "SELECT status_changed_at FROM crm_deals WHERE id = CAST(:i AS uuid)"),
+                {"i": deal}).scalar()
+
     async with tenant_engine_scope(_dsn(ns)), tenant_session(a) as db:
-        again = await core.restamp_deal_stage_from_source(db, "zoho", organization_id=a)
-    assert again == 0
+        res = await core.restamp_deal_stage_from_source(db, "zoho", organization_id=a)
+    assert (res.written, res.scanned, res.skipped_bad) == (2, 3, 1)
+    assert stamp(broken) == IMPORTED
+    assert stamp(good1) == datetime(2026, 10, 26, 9, 40, 59, tzinfo=UTC)
+    assert stamp(good2) == datetime(2026, 10, 27, 1, 0, tzinfo=UTC)
+
+
+async def test_restamp_leaves_a_dirty_deal_alone(ns, app_engine) -> None:  # noqa: F811
+    from acb_common.db import tenant_session
+    from gateway.routes.crm import core
+
+    a = ns.org_a
+    lane = (await _native(ns, a))["Proposal"]
+    dirty = _mirrored(ns, a, "Dirty", lane, "d-1", "2026-10-26T15:10:59+05:30")
+    newer = datetime(2026, 10, 28, 8, 0, tzinfo=UTC)
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_deals SET zoho_dirty = true, status_changed_at = :t "
+            "WHERE id = CAST(:i AS uuid)"), {"t": newer, "i": dirty})
+    async with tenant_engine_scope(_dsn(ns)), tenant_session(a) as db:
+        res = await core.restamp_deal_stage_from_source(db, "zoho", organization_id=a)
+    assert res.written == 0
+    with ns.admin_engine.begin() as c:
+        got = c.execute(text(
+            "SELECT status_changed_at FROM crm_deals WHERE id = CAST(:i AS uuid)"),
+            {"i": dirty}).scalar()
+    assert got == newer
 
 
 async def test_restamp_is_bounded_by_the_batch(ns, app_engine, monkeypatch) -> None:  # noqa: F811
@@ -223,8 +275,11 @@ async def test_restamp_is_bounded_by_the_batch(ns, app_engine, monkeypatch) -> N
         _mirrored(ns, a, f"Z{i}", lane, f"z-{i}", "2026-10-26T15:10:59+05:30")
     monkeypatch.setattr(core, "STAGE_RESTAMP_BATCH", 2)
     seen = []
-    for _ in range(4):
+    after = None
+    for _ in range(3):
         async with tenant_engine_scope(_dsn(ns)), tenant_session(a) as db:
-            seen.append(await core.restamp_deal_stage_from_source(
-                db, "zoho", organization_id=a))
-    assert seen == [2, 2, 1, 0]
+            res = await core.restamp_deal_stage_from_source(
+                db, "zoho", organization_id=a, after_id=after)
+        seen.append((res.written, res.scanned))
+        after = res.last_id
+    assert seen == [(2, 2), (2, 2), (1, 1)]

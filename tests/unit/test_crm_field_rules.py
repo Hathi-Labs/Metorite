@@ -564,3 +564,15 @@ def test_a_deal_takes_zoho_stage_time_as_its_stage_clock() -> None:
             "deal", {"id": "1", "Deal_Name": "D", "Stage": "Proposal", **bad},
             modified_at=None, owners={})
         assert "status_changed_at" not in plain.values
+
+
+@pytest.mark.parametrize("bad", [
+    "2026-13-45T25:61:61+05:30", "2026-10-26T15:10:59", "", "   ", "x", 12345,
+])
+def test_a_bad_stage_time_sets_no_stage_clock(bad: object) -> None:
+    """CRM-U14: out of range, no offset, empty or not text: no value is sent."""
+    mapped = mapping.map_record(
+        "deal", {"id": "1", "Deal_Name": "D", "Stage": "Proposal",
+                 "Stage_Modified_Time": bad}, modified_at=None, owners={})
+    assert "status_changed_at" not in mapped.values
+    assert mapping.instant(bad, zoned=True) is None
