@@ -72,6 +72,21 @@ label. The tests are at the end of this file, under "BR-1b-a".
 * M9. ``worker.run_one``: settle the outer failure with ``exc``, not
   ``attempt.timeout or exc``.
   ``test_r8_a_handler_that_hangs_in_the_database_fails_as_a_timeout`` goes red.
+
+**Review round 1 of BR-1b-a.** The tests are at the end of this file.
+
+* M10. ``worker.run_one``: settle with the *now* of the claim, not the
+  clock. ``test_r8_a_slow_try_takes_its_backoff_from_its_end`` (both modes)
+  and ``test_r8_the_worker_reads_the_clock_for_each_job`` go red.
+* M11. ``queue.give_up``: drop the ``jobs.failed`` line.
+  ``test_r8_an_intent_mark_stops_a_second_provider_call`` and
+  ``test_r8_a_detached_kind_that_is_not_idempotent_gets_one_try`` go red.
+* M12. ``worker._run_detached``: drop the guard of a kind that is not
+  idempotent. ``test_r8_a_detached_kind_that_is_not_idempotent_gets_one_try``
+  goes red.
+* M13. ``queue._PRUNE_SQL``: drop the bound-tenant belt.
+  ``test_r8_a_prune_on_a_session_that_bypasses_rls_takes_the_bound_org_only``
+  goes red.
 """
 
 from __future__ import annotations

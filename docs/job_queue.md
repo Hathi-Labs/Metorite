@@ -2,7 +2,9 @@
 
 **Status:** BR-1a is BUILT and dark (WS-BRIEF, Metorite #582, epic #479).
 BR-1b-a is BUILT and dark (Metorite #642): the detached mode, `jobs.prune` and
-the timeout label. The switch `JOB_QUEUE` is OFF. No producer exists yet. The
+the timeout label. Its review round 1 added the settle clock, `give_up`, one
+try for a detached kind, and the cap and belt of the prune. The switch
+`JOB_QUEUE` is OFF. No producer exists yet. The
 rest of BR-1b moves the first producers.
 
 This page is the engineering reference of the queue. It is not a product
@@ -37,6 +39,9 @@ time. The state is in Postgres only, so a job survives a restart.
 5. The settle runs in the same transaction. A pass sets `done`. A failure sets
    `queued` with a backoff, or `failed` at the last try. `last_error`
    keeps the error.
+6. The settle reads the clock again after the handler returns. So the
+   backoff of a slow try starts at the end of the try. So a try of 240
+   seconds does not come back in the same tick. The other orgs do not wait.
 
 The writes of a handler and `done` commit together, or neither commits.
 
@@ -65,6 +70,22 @@ The writes of a handler and `done` commit together, or neither commits.
   worker reads the row. A row that is still `running` with the token of the
   claim fails the try with `Unsettled: the handler returned without
   settling`. A handler that raises fails the try in a new session.
+- **A detached kind gets one try, unless you say otherwise.** The default is
+  `idempotent=False`. Then the worker gives up the claim of try 2 or later
+  before the handler runs. The job is then `failed`, and `last_error` holds
+  `worker.NOT_IDEMPOTENT`. Register with `idempotent=True` only when a
+  second try is safe. An example is a handler that reads an intent mark
+  first.
+- **A detached handler must await all of its work.** It must not start a
+  task with `create_task`, and it must not leave work to run after it
+  returns. The time limit cancels the current task only, so a task that the
+  handler starts runs on past the limit and past the settle.
+- **A handler that must not try again calls `queue.give_up`.**
+  `queue.give_up(db, claim, error, now=...)` sets `failed` for good, with
+  tries left or not. The fence token guards it, as for `fail`. It answers
+  False when the claim is gone. It logs `jobs.failed` at error. Name the
+  reason before the first colon of `error`, because the log line holds that
+  part only.
 - **A handler runs for at most `worker.HANDLER_TIMEOUT` (240 seconds).** At the
   limit the worker cancels the handler, and the try fails as an error
   does. `last_error` then says `HandlerTimeout: the handler timed out`. The
@@ -100,7 +121,7 @@ The writes of a handler and `done` commit together, or neither commits.
 | Event | Level | When |
 |---|---|---|
 | `jobs.attempt_failed` | warning | A try failed, and the queue retries it |
-| `jobs.failed` | error | The last try failed. The job is `failed` for good |
+| `jobs.failed` | error | The last try failed, or a handler or the worker gave the job up (`outcome="given_up"`). The job is `failed` for good |
 | `jobs.lease_expired` | warning | A lost lease with tries left. The claim takes the row again |
 | `jobs.lease_expired` | error | A lost lease at the last try. The job is `failed` |
 | `jobs.complete_lost` | warning | `complete` changed no row. The worker rolled back the writes of the handler |
@@ -111,7 +132,9 @@ The writes of a handler and `done` commit together, or neither commits.
 | `jobs.pruned` | info | The prune job deleted rows, with the count |
 | `jobs.tick` | info | One line for each tick that ran a job, with the counts |
 
-No log line holds a payload or an error text. A line holds the error type only.
+No log line holds a payload or an error text. A line holds the error type
+only. For a give-up, the line holds the text before the first colon of the
+error, which is its name.
 
 ## 5. How to add a kind (BR-1b)
 
@@ -146,7 +169,11 @@ The adversarial review of BR-1a recorded this contract. BR-1b-a built it.
 6. Then it opens a new session. It runs `hold`, writes the result and runs
    `complete`. When `hold` answers False, another claim took the row, and the
    handler writes nothing.
-7. A job that must run at most once uses `max_attempts=1`.
+7. When step 3 finds a mark with no result, the handler calls `give_up` with
+   a named error. The job is then `failed`, and `jobs.failed` tells a person.
+   Never settle an uncertain send as `done`. That loses it with no signal.
+8. A kind that follows steps 3 and 7 registers with `idempotent=True`. A kind
+   that does not keeps the default, so the worker gives it one try only.
 
 **The intent mark is a column on the domain row.** No helper and no shared
 table exist for it. The owner of the domain table adds the column, for
@@ -158,28 +185,36 @@ test proves the pattern with a plain table:
 async def send(org: str, payload: dict, claim: queue.Claim) -> None:
     async with tenant_session(org) as db:
         row = await read_draft(db, payload["draft_id"])
-    if row.sent_mark is None:
+    if row.sent_mark is not None:                # the call possibly ran
         async with tenant_session(org) as db:
-            await mark_sent_intent(db, row.id)    # commits on exit
-        result = await provider.send(row, idempotency_key=claim.id)
-    else:
-        result = None                            # the call possibly ran
+            await queue.give_up(db, claim, "UncertainSend: the provider "
+                                "call possibly ran, so no second call", now=now())
+        return
+    async with tenant_session(org) as db:
+        await mark_sent_intent(db, row.id)       # commits on exit
+    result = await provider.send(row, idempotency_key=claim.id)
     async with tenant_session(org) as db:
         if not await queue.hold(db, claim):
             return
         await write_result(db, row.id, result)
         await queue.complete(db, claim, now=now())
 
-worker.register("email.send_later", send, mode="detached")
+worker.register("email.send_later", send, mode="detached", idempotent=True)
 ```
 
 ## 5b. Retention: `jobs.prune` (BR-1b-a, built)
 
 - **What it deletes.** The `done` and `failed` rows of the bound org that
   finished more than 30 days ago (`queue.RETENTION`). It deletes 500 rows in
-  each statement (`queue.PRUNE_BATCH`). A `queued` or `running` row stays, at
-  any age. RLS binds each DELETE to the org, as for every statement of the
-  queue.
+  each statement (`queue.PRUNE_BATCH`), and 10 statements in one run at most
+  (`queue.PRUNE_MAX_BATCHES`). So one run takes at most 5000 rows, and the
+  next day takes the rest of a backlog. A `queued` or `running` row stays, at
+  any age.
+- **Two binds.** RLS binds each DELETE to the org, as for every statement
+  of the queue. The DELETE also names the bound tenant
+  (`organization_id = queue._BOUND_ORG`). So a session that bypasses RLS,
+  such as the owner role, still deletes the rows of the bound org only. With
+  no tenant bound, it deletes nothing.
 - **Where it runs.** `worker.py` registers `jobs.prune` at import, as a
   `session` handler. So it runs only when `JOB_QUEUE` is on.
 - **The schedule.** `worker.run_org` seeds one job for each org and each UTC
@@ -188,6 +223,10 @@ worker.register("email.send_later", send, mode="detached")
   writes. Every later tick of that day costs no statement for the seed. Two
   workers with two caches still give one live job, because of the dedupe
   key.
+- **One live prune job for each org and day.** A restart empties the cache.
+  When the job of the day is already `done`, the dedupe key does not match
+  it. So the next tick can seed a second job for that day. That job is
+  harmless: it finds no old rows, or only a few.
 - **Why a daily seed, and not a job that queues the next one.** A chain of
   jobs breaks for good when one link fails. A seed on each day starts again
   on the next day.
@@ -203,6 +242,16 @@ worker.register("email.send_later", send, mode="detached")
 `start_job_worker()` starts no task and `run_tick()` does nothing. The one
 reader is `worker.worker_enabled()`. A flip on a box is the gate
 `enforcement-flip`. `env_guard` refuses the key from a tenant.
+
+**The load with the switch ON.** `jobs.prune` is registered at import, so
+the worker always has a kind to claim. Each tick of 15 seconds costs these
+statements:
+
+- One discovery read of the orgs.
+- For each org, one claim session. A tick with no due job costs only that
+  session for the org.
+- For each org, one more session on the first tick of each UTC day, for the
+  seed of the prune job. Then the prune job runs once for each org and day.
 
 ## 7. Acceptance of BR-1a
 
@@ -244,6 +293,16 @@ BR-1b-a adds these tests:
 | One prune job for each org and day, and no statement after the seed | `test_r8_run_org_seeds_one_prune_job_for_each_org_and_day` |
 | No prune job with no prune handler | `test_r8_no_prune_job_is_seeded_with_no_prune_handler` |
 | The register modes, and the prune kind at import | `test_register_takes_a_mode_and_refuses_another`, `test_the_prune_kind_is_registered_at_import` |
+
+The review round 1 of BR-1b-a adds these tests:
+
+| Rule | Test |
+|---|---|
+| The backoff of a slow try starts at its end | `test_r8_a_slow_try_takes_its_backoff_from_its_end` |
+| An uncertain send fails with a named error and `jobs.failed` | `test_r8_an_intent_mark_stops_a_second_provider_call` |
+| A detached kind that is not idempotent gets one try | `test_r8_a_detached_kind_that_is_not_idempotent_gets_one_try` |
+| One prune run takes a capped number of rows | `test_r8_one_prune_run_takes_a_capped_number_of_rows` |
+| A prune that bypasses RLS takes the bound org only | `test_r8_a_prune_on_a_session_that_bypasses_rls_takes_the_bound_org_only` |
 
 ## 8. Out of scope of BR-1a and BR-1b-a
 
