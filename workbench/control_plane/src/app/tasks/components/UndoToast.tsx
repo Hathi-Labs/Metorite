@@ -119,7 +119,9 @@ export function UndoToast() {
    * it is the outstanding work, not a missing wire.
    */
   useEffect(() => {
-    if (!undoSnapshot || sharedId) return;
+    // A change whose live writes have not answered has no Undo yet, on the
+    // key too (UXD-1). Else a refusal's Retry would put back an undone move.
+    if (!undoSnapshot || sharedId || undoSnapshot.pending) return;
     const onKey = (e: KeyboardEvent) => {
       if (isTypingTarget(e.target as HTMLElement | null)) return;
       if (isUndoShortcut(e)) {

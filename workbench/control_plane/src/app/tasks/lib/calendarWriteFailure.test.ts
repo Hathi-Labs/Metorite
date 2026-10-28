@@ -81,6 +81,24 @@ describe("calendar-write-failure-rolls-back", () => {
   });
 });
 
+describe("calendar-write-failure-reads-back-only-its-rows", () => {
+  it("leaves the other rows alone", async () => {
+    const other = { id: "t2", title: "Newer optimistic edit", disposition: "NEXT" } as MyTask;
+    useTaskStore.setState({ items: [block(NINE, TEN), other] });
+    vi.mocked(apiPatchItem).mockRejectedValue(new Error("409"));
+    vi.mocked(fetchItems).mockResolvedValue([
+      block(NINE, TEN),
+      { ...other, title: "Older server title" } as MyTask,
+    ]);
+    useTaskStore.getState().applySchedule("Moved block", move);
+    await settle();
+    await settle();
+    const s = useTaskStore.getState();
+    expect(s.items[0].scheduledStart).toBe(NINE);
+    expect(s.items[1].title).toBe("Newer optimistic edit");
+  });
+});
+
 describe("calendar-undo-after-confirm", () => {
   it("offers Undo only after the server confirms", async () => {
     let answer!: (row: MyTask) => void;
@@ -105,6 +123,8 @@ describe("calendar-undo-after-confirm", () => {
       "utf-8",
     );
     expect(src).toMatch(/snap\?\.pending \? null : snap/);
+    // Ctrl+Z waits too.
+    expect(src).toMatch(/if \(!undoSnapshot \|\| sharedId \|\| undoSnapshot\.pending\) return;/);
     expect(src).toMatch(/useTaskStore\(\(s\) => shownSnapshot\(s\.undoSnapshot\)\)/);
   });
 });

@@ -2375,13 +2375,16 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       if (weight) {
         const before = get().items.find((i) => i.id === id);
         sync(
-          apply
-            .then(() => apiPatchItem(id, weightPatch(before, weight)))
-            .then((updated) =>
+          apply.then(
+            async () => {
+              const updated = await apiPatchItem(id, weightPatch(before, weight));
               set((s) => ({
                 items: s.items.map((i) => (i.id === id ? updated : i)),
-              })),
-            ),
+              }));
+            },
+            // A refused organize: `onRefused` already said it, once (UXD-1).
+            () => undefined,
+          ),
         );
       }
       if (decision.kind === "project") {
@@ -3606,10 +3609,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         if (current) set({ undoSnapshot: { ...snap, pending: false } });
         return;
       }
-      // Refused: no Undo for an act that did not happen. The list is read
-      // back, so each block returns to the slot that the server holds.
+      // Refused: no Undo for an act that did not happen. The rows of this
+      // act are read back, so each block returns to the slot that the server
+      // holds. Other rows keep their state: a newer change may be in flight.
       if (current) set({ undoSnapshot: null });
-      await refetchAfterFailure(set);
+      const ids = new Set(changes.map((c) => c.id));
+      try {
+        const truth = new Map(
+          (await fetchItems("all")).filter((i) => ids.has(i.id)).map((i) => [i.id, i]),
+        );
+        set((s) => ({ items: s.items.map((i) => truth.get(i.id) ?? i) }));
+      } catch {
+        /* the next hydrate reconciles */
+      }
       get().reportSyncFailure(
         `${label}: this did not save, and the calendar shows what the server holds.`,
         () => get().applySchedule(label, changes),
