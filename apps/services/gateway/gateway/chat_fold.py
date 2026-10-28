@@ -121,6 +121,41 @@ def is_specialist_tool(name: str, sub_agent_name: str) -> bool:
     return bool(agent) and str(name or "").strip().lower() == agent.replace("-", "_")
 
 
+#: The tool names that hand work to another agent (substring match, as the
+#: live twin ``isHandoffTool`` in ``lib/chatStream.ts``). ``spawn_subagents``
+#: is a hand-off whose rows keep no child text (WS-67 OA-9b hardening).
+HANDOFF_TOOLS = ("call_agent", "delegate_to_agent", "spawn_subagents")
+SPAWN_TOOL = "spawn_subagents"
+
+
+def is_handoff_tool(name: str) -> bool:
+    """Port of ``isHandoffTool`` (``lib/chatStream.ts``)."""
+    lowered = str(name or "").lower()
+    return any(h in lowered for h in HANDOFF_TOOLS)
+
+
+def take_handoff(
+    tool_name: str, acc: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Port of ``takeHandoff`` (``lib/chatStream.ts``): ``(fields, rest)``.
+
+    A hand-off row (``is_handoff_tool`` or a specialist tool) takes the name,
+    the text and the steps, and the accumulator starts again. A spawn row takes
+    no text, because a child's text is item JSON for the parent model. Any other
+    tool takes nothing and leaves the accumulator alone.
+    """
+    if not (is_handoff_tool(tool_name) or is_specialist_tool(tool_name, acc["name"])):
+        return {}, acc
+    fields: dict[str, Any] = {}
+    if acc["name"] or acc["text"] or acc["tools"]:
+        fields = {
+            "subAgentName": acc["name"],
+            "subAgentText": "" if SPAWN_TOOL in str(tool_name).lower() else acc["text"],
+            "subAgentTools": acc["tools"],
+        }
+    return fields, {"name": "", "text": "", "tools": []}
+
+
 def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Fold one run's AG-UI events into the persisted-message shape.
 
@@ -230,18 +265,7 @@ def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
             tc_id = str(ev.get("toolCallId") or "")
             name = tool_names.get(tc_id, "tool")
             result = str(ev.get("result") or ev.get("content") or "")
-            is_delegate = "call_agent" in name.lower() or is_specialist_tool(
-                name, sub_agent["name"])
-            sub_fields: dict[str, Any] = {}
-            if is_delegate and (
-                sub_agent["name"] or sub_agent["text"] or sub_agent["tools"]
-            ):
-                sub_fields = {
-                    "subAgentName": sub_agent["name"],
-                    "subAgentText": sub_agent["text"],
-                    "subAgentTools": sub_agent["tools"],
-                }
-                sub_agent = {"name": "", "text": "", "tools": []}
+            sub_fields, sub_agent = take_handoff(name, sub_agent)
             tool_events.append({
                 "id": tc_id,
                 "name": name,
