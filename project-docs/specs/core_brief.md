@@ -73,7 +73,7 @@ exists today.
 | One read of a member and the cards | `reach.loop.resolve` and `reach.loop.snapshot` | `reach/loop.py:134`, `:121` |
 | The brief lines | `plan.brief_items`, `plan.line`, `plan.brief_parts` | `reach/plan.py:324`, `:189`, `:351` |
 | The lead from the counts, with no model | `plan.brief_lead` | `reach/plan.py:362` |
-| The reach class of each kind | `REACH_CLASS` | `reach/classes.py:21` |
+| The reach class of each kind | `REACH_CLASS` | `reach/classes.py:22` |
 | The attention budget: cap, quiet hours, batch | `proactive_reach.md` §6.1, `flags.daily_cap` | `reach/flags.py:64` |
 | What closed today | `handled_run` (tasks, email, approvals) | `routes/shell/handled.py:105` |
 | Mail numbers | `needs_reply_count`, `promise_tasks` | `routes/email/digest.py:279`, `:495` |
@@ -147,17 +147,22 @@ One row for each line and each number of a run.
 | `position` | INT NOT NULL | The order in the brief |
 | `section` | TEXT NOT NULL | CHECK `now`, `needs_you`, `numbers`, `done`, `moved`, `acted` |
 | `text` | TEXT NOT NULL | The line that code wrote, from the card |
-| `source_app` | TEXT NOT NULL | `tasks`, `email`, `calendar`, `crm`, `approvals`, `knowledge` |
+| `source_app` | TEXT NOT NULL | `tasks`, `email`, `calendar`, `crm`, `approvals`, `knowledge`, `chat`. The prefix of `source_id` sets it, except that `calendar:<date>` keeps `calendar` |
 | `source_kind` | TEXT NOT NULL | The card kind, or `count` for a number over a list |
-| `source_id` | TEXT NOT NULL | The `signal_id` grammar, `<app>:<ref>` (`my_day_feed.md` §4.1) |
+| `source_id` | TEXT NOT NULL | The `signal_id` shape `<app>:<ref>` (`my_day_feed.md` §4.1). Split it on the first colon only |
 | `source_ids` | TEXT[] NOT NULL DEFAULT `{}` | For a `count`: the counted ids, at most 50 |
 | `href` | TEXT NOT NULL | The deep link. Code builds it (`my_day_feed.md` §12) |
 | `value` | NUMERIC NULL | The number that the line states |
 | `value_path` | TEXT NULL | The field of the facts with the number, for example `facts.waited_hours` |
 | `fingerprint` | TEXT NULL | The card's fingerprint at gather time |
 
-CHECK: each source column is not empty. CHECK: `value IS NULL OR value_path
-IS NOT NULL`.
+CHECK: each source column is not empty. CHECK: `source_id` matches
+`^[a-z_]+:.+`. CHECK: `value IS NULL OR value_path IS NOT NULL`.
+
+No validator of the `<app>:<ref>` shape exists in code.
+`permissions.normalize_grant_subject` checks the grant subject (`org`,
+`group:<slug>`, an address), which is a different grammar. So the SQL CHECK
+is the fence of the shape, and no second grammar module is added.
 
 **One click.** The `href` uses the grammar of the KB-4b chips, so the
 existing chip draws it. The click opens the record in its own app, and that
@@ -372,19 +377,23 @@ Each answer below is a recommendation, not a decision. Product shape is the owne
 Each slice ships dark. Each flag defaults OFF. The queue needs `JOB_QUEUE`,
 and the at-most-once rule needs AUTO-2's `UNATTENDED_LEDGER`.
 
-| # | Slice | Flag | Gate |
-|---|---|---|---|
-| 1 | BR-4: the two tables and the store module | none | AGENT-SAFE |
-| 2 | BR-2a-1: the planner and the gather, with the template lead | `BRIEF_ENABLED`, `BRIEF_ORGS` | AGENT-SAFE to build. The production flip: `enforcement-flip` |
-| 3 | BR-4b: the claim fence | none | AGENT-SAFE |
-| 4 | BR-2a-2: the phrase step | `BRIEF_COMPOSE` | AGENT-SAFE to build. **OWNER-GATE** to flip in production (credits, §3a rule 3) |
-| 5 | BR-2c: in-app delivery and the read route | `BRIEF_IN_APP`, `NEXT_PUBLIC_BRIEF_CARD` | AGENT-SAFE. The production flip: `enforcement-flip` |
-| 6 | BR-2d: the monitor | none | AGENT-SAFE |
-| 7 | BR-2b with BR-7b: the close-out | `BRIEF_CLOSEOUT` | AGENT-SAFE. The production flip: `enforcement-flip` |
-| 8 | BR-7a: the effect registry and its fence | none | AGENT-SAFE |
-| 9 | BR-5: the exception rules | `BRIEF_EXCEPTIONS` | AGENT-SAFE to build. The production flip waits on Q4 |
-| 10 | BR-3a: one week on pilot data | none | **OWNER-GATE**: the pilot orgs and their inboxes are the owner's |
-| 11 | Web push of the brief, through Reach | `BRIEF_PUSH` | **OWNER-GATE**: it reaches a person through a third party |
+| # | Slice | Needs | Flag | Gate |
+|---|---|---|---|---|
+| 1 | BR-4: the two tables and the store module | BR-1a | none | AGENT-SAFE |
+| 2 | BR-2a-1: the planner and the gather, with the template lead | 1, AUTO-2 (#814), the BR-1b detached mode (#642) | `BRIEF_ENABLED`, `BRIEF_ORGS` | AGENT-SAFE to build. The production flip: `enforcement-flip` |
+| 3 | BR-4b: the claim fence | 2 | none | AGENT-SAFE |
+| 4 | BR-2a-2: the phrase step | 3 | `BRIEF_COMPOSE` | AGENT-SAFE to build. **OWNER-GATE** to flip in production (credits, §3a rule 3) |
+| 5 | BR-2c: in-app delivery and the read route | 2 | `BRIEF_IN_APP`, `NEXT_PUBLIC_BRIEF_CARD` | AGENT-SAFE. The production flip: `enforcement-flip` |
+| 6 | BR-2d: the monitor | 2, AUTO-2 | none | AGENT-SAFE |
+| 7 | BR-2b with BR-7b: the close-out | 2 | `BRIEF_CLOSEOUT` | AGENT-SAFE. The production flip: `enforcement-flip` |
+| 8 | BR-7a: the effect registry and its fence | BR-1a | none | AGENT-SAFE |
+| 9 | BR-5: the exception rules | 2 | `BRIEF_EXCEPTIONS` | AGENT-SAFE to build. The production flip waits on Q4 |
+| 10 | BR-3a: one week on pilot data | 5 | none | **OWNER-GATE**: the pilot orgs and their inboxes are the owner's |
+| 11 | Web push of the brief, through Reach | 6 | `BRIEF_PUSH` | **OWNER-GATE**: it reaches a person through a third party |
+
+The BR-1b detached mode is the part of BR-1b (#642) that slice 2 needs, and
+it can ship before the rest of BR-1b. `docs/job_queue.md` §5a holds its
+rules.
 
 ### Acceptance
 
