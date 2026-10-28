@@ -47,7 +47,7 @@ describe("the answer POST hears it", () => {
   it("a plain 409 is still a drop", async () => {
     const fetchFn = vi.fn(async () => new Response(JSON.stringify({ detail: "No pending question" }), { status: 409 }));
     expect(await sendRespondInputResult(BODY, fetchFn as unknown as typeof fetch)).toEqual({
-      outcome: "drop", resend: null,
+      outcome: "drop", resend: null, reason: "Nothing waits on this answer now. The run ended, or someone answered it.",
     });
   });
 });

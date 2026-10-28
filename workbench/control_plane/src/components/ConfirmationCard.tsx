@@ -248,6 +248,9 @@ interface ConfirmationCardProps {
   onReject: () => void;
   /** Disable buttons after a choice is made. */
   disabled?: boolean;
+  /** Why the last answer did not land (UXD-3). It shows beside the buttons,
+   *  and Approve tries again. */
+  error?: string;
   /** Where this card sits in the queue, when more than one is waiting. */
   position?: CardPosition;
   /**
@@ -288,6 +291,7 @@ export default function ConfirmationCard({
   id,
   reply,
   onReply,
+  error,
 }: ConfirmationCardProps) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
@@ -542,7 +546,13 @@ export default function ConfirmationCard({
         >
           Reject
         </Button>
-        <span className="text-[10px] text-muted-foreground">{noRecipientHint(rows) || CONFIRM_HINT}</span>
+        {error ? (
+          <span role="alert" className="text-[10px] text-destructive" data-confirmation-error="">
+            {error}
+          </span>
+        ) : (
+          <span className="text-[10px] text-muted-foreground">{noRecipientHint(rows) || CONFIRM_HINT}</span>
+        )}
       </div>
       )}
       </RollupBody>

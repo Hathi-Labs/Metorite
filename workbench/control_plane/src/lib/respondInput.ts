@@ -42,6 +42,9 @@ export interface RespondResult {
   /** The account that drew the card, when the browser is signed in to
    *  another one now (WS-51 S2). The answer was not sent. */
   otherAccount?: string | null;
+  /** Why the answer did not land, in plain words, for the card to show
+   *  beside its buttons (UXD-3). Absent on `ok` and on a resend. */
+  reason?: string;
 }
 
 export interface RespondInputBody {
@@ -103,6 +106,34 @@ export function otherAccountOf(body: string): string | null {
   return null;
 }
 
+/** The detail text of a gateway refusal, if it holds a plain one. */
+function refusalDetail(body: string): string | null {
+  try {
+    const j = JSON.parse(body) as { detail?: unknown; error?: unknown };
+    for (const v of [j.detail, j.error]) {
+      if (typeof v === "string" && v.trim() && v.length <= 200) return v.trim();
+    }
+  } catch {
+    /* not JSON */
+  }
+  return null;
+}
+
+/**
+ * Why an answer did not land, in words the member can act on (UXD-3). A
+ * retry names the next step. A refusal says what to change. Nothing goes
+ * only to the console.
+ */
+export function respondFailureText(status: number | undefined, body = ""): string {
+  if (status === undefined) return "Metorite could not be reached. Check the connection, then try again.";
+  if (status >= 500) return "The server could not take the answer. Try again.";
+  if (status === 409) return "Nothing waits on this answer now. The run ended, or someone answered it.";
+  if (status === 403) return "You cannot answer this request. Ask its owner to answer it.";
+  if (status === 401) return "Your session ended. Sign in again, then answer.";
+  const detail = refusalDetail(body);
+  return detail ? `The server refused the answer: ${detail}` : "The server refused the answer.";
+}
+
 /** What a failed POST means. `status` is undefined for a network fault. */
 export function respondFailure(status: number | undefined): "retry" | "drop" {
   if (status === undefined) return "retry";
@@ -129,7 +160,7 @@ export async function sendRespondInputResult(
     });
   } catch (err) {
     console.error("respond-input failed — restoring HITL card", err);
-    return { outcome: "retry", resend: null };
+    return { outcome: "retry", resend: null, reason: respondFailureText(undefined) };
   }
   if (res.ok) return { outcome: "ok", resend: null };
   const text = await res.text().catch(() => "");
@@ -146,5 +177,5 @@ export async function sendRespondInputResult(
   } else {
     console.error(`respond-input failed (${res.status}) — restoring HITL card`, text);
   }
-  return { outcome, resend: null };
+  return { outcome, resend: null, reason: respondFailureText(res.status, text) };
 }

@@ -244,28 +244,96 @@ export function approvalFor(
   return ids.length > 0 ? approveRows(ids) : null;
 }
 
+/**
+ * What became of an answered card, as one line in the thread (UXD-3). A card
+ * never leaves with no word: it reads "Applying", then "Approved" or
+ * "Rejected", or "Not applied" with the reason of a refusal.
+ */
+export interface ConfirmationReceipt {
+  key: string;
+  /** The card's summary, or its title. */
+  label: string;
+  kind: "applying" | "approved" | "rejected" | "refused";
+  /** What the member answered. "applying" becomes this once the server took it. */
+  intent: "approved" | "rejected";
+  /** Why a refused answer did not land. */
+  reason?: string;
+  /** The message the line draws under: the last one when the member answered. */
+  afterId?: string | null;
+}
+
 export interface ConfirmationQueueState {
   cards: PendingConfirmation[];
   /** Ids the server closed, or that took an answer. A replay cannot reopen them. */
   resolved: ReadonlySet<string>;
   /** Ids with an answer in flight. A replay cannot reopen them either. */
   answering: ReadonlySet<string>;
+  /** Why the last answer of a restored card failed, by key. The card shows
+   *  it beside its buttons, and Approve tries again (UXD-3). */
+  errors: ReadonlyMap<string, string>;
+  /** One line for each answered card, oldest first (UXD-3). */
+  receipts: readonly ConfirmationReceipt[];
 }
 
 export const EMPTY_CONFIRMATIONS: ConfirmationQueueState = {
   cards: [],
   resolved: new Set(),
   answering: new Set(),
+  errors: new Map(),
+  receipts: [],
 };
+
+/** The line of a receipt, in plain words. */
+export function receiptText(r: ConfirmationReceipt): string {
+  switch (r.kind) {
+    case "applying":
+      return r.intent === "rejected" ? `Rejecting… ${r.label}` : `Applying… ${r.label}`;
+    case "approved":
+      return `Approved · ${r.label}`;
+    case "rejected":
+      return `Rejected · ${r.label}`;
+    case "refused":
+      return `Not applied · ${r.label}${r.reason ? `. ${r.reason}` : ""}`;
+  }
+}
+
+function withoutError(errors: ReadonlyMap<string, string>, key: string): ReadonlyMap<string, string> {
+  if (!errors.has(key)) return errors;
+  const next = new Map(errors);
+  next.delete(key);
+  return next;
+}
+
+function settleReceipt(
+  receipts: readonly ConfirmationReceipt[],
+  key: string,
+  patch: (r: ConfirmationReceipt) => ConfirmationReceipt | null,
+): readonly ConfirmationReceipt[] {
+  if (!receipts.some((r) => r.key === key)) return receipts;
+  return receipts.flatMap((r) => {
+    if (r.key !== key) return [r];
+    const next = patch(r);
+    return next ? [next] : [];
+  });
+}
 
 export type ConfirmationAction =
   | { type: "requested"; value: unknown }
   | { type: "resolved"; requestId: string }
-  | { type: "answering"; key: string }
+  /** An answer is in flight. With `label`, a receipt line says so (UXD-3). */
+  | {
+      type: "answering";
+      key: string;
+      label?: string;
+      intent?: "approved" | "rejected";
+      afterId?: string | null;
+    }
   | { type: "answered"; key: string }
-  /** The POST got a 4xx. The card stays gone until a replay shows it again. */
-  | { type: "dropped"; key: string }
-  | { type: "restore"; card: PendingConfirmation }
+  /** The POST got a 4xx. The card stays gone until a replay shows it again.
+   *  `reason` turns its receipt into "Not applied"; none (a resend) drops it. */
+  | { type: "dropped"; key: string; reason?: string }
+  /** The POST may pass on a retry. `reason` shows on the card (UXD-3). */
+  | { type: "restore"; card: PendingConfirmation; reason?: string }
   /** A non-blocking card, answered by a chat message. Its key can come again. */
   | { type: "dismiss"; key: string }
   | { type: "runFinalized" }
@@ -326,17 +394,36 @@ export function confirmationReducer(
       const key = action.requestId;
       if (!key) return state;
       return {
+        ...state,
         cards: state.cards.filter((c) => c.key !== key),
         resolved: withAdded(state.resolved, key),
         answering: withRemoved(state.answering, key),
+        errors: withoutError(state.errors, key),
+        // The server closed it: an answer in flight landed.
+        receipts: settleReceipt(state.receipts, key, (r) =>
+          r.kind === "applying" ? { ...r, kind: r.intent } : r),
       };
     }
-    case "answering":
+    case "answering": {
+      const receipt: ConfirmationReceipt | null = action.label
+        ? {
+            key: action.key,
+            label: action.label,
+            kind: "applying",
+            intent: action.intent ?? "approved",
+            afterId: action.afterId ?? null,
+          }
+        : null;
       return {
         ...state,
         cards: state.cards.filter((c) => c.key !== action.key),
         answering: withAdded(state.answering, action.key),
+        errors: withoutError(state.errors, action.key),
+        receipts: receipt
+          ? [...state.receipts.filter((r) => r.key !== action.key), receipt]
+          : state.receipts,
       };
+    }
     case "answered":
       // The server took the answer. Its `confirmation_resolved` follows, and
       // this keeps a replay that arrives first from reopening the card.
@@ -344,17 +431,25 @@ export function confirmationReducer(
         ...state,
         resolved: withAdded(state.resolved, action.key),
         answering: withRemoved(state.answering, action.key),
+        receipts: settleReceipt(state.receipts, action.key, (r) => ({ ...r, kind: r.intent })),
       };
     case "dropped":
-      return { ...state, answering: withRemoved(state.answering, action.key) };
+      return {
+        ...state,
+        answering: withRemoved(state.answering, action.key),
+        receipts: settleReceipt(state.receipts, action.key, (r) =>
+          action.reason ? { ...r, kind: "refused", reason: action.reason } : null),
+      };
     case "restore": {
       const key = action.card.key;
       const answering = withRemoved(state.answering, key);
-      if (state.resolved.has(key) || state.cards.some((c) => c.key === key)) {
-        return { ...state, answering };
-      }
+      // The card comes back, so its "Applying" line goes.
+      const receipts = settleReceipt(state.receipts, key, () => null);
+      if (state.resolved.has(key)) return { ...state, answering, receipts };
+      const errors = action.reason ? new Map(state.errors).set(key, action.reason) : state.errors;
+      if (state.cards.some((c) => c.key === key)) return { ...state, answering, receipts, errors };
       // First, so the member sees the card they tried to answer.
-      return { ...state, cards: [action.card, ...state.cards], answering };
+      return { ...state, cards: [action.card, ...state.cards], answering, errors, receipts };
     }
     case "dismiss":
       return { ...state, cards: state.cards.filter((c) => c.key !== action.key) };
@@ -371,9 +466,10 @@ export function confirmationReducer(
 export function settleAnswer(
   card: PendingConfirmation,
   outcome: "ok" | "drop" | "retry",
+  reason?: string,
 ): ConfirmationAction {
-  if (outcome === "retry") return { type: "restore", card };
-  if (outcome === "drop") return { type: "dropped", key: card.key };
+  if (outcome === "retry") return { type: "restore", card, ...(reason ? { reason } : {}) };
+  if (outcome === "drop") return { type: "dropped", key: card.key, ...(reason ? { reason } : {}) };
   return { type: "answered", key: card.key };
 }
 
