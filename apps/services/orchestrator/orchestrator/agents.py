@@ -1045,6 +1045,16 @@ def build_orchestrator_agent(
         constraint_tools: list[Any] = list(_CONSTRAINT_TOOLS)
     else:
         constraint_tools = []
+    # CTX-1 (#825): the page reader of a stored tool result, only with
+    # TOOL_RESULT_SPILL `on`, and for the whole run, so the tool list stays
+    # byte-stable across the turns of a chat. Fence:
+    # tests/unit/test_tool_result_spill.py.
+    from acb_common.settings import tool_result_spill_mode
+    spill_tools: list[Any] = []
+    if tool_result_spill_mode() == "on":
+        from acb_skills.tool_result_spill import TOOLS as _SPILL_TOOLS
+
+        spill_tools = list(_SPILL_TOOLS)
     # WS-62 CF-3: the orchestrator's own, never a specialist's (§9.2 Q3).
     # Dark until CHAT_FIRST_TOOLS is on (review of #1197, P1). Fence:
     # tests/unit/test_show_in_app.py, test_company_search_tool.py.
@@ -1054,6 +1064,7 @@ def build_orchestrator_agent(
         *retrieval_tools,
         *profile_tools,
         *constraint_tools,
+        *spill_tools,
         search_timeline,
         *page_tools,
         spawn_copilot_agent,

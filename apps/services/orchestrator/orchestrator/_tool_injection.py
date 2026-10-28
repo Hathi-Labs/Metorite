@@ -2723,6 +2723,10 @@ def _inject_agent_tools(
                 agent=_agent_label, agent_type=type(agent).__name__,
             )
 
+    # CTX-1: a large tool result as a preview and a handle. It goes FIRST, so
+    # its middleware is the outermost and the number check below still reads
+    # the full result.
+    _apply_tool_result_spill(agents, agent_name)
     # H-236: the agent's OWN egress tools and MCP servers leave as well, and
     # a native MAF agent gets the call-time refusal, as a per-run view.
     if no_egress:
@@ -2766,6 +2770,46 @@ def _apply_answer_check(agents: list[Any], agent_name: str | None) -> None:
             continue
         agents[i] = agent_with_providers(agent, [AnswerCheckProvider(mode)])
         _log.info("executor.answer_check_on", agent=agent_name, mode=mode)
+
+
+def _apply_tool_result_spill(agents: list[Any], agent_name: str | None) -> None:
+    """The preview-and-handle view of a large tool result on ONE run (CTX-1).
+
+    It replaces each native MAF ``Agent`` in *agents* with a per-run view that
+    carries ``acb_skills.tool_result_spill``'s provider, as
+    :func:`_apply_answer_check` does. With ``TOOL_RESULT_SPILL`` ``off`` it
+    changes nothing. ``shadow`` attaches the logging middleware to each native
+    agent. ``on`` attaches it only to an agent that holds ``read_tool_result``,
+    because a handle that the agent cannot read is a dead end. Call it BEFORE
+    the egress and number-check steps, so the middleware is outermost.
+    """
+    from acb_common.settings import (
+        tool_result_preview_chars,
+        tool_result_spill_chars,
+        tool_result_spill_mode,
+    )
+
+    mode = tool_result_spill_mode()
+    if mode == "off":
+        return
+    try:
+        from acb_skills.tool_result_spill import READ_TOOL, ToolResultSpillProvider
+        from agent_framework import Agent
+    except ImportError as exc:
+        _log.warning("executor.tool_result_spill_unavailable", error=str(exc)[:200])
+        return
+    from orchestrator._native_run_context import agent_with_providers
+
+    for i, agent in enumerate(agents):
+        if not isinstance(agent, Agent):
+            continue
+        if mode == "on":
+            held = {_tool_name(t) for _label, pool in _own_tool_pools(agent) for t in pool}
+            if READ_TOOL not in held:
+                continue
+        agents[i] = agent_with_providers(agent, [ToolResultSpillProvider(
+            mode, tool_result_spill_chars(), tool_result_preview_chars())])
+        _log.info("executor.tool_result_spill_on", agent=agent_name, mode=mode)
 
 
 def _apply_no_egress(

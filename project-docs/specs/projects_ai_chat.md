@@ -2453,8 +2453,8 @@ report pipeline.
    names `crm_report`.
 
 **The CRM mapping.** `crm_tools._crm_report_spec` reads the data of
-`GET /crm/reports/{kind}`. An amount is in whole rupees, as the text answer
-prints it.
+`GET /crm/reports/{kind}`. An amount is in whole units of its own
+currency, as the text answer prints it.
 
 | Kind | KPI tiles | Visuals |
 |---|---|---|
@@ -2465,10 +2465,10 @@ prints it.
 
 - The source line is "CRM <kind>, <date>". The period of `win-loss` is the
   window of the route.
-- The route sums the amounts of every deal currency, and it sends no
-  currency. So a report of amounts keeps the INR label of the text answer,
-  and its sources add "Amounts are summed across deal currencies." HANDOFF
-  H-333 owns the route fix.
+- The route never adds two currencies (HANDOFF H-333). Each figure has a
+  `currency`, and the other currencies sit in `others`. So a report of
+  amounts labels each amount with its own code, and a second table lists
+  the other currencies.
 - A bar chart holds 12 bars and a table holds 20 rows. Each cut adds one
   line that says so.
 - The funnel draws as a bar chart, not as the chart type `funnel`. The PDF
