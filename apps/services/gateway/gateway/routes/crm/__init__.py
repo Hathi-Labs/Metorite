@@ -113,7 +113,10 @@ a Native CRM, admin only.
 
 ``cutover.py`` is WS-53 CRM-Z10a — ``GET /crm/cutover/preview``, what moves to
 Metorite when the org leaves Zoho and what does not. Read only, with no source
-call. Admin only, behind ``CRM_MIRROR``, and Mirror mode only.
+call. Admin only, behind ``CRM_MIRROR``, and Mirror mode only. CRM-Z10b adds
+the switch: ``POST /crm/cutover/start``, ``GET /crm/cutover/status`` and
+``POST /crm/cutover``. Admin only, behind ``CRM_CUTOVER_ORGS``, and the admin
+types ``SWITCH``.
 
 ``note_search.py`` is WS-53 CRM-Q27 — ``GET /crm/notes/search``, the notes
 nearest to a query by meaning (table ``crm_note_vectors``). Read only. An org
