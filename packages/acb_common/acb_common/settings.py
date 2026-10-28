@@ -354,6 +354,19 @@ class Settings(BaseSettings):
     # tests/unit/test_crm_answer_check.py.
     crm_answer_check: str = "off"
 
+    # `tool_result_spill` (CTX-1, Metorite #825, `one_assistant_context.md`
+    # §7.1) keeps a large tool result out of the prompt: the model reads a
+    # preview and a handle, and `read_tool_result` pages the rest. `off` (the
+    # default), `shadow` (log one `tool_result.size` line per result, change
+    # nothing the model sees) or `on`. Any other value reads as `off`. The
+    # one reader is `tool_result_spill_mode` below. A value on a box is the
+    # grant `enforcement-flip`. Fence: tests/unit/test_tool_result_spill.py.
+    tool_result_spill: str = "off"
+    # A result longer than this many characters spills (mode `on`).
+    tool_result_spill_chars: int = 24000
+    # The preview keeps about this many characters of the head of a result.
+    tool_result_preview_chars: int = 4000
+
     # ── The My Day loop (WS-58 MD-5b, 2026-10-14) ───────────────────────────
     #
     # `my_day_loop_enabled` is the switch of the `my_day` loop, default OFF
@@ -1789,3 +1802,38 @@ def crm_answer_check_mode() -> str:
         return "off"
     mode = raw.strip().lower()
     return mode if mode in CRM_ANSWER_CHECK_MODES else "off"
+
+
+#: The modes of ``TOOL_RESULT_SPILL`` (CTX-1).
+TOOL_RESULT_SPILL_MODES: tuple[str, ...] = ("off", "shadow", "on")
+
+
+def tool_result_spill_mode() -> str:
+    """The ONE reader of ``TOOL_RESULT_SPILL``: ``off``, ``shadow`` or ``on``.
+
+    Any other value, and a settings load that fails, read as ``off``.
+    """
+    try:
+        raw = str(getattr(get_settings(), "tool_result_spill", "off") or "off")
+    except Exception:  # a broken settings load never turns the spill on
+        return "off"
+    mode = raw.strip().lower()
+    return mode if mode in TOOL_RESULT_SPILL_MODES else "off"
+
+
+def _positive_int(name: str, default: int) -> int:
+    try:
+        value = int(getattr(get_settings(), name, default))
+    except Exception:
+        return default
+    return value if value > 0 else default
+
+
+def tool_result_spill_chars() -> int:
+    """``TOOL_RESULT_SPILL_CHARS``: the size above which a result spills."""
+    return _positive_int("tool_result_spill_chars", 24000)
+
+
+def tool_result_preview_chars() -> int:
+    """``TOOL_RESULT_PREVIEW_CHARS``: the head of a result that stays in the prompt."""
+    return _positive_int("tool_result_preview_chars", 4000)

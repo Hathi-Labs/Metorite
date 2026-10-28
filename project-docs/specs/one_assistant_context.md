@@ -1850,6 +1850,89 @@ The chat-speed work (#1313, #1323) owns latency. These points touch it:
 
 HANDOFF **H-412** carries these points to that session.
 
+### 7.1 CTX-1: a large tool result as a preview and a handle
+
+Metorite #825. **Status:** BUILT, dark behind `TOOL_RESULT_SPILL` (default `off`).
+Risk: MEDIUM. The untrusted-mail guard and the number check must keep working.
+
+**Why.** A large tool result goes into the prompt in full. A run makes 4 to 9
+model calls, and each call sends that result again. Production has
+`MAF_NATIVE_SESSIONS=true`, so the stored session also carries the result into
+each later turn. A preview cuts the input tokens, so each call is faster.
+
+**Design.**
+
+1. One per-run `FunctionMiddleware`, `SpillToolResults`, runs for every tool of
+   a native MAF run (core, injected, pack and MCP). The seam is
+   `_auto_invoke_function` in MAF. The Copilot path and the Tier-2 shim are out
+   of scope.
+2. The store is an in-process LRU with a TTL of 30 minutes and 128 entries. It
+   is NOT the WS-60 artifact store, because a lasting copy of mail breaks the
+   rule that `test_mail_copies_in_chat_stores.py` fences. The key is the run's
+   org, member and thread plus a ref such as `tr_3f9c0a1b`. The run binding
+   gives all three. No tool argument gives any of them. An expired ref answers
+   "not found" and tells the model to call the tool again.
+3. A result above `TOOL_RESULT_SPILL_CHARS` (24000) reaches the model as a
+   preview. The preview is the first `TOOL_RESULT_PREVIEW_CHARS` (4000)
+   chars, cut at a line end, and never less than 2000 chars. Then come the
+   END line of each open frame and one footer line. The footer holds the
+   ref, the size and the next offset.
+4. `read_tool_result(ref, offset=0)` returns pages of 16000 chars. With the
+   setting `on`, it joins the core list of the orchestrator for the whole
+   run. So the tool list stays the same across the turns of a chat. With
+   `off` and `shadow`, the run gets no new tool. In `on`, an agent that
+   does not hold the tool gets no spill.
+5. `shadow` changes nothing that the model sees. It logs one
+   `tool_result.size` line per result. The line holds the tool name, chars,
+   tokens (chars/4), the source (`mcp`, `pack` or `core`), the untrusted flag
+   and `would_spill`. It holds no text.
+
+**Guards.**
+
+- **Untrusted mail.** An entry counts as untrusted in four cases. Its text
+  has a marker shape. Its tool is an MCP tool. Its pack owner is in
+  `UNTRUSTED_INPUT_AGENTS`. Or `session_is_marked()` is true. A failed check
+  counts as marked. A read of an untrusted entry first calls
+  `mark_untrusted_answer()`, so the chat stays on hold. Then the read puts
+  each page in a fresh `UntrustedFrame`.
+- **Number check.** `_apply_tool_result_spill` runs before `_apply_no_egress`
+  and `_apply_answer_check`, so the spill middleware is outermost.
+  `RecordToolResults` still reads the full text before the spill replaces it.
+- **Exempt.** `narrow_and_read` (it bounds its own output), the delegation
+  tools (they have their own cap), `ask_questions`, `request_confirmation` and
+  `read_tool_result` never spill.
+- **UI.** The stream cuts each tool result to 2000 chars. The preview keeps
+  those chars as they were, so no card changes.
+
+**Settings** (`acb_common/settings.py`, one reader for each):
+`TOOL_RESULT_SPILL` (`off`, `shadow` or `on`), `TOOL_RESULT_SPILL_CHARS` and
+`TOOL_RESULT_PREVIEW_CHARS`. A value on a box is the grant `enforcement-flip`.
+
+**Acceptance.**
+
+1. `off`: the request bytes do not change. The run gets no tool and no middleware.
+2. `shadow`: one `tool_result.size` line per result, with no text. The request
+   bytes do not change.
+3. `on`: a 100K MCP result reaches the model as 4.3K chars or less.
+   It carries the ref. Each later call of the run is 24K chars smaller.
+4. `read_tool_result` returns the next page. Another org, member or thread
+   gets "not found".
+5. A framed result: the preview closes its frame. Each page has a fresh
+   frame. A read marks the session.
+6. No new `agent_blob` or `artifacts` row.
+7. A CRM result above the cap still feeds the number check.
+8. `narrow_and_read` and delegation results never spill.
+9. The first 2000 chars of `TOOL_CALL_RESULT` do not change.
+
+**Fences.** `tests/unit/test_tool_result_spill.py` holds each item above. It
+must stay green with `test_crm_answer_check.py`,
+`test_crm_answer_check_executor.py`, `test_untrusted_frame.py`,
+`test_mail_copies_in_chat_stores.py`, `test_delegation_no_egress.py`,
+`test_narrowing_one_seam.py`, `test_native_session_persistence.py`,
+`test_read_tool_paging.py`, `test_sub_agent_result_cap.py`,
+`test_tool_packs_off.py`, `test_core_tool_floor.py` and
+`test_tool_schema_diet.py`.
+
 ## 8. Out of scope
 
 - An image-reading model for drawings. The owner chose OCR first.

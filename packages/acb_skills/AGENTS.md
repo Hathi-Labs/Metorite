@@ -92,6 +92,12 @@ not write a second copy of that seam. A bare test file name is under
    - The sources are the run's tool results, its CRM call arguments and `member_message`, never the packed prompt.
    - A failed answer gets ONE retry. A check that raises sends the answer unchanged, so it never loses the turn.
    - `orchestrator._tool_injection._apply_answer_check` is the one seam that attaches it. Fences: `test_crm_answer_check.py`, `test_crm_answer_check_executor.py`.
+5l-1a. tool_result_spill.py -- a large tool result as a preview and a handle (CTX-1, Metorite #825, spec `one_assistant_context.md` §7.1). Dark behind `TOOL_RESULT_SPILL`.
+   - The store is an in-process LRU with a TTL, keyed by the run's org, member and thread plus the ref. It writes no row, so it is not the WS-60 artifact store.
+   - An untrusted entry has a marker shape, an MCP tool, a pack owner of `UNTRUSTED_INPUT_AGENTS`, or a marked or unknown session. A read of it marks the session. It frames each page afresh.
+   - `orchestrator._tool_injection._apply_tool_result_spill` is the one seam. It runs BEFORE the egress and number-check steps. So the number check reads the full text.
+   - `narrow_and_read` and the delegation tools never spill.
+   - Fence: `test_tool_result_spill.py`.
 5l-2. org_facts_tools.py -- `org_facts(app, query)` and the CRM facts block (spec `crm_platform.md` §18.14.4). It loads with the `crm` skill family only.
    - `crm_answer_question` sends a pick only when this run showed that card and the member clicked it. Fences: `test_org_facts.py`, `test_org_facts_r8.py`, `test_crm_answer_first.py`.
 5m. untrusted.py -- the ONE frame for text that a stranger wrote (spec `email_app_master_plan.md` §12.3.13.8).
