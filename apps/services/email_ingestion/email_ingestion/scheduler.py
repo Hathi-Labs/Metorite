@@ -36,6 +36,7 @@ import functools
 import json
 import logging
 import os
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import aclosing, asynccontextmanager
@@ -363,6 +364,13 @@ _STORED_CATEGORIES = text(
     "WHERE account_id = :aid AND provider_message_id = :pid"
 )
 
+#: The stored categories of a whole batch in ONE read. Production ran the
+#: per-message read above 32 million times in nine days.
+_STORED_CATEGORIES_MANY = text(
+    "SELECT provider_message_id, categories FROM email_messages "
+    "WHERE account_id = :aid AND provider_message_id = ANY(:pids)"
+)
+
 
 def _next_backoff(current: int, interval: int, *, failed: bool) -> int:
     """The next sleep length for a sync loop.
@@ -530,9 +538,11 @@ async def _drop_below_floor(
 async def _write_messages(
     db: Any, account_id: str, messages: list[Any], floor: datetime, *,
     learn_labels: bool = False, reclaim: bool = False,
-) -> tuple[list[Any], list[Any]]:
+) -> tuple[list[Any], list[Any], int]:
     """Write *messages* in the session of the caller. Returns the messages
-    that it wrote, and the label changes.
+    that it wrote, the label changes, and how many rows really changed (an
+    insert, an update or a ``[DELETED]`` marker). An upsert that the guard
+    skipped is not a change.
 
     The ONE write of phase (c) and of each import batch (EM-T6b). It drops
     each message below the floor first (``_drop_below_floor``). A
@@ -540,14 +550,31 @@ async def _write_messages(
     to TRASH (WS-17 EM-G4b E-B2). Only the Gmail history sends the marker.
     Every other message goes through the shared upsert. With
     ``learn_labels``, it reads the stored categories of an existing row
-    first, because the upsert overwrites them.
+    first, because the upsert overwrites them. ONE read covers the batch. A
+    message id that repeats in the batch reads its row again, so it sees what
+    the first copy wrote.
     ``reclaim`` goes to the upsert. Each caller passes the
     ``REKEYS_MESSAGE_IDS`` attribute of its provider (WS-17 EM-G1, D-EM-34).
     It never calls ``commit()``."""
     kept = await _drop_below_floor(db, account_id, messages, floor)
     label_changes: list[Any] = []
+    stored_categories: dict[str, list[Any]] = {}
+    if learn_labels:
+        pids = sorted({m.provider_message_id for m in kept
+                       if m.subject != "[DELETED]"})
+        if pids:
+            rows = (await db.execute(_STORED_CATEGORIES_MANY, {
+                "aid": account_id, "pids": pids})).fetchall()
+            stored_categories = {r.provider_message_id: list(r.categories or [])
+                                 for r in rows}
+    seen: set[str] = set()
+    changed = 0
     for msg in kept:
+        pid = msg.provider_message_id
+        repeat = pid in seen
+        seen.add(pid)
         if msg.subject == "[DELETED]":
+            changed += 1
             params = {"account_id": account_id,
                       "provider_id": msg.provider_message_id}
             # Only a real marker deletes a draft, never a subject (review
@@ -559,19 +586,22 @@ async def _write_messages(
             await db.execute(_TRASH_DELETED, params)
             continue
         old_categories = None
-        if learn_labels:
+        if learn_labels and repeat:
             stored = (await db.execute(_STORED_CATEGORIES, {
-                "aid": account_id,
-                "pid": msg.provider_message_id})).fetchone()
+                "aid": account_id, "pid": pid})).fetchone()
+            old_categories = list(stored.categories or []) if stored else None
+        elif learn_labels:
             # Existing rows only — a brand-new message has no prior
             # categories to diff against.
-            old_categories = list(stored.categories or []) if stored else None
+            old_categories = stored_categories.get(pid)
         # ONE shared ingest upsert (message + attachments); see
         # email_ingestion.persist.upsert_message.
-        await upsert_message(db, account_id, msg, reclaim=reclaim)
+        # ``None`` (a stubbed upsert) counts as a change, never as a skip.
+        if await upsert_message(db, account_id, msg, reclaim=reclaim) is not False:
+            changed += 1
         if old_categories is not None:
             label_changes.append((msg, old_categories))
-    return kept, label_changes
+    return kept, label_changes, changed
 
 
 def _catch_up_watermark(row: Any) -> datetime | None:
@@ -664,15 +694,19 @@ def _watermark_outcome(
 
 def _cycle_result(
     synced: int, history_id: Any, import_error: str | None, catch_up: _CatchUp,
-    *, limit: bool = False,
+    *, limit: bool = False, changed: int | None = None,
 ) -> dict[str, Any]:
     """The result of a sync cycle. A failed import is an error for each
     caller, after the new mail landed. A short catch-up is a soft failure:
     the loop backs off, and no caller sees an error (fix round 3). An
     abandoned catch-up is no failure, so the loop polls at its interval
     (fix round 4). ``limit`` is true when the storage limit stopped the
-    import (WS-17 EM-T6c item 5), and the result then holds ``limit: true``."""
+    import (WS-17 EM-T6c item 5), and the result then holds ``limit: true``.
+    ``changed`` counts the rows the cycle really wrote. ``synced`` counts
+    every message it listed, written or not."""
     result: dict[str, Any] = {"synced": synced, "history_id": history_id}
+    if changed is not None:
+        result["changed"] = changed
     if limit:
         result["limit"] = True
     if catch_up.back_off:
@@ -955,7 +989,7 @@ async def _run_import(
             on_estimate=on_estimate)) as batches:
         async for batch in batches:
             async with tenant_session(org) as db:
-                kept, _ = await _write_messages(
+                kept, _, _ = await _write_messages(
                     db, account_id, batch, floor,
                     reclaim=getattr(provider, "REKEYS_MESSAGE_IDS", False))
                 if progress:
@@ -1291,6 +1325,9 @@ async def _rerun_once(
     merged = dict(result)
     merged["synced"] = (int(result.get("synced") or 0)
                         + int(again.get("synced") or 0))
+    if "changed" in result or "changed" in again:
+        merged["changed"] = (int(result.get("changed") or 0)
+                             + int(again.get("changed") or 0))
     merged["reran"] = True
     return merged
 
@@ -1542,11 +1579,12 @@ async def _sync_cycle(
         async with tenant_session(org) as db:
             # The backstop of the floor, for a provider that ignores ``since``.
             # The reconcile below then reads the same list.
-            sync_result.messages, label_changes = await _write_messages(
+            sync_result.messages, label_changes, changed = await _write_messages(
                 db, account_id, sync_result.messages, floor,
                 learn_labels=learn_labels,
                 reclaim=getattr(provider, "REKEYS_MESSAGE_IDS", False))
         persisted_count = imported + len(sync_result.messages)
+        changed_count = imported + changed
 
         # Revive label-learning on the scheduler path (email item 2.1): the
         # gateway-registered hook learns FROM-classification patterns from
@@ -1641,7 +1679,8 @@ async def _sync_cycle(
             account_id, provider_name, persisted_count,
         )
         return _cycle_result(persisted_count, cursor,
-                             import_error, catch_up, limit=stopped_at_limit)
+                             import_error, catch_up, limit=stopped_at_limit,
+                             changed=changed_count)
 
     except Exception as exc:
         logger.warning(
@@ -1691,6 +1730,27 @@ async def _sync_cycle(
 # -- Per-account sync loop ----------------------------------------------------
 
 
+#: The longest a loop goes without the new-mail pipeline while mail is
+#: listed. A capped sweep and a failed rules run still get their next pass.
+PIPELINE_IDLE_SECS = 1800
+
+
+def _pipeline_due(result: Any, last_run: float | None) -> bool:
+    """Whether a loop cycle runs the ``on_new_mail`` pipeline.
+
+    A cycle runs it when it really wrote a row (``changed``). A cycle that
+    only re-listed current mail runs it when the last run is older than
+    ``PIPELINE_IDLE_SECS``, or never happened. Before this, every cycle that
+    listed any mail ran it, so a quiet mailbox ran the rules, the sweep and
+    the sender pass every five minutes. A result with no ``changed`` key
+    (an older shape) falls back to ``synced``, as before."""
+    if not isinstance(result, dict) or not result.get("synced", 0):
+        return False
+    if "changed" not in result or result.get("changed"):
+        return True
+    return last_run is None or time.monotonic() - last_run >= PIPELINE_IDLE_SECS
+
+
 def _forget_this_loop(account_id: str) -> None:
     """Drop the entry of *account_id* only when it is the calling task.
 
@@ -1725,6 +1785,7 @@ async def _account_sync_loop(
             account_id, interval_secs,
         )
         backoff_secs = 0  # 0 = healthy, sleep the normal interval; >0 = failing
+        last_pipeline_at: float | None = None  # monotonic; None = never ran
         while True:
             sync_failed = False
             try:
@@ -1745,7 +1806,7 @@ async def _account_sync_loop(
                 # (fix round 4).
                 sync_failed = (not isinstance(result, dict) or "error" in result
                                or bool(result.get("catch_up_incomplete")))
-                new_mail = isinstance(result, dict) and result.get("synced", 0)
+                new_mail = _pipeline_due(result, last_pipeline_at)
                 # Process new mail through the shared pipeline — auto-run
                 # rules, categorize senders, classify threads (Reply Zero),
                 # auto-archive. The gateway registers this hook; it isolates
@@ -1754,6 +1815,7 @@ async def _account_sync_loop(
                 # mail is processed identically however it arrived.
                 ran_new_mail = False
                 if new_mail:
+                    last_pipeline_at = time.monotonic()
                     try:
                         registered = hooks.on_new_mail is not None
                         await run_hook(hooks.on_new_mail, account_id)
