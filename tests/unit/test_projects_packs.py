@@ -41,6 +41,7 @@ from agent_framework import FunctionTool
 from orchestrator import _tool_injection as ti
 
 from evals.one_assistant_measure.scenarios import SCENARIOS
+from tests.unit import test_loader_replaces_handoff as L
 from tests.unit import test_projects_create_tasks as tc
 from tests.unit._egress_mark_store import install_memory_mark_store
 from tests.unit._projects_agent_fakes import approve, fake_gateway
@@ -723,3 +724,109 @@ async def test_layer_c_adds_the_core_pack_before_the_first_request(store) -> Non
     assert [_name(t) for t in ctx.tools] == list(_family("projects"))
     assert all(type(t).__name__ == "_StrictTool" for t in ctx.tools)
     assert any("PROJECTS TOOLS." in text for text in ctx.instructions)
+
+
+# ── 10. The loader reaches the Projects owner (OA-7i, `plan_loader`) ────────
+
+PROJ = frozenset(SLUGS)
+NO_WORDS = "Tell Anil that we pay on Friday"
+
+
+@pytest.fixture
+def agents(monkeypatch) -> list[Any]:
+    return L._fresh()
+
+
+def _specialist(agent: Any) -> bool:
+    return "projects_assistant" in L._names(agent.default_options["tools"])
+
+
+async def test_projects_is_reached_with_no_pack_held_and_the_texts_agree(
+    store, agents, monkeypatch,
+) -> None:
+    """With no pack held, the specialist tool leaves, the persona stays as it
+    was, and a hand-off answers a refusal that names ``load_skill_tools`` and
+    the Projects packs. The rules say that no Projects agent exists.
+    Mutation: leave the owner out of ``NO_PERSONA_BULLETS`` -> ``_available``
+    refuses it, the specialist stays -> red."""
+    ran = L._fake_run_agent(monkeypatch)
+    persona = agents[0].default_options["instructions"]
+    assert _specialist(agents[0]), "non-vacuity"
+    applied = await L._apply(agents, NO_WORDS, allowed=PROJ)
+    assert applied is not None and applied.builds == ()
+    assert applied.record.via_loader == {PA} and PA in applied.record.replaced
+    assert not _specialist(agents[0])
+    assert agents[0].default_options["instructions"] == persona
+    provider = L._provider(agents[0])
+    assert provider is not None and provider.loader.offered == SLUGS
+    with L._in_run(applied):
+        refused = await L.agent_tools.call_agent(PA, "Show my overdue tasks")
+        background = await L.agent_tools.call_agent_background(PA, "Sync")
+        await L.asyncio.sleep(0.05)
+    assert refused == tp.LOADER_HANDOFF_REFUSED.format(owner=PA, packs=", ".join(SLUGS))
+    assert "load_skill_tools" in refused and "projects-plan" in refused
+    for slug in SLUGS:
+        assert "No Projects agent exists" in tp.PACKS[slug].rules
+    assert ran == [PA] and background != refused
+
+
+def test_the_core_rules_name_the_loader_while_the_owner_is_reached() -> None:
+    """The ``loader_route`` line replaces the open-hand-off route line when
+    the owner is in ``via_loader``. (A held Projects pack leaves no room for
+    the largest pack, so the plan reaches the owner with no pack held, and
+    this text is the rule for the case that a load adds.) Mutation: drop
+    ``loader_route`` from the core pack -> the rules send the model to an
+    owner that is refused -> red."""
+    for slug in SLUGS:
+        block = tp._rules_block(tp.PACKS[slug], False, (slug,), {PA})
+        assert tp._PROJECTS_LOAD_LINE in block, slug
+        assert tp._PROJECTS_ROUTE_LINE not in block, slug
+
+
+async def test_projects_is_not_reached_when_a_pack_cannot_fit(
+    store, agents,
+) -> None:
+    """``email`` is held, so ``projects-plan`` (35 tools) does not fit under
+    110 even with the specialist slot freed. The specialist and the hand-off
+    stay. Mutation: drop the cap from ``plan_loader`` -> the owner is reached
+    -> red."""
+    applied = await L._apply(agents, "check my inbox", allowed=PROJ | {"email"})
+    assert applied is not None and applied.record.slugs == ("email",)
+    assert PA not in applied.record.via_loader
+    assert _specialist(agents[0])
+    assert tp.delegation_refusal(PA, {tp.PACKS_KEY: applied.record}) is None
+
+
+async def test_a_refused_projects_load_opens_the_hand_off(
+    store, agents, monkeypatch,
+) -> None:
+    """A true count over the cap refuses the load. The answer names
+    ``call_agent``, and the hand-off runs. Mutation: drop the ``via_failed``
+    mark -> the refusal and the hand-off point at each other -> red."""
+    ran = L._fake_run_agent(monkeypatch)
+    applied = await L._apply(agents, NO_WORDS, allowed=PROJ)
+    assert applied is not None and applied.record.via_loader == {PA}
+    provider = L._provider(agents[0])
+    assert provider is not None
+    with L._in_run(applied):
+        assert (await L.agent_tools.call_agent(PA, "x")).startswith("Not run.")
+        answer = await L._call(provider.loader, "projects-plan", L._dummies(105))
+        out = await L.agent_tools.call_agent(PA, "Show the burndown")
+    assert answer == tp.LOAD_NO_PATH.format(
+        label=tp._label("projects-plan"), slug="projects-plan", owner=PA)
+    assert ran == [PA] and "ran" in out and applied.record.via_failed == {PA}
+
+
+async def test_in_a_covered_org_the_owner_is_not_reached_and_no_pack_loads(
+    store, agents, _broker,
+) -> None:
+    """The loader cannot serve a covered org, so the specialist and its
+    hand-off stay. Mutation: drop the covered check from ``_available`` ->
+    the specialist leaves and nothing replaces it -> red."""
+    _broker(True)
+    applied = await L._apply(agents, NO_WORDS, allowed=PROJ)
+    assert _specialist(agents[0])
+    assert applied is None or (PA not in applied.record.via_loader and applied.builds == ())
+    covered = await L._apply(agents, "Show my overdue tasks", allowed=PROJ)
+    assert _specialist(agents[0])
+    assert covered is None or covered.builds == ()
