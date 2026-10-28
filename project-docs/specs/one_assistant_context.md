@@ -26,14 +26,15 @@ below, PR #1383). The flag is off on each box, so no run loads a pack yet.
 OA-7e is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7e"
 below, PR #1389). It adds layer (b), the meta tool `load_skill_tools`.
 
-OA-7h is PARTLY BUILT (2026-10-27): the harness in
-`evals/one_assistant_measure` runs the real `email` pack. The first live run
-on 2026-10-27 did not meet the gate (pack 14 of 54, delegation 48 of 54). The
-pack loaded in only 12 of 54 turns, and in those 12 the model handed off no
-mail work (3 of the 12 handed off setup work). The fix is OA-7i: with packs on, an owner's specialist tool leaves the
-chat when the loader can reach every pack of that owner. The live measure
-runs again after OA-7i. The report `docs/one_assistant_measure_2026-10-27.md`
-is the record of run 1.
+OA-7h is PARTLY BUILT (2026-10-28): the gate is NOT met, by a small margin.
+Run 3 (`docs/one_assistant_measure_2026-10-28.md`, with
+`TOOL_PACKS=email,email-setup`) passed pack 46 of 54 and delegation 47 of 54.
+`no_write` on `reply_correction` turn 1 passed 2 of 3 on the pack arm. The pack
+arm handed off no mail work, the model called `load_skill_tools` in 25 turns, and
+the pack arm ran in a median of 11.2 s against 27.3 s. Run 2 failed because
+`TOOL_PACKS=email` left `email-setup` out, so OA-7i did nothing. Next: a rules
+edit (find the email before `compose_reply`, and "send it" means `send_draft`),
+then a larger repeat. Run 1 is `docs/one_assistant_measure_2026-10-27.md`.
 
 OA-7d is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7d"
 below). The dock sends `surface`, and a turn from `/email` loads the `email`
@@ -76,6 +77,9 @@ below). It adds layer (c), the pack items of the turn-kind request.
 
 OA-7i is BUILT, dark behind `TOOL_PACKS` (2026-10-28, "As built, OA-7i"
 below). With packs on, the loader replaces the specialist hand-off.
+
+OA-7j is BUILT, dark behind `TOOL_PACKS` (2026-10-28, "As built, OA-7j"
+below). It tunes three rules of the `email` pack.
 
 **As built, OA-7f.** Layer (c) loads a pack that layer (a) missed, from the
 System-1 request that already runs. It adds no model call.
@@ -126,6 +130,15 @@ System-1 request that already runs. It adds no model call.
   an estimate. OA-8 should measure it.
 - **Fences.** `tests/unit/test_tier_policy.py` (`TestTurnKindPackItems`) and
   `tests/unit/test_turn_kind_pack_items.py`. Each case names its mutation.
+
+**As built, OA-7j.** Dark behind `TOOL_PACKS`. `_EMAIL_RULES` in
+`tool_packs.py` grew by 323 characters (2,362 to 2,685).
+- **Search first.** The reply bullet ends with the search rule.
+- **Send it.** The old line "call compose_reply or send_draft at once" is
+  gone. The new line sends the draft of the working set with `send_draft`.
+  It allows `compose_reply` only when no draft exists.
+- **No unasked draft.** A new bullet carries the OA-7g rule in the pack.
+- **Run 4.** OA-7h must run again to confirm the gate.
 
 **As built, OA-7i.** With the flag on, the loader replaces the specialist
 hand-off, dark behind `TOOL_PACKS`. The rule is in the OA-7i block of §4.2.8.
@@ -999,6 +1012,7 @@ Each slice merges alone, in this order.
 | OA-7e | Layer (b): `load_skill_tools`. BUILT, dark, 2026-10-27 | MEDIUM |
 | OA-7f | Layer (c): pack items in the turn-kind request. BUILT, dark, 2026-10-27 | MEDIUM |
 | OA-7i | With packs on, the loader replaces the specialist hand-off. BUILT, dark, 2026-10-28 | HIGH |
+| OA-7j | The `email` pack rules: search first, "send it" is `send_draft`, no unasked draft. BUILT, dark, 2026-10-28 | MEDIUM |
 | OA-7h | The email measure on real code, with the tier flags of production | LOW (eval only) |
 
 **OA-7a. The registry and the flag.**
@@ -1096,6 +1110,23 @@ Each slice merges alone, in this order.
 - **Files.** `orchestrator/agents.py` (rule 12) and `acb_skills/handoff.py` (`_RULES`).
 - **Acceptance.** OA-7h checks it: `no_write` passes on `reply_correction` turn 1, 3 of 3, on both arms.
 - **Fence.** Unit tests pin both texts, in `tests/unit/test_handoff_words.py` and `tests/unit/test_orchestrator_one_source.py`.
+
+**OA-7j. The email pack rules.**
+- **Why.** OA-7h run 3 (2026-10-28) passed 46 of 54 pack-arm email turns and
+  47 of 54 for delegation. The gate is short by one turn.
+  - `no_write` on `reply_correction` turn 1 passed 2 of 3. The gate needs 3 of 3.
+  - `five_turns` turn 3 failed twice. For "send it" the model called
+    `compose_reply` again, not `send_draft`.
+  - `exact_reply` failed twice in run 2. The model called `compose_reply`
+    for a named person before it found the address.
+  - The pack arm was 2.4 times faster at the median (11.2 s against 27.3 s).
+    It made no mail hand-off.
+- **Rule.** The `email` pack rules say three things. Find the address of a
+  named person with `find_contact` or `query_inbox` before `compose_reply`.
+  After a draft in this chat, "send it" means `send_draft` on that draft.
+  Draft only when the member asks for a draft or a reply.
+- **Fence.** `tests/unit/test_email_pack_rules_oa7j.py`. The rules ride only
+  with the pack, so the flag-off persona does not change.
 
 **OA-7i. The loader replaces the specialist hand-off.**
 - **Why.** OA-7h run 1 (`docs/one_assistant_measure_2026-10-27.md`) ran 54

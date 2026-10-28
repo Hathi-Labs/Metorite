@@ -75,9 +75,14 @@ PRODUCTION: dict[str, Any] = {
 def pack_flag() -> dict[str, Any]:
     """The real flag of the ``pack`` arm: ``TOOL_PACKS`` and ``TOOL_PACKS_ORGS``.
 
-    ``email`` alone, for the eval org only. The ``email-setup`` pack does not
-    fit beside ``email`` at the real base of the run (H-417)."""
-    return {"tool_packs": "email", "tool_packs_orgs": ds.ORG}
+    EVERY pack of ``email-assistant``, for the eval org only. OA-7i removes the
+    specialist tool only when the loader can reach every pack of the owner
+    (``tool_packs.plan_loader``). With ``email`` alone, run 2 of 2026-10-28
+    kept ``email_assistant`` in the run and handed off mail work in 31 turns."""
+    from acb_skills import tool_packs
+
+    return {"tool_packs": ",".join(tool_packs.owner_packs(pack.EA)),
+            "tool_packs_orgs": ds.ORG}
 EVAL_ENV = Path.home() / ".metorite" / "secrets" / "eval.env"
 RATE_CARD = json.loads((HERE / "rate_card.json").read_text(encoding="utf-8"))
 
