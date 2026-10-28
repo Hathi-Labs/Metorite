@@ -356,7 +356,7 @@ describe("a held module (CRM-Q16, spec section 18.8)", () => {
     expect(box("Activities")).not.toContain('checked=""');
     expect(box("Contacts")).toContain('checked=""');
     // A held row is not also suggested for a hold.
-    expect(html).not.toContain("Hold it");
+    expect(html).not.toContain("Pause syncing");
   });
 
   it("shows the badge and the button, and no sentence, when the count is not known", () => {
@@ -439,8 +439,8 @@ describe("a large module that is not held (CRM-Q16)", () => {
     expect(largeUnheld(health, big)).toBe(true);
     const html = draw(health);
     expect(html).toContain("Large");
-    expect(html).toContain("Contacts has 12,000 records. Hold it, and sync it on its own when Metorite is quiet");
-    expect(html).toContain("Hold it");
+    expect(html).toContain("Contacts has 12,000 records. Pause syncing it, and sync it on its own when Metorite is quiet");
+    expect(html).toContain("Pause syncing");
 
     const fresh = entity("contacts", 6000, 100);
     expect(largeUnheld(healthy({ entities: [fresh] }), fresh)).toBe(true);
@@ -451,7 +451,7 @@ describe("a large module that is not held (CRM-Q16)", () => {
   it("does not nag about a module that is already in, nor after an admin decided (review P2)", () => {
     const done = entity("contacts", 6000, 6000);
     expect(largeUnheld(healthy({ entities: [done] }), done)).toBe(false);
-    expect(draw(healthy({ entities: [done] }))).not.toContain("Hold it");
+    expect(draw(healthy({ entities: [done] }))).not.toContain("Pause syncing");
 
     const decided = entity("contacts", 6000, 100);
     const released = healthy({
@@ -459,7 +459,7 @@ describe("a large module that is not held (CRM-Q16)", () => {
       holds: { contacts: { held: false, by: "admin", count: 6000, at: null } },
     });
     expect(largeUnheld(released, decided)).toBe(false);
-    expect(draw(released)).not.toContain("Hold it");
+    expect(draw(released)).not.toContain("Pause syncing");
   });
 
   it("does not suggest at or below the limit, nor for a held row", () => {
@@ -471,9 +471,9 @@ describe("a large module that is not held (CRM-Q16)", () => {
       holds: { contacts: { held: true, by: "auto", count: 12000, at: null } },
     });
     expect(largeUnheld(held, big)).toBe(false);
-    expect(draw(held)).not.toContain("Hold it");
+    expect(draw(held)).not.toContain("Pause syncing");
     expect(largeSentence("Contacts", 12000)).toBe(
-      "Contacts has 12,000 records. Hold it, and sync it on its own when Metorite is quiet",
+      "Contacts has 12,000 records. Pause syncing it, and sync it on its own when Metorite is quiet",
     );
   });
 });
@@ -528,16 +528,30 @@ describe("the hold requests (CRM-Q16)", () => {
 });
 
 describe("values that did not map (CRM-Q19, spec section 18.9.6 item 7)", () => {
-  it("shows the count of each entity row under Not mapped", () => {
-    const html = draw(
-      healthy({ entities: [entity("leads", 40, 40, { unmapped: 3 }), entity("deals", 10, 10)] }),
-    );
-    expect(html).toContain("Not mapped");
-    // The last cell of each row is the count.
-    const lastCell = (label: string) =>
-      html.match(new RegExp(`<tr aria-label="${label}">.*?<td[^>]*>([^<]*)</td></tr>`))?.[1];
-    expect(lastCell("Leads")).toBe("3");
-    expect(lastCell("Deals")).toBe("0");
+  it("shows the count of each record type under Did not fit, in its row's expand", () => {
+    const view = healthy({ entities: [entity("leads", 40, 40, { unmapped: 3 }), entity("deals", 10, 10)] });
+    const open = (rowsOpen: boolean) =>
+      renderToStaticMarkup(
+        createElement(SyncHealthCardView, {
+          health: view,
+          nowMs: NOW,
+          onSyncNow: () => undefined,
+          detailsOpen: true,
+          rowsOpen,
+        }),
+      );
+    // Closed by default: the table has five columns and no engine count.
+    const closed = open(false);
+    expect(closed).not.toContain("Did not fit");
+    expect(closed.match(/<th /g)).toHaveLength(5);
+    const html = open(true);
+    const counts = (label: string) =>
+      html.match(new RegExp(`<tr aria-label="${label} last run">.*?</tr>`))?.[0].replace(/<[^>]*>/g, "");
+    expect(counts("Leads")).toContain("Did not fit 3");
+    expect(counts("Deals")).toContain("Did not fit 0");
+    for (const word of ["Left out", "No matching record", "Could not save"]) {
+      expect(counts("Leads")).toContain(word);
+    }
   });
 
   it("reads 0 from an older gateway, and never a value", () => {

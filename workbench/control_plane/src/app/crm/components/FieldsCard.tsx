@@ -3,8 +3,8 @@
 /**
  * The Fields card of the CRM settings page (WS-53 CRM-Q4, spec section 18.3).
  *
- * It lists the custom fields of each entity: the label, the type and the
- * source, with a flag for a hidden field and the options of a picklist in a
+ * It lists the custom fields of each entity: the label and the type
+ * (named as in the field studio), with a flag for a hidden field and the options of a picklist in a
  * disclosure. It is a list to read.
  *
  * **The field studio** (WS-53 CRM-C4, section 20.7). When the layout says
@@ -20,8 +20,9 @@ import Button from "@/components/ui/Button";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import type { FieldDef } from "../lib/fields";
-import { fieldsCardShape } from "../lib/fieldStudio";
-import { useFieldDefs, useFieldLayout } from "../lib/useCrmMode";
+import { zohoLink } from "../lib/connect";
+import { fieldsCardShape, typeLabel } from "../lib/fieldStudio";
+import { useFieldDefs, useFieldLayout, usePipelines } from "../lib/useCrmMode";
 import type { EntitySlug } from "../lib/types";
 import FieldStudio from "./FieldStudio";
 import { Card } from "./SettingsCards";
@@ -34,12 +35,22 @@ export const FIELD_ENTITIES: { slug: EntitySlug; label: string }[] = [
 ];
 
 export const FIELDS_MIRROR_NOTE = "Fields come from Zoho. Edit fields in Zoho.";
-export const FIELDS_NATIVE_NOTE = "Only a studio admin can edit fields.";
+export const FIELDS_NATIVE_NOTE = "Field editing is not on for your organization yet.";
 
-const SOURCE_LABEL: Record<FieldDef["source"], string> = {
-  zoho: "Zoho",
-  native: "Metorite",
-};
+/**
+ * The Zoho address to link "Edit fields in Zoho" to, or null when none is
+ * known. A pipeline of the mirror carries the checked Zoho address of its
+ * record (`zohoLink`). The site address is the part up to the first slash.
+ */
+export function zohoSiteLink(
+  pipelines: { ext_url?: string | null }[] | null | undefined,
+): string | null {
+  for (const pipeline of pipelines ?? []) {
+    const link = zohoLink({ ext_url: pipeline.ext_url });
+    if (link) return new URL(link).origin;
+  }
+  return null;
+}
 
 /** The label of each option of a picklist. An option is `{label, value}` or a bare value. */
 export function optionLabels(options: unknown[] | null): string[] {
@@ -58,15 +69,37 @@ export function optionLabels(options: unknown[] | null): string[] {
 export function FieldsCardView({
   byEntity,
   readOnly,
+  zohoUrl = null,
 }: {
   byEntity: Record<EntitySlug, FieldDef[] | null>;
   /** Mirror mode. */
   readOnly: boolean;
+  /** The checked Zoho address, when known. "Edit fields in Zoho" links to it. */
+  zohoUrl?: string | null;
 }) {
   return (
     <Card
       title="Fields"
-      note={readOnly ? FIELDS_MIRROR_NOTE : FIELDS_NATIVE_NOTE}
+      note={
+        !readOnly ? (
+          FIELDS_NATIVE_NOTE
+        ) : zohoUrl ? (
+          <>
+            Fields come from Zoho.{" "}
+            <a
+              href={zohoUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary underline underline-offset-2"
+            >
+              Edit fields in Zoho
+            </a>
+            .
+          </>
+        ) : (
+          FIELDS_MIRROR_NOTE
+        )
+      }
     >
       <div className="divide-y divide-border/60">
         {FIELD_ENTITIES.map(({ slug, label }) => {
@@ -88,10 +121,7 @@ export function FieldsCardView({
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="font-medium">{def.label}</span>
                           <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
-                            {def.type}
-                          </span>
-                          <span className="text-[10px] text-muted-foreground">
-                            {SOURCE_LABEL[def.source]}
+                            {typeLabel(def.type)}
                           </span>
                           {!def.visible && (
                             <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
@@ -180,9 +210,11 @@ function FieldsCardRead({ readOnly }: { readOnly: boolean }) {
   const contacts = useFieldDefs("contacts").defs;
   const organizations = useFieldDefs("organizations").defs;
   const deals = useFieldDefs("deals").defs;
+  const { pipelines } = usePipelines(readOnly);
   return (
     <FieldsCardView
       readOnly={readOnly}
+      zohoUrl={zohoSiteLink(pipelines)}
       byEntity={{ leads, contacts, organizations, deals }}
     />
   );

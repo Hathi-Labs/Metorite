@@ -4,7 +4,7 @@
  * The Field map card of the CRM settings page (WS-53 CRM-Q7a, spec section 18.7).
  *
  * For each entity it lists the Zoho fields that go to `custom` today. For each
- * field it shows the rule, if one exists: the target column, the status, who
+ * field it shows the rule, if one exists: the Metorite field, the status, who
  * proposed it and why. An admin can approve or reject a proposal, reject an
  * approved rule, or pick a target by hand. The next sync applies the choice.
  *
@@ -18,7 +18,7 @@
  * confidence number.
  *
  * **The plan (CRM-Q18-2, spec section 18.9.6).** The top of the card names
- * the field map in use, who approved it and when. A pick by hand ("Map") goes
+ * the field map in use, who approved it and when. A pick by hand ("Add to draft") goes
  * into a draft (`POST /crm/mapping/plans`) and changes no live rule. The card
  * shows the draft as not applied, with its changes against the map in use,
  * and "Approve draft" applies it in one press. "Go back" asks first, then
@@ -105,7 +105,7 @@ export type FieldMapHandlers = {
   onDecide: (rule: FieldRule, status: "approved" | "rejected") => void;
   /**
    * CRM-Q18-2. True while the card cannot build a draft yet: the plan, or
-   * the rules of the open draft, still load. "Map" waits.
+   * the rules of the open draft, still load. "Add to draft" waits.
    */
   pickWaits?: boolean;
 };
@@ -352,8 +352,8 @@ function FieldRow({
         {actions.includes("pick") && (
           <>
             <SelectButton
-              label="Target column"
-              prompt="Pick a target"
+              label="Metorite field"
+              prompt="Pick a field"
               value={column}
               defaultValue=""
               options={pickOptions(field)}
@@ -368,7 +368,7 @@ function FieldRow({
               loading={busy && !rule}
               onClick={() => handlers.onPick(entity, field.key, column)}
             >
-              Map
+              Add to draft
             </Button>
           </>
         )}

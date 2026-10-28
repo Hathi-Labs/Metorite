@@ -6,6 +6,7 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import OverflowTip from "@/components/ui/OverflowTip";
 import RailRow from "@/components/ui/RailRow";
+import { shellChatOn } from "@/lib/shell/chatFlag";
 import { useState } from "react";
 import { EmailAccount, EmailFolder, AutomationFeature } from "../lib/types";
 import { MailboxAvatar, mailboxLabel } from "./MailboxChip";
@@ -119,6 +120,16 @@ const AUTOMATION_ITEMS: {
   { key: "ai-settings", label: "AI Settings", icon: themedIcon("Sparkles") },
   { key: "analytics", label: "Analytics", icon: themedIcon("BarChart3") },
 ];
+
+/**
+ * The automation rows to draw. With the one assistant on (D99), the top bar
+ * is the only chat door, and `page.tsx` sends a click on "Chat" there anyway,
+ * so the row goes. With the flag off, "Chat keeps its sidebar door"
+ * (`lib/shell/chatFlag.ts`). Fence: `lib/sidebarChatRow.test.ts`.
+ */
+export function automationItems(chatOn: boolean = shellChatOn()) {
+  return chatOn ? AUTOMATION_ITEMS.filter((item) => item.key !== "chat") : AUTOMATION_ITEMS;
+}
 
 export function AccountSidebar({
   accounts,
@@ -339,7 +350,7 @@ export function AccountSidebar({
             <span>Email Automation</span>
           </div>
           <div className="mt-1 space-y-0.5">
-            {AUTOMATION_ITEMS.map(({ key, label, icon: Icon }) => (
+            {automationItems().map(({ key, label, icon: Icon }) => (
               <RailRow
                 key={key}
                 label={label}
