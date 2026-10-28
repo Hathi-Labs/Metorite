@@ -925,6 +925,18 @@ def _pull_latest(repo_dir: Path) -> dict[str, Any]:
 
 
 def _ensure_local_git_repo(source_dir: Path, cache_dir: Path, settings: Any) -> None:
+    """Sync *source_dir* into *cache_dir* and seed its git repo, under the lock.
+
+    WS-67 OA-9b hardening item 7: up to five spawn children load the worker at
+    once into one cache dir. The per-repo lock of the clone path (``_repo_locks``)
+    now also holds the copy, so a reader never imports a short file. The lock is
+    taken by cache dir name, the same key that ``_get_repo_lock`` uses.
+    """
+    with _get_repo_lock(cache_dir.name):
+        _ensure_local_git_repo_locked(source_dir, cache_dir, settings)
+
+
+def _ensure_local_git_repo_locked(source_dir: Path, cache_dir: Path, settings: Any) -> None:
     """Initialise or sync a local-only git-tracked working copy of *source_dir*.
 
     This gives pure MAF agents (without GitHub remotes) the same version-control

@@ -308,13 +308,20 @@ def tier_routing_on(agent: str | None) -> bool:
     """True when the tier policy covers *agent*. ONE reader, and it fails closed.
 
     The value is a comma list of agent names, or ``*`` for every agent. An
-    empty value, an empty agent name and any error read as OFF. The idiom is
+    empty value, an empty agent name and any error read as OFF. An internal
+    agent reads as OFF too, whatever the value. The idiom is
     ``executor._native_sessions_enabled``.
     """
     name = str(agent or "").strip()
     if not name:
         return False
     try:
+        # An internal agent (the spawn worker) never takes the policy, also
+        # under ``*``. Its tier is the job tier (OA-9b hardening item 3).
+        from acb_skills.subagent_contract import INTERNAL_AGENTS
+
+        if name in INTERNAL_AGENTS:
+            return False
         names = covered_agents()
         return ALL_AGENTS in names or name in names
     except Exception:  # never arm the policy on a fault
