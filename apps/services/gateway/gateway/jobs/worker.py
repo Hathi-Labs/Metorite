@@ -24,6 +24,20 @@ worker that does not know it.
 row lock. A handler that raises fails one attempt, and the queue retries it
 with a backoff.
 
+⚠️ A handler must use only the session that it receives. A second session is
+a second transaction: its writes commit even when the attempt fails, and its
+locks can wait on the row lock of the run.
+
+**The time limit.** A handler runs for at most :data:`HANDLER_TIMEOUT`. Past
+it, the worker cancels the handler, and the attempt fails as an error does.
+The order ``HANDLER_TIMEOUT < queue.LEASE < idle_in_transaction_session_timeout``
+is fenced, so one hung handler cannot stop the queue of every org.
+
+**The signals.** ``jobs.attempt_failed`` (warning) is a failed attempt that
+the queue retries. ``jobs.failed`` (error) is a job that failed for good.
+``jobs.lease_expired`` comes from :func:`queue.claim`. ``jobs.tick`` (info)
+sums one tick that ran a job.
+
 **Restart and a killed worker.** The state is in Postgres only. A worker
 that dies mid-job drops its connection, so the row lock goes. The row stays
 ``running`` until ``lease_until`` passes, and then the next claim takes it.
@@ -62,6 +76,10 @@ TICK_SECONDS = 15
 BATCH = 20
 #: The seconds that a stop waits for a tick in progress.
 STOP_GRACE_SECONDS = 30
+#: The seconds that one handler may run. It must stay below ``queue.LEASE``
+#: and below the 600 s ``idle_in_transaction_session_timeout`` of
+#: ``acb_common.db``. Fence: ``test_the_handler_timeout_is_below_the_lease_and_the_idle_timeout``.
+HANDLER_TIMEOUT = 240.0
 
 #: A handler takes the tenant session of the run and the payload.
 Handler = Callable[[Any, dict[str, Any]], Awaitable[None]]
@@ -110,8 +128,53 @@ def kinds() -> list[str]:
     return sorted(_HANDLERS)
 
 
+class HandlerTimeout(Exception):
+    """A handler ran over :data:`HANDLER_TIMEOUT`, and the worker cancelled it."""
+
+
+class _ClaimGone(Exception):
+    """``complete`` changed no row after ``hold`` passed. The raise rolls back
+    the writes of the handler, so no side effect commits for a job that stays
+    ``running``."""
+
+
 def _describe(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"[: queue.ERROR_CHARS]
+
+
+async def _call(handler: Handler, db: Any, payload: dict[str, Any]) -> None:
+    """Run *handler* for at most :data:`HANDLER_TIMEOUT` seconds.
+
+    The timeout scope cancels the handler at the limit, in this same task, so
+    a stop of the worker cancels the handler too. A TimeoutError that the
+    handler raises itself stays its own error, so ``last_error`` tells the two
+    apart."""
+    limit = HANDLER_TIMEOUT
+    scope = asyncio.timeout(limit)
+    try:
+        async with scope:
+            await handler(db, payload)
+    except TimeoutError:
+        if scope.expired():
+            raise HandlerTimeout(f"the handler timed out after {limit:g} s") from None
+        raise
+
+
+async def _settle_failure(db: Any, job: queue.Claim, exc: BaseException, org: str,
+                          now: datetime) -> str:
+    """Settle a failed attempt, and log it. ``jobs.failed`` (error) marks the
+    last attempt, and ``jobs.attempt_failed`` (warning) marks a retry."""
+    state = await queue.fail(db, job, _describe(exc), now=now)
+    if state is None:
+        _log.info("jobs.lease_lost", job_id=job.id, kind=job.kind)
+        return "lost"
+    if state == "failed":
+        _log.error("jobs.failed", job_id=job.id, kind=job.kind, attempts=job.attempts,
+                   org=org, error=type(exc).__name__)
+        return "failed"
+    _log.warning("jobs.attempt_failed", job_id=job.id, kind=job.kind,
+                 attempt=job.attempts, org=org, error=type(exc).__name__)
+    return "retry"
 
 
 # ── One job ─────────────────────────────────────────────────────────────────
@@ -140,32 +203,39 @@ async def run_one(org: str, now: datetime) -> str | None:
                 if handler is None:
                     raise LookupError(f"no handler of kind {job.kind}")
                 async with db.begin_nested():
-                    await handler(db, dict(job.payload))
+                    await _call(handler, db, dict(job.payload))
             except Exception as exc:
-                _log.warning("jobs.attempt_failed", job_id=job.id, kind=job.kind,
-                             attempt=job.attempts, error=type(exc).__name__)
-                state = await queue.fail(db, job, _describe(exc), now=now)
-                return "lost" if state is None else ("retry" if state == "queued" else "failed")
-            changed = await queue.complete(db, job, now=now)
-            return "done" if changed == 1 else "lost"
+                return await _settle_failure(db, job, exc, org, now)
+            if await queue.complete(db, job, now=now) != 1:
+                # Raise inside the session, so the writes of the handler roll back.
+                raise _ClaimGone(job.id)
+            return "done"
+    except _ClaimGone:
+        _log.warning("jobs.complete_lost", job_id=job.id, kind=job.kind)
+        return "lost"
     except Exception as exc:
         # The session itself broke. Settle the attempt in a new session.
         _log.warning("jobs.run_failed", job_id=job.id, error=type(exc).__name__)
         async with tenant_session(org) as db:
-            state = await queue.fail(db, job, _describe(exc), now=now)
-        return "lost" if state is None else ("retry" if state == "queued" else "failed")
+            return await _settle_failure(db, job, exc, org, now)
 
 
 # ── One org, and the tick ───────────────────────────────────────────────────
 
 
-async def run_org(org: str, now: datetime | None = None) -> Counter[str]:
+async def run_org(org: str, now: datetime | None = None, *,
+                  clock: Callable[[], datetime] | None = None) -> Counter[str]:
     """Up to :data:`BATCH` due jobs of *org*. Answers the count of each
     outcome. Opens no session when no handler is registered.
 
-    The org is bound for the whole call, so a handler that opens
-    ``tenant_session()`` with no argument acts for the org of its job."""
-    at = now or _now()
+    The worker reads the clock again for each job, because a batch can run
+    for minutes. *clock* replaces :func:`_now`. A fixed *now* freezes it.
+
+    The org is bound for the whole call. A handler gets its session as an
+    argument and must use only that session (a second session is a second
+    transaction, outside the settle)."""
+    if clock is None:
+        clock = (lambda: now) if now is not None else _now
     counts: Counter[str] = Counter()
     if not _HANDLERS:
         return counts
@@ -175,7 +245,7 @@ async def run_org(org: str, now: datetime | None = None) -> Counter[str]:
             if _stopping.is_set():
                 break
             try:
-                outcome = await run_one(org, at)
+                outcome = await run_one(org, clock())
             except Exception as exc:
                 _log.warning("jobs.claim_failed", error=type(exc).__name__)
                 counts["error"] += 1
@@ -205,10 +275,20 @@ async def run_tick(now: datetime | None = None) -> dict[str, Counter[str]]:
     return out
 
 
+def _log_tick(out: dict[str, Counter[str]]) -> None:
+    """One info line for a tick that ran a job. A quiet tick logs nothing."""
+    if not out:
+        return
+    total: Counter[str] = Counter()
+    for counts in out.values():
+        total.update(counts)
+    _log.info("jobs.tick", orgs=len(out), **{k: total[k] for k in sorted(total)})
+
+
 async def _loop() -> None:
     while not _stopping.is_set():
         try:
-            await run_tick()
+            _log_tick(await run_tick())
         except asyncio.CancelledError:
             raise
         except Exception as exc:

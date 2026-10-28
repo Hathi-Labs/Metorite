@@ -36,7 +36,13 @@ g. Every test takes a frozen clock.
   ``test_r8_org_a_cannot_claim_settle_or_read_a_job_of_org_b`` goes red.
 * M2. ``queue._CLAIM_SQL``: drop ``FOR UPDATE SKIP LOCKED`` and the token
   match of ``queue._HOLD_SQL``.
-  ``test_r8_two_workers_never_run_one_job_twice`` goes red.
+  ``test_r8_two_workers_never_run_one_job_twice`` goes red, within its 30 s
+  limit.
+* M3. ``worker._call``: await the handler with no timeout scope.
+  ``test_r8_a_hung_handler_times_out_and_the_next_org_still_runs`` goes red
+  within its 20 s limit.
+* M4. ``worker._settle_failure``: drop the ``jobs.failed`` error line.
+  ``test_r8_a_job_that_fails_for_good_logs_jobs_failed_once`` goes red.
 """
 
 from __future__ import annotations
@@ -51,6 +57,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import structlog
 
 pytest.importorskip("sqlalchemy")
 
@@ -80,6 +87,7 @@ FLAKY = f"test.br1a{TAG}.flaky"
 SLOW = f"test.br1a{TAG}.slow"
 CHILD = f"test.br1a{TAG}.child"
 NOBODY = f"test.br1a{TAG}.nobody"
+HUNG = f"test.br1a{TAG}.hung"
 
 #: The frozen clock: Tuesday 10 March 2099, 09:00 UTC.
 T = datetime(2099, 3, 10, 9, 0, tzinfo=UTC)
@@ -136,6 +144,10 @@ def _count(world: Any, kind: str) -> int:
     with world.p.admin_engine.connect() as c:
         return int(c.execute(text("SELECT count(*) FROM jobs WHERE kind = :k"),
                              {"k": kind}).scalar_one())
+
+
+def _events(caps: list[dict], name: str) -> list[dict]:
+    return [c for c in caps if c.get("event") == name]
 
 
 def _register_ok(world: Any) -> None:
@@ -338,8 +350,13 @@ def test_r8_a_running_job_with_a_lost_lease_is_claimed_again_and_runs(world) -> 
             late_fail = await queue.fail(db, dead, "late", now=T + queue.LEASE)
         return job, before, after, late, late_fail
 
-    job, before, after, late, late_fail = _go(world, go)
+    with structlog.testing.capture_logs() as caps:
+        job, before, after, late, late_fail = _go(world, go)
     assert before == Counter() and after == Counter(done=1)
+    expired = _events(caps, "jobs.lease_expired")
+    assert len(expired) == 1 and expired[0]["log_level"] == "warning"
+    assert expired[0]["job_id"] == job and expired[0]["outcome"] == "claimed_again"
+    assert not _events(caps, "jobs.failed")
     assert late == 0 and late_fail is None
     row = _row(world, job)
     assert row.state == "done" and row.attempts == 2 and world.runs[7] == 1
@@ -355,10 +372,14 @@ def test_r8_a_lost_lease_at_the_last_attempt_fails_the_job(world) -> None:
             assert await queue.claim(db, [OK], now=T) is not None
         return job, await worker.run_org(org, T + queue.LEASE)
 
-    job, counts = _go(world, go)
+    with structlog.testing.capture_logs() as caps:
+        job, counts = _go(world, go)
     assert counts == Counter()
     row = _row(world, job)
     assert row.state == "failed" and row.last_error == "lease expired" and world.runs[8] == 0
+    expired = _events(caps, "jobs.lease_expired")
+    assert len(expired) == 1 and expired[0]["log_level"] == "error"
+    assert expired[0]["job_id"] == job and expired[0]["outcome"] == "failed"
 
 
 def test_r8_a_live_worker_keeps_its_row_after_the_lease_time(world) -> None:
@@ -419,7 +440,10 @@ def test_r8_two_workers_never_run_one_job_twice(world) -> None:
     async def go() -> list[Counter]:
         for n in range(8):
             await _enqueue(org, OK, {"n": n})
-        return list(await asyncio.gather(worker.run_org(org, T), worker.run_org(org, T)))
+        # A limit, so a lost SKIP LOCKED fails in seconds and does not wait
+        # for the 600 s idle timeout of the database.
+        return list(await asyncio.wait_for(
+            asyncio.gather(worker.run_org(org, T), worker.run_org(org, T)), 30))
 
     first, second = _go(world, go)
     assert pairing.met >= 1  # non-vacuity: two runs held two jobs at once
@@ -595,3 +619,126 @@ def test_a_kind_takes_one_handler() -> None:
 def test_the_backoff_doubles_to_its_cap() -> None:
     assert [queue.backoff(n).total_seconds() for n in (1, 2, 3)] == [30, 60, 120]
     assert queue.backoff(30) == queue.BACKOFF_CAP
+
+
+# ── The time limit, the signals and the clock (BR-1a review round 1) ───────
+
+
+def test_the_handler_timeout_is_below_the_lease_and_the_idle_timeout() -> None:
+    """A hung handler must fail its attempt before the lease passes, and
+    before Postgres kills the idle transaction that holds the row lock."""
+    from acb_common import db as seam
+
+    idle = timedelta(milliseconds=int(seam._IDLE_IN_TXN_TIMEOUT_MS))
+    assert idle == timedelta(minutes=10)
+    assert timedelta(seconds=worker.HANDLER_TIMEOUT) < queue.LEASE < idle
+
+
+def test_r8_a_hung_handler_times_out_and_the_next_org_still_runs(world, monkeypatch) -> None:
+    monkeypatch.setattr(worker, "HANDLER_TIMEOUT", 0.2)
+    started: list[str] = []
+
+    async def hung(db: Any, payload: dict[str, Any]) -> None:
+        started.append(current_tenant())
+        await asyncio.Event().wait()  # never set
+
+    worker.register(HUNG, hung)
+    _register_ok(world)
+    a, b = world.p.org_a, world.p.org_b
+
+    async def go() -> tuple:
+        stuck = await _enqueue(a, HUNG, {}, max_attempts=2)
+        ok = await _enqueue(b, OK, {"n": 4})
+        # The orgs run in the order a, b. A limit, so a lost timeout fails fast.
+        return stuck, ok, await asyncio.wait_for(worker.run_tick(T), 20)
+
+    with structlog.testing.capture_logs() as caps:
+        stuck, ok, tick = _go(world, go)
+    assert tick == {a: Counter(retry=1), b: Counter(done=1)}
+    assert started == [a] and world.runs[4] == 1
+    row = _row(world, stuck)
+    assert row.state == "queued" and row.attempts == 1 and row.lease_until is None
+    assert row.last_error == "HandlerTimeout: the handler timed out after 0.2 s"
+    assert row.run_at == T + queue.backoff(1)
+    assert _row(world, ok).state == "done"
+    retry = _events(caps, "jobs.attempt_failed")
+    assert len(retry) == 1 and retry[0]["error"] == "HandlerTimeout"
+    assert not _events(caps, "jobs.failed")
+
+
+def test_r8_a_job_that_fails_for_good_logs_jobs_failed_once(world) -> None:
+    async def bad(db: Any, payload: dict[str, Any]) -> None:
+        raise RuntimeError("no")
+
+    worker.register(BAD, bad)
+    org = world.p.org_a
+    job = _go(world, lambda: _enqueue(org, BAD, {}, max_attempts=2))
+
+    with structlog.testing.capture_logs() as first:
+        assert _go(world, lambda: _ticks(T)) == [{org: Counter(retry=1)}]
+    assert not _events(first, "jobs.failed")
+    retry = _events(first, "jobs.attempt_failed")
+    assert len(retry) == 1 and retry[0]["log_level"] == "warning"
+    assert retry[0]["job_id"] == job and retry[0]["attempt"] == 1
+
+    with structlog.testing.capture_logs() as last:
+        assert _go(world, lambda: _ticks(T + queue.backoff(1))) == [{org: Counter(failed=1)}]
+    failed = _events(last, "jobs.failed")
+    assert len(failed) == 1 and not _events(last, "jobs.attempt_failed")
+    assert failed[0]["log_level"] == "error"
+    assert (failed[0]["job_id"], failed[0]["kind"], failed[0]["attempts"],
+            failed[0]["org"]) == (job, BAD, 2, org)
+    assert _row(world, job).state == "failed"
+
+
+def test_a_tick_that_ran_a_job_logs_one_summary_line(monkeypatch) -> None:
+    with structlog.testing.capture_logs() as caps:
+        worker._log_tick({})
+        worker._log_tick({"a": Counter(done=2, retry=1), "b": Counter(done=1, failed=1)})
+    lines = _events(caps, "jobs.tick")
+    assert len(lines) == 1 and lines[0]["log_level"] == "info"
+    assert {k: lines[0][k] for k in ("orgs", "done", "retry", "failed")} == {
+        "orgs": 2, "done": 3, "retry": 1, "failed": 1}
+
+
+def test_r8_the_worker_reads_the_clock_for_each_job(world) -> None:
+    _register_ok(world)
+    org = world.p.org_a
+    instants = iter([T, T + timedelta(seconds=7), T + timedelta(seconds=9)])
+
+    async def go() -> tuple:
+        # The claim takes the oldest run_at first, so the order is fixed.
+        first = await _enqueue(org, OK, {"n": 1}, run_at=T - timedelta(seconds=1))
+        second = await _enqueue(org, OK, {"n": 2})
+        return first, second, await worker.run_org(org, clock=lambda: next(instants))
+
+    first, second, counts = _go(world, go)
+    assert counts == Counter(done=2)
+    assert _row(world, first).finished_at == T
+    assert _row(world, second).finished_at == T + timedelta(seconds=7)
+
+
+def test_r8_a_complete_that_changes_no_row_rolls_back_the_handler(world) -> None:
+    """``hold`` passes, the handler writes, and then ``complete`` changes no
+    row. The run raises inside its session, so no write of the handler
+    commits for a job that stays ``running``."""
+    async def steal(db: Any, payload: dict[str, Any]) -> None:
+        await queue.enqueue(db, CHILD, {"side": "effect"}, now=T)
+        await db.execute(text(
+            "UPDATE jobs SET locked_by = gen_random_uuid() "
+            "WHERE kind = :k AND state = 'running'"), {"k": OK})
+
+    worker.register(OK, steal)
+    org = world.p.org_b
+
+    async def go() -> tuple:
+        job = await _enqueue(org, OK, {})
+        return job, await worker.run_one(org, T)
+
+    with structlog.testing.capture_logs() as caps:
+        job, outcome = _go(world, go)
+    assert outcome == "lost"
+    assert _count(world, CHILD) == 0
+    row = _row(world, job)
+    assert row.state == "running" and row.attempts == 1 and row.finished_at is None
+    assert len(_events(caps, "jobs.complete_lost")) == 1

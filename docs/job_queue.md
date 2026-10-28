@@ -48,8 +48,19 @@ The writes of a handler and `done` commit together, or neither commits.
   A claimed row of another org is refused.
 - **A handler must not call `commit()`.** A commit ends `SET LOCAL` and the row
   lock.
+- **A handler must use only the session that it receives.** A second session
+  is a second transaction. Its writes commit when the try fails, and its
+  locks can wait on the row lock of the run.
 - **A handler runs while a session is open.** Do not call a model or a
-  provider for a long time inside a handler. Plan that work for BR-1b.
+  provider inside a handler. Section 5a gives the rules for BR-1b.
+- **A handler runs for at most `worker.HANDLER_TIMEOUT` (240 seconds).** At the
+  limit the worker cancels the handler, and the try fails as an error
+  does. `last_error` then says `HandlerTimeout: the handler timed out`. A test
+  fences the order `HANDLER_TIMEOUT` < `queue.LEASE` (5 minutes) < the
+  600 second `idle_in_transaction_session_timeout` of `acb_common.db`.
+- **A lost settle rolls back.** When `complete` changes no row after `hold`
+  passed, the worker raises inside the session. The writes of the handler do
+  not commit, and the outcome is `lost`.
 - **The worker claims only the kinds that it has a handler for.** A job of an
   unknown kind waits. A worker that does not know the kind never fails it.
 - **The payload is a JSON object of at most 64 KiB.** `enqueue` refuses NaN,
@@ -71,6 +82,19 @@ The writes of a handler and `done` commit together, or neither commits.
 - A worker that lost its lease changes nothing. The settle matches the fence
   token, so it changes 0 rows.
 
+## 4a. The signals
+
+| Event | Level | When |
+|---|---|---|
+| `jobs.attempt_failed` | warning | A try failed, and the queue retries it |
+| `jobs.failed` | error | The last try failed. The job is `failed` for good |
+| `jobs.lease_expired` | warning | A lost lease with tries left. The claim takes the row again |
+| `jobs.lease_expired` | error | A lost lease at the last try. The job is `failed` |
+| `jobs.complete_lost` | warning | `complete` changed no row. The worker rolled back the writes of the handler |
+| `jobs.tick` | info | One line for each tick that ran a job, with the counts |
+
+No log line holds a payload or an error text. A line holds the error type only.
+
 ## 5. How to add a kind (BR-1b)
 
 ```python
@@ -87,6 +111,27 @@ await queue.enqueue(db, "email.send_later", {"draft_id": draft_id},
 ```
 
 A kind matches `[a-z][a-z0-9_.]{0,63}`.
+
+## 5a. Rules for BR-1b handlers
+
+The adversarial review of BR-1a recorded this contract. BR-1b builds to it.
+
+1. **Work that touches only the database** may use the in-session handler of
+   section 5.
+2. **A call to a provider, a model or a send** must use a detached mode. BR-1a
+   does not build it. BR-1b builds it.
+3. In the detached mode, the handler first commits an intent mark on the
+   domain row.
+4. Then it calls the provider with no session open. Where the provider takes
+   an idempotency key, it sends the job id.
+5. Then it opens a new session. It runs `hold`, writes the result and runs
+   `complete`.
+6. On a retry, the handler reads the intent mark first. A mark with no result
+   means the call possibly ran.
+7. A job that must run at most once uses `max_attempts=1`.
+
+**No retention exists yet.** The `done` and `failed` rows stay. BR-1b adds a
+`jobs.prune` kind that deletes old rows.
 
 ## 6. The switch
 
@@ -109,6 +154,17 @@ database every test SKIPS, and the run reads green.
 | e. Org A cannot claim, settle or read a job of org B | `test_r8_org_a_cannot_claim_settle_or_read_a_job_of_org_b` |
 | f. NaN, Infinity and a large payload are refused | `test_r8_a_bad_payload_is_refused_at_enqueue_and_writes_nothing` |
 | g. A frozen clock, no sleeps | every test passes `now` |
+
+The review round adds these tests:
+
+| Rule | Test |
+|---|---|
+| The order of the three time limits | `test_the_handler_timeout_is_below_the_lease_and_the_idle_timeout` |
+| A hung handler fails its try, and the next org runs | `test_r8_a_hung_handler_times_out_and_the_next_org_still_runs` |
+| `jobs.failed` logs once, at the last try only | `test_r8_a_job_that_fails_for_good_logs_jobs_failed_once` |
+| One summary line for a tick | `test_a_tick_that_ran_a_job_logs_one_summary_line` |
+| The worker reads the clock for each job | `test_r8_the_worker_reads_the_clock_for_each_job` |
+| A lost settle rolls back the handler | `test_r8_a_complete_that_changes_no_row_rolls_back_the_handler` |
 
 ## 8. Out of scope of BR-1a
 

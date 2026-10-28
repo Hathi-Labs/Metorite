@@ -31,7 +31,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from acb_common import get_logger
 from sqlalchemy import text
+
+_log = get_logger("jobs.queue")
 
 #: The four states, as migration 312's CHECK ``jobs_state`` holds them.
 STATES: tuple[str, ...] = ("queued", "running", "done", "failed")
@@ -270,8 +273,10 @@ async def claim(db: Any, kinds: list[str], *, now: datetime,
     """Claim the oldest due job of one of *kinds*, or answer None.
 
     The caller commits, so the claim lasts after this transaction. A running
-    row with a lost lease at its last attempt turns ``failed``, and the
-    claim takes the next row.
+    row with a lost lease at its last attempt turns ``failed`` and logs
+    ``jobs.lease_expired`` at error, and the claim takes the next row. A lost
+    lease with attempts left logs ``jobs.lease_expired`` at warning, and the
+    claim takes that row again.
     """
     if not kinds:
         return None
@@ -283,7 +288,14 @@ async def claim(db: Any, kinds: list[str], *, now: datetime,
         if row.state == "running" and int(row.attempts) >= int(row.max_attempts):
             await db.execute(text(_EXPIRE_SQL), {
                 "id": str(row.id), "now": now, "chars": ERROR_CHARS})
+            _log.error("jobs.lease_expired", job_id=str(row.id), kind=row.kind,
+                       attempts=int(row.attempts), org=str(row.organization_id),
+                       outcome="failed")
             continue
+        if row.state == "running":
+            _log.warning("jobs.lease_expired", job_id=str(row.id), kind=row.kind,
+                         attempts=int(row.attempts), org=str(row.organization_id),
+                         outcome="claimed_again")
         token = str(uuid.uuid4())
         await db.execute(text(_TAKE_SQL), {
             "id": str(row.id), "token": token, "now": now, "lease_until": now + lease})
