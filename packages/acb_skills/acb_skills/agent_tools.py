@@ -36,6 +36,7 @@ import contextlib
 import contextvars
 import json as _json
 import os as _os
+import textwrap
 import uuid as _uuid
 from collections.abc import Iterator
 from typing import Any
@@ -666,8 +667,7 @@ async def spawn_subagents(jobs: str) -> str:
     )
 
     def _clip(text: str) -> str:
-        one = " ".join(text.split())
-        return one if len(one) <= 60 else one[:57].rstrip() + "..."
+        return textwrap.shorten(text, width=60, placeholder="...")
 
     blocks: list[str] = []
     for job, result in zip(plan.jobs, results, strict=True):

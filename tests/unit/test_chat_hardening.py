@@ -111,10 +111,13 @@ def test_delegation_paths_have_wallclock_timeouts():
     from acb_skills import agent_tools as at
 
     assert at._SUB_AGENT_TIMEOUT > 0
-    for fn in (at.call_agent, at.call_agents_parallel):
-        src = inspect.getsource(fn)
-        assert "wait_for" in src, f"{fn.__name__} lacks a delegation timeout"
-        assert "_SUB_AGENT_TIMEOUT" in src
+    src = inspect.getsource(at.call_agent)
+    assert "wait_for" in src, "call_agent lacks a delegation timeout"
+    assert "_SUB_AGENT_TIMEOUT" in src
+    # WS-67 OA-9b: the fan-out runs each branch through `_run_branch`, which
+    # holds the wait_for. The tool passes the clock in.
+    assert "_SUB_AGENT_TIMEOUT" in inspect.getsource(at.call_agents_parallel)
+    assert "wait_for" in inspect.getsource(at._run_branch)
 
 
 @pytest.mark.asyncio
