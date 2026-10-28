@@ -33,6 +33,7 @@ describe("quote-bare-blockquote-needs-attribution", () => {
     expect(isAttribution("On Mon, Ana wrote: ")).toBe(true);
     expect(isAttribution("From: Ana <ana@x.com>\nSent: Monday, 27 October 2026 10:00\nTo: Ops")).toBe(true);
     expect(isAttribution("From: Ana\nDate: 27 Oct 2026")).toBe(true);
+    expect(isAttribution("Fyi\n---------- Forwarded message ---------")).toBe(true);
   });
 
   it("the bare blockquote rule asks isAttribution, and no unconditional fallback is left", () => {

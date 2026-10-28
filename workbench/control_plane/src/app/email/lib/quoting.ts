@@ -93,7 +93,10 @@ function textBefore(el: Element, max = 400): string {
   while (node && out.length < max) {
     let prev: Node | null = node.previousSibling;
     while (prev && out.length < max) {
-      out = (prev.textContent ?? "") + out;
+      // A line break or an element ends a line, so "From: A<br>Sent: …"
+      // keeps its fields apart for the header test.
+      const text = prev.nodeName === "BR" ? "\n" : (prev.textContent ?? "");
+      out = (prev.nodeType === 1 ? `${text}\n` : text) + out;
       prev = prev.previousSibling;
     }
     node = node.parentNode;
@@ -107,6 +110,7 @@ export function isAttribution(text: string): boolean {
   const t = text.replace(/\u00a0/g, " ").trim();
   if (!t) return false;
   if (/\bwrote:\s*$/i.test(t)) return true;
+  if (/-{2,}\s*Forwarded message\s*-{2,}\s*$/i.test(t)) return true;
   const tail = t.slice(-300);
   return /\bFrom:\s/i.test(tail) && /\b(Sent|Date):/i.test(tail);
 }
