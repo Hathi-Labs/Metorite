@@ -155,14 +155,11 @@ describe("the pipeline settings in Mirror mode", () => {
         leadStatuses: [],
         lostReasons: [],
         saving: false,
-        canPullStages: true,
         onSaveStatus: async () => true,
         onRemoveStatus: async () => true,
-        onReorderStatuses: async () => undefined,
         onSaveLostReason: async () => true,
         onRemoveLostReason: async () => true,
         onReorderLostReasons: async () => undefined,
-        onPullStages: async () => null,
       }),
     );
   it("says where the stages come from, and shuts every control", () => {

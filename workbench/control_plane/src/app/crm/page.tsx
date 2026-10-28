@@ -1078,6 +1078,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               questions={questions.gate === "on" ? <OpenQuestionsCard /> : undefined}
               rules={rules.gate === "on" ? <BusinessRulesCard /> : undefined}
               pipelines={pipelines}
+              pipelineId={pipelineId}
               showAdminCards={ctx.isAdmin}
               dealStatuses={store.dealStatuses}
               leadStatuses={store.leadStatuses}
@@ -1087,7 +1088,6 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               studioAdmin={studioAdmin}
               onSaveStatus={store.saveStatus}
               onRemoveStatus={store.removeStatus}
-              onReorderStatuses={store.reorderStatuses}
               onSaveLostReason={store.saveLostReason}
               onRemoveLostReason={store.removeLostReason}
               onReorderLostReasons={store.reorderLostReasons}

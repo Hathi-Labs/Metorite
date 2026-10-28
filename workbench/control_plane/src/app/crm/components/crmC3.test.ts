@@ -24,7 +24,12 @@ import {
 import type { LostReason, PipelineLane, Status, StatusType } from "../lib/types";
 import { DEFAULT_VIEW } from "../lib/urlState";
 import KanbanBoard from "./KanbanBoard";
-import PipelineSettings, { MirrorReasonGrid, MirrorStatusGrid } from "./PipelineSettings";
+import PipelineSettings, {
+  MirrorReasonGrid,
+  MirrorStageForm,
+  NativeStageForm,
+  StageList,
+} from "./PipelineSettings";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 const noop = async () => true;
@@ -159,6 +164,10 @@ describe("a hidden lane on a board", () => {
 });
 
 // ── Done when 18: the Mirror editor and both resets ──────────────────────
+//
+// CRM-U11 (D130) rebuilt the editor: one line per row, and an Edit dialog.
+// The row "Reset to Zoho" became "Use Zoho's value" in the dialog, and
+// "Reset order to Zoho" became the "Same as Zoho" choice of "Column order".
 
 describe("the Mirror editor", () => {
   const qualify = status("Qualify", {
@@ -180,15 +189,25 @@ describe("the Mirror editor", () => {
 
   const grid = (statuses: Status[]) =>
     renderToStaticMarkup(
-      createElement(MirrorStatusGrid, {
+      createElement(StageList, {
         kind: "deal",
-        title: "Deal stages",
-        blurb: "Zoho owns the stages.",
+        mode: "mirror",
         statuses,
         saving: false,
         onSave: noop,
         onOrder: noop,
         onResetOrder: noop,
+      })
+    );
+  /** The Edit dialog of one Mirror stage. `Modal` portals, so the form renders alone. */
+  const dialog = (stage: Status) =>
+    renderToStaticMarkup(
+      createElement(MirrorStageForm, {
+        kind: "deal",
+        status: stage,
+        saving: false,
+        onSave: noop,
+        onCancel: () => undefined,
       })
     );
   /** The markup of the one button whose text holds *label*, in *html*. */
@@ -198,25 +217,27 @@ describe("the Mirror editor", () => {
     return found!.split("</button>")[0];
   };
 
-  it("shows the Zoho value beside the Metorite value on each row", () => {
+  it("shows the win chance as text on each row, and the Zoho value beside the Metorite value in Edit", () => {
     const html = grid([qualify, removed]);
-    expect(html).toContain("Zoho 10%");
-    expect(html).toContain("Zoho 40%");
-    expect(html).toContain('aria-label="Metorite probability"');
-    expect(html).toContain('value="33"');
+    expect(html).toContain(">33%<");
     expect(html).toContain("Removed in Zoho");
     expect(html).toContain('draggable="true"');
-    // No source field is editable: the name is text, and there is no delete.
+    expect(html).toContain('aria-label="Edit Qualify"');
+    // One line per row: no input on a row, no source field, no delete.
+    expect(html).not.toContain("<input");
     expect(html).not.toMatch(/aria-label="(Delete|Remove)/);
+    expect(dialog(qualify)).toContain("Zoho: 10%");
+    expect(dialog(qualify)).toContain('value="33"');
+    expect(dialog(removed)).toContain("Zoho: 40%");
+    expect(dialog(removed)).toContain('placeholder="40"');
   });
 
-  it("offers Reset to Zoho on a row with an overlay, and Reset order after an admin order", () => {
-    const withOverlay = grid([qualify]);
-    expect(button(withOverlay, "Reset to Zoho")).not.toContain('disabled=""');
-    expect(button(withOverlay, "Reset order to Zoho")).not.toContain('disabled=""');
-    const plain = grid([status("Plain", { source_probability: 10 })]);
-    expect(button(plain, "Reset to Zoho")).toContain('disabled=""');
-    expect(button(plain, "Reset order to Zoho")).toContain('disabled=""');
+  it("offers \"Use Zoho's value\" with an overlay, and shows \"Custom\" after an admin order", () => {
+    expect(button(dialog(qualify), "Use Zoho")).not.toContain('disabled=""');
+    const plain = status("Plain", { source_probability: 10 });
+    expect(button(dialog(plain), "Use Zoho")).toContain('disabled=""');
+    expect(button(grid([qualify]), "Custom")).toContain('aria-selected="true"');
+    expect(button(grid([plain]), "Same as Zoho")).toContain('aria-selected="true"');
   });
 
   it("resets the probability and the colour, and keeps hide and the rot threshold", () => {
@@ -290,17 +311,16 @@ describe("the Mirror editor", () => {
           saving: false,
           onSaveStatus: noop,
           onRemoveStatus: noop,
-          onReorderStatuses: async () => undefined,
           onSaveLostReason: noop,
           onRemoveLostReason: noop,
           onReorderLostReasons: async () => undefined,
         })
       );
     const admin = draw(true);
-    expect(admin).toContain("Reset order to Zoho");
-    expect(admin).toContain("Zoho 10%");
+    expect(admin).toContain("Same as Zoho");
+    expect(admin).toContain('aria-label="Edit Qualify"');
     const member = draw(false);
-    expect(member).not.toContain("Reset order to Zoho");
+    expect(member).not.toContain("Same as Zoho");
     expect(member).not.toContain('draggable="true"');
   });
 });
@@ -308,7 +328,9 @@ describe("the Mirror editor", () => {
 // ── Native mode adds hide (item 15) ──────────────────────────────────────
 
 describe("the Native grid", () => {
-  it("has a hidden box on each stage and each lost reason", () => {
+  it("hides a stage in its Edit dialog, and a lost reason with its box", () => {
+    // CRM-U11: the stage row lost its "hidden" box. The Edit dialog holds
+    // "Show this column on the board", and a hidden stage shows a tag.
     const html = renderToStaticMarkup(
       createElement(PipelineSettings, {
         dealStatuses: [status("Open", { type: "open" as StatusType })],
@@ -317,15 +339,38 @@ describe("the Native grid", () => {
         saving: false,
         onSaveStatus: noop,
         onRemoveStatus: noop,
-        onReorderStatuses: async () => undefined,
         onSaveLostReason: noop,
         onRemoveLostReason: noop,
         onReorderLostReasons: async () => undefined,
       })
     );
-    expect(html.match(/>hidden</g)?.length).toBe(2);
+    expect(html.match(/>hidden</g)?.length).toBe(1);
     // The Native grid keeps its own source fields: no Zoho column.
     expect(html).not.toContain("Zoho ");
+    const form = renderToStaticMarkup(
+      createElement(NativeStageForm, {
+        kind: "deal",
+        status: status("Open", { hidden: true }),
+        saving: false,
+        onSave: noop,
+        onAdd: noop,
+        onRemove: noop,
+        onCancel: () => undefined,
+      })
+    );
+    expect(form).toContain("Show this column on the board");
+    expect(form).not.toMatch(/type="checkbox"[^>]*checked=""[^>]*>[^<]*Show this column/);
+    const list = renderToStaticMarkup(
+      createElement(StageList, {
+        kind: "deal",
+        mode: "native",
+        statuses: [status("Open"), status("Parked", { hidden: true, position: 10 })],
+        saving: false,
+        onSave: noop,
+        onOrder: noop,
+      })
+    );
+    expect(list).toContain(">Hidden<");
   });
 });
 

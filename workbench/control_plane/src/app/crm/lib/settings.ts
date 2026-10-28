@@ -16,8 +16,8 @@
 //      says so before the request, because "422" in a toast is not an answer
 //      to "why can I not save this row".
 
-import { REQUIREABLE_FIELDS } from "./board";
-import type { StageMetadataReport, StatusKind, StatusType } from "./types";
+import { orderLanes, REQUIREABLE_FIELDS } from "./board";
+import type { StageMetadataReport, Status, StatusKind, StatusType } from "./types";
 
 /** Lanes are numbered in tens so a lane can be inserted between two by hand. */
 export const POSITION_STEP = 10;
@@ -338,6 +338,67 @@ export function orderAfterDrop<T extends { id: string }>(
 ): string[] | null {
   const moved = moveItem(rows, from, to);
   return moved === rows ? null : moved.map((row) => row.id);
+}
+
+// ── CRM-U11: the stage list is the board (D130, crm_platform.md §20.15) ───
+
+/**
+ * A part order, merged into the full order (CRM-U11 item 5).
+ *
+ * The order route takes every id of the kind. With two pipelines the stage
+ * list shows a part of them. The ids of the part take their own slots of the
+ * full order, in their new order, and each other id keeps its slot. An id of
+ * the part that the full order does not hold is dropped, and a repeated id
+ * counts once, so each id of `fullIds` comes back once.
+ */
+export function mergePartOrder(
+  fullIds: readonly string[],
+  partIds: readonly string[]
+): string[] {
+  const known = new Set(fullIds);
+  const queue = [...new Set(partIds)].filter((id) => known.has(id));
+  const inPart = new Set(queue);
+  let next = 0;
+  return fullIds.map((id) => (inPart.has(id) ? queue[next++] : id));
+}
+
+/**
+ * The full order after one move in the list on screen, or null when nothing
+ * moved. `shownIds` is the list in its order, and `fullIds` is every id of
+ * the kind in the current order.
+ */
+export function orderAfterMove(
+  fullIds: readonly string[],
+  shownIds: readonly string[],
+  from: number,
+  to: number
+): string[] | null {
+  const shown = [...shownIds];
+  const moved = moveItem(shown, from, to);
+  return moved === shown ? null : mergePartOrder(fullIds, moved);
+}
+
+/**
+ * Every id of a Native kind with a new stage before the first won or lost
+ * stage (D130 rule 4). The create route puts a new stage at the end, so the
+ * order route then moves it. Null when no won or lost stage exists, because
+ * the end is already the right place.
+ */
+export function orderWithNewStage(
+  statuses: readonly Status[],
+  addedId: string
+): string[] | null {
+  const ordered = orderLanes(
+    statuses
+      .filter((status) => status.id !== addedId)
+      .map((status) => ({ status, pipeline_position: null })),
+    "native"
+  ).map(({ status }) => status);
+  const at = ordered.findIndex((status) => status.type === "won" || status.type === "lost");
+  if (at < 0) return null;
+  const ids = ordered.map((status) => status.id);
+  ids.splice(at, 0, addedId);
+  return ids;
 }
 
 // ── CRM-C1: the drafts of the settings rows ───────────────────────────────
