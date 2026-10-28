@@ -511,6 +511,32 @@ class TestTheInstructionsOfTheRoutine:
         assert {"claim_task", "set_task_status", "add_comment"} <= WRITE_TOOLS
 
 
+class TestAskedWork:
+    """MCP-Ga (D135): work that a person asks for in chat gets a task first.
+
+    The owner saw agents skip the board, because every step started from
+    ``my_work`` and most sessions start from a request in chat.
+    """
+
+    _NEEDLES = ("search_tasks", "create_task",
+                "A session that only reads or answers needs no task",
+                "what is done, what is left and the next step")
+
+    async def test_a_write_connection_is_told_to_find_or_make_the_task(self, armed):
+        text = await _instructions()
+        for needle in self._NEEDLES:
+            assert needle in text, needle
+
+    async def test_the_rule_comes_after_the_steps_it_names(self, armed):
+        text = await _instructions()
+        assert text.index("6. End with exactly one disposition") < text.index(
+            "follow steps 4 to 6")
+
+    async def test_a_read_only_connection_is_not_told_to_make_a_task(self, armed):
+        text = await _instructions(READ_ONLY)
+        assert "create_task" not in text and "search_tasks" not in text
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # P11, P12: the checks of §9.6 and the other methods
 # ═══════════════════════════════════════════════════════════════════════════

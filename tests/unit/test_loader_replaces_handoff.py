@@ -65,6 +65,9 @@ ORG = "0a0a0a0a-0000-4000-8000-0000000000f1"
 MEMBER = "jane@acme.test"
 SESSION = "chat-oa7i-1"
 ALL = frozenset({"email", "email-setup"})
+CRM = "crm-assistant"
+CRM_PACK = frozenset({"crm-records"})
+CRM_TOOLS = tuple(sf.SKILL_FAMILIES["crm-records"]["tools"])
 EMAIL_TOOLS = tuple(sf.SKILL_FAMILIES["email"]["tools"])
 SETUP_TOOLS = tuple(sf.SKILL_FAMILIES["email-setup"]["tools"])
 #: Words with no email word, so layer (a) loads no pack.
@@ -132,6 +135,8 @@ def _stub_owner(monkeypatch) -> None:
     names = EMAIL_TOOLS + SETUP_TOOLS
     stub = types.SimpleNamespace(_agent_tools=lambda: [_probe(n) for n in names])
     monkeypatch.setitem(ti._PACK_OWNER_MODULES, EA, stub)
+    crm_stub = types.SimpleNamespace(_agent_tools=lambda: [_probe(n) for n in CRM_TOOLS])
+    monkeypatch.setitem(ti._PACK_OWNER_MODULES, CRM, crm_stub)
     monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda _name: frozenset())
 
 
@@ -721,3 +726,110 @@ async def test_the_mcp_lookahead_reads_metadata_only(monkeypatch) -> None:
     monkeypatch.setattr(mcp_registry.store, "load_headers_by_prefix", headers)
     assert await mcp_registry.enabled_meta(ORG) == []
     assert called == ["migrate", "list"]
+
+
+# ── 9. The CRM assistant (OA-8a, `crm-records`) ─────────────────────────────
+
+
+def _crm_tool_present(agent: Any) -> bool:
+    return "crm_assistant" in _names(agent.default_options["tools"])
+
+
+async def test_crm_is_reached_with_no_pack_held_and_the_texts_agree(
+    store, agents, monkeypatch,
+) -> None:
+    """OA-8a gives CRM no persona bullet (`NO_PERSONA_BULLETS`), so the
+    flag-off persona stays byte-identical. The plan still reaches the owner:
+    the `crm_assistant` tool leaves, the persona stays as it was, and a
+    hand-off answers a refusal that names `load_skill_tools` and
+    `crm-records`. The rules of the pack say that no CRM agent exists, so the
+    refusal and the rules agree. Mutation: demand a bullet of every owner in
+    `_available` → CRM is never reached → red."""
+    ran = _fake_run_agent(monkeypatch)
+    persona = agents[0].default_options["instructions"]
+    assert _crm_tool_present(agents[0]), "non-vacuity"
+    applied = await _apply(agents, allowed=CRM_PACK)
+    assert applied is not None and applied.builds == ()
+    assert applied.record.via_loader == {CRM} and applied.record.replaced == {CRM}
+    assert not _crm_tool_present(agents[0])
+    assert agents[0].default_options["instructions"] == persona
+    provider = _provider(agents[0])
+    assert provider is not None and provider.loader.offered == ("crm-records",)
+    assert getattr(agents[0], ti.PACK_REFUSED_ATTR) == {CRM}
+    with _in_run(applied):
+        refused = await agent_tools.call_agent(CRM, "How is the pipeline?")
+        background = await agent_tools.call_agent_background(CRM, "Sync the notes.")
+        await asyncio.sleep(0.05)
+    assert refused == tp.LOADER_HANDOFF_REFUSED.format(owner=CRM, packs="crm-records")
+    assert "load_skill_tools" in refused and "crm-records" in refused
+    assert "No CRM agent exists" in tp.PACKS["crm-records"].rules
+    assert "No CRM agent exists" in tp.PACKS["crm-records"].delegation_refusal
+    assert ran == [CRM] and background != refused, "the background hand-off still runs"
+
+
+async def test_both_owners_are_reached_together(store, agents) -> None:
+    """With both owners allowed and room, both specialists leave. The persona
+    loses the email bullet and nothing else. Mutation: stop at the first owner
+    of the plan → one specialist stays → red."""
+    persona = agents[0].default_options["instructions"]
+    applied = await _apply(agents, allowed=ALL | CRM_PACK)
+    assert applied is not None and applied.record.via_loader == {EA, CRM}
+    tools = _names(agents[0].default_options["tools"])
+    assert "email_assistant" not in tools and "crm_assistant" not in tools
+    assert agents[0].default_options["instructions"] == persona.replace(_bullet(), "", 1)
+    provider = _provider(agents[0])
+    assert provider is not None and provider.loader.offered == ("email", "email-setup", "crm-records")
+
+
+@pytest.mark.parametrize(("base", "via"), [(60, True), (102, False)])
+async def test_crm_is_not_reached_over_the_cap(
+    base: int, via: bool, store, agents, monkeypatch,
+) -> None:
+    """The cap reads the tools of `crm-records` against 110. At base 102 the
+    count is 103 with the load tool, and the 9 pack tools do not fit even with
+    the specialist gone, so the tool and the hand-off stay. Mutation: drop the
+    cap check from the plan → base 102 loses the specialist → red."""
+    _base(monkeypatch, base)
+    assert 102 + 1 - 1 + len(CRM_TOOLS) > tp.MAX_REQUEST_TOOLS, "non-vacuity of the cap"
+    applied = await _apply(agents, allowed=CRM_PACK)
+    assert _crm_tool_present(agents[0]) is (not via)
+    assert (applied is not None and applied.record.via_loader == {CRM}) is via
+    if not via:
+        assert applied is None or tp.delegation_refusal(CRM, {tp.PACKS_KEY: applied.record}) is None
+
+
+async def test_a_refused_crm_load_opens_the_hand_off(store, agents, monkeypatch) -> None:
+    """The fallback of fix round 1 holds for CRM. A true count over the cap
+    refuses the load, the text names `call_agent` and `crm-assistant`, and the
+    hand-off runs. Mutation: drop the mark → the refusal and the hand-off
+    point at each other → red."""
+    ran = _fake_run_agent(monkeypatch)
+    _base(monkeypatch, 55)
+    applied = await _apply(agents, allowed=CRM_PACK)
+    assert applied is not None and applied.record.via_loader == {CRM}
+    provider = _provider(agents[0])
+    assert provider is not None
+    live = _dummies(105)
+    with _in_run(applied):
+        assert (await agent_tools.call_agent(CRM, "x")).startswith("Not run.")
+        answer = await _call(provider.loader, "crm-records", live)
+        out = await agent_tools.call_agent(CRM, "How is the pipeline?")
+    assert answer == tp.LOAD_NO_PATH.format(label=tp._label("crm-records"), slug="crm-records", owner=CRM)
+    assert "call_agent" in answer and CRM in answer
+    assert ran == [CRM] and "ran" in out and applied.record.via_failed == {CRM}
+
+
+async def test_an_owner_with_no_bullet_and_no_exemption_is_not_reached(
+    store, agents, monkeypatch,
+) -> None:
+    """Only an owner in `NO_PERSONA_BULLETS` may lack a bullet. Take CRM out of
+    that set and the plan does not reach it: the persona would keep no text to
+    swap, and a missing bullet of any other owner must not strand the model.
+    The specialist and the hand-off stay. Mutation: accept a missing bullet
+    for every owner → CRM is reached → red."""
+    monkeypatch.setattr(tp, "NO_PERSONA_BULLETS", frozenset())
+    persona = agents[0].default_options["instructions"]
+    applied = await _apply(agents, allowed=CRM_PACK)
+    assert _crm_tool_present(agents[0])
+    assert agents[0].default_options["instructions"] == persona
+    assert applied is None or applied.record.via_loader == frozenset()
