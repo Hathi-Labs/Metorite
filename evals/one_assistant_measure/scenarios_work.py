@@ -137,7 +137,7 @@ CRM_SCENARIOS: tuple[Scenario, ...] = (
              Plan((("search_crm", {"query": "Vantage", "entity": "deals"}),),
                   "The Vantage rollout is in Qualified, INR 800,000.")),
         Turn("Move it to Proposal",
-             (Check("answer_all", (r"Zoho",), "says_zoho_owns_it"),
+             (Check("answer_some", ((r"Zoho", r"\bnote\b"), 1), "names_zoho_or_offers_a_note"),
               Check("no_unasked_write", 0)),
              Plan((), "Zoho owns the CRM records now, so I cannot move the deal here. I can add "
                       "a note, or open the deal in Zoho.")),

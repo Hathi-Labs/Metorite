@@ -519,6 +519,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 spawned=sum(1 for name, _ in record.tool_calls if name == "spawn_subagents"),
                 needs=next((str(c.arg) for c in turn.checks if c.kind == "right_pack"), ""),
                 reachable=reachable_of(tap.events[marks[3]:]),
+                write_cards=ck.write_cards_of(record.events),
             )
             result = ck.check_turn(turn, obs)
             calls = [call_row(c) for c in harness.model_calls[marks[2]:]]
@@ -539,6 +540,9 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 "work_tools": [n for n, _, _ in [*obs.work_calls, *obs.sub_work_calls]],
                 "specialist_handoffs": {k: len(v) for k, v in obs.handoffs.items()},
                 "loaded_by_model": obs.loaded,
+                "handoff_reasons": {
+                    owner: ck.handoff_reason(owner, obs.needs, obs.reachable)
+                    for owner in obs.handoffs} if arm == "pack" and obs.owners else {},
                 "work_writes": [f"{m} {p}" for m, p, _ in obs.work_writes],
                 "unknown_routes": work.unknown[:],
                 "max_tools": max((c["tools"] for c in calls if c["agent"] == ORCHESTRATOR),
@@ -554,10 +558,16 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
     return rows
 
 
-def reachable_of(events: list[dict[str, Any]]) -> frozenset[str]:
+def reachable_of(events: list[dict[str, Any]]) -> frozenset[str] | None:
     """The packs that the run held or could load in a turn, from the log of the
     pack code: the packs it loaded (layer a), the packs it offered to the loader,
-    and the packs that the model loaded (layer b)."""
+    and the packs that the model loaded (layer b).
+
+    None when the log has no ``executor.pack_plan`` line. The code logs it only
+    when it builds a pack or offers the loader, so a run where the flag did
+    nothing logs none. The checks read None as "unknown" and fail."""
+    if not any(e["event"] == "executor.pack_plan" for e in events):
+        return None
     from acb_skills import tool_packs
 
     known = {slug for slug in tool_packs.PACKS}
@@ -809,11 +819,24 @@ def extra_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
         "cache_share_load_turns": share(loaded_turns),
         "cache_share_other_turns": share(other_turns),
         "specialist_handoffs": dict(kinds),
+        "app_handoff_turns": app_handoff_turns(rs),
         "guard_failures": sorted({f"{r['scenario']}#{r['turn']} {k}" for r in rs
                                   for k in GUARD_CHECKS if r["checks"].get(k) is False}),
         "by_set": {name: set_summary([r for r in rs if r.get("set", "email") == name])
                    for name in sorted({r.get("set", "email") for r in rs})},
     }
+
+
+def app_handoff_turns(rs: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    """Fix round 1 (P2-b). The pack-arm turns that handed work to an owner whose
+    packs are on, by owner and by reason (:func:`checks.handoff_reason`). A hand-off
+    that passes its check is still a turn that the pack did not serve."""
+    out: dict[str, dict[str, int]] = {}
+    for r in rs:
+        for owner, why in (r.get("handoff_reasons") or {}).items():
+            out.setdefault(owner, {}).setdefault(why, 0)
+            out[owner][why] += 1
+    return out
 
 
 def set_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -872,6 +895,12 @@ def stop_results(summary: dict[str, Any]) -> list[tuple[int, str, str]]:
         top = packs.get("tools_per_call_max")
         out.append((8, "n/a" if top is None else ("STOP" if top > MAX_REQUEST_TOOLS else "ok"),
                     f"at most {top} tools in a request, cap {MAX_REQUEST_TOOLS}"))
+    if packs:
+        by = packs.get("app_handoff_turns") or {}
+        total = sum(n for reasons in by.values() for n in reasons.values())
+        fault = sum(reasons.get("model_choice", 0) for reasons in by.values())
+        out.append((11, "STOP" if fault else ("REVIEW" if total else "ok"),
+                    f"{total} hand-off turns on a packed app, {fault} by model choice: {by}"))
     for n, why in ((3, "needs the general set and a run with no packs"),
                    (4, "needs the general set"), (9, "needs the spawn arm (OA-9b)"),
                    (10, "needs the spawn arm (OA-9b)")):
@@ -954,7 +983,8 @@ def report(data: dict[str, Any]) -> str:
                 ("Tools in a request, most", "tools_per_call_max"),
                 ("Cache share, turns with a model load", "cache_share_load_turns"),
                 ("Cache share, other turns", "cache_share_other_turns"),
-                ("Hand-offs to an owner", "specialist_handoffs")):
+                ("Hand-offs to an owner", "specialist_handoffs"),
+                ("Hand-off turns on a packed app, by owner and reason", "app_handoff_turns")):
             lines.append(f"| {label} | " + " | ".join(str(s[a].get(key)) for a in arms) + " |")
         lines += ["", "| Stop result of §4.3.3 | State | Why |", "|---|---|---|"]
         lines += [f"| {n} | {state} | {why} |" for n, state, why in stop_results(s)]

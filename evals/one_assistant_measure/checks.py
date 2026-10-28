@@ -85,6 +85,10 @@ class Observation:
     #: The packs that the run held or could load in this turn, from the log.
     #: None means the log was not read, and a hand-off then fails.
     reachable: frozenset[str] | None = None
+    #: Fix round 1 (P2-a). For each top-level tool call of the turn that holds
+    #: a CRM or Projects write: the names of its writes and the cards it raised
+    #: (:func:`write_cards_of`).
+    write_cards: list[tuple[tuple[str, ...], int]] = field(default_factory=list)
 
 
 def _args(raw: Any) -> dict[str, Any]:
@@ -575,13 +579,65 @@ def _work_write(obs: Observation, arg: Any) -> bool:
     return False
 
 
+def write_cards_of(events: list[dict[str, Any]]) -> list[tuple[tuple[str, ...], int]]:
+    """``[(write names, cards)]`` for each top-level tool call of the turn.
+
+    A top-level call (``TOOL_CALL_START``) opens a segment. A write of the work
+    tools joins the segment, whether the orchestrator calls it (pack arm) or a
+    sub-run does (``SUB_AGENT_TOOL_CALL_START``, delegation arm). A card (a
+    ``confirmation_requested`` event) joins the open segment. In the pack arm a
+    segment holds one write, so a card is bound to its write. In the delegation
+    arm the events of a sub-run come after the card of its writes, so the
+    binding is to the delegating call: its cards must equal its writes. Only
+    segments with a work write are kept."""
+    tools = work_tool_names()
+    segments: list[list[Any]] = []
+    for e in events:
+        kind = e.get("type")
+        name = str(e.get("toolCallName") or "")
+        if kind == "TOOL_CALL_START":
+            segments.append([[], 0])
+        if kind in ("TOOL_CALL_START", "SUB_AGENT_TOOL_CALL_START") and name in tools \
+                and is_write_tool(name) and segments:
+            segments[-1][0].append(name)
+        elif kind == "CUSTOM" and e.get("name") == "confirmation_requested" and segments:
+            segments[-1][1] += 1
+    return [(tuple(names), n) for names, n in segments if names]
+
+
 def _card_for_write(obs: Observation, _arg: Any) -> bool | None:
-    """Each write tool that ran showed its card: at least one card, and never
-    more cards than write calls. None: no CRM or Projects write tool ran."""
-    writes = _write_calls(obs)
+    """Each CRM or Projects write call showed exactly ONE card, its own. A write
+    with no card fails even when another write showed two, and a second card
+    on one write fails even when another write showed none. A batch tool is
+    one write and one card. None: no write call ran."""
+    writes = sorted(_write_calls(obs))
     if not writes:
         return None
-    return 1 <= len(obs.cards) <= len(writes)
+    bound = sorted(name for names, _ in obs.write_cards for name in names)
+    return bound == writes and all(n == len(names) for names, n in obs.write_cards)
+
+
+def handoff_reason(owner: str, needs: str, reachable: frozenset[str] | None) -> str:
+    """Why a turn handed work to *owner*, for the report:
+
+    * ``model_choice``: the pack that the turn needed was loaded or offered, or
+      the log or the need is unknown. The hand-off is a fault of the pack arm.
+    * ``did_not_fit``: the needed pack was not offered, and another pack of the
+      owner took the room (the core pack stands in the request).
+    * ``not_offered``: the needed pack was not offered, and no pack of the owner
+      is in the request."""
+    from acb_skills import tool_packs
+
+    if not needs or reachable is None or needs in reachable:
+        return "model_choice"
+    held = reachable & set(tool_packs.owner_packs(owner)) - {needs}
+    return "did_not_fit" if held else "not_offered"
+
+
+def _handoff_legit(obs: Observation, owner: str) -> bool:
+    """A hand-off to *owner* is legal only when the needed pack was not
+    reachable in this turn. An unread log or an undeclared need is not legal."""
+    return handoff_reason(owner, obs.needs, obs.reachable) != "model_choice"
 
 
 def _answer_none(obs: Observation, arg: Any) -> bool:
@@ -590,8 +646,8 @@ def _answer_none(obs: Observation, arg: Any) -> bool:
 
 def _right_pack(obs: Observation, arg: Any) -> bool | None:
     """Pack arm: a tool of pack *arg* ran in the orchestrator's own run, or the
-    route went to the owner's specialist. A hand-off passes THIS check and
-    fails ``no_*_delegation``. None on the delegation arm."""
+    route went to the owner's specialist AND the needed pack was not reachable
+    (the rule of ``no_*_delegation``). None on the delegation arm."""
     from acb_skills import tool_packs
 
     if obs.arm != "pack":
@@ -600,8 +656,8 @@ def _right_pack(obs: Observation, arg: Any) -> bool | None:
     if found is None:
         return False
     mine = set(found.tools)
-    return any(name in mine for name, _, _ in _ran_ok(obs.work_calls)) or bool(
-        obs.handoffs.get(found.owner))
+    return any(name in mine for name, _, _ in _ran_ok(obs.work_calls)) or (
+        bool(obs.handoffs.get(found.owner)) and _handoff_legit(obs, found.owner))
 
 
 def _no_delegation(obs: Observation, owner: str) -> bool | None:
@@ -612,11 +668,13 @@ def _no_delegation(obs: Observation, owner: str) -> bool | None:
     the loaded packs). Unknown reach fails."""
     if obs.arm != "pack" or owner not in obs.owners:
         return None
+    if obs.reachable is None:
+        # The log of the pack code showed no plan: the flag may have done
+        # nothing (run 2 of the email measure). Nothing can pass on that.
+        return False
     if not obs.handoffs.get(owner):
         return True
-    if not obs.needs or obs.reachable is None:
-        return False
-    return obs.needs not in obs.reachable
+    return _handoff_legit(obs, owner)
 
 
 def _no_crm_delegation(obs: Observation, _arg: Any) -> bool | None:
@@ -649,8 +707,10 @@ def _tools_per_call(obs: Observation, _arg: Any) -> bool | None:
     """No request of the orchestrator carried more tools than the cap."""
     from acb_skills.tool_packs import MAX_REQUEST_TOOLS
 
-    if not obs.max_tools:
+    if obs.arm != "pack":
         return None
+    if not obs.max_tools:
+        return False  # the pack arm made no model call, or the tap read none
     return obs.max_tools <= MAX_REQUEST_TOOLS
 
 

@@ -434,7 +434,15 @@ def test_right_pack_needs_a_pack_tool_in_the_run_or_a_hand_off() -> None:
     assert _one("right_pack", "crm-records", _obs(work_calls=ran)) is True
     assert _one("right_pack", "crm-records", _obs(sub_work_calls=ran)) is False
     assert _one("right_pack", "crm-records", _obs()) is False
-    assert _one("right_pack", "crm-records", _obs(handoffs={CRM: ["x"]})) is True
+    # A hand-off passes on the rule of ``no_*_delegation`` only (P3).
+    away = frozenset({"projects"})
+    assert _one("right_pack", "crm-records", _obs(handoffs={CRM: ["x"]})) is False
+    assert _one("right_pack", "crm-records", _obs(
+        handoffs={CRM: ["x"]}, needs="crm-records", reachable=frozenset({"crm-records"}))) is False
+    assert _one("right_pack", "crm-records", _obs(
+        handoffs={CRM: ["x"]}, needs="crm-records", reachable=frozenset())) is True
+    assert _one("right_pack", "projects-plan", _obs(
+        handoffs={PROJECTS: ["x"]}, needs="projects-plan", reachable=away)) is True
     assert _one("right_pack", "crm-records", _obs(handoffs={PROJECTS: ["x"]})) is False
     assert _one("right_pack", "projects", _obs(work_calls=ran)) is False
     lost = [("get_pipeline", {}, "Error: Requested function not found.")]
@@ -448,11 +456,12 @@ def test_no_crm_delegation_fails_a_hand_off_of_covered_work() -> None:
     assert _auto("no_crm_delegation", _obs(**kw)) is False
     assert _auto("no_crm_delegation", _obs(**kw, needs="crm-records",
                                            reachable=frozenset({"crm-records"}))) is False
-    assert _auto("no_crm_delegation", _obs(owners=pack.OWNERS)) is True
+    assert _auto("no_crm_delegation", _obs(owners=pack.OWNERS, reachable=frozenset())) is True
     assert _auto("no_crm_delegation", _obs(arm="delegation", **kw)) is None
     assert _auto("no_crm_delegation", _obs(handoffs={CRM: ["x"]})) is None
     # A hand-off to the Projects assistant is not a CRM hand-off.
-    assert _auto("no_crm_delegation", _obs(owners=pack.OWNERS, handoffs={PROJECTS: ["x"]})) is True
+    assert _auto("no_crm_delegation", _obs(
+        owners=pack.OWNERS, handoffs={PROJECTS: ["x"]}, reachable=frozenset())) is True
 
 
 def test_no_projects_delegation_passes_only_when_no_pack_fits() -> None:
@@ -468,7 +477,7 @@ def test_no_projects_delegation_passes_only_when_no_pack_fits() -> None:
         **base, needs="projects-bulk", reachable=none)) is False
     assert _auto("no_projects_delegation", _obs(**base, reachable=none)) is False
     assert _auto("no_projects_delegation", _obs(**base, needs="projects-structure")) is False
-    assert _auto("no_projects_delegation", _obs(owners=pack.OWNERS)) is True
+    assert _auto("no_projects_delegation", _obs(owners=pack.OWNERS, reachable=none)) is True
     assert _auto("no_projects_delegation", _obs(arm="delegation", **base)) is None
 
 
@@ -491,14 +500,49 @@ def test_mirror_respected_fails_a_record_write() -> None:
 def test_one_card_per_write_needs_a_card_for_each_write_tool() -> None:
     """Mutation: drop the lower bound → a write with no card passes → red."""
     write = [("update_deal_status", {}, "Moved")]
-    card = [{"title": "Move this deal?"}]
     assert _auto("one_card_per_write", _obs()) is None
     assert _auto("one_card_per_write", _obs(work_calls=[("get_pipeline", {}, "ok")])) is None
-    assert _auto("one_card_per_write", _obs(work_calls=write, cards=card)) is True
+    assert _auto("one_card_per_write", _obs(
+        work_calls=write, write_cards=[(("update_deal_status",), 1)])) is True
     assert _auto("one_card_per_write", _obs(work_calls=write)) is False
-    assert _auto("one_card_per_write", _obs(work_calls=write, cards=card * 2)) is False
+    assert _auto("one_card_per_write", _obs(
+        work_calls=write, write_cards=[(("update_deal_status",), 2)])) is False
     both = [*write, ("log_activity", {}, "ok")]
-    assert _auto("one_card_per_write", _obs(work_calls=both, cards=card * 2)) is True
+    one, two = ("update_deal_status",), ("log_activity",)
+    assert _auto("one_card_per_write", _obs(work_calls=both, write_cards=[
+        (one, 1), (two, 1)])) is True
+    # P2-a, hidden failure 1: two writes, one card. The total passed it.
+    assert _auto("one_card_per_write", _obs(work_calls=both, write_cards=[
+        (one, 1), (two, 0)])) is False
+    # Hidden failure 2: two writes, two cards, both on one write.
+    assert _auto("one_card_per_write", _obs(work_calls=both, write_cards=[
+        (one, 2), (two, 0)])) is False
+    # A card must be on the write that raised it, by tool name.
+    assert _auto("one_card_per_write", _obs(work_calls=write, write_cards=[(two, 1)])) is False
+    # Delegation arm: both writes in one delegated run need two cards.
+    assert _auto("one_card_per_write", _obs(
+        arm="delegation", work_calls=both, write_cards=[((*one, *two), 1)])) is False
+    assert _auto("one_card_per_write", _obs(
+        arm="delegation", work_calls=both, write_cards=[((*one, *two), 2)])) is True
+
+
+def test_cards_are_bound_to_the_write_that_raised_them() -> None:
+    """``write_cards_of`` reads the events: a card belongs to the open write.
+    Mutation: count every card on the first write → the second case is red."""
+    start = {"type": "TOOL_CALL_START", "toolCallName": "update_deal_status"}
+    sub = {"type": "SUB_AGENT_TOOL_CALL_START", "toolCallName": "log_activity"}
+    read = {"type": "TOOL_CALL_START", "toolCallName": "get_pipeline"}
+    card = {"type": "CUSTOM", "name": "confirmation_requested", "value": {}}
+    second = {"type": "TOOL_CALL_START", "toolCallName": "log_activity"}
+    assert ck.write_cards_of([read, start, card, second, card]) == [
+        (("update_deal_status",), 1), (("log_activity",), 1)]
+    assert ck.write_cards_of([start, card, card, second]) == [
+        (("update_deal_status",), 2), (("log_activity",), 0)]
+    # A delegated run: the card comes before the sub-run's calls.
+    hand = {"type": "TOOL_CALL_START", "toolCallName": "crm_assistant"}
+    assert ck.write_cards_of([hand, card, sub]) == [(("log_activity",), 1)]
+    # A card of a read or of another tool is not a work card.
+    assert ck.write_cards_of([read, card]) == []
 
 
 def test_the_request_may_not_pass_the_cap() -> None:
@@ -506,7 +550,9 @@ def test_the_request_may_not_pass_the_cap() -> None:
     cap = tool_packs.MAX_REQUEST_TOOLS
     assert _auto("tools_per_call", _obs(max_tools=cap)) is True
     assert _auto("tools_per_call", _obs(max_tools=cap + 1)) is False
-    assert _auto("tools_per_call", _obs()) is None
+    # P3: the pack arm with no count means the tap read none: fail. Delegation: None.
+    assert _auto("tools_per_call", _obs()) is False
+    assert _auto("tools_per_call", _obs(arm="delegation")) is None
 
 
 def test_spawned_and_not_spawned() -> None:
@@ -604,8 +650,83 @@ def test_the_unused_pack_and_layer_b_shares_read_the_log() -> None:
     rs = [{**bare, "checks": {"right_pack": True}, "loaded_by_model": ["projects-plan"]},
           {**bare, "checks": {"right_pack": True}, "loaded_by_model": []}]
     assert run.extra_summary(rs)["layer_b_share_pct"] == 50.0
+    assert run.reachable_of([]) is None
+    assert run.reachable_of([{"event": "executor.pack_built"}]) is None
     assert run.reachable_of([
         {"event": "executor.pack_plan", "offered": "['email-setup', 'projects-bulk']",
          "packs": "['projects']"},
         {"event": "tool_packs.loaded", "pack": "crm-records"}]) == frozenset(
             {"email-setup", "projects-bulk", "projects", "crm-records"})
+
+
+# ── fix round 1: the unread log, the reasons of a hand-off ───────────────────
+
+
+def test_a_run_with_no_pack_plan_line_passes_nothing(monkeypatch) -> None:
+    """P1. The code logs ``executor.pack_plan`` only when it builds a pack or
+    offers the loader. A flag that does nothing logs none, and the old
+    ``reachable_of`` gave an empty set that read as "not reachable", so a
+    hand-off passed. The real ``run_chat`` path, with the tap blind to the plan
+    line, must give a failing hand-off check.
+    Mutation: make ``reachable_of`` return ``frozenset()`` for no event → red."""
+    real = run.reachable_of
+
+    def blind(events):
+        return real([e for e in events if e["event"] != "executor.pack_plan"])
+
+    monkeypatch.setattr(run, "reachable_of", blind)
+    sc = scenario("pm_capacity")  # a hand-off turn, legal when the plan is read
+    (row,) = run.run_chat(sc, "pack")
+    assert row["checks"]["no_projects_delegation"] is False, row["checks"]
+    assert row["checks"]["right_pack"] is False and row["passed"] is False
+    # Read as it is, the same turn passes.
+    monkeypatch.setattr(run, "reachable_of", real)
+    (row,) = run.run_chat(sc, "pack")
+    assert row["checks"]["no_projects_delegation"] is True and row["passed"]
+    assert row["checks"]["right_pack"] is True
+
+
+def test_an_unread_plan_fails_a_turn_with_no_hand_off_too() -> None:
+    assert _auto("no_crm_delegation", _obs(owners=pack.OWNERS)) is False
+    assert _auto("no_projects_delegation", _obs(owners=pack.OWNERS)) is False
+    assert _auto("no_projects_delegation", _obs(arm="delegation", owners=pack.OWNERS)) is None
+
+
+def test_a_hand_off_reason_is_named() -> None:
+    """Mutation: return ``did_not_fit`` for every unreachable pack → the
+    ``not_offered`` case is red."""
+    plan = "projects-plan"
+    assert ck.handoff_reason(PROJECTS, plan, frozenset({"projects"})) == "did_not_fit"
+    assert ck.handoff_reason(PROJECTS, plan, frozenset()) == "not_offered"
+    assert ck.handoff_reason(PROJECTS, plan, frozenset({plan})) == "model_choice"
+    assert ck.handoff_reason(PROJECTS, "", frozenset()) == "model_choice"
+    assert ck.handoff_reason(PROJECTS, plan, None) == "model_choice"
+
+
+def test_the_report_counts_hand_off_turns_on_a_packed_app(scripted) -> None:
+    """P2-b. A hand-off that passes its check is still a turn the pack did not
+    serve. The summary names it by owner and reason, and stop result 11 shows
+    REVIEW for a legal one and STOP for a model choice."""
+    rows, _ = scripted
+    summary = run.summarise(rows)
+    assert summary["pack"]["app_handoff_turns"] == {PROJECTS: {"did_not_fit": 2}}
+    assert summary["delegation"]["app_handoff_turns"] == {}
+    states = {n: (s, why) for n, s, why in run.stop_results(summary)}
+    assert states[11][0] == "REVIEW" and "2 hand-off turns" in states[11][1]
+    bad = [json.loads(json.dumps(r)) for r in rows]
+    victim = next(r for r in bad if r["arm"] == "pack" and r.get("handoff_reasons"))
+    victim["handoff_reasons"] = {PROJECTS: "model_choice"}
+    assert {n: s for n, s, _ in run.stop_results(run.summarise(bad))}[11] == "STOP"
+    clean = [r for r in rows if not (r["arm"] == "pack" and r.get("handoff_reasons"))]
+    assert {n: s for n, s, _ in run.stop_results(run.summarise(clean))}[11] == "ok"
+    assert "Hand-off turns on a packed app" in run.report({"summary": summary})
+
+
+def test_mirror_chat_accepts_zoho_or_an_offer_of_a_note() -> None:
+    turn = scenario("crm_mirror").turns[1]
+    check = next(c for c in turn.checks if c.kind == "answer_some")
+    zoho = _obs(answer="Zoho owns the deal.")
+    note = _obs(answer="I cannot move it, but I can add a note.")
+    neither = _obs(answer="Done, the deal is in Proposal.")
+    for obs, want in ((zoho, True), (note, True), (neither, False)):
+        assert ck.KINDS[check.kind](obs, check.arg) is want
