@@ -12,6 +12,7 @@ session of another tenant fails the WITH CHECK.
 **The states.** ``queued`` → ``running`` (a claim) → ``done`` or, after a
 failure, ``queued`` again with a backoff, or ``failed`` at the last attempt.
 A ``running`` row whose ``lease_until`` has passed goes to the next claim.
+:func:`prune` deletes the old ``done`` and ``failed`` rows (BR-1b).
 
 **The fence token.** Each claim writes a new ``locked_by``. :func:`hold`,
 :func:`complete` and :func:`fail` match it, so a worker that lost its lease
@@ -53,6 +54,10 @@ BACKOFF_CAP = timedelta(hours=1)
 ERROR_CHARS = 2000
 #: The bound of the CHECK ``jobs_dedupe_key``.
 DEDUPE_CHARS = 200
+#: The age of a ``done`` or ``failed`` row that :func:`prune` deletes.
+RETENTION = timedelta(days=30)
+#: The rows that one DELETE of :func:`prune` takes, at most.
+PRUNE_BATCH = 500
 
 #: The CHECK ``jobs_kind``.
 _KIND = re.compile(r"[a-z][a-z0-9_.]{0,63}")
@@ -208,6 +213,15 @@ _FAIL_SQL = (
     "RETURNING state"
 )
 
+#: One batch of the old terminal rows. RLS binds it to the org of the
+#: session, as every statement here. A queued or running row never matches.
+_PRUNE_SQL = (
+    "DELETE FROM jobs WHERE id IN ("
+    "  SELECT id FROM jobs WHERE state IN ('done', 'failed') "
+    "  AND finished_at < :before "
+    "  ORDER BY finished_at LIMIT CAST(:batch AS integer))"
+)
+
 _GET_SQL = (
     "SELECT id, organization_id, kind, payload, state, attempts, max_attempts, "
     "run_at, locked_by, lease_until, last_error, dedupe_key, finished_at "
@@ -331,3 +345,26 @@ async def fail(db: Any, job: Claim, error: str, *, now: datetime) -> str | None:
         "retry_at": now + backoff(job.attempts), "error": error[:ERROR_CHARS],
     })).scalar_one_or_none()
     return None if state is None else str(state)
+
+
+# ── Retention (BR-1b) ───────────────────────────────────────────────────────
+
+
+async def prune(db: Any, *, now: datetime, retention: timedelta = RETENTION,
+                batch: int | None = None) -> int:
+    """Delete the ``done`` and ``failed`` rows of the bound org that finished
+    before ``now - retention``, in batches. Answers the rows deleted.
+
+    A ``queued`` or ``running`` row stays, at any age. The org is never an
+    argument: RLS binds each DELETE to ``tenant_session(org)``."""
+    size = PRUNE_BATCH if batch is None else batch
+    if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+        raise JobError("batch must be a positive integer")
+    before = _aware(now, "now") - retention
+    total = 0
+    while True:
+        result = await db.execute(text(_PRUNE_SQL), {"before": before, "batch": size})
+        done = int(result.rowcount or 0)
+        total += done
+        if done < size:
+            return total
