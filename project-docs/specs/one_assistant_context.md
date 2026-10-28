@@ -144,11 +144,22 @@ hand-off, dark behind `TOOL_PACKS`. The rule is in the OA-7i block of §4.2.8.
 - **The record.** `PackRun.via_loader` holds the owners. They join `replaced`.
   `PackRun.refusal` answers `LOADER_HANDOFF_REFUSED` while the run does not
   hold each pack of such an owner.
+- **A refused load opens the hand-off.** The plan counts no granted Custom
+  App action, because those join later with no cap. So the plan can reach an
+  owner that the live list cannot serve. A refused load of a pack of such an
+  owner answers `LOAD_NO_PATH`. The text names `call_agent` and the owner.
+  The owner joins `PackRun.via_failed`, and `PackRun.refusal` gives None for
+  it. So the hand-off runs for the rest of the run. The fallback is the guard,
+  and the plan does not read the app grants.
 - **The edge case.** A load of `email` can leave no room for `email-setup`.
-  The refusal then is `LOAD_NO_PATH`: finish the work with the tools held, and
-  ask for the setup work in the next message. Next turn `email` is sticky and
-  `email-setup` cannot load, so the plan reaches no owner and the hand-off
-  opens. The rules route the setup work to the email assistant.
+  That refusal is `LOAD_NO_PATH` too, so the model hands the setup work to the
+  email assistant. Next turn `email` is sticky and `email-setup` cannot load.
+  The plan reaches no owner, and the rules route the setup work to the owner.
+- **The logs.** `executor.packs_loaded` is logged only when a pack built, as
+  before OA-7i, because OA-7h counts it as a load. The plan rides on
+  `executor.pack_plan`.
+- **The MCP read.** `_mcp_may_attach` calls `gateway.connections.mcp.enabled_meta`.
+  It reads the rows with no header blob and no token refresh.
 - **A held chat.** Nothing in `_start_pack_turn` or the offer excludes a held
   chat. A no-egress run and a marked chat keep the replacement. The pack loads
   held, with its sends dropped, as layer (a) does. A no-egress run gets no MCP
@@ -1115,7 +1126,9 @@ Each slice merges alone, in this order.
   - A held chat keeps the replacement. The pack loads held.
   - The offer and the removal read one function.
   - `call_agent_background` to `email-assistant` still runs.
-  - The two-turn edge case: the setup load refuses with the finish text, and the next turn opens the hand-off.
+  - A refused load of a reached owner opens the hand-off, and the refusal names `call_agent` and the owner.
+  - The two-turn edge case: the setup load refuses, the hand-off is open, and the next turn keeps it open.
+  - A turn that builds no pack logs no `executor.packs_loaded`.
 - **Fence.** `tests/unit/test_loader_replaces_handoff.py`.
 
 **OA-7h. The email measure on real code.**
