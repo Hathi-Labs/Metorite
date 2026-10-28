@@ -157,10 +157,9 @@ def test_a_job_naming_decide_does_not_run() -> None:
 
 
 def test_the_answer_check_skips_the_worker(monkeypatch) -> None:
+    import acb_skills.answer_check as ac
     from agent_framework import Agent
     from orchestrator import _tool_injection as ti
-
-    import acb_skills.answer_check as ac
 
     class _Probe(Agent):  # type: ignore[misc]
         def __init__(self) -> None:  # no client: only the isinstance test reads it
