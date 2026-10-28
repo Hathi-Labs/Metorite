@@ -26,14 +26,15 @@ below, PR #1383). The flag is off on each box, so no run loads a pack yet.
 OA-7e is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7e"
 below, PR #1389). It adds layer (b), the meta tool `load_skill_tools`.
 
-OA-7h is PARTLY BUILT (2026-10-27): the harness in
-`evals/one_assistant_measure` runs the real `email` pack. The first live run
-on 2026-10-27 did not meet the gate (pack 14 of 54, delegation 48 of 54). The
-pack loaded in only 12 of 54 turns, and in those 12 the model handed off no
-mail work (3 of the 12 handed off setup work). The fix is OA-7i: with packs on, an owner's specialist tool leaves the
-chat when the loader can reach every pack of that owner. The live measure
-runs again after OA-7i. The report `docs/one_assistant_measure_2026-10-27.md`
-is the record of run 1.
+OA-7h is PARTLY BUILT (2026-10-28): the gate is NOT met, by a small margin.
+Run 3 (`docs/one_assistant_measure_2026-10-28.md`, with
+`TOOL_PACKS=email,email-setup`) passed pack 46 of 54 and delegation 47 of 54.
+`no_write` on `reply_correction` turn 1 passed 2 of 3 on the pack arm. The pack
+arm handed off no mail work, the model called `load_skill_tools` in 25 turns, and
+the pack arm ran in a median of 11.2 s against 27.3 s. Run 2 failed because
+`TOOL_PACKS=email` left `email-setup` out, so OA-7i did nothing. Next: a rules
+edit (find the email before `compose_reply`, and "send it" means `send_draft`),
+then a larger repeat. Run 1 is `docs/one_assistant_measure_2026-10-27.md`.
 
 OA-7d is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7d"
 below). The dock sends `surface`, and a turn from `/email` loads the `email`
@@ -73,6 +74,12 @@ adds the core pack of the app and nothing else.
 
 OA-7f is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7f"
 below). It adds layer (c), the pack items of the turn-kind request.
+
+OA-7i is BUILT, dark behind `TOOL_PACKS` (2026-10-28, "As built, OA-7i"
+below). With packs on, the loader replaces the specialist hand-off.
+
+OA-7j is BUILT, dark behind `TOOL_PACKS` (2026-10-28, "As built, OA-7j"
+below). It tunes three rules of the `email` pack.
 
 **As built, OA-7f.** Layer (c) loads a pack that layer (a) missed, from the
 System-1 request that already runs. It adds no model call.
@@ -123,6 +130,69 @@ System-1 request that already runs. It adds no model call.
   an estimate. OA-8 should measure it.
 - **Fences.** `tests/unit/test_tier_policy.py` (`TestTurnKindPackItems`) and
   `tests/unit/test_turn_kind_pack_items.py`. Each case names its mutation.
+
+**As built, OA-7j.** Dark behind `TOOL_PACKS`. `_EMAIL_RULES` in
+`tool_packs.py` grew by 323 characters (2,362 to 2,685).
+- **Search first.** The reply bullet ends with the search rule.
+- **Send it.** The old line "call compose_reply or send_draft at once" is
+  gone. The new line sends the draft of the working set with `send_draft`.
+  It allows `compose_reply` only when no draft exists.
+- **No unasked draft.** A new bullet carries the OA-7g rule in the pack.
+- **Run 4.** OA-7h must run again to confirm the gate.
+
+**As built, OA-7i.** With the flag on, the loader replaces the specialist
+hand-off, dark behind `TOOL_PACKS`. The rule is in the OA-7i block of §4.2.8.
+- **The plan.** `tool_packs.plan_loader` is the one reachability rule. Its
+  answer (`LoaderPlan`) gives the offer of `load_skill_tools` and the owners
+  whose specialist leaves (`via_loader`). `_tool_injection._plan_pack_loader`
+  asks it once for each run, and `_offer_pack_loader` only reads the plan.
+- **The cap.** An owner is reached only when each of its packs that the run
+  does not hold fits 110 tools with the specialist gone. So the discount is
+  the owner's own specialist tools in the pool. At a base of 79 the owner is
+  reached. At a base of 80 it is not.
+- **The MCP rule.** The MCP injection runs after the packs.
+  `_tool_injection._mcp_may_attach` looks ahead, with the early exits and the
+  row filters of `_inject_mcp_servers`. It lists the registry rows and
+  refreshes no token. A fault reads as "a server may attach", so the
+  specialist stays. `MAF_MCP_ORGS=*` is on in production, so an org with a
+  server in scope for the orchestrator keeps the hand-off.
+- **The record.** `PackRun.via_loader` holds the owners. They join `replaced`.
+  `PackRun.refusal` answers `LOADER_HANDOFF_REFUSED` while the run does not
+  hold each pack of such an owner.
+- **A refused load opens the hand-off.** The plan counts no granted Custom
+  App action, because those join later with no cap. So the plan can reach an
+  owner that the live list cannot serve. A refused load of a pack of such an
+  owner answers `LOAD_NO_PATH`. The text names `call_agent` and the owner.
+  The owner joins `PackRun.via_failed`, and `PackRun.refusal` gives None for
+  it. So the hand-off runs for the rest of the run. The fallback is the guard,
+  and the plan does not read the app grants.
+- **The edge case.** A load of `email` can leave no room for `email-setup`.
+  That refusal is `LOAD_NO_PATH` too, so the model hands the setup work to the
+  email assistant. Next turn `email` is sticky and `email-setup` cannot load.
+  The plan reaches no owner, and the rules route the setup work to the owner.
+- **The logs.** `executor.packs_loaded` is logged only when a pack built, as
+  before OA-7i, because OA-7h counts it as a load. The plan rides on
+  `executor.pack_plan`.
+- **The MCP read.** `_mcp_may_attach` calls `gateway.connections.mcp.enabled_meta`.
+  It reads the rows with no header blob and no token refresh.
+- **The CRM assistant.** `crm-assistant` is the second owner (pack
+  `crm-records`, 9 tools). OA-8a gives it no persona bullet, and
+  `tool_packs.NO_PERSONA_BULLETS` lists it. So the plan accepts that owner with
+  no bullet, and the persona stays as it was. Any other owner with no bullet is
+  not reached. The CRM rules say that no CRM agent exists, and the refusal
+  names `load_skill_tools` and `crm-records`, so the two texts agree.
+- **A held chat.** Nothing in `_start_pack_turn` or the offer excludes a held
+  chat. A no-egress run and a marked chat keep the replacement. The pack loads
+  held, with its sends dropped, as layer (a) does. A no-egress run gets no MCP
+  server.
+- **Unchanged.** `call_agent_background`, scheduled jobs, workflows, the app
+  rails, registry quick actions and the Copilot path.
+- **Open.** The base count is an estimate before the injection. A granted app
+  tool is not in it. A tool count past 110 in a run that the plan reached
+  shows in the `executor.pack_request_tools` line. OA-8e can measure the gap.
+- **Fences.** `tests/unit/test_loader_replaces_handoff.py`,
+  `tests/unit/test_load_skill_tools.py` and `tests/unit/test_tool_packs_off.py`.
+  Each case names its mutation.
 
 **As built, OA-7e.** Layer (b) loads a pack that layer (a) missed, in the
 middle of a turn.
@@ -307,7 +377,10 @@ the member's words, and the words of a pack. The surface came with OA-7d.
   not find the text loads no pack, and logs `executor.packs_refused`.
 - **The refusal.** `tool_packs.delegation_refusal` holds the rule. It acts
   only while the run holds every pack of the owner (`tool_packs.owner_packs`),
-  so both email packs (fix round 1, P1-A). Then the streaming seam
+  so both email packs (fix round 1, P1-A). OA-7i adds a second case: it also
+  acts while every pack of the owner is held or reachable by the loader. The
+  text then names `load_skill_tools` and the packs not held (OA-7i, below).
+  Then the streaming seam
   `executor._run_sub_agent_streaming` refuses a hand-off to `email-assistant`
   from the chat run. That covers each specialist tool and
   `delegate_to_agent`. `agent_tools.call_agent` and each branch of
@@ -938,6 +1011,8 @@ Each slice merges alone, in this order.
 | OA-7d | The structured `surface` field from the dock. BUILT, dark, 2026-10-27 | LOW |
 | OA-7e | Layer (b): `load_skill_tools`. BUILT, dark, 2026-10-27 | MEDIUM |
 | OA-7f | Layer (c): pack items in the turn-kind request. BUILT, dark, 2026-10-27 | MEDIUM |
+| OA-7i | With packs on, the loader replaces the specialist hand-off. BUILT, dark, 2026-10-28 | HIGH |
+| OA-7j | The `email` pack rules: search first, "send it" is `send_draft`, no unasked draft. BUILT, dark, 2026-10-28 | MEDIUM |
 | OA-7h | The email measure on real code, with the tier flags of production | LOW (eval only) |
 
 **OA-7a. The registry and the flag.**
@@ -1035,6 +1110,65 @@ Each slice merges alone, in this order.
 - **Files.** `orchestrator/agents.py` (rule 12) and `acb_skills/handoff.py` (`_RULES`).
 - **Acceptance.** OA-7h checks it: `no_write` passes on `reply_correction` turn 1, 3 of 3, on both arms.
 - **Fence.** Unit tests pin both texts, in `tests/unit/test_handoff_words.py` and `tests/unit/test_orchestrator_one_source.py`.
+
+**OA-7j. The email pack rules.**
+- **Why.** OA-7h run 3 (2026-10-28) passed 46 of 54 pack-arm email turns and
+  47 of 54 for delegation. The gate is short by one turn.
+  - `no_write` on `reply_correction` turn 1 passed 2 of 3. The gate needs 3 of 3.
+  - `five_turns` turn 3 failed twice. For "send it" the model called
+    `compose_reply` again, not `send_draft`.
+  - `exact_reply` failed twice in run 2. The model called `compose_reply`
+    for a named person before it found the address.
+  - The pack arm was 2.4 times faster at the median (11.2 s against 27.3 s).
+    It made no mail hand-off.
+- **Rule.** The `email` pack rules say three things. Find the address of a
+  named person with `find_contact` or `query_inbox` before `compose_reply`.
+  After a draft in this chat, "send it" means `send_draft` on that draft.
+  Draft only when the member asks for a draft or a reply.
+- **Fence.** `tests/unit/test_email_pack_rules_oa7j.py`. The rules ride only
+  with the pack, so the flag-off persona does not change.
+
+**OA-7i. The loader replaces the specialist hand-off.**
+- **Why.** OA-7h run 1 (`docs/one_assistant_measure_2026-10-27.md`) ran 54
+  email turns for each arm with the real `TOOL_PACKS` flag.
+  - The email pack loaded in 12 turns, all by words. In those turns the model
+    handed off mail work 0 times. The median time was 7.4 s.
+  - In the other 42 turns no pack loaded. The model handed the work to
+    `email_assistant` in 39 of them. It never called `load_skill_tools`. The
+    median time was 17.6 s. In production a hand-off turn takes 78 to 259 s.
+  - Layer (c) cannot close the gap. The turn-kind request skips a short turn,
+    and 66 of 108 turns were short.
+  - Quality was equal. Without the hand-off check the pack arm passed 50 of
+    54 turns, and delegation passed 48 of 54.
+  - D117 retires conversational delegation.
+- **The rule.** It acts in a run where `packs_on` allows packs and the loader
+  is offered. Take each owner with packs (today `email-assistant`). Suppose
+  the run holds every pack of the owner, or the loader can load the rest on
+  its own. Then the specialist tool of the owner leaves, and the owner joins
+  `PackRun.replaced`. The persona swaps the delegation bullets as `persona_for`
+  does. A hand-off by `call_agent` or `delegate_to_agent` is refused. The text
+  names `load_skill_tools` and the packs. "On its own" means the admission of
+  `LoadSkillTools._admit`. The run holds fewer than 3 packs. The count stays
+  within 110 tools with the specialist gone. The MCP rule and the flag allow
+  it. Else the specialist stays, as in OA-7c fix round 1.
+- **Files.**
+  - `acb_skills/tool_packs.py`: `plan_loader`, `LoaderPlan`, `PackRun.via_loader`,
+    `persona_for` and `_rules_block` take `via_loader`, `Pack.loader_route`
+  - `orchestrator/_tool_injection.py`: `_plan_pack_loader`, `_mcp_may_attach`,
+    `_apply_tool_packs`, `_offer_pack_loader`
+  - `orchestrator/executor.py`: `_apply_pack_turn` passes the grant check
+- **Acceptance.**
+  - Flag off: the tool list, the persona and the turn-kind request are byte-identical.
+  - Flag on, no email pack held, loader offered: no `email_assistant` tool and no email delegation bullets. `call_agent` answers a refusal that names `load_skill_tools`.
+  - `email` held and `email-setup` over the cap: the hand-off stays open, as before.
+  - Beside an MCP server: `email_assistant` stays.
+  - A held chat keeps the replacement. The pack loads held.
+  - The offer and the removal read one function.
+  - `call_agent_background` to `email-assistant` still runs.
+  - A refused load of a reached owner opens the hand-off, and the refusal names `call_agent` and the owner.
+  - The two-turn edge case: the setup load refuses, the hand-off is open, and the next turn keeps it open.
+  - A turn that builds no pack logs no `executor.packs_loaded`.
+- **Fence.** `tests/unit/test_loader_replaces_handoff.py`.
 
 **OA-7h. The email measure on real code.**
 - **Files.**
@@ -1456,6 +1590,7 @@ context has no live tool list. The decorator emits `ExperimentalWarning`.
 - **OA-7e.** In one run, a scripted model loads the `email` pack and then calls `compose_reply` with the held answer of the pack. A load past the cap refuses. Fence: `tests/unit/test_load_skill_tools.py`.
 - **OA-7f.** A long email turn with no email words loads the pack with one System-1 request. A short turn and a Max turn send none. Fence: `tests/unit/test_tier_policy.py`.
 - **OA-7g.** Shipped live ahead of OA-7, owner 2026-10-26 (PR #1356, `344cad4fc`, fence `tests/unit/test_no_unasked_draft.py`). The orchestrator persona and `handoff._RULES` carry the rule against an unasked draft, both always on. OA-7h checks it: `no_write` passes on `reply_correction` turn 1, 3 of 3, on both arms.
+- **OA-7i.** With the flag on and the loader offered, a turn with no pack held has no `email_assistant` tool. A hand-off to the email assistant answers a refusal that names `load_skill_tools`. A pack that cannot load keeps the specialist. So does an MCP server that may attach. Fence: `tests/unit/test_loader_replaces_handoff.py`.
 - **OA-7h.** On the 18 email turns, 3 runs each, with the tier flags of production, the pack arm passes at least as many turns as delegation. From turn 2, each email chat sends through the held card. No act shows two cards.
 - **OA-8a.** Each CRM write asks its card in the stream of the orchestrator. Mirror mode drops the 3 record writes. A held pack drops the 4 writes. Fence: `tests/unit/test_pack_guards.py`.
 - **OA-8b.** The Projects families together equal `skill_projects.__all__`, and each holds 35 tools or fewer. In a covered org, no Projects pack loads. Fences: `tests/unit/test_projects_agent.py` and `tests/unit/test_pack_guards.py`.
@@ -1745,6 +1880,89 @@ The chat-speed work (#1313, #1323) owns latency. These points touch it:
    small rise in the input tokens of a delegated run.
 
 HANDOFF **H-412** carries these points to that session.
+
+### 7.1 CTX-1: a large tool result as a preview and a handle
+
+Metorite #825. **Status:** BUILT, dark behind `TOOL_RESULT_SPILL` (default `off`).
+Risk: MEDIUM. The untrusted-mail guard and the number check must keep working.
+
+**Why.** A large tool result goes into the prompt in full. A run makes 4 to 9
+model calls, and each call sends that result again. Production has
+`MAF_NATIVE_SESSIONS=true`, so the stored session also carries the result into
+each later turn. A preview cuts the input tokens, so each call is faster.
+
+**Design.**
+
+1. One per-run `FunctionMiddleware`, `SpillToolResults`, runs for every tool of
+   a native MAF run (core, injected, pack and MCP). The seam is
+   `_auto_invoke_function` in MAF. The Copilot path and the Tier-2 shim are out
+   of scope.
+2. The store is an in-process LRU with a TTL of 30 minutes and 128 entries. It
+   is NOT the WS-60 artifact store, because a lasting copy of mail breaks the
+   rule that `test_mail_copies_in_chat_stores.py` fences. The key is the run's
+   org, member and thread plus a ref such as `tr_3f9c0a1b`. The run binding
+   gives all three. No tool argument gives any of them. An expired ref answers
+   "not found" and tells the model to call the tool again.
+3. A result above `TOOL_RESULT_SPILL_CHARS` (24000) reaches the model as a
+   preview. The preview is the first `TOOL_RESULT_PREVIEW_CHARS` (4000)
+   chars, cut at a line end, and never less than 2000 chars. Then come the
+   END line of each open frame and one footer line. The footer holds the
+   ref, the size and the next offset.
+4. `read_tool_result(ref, offset=0)` returns pages of 16000 chars. With the
+   setting `on`, it joins the core list of the orchestrator for the whole
+   run. So the tool list stays the same across the turns of a chat. With
+   `off` and `shadow`, the run gets no new tool. In `on`, an agent that
+   does not hold the tool gets no spill.
+5. `shadow` changes nothing that the model sees. It logs one
+   `tool_result.size` line per result. The line holds the tool name, chars,
+   tokens (chars/4), the source (`mcp`, `pack` or `core`), the untrusted flag
+   and `would_spill`. It holds no text.
+
+**Guards.**
+
+- **Untrusted mail.** An entry counts as untrusted in four cases. Its text
+  has a marker shape. Its tool is an MCP tool. Its pack owner is in
+  `UNTRUSTED_INPUT_AGENTS`. Or `session_is_marked()` is true. A failed check
+  counts as marked. A read of an untrusted entry first calls
+  `mark_untrusted_answer()`, so the chat stays on hold. Then the read puts
+  each page in a fresh `UntrustedFrame`.
+- **Number check.** `_apply_tool_result_spill` runs before `_apply_no_egress`
+  and `_apply_answer_check`, so the spill middleware is outermost.
+  `RecordToolResults` still reads the full text before the spill replaces it.
+- **Exempt.** `narrow_and_read` (it bounds its own output), the delegation
+  tools (they have their own cap), `ask_questions`, `request_confirmation` and
+  `read_tool_result` never spill.
+- **UI.** The stream cuts each tool result to 2000 chars. The preview keeps
+  those chars as they were, so no card changes.
+
+**Settings** (`acb_common/settings.py`, one reader for each):
+`TOOL_RESULT_SPILL` (`off`, `shadow` or `on`), `TOOL_RESULT_SPILL_CHARS` and
+`TOOL_RESULT_PREVIEW_CHARS`. A value on a box is the grant `enforcement-flip`.
+
+**Acceptance.**
+
+1. `off`: the request bytes do not change. The run gets no tool and no middleware.
+2. `shadow`: one `tool_result.size` line per result, with no text. The request
+   bytes do not change.
+3. `on`: a 100K MCP result reaches the model as 4.3K chars or less.
+   It carries the ref. Each later call of the run is 24K chars smaller.
+4. `read_tool_result` returns the next page. Another org, member or thread
+   gets "not found".
+5. A framed result: the preview closes its frame. Each page has a fresh
+   frame. A read marks the session.
+6. No new `agent_blob` or `artifacts` row.
+7. A CRM result above the cap still feeds the number check.
+8. `narrow_and_read` and delegation results never spill.
+9. The first 2000 chars of `TOOL_CALL_RESULT` do not change.
+
+**Fences.** `tests/unit/test_tool_result_spill.py` holds each item above. It
+must stay green with `test_crm_answer_check.py`,
+`test_crm_answer_check_executor.py`, `test_untrusted_frame.py`,
+`test_mail_copies_in_chat_stores.py`, `test_delegation_no_egress.py`,
+`test_narrowing_one_seam.py`, `test_native_session_persistence.py`,
+`test_read_tool_paging.py`, `test_sub_agent_result_cap.py`,
+`test_tool_packs_off.py`, `test_core_tool_floor.py` and
+`test_tool_schema_diet.py`.
 
 ## 8. Out of scope
 

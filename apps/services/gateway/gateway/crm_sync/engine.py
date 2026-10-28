@@ -101,10 +101,12 @@ from gateway.crm_sync.runs import CursorRow, RunLost, SyncRunning
 from gateway.routes.crm import access as crm_access
 from gateway.routes.crm import flags
 from gateway.routes.crm.core import (
+    STAGE_RESTAMP_BATCH,
     compute_lead_name,
     delete_from_source,
     delete_module_records_from_source,
     merge_status_from_source,
+    restamp_deal_stage_from_source,
     savepoint,
     set_deal_contacts_from_source,
     set_pipeline_stages_from_source,
@@ -2573,6 +2575,31 @@ async def _relink_leads(ctx: _Ctx) -> None:
         ctx.counts["converted_leads"]["unlinked"] = int(row.n if row is not None else 0)
 
 
+#: Batches of one run for the stage-time repair (CRM-U14). Batch size is
+#: ``core.STAGE_RESTAMP_BATCH``, so a run repairs at most 10,000 deals and the
+#: next run goes on.
+_RESTAMP_BATCHES = 20
+
+
+async def _restamp_stages(ctx: _Ctx) -> None:
+    """Copy Zoho's stage time onto the deals stored before the mapping took it.
+
+    Idempotent and bounded: the door selects only the rows that differ, and the
+    step stops after :data:`_RESTAMP_BATCHES` batches. Each batch is one page.
+    """
+    after: str | None = None
+    for _ in range(_RESTAMP_BATCHES):
+        async with ctx.page() as db:
+            batch = await restamp_deal_stage_from_source(
+                db, EXT_SOURCE, organization_id=ctx.org, after_id=after,
+            )
+        if batch.skipped_bad:
+            _log.warning("crm.sync.stage_restamp_skipped_bad count=%s", batch.skipped_bad)
+        after = batch.last_id
+        if batch.scanned < STAGE_RESTAMP_BATCH:
+            return
+
+
 async def _roles_pending(ctx: _Ctx) -> list[str]:
     if ctx.roles_pending is None:
         state = _row(ctx, ROLES_MODULE).state or {}
@@ -3065,6 +3092,7 @@ async def _execute(ctx: _Ctx) -> None:
             await _deleted_pass(ctx, entity)
     await _relink_leads(ctx)
     await _deal_roles(ctx)
+    await _restamp_stages(ctx)
     await _module_records(ctx)
     await _recover_activities(ctx)
     # CRM-Q17a-1 (§18.9.3): the fill rank, after the module step, at most once

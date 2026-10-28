@@ -155,7 +155,11 @@ describe("the lane sort choice", () => {
     expect(readCardSort("vj@x.in|org-1", store)).toBe("stage_age");
     writeCardSort("vj@x.in|org-1", "next_activity", store);
     expect(readCardSort("vj@x.in|org-1", store)).toBe("next_activity");
-    store.data.set(`${CARD_SORT_PREFIX}vj@x.in|org-1`, "amount");
+    for (const sort of ["recently_changed", "close_date", "amount"] as const) {
+      writeCardSort("vj@x.in|org-1", sort, store);
+      expect(readCardSort("vj@x.in|org-1", store)).toBe(sort);
+    }
+    store.data.set(`${CARD_SORT_PREFIX}vj@x.in|org-1`, "bogus");
     expect(readCardSort("vj@x.in|org-1", store)).toBe("stage_age");
   });
 
@@ -163,5 +167,8 @@ describe("the lane sort choice", () => {
     expect(cardSortQuery("stage_age")).toEqual({});
     expect(cardSortQuery(undefined)).toEqual({});
     expect(cardSortQuery("next_activity")).toEqual({ card_sort: "next_activity" });
+    expect(cardSortQuery("amount")).toEqual({ card_sort: "amount" });
+    expect(cardSortQuery("close_date")).toEqual({ card_sort: "close_date" });
+    expect(cardSortQuery("recently_changed")).toEqual({ card_sort: "recently_changed" });
   });
 });

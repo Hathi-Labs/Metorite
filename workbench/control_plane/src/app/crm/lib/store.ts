@@ -39,6 +39,7 @@ import type { SettingsDraft } from "./settings";
 import { cardSortQuery, type CardSort } from "./nextActivity";
 import {
   applyPatches,
+  orderWithNewStage,
   reorderFailureMessage,
   type PositionPatch,
 } from "./settings";
@@ -213,8 +214,15 @@ type CrmState = {
   ) => Promise<void>;
   /** CRM-C3: the Metorite order of a Mirror kind, every id in order, in one request. */
   orderStatuses: (kind: StatusKind, ids: string[]) => Promise<boolean>;
-  /** CRM-C3: "Reset order to Zoho". */
+  /** CRM-C3: "Reset order to Zoho". CRM-U11: the "Same as Zoho" choice. */
   resetStatusOrder: (kind: StatusKind) => Promise<boolean>;
+  /**
+   * CRM-U11, Native mode: "Add stage". One create, then one order call that
+   * puts the stage before the first won or lost stage (D137 rule 4). The id
+   * of the new stage, or null when the create failed. When only the order
+   * failed, the stage stays at the end and the error says so.
+   */
+  addStageBeforeClosed: (kind: StatusKind, body: Record<string, unknown>) => Promise<string | null>;
   saveLostReason: (
     reasonId: string | null,
     body: Record<string, unknown>
@@ -783,6 +791,36 @@ export const useCrmStore = create<CrmState>((set, get) => ({
       set({ saving: false });
       await get().loadVocabulary();
     }
+  },
+
+  async addStageBeforeClosed(kind, body) {
+    set({ saving: true, error: null });
+    // The list before the create: every id of the kind but the new one.
+    const before = kind === "deal" ? get().dealStatuses : get().leadStatuses;
+    let created: Status;
+    try {
+      created = await api.createStatus(kind, body);
+    } catch (err) {
+      set({ saving: false, error: message(err) });
+      await get().loadVocabulary();
+      return null;
+    }
+    try {
+      const ids = orderWithNewStage(before, created.id);
+      if (ids) await api.orderStatuses(kind, ids);
+    } catch (err) {
+      const why = message(err);
+      set({
+        error:
+          `"${created.name}" was added at the end, because its place before Won and Lost did not save.` +
+          (why ? ` ${why}` : "") +
+          " Move it with its arrows.",
+      });
+    } finally {
+      set({ saving: false });
+      await get().loadVocabulary();
+    }
+    return created.id;
   },
 
   async saveLostReason(reasonId, body) {

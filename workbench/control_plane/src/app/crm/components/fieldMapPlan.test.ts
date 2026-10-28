@@ -563,7 +563,6 @@ describe("who sees the card (item 8)", () => {
         saving: false,
         onSaveStatus: async () => true,
         onRemoveStatus: async () => true,
-        onReorderStatuses: async () => undefined,
         onSaveLostReason: async () => true,
         onRemoveLostReason: async () => true,
         onReorderLostReasons: async () => undefined,

@@ -54,6 +54,7 @@ import {
   newestDigest,
   ownerLabel,
   percentLabel,
+  plusLabel,
   pipelineWidths,
   shareOfForecast,
   undatedNotice,
@@ -109,6 +110,11 @@ function Block({
   );
 }
 
+/** A figure and, when the report holds another currency, "plus ..." after it. */
+function withPlus(figure: string, plus: string): string {
+  return plus ? `${figure} · ${plus}` : figure;
+}
+
 function Empty({ children }: { children: React.ReactNode }) {
   return <p className="py-6 text-center text-xs text-muted-foreground">{children}</p>;
 }
@@ -143,12 +149,20 @@ function Forecast({ reports }: { reports: CrmReports }) {
   return (
     <Block
       title="Forecast by stage"
-      blurb="Open and ongoing lanes only. Weighted ₹ is each deal's amount at its own probability, falling back to its stage's default — won is booked revenue, lost is nothing, and a parked deal is nobody's forecast."
+      blurb="Open and ongoing lanes only. Weighted amount is each deal's amount at its own probability, falling back to its stage's default — won is booked revenue, lost is nothing, and a parked deal is nobody's forecast."
     >
       <div className="mb-4 grid grid-cols-3 gap-4">
         <Figure label="Open deals" value={String(pipeline.count)} />
-        <Figure label="In the pipeline" value={money(pipeline.amount)} />
-        <Figure label="Weighted" value={money(pipeline.weighted)} />
+        <Figure
+          label="In the pipeline"
+          value={money(pipeline.amount, pipeline.currency)}
+          hint={plusLabel(pipeline.others, (o) => o.amount) || undefined}
+        />
+        <Figure
+          label="Weighted"
+          value={money(pipeline.weighted, pipeline.currency)}
+          hint={plusLabel(pipeline.others, (o) => o.weighted) || undefined}
+        />
       </div>
       {!hasPipeline(pipeline) ? (
         // `hasPipeline` tests whether any open/ongoing STAGE exists, not
@@ -179,11 +193,23 @@ function Forecast({ reports }: { reports: CrmReports }) {
                 {stage.count} deals
               </span>
               <span className="w-24 shrink-0 text-right text-xs tabular-nums text-foreground">
-                {compact(stage.weighted)}
+                {compact(stage.weighted, stage.currency)}
               </span>
             </li>
           ))}
         </ul>
+      )}
+      {ordered.some((stage) => (stage.others?.length ?? 0) > 0) && (
+        <p className="mt-3 text-[11px] text-muted-foreground">
+          Weighted in another currency:{" "}
+          {ordered
+            .filter((stage) => (stage.others?.length ?? 0) > 0)
+            .map(
+              (stage) =>
+                `${stage.status.name} ${plusLabel(stage.others, (o) => o.weighted)}`
+            )
+            .join(" · ")}
+        </p>
       )}
       {hasPipeline(pipeline) && (
         <p className="mt-3 text-[11px] text-muted-foreground">
@@ -291,12 +317,18 @@ function WinLoss({ reports }: { reports: CrmReports }) {
             <Figure
               label="Won"
               value={String(winLoss.won)}
-              hint={compact(winLoss.won_amount)}
+              hint={withPlus(
+                compact(winLoss.won_amount, winLoss.currency),
+                plusLabel(winLoss.others, (o) => o.won_amount)
+              )}
             />
             <Figure
               label="Lost"
               value={String(winLoss.lost)}
-              hint={compact(winLoss.lost_amount)}
+              hint={withPlus(
+                compact(winLoss.lost_amount, winLoss.currency),
+                plusLabel(winLoss.others, (o) => o.lost_amount)
+              )}
             />
             <Figure
               label="Average cycle"
@@ -325,7 +357,11 @@ function WinLoss({ reports }: { reports: CrmReports }) {
                     {reason.label}
                   </span>
                   <span className="shrink-0 tabular-nums text-muted-foreground">
-                    {reason.deals} · {compact(reason.amount)}
+                    {reason.deals} ·{" "}
+                    {withPlus(
+                      compact(reason.amount, reason.currency),
+                      plusLabel(reason.others, (o) => o.amount)
+                    )}
                   </span>
                 </li>
               ))}
@@ -351,7 +387,7 @@ function Leaderboard({ reports }: { reports: CrmReports }) {
   return (
     <Block
       title="By owner"
-      blurb={`Who is carrying what. Won ₹ is ${windowLabel(owners.window_days)}, the same window as win / loss.`}
+      blurb={`Who is carrying what. Won amount is ${windowLabel(owners.window_days)}, the same window as win / loss.`}
     >
       {!hasOwners(owners) ? (
         <Empty>No deals are assigned yet.</Empty>
@@ -375,10 +411,20 @@ function Leaderboard({ reports }: { reports: CrmReports }) {
                   {row.open_deals}
                 </td>
                 <td className="py-1.5 text-right tabular-nums text-foreground">
-                  {compact(row.weighted)}
+                  {compact(row.weighted, row.currency)}
+                  {(row.others?.length ?? 0) > 0 && (
+                    <span className="block text-[11px] text-muted-foreground">
+                      {plusLabel(row.others, (o) => o.weighted)}
+                    </span>
+                  )}
                 </td>
                 <td className="py-1.5 text-right tabular-nums text-muted-foreground">
-                  {compact(row.won_amount)}
+                  {compact(row.won_amount, row.currency)}
+                  {(row.others?.length ?? 0) > 0 && (
+                    <span className="block text-[11px]">
+                      {plusLabel(row.others, (o) => o.won_amount)}
+                    </span>
+                  )}
                 </td>
               </tr>
             ))}

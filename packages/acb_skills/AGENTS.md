@@ -40,6 +40,7 @@ not write a second copy of that seam. A bare test file name is under
    - OA-7e, layer (b): `load_tool` builds `load_skill_tools` for one run. Its description is the `catalog` of the packs that `loadable` gives. `LoadSkillTools` is its `FunctionMiddleware`: it takes its own tool by identity, builds through the orchestrator's builder, and calls `FunctionInvocationContext.add_tools`. `LoadSkillToolsProvider` adds both to one run.
    - A load obeys the caps of layer (a), and a refusal past a cap names `spawn_subagents`. A load alone makes no pack sticky. A pack becomes sticky when one of its tools runs (`note_used`).
    - MCP rule: a load of a pack of an owner that reads stranger text refuses when the live list holds an MCP tool. `_beside_mcp` fails closed. Precedence differs by layer. In layer (a) the email pack wins and the MCP server stays out. In layer (b) the MCP tool wins and the pack stays out.
+   - OA-7i: `plan_loader` is the ONE reachability rule of the loader in a run. Its `LoaderPlan` gives the offer and `via_loader`, the owners whose specialist leaves. A hand-off to such an owner answers `LOADER_HANDOFF_REFUSED`. Fence: `test_loader_replaces_handoff.py`.
    - `PackRun.holds()` gives each pack of the run, loads too. `PackRun.refusal` applies `_refusals_for` to them. `_rules_block` is the ONE rules text of both layers. Fence: `test_load_skill_tools.py`.
    - `owner_scope(owner, held)` binds `no_egress` for any value of `held` but `False`. Fences: `test_tool_packs_registry.py`, `test_pack_guards.py`.
 5b. decide_tools.py -- the `decide` core-floor tool (spec `customer_console.md` §6A.14). It sends no member and never logs `context`.
@@ -91,6 +92,12 @@ not write a second copy of that seam. A bare test file name is under
    - The sources are the run's tool results, its CRM call arguments and `member_message`, never the packed prompt.
    - A failed answer gets ONE retry. A check that raises sends the answer unchanged, so it never loses the turn.
    - `orchestrator._tool_injection._apply_answer_check` is the one seam that attaches it. Fences: `test_crm_answer_check.py`, `test_crm_answer_check_executor.py`.
+5l-1a. tool_result_spill.py -- a large tool result as a preview and a handle (CTX-1, Metorite #825, spec `one_assistant_context.md` §7.1). Dark behind `TOOL_RESULT_SPILL`.
+   - The store is an in-process LRU with a TTL, keyed by the run's org, member and thread plus the ref. It writes no row, so it is not the WS-60 artifact store.
+   - An untrusted entry has a marker shape, an MCP tool, a pack owner of `UNTRUSTED_INPUT_AGENTS`, or a marked or unknown session. A read of it marks the session. It frames each page afresh.
+   - `orchestrator._tool_injection._apply_tool_result_spill` is the one seam. It runs BEFORE the egress and number-check steps. So the number check reads the full text.
+   - `narrow_and_read` and the delegation tools never spill.
+   - Fence: `test_tool_result_spill.py`.
 5l-2. org_facts_tools.py -- `org_facts(app, query)` and the CRM facts block (spec `crm_platform.md` §18.14.4). It loads with the `crm` skill family only.
    - `crm_answer_question` sends a pick only when this run showed that card and the member clicked it. Fences: `test_org_facts.py`, `test_org_facts_r8.py`, `test_crm_answer_first.py`.
 5m. untrusted.py -- the ONE frame for text that a stranger wrote (spec `email_app_master_plan.md` §12.3.13.8).
