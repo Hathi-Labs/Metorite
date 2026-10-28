@@ -1741,3 +1741,53 @@ async def test_mirror_mode_makes_no_lead_and_advances_the_cursor(
     assert first["candidates"] == 1
     assert second["candidates"] == 0
     assert db.rows("crm_auto_lead_cursors")[0]["processed_watermark"] == _at(5)
+
+
+# ── The switch to Native (WS-53 CRM-Z10b) ───────────────────────────────────
+
+async def test_the_batch_reads_the_mode_for_share_before_its_stamp(
+    db: FakeCrmDB, on: None,
+) -> None:
+    """The switch takes ``crm_settings`` FOR UPDATE and rewinds the watermark.
+    The batch reads the mode FOR SHARE in the transaction of its stamp, so a
+    Mirror cycle stamps BEFORE the rewind. The R8 race is in
+    ``test_crm_cutover_switch_r8.py``."""
+    _ready(db)
+    db.seed("crm_settings", organization_id=MAILBOX_ORG, mode="mirror")
+    _message(db, processed_at=_at(5))
+    db.statements.clear()
+
+    await auto_lead.create_leads_from_new_mail(ACCOUNT_ID)
+
+    shared = [i for i, s in enumerate(db.statements)
+              if "FROM crm_settings" in s and s.endswith("FOR SHARE")]
+    stamps = [i for i, s in enumerate(db.statements)
+              if s.startswith("UPDATE crm_auto_lead_cursors SET processed_watermark")]
+    assert shared, "the batch did not read the mode FOR SHARE"
+    assert stamps and shared[0] < stamps[0]
+
+
+async def test_the_batch_reads_the_cursor_again_under_the_mode_lock(
+    db: FakeCrmDB, on: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The switch may rewind the watermark after the step read the cursor. The
+    batch reads the cursor again under the lock, so the rewound mail is a
+    candidate. With the stale cursor, the message below would be skipped."""
+    _ready(db)
+    _message(db, processed_at=_at(5))
+    cursor = db.rows("crm_auto_lead_cursors")[0]
+    real = auto_lead._run_batch
+
+    from types import SimpleNamespace
+
+    async def _rewound_after_the_read(db_, org, account, stale, stats):
+        # The caller read a watermark past the message. The switch rewound it.
+        stale_view = SimpleNamespace(**{**cursor, "processed_watermark": _at(6)})
+        cursor["processed_watermark"] = _at(4)
+        return await real(db_, org, account, stale_view, stats)
+
+    monkeypatch.setattr(auto_lead, "_run_batch", _rewound_after_the_read)
+    stats = await auto_lead.create_leads_from_new_mail(ACCOUNT_ID)
+
+    assert stats["candidates"] == 1 and stats["created"] == 1
+    assert [r["email"] for r in _leads(db)] == [STRANGER]

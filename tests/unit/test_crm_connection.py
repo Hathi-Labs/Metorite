@@ -810,6 +810,116 @@ def test_the_mirror_list_defaults_to_empty() -> None:
     assert Settings.model_fields["crm_mirror_orgs"].default == ""
 
 
+# ── 4c. CRM_CUTOVER_ORGS: the per-org list of the switch (CRM-Z10b) ──────────
+
+
+def test_the_cutover_list_defaults_to_empty_and_allows_no_org(
+    world: tuple[FakeRegistry, FakeZoho], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from acb_common.settings import Settings
+    from gateway.routes.crm import flags
+
+    assert Settings.model_fields["crm_cutover_orgs"].default == ""
+    monkeypatch.setattr(get_settings(), "crm_cutover_orgs", "", raising=False)
+    assert flags.cutover_allowed(ORG_A) is False
+
+
+def test_the_cutover_list_has_the_grammar_of_the_crm_list_and_needs_the_mirror(
+    world: tuple[FakeRegistry, FakeZoho], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gateway.routes.crm import flags
+
+    monkeypatch.setattr(get_settings(), "crm_cutover_orgs",
+                        f" {ORG_A.upper()} , other", raising=False)
+    assert flags.cutover_allowed(ORG_A) is True
+    assert flags.cutover_allowed(ORG_OUT) is False
+    monkeypatch.setattr(get_settings(), "crm_cutover_orgs", "*", raising=False)
+    assert flags.cutover_allowed(ORG_OUT) is True
+    assert flags.cutover_allowed(None) is False
+    # The cutover list never opens an org that the mirror list shuts.
+    monkeypatch.setattr(get_settings(), "crm_mirror_orgs", ORG_A, raising=False)
+    assert flags.cutover_allowed(ORG_OUT) is False
+    monkeypatch.setattr(get_settings(), "crm_mirror", False, raising=False)
+    assert flags.cutover_allowed(ORG_A) is False
+
+
+# ── 4d. The disconnect reports what Zoho said (CRM-Z10b) ────────────────────
+
+
+def _connected_row(registry: FakeRegistry) -> None:
+    registry.rows[ORG_A] = {
+        "id": "conn-0001", "org": ORG_A, "status": "connected",
+        "credential": _credential(), "scopes": [], "connected_by": ADMIN,
+        "last_error": None,
+    }
+
+
+@pytest.mark.parametrize(("body", "said"), [
+    ({"status": "success"}, "confirmed"),
+    ({"status": "failure"}, "not_confirmed"),
+])
+async def test_the_reporting_disconnect_says_what_zoho_said(
+    world: tuple[FakeRegistry, FakeZoho], body: dict[str, Any], said: str,
+) -> None:
+    registry, zoho = world
+    _connected_row(registry)
+    zoho.revoke_body = body
+    row, outcome = await conn.disconnect_zoho_reporting(ORG_A)
+    assert outcome == said
+    assert row is not None and row.status == "disconnected"
+    assert registry.rows[ORG_A]["credential"] is None
+    revokes = [r for r in zoho.requests if r.url.path.endswith("/token/revoke")]
+    assert len(revokes) == 1
+    # A second call changes no row, so it reports no outcome and calls nobody.
+    zoho.requests.clear()
+    again, outcome = await conn.disconnect_zoho_reporting(ORG_A)
+    assert outcome is None and again is not None and again.status == "disconnected"
+    assert zoho.requests == []
+
+
+async def test_a_missing_zoho_client_reports_not_configured(
+    world: tuple[FakeRegistry, FakeZoho], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, zoho = world
+    _connected_row(registry)
+    monkeypatch.setattr(get_settings(), "crm_zoho_client_id", "", raising=False)
+    row, outcome = await conn.disconnect_zoho_reporting(ORG_A)
+    assert outcome == "not_configured"
+    assert row is not None and row.status == "disconnected"
+    assert zoho.requests == []
+
+
+async def test_a_transport_error_reports_not_confirmed(
+    world: tuple[FakeRegistry, FakeZoho], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, _zoho = world
+    _connected_row(registry)
+
+    def _down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down", request=request)
+
+    monkeypatch.setattr(
+        conn, "_source",
+        lambda credential=None, transport=None: ZohoSource(
+            conn.zoho_oauth_config(), credential,
+            transport=httpx.MockTransport(_down),
+        ),
+    )
+    row, outcome = await conn.disconnect_zoho_reporting(ORG_A)
+    assert outcome == "not_confirmed"
+    assert row is not None and row.status == "disconnected"
+
+
+async def test_disconnect_zoho_keeps_its_shape(
+    world: tuple[FakeRegistry, FakeZoho],
+) -> None:
+    """The one disconnect logic still returns the row alone (WS-54 IN-1)."""
+    registry, _zoho = world
+    _connected_row(registry)
+    row = await conn.disconnect_zoho(ORG_A)
+    assert row is not None and row.status == "disconnected"
+
+
 async def test_the_scheduler_skips_an_org_outside_the_mirror_list(
     world: tuple[FakeRegistry, FakeZoho], monkeypatch: pytest.MonkeyPatch,
 ) -> None:

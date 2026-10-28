@@ -319,10 +319,15 @@ async def _old_credential_locked(db: Any, org: str) -> SourceCredential | None:
         return None
 
 
-async def _best_effort_revoke(credential: SourceCredential | None, why: str) -> None:
-    """Revoke at Zoho and go on, whatever happens. Log the outcome only."""
+async def _best_effort_revoke(credential: SourceCredential | None, why: str) -> str | None:
+    """Revoke at Zoho and go on, whatever happens. Log the outcome only.
+
+    Returns the outcome: ``confirmed``, ``not_confirmed``, ``not_configured``
+    or ``failed:<code>``. ``None`` when there was no token to revoke. A caller
+    that ignores it keeps the old behaviour.
+    """
     if credential is None or not credential.refresh_token:
-        return
+        return None
     try:
         confirmed = await _source(credential).revoke()
         outcome = "confirmed" if confirmed else "not_confirmed"
@@ -333,6 +338,7 @@ async def _best_effort_revoke(credential: SourceCredential | None, why: str) -> 
     except (TimeoutError, httpx.HTTPError):
         outcome = "failed:transport"
     _log.info("zoho revoke (%s): %s", why, outcome)
+    return outcome
 
 
 @dataclass(frozen=True)
@@ -595,14 +601,35 @@ async def disconnect_zoho(org: str) -> store.Connection | None:
     change, or ``None`` when the org has no Zoho connection. A second call
     changes nothing.
     """
+    connection, _outcome = await disconnect_zoho_reporting(org)
+    return connection
+
+
+#: The revoke outcomes that a caller shows (CRM-Z10b). Each other outcome of
+#: :func:`_best_effort_revoke` (a refused or a failed call, or no token) is
+#: ``not_confirmed``: the customer removes the app in Zoho by hand.
+REVOKE_OUTCOMES: tuple[str, ...] = ("confirmed", "not_confirmed", "not_configured")
+
+
+async def disconnect_zoho_reporting(
+    org: str,
+) -> tuple[store.Connection | None, str | None]:
+    """:func:`disconnect_zoho`, and what Zoho said to the revoke (CRM-Z10b).
+
+    Returns ``(connection, outcome)``. ``outcome`` is ``confirmed``,
+    ``not_confirmed`` or ``not_configured`` when this call changed the row,
+    and ``None`` when it changed nothing (no connection, or one that is
+    already ``disconnected``). The revoke never stops the disconnect.
+    """
     async with _tenant_session() as db:
         row = await store.get(db, org, PROVIDER, OWNING_APP)
         if row is None or row.status == store.STATUS_DISCONNECTED:
-            return row
+            return row, None
         credential = await store.load_credential(db, org, PROVIDER, OWNING_APP)
-    await _best_effort_revoke(credential, "disconnect")
+    raw = await _best_effort_revoke(credential, "disconnect")
+    outcome = raw if raw in REVOKE_OUTCOMES else "not_confirmed"
     async with _tenant_session() as db:
-        return await store.disconnect(db, org, row.id)
+        return await store.disconnect(db, org, row.id), outcome
 
 
 # ── The shared token (§5.2 item 11) ─────────────────────────────────────────
