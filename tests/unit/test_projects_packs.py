@@ -17,6 +17,7 @@ it red (R7). What is locked:
 6. The persona, the refusal and the rules of the owner without a bullet.
 7. A covered organization loads no Projects pack.
 8. A batch tool shows one card through the real assembly, and R5.
+9. Layers (b) and (c) build the same tools.
 
 Run: ``uv run pytest tests/unit/test_projects_packs.py -q``.
 """
@@ -43,6 +44,7 @@ from evals.one_assistant_measure.scenarios import SCENARIOS
 from tests.unit import test_projects_create_tasks as tc
 from tests.unit._egress_mark_store import install_memory_mark_store
 from tests.unit._projects_agent_fakes import approve, fake_gateway
+from tests.unit.test_load_skill_tools import _call, _dummies, _in_run, _loader, _record
 from tests.unit.test_tool_packs_choice import (
     CONFIG,
     EA,
@@ -671,3 +673,53 @@ def test_a_held_projects_tool_is_no_egress_tool() -> None:
     for slug in SLUGS:
         for tool in ti._owner_pack_tools(slug, PA, source):
             assert not eg.is_egress_tool(tool), _name(tool)
+
+
+# ── 9. Layers (b) and (c) build the same FunctionTool packs ─────────────────
+
+
+async def test_the_loader_adds_a_projects_pack_of_strict_function_tools(store) -> None:
+    """Layer (b): ``load_skill_tools`` builds the pack with the same guarded
+    builder, and ``add_tools`` takes the owner's ``_StrictTool`` objects.
+    Mutation: the build skips a ``FunctionTool`` (``_pack_func``) -> the pack
+    is empty and the load answers "not available" -> red."""
+    record = _record()
+    loader = _loader(record, offered=("projects-plan",))
+    live = _dummies(5)
+    with _in_run(loader):
+        answer, passed = await _call(loader, "projects-plan", live)
+    assert passed is False
+    assert answer.startswith("Loaded the Projects planning and reports tools (35 tools)"), answer
+    assert "PROJECTS PLANNING TOOLS." in answer
+    added = live[5:]
+    assert [_name(t) for t in added] == list(_family("projects-plan"))
+    assert all(type(t).__name__ == "_StrictTool" for t in added)
+    assert record.holds() == ("projects-plan",)
+
+
+async def test_layer_c_adds_the_core_pack_before_the_first_request(store) -> None:
+    """Layer (c) loads through the same builder in ``before_run``. Mutation: a
+    ``normalize_tools`` that rebuilds the tool -> the class is lost -> red."""
+    import types
+
+    class _Ctx:
+        def __init__(self) -> None:
+            self.tools: list[Any] = []
+            self.instructions: list[str] = []
+
+        def extend_tools(self, _source: str, tools: Any) -> None:
+            self.tools.extend(tools)
+
+        def extend_instructions(self, _source: str, text: Any) -> None:
+            self.instructions.append(str(text))
+
+    record = _record()
+    loader = _loader(record, offered=("projects",))
+    assert loader.set_early(["projects"]) == ("projects",)
+    agent = types.SimpleNamespace(default_options={"tools": _dummies(5)})
+    ctx = _Ctx()
+    with _in_run(loader):
+        await loader.load_early(agent, ctx)
+    assert [_name(t) for t in ctx.tools] == list(_family("projects"))
+    assert all(type(t).__name__ == "_StrictTool" for t in ctx.tools)
+    assert any("PROJECTS TOOLS." in text for text in ctx.instructions)
