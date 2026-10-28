@@ -199,11 +199,11 @@ function Forecast({ reports }: { reports: CrmReports }) {
           ))}
         </ul>
       )}
-      {ordered.some((stage) => stage.others.length > 0) && (
+      {ordered.some((stage) => (stage.others?.length ?? 0) > 0) && (
         <p className="mt-3 text-[11px] text-muted-foreground">
           Weighted in another currency:{" "}
           {ordered
-            .filter((stage) => stage.others.length > 0)
+            .filter((stage) => (stage.others?.length ?? 0) > 0)
             .map(
               (stage) =>
                 `${stage.status.name} ${plusLabel(stage.others, (o) => o.weighted)}`
@@ -412,7 +412,7 @@ function Leaderboard({ reports }: { reports: CrmReports }) {
                 </td>
                 <td className="py-1.5 text-right tabular-nums text-foreground">
                   {compact(row.weighted, row.currency)}
-                  {row.others.length > 0 && (
+                  {(row.others?.length ?? 0) > 0 && (
                     <span className="block text-[11px] text-muted-foreground">
                       {plusLabel(row.others, (o) => o.weighted)}
                     </span>
@@ -420,7 +420,7 @@ function Leaderboard({ reports }: { reports: CrmReports }) {
                 </td>
                 <td className="py-1.5 text-right tabular-nums text-muted-foreground">
                   {compact(row.won_amount, row.currency)}
-                  {row.others.length > 0 && (
+                  {(row.others?.length ?? 0) > 0 && (
                     <span className="block text-[11px]">
                       {plusLabel(row.others, (o) => o.won_amount)}
                     </span>
