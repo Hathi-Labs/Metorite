@@ -122,6 +122,9 @@ OLD = f"test.br1a{TAG}.old"
 #: The domain table of the intent-mark test. The test makes it and drops it.
 INTENT_TABLE = f"br1b_intent_{TAG}"
 
+#: The named error of an uncertain send (review P1-2).
+UNCERTAIN = "UncertainSend: the provider call possibly ran, so no second call"
+
 #: The frozen clock: Tuesday 10 March 2099, 09:00 UTC.
 T = datetime(2099, 3, 10, 9, 0, tzinfo=UTC)
 
@@ -210,10 +213,13 @@ def test_the_migration_holds_the_states_and_the_rls_of_the_queue() -> None:
     assert "WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid)" in sql
     assert "gtd_" not in sql
     assert "FOR UPDATE SKIP LOCKED" in queue._CLAIM_SQL
-    # No statement names an org: RLS binds each one.
+    # No statement takes an org: RLS binds each one. The prune DELETE also
+    # names the bound tenant, as a belt for a session that bypasses RLS.
     for name in dir(queue):
-        if name.endswith("_SQL"):
+        if name.endswith("_SQL") and name != "_PRUNE_SQL":
             assert "organization_id =" not in getattr(queue, name), name
+    assert f"organization_id = {queue._BOUND_ORG} " in queue._PRUNE_SQL
+    assert ":org" not in queue._PRUNE_SQL
     assert "organization_id" not in queue._INSERT_SQL.split("VALUES")[0]
 
 
@@ -742,7 +748,9 @@ def test_a_tick_that_ran_a_job_logs_one_summary_line(monkeypatch) -> None:
 def test_r8_the_worker_reads_the_clock_for_each_job(world) -> None:
     _register_ok(world)
     org = world.p.org_a
-    instants = iter([T, T + timedelta(seconds=7), T + timedelta(seconds=9)])
+    # claim 1, settle 1, claim 2, settle 2, and the claim that finds no job.
+    s = timedelta(seconds=1)
+    instants = iter([T, T + 3 * s, T + 7 * s, T + 9 * s, T + 11 * s])
 
     async def go() -> tuple:
         # The claim takes the oldest run_at first, so the order is fixed.
@@ -752,8 +760,9 @@ def test_r8_the_worker_reads_the_clock_for_each_job(world) -> None:
 
     first, second, counts = _go(world, go)
     assert counts == Counter(done=2)
-    assert _row(world, first).finished_at == T
-    assert _row(world, second).finished_at == T + timedelta(seconds=7)
+    # Each settle reads the clock after its handler (review P1-1).
+    assert _row(world, first).finished_at == T + timedelta(seconds=3)
+    assert _row(world, second).finished_at == T + timedelta(seconds=9)
 
 
 def test_r8_a_complete_that_changes_no_row_rolls_back_the_handler(world) -> None:
@@ -884,6 +893,7 @@ def test_r8_a_detached_handler_that_lost_its_lease_settles_nothing(world) -> Non
             out["hold"] = await queue.hold(db, claim)
             out["complete"] = await queue.complete(db, claim, now=late)
             out["fail"] = await queue.fail(db, claim, "late", now=late)
+            out["give_up"] = await queue.give_up(db, claim, "Late: gone", now=late)
 
     worker.register(DETACHED, detached, mode="detached")
 
@@ -895,6 +905,7 @@ def test_r8_a_detached_handler_that_lost_its_lease_settles_nothing(world) -> Non
     second = out["second"]
     assert second is not None and second.id == job and second.attempts == 2
     assert out["hold"] is False and out["complete"] == 0 and out["fail"] is None
+    assert out["give_up"] is False
     assert outcome == "lost"
     row = _row(world, job)
     assert row.state == "running" and str(row.locked_by) == second.token
@@ -914,7 +925,9 @@ def _intent_table(world: Any) -> None:
 def test_r8_an_intent_mark_stops_a_second_provider_call(world) -> None:
     """Acceptance 3, and the pattern of ``docs/job_queue.md`` §5a. The
     handler commits the mark, calls the provider, and dies. The retry reads
-    the mark and does not call the provider again."""
+    the mark and does not call the provider again. The send is then
+    uncertain, so the retry gives the job up: it is ``failed``, with a named
+    error and a ``jobs.failed`` line, and never a silent ``done``."""
     _intent_table(world)
     org = world.p.org_a
     provider = Counter()
@@ -926,33 +939,39 @@ def test_r8_an_intent_mark_stops_a_second_provider_call(world) -> None:
                 f"SELECT marked_at FROM {INTENT_TABLE} WHERE key = :k"),
                 {"k": key})).scalar_one_or_none()
         if mark is not None:
-            # A mark with no result: the call possibly ran. Do not call again.
-            result = "unknown"
-        else:
-            async with tenant_session(org_) as db:  # the mark commits here
+            # A mark with no result: the call possibly ran. Do not call again,
+            # and do not report a send that nobody saw land.
+            async with tenant_session(org_) as db:
                 await db.execute(text(
-                    f"INSERT INTO {INTENT_TABLE} (key, marked_at) VALUES (:k, now())"),
+                    f"UPDATE {INTENT_TABLE} SET result = 'unknown' WHERE key = :k"),
                     {"k": key})
-            provider["calls"] += 1  # the provider stub, with no session open
-            raise RuntimeError("the worker died after the provider call")
-        async with tenant_session(org_) as db:
-            if not await queue.hold(db, claim):
-                return
+                await queue.give_up(db, claim, UNCERTAIN, now=T + queue.backoff(1))
+            return
+        async with tenant_session(org_) as db:  # the mark commits here
             await db.execute(text(
-                f"UPDATE {INTENT_TABLE} SET result = :r WHERE key = :k"),
-                {"r": result, "k": key})
-            await queue.complete(db, claim, now=T)
+                f"INSERT INTO {INTENT_TABLE} (key, marked_at) VALUES (:k, now())"),
+                {"k": key})
+        provider["calls"] += 1  # the provider stub, with no session open
+        raise RuntimeError("the worker died after the provider call")
 
-    worker.register(DETACHED, detached, mode="detached")
+    # The handler reads its mark first, so a second try is safe to run.
+    worker.register(DETACHED, detached, mode="detached", idempotent=True)
     key = f"intent-{uuid.uuid4().hex[:8]}"
     try:
-        job = _go(world, lambda: _enqueue(org, DETACHED, {"key": key}, max_attempts=2))
-        first, second = _go(world, lambda: _ticks(T, T + queue.backoff(1)))
-        assert first == {org: Counter(retry=1)} and second == {org: Counter(done=1)}
+        job = _go(world, lambda: _enqueue(org, DETACHED, {"key": key}, max_attempts=3))
+        with structlog.testing.capture_logs() as caps:
+            first, second = _go(world, lambda: _ticks(T, T + queue.backoff(1)))
+        assert first == {org: Counter(retry=1)} and second == {org: Counter(failed=1)}
         assert provider["calls"] == 1
         row = _row(world, job)
-        assert row.state == "done" and row.attempts == 2
-        assert row.last_error == "RuntimeError: the worker died after the provider call"
+        # Tries were left, and the job still failed for good.
+        assert row.state == "failed" and row.attempts == 2 < row.max_attempts
+        assert row.last_error == UNCERTAIN
+        assert row.finished_at == T + queue.backoff(1) and row.locked_by is None
+        failed = _events(caps, "jobs.failed")
+        assert len(failed) == 1 and failed[0]["log_level"] == "error"
+        assert (failed[0]["job_id"], failed[0]["error"], failed[0]["outcome"]) == (
+            job, "UncertainSend", "given_up")
         with world.p.admin_engine.connect() as c:
             mark = c.execute(text(f"SELECT marked_at, result FROM {INTENT_TABLE} "
                                   "WHERE key = :k"), {"k": key}).one()
@@ -1158,3 +1177,134 @@ def test_r8_a_detached_handler_must_settle_its_job(world) -> None:
         "Unsettled: the handler returned without settling")
     loud_row = _row(world, loud)
     assert loud_row.state == "queued" and loud_row.last_error == "ValueError: provider refused"
+
+
+# ── BR-1b-a review round 1 ─────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("mode", ["session", "detached"])
+def test_r8_a_slow_try_takes_its_backoff_from_its_end(world, mode) -> None:
+    """Review P1-1. A try runs for 240 s on the clock and fails. The retry
+    time counts from the end of the try, so the same batch does not claim
+    the job again at once, and a tick inside the backoff claims nothing."""
+    org = world.p.org_a
+    t = [T]
+    slow = timedelta(seconds=240)
+
+    def step() -> None:
+        t[0] = t[0] + slow  # the slow provider
+
+    if mode == "session":
+        async def handler(db: Any, payload: dict[str, Any]) -> None:
+            step()
+            raise RuntimeError("slow and wrong")
+
+        worker.register(SLOW, handler)
+    else:
+        async def handler(org_: str, payload: dict[str, Any], claim: queue.Claim) -> None:
+            step()
+            raise RuntimeError("slow and wrong")
+
+        worker.register(SLOW, handler, mode="detached", idempotent=True)
+
+    async def go() -> tuple:
+        job = await _enqueue(org, SLOW, {}, max_attempts=3)
+        return job, await worker.run_org(org, clock=lambda: t[0])
+
+    job, counts = _go(world, go)
+    end = T + slow
+    assert counts == Counter(retry=1)
+    row = _row(world, job)
+    assert row.state == "queued" and row.attempts == 1
+    assert row.run_at == end + queue.backoff(1)
+    # A tick inside the backoff claims nothing. The tick at its end does.
+    inside = _go(world, lambda: worker.run_org(org, end + queue.backoff(1) - timedelta(seconds=1)))
+    assert inside == Counter() and _row(world, job).attempts == 1
+    t[0] = end + queue.backoff(1)
+    assert _go(world, lambda: worker.run_org(org, clock=lambda: t[0])) == Counter(retry=1)
+    assert _row(world, job).attempts == 2
+
+
+@pytest.mark.parametrize("idempotent", [False, True])
+def test_r8_a_detached_kind_that_is_not_idempotent_gets_one_try(world, idempotent) -> None:
+    """Review P2-a. With ``idempotent=False`` (the default), the claim of try
+    2 fails the job for good, and the handler does not run again. With
+    ``idempotent=True``, try 2 runs."""
+    org = world.p.org_b
+    calls = Counter()
+
+    async def handler(org_: str, payload: dict[str, Any], claim: queue.Claim) -> None:
+        calls["n"] += 1
+        raise RuntimeError("the provider broke")
+
+    if idempotent:
+        worker.register(DETACHED, handler, mode="detached", idempotent=True)
+    else:
+        worker.register(DETACHED, handler, mode="detached")
+    assert worker._HANDLERS[DETACHED].idempotent is idempotent
+    job = _go(world, lambda: _enqueue(org, DETACHED, {}, max_attempts=3))
+    with structlog.testing.capture_logs() as caps:
+        first, second = _go(world, lambda: _ticks(T, T + queue.backoff(1)))
+    assert first == {org: Counter(retry=1)}
+    row = _row(world, job)
+    if idempotent:
+        assert second == {org: Counter(retry=1)} and calls["n"] == 2
+        assert row.state == "queued" and row.attempts == 2
+        assert not _events(caps, "jobs.failed")
+    else:
+        assert second == {org: Counter(failed=1)} and calls["n"] == 1
+        assert row.state == "failed" and row.attempts == 2
+        assert row.last_error == worker.NOT_IDEMPOTENT == "not idempotent: refusing a second try"
+        failed = _events(caps, "jobs.failed")
+        assert len(failed) == 1 and failed[0]["outcome"] == "given_up"
+
+
+def test_register_refuses_an_idempotent_flag_that_is_not_a_bool() -> None:
+    async def h(org: str, payload: dict[str, Any], claim: queue.Claim) -> None:
+        return None
+
+    with pytest.raises(ValueError):
+        worker.register(f"test.br1a{TAG}.flag", h, mode="detached", idempotent="yes")
+
+
+def test_r8_one_prune_run_takes_a_capped_number_of_rows(world, monkeypatch) -> None:
+    """Review P2-c. One run deletes at most ``PRUNE_MAX_BATCHES`` batches,
+    and the next run takes the rest."""
+    monkeypatch.setattr(queue, "PRUNE_BATCH", 2)
+    monkeypatch.setattr(queue, "PRUNE_MAX_BATCHES", 2)
+    a = world.p.org_a
+    rows = [_put(world, a, "done", T - timedelta(days=40)) for _ in range(5)]
+
+    async def run() -> int:
+        async with tenant_session(a) as db:
+            return await queue.prune(db, now=T)
+
+    assert [_go(world, run) for _ in range(3)] == [4, 1, 0]
+    assert all(_row(world, r) is None for r in rows)
+
+
+class _SyncDb:
+    """A sync connection as the async ``db`` of :func:`queue.prune`."""
+
+    def __init__(self, conn: Any) -> None:
+        self.conn = conn
+
+    async def execute(self, *args: Any) -> Any:
+        return self.conn.execute(*args)
+
+
+def test_r8_a_prune_on_a_session_that_bypasses_rls_takes_the_bound_org_only(world) -> None:
+    """Review P2-d. The admin role bypasses RLS. With a tenant bound, the
+    prune still deletes the rows of that org only. With no tenant bound, it
+    deletes nothing."""
+    a, b = world.p.org_a, world.p.org_b
+    old = T - timedelta(days=40)
+    row_a, row_b = _put(world, a, "done", old), _put(world, b, "done", old)
+    with world.p.admin_engine.begin() as c:
+        assert asyncio.run(queue.prune(_SyncDb(c), now=T)) == 0
+    assert _row(world, row_a) is not None and _row(world, row_b) is not None
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": a})
+        assert asyncio.run(queue.prune(_SyncDb(c), now=T)) >= 1
+    assert _row(world, row_a) is None
+    assert _row(world, row_b) is not None
