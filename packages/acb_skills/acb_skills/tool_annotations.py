@@ -33,6 +33,8 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "call_agent":            {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
     "call_agents_parallel":  {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
     "call_agent_background": {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
+    # WS-67 OA-9b: children that only read, started by the main assistant.
+    "spawn_subagents":       {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
     # Web access
     "web_search":            {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": True},
     "fetch_page":            {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": True},
@@ -220,6 +222,10 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     # Not H-236's, and left out for the same reason: only a WhatsApp run holds
     # it, so the block of every other agent stays byte-identical.
     "whatsapp_ui",
+    # WS-67 OA-9b: only the orchestrator holds it, and only for an org on
+    # SPAWN_SUBAGENTS_ORGS. No other agent's block names it, so every block
+    # stays byte-identical.
+    "spawn_subagents",
     # WS-53 CRM-C7: the twelve CRM reads. They only read, so the risk block
     # gains nothing from them, and it stays byte-identical for every agent.
     "crm_list_records",

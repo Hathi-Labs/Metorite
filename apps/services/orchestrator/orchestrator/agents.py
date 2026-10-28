@@ -444,6 +444,32 @@ def _assistant_profile_enabled(org: str | None = None) -> bool:
         return False
 
 
+def _spawn_subagents_enabled(org: str | None = None) -> bool:
+    """True when ``spawn_subagents`` is on for this assistant's organization.
+
+    The rule is ``subagent_contract.spawn_subagents_on`` (``SPAWN_SUBAGENTS_ORGS``,
+    OWNER-ONLY, empty means off). *org* is the organization that the caller
+    holds from the server-side ``UserContext``. With none, the bound tenant and
+    then the run's org answer, as for the profile. A caller with none of them
+    fails closed. The executor asks the same rule again at injection
+    (``_tool_injection._drop_spawn_tool``). Never raises.
+    """
+    try:
+        from acb_skills.subagent_contract import spawn_subagents_on
+
+        if not org:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        if not org:
+            from orchestrator.executor import _current_run_org
+
+            org = _current_run_org()
+        return spawn_subagents_on(org)
+    except Exception:
+        return False
+
+
 def _context_recency_enabled() -> bool:
     """The one reader of ``CONTEXT_RECENCY``, in ``acb_skills`` (CX-1)."""
     try:
@@ -762,6 +788,16 @@ except ImportError:  # pragma: no cover — acb_skills ships with the platform
     pass
 else:
     _register_platform(delegate_to_agent)
+    # WS-67 OA-9b: `spawn_subagents` is a delegation tool too (the fifth of
+    # `egress.DELEGATION_TOOLS`), and the orchestrator's own. Trusted by
+    # identity, so a held chat keeps it and each child it starts binds
+    # `no_egress`. A tool of another repo that borrows the name gets no trust.
+    try:
+        from acb_skills.agent_tools import spawn_subagents as _spawn_subagents_tool
+    except ImportError:  # pragma: no cover — acb_skills ships with the platform
+        pass
+    else:
+        _register_platform(_spawn_subagents_tool)
 
 
 # ---------------------------------------------------------------------------
@@ -1060,6 +1096,15 @@ def build_orchestrator_agent(
     # tests/unit/test_show_in_app.py, test_company_search_tool.py.
     from orchestrator.in_app_path import chat_first_tools_enabled
     page_tools: list[Any] = [show_in_app] if chat_first_tools_enabled() else []
+    # WS-67 OA-9b (one_assistant_context.md §4.5, OA-9b narrowing 4): the
+    # orchestrator's own, on this one path. It is in no injected set and in no
+    # agent's tool_scope, so only the main assistant holds it. Dark until
+    # SPAWN_SUBAGENTS_ORGS names the org. Fence: tests/unit/test_spawn_subagents.py.
+    spawn_tools: list[Any] = []
+    if _spawn_subagents_enabled(organization_id):
+        from acb_skills.agent_tools import spawn_subagents
+
+        spawn_tools = [spawn_subagents]
     core_tools: list[Any] = [
         *retrieval_tools,
         *profile_tools,
@@ -1067,6 +1112,7 @@ def build_orchestrator_agent(
         *spill_tools,
         search_timeline,
         *page_tools,
+        *spawn_tools,
         spawn_copilot_agent,
         delegate_to_agent,
         *_memory_tools,

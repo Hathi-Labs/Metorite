@@ -1,0 +1,49 @@
+{
+  "name": "worker",
+  "app": "chat",
+  "description": "Internal sub-agent of spawn_subagents. Runs one read-only job with the tools of that job and ends with one JSON object of items. No picker, no specialist tool and no route names it, and it refuses to run with no job.",
+  "version": "0.1.0",
+  "runtime": "maf",
+  "model_tier": "tier-fast",
+  "sharing": {
+    "instancing": "shared",
+    "visibility": "organization",
+    "shareable": false,
+    "outputs_visibility": "instance"
+  },
+  "skill_repos": [],
+  "mcp_servers": {},
+  "max_mutation_attempts": 1,
+  "tags": [
+    "internal",
+    "sub-agent"
+  ],
+  "integrations": [],
+  "optional_integrations": [],
+  "tool_scope": [
+    "web_search",
+    "fetch_page"
+  ],
+  "floor_opt_out": [
+    "call_agent",
+    "call_agent_background",
+    "call_agents_parallel",
+    "code_task",
+    "decide",
+    "get_errors",
+    "get_workflow_run",
+    "list_integrations",
+    "list_workflows",
+    "load_artifact_kit",
+    "load_design_system",
+    "manage_todo_list",
+    "package_artifacts",
+    "recall_notes",
+    "run_diagnostics",
+    "run_script",
+    "run_workflow",
+    "save_note",
+    "share_artifact",
+    "write_artifact"
+  ]
+}
