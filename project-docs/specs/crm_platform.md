@@ -11588,6 +11588,9 @@ Owner, 2026-10-20: the board order and the win chance are two settings.
 1. **The order never follows the probability.** An admin sets the order of
    the boards. A stage at 90% can sit before a stage at 10%. Mirror mode
    without an admin order uses the source position, then the pipeline place.
+   *Amended 2026-10-27 by D137 and CRM-U11 (§20.15): Mirror mode without an
+   admin order uses the place in the Zoho pipeline first, and no type group
+   moves a column.*
 2. **Every stage has a win chance.** Migration 288 adds `probability` and
    `ui_probability` to `crm_lead_statuses`. A won status holds 100 and a lost
    status holds 0, for both kinds (D-CRM-10).
@@ -11638,6 +11641,153 @@ the drawer, and tap again.
 
 Fences (R7): `crmU10.test.ts` holds the tab rule, the wire and the three
 source fences. It checks that `AppShell` draws only what the page emits.
+
+### 20.15 CRM-U11: the stage settings are the board (owner report, 2026-10-27)
+
+**Status.** ✅ Built 2026-10-28 on branch `crm-stage-order`, and the verifier gave PASS. Decision D137. Metorite: task #833 under
+epic #477. The spec audit of 2026-10-27 checked it against the code at
+72094831d and gave GO-NARROWED.
+
+**Two scope rules from the audit.**
+
+- **Native mode with two pipelines or more** keeps the read-only list and its
+  note "Stage editing for several pipelines is not available yet." The new
+  screen serves Mirror mode, and Native mode with one pipeline or none.
+- **A Native stage that sits after Won or Lost** now shows there, because no
+  type group moves it. Production holds two Native orgs on 2026-10-27, and
+  each has only the six seed stages, in order. So no org changes, and no data
+  fix runs.
+
+**Gate.** AGENT-SAFE. No flag, no migration and no gateway change. The order
+route (`PUT /crm/statuses/{kind}/order`) and the reset route
+(`POST /crm/statuses/{kind}/order/reset`) exist. If the build finds that the
+gateway must change, stop and report.
+
+**The owner's report.** The deal stages were "very complicated" to set up.
+The Kanban columns did not show "like it is currently showing up in ZOHO".
+The owner asked for the Zoho order, or an easy setting.
+
+**Measured on production, 2026-10-27 (Fracktal).**
+
+- The pipeline "Fracktal Sales Pipeline" lists 12 stages in this order:
+  Re-Evaluate, Confirmation and Advance, New Deal, Discovery Meeting, Sample
+  parts, Proposal / Quote Sent, Negotiation/Review, Awaiting PO, PO Received,
+  Closed Won, Payment Complete, Closed Lost.
+- Five more stages are outside the pipeline: Meeting Scheduled (0 deals),
+  Delivered & Installed (10), Discovery Meeting Done (4), New Lead (8) and
+  Negotiation / Tendering (2).
+- Each of the 17 stages has a `ui_position` equal to its place in the global
+  Zoho picklist times 10. An admin saved the order once, and it was a copy of
+  the picklist, not of the pipeline.
+
+**Why the board was wrong.** Three causes:
+
+1. With one pipeline, `resolvePipeline` returns null. The board sends no
+   `pipeline_id`, and no lane has a pipeline place.
+2. With a saved order, `orderLanes` reads `ui_position` and never the
+   pipeline place. With no saved order, the place only breaks a tie of the
+   global position (`lib/board.ts`).
+3. `orderLanes` puts the open stages first, then on hold, then won, then
+   lost. A drag in settings that crossed a group moved no column.
+
+**Why the settings were hard.** Each row of `MirrorStatusGrid` holds a drag
+handle, two arrows, the Zoho win chance, the Metorite win chance, a colour,
+a hide box, a Rules toggle, Save, Cancel and "Reset to Zoho". The list holds
+stages outside the pipeline with no mark. A separate read-only card lists the
+pipelines. A strip repeats the order above the list. The list order is not
+the board order, because of cause 3.
+
+#### The order rule (D137)
+
+`orderLanes(lanes, mode, places)` stays the one order. `places` maps a status
+id to its place in the pipeline that the board shows. That is the chosen
+pipeline, or the default pipeline when the board shows every deal. A lane's
+own `pipeline_position` wins when the payload has one. The page builds
+`places` from `GET /crm/pipelines`, which it reads already.
+
+1. **No type group.** The open, on hold, won and lost groups go. A stage that
+   Zoho no longer lists, and a hidden stage, still go to the end.
+2. **Mirror mode, no saved order:** the place in the pipeline first. The
+   stages with no place follow, by source position. Then the name.
+3. **Mirror mode, a saved order:** `ui_position`. A row with none follows, by
+   source position. Then the name.
+4. **Native mode:** `position`, then the name.
+5. **The Leads board:** the same rule, with no pipeline. Mirror mode with no
+   saved order uses the Zoho picklist order.
+6. **The win chance never moves a column.**
+
+#### The Deal stages screen
+
+The screen is one list, and the list is the board.
+
+1. **Heading and one line.** "Deal stages". Then: "These are the columns of
+   your Deals board, left to right. Drag a stage, or use its arrows, to move
+   its column."
+2. **Mirror mode: "Column order".** Two choices, "Same as Zoho" and "Custom".
+   It shows "Custom" when the kind has a saved order. "Same as Zoho" asks first
+   when a saved order exists: "Your custom order will be lost." It then calls
+   the reset route. A move while "Same as Zoho" shows saves a custom order, and
+   the choice then shows "Custom". Under it, one line: "Zoho owns the stage
+   names. Your order, colours and win chances stay in Metorite. Nothing here
+   changes Zoho."
+3. **A pipeline picker** (`SelectButton`) sits above the list when the org
+   has two pipelines or more. The read-only "Pipelines" card goes.
+4. **The list.** Each stage of the kind once, in the order of `orderLanes`
+   for the pipeline on screen, empty stages included. One row, one line: the
+   drag handle, Up and Down, the colour dot, the name, then a tag only where it
+   applies: "Won", "Lost", "On hold", "Hidden", "Not in the Zoho pipeline" or
+   "Removed in Zoho". At the right: the win chance as text, such as "40%", and
+   an "Edit" button. No input, Save, Cancel or Reset sits on a row.
+5. **A move saves at once.** The row moves, then the order route saves every
+   id of the kind. On a failure the row goes back, and the error shows. When
+   the list shows a part of the stages (two pipelines), the stages on screen
+   take their own slots of the full order in their new order, and each other
+   stage keeps its slot. A pure function in `lib/settings.ts` does it.
+6. **Edit opens a `Modal`** with the stage name as its title. It holds the
+   colour, the win chance, "Show this column on the board" (the inverse of
+   hide) and "Warn when a deal stays more than N days". A deal stage also keeps
+   "Fields a deal needs to enter this stage", the checkboxes of
+   `REQUIREABLE_FIELDS` (WS-26h). The move gate reads them, so they stay, in
+   both modes. A lead status has neither. In Mirror mode, the win
+   chance shows "Zoho: 40%" and a "Use Zoho's value" action. A won stage fixes
+   the win chance at 100 and a lost stage at 0, with the reason in one line.
+   Native mode adds the name, the type (Open, On hold, Won, Lost, each with
+   one line of help) and Delete, which asks first. One Save and one Cancel.
+7. **Native mode: "Add stage"** under the list opens the same `Modal`, empty.
+   A new stage lands before the first won or lost stage.
+8. **Lead statuses** use the same list and the same `Modal`, with the Leads
+   board as the board and no pipeline picker.
+
+The OrderStrip, the inline inputs, the row buttons Save, Cancel and "Reset
+to Zoho", and the Rules toggle go. Lost reasons do not change in this slice.
+
+**Fracktal after the deploy.** Its saved order stays, because nothing
+rewrites an admin's choice. The owner picks "Same as Zoho" once to get the
+pipeline order.
+
+#### Done when
+
+1. A test of `orderLanes` with the Fracktal shape above gives the 12 pipeline
+   stages in the pipeline order, then the 5 others in picklist order, with no
+   saved order. With the saved order, it gives the `ui_position` order. No
+   type group and no win chance moves a stage.
+2. With one pipeline and no `pipeline_id`, the board orders by the places of
+   the default pipeline.
+3. The settings list and the board read the same function with the same
+   input, so a move shows the same order in both.
+4. The pure merge of a part order into the full order has tests: a move
+   inside the part, a part at the start, a part at the end, and a part
+   with gaps.
+5. The four captures of `visual-review` (light mode, compact density, a
+   changed accent, 390 px) of the Deal stages screen in Mirror mode and in
+   Native mode, and of the Edit `Modal`.
+6. `npx tsc --noEmit` passes, and `npx vitest run` passes on the CRM tests.
+   The PR names each fence test that D137 changes, with the old rule and the
+   new one.
+
+Fences (R7): `boardStages.test.ts`, `board.test.ts`, `crmC3.test.ts` and
+`crmU6.test.ts` change to D137. `crmU11.test.ts` holds the Fracktal case, the
+merge cases and a source fence that no type group sits in `orderLanes`.
 
 ### 20.16 CRM-U12: plain words and no dead ends in CRM setup (2026-10-27)
 
@@ -11770,3 +11920,19 @@ U13a goes first. U13b and U13c can run side by side after it.
 2. One press of "Accept the AI's suggestions" accepts each item that has a suggestion, and the count on the rail falls to the items that need a person.
 3. One pick on the Field map saves it, and "Change history" lists it as a new version.
 4. The four `visual-review` captures (light mode, compact density, a changed accent, 390 px) of each new section.
+
+### 20.18 CRM-U14: the order of the cards on the Deals board (2026-10-28)
+
+**Status.** ✅ Built 2026-10-28 on branch `crm-u14-card-order`. Not merged. Not deployed.
+
+The owner saw the cards of a Deals column in a different order from Zoho. The cause: a mirrored deal held the import time in `status_changed_at`, so the default order was close to random. Zoho's own `Stage_Modified_Time` sat unused in `custom`.
+
+What the slice does:
+
+1. The Zoho deal mapping sets `status_changed_at` from `Stage_Modified_Time` on each upsert. A deal with no value keeps the stored clock.
+2. Each sync run repairs the rows stored before this change. The step is `crm_sync/engine.py` `_restamp_stages`. It writes through the fenced door `core.restamp_deal_stage_from_source`, 500 rows a batch, 20 batches a run, Zoho rows only. A repeat writes nothing. No migration.
+3. "Board options" gets "Sort cards": Recently moved (default), Recently changed, Closing date, Amount and Next step. `?card_sort=` takes `stage_age`, `recently_changed`, `close_date`, `amount` and `next_activity`. Any other value is a 422.
+
+Fences: `tests/unit/test_crm_stage_card_order_r8.py` (R8), `tests/unit/test_crm_upsert_from_source_fence.py` (the new door is sync-only).
+
+Known gap: some tenants send no `Modified_Time` on Deals (see `crm_sources/zoho/client.py`, `list_changed`). For them `ext_modified_at` is NULL. "Recently changed" then uses `updated_at`.

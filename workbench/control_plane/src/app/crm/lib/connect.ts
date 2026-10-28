@@ -336,6 +336,27 @@ export function isMirrored(record: Row | null | undefined): boolean {
 }
 
 /**
+ * Whether a record is read-only here (CRM-Z10c). The lock follows the mode,
+ * not `ext_source`: only Mirror mode locks, and an unknown mode stays locked
+ * because the gateway is the boundary. A record that Zoho never owned is open
+ * in every mode, so the lock needs an `ext_source` too.
+ */
+export function isLocked(record: Row | null | undefined, mode: CrmMode): boolean {
+  if (mode === "native") return false;
+  return isMirrored(record);
+}
+
+/** "Imported from Zoho on 12 Oct 2026": Native mode, imported record, else null. */
+export function importedLine(record: Row | null | undefined, mode: CrmMode): string | null {
+  if (mode !== "native" || !isMirrored(record)) return null;
+  const value = record?.created_at;
+  const at = typeof value === "string" ? new Date(value) : null;
+  if (!at || Number.isNaN(at.getTime())) return null;
+  const date = at.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+  return `Imported from Zoho on ${date}`;
+}
+
+/**
  * The "Open in Zoho" link of a mirrored record (CRM-Q1), or null.
  *
  * Only an http or https address passes. The value comes from the customer's

@@ -506,6 +506,10 @@ _RAW_ALLOW = {
     # row, or clears a free column, and only `crm_sync/` names it
     # (`test_crm_upsert_from_source_fence.py`).
     "core.py::apply_field_rule_from_source",
+    # CRM-U14: the stage-time repair. It sets only `status_changed_at` of a
+    # Zoho deal from the stored Zoho value, and only `crm_sync/` names it
+    # (`test_crm_upsert_from_source_fence.py`).
+    "core.py::restamp_deal_stage_from_source",
     "core.py::insert_row", "core.py::update_row",
     # The legacy importer, the sync and the stage repair refuse Mirror mode.
     "import_zoho.py", "sync_zoho.py",

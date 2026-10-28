@@ -10,6 +10,7 @@
 // offers are derived from the entity, and the query is built from the chips.
 
 import { pickable } from "./emptyStages";
+import type { CardSort } from "./nextActivity";
 import { RANGE_KEYS, type CrmView } from "./urlState";
 import type { EntitySlug, Status } from "./types";
 
@@ -51,7 +52,7 @@ export type ListQuery = {
   close_from?: string;
   close_to?: string;
   /** CRM-X3, the board only: the order of the cards in a deal lane. */
-  card_sort?: "stage_age" | "next_activity";
+  card_sort?: CardSort;
   /** CRM-Q8: `custom.<key>.in` = the chosen options, joined by commas. */
   [custom: `custom.${string}`]: string | undefined;
 };

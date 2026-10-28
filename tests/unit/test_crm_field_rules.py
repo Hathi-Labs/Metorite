@@ -548,3 +548,31 @@ def test_q18_3_a_put_with_a_new_column_clears_the_mark(monkeypatch) -> None:
     asyncio.run(plans.change_rule(None, approved, org=ORG, by="a", put=plans.PlanRule(
         "lead", "Why_Lost", "textarea", "email", 5)))
     assert seen["rules"][key].opened_empty is True, "the same column keeps it"
+
+
+def test_a_deal_takes_zoho_stage_time_as_its_stage_clock() -> None:
+    """CRM-U14: ``Stage_Modified_Time`` is ``status_changed_at``. A deal with
+    none or a bad one sends no value, so the stored clock stays. The raw
+    value stays in ``custom`` for the repair step."""
+    fields = {"id": "1", "Deal_Name": "D", "Stage": "Proposal",
+              "Stage_Modified_Time": "2026-10-26T15:10:59+05:30"}
+    mapped = mapping.map_record("deal", fields, modified_at=None, owners={})
+    assert mapped.values["status_changed_at"].isoformat() == "2026-10-26T15:10:59+05:30"
+    assert mapped.values["custom"]["Stage_Modified_Time"] == "2026-10-26T15:10:59+05:30"
+    for bad in ({}, {"Stage_Modified_Time": None}, {"Stage_Modified_Time": "x"}):
+        plain = mapping.map_record(
+            "deal", {"id": "1", "Deal_Name": "D", "Stage": "Proposal", **bad},
+            modified_at=None, owners={})
+        assert "status_changed_at" not in plain.values
+
+
+@pytest.mark.parametrize("bad", [
+    "2026-13-45T25:61:61+05:30", "2026-10-26T15:10:59", "", "   ", "x", 12345,
+])
+def test_a_bad_stage_time_sets_no_stage_clock(bad: object) -> None:
+    """CRM-U14: out of range, no offset, empty or not text: no value is sent."""
+    mapped = mapping.map_record(
+        "deal", {"id": "1", "Deal_Name": "D", "Stage": "Proposal",
+                 "Stage_Modified_Time": bad}, modified_at=None, owners={})
+    assert "status_changed_at" not in mapped.values
+    assert mapping.instant(bad, zoned=True) is None
