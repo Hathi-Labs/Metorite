@@ -124,6 +124,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - Fences: `tests/unit/test_tool_packs_choice.py` and `tests/unit/test_tool_packs_off.py`.
 
 28. **`load_skill_tools` loads a pack in the middle of a turn** (WS-67 OA-7e, layer (b), `project-docs/specs/one_assistant_context.md` §4.2.2). It ships dark behind `TOOL_PACKS`.
+   - OA-7i: `_plan_pack_loader` asks `tool_packs.plan_loader` once for each run. `_offer_pack_loader` and the removal of a specialist read that one plan. `_mcp_may_attach` looks ahead at the registry and fails closed. Do not compute reachability anywhere else.
    - `_offer_pack_loader` puts `tool_packs.LoadSkillToolsProvider` on a view of the run (`agent_with_providers`). Only `_apply_tool_packs` with `offer_loader` calls it, and only `executor._apply_pack_turn` passes that. Do not offer the loader on another path.
    - The load builds through `_pack_tools` (`_build_pack_for_load`), with the run context of the call and the names of the live tool list. Do not build a pack a second way.
    - A turn that loads no pack still returns a `PackApply` with no build. The executor then binds the run key and the record that a load needs.

@@ -1657,12 +1657,6 @@ line — never reclaim a number by deleting the other entry.
   this is open.
 - **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
 
-### H-333 · The CRM report routes add amounts of different currencies into one figure · [AGENT]
-- **Metorite:** #737. The task holds the full entry (moved 2026-10-28, D118).
-- **Check:** `rg -n "SUM\(amount\)" apps/services/gateway/gateway/routes/crm/reports.py`.
-  A hit with no `currency` in the same statement means this is open.
-- **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
-
 ### H-334 · The email owner check names no tenant by default · [AGENT]
 - **Metorite:** #563. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** `git grep -n "this_tenant: bool = False" -- apps/services/gateway/gateway/routes/email/core.py`.
@@ -1695,14 +1689,6 @@ line — never reclaim a number by deleting the other entry.
   `_ensure_subscription` in `transport/sync.py`, and the hydrate in
   `get_message` in `transport/messages.py`.
 - **Added:** 2026-10-18 · email route errors (gateway log, 7 days)
-
-### H-353 · 🔴 The CRM overlay read applies no member visibility · [AGENT] · finding
-- **Metorite:** #564. The task holds the full entry (moved 2026-10-28, D118).
-- **Check:** in `apps/services/gateway/gateway/routes/crm/aggregate.py`, read
-  `_read_overlay` and `overlay_where`. If the overlay query filters by the
-  `owner` parameter only, and applies none of the visibility that
-  `list_query` applies to a member, this is open.
-- **Added:** 2026-10-18 · review of #1126
 
 ### H-354 · A refusal looks wrong in two chat places · [AGENT] · finding
 - **Metorite:** #782. The task holds the full entry (moved 2026-10-28, D118).
