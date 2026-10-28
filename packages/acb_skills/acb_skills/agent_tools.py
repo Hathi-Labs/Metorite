@@ -603,12 +603,12 @@ def _delegating_names() -> frozenset[str]:
     return frozenset(names)
 
 
-def _render_items(number: int, label: str, text: str) -> str:
+def _render_items(number: int, label: str, text: str, tools: Any = ()) -> str:
     """One job block for the parent: the parsed items of the child, never its
     raw text (SUB-1 rule 2)."""
     from acb_skills.subagent_contract import parse_items
 
-    items = parse_items(text)
+    items = parse_items(text, tools=tuple(tools))
     lines = [f"Job {number} ({label}):"]
     if not items:
         lines.append("- No items found.")
@@ -702,7 +702,7 @@ async def _spawn_run(plan: Any, sc: Any, artifact_context_scope: Any) -> str:
             blocks.append(f"Job {job.number} ({label}): Error: no answer in "
                           f"{sc.JOB_TIMEOUT_S:g}s, so the job was stopped.")
             continue
-        blocks.append(_render_items(job.number, label, text))
+        blocks.append(_render_items(job.number, label, text, job.tools))
     # The items come from pages the children read, so the parent reads them
     # as data and never as an instruction (OA-9b hardening item 6).
     from acb_skills.untrusted import UntrustedFrame

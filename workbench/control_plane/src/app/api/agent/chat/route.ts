@@ -473,7 +473,7 @@ async function translateAndPersistStream(
           out = { type: "sub_agent_tool_end", agentName: String(ev.agentName ?? ""), id: stId, result: String(ev.content ?? ""), success: ok };
         } else if (t === "SUB_AGENT_ERROR") {
           subAgent.text += subAgent.text ? `\n[error] ${String(ev.error ?? "Sub-agent error")}` : `[error] ${String(ev.error ?? "Sub-agent error")}`;
-          out = { type: "sub_agent_error", agentName: String(ev.agentName ?? ""), error: String(ev.error ?? "Sub-agent error") };
+          out = { type: "sub_agent_error", agentName: String(ev.agentName ?? ""), runId: String(ev.runId ?? ""), error: String(ev.error ?? "Sub-agent error") };
         } else if (t === "RUN_FINISHED" || t === "done") {
           // RUN_FINISHED: standard AG-UI event from the agent executor.
           // "done": synthetic event from the reconnect endpoint when the

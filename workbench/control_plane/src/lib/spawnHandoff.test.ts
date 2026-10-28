@@ -100,17 +100,39 @@ describe("the live stream keeps each child step on its spawn row", () => {
     expect(call.subAgentName).toBe("email-assistant");
   });
 
-  it("keeps the spawn row active when one child fails, and fails that step", () => {
+  it("keeps the spawn row active when a worker fails with no step, and shows that child as failed", () => {
     let m = start(turn(), "sp1", "spawn_subagents");
-    m = applySubAgentEvent(m, { type: "sub_agent_tool_start", agentName: "worker", id: "c1", name: "web_search" });
-    m = applySubAgentEvent(m, { type: "sub_agent_error", agentName: "worker", error: "provider error" });
+    // A worker is a batch run: it sends no step before it fails.
+    m = applySubAgentEvent(m, { type: "sub_agent_error", agentName: "worker", runId: "r1", error: "provider error" });
     const row = m.toolEvents![0];
     expect(row.subAgentActive).toBe(true);
     expect(row.status).toBe("running");
-    expect(row.subAgentTools![0]).toMatchObject({ id: "c1", status: "error", result: "provider error" });
+    expect(row.subAgentTools).toEqual([{ id: "err-r1", name: "worker", status: "error", result: "provider error" }]);
     // The steps of the other children still land on the row.
     m = childStep(m, "worker", "c2", "fetch_page");
-    expect(m.toolEvents![0].subAgentTools!.map((t) => t.id)).toEqual(["c1", "c2"]);
+    expect(m.toolEvents![0].subAgentTools!.map((t) => t.id)).toEqual(["err-r1", "c2"]);
+  });
+
+  it("never marks the step of a sibling when an error arrives between its start and its result", () => {
+    let m = start(turn(), "sp1", "spawn_subagents");
+    m = applySubAgentEvent(m, { type: "sub_agent_tool_start", agentName: "worker", id: "c1", name: "web_search" });
+    m = applySubAgentEvent(m, { type: "sub_agent_error", agentName: "worker", runId: "r2", error: "boom" });
+    m = applySubAgentEvent(m, { type: "sub_agent_tool_end", id: "c1", success: true, result: "3 results" });
+    const steps = m.toolEvents![0].subAgentTools!;
+    expect(steps.find((s) => s.id === "c1")).toMatchObject({ status: "done", result: "3 results" });
+    expect(steps.find((s) => s.id === "err-r2")).toMatchObject({ status: "error", result: "boom" });
+  });
+
+  it("shows one failed step for one error that arrives twice", () => {
+    let m = start(turn(), "sp1", "spawn_subagents");
+    const err = { type: "sub_agent_error", agentName: "worker", runId: "r1", error: "x" };
+    m = applySubAgentEvent(applySubAgentEvent(m, err), err);
+    expect(m.toolEvents![0].subAgentTools).toHaveLength(1);
+  });
+
+  it("route.ts forwards the run id of a sub-agent error", () => {
+    const route = readFileSync(join(__dirname, "..", "..", "src/app/api/agent/chat/route.ts"), "utf-8");
+    expect(route).toMatch(/type: "sub_agent_error", agentName: [^}]*runId: String\(ev\.runId/);
   });
 
   it("still closes a call_agent row on a sub-agent error", () => {

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import Any
@@ -60,9 +61,8 @@ __all__ = [
     "MAX_JOBS",
     "MAX_NAMED_OVERFLOW",
     "MAX_SPAWNS_PER_TURN",
-    "MEMBER_CLAIMS",
-    "MEMBER_SOURCE",
-    "claims_member",
+    "FREE_SOURCES",
+    "source_allowed",
     "MEMBER_TOOLS",
     "SPAWN_TOOL",
     "TIERS",
@@ -150,14 +150,15 @@ MEMBER_TOOLS = frozenset({"ask_questions", "ask_user", "request_confirmation", "
 #: child (§6.6). ``decide`` runs a second model call inside the tool.
 EXTRA_CALL_TOOLS = frozenset({"decide"})
 
-#: The source that only the member's own words may carry. A child item never
-#: holds it (§6.4): the parser rewrites it to :data:`CHILD_SOURCE`.
-MEMBER_SOURCE = "member"
+#: The source that a child item gets when its own source is not one that the
+#: parser can check (§6.4). The kind is ``inferred`` too. A page can tell a
+#: child to write any source, such as ``member``, so the check is an allow list.
+CHILD_SOURCE = "sub-agent (unverified)"
 
-#: The sources that claim the member, after :func:`claims_member` normalizes
-#: the text (no spaces, no format characters, case folded).
-MEMBER_CLAIMS = frozenset({"member", "themember", "user", "theuser", "owner", "you"})
-CHILD_SOURCE = "sub-agent (claimed member)"
+#: The sources of a child item that need no job: the two marks of the parser.
+FREE_SOURCES = frozenset({"inferred", "unstructured"})
+
+_URL_SOURCE = re.compile(r"https?://[A-Za-z0-9.-]+(?::[0-9]+)?(?:[/?#][^\s]*)?")
 
 _CALL_SHAPE = (
     f"Error: jobs must be a JSON array of 1 to {MAX_JOBS} jobs. Each job is an object "
@@ -415,24 +416,20 @@ def _value_of(raw: Any) -> str | None:
     return json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
 
 
-def claims_member(source: str) -> bool:
-    """True when *source* claims to be the member (or the user, the owner, you).
+def source_allowed(source: str, tools: Collection[str]) -> bool:
+    """True when *source* is one that a child item may carry (§6.4).
 
-    A page can tell a child to write ``the member`` or ``mem​ber``. So the
-    text is normalized first: NFKC, then each space and each format character
-    (zero width and the like) is removed, then the case is folded.
+    An allow list: an ASCII ``http`` or ``https`` URL, the name of a tool that
+    the job holds (the web pair always counts), or ``inferred``. Anything else
+    is a claim that nothing backs, such as ``member``, ``the member's request``
+    or a look-alike with a Cyrillic letter. The match is exact.
     """
-    import unicodedata
-
-    text = unicodedata.normalize("NFKC", source)
-    kept = "".join(
-        ch for ch in text
-        if not ch.isspace() and unicodedata.category(ch) != "Cf"
-    )
-    return kept.casefold() in MEMBER_CLAIMS
+    if source in FREE_SOURCES or source in WEB_TOOLS or source in tools:
+        return True
+    return bool(_URL_SOURCE.fullmatch(source))
 
 
-def _items_of(payload: Any) -> list[Item] | None:
+def _items_of(payload: Any, tools: Collection[str] | None = None) -> list[Item] | None:
     """The items of the contract object, or ``None`` when it is another shape."""
     if not isinstance(payload, dict) or set(payload) != {"items"}:
         return None
@@ -454,15 +451,15 @@ def _items_of(payload: Any) -> list[Item] | None:
         if value is None:
             return None
         source = source.strip()
-        if claims_member(source):
-            # A page can tell the child to claim the member. Only the member's
-            # own words carry that source, so the claim is a guess (§6.4).
+        if tools is not None and not source_allowed(source, tools):
+            # A page can tell the child to write any source, the member too.
+            # A source that nothing backs makes the item a guess (§6.4).
             kind, source = "inferred", CHILD_SOURCE
         items.append(Item(value=value, kind=kind, source=source))
     return items
 
 
-def parse_items(text: str | bytes | None) -> list[Item]:
+def parse_items(text: str | bytes | None, tools: Collection[str] | None = None) -> list[Item]:
     """The items of a child's answer, in its order (§6.4).
 
     The answer must be exactly one JSON object with the one key ``items``, a
@@ -473,13 +470,17 @@ def parse_items(text: str | bytes | None) -> list[Item]:
     Any other answer, a code fence around the object too, becomes ONE item
     from :func:`unstructured`. One bad item does the same to the whole answer,
     so a mark of ``quoted`` never stands beside text that the parse lost.
+
+    With *tools* (the tools of the job), a source that :func:`source_allowed`
+    refuses becomes :data:`CHILD_SOURCE`, and its kind becomes ``inferred``.
+    ``None`` skips that check, for a caller with no job.
     """
     raw = _as_text(text)
     try:
         payload = json.loads(raw, object_pairs_hook=_one_of_each)
     except (ValueError, RecursionError):
         return [unstructured(raw)]
-    items = _items_of(payload)
+    items = _items_of(payload, tools)
     return items if items is not None else [unstructured(raw)]
 
 

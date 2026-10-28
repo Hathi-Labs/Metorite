@@ -515,22 +515,22 @@ export function applySubAgentEvent(
       const ri = evts.length - 1 - idx;
       if (isSpawnTool(evts[ri].name)) {
         // One child of a spawn failed. The other children go on, so the row
-        // stays active until its own tool_end. The error marks the newest
-        // running step of the row as failed, and the row keeps its status.
+        // stays active until its own tool_end. A worker is a batch run: it
+        // sends no step before it fails. So the failure is its own step, keyed
+        // by the child's run id (route.ts forwards it), and no step of a
+        // sibling changes.
         const steps = evts[ri].subAgentTools ?? [];
-        const run = [...steps].reverse().findIndex((st) => st.status === "running");
-        if (run === -1) return m;
-        const si = steps.length - 1 - run;
+        const failId = `err-${String(evt.runId ?? "") || steps.length}`;
+        if (steps.some((st) => st.id === failId)) return m;
+        const failed = {
+          id: failId,
+          name: String(evt.agentName ?? "") || "worker",
+          status: "error" as const,
+          result: String(evt.error ?? "Sub-agent error"),
+        };
         return {
           ...m,
-          toolEvents: evts.map((t, i) => i === ri
-            ? {
-                ...t,
-                subAgentTools: steps.map((st, k) => k === si
-                  ? { ...st, status: "error" as const, result: String(evt.error ?? "Sub-agent error") }
-                  : st),
-              }
-            : t),
+          toolEvents: evts.map((t2, k) => k === ri ? { ...t2, subAgentTools: [...steps, failed] } : t2),
         };
       }
       return {

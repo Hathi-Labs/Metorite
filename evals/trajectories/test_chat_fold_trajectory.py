@@ -102,63 +102,9 @@ def test_sub_agent_timeline_attaches_to_delegate_tool():
     ]
 
 
-def test_four_hand_offs_keep_their_own_steps():
-    """WS-67 OA-9b hardening: ``spawn_subagents``, a specialist tool,
-    ``delegate_to_agent`` and ``call_agent`` each keep their own child steps.
-    The spawn row keeps no child text, and no later row takes ``worker`` steps.
-    The stored row is the last writer, so this is the reload view. The live
-    twin is ``takeHandoff`` in ``lib/chatStream.ts``, fenced by
-    ``spawnHandoff.test.ts``."""
-    events = [
-        _ev("TOOL_CALL_START", 10, toolCallId="sp1", toolCallName="spawn_subagents"),
-        _ev("SUB_AGENT_TOOL_CALL_START", 11, agentName="worker", toolCallId="c1", toolCallName="web_search"),
-        _ev("SUB_AGENT_TOOL_CALL_RESULT", 12, toolCallId="c1", content="r", success=True),
-        _ev("SUB_AGENT_TEXT_DELTA", 13, agentName="worker", delta='{"items":[]}'),
-        _ev("TOOL_CALL_END", 14, toolCallId="sp1", result="ok", success=True),
-        _ev("TOOL_CALL_START", 20, toolCallId="em1", toolCallName="email_assistant"),
-        _ev("SUB_AGENT_TOOL_CALL_START", 21, agentName="email-assistant", toolCallId="e1", toolCallName="draft_reply"),
-        _ev("SUB_AGENT_TOOL_CALL_RESULT", 22, toolCallId="e1", content="d", success=True),
-        _ev("TOOL_CALL_END", 23, toolCallId="em1", result="ok", success=True),
-        _ev("TOOL_CALL_START", 30, toolCallId="d1", toolCallName="delegate_to_agent"),
-        _ev("SUB_AGENT_TOOL_CALL_START", 31, agentName="projects-assistant", toolCallId="p1", toolCallName="list_tasks"),
-        _ev("SUB_AGENT_TOOL_CALL_RESULT", 32, toolCallId="p1", content="t", success=True),
-        _ev("TOOL_CALL_END", 33, toolCallId="d1", result="ok", success=True),
-        _ev("TOOL_CALL_START", 40, toolCallId="ca1", toolCallName="call_agent"),
-        _ev("SUB_AGENT_TOOL_CALL_START", 41, agentName="task-manager", toolCallId="t1", toolCallName="sql"),
-        _ev("SUB_AGENT_TOOL_CALL_RESULT", 42, toolCallId="t1", content="3", success=True),
-        _ev("TOOL_CALL_END", 43, toolCallId="ca1", result="ok", success=True),
-        _ev("RUN_FINISHED", 50),
-    ]
-    folded = fold_run_events(events)
-    assert folded is not None
-    rows = {t["id"]: t for t in folded["tool_events"]}
-    want = {
-        "sp1": ("worker", ["c1"]),
-        "em1": ("email-assistant", ["e1"]),
-        "d1": ("projects-assistant", ["p1"]),
-        "ca1": ("task-manager", ["t1"]),
-    }
-    for row_id, (agent, steps) in want.items():
-        assert rows[row_id]["subAgentName"] == agent, row_id
-        assert [st["id"] for st in rows[row_id]["subAgentTools"]] == steps, row_id
-    assert rows["sp1"]["subAgentText"] == ""  # raw child JSON is never text
-    assert "worker" not in {rows[i]["subAgentName"] for i in ("em1", "d1", "ca1")}
-
-
-def test_the_fold_and_the_live_rule_name_the_same_hand_offs():
-    """Parity with ``lib/chatStream.ts`` (``isHandoffTool``, ``takeHandoff``):
-    the fold list and the live source name the same tools, and both drop the
-    text of a spawn row."""
-    from pathlib import Path
-
-    from gateway.chat_fold import HANDOFF_TOOLS, SPAWN_TOOL
-
-    live = (Path(__file__).resolve().parents[2]
-            / "workbench/control_plane/src/lib/chatStream.ts").read_text(encoding="utf-8")
-    for name in HANDOFF_TOOLS:
-        assert f'"{name}"' in live or name in live, name
-    assert f'includes("{SPAWN_TOOL}")' in live
-    assert 'isSpawnTool(toolName) ? "" : acc.text' in live
+# The four-hand-off turn and the parity check of the fold rule with
+# ``lib/chatStream.ts`` live in ``tests/unit/test_chat_fold_handoffs.py``.
+# pr-check runs ``tests/unit/``, and it does not run this folder.
 
 
 def test_todos_and_custom_events_persist():

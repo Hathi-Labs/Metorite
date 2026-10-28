@@ -376,17 +376,20 @@ OWNER-GATE.
 was a P1 or a P2. Note 1 was a gate for the flag flip. All seven are closed,
 and the flag stays off. Fences: `tests/unit/test_spawn_hardening.py`,
 `workbench/control_plane/src/lib/spawnHandoff.test.ts` and
-`evals/trajectories/test_chat_fold_trajectory.py`.
+`tests/unit/test_chat_fold_handoffs.py`.
 - **1. The chat UI.** `spawn_subagents` and `delegate_to_agent` are hand-offs.
   `chatStream.isHandoffTool` and `takeHandoff` decide it, for the live
   reducer and for the checkpoint that `route.ts` saves. The gateway fold
   writes the final stored row at the run end, and it replaces the checkpoint.
   So `gateway/chat_fold.py` holds the same rule (`take_handoff`), and the
-  trajectory eval checks the two for parity. Each child step stays on its
+  unit test reads the names out of `isHandoffTool` and compares them with
+  `HANDOFF_TOOLS`, as sets, in both directions. Each child step stays on its
   own spawn row. The spawn row keeps no child text, because that text is item
   JSON for the parent model. A later specialist row or `call_agent` row gets
   its own steps, and none that are labelled `worker`. In the live view, an
-  error of one spawn child marks its step as failed and keeps the row active.
+  error of one spawn child adds a failed step for that child (keyed by its
+  run id) and keeps the row active. The stored row does not hold that step.
+  The spawn result holds the failure as an item.
 - **2. Nested spawns.** A run that is a sub-run never spawns, at any depth.
   The test reads `_delegation_chain` and the `sub_run` key that the executor
   binds on a delegated run. The spawn calls of one run run one after the other
@@ -402,10 +405,11 @@ and the flag stays off. Fences: `tests/unit/test_spawn_hardening.py`,
   not run (`EXTRA_CALL_TOOLS`).
 - **6. Untrusted items.** The spawn result is one block of
   `UntrustedFrame` (the label `SUB AGENT ITEMS`), with the data note before it.
-  `parse_items` rewrites a source that claims the member to
-  `sub-agent (claimed member)` and the kind to `inferred`. The claims are
-  `member`, `the member`, `user`, `the user`, `owner` and `you`. The match
-  ignores case, spaces and format characters (`claims_member`).
+  `parse_items` checks the source of each item against an allow list
+  (`source_allowed`). A source may be an ASCII http or https URL, a tool name
+  that the job holds, or `inferred`. Any other source becomes
+  `sub-agent (unverified)`, and the kind becomes `inferred`. So `member` and
+  each look-alike of it cannot pass.
 - **7. The loader.** `loader._ensure_local_git_repo` takes the `_repo_locks`
   lock of the cache dir name around the copy and the git seed.
 - **Also.** `register_agent` refuses the name `worker` (HTTP 409). The tool
