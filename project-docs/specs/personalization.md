@@ -62,7 +62,7 @@ an address, a link or a long number. Only the typed words ground a write.
 
 **§14 ACCEPTED 2026-10-25 (D113).** The first release adds PZ-25 (rollout
 by org), PZ-26 (the interview) and PZ-27 ("Get to know me"). PZ-11 follows
-them, for Hathi Labs only.
+them. The owner later chose every organization (D113 point 6).
 
 **PZ-9 BUILT 2026-10-25.** A purge deletes the member's `user_settings`
 row of the org, and a removal clears the profile. `GET
