@@ -309,6 +309,27 @@ def test_the_executor_drops_the_tool_for_another_org(monkeypatch) -> None:
     assert [t.__name__ for t in none.default_options["tools"]] == ["remember"]
 
 
+def test_the_injection_seam_calls_the_drop(monkeypatch) -> None:
+    """``_inject_agent_tools`` is the one seam every run goes through, so the
+    drop must be CALLED there, not only exist."""
+    from orchestrator import _tool_injection as ti
+
+    class _Native:
+        def __init__(self) -> None:
+            self.name = "orchestrator"
+            self.default_options = {"tools": [at.spawn_subagents], "instructions": ""}
+
+    monkeypatch.setenv("AGENT_PERMISSION_MODE", "approve_all")
+    monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda *_a, **_k: frozenset())
+    monkeypatch.setattr(ti, "_run_org", lambda: ORG)
+    for flag, want in (("another-org", []), (ORG, ["spawn_subagents"])):
+        monkeypatch.setattr(get_settings(), "spawn_subagents_orgs", flag)
+        agent = _Native()
+        ti._inject_agent_tools([agent], agent_name="orchestrator", agent_config={}, no_egress=False)
+        held = [getattr(t, "__name__", "") for t in agent.default_options["tools"]]
+        assert [n for n in held if n == "spawn_subagents"] == want, flag
+
+
 def test_a_held_chat_keeps_the_tool(monkeypatch) -> None:
     """A delegation tool is no egress tool, so ``no_egress`` keeps it."""
     import orchestrator.agents  # noqa: F401
@@ -401,7 +422,7 @@ def test_a_call_with_no_valid_job_runs_nothing_and_uses_no_spawn(spawn) -> None:
 
 
 async def _sleep_long(fake: FakeSub, job) -> str:
-    await asyncio.sleep(30)
+    await asyncio.sleep(3)
     return _items(job.number)
 
 

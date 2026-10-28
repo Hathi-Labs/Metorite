@@ -260,6 +260,16 @@ def test_a_dynamic_agent_does_not_take_the_place(monkeypatch) -> None:
     assert entry["local_path"] == "apps/agents/agent-worker"
 
 
+def test_a_run_that_is_not_the_worker_never_inherits_the_job() -> None:
+    """``_run_sub_agent_streaming`` derives the context of a sub-run. For any
+    agent but the worker it takes the job key out."""
+    from orchestrator import executor
+
+    assert executor._without_job_key("projects-assistant") == {sc.JOB_KEY: None}
+    assert executor._without_job_key("email-assistant") == {sc.JOB_KEY: None}
+    assert executor._without_job_key("worker") == {}
+
+
 def test_the_lookups_by_name_all_use_the_internal_first_list() -> None:
     """The two runs that load a sub-agent by name (``_run_sub_agent_streaming``
     and ``_run_agent_inner``) read ``_registry_entries()``, and neither builds
