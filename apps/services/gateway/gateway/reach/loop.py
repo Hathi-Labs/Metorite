@@ -57,7 +57,8 @@ no tenant-discovery site. Every statement runs in ``tenant_session(org)``.
 ``UNATTENDED_LEDGER`` on, each brief send commits a row of
 ``gateway.jobs.unattended`` before the send. Its slot is the outbox key of the
 brief, so the two keys agree. A brief that a crash cut turns ``unknown`` and
-is never sent again. A member pass that times out or fails counts one failure
+is never sent again. A brief that reached no send, such as an empty one,
+gives its slot back. A member pass that times out or fails counts one failure
 in an incident of job ``reach.member``. With the switch off, nothing changes.
 
 Every failure logs and never raises out of the tick. Fences:
@@ -69,6 +70,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -101,6 +103,12 @@ BASELINE_MARK = ("reach:baseline", "0")
 #: The ledger job of a brief send, and of a member pass (AUTO-2).
 BRIEF_JOB = "reach.brief"
 MEMBER_JOB = "reach.member"
+
+#: The attempt mark of one ledgered brief send (AUTO-2). ``_send_now`` sets
+#: it just before ``channel.deliver``. A send that ends with no mark reached
+#: no provider, so its ledger slot goes back (``unattended.release``).
+_attempt: contextvars.ContextVar[list[bool] | None] = contextvars.ContextVar(
+    "reach_attempt", default=None)
 
 _task: asyncio.Task[None] | None = None
 _stopping = asyncio.Event()
@@ -200,6 +208,9 @@ async def _send_now(org: str, member: str, *, kind: str, cards: list[dict[str, A
                                   key=key, body=body, local_date=local_date)
     if outbox_id is None:
         return "duplicate"
+    mark = _attempt.get()
+    if mark is not None:
+        mark.append(True)  # from here, the provider may have the message
     got = await channel.deliver(org, member, kind=kind, body=body, outbox_id=outbox_id,
                                 template=template.name if template else None,
                                 template_params=template.params if template else None,
@@ -266,7 +277,8 @@ def brief_outcome(got: str) -> tuple[str, str | None]:
 
     ``send_unsure`` is a timeout or a 5xx, after which Meta may have the
     message, so the run is ``unknown``. Another failure is ``failed``. A skip
-    or an empty brief ran, so it is ``ok``."""
+    ran, so it is ``ok``. A brief that reached no send never comes here: its
+    slot goes back (:func:`_ledgered_now`)."""
     state, _, reason = got.partition(":")
     if state != "failed":
         return "ok", None
@@ -282,7 +294,11 @@ async def _ledgered(org: str, slot: str, snap: Snapshot,
 
     With the ledger off, this is ``await send()``. With it on, the row
     commits before the send. Shielded, so the member timeout cannot cut
-    between the send and the end of the row."""
+    between the send and the end of the row.
+
+    A slot is taken only once a send may have run. A send that reached no
+    ``channel.deliver`` (an empty brief, a duplicate, or an error before the
+    outbox row) gives its slot back, so a later pass can try again."""
     if not unattended.ledger_enabled():
         return await send()
     return await asyncio.shield(_ledgered_now(org, slot, snap, send))
@@ -294,11 +310,21 @@ async def _ledgered_now(org: str, slot: str, snap: Snapshot,
                                  scheduled_for=snap.day.day_start(snap.now), now=snap.now)
     if not run.fresh:
         return "already"
+    mark: list[bool] = []
+    token = _attempt.set(mark)
     try:
         got = await send()
     except Exception as exc:
-        await unattended.finish(org, run, state="failed", error=exc, now=snap.now)
+        if not mark:
+            await unattended.release(org, run)
+        else:
+            await unattended.finish(org, run, state="failed", error=exc, now=snap.now)
         raise
+    finally:
+        _attempt.reset(token)
+    if not mark:
+        await unattended.release(org, run)
+        return got
     state, error = brief_outcome(got)
     await unattended.finish(org, run, state=state, error=error, now=snap.now)
     return got
@@ -335,9 +361,9 @@ async def _brief_step(org: str, member: str, snap: Snapshot,
             return f"brief:{got}", "template" if got == "sent" else "none"
         return "brief:held", "none"
     if is_open and await outbox.full_brief_due(org, member, due, full_key):
-        if await unattended.state_of(org, BRIEF_JOB, key) == "unknown":
-            # The day's brief possibly reached the member, so the full brief
-            # does not follow it as a retry (AUTO-2).
+        if await unattended.state_of(org, BRIEF_JOB, key) in ("started", "unknown"):
+            # The day's brief possibly reached the member, or its run has no
+            # end yet, so the full brief does not follow it as a retry (AUTO-2).
             return None, "none"
         cards = plan.on_whatsapp(snap.cards)
         body = plan.compose_brief(cards, app_url(), due, now=snap.now)

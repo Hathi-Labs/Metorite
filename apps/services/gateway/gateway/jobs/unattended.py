@@ -16,6 +16,10 @@ process, so a restart) or whose ``progress_at`` is older than
 ``unknown`` and never run it again. A send that possibly reached the
 provider is ``unknown`` too, and nobody retries it.
 
+**A slot that attempted nothing.** :func:`release` deletes a started row
+whose work surely did not reach the provider, so a later pass can begin the
+slot again. A slot is taken only when a send may have run.
+
 **Incidents.** :func:`record_failure` keeps one open incident for each job
 and error class of an org, with a count and ``last_seen``. The first failure
 logs ``unattended.incident_opened`` at error. A repeat logs at debug only, so
@@ -102,6 +106,11 @@ _FINISH_SQL = (
 _TOUCH_SQL = (
     "UPDATE unattended_runs SET progress_at = GREATEST(progress_at, :now) "
     "WHERE id = CAST(:id AS uuid) AND state = 'started'"
+)
+
+#: Give a slot back: only a started run, so a run that ended keeps its row.
+_RELEASE_SQL = (
+    "DELETE FROM unattended_runs WHERE id = CAST(:id AS uuid) AND state = 'started'"
 )
 
 _INCIDENT_SQL = (
@@ -279,6 +288,22 @@ async def finish(org: str, run: Run, *, state: str = "ok", error: object = None,
     elif not changed:
         _log.warning("unattended.finish_lost", job=run.job, state=state)
     return changed
+
+
+async def release(org: str, run: Run) -> bool:
+    """Give back the slot of a started run that attempted nothing.
+
+    Call it only when the work surely did not reach the provider, for
+    example a brief with nothing to say. The row goes, so a later
+    :func:`begin` of the slot is fresh. True when the row went. A run that
+    already ended keeps its row."""
+    if run.id is None or not ledger_enabled():
+        return False
+    async with tenant_session(org) as db:
+        result: Any = await db.execute(text(_RELEASE_SQL), {"id": run.id})
+    released = bool(getattr(result, "rowcount", 0))
+    _log.info("unattended.slot_released", job=run.job, released=released)
+    return released
 
 
 async def mark_unknown(org: str, run: Run, *, now: datetime | None = None) -> bool:

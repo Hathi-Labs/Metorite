@@ -211,6 +211,14 @@ column DEFAULT writes the bound tenant (R5).
    row. A state other than `ok` counts a failure in its incident.
 4. A send that possibly reached the provider ends `unknown`. Nobody retries
    it.
+5. Work that surely reached no provider calls `release(org, run)`. The
+   started row goes, so a later `begin` of the slot is fresh.
+
+**The rule: a slot is taken only once a send may have run.** An empty
+brief, or an error before the send, did not reach the provider, so it gives
+the slot back. An error after the send began keeps the row, and nobody
+retries it. `release` deletes only a `started` row, so a run that ended
+keeps its row.
 
 `once(org, job, slot, work)` joins the four steps. Work that raises
 `OutcomeUnknown` ends `unknown`. Another error ends `failed`, and `once`
@@ -250,6 +258,7 @@ reason. The text of a failure never reaches a row.
 | `unattended.run_stalled` | warning | The stall guard stopped a run |
 | `unattended.finish_lost` | warning | `finish` changed no row, because the run already ended |
 | `unattended.slot_taken` | info | `begin` found the slot taken |
+| `unattended.slot_released` | info | `release` gave a slot back |
 
 Until alert delivery exists, `unattended.incident_opened` is the one alert
 of an incident. Nothing closes an incident yet.
@@ -266,9 +275,16 @@ With `UNATTENDED_LEDGER` on, the Reach loop uses the ledger in two places:
   of job `reach.member`. A pass writes no run row, because it runs each
   minute.
 
+Reach sets a mark just before `channel.deliver`. A brief send with no mark
+gives its slot back. Examples are an empty brief, a duplicate, and an error
+before the outbox row, such as a failed read of the name. Then a later pass sends
+the brief when cards arrive. An error after the mark ends `failed`, and
+nobody retries it.
+
 A brief send that ends `failed:send_unsure` is `unknown`. Then the full
-brief does not follow it as a retry. Reach does not run on the queue in this
-slice.
+brief does not follow it as a retry. A brief run that is still `started`
+blocks the full brief too, because its end is not known yet. Reach does not
+run on the queue in this slice.
 
 ### 9.7 How to use it from a job
 

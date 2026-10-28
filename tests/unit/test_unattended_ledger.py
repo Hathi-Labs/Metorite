@@ -45,6 +45,13 @@ not a pass.
   ``test_r8_2_a_send_killed_after_the_intent_mark_is_unknown`` goes red.
 * M4. ``reach.loop._brief_step``: drop the ``state_of`` check before the full
   brief. ``test_r8_an_unsure_send_is_unknown_and_never_retried`` goes red.
+* M6. ``reach.loop._ledgered_now``: drop the two ``release`` calls, and
+  finish every run as before. ``test_r8_an_empty_brief_gives_its_slot_back``
+  and ``test_r8_an_error_before_the_outbox_row_gives_the_slot_back`` go red.
+* M7. ``reach.loop._send_now``: drop the attempt mark.
+  ``test_r8_an_error_during_the_send_is_never_retried`` goes red.
+* M8. ``reach.loop._brief_step``: block the full brief only on ``unknown``.
+  ``test_r8_a_started_brief_run_blocks_the_full_brief`` goes red.
 * M5. ``unattended.run_guarded``: drop the ``guard.stalled()`` check.
   ``test_r8_4_a_run_with_no_progress_is_stopped_and_stalled`` goes red
   within its 20 s limit.
@@ -247,9 +254,12 @@ def world(promoted, monkeypatch):  # noqa: F811
         ns.calls[(org, kind)] += 1
         if ns.mode == "kill":
             raise Killed
+        if ns.mode == "boom":
+            raise RuntimeError("the provider call broke")
         if ns.mode == "unsure":
             return channel.Delivery("failed", reason="send_unsure")
-        return channel.Delivery("sent", "free_text", provider_message_id="wamid.1")
+        return channel.Delivery("sent", "template" if template else "free_text",
+                                provider_message_id="wamid.1")
 
     monkeypatch.setattr(channel, "deliver", deliver)
     _wipe(p)
@@ -553,3 +563,91 @@ def test_r8_6_with_the_switch_off_reach_writes_no_ledger_row(world, monkeypatch)
     assert sum(world.calls.values()) == 1
     assert [(r["kind"], r["state"]) for r in _outbox(world)] == [("brief", "sent")]
     assert _runs(world) == [] and _incidents(world) == []
+
+
+# ── A slot is taken only once a send may have run (repair round 1) ─────────
+
+#: 09:30 in Kolkata, inside the template window of the brief.
+MORNING = datetime(2026, 10, 15, 4, 0, tzinfo=UTC)
+CLOSED = ("919800000001", False)
+OPEN = ("919800000001", True)
+
+
+@pytest.fixture
+def template(monkeypatch):
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "reach_brief_template", "daily_brief")
+    ns = SimpleNamespace(name_fails=0)
+
+    async def display_name(org, member):
+        if ns.name_fails:
+            ns.name_fails -= 1
+            raise RuntimeError("the name read broke")
+        return "Priya Shah"
+
+    monkeypatch.setattr(channel, "display_name", display_name)
+    return ns
+
+
+def _pass(org: str, cards: list[dict[str, Any]], at: datetime,
+          reach: tuple[str | None, bool]) -> Any:
+    return lambda: loop._brief_step(org, ME, loop.Snapshot(cards, at, DAY, True, True), reach)
+
+
+@_DB_GATE
+def test_r8_an_empty_brief_gives_its_slot_back(world, template) -> None:
+    org = world.p.org_a
+    first = _go(world, _pass(org, [], MORNING, CLOSED))
+    assert first == ("brief:empty", "none")
+    assert _runs(world, loop.BRIEF_JOB) == []  # no send ran, so the slot is free
+    second = _go(world, _pass(org, [_card()], MORNING + timedelta(minutes=30), CLOSED))
+    assert second == ("brief:sent", "template")
+    assert sum(world.calls.values()) == 1
+    assert [(r["slot"], r["state"]) for r in _runs(world, loop.BRIEF_JOB)] == [
+        (plan.brief_key(ME, TODAY), "ok")]
+
+
+@_DB_GATE
+def test_r8_an_error_before_the_outbox_row_gives_the_slot_back(world, template) -> None:
+    org = world.p.org_a
+    template.name_fails = 1
+    with pytest.raises(RuntimeError):
+        _go(world, _pass(org, [_card()], MORNING, CLOSED))
+    assert _runs(world, loop.BRIEF_JOB) == [] and _outbox(world) == []
+    assert sum(world.calls.values()) == 0
+    again = _go(world, _pass(org, [_card()], MORNING + timedelta(minutes=1), CLOSED))
+    assert again == ("brief:sent", "template")
+    assert sum(world.calls.values()) == 1
+    assert [r["state"] for r in _runs(world, loop.BRIEF_JOB)] == ["ok"]
+
+
+@_DB_GATE
+def test_r8_an_error_during_the_send_is_never_retried(world) -> None:
+    org = world.p.org_a
+    world.mode = "boom"
+    with pytest.raises(RuntimeError):
+        _go(world, lambda: _brief(org))
+    world.mode = "sent"
+    for _ in range(2):
+        assert _go(world, lambda: _brief(org))[0] is None
+    assert sum(world.calls.values()) == 1
+    assert [(r["state"], r["error_class"]) for r in _runs(world, loop.BRIEF_JOB)] == [
+        ("failed", "RuntimeError")]
+
+
+@_DB_GATE
+def test_r8_a_started_brief_run_blocks_the_full_brief(world, template) -> None:
+    org = world.p.org_a
+    assert _go(world, _pass(org, [_card()], MORNING, CLOSED)) == ("brief:sent", "template")
+    # The finish of the template brief was lost: the row of this runner stays
+    # started, and it is not an orphan yet.
+    with world.p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE unattended_runs SET state = 'started', finished_at = NULL, "
+            "error_class = NULL, runner = CAST(:r AS uuid), progress_at = :at "
+            "WHERE job = :j"), {"r": unattended.RUNNER, "at": MORNING, "j": loop.BRIEF_JOB})
+    later = _go(world, _pass(org, [_card()], MORNING + timedelta(minutes=5), OPEN))
+    assert later == (None, "none")
+    assert sum(world.calls.values()) == 1
+    assert [r["state"] for r in _runs(world, loop.BRIEF_JOB)] == ["started"]
