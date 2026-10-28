@@ -49,7 +49,7 @@ export function resolvePipeline(
 }
 
 /**
- * The place of each stage in the pipeline on screen (D130): status id to its
+ * The place of each stage in the pipeline on screen (D137): status id to its
  * `position` in that pipeline. `orderLanes` reads it.
  *
  * The pipeline is the one `pipelineId` names, else the default, else the

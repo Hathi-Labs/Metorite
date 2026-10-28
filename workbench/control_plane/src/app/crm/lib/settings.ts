@@ -340,7 +340,7 @@ export function orderAfterDrop<T extends { id: string }>(
   return moved === rows ? null : moved.map((row) => row.id);
 }
 
-// ── CRM-U11: the stage list is the board (D130, crm_platform.md §20.15) ───
+// ── CRM-U11: the stage list is the board (D137, crm_platform.md §20.15) ───
 
 /**
  * A part order, merged into the full order (CRM-U11 item 5).
@@ -380,7 +380,7 @@ export function orderAfterMove(
 
 /**
  * Every id of a Native kind with a new stage before the first won or lost
- * stage (D130 rule 4). The create route puts a new stage at the end, so the
+ * stage (D137 rule 4). The create route puts a new stage at the end, so the
  * order route then moves it. Null when no won or lost stage exists, because
  * the end is already the right place.
  */

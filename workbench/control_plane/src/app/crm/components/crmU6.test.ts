@@ -62,7 +62,7 @@ describe.each([
   const html = render(readOnly);
 
   it("is the board order: the list follows the stage order, not the win chance", () => {
-    // CRM-U11 (D130): the board-order strip is gone, and the list IS the
+    // CRM-U11 (D137): the board-order strip is gone, and the list IS the
     // board. Proposal (60%) still comes before Qualify (10%).
     expect(html).not.toContain('aria-label="Board order"');
     const rows = [...html.matchAll(/aria-label="Edit ([^"]+)"/g)].map((m) => m[1]);

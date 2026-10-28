@@ -76,7 +76,7 @@ const FRACKTAL: PipelineLane[] = [
 
 const names = (lanes: readonly { status: Status }[]) => lanes.map((l) => l.status.name);
 
-describe("orderLanes in Mirror mode - the pipeline place first, never the probability (D130)", () => {
+describe("orderLanes in Mirror mode - the pipeline place first, never the probability (D137)", () => {
   it("puts the pipeline stages by place, then the others by source position, with no type group", () => {
     expect(names(orderLanes(FRACKTAL, "mirror"))).toEqual([
       // The twelve stages of the pipeline, in its order. A won or a lost
@@ -134,7 +134,7 @@ describe("orderLanes in Mirror mode - the pipeline place first, never the probab
 });
 
 describe("orderLanes in Native mode — the admin's stage order", () => {
-  it("orders by position with no type group, and probability reorders nothing (D130)", () => {
+  it("orders by position with no type group, and probability reorders nothing (D137)", () => {
     expect(names(orderLanes(FRACKTAL, "native"))).toEqual([
       "New Lead",
       "New Deal",
@@ -158,7 +158,7 @@ describe("orderLanes in Native mode — the admin's stage order", () => {
   });
 
   it("keeps a stage where the admin put it, after Won too", () => {
-    // The old rule moved "Brand new" before Won. D130: the list is the board,
+    // The old rule moved "Brand new" before Won. D137: the list is the board,
     // and "Add stage" (not this sort) puts a new stage before Won.
     const lanes = [
       lane("Qualify", "open", 20, 0, 0, 1),
@@ -306,7 +306,7 @@ describe("the page wires the toggle through the shared Button", () => {
   });
 
   it("hands the Deals board the visible lanes, and the Leads board its own", () => {
-    // D130: the board passes the places of the pipeline on screen.
+    // D137: the board passes the places of the pipeline on screen.
     expect(page).toContain("const dealLanes = visibleLanes(orderLanes(store.lanes, ctx.mode, places), showEmpty)");
     expect(page).toContain("const places = useMemo(() => placesOf(pipelines, pipelineId), [pipelines, pipelineId]);");
     expect(page).toContain('lanes={view.tab === "leads" ? store.leadLanes : dealLanes}');

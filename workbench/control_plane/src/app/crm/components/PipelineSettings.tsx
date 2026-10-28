@@ -20,7 +20,7 @@
  * reorder or probability was a curl, which is the second half of why the live
  * board was wrong (§5.1's delivery gap 2).
  *
- * **The stage list is the board** (WS-53 CRM-U11, D130, §20.15). Deal stages
+ * **The stage list is the board** (WS-53 CRM-U11, D137, §20.15). Deal stages
  * and Lead statuses are each one `StageList`: one row for each stage, in the
  * order of `orderLanes`, the function the board calls. A move saves at once
  * through the order route. Edit opens one `Modal` for the rest.
@@ -367,7 +367,7 @@ export default function PipelineSettings({
   );
 }
 
-// ── CRM-U11 · the stage list is the board (D130, crm_platform.md §20.15) ────
+// ── CRM-U11 · the stage list is the board (D137, crm_platform.md §20.15) ────
 
 /** The words of one list: the deal stages or the lead statuses. */
 const LIST_WORDS: Record<

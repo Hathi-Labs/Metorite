@@ -118,7 +118,7 @@ describe("a hidden lane on a board", () => {
   });
 
   it("sits at the end of the board when it holds records", () => {
-    // D130: the old rule put it at the end of its group, before Won.
+    // D137: the old rule put it at the end of its group, before Won.
     const lanes = [lane(HIDDEN, 2), lane(OPEN, 1), lane(WON, 0), lane(GONE, 1)];
     expect(visibleLanes(orderLanes(lanes, "native"), true).map((l) => l.status.id)).toEqual([
       "Open",
@@ -146,7 +146,7 @@ describe("a hidden lane on a board", () => {
 
   it("keeps the Leads board in Zoho order with no overlay: no groups by type", () => {
     // Fracktal's Lead Status list, in Zoho order. A lost or won status stays
-    // where Zoho puts it. Since D130 the deal board has no type group either.
+    // where Zoho puts it. Since D137 the deal board has no type group either.
     const zoho = [
       status("Not Contacted", { position: 0, probability: null }),
       status("Junk Lead", { position: 1, type: "lost", probability: null }),
@@ -165,7 +165,7 @@ describe("a hidden lane on a board", () => {
 
 // ── Done when 18: the Mirror editor and both resets ──────────────────────
 //
-// CRM-U11 (D130) rebuilt the editor: one line per row, and an Edit dialog.
+// CRM-U11 (D137) rebuilt the editor: one line per row, and an Edit dialog.
 // The row "Reset to Zoho" became "Use Zoho's value" in the dialog, and
 // "Reset order to Zoho" became the "Same as Zoho" choice of "Column order".
 

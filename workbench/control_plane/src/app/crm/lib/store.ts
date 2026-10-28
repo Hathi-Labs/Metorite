@@ -218,7 +218,7 @@ type CrmState = {
   resetStatusOrder: (kind: StatusKind) => Promise<boolean>;
   /**
    * CRM-U11, Native mode: "Add stage". One create, then one order call that
-   * puts the stage before the first won or lost stage (D130 rule 4). The id
+   * puts the stage before the first won or lost stage (D137 rule 4). The id
    * of the new stage, or null when the create failed. When only the order
    * failed, the stage stays at the end and the error says so.
    */

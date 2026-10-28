@@ -92,7 +92,7 @@ function compareAdminOrder(a: Status, b: Status): number {
 }
 
 /**
- * THE order of the board columns (D130, owner decision 2026-10-27). This is
+ * THE order of the board columns (D137, owner decision 2026-10-27). This is
  * the one place that decides it. The Deals board and the stage list in CRM
  * settings both call it, with the same input, so the list is the board.
  *

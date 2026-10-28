@@ -623,7 +623,7 @@ describe("rotLevel", () => {
 // ── CRM-C3 · the admin order key (crm_platform.md §20.6 item 12) ──────────
 //
 // In Mirror mode an admin order wins. The key is (ui_position IS NULL,
-// ui_position, source position). D130 removed the four type groups.
+// ui_position, source position). D137 removed the four type groups.
 
 describe("orderLanes with an admin order", () => {
   /** A lane of a Mirror org: source position `source`, Metorite order `ui`. */
@@ -651,7 +651,7 @@ describe("orderLanes with an admin order", () => {
   const names = (lanes: { status: Status }[]) => lanes.map((l) => l.status.name);
 
   it("sorts by the admin order with no type group, and a new Zoho stage goes after the ordered ones", () => {
-    // D130: the old rule kept Won and Lost at the end and put Discover at the
+    // D137: the old rule kept Won and Lost at the end and put Discover at the
     // end of the open group. Now the saved order alone decides.
     const lanes = [
       lane("Qualify", "open", 0, 20),
@@ -692,7 +692,7 @@ describe("orderLanes with an admin order", () => {
   });
 
   it("puts a hidden stage, and a stage that left Zoho, at the end of the whole board", () => {
-    // D130: the old rule put them at the end of their group, before Won.
+    // D137: the old rule put them at the end of their group, before Won.
     const lanes = [
       lane("Hidden", "open", 0, 0, { hidden: true }),
       lane("Gone", "open", 1, 5, { source_gone_at: "2026-10-13T00:00:00Z" }),

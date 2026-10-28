@@ -1,4 +1,4 @@
-// CRM-U11: the stage settings are the board (D130, crm_platform.md §20.15).
+// CRM-U11: the stage settings are the board (D137, crm_platform.md §20.15).
 //
 // The runner has no DOM. The order rule is called directly, the screen and the
 // Edit dialog render to a string, the store runs on a fake `fetch`, and a
