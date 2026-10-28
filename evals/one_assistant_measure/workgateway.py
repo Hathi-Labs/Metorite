@@ -246,6 +246,9 @@ class WorkGateway:
                 return list(LOST_REASONS)
             if head == "pipeline":
                 return self._pipeline(params.get("owner"))
+            found = self._crm_read_family(rest, params)
+            if found is not None:
+                return found
             if head in _CRM_TABLES and len(rest) == 1:
                 return self._search(head, str(params.get("q") or ""))
             if head in _CRM_TABLES and len(rest) == 2:
@@ -269,6 +272,65 @@ class WorkGateway:
         if method == "POST" and head == "leads" and rest[2:] == ["convert"]:
             return {"deal": {"id": cid(950), "name": "Meera Joshi"},
                     "contact": {"id": cid(951)}, "organization": {"id": cid(952)}}
+        return None
+
+    def _crm_read_family(self, rest: list[str], params: dict[str, Any]) -> Any:
+        """The routes of the injected ``crm_*`` read tools (OA-8e fix round 2).
+
+        The live models of the first run called these routes, and the fake had
+        none, so both arms read 404. Each answer is a small synthetic body in
+        the shape that ``acb_skills.crm_tools`` reads. None: not one of them."""
+        head = rest[0]
+        if rest == ["sync", "short-reads"]:
+            return []  # nothing is short
+        if head == "fields" and len(rest) == 2 and rest[1] in _CRM_TABLES:
+            return []  # no custom fields
+        if rest == ["pipelines"]:
+            return [{"id": cid(920), "name": "Sales", "is_default": True, "stages": [
+                {**s, "probability": p}
+                for s, p in zip(CRM_STAGES, (20, 40, 70, 100, 0), strict=True)]}]
+        if rest == ["owners"]:
+            return {"owners": [{"name": "Member", "email": ME}, {"name": "Kiran", "email": KIRAN}]}
+        if head == "deals" and rest[2:] == ["contacts"]:
+            rows = [{"contact": CRM_CONTACTS[0], "role": "Decision maker", "is_primary": True}]
+            return {"rows": rows if rest[1] == cid(1) else []}
+        if head == "reports" and len(rest) == 2:
+            return self._crm_report(rest[1])
+        if rest == ["aggregate"]:
+            return {"groups": [
+                {"label": s["name"], "type": s["type"], "value": sum(
+                    1 for d in CRM_DEALS if d["status"] == s["name"])} for s in CRM_STAGES]}
+        if rest == ["aggregate", "stage-dwell"]:
+            return {"stages": [{"name": "Negotiation", "samples": 1, "median_days": 14,
+                                "p90_days": 14, "max_dwell_days": 21}],
+                    "overdue_total": 0, "overdue": []}
+        if rest == ["catalogue"]:
+            # The catalogue is off: the tools then read the old routes.
+            return 404, {"detail": {"code": "catalogue_off"}}
+        return None
+
+    @staticmethod
+    def _crm_report(kind: str) -> Any:
+        stages = [{"status": s, "count": sum(1 for d in CRM_DEALS if d["status"] == s["name"]),
+                   "amount": sum(d["amount"] for d in CRM_DEALS if d["status"] == s["name"]),
+                   "weighted": 0.0, "currency": "INR"} for s in CRM_STAGES]
+        if kind == "pipeline":
+            return {"stages": stages, "count": len(CRM_DEALS), "currency": "INR",
+                    "amount": sum(d["amount"] for d in CRM_DEALS), "weighted": 0.0}
+        if kind == "funnel":
+            return {"stages": [{"status": s["status"], "entered": s["count"],
+                                "advanced": 0, "conversion_forward": 0,
+                                "median_dwell_days": None, "dwell_samples": 0} for s in stages]}
+        if kind == "win-loss":
+            return {"since": "2026-07-30", "won": 1, "lost": 0, "win_rate": 100,
+                    "won_amount": 300000, "lost_amount": 0, "closed_without_date": 0,
+                    "currency": "INR", "lost_reasons": []}
+        if kind == "owners":
+            return {"window_days": 90, "owners": [
+                {"owner_email": ME, "open_deals": 2, "weighted": 0.0, "won_amount": 300000,
+                 "currency": "INR"},
+                {"owner_email": KIRAN, "open_deals": 1, "weighted": 0.0, "won_amount": 0,
+                 "currency": "INR"}]}
         return None
 
     @staticmethod
@@ -310,6 +372,13 @@ class WorkGateway:
             return {"applied": len(ids), "requested": len(ids), "skipped": [], "failed": [],
                     "results": [{"task_id": i} for i in ids],
                     "subtasks_archived": 0}
+        if method == "POST" and parts[0] == "tasks" and parts[2:] == ["archive"]:
+            task = next((t for t in TASKS if t["id"] == parts[1]), {})
+            return {**task, "archived_at": "2026-10-28T09:00:00Z"}
+        if method == "POST" and rest == "nodes" and isinstance(body, dict):
+            self._made += 1
+            return {"id": pid(self._made), "name": body.get("name"), "kind": "project",
+                    "status": "active", "children": []}
         if method == "POST" and parts[0] == "tasks" and parts[2:] == ["complete"]:
             task = next((t for t in TASKS if t["id"] == parts[1]), {})
             return {**task, "completed_at": "2026-10-28T09:00:00Z", "category": "done"}
@@ -345,6 +414,9 @@ class WorkGateway:
             return self._list(params)
         if rest.startswith("analytics/"):
             return self._analytics(parts[1])
+        found = self._projects_read_more(rest)
+        if found is not None:
+            return found
         if parts[0] == "nodes" and len(parts) >= 2 and parts[1] in NODES:
             return self._node_read(parts)
         if parts[0] == "tasks" and len(parts) >= 2:
@@ -352,6 +424,34 @@ class WorkGateway:
             if task is None:
                 return 404, {"detail": "not found"}
             return {"subtasks": [], "progress": {}} if parts[2:] == ["relations"] else task
+        return None
+
+    @staticmethod
+    def _projects_read_more(rest: str) -> Any:
+        """The Projects routes that the live models called and the fake lacked
+        (OA-8e fix round 2). None: not one of them."""
+        due = [t for t in TASKS if t.get("due_at") and not t.get("completed_at")]
+        if rest in ("calendar", "my/calendar"):
+            rows = due if rest == "calendar" else [t for t in due if ME in t["assignees"]]
+            return {"rows": rows, "truncated": False}
+        if rest == "my/inbox":
+            rows = [t for t in TASKS if ME in t["assignees"] and not t.get("completed_at")]
+            return {"rows": rows, "total": len(rows)}
+        if rest in ("my/reminders", "intake"):
+            return {"rows": [], "total": 0}
+        if rest == "my/areas":
+            return {"rows": []}
+        if rest == "assignees":
+            return {"people": [
+                {"name": "Ananya", "assignee": ANANYA, "load": {"open": 2}},
+                {"name": "Member", "assignee": ME, "load": {"open": 3}},
+                {"name": "Kiran", "assignee": KIRAN, "load": {"open": 0}}], "agents": []}
+        if rest == "people/names":
+            return {"names": {ANANYA: "Ananya", ME: "Member", KIRAN: "Kiran"}}
+        if rest == "needs-attention":
+            return {"rows": [], "total": 0, "counts": {}}
+        if rest == "agent-runs":
+            return {"rows": []}
         return None
 
     def _node_read(self, parts: list[str]) -> Any:

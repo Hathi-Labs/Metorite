@@ -311,6 +311,33 @@ probe of 2026-10-25 within 1 percent.
 | 1 | A scripted check failed |
 | 2 | The live run cannot start |
 
+## Fix round 2 (after the first live run)
+
+The first live run (`docs/one_assistant_measure_oa8e_2026-10-28.md`) found six
+defects of the harness. All six are repaired, and none changes a product file.
+
+1. `workgateway.py` answers the routes that the live models called: the
+   `crm_*` read family (short reads, fields, pipelines, owners, deal contacts,
+   the four reports, aggregate and stage dwell), the archive route, create
+   project, calendar, my calendar, my inbox, my reminders, my areas, intake,
+   assignees, people names, needs attention and agent runs. A route with no
+   fixture still answers 404 and shows in `unknown_routes`.
+2. A refused call is no write (`checks.refused`). That covers a tool that is
+   not found, dropped or held, and a call that answers `Refused`.
+3. `crm_report` and `status_report` carry `read_only=False` on purpose, because
+   `make_report=true` writes files. They send only GET, so the harness table
+   `READ_DESPITE_ANNOTATION` reads them as reads. The product is not at fault.
+4. `scenarios_work.amount()` takes `450,000`, `4,50,000`, `450000` and `4.5 lakh`.
+5. `run.no_local_database` closes the graph opener in every run, so
+   `retrieve_entity_context` and `retrieve_sales_context` read no local database.
+6. `--spent-before-from a.json,b.json` sums what each chunk spent by itself.
+   Do not pass the `spent_usd` of a chunk, because it holds the chunks before it.
+
+OA-9b is merged, so `spawn_subagents` exists. The fan-out chats and the
+`packs+spawn` arm stay listed and skipped (`run.SPAWN_NOT_WIRED`). They need
+fixtures for `web_search` and `fetch_page`, a plan for the worker, ten invoices
+and an arm flag, which is more than small wiring.
+
 ## The live run of OA-8e (phase 2, not run)
 
 The live run needs the tunnel and the grant `deploy`, as above. Run each

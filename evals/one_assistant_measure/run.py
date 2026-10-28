@@ -102,9 +102,20 @@ def owners_of(sc: Scenario) -> tuple[str, ...]:
     return (EA,) if sc.set == "email" else pack.OWNERS
 
 
+#: Why the fan-out chats and the ``packs+spawn`` arm stay listed and skipped
+#: after OA-9b (fix round 2). The tool exists (``agent_tools.spawn_subagents``,
+#: dark behind ``SPAWN_SUBAGENTS_ORGS``). The chats need more than small wiring:
+#: fixtures for ``web_search`` and ``fetch_page`` (a live run may send nothing
+#: but the Router), a scripted plan for the sub-agent worker, ten invoices as
+#: fixtures, and a third arm that sets ``SPAWN_SUBAGENTS_ORGS`` in the eval
+#: process. Phase 3 builds them.
+SPAWN_NOT_WIRED = ("spawn_subagents exists (OA-9b), but the fan-out fixtures, the worker plan "
+                   "and the arm flag are not wired")
+
+
 def spawn_built() -> bool:
-    """True once ``spawn_subagents`` exists as a tool (OA-9b). A test pins this
-    to False, and fails when OA-9b lands, so the fan-out arm gets built."""
+    """True once ``spawn_subagents`` exists as a tool (OA-9b). It says nothing
+    about the wiring: :data:`SPAWN_NOT_WIRED` is why the chats stay skipped."""
     root = Path(__file__).resolve().parents[2]
     for base in (root / "apps" / "services" / "orchestrator", root / "packages" / "acb_skills"):
         for path in base.rglob("*.py"):
@@ -403,6 +414,26 @@ def _use_router(harness: RoutingHarness, router: tuple[str, str]) -> None:
     _system_one_seam(mp)
 
 
+#: The tools of the orchestrator that read the LOCAL database of the machine
+#: that runs the eval, in process. The first live run of OA-8e let them answer,
+#: and records of the local dev database reached the Router as tool results.
+#: ``retrieve_entity_context`` and ``retrieve_sales_context`` read the entity
+#: graph through ``executor._graph_session_opener_current``. The others reach a
+#: store that the live runner pins off (Mem0, Graphiti) or send an httpx request
+#: that the guard of the harness refuses (``search_company``, ``org_facts``).
+LOCAL_DB_TOOLS = frozenset({"retrieve_entity_context", "retrieve_sales_context"})
+
+
+def no_local_database(mp: Any) -> None:
+    """Close every in-process read of the local database (fix round 2, item 5).
+
+    The graph opener answers None, so each retrieval tool answers "no match"
+    and opens no session. It applies to every run, scripted or live."""
+    from orchestrator import executor
+
+    mp.setattr(executor, "_graph_session_opener_current", lambda: None)
+
+
 def _system_one_seam(mp: Any) -> None:
     """The EVAL-ONLY System-1 seam: the turn-kind request goes to the Router.
 
@@ -450,6 +481,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
         if live:
             _use_router(harness, router)
         harness.mailboxes = mb.BOXES
+        no_local_database(harness._mp)
         module = load_agent_module(harness._registry[EA]["local_path"])
         harness._modules[EA] = module
         gateway = mb.Mailbox(sc.mails)
@@ -1002,7 +1034,25 @@ def _sha() -> str:
         return ""
 
 
+def chunk_spend(data: dict[str, Any]) -> float:
+    """The USD that one chunk spent by itself. ``spent_usd`` of a chunk counts
+    from its ``spent_before_usd``, so the chunk's own figure is the difference."""
+    if isinstance(data.get("spent_this_chunk_usd"), (int, float)):
+        return float(data["spent_this_chunk_usd"])
+    return max(0.0, float(data.get("spent_usd") or 0.0) - float(data.get("spent_before_usd") or 0.0))
+
+
+def spent_so_far(paths: list[Path]) -> float:
+    """The ``--spent-before`` for the chunk that follows the chunks in *paths*:
+    the sum of what each chunk spent by itself. Never the sum of their
+    ``spent_usd``, which already holds the chunks before it (the first live run
+    of OA-8e counted that twice)."""
+    return round(sum(chunk_spend(json.loads(p.read_text(encoding="utf-8"))) for p in paths), 4)
+
+
 def _write(out: Path, data: dict[str, Any]) -> None:
+    data["spent_this_chunk_usd"] = round(
+        float(data.get("spent_usd") or 0.0) - float(data.get("spent_before_usd") or 0.0), 4)
     data["summary"] = summarise(data["rows"])
     out.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
 
@@ -1117,7 +1167,7 @@ def merge(paths: list[Path], out: Path) -> dict[str, Any]:
     data["replaced"] = [d for p in parts for d in p.get("replaced") or []]
     data["stopped"] = [p["stopped"] for p in parts if p.get("stopped")]
     data["chunks"] = len(parts)
-    data["spent_usd"] = max(float(p.get("spent_usd") or 0.0) for p in parts)
+    data["spent_usd"] = round(sum(chunk_spend(p) for p in parts), 4)
     data["repeat"] = max((r["repeat"] for r in data["rows"]), default=0)
     _write(out, data)
     return data
@@ -1202,6 +1252,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="live: the number of the first repeat, for a run in chunks")
     parser.add_argument("--spent-before", type=float, default=0.0,
                         help="live: USD that earlier chunks spent, counted against the budget")
+    parser.add_argument("--spent-before-from", default="",
+                        help="live: a comma list of earlier chunk files. The runner sums what each "
+                             "chunk spent by itself and uses it as --spent-before")
     parser.add_argument("--tier", default="tier-balanced", help="the orchestrator's tier")
     parser.add_argument("--budget-usd", type=float, default=5.0)
     parser.add_argument("--timeout", type=float, default=300.0, help="live: seconds a turn")
@@ -1213,8 +1266,8 @@ def main(argv: list[str] | None = None) -> int:
         reconfigure(encoding="utf-8", errors="replace")
 
     asked = [a.strip() for a in args.arms.split(",") if a.strip()]
-    if SPAWN_ARM in asked and not spawn_built():
-        print(f"SKIP: the arm {SPAWN_ARM} waits for OA-9b (spawn_subagents is not built)")
+    if SPAWN_ARM in asked:
+        print(f"SKIP: the arm {SPAWN_ARM}: {SPAWN_NOT_WIRED}")
     arms = tuple(a for a in asked if a in ARMS)
     wanted = {s.strip() for s in args.scenarios.split(",") if s.strip()}
     chosen = tuple(sc for sc in all_scenarios() if not wanted or sc.id in wanted)
@@ -1264,9 +1317,11 @@ def main(argv: list[str] | None = None) -> int:
     print(why)
     if not ok:
         return EXIT_NO_GO
+    before = args.spent_before + spent_so_far(
+        [Path(p) for p in args.spent_before_from.split(",") if p.strip()])
     data = run_live(router, scenarios, arms, repeat=max(1, args.repeat), tier=args.tier,
                     budget=args.budget_usd, out=out, timeout=args.timeout,
-                    first_repeat=args.first_repeat, spent_before=args.spent_before)
+                    first_repeat=args.first_repeat, spent_before=before)
     print(report(data))
     print(f"results: {out}")
     return EXIT_PASS

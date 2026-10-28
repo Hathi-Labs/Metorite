@@ -17,6 +17,7 @@ The write turns ask ONE write in the chat, and the card is its question.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from evals.one_assistant_measure.scenarios import (
@@ -35,9 +36,31 @@ from evals.one_assistant_measure.workgateway import (
 )
 
 #: The fan-out chats wait for ``spawn_subagents``, the tool of OA-9b.
-FANOUT_SKIP = "needs OA-9b: spawn_subagents is not built"
+FANOUT_SKIP = ("spawn_subagents exists (OA-9b), but the fan-out fixtures, the worker plan "
+               "and the arm flag are not wired (run.SPAWN_NOT_WIRED)")
 
 CRM_PAGE = "## Where the member is now\nThe member is in the CRM app (/crm)."
+
+
+def amount(rupees: int) -> str:
+    """A regex for an amount in rupees in the forms a member reads: 450,000,
+    4,50,000, 450000, and 4.5 lakh (also "4.50 lakh", "4.5L", "4.5 lac").
+    A larger amount in crore reads the same way (1 crore is 100 lakh)."""
+    western = f"{rupees:,}"
+    digits = str(rupees)
+    head, tail = digits[:-3], digits[-3:]
+    groups: list[str] = []
+    while len(head) > 2:
+        groups.insert(0, head[-2:])
+        head = head[:-2]
+    indian = ",".join(([head] if head else []) + groups + [tail]) if len(digits) > 3 else digits
+    lakh = rupees / 100_000
+    num = f"{lakh:.2f}".rstrip("0").rstrip(".")
+    forms = {re.escape(western), re.escape(indian), digits, rf"{re.escape(num)}0?\s*(?:lakh|lakhs|lac|lacs|L)\b"}
+    if lakh >= 100:
+        crore = f"{lakh / 100:.2f}".rstrip("0").rstrip(".")
+        forms.add(rf"{re.escape(crore)}0?\s*(?:crore|cr)\b")
+    return r"(?<![\d,.])(?:" + "|".join(sorted(forms)) + ")"
 
 
 def page_for(surface: str) -> str:
@@ -63,7 +86,7 @@ CRM_SCENARIOS: tuple[Scenario, ...] = (
     _crm("crm_pipeline", "The pipeline, then one person's deals", (
         Turn("How is the pipeline looking?",
              (Check("ran_tool", ("get_pipeline",), "read_the_pipeline"),
-              Check("answer_all", (r"Negotiation", r"450,000"), "names_the_stage_and_amount"),
+              Check("answer_all", (r"Negotiation", amount(450_000)), "names_the_stage_and_amount"),
               Check("no_unasked_write", 0), Check("right_pack", "crm-records")),
              Plan((("get_pipeline", {}),),
                   "Four deals worth INR 1,670,000 sit across five stages. Negotiation holds "

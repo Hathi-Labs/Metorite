@@ -41,7 +41,7 @@ from evals.one_assistant_measure.scenarios_work import (
     PROJECTS_SCENARIOS,
     WORK_SCENARIOS,
 )
-from evals.routing.harness import ORCHESTRATOR
+from evals.routing.harness import ORCHESTRATOR, ReplyModel, text_turn, tool_turn
 
 CRM, PROJECTS, EA = pack.CRM, pack.PROJECTS, pack.EA
 CRM_WRITES = {"create_lead", "update_deal_status", "convert_lead", "log_activity"}
@@ -154,9 +154,16 @@ def test_the_fanout_chats_are_listed_and_skipped_until_spawn_exists(capsys) -> N
     assert code == 0 and out.count("SKIP: fan_") == 3 and f"SKIP: the arm {run.SPAWN_ARM}" in out
 
 
-def test_spawn_subagents_is_not_built() -> None:
-    assert run.spawn_built() is False, (
-        "spawn_subagents exists: build the packs+spawn arm and the fan-out plans (OA-8e phase 2)")
+def test_spawn_exists_but_the_fanout_stays_skipped_with_a_reason() -> None:
+    """OA-9b is merged, so the tool exists. The fan-out chats need fixtures for
+    ``web_search`` and ``fetch_page``, a worker plan and an arm flag, which is
+    more than small wiring, so they stay skipped and say why.
+    Mutation: set ``skip`` of one fan-out chat to "" → it runs with an empty plan
+    → red."""
+    assert run.spawn_built() is True
+    for sc in FANOUT_SCENARIOS:
+        assert sc.skip and "not wired" in sc.skip, sc.id
+    assert "not wired" in run.SPAWN_NOT_WIRED
 
 
 # ── the pack flag ────────────────────────────────────────────────────────────
@@ -730,3 +737,194 @@ def test_mirror_chat_accepts_zoho_or_an_offer_of_a_note() -> None:
     neither = _obs(answer="Done, the deal is in Proposal.")
     for obs, want in ((zoho, True), (note, True), (neither, False)):
         assert ck.KINDS[check.kind](obs, check.arg) is want
+
+
+# ── fix round 2: the six harness defects ─────────────────────────────────────
+
+
+def test_a_refused_call_is_no_write() -> None:
+    """Item 2. A tool that is not in the request (dropped in Mirror mode, held,
+    not found) or that refuses its arguments did not write. The three guard
+    checks must not count it.
+    Mutation: make ``refused`` return False → every case below is red."""
+    gone = 'Error: Requested function "update_deal_status" not found.'
+    bad = "Refused: task_id must be a UUID from an earlier tool result."
+    for result in (gone, bad):
+        call = [("update_deal_status", {}, result)]
+        assert ck.refused(result) is True
+        assert _one("no_unasked_write", 0, _obs(work_calls=call)) is True
+        assert _auto("one_card_per_write", _obs(work_calls=call)) is None
+        assert _auto("mirror_respected", _obs(mirror=True, work_calls=call)) is True
+    assert ck.refused("Moved Kestrel pilot to Negotiation.") is False
+    ran = [("update_deal_status", {}, "Moved")]
+    assert _one("no_unasked_write", 0, _obs(work_calls=ran)) is False
+    assert _auto("mirror_respected", _obs(mirror=True, work_calls=ran)) is False
+    # One write that ran and one that was refused: one card, on the one that ran.
+    both = [("complete", {}, bad), ("complete", {}, "Done: #22")]
+    assert _auto("one_card_per_write", _obs(
+        work_calls=both, write_cards=[(("complete",), 0), (("complete",), 1)])) is True
+    assert _one("no_unasked_write", 1, _obs(work_calls=both)) is True
+    # A write that ran and showed no card still fails.
+    assert _auto("one_card_per_write", _obs(work_calls=[both[1]])) is False
+
+
+def test_crm_report_reads_as_a_read_in_the_checks() -> None:
+    """Item 3. ``crm_report`` carries ``read_only=False`` in
+    ``tool_annotations.py`` (line 143) ON PURPOSE: with ``make_report=true`` it
+    writes two files, so an edited turn must not run it again. The comment sits
+    before the tool in ``crm_tools.py``. It sends only GET, so it is no product
+    bug and no CRM record changes. The harness table
+    ``READ_DESPITE_ANNOTATION`` makes it a read here.
+    Mutation: empty the table → the first case is red."""
+    from acb_skills.tool_annotations import get_annotations
+
+    assert get_annotations("crm_report")["read_only"] is False  # the product says so
+    assert ck.is_write_tool("crm_report") is False and ck.is_write_tool("status_report") is False
+    call = [("crm_report", {}, "CRM report pipeline:")]
+    assert _one("no_unasked_write", 0, _obs(work_calls=call)) is True
+    assert _auto("one_card_per_write", _obs(work_calls=call)) is None
+    assert ck.is_write_tool("update_deal_status") is True
+    assert {"crm_report", "status_report"} == ck.READ_DESPITE_ANNOTATION
+
+
+@pytest.mark.parametrize(("text", "want"), [
+    ("Negotiation holds INR 450,000.", True),
+    ("The Orbit deal is worth \u20b94.5 lakh.", True),
+    ("It is worth 4.50 lakh.", True),
+    ("It is worth 4,50,000 rupees.", True),
+    ("It is worth 450000.", True),
+    ("It is worth 4.5L.", True),
+    ("It is worth 4.5 lac.", True),
+    ("It is worth 45,000.", False),
+    ("It is worth 14.5 lakh.", False),
+    ("It is worth 1,450,000.", False),
+    ("It is worth 4.5 crore.", False),
+])
+def test_the_amount_check_takes_the_indian_forms(text: str, want: bool) -> None:
+    """Item 4. The first live run failed `crm_pipeline` on both arms, because
+    the model wrote "4.5 lakh" and the check wanted "450,000".
+    Mutation: return only the western form from ``amount`` → the lakh cases are
+    red."""
+    from evals.one_assistant_measure.scenarios_work import amount
+
+    assert (re.search(amount(450_000), text, re.IGNORECASE) is not None) is want
+    turn = scenario("crm_pipeline").turns[0]
+    check = next(c for c in turn.checks if c.name == "names_the_stage_and_amount")
+    got = ck.KINDS[check.kind](_obs(answer=f"Negotiation. {text}"), check.arg)
+    assert got is want
+
+
+def test_a_run_reads_no_local_database() -> None:
+    """Item 5. The first live run let `retrieve_entity_context` read the local
+    dev database, and the text reached the Router. ``no_local_database`` closes
+    the graph opener of every run, so the tool answers "no match" and opens no
+    session. The sentinel below fails if the tool reaches the opener.
+    Mutation: remove the ``no_local_database`` call from ``run_chat`` → the
+    sentinel raises, the tool answers an error, and the case is red."""
+    assert {"retrieve_entity_context", "retrieve_sales_context"} == run.LOCAL_DB_TOOLS
+    sc = scenario("crm_miss")
+    models = {
+        ORCHESTRATOR: ReplyModel([
+            tool_turn("retrieve_entity_context", {"query": "Orbit"}, "r1"),
+            tool_turn("retrieve_sales_context", {"query": "Orbit"}, "r2"),
+            text_turn("No match."),
+        ])}
+
+    from orchestrator.agents import retrieve_entity_context
+
+    scope = retrieve_entity_context.__globals__  # the module that holds the tools
+
+    def sentinel(*_a, **_k):
+        raise AssertionError("a run read the local database")
+
+    real = (scope["retrieve"], scope["_sales_context_fn"])
+    scope["retrieve"] = scope["_sales_context_fn"] = sentinel
+    try:
+        (row,) = run.run_chat(sc, "pack", models=models)
+    finally:
+        scope["retrieve"], scope["_sales_context_fn"] = real
+    results = json.dumps(models[ORCHESTRATOR].bodies[-1]["messages"], ensure_ascii=False)
+    assert "(no matching entities found)" in results and "(no matching sales data found)" in results
+    assert "read the local database" not in results and row["error"] is None
+
+
+def test_a_chained_spent_before_counts_each_chunk_once(tmp_path) -> None:
+    """Item 6. ``spent_usd`` of a chunk already holds the chunks before it. The
+    first live run summed those figures and counted the early chunks twice.
+    Mutation: sum ``spent_usd`` in ``spent_so_far`` or in ``merge`` → the total
+    is 4, not 3 → red."""
+    a = {"rows": [], "spent_usd": 1.0, "spent_before_usd": 0.0, "stopped": None}
+    b = {"rows": [], "spent_usd": 3.0, "spent_before_usd": 1.0, "stopped": None}
+    pa, pb = tmp_path / "a.json", tmp_path / "b.json"
+    pa.write_text(json.dumps(a), encoding="utf-8")
+    pb.write_text(json.dumps(b), encoding="utf-8")
+    assert run.chunk_spend(a) == 1.0 and run.chunk_spend(b) == 2.0
+    assert run.spent_so_far([pa]) == 1.0 and run.spent_so_far([pa, pb]) == 3.0
+    merged = run.merge([pa, pb], tmp_path / "m.json")
+    assert merged["spent_usd"] == 3.0
+    # A chunk written by the runner carries its own figure.
+    out = tmp_path / "w.json"
+    data = {"rows": [], "spent_usd": 2.5, "spent_before_usd": 2.0}
+    run._write(out, data)
+    assert json.loads(out.read_text(encoding="utf-8"))["spent_this_chunk_usd"] == 0.5
+
+
+def test_the_fake_answers_the_routes_of_the_first_live_run() -> None:
+    """Item 1. Each route that the live models called and the fake lacked now
+    has a fixture. A route with no fixture still answers 404 and is listed.
+    Mutation: drop the ``_crm_read_family`` call from ``_crm`` → the CRM cases
+    answer 404 → red."""
+    gate = wg.WorkGateway()
+    deal = wg.cid(1)
+    crm = ["sync/short-reads", "fields/deals", "fields/contacts", "fields/leads",
+           "fields/organizations", "pipelines", "owners", f"deals/{deal}/contacts",
+           "reports/pipeline", "reports/funnel", "reports/win-loss", "reports/owners",
+           "aggregate", "aggregate/stage-dwell"]
+    for path in crm:
+        assert gate.route("GET", f"/crm/{path}", {}, None) is not None, path
+    pm = ["calendar", "my/calendar", "my/inbox", "my/reminders", "my/areas", "intake",
+          "assignees", "people/names", "needs-attention", "agent-runs"]
+    for path in pm:
+        assert gate.route("GET", f"/projects/{path}", {}, None) is not None, path
+    task = wg.TASK_IDS[13]
+    assert gate.route("POST", f"/projects/tasks/{task}/archive", {}, {})["archived_at"]
+    assert gate.route("POST", "/projects/nodes", {}, {"name": "X"})["name"] == "X"
+    assert gate.unknown == []
+    # The unknown stays unknown, and the catalogue is off (a real answer).
+    assert gate.route("GET", "/crm/never-heard-of-it", {}, None) is None
+    assert gate.route("GET", "/crm/catalogue", {}, None)[0] == 404
+    assert gate.route("GET", "/projects/nodes/" + wg.pid(999), {}, None) is None
+
+
+def test_the_crm_read_tools_run_against_the_fake_without_a_404() -> None:
+    """The `crm_*` read family and the Projects reads reach the fake through the
+    real tools. Mutation: drop one fixture → that tool shows a 404 → red."""
+    import asyncio
+
+    from acb_skills import crm_tools
+
+    from evals.routing.harness import RoutingHarness
+
+    deal = wg.cid(1)
+
+    async def go() -> list[str]:
+        out = []
+        for call in (crm_tools.crm_list_pipelines(), crm_tools.crm_list_owners(),
+                     crm_tools.crm_report("pipeline"), crm_tools.crm_report("owners"),
+                     crm_tools.crm_stage_dwell(), crm_tools.crm_deal_contacts(deal),
+                     crm_tools.crm_list_fields("deals")):
+            out.append(await call)
+        return out
+
+    with RoutingHarness() as harness:
+        gate = wg.WorkGateway()
+        gate.install(harness._mp)
+        from acb_skills import memory_tools
+
+        token = memory_tools._memory_user_id.set(run.ds.MEMBER)
+        try:
+            answers = asyncio.run(go())
+        finally:
+            memory_tools._memory_user_id.reset(token)
+    assert gate.unknown == [], gate.unknown
+    assert all(a and "404" not in a for a in answers), answers
