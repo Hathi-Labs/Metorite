@@ -11927,3 +11927,19 @@ U13a goes first. U13b and U13c can run side by side after it.
 2. One press of "Accept the AI's suggestions" accepts each item that has a suggestion, and the count on the rail falls to the items that need a person.
 3. One pick on the Field map saves it, and "Change history" lists it as a new version.
 4. The four `visual-review` captures (light mode, compact density, a changed accent, 390 px) of each new section.
+
+### 20.18 CRM-U14: the order of the cards on the Deals board (2026-10-28)
+
+**Status.** ✅ Built 2026-10-28 on branch `crm-u14-card-order`. Not merged. Not deployed.
+
+The owner saw the cards of a Deals column in a different order from Zoho. The cause: a mirrored deal held the import time in `status_changed_at`, so the default order was close to random. Zoho's own `Stage_Modified_Time` sat unused in `custom`.
+
+What the slice does:
+
+1. The Zoho deal mapping sets `status_changed_at` from `Stage_Modified_Time` on each upsert. A deal with no value keeps the stored clock.
+2. Each sync run repairs the rows stored before this change. The step is `crm_sync/engine.py` `_restamp_stages`. It writes through the fenced door `core.restamp_deal_stage_from_source`, 500 rows a batch, 20 batches a run, Zoho rows only. A repeat writes nothing. No migration.
+3. "Board options" gets "Sort cards": Recently moved (default), Recently changed, Closing date, Amount and Next step. `?card_sort=` takes `stage_age`, `recently_changed`, `close_date`, `amount` and `next_activity`. Any other value is a 422.
+
+Fences: `tests/unit/test_crm_stage_card_order_r8.py` (R8), `tests/unit/test_crm_upsert_from_source_fence.py` (the new door is sync-only).
+
+Known gap: some tenants send no `Modified_Time` on Deals (see `crm_sources/zoho/client.py`, `list_changed`). For them `ext_modified_at` is NULL. "Recently changed" then uses `updated_at`.

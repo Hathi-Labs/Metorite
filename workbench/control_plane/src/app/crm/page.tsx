@@ -234,7 +234,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // `lib/nextActivity.ts`). Each is kept per member and organization.
   const { access } = useAccess();
   const memberScope = chatScope(access.email, access.organization?.id);
-  // The order of the cards in a deal lane (CRM-X3): stage age or next activity.
+  // The order of the cards in a deal lane (CRM-X3): five orders (Board options, Sort cards).
   const savedSort = useMemo(() => readCardSort(memberScope), [memberScope]);
   const [pickedSort, setPickedSort] = useState<{ scope: string | null; sort: CardSort } | null>(
     null
@@ -917,10 +917,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                           writeShowEmpty(memberScope, next);
                           setPickedEmpty({ scope: memberScope, show: next });
                         },
-                        nextActivity: cardSort === "next_activity",
-                        onToggleNextActivity: () => {
-                          const next: CardSort =
-                            cardSort === "next_activity" ? "stage_age" : "next_activity";
+                        cardSort,
+                        onPickCardSort: (next) => {
                           writeCardSort(memberScope, next);
                           setPickedSort({ scope: memberScope, sort: next });
                         },

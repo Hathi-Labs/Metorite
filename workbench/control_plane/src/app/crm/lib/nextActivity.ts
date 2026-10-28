@@ -124,7 +124,27 @@ export function isOverdue(
 // shape of `emptyStages.ts`.
 
 /** `GET /crm/pipeline?card_sort=`. */
-export type CardSort = "stage_age" | "next_activity";
+export type CardSort =
+  | "stage_age"
+  | "recently_changed"
+  | "close_date"
+  | "amount"
+  | "next_activity";
+
+/** The "Sort cards" choices, in menu order. `stage_age` is the default. */
+export const CARD_SORT_CHOICES: ReadonlyArray<{
+  value: CardSort;
+  label: string;
+  hint: string;
+}> = [
+  { value: "stage_age", label: "Recently moved", hint: "Newest stage change first, by the CRM's stage time" },
+  { value: "recently_changed", label: "Recently changed", hint: "Last edited first" },
+  { value: "close_date", label: "Closing date", hint: "Soonest closing date first" },
+  { value: "amount", label: "Amount", hint: "Largest amount first" },
+  { value: "next_activity", label: "Next step", hint: "Soonest next activity first" },
+];
+
+const CARD_SORTS: ReadonlySet<string> = new Set(CARD_SORT_CHOICES.map((c) => c.value));
 
 /** The key prefix. The scope `<email>|<organizationId>` follows it. */
 export const CARD_SORT_PREFIX = "metorite:crm:card-sort:";
@@ -145,7 +165,8 @@ export function readCardSort(
   const key = cardSortKey(scope);
   if (!key || !store) return "stage_age";
   try {
-    return store.getItem(key) === "next_activity" ? "next_activity" : "stage_age";
+    const saved = store.getItem(key);
+    return saved && CARD_SORTS.has(saved) ? (saved as CardSort) : "stage_age";
   } catch {
     return "stage_age";
   }
@@ -168,5 +189,5 @@ export function writeCardSort(
 
 /** The query of the board read. The default sends nothing, as before. */
 export function cardSortQuery(sort: CardSort | undefined): { card_sort?: CardSort } {
-  return sort === "next_activity" ? { card_sort: sort } : {};
+  return sort && sort !== "stage_age" && CARD_SORTS.has(sort) ? { card_sort: sort } : {};
 }

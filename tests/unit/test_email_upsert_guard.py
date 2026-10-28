@@ -186,9 +186,9 @@ async def _tenant_conn(db):
         await aeng.dispose()
 
 
-async def _upsert(db, msg) -> None:
+async def _upsert(db, msg, **kw) -> bool:
     async with _tenant_conn(db) as conn:
-        await upsert_message(conn, db.account, msg)
+        return await upsert_message(conn, db.account, msg, **kw)
 
 
 def _row(db, pmid: str):
@@ -219,6 +219,16 @@ class TestTheGuardOnARealDatabase:
 
         assert second.xmin == first.xmin
         assert second.updated_at == first.updated_at
+
+    async def test_the_upsert_says_whether_it_wrote(self, private_db):
+        """The sync loop runs its new-mail pipeline only on a real change, so
+        the return value must follow the guard: insert True, skip False,
+        change True, insert-only conflict False."""
+        msg = _Msg(provider_message_id=_pmid())
+        assert await _upsert(private_db, msg) is True
+        assert await _upsert(private_db, msg) is False
+        assert await _upsert(private_db, replace(msg, is_read=True)) is True
+        assert await _upsert(private_db, msg, on_conflict="nothing") is False
 
     async def test_a_changed_field_still_writes(self, private_db):
         msg = _Msg(provider_message_id=_pmid())

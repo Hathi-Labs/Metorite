@@ -195,6 +195,9 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # words in tenant Redis, and nothing leaves the platform.
     "keep_correction":       {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
     "drop_correction":       {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
+    # CTX-1 (#825): pages of a stored tool result. It reads an in-process
+    # store of this chat and nothing leaves the platform.
+    "read_tool_result":      {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
 }
 
 #: Tools that only a sandboxed run holds (WS-43d). ``_inject_agent_tools`` never
@@ -270,6 +273,9 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     # stays byte-identical.
     "keep_correction",
     "drop_correction",
+    # CTX-1 (#825): the page reader of a stored result. It only reads, and
+    # only the orchestrator holds it, behind TOOL_RESULT_SPILL `on`.
+    "read_tool_result",
 })
 
 #: Every name that :func:`annotate` registered: an agent's OWN tool. They
