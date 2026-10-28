@@ -69,6 +69,11 @@ MAX_ENTRIES = 128
 #: The most characters of one result that the store keeps.
 MAX_STORED_CHARS = 2_000_000
 
+#: The most characters the store keeps in all, across every entry. An add that
+#: would pass it evicts the least recently used entries first. An entry larger
+#: than this is not stored, and the result passes through whole.
+MAX_TOTAL_CHARS = 16_000_000
+
 #: The size of one page of :func:`read_tool_result`.
 PAGE_CHARS = 16_000
 
@@ -148,9 +153,25 @@ def clear_store() -> None:
     _STORE.clear()
 
 
-def _keep(owner: tuple[str, str, str], text: str, untrusted: bool, tool: str) -> str:
+def _stored_size(text: str) -> int:
+    return min(len(text), MAX_STORED_CHARS)
+
+
+def _total_chars() -> int:
+    return sum(len(e.text) for e in _STORE.values())
+
+
+def _keep(owner: tuple[str, str, str], text: str, untrusted: bool, tool: str) -> str | None:
+    """Keep *text* and return its ref, or ``None`` when it cannot fit the
+    total cap (:data:`MAX_TOTAL_CHARS`). The least recently used entries go
+    first, until the new entry fits."""
+    size = _stored_size(text)
+    if size > MAX_TOTAL_CHARS:
+        return None
     now = time.monotonic()
     _sweep(now)
+    while _STORE and _total_chars() + size > MAX_TOTAL_CHARS:
+        _STORE.popitem(last=False)
     ref = "tr_" + secrets.token_hex(4)
     _STORE[(*owner, ref)] = _Entry(
         now + TTL_S, text[0:MAX_STORED_CHARS], untrusted, tool, len(text))
@@ -309,12 +330,14 @@ class SpillToolResults(FunctionMiddleware):
             if text is None:
                 return
             would = len(text) > self.spill_chars
+            oversize = would and _stored_size(text) > MAX_TOTAL_CHARS
             untrusted = await _untrusted(function, text) if would else (
                 _sync_untrusted(function, text))
             _log.info(
                 "tool_result.size", tool=name, chars=len(text),
                 tokens=len(text) // 4, source=_source(function),
-                untrusted=untrusted, would_spill=would, mode=self.mode,
+                untrusted=untrusted, would_spill=would, oversize=oversize,
+                mode=self.mode,
             )
             if self.mode != "on" or not would:
                 return
@@ -323,6 +346,8 @@ class SpillToolResults(FunctionMiddleware):
                 _log.warning("tool_result.spill_unkeyed", tool=name)
                 return
             ref = _keep(owner, text, untrusted, name)
+            if ref is None:  # larger than the total cap: the result stays whole
+                return
             context.result = preview(text, ref, self.preview_chars)
         except Exception as exc:  # a spill fault leaves the result whole
             _log.warning("tool_result.spill_failed", tool=name, error=type(exc).__name__)

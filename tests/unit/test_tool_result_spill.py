@@ -222,7 +222,7 @@ class TestShadow:
         assert lines[1]["would_spill"] is False
         for entry in lines:
             assert set(entry) == {"event", "tool", "chars", "tokens", "source",
-                                  "untrusted", "would_spill", "mode"}
+                                  "untrusted", "would_spill", "oversize", "mode"}
         assert "row 0000" not in json.dumps(logged)
 
     async def test_the_request_bytes_do_not_change(self, as_run) -> None:
@@ -377,6 +377,30 @@ class TestTheReadTool:
         for _ in range(trs.MAX_ENTRIES + 5):
             self._spill("x" * 10)
         assert len(trs._STORE) == trs.MAX_ENTRIES
+
+    def test_the_total_cap_evicts_the_least_recently_used(self, as_run, monkeypatch) -> None:
+        as_run()
+        monkeypatch.setattr(trs, "MAX_TOTAL_CHARS", 100)
+        owner = trs._owner_key()
+        first = trs._keep(owner, "a" * 40, False, "t")
+        second = trs._keep(owner, "b" * 40, False, "t")
+        trs._STORE.move_to_end((*owner, first))  # first is now the newest
+        third = trs._keep(owner, "c" * 40, False, "t")
+        refs = {k[3] for k in trs._STORE}
+        assert refs == {first, third} and second not in refs
+        assert trs._total_chars() <= 100
+
+    async def test_an_entry_above_the_total_cap_passes_through_whole(
+        self, as_run, monkeypatch, logged,
+    ) -> None:
+        as_run()
+        monkeypatch.setattr(trs, "MAX_TOTAL_CHARS", 50_000)
+        agent, client = _agent([("call", "fetch_rows", {}), ("text", "Done.")])
+        await _view(agent, "on").run("go")
+        assert len(_tool_texts(client.requests[1])[0]) == BIG
+        assert trs._STORE == {}
+        line = [e for e in logged if e["event"] == "tool_result.size"][0]
+        assert line["oversize"] is True and line["would_spill"] is True
 
     async def test_no_tool_argument_names_the_org_member_or_thread(self) -> None:
         import inspect
