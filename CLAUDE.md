@@ -236,7 +236,7 @@ Run a manual dispatch only when the owner asks for it in your session, or when
 production is down. A dark feature never needs one. If you think a change
 cannot wait, ask the owner.
 
-**⚠️ WORK UNDER A METORITE TASK** *(owner directive, 2026-10-28, D134)*.
+**⚠️ WORK UNDER A METORITE TASK** *(owner directive, 2026-10-28, D135)*.
 The owner watches the board, so work that is not on it is invisible. Every
 session that changes the repo or a box follows these steps:
 

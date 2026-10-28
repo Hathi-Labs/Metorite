@@ -1,11 +1,14 @@
-"""The fence of the OA-5 measure: ``evals/one_assistant_measure`` (WS-67, R7).
+"""The fence of the OA-5 and OA-7h measure: ``evals/one_assistant_measure`` (WS-67, R7).
 
 * Each scenario's known-good plan passes every check on BOTH arms, through
   the real orchestrator run, the real email factory and the real cards. Only
   the model wire and the email gateway are fakes. Nothing leaves the box.
 * Each checker fails on a bad answer, one mutation each.
-* The pack arm holds the email tools and no email delegation, and a
-  delegation to the email assistant fails its check.
+* The pack arm sets the REAL flag (``TOOL_PACKS``), and the real run loads
+  the real ``email`` pack. A hand-off for setup work passes the check
+  ``no_email_delegation``, and a hand-off of mail work fails it (OA-7h).
+* The checks ``held_card`` and ``one_card`` fail on a plain send and on a
+  second card. The measure installs the in-memory mark store.
 * The harness's live mode with real specialists refuses a send that is not
   the Router, and the cost of a call matches the vendor's figures.
 
@@ -67,35 +70,104 @@ def test_the_tap_sees_each_agent_of_each_arm(scripted) -> None:
     rows, _ = scripted
     for r in rows:
         agents = {c["agent"] for c in r["model_calls"]}
-        if r["arm"] == "pack":
+        if r["arm"] == "pack" and "setup" not in r["handoffs"]:
             assert agents == {ORCHESTRATOR}, r
         elif r["email_tools"]:
             assert agents == {ORCHESTRATOR, pack.EA}, r
         assert r["first_text_s"] is not None and r["total_s"] >= r["first_text_s"], r
 
 
-def test_the_pack_arm_holds_the_email_tools_and_no_email_delegation() -> None:
+def _names(body: dict[str, Any]) -> set[str]:
+    return {t["function"]["name"] for t in body.get("tools") or []}
+
+
+def test_the_pack_arm_sets_the_real_flag_and_loads_the_real_pack() -> None:
+    """The pack arm sets ``TOOL_PACKS`` and ``TOOL_PACKS_ORGS`` in this process,
+    and the real run loads the real pack. The model loads it first when the
+    member's words do not (layer (b)). Mutation: ``pack_flag`` gives nothing →
+    no pack tool in the second request → red."""
+    from acb_common import get_settings
+    from acb_skills import tool_packs
+
     sc = scenario("read_invoice")
     models = run.scripted_models(sc, "pack")
-    run.run_chat(sc, "pack", models=models)
-    offered = {t["function"]["name"] for t in models[ORCHESTRATOR].bodies[0]["tools"]}
-    assert pack.DELEGATE_TOOL not in offered
-    # ``narrow_and_read`` exists only with NARROWING_AGENTS on, and it is
-    # off here, as for the delegated email assistant.
-    own = pack.email_tool_names() - {"narrow_and_read"}
-    assert own <= offered and "narrow_and_read" not in offered, sorted(own - offered)
-    system = json.dumps(models[ORCHESTRATOR].bodies[0]["messages"][0], ensure_ascii=False)
-    assert pack.RULES.splitlines()[0] in system and pack.DELEGATE_TOOL not in system
-
-
-def test_a_delegation_in_the_pack_arm_fails_its_check() -> None:
-    sc = scenario("read_invoice")
-    models = {ORCHESTRATOR: ReplyModel([
-        tool_turn("call_agent", {"agent_name": pack.EA, "message": "Read the invoice."}),
-        text_turn("Delta Freight asks for Rs 48,500 by 5 November."),
-    ])}
     (row,) = run.run_chat(sc, "pack", models=models)
-    assert row["refused"] == 1 and row["checks"]["no_email_delegation"] is False, row
+    assert row["passed"], row
+    first, second = (_names(b) for b in models[ORCHESTRATOR].bodies[:2])
+    assert tool_packs.LOAD_TOOL in first and "query_inbox" not in first
+    own = set(tool_packs.SKILL_FAMILIES["email"]["tools"])
+    assert own <= second, sorted(own - second)
+    # A load in the middle of a turn keeps the specialist tool for that turn.
+    # The next turns of the chat start with the pack (sticky), and the pack
+    # replaces the tool: see the five-turn chat in the test below.
+    assert pack.DELEGATE_TOOL in second
+    # A load by the tool brings the rules in its answer (layer (b)).
+    seen = json.dumps(models[ORCHESTRATOR].bodies[1]["messages"], ensure_ascii=False)
+    assert tool_packs.rules_for("email").splitlines()[0] in seen
+    # The flag lives in the eval process only, for one chat.
+    assert get_settings().tool_packs == "" and get_settings().tool_packs_orgs == ""
+    assert run.pack_flag() == {"tool_packs": "email", "tool_packs_orgs": run.ds.ORG}
+
+
+def test_a_chat_that_holds_the_pack_has_no_specialist_tool_for_email() -> None:
+    sc = scenario("five_turns")
+    models = run.scripted_models(sc, "pack")
+    run.run_chat(sc, "pack", models=models)
+    later = [_names(b) for b in models[ORCHESTRATOR].bodies[3:]]
+    assert later and all("compose_reply" in n and pack.DELEGATE_TOOL not in n for n in later)
+
+
+def test_the_delegation_arm_holds_no_pack() -> None:
+    sc = scenario("read_invoice")
+    models = run.scripted_models(sc, "delegation")
+    run.run_chat(sc, "delegation", models=models)
+    offered = _names(models[ORCHESTRATOR].bodies[0])
+    assert pack.DELEGATE_TOOL in offered and "load_skill_tools" not in offered
+    assert "query_inbox" not in offered
+
+
+def test_both_arms_run_with_the_settings_of_production() -> None:
+    """Both arms get the tier flags, the held card, native sessions and the
+    narrowing agent. ``narrow_and_read`` is then a tool of the email pack."""
+    from acb_common import get_settings
+
+    seen: dict[str, Any] = {}
+    sc = scenario("read_invoice")
+
+    def on_turn(_row: dict[str, Any]) -> None:
+        settings = get_settings()
+        for name in run.PRODUCTION:
+            seen[name] = getattr(settings, name)
+
+    models = run.scripted_models(sc, "pack")
+    run.run_chat(sc, "pack", models=models, on_turn=on_turn)
+    assert seen == run.PRODUCTION, seen
+    after = get_settings()
+    assert after.ai_tier_routing == "" and after.email_held_card_send is False
+    assert "narrow_and_read" in _names(models[ORCHESTRATOR].bodies[1])
+
+
+def test_a_hand_off_of_mail_work_in_the_pack_arm_fails_its_check() -> None:
+    sc = scenario("read_invoice")
+    models = {
+        ORCHESTRATOR: ReplyModel([
+            tool_turn("call_agent", {"agent_name": pack.EA, "message": "Read the invoice."}),
+            text_turn("Delta Freight asks for Rs 48,500 by 5 November."),
+        ]),
+        pack.EA: ReplyModel([text_turn("It asks for Rs 48,500.")]),
+    }
+    (row,) = run.run_chat(sc, "pack", models=models)
+    assert row["handoffs"] == ["mail"] and row["checks"]["no_email_delegation"] is False, row
+
+
+def test_a_hand_off_for_setup_work_in_the_pack_arm_passes_its_check() -> None:
+    """With the ``email`` pack alone, the rule goes to the email assistant. The
+    scripted plan of ``five_turns`` turn 4 does so, through the real run."""
+    rows = run.run_chat(scenario("five_turns"), "pack")
+    rule = rows[3]
+    assert rule["handoffs"] == ["setup"] and rule["tasks"], rule
+    assert rule["checks"]["no_email_delegation"] is True and rule["checks"]["rule_in"] is True
+    assert all(r["checks"]["no_email_delegation"] is True for r in rows)
 
 
 def test_the_delegation_arm_reaches_the_real_email_assistant(scripted) -> None:
@@ -248,6 +320,50 @@ def test_a_named_mailbox_on_a_pooled_read_fails() -> None:
     assert _one("all_inboxes", None, _obs()) is None
 
 
+@pytest.mark.parametrize(("task", "kind"), [
+    ("set a rule on my personal box: label mail with receipt in the subject as Receipts", "setup"),
+    ("Change my writing style to be shorter.", "setup"),
+    ("Save this in the knowledge: we quote in rupees.", "setup"),
+    ("Turn off the signature setting for Work.", "setup"),
+    ("Read the invoice from Delta Freight.", "mail"),
+    ("Search my mail for the Navy order.", "mail"),
+    ("Reply to Anil and confirm the date.", "mail"),
+    ("Send the draft.", "mail"),
+    # Mail work wins over a setup word: it errs to the failing side.
+    ("Read the mail that sets the new rule.", "mail"),
+    ("Summarise my unread mail.", "mail"),
+    # Fix round 1: four probes of the verifier, and more.
+    ("Check my unread emails against my settings", "mail"),
+    ("Show the emails that match my rules", "mail"),
+    ("Set up a rule to send newsletters to a label", "setup"),
+    # A read of the knowledge is not a setup verb, so it counts as mail.
+    ("Search the knowledge for my writing style", "mail"),
+    ("Create a rule that labels mail from Delta as Invoices", "setup"),
+    ("Update my writing style to be shorter.", "setup"),
+    ("Add a signature setting for Work.", "setup"),
+    ("Delete the rule Receipts.", "setup"),
+    ("Delete the email about the rule.", "mail"),
+    ("Respond to Anil about the date.", "mail"),
+    ("List my drafts.", "mail"),
+    ("Open the thread with Kumar.", "mail"),
+    ("Get the replies from Priya.", "mail"),
+    ("Look up the invoice and send it on.", "mail"),
+    ("Tell me what you did.", "mail"),
+])
+def test_a_hand_off_is_setup_or_mail_work(task: str, kind: str) -> None:
+    assert ck.handoff_kind(task) == kind
+    got = ck.check_turn(Turn("x", (), Plan()), _obs(arm="pack", tasks=[task]))
+    assert got["no_email_delegation"] is (kind == "setup")
+
+
+def test_the_refusal_of_a_pack_still_fails_the_check() -> None:
+    assert ck.check_turn(Turn("x", (), Plan()), _obs(arm="pack", refused=["x"]))[
+        "no_email_delegation"] is False
+    assert ck.check_turn(Turn("x", (), Plan()), _obs(arm="pack"))["no_email_delegation"] is True
+    assert ck.check_turn(Turn("x", (), Plan()), _obs(arm="delegation", tasks=["Read x."]))[
+        "no_email_delegation"] is None
+
+
 def test_the_arm_checks_apply_to_their_arm_only() -> None:
     guess = _obs(tasks=["List the parts of the Navy order (e.g. CB6/CB7)."])
     assert _one("task_no_guess", NAVY_NAMES, guess) is False
@@ -272,19 +388,123 @@ def test_the_arguments_of_a_call_are_read_once() -> None:
         ("read_email", {"email_id": MAIL}, "From: x"), ("query_inbox", {"query": "invoice"}, "")]
 
 
+# ── OA-7h: the held card, one card, the mark store ───────────────────────────
+
+
+def _held(turn: int, gateway: list[tuple[str, str, Any]]) -> bool | None:
+    return ck.check_turn(Turn("x", (), Plan()), _obs(turn=turn, gateway=gateway))["held_card"]
+
+
+def test_from_turn_2_a_send_must_go_through_the_held_card() -> None:
+    plain = [("POST", "/email/drafts/send", {"draft_id": DRAFT})]
+    held = [("POST", "/email/held-card", {"draft_id": DRAFT}),
+            ("POST", "/email/held-card/act", {"card_id": "c"})]
+    assert _held(2, held) is True
+    assert _held(2, plain) is False
+    assert _held(3, [("POST", "/email/send", {})]) is False
+    assert _held(3, [("POST", "/email/forward", {})]) is False
+    # A plain send beside a held send in one turn fails: one send leaked.
+    assert _held(2, held + plain) is False
+    # Turn 1 is a clean chat, and a turn with no send has nothing to check.
+    assert _held(1, plain) is None
+    assert _held(2, [("GET", "/email/messages", {})]) is None
+
+
+def test_no_act_shows_two_cards() -> None:
+    one = _obs(email_calls=[("send_draft", {}, "")], cards=[{"title": "Send this draft?"}])
+    two = _obs(email_calls=[("send_draft", {}, "")],
+               cards=[{"title": "Send this draft?"}, {"title": "Send this draft?"}])
+    assert ck.check_turn(Turn("x", (), Plan()), one)["one_card"] is True
+    assert ck.check_turn(Turn("x", (), Plan()), two)["one_card"] is False
+    # Two writes may show two cards. A read has nothing to check.
+    both = _obs(email_calls=[("compose_reply", {}, ""), ("edit_draft", {}, "")],
+                cards=[{"title": "a"}, {"title": "b"}])
+    assert ck.check_turn(Turn("x", (), Plan()), both)["one_card"] is True
+    read = _obs(email_calls=[("read_email", {}, "")])
+    assert ck.check_turn(Turn("x", (), Plan()), read)["one_card"] is None
+
+
+def test_a_card_less_write_gives_a_second_send_card_no_room() -> None:
+    """Fix round 1 (P2-1). a turn with ``create_label`` and a send that shows the
+    gate card and the held card has two send cards for one send. The old check counted every write, and it passed this turn. Mutation:
+    count ``len(cards) <= len(writes)`` → this case passes → red."""
+    gate = {"title": "Send this email?"}
+    held = {"title": "Send this draft?", "rows": []}
+    calls = [("create_label", {}, ""), ("send_draft", {}, "")]
+    two = _obs(email_calls=calls, cards=[gate, held])
+    assert ck.check_turn(Turn("x", (), Plan()), two)["one_card"] is False
+    assert ck.check_turn(Turn("x", (), Plan()), _obs(email_calls=calls, cards=[held]))[
+        "one_card"] is True
+    # Two cards for one other write is a second card for that act.
+    extra = _obs(email_calls=[("manage_inbox", {}, "")],
+                 cards=[{"title": "Archive these?"}, {"title": "Archive them all?"}])
+    assert ck.check_turn(Turn("x", (), Plan()), extra)["one_card"] is False
+    # A reply and a draft edit show one card each, and a send adds one more.
+    full = _obs(email_calls=[("compose_reply", {}, ""), ("edit_draft", {}, ""),
+                             ("send_draft", {}, "")],
+                cards=[{"title": "Reply to a?"}, {"title": "Save these changes?"}, held])
+    assert ck.check_turn(Turn("x", (), Plan()), full)["one_card"] is True
+
+
+@pytest.mark.parametrize("arm", ["delegation", "pack"])
+def test_a_scripted_chat_sends_through_the_held_card_from_turn_2(arm: str) -> None:
+    """Turn 1 reads mail, so turn 3 is held. The send runs through the real
+    held card of the real tool, once, with one card. Mutation: set
+    ``email_held_card_send`` False in ``PRODUCTION`` → the send is plain →
+    ``held_card`` red."""
+    rows = run.run_chat(scenario("five_turns"), arm)
+    send = rows[2]
+    assert send["checks"]["held_card"] is True and send["checks"]["one_card"] is True, send
+    assert send["checks"]["sent_draft"] is True and send["cards"] == 1, send
+    assert rows[0]["checks"]["held_card"] is None
+
+
+def test_the_measure_installs_the_mark_store_and_the_chat_is_marked() -> None:
+    """Reading mail writes the mark of the chat to the in-memory store, and the
+    next turn reads it (duty 1 of H-417). Mutation: no store → the run stops
+    at once, and the held-card check could prove nothing."""
+    rows = run.run_chat(scenario("five_turns"), "pack")
+    assert rows[0]["mark_writes"] >= 1, rows[0]
+    built = [e for e in rows[1]["pack_events"] if e["event"] == "executor.pack_built"]
+    assert built and built[0]["held"] is True, rows[1]["pack_events"]
+    first = [e for e in rows[0]["pack_events"] if e["event"] == "executor.pack_built"]
+    assert first and first[0]["held"] is False, rows[0]["pack_events"]
+
+
+def test_a_missing_mark_store_stops_the_run(monkeypatch) -> None:
+    monkeypatch.setattr(run, "install_memory_mark_store", lambda _mp: None)
+    with pytest.raises(AssertionError, match="mark store"):
+        run.run_chat(scenario("read_invoice"), "pack")
+
+
+def test_the_summary_reports_the_cache_share_and_the_setup_gap() -> None:
+    rows = run.run_chat(scenario("five_turns"), "pack")
+    for r in rows:
+        r["model_calls"] = [{"agent": ORCHESTRATOR, "prompt": 1000, "cached": 600,
+                             "completion": 10, "cost_usd": 0.01, "dur_s": 1.0}]
+        r["total_s"] = 2.0
+    arm = run.summarise(rows)["pack"]
+    assert arm["cache_share"] == 0.6
+    assert arm["setup_handoff_turns"] == 1 and arm["mail_handoff_turns"] == 0
+    assert arm["setup_handoff_cost_per_turn_usd"] == 0.01
+    text = run.report({"summary": {"pack": arm, "delegation": arm}})
+    assert "Cache share" in text and "`held_card`" in text and "`one_card`" in text
+
+
+def test_the_tap_keeps_the_turn_kind_time_and_the_loads_of_a_pack() -> None:
+    rows = run.run_chat(scenario("five_turns"), "pack")
+    events = [e["event"] for r in rows for e in r["pack_events"]]
+    assert "ai_route.turn_kind" in events and "tool_packs.loaded" in events
+    assert any("calls_before" in e for r in rows for e in r["pack_events"])
+    first = {"pack_events": [{"event": "ai_route.turn_kind", "latency_ms": 40, "calls_before": 0}]}
+    assert run._turn_kind_ms(first) == 40.0 and run._turn_kind_ms({}) is None
+    items = {"pack_events": [{"event": "executor.packs_turn_kind", "asked": "['email']",
+                              "calls_before": 0}]}
+    assert run._asked_pack_items(items) and not run._asked_pack_items(first)
+    assert run._packs_before_first_call(items) and not run._packs_before_first_call(first)
+
+
 # ── the pack fixture, the cost, the harness ──────────────────────────────────
-
-
-def test_the_pack_persona_drops_each_email_assistant_bullet() -> None:
-    # The package ``orchestrator.agents`` shadows ``agents.py`` and loads it
-    # as ``_mod``. It re-exports no persona.
-    from orchestrator import agents
-
-    text = pack.persona_for_pack(agents._mod._PULL_INSTRUCTIONS)
-    assert pack.DELEGATE_TOOL not in text and text.endswith(pack.RULES)
-    assert "SPECIALIST AGENT TOOLS" in text and len(pack.RULES) < 3000
-    with pytest.raises(RuntimeError):
-        pack.persona_for_pack("- a persona with no email bullet")
 
 
 def test_the_card_reproduces_each_probe_of_the_router() -> None:
@@ -320,6 +540,35 @@ def test_a_live_run_refuses_a_router_that_is_not_on_this_machine(monkeypatch) ->
     monkeypatch.setenv("LITELLM_BASE_URL", "https://router.example.com")
     monkeypatch.setenv("LITELLM_API_KEY", "not-a-key")
     assert run.main(["--live", "--scenarios", "read_invoice"]) == run.EXIT_NO_GO
+
+
+def test_the_live_harness_installs_the_system_one_seam() -> None:
+    """In a live run, ``system_one._ask`` reads ``routing_is_on`` as True, so the
+    turn-kind request goes to the Router on ``tier-fast``. Every other caller
+    reads the real answer, and the seam ends with the harness. Mutation: drop
+    ``_system_one_seam`` from ``_use_router`` → ``_ask`` raises ``router_off``
+    → red."""
+    from acb_llm import routed
+    from acb_skills import system_one
+
+    real = routed.routing_is_on
+    with RoutingHarness(live=True, real_specialists=True) as harness:
+        run._use_router(harness, ("http://127.0.0.1:1", "k-test"))
+        assert system_one._gateway() == ("http://127.0.0.1:1/v1", "k-test")
+        assert system_one.SYSTEM_ONE_TIER == "tier-fast"
+
+        async def ask() -> None:
+            item = system_one.Item(id="x", question="q", kind="yes_no", options=system_one.YES_NO)
+            await system_one.ask("c", [item], timeout_s=0.5)
+
+        # The seam passes `router_off`. The request then fails on the closed
+        # port or the blocked send, which is any reason but `router_off`.
+        with pytest.raises(system_one.SystemOneUnavailable) as raised:
+            asyncio.run(ask())
+        assert raised.value.reason != "router_off", raised.value.reason
+        # A caller that is not `_ask` reads the real answer.
+        assert routed.routing_is_on() is real()
+    assert routed.routing_is_on is real
 
 
 def _stored_row(answer: str, claim: bool) -> dict[str, Any]:

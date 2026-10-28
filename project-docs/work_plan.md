@@ -165,7 +165,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-WA | **WhatsApp** | 🟡 gated · M2 | `specs/whatsapp_message_manager.md` · `specs/whatsapp_assistant_channel.md` | Metorite: epic 476 · D115 freeze, lifted for brief task 8 only (D122.3) · next BR-8a, E-20 |
 | WS-KB | **Knowledge** | 🟢 active · M2 | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | Metorite: project Knowledge · no P0 or P1 · next H-401, KC-1 |
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_base.md` §20 · `specs/company_context.md` (KG-0 writes `specs/knowledge_graph.md`) | Metorite: epic 783 (Knowledge) · D128 · gate MEM-3 (the memory shape) · next KG-0, KG-1, KG-9 |
-| WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` (SW-0 writes the coordination spec) | Metorite: epics 321 (coordination, D134), 354 (MCP gaps) and 495 (parity, D124 and D135, M3) · next SW-0, MCP-P0, then SW-23 and SW-24 |
+| WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` (SW-0 writes the coordination spec) | Metorite: epics 321 (coordination, D135), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · next SW-0, MCP-P0, then SW-23 and SW-24 |
 | WS-STU | **Studio**: tool packs, workflows, AI apps | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 491 (Agent Tooling) · D127 · next STU-0, then SKL-1 and SKL-2 after SBX-1 |
 | WS-UX | **UX System** | 🟢 active · M1 | none yet | Metorite: epic 492 · next UI-G1, UX-3 (D119.3) |
 | WS-WH | **Writing Help** | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 493 · next WA-1 |
@@ -4733,7 +4733,17 @@ Owner decision, 2026-10-27 (see D129). Metorite #805 and #806. It amends D95.2 f
 2. **The order.** Fracktal cuts over first, after CRM-Z10a, c, e and b pass on staging. Shaurrya Tele goes second, because its custom modules also need CRM-Z10d.
 3. **The ask.** The owner asks each customer and runs each production cutover (CRM-Z10-run). The agent prepares the preview and the counts for that talk.
 
-### D134 — Metorite is the coordination platform for agents. HANDOFF.md retires into tasks (2026-10-28)
+*Amended 2026-10-27 (owner, in chat): "we keep the ZOHO labels, but we should be able to edit them later on. Possibly have the AI suggest improvements to the way in which the CRM is set up." So the AI may propose a better setup, and an admin approves each change, as with the mapping suggestions (CRM-Q20-2). It never applies a change by itself. That is a later slice, not part of CRM-Z10. The owner puts the CRM bug fixes and the setup UX before the cutover, and both customers cut over later.*
+
+### D134 — CRM settings fold into five sections, the AI's questions sit in one list, and a Field map pick applies at once (2026-10-27)
+
+Owner answers, 2026-10-27, in chat, to three questions after the audit of the CRM setup screens. Workstream: **WS-CRM**. Owning spec: `specs/crm_platform.md` §20.17 (CRM-U13).
+
+1. **Five sections for an admin of a Zoho mirror:** Connection, Needs your input, Fields, Pipeline and AI rules. Today there are eleven. Each old `?section=` id stays as an alias, so no link breaks.
+2. **One list holds what the AI asks.** "Needs your input" holds the open questions, the suggestions, the Field map proposals and the choices that members made in chat. Its main button accepts each suggestion of the AI. An admin can change or undo each one later.
+3. **A Field map pick applies at once.** The draft step goes. The change history keeps each version, and an admin can go back to any of them.
+
+### D135 — Metorite is the coordination platform for agents. HANDOFF.md retires into tasks (2026-10-28)
 
 Owner decision, 2026-10-28, in chat: "okay then", on the recommendation to coordinate agents in Metorite and not in a repo file. It answers P7 of the Metorite epic 321 (Agent swarm coordination), and it extends D118.
 
@@ -4742,7 +4752,7 @@ Owner decision, 2026-10-28, in chat: "okay then", on the recommendation to coord
 3. **The repo keeps two things.** A nightly read-only snapshot serves a session that cannot reach Metorite. A short break-glass section serves the time when Metorite is down (SW-19b). Agents build Metorite, so they must not need it to recover it.
 4. **The order is in epic 321.** SW-0, the coordination spec, comes first and gates every slice.
 
-### D135 — Every app reaches external agents by construction: one manifest, two doors (2026-10-28)
+### D136 — Every app reaches external agents by construction: one manifest, two doors (2026-10-28)
 
 Owner directive, 2026-10-28, in chat: "Via the MCP, external coding agents should also have access to CRM, email, and all the other apps that we will build in the future... So Metorite becomes the place where all the companies' data is well structured, orchestrated, and kept." It extends D124 and changes none of its rules.
 
