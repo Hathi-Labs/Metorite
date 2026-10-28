@@ -395,6 +395,43 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # WS-67 OA-8a (one_assistant_context.md §4.3.2): the CRM assistant's own
+    # nine tools, for the one assistant to hold in a CRM turn. The four reads
+    # and the four writes are the specialist's own tools. ``crm_search_notes``
+    # is also in the injected ``crm`` family: the orchestrator does not hold
+    # it in its ``tool_scope``, and a run that holds it skips the pack copy.
+    "crm-records": {
+        "label": "CRM records",
+        "summary": (
+            "Work the CRM records: find a lead, deal or contact, read the "
+            "pipeline and a record, read its timeline, create a lead, move "
+            "a deal, log an activity and convert a lead."
+        ),
+        "description": (
+            "A tool pack: the CRM Assistant's own tools for daily record "
+            "work, for the main assistant to load in a CRM turn. It holds "
+            "the tools to search, read the pipeline, open a record and its "
+            "timeline, search notes, create a lead, move a deal, log an "
+            "activity and convert a lead. Each write asks the member first. "
+            "A run loads a pack only where tool packs are on, so until then "
+            "this switch has no effect."
+        ),
+        "tools": (
+            "convert_lead",
+            "create_lead",
+            "crm_search_notes",
+            "get_pipeline",
+            "get_record",
+            "get_timeline",
+            "log_activity",
+            "search_crm",
+            "update_deal_status",
+        ),
+        "owner": "crm-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
 }
 
 
