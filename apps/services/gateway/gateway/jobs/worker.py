@@ -161,23 +161,30 @@ async def run_one(org: str, now: datetime) -> str | None:
 
 async def run_org(org: str, now: datetime | None = None) -> Counter[str]:
     """Up to :data:`BATCH` due jobs of *org*. Answers the count of each
-    outcome. Opens no session when no handler is registered."""
+    outcome. Opens no session when no handler is registered.
+
+    The org is bound for the whole call, so a handler that opens
+    ``tenant_session()`` with no argument acts for the org of its job."""
     at = now or _now()
     counts: Counter[str] = Counter()
     if not _HANDLERS:
         return counts
-    for _ in range(BATCH):
-        if _stopping.is_set():
-            break
-        try:
-            outcome = await run_one(org, at)
-        except Exception as exc:
-            _log.warning("jobs.claim_failed", error=type(exc).__name__)
-            counts["error"] += 1
-            break
-        if outcome is None:
-            break
-        counts[outcome] += 1
+    token = bind_tenant(org)
+    try:
+        for _ in range(BATCH):
+            if _stopping.is_set():
+                break
+            try:
+                outcome = await run_one(org, at)
+            except Exception as exc:
+                _log.warning("jobs.claim_failed", error=type(exc).__name__)
+                counts["error"] += 1
+                break
+            if outcome is None:
+                break
+            counts[outcome] += 1
+    finally:
+        release_tenant(token)
     return counts
 
 
@@ -189,15 +196,12 @@ async def run_tick(now: datetime | None = None) -> dict[str, Counter[str]]:
     for org in await _orgs():
         if _stopping.is_set():
             break
-        token = bind_tenant(org)
         try:
             counts = await run_org(org, now)
             if counts:
                 out[org] = counts
         except Exception as exc:
             _log.warning("jobs.org_failed", error=type(exc).__name__)
-        finally:
-            release_tenant(token)
     return out
 
 

@@ -135,6 +135,8 @@ def _as_dict(value: Any) -> dict[str, Any]:
 # ── The SQL ─────────────────────────────────────────────────────────────────
 #
 # No statement names an org. RLS binds each one to `tenant_session(org)`.
+# ⚠️ A parameter inside a CASE or a function has no column type, so asyncpg
+# sends it as text. Each one carries a CAST (R8 found it).
 
 _INSERT_SQL = (
     "INSERT INTO jobs (kind, payload, run_at, max_attempts, dedupe_key) "
@@ -174,7 +176,7 @@ _TAKE_SQL = (
 _EXPIRE_SQL = (
     "UPDATE jobs SET state = 'failed', locked_by = NULL, lease_until = NULL, "
     "finished_at = :now, updated_at = now(), "
-    "last_error = left(COALESCE(last_error || ' | ', '') || 'lease expired', :chars) "
+    "last_error = left(COALESCE(last_error || ' | ', '') || 'lease expired', CAST(:chars AS integer)) "
     "WHERE id = CAST(:id AS uuid)"
 )
 
@@ -195,8 +197,8 @@ _COMPLETE_SQL = (
 _FAIL_SQL = (
     "UPDATE jobs SET "
     "state = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'queued' END, "
-    "run_at = CASE WHEN attempts >= max_attempts THEN run_at ELSE :retry_at END, "
-    "finished_at = CASE WHEN attempts >= max_attempts THEN :now ELSE NULL END, "
+    "run_at = CASE WHEN attempts >= max_attempts THEN run_at ELSE CAST(:retry_at AS timestamptz) END, "
+    "finished_at = CASE WHEN attempts >= max_attempts THEN CAST(:now AS timestamptz) ELSE NULL END, "
     "locked_by = NULL, lease_until = NULL, last_error = :error, updated_at = now() "
     "WHERE id = CAST(:id AS uuid) AND state = 'running' "
     "AND locked_by = CAST(:token AS uuid) "
