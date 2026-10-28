@@ -108,15 +108,17 @@
 > flag.
 > CRM-C6a, the Native lead-conversion mapping in the `field-mapping` section,
 > dark behind `CRM_FIELD_STUDIO_ORGS` (2026-10-14, migration 261, §20.9).
->
+
 > **Built from §3.4 (CRM-Z10):** CRM-Z10g, the names of the core records in
 > a Native CRM (D133.1). Built 2026-10-28 on `crm-z10g-labels`, not merged.
 > Migration 311 adds `crm_settings.labels`, `cutover_at` and `cutover_by`.
+> The two stamps wait for CRM-Z10b. The §3.4 slice table is on the branch
+> `crm-z10-cutover`. Fence: `tests/unit/test_crm_labels_r8.py`.
+
 > `PUT /crm/settings/labels` is admin only, and Mirror mode gets 409.
 > `GET /crm/mode` serves the stored names in Native mode with no flag. The
 > start over clears the names. The admin renames the record types in Fields,
-> "Record names". The two stamps wait for CRM-Z10b. The §3.4 slice table is
-> on the branch `crm-z10-cutover`. Fence: `tests/unit/test_crm_labels_r8.py`.
+> "Record names".
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
