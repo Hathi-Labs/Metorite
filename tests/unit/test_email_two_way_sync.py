@@ -30,6 +30,8 @@ def _provider(**overrides):
     p.move_to_folder = AsyncMock(return_value=None)
     p.trash_message = AsyncMock(return_value=None)
     p.set_labels = AsyncMock()
+    # Sync on the real providers. The route reads it after the push.
+    p.credentials_dirty = MagicMock(return_value=False)
     for k, v in overrides.items():
         setattr(p, k, v)
     return p

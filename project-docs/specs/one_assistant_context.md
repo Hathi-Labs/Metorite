@@ -7,6 +7,8 @@ is BUILT (2026-10-25): the report is `docs/one_assistant_measure_2026-10-25.md`.
 
 OA-8a is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-8a" in §4.3.2). The flag flip is OWNER-GATE.
 
+OA-8b is BUILT, dark behind `TOOL_PACKS` (2026-10-28, "As built, OA-8b" in §4.3.2). The flag flip is OWNER-GATE.
+
 OA-3 is built, dark behind `ATTACHMENT_OCR`, and §4.1 holds three conditions
 for the flip. OA-6 is DECIDED (D117,
 2026-10-26): yes, for all apps. §4.2 (OA-7), §4.3 (OA-8) and §6 (OA-9) hold
@@ -26,15 +28,16 @@ below, PR #1383). The flag is off on each box, so no run loads a pack yet.
 OA-7e is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7e"
 below, PR #1389). It adds layer (b), the meta tool `load_skill_tools`.
 
-OA-7h is PARTLY BUILT (2026-10-28): the gate is NOT met, by a small margin.
-Run 3 (`docs/one_assistant_measure_2026-10-28.md`, with
-`TOOL_PACKS=email,email-setup`) passed pack 46 of 54 and delegation 47 of 54.
-`no_write` on `reply_correction` turn 1 passed 2 of 3 on the pack arm. The pack
-arm handed off no mail work, the model called `load_skill_tools` in 25 turns, and
-the pack arm ran in a median of 11.2 s against 27.3 s. Run 2 failed because
-`TOOL_PACKS=email` left `email-setup` out, so OA-7i did nothing. Next: a rules
-edit (find the email before `compose_reply`, and "send it" means `send_draft`),
-then a larger repeat. Run 1 is `docs/one_assistant_measure_2026-10-27.md`.
+OA-7h is PARTLY BUILT (2026-10-28): the gate is NOT met, by one turn.
+Run 4 (`docs/one_assistant_measure_2026-10-28.md`, with the OA-7j rules and 5
+repeats) passed pack 78 of 90 and delegation 79 of 90. Without the hand-off
+check, both passed 79 of 90. `no_write` on `reply_correction` turn 1 passed 5 of
+5 on both arms. The pack arm handed off mail work in 1 of 90 turns, and it ran in
+a median of 12.3 s against 33.9 s. The three run-3 failure kinds are fixed
+(2 of 3, 2 of 3 and 1 of 3 became 0 of 5, 1 of 5 and 0 of 5). The owner decides
+whether one mail hand-off after a pack load fails the gate. Run 3 (46 of 54
+against 47 of 54) and run 2 (the flag `email` alone) are in the same report.
+Run 1 is `docs/one_assistant_measure_2026-10-27.md`.
 
 OA-7d is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7d"
 below). The dock sends `surface`, and a turn from `/email` loads the `email`
@@ -1199,7 +1202,7 @@ The orchestrator offers each registry agent as a tool (`orchestrator/agents.py:7
 |---|---|---|
 | `email-assistant` | 59 own tools, on `tier-powerful` | The packs `email` and `email-setup` (OA-7) |
 | `crm-assistant` | 21 own tools. The orchestrator already holds 12 of the 13 shared `crm_*` reads (`agent-orchestrator/config.json`, `tool_scope`). It lacks `crm_search_notes` (`tests/unit/test_crm_agent.py:1405-1412`) | The pack `crm-records`: 9 tools. They are 4 reads, 4 writes and `crm_search_notes` (OA-8a) |
-| `projects-assistant` | 113 own tools (`agent-projects/config.json`) | The core pack `projects`, with about 27 tools. More packs of 35 tools or fewer: planning, structure and bulk acts (OA-8b) |
+| `projects-assistant` | 120 own tools (`agent-projects/config.json`) | Four packs: the core pack `projects` (23 tools), `projects-plan` (35), `projects-structure` (34) and `projects-bulk` (28) (OA-8b) |
 | `whatsapp-assistant` | 14 own tools. It writes drafts only | The pack `whatsapp` (OA-8c) |
 | `apis-config` | No own tools | A rules-only pack `integrations`, if the measure supports it (OA-8d). `install_dependency` stays out (D85) |
 | `app-builder` | Copilot runtime, with a workspace for each session (`routes/agent.py:679-696`) | Stays a sub-agent. It is a heavy job on its own runtime |
@@ -1244,17 +1247,36 @@ The orchestrator offers each registry agent as a tool (`orchestrator/agents.py:7
 - A held CRM pack names its real reason. The hold note takes the session of the run. So a chat that read mail gets the mail reason, in the persona and in the answer of a load. `egress.py` holds the CRM wording for an owner that does not read mail itself: `EGRESS_HOLD_NOTE_PACK_OTHER` and `EGRESS_HELD_PACK_ANSWER_OTHER`. The email owner keeps the email wording. `NO_PERSONA_BULLETS` names the owners with no persona text, and any other owner with no bullet raises.
 - Redis can mark a chat after the pack built open. The gate of the pack then asks the untrusted card besides the card of the write, because the CRM owner does not read mail itself. This fails safe. A chat marked before the build holds the pack, with no write tool.
 
-**OA-8b. Projects.**
-- **Files.** `acb_skills/skill_families.py`, `acb_skills/tool_packs.py` and `tests/unit/test_projects_agent.py`.
+**OA-8b. Projects.** Build AGENT-SAFE. The flag flip is OWNER-GATE.
+- **Files.**
+  - `acb_skills/skill_families.py`: four families with the owner `projects-assistant` and 120 tools
+  - `acb_skills/tool_packs.py`: four `Pack` entries with rules, words and a `delegation_refusal`. `Pack.surface` takes a tuple. `owner_tools` reads the name of a `FunctionTool`. `NO_PERSONA_BULLETS` names the owner
+  - `orchestrator/_tool_injection.py`: `_pack_tools` and `_pack_call` accept a `FunctionTool`. A cache of the owner's tools. The covered-org pre-filter
+  - `gateway/routes/integrations_skills.py`: the catalog price reads the name of a `FunctionTool`
+  - `workbench/control_plane/src/lib/shell/surface.test.ts`: the slugs `tasks` and `calendar`
 - **Acceptance.**
-  - The Projects families together equal `skill_projects.__all__`.
-  - Each pack tool keeps the strict-argument wrapper (`agent-projects/agents.py:184-205`).
+  - The four Projects families together equal `skill_projects.__all__`, and each holds 35 tools or fewer.
+  - Each pack tool keeps the strict-argument class `_StrictTool` (`agent-projects/agents.py:110-181`). The schema says `additionalProperties: false`, and the tool answers an unknown argument by name.
   - In a covered org, no Projects pack loads, and the work goes to the specialist.
-  - A batch tool shows one card with its counts.
-- **Fence.**
-  - F7 of `test_projects_agent.py`
-  - the limit of 35 tools in `tests/unit/test_tool_packs_registry.py`
-  - the covered-org case in `tests/unit/test_pack_guards.py`
+  - A batch tool shows one card with its counts, and the assembly gates it once.
+  - The core pack loads beside the `email` pack at the measured base.
+- **Fence.** `tests/unit/test_projects_packs.py`, and the Projects cases of `test_tool_packs_registry.py`, `test_tool_packs_choice.py` and `test_skills_registry.py`.
+- **Verify.** `uv run pytest tests/unit/test_projects_packs.py tests/unit/test_tool_packs_registry.py tests/unit/test_tool_packs_choice.py tests/unit/test_skills_registry.py tests/unit/test_tool_packs_off.py tests/unit/test_load_skill_tools.py tests/unit/test_turn_kind_pack_items.py tests/unit/test_pack_guards.py tests/unit/test_projects_agent.py tests/unit/test_projects_agent_refusals.py tests/unit/test_no_egress_tool_audit.py tests/unit/test_delegation_no_egress.py -q`, and `npx vitest run src/lib/shell/surface.test.ts` in `workbench/control_plane`.
+
+**As built, OA-8b (2026-10-28).**
+- There are 120 tools, not 113. The four families are `projects` (23 tools), `projects-plan` (35), `projects-structure` (34) and `projects-bulk` (28). No tool is in two packs. The union is `skill_projects.__all__` and the `own_tool_scope` of the owner.
+- The core pack holds 23 tools, not 27. The base is 55 tools, because it counts the four specialist tools. The request also carries `load_skill_tools` (1) and the `email` pack (31). That leaves 23 for the core pack, and the total is 110, the cap. `choose` does not credit the specialist tool that a pack removes, so a larger core pack would drop out beside `email`. The fence is `test_the_core_pack_loads_beside_the_email_pack_at_the_measured_base`. It fails when the base grows or when the core pack grows. `edit_task`, `watch`, `create_project`, `needs_attention`, `show_view` and `my_led_projects` moved out of the core pack, and the summary of its new family names each one.
+- The owner builds `FunctionTool` objects of the class `_StrictTool`. The old builder skipped every tool that was no coroutine function, so each Projects pack was empty. `_pack_func` reads `fn.func`. `_pack_call` returns a shallow copy of the tool with `func` swapped, as `_gate_own_maf_tools` does. The class and the input model stay, so the schema keeps `additionalProperties: false`. `_as_agent_tools` already keeps a `FunctionTool` as it is. `owner_tools` and the catalog price read the name through `tool_guard.tool_name`.
+- `_owner_pack_tools` builds the 120 tools once for each owner module. The entry holds while the module and its `_agent_tools` are the same objects, so a patched owner builds again. The pack call never changes a cached tool.
+- The covered-org check is the second entry of `_PACK_OWNER_FILTERS`. It calls `_run_covered("projects-assistant")` on the run binding. A covered run builds an empty pack, so the specialist stays. The filter runs for each layer.
+- `Pack.surface` takes a tuple. The core pack names `projects`, `tasks` and `calendar`, the three lenses of one task store (D52 to D54). `surface_slugs` gives the tuple for a single string too. The browser sends the first path segment already, so `surface.ts` does not change.
+- The words are whole words. The core words are `task`, `tasks`, `subtask`, `backlog`, `sprint`, `milestone`, `overdue`, `due date`, `my work`, `kanban`, `project board`, `assign` and `assignee`. Bare `project`, `calendar`, `plan`, `report`, `delete`, `reply`, `deal` and `note` are out. The 18 email turns of OA-5 and the CRM turns of OA-8a load no Projects pack. "Make a task from this email" loads `email` and `projects`.
+- The four packs come after `crm-records` in `PACKS`. Every pack sets a `delegation_refusal`, because without it the specialist stays and the model keeps handing work off (OA-7h, run 1: 42 of 54 email turns). The two persona lines that send task work to `projects_assistant` are the constant `PROJECTS_DELEGATION_BULLETS`, in `PACK_DELEGATION_BULLETS`. The persona with the flag off stays byte for byte as it was. A run that removes the specialist takes those lines out by one exact swap (fix round 1, P2-1).
+- The Projects specialist stays beside a loaded Projects pack, unless the loader reaches the owner (`via_loader`) or the run holds every Projects pack (`SPECIALIST_STAYS_UNTIL_REACHED`). Email and CRM keep the older rule, where one loaded pack removes the specialist. The cause: a core load alone would strand plan and structure work, which cannot join it. The rules of each pack carry the line "No Projects agent exists to hand a task to." While the hand-off is open, `handoff_swap` replaces it with a route that names `call_agent` and `projects-assistant` for the work of a pack that did not load.
+- When a turn matches a specific Projects pack and its core pack, and the request cannot hold both, `choose` loads the specific pack and drops the core pack (`Pack.replaces_core`). So "Who has spare team capacity?" on /projects loads `projects-plan`. Ten words of the plan and structure lists also match the core word "task", so they needed this rule. The bulk pack (28) fits beside the core pack.
+- `plan_loader` offers no Projects pack to an owner that cannot load, such as a covered org. `GET /skills` reads the per-owner cache of the run path.
+- OA-7i reaches the owner (`plan_loader`) when each unheld Projects pack fits under 110 tools with the specialist slot freed. With no pack held, all four fit, so the `projects_assistant` tool leaves and a hand-off answers the loader refusal. The measured base is 56 with the loader, so `projects-plan` (35) and `projects-structure` (34) never fit beside a held Projects pack. A covered org is not reached, because `_available` returns false for it. A load that refuses at run time sets `via_failed`, and the hand-off opens again. Each pack sets `loader_route`, the rules line that names the loader. Fences: the OA-8b loader cases of `test_projects_packs.py`.
+- The held set of a Projects pack is empty. No Projects tool is an egress tool, so a held pack keeps all its tools, as the owner's held run does.
 
 **OA-8c. WhatsApp.**
 - **Acceptance.**
@@ -1413,6 +1435,38 @@ tokens. OA-7g shipped live (PR #1356, `344cad4fc`).
 - Test helpers keyed on `agent-{owner}` map the owner to its directory through
   the registry `local_path`.
 - Verify: the command in §4.3.2, "OA-8a".
+
+**OA-8b. GO, narrowed.**
+1. The audit checked `6c0f5a83a`. Build after OA-8a. Re-check each anchor on the
+   new main. The tool count is 120, and the union of the families is
+   `skill_projects.__all__`.
+2. Four families, with the owner `projects-assistant`. Each holds 35 tools or
+   fewer. The core pack has the surface and the words. The other three packs
+   name only their own tools in their rules. The core rules route the rest of
+   the work to `load_skill_tools` by pack slug.
+3. The first audit kept the specialist tool and set no `delegation_refusal`,
+   because a pack with a refusal removes the specialist as soon as one pack
+   loads. OA-7i changes that. It reaches an owner only when its packs carry a
+   refusal, and it decides for each run. So every Projects pack sets a
+   refusal. The persona lines for the owner become the bullet
+   `PROJECTS_DELEGATION_BULLETS`. The core rules say that no Projects agent
+   exists to hand work to when the loader reaches the owner.
+4. The owner builds `FunctionTool` objects (`_StrictTool`). Make the builder
+   accept them, keep the class, and cache the 120 tools. Keep
+   `additionalProperties: false` and the unknown-argument answer.
+5. `Pack.surface` takes a tuple. The core pack serves `/projects`, `/tasks`
+   and `/calendar`.
+6. A covered org loads no Projects pack. Put the check in the pre-filter slot
+   of `_pack_tools`. `_run_covered` fails closed.
+7. The words are whole words. Leave out bare `project`, `calendar`, `plan`,
+   `report`, `delete`, `reply`, `deal` and `note`.
+8. The cap math uses the measured base. The core pack must fit beside `email`
+   (31) and the loader (1). Measure it with `_pack_base_count`.
+9. Batch tools show one card each, raised inside the tool body. The pack
+   wrapper carries `__cc_gated__`, so the assembly gates it once.
+10. Non-goals. No sandbox tool joins a pack. The own run of `agent-projects`
+    does not change. No flag flips.
+11. Verify: the command in §4.3.2, "OA-8b".
 
 **OA-9a. The parser is BUILT (PR #1388). The `worker` half is GO,
 narrowed (2026-10-27).** The parser files are `subagent_contract.py` and
@@ -1593,7 +1647,7 @@ context has no live tool list. The decorator emits `ExperimentalWarning`.
 - **OA-7i.** With the flag on and the loader offered, a turn with no pack held has no `email_assistant` tool. A hand-off to the email assistant answers a refusal that names `load_skill_tools`. A pack that cannot load keeps the specialist. So does an MCP server that may attach. Fence: `tests/unit/test_loader_replaces_handoff.py`.
 - **OA-7h.** On the 18 email turns, 3 runs each, with the tier flags of production, the pack arm passes at least as many turns as delegation. From turn 2, each email chat sends through the held card. No act shows two cards.
 - **OA-8a.** Each CRM write asks its card in the stream of the orchestrator. Mirror mode drops the 3 record writes. A held pack drops the 4 writes. Fence: `tests/unit/test_pack_guards.py`.
-- **OA-8b.** The Projects families together equal `skill_projects.__all__`, and each holds 35 tools or fewer. In a covered org, no Projects pack loads. Fences: `tests/unit/test_projects_agent.py` and `tests/unit/test_pack_guards.py`.
+- **OA-8b.** The four Projects families together equal `skill_projects.__all__`, and each holds 35 tools or fewer. A pack tool keeps its strict arguments. In a covered org, no Projects pack loads. A batch tool shows one card with its counts. The core pack fits beside the `email` pack at the measured base. Fences: `tests/unit/test_projects_packs.py` and `tests/unit/test_tool_packs_registry.py`.
 - **OA-8c.** The held set of the `whatsapp` pack equals the held set of its owner. Fence: `tests/unit/test_pack_guards.py`.
 - **OA-8d.** Optional. OA-8e shows that the turns of the `integrations` pack lose nothing.
 - **OA-8e.** A report in `docs/` gives the numbers of §4.3.3 for the three arms. None of the stop results of §4.3.3 occurs. OA-10 starts only then.
