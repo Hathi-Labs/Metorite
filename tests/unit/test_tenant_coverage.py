@@ -370,6 +370,21 @@ def test_the_reminder_tables_are_tenant_scoped(table: str) -> None:
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_job_queue_table_is_tenant_scoped() -> None:
+    """WS-BRIEF BR-1a (``docs/job_queue.md``). A job holds one unit of
+    background work of one organization, and its payload can name tenant
+    data. The table may not be exempt, and the committed policy phase must
+    carry it (R5)."""
+    gen = _generator()
+    assert "jobs" in gen.discover_tables()
+    assert "jobs" not in gen.EXEMPT
+    assert "jobs" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE jobs FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_generated_policies_carry_all_four_load_bearing_clauses() -> None:
     """FORCE, WITH CHECK and the missing-ok flag each have an incident behind
     them (saas_multitenancy_implementation.md §1.1). Drop any one and the
