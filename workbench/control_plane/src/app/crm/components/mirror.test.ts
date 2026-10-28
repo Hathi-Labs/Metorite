@@ -11,7 +11,7 @@ import { modeLine, type ConnectionInfo, type SyncStatus } from "../lib/connect";
 import AccessPanel from "./AccessPanel";
 import PipelineSettings from "./PipelineSettings";
 import FieldsPanel from "./FieldsPanel";
-import FirstOpen from "./FirstOpen";
+import FirstOpen, { CHOICE_LINE } from "./FirstOpen";
 import KanbanBoard from "./KanbanBoard";
 import { ImportProgress, StalledBanner } from "./MirrorBanner";
 import Timeline from "./Timeline";
@@ -37,20 +37,26 @@ describe("the first open", () => {
       createElement(FirstOpen, { phase, busy: null, onNative: noop, onConnectZoho: noop }),
     );
 
-  it("shows an admin two cards, with Zoho live and three coming soon", () => {
+  it("shows an admin two cards, with Zoho live and one line for the later CRMs", () => {
     const html = draw("choose");
     expect(html).toContain("Use Metorite as your CRM");
     expect(html).toContain("Connect your CRM");
-    for (const name of ["Zoho CRM", "HubSpot", "Salesforce", "Pipedrive"]) {
-      expect(html).toContain(name);
-    }
-    expect(html.match(/Coming soon/g)).toHaveLength(3);
-    // Zoho's Connect is the one enabled Connect button.
+    expect(html).toContain("Zoho CRM");
+    expect(html).toContain("HubSpot, Salesforce and Pipedrive come later.");
+    // No dead row: HubSpot, Salesforce and Pipedrive have no Connect button and no badge.
+    expect(html).not.toContain("Coming soon");
     const connects = [...html.matchAll(/<button[^>]*>[\s\S]*?<\/button>/g)]
       .map((m) => m[0])
       .filter((b) => b.replace(/<[^>]*>/g, "").trim() === "Connect");
-    expect(connects).toHaveLength(4);
+    expect(connects).toHaveLength(1);
     expect(connects.filter((b) => !/ disabled=/.test(b))).toHaveLength(1);
+  });
+
+  it("tells the truth about changing the choice", () => {
+    const html = draw("choose");
+    expect(html).toContain(CHOICE_LINE);
+    expect(CHOICE_LINE).toBe("To change this later, you start over, and the CRM records are removed.");
+    expect(html).not.toContain("You can change this later in Settings");
   });
 
   it("shows only the Native card when the mirror is off", () => {

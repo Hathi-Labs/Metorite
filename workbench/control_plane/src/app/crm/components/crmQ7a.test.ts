@@ -174,8 +174,8 @@ describe("the Field map card", () => {
   it("draws approve, reject and the pick by hand", () => {
     expect(html).toContain("Approve");
     expect(html).toContain("Reject");
-    expect(html).toContain("Pick a target");
-    expect(html).toContain(">Map<");
+    expect(html).toContain("Pick a field");
+    expect(html).toContain(">Add to draft<");
   });
 
   it("says so when no column can take a field", () => {

@@ -13,6 +13,7 @@ import RailRow from "@/components/ui/RailRow";
 import { boundaryKey } from "../lib/boundary";
 import type { CrmMode } from "../lib/connect";
 import { FIELD_MAP_TITLE } from "../lib/fieldMap";
+import { CONVERT_MAPPING_TITLE } from "./ConvertMappingCard";
 import { pushView } from "../lib/history";
 import { draftOf } from "../lib/settings";
 import {
@@ -145,7 +146,8 @@ describe("the sections a caller sees", () => {
 
   it("draws the conversion mapping in Native mode and the Field map in Mirror mode", () => {
     const native = settings(true, "native", "field-mapping", {}, true);
-    expect(native).toContain(">Field mapping</h2>");
+    expect(native).toContain(`>${CONVERT_MAPPING_TITLE}</h2>`);
+    expect(native).not.toContain(">Field mapping</h2>");
     expect(inner(settings(true, "native", "field-mapping"))).toBe("");
     // The Q7a Field map card stays Mirror only (PipelineSettings.tsx:301).
     expect(read("./PipelineSettings.tsx")).toContain(
@@ -538,7 +540,10 @@ describe("the card headings", () => {
         for (const section of visibleSections({ isAdmin, mode, studioAdmin: true })) {
           if (section.id === "setup" || section.id === "access") continue;
           const html = settings(isAdmin, mode, section.id as SettingsSectionId, {}, true);
-          expect(html, `${section.id} ${isAdmin} ${mode}`).toContain(`>${section.label}</h2>`);
+          // The Native conversion card says what it does, not "Field mapping" (CRM-U12).
+          const heading =
+            section.id === "field-mapping" && mode !== "mirror" ? CONVERT_MAPPING_TITLE : section.label;
+          expect(html, `${section.id} ${isAdmin} ${mode}`).toContain(`>${heading}</h2>`);
         }
       }
     }

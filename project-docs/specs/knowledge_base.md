@@ -2109,6 +2109,9 @@ Four builders work at once, so they keep out of each other's files.
 | **KB-2m** | ✅ BUILT 2026-10-22 (KB-2m1 to KB-2m5). Import of Markdown and HTML files and of a Notion zip, with folders becoming parents. Export of a page or a space as Markdown or HTML, with sub-pages, as a zip. Attachments wait for KB-2c. See "KB-2m in detail" below |
 | **KB-2o** | Labels on pages, a labels list and a page of the pages with one label |
 | **KB-2c** | Files: attachments, video, audio and PDF blocks, and draw.io and Excalidraw blocks that save as attachments. After AM-5 and H-322 |
+| **KB-2q** | Added 2026-10-27, owner report. Make and edit a space, frontend only. The gateway has `POST /knowledge/spaces` and `PATCH /knowledge/spaces/{id}`, and no UI calls them. A `+` beside the Spaces heading and a command-bar act for a holder of `knowledge:manage`. Space settings in the space menu: name, icon and purpose. The form says: "Make a space when a different group of people needs to see it. For a new topic, make a page." |
+| **KB-2r** | Added 2026-10-27. Who can see a space: a panel over `PUT /knowledge/spaces/{id}/grants`, with the existing subject picker and no second grant picker. A plain-words summary of the grants. Archive a space: a new manager-only route that sets `archived_at`, and the pages leave the index in the same transaction (§4.2). Restore from an Archived spaces view. The `me` space has no panel and no archive. Risk tier HIGH (visibility). R8 proves a hidden space hides its pages from the page reads and from search |
+| **KB-2s** | Added 2026-10-27. "My notes" shows in the rail and the switcher from the first open, with an empty state and New page. The first write still makes the `me` row (§4.1) |
 
 
 #### KB-2k in detail (specified 2026-10-22)
