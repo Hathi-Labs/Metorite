@@ -21,7 +21,9 @@ BYPASSRLS):
 - an unknown key, an empty name, a name of 61 characters and a NUL are
   each a 422 that writes nothing;
 - an empty body clears every name, and a ``null`` entry clears one;
-- the start over (``POST /crm/reset``) clears the names and the stamps.
+- the start over (``POST /crm/reset``) clears the names and the stamps;
+- "Change CRM setup" (``PATCH /crm/settings`` with ``mode: null``) clears
+  them too, so Native → none → Native starts with the names of the CRM.
 
 A hermetic fake agrees with any SQL it is handed (the ``mode = 'native'``
 guard, the JSONB cast, the RLS policy), so none of this is proved without
@@ -65,6 +67,7 @@ SITES = {"label": "Existing Sites", "singular_label": "Existing Site"}
 #: after each test.
 _CLEANED = (
     "crm_source_profiles", "crm_settings", "integration_connections",
+    "crm_pipeline_stages", "crm_pipelines",
     "crm_deal_statuses", "crm_lead_statuses", "crm_lost_reasons",
 )
 
@@ -368,4 +371,38 @@ async def test_the_start_over_clears_the_names_and_the_stamps(zg, app_engine) ->
             "SELECT access FROM crm_settings WHERE organization_id = "
             "CAST(:o AS uuid)"), {"o": zg.org_a}).scalar()
     assert access == "everyone"
+    assert _stored(zg, zg.org_b)[0] == {"contacts": SITES}
+
+
+async def test_change_crm_setup_clears_the_names_and_the_stamps(zg, app_engine) -> None:  # noqa: F811
+    """Review P2: Native → none → Native through ``PATCH /crm/settings``.
+
+    Before the fix, ``_reset_setup`` kept ``labels``, ``cutover_at`` and
+    ``cutover_by``. The old names came back on the new Native setup, and a
+    stale ``cutover_at`` broke CRM-Z10b phase 2 step 3.
+    """
+    _assert_non_priv(app_engine)
+    admin = _admin(zg.org_a)
+    _set(zg, zg.org_b, mode="native", labels={"contacts": SITES})
+    r = await _call(zg, admin, "PATCH", "/crm/settings", {"mode": "native"})
+    assert r.status_code == 200, r.text
+    r = await _put(zg, {"labels": {"contacts": SITES}})
+    assert r.status_code == 200, r.text
+    # Nothing writes the stamps yet (CRM-Z10b will), so the test sets them.
+    with zg.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_settings SET cutover_at = now(), cutover_by = 'a@x.test' "
+            "WHERE organization_id = CAST(:o AS uuid)"), {"o": zg.org_a})
+    assert _stored(zg, zg.org_a)[0] == {"contacts": SITES}
+
+    r = await _call(zg, admin, "PATCH", "/crm/settings", {"mode": None})
+    assert r.status_code == 200, r.text
+    assert tuple(_stored(zg, zg.org_a)) == (None, None, None)
+
+    r = await _call(zg, admin, "PATCH", "/crm/settings", {"mode": "native"})
+    assert r.status_code == 200, r.text
+    assert await _mode(zg, zg.org_a) == {"mode": "native"}, "no old names"
+    stored, cutover_at, cutover_by = _stored(zg, zg.org_a)
+    assert (stored, cutover_at, cutover_by) == (None, None, None)
+    # Org B keeps its names.
     assert _stored(zg, zg.org_b)[0] == {"contacts": SITES}

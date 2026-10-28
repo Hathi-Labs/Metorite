@@ -19,7 +19,9 @@ back to NULL (CRM-U5b, "Change CRM setup"): allowed only with 0 rows in the
 five record tables and no Zoho connection that is ``connected``, else a 409
 (``crm_has_records``, ``crm_connected``). The reset clears ``mode`` and
 ``connection_id`` and deletes the stages and lost reasons, in the same
-transaction, and keeps ``access`` and ``access_groups``. Each other change of
+transaction, and keeps ``access`` and ``access_groups``. It also clears
+``labels``, ``cutover_at`` and ``cutover_by`` (CRM-Z10g), as the start over
+does. Each other change of
 mode is a 422. Only the Zoho callback of ``connection.py`` (CRM-Z2) sets
 ``mirror``. A
 ``mode`` equal to the stored one is not a change, so it is a 200 that writes no
@@ -275,11 +277,17 @@ async def _check_reset_allowed(db: Any, org: str) -> None:
 
 
 async def _reset_setup(db: Any, org: str) -> None:
-    """Clear the mode, the connection pointer and the seeded pipeline."""
+    """Clear the mode, the connection pointer and the seeded pipeline.
+
+    CRM-Z10g: the names of the records and the cutover stamps go too, as in
+    the start over (``_CLEAR_SETUP_SQL``). Else Native → none → Native shows
+    the old names again, and a stale ``cutover_at`` stays on a new setup.
+    """
     from gateway.crm_sync import holds
 
     await db.execute(text(
-        "UPDATE crm_settings SET connection_id = NULL "
+        "UPDATE crm_settings SET connection_id = NULL, "
+        "labels = NULL, cutover_at = NULL, cutover_by = NULL "
         "WHERE organization_id = CAST(:o AS uuid)"), {"o": org})
     await holds.clear(db, org)  # CRM-Q16: the next import decides again
     try:

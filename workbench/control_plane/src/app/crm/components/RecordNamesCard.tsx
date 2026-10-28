@@ -6,7 +6,8 @@
  * An admin of a Native CRM renames the four record types here: "Existing
  * Sites" in place of "Contacts", for example. Each type has two boxes, the
  * name of the list and the name of one record, with the default name as the
- * placeholder. One Save writes the whole map (`PUT /crm/settings/labels`).
+ * placeholder. The name of the list alone is enough, and the record page then
+ * uses it. One Save writes the whole map (`PUT /crm/settings/labels`).
  * "Use the default" empties the boxes of one type, and the next Save stores
  * that. The rail, the list headings and the record pages read the names from
  * `GET /crm/mode` (`useSourceLabels`), and the write wakes that read.
@@ -42,6 +43,7 @@ import {
   problemsOf,
   rowIsSet,
   rowsOf,
+  singularPlaceholder,
   type NameRow,
   type NameRows,
 } from "../lib/recordNames";
@@ -76,7 +78,13 @@ export function RecordNamesView({
 }: RecordNamesViewProps) {
   if (!isAdmin) return null;
   if (mode === "mirror") {
-    return <Card title={RECORD_NAMES_TITLE} note={RECORD_NAMES_MIRROR_NOTE}>{null}</Card>;
+    // The note is the body, not the header note. A header with no body draws
+    // its bottom border on the border of the card, so the two lines doubled.
+    return (
+      <Card title={RECORD_NAMES_TITLE}>
+        <p className="px-4 py-3 text-xs text-muted-foreground">{RECORD_NAMES_MIRROR_NOTE}</p>
+      </Card>
+    );
   }
   if (mode !== "native") return null;
   const problems = problemsOf(rows);
@@ -121,7 +129,7 @@ export function RecordNamesView({
               </div>
               <div className="mt-1 grid gap-2 sm:grid-cols-2">
                 {field("plural", "Name of the list", type.plural)}
-                {field("singular", "Name of one record", type.singular)}
+                {field("singular", "Name of one record", singularPlaceholder(type, row))}
               </div>
               {problem && (
                 <p id={problemId} className="mt-1 text-xs text-destructive">

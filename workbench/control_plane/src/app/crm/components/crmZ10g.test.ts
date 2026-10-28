@@ -9,7 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import {
-  BOTH_NAMES_PROBLEM,
+  LIST_NAME_PROBLEM,
   RECORD_NAME_MAX,
   RECORD_NAMES_MIRROR_NOTE,
   RECORD_NAMES_NOTE,
@@ -24,6 +24,10 @@ import {
   rowsOf,
   type NameRows,
 } from "../lib/recordNames";
+import { clearAll, put } from "@/lib/dataCache";
+
+import { effectiveMode } from "../lib/connect";
+import { useSourceLabels } from "../lib/useCrmMode";
 import { sourceSingular, viewLabel, type SourceLabels } from "../lib/views";
 import { RecordNamesView, type RecordNamesViewProps } from "./RecordNamesCard";
 
@@ -77,17 +81,41 @@ describe("the card of a Native admin", () => {
     expect(html.match(new RegExp(USE_DEFAULT_LABEL, "g"))?.length).toBe(1);
   });
 
-  it("keeps Save off until a name changes, and off while a row is half filled", () => {
+  it("keeps Save off until a name changes, and off with a record name and no list name", () => {
     const off = view({ changed: false });
     expect(off).toMatch(/<button[^>]*disabled=""[^>]*>[\s\S]*?Save names/);
     const on = view({ rows: rowsOf(SITES), changed: true });
     expect(on).not.toMatch(/<button[^>]*disabled=""[^>]*>[\s\S]*?Save names/);
-    const half: NameRows = { ...rowsOf(null), contacts: { plural: "Existing Sites", singular: "" } };
+    const half: NameRows = { ...rowsOf(null), contacts: { plural: "", singular: "Existing Site" } };
     const blocked = view({ rows: half, changed: true });
-    expect(textOf(blocked)).toContain(BOTH_NAMES_PROBLEM);
+    expect(textOf(blocked)).toContain(LIST_NAME_PROBLEM);
     expect(blocked).toContain('aria-invalid="true"');
     expect(blocked).toContain('aria-describedby="crm-record-name-contacts-problem"');
     expect(blocked).toMatch(/<button[^>]*disabled=""[^>]*>[\s\S]*?Save names/);
+  });
+
+  it("loads a stored list name with no singular name, with no problem, and saves it (verifier F2)", () => {
+    // The server stores this shape, and CRM-Z10b stores it when the Zoho
+    // profile has no singular name. The card used to show "Fill in both
+    // names" on load and block Save.
+    const stored: SourceLabels = { contacts: { label: "Existing Sites", singular_label: null } };
+    const rows = rowsOf(stored);
+    expect(rows.contacts).toEqual({ plural: "Existing Sites", singular: "" });
+    expect(problemsOf(rows)).toEqual({});
+    expect(namesChanged(rows, stored)).toBe(false);
+
+    const html = view({ rows, changed: true });
+    expect(textOf(html)).not.toContain(LIST_NAME_PROBLEM);
+    expect(html).not.toContain('aria-invalid="true"');
+    expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>[\s\S]*?Save names/);
+    // The empty box says what the record page shows: the list name.
+    expect(html).toContain('placeholder="Existing Sites"');
+    expect(html).not.toContain('placeholder="Contact"');
+
+    // The body sends `null`, never "": the server refuses an empty name.
+    expect(labelsBody(rows)).toEqual(stored);
+    // The record page reads the plural.
+    expect(sourceSingular("contacts", stored)).toBe("Existing Sites");
   });
 });
 
@@ -100,6 +128,15 @@ describe("Mirror mode, a member and no mode", () => {
     );
     expect(html).not.toContain("<input");
     expect(html).not.toContain(SAVE_NAMES_LABEL);
+    // Verifier F3: the note is a body paragraph after the header, so the
+    // header's bottom border does not sit on the border of the card.
+    const header = html.slice(html.indexOf("<header"), html.indexOf("</header>"));
+    expect(header).not.toContain(RECORD_NAMES_MIRROR_NOTE);
+    expect(html).toMatch(
+      new RegExp(
+        `</header><p class="px-4 py-3 text-xs text-muted-foreground">${RECORD_NAMES_MIRROR_NOTE}</p></section>`,
+      ),
+    );
   });
 
   it("draws nothing for a member who is not an admin, in each mode", () => {
@@ -114,12 +151,19 @@ describe("Mirror mode, a member and no mode", () => {
 });
 
 describe("the rules of a name", () => {
-  it("reads two empty boxes as the default, and one box alone as a problem", () => {
+  it("reads two empty boxes as the default, a list name alone as enough, and a record name alone as a problem", () => {
     expect(rowProblem({ plural: "", singular: "" })).toBeNull();
     expect(rowProblem({ plural: "  ", singular: "" })).toBeNull();
-    expect(rowProblem({ plural: "Sites", singular: "" })).toBe(BOTH_NAMES_PROBLEM);
-    expect(rowProblem({ plural: "", singular: "Site" })).toBe(BOTH_NAMES_PROBLEM);
+    expect(rowProblem({ plural: "Sites", singular: "" })).toBeNull();
+    expect(rowProblem({ plural: "Sites", singular: "  " })).toBeNull();
+    expect(rowProblem({ plural: "", singular: "Site" })).toBe(LIST_NAME_PROBLEM);
+    expect(rowProblem({ plural: " ", singular: "Site" })).toBe(LIST_NAME_PROBLEM);
     expect(rowProblem({ plural: "Sites", singular: "Site" })).toBeNull();
+  });
+
+  it("sends a list name alone with a null singular name", () => {
+    const rows: NameRows = { ...rowsOf(null), deals: { plural: " Orders ", singular: "  " } };
+    expect(labelsBody(rows)).toEqual({ deals: { label: "Orders", singular_label: null } });
   });
 
   it("allows 60 characters after the trim and refuses 61", () => {
@@ -153,6 +197,39 @@ describe("the rules of a name", () => {
     expect(viewLabel("contacts", SITES)).toBe("Existing Sites");
     expect(sourceSingular("contacts", SITES)).toBe("Existing Site");
     expect(viewLabel("deals", SITES)).toBe("Deals");
+  });
+});
+
+describe("a member reads the names (review P1)", () => {
+  /** Draws the plural name of Contacts that `useSourceLabels(enabled)` gives. */
+  function Probe({ enabled }: { enabled: boolean }) {
+    return createElement("span", null, useSourceLabels(enabled)?.contacts?.label ?? "none");
+  }
+  const probe = (enabled: boolean) =>
+    textOf(renderToStaticMarkup(createElement(Probe, { enabled }))).trim();
+
+  it("reads the names when the client mode is null: connection null, settings mode undefined", () => {
+    // A member of a Native org off CRM_MIRROR_ORGS: `GET /crm/connection` is
+    // 404 (connection null), and `GET /crm/settings` is 403 (the admin floor),
+    // so `readSettings` gives null and the settings mode is undefined.
+    const mode = effectiveMode(null, undefined);
+    expect(mode).toBeNull();
+
+    // The page reads the names with no gate on that mode.
+    const page = read("../page.tsx");
+    expect(/useSourceLabels\(([^)]*)\)/.exec(page)?.[1]).toBe("true");
+
+    // The server serves the stored names to a member by its own mode. The
+    // cache holds that answer, so the first render draws it with no DOM.
+    clearAll();
+    try {
+      put("crm:mode", { mode: "native", labels: SITES });
+      expect(probe(true)).toBe("Existing Sites");
+      // The old gate, `ctx.mode !== null`, read nothing for this member.
+      expect(probe(mode !== null)).toBe("none");
+    } finally {
+      clearAll();
+    }
   });
 });
 

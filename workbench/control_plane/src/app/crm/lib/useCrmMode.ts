@@ -205,9 +205,10 @@ export function useSyncHealth(enabled: boolean): SyncHealthState {
 }
 
 /**
- * The body of `GET /crm/mode`, in Mirror mode only. One read and one cache
- * key serve the labels and the overlays, so the two never disagree about the
- * shape under the key. A failure gives `null`, and the CRM draws as before.
+ * The body of `GET /crm/mode`. One read and one cache key serve the labels,
+ * the overlays and the entity states, so they never disagree about the shape
+ * under the key. A failure, such as the 403 or 404 of a member, gives `null`,
+ * and the CRM draws as before.
  */
 function useModeRead(enabled: boolean): { body: CrmModeBody | null; loading: boolean } {
   const res = useCachedResource<CrmModeBody | null>(

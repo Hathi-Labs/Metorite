@@ -17,12 +17,12 @@ import { CRM_VIEWS, ENTITY_NOUN, type SourceLabel, type SourceLabels } from "./v
 export const RECORD_NAME_MAX = 60;
 
 export const RECORD_NAMES_TITLE = "Record names";
-export const RECORD_NAMES_NOTE = "Rename the record types. An empty box keeps the default name.";
+export const RECORD_NAMES_NOTE = "Rename the record types. Two empty boxes keep the default names.";
 export const RECORD_NAMES_MIRROR_NOTE =
   "Zoho names these. You can rename them after you switch to Metorite.";
 export const USE_DEFAULT_LABEL = "Use the default";
 export const SAVE_NAMES_LABEL = "Save names";
-export const BOTH_NAMES_PROBLEM = "Fill in both names, or use the default.";
+export const LIST_NAME_PROBLEM = "Fill in the name of the list, or use the default.";
 export const TOO_LONG_PROBLEM = `Use ${RECORD_NAME_MAX} characters or fewer.`;
 
 /** One record type, with the CRM's own names. */
@@ -59,12 +59,16 @@ export function rowIsSet(row: NameRow): boolean {
 }
 
 /**
- * What is wrong with one row, or null. Two empty boxes use the default. One
- * box alone is not enough: the list and the record page each need a name.
+ * What is wrong with one row, or null. Two empty boxes use the default.
+ *
+ * The name of the list alone is enough. The server stores it with no
+ * singular name, and the record page then reads the plural (`sourceSingular`).
+ * CRM-Z10b stores that shape when the Zoho profile has no singular name. The
+ * name of one record alone is a problem, because the rail needs a list name.
  */
 export function rowProblem(row: NameRow): string | null {
   if (!rowIsSet(row)) return null;
-  if (row.plural.trim() === "" || row.singular.trim() === "") return BOTH_NAMES_PROBLEM;
+  if (row.plural.trim() === "") return LIST_NAME_PROBLEM;
   if (row.plural.trim().length > RECORD_NAME_MAX || row.singular.trim().length > RECORD_NAME_MAX) {
     return TOO_LONG_PROBLEM;
   }
@@ -83,16 +87,25 @@ export function problemsOf(rows: NameRows): Partial<Record<EntitySlug, string>> 
 
 /**
  * The `labels` of the PUT body: each set row, trimmed. A type that is left
- * out takes the default name again, so the body is the whole map.
+ * out takes the default name again, so the body is the whole map. An empty
+ * name of one record is `null`, because the server refuses an empty name.
  */
 export function labelsBody(rows: NameRows): Partial<Record<EntitySlug, Required<SourceLabel>>> {
   const out: Partial<Record<EntitySlug, Required<SourceLabel>>> = {};
   for (const type of RECORD_TYPES) {
     const row = rows[type.slug];
     if (!rowIsSet(row)) continue;
-    out[type.slug] = { label: row.plural.trim(), singular_label: row.singular.trim() };
+    out[type.slug] = { label: row.plural.trim(), singular_label: row.singular.trim() || null };
   }
   return out;
+}
+
+/**
+ * The placeholder of the box for one record. With a list name and no name of
+ * one record, the record page shows the list name, so the box says that.
+ */
+export function singularPlaceholder(type: RecordType, row: NameRow): string {
+  return row.plural.trim() || type.singular;
 }
 
 /** True when the boxes differ from the stored names. */

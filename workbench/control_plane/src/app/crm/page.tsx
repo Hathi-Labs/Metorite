@@ -200,7 +200,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // CRM-Q17a-2 item 7: in Mirror mode, the source's names of the core
   // entities. CRM-Z10g: in Native mode, the names that an admin stored. A
   // CRM with no name, or a Mirror org off the list, keeps the CRM's names.
-  const labels = useSourceLabels(ctx.mode !== null);
+  // ⚠️ Not gated on `ctx.mode`. A member of a Native org off the mirror list
+  // has no client mode (connection 404, settings 403), and the server serves
+  // the names by its own mode. A 403 or 404 reads as no names.
+  const labels = useSourceLabels(true);
   // CRM-Q20-2 (option A): the Zoho module that each core list opens, for
   // each member. With none, each list opens its own records.
   const overlays = useOverlays(ctx.mode === "mirror");
