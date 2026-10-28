@@ -11,10 +11,15 @@
 // components draw what this file decides, with the parts that the four known
 // entities use (`RecordList`, the record page shell, `FieldValue`).
 //
-// ⚠️ Read only, in every mode. A generic record has no native writer: the sync
-// is the only writer (CRM-Q6a), so no control here ever edits one.
+// Read only in Mirror mode: the sync is the only writer there (CRM-Q6a). In
+// Native mode (CRM-Z10d) a member edits a record in place, as a core record
+// is edited. `isLocked` in `connect.ts` decides, and an unknown mode stays
+// locked. The gateway is the boundary: it refuses a Mirror write with 409.
 
 import { fieldRows, type FieldDef, type FieldRow, type FieldValue } from "./fields";
+import { formValue, isLookupTarget } from "./fieldLayout";
+import { sameValue } from "./recordForm";
+import type { CrmOwner } from "./filterBar";
 import { LIST_PAGE_SIZE, type ListQuery } from "./filters";
 import { dateTime, shortDate } from "./format";
 import type { CrmColumn } from "./columns";
@@ -358,4 +363,73 @@ function isBlank(value: unknown): boolean {
     value === "" ||
     (Array.isArray(value) && value.length === 0)
   );
+}
+
+// ── The edit of a record in Native mode (CRM-Z10d) ──────────────────────────
+
+/** The definition that lets the shared editor draw the name of a record. */
+export const NAME_DEF: FieldDef = {
+  key: "name",
+  label: "Name",
+  type: "text",
+  options: null,
+  position: 0,
+  visible: true,
+  source: "native",
+  api_name: null,
+  is_system: true,
+};
+
+/**
+ * The definition of the owner: a pick from the members. The owner that the
+ * record holds stays a choice even when the list does not name it.
+ */
+export function ownerDef(owners: ReadonlyArray<CrmOwner> | null, held?: string | null): FieldDef {
+  const members = (owners ?? []).filter((o) => o.member && o.email.trim());
+  const list = members.map((o) => ({ value: o.email, label: o.name?.trim() || o.email }));
+  if (held && !list.some((o) => o.value.toLowerCase() === held.toLowerCase())) {
+    list.push({ value: held, label: held });
+  }
+  return {
+    key: "owner_email",
+    label: "Owner",
+    type: "select",
+    options: list,
+    position: 0,
+    visible: true,
+    source: "native",
+    api_name: null,
+    is_system: true,
+  };
+}
+
+/**
+ * Whether the editor can change a field. A lookup needs a native target, as
+ * the gateway allows no other. A system key of Zoho never shows as a row.
+ */
+export function moduleEditable(def: FieldDef): boolean {
+  if (def.is_system) return true;
+  if (def.type === "lookup") return isLookupTarget(def.lookup_target);
+  return true;
+}
+
+/** What the record holds for a definition: a column, or a key of `fields`. */
+export function moduleStored(record: ModuleRecord, def: FieldDef): unknown {
+  if (def.key === "name" && def.is_system) return record.name;
+  if (def.key === "owner_email" && def.is_system) return record.owner_email;
+  return record.fields?.[def.key];
+}
+
+/**
+ * The body of the edit of one field, or null when the value did not change.
+ * It names that key only. `name` and `owner_email` are columns, any other
+ * key goes in `fields`, and a cleared value sends a JSON `null`.
+ */
+export function modulePatch(def: FieldDef, record: ModuleRecord, next: unknown): Row | null {
+  const stored = moduleStored(record, def);
+  const unsetBoolean = def.type === "boolean" && typeof stored !== "boolean";
+  if (!unsetBoolean && sameValue(def, stored, next)) return null;
+  const blank = next === null || next === undefined || next === "" || (Array.isArray(next) && next.length === 0);
+  const value = def.type === "boolean" ? formValue(def, next) : blank ? null : next;
+  return def.is_system ? { [def.key]: value } : { fields: { [def.key]: value } };
 }

@@ -17,8 +17,11 @@
  *   contact) or another generic record. The gateway resolves the link. A
  *   lookup with no link stays text.
  *
- * Read only, in every mode. The sync is the only writer of a generic record.
- * `?mrec=<Module>:<id>` opens it, and `?rtab=` holds the tab.
+ * Read only in Mirror mode, and while the mode is unknown: the sync is the
+ * only writer there. In Native mode (CRM-Z10d) the name, the owner and each
+ * field edit in place, with the shared `FieldInput`, as a core record does
+ * (`ModuleEditRow`). There is no create and no delete. The gateway refuses a
+ * Mirror write with 409. `?mrec=<Module>:<id>` opens it, and `?rtab=` holds the tab.
  *
  * The fill rank (WS-53 CRM-Q17a-2 items 5 and 6). While the field
  * definitions carry fill numbers, Overview draws the filled fields first, by
@@ -29,9 +32,14 @@
 import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useCachedResource } from "@/lib/useCachedResource";
+import { useState } from "react";
 import * as api from "../lib/api";
 import { CrmError } from "../lib/api";
-import { zohoLink } from "../lib/connect";
+import { importedLine, isLocked, zohoLink } from "../lib/connect";
+import { useCrmModeValue } from "../lib/modeContext";
+import { useOwners } from "../lib/useCrmMode";
+import type { CrmOwner } from "../lib/filterBar";
+import type { CrmRefusal } from "../lib/store";
 import { fillRankOn, filledFirst } from "../lib/fields";
 import {
   MODULE_NOT_FOUND,
@@ -45,6 +53,9 @@ import {
   moduleTimelineKey,
   moduleTimelineState,
   moduleTitle,
+  moduleEditable,
+  NAME_DEF,
+  ownerDef,
   sheetTitle,
   shownModuleTab,
   type ModuleFieldRow,
@@ -56,8 +67,17 @@ import {
 import type { TimelineEntry } from "../lib/types";
 import FieldValue from "./FieldValue";
 import { FoldedFields } from "./FieldsPanel";
+import ModuleEditRow from "./ModuleEditRow";
 import { RecordFacts, RecordModal, RecordTabBar } from "./RecordShell";
 import Timeline from "./Timeline";
+
+/** The write path of the sheet (CRM-Z10d). `onPatch` gives `false` on a refusal. */
+export type ModuleEdit = {
+  saving: boolean;
+  refusal: CrmRefusal | null;
+  owners: CrmOwner[] | null;
+  onPatch: (body: Record<string, unknown>) => Promise<boolean>;
+};
 
 export default function ModuleRecordSheet({
   module,
@@ -86,7 +106,35 @@ export default function ModuleRecordSheet({
         throw err;
       }),
   );
-  const state = moduleSheetState(res.data, res.error, id);
+  // CRM-Z10d: a saved record comes back whole. It shows until the read gives
+  // newer data, so the sheet never flashes the old value.
+  const [saved, setSaved] = useState<{ base: unknown; page: ModuleRecordPage } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [refusal, setRefusal] = useState<CrmRefusal | null>(null);
+  const mode = useCrmModeValue();
+  const shownData = saved && saved.base === res.data ? saved.page : res.data;
+  const state = moduleSheetState(shownData, res.error, id);
+  const owners = useOwners(
+    state.kind === "page" && !isLocked(state.page.record, mode),
+  );
+  async function patch(body: Record<string, unknown>): Promise<boolean> {
+    setSaving(true);
+    setRefusal(null);
+    try {
+      const next = await api.patchModuleRecord(module, id, body);
+      setSaved({ base: res.data, page: next });
+      res.refresh();
+      return true;
+    } catch (err) {
+      const text = err instanceof Error ? err.message : String(err);
+      setRefusal({ message: text, field: err instanceof CrmError ? (err.field ?? null) : null });
+      // A 409 means Zoho owns the record now: read it again, as the core sheet does.
+      res.refresh();
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
   const page = state.kind === "page" ? state.page : null;
   // CRM-Q23c: the timeline is read only when its tab is on screen.
   const wantsTimeline = page !== null && shownModuleTab(page, tab) === "timeline";
@@ -115,6 +163,7 @@ export default function ModuleRecordSheet({
           onOpenLink={onOpenLink}
           timeline={timeline}
           onRetryTimeline={stream.refresh}
+          edit={{ saving, refusal, owners, onPatch: patch }}
         />
       ) : state.kind === "failed" ? (
         <div className="flex flex-col items-center gap-3 p-8 text-center">
@@ -140,6 +189,7 @@ export function ModuleRecordBody({
   onOpenLink,
   timeline = { kind: "loading" },
   onRetryTimeline = () => undefined,
+  edit,
 }: {
   page: ModuleRecordPage;
   tab: string;
@@ -148,7 +198,19 @@ export function ModuleRecordBody({
   /** CRM-Q23c: the read of the Timeline tab. */
   timeline?: ModuleTimelineState;
   onRetryTimeline?: () => void;
+  /**
+   * CRM-Z10d: the write path. Without it, or when `isLocked` says so, the
+   * page reads only. The lock follows the mode, and an unknown mode locks.
+   */
+  edit?: ModuleEdit;
 }) {
+  const mode = useCrmModeValue();
+  const editor: ModuleEdit | null = edit && !isLocked(page.record, mode) ? edit : null;
+  // `importedLine` reads `created_at`. A module record keeps the Zoho date.
+  const imported = importedLine(
+    { ...page.record, created_at: page.record.ext_created_at },
+    mode,
+  );
   const shown = shownModuleTab(page, tab);
   const rows = moduleFieldRows(page);
   const ranked = fillRankOn(page.field_defs);
@@ -161,6 +223,7 @@ export function ModuleRecordBody({
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3">
         <RecordFacts facts={moduleFacts(page.record)} />
+        {imported && <span className="text-[11px] text-muted-foreground">{imported}</span>}
       </div>
 
       <RecordTabBar tabs={moduleTabs(page)} active={shown} onTab={onTab} />
@@ -176,18 +239,51 @@ export function ModuleRecordBody({
               rows={rows}
               emptyText="No fields on this record."
               renderRows={(shownRows) => (
-                <FieldList rows={shownRows} empty="No fields on this record." onOpenLink={onOpenLink} />
+                <FieldList
+                  rows={shownRows}
+                  empty="No fields on this record."
+                  onOpenLink={onOpenLink}
+                  page={page}
+                  editor={editor}
+                />
               )}
             />
           ) : (
-            <FieldList rows={rows} empty="No fields on this record." onOpenLink={onOpenLink} />
+            <FieldList
+              rows={rows}
+              empty="No fields on this record."
+              onOpenLink={onOpenLink}
+              page={page}
+              editor={editor}
+            />
           )
         ) : (
           <>
+            {editor && (
+              <dl className="divide-y divide-border/60 border-b border-border/60">
+                <ModuleEditRow
+                  def={NAME_DEF}
+                  record={page.record}
+                  shown={{ kind: "text", text: page.record.name || "—" }}
+                  saving={editor.saving}
+                  refusal={editor.refusal}
+                  onPatch={editor.onPatch}
+                />
+                <ModuleEditRow
+                  def={ownerDef(editor.owners, page.record.owner_email)}
+                  record={page.record}
+                  saving={editor.saving}
+                  refusal={editor.refusal}
+                  onPatch={editor.onPatch}
+                />
+              </dl>
+            )}
             <FieldList
               rows={overview.slice(0, OVERVIEW_FIELDS)}
               empty="No fields on this record."
               onOpenLink={onOpenLink}
+              page={page}
+              editor={editor}
             />
             {rows.length > OVERVIEW_FIELDS && (
               <p className="border-t border-border px-4 py-2 text-[11px] text-muted-foreground">
@@ -246,17 +342,38 @@ function FieldList({
   rows,
   empty,
   onOpenLink,
+  page,
+  editor = null,
 }: {
   rows: ModuleFieldRow[];
   empty: string;
   onOpenLink: (link: ModuleLink) => void;
+  page?: ModuleRecordPage;
+  /** CRM-Z10d: set only when the mode is Native. Then an editable field has a Pencil. */
+  editor?: ModuleEdit | null;
 }) {
+  const defs = new Map((page?.field_defs ?? []).map((d) => [d.key, d]));
   if (rows.length === 0) {
     return <p className="px-4 py-8 text-center text-xs text-muted-foreground">{empty}</p>;
   }
   return (
     <dl className="divide-y divide-border/60">
-      {rows.map((row) => (
+      {rows.map((row) => {
+        const def = defs.get(row.key);
+        if (editor && page && def && moduleEditable(def)) {
+          return (
+            <ModuleEditRow
+              key={row.key}
+              def={def}
+              record={page.record}
+              shown={row.value}
+              saving={editor.saving}
+              refusal={editor.refusal}
+              onPatch={editor.onPatch}
+            />
+          );
+        }
+        return (
         <div key={row.key} className="flex items-start gap-3 px-4 py-2">
           <dt className="w-28 shrink-0 pt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
             {row.label}
@@ -275,7 +392,8 @@ function FieldList({
             )}
           </dd>
         </div>
-      ))}
+        );
+      })}
     </dl>
   );
 }
