@@ -110,6 +110,26 @@ def refuse_nul(pairs: Iterable[tuple[str, str]]) -> None:
             raise HTTPException(status_code=422, detail=NUL_DETAIL)
 
 
+def refuse_nul_tree(node: Any) -> None:
+    """The one guard over a JSON body: every string key and value of the
+    tree (WS-53 CRM-Z10d). ``json.dumps`` writes a NUL as the six characters
+    ``\u0000``, so a dump would hide it. The walk reads the raw strings.
+    """
+    refuse_nul(_string_pairs(node))
+
+
+def _string_pairs(node: Any) -> Iterable[tuple[str, str]]:
+    if isinstance(node, str):
+        yield ("", node)
+    elif isinstance(node, dict):
+        for key, val in node.items():
+            yield (str(key), "")
+            yield from _string_pairs(val)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            yield from _string_pairs(item)
+
+
 class ListParams:
     """The list contract's query parameters — declared once, bound four times.
 
