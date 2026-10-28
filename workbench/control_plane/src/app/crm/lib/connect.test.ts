@@ -211,7 +211,7 @@ describe("the mirror marks (spec 3.3)", () => {
     expect(isLocked(null, null)).toBe(false);
   });
   it("says when an imported record came in, in Native mode only", () => {
-    const zoho = { ext_source: "zoho", created_at: "2026-10-12T10:00:00Z" };
+    const zoho = { ext_source: "zoho", created_at: "2026-10-12T12:00:00Z" };
     expect(importedLine(zoho, "native")).toBe("Imported from Zoho on 12 Oct 2026");
     expect(importedLine(zoho, "mirror")).toBeNull();
     expect(importedLine(zoho, null)).toBeNull();
