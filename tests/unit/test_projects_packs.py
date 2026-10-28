@@ -31,8 +31,6 @@ from typing import Any
 import pytest
 
 pytest.importorskip("agent_framework", reason="MAF not installed")
-pytest.importorskip("skill_projects", reason="skill-projects not installed")
-
 import skill_projects
 from acb_skills import egress as eg
 from acb_skills import skill_families as sf
@@ -521,6 +519,11 @@ def test_the_core_rules_name_the_other_packs_and_no_tool_of_them() -> None:
     for slug in SLUGS[1:]:
         assert slug in rules, slug
     assert "load_skill_tools" in rules
+    # Fix round 2: plan and structure cannot fit beside the core pack, so the
+    # rules send that work to call_agent, and only bulk to the loader.
+    assert 'call call_agent with agent_name "projects-assistant"' in rules
+    assert "Call load_skill_tools with the pack projects-bulk" in rules
+    assert "call load_skill_tools with the pack that you need" not in rules.lower()
     for slug in SLUGS[1:]:
         assert tp.PACKS[slug].rules.count("Use them yourself.") == 1
     assert max(len(tp.rules_for(slug)) for slug in SLUGS) < 3300
@@ -988,3 +991,37 @@ def test_the_skills_catalog_builds_the_projects_tools_once() -> None:
     one = sk._pack_tools_by_name()
     two = sk._pack_tools_by_name()
     assert one["task_detail"] is two["task_detail"] and one["delete_task"] is two["delete_task"]
+
+
+MIXED = [
+    "Make a task from this email with task type Bug",
+    "Make a recurring task from this email",
+    "Make a task from this email and add the task tag urgent",
+    "Archive tasks named in this email",
+    "Make a task from this email about the gantt",
+]
+
+
+@pytest.mark.parametrize("words", MIXED)
+@pytest.mark.parametrize("surface", ["", "projects"])
+def test_a_mixed_email_turn_keeps_email_and_the_core_pack_at_the_measured_base(
+    words: str, surface: str, orchestrator,
+) -> None:
+    """Fix round 2 (P2). Email (31) + core (23) = 110 at base 56. The specific
+    pack cannot join, and dropping the core pack for it would load neither.
+    Mutation: restore the unconditional drop -> only email loads -> red."""
+    base = _real_base(orchestrator)
+    choice = tp.choose(_surface_turn(words, surface), allowed=EVERY, base_tools=base)
+    assert choice.slugs[:2] == ("email", "projects") or (
+        choice.slugs == ("email", "projects", "projects-bulk")), (words, choice)
+    assert "projects" in choice.slugs and "projects" not in choice.skipped
+
+
+def test_a_dropped_core_pack_is_recorded_in_skipped() -> None:
+    """Where the drop is valid it shows in ``Choice.skipped``. Mutation: do
+    not record it -> no log line shows the drop -> red."""
+    choice = tp.choose(
+        _surface_turn("Who has spare team capacity?", "projects"),
+        allowed=EVERY, base_tools=56)
+    assert choice.slugs == ("projects-plan",) and "projects" in choice.skipped
+
