@@ -236,6 +236,26 @@ Run a manual dispatch only when the owner asks for it in your session, or when
 production is down. A dark feature never needs one. If you think a change
 cannot wait, ask the owner.
 
+**⚠️ WORK UNDER A METORITE TASK** *(owner directive, 2026-10-28, D134)*.
+The owner watches the board, so work that is not on it is invisible. Every
+session that changes the repo or a box follows these steps:
+
+1. **Find or make the task.** Call `my_work`. For work that the owner asks for
+   in chat, search for its task with `search_tasks`, or make one with
+   `create_task`. Do this before the first edit.
+2. **Claim it.** Call `claim_task`. A 409 means another session holds it.
+   Take another task.
+3. **Show progress.** Post a short note at least once a minute with
+   `post_agent_activity`, or a comment at each step.
+4. **Link the work.** Put the task URL in the pull request body. Call
+   `add_task_reference` for the branch and the pull request.
+5. **Move the status.** Move the task to review when the pull request opens.
+   Move it to done after the merge, with the evidence in a comment.
+6. **Hand off when you stop.** Call `release_task`, with a note of what is
+   done, what is left and the next step.
+
+A session that only reads or answers needs no task.
+
 **⚠️ TEST ON STAGING BEFORE PRODUCTION** *(owner directive, 2026-10-17)*.
 Staging holds a reduced copy of four organizations. Every outbound switch is
 OFF there, so staging sends no mail and calls no CRM. Write nothing there that
