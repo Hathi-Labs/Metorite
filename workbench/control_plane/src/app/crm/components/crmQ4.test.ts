@@ -19,7 +19,7 @@ import {
   type FieldDef,
 } from "../lib/fields";
 import FieldValue from "./FieldValue";
-import FieldsCard, { FieldsCardView } from "./FieldsCard";
+import FieldsCard, { FieldsCardView, zohoSiteLink } from "./FieldsCard";
 import FieldsPanel from "./FieldsPanel";
 import type { ViewActions } from "../lib/useViewActions";
 import CrmViewBar from "./CrmViewBar";
@@ -191,24 +191,37 @@ describe("the Fields card", () => {
     deals: null,
   };
 
-  it("lists label, type, source, the hidden flag and the options in Mirror mode", () => {
+  it("lists label, type, the hidden flag and the options in Mirror mode", () => {
     const html = renderToStaticMarkup(createElement(FieldsCardView, { byEntity, readOnly: true }));
     expect(html).toContain("Fields come from Zoho.");
-    expect(html).not.toContain("Only a studio admin can edit fields.");
+    expect(html).not.toContain("Field editing is not on for your organization yet.");
     expect(html).toContain("Tier");
-    expect(html).toContain("select");
-    expect(html).toContain("Zoho");
+    // The type reads as in the field studio, and no row carries a "Zoho" tag.
+    expect(html).toContain("Picklist");
+    expect(html).not.toContain(">select<");
+    expect(html).not.toContain(">Zoho<");
     expect(html).toContain("Gold");
     expect(html).toContain("hidden");
-    expect(html).toContain("Metorite");
   });
 
-  it("lists the same in Native mode and says that only a studio admin edits", () => {
+  it("lists the same in Native mode and says field editing is off", () => {
     const html = renderToStaticMarkup(createElement(FieldsCardView, { byEntity, readOnly: false }));
-    expect(html).toContain("Only a studio admin can edit fields.");
+    expect(html).toContain("Field editing is not on for your organization yet.");
     expect(html).not.toContain("Fields come from Zoho.");
     expect(html).toContain("Tier");
     expect(html).not.toContain("<input");
+  });
+
+  it("links Edit fields in Zoho when the Zoho address is known, and never a bad one", () => {
+    const linked = renderToStaticMarkup(
+      createElement(FieldsCardView, { byEntity, readOnly: true, zohoUrl: "https://crm.zoho.com" }),
+    );
+    expect(linked).toMatch(/<a href="https:\/\/crm\.zoho\.com"[^>]*>Edit fields in Zoho<\/a>/);
+    expect(zohoSiteLink([{ ext_url: "https://crm.zoho.com/crm/org1/tab/Potentials/1" }])).toBe(
+      "https://crm.zoho.com",
+    );
+    expect(zohoSiteLink([{ ext_url: "javascript:alert(1)" }, { ext_url: null }])).toBeNull();
+    expect(zohoSiteLink(null)).toBeNull();
   });
 
   it("names the four entities, and an empty one says so", () => {
