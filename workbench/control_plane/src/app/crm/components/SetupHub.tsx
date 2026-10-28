@@ -41,6 +41,7 @@ import {
   type RecordCounts,
 } from "../lib/setup";
 import { invalidateCrmMode, useRecordCounts } from "../lib/useCrmMode";
+import CutoverCard from "./CutoverCard";
 import StartOverDialog from "./StartOverDialog";
 
 const STATUS_TONE: Record<string, BadgeTone> = {
@@ -260,6 +261,7 @@ export default function SetupHubSection({
         busy={{ syncing: syncing || choosing, connecting }}
         onAction={act}
       />
+      {mode === "mirror" && <CutoverCard />}
       <ConfirmDialog
         open={disconnecting !== null}
         title="Disconnect Zoho?"
