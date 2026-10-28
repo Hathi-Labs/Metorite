@@ -2631,7 +2631,8 @@ async def restamp_deal_stage_from_source(
     org = str(organization_id)
     rows = (await db.execute(
         text(
-            "SELECT id, custom->>'Stage_Modified_Time' AS stage_time "
+            "SELECT id, status_changed_at, "
+            "custom->>'Stage_Modified_Time' AS stage_time "
             "FROM crm_deals WHERE organization_id = CAST(:org AS uuid) "
             "AND ext_source = :src "
             # A deal with a native edit still to push is not the provider's.
@@ -2647,6 +2648,10 @@ async def restamp_deal_stage_from_source(
         parsed = _stage_instant(row.stage_time)
         if parsed is None:
             skipped += 1
+            continue
+        # A run in a steady state finds the clock already right. Skip the
+        # round trip, so a sync every 10 minutes writes nothing.
+        if row.status_changed_at == parsed:
             continue
         result = await db.execute(
             text(
