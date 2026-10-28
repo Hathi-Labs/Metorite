@@ -335,6 +335,10 @@ async def _brief_step(org: str, member: str, snap: Snapshot,
             return f"brief:{got}", "template" if got == "sent" else "none"
         return "brief:held", "none"
     if is_open and await outbox.full_brief_due(org, member, due, full_key):
+        if await unattended.state_of(org, BRIEF_JOB, key) == "unknown":
+            # The day's brief possibly reached the member, so the full brief
+            # does not follow it as a retry (AUTO-2).
+            return None, "none"
         cards = plan.on_whatsapp(snap.cards)
         body = plan.compose_brief(cards, app_url(), due, now=snap.now)
         if body is None:

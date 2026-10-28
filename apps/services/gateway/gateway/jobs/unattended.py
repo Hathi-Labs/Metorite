@@ -234,6 +234,17 @@ async def recover(org: str, job: str, *slots: str, now: datetime | None = None) 
     return bool(marked)
 
 
+async def state_of(org: str, job: str, slot: str) -> str | None:
+    """The state of the run of *slot*, or None: no row, or the ledger is off."""
+    check_job(job)
+    check_slot(slot)
+    if not ledger_enabled():
+        return None
+    async with tenant_session(org) as db:
+        got = (await db.execute(text(_STATE_SQL), {"j": job, "s": slot})).first()
+    return None if got is None else str(got[1])
+
+
 async def _mark_orphans(db: Any, job: str, slots: list[str], now: datetime) -> list[str]:
     rows = (await db.execute(text(_ORPHAN_SQL), {
         "e": UNKNOWN_CLASS, "now": now, "j": job, "slots": slots, "r": RUNNER,
