@@ -733,6 +733,9 @@ class TestTheMeterOnARealDatabase:
                     "WHERE attrelid = CAST(:t AS regclass) AND attnum > 0 "
                     "AND NOT attisdropped AND attlen = -1"),
                     {"t": table}).scalars())
+                if table == "email_messages":
+                    # KG-3a: derived search data is named but not counted.
+                    found -= set(storage.MESSAGE_DERIVED_COLUMNS)
                 assert found == set(named), (table, found ^ set(named))
 
 

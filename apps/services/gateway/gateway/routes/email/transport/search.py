@@ -4,8 +4,8 @@ This is the dedicated search surface (``GET /email/search``), distinct from the
 folder-oriented ``/email/messages`` list:
 
   • It searches the WHOLE message — subject + body_text + sender name + email —
-    over an FTS index whose expression matches the query exactly (migration 72),
-    so body matches are found via the GIN index, not a sequential scan.
+    through the stored vector ``em.fts`` (migration 314). Under FORCE RLS no
+    index serves the app role, so a cheap test of each row is the speed-up.
   • It ranks by relevance (``ts_rank_cd``), not just recency, so the best match
     surfaces first — with recency as the tie-break.
   • It searches ACROSS folders and (optionally) across all of the user's
@@ -35,6 +35,7 @@ complete, reliable lexical search on its own.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -53,9 +54,10 @@ from gateway.routes.email.transport.messages import _also_in_by_message
 from sqlalchemy import text
 
 # The tsvector expression — MUST stay byte-for-byte identical to the GIN index
-# in migration 72 (idx_email_messages_fts_body) so the planner uses the index
-# instead of recomputing per row. One constant, referenced everywhere it's
-# needed (WHERE match, rank, headline), so they can never drift apart.
+# in migration 72 (idx_email_messages_fts_body) and to the trigger of migration
+# 314, which fills ``em.fts`` with it. A role that bypasses RLS can use that
+# index. The app role cannot (``docs/rls_and_indexes.md``), so it reads
+# ``_FTS_MATCH`` below.
 _FTS_VECTOR = (
     "to_tsvector('english', "
     "coalesce(em.subject,'') || ' ' || "
@@ -63,6 +65,15 @@ _FTS_VECTOR = (
     "coalesce(em.from_address->>'name','') || ' ' || "
     "coalesce(em.from_address->>'email',''))"
 )
+
+# What the match and the rank read (WS-KG KG-3a, migration 314). The stored
+# column first, and the expression for a row that the backfill has not
+# reached. Under FORCE RLS no index serves the app role
+# (``docs/rls_and_indexes.md``), so the cost of the test of each row is the
+# cost of the search. A stored vector is cheap, and the expression parses the
+# whole body. The trigger of 314 keeps the column equal to the expression, so
+# a row gives the same answer either way.
+_FTS_MATCH = f"COALESCE(em.fts, {_FTS_VECTOR})"
 
 # What the highlighter runs over — subject + body only (sender is shown
 # separately on the card, no need to highlight it inside the snippet).
@@ -192,6 +203,10 @@ async def search_messages(
                     "of magnitude on HTML-heavy mail."),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
+    with_total: bool = Query(
+        True,
+        description="Count every match for ``total``. Company retrieval sets "
+                    "it False: it reads one page and never the count."),
     user: UserContext = Depends(get_current_user),
 ):
     """Ranked search over the user's email — the query surface behind the search
@@ -216,7 +231,7 @@ async def search_messages(
         # Filters-only search: no text ⇒ no FTS predicate and nothing to rank.
         if text_q:
             where.append(
-                f"{_FTS_VECTOR} @@ websearch_to_tsquery('english', :q)")
+                f"{_FTS_MATCH} @@ websearch_to_tsquery('english', :q)")
 
         # Search is the one place "all" spans sent mail too: the browse view
         # excludes it (All shows what arrived), but "what did I tell them?" is
@@ -244,9 +259,15 @@ async def search_messages(
 
         where_sql = " AND ".join(where)
 
-        total = (await db.execute(text(
-            f"SELECT COUNT(*) FROM email_messages em WHERE {where_sql}"
-        ), params)).scalar() or 0
+        # The count visits every match. The Email app shows it, so it is on by
+        # default. Company retrieval turns it off (WS-KG KG-3a): it reads k
+        # hits, and the count doubled the time of each search. Off, ``total``
+        # is None.
+        total: int | None = None
+        if with_total:
+            total = (await db.execute(text(
+                f"SELECT COUNT(*) FROM email_messages em WHERE {where_sql}"
+            ), params)).scalar() or 0
 
         params["limit"] = page_size
         params["offset"] = (page - 1) * page_size
@@ -281,7 +302,7 @@ async def search_messages(
                     "COALESCE(1 - (ee.embedding <=> CAST(:qvec AS vector)), 0)"
                     " AS sim")
                 order_sql = (
-                    "(LEAST(ts_rank_cd(" + _FTS_VECTOR +
+                    "(LEAST(ts_rank_cd(" + _FTS_MATCH +
                     ", websearch_to_tsquery('english', :q)), 1.0) * 0.5"
                     " + COALESCE(1 - (ee.embedding <=> CAST(:qvec AS vector)),"
                     " 0) * 0.5) DESC, em.received_at DESC")
@@ -293,7 +314,7 @@ async def search_messages(
         # <mark> in it, which the list would render as a "match" snippet that
         # matched nothing. Emit an empty highlight instead so the card falls back
         # to its normal preview.
-        rank_select = (f"ts_rank_cd({_FTS_VECTOR},"
+        rank_select = (f"ts_rank_cd({_FTS_MATCH},"
                        " websearch_to_tsquery('english', :q)) AS rank"
                        if text_q else "0.0 AS rank")
         headline_select = (
@@ -357,3 +378,51 @@ async def search_messages(
             "query": text_q,
             "hybrid": bool(join_sql),
         }
+
+
+# ── The backfill of the stored vector (WS-KG KG-3a, migration 314) ──────────
+
+#: The rows that one transaction of the backfill fills.
+BACKFILL_BATCH = 1000
+
+_NO_ID = "00000000-0000-0000-0000-000000000000"
+
+
+async def backfill_fts(
+    org: str, *, batch: int = BACKFILL_BATCH, pause_s: float = 0.2,
+    max_batches: int | None = None,
+) -> dict[str, int]:
+    """Fill ``email_messages.fts`` for each row of *org* that has none.
+
+    Each batch is one short transaction through the tenant seam, so FORCE RLS
+    binds *org*. The batches walk the primary key, so a batch never reads a
+    row twice. A second run finds no NULL and writes nothing. A run that stops
+    keeps its committed batches, and the next run takes the rest.
+
+    The UPDATE sets only ``fts``, so the trigger of 314 does not fire. It
+    writes ``_FTS_VECTOR``, the expression of the trigger. *pause_s* is the
+    sleep between batches, so a sync does not wait behind the backfill.
+    *max_batches* stops the run early, for a test. Returns ``batches`` and
+    ``filled``.
+    """
+    counts = {"batches": 0, "filled": 0}
+    last = _NO_ID
+    while max_batches is None or counts["batches"] < max_batches:
+        async with _tenant_session(org) as db:
+            ids = (await db.execute(text(
+                "WITH b AS (SELECT em.id FROM email_messages em"
+                " WHERE em.organization_id = CAST(:org AS uuid)"
+                " AND em.fts IS NULL AND em.id > CAST(:last AS uuid)"
+                " ORDER BY em.id LIMIT :n FOR UPDATE)"
+                f" UPDATE email_messages em SET fts = {_FTS_VECTOR}"
+                " FROM b WHERE em.id = b.id RETURNING em.id"),
+                {"org": org, "last": last, "n": batch},
+            )).scalars().all()
+        if not ids:
+            break
+        counts["batches"] += 1
+        counts["filled"] += len(ids)
+        last = str(max(ids, key=str))
+        if pause_s > 0:
+            await asyncio.sleep(pause_s)
+    return counts
