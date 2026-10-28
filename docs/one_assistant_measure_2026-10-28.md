@@ -114,3 +114,82 @@ The pack arm passes `replied` 3/3 and `the_corrected_date` 3/3 where delegation 
 - `held_card` rests on three sends for each arm. `one_card` holds the send cards apart from the others and does not tie a card of another write to its own write.
 - Router time varied between run 1 and run 2.
 - The raw results file is not in git. Rebuild it with the commands in `evals/one_assistant_measure/README.md`.
+
+
+---
+
+# Run 3 (2026-10-28): every pack of the owner on
+
+**Verdict: the gate is NOT met, by a small margin.** The pack arm passes 46 of 54 turns, and delegation passes 47 of 54. `no_write` on `reply_correction` turn 1 passes 2 of 3 on the pack arm. The hand-off problem of run 2 is fixed: the pack arm handed off no mail work. The remaining gap is model noise on a few turns, plus one unasked draft.
+
+Code: `a58c34094` on branch `ws67-oa7h-run2-mt-5189fa37`. The pack arm set `TOOL_PACKS=email,email-setup` and `TOOL_PACKS_ORGS` for the eval org, in the eval process only. Before the run, `test_the_pack_arm_turns_on_every_pack_of_the_email_assistant` showed `via_loader` holding `email-assistant` in the first `executor.pack_plan` line. A mutation that sets only `email` turned that test red. The run cost USD 1.21. The Router stayed up, and the tunnel is closed (port 18090 free).
+
+## R3.1 Run 3 against run 2
+
+| Measure | Run 2 delegation | Run 2 pack | Run 3 delegation | Run 3 pack |
+|---|---|---|---|---|
+| Turns that pass every check | 49/54 | 16/54 | 47/54 | 46/54 |
+| Pass count without the hand-off check | 49/54 | 45/54 | 47/54 | 46/54 |
+| `held_card` | 3/3 | 3/3 | 3/3 | 1/1 |
+| `one_card` | 11/11 | 12/12 | 12/12 | 13/13 |
+| `no_write`, `reply_correction` turn 1 | 3/3 | 3/3 | 3/3 | 2/3 |
+| First text, median / mean / p90 s | 3.0 / 10.5 / 31.4 | 3.8 / 9.5 / 23.4 | 3.1 / 8.4 / 23.1 | 3.6 / 4.2 / 7.8 |
+| Turn total, median / mean / p90 s | 21.0 / 25.7 / 50.0 | 16.7 / 22.7 / 47.2 | 27.3 / 29.2 / 48.9 | 11.2 / 11.9 / 18.6 |
+| Cache share | 0.987 | 0.978 | 0.985 | 0.940 |
+| Cost per turn, USD | 0.0075 | 0.0072 | 0.0096 | 0.0129 |
+| Cost of the arm, USD | 0.407 | 0.388 | 0.517 | 0.695 |
+| Turns that hand off mail work | 45 | 31 | 45 | **0** |
+| Turns that hand off setup work | 3 | 2 | 2 | 1 |
+| Turns where `plan_loader` reached the owner | - | 0 | - | 35 |
+| Turns that loaded a pack | - | 17 | - | 50 |
+| Turns where the model called `load_skill_tools` | - | 0 | - | 25 |
+| `via_failed` fallbacks | - | 0 | - | 0 |
+| Turn-kind time with pack items, mean ms | - | 1,721 (5 turns) | - | 2,108 (6 turns) |
+| Turn-kind time without pack items, mean ms | 1,555 | 1,960 | 1,631 | 2,124 |
+
+`plan_loader` reached the owner in the 35 turns that began with no pack. In the other 19 turns, the chat already held the pack (words 6, sticky 13), so nothing was left to reach. Run 3 had a faster Router than run 2, so compare inside a run.
+
+## R3.2 How the pack loaded (54 pack turns)
+
+| Path | Turns |
+|---|---|
+| The model called `load_skill_tools` | 25 |
+| Layer (c), the turn-kind pack item (early, before the first model call) | 6 |
+| Layer (a), the member's words | 6 |
+| Layer (a), sticky from an earlier turn | 13 |
+| No pack | 4 |
+
+The model finds the loader on its own. The `before_run` early load works with a live model: the 6 layer (c) turns logged `executor.packs_turn_kind` and `tool_packs.loaded` with zero model calls before them.
+
+A direct pack turn took a median of 12.0 s (46 turns). A delegation hand-off took a median of 30.7 s (47 turns). The pack arm costs more per turn (USD 0.0129 against 0.0096). The orchestrator on `tier-balanced` does all the work, and a loaded turn has a cache share of 0.939.
+
+## R3.3 The failing pack turns, runs 2 and 3
+
+The cause column reads: **model** (a choice that the rules did not forbid), **rules** (the pack rules lack a line), or **scenario**. No failure came from the persona text.
+
+| Run | Turn | Failed check | Pack loaded | What the model did | Cause |
+|---|---|---|---|---|---|
+| 2 | `exact_reply` r2 | `reply_card` | yes | Called `compose_reply` at once with no search for the named person. The card named another person. | Rules and model |
+| 2 | `exact_reply` r3 | `reply_card` | yes | The same, then asked the member to point to the email | Rules and model |
+| 3 | `exact_reply` r1 | `reply_card`, `text_word_for_word` | no | Never loaded the pack. Asked which mailbox to send from. | Model |
+| 2 | `five_turns` 2 and 3, r3 | `reply_card`, `kiran_in_cc`, `sent_draft` | no | Asked for the text and the address, and called no tool. Delegation failed turn 2 the same way. | Model |
+| 3 | `five_turns` 3 r1, r3 | `sent_draft` | yes | Called `compose_reply` for "send it". That saved a draft and showed a card. It did not call `send_draft`. | Rules and model |
+| 2, 3 | `five_turns` 4 | `rule_in` | yes | Read `list_labels`, saw that Personal needs reconnecting, and refused. Delegation fails this turn too. | Scenario |
+| 3 | `reply_correction` 1 r1 | `no_write` | yes | Searched, read the mail, then called an unasked `compose_reply` | Model against rule 12 (OA-7g) |
+| 2, 3 | `scanned_file` | `no_content_claim`, `tried_the_file`, `admits_unreadable` | mixed | Stated the model and revision from the file name, or never tried the file. Delegation fails this turn as often. | Model |
+| 2 | `read_invoice` r2 | `the_amount`, `the_due_date` | no | Found no invoice and called no mail tool | Model |
+
+The pack rules say: "Send it means: call compose_reply or send_draft at once". That line allows `compose_reply` where `send_draft` is right, and it explains the two `sent_draft` fails. The rules also lack a line that says to find the email with `query_inbox` before `compose_reply` when the member names a person. Both gaps are a rules edit.
+
+The `reply_card` count in run 3 is 5/6 on both arms. The run 2 gap (3/6) was two `exact_reply` turns.
+
+## R3.4 The gate of §4.2.8 OA-7h
+
+| Line | Delegation | Pack | Met |
+|---|---|---|---|
+| The pack arm passes at least as many turns | 47/54 | 46/54 | **No** (one turn short) |
+| `held_card` from turn 2 | 3/3 | 1/1 | Yes (one send only) |
+| `one_card` | 12/12 | 13/13 | Yes |
+| `no_write` on `reply_correction` turn 1 | 3/3 | 2/3 | **No** |
+
+**Not met.** The design now works: the pack arm hands off no mail work, the model finds the loader, and the early load is confirmed. The two misses are model choices on a small sample. Next steps are a rules edit for the two gaps above, and a larger repeat count. A gap of one turn is inside the noise of three runs.

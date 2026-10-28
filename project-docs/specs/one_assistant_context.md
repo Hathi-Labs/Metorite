@@ -26,15 +26,15 @@ below, PR #1383). The flag is off on each box, so no run loads a pack yet.
 OA-7e is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7e"
 below, PR #1389). It adds layer (b), the meta tool `load_skill_tools`.
 
-OA-7h is PARTLY BUILT (2026-10-28): the gate is NOT met. Run 2 (2026-10-28,
-`docs/one_assistant_measure_2026-10-28.md`, on `8f9b25e7d`) passed pack 16 of
-54 and delegation 49 of 54. Without the hand-off check it passed pack 45 and
-delegation 49. The cause is the eval flag `TOOL_PACKS=email`. OA-7i removes the
-specialist only when the loader can reach every pack of the owner, and `email`
-alone leaves `email-setup` out, so `via_loader` was empty in all 54 pack turns
-and 31 turns handed off mail work. The pack loaded in 17 turns: 12 by layer
-(a), 5 by layer (c), none by `load_skill_tools`. Run 3 sets
-`TOOL_PACKS=email,email-setup`. Run 1 is `docs/one_assistant_measure_2026-10-27.md`.
+OA-7h is PARTLY BUILT (2026-10-28): the gate is NOT met, by a small margin.
+Run 3 (`docs/one_assistant_measure_2026-10-28.md`, with
+`TOOL_PACKS=email,email-setup`) passed pack 46 of 54 and delegation 47 of 54.
+`no_write` on `reply_correction` turn 1 passed 2 of 3 on the pack arm. The pack
+arm handed off no mail work, the model called `load_skill_tools` in 25 turns, and
+the pack arm ran in a median of 11.2 s against 27.3 s. Run 2 failed because
+`TOOL_PACKS=email` left `email-setup` out, so OA-7i did nothing. Next: a rules
+edit (find the email before `compose_reply`, and "send it" means `send_draft`),
+then a larger repeat. Run 1 is `docs/one_assistant_measure_2026-10-27.md`.
 
 OA-7d is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7d"
 below). The dock sends `surface`, and a turn from `/email` loads the `email`
