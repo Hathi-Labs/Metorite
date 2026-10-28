@@ -26,6 +26,15 @@ below, PR #1383). The flag is off on each box, so no run loads a pack yet.
 OA-7e is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7e"
 below, PR #1389). It adds layer (b), the meta tool `load_skill_tools`.
 
+OA-7h is PARTLY BUILT (2026-10-27): the harness in
+`evals/one_assistant_measure` runs the real `email` pack. The first live run
+on 2026-10-27 did not meet the gate (pack 14 of 54, delegation 48 of 54). The
+pack loaded in only 12 of 54 turns, and in those 12 the model handed off no
+mail work (3 of the 12 handed off setup work). The fix is OA-7i: with packs on, an owner's specialist tool leaves the
+chat when the loader can reach every pack of that owner. The live measure
+runs again after OA-7i. The report `docs/one_assistant_measure_2026-10-27.md`
+is the record of run 1.
+
 OA-7d is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7d"
 below). The dock sends `surface`, and a turn from `/email` loads the `email`
 pack with no email word.

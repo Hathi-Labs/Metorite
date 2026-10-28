@@ -4733,6 +4733,17 @@ Owner decision, 2026-10-27 (see D129). Metorite #805 and #806. It amends D95.2 f
 2. **The order.** Fracktal cuts over first, after CRM-Z10a, c, e and b pass on staging. Shaurrya Tele goes second, because its custom modules also need CRM-Z10d.
 3. **The ask.** The owner asks each customer and runs each production cutover (CRM-Z10-run). The agent prepares the preview and the counts for that talk.
 
+*Amended 2026-10-27 (owner, in chat): "we keep the ZOHO labels, but we should be able to edit them later on. Possibly have the AI suggest improvements to the way in which the CRM is set up." So the AI may propose a better setup, and an admin approves each change, as with the mapping suggestions (CRM-Q20-2). It never applies a change by itself. That is a later slice, not part of CRM-Z10. The owner puts the CRM bug fixes and the setup UX before the cutover, and both customers cut over later.*
+
+### D134 — CRM settings fold into five sections, the AI's questions sit in one list, and a Field map pick applies at once (2026-10-27)
+
+Owner answers, 2026-10-27, in chat, to three questions after the audit of the CRM setup screens. Workstream: **WS-CRM**. Owning spec: `specs/crm_platform.md` §20.17 (CRM-U13).
+
+1. **Five sections for an admin of a Zoho mirror:** Connection, Needs your input, Fields, Pipeline and AI rules. Today there are eleven. Each old `?section=` id stays as an alias, so no link breaks.
+2. **One list holds what the AI asks.** "Needs your input" holds the open questions, the suggestions, the Field map proposals and the choices that members made in chat. Its main button accepts each suggestion of the AI. An admin can change or undo each one later.
+3. **A Field map pick applies at once.** The draft step goes. The change history keeps each version, and an admin can go back to any of them.
+
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 | Work | Owner | Mirrors (link-only after §5) |
