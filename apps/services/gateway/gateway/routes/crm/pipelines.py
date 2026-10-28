@@ -158,16 +158,14 @@ async def read_pipelines(db: Any, only: str | None = None) -> list[PipelineModel
 
 
 async def _native_pipeline(db: Any, pipeline_id: str) -> None:
-    """404 for an unknown pipeline, 409 ``mirrored_pipeline`` for one that a
-    provider owns. An org that went from Mirror back to Native keeps such rows,
-    and the next sync would overwrite an edit."""
-    row = await require_row(db, "crm_pipelines", pipeline_id, "Pipeline")
+    """404 for an unknown pipeline, 409 ``mirror_mode_settings`` in Mirror mode.
+
+    CRM-Z10c: the lock follows the mode and not ``ext_source``. An org that went
+    from Mirror back to Native keeps its imported pipelines, and it may edit
+    them. ``assert_writable`` is the only guard.
+    """
+    await require_row(db, "crm_pipelines", pipeline_id, "Pipeline")
     await assert_writable(db, current_tenant(), "crm_pipelines")
-    if getattr(row, "ext_source", None):
-        raise HTTPException(status_code=409, detail={
-            "code": "mirrored_pipeline",
-            "message": "This pipeline comes from the provider. Change it there.",
-        })
 
 
 async def _one(db: Any, pipeline_id: str) -> PipelineModel:

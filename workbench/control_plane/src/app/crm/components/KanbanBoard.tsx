@@ -43,7 +43,7 @@ import {
   type RotLevel,
 } from "../lib/board";
 import { cardLabel } from "../lib/cardLabel";
-import { isMirrored, type CrmMode } from "../lib/connect";
+import { isLocked, type CrmMode } from "../lib/connect";
 import { isRetired } from "../lib/emptyStages";
 import { money, shortEmail, stageAgeLabel } from "../lib/format";
 import { useCompactMoney } from "../lib/useCompactMoney";
@@ -181,6 +181,7 @@ export default function KanbanBoard({
                   entity={entity}
                   card={card}
                   locked={readOnly}
+                  mode={mode}
                   atCursor={card.id === cursorId}
                   warnLost={needsLostReason(card, lane.status)}
                   // WS-26h rot: presentation only. The card's EXISTING
@@ -265,11 +266,13 @@ function RecordCard({
   onDragStart,
   onDragEnd,
   onOpen,
+  mode,
 }: {
   entity: "deals" | "leads";
   card: Card;
   /** Mirror mode: the card never drags. */
   locked: boolean;
+  mode: CrmMode;
   /** The sheet shows this record. `j` and `k` move it (CRM-X4). */
   atCursor: boolean;
   warnLost: boolean;
@@ -291,7 +294,7 @@ function RecordCard({
       // A record that Zoho owns does not move here (CRM-Z7): the write would
       // be refused, and a card that snaps back reads as a bug. In Mirror mode
       // no card moves at all.
-      draggable={!locked && !isMirrored(card as unknown as Record<string, unknown>)}
+      draggable={!locked && !isLocked(card as unknown as Record<string, unknown>, mode)}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onActivate={() => onOpen()}
