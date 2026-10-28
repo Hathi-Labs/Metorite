@@ -585,6 +585,7 @@ export default function AgentChat({
   const restoreCappedText = useCallback((text: string) => restoreCappedRef.current(text), []);
   const {
     messages, isLoading, error, sendMessage, steerMessage, stopGeneration, setMessages,
+    stopping, stopError,
     outage, retryHeld, run,
   } = useAgentChat({
     agentName: currentAgentName,
@@ -1691,8 +1692,10 @@ export default function AgentChat({
 
   /** Stop: it halts the run. There is no "stop and send". */
   const handleStop = useCallback(() => {
+    // One cancel at a time: Esc during "Stopping" does not send a second.
+    if (stopping) return;
     void stopGeneration();
-  }, [stopGeneration]);
+  }, [stopGeneration, stopping]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2784,11 +2787,27 @@ export default function AgentChat({
               <ChatSendButton
                 action={primary}
                 onClick={primary === "stop" ? handleStop : undefined}
-                disabled={primary === "send" ? !input.trim() || loadingHistory : false}
+                // A Stop waits for the server's answer (UXD-4).
+                loading={primary === "stop" && stopping}
+                label={primary === "stop" && stopping ? "Stopping the reply" : undefined}
+                title={primary === "stop" && stopping ? "Stopping…" : undefined}
+                disabled={primary === "send" ? !input.trim() || loadingHistory : stopping}
                 large={phoneChrome}
               />
             </div>
           </div>
+
+          {/* A Stop that did not stop the run: it is still live, and the
+              next Stop (or Esc) tries again (UXD-4). */}
+          {stopError && isRunActive && !stopping && (
+            <p role="alert" data-chat-stop-error className="mt-1.5 flex items-start gap-1.5 px-1 text-[11px] text-destructive">
+              <Icon name="AlertCircle" size={12} className="mt-0.5 shrink-0" />
+              <span className="min-w-0">{stopError}</span>
+              <Button type="button" variant="text" size="none" onClick={handleStop} className="shrink-0 font-medium">
+                Retry
+              </Button>
+            </p>
+          )}
 
           {/* A steer the server refused, or a model that cannot take one.
               The words are back in the box. */}

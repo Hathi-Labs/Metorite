@@ -188,8 +188,9 @@ export interface EditDeps {
   getMessages: () => readonly ChatMessage[];
   /** True while a run is in flight on the thread. */
   isRunning: () => boolean;
-  /** Stop the run and resolve when the stop has settled on the server. */
-  stop: () => Promise<void>;
+  /** Stop the run and resolve when the stop has settled on the server, with
+   *  the reason of a failed cancel, else null (UXD-4). */
+  stop: () => Promise<string | null | void>;
   /** Start the new run, and resolve with the server's answer to the edit.
    *  It replaces the superseded turn only when the answer is yes. */
   send: (text: string, opts: { supersedes: string }) => Promise<EditOutcome>;
@@ -214,6 +215,10 @@ export async function submitEdit(
   if (!trimmed || lastUserMessageId(before) !== messageId) {
     return { ok: false, reason: EDIT_NOT_LAST };
   }
-  if (deps.isRunning()) await deps.stop();
+  if (deps.isRunning()) {
+    // A cancel that failed leaves the old run live, so the edit waits (UXD-4).
+    const failed = await deps.stop();
+    if (failed) return { ok: false, reason: failed };
+  }
   return deps.send(trimmed, { supersedes: messageId });
 }
