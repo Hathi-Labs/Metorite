@@ -1515,6 +1515,20 @@ The PR and CI data come from `github_integration.md` (WS-54). This section draws
 
 **What EA-13 does not build.** A server filter for "Agent work" (the toggle filters loaded rows). A dismiss of a failed run (EA12-12). A new run state. A status move on a pull request event, which `github_integration.md` §12 owns.
 
+**7. The agent card (EA-13g, PLANNED 2026-10-27, Metorite 842).** Owner ask: the card of a task that an agent holds looks different from a human's card. The look comes from `AGENT_STATES`, and it adds no palette.
+
+| Run state | The card |
+|---|---|
+| `working`, `answered` | A 2 px accent edge with a light that travels round it, and a live line at the foot: the client glyph, a live dot and `agent_note` |
+| `queued` | A still, dashed accent edge |
+| `awaiting` | A still amber edge, and "Needs you" with the first line of the question |
+| `stale` | A muted, dashed gray edge, and "<client> idle" |
+| `failed` | A still red edge |
+
+- The edge is a status loop (`DESIGN_SYSTEM.md` §4), and it moves `transform` only. With reduced motion it stays lit and still.
+- Only cards on screen move, and at most 12 at once.
+- `working` moves from gray to the theme accent for the card edge. That amends the "neutral" tone of §12.1 for the edge only. The pill keeps its glyph.
+
 ### 12.3 One AI for each task (EA-14a)
 
 Owner directive, 2026-10-20. If one AI session holds a task, no other AI session may claim it or start work on it.
