@@ -156,6 +156,11 @@ class Pack:
     #: matched and the request cannot hold both (:func:`choose`). Empty for a
     #: pack with no such core pack.
     replaces_core: str = ""
+    #: OA-8f. One line, in the member's terms, on WHEN to load this pack. The
+    #: catalog of ``load_skill_tools`` shows it in place of the long summary of
+    #: the skill family, because the catalog rides in every call. Empty: the
+    #: catalog falls back to the summary.
+    when: str = ""
 
     @property
     def owner(self) -> str:
@@ -373,6 +378,9 @@ No Projects agent exists to hand a task to.
   that it gives, and do not ask for an id that it gives.
 - Send independent reads together, as parallel calls. Call one write at a
   time, because each write shows a card.
+- For two or more new tasks at once, call load_skill_tools with the pack
+  projects-bulk, then call create_tasks once. That shows one card for the set.
+  Do not call create_task once for each task.
 - Find a task by a short word with find_tasks. It searches descriptions too.
   Try a shorter fragment before you say that a task does not exist. Another
   person's work is list_tasks with assignee, never my_work.
@@ -542,6 +550,7 @@ _PROJECTS_SURFACES = ("projects", "tasks", "calendar")
 PACKS: dict[str, Pack] = {
     "email": Pack(
         slug="email",
+        when="Load for mail: read, search, reply, send, drafts and my inbox.",
         rules=_EMAIL_RULES,
         references=(_EMAIL_LINK,),
         # Fix round 1 (P1-B): each word needs an email context. A bare
@@ -559,6 +568,7 @@ PACKS: dict[str, Pack] = {
     ),
     "email-setup": Pack(
         slug="email-setup",
+        when="Load to set up mail: rules, writing style, senders and categories.",
         rules=_EMAIL_SETUP_RULES,
         words=(
             "email rule", "email rules", "mail rule", "mail rules",
@@ -574,6 +584,7 @@ PACKS: dict[str, Pack] = {
     # is out: "fix the CI pipeline" and "lead the standup" must not load it.
     "crm-records": Pack(
         slug="crm-records",
+        when="Load to change deals, leads and contacts, or to read a record's timeline. Plain reads of the pipeline need no load.",
         rules=_CRM_RULES,
         words=(
             "crm", "zoho", "sales pipeline", "deal pipeline", "pipeline stage",
@@ -588,6 +599,7 @@ PACKS: dict[str, Pack] = {
     # specialist first, so the core pack outlasts the three others.
     "projects": Pack(
         slug="projects",
+        when="Load for tasks, projects and my work: find, create, update, assign and complete.",
         rules=_PROJECTS_RULES,
         words=_PROJECTS_WORDS,
         delegation_refusal=_PROJECTS_DELEGATION_REFUSED,
@@ -597,6 +609,7 @@ PACKS: dict[str, Pack] = {
     ),
     "projects-plan": Pack(
         slug="projects-plan",
+        when="Load for team load, capacity, reports, a timeline or a plan from a goal.",
         rules=_PROJECTS_PLAN_RULES,
         words=_PROJECTS_PLAN_WORDS,
         replaces_core="projects",
@@ -606,6 +619,7 @@ PACKS: dict[str, Pack] = {
     ),
     "projects-structure": Pack(
         slug="projects-structure",
+        when="Load to change a project's statuses, fields, tags, access or saved views.",
         rules=_PROJECTS_STRUCTURE_RULES,
         words=_PROJECTS_STRUCTURE_WORDS,
         replaces_core="projects",
@@ -615,6 +629,7 @@ PACKS: dict[str, Pack] = {
     ),
     "projects-bulk": Pack(
         slug="projects-bulk",
+        when="Load for two or more tasks at once, and to archive, move or delete.",
         rules=_PROJECTS_BULK_RULES,
         words=_PROJECTS_BULK_WORDS,
         replaces_core="projects",
@@ -783,6 +798,29 @@ PACKS_KEY = "tool_packs"
 MAX_PACKS = 3
 #: The most tools in one request. OA-5 measured 110 tools at 51 of 54 turns.
 MAX_REQUEST_TOOLS = 110
+#: OA-8f. The floor tools that the orchestrator gives up while
+#: ``ORCHESTRATOR_FLOOR_TRIM`` is on. Each had no call in seven days of
+#: production use, and the email and Projects agents opt out of most of them.
+#: ``call_agent`` stays: the loader text and the Projects route line name it.
+#: Every name is a floor tool that an agent may opt out of
+#: (``_tool_injection.FLOOR_OPT_OUT_ALLOWED``).
+FLOOR_TRIM_TOOLS: frozenset[str] = frozenset({
+    "list_integrations", "get_errors", "run_diagnostics", "save_note",
+    "recall_notes", "load_artifact_kit", "manage_todo_list",
+    "call_agents_parallel", "decide",
+})
+
+
+def floor_trim_enabled() -> bool:
+    """THE one reader of ``ORCHESTRATOR_FLOOR_TRIM``. Off when settings fail."""
+    try:
+        from acb_common import get_settings
+
+        return bool(getattr(get_settings(), "orchestrator_floor_trim", False))
+    except Exception:
+        return False
+
+
 #: A sticky pack leaves at the start of a turn when no tool of it ran in the
 #: last 8 member turns.
 DECAY_TURNS = 8
@@ -1081,7 +1119,10 @@ def _replaces_specialist(slug: str) -> bool:
     return bool(found is not None and found.delegation_refusal)
 
 
-def choose(turn: PackTurn, *, allowed: Iterable[str], base_tools: int) -> Choice:
+def choose(
+    turn: PackTurn, *, allowed: Iterable[str], base_tools: int,
+    specialists: Mapping[str, int] | None = None,
+) -> Choice:
     """The packs of this turn: layer (a), with no model call (§4.2.2).
 
     1. The decay: a sticky pack leaves when no tool of it ran in the last
@@ -1103,6 +1144,11 @@ def choose(turn: PackTurn, *, allowed: Iterable[str], base_tools: int) -> Choice
     an admin turned off. A slug that is no pack is dropped, and so is a pack
     of more than :data:`MAX_PACK_TOOLS` tools, so that limit holds in a run
     and not only in the registry fence.
+
+    OA-8f: *specialists* gives, for an owner, how many of its specialist tools
+    are in the *base_tools* count. A chosen pack that replaces its owner's
+    specialist (:func:`_specialist_leaves`) takes those tools out of the sum,
+    because the run does not send them. With none given, the sum is as it was.
     """
     allow = frozenset(allowed) & frozenset(
         slug for slug in PACKS if is_pack(slug) and _tool_count(slug) <= MAX_PACK_TOOLS)
@@ -1128,6 +1174,19 @@ def choose(turn: PackTurn, *, allowed: Iterable[str], base_tools: int) -> Choice
                 order.append(slug)
     sticky = {entry.slug: entry for entry in live}
     skipped: list[str] = []
+    stays = dict(specialists or {})
+
+    def _total(slugs: Sequence[str]) -> int:
+        """The tools of the request with *slugs*: the base, the packs, less the
+        specialist tools that the packs replace (OA-8f)."""
+        gone = {
+            found.owner for slug in slugs
+            if (found := pack(slug)) is not None and found.delegation_refusal
+            and _specialist_leaves(found.owner, slugs, ())
+        }
+        return (base_tools + sum(_tool_count(slug) for slug in slugs)
+                - sum(stays.get(owner, 0) for owner in gone))
+
     # OA-8b fix round 1 (P2-2): a specific pack that the words matched takes the
     # place of its owner's core pack when the request cannot hold both. The core
     # pack matched by a word ("tasks") or by the surface, and the member asked
@@ -1137,21 +1196,20 @@ def choose(turn: PackTurn, *, allowed: Iterable[str], base_tools: int) -> Choice
         found = pack(slug)
         core = found.replaces_core if found is not None else ""
         if not (core and core in order and core not in sticky and slug not in sticky
-                and base_tools + sum(_tool_count(s) for s in order) > MAX_REQUEST_TOOLS):
+                and _total(order) > MAX_REQUEST_TOOLS):
             continue
         # Fix round 2 (P2): drop the core pack only when the order WITHOUT it
         # fits both caps. Else keep it, and the cap loop skips the specific
         # pack as before (a mixed email turn keeps email and the core pack).
         rest = [s for s in order if s != core]
         if (len(rest) <= MAX_PACKS
-                and base_tools + sum(_tool_count(s) for s in rest) <= MAX_REQUEST_TOOLS):
+                and _total(rest) <= MAX_REQUEST_TOOLS):
             order.remove(core)
             layers.pop(core, None)
             skipped.append(core)
 
     def _over() -> bool:
-        return len(order) > MAX_PACKS or (
-            base_tools + sum(_tool_count(slug) for slug in order) > MAX_REQUEST_TOOLS)
+        return len(order) > MAX_PACKS or _total(order) > MAX_REQUEST_TOOLS
 
     while order and _over():
         olds = [sticky[slug] for slug in order if slug in sticky]
@@ -1591,9 +1649,17 @@ def catalog(slugs: Iterable[str]) -> str:
     """One index line for each pack of *slugs*: the slug and the ``summary``
     of its family, the line that ``build_catalog`` prices."""
     return "\n".join(
-        f"- {slug}: {SKILL_FAMILIES[slug]['summary']}" + (LOAD_MCP_NOTE if _reads_strangers(slug) else "")
+        f"- {slug}: {_catalog_line(slug)}" + (LOAD_MCP_NOTE if _reads_strangers(slug) else "")
         for slug in slugs if pack(slug) is not None
     )
+
+
+def _catalog_line(slug: str) -> str:
+    """The text of a catalog line: the ``when`` line of the pack (OA-8f), or
+    the summary of its skill family."""
+    found = pack(slug)
+    return (found.when if found is not None and found.when else "") or str(
+        SKILL_FAMILIES[slug]["summary"])
 
 
 #: Added to the catalog line of a pack of an owner that reads stranger text.

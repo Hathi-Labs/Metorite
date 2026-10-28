@@ -137,11 +137,12 @@ def _floor_opt_out(
     away in silence. A config without the key changes nothing.
     """
     raw = agent_config.get("floor_opt_out") if isinstance(agent_config, dict) else None
+    trimmed = _floor_trim(agent_name)
     if not raw:
-        return frozenset()
+        return trimmed
     if not isinstance(raw, list):
         _log.warning("executor.floor_opt_out_not_a_list", agent=agent_name)
-        return frozenset()
+        return trimmed
     names = {str(n) for n in raw}
     refused = names - FLOOR_OPT_OUT_ALLOWED
     if refused:
@@ -151,7 +152,24 @@ def _floor_opt_out(
             hint="only a floor or workflow tool, and never ask_questions or "
                  "emit_generative_ui",
         )
-    return frozenset(names & FLOOR_OPT_OUT_ALLOWED)
+    return frozenset(names & FLOOR_OPT_OUT_ALLOWED) | trimmed
+
+
+def _floor_trim(agent_name: str | None) -> frozenset[str]:
+    """The floor tools that the orchestrator gives up while
+    ``ORCHESTRATOR_FLOOR_TRIM`` is on (WS-67 OA-8f), or none.
+
+    It rides the seam of :func:`_floor_opt_out`, so the estimate of the pack
+    cap, the scope, the addendum and the final list all agree. Only the
+    orchestrator trims. With the flag off it returns no name, and a run is
+    byte-identical to one without this code. Fence:
+    ``tests/unit/test_floor_trim.py``.
+    """
+    if agent_name != "orchestrator":
+        return frozenset()
+    from acb_skills.tool_packs import FLOOR_TRIM_TOOLS, floor_trim_enabled
+
+    return FLOOR_TRIM_TOOLS & FLOOR_OPT_OUT_ALLOWED if floor_trim_enabled() else frozenset()
 
 
 def _sandbox_covers(agent_name: str, organization_id: str) -> bool:
@@ -3430,6 +3448,26 @@ def _delegates_to(tool: Any) -> str | None:
     return str(target) if target else None
 
 
+def _facts_removed() -> frozenset[str]:
+    """The CRM facts tools that :func:`_add_crm_facts_block` will take from a
+    run of this org (WS-67 OA-8f), for the count of the pack cap.
+
+    An org off ``CRM_QUESTIONS_ORGS`` loses all of them, and so does a box with
+    the list empty: :func:`_facts_withheld` names none there, but the block
+    still removes them when it reads no fact row. A listed org loses what
+    :func:`_facts_withheld` names. The block may still remove more when its
+    read returns no row, and that read needs the network, so the estimate
+    keeps those tools and errs on the safe side."""
+    try:
+        from acb_skills.crm_tools import questions_org_on
+        from acb_skills.org_facts_tools import FACTS_GATED_TOOLS
+    except ImportError:
+        return frozenset()
+    if not questions_org_on(_run_org_or_none()):
+        return frozenset(fn.__name__ for fn in FACTS_GATED_TOOLS)
+    return _facts_withheld()
+
+
 def _pack_base_count(
     agent: Any, *, agent_name: str | None, tool_scope: list[str] | None,
     agent_config: dict[str, Any] | None, disabled: frozenset[str],
@@ -3442,17 +3480,24 @@ def _pack_base_count(
     the workflow trio, and the same withheld names (D85, the floor opt-out,
     WhatsApp and the CRM facts). So with no app grant it equals the count
     after the injection (fix round 1, Q1). A granted app tool is not
-    counted, because its read needs the database. ``_add_crm_facts_block``
-    can only take tools away after it. The executor logs the true count
-    after the injection (``executor.pack_request_tools``) and warns past
-    the cap.
+    counted, because its read needs the database, and an MCP tool is not
+    counted either (the log line ``executor.request_tools`` shows both).
+
+    OA-8f: the CRM facts tools that ``_add_crm_facts_block`` removes for an
+    org off ``CRM_QUESTIONS_ORGS`` are not counted (:func:`_facts_removed`).
+    The loader is not counted here, because a context provider holds it:
+    :func:`_apply_tool_packs` adds it when the run offers it. The executor
+    logs the true count after the injection (``executor.pack_request_tools``)
+    and warns past the cap. Fence: ``tests/unit/test_exact_tool_count.py``.
     """
     from acb_skills.skill_families import SKILL_FAMILIES
 
     names = {_tool_name(t) for _label, pool in _own_tool_pools(agent) for t in pool}
+    gone = _facts_removed()
+    names -= gone  # `_add_crm_facts_block` drops an agent's own copy too
     withheld = (_withheld_shell_tools(agent_name, agent_config)
                 | _floor_opt_out(agent_name, agent_config)
-                | _whatsapp_withheld() | _facts_withheld())
+                | _whatsapp_withheld() | gone)
     scope = _resolve_injected_scope(tool_scope, disabled_families=disabled, withheld=withheld)
     chain = [_tool_name(fn) for fn in _collect_injectable_platform_tools(agent_name)]
     injected = set(chain) if scope is None else {name for name in chain if name in scope}
@@ -3461,6 +3506,22 @@ def _pack_base_count(
     if "workflows" not in disabled:
         injected |= set(SKILL_FAMILIES["workflows"]["tools"])
     return len(names | (injected - withheld))
+
+
+def _specialist_counts(
+    pool: Sequence[Any], only: Iterable[str] | None = None,
+) -> dict[str, int]:
+    """How many specialist tools of each owner the *pool* holds (OA-8f).
+
+    *only* narrows the answer to those owners. ``tool_packs.choose`` reads it
+    to price the tools that a chosen pack takes out of the request."""
+    keep = None if only is None else frozenset(only)
+    out: dict[str, int] = {}
+    for item in pool:
+        target = _delegates_to(item)
+        if target and (keep is None or target in keep):
+            out[target] = out.get(target, 0) + 1
+    return out
 
 
 async def _apply_tool_packs(
@@ -3527,12 +3588,22 @@ async def _apply_tool_packs(
     allow = frozenset(allowed) - disabled
     base = _pack_base_count(agent, agent_name=agent_name, tool_scope=tool_scope,
                             agent_config=agent_config, disabled=disabled)
-    if offer_loader and tool_packs.loadable(allow):
+    specialists = _specialist_counts(pool)
+    choice = tool_packs.choose(
+        turn, allowed=allow, base_tools=base, specialists=specialists)
+    loader_counted = False
+    if offer_loader and tool_packs.loadable(allow, choice.slugs):
         # OA-7e: the load tool rides in the request too, so the cap counts
-        # it. When layer (a) then loads each allowed pack, the run offers no
-        # load tool, and the count errs by one on the safe side.
+        # it. OA-8f: only when it will be offered, which is when an allowed
+        # pack stays unloaded after layer (a). The choice then runs again with
+        # the load tool in the count. When layer (a) loads each allowed pack,
+        # the run offers no load tool and the count has none. The plan can
+        # still refuse the offer when no pack fits, and the count then errs
+        # by one on the safe side.
         base += 1
-    choice = tool_packs.choose(turn, allowed=allow, base_tools=base)
+        loader_counted = True
+        choice = tool_packs.choose(
+            turn, allowed=allow, base_tools=base, specialists=specialists)
     await tool_packs.drop_sticky(turn, choice.evicted)
     if not choice.slugs:
         _log.info("executor.packs_chosen", packs=[], evicted=list(choice.evicted),
@@ -3574,6 +3645,12 @@ async def _apply_tool_packs(
         return None
     record = tool_packs.PackRun.of(turn, choice, loaded, via)
     replaced = frozenset(record.replaced)
+    # OA-8f: the count that the run sends once this apply is done: the base
+    # (with the load tool only when the plan offers it), the pack tools, less
+    # each specialist tool that leaves (a pack's, and an owner the loader
+    # reaches). The inject step after this one adds nothing to the count.
+    sent_tools = (base - int(loader_counted) + int(bool(plan.offered))
+                  + len(added) - sum(_specialist_counts(pool, replaced).values()))
     opts["instructions"] = persona
     pool[:] = [t for t in pool if _delegates_to(t) not in replaced]
     pool.extend(added)
@@ -3597,6 +3674,7 @@ async def _apply_tool_packs(
     _log.info(
         "executor.pack_plan", offered=list(plan.offered), via_loader=sorted(via),
         packs=list(record.slugs), base_tools=base, current_tools=current,
+        sent_tools=sent_tools,
     )
     applied = PackApply(builds=tuple(builds), record=record, run_key=run_key)
     if offer_loader and not _offer_pack_loader(agents, applied, plan) and via:

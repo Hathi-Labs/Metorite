@@ -144,6 +144,14 @@ def test_the_core_pack_fits_the_core_budget() -> None:
     assert len(_family("projects")) == 23
 
 
+@pytest.fixture(autouse=True)
+def _facts_tools_stay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cap numbers here are those of an org on ``CRM_QUESTIONS_ORGS``, which
+    holds the 3 CRM facts tools (55 tools). A unit test has no such org, and
+    the estimate then drops them (OA-8f), so this keeps the old boundary."""
+    monkeypatch.setattr(ti, "_facts_removed", ti._facts_withheld)
+
+
 # ── 2. The cap ──────────────────────────────────────────────────────────────
 
 
