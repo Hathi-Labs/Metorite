@@ -2,11 +2,20 @@
 
 Spec: ``project-docs/specs/crm_app.md`` §5.1 system 2 · ticket WS-26g.
 
-    GET /crm/reports/pipeline    per open/ongoing stage: count, ₹, ₹ weighted
+    GET /crm/reports/pipeline    per open/ongoing stage: count, amount, weighted
     GET /crm/reports/funnel      per stage: entered, conversion-forward %,
                                  median dwell days over DEPARTURES
     GET /crm/reports/win-loss    trailing 90d: win rate, cycle, lost reasons
-    GET /crm/reports/owners      per owner: open deals, ₹ weighted, ₹ won 90d
+    GET /crm/reports/owners      per owner: open deals, weighted, won 90d
+
+**An amount is never added across currencies** (HANDOFF H-333). ``crm_deals``
+carries a ``currency`` per deal and the app holds no exchange rate, so every
+money figure is computed for ONE currency at a time. The scalar fields hold the
+PRIMARY currency (INR first, the column default, then the other codes in code
+order), named in ``currency``. The other currencies' own figures sit in
+``others``, each with its own code. A CRM with one currency has ``others == []``
+and the same numbers as before. The currencies are read as rows and tallied in
+Python, and each aggregate gets a bound ``currency = :currency`` predicate.
 
 **Read-only.** Nothing here writes a row, reaches Zoho, reads a flag or needs a
 migration: every number is a query over what ``crm_status_changes``,
@@ -88,7 +97,7 @@ from sqlalchemy import text
 #: ways, and bound as a parameter like every other caller value here.
 DEAL_ENTITY_TYPE = "deal"
 
-#: The trailing window the win/loss block and the leaderboard's "won ₹" read.
+#: The trailing window the win/loss block and the leaderboard's "won" amount read.
 #: A constant rather than a query parameter: §5.1 fixes it at 90 days, and a
 #: caller-chosen window is a saved-view feature (WS-26i), not a report.
 WINDOW_DAYS = 90
@@ -113,25 +122,44 @@ MAX_OWNERS = 25
 
 SECONDS_PER_DAY = 86_400.0
 
+#: The column default of ``crm_deals.currency`` (migration 144), and so the
+#: currency that leads every report. The app holds no organization currency.
+DEFAULT_CURRENCY = "INR"
+
 
 # ── Models ──────────────────────────────────────────────────────────────────
+
+class MoneyTotals(BaseModel):
+    """The amount and weighted figures of ONE currency."""
+
+    currency: str
+    amount: float
+    weighted: float
+
 
 class StageTotals(BaseModel):
     """One lane of the forecast: what is in it and what it is worth."""
 
     status: StatusModel
+    #: Deals of every currency. A count is not an amount.
     count: int
+    #: ``amount`` and ``weighted`` are in :attr:`currency` ONLY. The lane's
+    #: other currencies sit in :attr:`others`.
+    currency: str = DEFAULT_CURRENCY
     amount: float
     #: 0.0 on any lane whose type is not in ``WEIGHTED_TYPES`` — this block only
     #: renders open/ongoing lanes, so in practice it is never the zero.
     weighted: float
+    others: list[MoneyTotals] = []
 
 
 class PipelineReport(BaseModel):
     stages: list[StageTotals]
     count: int
+    currency: str = DEFAULT_CURRENCY
     amount: float
     weighted: float
+    others: list[MoneyTotals] = []
 
 
 class FunnelStage(BaseModel):
@@ -170,13 +198,26 @@ class FunnelReport(BaseModel):
     unmatched: list[UnmatchedStage]
 
 
+class LostReasonOther(BaseModel):
+    currency: str
+    amount: float
+
+
 class LostReasonShare(BaseModel):
     label: str
     deals: int
+    currency: str = DEFAULT_CURRENCY
     amount: float
+    others: list[LostReasonOther] = []
     #: False for :data:`UNATTRIBUTED_LOST` — the bucket is a report of missing
     #: data, not a reason somebody chose, and the two must not add up as one.
     attributed: bool
+
+
+class WinLossOther(BaseModel):
+    currency: str
+    won_amount: float
+    lost_amount: float
 
 
 class WinLossReport(BaseModel):
@@ -187,8 +228,11 @@ class WinLossReport(BaseModel):
     lost: int
     #: ``won / (won + lost)`` as a percentage; 0.0 when nothing closed.
     win_rate: float
+    #: ``won_amount`` and ``lost_amount`` are in :attr:`currency` ONLY.
+    currency: str = DEFAULT_CURRENCY
     won_amount: float
     lost_amount: float
+    others: list[WinLossOther] = []
     #: Mean ``created_at`` → ``closed_at`` over the deals in the window, in
     #: days. ``None`` when none of them can be measured — never 0.0, which is
     #: a measurement.
@@ -200,13 +244,21 @@ class WinLossReport(BaseModel):
     lost_reasons: list[LostReasonShare]
 
 
+class OwnerOther(BaseModel):
+    currency: str
+    weighted: float
+    won_amount: float
+
+
 class OwnerRow(BaseModel):
     #: ``None`` is the unassigned bucket — a deal nobody owns still forecasts
     #: money, and hiding it makes the leaderboard disagree with the board.
     owner_email: str | None
     open_deals: int
+    currency: str = DEFAULT_CURRENCY
     weighted: float
     won_amount: float
+    others: list[OwnerOther] = []
 
 
 class OwnerLeaderboard(BaseModel):
@@ -231,14 +283,34 @@ async def _deal_stages(db: Any) -> list[Any]:
     return await read_statuses(db, "crm_deal_statuses")
 
 
+def _ordered_currencies(codes: Any) -> list[str]:
+    """The distinct codes, :data:`DEFAULT_CURRENCY` first, then in code order."""
+    found = {str(code) for code in codes if code is not None}
+    return sorted(found, key=lambda code: (code != DEFAULT_CURRENCY, code))
+
+
+async def _currencies(db: Any) -> list[str]:
+    """The currencies the deals carry. Read as rows and tallied here, with no
+    ``GROUP BY`` (module docstring). Never empty: no deal reads as the default."""
+    rows = (await db.execute(text("SELECT currency FROM crm_deals"), {})).fetchall()
+    return _ordered_currencies(getattr(r, "currency", None) for r in rows) or [
+        DEFAULT_CURRENCY
+    ]
+
+
 async def _lane_totals(
     db: Any,
     lane: Any,
     *,
+    currency: str,
     extra_where: tuple[str, ...] = (),
     params: dict[str, Any] | None = None,
 ) -> _Totals:
-    """Count, ₹ and ₹ weighted over one WHOLE lane.
+    """Count, amount and weighted amount over one WHOLE lane, in ONE currency.
+
+    ``currency`` is required and always lands in the WHERE clause, so no SUM
+    here can add two currencies (HANDOFF H-333). ``count`` is the count of that
+    currency's deals.
 
     The same statement shape ``get_pipeline`` emits, reusing the same
     :data:`~gateway.routes.crm.core.WEIGHTED_SQL`, so the two forecast surfaces
@@ -254,9 +326,12 @@ async def _lane_totals(
     Every fragment in ``extra_where`` is a literal written in this module;
     caller values are always bound parameters.
     """
-    where = " AND ".join(("status_id = CAST(:status_id AS uuid)", *extra_where))
+    where = " AND ".join((
+        "status_id = CAST(:status_id AS uuid)", "currency = :currency", *extra_where,
+    ))
     scope = {
         **(params or {}),
+        "currency": currency,
         "status_id": str(lane.id),
         # The lane's own default is the inheritance fallback, bound rather than
         # interpolated like every other value here.
@@ -304,22 +379,51 @@ async def pipeline_report(
     (``core.WEIGHTED_TYPES``).
     """
     async with _tenant_session() as db:
+        lanes = [
+            lane for lane in await _deal_stages(db)
+            if getattr(lane, "type", "open") in WEIGHTED_TYPES
+        ]
+        currencies = await _currencies(db)
+        grid = {
+            code: [await _lane_totals(db, lane, currency=code) for lane in lanes]
+            for code in currencies
+        }
+        # Only a currency with a deal in these lanes is reported, so a CRM whose
+        # USD deals are all closed shows no "plus USD 0".
+        live = [c for c in currencies if any(t.count for t in grid[c])]
+        primary = live[0] if live else currencies[0]
         stages: list[StageTotals] = []
-        for lane in await _deal_stages(db):
-            if getattr(lane, "type", "open") not in WEIGHTED_TYPES:
-                continue
-            totals = await _lane_totals(db, lane)
+        for index, lane in enumerate(lanes):
+            main = grid[primary][index]
             stages.append(StageTotals(
                 status=status_wire(lane),
-                count=totals.count,
-                amount=totals.amount,
-                weighted=totals.weighted,
+                count=sum(grid[c][index].count for c in currencies),
+                currency=primary,
+                amount=main.amount,
+                weighted=main.weighted,
+                others=[
+                    MoneyTotals(
+                        currency=c,
+                        amount=grid[c][index].amount,
+                        weighted=grid[c][index].weighted,
+                    )
+                    for c in live if c != primary and grid[c][index].count
+                ],
             ))
         return PipelineReport(
             stages=stages,
             count=sum(s.count for s in stages),
-            amount=sum(s.amount for s in stages),
-            weighted=sum(s.weighted for s in stages),
+            currency=primary,
+            amount=sum(t.amount for t in grid[primary]),
+            weighted=sum(t.weighted for t in grid[primary]),
+            others=[
+                MoneyTotals(
+                    currency=c,
+                    amount=sum(t.amount for t in grid[c]),
+                    weighted=sum(t.weighted for t in grid[c]),
+                )
+                for c in live if c != primary
+            ],
         )
 
 
@@ -526,7 +630,7 @@ async def win_loss_report(
         since = until - timedelta(days=WINDOW_DAYS)
         closed = (await db.execute(
             text(
-                "SELECT id, status_id, amount, created_at, closed_at, "
+                "SELECT id, status_id, amount, currency, created_at, closed_at, "
                 "lost_reason_id FROM crm_deals "
                 "WHERE closed_at >= :since AND closed_at <= :until"
             ),
@@ -536,6 +640,10 @@ async def win_loss_report(
         won = [d for d in closed if types.get(str(d.status_id)) == "won"]
         lost = [d for d in closed if types.get(str(d.status_id)) == "lost"]
         cycles = [c for c in (_cycle_days(d) for d in won + lost) if c is not None]
+        codes = _ordered_currencies(
+            getattr(d, "currency", None) for d in won + lost
+        ) or [DEFAULT_CURRENCY]
+        primary = codes[0]
 
         return WinLossReport(
             window_days=WINDOW_DAYS,
@@ -543,18 +651,31 @@ async def win_loss_report(
             won=len(won),
             lost=len(lost),
             win_rate=_percent(len(won), len(won) + len(lost)),
-            won_amount=_amount(won),
-            lost_amount=_amount(lost),
+            currency=primary,
+            won_amount=_amount(won, primary),
+            lost_amount=_amount(lost, primary),
+            others=[
+                WinLossOther(
+                    currency=code,
+                    won_amount=_amount(won, code),
+                    lost_amount=_amount(lost, code),
+                )
+                for code in codes[1:]
+            ],
             average_cycle_days=(
                 round(sum(cycles) / len(cycles), 1) if cycles else None
             ),
             closed_without_date=await _undated_closed(db, lanes),
-            lost_reasons=await _lost_breakdown(db, lost),
+            lost_reasons=await _lost_breakdown(db, lost, codes),
         )
 
 
-def _amount(deals: list[Any]) -> float:
-    return float(sum(float(getattr(d, "amount", 0) or 0) for d in deals))
+def _amount(deals: list[Any], currency: str) -> float:
+    """The sum of the deals that carry ``currency``. Never a cross-currency sum."""
+    return float(sum(
+        float(getattr(d, "amount", 0) or 0)
+        for d in deals if str(getattr(d, "currency", None)) == currency
+    ))
 
 
 def _cycle_days(deal: Any) -> float | None:
@@ -598,7 +719,9 @@ async def _undated_closed(db: Any, lanes: list[Any]) -> int:
     return total
 
 
-async def _lost_breakdown(db: Any, lost: list[Any]) -> list[LostReasonShare]:
+async def _lost_breakdown(
+    db: Any, lost: list[Any], codes: list[str],
+) -> list[LostReasonShare]:
     """Lost deals in the window, by reason, with a named unattributed bucket.
 
     The bucket is not a rounding error: ``import_zoho`` bypasses both
@@ -618,21 +741,30 @@ async def _lost_breakdown(db: Any, lost: list[Any]) -> list[LostReasonShare]:
         key = str(getattr(deal, "lost_reason_id", None) or "")
         grouped.setdefault(labels.get(key), []).append(deal)
 
-    shares = [
-        LostReasonShare(
-            label=label, deals=len(deals), amount=_amount(deals), attributed=True,
+    primary = codes[0]
+
+    def share(label: str, deals: list[Any], attributed: bool) -> LostReasonShare:
+        present = {str(getattr(d, "currency", None)) for d in deals}
+        return LostReasonShare(
+            label=label,
+            deals=len(deals),
+            currency=primary,
+            amount=_amount(deals, primary),
+            others=[
+                LostReasonOther(currency=code, amount=_amount(deals, code))
+                for code in codes[1:] if code in present
+            ],
+            attributed=attributed,
         )
+
+    shares = [
+        share(label, deals, True)
         for label, deals in grouped.items() if label is not None
     ]
     shares.sort(key=lambda s: (-s.deals, s.label))
     unattributed = grouped.get(None, [])
     if unattributed:
-        shares.append(LostReasonShare(
-            label=UNATTRIBUTED_LOST,
-            deals=len(unattributed),
-            amount=_amount(unattributed),
-            attributed=False,
-        ))
+        shares.append(share(UNATTRIBUTED_LOST, unattributed, False))
     return shares
 
 
@@ -642,7 +774,7 @@ async def _lost_breakdown(db: Any, lost: list[Any]) -> list[LostReasonShare]:
 async def owner_leaderboard(
     user: UserContext = Depends(get_current_user),
 ) -> OwnerLeaderboard:
-    """Per owner: open deals, ₹ weighted, and ₹ won in the trailing window.
+    """Per owner: open deals, weighted, and won in the trailing window.
 
     ``owner_email`` is *assignment*, not an ACL (D-CRM-3) — this is a
     leaderboard over who is carrying what, not a permission surface, and every
@@ -650,11 +782,18 @@ async def owner_leaderboard(
     """
     async with _tenant_session() as db:
         lanes = await _deal_stages(db)
-        ranked, omitted = await _owners(db)
+        ranked, omitted, held = await _owners(db)
+        codes = _ordered_currencies(c for found in held.values() for c in found) or [
+            DEFAULT_CURRENCY
+        ]
         until = now()
         since = until - timedelta(days=WINDOW_DAYS)
         rows = [
-            await _owner_row(db, lanes, owner, since=since, until=until)
+            await _owner_row(
+                db, lanes, owner, since=since, until=until,
+                primary=codes[0],
+                others=[c for c in codes[1:] if c in held.get(owner, set())],
+            )
             for owner in ranked
         ]
         rows.sort(key=lambda r: (-r.weighted, -r.won_amount, r.owner_email or "~"))
@@ -663,7 +802,9 @@ async def owner_leaderboard(
         )
 
 
-async def _owners(db: Any) -> tuple[list[str | None], int]:
+async def _owners(
+    db: Any,
+) -> tuple[list[str | None], int, dict[str | None, set[str]]]:
     """The owners to compute, ranked by TOTAL deal count, and how many were cut.
 
     Read as rows and counted in Python rather than as a ``GROUP BY``: it is one
@@ -690,14 +831,20 @@ async def _owners(db: Any) -> tuple[list[str | None], int]:
     report a count for rows its own figures never summed. Both render as
     "Unassigned" in the UI, which is the right place for that judgement.
     """
-    rows = (await db.execute(text("SELECT owner_email FROM crm_deals"), {})).fetchall()
+    rows = (await db.execute(
+        text("SELECT owner_email, currency FROM crm_deals"), {},
+    )).fetchall()
     tally: dict[str | None, int] = {}
+    held: dict[str | None, set[str]] = {}
     for row in rows:
         stored = getattr(row, "owner_email", None)
         email = None if stored is None else str(stored).strip().lower()
         tally[email] = tally.get(email, 0) + 1
+        code = getattr(row, "currency", None)
+        if code is not None:
+            held.setdefault(email, set()).add(str(code))
     ranked = sorted(tally, key=lambda e: (-tally[e], e is None, e or ""))
-    return ranked[:MAX_OWNERS], max(0, len(ranked) - MAX_OWNERS)
+    return ranked[:MAX_OWNERS], max(0, len(ranked) - MAX_OWNERS), held
 
 
 def _owner_scope(owner: str | None) -> tuple[tuple[str, ...], dict[str, Any]]:
@@ -723,39 +870,46 @@ def _owner_scope(owner: str | None) -> tuple[tuple[str, ...], dict[str, Any]]:
 
 async def _owner_row(
     db: Any, lanes: list[Any], owner: str | None, *, since: Any, until: Any,
+    primary: str, others: list[str],
 ) -> OwnerRow:
     where, params = _owner_scope(owner)
     open_deals = 0
-    weighted = 0.0
-    won_amount = 0.0
-    for lane in lanes:
-        kind = getattr(lane, "type", "open")
-        if kind in WEIGHTED_TYPES:
-            totals = await _lane_totals(
-                db, lane, extra_where=where, params=params,
-            )
-            open_deals += totals.count
-            weighted += totals.weighted
-        elif kind == "won":
-            # Won ₹ is scoped to the SAME window the win/loss block uses —
-            # BOTH bounds included — so the two reports cannot print two
-            # different "won" numbers on one screen. NULL `closed_at` falls
-            # outside it (every imported won deal, until the owner runs f4's
-            # backfill) and so does a future one (f4's proxy is a forecast
-            # date, so imported deals routinely carry them).
-            totals = await _lane_totals(
-                db, lane,
-                extra_where=(
-                    *where,
-                    "closed_at >= :closed_since",
-                    "closed_at <= :closed_until",
-                ),
-                params={**params, "closed_since": since, "closed_until": until},
-            )
-            won_amount += totals.amount
+    weighted = {code: 0.0 for code in (primary, *others)}
+    won_amount = dict(weighted)
+    for code in weighted:
+        for lane in lanes:
+            kind = getattr(lane, "type", "open")
+            if kind in WEIGHTED_TYPES:
+                totals = await _lane_totals(
+                    db, lane, currency=code, extra_where=where, params=params,
+                )
+                open_deals += totals.count
+                weighted[code] += totals.weighted
+            elif kind == "won":
+                # Won amount is scoped to the SAME window the win/loss block
+                # uses, BOTH bounds included, so the two reports cannot print
+                # two different "won" numbers on one screen. NULL `closed_at`
+                # falls outside it (every imported won deal, until the owner
+                # runs f4's backfill) and so does a future one (f4's proxy is a
+                # forecast date, so imported deals routinely carry them).
+                totals = await _lane_totals(
+                    db, lane, currency=code,
+                    extra_where=(
+                        *where,
+                        "closed_at >= :closed_since",
+                        "closed_at <= :closed_until",
+                    ),
+                    params={**params, "closed_since": since, "closed_until": until},
+                )
+                won_amount[code] += totals.amount
     return OwnerRow(
         owner_email=owner,
         open_deals=open_deals,
-        weighted=weighted,
-        won_amount=won_amount,
+        currency=primary,
+        weighted=weighted[primary],
+        won_amount=won_amount[primary],
+        others=[
+            OwnerOther(currency=code, weighted=weighted[code], won_amount=won_amount[code])
+            for code in others
+        ],
     )

@@ -1077,12 +1077,9 @@ _REPORT_TITLES: dict[str, str] = {
     "pipeline": "Pipeline", "funnel": "Funnel", "win-loss": "Win and loss",
     "owners": "Owners",
 }
-#: The kinds whose route sums ``crm_deals.amount``. The route carries no
-#: currency: it adds the amounts of every deal currency into one figure
-#: (``gateway/routes/crm/reports.py``, HANDOFF H-333). So the INR label is the
-#: label the text answer uses, and the report says how the sum was made.
-_MONEY_KINDS = frozenset({"pipeline", "win-loss", "owners"})
-CURRENCY_NOTE = "Amounts are summed across deal currencies."
+#: Each money figure of a report route is in ONE currency (HANDOFF H-333). The
+#: scalar fields are in the row's ``currency``. The other currencies sit in the
+#: row's ``others``, each with its own code. Code labels each amount with it.
 #: A bar chart holds 12 bars, and a table visual 20 rows.
 REPORT_CHART_BARS = 12
 REPORT_TABLE_ROWS = 20
@@ -1091,6 +1088,44 @@ REPORT_TABLE_ROWS = 20
 def _rupees(value: Any) -> int:
     """An amount in whole rupees, as the text answer prints it."""
     return round(float(value or 0))
+
+
+def _code(row: dict[str, Any]) -> str:
+    """The currency code of a report row. A row from an old route reads INR."""
+    return str(row.get("currency") or "INR")
+
+
+def _plus(row: dict[str, Any], fields: tuple[tuple[str, str], ...]) -> str:
+    """The " · plus USD 200 (weighted USD 100)" tail of a text line, or "".
+
+    ``fields`` pairs a key of each ``others`` entry with the word that names it.
+    The first pair may have an empty word, because it can be the amount itself.
+    """
+    parts = []
+    for other in row.get("others") or []:
+        if not isinstance(other, dict):
+            continue
+        code = _code(other)
+        head, *rest = fields
+        lead = f"{head[1]} " if head[1] else ""
+        text = f"plus {lead}{code} {float(other.get(head[0]) or 0):,.0f}"
+        if rest:
+            text += " (" + ", ".join(
+                f"{word} {code} {float(other.get(key) or 0):,.0f}"
+                for key, word in rest
+            ) + ")"
+        parts.append(text)
+    return "".join(f" · {part}" for part in parts)
+
+
+def _other_rows(rows: list[dict[str, Any]], name: Callable[[dict[str, Any]], str],
+                keys: tuple[str, ...]) -> list[list[Any]]:
+    """Table rows for the figures in the ``others`` of each row."""
+    return [
+        [name(row), _code(other), *(_rupees(other.get(key)) for key in keys)]
+        for row in rows for other in row.get("others") or []
+        if isinstance(other, dict)
+    ]
 
 
 def _cut_note(shown: int, total: int, noun: str) -> str:
@@ -1139,23 +1174,38 @@ def _table_section(heading: str, title: str, columns: list[str],
 def _pipeline_spec(data: dict[str, Any]) -> dict[str, Any]:
     stages = [s for s in data.get("stages") or [] if isinstance(s, dict)]
     count, amount, weighted = data["count"], data["amount"], data["weighted"]
+    code = _code(data)
+    others = [o for o in data.get("others") or [] if isinstance(o, dict)]
     sections: list[dict[str, Any]] = []
     if stages:
         sections.append(_chart_section(
-            "Value by stage", *_stage_bars(stages, "amount", "Value by stage (INR)", "INR")))
+            "Value by stage",
+            *_stage_bars(stages, "amount", f"Value by stage ({code})", code)))
     sections.append(_table_section(
-        "Stages", "Each open stage", ["Stage", "Deals", "Value (INR)", "Weighted (INR)"],
+        "Stages", "Each open stage",
+        ["Stage", "Deals", f"Value ({code})", f"Weighted ({code})"],
         [[str(s["status"]["name"]), s["count"], _rupees(s["amount"]), _rupees(s["weighted"])]
          for s in stages]))
+    extra = _other_rows(stages, lambda s: str(s["status"]["name"]),
+                        ("amount", "weighted"))
+    if extra:
+        sections.append(_table_section(
+            "Other currencies", "Each open stage in another currency",
+            ["Stage", "Currency", "Value", "Weighted"], extra))
+    kpis: list[dict[str, Any]] = [
+        {"label": "Open deals", "value": count},
+        {"label": "Pipeline value", "value": _rupees(amount), "unit": code},
+        {"label": "Weighted forecast", "value": _rupees(weighted), "unit": code},
+    ]
+    kpis.append({"label": "Open stages", "value": len(stages)})
     return {
-        "summary": (f"**{count} open deals** worth INR {_rupees(amount):,}, weighted "
-                    f"INR {_rupees(weighted):,}, in {len(stages)} stages."),
-        "kpis": [
-            {"label": "Open deals", "value": count},
-            {"label": "Pipeline value", "value": _rupees(amount), "unit": "INR"},
-            {"label": "Weighted forecast", "value": _rupees(weighted), "unit": "INR"},
-            {"label": "Open stages", "value": len(stages)},
-        ],
+        "summary": (f"**{count} open deals** worth {code} {_rupees(amount):,}, weighted "
+                    f"{code} {_rupees(weighted):,}"
+                    + "".join(f", plus {_code(o)} {_rupees(o.get('amount')):,}"
+                              f" (weighted {_code(o)} {_rupees(o.get('weighted')):,})"
+                              for o in others)
+                    + f", in {len(stages)} stages."),
+        "kpis": kpis,
         "sections": sections,
     }
 
@@ -1197,12 +1247,13 @@ def _funnel_spec(data: dict[str, Any]) -> dict[str, Any]:
 
 def _win_loss_spec(data: dict[str, Any]) -> dict[str, Any]:
     won, lost = data["won"], data["lost"]
+    code = _code(data)
     kpis: list[dict[str, Any]] = [
         {"label": "Won", "value": won},
         {"label": "Lost", "value": lost},
         {"label": "Win rate", "value": data["win_rate"], "unit": "%"},
-        {"label": "Won value", "value": _rupees(data["won_amount"]), "unit": "INR"},
-        {"label": "Lost value", "value": _rupees(data["lost_amount"]), "unit": "INR"},
+        {"label": "Won value", "value": _rupees(data["won_amount"]), "unit": code},
+        {"label": "Lost value", "value": _rupees(data["lost_amount"]), "unit": code},
     ]
     if data.get("average_cycle_days") is not None:
         kpis.append({"label": "Average cycle", "value": data["average_cycle_days"],
@@ -1217,10 +1268,23 @@ def _win_loss_spec(data: dict[str, Any]) -> dict[str, Any]:
         closed["text"] = "No deal closed in this window."
     reasons = [r for r in data.get("lost_reasons") or [] if isinstance(r, dict)]
     sections = [closed]
+    others = [o for o in data.get("others") or [] if isinstance(o, dict)]
+    if others:
+        sections.append(_table_section(
+            "Other currencies", "Won and lost value in another currency",
+            ["Currency", "Won value", "Lost value"],
+            [[_code(o), _rupees(o.get("won_amount")), _rupees(o.get("lost_amount"))]
+             for o in others]))
     if reasons:
         sections.append(_table_section(
-            "Lost reasons", "Lost deals by reason", ["Reason", "Deals", "Value (INR)"],
+            "Lost reasons", "Lost deals by reason",
+            ["Reason", "Deals", f"Value ({code})"],
             [[str(r["label"]), r["deals"], _rupees(r["amount"])] for r in reasons]))
+        extra = _other_rows(reasons, lambda r: str(r["label"]), ("amount",))
+        if extra:
+            sections.append(_table_section(
+                "Lost reasons in other currencies", "Lost value by reason",
+                ["Reason", "Currency", "Value"], extra))
     return {
         "period": f"The last {data['window_days']} days, since {data['since']}",
         "summary": (f"**{won} won** and {lost} lost since {data['since']}. "
@@ -1238,17 +1302,26 @@ def _owners_spec(data: dict[str, Any]) -> dict[str, Any]:
     if omitted:
         kpis.append({"label": "Owners not in the report", "value": omitted})
     kpis.append({"label": "Won window", "value": window, "unit": "days"})
+    code = _code(owners[0]) if owners else "INR"
     text = f"Won amounts cover the last {window} days."
     if omitted:
         text += f" {omitted} more owners are not in the report."
+    sections = [_table_section(
+        "Owners", "Each owner",
+        ["Owner", "Open deals", f"Weighted ({code})", f"Won ({code})"],
+        [[str(o.get("owner_email") or "Unassigned"), o["open_deals"],
+          _rupees(o["weighted"]), _rupees(o["won_amount"])] for o in owners],
+        text)]
+    extra = _other_rows(owners, lambda o: str(o.get("owner_email") or "Unassigned"),
+                        ("weighted", "won_amount"))
+    if extra:
+        sections.append(_table_section(
+            "Other currencies", "Each owner in another currency",
+            ["Owner", "Currency", "Weighted", "Won"], extra))
     return {
         "summary": f"**{len(owners)} owners**, ranked by their deals in play. {text}",
         "kpis": kpis,
-        "sections": [_table_section(
-            "Owners", "Each owner", ["Owner", "Open deals", "Weighted (INR)", "Won (INR)"],
-            [[str(o.get("owner_email") or "Unassigned"), o["open_deals"],
-              _rupees(o["weighted"]), _rupees(o["won_amount"])] for o in owners],
-            text)],
+        "sections": sections,
     }
 
 
@@ -1266,8 +1339,7 @@ def _crm_report_spec(report: str, data: dict[str, Any],
     return {"title": f"CRM report · {_REPORT_TITLES[report]}",
             **_REPORT_SPECS[report](data),
             "date": day,
-            "sources": [f"CRM {report}, {day}",
-                        *([CURRENCY_NOTE] if report in _MONEY_KINDS else [])]}
+            "sources": [f"CRM {report}, {day}"]}
 
 
 # read_only=False, idempotent=False in TOOL_ANNOTATIONS (§14.10.9): with
@@ -1290,13 +1362,16 @@ async def crm_report(kind: str, page: int = 1, make_report: bool = False) -> str
             return await _overlay_report(report, mod)
     if report == "pipeline":
         lines = [
-            f"- {s['status']['name']}: {s['count']} deals · INR {s['amount']:,.0f}"
-            f" · weighted INR {s['weighted']:,.0f}"
+            f"- {s['status']['name']}: {s['count']} deals · {_code(s)} {s['amount']:,.0f}"
+            f" · weighted {_code(s)} {s['weighted']:,.0f}"
+            + _plus(s, (("amount", ""), ("weighted", "weighted")))
             for s in data.get("stages") or []
         ]
         lines.append(
-            f"Total: {data.get('count', 0)} deals · INR {data.get('amount', 0):,.0f}"
-            f" · weighted INR {data.get('weighted', 0):,.0f}"
+            f"Total: {data.get('count', 0)} deals · {_code(data)} "
+            f"{data.get('amount', 0):,.0f}"
+            f" · weighted {_code(data)} {data.get('weighted', 0):,.0f}"
+            + _plus(data, (("amount", ""), ("weighted", "weighted")))
         )
     elif report == "funnel":
         lines = [
@@ -1310,16 +1385,22 @@ async def crm_report(kind: str, page: int = 1, make_report: bool = False) -> str
         lines = [
             f"Since {data.get('since')}: won {data.get('won')}, lost "
             f"{data.get('lost')}, win rate {data.get('win_rate')}%.",
-            f"Won INR {data.get('won_amount', 0):,.0f}, lost INR "
-            f"{data.get('lost_amount', 0):,.0f}. Closed with no date: "
-            f"{data.get('closed_without_date', 0)}.",
+            f"Won {_code(data)} {data.get('won_amount', 0):,.0f}, lost {_code(data)} "
+            f"{data.get('lost_amount', 0):,.0f}"
+            + "".join(
+                f", plus won {_code(o)} {float(o.get('won_amount') or 0):,.0f}, lost "
+                f"{_code(o)} {float(o.get('lost_amount') or 0):,.0f}"
+                for o in data.get("others") or [] if isinstance(o, dict))
+            + f". Closed with no date: {data.get('closed_without_date', 0)}.",
             *(f"- Lost reason {r['label']}: {r['deals']} deals"
               for r in data.get("lost_reasons") or []),
         ]
     else:
         lines = [
             f"- {o.get('owner_email') or 'Unassigned'}: {o['open_deals']} open · "
-            f"weighted INR {o['weighted']:,.0f} · won INR {o['won_amount']:,.0f}"
+            f"weighted {_code(o)} {o['weighted']:,.0f} · won {_code(o)} "
+            f"{o['won_amount']:,.0f}"
+            + _plus(o, (("weighted", "weighted"), ("won_amount", "won")))
             for o in data.get("owners") or []
         ]
     shown = _page_of(lines, page, "lines")

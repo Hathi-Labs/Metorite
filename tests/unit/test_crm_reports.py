@@ -118,6 +118,9 @@ async def test_pipeline_report_totals_each_open_lane_and_the_board(
     assert report.count == 3
     assert report.amount == 700000
     assert report.weighted == 130000
+    # One currency: the same scalars as before, and nothing in `others`.
+    assert report.currency == "INR" and report.others == []
+    assert all(st.others == [] for st in report.stages)
 
 
 @pytest.mark.asyncio
@@ -210,7 +213,7 @@ async def test_weighted_parity_against_the_emitted_sql(
     # `reports._deal_stages`, so the overlay reaches `:stage_probability`.
     (lane,) = await crm_core.read_statuses(db, "crm_deal_statuses")
 
-    totals = await crm_reports._lane_totals(db, lane)
+    totals = await crm_reports._lane_totals(db, lane, currency="INR")
 
     assert totals.weighted == pytest.approx(row["expected_weighted"])
 
@@ -235,6 +238,117 @@ def test_the_weighted_formula_has_exactly_one_definition() -> None:
 
     assert crm_pipeline.WEIGHTED_SQL is crm_core.WEIGHTED_SQL
     assert "COALESCE(probability, :stage_probability)" in crm_core.WEIGHTED_SQL
+
+
+# ── Currency (HANDOFF H-333) ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_pipeline_report_never_adds_two_currencies(db: FakeCrmDB) -> None:
+    lanes = seeded_board(db)
+    deal(db, lanes["qualification"], amount=1000, probability=50)
+    deal(db, lanes["qualification"], amount=200, probability=50, currency="USD")
+    deal(db, lanes["proposal"], amount=400, probability=50, currency="USD")
+
+    report = await crm_reports.pipeline_report(user=USER)
+
+    by_name = {s.status.name: s for s in report.stages}
+    assert report.currency == "INR"
+    assert (report.amount, report.weighted, report.count) == (1000, 500, 3)
+    assert [(o.currency, o.amount, o.weighted) for o in report.others] == [
+        ("USD", 600, 300),
+    ]
+    assert by_name["Qualification"].amount == 1000
+    assert by_name["Qualification"].count == 2
+    assert [o.amount for o in by_name["Qualification"].others] == [200]
+    assert by_name["Proposal"].amount == 0
+    assert [o.amount for o in by_name["Proposal"].others] == [400]
+
+
+@pytest.mark.asyncio
+async def test_a_crm_with_only_usd_leads_with_usd(db: FakeCrmDB) -> None:
+    lanes = seeded_board(db)
+    deal(db, lanes["qualification"], amount=200, probability=50, currency="USD")
+
+    report = await crm_reports.pipeline_report(user=USER)
+
+    assert (report.currency, report.amount, report.others) == ("USD", 200, [])
+
+
+@pytest.mark.asyncio
+async def test_win_loss_splits_won_lost_and_reasons_by_currency(
+    db: FakeCrmDB,
+) -> None:
+    lanes = seeded_board(db)
+    reason = db.seed("crm_lost_reasons", label="Price", position=1)
+    closed = crm_core.now() - timedelta(days=5)
+    deal(db, lanes["won"], amount=1000, closed_at=closed)
+    deal(db, lanes["won"], amount=200, closed_at=closed, currency="USD")
+    deal(db, lanes["lost"], amount=300, closed_at=closed, currency="USD",
+         lost_reason_id=str(reason.id))
+
+    report = await crm_reports.win_loss_report(user=USER)
+
+    assert report.currency == "INR"
+    assert (report.won_amount, report.lost_amount) == (1000, 0)
+    assert [(o.currency, o.won_amount, o.lost_amount) for o in report.others] == [
+        ("USD", 200, 300),
+    ]
+    (share,) = report.lost_reasons
+    assert (share.amount, [(o.currency, o.amount) for o in share.others]) == (
+        0, [("USD", 300)],
+    )
+
+
+@pytest.mark.asyncio
+async def test_owners_split_weighted_and_won_by_currency(db: FakeCrmDB) -> None:
+    lanes = seeded_board(db)
+    closed = crm_core.now() - timedelta(days=5)
+    deal(db, lanes["proposal"], amount=1000, probability=50, owner_email="a@x.io")
+    deal(db, lanes["proposal"], amount=200, probability=50, owner_email="a@x.io",
+         currency="USD")
+    deal(db, lanes["won"], amount=300, owner_email="a@x.io", closed_at=closed,
+         currency="USD")
+
+    board = await crm_reports.owner_leaderboard(user=USER)
+
+    (row,) = board.owners
+    assert (row.currency, row.weighted, row.won_amount, row.open_deals) == (
+        "INR", 500, 0, 2,
+    )
+    assert [(o.currency, o.weighted, o.won_amount) for o in row.others] == [
+        ("USD", 100, 300),
+    ]
+
+
+def test_every_money_sum_in_reports_is_bound_to_a_currency() -> None:
+    """The fence of H-333. A call of ``_lane_totals`` or ``_amount`` that names
+    no currency would add the currencies again. The behaviour fence is
+    ``test_crm_reports_currency_r8.py``."""
+    import re
+
+    source = inspect.getsource(crm_reports)
+    calls = [
+        m for m in re.finditer(r"(?<![\w.])(?:_lane_totals|_amount)\(", source)
+        if not source[:m.start()].endswith(("def ", "async def "))
+    ]
+    assert len(calls) >= 8
+    for call in calls:
+        depth, i = 1, call.end()
+        while depth:
+            depth += {"(": 1, ")": -1}.get(source[i], 0)
+            i += 1
+        args = source[call.end():i - 1]
+        assert "currency" in args or re.search(r",\s*(primary|code)\s*$", args), (
+            source[call.start():i]
+        )
+    # The one statement that holds the SUM carries the predicate.
+    assert '"currency = :currency"' in source
+    root = Path(__file__).resolve().parents[2]
+    for folder in ("packages", "apps"):
+        for path in (root / folder).rglob("*.py"):
+            assert "summed across deal currencies" not in path.read_text(
+                encoding="utf-8", errors="ignore"
+            ), path
 
 
 # ── Block 2 · the funnel ────────────────────────────────────────────────────

@@ -5429,22 +5429,29 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
 
 ### H-333 · The CRM report routes add amounts of different currencies into one figure · [AGENT]
-- **Check:** `rg -n "SUM\(amount\)" apps/services/gateway/gateway/routes/crm/reports.py`.
-  A hit with no `currency` in the same statement means this is open.
-- **Why.** `_lane_totals` sums `crm_deals.amount` over every deal, and
-  `_amount` does the same for win and loss. Each deal has its own
-  `currency`. So a CRM with USD and INR deals gets one meaningless total.
-  The models of the four report routes carry no currency field. The text
-  answer of `crm_report` labels every amount INR, and since #1080 a kept
-  report does too, with the source line "Amounts are summed across deal
-  currencies."
-- **Do this:** group each total by `currency` in the routes, or convert to
-  the currency of the organization with a named rate. Add the currency to
-  the route models. Then label each amount in `crm_tools.crm_report` and in
-  `_crm_report_spec` with its own currency, and delete `CURRENCY_NOTE`.
-  Add an R8 test with two currencies in one lane.
+- **Check:** `uv run pytest tests/unit/test_crm_reports.py -k bound_to_a_currency` passes, and `git grep -n "CURRENCY_NOTE" -- packages apps tests` prints nothing. If both hold and the branch `crm-h333-currency` is merged, delete this entry.
+- **Status:** BUILT on branch `crm-h333-currency` (2026-10-28), not merged yet.
+- **Why.** `_lane_totals` summed `crm_deals.amount` over every deal, and `_amount` did the same for win and loss. Each deal has its own `currency`. So a CRM with USD and INR deals got one meaningless total.
+- **Design built.** The app holds no exchange rate and no organization currency, so the routes do not convert. Each route reads the distinct currencies as rows and runs each aggregate once per currency with a bound `currency = :currency`. The scalar fields hold the primary currency, INR first and then the other codes in code order. The models gain `currency` and `others`. `others` holds the other currencies, each with its own code, and it is empty for one currency. `crm_report` text and `_crm_report_spec` label each amount with its own code, and `CURRENCY_NOTE` is gone.
+- **Done when:** `tests/unit/test_crm_reports_currency_r8.py` passes on a real database, the fence `test_every_money_sum_in_reports_is_bound_to_a_currency` passes, and the Reports tab shows `others` only when it is not empty.
+- **Next:** H-418 (Deals board lane totals) and H-419 (`GET /crm/aggregate` and the weekly digest) have the same defect.
 - **Authority:** `specs/crm_app.md` (the reports routes), `specs/projects_ai_chat.md` §14.10.9
 - **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
+
+### H-418 · The Deals board lane totals add amounts of different currencies · [AGENT]
+- **Check:** `git grep -n "PipelineLane" -- apps/services/gateway/gateway/routes/crm/pipeline.py`, then read the lane query near `WEIGHTED_SQL`. If the statement has no `currency = :currency` predicate, this entry stays.
+- **Why.** `get_pipeline` sums `amount` and the weighted amount over a whole lane for every deal currency. `KanbanBoard.tsx` shows the result as one figure. H-333 fixed the report routes and left the board alone, because the board has a cross-language parity fixture (`tests/fixtures/crm_weighted_parity.json`, `board.ts`).
+- **Do this:** follow the H-333 design. Read the currencies as rows, sum once per currency, keep the primary currency in `PipelineLane.amount` and `weighted`, and add `currency` and `others`. Show `others` on the lane header only when it is not empty. Update `board.ts` and the parity fixture in the same change. Add an R8 test with two currencies in one lane.
+- **Authority:** `specs/crm_app.md` §5.1 · H-333
+- **Added:** 2026-10-28 · H-333 build
+
+### H-419 · `GET /crm/aggregate` and the weekly CRM digest add amounts of different currencies · [AGENT]
+- **Check:** `git grep -n "sum_amount" -- apps/services/gateway/gateway/routes/crm/aggregate.py apps/services/gateway/gateway/crm_sync/digest.py`. If the SUM statements have no `currency` predicate or group, this entry stays.
+- **Why.** `sum_amount` and `weighted` in `aggregate.py` sum `crm_deals.amount` over every currency, and the rows carry no currency. The two digest queries in `crm_sync/digest.py` do the same and label the unit "INR". The digest reaches real people, so the wrong figure goes out by mail.
+- **Do this:** follow the H-333 design. Return the primary currency in the scalar fields, and the rest in an `others` list with a code on each. Label the digest unit with the real code. Do not edit `WEIGHTED_SQL`. Add a `currency = :currency` predicate to each call. Add an R8 test with two currencies.
+- **Authority:** `specs/crm_platform.md` §20.10 · H-333
+- **Added:** 2026-10-28 · H-333 build
+
 ### H-334 · The email owner check names no tenant by default · [AGENT]
 - **Check:** `git grep -n "this_tenant: bool = False" -- apps/services/gateway/gateway/routes/email/core.py`.
   A hit means this entry stays.
