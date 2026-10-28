@@ -35,7 +35,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 import { useState } from "react";
 import * as api from "../lib/api";
 import { CrmError } from "../lib/api";
-import { importedLine, isLocked, zohoLink } from "../lib/connect";
+import { isLocked, zohoCreatedLine, zohoLink } from "../lib/connect";
 import { useCrmModeValue } from "../lib/modeContext";
 import { useOwners } from "../lib/useCrmMode";
 import type { CrmOwner } from "../lib/filterBar";
@@ -206,11 +206,8 @@ export function ModuleRecordBody({
 }) {
   const mode = useCrmModeValue();
   const editor: ModuleEdit | null = edit && !isLocked(page.record, mode) ? edit : null;
-  // `importedLine` reads `created_at`. A module record keeps the Zoho date.
-  const imported = importedLine(
-    { ...page.record, created_at: page.record.ext_created_at },
-    mode,
-  );
+  // A module record keeps only the date Zoho created it, so the line says so.
+  const imported = zohoCreatedLine(page.record, mode);
   const shown = shownModuleTab(page, tab);
   const rows = moduleFieldRows(page);
   const ranked = fillRankOn(page.field_defs);

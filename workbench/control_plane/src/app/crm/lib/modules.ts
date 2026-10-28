@@ -409,6 +409,8 @@ export function ownerDef(owners: ReadonlyArray<CrmOwner> | null, held?: string |
  */
 export function moduleEditable(def: FieldDef): boolean {
   if (def.is_system) return true;
+  // A module field def carries `lookup_module`, not `lookup_target`, so a module
+  // lookup stays read only: the picker searches native records only.
   if (def.type === "lookup") return isLookupTarget(def.lookup_target);
   return true;
 }

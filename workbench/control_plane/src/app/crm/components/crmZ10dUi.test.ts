@@ -116,9 +116,9 @@ describe("CRM-Z10d UI: the lock follows the mode", () => {
   });
 
   it("shows the imported line in Native mode only", () => {
-    expect(draw("native")).toContain("Imported from Zoho on 12 Oct 2026");
-    expect(draw("mirror")).not.toContain("Imported from Zoho");
-    expect(draw(null)).not.toContain("Imported from Zoho");
+    expect(draw("native")).toContain("From Zoho, created there on 12 Oct 2026");
+    expect(draw("mirror")).not.toContain("From Zoho, created there");
+    expect(draw(null)).not.toContain("From Zoho, created there");
   });
 });
 
