@@ -432,6 +432,231 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # WS-67 OA-8b (one_assistant_context.md §4.3.3): the Projects assistant's
+    # 120 own tools in four packs. Each holds 35 tools or fewer. The core pack
+    # holds 23, so that it fits beside the 31 email tools and the measured
+    # base under the 110-tool request cap. The four together equal
+    # ``skill_projects.__all__`` and the owner's ``own_tool_scope``.
+    "projects": {
+        "label": "Projects",
+        "summary": (
+            "The daily work on tasks: my work, find and read tasks and "
+            "projects, the tree, a summary, the calendar, draw a board or a "
+            "task table, create, update, assign, comment, complete, defer "
+            "and move a task, subtasks, private tasks and the member's own "
+            "triage."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for the daily "
+            "work on tasks, for the main assistant to load in a Projects, "
+            "Tasks or Calendar turn. It holds the tools to read the tree, a "
+            "project and its tasks, find a task, show the member's own work "
+            "and the calendar, draw a board, and to create, update, assign, "
+            "comment on, complete, defer and move a task. Each write asks "
+            "the member first. A run loads a pack only where tool packs are "
+            "on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "add_subtasks",
+            "assign",
+            "calendar",
+            "comment",
+            "complete",
+            "create_personal_task",
+            "create_task",
+            "defer",
+            "find_tasks",
+            "list_tasks",
+            "move_task",
+            "my_task",
+            "my_work",
+            "open_in_app",
+            "people_for",
+            "project_summary",
+            "projects_tree",
+            "render_board",
+            "render_tasks",
+            "set_my_overlay",
+            "task_detail",
+            "update_task",
+            "vocabulary",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    "projects-plan": {
+        "label": "Projects planning and reports",
+        "summary": (
+            "Plan and report on projects: analytics, team capacity, who fits "
+            "a task, conflicts, a task table, export, reports and their "
+            "schedule, a timeline, a plan from a goal, task links, repeat "
+            "rules, new projects and project settings."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools to plan and to "
+            "report, for the main assistant to load when a turn needs them. "
+            "It holds the five analytics reads, the team's capacity, who "
+            "fits a task, plan conflicts, the task table and its export, the "
+            "saved reports with their recipients and schedule, the "
+            "timeline, a plan from a goal, links between tasks, repeat "
+            "rules, and a new project with its settings. A run loads a pack "
+            "only where tool packs are on, so until then this switch has no "
+            "effect."
+        ),
+        "tools": (
+            "add_report_recipient",
+            "add_task_ref",
+            "analytics_finished",
+            "analytics_load",
+            "analytics_outlook",
+            "analytics_stuck",
+            "analytics_throughput",
+            "create_project",
+            "edit_project",
+            "export_tasks",
+            "find_conflicts",
+            "fit_for_task",
+            "link_tasks",
+            "link_tasks_batch",
+            "needs_attention",
+            "propose_plan",
+            "rebalance",
+            "recurrence",
+            "remove_report_recipient",
+            "remove_task_ref",
+            "render_report",
+            "render_timeline",
+            "report_delete",
+            "report_list",
+            "report_recipients",
+            "report_render",
+            "report_save",
+            "set_recurrence",
+            "set_report_schedule",
+            "status_report",
+            "task_dataset",
+            "team_capacity",
+            "unlink_tasks",
+            "update_project",
+            "waiting_agent_requests",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    "projects-structure": {
+        "label": "Projects structure",
+        "summary": (
+            "Shape a project: the statuses, types, fields and tags, who can "
+            "see a project, saved views, watchers, the member's own areas, "
+            "the intake queue and notifications."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools to shape a "
+            "project, for the main assistant to load when a turn needs "
+            "them. It holds the tools for statuses, task types, fields and "
+            "tags, who can see a project, saved views, watchers, the "
+            "member's own areas, the intake queue and the notifications. "
+            "A run loads a pack only where tool packs are on, so until "
+            "then this switch has no effect."
+        ),
+        "tools": (
+            "capture_intake",
+            "create_area",
+            "create_field",
+            "create_status",
+            "create_tag",
+            "create_tags",
+            "create_type",
+            "create_types",
+            "delete_area",
+            "delete_field",
+            "delete_status",
+            "delete_tag",
+            "delete_type",
+            "delete_view",
+            "grant_access",
+            "intake_queue",
+            "mark_notifications_read",
+            "merge_tags",
+            "my_areas",
+            "my_contexts",
+            "notifications",
+            "project_access",
+            "project_views",
+            "rename_area",
+            "revoke_access",
+            "save_view",
+            "set_status_set",
+            "show_view",
+            "triage_intake",
+            "update_field",
+            "update_status",
+            "update_tag",
+            "update_type",
+            "watchers",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    "projects-bulk": {
+        "label": "Projects bulk and guarded acts",
+        "summary": (
+            "Many tasks at once, and the acts that are hard to undo: "
+            "create, file, merge or bulk-edit tasks, archive, restore, "
+            "move or delete a task or a project, comments and attachments, "
+            "reminders, a nudge, a revert, watch, and the edit forms."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for bulk work "
+            "and for guarded acts, for the main assistant to load when a "
+            "turn needs them. It holds the tools to create, file, merge and "
+            "bulk-edit tasks, to archive, restore, move and delete a task "
+            "or a project, to edit or delete a comment or an attachment, "
+            "the reminders, a nudge, a revert, a watch, and the edit forms. "
+            "Each act asks the member first. A run loads a pack only where "
+            "tool packs are on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "archive_project",
+            "archive_task",
+            "attach_to_task",
+            "bulk_update",
+            "convert_folder_to_project",
+            "create_tasks",
+            "delete_attachment",
+            "delete_comment",
+            "delete_project",
+            "delete_task",
+            "edit_comment",
+            "edit_task",
+            "file_tasks",
+            "list_reminders",
+            "merge_tasks",
+            "move_project",
+            "my_led_projects",
+            "nudge_task",
+            "promote_reminder",
+            "reopen_reminder",
+            "reschedule_reminder",
+            "resolve_reminder",
+            "revert_activity",
+            "set_reminder",
+            "unarchive_project",
+            "unarchive_task",
+            "update_reminder",
+            "watch",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
 }
 
 

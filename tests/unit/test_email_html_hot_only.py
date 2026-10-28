@@ -9,7 +9,8 @@ for a message older than the hot window:
 
 1. the sync upsert (``persist.upsert_message``), through ``html_tier.drops_html``;
 2. the body backfill (``body_backfill.write_bodies``);
-3. the open (``transport/messages.py::get_message``);
+3. the open (``transport/messages.py::get_message``). Its write lives in
+   ``_hydrate_opened_body``, after the fetch (2026-10-28);
 4. ``core.hydrate_message_body``. Its write lives in
    ``core._store_hydrated_body``, which it shares with ``core.BodyFetch``
    (EM-T17 PR-A1), so the two callers keep one write rule.
@@ -275,7 +276,7 @@ class TestTheHtmlToText:
         import inspect
 
         # EM-T17 PR-A1: the hydrate and `BodyFetch` share `_hydrated_columns`.
-        for fn in (persist._bodies, m.get_message, core._hydrated_columns):
+        for fn in (persist._bodies, m._hydrate_opened_body, core._hydrated_columns):
             assert "_html_to_text(" in inspect.getsource(fn), fn.__qualname__
         assert persist._html_to_text is body_backfill._html_to_text
         assert m._html_to_text is body_backfill._html_to_text
@@ -390,7 +391,9 @@ ALLOWED_HTML_WRITERS: dict[tuple[str, str], str] = {
     (f"{_INGESTION}/persist.py", "<module>"):
         "writer 1, the sync upsert: `_INSERT`, and the SET of `_SYNCED_COLUMNS`",
     (f"{_INGESTION}/body_backfill.py", "write_bodies"): "writer 2, the body backfill",
-    (f"{_ROUTES}/transport/messages.py", "get_message"): "writer 3, the open",
+    (f"{_ROUTES}/transport/messages.py", "_hydrate_opened_body"):
+        "writer 3, the open. `get_message` hands it the provider, and it "
+        "writes after the fetch with no session held across it (2026-10-28)",
     (f"{_ROUTES}/core.py", "_store_hydrated_body"):
         "writer 4, the drafter's hydrate. `hydrate_message_body` and "
         "`BodyFetch.store` both write through it (EM-T17 PR-A1)",
@@ -402,7 +405,7 @@ ALLOWED_HTML_WRITERS: dict[tuple[str, str], str] = {
 #: The writers that must write the cold-safe term, and only it.
 TERM_WRITERS = frozenset({
     (f"{_INGESTION}/body_backfill.py", "write_bodies"),
-    (f"{_ROUTES}/transport/messages.py", "get_message"),
+    (f"{_ROUTES}/transport/messages.py", "_hydrate_opened_body"),
     (f"{_ROUTES}/core.py", "_store_hydrated_body"),
 })
 #: The scopes that the scan must find, so a list that went stale fails.

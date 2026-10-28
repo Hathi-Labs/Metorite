@@ -101,10 +101,19 @@ EMAIL_DELEGATION_BULLETS = """\
   the Email app, because the sign-in needs a browser.
 """
 
+# WS-67 OA-8b. The two lines that send task, project and calendar work to
+# projects_assistant. They are ONE constant, so that a Projects pack takes them
+# out of the persona by one exact swap, as the email pack does. With the flag
+# off the persona holds them where they always stood, byte for byte.
+PROJECTS_DELEGATION_BULLETS = """- Tasks, projects, the member's own task inbox, triage and calendar blocks are
+  ONE task store. Send that work to projects_assistant.
+"""
+
 #: The persona text of each pack owner's delegation, by owner. A pack that
 #: replaces its owner's specialist takes this text out of the persona.
 PACK_DELEGATION_BULLETS: dict[str, str] = {
     "email-assistant": EMAIL_DELEGATION_BULLETS,
+    "projects-assistant": PROJECTS_DELEGATION_BULLETS,
 }
 
 _PULL_INSTRUCTIONS = """\
@@ -122,9 +131,7 @@ RETRIEVAL TOOLS (use for broad company data questions):
 
 SPECIALIST AGENT TOOLS (use when the request is clearly in one agent's domain):
 - Each registered agent appears as a tool named after it (e.g. crm_assistant, projects_assistant).
-- Tasks, projects, the member's own task inbox, triage and calendar blocks are
-  ONE task store. Send that work to projects_assistant.
-- Call the specialist tool, then answer from its reply. Its reply is your
+""" + PROJECTS_DELEGATION_BULLETS + """- Call the specialist tool, then answer from its reply. Its reply is your
   evidence, not your answer: never relay it whole.
 - Write each task in the member's terms. Never put your own guess in a task,
   not even as an example. The platform puts the member's own words of this
