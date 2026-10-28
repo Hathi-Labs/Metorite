@@ -1,9 +1,12 @@
 # Core brief — the 07:30 brief, the 18:30 close-out, and silence between
 
 **Status: PROPOSED, 2026-10-28.** Verified against code on 2026-10-28, at
-`origin/main` `bd0efea9c`. Nothing in this spec is built, except BR-1a (the
-job queue, `docs/job_queue.md`). The owner has not accepted §9. Until the
-owner does, an agent may build only the slices that §9 does not block.
+`origin/main` `bd0efea9c`. Two slices are built and dark. BR-1a is the
+job queue (`docs/job_queue.md`). BR-1b-a is its detached mode and
+`jobs.prune` (Metorite #642). Nothing else in this spec is built.
+
+The owner has not accepted §9. Until the owner does, an agent may build only
+the slices that §9 does not block.
 
 **Board.** Workstream **WS-BRIEF** (`work_plan.md` §2.1). Metorite epic
 **#479**, items BR-2a to BR-7b. AUTO-2 is Metorite **#814**.
@@ -178,8 +181,11 @@ record.
   their own runs.
 - One expand-only migration adds both tables, with the next free number at
   build time (R1, R6). Nothing existing changes.
-- Retention: `jobs.prune` (BR-1b) deletes runs older than 90 days.
-  RECOMMENDED, §9 Q6.
+- Retention: runs older than 90 days go. RECOMMENDED, §9 Q6. BR-1b-a built
+  `jobs.prune` and its hook list, `worker.prune_hooks` (`docs/job_queue.md`
+  §5b). The job deletes old `jobs` rows only. BR-4 appends a hook that calls
+  the store's prune of the runs, with a 90 day cut-off. That hook waits for
+  the store module (PR #1441).
 
 ---
 
@@ -392,8 +398,8 @@ and the at-most-once rule needs AUTO-2's `UNATTENDED_LEDGER`.
 | 11 | Web push of the brief, through Reach | 6 | `BRIEF_PUSH` | **OWNER-GATE**: it reaches a person through a third party |
 
 The BR-1b detached mode is the part of BR-1b (#642) that slice 2 needs, and
-it can ship before the rest of BR-1b. `docs/job_queue.md` §5a holds its
-rules.
+it can ship before the rest of BR-1b. BR-1b-a built it, dark, on
+2026-10-28. `docs/job_queue.md` §5a holds its rules.
 
 ### Acceptance
 
