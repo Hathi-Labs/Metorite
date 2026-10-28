@@ -5218,6 +5218,11 @@ async def _run_agent_inner(
                 organization_id=_RUN_ORG.get(thread_id),
             )
         )
+        # WS-67 OA-9b hardening item 5: a worker never mutates a repo.
+        if _is_internal_agent(agent_name):
+            raise AgentRunError(
+                str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+            ) from exc
         # Structural incompatibility (missing agents.py, no tools, LangGraph remnant, etc.)
         # Trigger the Copilot SDK mutation sandbox to auto-fix the repo and open a PR.
         # The sandbox receives the full error + the agent_repo_compatibility.md guide

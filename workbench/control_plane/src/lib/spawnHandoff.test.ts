@@ -100,6 +100,26 @@ describe("the live stream keeps each child step on its spawn row", () => {
     expect(call.subAgentName).toBe("email-assistant");
   });
 
+  it("keeps the spawn row active when one child fails, and fails that step", () => {
+    let m = start(turn(), "sp1", "spawn_subagents");
+    m = applySubAgentEvent(m, { type: "sub_agent_tool_start", agentName: "worker", id: "c1", name: "web_search" });
+    m = applySubAgentEvent(m, { type: "sub_agent_error", agentName: "worker", error: "provider error" });
+    const row = m.toolEvents![0];
+    expect(row.subAgentActive).toBe(true);
+    expect(row.status).toBe("running");
+    expect(row.subAgentTools![0]).toMatchObject({ id: "c1", status: "error", result: "provider error" });
+    // The steps of the other children still land on the row.
+    m = childStep(m, "worker", "c2", "fetch_page");
+    expect(m.toolEvents![0].subAgentTools!.map((t) => t.id)).toEqual(["c1", "c2"]);
+  });
+
+  it("still closes a call_agent row on a sub-agent error", () => {
+    let m = start(turn(), "c1", "call_agent");
+    m = applySubAgentEvent(m, { type: "sub_agent_error", agentName: "x", error: "boom" });
+    expect(m.toolEvents![0].subAgentActive).toBe(false);
+    expect(m.toolEvents![0].status).toBe("error");
+  });
+
   it("drops a child step when no hand-off row is active", () => {
     const m = childStep(start(turn(), "t1", "web_search"), "worker", "c1", "web_search");
     expect(m.toolEvents![0].subAgentTools).toBeUndefined();

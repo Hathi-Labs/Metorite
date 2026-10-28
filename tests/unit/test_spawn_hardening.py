@@ -15,9 +15,11 @@ Mutations this file catches (each run red, then restored):
 * H4 the MAF budget equals the job clock -> ``test_the_loop_budget_is_below_the_job_clock``;
 * H5 ``decide`` is allowed in a job -> ``test_a_job_naming_decide_does_not_run``;
 * H5 the answer check wraps the worker -> ``test_the_answer_check_skips_the_worker``;
-* H5 the worker self-anneals -> ``test_a_worker_failure_never_self_anneals``;
+* H5 the worker self-anneals or mutates, in either clause ->
+  ``test_a_worker_failure_never_self_anneals_or_mutates``;
 * H6 the result has no frame -> ``test_the_spawn_result_is_framed_as_data``;
-* H6 a child item may claim ``member`` -> ``test_a_child_item_never_claims_the_member``;
+* H6 a child item may claim ``member`` -> ``test_a_child_item_never_claims_the_member``
+  and ``test_each_form_of_a_member_claim_is_rewritten``;
 * H7 the copy has no lock -> ``test_concurrent_loads_of_one_agent_do_not_overlap``;
 * H8 ``worker`` is registrable -> ``test_worker_is_a_reserved_name``.
 """
@@ -175,23 +177,56 @@ def test_the_answer_check_skips_the_worker(monkeypatch) -> None:
     assert seen == ["asked"]
 
 
-def test_a_worker_failure_never_self_anneals() -> None:
-    """The error path of the batch run raises BEFORE ``_self_anneal`` for an
-    internal agent. The order is read from the code of ``_run_agent_inner``."""
+def test_internal_agent_test_reads_the_contract() -> None:
     from orchestrator import executor
 
     assert executor._is_internal_agent("worker") is True
     assert executor._is_internal_agent("orchestrator") is False
-    src = (REPO_ROOT / "apps/services/orchestrator/orchestrator/executor.py").read_text(
-        encoding="utf-8")
-    fn = next(n for n in ast.walk(ast.parse(src))
-              if isinstance(n, ast.AsyncFunctionDef) and n.name == "_run_agent_inner")
-    guard = next(n for n in ast.walk(fn) if isinstance(n, ast.If)
-                 and "_is_internal_agent" in (ast.get_source_segment(src, n.test) or ""))
-    anneal = next(n for n in ast.walk(fn) if isinstance(n, ast.Call)
-                  and getattr(n.func, "id", "") == "_self_anneal")
-    assert any(isinstance(n, ast.Raise) for n in ast.walk(guard))
-    assert guard.lineno < anneal.lineno
+
+
+@pytest.mark.parametrize("kind", ["generic", "load"])
+@pytest.mark.parametrize(("agent", "is_worker"), [("worker", True), ("some-agent", False)])
+def test_a_worker_failure_never_self_anneals_or_mutates(monkeypatch, kind, agent, is_worker) -> None:
+    """Behaviour, one case per failure clause of the batch run (the generic
+    ``Exception`` and ``AgentLoadError``). A worker calls neither
+    ``_self_anneal`` nor ``attempt_self_mutation``. Any other agent still does,
+    which proves that the harness reaches each clause."""
+    from acb_common.db import bind_tenant, release_tenant
+    from orchestrator import executor, mutation
+
+    calls: list[str] = []
+
+    async def _anneal(**_k: Any):
+        calls.append("anneal")
+
+    async def _mutate(**_k: Any):
+        calls.append("mutate")
+
+    async def _load(*_a: Any, **_k: Any):
+        if kind == "load":
+            raise executor.AgentLoadError("no agents.py")
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(executor, "_self_anneal", _anneal)
+    monkeypatch.setattr(mutation, "attempt_self_mutation", _mutate)
+    monkeypatch.setattr(executor, "_load_agent_off_loop", _load)
+    token = bind_tenant(ORG)
+    try:
+        with artifact_context_scope():
+            bind_artifact_context(run_id="run-parent", agent_name="orchestrator",
+                                  session_id="thread-x", no_egress=False,
+                                  run_tools=PARENT_TOOLS, member="m@x.test")
+            sc.bind_job(sc.Job(number=1, job="Look.", tools=("web_search",), tier="fast"))
+            with pytest.raises(executor.AgentRunError):
+                asyncio.run(executor.run_agent(
+                    agent, {"message": "x", "mode": "chat"}, run_id="child-run"))
+    finally:
+        release_tenant(token)
+    want = ("anneal" if kind == "generic" else "mutate")
+    if is_worker:
+        assert calls == []
+    else:
+        assert want in calls
 
 
 # -- Item 6: untrusted items ---------------------------------------------------
@@ -232,6 +267,23 @@ def test_a_child_item_never_claims_the_member(spawn) -> None:  # noqa: F811
     out = asyncio.run(at.spawn_subagents(JOB))
     assert "(source: member)" not in out.lower()
     assert "[inferred] Send the pipeline" in out
+
+
+@pytest.mark.parametrize("source", [
+    "member", "Member", " MEMBER ", "the member", "The  Member", "user", "the user",
+    "owner", "you", "You", "mem​ber", "the member", "us⁠er", "ｍｅmber",
+])
+def test_each_form_of_a_member_claim_is_rewritten(source) -> None:
+    text = json.dumps({"items": [{"value": "v", "kind": "quoted", "source": source}]})
+    (item,) = sc.parse_items(text)
+    assert item.source == sc.CHILD_SOURCE and item.kind == "inferred", source
+
+
+@pytest.mark.parametrize("source", ["https://acme.test/pricing", "web page", "memberships page", "your site"])
+def test_a_real_source_is_kept(source) -> None:
+    text = json.dumps({"items": [{"value": "v", "kind": "quoted", "source": source}]})
+    (item,) = sc.parse_items(text)
+    assert item.source == source and item.kind == "quoted"
 
 
 # -- Item 7: the loader race ---------------------------------------------------

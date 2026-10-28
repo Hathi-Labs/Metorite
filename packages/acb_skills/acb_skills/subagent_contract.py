@@ -60,7 +60,9 @@ __all__ = [
     "MAX_JOBS",
     "MAX_NAMED_OVERFLOW",
     "MAX_SPAWNS_PER_TURN",
+    "MEMBER_CLAIMS",
     "MEMBER_SOURCE",
+    "claims_member",
     "MEMBER_TOOLS",
     "SPAWN_TOOL",
     "TIERS",
@@ -151,6 +153,10 @@ EXTRA_CALL_TOOLS = frozenset({"decide"})
 #: The source that only the member's own words may carry. A child item never
 #: holds it (§6.4): the parser rewrites it to :data:`CHILD_SOURCE`.
 MEMBER_SOURCE = "member"
+
+#: The sources that claim the member, after :func:`claims_member` normalizes
+#: the text (no spaces, no format characters, case folded).
+MEMBER_CLAIMS = frozenset({"member", "themember", "user", "theuser", "owner", "you"})
 CHILD_SOURCE = "sub-agent (claimed member)"
 
 _CALL_SHAPE = (
@@ -409,6 +415,23 @@ def _value_of(raw: Any) -> str | None:
     return json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
 
 
+def claims_member(source: str) -> bool:
+    """True when *source* claims to be the member (or the user, the owner, you).
+
+    A page can tell a child to write ``the member`` or ``mem​ber``. So the
+    text is normalized first: NFKC, then each space and each format character
+    (zero width and the like) is removed, then the case is folded.
+    """
+    import unicodedata
+
+    text = unicodedata.normalize("NFKC", source)
+    kept = "".join(
+        ch for ch in text
+        if not ch.isspace() and unicodedata.category(ch) != "Cf"
+    )
+    return kept.casefold() in MEMBER_CLAIMS
+
+
 def _items_of(payload: Any) -> list[Item] | None:
     """The items of the contract object, or ``None`` when it is another shape."""
     if not isinstance(payload, dict) or set(payload) != {"items"}:
@@ -431,7 +454,7 @@ def _items_of(payload: Any) -> list[Item] | None:
         if value is None:
             return None
         source = source.strip()
-        if source.casefold() == MEMBER_SOURCE:
+        if claims_member(source):
             # A page can tell the child to claim the member. Only the member's
             # own words carry that source, so the claim is a guess (§6.4).
             kind, source = "inferred", CHILD_SOURCE

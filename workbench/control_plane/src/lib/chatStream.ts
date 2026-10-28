@@ -513,6 +513,26 @@ export function applySubAgentEvent(
       const idx = [...evts].reverse().findIndex((t) => t.subAgentActive);
       if (idx === -1) return m;
       const ri = evts.length - 1 - idx;
+      if (isSpawnTool(evts[ri].name)) {
+        // One child of a spawn failed. The other children go on, so the row
+        // stays active until its own tool_end. The error marks the newest
+        // running step of the row as failed, and the row keeps its status.
+        const steps = evts[ri].subAgentTools ?? [];
+        const run = [...steps].reverse().findIndex((st) => st.status === "running");
+        if (run === -1) return m;
+        const si = steps.length - 1 - run;
+        return {
+          ...m,
+          toolEvents: evts.map((t, i) => i === ri
+            ? {
+                ...t,
+                subAgentTools: steps.map((st, k) => k === si
+                  ? { ...st, status: "error" as const, result: String(evt.error ?? "Sub-agent error") }
+                  : st),
+              }
+            : t),
+        };
+      }
       return {
         ...m,
         toolEvents: evts.map((t, i) => i === ri
