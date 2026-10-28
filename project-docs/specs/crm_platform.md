@@ -11588,7 +11588,7 @@ Owner, 2026-10-20: the board order and the win chance are two settings.
 1. **The order never follows the probability.** An admin sets the order of
    the boards. A stage at 90% can sit before a stage at 10%. Mirror mode
    without an admin order uses the source position, then the pipeline place.
-   *Amended 2026-10-27 by D135 and CRM-U11 (§20.15): Mirror mode without an
+   *Amended 2026-10-27 by D137 and CRM-U11 (§20.15): Mirror mode without an
    admin order uses the place in the Zoho pipeline first, and no type group
    moves a column.*
 2. **Every stage has a win chance.** Migration 288 adds `probability` and
@@ -11644,7 +11644,7 @@ source fences. It checks that `AppShell` draws only what the page emits.
 
 ### 20.15 CRM-U11: the stage settings are the board (owner report, 2026-10-27)
 
-**Status.** ✅ Built 2026-10-28 on branch `crm-stage-order`, and the verifier gave PASS. Decision D135. Metorite: task #833 under
+**Status.** ✅ Built 2026-10-28 on branch `crm-stage-order`, and the verifier gave PASS. Decision D137. Metorite: task #833 under
 epic #477. The spec audit of 2026-10-27 checked it against the code at
 72094831d and gave GO-NARROWED.
 
@@ -11697,7 +11697,7 @@ stages outside the pipeline with no mark. A separate read-only card lists the
 pipelines. A strip repeats the order above the list. The list order is not
 the board order, because of cause 3.
 
-#### The order rule (D135)
+#### The order rule (D137)
 
 `orderLanes(lanes, mode, places)` stays the one order. `places` maps a status
 id to its place in the pipeline that the board shows. That is the chosen
@@ -11782,11 +11782,11 @@ pipeline order.
    changed accent, 390 px) of the Deal stages screen in Mirror mode and in
    Native mode, and of the Edit `Modal`.
 6. `npx tsc --noEmit` passes, and `npx vitest run` passes on the CRM tests.
-   The PR names each fence test that D135 changes, with the old rule and the
+   The PR names each fence test that D137 changes, with the old rule and the
    new one.
 
 Fences (R7): `boardStages.test.ts`, `board.test.ts`, `crmC3.test.ts` and
-`crmU6.test.ts` change to D135. `crmU11.test.ts` holds the Fracktal case, the
+`crmU6.test.ts` change to D137. `crmU11.test.ts` holds the Fracktal case, the
 merge cases and a source fence that no type group sits in `orderLanes`.
 
 ### 20.16 CRM-U12: plain words and no dead ends in CRM setup (2026-10-27)

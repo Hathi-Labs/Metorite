@@ -165,7 +165,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-WA | **WhatsApp** | 🟡 gated · M2 | `specs/whatsapp_message_manager.md` · `specs/whatsapp_assistant_channel.md` | Metorite: epic 476 · D115 freeze, lifted for brief task 8 only (D122.3) · next BR-8a, E-20 |
 | WS-KB | **Knowledge** | 🟢 active · M2 | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | Metorite: project Knowledge · no P0 or P1 · next H-401, KC-1 |
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_base.md` §20 · `specs/company_context.md` (KG-0 writes `specs/knowledge_graph.md`) | Metorite: epic 783 (Knowledge) · D128 · gate MEM-3 (the memory shape) · next KG-0, KG-1, KG-9 |
-| WS-MCP | **MCP and external agents** | 🟢 active · M2 | `specs/external_agent_access.md` | Metorite: epics 354 and 495 (MCP & External Agents) · parity after Phase 2 (D124) · next WS-55-follow, MCP-Ga |
+| WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` (SW-0 writes the coordination spec) | Metorite: epics 321 (coordination, D135), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · next SW-0, MCP-P0, then SW-23 and SW-24 |
 | WS-STU | **Studio**: tool packs, workflows, AI apps | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 491 (Agent Tooling) · D127 · next STU-0, then SKL-1 and SKL-2 after SBX-1 |
 | WS-UX | **UX System** | 🟢 active · M1 | none yet | Metorite: epic 492 · next UI-G1, UX-3 (D119.3) |
 | WS-WH | **Writing Help** | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 493 · next WA-1 |
@@ -4743,7 +4743,26 @@ Owner answers, 2026-10-27, in chat, to three questions after the audit of the CR
 2. **One list holds what the AI asks.** "Needs your input" holds the open questions, the suggestions, the Field map proposals and the choices that members made in chat. Its main button accepts each suggestion of the AI. An admin can change or undo each one later.
 3. **A Field map pick applies at once.** The draft step goes. The change history keeps each version, and an admin can go back to any of them.
 
-### D135 — The Deals board shows the columns in the order of the settings list. Mirror mode defaults to the order of the Zoho pipeline. It amends the 2026-10-12 order rule and CRM-U6 item 1 (2026-10-27)
+### D135 — Metorite is the coordination platform for agents. HANDOFF.md retires into tasks (2026-10-28)
+
+Owner decision, 2026-10-28, in chat: "okay then", on the recommendation to coordinate agents in Metorite and not in a repo file. It answers P7 of the Metorite epic 321 (Agent swarm coordination), and it extends D118.
+
+1. **Metorite holds every handoff.** A new obligation is a Metorite task first. The Check of an entry becomes a field of its task (SW-23).
+2. **Agents coordinate there.** They use claims, handoff notes (SW-24), "affects" notes (SW-25), wake-ups (SW-15), shared numbers (SW-27) and the conflict radar (SW-26).
+3. **The repo keeps two things.** A nightly read-only snapshot serves a session that cannot reach Metorite. A short break-glass section serves the time when Metorite is down (SW-19b). Agents build Metorite, so they must not need it to recover it.
+4. **The order is in epic 321.** SW-0, the coordination spec, comes first and gates every slice.
+
+### D136 — Every app reaches external agents by construction: one manifest, two doors (2026-10-28)
+
+Owner directive, 2026-10-28, in chat: "Via the MCP, external coding agents should also have access to CRM, email, and all the other apps that we will build in the future... So Metorite becomes the place where all the companies' data is well structured, orchestrated, and kept." It extends D124 and changes none of its rules.
+
+1. **One manifest, two doors.** Each app's route manifest (classes A, B, C and X) is the allowlist for Mira and for the MCP. No hand-written second list.
+2. **A fixed tool set.** `list_apps`, `describe_app`, `app_read` and `app_write` serve every app, so the tool count does not grow with each app.
+3. **A new app ships with its manifest.** A fence fails a live app with none (MCP-P4).
+4. **D124 holds.** One scope per app, an approval card per write or delete, untrusted text, an audit row and an admin switch.
+5. **When.** MCP-P0 to MCP-P4 come in M3, after Phase 2 (D124.4). Studio over the MCP (MCP-P5) comes in M4, after the sandbox. Metorite epic 495 holds the slices.
+
+### D137 — The Deals board shows the columns in the order of the settings list. Mirror mode defaults to the order of the Zoho pipeline. It amends the 2026-10-12 order rule and CRM-U6 item 1 (2026-10-27)
 
 Owner report, 2026-10-27, in chat: the deal stages were "very complicated" to configure, and the Kanban columns do not show "like it is currently showing up in ZOHO". The owner asked for the Zoho order, or an easy setting. Workstream: **WS-CRM**. Owning spec: `specs/crm_platform.md` §20.15 (CRM-U11).
 
