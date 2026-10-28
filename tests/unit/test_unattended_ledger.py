@@ -43,6 +43,11 @@ not a pass.
   ``test_r8_3_failures_group_into_one_incident_for_each_class`` goes red.
 * M3. ``reach.loop._brief_step``: drop the ``unattended.recover`` call.
   ``test_r8_2_a_send_killed_after_the_intent_mark_is_unknown`` goes red.
+* M4. ``reach.loop._brief_step``: drop the ``state_of`` check before the full
+  brief. ``test_r8_an_unsure_send_is_unknown_and_never_retried`` goes red.
+* M5. ``unattended.run_guarded``: drop the ``guard.stalled()`` check.
+  ``test_r8_4_a_run_with_no_progress_is_stopped_and_stalled`` goes red
+  within its 20 s limit.
 """
 
 from __future__ import annotations
@@ -506,10 +511,14 @@ def test_r8_4_a_run_with_no_progress_is_stopped_and_stalled(world) -> None:
             await asyncio.sleep(0.005)
         return "done"
 
-    async def go() -> list[Any]:
+    async def both() -> list[Any]:
         first = await unattended.once(org, JOB, "hang", hang, clock=clock, poll=0.01)
         second = await unattended.once(org, JOB, "busy", busy, clock=clock, poll=0.01)
         return [first[1], second[1]]
+
+    async def go() -> list[Any]:
+        # A guard that never fires would hang for an hour. The limit makes it red.
+        return await asyncio.wait_for(both(), 20)
 
     assert _go(world, go) == [None, "done"]
     assert cancelled["n"] == 1
