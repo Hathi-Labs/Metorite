@@ -20,7 +20,8 @@ removes (``ask_questions``, ``emit_generative_ui`` and ``read_attachment``).
 
 A child makes at most 4 model calls: ``max_iterations`` of 3 rounds, then the
 one final call that MAF makes with the tools off. The wall clock of the job is
-``subagent_contract.JOB_TIMEOUT_S``, and the spawn tool enforces it.
+``subagent_contract.JOB_TIMEOUT_S``, and the spawn tool enforces it. The tool loop
+has the shorter ``CHILD_LOOP_BUDGET_S``, so the final call runs before that clock.
 
 Exports:
     build_agents() -> list[Agent]
@@ -95,7 +96,7 @@ def build_agent() -> Any:
         # 3 rounds, then MAF's one final call with the tools off: 4 calls.
         function_invocation_configuration={
             "max_iterations": sc.MAX_CHILD_ROUNDS - 1,
-            "max_duration_seconds": sc.JOB_TIMEOUT_S,
+            "max_duration_seconds": sc.CHILD_LOOP_BUDGET_S,
         },
     )
     return Agent(

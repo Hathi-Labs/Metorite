@@ -54,6 +54,13 @@ from acb_skills.loader import (
     refuse_copilot_specialist,
 )
 
+def _is_internal_agent(agent_name: object) -> bool:
+    """True for an internal agent (the spawn worker), by name."""
+    from acb_skills.subagent_contract import INTERNAL_AGENTS
+
+    return str(agent_name or "") in INTERNAL_AGENTS
+
+
 # Max self-anneal retries before giving up and falling back to LLM recovery.
 _MAX_ANNEAL_ATTEMPTS = 2
 
@@ -2555,6 +2562,9 @@ async def _run_sub_agent_streaming(
                 deliver_to=_deliver_to,
                 # The SUB-agent's own tools (``run_holds_tool``, §14.10).
                 run_tools=_sub_run_tools,
+                # WS-67 OA-9b hardening: this run is a sub-run, so it never
+                # holds ``spawn_subagents`` (``agent_tools.spawn_subagents``).
+                sub_run=True,
             )
 
             # Skills-as-an-index bodies (QM-2). A sub-agent gets the COMPACT
@@ -4985,6 +4995,8 @@ async def _run_agent_inner(
                 # The run's platform tools after every narrowing, for
                 # ``write_artifact.run_holds_tool`` (§14.10).
                 run_tools=_run_tools,
+                # WS-67 OA-9b hardening: a run with a parent is a sub-run.
+                **({"sub_run": True} if _parent_ctx.get("run_id") else {}),
             )
             try:
                 _ws_root = Path(_effective_agent_dir)
@@ -5241,6 +5253,14 @@ async def _run_agent_inner(
         _run_tb = "".join(
             _tb.format_exception(type(exc), exc, exc.__traceback__)
         )[:8000]
+
+        # WS-67 OA-9b hardening item 5: a worker (spawn child) has a fixed
+        # number of model calls. It never self-anneals and never mutates a
+        # repo. The error is the answer of the child.
+        if _is_internal_agent(agent_name):
+            raise AgentRunError(
+                str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+            ) from exc
 
         # ── Self-annealing: detect → fix in-process → retry → LLM recovery ──
         recovery = await _self_anneal(
