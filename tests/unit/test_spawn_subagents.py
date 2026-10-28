@@ -703,7 +703,7 @@ def test_the_worker_client_carries_the_round_cap() -> None:
         agent = mod.build_agents()[0]
     config = agent.client.function_invocation_configuration
     assert config["max_iterations"] == sc.MAX_CHILD_ROUNDS - 1 == 3
-    assert config["max_duration_seconds"] == sc.JOB_TIMEOUT_S
+    assert config["max_duration_seconds"] == sc.CHILD_LOOP_BUDGET_S
 
 
 # ── One caller, one fan-out ─────────────────────────────────────────────────
@@ -732,7 +732,8 @@ def test_parse_jobs_has_one_caller_and_it_is_the_spawn_tool() -> None:
 def test_both_fan_out_tools_use_the_one_fan_out() -> None:
     src = (REPO_ROOT / "packages/acb_skills/acb_skills/agent_tools.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
-    for name in ("call_agents_parallel", "spawn_subagents"):
+    # ``spawn_subagents`` runs its fan-out in ``_spawn_run`` (the body under the lock).
+    for name in ("call_agents_parallel", "_spawn_run"):
         node = next(n for n in ast.walk(tree)
                     if isinstance(n, ast.AsyncFunctionDef) and n.name == name)
         body = ast.get_source_segment(src, node) or ""

@@ -555,6 +555,16 @@ _SPAWN_LIMIT = (
     "with the items you have."
 )
 
+#: The answer in a run that is itself a sub-run, at any delegation depth
+#: (OA-9b hardening item 2). Only the member's own assistant spawns.
+_SPAWN_NESTED = (
+    "spawn_subagents is not available in a sub-run. Do the work yourself with "
+    "your own tools."
+)
+
+#: The label of the block that holds the items of the children.
+_ITEMS_LABEL = "SUB AGENT ITEMS"
+
 #: The tier name that a ``fast`` job sends (``tier_policy.TIER_FAST``).
 _FAST_TIER = "tier-fast"
 
@@ -593,12 +603,12 @@ def _delegating_names() -> frozenset[str]:
     return frozenset(names)
 
 
-def _render_items(number: int, label: str, text: str) -> str:
+def _render_items(number: int, label: str, text: str, tools: Any = ()) -> str:
     """One job block for the parent: the parsed items of the child, never its
     raw text (SUB-1 rule 2)."""
     from acb_skills.subagent_contract import parse_items
 
-    items = parse_items(text)
+    items = parse_items(text, tools=tuple(tools))
     lines = [f"Job {number} ({label}):"]
     if not items:
         lines.append("- No items found.")
@@ -617,6 +627,8 @@ async def spawn_subagents(jobs: str) -> str:
     other. A sub-agent only reads. It cannot write, send, ask the member or
     start another agent, so do any write yourself after the sub-agents answer.
     A sub-agent has no memory of this chat, so each job must hold all it needs.
+    A job with no "tools" key holds no tool at all, so it can only answer from
+    its job text. Name the tools the job needs.
 
     Args:
         jobs: A JSON array of 1 to 5 jobs. Each job is an object with the keys
@@ -637,6 +649,8 @@ async def spawn_subagents(jobs: str) -> str:
     if not sc.spawn_subagents_on(_caller_org()):
         return _SPAWN_OFF
     ctx = artifact_context()
+    if _delegation_chain.get() or ctx.get("sub_run"):
+        return _SPAWN_NESTED  # a sub-run never spawns, at any depth
     run_tools = ctx.get("run_tools")
     if not isinstance(run_tools, (frozenset, set, tuple, list)):
         return _SPAWN_OFF  # a frame with no run holds no tool to share
@@ -645,9 +659,16 @@ async def spawn_subagents(jobs: str) -> str:
     )
     if not plan.jobs:
         return plan.notes() or "No job ran."
-    if not sc.take_spawn(ctx.get("run_id")):
-        return _SPAWN_LIMIT
+    # Two spawn calls of one model step run one after the other, so at most
+    # five children of a run run at once (§6.2).
+    async with sc.spawn_lock(ctx.get("run_id")):
+        if not sc.take_spawn(ctx.get("run_id")):
+            return _SPAWN_LIMIT
+        return await _spawn_run(plan, sc, artifact_context_scope)
 
+
+async def _spawn_run(plan: Any, sc: Any, artifact_context_scope: Any) -> str:
+    """Run the jobs of *plan* and join the item blocks (the body of the spawn)."""
     wire = _stream_wire()
     parent_model = _parent_run_model()
 
@@ -681,11 +702,21 @@ async def spawn_subagents(jobs: str) -> str:
             blocks.append(f"Job {job.number} ({label}): Error: no answer in "
                           f"{sc.JOB_TIMEOUT_S:g}s, so the job was stopped.")
             continue
-        blocks.append(_render_items(job.number, label, text))
+        blocks.append(_render_items(job.number, label, text, job.tools))
+    # The items come from pages the children read, so the parent reads them
+    # as data and never as an instruction (OA-9b hardening item 6).
+    from acb_skills.untrusted import UntrustedFrame
+
+    frame = UntrustedFrame.new()
+    out = [
+        frame.note("The blocks below hold what sub-agents read from the web "
+                   "and the tools of this chat."),
+        frame.wrap(_ITEMS_LABEL, "\n\n".join(blocks)),
+    ]
     notes = plan.notes()
     if notes:
-        blocks.append(notes)
-    return "\n\n".join(blocks)
+        out.append(notes)
+    return "\n\n".join(out)
 
 
 async def call_agent_background(agent_name: str, message: str) -> str:
