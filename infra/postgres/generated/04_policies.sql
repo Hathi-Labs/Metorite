@@ -1439,3 +1439,10 @@ DROP POLICY IF EXISTS kb_node_access_tenant_isolation ON kb_node_access;
 CREATE POLICY kb_node_access_tenant_isolation ON kb_node_access
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE jobs FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS jobs_tenant_isolation ON jobs;
+CREATE POLICY jobs_tenant_isolation ON jobs
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

@@ -2437,3 +2437,15 @@ ALTER TABLE kb_node_access ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE kb_node_access ADD CONSTRAINT kb_node_access_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS kb_node_access_org_idx ON kb_node_access (organization_id);
+
+-- jobs
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM jobs WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: jobs still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE jobs ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE jobs ADD CONSTRAINT jobs_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS jobs_org_idx ON jobs (organization_id);
