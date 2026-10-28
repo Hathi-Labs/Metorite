@@ -28,6 +28,7 @@ import pytest
 from acb_skills import skill_families as sf
 from acb_skills import skill_index as sx
 from acb_skills import tool_packs as tp
+from acb_skills.tool_guard import tool_name
 
 from tests.unit._native_maf_harness import load_agent_module
 
@@ -36,6 +37,8 @@ EA = "email-assistant"
 EA_DIR = "apps/agents/agent-email-assistant"
 CRM = "crm-assistant"
 CRM_DIR = "apps/agents/agent-crm"
+PROJECTS = "projects-assistant"
+PROJECTS_DIR = "apps/agents/agent-projects"
 
 
 def _own_tool_scope() -> set[str]:
@@ -96,7 +99,10 @@ def test_narrow_and_read_is_in_exactly_one_family() -> None:
 def test_both_email_families_name_the_email_assistant_as_owner() -> None:
     """Mutation: drop the ``owner`` key, which turns a pack into an injected
     family that the drift gate then refuses."""
-    assert sf.pack_slugs() == ("email", "email-setup", "crm-records")
+    assert sf.pack_slugs() == (
+        "email", "email-setup", "crm-records",
+        "projects", "projects-plan", "projects-structure", "projects-bulk",
+    )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
         assert sf.is_pack(slug)
@@ -244,7 +250,7 @@ def test_packs_on_needs_the_org_on_the_list(_flag) -> None:
     """Mutation: the reader ignores ``TOOL_PACKS_ORGS``, or an empty org
     matches ``*``."""
     _flag("*", ORG_A)
-    every = frozenset({"email", "email-setup", "crm-records"})
+    every = frozenset(sf.pack_slugs())
     assert tp.packs_on(ORG_A) == every
     assert tp.packs_on(ORG_A.upper()) == every
     assert tp.packs_on(ORG_B) == frozenset()
@@ -410,10 +416,11 @@ def test_build_catalog_prices_a_pack_from_its_owner_tools() -> None:
     """Mutation: ``build_catalog`` prices a pack by the addendum delta (it has
     no section, so the rules block goes unpriced), or puts the pack tools in
     ``total_injected_tokens``."""
-    modules = {EA: _email_module(), CRM: load_agent_module(CRM_DIR)}
-    owner = {fn.__name__: fn for slug in sf.pack_slugs()
+    modules = {EA: _email_module(), CRM: load_agent_module(CRM_DIR),
+               PROJECTS: load_agent_module(PROJECTS_DIR)}
+    owner = {tool_name(fn): fn for slug in sf.pack_slugs()
              for fn in tp.owner_tools(slug, modules[sf.SKILL_FAMILIES[slug]["owner"]])}
-    assert len(owner) >= 58 + 8, "non-vacuity: the owners build their tools"
+    assert len(owner) >= 58 + 8 + 120, "non-vacuity: the owners build their tools"
 
     def _mk(name: str):
         def fn(query: str) -> str:
