@@ -819,8 +819,17 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   // A receipt is a card of the transcript: its arrival rolls up the long
   // cards above it (`components/RollupCard.tsx`). It is short, so it draws
   // no toggle of its own. Its title row is the header (`header="own"`).
+  // A write that is done, or that the member cancelled, opens folded. A
+  // failed, partial or refused one still opens (task 1003).
   return (
-    <RollupCard id={`tool:${e.id}`} title={heading} icon={icon} summary={unfenced(detail).split(NL)[0]} header="own">
+    <RollupCard
+      id={`tool:${e.id}`}
+      title={heading}
+      icon={icon}
+      summary={unfenced(detail).split(NL)[0]}
+      receipt={outcome === "done" || outcome === "cancelled"}
+      header="own"
+    >
     <div className={`rounded-lg border px-2.5 py-2 ${tone}`}>
       <RollupHeader aside={aside ? <FencedText text={aside} pills={false} links={false} /> : undefined} />
       <RollupBody>
@@ -1054,6 +1063,7 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
       icon={icon}
       rows={rows.length || undefined}
       summary={names.join(" · ") || unfenced(head)}
+      receipt={outcome === "done" || outcome === "cancelled"}
       header="own"
     >
     <div className={`rounded-lg border px-2.5 py-2 ${toneFor(outcome, e.name)}`}>

@@ -875,9 +875,21 @@ function RuleResultCard({
   };
 
   const title = `${created ? "Created rule" : "Updated rule"}: ${name}`;
+  // The rule is written. Disable and Delete are optional, so the card is a
+  // receipt and opens folded (task 1003). The folded row says what it does.
+  const ruleSummary = [conds.length ? `${conds.length} condition${conds.length > 1 ? "s" : ""}` : "",
+    actions.length ? `${actions.length} action${actions.length > 1 ? "s" : ""}` : ""]
+    .filter(Boolean).join(", ") || title;
   const tone = receiptTone(false);
   return (
-    <RollupCard id={`tool:${e.id}`} title={title} icon="Sparkles" header="own">
+    <RollupCard
+      id={`tool:${e.id}`}
+      title={title}
+      icon="Sparkles"
+      summary={ruleSummary}
+      receipt={e.status !== "error" && state !== "failed"}
+      header="own"
+    >
     <div data-email-card="rule" className={tone.frame}>
       {/* The result of an act sits BESIDE the header, with the buttons it
           replaces. The header's aside shows only while the card is open, so
@@ -1002,7 +1014,14 @@ function SettingsUpdatedCard({ event: e }: { event: ToolEvent }) {
   const tone = receiptTone(false);
 
   return (
-    <RollupCard id={`tool:${e.id}`} title="Settings updated" icon="Settings2" header="own">
+    <RollupCard
+      id={`tool:${e.id}`}
+      title="Settings updated"
+      icon="Settings2"
+      header="own"
+      summary={changed.map(([label, value]) => `${label}: ${value}`).join(", ") || undefined}
+      receipt
+    >
     <div data-email-card="settings" className={tone.frame}>
       <CardHead tone={tone.icon}>
         <Button variant="secondary" size="none" className={DENSE} onClick={() => router.push("/email")}>
@@ -1724,9 +1743,11 @@ function LabelUpdateCard({ event: e }: { event: ToolEvent }) {
   // The count reads after the title, on the title row ("Labels updated · 2
   // emails"), as before.
   const title = failed ? "Couldn't update labels" : "Labels updated";
+  const labelSummary = [add.length ? `Added ${add.join(", ")}` : "", remove.length ? `Removed ${remove.join(", ")}` : ""]
+    .filter(Boolean).join(". ");
 
   return (
-    <RollupCard id={`tool:${e.id}`} title={title} icon="Tag" header="own">
+    <RollupCard id={`tool:${e.id}`} title={title} icon="Tag" summary={labelSummary} receipt={!failed} header="own">
     <div data-email-card="label" className={tone.frame}>
       <CardHead
         tone={failed ? tone.icon : "text-primary"}
@@ -1790,7 +1811,7 @@ function ManageInboxCard({ event: e }: { event: ToolEvent }) {
 
   // One row, and no body: nothing folds, so it draws no toggle.
   return (
-    <RollupCard id={`tool:${e.id}`} title={title} icon={iconName} header="own">
+    <RollupCard id={`tool:${e.id}`} title={title} icon={iconName} receipt={!failed} header="own">
     <div data-email-card="manage" className={tone.frame}>
       <CardHead tone={tone.icon} />
     </div>
@@ -2228,6 +2249,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
       title={meta.label}
       icon={iconName}
       summary={withoutIds(detail.split(/\r?\n/)[0] ?? "")}
+      receipt={!failed}
       header="own"
     >
     <div data-email-card="action" className={tone.frame}>

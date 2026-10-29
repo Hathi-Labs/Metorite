@@ -245,7 +245,7 @@ export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
   };
 
   return (
-    <RollupCard id={`tool:${e.id}`} title={title} icon={icon} summary={text.split("\n")[0]} header="own">
+    <RollupCard id={`tool:${e.id}`} title={title} icon={icon} summary={text.split("\n")[0]} receipt={!failed} header="own">
       <div
         className={`rounded-lg border px-2.5 py-2 ${
           failed ? "border-destructive/40 bg-destructive/5" : "border-sidebar-border bg-secondary/40"

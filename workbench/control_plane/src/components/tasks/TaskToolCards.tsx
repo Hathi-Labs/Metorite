@@ -476,7 +476,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   // One look with the Projects receipts: a `RollupCard` whose title row is
   // the shared header, with the icon in the card's tone.
   return (
-    <RollupCard id={`tool:${e.id}`} title={meta.label} icon={iconName} summary={detail.split(/\r?\n/)[0]} header="own">
+    <RollupCard id={`tool:${e.id}`} title={meta.label} icon={iconName} summary={detail.split(/\r?\n/)[0]} receipt={!failed} header="own">
     <div
       className={`rounded-lg border px-2.5 py-2 ${
         failed
