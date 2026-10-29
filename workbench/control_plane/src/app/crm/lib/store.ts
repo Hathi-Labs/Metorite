@@ -372,7 +372,8 @@ export const useCrmStore = create<CrmState>((set, get) => ({
       set({ lanes: toBoardLanes(pipeline), error: null });
     } catch (err) {
       if (mine !== latestBoard) return;
-      set({ error: message(err) });
+      // CRM-U15: a failed read clears the old lanes, so none stays under the banner.
+      set({ lanes: [], error: message(err) });
     } finally {
       if (mine === latestBoard) set({ loading: false });
     }

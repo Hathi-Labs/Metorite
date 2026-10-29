@@ -453,7 +453,7 @@ describe("item 5 (CRM-U8): the + Filter panel lists the fullest picklists first"
   const filters = defs.map((def) => ({ def, kind: "options" as const }));
 
   it("orders the picklists by fill, a tie in the order of the bar", () => {
-    const picklists = filterFields("leads", filters).filter((f) => f.group === "Picklists");
+    const picklists = filterFields("leads", filters).filter((f) => f.group === "Choices");
     expect(picklists.map((f) => f.label)).toEqual(["Tier", "Channel", "Segment", "Region", "Zone"]);
     expect(filtersButtonLabel(0)).toBe("Filters");
     expect(filtersButtonLabel(3)).toBe("Filters (3)");
@@ -464,7 +464,7 @@ describe("item 5 (CRM-U8): the + Filter panel lists the fullest picklists first"
       { def: { ...pick("a", null, 0) }, kind: "options" as const },
       { def: pick("b", 0.1, 1), kind: "options" as const },
     ];
-    const labels = filterFields("leads", flat).filter((f) => f.group === "Picklists");
+    const labels = filterFields("leads", flat).filter((f) => f.group === "Choices");
     expect(labels.map((f) => f.label)).toEqual(["B", "A"]);
   });
 
