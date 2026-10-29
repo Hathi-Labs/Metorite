@@ -17,6 +17,10 @@ the audit's acceptance list that it holds (1 to 21):
 - the watermark rewind, and its race with an auto-lead cycle (7, 8);
 - a second call, an open run, the refusals and a rollback write nothing
   (9, 10, 11, 12, 19);
+- phase 1 always starts its own run, and phase 2 takes only that run as the
+  final sync: a one-module run or a run that ended after it fails closed
+  (review P0);
+- two closes of Zoho at one time revoke once and write one line (F2);
 - a run that raced the commit stops with ``mode_changed`` (14);
 - a module that is not complete blocks unless the admin leaves it out (15);
 - a revoke that Zoho does not confirm still switches (16);
@@ -158,19 +162,25 @@ def _final_run(p: Any, org: str, *, start_min: int = 5, end_min: int | None = 4,
 
 async def _ready(p: Any, *, deals: int = DEALS, final: bool = True) -> None:
     """Org A: a Mirror org with records, a live Zoho token, a finished
-    import and, with *final*, a good final run 4 minutes old."""
+    import and, with *final*, a good final run 4 minutes old. Its id is
+    ``p.final_run_id``, as if phase 1 had started it."""
     _seed(p, p.org_a, tag="A", deals=deals)
     connected = await _connect(p, OrgZoho("A1", "Z-A"))
     assert connected.status_code == 302, connected.text
     _done_cursors(p, p.org_a)
-    if final:
-        _final_run(p, p.org_a)
+    p.final_run_id = _final_run(p, p.org_a) if final else None
     p.active["zoho"].requests.clear()
 
 
+def _body(p: Any, **extra: Any) -> dict[str, Any]:
+    """The body of phase 2: the word, and the run that phase 1 started."""
+    return {**SWITCH, "run_id": getattr(p, "final_run_id", None), **extra}
+
+
 async def _switch(p: Any, body: dict[str, Any] | None = None, user: Any = None) -> Any:
-    return await _call(p, user or _admin(p.org_a), "POST", "/crm/cutover",
-                       SWITCH if body is None else body)
+    """Phase 2. A body with no ``run_id`` gets the run of phase 1."""
+    sent = _body(p) if body is None else {"run_id": getattr(p, "final_run_id", None), **body}
+    return await _call(p, user or _admin(p.org_a), "POST", "/crm/cutover", sent)
 
 
 def _settings(p: Any, org: str) -> Any:
@@ -301,7 +311,7 @@ def _seed_case(p: Any, case: dict[str, Any], *, settings: bool = True) -> dict[s
                     {**o, "p": pid, "s": ids[sid], "pl": place})
     if settings:
         _done_cursors(p, p.org_a)
-        _final_run(p, p.org_a)
+        p.final_run_id = _final_run(p, p.org_a)
     return ids
 
 
@@ -323,11 +333,19 @@ async def test_the_switch_keeps_every_record_and_closes_zoho(zb, app_engine) -> 
     setup = _setup_counts(zb, zb.org_a)
     org_b = _records(zb, zb.org_b)
     access = _settings(zb, zb.org_a).access
+    member = _member("m@crm-t5-r8.test", zb.org_a)
+    # F3: a Mirror CRM's mode body has no cutover fact.
+    assert "cutover_done" not in (await _call(zb, member, "GET", "/crm/mode")).json()
 
     r = await _switch(zb)
     assert r.status_code == 200, r.text
     assert r.json() == {"status": "switched", "revoked": "confirmed",
                         "zoho_connection": "disconnected"}
+    # F3: the mode body says the switch is done, so the card may read the
+    # status. A Native CRM with no stamp leaves it out
+    # (``test_crm_aggregate_r8.py`` pins ``{"mode": "native"}``).
+    mode = (await _call(zb, member, "GET", "/crm/mode")).json()
+    assert (mode["mode"], mode.get("cutover_done")) == ("native", True)
 
     # Item 1: every record, link and source key, as before.
     assert _records(zb, zb.org_a) == (counts, keys)
@@ -572,7 +590,7 @@ async def test_a_mirror_cycle_that_holds_the_mode_stamps_before_the_rewind(
         cycle = asyncio.create_task(_cycle(zb.org_a, box))
         await asyncio.wait_for(reached.wait(), 30)
         switch = asyncio.create_task(_request(zb, _admin(zb.org_a), "POST",
-                                              "/crm/cutover", SWITCH))
+                                              "/crm/cutover", _body(zb)))
         waited = await _waits_on_a_lock(zb)
         go.set()
         stats = await cycle
@@ -641,6 +659,54 @@ async def test_a_failed_close_of_zoho_completes_on_the_second_call(
     assert len(_actions(zb, "crm.cutover.disconnect")) == 1
 
 
+async def test_two_closes_of_zoho_at_one_time_revoke_once(
+    zb, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """F2 (verifier): phase 3 failed, so the token is live. Two admins press
+    "Finish closing Zoho" at one time. The first holds the connect lock while
+    Zoho answers the revoke. The second waits, then reads ``disconnected``.
+    So Zoho gets one revoke, and one ``crm.cutover.disconnect`` line lands.
+    Without the lock, both read ``connected`` and both revoke."""
+    _assert_non_priv(app_engine)
+    from gateway.routes.crm import connection, cutover
+
+    await _ready(zb)
+    real_close = cutover.disconnect_zoho_reporting
+
+    async def _broken(org: str) -> Any:
+        raise RuntimeError("the revoke broke")
+
+    monkeypatch.setattr(cutover, "disconnect_zoho_reporting", _broken)
+    assert (await _switch(zb)).json()["zoho_connection"] == "connected"
+    monkeypatch.setattr(cutover, "disconnect_zoho_reporting", real_close)
+
+    reached, go = asyncio.Event(), asyncio.Event()
+    real_revoke = connection._best_effort_revoke
+
+    async def _slow_revoke(*args: Any, **kwargs: Any) -> Any:
+        if not reached.is_set():
+            reached.set()
+            await go.wait()
+        return await real_revoke(*args, **kwargs)
+
+    monkeypatch.setattr(connection, "_best_effort_revoke", _slow_revoke)
+    admin = _admin(zb.org_a)
+    async with tenant_engine_scope(_app_dsn(zb)):
+        first = asyncio.create_task(_request(zb, admin, "POST", "/crm/cutover", SWITCH))
+        await asyncio.wait_for(reached.wait(), 30)
+        second = asyncio.create_task(_request(zb, admin, "POST", "/crm/cutover", SWITCH))
+        waited = await _waits_on_a_lock(zb)
+        go.set()
+        answers = [await first, await second]
+    assert waited, "the second close did not wait for the connect lock"
+    assert [a.status_code for a in answers] == [200, 200], [a.text for a in answers]
+    assert [a.json()["status"] for a in answers] == ["already_done", "already_done"]
+    assert sorted(str(a.json()["revoked"]) for a in answers) == ["None", "confirmed"]
+    assert len(_revokes(zb)) == 1
+    assert len(_actions(zb, "crm.cutover.disconnect")) == 1
+    assert _connection(zb, zb.org_a).credentials_encrypted is None
+
+
 async def test_an_open_run_refuses_and_writes_nothing(zb, app_engine) -> None:  # noqa: F811
     _assert_non_priv(app_engine)
     await _ready(zb)
@@ -695,6 +761,14 @@ async def test_the_refusals(zb, app_engine, monkeypatch) -> None:  # noqa: F811
     assert preview.status_code == 200 and preview.json()["can_switch"] is False
     monkeypatch.setattr(get_settings(), "crm_cutover_orgs", "*", raising=False)
 
+    # P0 (review): phase 2 needs the run of phase 1. No id, or an id of no
+    # run, is not a final sync.
+    for run_id in (None, "", "00000000-0000-0000-0000-000000000000"):
+        r = await _switch(zb, {"confirm": "SWITCH", "run_id": run_id})
+        assert r.status_code == 409, (run_id, r.text)
+        assert r.json()["detail"]["code"] == "final_sync_missing"
+    assert _hashes(zb) == before
+
     # Item 19: a final run that ended 16 minutes ago is too old.
     _exec(zb, "UPDATE crm_sync_runs SET started_at = now() - interval '20 minutes', "
               "finished_at = now() - interval '16 minutes' WHERE organization_id = "
@@ -716,7 +790,7 @@ async def test_the_refusals(zb, app_engine, monkeypatch) -> None:  # noqa: F811
 async def test_a_failure_in_phase_two_rolls_back_everything(
     zb, app_engine, monkeypatch, step,  # noqa: F811
 ) -> None:
-    """A failure after step 9 (the fields), then after step 10 (the watermark)."""
+    """A failure after step 10 (the watermark), then after step 11 (the mode)."""
     _assert_non_priv(app_engine)
     from gateway.routes.crm import cutover
 
@@ -779,7 +853,7 @@ async def test_a_run_that_raced_the_commit_stops_on_the_mode(
     monkeypatch.setattr(cutover, "fold_cutover_overlay", _paused)
     async with tenant_engine_scope(_app_dsn(zb)):
         switch = asyncio.create_task(_request(zb, _admin(zb.org_a), "POST",
-                                              "/crm/cutover", SWITCH))
+                                              "/crm/cutover", _body(zb)))
         await asyncio.wait_for(reached.wait(), 30)
         handle = await engine.acquire(zb.org_a)
         go.set()
@@ -870,13 +944,16 @@ async def test_two_calls_at_one_time_switch_once(zb, app_engine) -> None:  # noq
     admin = _admin(zb.org_a)
     async with tenant_engine_scope(_app_dsn(zb)):
         answers = await asyncio.gather(
-            _request(zb, admin, "POST", "/crm/cutover", SWITCH),
-            _request(zb, admin, "POST", "/crm/cutover", SWITCH),
+            _request(zb, admin, "POST", "/crm/cutover", _body(zb)),
+            _request(zb, admin, "POST", "/crm/cutover", _body(zb)),
         )
     assert [a.status_code for a in answers] == [200, 200], [a.text for a in answers]
     assert sorted(a.json()["status"] for a in answers) == ["already_done", "switched"]
     assert len(_actions(zb, "crm.cutover")) == 1
     assert _settings(zb, zb.org_a).mode == "native"
+    # F2: one revoke and one close line, whichever call closed Zoho.
+    assert len(_revokes(zb)) == 1
+    assert len(_actions(zb, "crm.cutover.disconnect")) == 1
 
 
 # ── Item 18: an overlay edit that holds the mode ────────────────────────────
@@ -911,7 +988,7 @@ async def test_an_order_edit_that_holds_the_mode_is_folded(
             zb, admin, "PUT", "/crm/statuses/deal/order",
             {"ids": [ids[i] for i in wanted]}))
         await asyncio.wait_for(reached.wait(), 30)
-        switch = asyncio.create_task(_request(zb, admin, "POST", "/crm/cutover", SWITCH))
+        switch = asyncio.create_task(_request(zb, admin, "POST", "/crm/cutover", _body(zb)))
         waited = await _waits_on_a_lock(zb)
         go.set()
         ordered = await order
@@ -982,7 +1059,7 @@ async def test_phase_one_starts_the_final_run_and_the_status_follows_it(zb, app_
     r = await _call(zb, admin, "POST", "/crm/cutover/start", SWITCH)
     assert r.status_code == 202, r.text
     run_id = r.json()["run_id"]
-    assert r.json()["already_fresh"] is False
+    assert r.json() == {"run_id": run_id}
     (handle,) = zb.final_runs
     assert handle.run_id == run_id
     status = (await _call(zb, admin, "GET", "/crm/cutover/status")).json()
@@ -990,18 +1067,78 @@ async def test_phase_one_starts_the_final_run_and_the_status_follows_it(zb, app_
     # A second start while it runs: the run lock refuses it.
     again = await _call(zb, admin, "POST", "/crm/cutover/start", SWITCH)
     assert again.status_code == 409 and again.json()["detail"]["code"] == "sync_running"
+    # A body of phase 1 takes no run id (R11).
+    extra = await _call(zb, admin, "POST", "/crm/cutover/start", {**SWITCH, "run_id": run_id})
+    assert extra.status_code == 422, extra.text
     _exec(zb, "UPDATE crm_sync_runs SET status = 'ok', finished_at = now() "
               "WHERE id = CAST(:i AS uuid)", i=run_id)
     status = (await _call(zb, admin, "GET", "/crm/cutover/status")).json()
     assert (status["state"], status["run_id"]) == ("ready", run_id)
-    fresh = await _call(zb, admin, "POST", "/crm/cutover/start", SWITCH)
-    assert fresh.status_code == 200, fresh.text
-    assert fresh.json() == {"run_id": run_id, "already_fresh": True}
-    assert len(zb.final_runs) == 1
-    # Phase 2 takes that run as the final one.
-    assert (await _switch(zb)).status_code == 200
+    # P0 (review): a fresh good run is no shortcut. Each start runs its own.
+    second = await _call(zb, admin, "POST", "/crm/cutover/start", SWITCH)
+    assert second.status_code == 202, second.text
+    newer = second.json()["run_id"]
+    assert newer != run_id and len(zb.final_runs) == 2
+    _exec(zb, "UPDATE crm_sync_runs SET status = 'ok', finished_at = now() "
+              "WHERE id = CAST(:i AS uuid)", i=newer)
+    # The first run is not the newest now, so it is not the final sync.
+    before = _hashes(zb)
+    stale = await _switch(zb, _body(zb, run_id=run_id))
+    assert stale.status_code == 409 and stale.json()["detail"]["code"] == "final_sync_missing"
+    assert _hashes(zb) == before
+    # Phase 2 takes the run of the last start as the final one.
+    assert (await _switch(zb, _body(zb, run_id=newer))).status_code == 200
     (line,) = _actions(zb, "crm.cutover")
-    assert line.payload["final_run"] == run_id
+    assert line.payload["final_run"] == newer
+
+
+async def test_a_fresh_one_module_run_is_not_the_final_sync(zb, app_engine) -> None:  # noqa: F811
+    """P0 (review). "Sync it on its own" ran one module a minute ago, and the
+    run ended ``ok``. The row does not say that the run read one module. So
+    phase 1 starts its own full run, and phase 2 refuses the one-module run,
+    with every table as before."""
+    _assert_non_priv(app_engine)
+    await _ready(zb, final=False)
+    admin = _admin(zb.org_a)
+    one_module = _final_run(zb, zb.org_a, start_min=2, end_min=1)
+    r = await _call(zb, admin, "POST", "/crm/cutover/start", SWITCH)
+    assert r.status_code == 202, r.text
+    final = r.json()["run_id"]
+    assert final != one_module and len(zb.final_runs) == 1
+    # The final run is still open.
+    r = await _switch(zb, _body(zb, run_id=one_module))
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "run_open"
+    _exec(zb, "UPDATE crm_sync_runs SET status = 'ok', finished_at = now() "
+              "WHERE id = CAST(:i AS uuid)", i=final)
+    before = _hashes(zb)
+    for run_id in (one_module, None):
+        r = await _switch(zb, _body(zb, run_id=run_id))
+        assert r.status_code == 409, (run_id, r.text)
+        assert r.json()["detail"]["code"] == "final_sync_missing"
+    assert _hashes(zb) == before
+    assert _settings(zb, zb.org_a).mode == "mirror"
+    assert not _actions(zb, "crm.cutover") and _revokes(zb) == []
+    r = await _switch(zb, _body(zb, run_id=final))
+    assert r.status_code == 200, r.text
+    (line,) = _actions(zb, "crm.cutover")
+    assert line.payload["final_run"] == final
+
+
+async def test_a_run_that_ends_after_the_final_run_fails_closed(zb, app_engine) -> None:  # noqa: F811
+    """P0 (review). A scheduled run starts after the final run and ends
+    ``ok`` before the commit. Its changes are not the final sync's, and T0
+    would be wrong. Phase 2 answers ``final_sync_missing`` and writes
+    nothing. The admin starts the switch again."""
+    _assert_non_priv(app_engine)
+    await _ready(zb)
+    _final_run(zb, zb.org_a, start_min=2, end_min=1)
+    before = _hashes(zb)
+    r = await _switch(zb)
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "final_sync_missing"
+    assert _hashes(zb) == before
+    assert _settings(zb, zb.org_a).mode == "mirror"
+    assert not _actions(zb, "crm.cutover") and _revokes(zb) == []
 
 
 async def test_phase_one_refuses_a_dead_token_an_open_import_and_a_failed_run(

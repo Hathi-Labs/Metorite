@@ -38,22 +38,29 @@ refuses an unknown field.
 
 1. ``POST /crm/cutover/start`` checks the mode, the connection, the open
    import and each key, then starts the final sync through the normal engine,
-   each page in its own transaction. It skips the sync when a good run ended
-   in the last :data:`FRESH_MINUTES` minutes. It starts NO label, vector,
-   mapping, question or digest step (``scheduler.spawn`` would).
+   each page in its own transaction. ⚠️ It ALWAYS starts its own full run and
+   returns the ``run_id``. A good run that is fresh does not count: a "Sync
+   it on its own" run reads one module only, and the run row does not say
+   so. It starts NO label, vector, mapping, question or digest step
+   (``scheduler.spawn`` would).
 2. ``POST /crm/cutover`` runs phase 2 in ONE transaction. The lock order is the
    order of the start over (``settings._start_over``): the advisory connect
    lock, then ``crm_settings`` ``FOR UPDATE``. It checks the mode, no open
-   run, a final run that ended well in the last 15 minutes (the database
-   clock), and each key again. Then :func:`fold_cutover_overlay` (THE FOLD),
+   run, and that the newest run IS the run of phase 1 (the ``run_id`` of the
+   body), ended well in the last 15 minutes by the database clock. Any other
+   newest run is 409 ``final_sync_missing``, also a scheduled run that ended
+   after the final run. Then it checks each key again. Then
+   :func:`fold_cutover_overlay` (THE FOLD),
    the labels, :func:`own_cutover_fields`, the watermark rewind (§3.4.1) and
    the mode. A write that meets the switch is 409 ``crm_changed``. One audit
    line, ``crm.cutover``, after the commit.
 3. After the commit, :func:`connection.disconnect_zoho_reporting` revokes the
-   token and deletes the blob. A failure there never undoes phase 2: the
-   admin presses again, and a second call answers ``already_done`` and closes
-   Zoho. A second audit line, ``crm.cutover.disconnect``, records what Zoho
-   said, only when the call changed the row.
+   token and deletes the blob, under the connect lock. A failure there never
+   undoes phase 2: the admin presses again, and a second call answers
+   ``already_done`` and closes Zoho. A Native org with a cutover stamp skips
+   the checks of the run, so that retry needs no ``run_id``. A second audit
+   line, ``crm.cutover.disconnect``, records what Zoho said, only when the
+   call changed the row.
 
 ⚠️ It never calls ``seed_native_pipeline`` (a fence reads the AST), and
 ``ALLOWED_MODE_CHANGES`` gains no Mirror-to-Native entry. The records, the
@@ -71,7 +78,7 @@ from typing import Annotated, Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_permission
 from acb_common import get_logger
-from fastapi import Depends, HTTPException, Response
+from fastapi import Depends, HTTPException
 from gateway.connections import store
 from gateway.routes.crm.access import ADMIN_PERMISSION, read_settings
 from gateway.routes.crm.connection import (
@@ -694,8 +701,8 @@ async def get_cutover_preview(
 # ── The switch (CRM-Z10b) ───────────────────────────────────────────────────
 
 
-class SwitchIn(BaseModel):
-    """The body of both POST routes. No other field is allowed (R11)."""
+class StartIn(BaseModel):
+    """The body of ``POST /crm/cutover/start``. No other field is allowed (R11)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -708,12 +715,17 @@ class SwitchIn(BaseModel):
     )
 
 
+class SwitchIn(StartIn):
+    """The body of ``POST /crm/cutover``. No other field is allowed (R11)."""
+
+    #: The run that phase 1 started. Phase 2 switches only when the newest run
+    #: of the org IS this run. A retry after the switch needs none.
+    run_id: str | None = Field(default=None, max_length=64)
+
+
 class StartOut(BaseModel):
-    #: The final run. With ``already_fresh``, the good run that is fresh.
-    run_id: str | None = None
-    #: A good run ended in the last :data:`FRESH_MINUTES` minutes, so no sync
-    #: starts. The admin may switch now.
-    already_fresh: bool = False
+    #: The final run that this call started. The dialog sends it to phase 2.
+    run_id: str
 
 
 class StatusOut(BaseModel):
@@ -884,10 +896,13 @@ def _start_final_run(handle: Any) -> asyncio.Task[Any]:
     dependencies=_SWITCH_GUARDS,
 )
 async def start_cutover(
-    payload: SwitchIn, response: Response,
-    user: UserContext = Depends(get_current_user),
+    payload: StartIn, user: UserContext = Depends(get_current_user),
 ) -> StartOut:
-    """Phase 1: the checks, then the final sync. See the module doc."""
+    """Phase 1: the checks, then the final sync. See the module doc.
+
+    ⚠️ No shortcut for a fresh run. A one-module run ("Sync it on its own")
+    is as fresh as a full one, and phase 2 would take it as the final sync.
+    """
     from gateway.crm_sync import engine, runs
 
     org = _organization(user)
@@ -899,16 +914,6 @@ async def start_cutover(
             raise _refuse(409, *_NOT_MIRROR)
         _check_connection(await store.get(db, org, PROVIDER, OWNING_APP))
         await _check_keys(db, org, leave_out)
-        latest = await runs.latest(db, org)
-        fresh = latest is not None and latest.status == runs.STATUS_OK and bool(
-            (await db.execute(text(
-                "SELECT CAST(:end AS timestamptz) >= now() - "
-                "make_interval(mins => :m) AS fresh"),
-                {"end": latest.finished_at, "m": FRESH_MINUTES})).scalar(),
-        )
-    if fresh:
-        response.status_code = 200
-        return StartOut(run_id=latest.id, already_fresh=True)
     try:
         handle = await engine.acquire(org)
     except runs.SyncRunning as exc:
@@ -985,7 +990,7 @@ _OPEN_RUN_SQL = (
     "AND status = 'running' LIMIT 1"
 )
 #: Step 5: the newest run, and whether it ended well in the window, by the
-#: database clock.
+#: database clock. The caller also checks that its id is the run of phase 1.
 _FINAL_RUN_SQL = (
     f"SELECT {_COLUMNS}, (status = 'ok' AND finished_at IS NOT NULL AND "
     "finished_at >= now() - make_interval(mins => :m)) AS fresh "
@@ -1093,8 +1098,15 @@ async def _set_native(db: Any, org: str, admin: str | None) -> None:
         {"o": org, "admin": admin})
 
 
-async def _switch(org: str, admin: str | None, leave_out: frozenset[str]) -> SwitchFacts | None:
-    """Phase 2. Returns None when the org switched before (``already_done``)."""
+async def _switch(
+    org: str, admin: str | None, leave_out: frozenset[str], run_id: str | None,
+) -> SwitchFacts | None:
+    """Phase 2. Returns None when the org switched before (``already_done``).
+
+    *run_id* is the run that phase 1 started. The newest run must be that
+    run, so a one-module run or a scheduled run that ended after it fails
+    closed with ``final_sync_missing``.
+    """
     from gateway.crm_sync import runs
 
     async with _tenant_session() as db:
@@ -1102,6 +1114,7 @@ async def _switch(org: str, admin: str | None, leave_out: frozenset[str]) -> Swi
         row = (await db.execute(text(_SWITCH_LOCK_SQL), {"o": org})).first()
         if row is None:
             raise _refuse(409, "settings_missing", "This CRM has no setup to switch.")
+        # Before the run checks: a retry after the commit needs no run.
         if row.mode == "native" and row.cutover_at is not None:
             return None
         if row.mode != "mirror":
@@ -1111,11 +1124,15 @@ async def _switch(org: str, admin: str | None, leave_out: frozenset[str]) -> Swi
                 409, "run_open", "A sync runs now. Wait for it to finish. Nothing changed.",
             )
         final = (await db.execute(text(_FINAL_RUN_SQL), {"o": org, "m": FRESH_MINUTES})).first()
-        if final is None or not final.fresh:
+        if (
+            final is None or not final.fresh or not run_id
+            or str(final.id) != run_id
+        ):
             raise _refuse(
                 409, "final_sync_missing",
-                f"The final sync must end well in the last {FRESH_MINUTES} "
-                "minutes. Start it again. Nothing changed.",
+                "The final sync of this switch must be the newest sync, and it "
+                f"must end well in the last {FRESH_MINUTES} minutes. Start the "
+                "switch again. Nothing changed.",
             )
         run = runs._row(final)
         left_out = await _check_keys(db, org, leave_out, run)
@@ -1185,7 +1202,9 @@ async def switch_to_metorite(
     _check_confirm(payload.confirm)
     admin = (user.email or "").strip().lower() or None
     try:
-        facts = await _switch(org, admin, frozenset(payload.leave_out))
+        facts = await _switch(
+            org, admin, frozenset(payload.leave_out), payload.run_id,
+        )
     except DBAPIError as exc:
         code = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
         if code in _CHANGED_STATES:

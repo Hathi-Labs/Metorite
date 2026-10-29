@@ -620,15 +620,24 @@ async def disconnect_zoho_reporting(
     ``not_confirmed`` or ``not_configured`` when this call changed the row,
     and ``None`` when it changed nothing (no connection, or one that is
     already ``disconnected``). The revoke never stops the disconnect.
+
+    ⚠️ ONE transaction under the connect lock, from the status read to
+    ``store.disconnect`` (CRM-Z10b, verifier finding F2). Two calls at one
+    time do not both read ``connected``: the second waits, then reads
+    ``disconnected`` and changes nothing. So Zoho gets one revoke, and the
+    caller writes one audit line. The revoke runs inside the lock on
+    purpose. It is bounded by the token timeout of the Zoho client. A crash
+    before the commit leaves the row and its blob, so the next call revokes
+    again. The lock is the one of the consent, the start over and the switch.
     """
     async with _tenant_session() as db:
+        await db.execute(text(_CONNECT_LOCK_SQL), {"key": f"crm.connect:{org}:{PROVIDER}"})
         row = await store.get(db, org, PROVIDER, OWNING_APP)
         if row is None or row.status == store.STATUS_DISCONNECTED:
             return row, None
         credential = await store.load_credential(db, org, PROVIDER, OWNING_APP)
-    raw = await _best_effort_revoke(credential, "disconnect")
-    outcome = raw if raw in REVOKE_OUTCOMES else "not_confirmed"
-    async with _tenant_session() as db:
+        raw = await _best_effort_revoke(credential, "disconnect")
+        outcome = raw if raw in REVOKE_OUTCOMES else "not_confirmed"
         return await store.disconnect(db, org, row.id), outcome
 
 
