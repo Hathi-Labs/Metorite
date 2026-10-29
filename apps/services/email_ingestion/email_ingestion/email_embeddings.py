@@ -1,9 +1,9 @@
 """Email semantic search (Phase 2) — embed messages for hybrid vector ranking.
 
 Runs in the same background sweep as the body backfill: after each account's
-sync, a BOUNDED batch of not-yet-embedded messages is embedded via the LiteLLM
-gateway (the same /v1/embeddings path mem0 uses — no OPENAI_API_KEY needed) and
-stored in email_embeddings (migration 73). The /email/search hybrid path then
+sync, a BOUNDED batch of not-yet-embedded messages is embedded through the embed
+door of Knowledge (``gateway.kb_index.embed``, the Router on ``tier-embed``, KG-2)
+and stored in email_embeddings (migration 73). The /email/search hybrid path then
 blends cosine similarity with the full-text rank.
 
 Gated by ``email_semantic_search_enabled``: when off, this is a no-op and search
@@ -77,39 +77,42 @@ def _content_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
 
 
-async def _embed_batch(texts: list[str], model: str) -> list[list[float]] | None:
-    """Embed a batch through the LiteLLM gateway (same route mem0 uses). Returns
-    one vector per input text, or None on any failure (caller skips this tick —
-    never fails the sync)."""
+async def _embed_batch(
+    texts: list[str], model: str,
+) -> list[list[float] | None] | None:
+    """Embed a batch through the embed door of Knowledge (KG-2, D128).
+
+    The door (``gateway.kb_index.embed.embed``) asks the Router on
+    ``tier-embed``. It writes a ``usage_event`` row and draws no credit. It
+    ignores *model*: the Router picks the model, and ``EMBED_MODEL`` is what
+    the stored row records. The door never raises. It answers ``None`` for
+    each text it could not embed. This function returns one entry for each
+    input text, or ``None`` when the whole call fails (the caller skips this
+    tick and never fails the sync).
+
+    The import of the door is lazy. ``email_ingestion`` is the lower layer
+    and its modules import no ``gateway`` at load time. The scheduler holds
+    that rule (``tests/unit/test_email_layering.py``).
+    """
     try:
-        import litellm  # noqa: PLC0415
-        from acb_common.settings import get_settings  # noqa: PLC0415
-        litellm.drop_params = True
-        settings = get_settings()
-        api_base = settings.litellm_base_url.rstrip("/") + "/v1"
+        from gateway.kb_index import embed as door  # noqa: PLC0415
+
         # EM-T4b: inside the automation scope (the cleanup backfill) the
         # cap and the daily budget bind the embed. Elsewhere this is a no-op.
         # The slot holds the leaf call and nothing else.
         async with llm_slot():
-            resp = await litellm.aembedding(
-                model=model,
-                input=texts,
-                api_base=api_base,
-                api_key=settings.litellm_master_key,
-                custom_llm_provider="openai",
-            )
+            vectors = await door.embed(texts)
     except Exception as exc:  # noqa: BLE001
         logger.warning("email_embed.batch_failed model=%s err=%s",
-                       model, str(exc)[:160])
+                       model, type(exc).__name__)
         return None
-    # litellm returns {data: [{embedding: [...]}, ...]} preserving input order.
-    try:
-        data = resp["data"] if isinstance(resp, dict) else resp.data
-        return [d["embedding"] if isinstance(d, dict) else d.embedding
-                for d in data]
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("email_embed.parse_failed err=%s", str(exc)[:160])
+    if len(vectors) != len(texts):
+        logger.warning("email_embed.parse_failed err=count_mismatch")
         return None
+    if not any(v is not None for v in vectors):
+        logger.warning("email_embed.batch_failed model=%s err=no_vector", model)
+        return None
+    return list(vectors)
 
 
 async def embed_query(query: str) -> list[float] | None:
@@ -134,27 +137,45 @@ class PendingEmbeddings:
     message_ids: tuple[str, ...]
     hashes: tuple[str, ...]
     texts: tuple[str, ...]
+    #: The mailbox owner, read from ``email_accounts`` (never from mail). The
+    #: model step binds it as the member of the run (H-152).
+    owner: str | None = None
+
+
+def _owner_of(rows: Sequence[Any]) -> str | None:
+    """The mailbox owner of the rows (one account), or ``None``."""
+    owner = str(getattr(rows[0], "owner", None) or "").strip()
+    return owner or None
 
 
 async def select_pending_embeddings(
     db: Any, account_id: str, *, batch: int = DEFAULT_BATCH,
+    force: bool = False,
 ) -> PendingEmbeddings | None:
     """The read step: up to ``batch`` of the account's messages that have no
     embedding yet (or whose body changed since last embed).
 
     Returns ``None`` when semantic search is disabled — with no statement —
     or when no message waits. Takes the caller's session, opens none and never
-    commits."""
+    commits.
+
+    ``force=True`` skips the flag. Only ``scripts/backfill_email_embeddings.py``
+    passes it, for the orgs that the owner names (KG-2). The flag is GLOBAL,
+    so the backfill must not need it. The default flow is unchanged."""
     from acb_common.settings import get_settings
     settings = get_settings()
-    if not settings.email_semantic_search_enabled:
+    if not force and not settings.email_semantic_search_enabled:
         return None
-    model = settings.email_embedding_model
+    # The door ignores the configured name and the Router picks the model, so
+    # the row records the model of the door (KG-2). Lazy: lower layer.
+    from gateway.kb_index.embed import EMBED_MODEL as model  # noqa: PLC0415
 
     # Candidates: messages with a body but no current embedding, OR whose stored
     # embedding was made from a different content_hash (body edited/backfilled).
     rows = (await db.execute(text(
-        """SELECT em.id, em.subject, em.body_text
+        """SELECT em.id, em.subject, em.body_text,
+                  (SELECT ea.user_id FROM email_accounts ea
+                    WHERE ea.id = em.account_id) AS owner
              FROM email_messages em
              LEFT JOIN email_embeddings ee ON ee.message_id = em.id
             WHERE em.account_id = :aid
@@ -182,18 +203,24 @@ async def select_pending_embeddings(
         hashes=tuple(_content_hash(_hash_source(r.subject, r.body_text))
                      for r in rows),
         texts=tuple(_embed_text(r.subject, r.body_text) for r in rows),
+        owner=_owner_of(rows),
     )
 
 
 async def compute_embeddings(
     pending: PendingEmbeddings,
-) -> list[list[float]] | None:
+) -> list[list[float] | None] | None:
     """The model step: one vector per pending message, through ``_embed_batch``.
 
     Takes NO session. The caller holds none open across the model call
     (EM-T4a-1). Returns ``None`` when the call fails or answers the wrong
     count, and the caller then writes nothing this tick."""
-    vectors = await _embed_batch(list(pending.texts), pending.model)
+    # H-152: a background job binds the member who owns the mailbox, or the
+    # Router refuses the call. ``app="email"`` makes the usage rows separable.
+    from acb_common import job_member_scope  # noqa: PLC0415
+
+    with job_member_scope(pending.owner, app="email"):
+        vectors = await _embed_batch(list(pending.texts), pending.model)
     if vectors is None or len(vectors) != len(pending.message_ids):
         return None
     return vectors
@@ -201,7 +228,7 @@ async def compute_embeddings(
 
 async def write_embeddings(
     db: Any, account_id: str, pending: PendingEmbeddings,
-    vectors: Sequence[Sequence[float]],
+    vectors: Sequence[Sequence[float] | None],
 ) -> int:
     """The write step: upsert one embedding per message. Returns how many it
     wrote.
@@ -210,8 +237,11 @@ async def write_embeddings(
     when the caller's ``tenant_session`` block exits, so each INSERT runs under
     the tenant binding."""
     embedded = 0
+    model = pending.model
     for mid, vec, h in zip(pending.message_ids, vectors, pending.hashes,
                            strict=False):
+        if vec is None:
+            continue  # the door gave no vector: the message waits for a later tick
         # pgvector accepts the '[..]' text form for a vector literal.
         vec_literal = "[" + ",".join(f"{x:.7f}" for x in vec) + "]"
         await db.execute(text(
@@ -224,7 +254,7 @@ async def write_embeddings(
                        content_hash = EXCLUDED.content_hash,
                        updated_at = now()"""),
             {"mid": mid, "aid": account_id, "emb": vec_literal,
-             "model": pending.model, "hash": h},
+             "model": model, "hash": h},
         )
         embedded += 1
 
