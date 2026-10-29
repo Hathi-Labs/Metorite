@@ -222,6 +222,17 @@ function useModeBody(enabled: boolean): CrmModeBody | null {
   return useModeRead(enabled).body;
 }
 
+/**
+ * CRM-Z10b: true when a Native CRM came from Zoho through the switch
+ * (`cutover_done` of `GET /crm/mode`). The cutover card reads the status of
+ * the switch only then. A Native CRM that never switched sends no status
+ * read, so it gets no 404 on each focus (verifier finding F3). It is the
+ * same one read as the labels, so it costs no request.
+ */
+export function useCutoverDone(enabled: boolean): boolean {
+  return useModeBody(enabled)?.cutover_done === true;
+}
+
 export type CoreStatesState = {
   /** `null` with no `entities` block: the rail and `/crm` draw as before. */
   states: CoreStates | null;

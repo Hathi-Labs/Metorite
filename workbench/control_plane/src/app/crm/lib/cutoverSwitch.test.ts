@@ -10,13 +10,20 @@ import { describe, expect, it, vi } from "vitest";
 
 import { resolveHue } from "@/lib/statusAccent";
 
+import { CrmError } from "./api";
 import { orderLanes, stageAccent, toLeadLanes } from "./board";
 import type { CutoverPreview, CutoverStatus, SwitchResult } from "./cutover";
 import {
+  FINISH_FAILED,
+  FINISH_NOT_SWITCHED,
   POLL_MS,
+  START_FAILED,
+  SWITCH_FAILED,
   SWITCH_WORD,
   canSwitch,
   closeSwitch,
+  finishClosing,
+  gapsOf,
   initialSwitch,
   resultLines,
   runSwitch,
@@ -205,6 +212,11 @@ function preview(over: Partial<CutoverPreview> = {}): CutoverPreview {
 
 const RESULT: SwitchResult = { status: "switched", revoked: "confirmed", zoho_connection: "disconnected" };
 
+/** A gateway refusal, as `call()` throws it. */
+function refusal(code: string, message: string, extra: Record<string, unknown> = {}): CrmError {
+  return new CrmError(message, 409, code, undefined, { code, message, ...extra });
+}
+
 function status(state: CutoverStatus["state"], error: string | null = null): CutoverStatus {
   return {
     state, run_id: "r1", started_at: null, finished_at: null, error,
@@ -244,9 +256,9 @@ describe("CRM-Z10b the switch dialog", () => {
     expect(s.leaveOut).toEqual(["module:Products"]);
   });
 
-  it("polls the status every 3 seconds, then switches with the ticked modules", async () => {
+  it("polls the status every 3 seconds, then switches with the ticked modules and the run", async () => {
     const reads = [status("running"), status("running"), status("ready")];
-    const start = vi.fn(async () => ({ run_id: "r1", already_fresh: false }));
+    const start = vi.fn(async () => ({ run_id: "r1" }));
     const read = vi.fn(async () => reads.shift()!);
     const commit = vi.fn(async () => RESULT);
     const wait = vi.fn(async (_ms: number) => undefined);
@@ -260,30 +272,119 @@ describe("CRM-Z10b the switch dialog", () => {
     expect(read).toHaveBeenCalledTimes(3);
     expect(wait.mock.calls.map(([ms]) => ms)).toEqual([POLL_MS, POLL_MS, POLL_MS]);
     expect(POLL_MS).toBe(3000);
-    expect(commit).toHaveBeenCalledWith(body);
+    // P0 (review): phase 2 gets the run that this start began.
+    expect(commit).toHaveBeenCalledWith({ ...body, run_id: "r1" });
     expect(phases).toEqual(["sync", "switch"]);
   });
 
-  it("switches at once after a fresh sync, and stops on a failed one", async () => {
+  it("always waits for its own run, and stops on a failed one", async () => {
     const commit = vi.fn(async () => RESULT);
-    const fresh = await runSwitch([], {
-      start: async () => ({ run_id: "r0", already_fresh: true }),
-      status: async () => { throw new Error("no read"); },
-      commit, wait: async () => undefined,
+    const read = vi.fn(async () => status("ready"));
+    const own = await runSwitch([], {
+      start: async () => ({ run_id: "r2" }),
+      status: read, commit, wait: async () => undefined,
     });
-    expect(fresh).toEqual({ result: RESULT });
+    expect(own).toEqual({ result: RESULT });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(commit).toHaveBeenLastCalledWith({ confirm: SWITCH_WORD, leave_out: [], run_id: "r2" });
     const stopped = await runSwitch([], {
-      start: async () => ({ run_id: "r1", already_fresh: false }),
+      start: async () => ({ run_id: "r1" }),
       status: async () => status("failed", "budget"),
       commit, wait: async () => undefined,
     });
     expect(stopped).toEqual({ error: syncStoppedWords("budget") });
     expect(commit).toHaveBeenCalledTimes(1);
     const refused = await runSwitch([], {
-      start: async () => { throw new Error("Zoho asks you to connect again."); },
+      start: async () => { throw refusal("needs_reconnect", "Zoho asks you to connect again."); },
       status: async () => status("ready"), commit, wait: async () => undefined,
     });
     expect(refused).toEqual({ error: "Zoho asks you to connect again." });
+    const lost = await runSwitch([], {
+      start: async () => { throw new TypeError("Failed to fetch"); },
+      status: async () => status("ready"), commit, wait: async () => undefined,
+    });
+    expect(lost).toEqual({ error: START_FAILED });
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it("finishes a switch whose answer got lost (review P2)", async () => {
+    // The first press: the switch committed, but its answer did not arrive.
+    const commitLost = vi.fn(async () => { throw new TypeError("Failed to fetch"); });
+    const first = await runSwitch([], {
+      start: async () => ({ run_id: "r1" }),
+      status: async () => status("ready"), commit: commitLost, wait: async () => undefined,
+    });
+    expect(first).toEqual({ error: SWITCH_FAILED });
+    expect(SWITCH_FAILED).not.toMatch(/Nothing changed/);
+    // The press again: the start says not_mirror, the status says done, and
+    // the switch goes again. The gateway answers already_done and closes Zoho.
+    const again: SwitchResult = { status: "already_done", revoked: "confirmed", zoho_connection: "disconnected" };
+    const commit = vi.fn(async () => again);
+    const read = vi.fn(async () => status("done"));
+    const second = await runSwitch([], {
+      start: async () => { throw refusal("not_mirror", "The switch is for a CRM that mirrors Zoho."); },
+      status: read, commit, wait: async () => undefined,
+    });
+    expect(second).toEqual({ result: again });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(commit).toHaveBeenCalledWith({ confirm: SWITCH_WORD, leave_out: [] });
+    // A start that says not_mirror for an org that did not switch: no switch.
+    const notDone = vi.fn(async () => RESULT);
+    const other = await runSwitch([], {
+      start: async () => { throw refusal("not_mirror", "The switch is for a CRM that mirrors Zoho."); },
+      status: async () => status("idle"), commit: notDone, wait: async () => undefined,
+    });
+    expect(other).toEqual({ error: "The switch is for a CRM that mirrors Zoho." });
+    expect(notDone).not.toHaveBeenCalled();
+  });
+
+  it("reloads the mode on close after a switch call that failed", () => {
+    const reload = vi.fn();
+    const close = vi.fn();
+    let s = initialSwitch(preview({ incomplete: [] }));
+    s = switchReducer(switchReducer(s, { type: "next" }), { type: "type", text: SWITCH_WORD });
+    s = switchReducer(s, { type: "submit" });
+    // A failure in the sync: the switch never went, so no reload.
+    const synced = switchReducer(s, { type: "failed", message: "No." });
+    closeSwitch(synced, { reload, close });
+    expect(reload).not.toHaveBeenCalled();
+    // A failure after the switch went: the mode may have changed.
+    s = switchReducer(switchReducer(s, { type: "phase", phase: "switch" }), {
+      type: "failed", message: SWITCH_FAILED,
+    });
+    expect(s.committed).toBe(true);
+    closeSwitch(s, { reload, close });
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(2);
+  });
+
+  it("finishes closing Zoho only when the status says the switch is done (F6)", async () => {
+    const commit = vi.fn(async () => RESULT);
+    const stale = await finishClosing({ status: async () => status("ready"), commit });
+    expect(stale).toEqual({ error: FINISH_NOT_SWITCHED });
+    expect(commit).not.toHaveBeenCalled();
+    const done = await finishClosing({ status: async () => status("done"), commit });
+    expect(done).toEqual({ lines: resultLines(RESULT).slice(1) });
+    expect(commit).toHaveBeenCalledWith({ confirm: SWITCH_WORD, leave_out: [] });
+    const failed = await finishClosing({
+      status: async () => status("done"),
+      commit: async () => ({ ...RESULT, revoked: null, zoho_connection: "connected" }),
+    });
+    expect(failed).toEqual({ error: FINISH_FAILED });
+  });
+
+  it("reads the modules of a 409 module_incomplete, and nothing else", () => {
+    const modules = [
+      { key: "module:Quotes", label: "Quotes", reason: "short" },
+      { key: "tasks", label: "Tasks", reason: "something new" },
+      { label: "No key" },
+    ];
+    expect(gapsOf(refusal("module_incomplete", "Tick them.", { modules }))).toEqual([
+      { key: "module:Quotes", label: "Quotes", reason: "short" },
+      { key: "tasks", label: "Tasks", reason: "failed" },
+    ]);
+    expect(gapsOf(refusal("run_open", "A sync runs now.", { modules }))).toEqual([]);
+    expect(gapsOf(new Error("plain"))).toEqual([]);
   });
 
   it("says what Zoho said to the revoke", () => {

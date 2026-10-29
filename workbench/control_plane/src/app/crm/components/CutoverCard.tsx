@@ -9,11 +9,18 @@
  * card leads with one sentence, and the counts sit behind a fold.
  *
  * - **Mirror mode.** The preview. When the org is on the cutover list
- *   (`can_switch`), the last line holds the "Switch to Metorite" button, and
- *   the button opens `CutoverDialog`.
- * - **Native mode.** Nothing, unless the switch is done and Zoho is still
- *   connected (phase 3 did not finish). Then "Finish closing Zoho" posts the
- *   switch again, and the gateway closes Zoho only.
+ *   (`can_switch`), the last part holds the two switches of D133 (as
+ *   amended 2026-10-29), each with one line about the records under it. The
+ *   one that keeps the records is the primary button, and it opens
+ *   `CutoverDialog`. The one that starts empty has the danger tone, and it
+ *   opens the start-over dialog of the hub (`onStartEmpty`). The hub then
+ *   leaves its own copy out (`switchesInCard`). Both labels come from
+ *   `lib/setup.ts`.
+ * - **Native mode.** Nothing, unless the switch is done (`cutover_done` of
+ *   `GET /crm/mode`) and Zoho is still connected (phase 3 did not finish).
+ *   Then "Finish closing Zoho" reads the status, and posts the switch again
+ *   only when it says `done`. The gateway then closes Zoho only. A Native
+ *   CRM that never switched reads no status.
  *
  * The dialog lives in the card itself, so a mode that changes under it does
  * not close it. `CutoverCardView` and `FinishClosingView` only draw, so a test
@@ -45,12 +52,18 @@ import {
   closingPending,
   getCutoverStatus,
   switchToMetorite,
+  switchesInCard,
   type CutoverPreview,
   type CutoverStatus,
   type Split,
 } from "../lib/cutover";
-import { SWITCH_LABEL, SWITCH_WORD, resultLines } from "../lib/cutoverSwitch";
+import { SWITCH_LABEL, finishClosing } from "../lib/cutoverSwitch";
+import { ACTIONS, KEEP_RECORDS_SWITCH } from "../lib/setup";
+import { useCutoverDone } from "../lib/useCrmMode";
 import CutoverDialog from "./CutoverDialog";
+
+/** The switch of the hub that removes the records (CRM-X0). */
+const START_EMPTY = ACTIONS["switch-to-metorite"];
 
 const CELL = "px-4 py-1.5 text-right tabular-nums";
 
@@ -70,10 +83,13 @@ function Heading({ children }: { children: React.ReactNode }) {
 export function CutoverCardView({
   preview,
   onSwitch,
+  onStartEmpty,
 }: {
   preview: CutoverPreview;
-  /** Opens the dialog. Shown only when the org may switch. */
+  /** Opens the dialog of the switch that keeps the records. Shown only when the org may switch. */
   onSwitch?: () => void;
+  /** Opens the start-over dialog of the hub, which removes the records. */
+  onStartEmpty?: () => void;
 }) {
   const lines = attention(preview);
   const asOf = preview.sync.last_good_at
@@ -191,12 +207,25 @@ export function CutoverCardView({
         )}
       </div>
 
-      {preview.can_switch && onSwitch ? (
-        <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-2">
-          <p className="min-w-0 flex-1 text-[11px] text-muted-foreground">{SWITCH_READY}</p>
-          <Button variant="primary" size="sm" icon="ArrowRightLeft" onClick={onSwitch}>
-            {SWITCH_LABEL}
-          </Button>
+      {switchesInCard(preview) && onSwitch ? (
+        <footer className="border-t border-border px-4 py-3">
+          <p className="text-[11px] text-muted-foreground">{SWITCH_READY}</p>
+          <ul className="mt-2 flex flex-col gap-3" aria-label="Choose how to switch">
+            <li className="flex flex-col items-start gap-1">
+              <Button variant="primary" size="sm" icon="ArrowRightLeft" onClick={onSwitch}>
+                {SWITCH_LABEL}
+              </Button>
+              <p className="text-[11px] text-muted-foreground">{KEEP_RECORDS_SWITCH.explain}</p>
+            </li>
+            {onStartEmpty && (
+              <li className="flex flex-col items-start gap-1">
+                <Button variant="destructive" size="sm" onClick={onStartEmpty}>
+                  {START_EMPTY.label}
+                </Button>
+                <p className="text-[11px] text-muted-foreground">{START_EMPTY.explain}</p>
+              </li>
+            )}
+          </ul>
         </footer>
       ) : (
         <footer className="border-t border-border px-4 py-2 text-[11px] text-muted-foreground">
@@ -253,8 +282,6 @@ export function FinishClosingView({
   );
 }
 
-export const FINISH_FAILED = "Zoho is still connected. The disconnect did not finish. Try again.";
-
 /** Nothing in the card may take Setup down. A throw draws nothing. */
 export class CutoverBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
@@ -268,14 +295,23 @@ export class CutoverBoundary extends Component<{ children: ReactNode }, { failed
   }
 }
 
-function CutoverRead({ onSwitch }: { onSwitch: (preview: CutoverPreview) => void }) {
-  const { data } = useCachedResource<CutoverPreview>("crm:cutover-preview", getCutoverPreview);
+/** The cache key of the preview. `SetupHub` reads the same key (`switchesInCard`). */
+export const PREVIEW_KEY = "crm:cutover-preview";
+
+function CutoverRead({
+  onSwitch,
+  onStartEmpty,
+}: {
+  onSwitch: (preview: CutoverPreview) => void;
+  onStartEmpty: () => void;
+}) {
+  const { data } = useCachedResource<CutoverPreview>(PREVIEW_KEY, getCutoverPreview);
   return isPreview(data) ? (
-    <CutoverCardView preview={data} onSwitch={() => onSwitch(data)} />
+    <CutoverCardView preview={data} onSwitch={() => onSwitch(data)} onStartEmpty={onStartEmpty} />
   ) : null;
 }
 
-/** Native mode: the card shows only while phase 3 waits. A 404 draws nothing. */
+/** Native mode, after the switch: the card shows only while phase 3 waits. A 404 draws nothing. */
 function FinishClosingRead() {
   const { data } = useCachedResource<CutoverStatus>("crm:cutover-status", getCutoverStatus);
   const [busy, setBusy] = useState(false);
@@ -288,14 +324,9 @@ function FinishClosingRead() {
     setBusy(true);
     setError(null);
     try {
-      const result = await switchToMetorite({ confirm: SWITCH_WORD, leave_out: [] });
-      if (result.zoho_connection === "disconnected" || result.zoho_connection === "none") {
-        setDone(resultLines(result).slice(1));
-      } else {
-        setError(FINISH_FAILED);
-      }
-    } catch (err) {
-      setError(err instanceof Error && err.message ? err.message : FINISH_FAILED);
+      const out = await finishClosing({ status: getCutoverStatus, commit: switchToMetorite });
+      if ("lines" in out) setDone(out.lines);
+      else setError(out.error);
     } finally {
       setBusy(false);
       invalidate("crm:cutover-status");
@@ -307,14 +338,25 @@ function FinishClosingRead() {
 
 /**
  * The card with its reads. In Mirror mode it draws nothing until Zoho counts
- * exist, when the read is refused, or when the body is not a preview.
+ * exist, when the read is refused, or when the body is not a preview. In
+ * Native mode it reads the status only after the switch (F3).
  */
-export default function CutoverCard({ mode }: { mode: CrmMode }) {
+export default function CutoverCard({
+  mode,
+  onStartEmpty,
+}: {
+  mode: CrmMode;
+  /** Opens the start-over dialog of the hub with `ACTIONS["switch-to-metorite"]`. */
+  onStartEmpty: () => void;
+}) {
   // The preview the dialog opened with. The dialog keeps it as a snapshot.
   const [opened, setOpened] = useState<CutoverPreview | null>(null);
+  const switched = useCutoverDone(mode === "native");
   return (
     <CutoverBoundary>
-      {mode === "native" ? <FinishClosingRead /> : <CutoverRead onSwitch={setOpened} />}
+      {mode === "native"
+        ? switched && <FinishClosingRead />
+        : <CutoverRead onSwitch={setOpened} onStartEmpty={onStartEmpty} />}
       {opened && <CutoverDialog open preview={opened} onClose={() => setOpened(null)} />}
     </CutoverBoundary>
   );

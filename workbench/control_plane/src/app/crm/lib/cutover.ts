@@ -70,9 +70,9 @@ export function getCutoverPreview(): Promise<CutoverPreview> {
 export const SWITCH_OFF =
   "The switch is not on for this organization yet. Nothing here changes your CRM.";
 
-/** The last line of the card when the switch is on. */
+/** The line over the two switches of the card, when the switch is on (D133, amended 2026-10-29). */
 export const SWITCH_READY =
-  "When the counts look right, switch. Metorite then becomes your CRM, and Zoho stops syncing.";
+  "When the counts look right, choose how to switch. Both make Metorite your CRM, and Zoho stops syncing.";
 
 export const SHOW_COUNTS = "Show the counts";
 
@@ -138,6 +138,16 @@ export function leadSentence(preview: CutoverPreview): string {
   return moving + incomplete + stays;
 }
 
+/**
+ * True when the cutover card shows both switches (D133 as amended
+ * 2026-10-29): a preview that the card draws, for an org on the cutover list.
+ * The hub then leaves its own start-empty switch out, so no action shows
+ * twice. `SetupHub` and the card read the same cached preview.
+ */
+export function switchesInCard(x: unknown): boolean {
+  return isPreview(x) && x.can_switch === true;
+}
+
 /** True when a body has the shape of a preview. Any other 200 body draws nothing. */
 export function isPreview(x: unknown): x is CutoverPreview {
   const p = x as Partial<CutoverPreview> | null | undefined;
@@ -199,10 +209,15 @@ export function incompleteOf(preview: CutoverPreview): IncompleteRow[] {
 
 // ── The switch (CRM-Z10b) ───────────────────────────────────────────────────
 
-/** The body of both POST routes. The admin's word and the modules left out. */
-export type SwitchBody = { confirm: string; leave_out: string[] };
+/**
+ * The body of both POST routes: the admin's word and the modules left out.
+ * The switch also sends `run_id`, the final run that the start began. A
+ * second call after the switch needs none.
+ */
+export type SwitchBody = { confirm: string; leave_out: string[]; run_id?: string | null };
 
-export type StartResult = { run_id: string | null; already_fresh: boolean };
+/** Phase 1 always starts its own final run (review P0). */
+export type StartResult = { run_id: string };
 
 export type CutoverStatus = {
   state: "idle" | "running" | "ready" | "failed" | "done";

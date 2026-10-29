@@ -1,18 +1,24 @@
-// ── The switch to Metorite (WS-53 CRM-Z10b, spec crm_platform.md §3.4, D133) ──
+// ── The switch to Metorite that keeps the records (WS-53 CRM-Z10b) ─────────
 //
-// The dialog "Switch to Metorite" has five steps:
+// Spec crm_platform.md §3.4, D133 (as amended 2026-10-29). The owner wants
+// two switches, and each name says what happens to the records. This file
+// holds the steps of the one that keeps them. Its label lives in `setup.ts`
+// (`KEEP_RECORDS_SWITCH`), with every other change of setup. The dialog
+// has five steps:
 //
 //   1. intro    — one sentence, and the counts behind a fold.
 //   2. leave    — a "Leave out" tick for each module that is not complete.
-//                 The step shows only when a module is not complete.
-//   3. confirm  — the admin types SWITCH. The button reads "Switch to Metorite"
-//                 (D134.1). It cannot be undone, so it asks first (§12 beat 4).
+//                 The step shows only when a module is not complete. A 409
+//                 `module_incomplete` adds the modules that it names.
+//   3. confirm  — the admin types SWITCH. It cannot be undone, so it asks
+//                 first (§12 beat 4).
 //   4. progress — POST start, then GET status every 3 seconds, then POST the
-//                 switch.
+//                 switch with the run that the start began.
 //   5. done     — what Zoho said to the revoke. Close reloads the mode.
 //
-// A failure goes back to step 3 with the reason, and keeps the word and the
-// ticks. The gateway is the boundary: it checks each of these again.
+// A failure goes back to step 3 with the reason (step 2 for a module), and
+// keeps the word and the ticks. The gateway is the boundary: it checks each
+// of these again.
 //
 // Pure: the reducer, the order of the calls and the words have tests
 // (`cutoverSwitch.test.ts`, `components/crmZ10b.test.ts`). The dialog draws them.
@@ -26,13 +32,14 @@ import type {
   SwitchBody,
   SwitchResult,
 } from "./cutover";
-import { incompleteOf } from "./cutover";
+import { STATE_WORDS, incompleteOf } from "./cutover";
+import { KEEP_RECORDS_SWITCH } from "./setup";
 
 /** The one word the admin types. The gateway checks it, case and spaces too. */
 export const SWITCH_WORD = "SWITCH";
 
-/** The words of the button that opens the dialog and of the one that switches (D134.1). */
-export const SWITCH_LABEL = "Switch to Metorite";
+/** The words of the button that opens the dialog, of its title and of the one that switches. */
+export const SWITCH_LABEL: string = KEEP_RECORDS_SWITCH.label;
 
 /** The status read waits this long between two reads. */
 export const POLL_MS = 3000;
@@ -48,11 +55,18 @@ export type SwitchState = {
   step: SwitchStep;
   /** The count keys that the admin ticked in "Leave out". */
   leaveOut: string[];
+  /** Modules that a 409 `module_incomplete` named and the preview did not. */
+  extraGaps: IncompleteRow[];
   /** What the admin typed. */
   typed: string;
   busy: boolean;
   /** What runs now, in step 4. */
   phase: "sync" | "switch" | null;
+  /**
+   * The dialog sent the switch at least once. After that, nobody knows from
+   * here whether the mode changed, so a close reloads it.
+   */
+  committed: boolean;
   error: string | null;
   result: SwitchResult | null;
 };
@@ -65,7 +79,7 @@ export type SwitchEvent =
   | { type: "submit" }
   | { type: "phase"; phase: "sync" | "switch" }
   | { type: "done"; result: SwitchResult }
-  | { type: "failed"; message: string };
+  | { type: "failed"; message: string; gaps?: IncompleteRow[] };
 
 /** The first state for one preview. */
 export function initialSwitch(preview: CutoverPreview): SwitchState {
@@ -74,12 +88,21 @@ export function initialSwitch(preview: CutoverPreview): SwitchState {
     steps: gaps ? ["intro", "leave", "confirm"] : ["intro", "confirm"],
     step: "intro",
     leaveOut: [],
+    extraGaps: [],
     typed: "",
     busy: false,
     phase: null,
+    committed: false,
     error: null,
     result: null,
   };
+}
+
+/** The modules of the "Leave out" step: those of the preview, then those of a 409. */
+export function switchGaps(preview: CutoverPreview, state: SwitchState): IncompleteRow[] {
+  const gaps = incompleteOf(preview);
+  const known = new Set(gaps.map((row) => row.key));
+  return [...gaps, ...state.extraGaps.filter((row) => !known.has(row.key))];
 }
 
 /** Every module that is not complete is ticked. The gateway refuses the rest. */
@@ -90,6 +113,16 @@ export function allLeftOut(state: SwitchState, gaps: readonly IncompleteRow[]): 
 /** The typed word matches exactly, and no call runs. */
 export function canSwitch(state: SwitchState): boolean {
   return state.step === "confirm" && state.typed === SWITCH_WORD && !state.busy;
+}
+
+/** The state after a failure that names modules: the "Leave out" step shows them. */
+function withGaps(state: SwitchState, gaps: IncompleteRow[]): SwitchState {
+  const known = new Set(state.extraGaps.map((row) => row.key));
+  const extraGaps = [...state.extraGaps, ...gaps.filter((row) => !known.has(row.key))];
+  const steps: SwitchStep[] = state.steps.includes("leave")
+    ? state.steps
+    : ["intro", "leave", "confirm"];
+  return { ...state, steps, extraGaps, step: "leave" };
 }
 
 export function switchReducer(state: SwitchState, event: SwitchEvent): SwitchState {
@@ -112,15 +145,36 @@ export function switchReducer(state: SwitchState, event: SwitchEvent): SwitchSta
         ? { ...state, step: "progress", busy: true, phase: "sync", error: null }
         : state;
     case "phase":
-      return { ...state, phase: event.phase };
+      return {
+        ...state,
+        phase: event.phase,
+        committed: state.committed || event.phase === "switch",
+      };
     case "done":
       return { ...state, step: "done", busy: false, phase: null, result: event.result };
-    case "failed":
-      return { ...state, step: "confirm", busy: false, phase: null, error: event.message };
+    case "failed": {
+      const failed: SwitchState = {
+        ...state,
+        step: "confirm",
+        busy: false,
+        phase: null,
+        error: event.message,
+      };
+      return event.gaps && event.gaps.length > 0 ? withGaps(failed, event.gaps) : failed;
+    }
   }
 }
 
-export const SWITCH_FAILED = "The switch did not finish. Nothing changed. Try again.";
+/**
+ * A switch call that failed with no reason from the gateway, such as a lost
+ * answer. The switch may have happened, so these words never say "Nothing
+ * changed". A second press finishes it, or says it is done.
+ */
+export const SWITCH_FAILED =
+  "Metorite did not get an answer from the switch, so it may be done. Press the button again to finish it.";
+
+/** The start of the final sync failed with no reason from the gateway. */
+export const START_FAILED = "The final sync did not start. Try again.";
 
 /** The words of a final sync that stopped, by its safe code. */
 const SYNC_STOPPED: Record<string, string> = {
@@ -146,35 +200,90 @@ export type SwitchDeps = {
   onPhase?: (phase: "sync" | "switch") => void;
 };
 
+export type SwitchOutcome =
+  | { result: SwitchResult }
+  | { error: string; gaps?: IncompleteRow[] };
+
+/** The `code` of a gateway refusal (`CrmError`), or undefined. */
+function codeOf(err: unknown): string | undefined {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : undefined;
+}
+
+/** The message of a gateway refusal. A failure with no code gets *fallback*. */
+function wordsOf(err: unknown, fallback: string): string {
+  if (codeOf(err) === undefined) return fallback;
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
 /**
- * Step 4: start the final sync, read the status every 3 seconds until it is
- * ready, then switch. Returns the result, or the words of the failure. It
- * never throws.
+ * The modules of a 409 `module_incomplete` (`detail.modules` of `CrmError`).
+ * Any other error, or a body of another shape, gives none.
  */
-export async function runSwitch(
-  leaveOut: string[],
-  deps: SwitchDeps,
-): Promise<{ result: SwitchResult } | { error: string }> {
-  const body: SwitchBody = { confirm: SWITCH_WORD, leave_out: [...leaveOut] };
+export function gapsOf(err: unknown): IncompleteRow[] {
+  if (codeOf(err) !== "module_incomplete") return [];
+  const modules = (err as { detail?: { modules?: unknown } }).detail?.modules;
+  if (!Array.isArray(modules)) return [];
+  const rows: IncompleteRow[] = [];
+  for (const item of modules) {
+    const row = item as { key?: unknown; label?: unknown; reason?: unknown } | null;
+    if (!row || typeof row.key !== "string" || !row.key) continue;
+    const reason = typeof row.reason === "string" && row.reason in STATE_WORDS
+      ? (row.reason as IncompleteRow["reason"])
+      : "failed";
+    rows.push({ key: row.key, label: typeof row.label === "string" ? row.label : row.key, reason });
+  }
+  return rows;
+}
+
+/** Phases 2 and 3. A refusal that names modules carries them. */
+async function commitStep(body: SwitchBody, deps: SwitchDeps): Promise<SwitchOutcome> {
+  deps.onPhase?.("switch");
   try {
-    deps.onPhase?.("sync");
-    const started = await deps.start(body);
-    if (!started.already_fresh) {
-      let ready = false;
-      for (let read = 0; read < POLL_LIMIT && !ready; read++) {
-        await deps.wait(POLL_MS);
-        const status = await deps.status();
-        if (status.state === "ready" || status.state === "done") ready = true;
-        else if (status.state === "failed") return { error: syncStoppedWords(status.error) };
-        else if (status.state === "idle") return { error: syncStoppedWords(null) };
-      }
-      if (!ready) return { error: SYNC_TOO_LONG };
-    }
-    deps.onPhase?.("switch");
     return { result: await deps.commit(body) };
   } catch (err) {
-    return { error: err instanceof Error && err.message ? err.message : SWITCH_FAILED };
+    const gaps = gapsOf(err);
+    const error = wordsOf(err, SWITCH_FAILED);
+    return gaps.length > 0 ? { error, gaps } : { error };
   }
+}
+
+/**
+ * Step 4: start the final sync, read the status every 3 seconds until it is
+ * ready, then switch with the run that the start began. Returns the result,
+ * or the words of the failure. It never throws.
+ *
+ * A start that answers `not_mirror` can follow a switch whose answer got
+ * lost. Then the status says `done`, and the switch is sent again: the
+ * gateway answers `already_done` and closes Zoho.
+ */
+export async function runSwitch(leaveOut: string[], deps: SwitchDeps): Promise<SwitchOutcome> {
+  const body: SwitchBody = { confirm: SWITCH_WORD, leave_out: [...leaveOut] };
+  deps.onPhase?.("sync");
+  let started: StartResult;
+  try {
+    started = await deps.start(body);
+  } catch (err) {
+    if (codeOf(err) === "not_mirror") {
+      const now = await deps.status().catch(() => null);
+      if (now?.state === "done") return commitStep(body, deps);
+    }
+    return { error: wordsOf(err, START_FAILED) };
+  }
+  try {
+    let ready = false;
+    for (let read = 0; read < POLL_LIMIT && !ready; read++) {
+      await deps.wait(POLL_MS);
+      const status = await deps.status();
+      if (status.state === "ready" || status.state === "done") ready = true;
+      else if (status.state === "failed") return { error: syncStoppedWords(status.error) };
+      else if (status.state === "idle") return { error: syncStoppedWords(null) };
+    }
+    if (!ready) return { error: SYNC_TOO_LONG };
+  } catch (err) {
+    return { error: wordsOf(err, syncStoppedWords(null)) };
+  }
+  return commitStep({ ...body, run_id: started.run_id }, deps);
 }
 
 /** What Zoho said, in a member's words (§3.4 phase 3). */
@@ -201,17 +310,46 @@ export function resultLines(result: SwitchResult): string[] {
   return lines;
 }
 
+export const FINISH_FAILED = "Zoho is still connected. The disconnect did not finish. Try again.";
+
+export const FINISH_NOT_SWITCHED =
+  "This CRM did not switch from Zoho, so there is nothing to close. Load the page again.";
+
+/**
+ * "Finish closing Zoho" (§3.4 phase 3). It reads the status first, and posts
+ * the switch again only when the status says `done` (verifier finding F6).
+ * A tab that is old must not send the switch word for the admin. It never
+ * throws.
+ */
+export async function finishClosing(deps: {
+  status: () => Promise<CutoverStatus>;
+  commit: (body: SwitchBody) => Promise<SwitchResult>;
+}): Promise<{ lines: string[] } | { error: string }> {
+  try {
+    const now = await deps.status();
+    if (now.state !== "done") return { error: FINISH_NOT_SWITCHED };
+    const result = await deps.commit({ confirm: SWITCH_WORD, leave_out: [] });
+    if (result.zoho_connection === "disconnected" || result.zoho_connection === "none") {
+      return { lines: resultLines(result).slice(1) };
+    }
+    return { error: FINISH_FAILED };
+  } catch (err) {
+    return { error: err instanceof Error && err.message ? err.message : FINISH_FAILED };
+  }
+}
+
 /**
  * Close the dialog. After a switch, the mode is read again (`invalidate`), so
- * the CRM opens in Native mode. Not before: the dialog keeps its place until
- * the admin read the result. A call that runs keeps the dialog open.
+ * the CRM opens in Native mode. Also after a switch call that failed: it may
+ * have changed the mode. Not before: the dialog keeps its place until the
+ * admin read the result. A call that runs keeps the dialog open.
  */
 export function closeSwitch(
   state: SwitchState,
   deps: { reload: () => void; close: () => void },
 ): void {
   if (state.busy) return;
-  if (state.step === "done") deps.reload();
+  if (state.step === "done" || state.committed) deps.reload();
   deps.close();
 }
 

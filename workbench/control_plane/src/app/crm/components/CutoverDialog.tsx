@@ -1,15 +1,17 @@
 "use client";
 
 /**
- * "Switch to Metorite" — the dialog of the switch from Zoho (WS-53 CRM-Z10b,
- * spec `crm_platform.md` §3.4, D133).
+ * The dialog of the switch from Zoho that keeps the records (WS-53
+ * CRM-Z10b, spec `crm_platform.md` §3.4, D133 as amended 2026-10-29). Its
+ * title is `KEEP_RECORDS_SWITCH.label` of `lib/setup.ts`.
  *
  * Modelled on `StartOverDialog`. Up to three steps for the admin: what
  * happens, with the counts behind a fold. A "Leave out" tick for each module
- * that is not complete. Then the typed `SWITCH`. Then the dialog runs the
- * final sync, reads its status every 3 seconds, switches, and shows what Zoho
- * said to the revoke. It is a `Modal` with the shared primitives, so it has
- * the focus trap, Escape and the scrim of every other dialog.
+ * that is not complete, also each module that a 409 names. Then the typed
+ * `SWITCH`. Then the dialog runs the final sync, reads its status every 3
+ * seconds, switches, and shows what Zoho said to the revoke. It is a `Modal`
+ * with the shared primitives, so it has the focus trap, Escape and the scrim
+ * of every other dialog.
  *
  * `CutoverBody` only draws one step, so a test can render each one. The
  * dialog owns the state through `switchReducer` and makes the calls through
@@ -29,7 +31,6 @@ import {
   STATE_WORDS,
   formatNumber,
   getCutoverStatus,
-  incompleteOf,
   movingTotal,
   startCutover,
   switchToMetorite,
@@ -48,6 +49,7 @@ import {
   progressWords,
   resultLines,
   runSwitch,
+  switchGaps,
   switchReducer,
   type SwitchEvent,
   type SwitchState,
@@ -107,14 +109,14 @@ export function CutoverBody({
   onCancel: () => void;
   onClose: () => void;
 }) {
-  const gaps = incompleteOf(preview);
+  const gaps = switchGaps(preview, state);
   const shown = state.steps.filter(
     (step): step is keyof typeof STEP_TITLES => step in STEP_TITLES,
   );
   const at = shown.indexOf(state.step as keyof typeof STEP_TITLES);
   const asking = state.step !== "progress" && state.step !== "done";
   return (
-    <div className="flex flex-col gap-4 px-5 pb-5">
+    <div className="flex flex-col gap-4 px-5 pb-5 pt-4">
       {asking && (
         <ol className="flex gap-2 text-[11px]" aria-label="Steps">
           {shown.map((step, i) => (
@@ -287,7 +289,7 @@ export default function CutoverDialog({
       onPhase: (phase) => send({ type: "phase", phase }),
     });
     if ("result" in out) send({ type: "done", result: out.result });
-    else send({ type: "failed", message: out.error || SWITCH_FAILED });
+    else send({ type: "failed", message: out.error || SWITCH_FAILED, gaps: out.gaps });
   }
 
   const close = () => closeSwitch(state, { reload: invalidateCrmMode, close: onClose });

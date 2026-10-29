@@ -22,10 +22,12 @@ import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { useToast } from "@/components/ui/Toast";
 import { relativeTime } from "@/lib/taskCard";
+import { useCachedResource } from "@/lib/useCachedResource";
 
 import * as api from "../lib/api";
 import { CrmError } from "../lib/api";
 import type { ConnectionInfo, CrmMode, SyncStatus } from "../lib/connect";
+import { getCutoverPreview, switchesInCard, type CutoverPreview } from "../lib/cutover";
 import {
   ACTIONS,
   SETUP_ANCHOR,
@@ -41,7 +43,7 @@ import {
   type RecordCounts,
 } from "../lib/setup";
 import { invalidateCrmMode, useRecordCounts } from "../lib/useCrmMode";
-import CutoverCard from "./CutoverCard";
+import CutoverCard, { PREVIEW_KEY } from "./CutoverCard";
 import StartOverDialog from "./StartOverDialog";
 
 const STATUS_TONE: Record<string, BadgeTone> = {
@@ -85,6 +87,7 @@ export function SetupHubView({
   counts,
   busy,
   onAction,
+  switchInCard = false,
 }: {
   state: HubState;
   mode: CrmMode;
@@ -94,8 +97,10 @@ export function SetupHubView({
   counts: RecordCounts | null;
   busy: HubBusy;
   onAction: (action: HubAction) => void;
+  /** The cutover card shows both switches, so the hub leaves its start-empty switch out. */
+  switchInCard?: boolean;
 }) {
-  const plan = hubActions(state, connection !== null);
+  const plan = hubActions(state, connection !== null, switchInCard);
   const mirror = mode === "mirror";
   const status = connection?.status ?? null;
   const lastError = sync?.error ?? connection?.last_error ?? null;
@@ -209,6 +214,13 @@ export default function SetupHubSection({
   const [disconnecting, setDisconnecting] = useState<"ask" | "busy" | null>(null);
   const [choosing, setChoosing] = useState(false);
   const state = hubState(mode, connection);
+  // The cutover card's own preview read: one cache key, so no second request.
+  // When the card shows both switches, the hub leaves its copy out.
+  const cutover = useCachedResource<CutoverPreview>(
+    mode === "mirror" ? PREVIEW_KEY : null,
+    getCutoverPreview,
+  );
+  const switchInCard = mode === "mirror" && switchesInCard(cutover.data);
 
   async function chooseMetorite() {
     setChoosing(true);
@@ -260,9 +272,12 @@ export default function SetupHubSection({
         counts={counts}
         busy={{ syncing: syncing || choosing, connecting }}
         onAction={act}
+        switchInCard={switchInCard}
       />
       {/* CRM-Z10b: in Native mode too, for "Finish closing Zoho". */}
-      {(mode === "mirror" || mode === "native") && <CutoverCard mode={mode} />}
+      {(mode === "mirror" || mode === "native") && (
+        <CutoverCard mode={mode} onStartEmpty={() => act(ACTIONS["switch-to-metorite"])} />
+      )}
       <ConfirmDialog
         open={disconnecting !== null}
         title="Disconnect Zoho?"

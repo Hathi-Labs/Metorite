@@ -1,22 +1,36 @@
-// CRM-Z10b: the dialog "Switch to Metorite", the switch button of the card,
-// and "Finish closing Zoho". The runner has no DOM, so each part is rendered
-// to a string. The steps and the calls are pure, in `lib/cutoverSwitch.ts`.
+// CRM-Z10b: the dialog of the switch that keeps the records, the two
+// switches of the card, and "Finish closing Zoho". The runner has no DOM, so
+// each part is rendered to a string. The steps and the calls are pure, in
+// `lib/cutoverSwitch.ts`.
 import { readFileSync } from "node:fs";
 
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
-import type { CutoverPreview } from "../lib/cutover";
+import { clearAll, put } from "@/lib/dataCache";
+
+import { CrmError } from "../lib/api";
+import type { ConnectionInfo } from "../lib/connect";
+import { switchesInCard, type CutoverPreview, type CutoverStatus } from "../lib/cutover";
 import {
   SWITCH_LABEL,
   SWITCH_WORD,
   initialSwitch,
+  runSwitch,
   switchReducer,
   type SwitchState,
 } from "../lib/cutoverSwitch";
-import { CutoverCardView, FinishClosingView } from "./CutoverCard";
+import {
+  ACTIONS,
+  CONNECT_FROM_NATIVE,
+  KEEP_RECORDS_SWITCH,
+  hubState,
+  type HubState,
+} from "../lib/setup";
+import CutoverCard, { CutoverCardView, FinishClosingView } from "./CutoverCard";
 import { CutoverBody } from "./CutoverDialog";
+import { SetupHubView } from "./SetupHub";
 
 const noop = () => undefined;
 
@@ -128,7 +142,160 @@ describe("CRM-Z10b the dialog", () => {
   });
 });
 
+describe("CRM-Z10b a 409 that names modules", () => {
+  it("shows the Leave out step with those modules, with no page reload", async () => {
+    // No gaps in the preview, so the dialog starts with no Leave out step.
+    const clean = preview({
+      incomplete: [], not_complete: [],
+      records: [preview().records[0]],
+    });
+    let s = switchReducer(initialSwitch(clean), { type: "next" });
+    expect(s.steps).toEqual(["intro", "confirm"]);
+    s = switchReducer(switchReducer(s, { type: "type", text: SWITCH_WORD }), { type: "submit" });
+    const refusal = new CrmError(
+      "Some modules are not complete. Fix them, or tick them in Leave out.",
+      409, "module_incomplete", undefined,
+      {
+        code: "module_incomplete",
+        message: "Some modules are not complete. Fix them, or tick them in Leave out.",
+        modules: [
+          { key: "module:Quotes", label: "Quotes", reason: "short" },
+          { key: "tasks", label: "Tasks", reason: "failed" },
+        ],
+      },
+    );
+    const status: CutoverStatus = {
+      state: "ready", run_id: "r1", started_at: null, finished_at: null, error: null,
+      age_seconds: 0, zoho_connection: "connected",
+    };
+    const out = await runSwitch([], {
+      start: async () => ({ run_id: "r1" }),
+      status: async () => status,
+      commit: async () => { throw refusal; },
+      wait: async () => undefined,
+    });
+    expect("error" in out && out.gaps?.map((g) => g.key)).toEqual(["module:Quotes", "tasks"]);
+    s = switchReducer(s, {
+      type: "failed", message: "error" in out ? out.error : "", gaps: "error" in out ? out.gaps : [],
+    });
+    expect(s.step).toBe("leave");
+    expect(s.steps).toEqual(["intro", "leave", "confirm"]);
+    const html = draw(s, clean);
+    expect(html).toContain("Leave out Quotes");
+    expect(html).toContain("Leave out Tasks");
+    expect(html).toContain("Metorite could not read every record");
+    expect(html).toMatch(/role="alert"[^>]*>Some modules are not complete/);
+    // Next waits for both ticks, and the word stays.
+    expect(buttonWith(html, "Next")).toMatch(/ disabled=""/);
+    s = switchReducer(s, { type: "tick", key: "module:Quotes", on: true });
+    s = switchReducer(s, { type: "tick", key: "tasks", on: true });
+    expect(buttonWith(draw(s, clean), "Next")).not.toMatch(/ disabled=""/);
+    expect(s.typed).toBe(SWITCH_WORD);
+  });
+});
+
+// ── The two switches (D133 as amended 2026-10-29) ───────────────────────────
+
+const START_EMPTY = ACTIONS["switch-to-metorite"];
+
+const conn = (status: ConnectionInfo["status"]): ConnectionInfo => ({
+  connected: status === "connected",
+  provider: "zoho",
+  owning_app: "crm",
+  status,
+  location: "in",
+  scopes: [],
+  connected_by: "dana@x.test",
+  last_sync_at: null,
+  last_error: null,
+  mode: "mirror",
+});
+
+/** The setup screen of a Mirror org: the hub, and the cutover card under it. */
+function drawScreen(state: HubState, connection: ConnectionInfo, p: CutoverPreview): string {
+  const hub = renderToStaticMarkup(createElement(SetupHubView, {
+    state, mode: "mirror", connection, sync: null, counts: null,
+    busy: { syncing: false, connecting: false }, onAction: noop,
+    switchInCard: switchesInCard(p),
+  }));
+  const card = renderToStaticMarkup(createElement(CutoverCardView, {
+    preview: p, onSwitch: noop, onStartEmpty: noop,
+  }));
+  return hub + card;
+}
+
+const timesIn = (html: string, words: string): number => html.split(words).length - 1;
+
+describe("CRM-Z10b the two switches have names that say what happens to the records", () => {
+  it("each label is unique, and each dialog title is its label", () => {
+    expect(KEEP_RECORDS_SWITCH.label).toBe("Switch to Metorite, keep the Zoho records");
+    expect(START_EMPTY.label).toBe("Switch to Metorite, start empty");
+    expect(SWITCH_LABEL).toBe(KEEP_RECORDS_SWITCH.label);
+    expect(START_EMPTY.dialog?.title).toBe(START_EMPTY.label);
+    expect(START_EMPTY.dialog?.then).toBe("native");
+    const others = [...Object.values(ACTIONS), CONNECT_FROM_NATIVE];
+    for (const action of others) {
+      expect(action.label, action.id).not.toBe(KEEP_RECORDS_SWITCH.label);
+      if (action !== START_EMPTY) {
+        expect(action.label.startsWith("Switch to Metorite"), action.id).toBe(false);
+      }
+    }
+    const labels = Object.values(ACTIONS).map((action) => action.label);
+    expect(new Set(labels).size).toBe(labels.length);
+    // One plain sentence under each, about the records.
+    for (const explain of [KEEP_RECORDS_SWITCH.explain, START_EMPTY.explain]) {
+      expect(explain.match(/[.!?]/g)).toHaveLength(1);
+      expect(explain).toMatch(/record/);
+    }
+  });
+
+  it("shows both choices once each when the org may switch, and only start empty when not", () => {
+    const states: Array<[HubState, ConnectionInfo]> = [
+      ["mirror-connected", conn("connected")],
+      ["mirror-disconnected", conn("disconnected")],
+      ["mirror-needs-reset", conn("needs_reset")],
+    ];
+    for (const [state, connection] of states) {
+      expect(hubState("mirror", connection)).toBe(state);
+      const on = drawScreen(state, connection, preview());
+      expect(timesIn(on, KEEP_RECORDS_SWITCH.label), state).toBe(1);
+      expect(timesIn(on, START_EMPTY.label), state).toBe(1);
+      // Both sit in the card: the keep switch is primary, start empty has the danger tone.
+      expect(buttonWith(on, KEEP_RECORDS_SWITCH.label)).toContain("bg-primary");
+      expect(buttonWith(on, START_EMPTY.label)).toContain("text-destructive");
+      expect(on).toContain(KEEP_RECORDS_SWITCH.explain);
+      expect(on).toContain(START_EMPTY.explain);
+
+      const off = drawScreen(state, connection, preview({ can_switch: false }));
+      expect(timesIn(off, KEEP_RECORDS_SWITCH.label), state).toBe(0);
+      expect(timesIn(off, START_EMPTY.label), state).toBe(1);
+      expect(buttonWith(off, START_EMPTY.label)).not.toContain("text-destructive");
+    }
+  });
+});
+
 describe("CRM-Z10b the card", () => {
+  afterEach(() => clearAll());
+
+  it("reads the status in Native mode only after the switch (F3)", () => {
+    const pending: CutoverStatus = {
+      state: "done", run_id: "r1", started_at: null, finished_at: null, error: null,
+      age_seconds: 60, zoho_connection: "connected",
+    };
+    put("crm:cutover-status", pending);
+    put("crm:mode", { mode: "native", cutover_done: true });
+    const switched = renderToStaticMarkup(createElement(CutoverCard, {
+      mode: "native", onStartEmpty: noop,
+    }));
+    expect(switched).toContain("Finish closing Zoho");
+    // A Native CRM that never switched: the card mounts no status read.
+    put("crm:mode", { mode: "native" });
+    const never = renderToStaticMarkup(createElement(CutoverCard, {
+      mode: "native", onStartEmpty: noop,
+    }));
+    expect(never).toBe("");
+  });
+
   it("shows the switch button only when the org may switch", () => {
     const on = renderToStaticMarkup(createElement(CutoverCardView, { preview: preview(), onSwitch: noop }));
     expect(buttonWith(on, SWITCH_LABEL)).toBeTruthy();
