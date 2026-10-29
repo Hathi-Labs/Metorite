@@ -126,6 +126,9 @@ def world(promoted, monkeypatch):  # noqa: F811
     _insert_members(p)
     w = SimpleNamespace(p=p, now=T0, cards={}, working=True, complete=True, resolve_as={},
                         reads=Counter())
+    # The ladder's owner is an active member of org A. They opt out, so the
+    # counts below are the three members of this suite.
+    _set_prefs(w, p.owner_email, p.org_a, {"enabled": False})
 
     async def orgs() -> list[str]:
         return [p.org_a, p.org_b]
@@ -187,7 +190,8 @@ def world(promoted, monkeypatch):  # noqa: F811
         c.execute(text("DELETE FROM unattended_incidents WHERE job LIKE 'brief.%'"))
         c.execute(text("DELETE FROM jobs WHERE kind LIKE 'brief.%' AND organization_id IN "
                        "(CAST(:a AS uuid), CAST(:b AS uuid))"), {"a": p.org_a, "b": p.org_b})
-        c.execute(text("DELETE FROM user_settings WHERE user_id LIKE :t"), {"t": LIKE})
+        c.execute(text("DELETE FROM user_settings WHERE user_id LIKE :t OR user_id = :o"),
+                  {"t": LIKE, "o": p.owner_email})
         c.execute(text("DELETE FROM app_user WHERE email LIKE :t"), {"t": LIKE})
 
 
@@ -214,7 +218,8 @@ def _runs(world: Any, member: str | None = None) -> list[Any]:
     with world.p.admin_engine.connect() as c:
         return list(c.execute(text(
             "SELECT * FROM brief_runs WHERE member_email LIKE :t "
-            "AND (:m IS NULL OR member_email = :m) ORDER BY member_email"),
+            "AND (CAST(:m AS text) IS NULL OR member_email = CAST(:m AS text)) "
+            "ORDER BY member_email"),
             {"t": LIKE, "m": member}).fetchall())
 
 
@@ -225,11 +230,11 @@ def _claims(world: Any, run_id: str) -> list[Any]:
             {"r": run_id}).fetchall())
 
 
-def _ledger(world: Any) -> list[Any]:
+def _ledger(world: Any, member: str | None = None) -> list[Any]:
     with world.p.admin_engine.connect() as c:
         return list(c.execute(text(
             "SELECT * FROM unattended_runs WHERE job = 'brief.brief' AND slot LIKE :t "
-            "ORDER BY started_at"), {"t": f"%{TAG}%"}).fetchall())
+            "ORDER BY started_at"), {"t": f"{member}:%" if member else f"%{TAG}%"}).fetchall())
 
 
 def _tick(world: Any, org: str, now: datetime) -> Counter[str]:
@@ -310,6 +315,10 @@ def test_r8_a_departed_member_is_skipped_and_the_others_are_planned(world) -> No
 
 
 def _seed_and_run(world: Any, *, at: datetime = T1) -> Counter[str]:
+    """The planner's tick, then the run's tick. The second tick opens a new
+    15-minute bucket, so it also seeds and runs a second plan job, which
+    enqueues nothing: each slot has its ``brief_runs`` row by then. So the
+    count of a run tick is the runs plus one."""
     _tick(world, world.p.org_a, T0)
     return _tick(world, world.p.org_a, at)
 
@@ -322,7 +331,8 @@ def test_r8_each_claim_names_its_record(world) -> None:
              card("email:acc:t1"), card("tasks:0043", "overdue", fingerprint=None)]
     world.cards[ANA] = cards
     counts = _seed_and_run(world)
-    assert counts == Counter(done=2)
+    assert counts == Counter(done=3)  # two runs, and the second plan job
+    assert len(_jobs(world, planner.RUN_KIND)) == 2  # the second plan enqueued nothing
     run = next(r for r in _runs(world) if r.member_email == ANA)
     assert run.state == "ready" and run.lead_source == "template"
     assert run.ready_at == T1 and run.error is None and run.unattended_run_id is None
@@ -369,11 +379,11 @@ def test_r8_two_ticks_and_a_restart_give_one_row_one_ledger_row_and_one_claim_se
     row with the ledger on, and one claim set."""
     _ledger_on(monkeypatch, ledger == "on")
     world.cards[ANA] = [card("email:acc:t1"), card("tasks:0042", "overdue")]
-    assert _seed_and_run(world) == Counter(done=2)
+    assert _seed_and_run(world) == Counter(done=3)
     first = next(r for r in _runs(world) if r.member_email == ANA)
     claims = _claims(world, str(first.id))
     assert len(claims) == 2 and first.state == "ready"
-    rows = _ledger(world)
+    rows = _ledger(world, ANA)
     if ledger == "on":
         assert len(rows) == 1 and rows[0].state == "ok" and rows[0].scheduled_for == SLOT
         assert str(first.unattended_run_id) == str(rows[0].id)
@@ -396,7 +406,7 @@ def test_r8_two_ticks_and_a_restart_give_one_row_one_ledger_row_and_one_claim_se
     second = _runs(world, ANA)[0]
     assert second.state == "ready" and second.ready_at == T1
     assert [c.id for c in _claims(world, str(second.id))] == [c.id for c in claims]
-    assert len(_ledger(world)) == (1 if ledger == "on" else 0)
+    assert len(_ledger(world, ANA)) == (1 if ledger == "on" else 0)
     assert world.reads["snapshot"] == 2  # ANA once, BEN once: no second gather
 
 
@@ -409,12 +419,13 @@ def test_r8_a_failed_first_try_and_a_retry_give_one_claim_set(world, monkeypatch
     world.cards[ANA] = [card("email:acc:t1")]
     world.cards[BEN] = [card("email:acc:t2")]
     world.complete = False
-    assert _seed_and_run(world) == Counter(retry=2)
+    assert _seed_and_run(world) == Counter(retry=2, done=1)
     runs = _runs(world)
     assert [r.state for r in runs] == ["planned", "planned"]
     assert all(_claims(world, str(r.id)) == [] for r in runs)
     assert _ledger(world) == []  # released, so a retry can begin the slot
     jobs = _jobs(world, planner.RUN_KIND)
+    assert len(jobs) == 2  # the second plan job added none: each slot has its row
     assert all(j.state == "queued" and j.attempts == 1 for j in jobs)
     assert all(j.last_error.startswith("SnapshotIncomplete") for j in jobs)
     world.complete = True
@@ -442,9 +453,12 @@ def test_r8_a_slot_that_the_ledger_holds_is_not_gathered_again(world, monkeypatc
         monkeypatch.setattr(unattended, "RUNNER", str(uuid.uuid4()))
 
     _go(world, crashed)
-    assert _seed_and_run(world) == Counter(done=2)
+    # ANA's run, BEN's run, the second plan job, and ANA's run again: the
+    # planner sees no row of ANA and enqueues the slot once more, while it is
+    # in the window. Each try finds the slot taken and gathers nothing.
+    assert _seed_and_run(world) == Counter(done=4)
     assert _runs(world, ANA) == []
-    rows = _ledger(world)
+    rows = _ledger(world, ANA)
     assert len(rows) == 1 and rows[0].state == "unknown"
     assert world.reads["snapshot"] == 1  # BEN only
 
