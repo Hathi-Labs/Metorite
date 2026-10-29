@@ -31,6 +31,13 @@ date, and their claims by cascade. ``jobs.prune`` of BR-1b calls it with a
 **A retry.** The UNIQUE index ``brief_claims_run_position_key`` holds one
 claim for each position of a run. :func:`add_claims` skips a position that
 has a claim, so a retry of the same claims makes no second set.
+
+**The moves (BR-2a-1).** :func:`set_state` with ``from_state`` changes the
+row only when it is in that state (``UPDATE ... WHERE state = :from``), and
+only along :data:`TRANSITIONS`: ``planned`` to ``gathered`` to ``ready``,
+and ``planned`` to ``empty``. So a second gather of a run that moved on
+changes nothing. :func:`set_lead` writes the lead, and :func:`link_run` the
+ledger row of AUTO-2.
 """
 
 from __future__ import annotations
@@ -51,6 +58,13 @@ STATES: tuple[str, ...] = (
 SECTIONS: tuple[str, ...] = ("now", "needs_you", "numbers", "done", "moved", "acted")
 #: The bound of the CHECK ``brief_claims_source_ids_max``.
 MAX_SOURCE_IDS = 50
+#: The moves that :func:`set_state` makes with a ``from_state`` guard
+#: (``core_brief.md`` §4.2). Each is ``(from, to)``. ``delivered`` (BR-2c)
+#: and ``phrasing`` (BR-2a-2) add their own rows when they ship.
+TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
+    ("planned", "gathered"), ("gathered", "ready"), ("planned", "empty")})
+#: The two sources of a lead, as the CHECK ``brief_runs_lead_source`` holds them.
+LEAD_SOURCES: tuple[str, ...] = ("template", "model")
 
 _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 
@@ -81,6 +95,23 @@ _SET_STATE_SQL = (
     "THEN CAST(:now AS timestamptz) ELSE delivered_at END "
     f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
     "AND id = CAST(:id AS uuid)"
+)
+
+#: The guarded move: the same UPDATE, and the row must be in ``:frm``.
+_SET_STATE_FROM_SQL = _SET_STATE_SQL + " AND state = CAST(:frm AS text)"
+
+_SET_LEAD_SQL = (
+    "UPDATE brief_runs SET lead = :lead, lead_source = :src, "
+    "lead_claim_ids = CAST(:ids AS uuid[]) "
+    f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
+    "AND id = CAST(:id AS uuid)"
+)
+
+#: The link to the ledger row, once: a run that has one keeps it.
+_LINK_RUN_SQL = (
+    "UPDATE brief_runs SET unattended_run_id = CAST(:u AS uuid) "
+    f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
+    "AND id = CAST(:id AS uuid) AND unattended_run_id IS NULL"
 )
 
 #: The run must be of the bound org and of the member, or no row goes in.
@@ -231,17 +262,51 @@ async def read_run(db: Any, member: str, *, kind: str, local_date: date) -> Run 
 
 
 async def set_state(db: Any, member: str, run_id: str, state: str, *, now: datetime,
-                    error: str | None = None) -> bool:
+                    error: str | None = None, from_state: str | None = None) -> bool:
     """Move the run *run_id* of *member* to *state*.
 
     ``ready`` stamps ``ready_at`` and ``delivered`` stamps ``delivered_at``
     with *now*. *error* is the error type only, never a payload. Answers
     False when no run of the member has the id.
+
+    With *from_state*, the row moves only when it is in that state, and the
+    pair must be in :data:`TRANSITIONS`. A row in another state answers
+    False and does not change. The gather of BR-2a-1 always passes it.
     """
     if state not in STATES:
         raise BriefStoreError(f"state must be one of {STATES}")
-    result: Any = await db.execute(text(_SET_STATE_SQL), {
-        "st": state, "err": error, "now": now, "m": _member(member), "id": run_id})
+    params: dict[str, Any] = {
+        "st": state, "err": error, "now": now, "m": _member(member), "id": run_id}
+    if from_state is None:
+        result: Any = await db.execute(text(_SET_STATE_SQL), params)
+    else:
+        if (from_state, state) not in TRANSITIONS:
+            raise BriefStoreError(f"no move from {from_state!r} to {state!r}")
+        result = await db.execute(text(_SET_STATE_FROM_SQL), {**params, "frm": from_state})
+    return bool(getattr(result, "rowcount", 0))
+
+
+async def set_lead(db: Any, member: str, run_id: str, lead: str, *, source: str,
+                   claim_ids: tuple[str, ...] = ()) -> bool:
+    """Write the lead of the run *run_id* of *member*. *source* is
+    ``template`` (code wrote it from the counts) or ``model``. A model lead
+    must cite a claim, and the CHECK ``brief_runs_model_lead_cites`` holds
+    it. Answers False when no run of the member has the id."""
+    if source not in LEAD_SOURCES:
+        raise BriefStoreError(f"source must be one of {LEAD_SOURCES}")
+    if not isinstance(lead, str) or not lead.strip():
+        raise BriefStoreError("lead must be a non-empty string")
+    result: Any = await db.execute(text(_SET_LEAD_SQL), {
+        "lead": lead, "src": source, "ids": list(claim_ids), "m": _member(member),
+        "id": run_id})
+    return bool(getattr(result, "rowcount", 0))
+
+
+async def link_run(db: Any, member: str, run_id: str, unattended_run_id: str) -> bool:
+    """Link the run *run_id* of *member* to its ledger row of AUTO-2, once.
+    A run that has a link keeps it, and the answer is then False."""
+    result: Any = await db.execute(text(_LINK_RUN_SQL), {
+        "u": unattended_run_id, "m": _member(member), "id": run_id})
     return bool(getattr(result, "rowcount", 0))
 
 
