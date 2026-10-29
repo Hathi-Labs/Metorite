@@ -1069,3 +1069,17 @@ def test_the_crm_read_tools_run_against_the_fake_without_a_404() -> None:
             memory_tools._memory_user_id.reset(token)
     assert gate.unknown == [], gate.unknown
     assert all(a and "404" not in a for a in answers), answers
+
+
+def test_both_arms_run_with_the_base_trim_on() -> None:
+    """Run 2 of OA-8e ships the trimmed base on BOTH arms, in the eval process
+    only. Mutation: drop the key from ``PRODUCTION`` → red."""
+    from acb_common import get_settings
+
+    assert run.PRODUCTION["orchestrator_floor_trim"] is True
+    seen: list[tuple[str, bool]] = []
+    for arm in ("delegation", "pack"):
+        run.run_chat(scenario("crm_deal_story"), arm,
+                     on_turn=lambda _r, a=arm: seen.append((a, get_settings().orchestrator_floor_trim)))
+    assert seen == [("delegation", True), ("pack", True)]
+    assert get_settings().orchestrator_floor_trim is False

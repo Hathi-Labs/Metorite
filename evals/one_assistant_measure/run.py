@@ -87,6 +87,9 @@ PRODUCTION: dict[str, Any] = {
     "ai_reasoning_off_agents": "orchestrator",
     "maf_native_sessions": True,
     "narrowing_agents": "email-assistant",
+    # Run 2 of OA-8e (OA-8f): the base trim we would ship. BOTH arms hold it,
+    # so the comparison is fair.
+    "orchestrator_floor_trim": True,
 }
 
 
