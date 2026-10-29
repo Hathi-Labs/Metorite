@@ -72,6 +72,48 @@ LENGTH: tuple[str, ...] = ("short", "default", "detailed")
 FACT_KINDS: tuple[str, ...] = ("about", "routine", "preference", "work", "relationship")
 FACT_SOURCES: tuple[str, ...] = ("chat", "whatsapp", "settings")
 
+#: The preferences that an app reads from the profile, and declares here
+#: (``personalization.md`` §12.6, owner rule of 2026-10-24). The key is the
+#: app, and the value holds each preference with its default. An app reads
+#: them through :func:`app_prefs` only, never from the column. The stored
+#: shape is ``apps.<app>.<key>``. The setup coach (PZ-16) reads this table
+#: for its items. A time is ``HH:MM``, on the member's clock.
+APP_PREFERENCES: dict[str, dict[str, Any]] = {
+    # WS-BRIEF BR-2a-1 (``core_brief.md`` §9 Q1 and Q5, owner 2026-10-29):
+    # every active member gets the brief at 07:30 and the close-out at 18:30
+    # in their zone, and each member can turn it off or move both.
+    "brief": {"enabled": True, "brief_time": "07:30", "closeout_time": "18:30"},
+}
+
+_CLOCK = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def clock_time(value: Any) -> str | None:
+    """A time of day as ``HH:MM`` (24 hours), or None for any other value."""
+    return value if isinstance(value, str) and _CLOCK.fullmatch(value) else None
+
+
+def _app_pref(value: Any, default: Any) -> Any:
+    """One stored preference, or its *default* when the shape is wrong. The
+    default sets the shape: a bool, or a ``HH:MM`` time."""
+    if isinstance(default, bool):
+        return value if isinstance(value, bool) else default
+    return clock_time(value) or default
+
+
+def app_prefs(raw: Any, app: str) -> dict[str, Any]:
+    """The preferences of *app*: the stored ``apps.<app>`` object over the
+    declared defaults of :data:`APP_PREFERENCES`. Lenient, as
+    :func:`stored_profile` is: a key of the wrong shape takes its default,
+    and a key that the app did not declare drops. An app that declared
+    nothing raises."""
+    declared = APP_PREFERENCES[app]
+    raw = _as_dict(raw)
+    apps = raw.get("apps") if isinstance(raw, dict) else None
+    stored = apps.get(app) if isinstance(apps, dict) else None
+    stored = stored if isinstance(stored, dict) else {}
+    return {key: _app_pref(stored.get(key), default) for key, default in declared.items()}
+
 #: The interview (PZ-26, ``personalization.md`` §14.3). One table: the id of
 #: each area and its starting question, in the order the interview asks. The
 #: model asks in its own words, so the question is an example.
