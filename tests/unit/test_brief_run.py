@@ -307,7 +307,7 @@ def test_main_imports_the_brief_before_the_worker_starts_in_its_own_try() -> Non
 
 
 def test_the_store_moves_are_the_four_of_the_run_and_the_delivery() -> None:
-    # BR-2c-1 adds ready to delivered: the first read of GET /brief/today.
+    # BR-2c-1 adds ready to delivered: the run makes it when BRIEF_IN_APP is on.
     assert {("planned", "gathered"), ("gathered", "ready"), ("planned", "empty"),
             ("planned", "failed"), ("ready", "delivered")} == store.TRANSITIONS
     assert store.LEAD_SOURCES == ("template", "model")

@@ -36,9 +36,10 @@ has a claim, so a retry of the same claims makes no second set.
 row only when it is in that state (``UPDATE ... WHERE state = :from``), and
 only along :data:`TRANSITIONS`: ``planned`` to ``gathered`` to ``ready``,
 ``planned`` to ``empty``, and ``planned`` to ``failed`` (a slot that gets
-no brief, with the reason). BR-2c-1 adds ``ready`` to ``delivered``, which
-the read route makes and which stamps ``delivered_at``. So a second gather of a run that moved on
-changes nothing. :func:`set_lead` writes the lead, and :func:`link_run` the
+no brief, with the reason). BR-2c-1 adds ``ready`` to ``delivered``. The
+run makes that move when the in-app surface is on, and the move stamps
+``delivered_at``. So a second gather of a run that moved on changes
+nothing. :func:`set_lead` writes the lead, and :func:`link_run` the
 ledger row of AUTO-2 of the current try.
 
 **A moved slot (BR-2a-1, repair round 2).** :func:`discard_planned` deletes
@@ -68,8 +69,9 @@ SECTIONS: tuple[str, ...] = ("now", "needs_you", "numbers", "done", "moved", "ac
 MAX_SOURCE_IDS = 50
 #: The moves that :func:`set_state` makes with a ``from_state`` guard
 #: (``core_brief.md`` §4.2). Each is ``(from, to)``. ``ready`` to
-#: ``delivered`` is BR-2c-1: the first read of ``GET /brief/today`` that
-#: serves the run. ``phrasing`` (BR-2a-2) adds its own rows when it ships.
+#: ``delivered`` is BR-2c-1: the run itself makes it, when the in-app
+#: surface is on (``brief.run``). ``phrasing`` (BR-2a-2) adds its own rows
+#: when it ships.
 TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
     ("planned", "gathered"), ("gathered", "ready"), ("planned", "empty"),
     ("planned", "failed"), ("ready", "delivered")})
@@ -95,6 +97,16 @@ _READ_RUN_SQL = (
     f"SELECT {_RUN_COLUMNS} FROM brief_runs "
     f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
     "AND kind = :k AND local_date = :d"
+)
+
+#: The newest run of the member and kind on a date in ``[:d0, :d1]`` whose
+#: slot is not after ``:now``. The UNIQUE key of the slot holds the range.
+_READ_LATEST_RUN_SQL = (
+    f"SELECT {_RUN_COLUMNS} FROM brief_runs "
+    f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
+    "AND kind = :k AND local_date BETWEEN :d0 AND :d1 "
+    "AND slot_at <= CAST(:now AS timestamptz) "
+    "ORDER BY slot_at DESC, local_date DESC LIMIT 1"
 )
 
 _SET_STATE_SQL = (
@@ -280,6 +292,21 @@ async def read_run(db: Any, member: str, *, kind: str, local_date: date) -> Run 
     """The run of *member*, *kind* and *local_date*, or None."""
     row = (await db.execute(text(_READ_RUN_SQL), {
         "m": _member(member), "k": kind, "d": local_date})).first()
+    return None if row is None else _run(row)
+
+
+async def read_latest_run(db: Any, member: str, *, kind: str, first_date: date,
+                          last_date: date, now: datetime) -> Run | None:
+    """The newest run of *member* and *kind*, in any state, on a date from
+    *first_date* to *last_date*, whose ``slot_at`` is not after *now*.
+    Answers None when no run matches. The newest is the latest ``slot_at``.
+    The caller decides which states it serves. *now* must carry a time zone.
+    """
+    if now.tzinfo is None:
+        raise BriefStoreError("now must carry a time zone")
+    row = (await db.execute(text(_READ_LATEST_RUN_SQL), {
+        "m": _member(member), "k": kind, "d0": first_date, "d1": last_date,
+        "now": now})).first()
     return None if row is None else _run(row)
 
 

@@ -20,17 +20,23 @@ and the same lines that the WhatsApp brief sends (``proactive_reach.md``
 
 **The stored run first** (WS-BRIEF BR-2c-1, ``core_brief.md`` §5 item 2).
 With ``BRIEF_IN_APP`` on for the org (``brief.flags.in_app``), the route
-reads the member's stored brief of today (``brief.store.read_run`` and
-``read_claims``), on the planner's calendar date of the member. A run in
-``ready`` or ``delivered`` gives the lead, and its claims give the pills, in
-position order (:func:`stored_parts`). The route then reads no feed. The
-once-a-day stamp and the row id keep the feed day. The gather wrote each claim's text with ``plan.line``,
-so the pills are the lines of ``plan.brief_parts`` of the same cards. With
-no such run, the route composes from the feed as before. With the switch
-off, the route reads no store, and its answer is byte for byte the answer
-before BR-2c-1. The chat does not move a run to ``delivered``. Only
-``GET /brief/today`` does (``routes/brief_today.py``). The pills stay text:
-a link chip needs a tool event, and a stored row has none.
+reads the member's stored brief through the read of ``GET /brief/today``
+(``brief_today.read_today``). A ``ready`` or ``delivered`` run gives the
+lead, and its claims give the pills, in position order
+(:func:`stored_parts`). The route then reads no feed. The gather wrote each
+claim's text with ``plan.line``, so the pills are the lines of
+``plan.brief_parts`` of the same cards. The pills stay text: a link chip
+needs a tool event, and a stored row has none.
+
+The stamp and the row id of a stored post are the run's ``local_date``,
+and the route refuses (204) when that date is stamped. So one run makes one
+post, on any number of fresh chats, before or after the day start. A run
+dated before the feed day is not today's brief, and the route composes
+from the feed instead. With no such run, or when the stored read fails
+(``chat_brief.stored_failed``), the route composes from the feed as before.
+With the switch off, the route reads no store, and its answer is byte for
+byte the answer before BR-2c-1. The chat writes nothing to the run: the run
+itself sets ``delivered`` (``brief.run``).
 
 **Only the server creates an agent row** (D-PM-39, ``projects_ai_chat.md``
 §20). The row goes in through the one minter, ``routes/agent.py``
@@ -45,7 +51,7 @@ member, and no fold sealed it. ``test_rooms.py`` keeps the mint keyword in
 ``chat_brief_posted_on``, in ``user_settings.my_day_prefs``, written through
 ``routes/shell/prefs.py`` ``_write`` (MD-2d's one-key merge). It holds the
 member's local date (``Day.feed_day``), so a chat opened at 23:50 and one at
-00:10 are two days. A layout save never touches it (migration 259). A
+00:10 are two days. A stored post stamps the run's ``local_date`` instead. A layout save never touches it (migration 259). A
 complete read with no brief stamps the day too, and an incomplete read
 leaves ``chat_brief_retry_after``, so the next fresh chats of the day read
 no feed (review of #1216).
@@ -162,22 +168,38 @@ def stored_parts(run: brief_store.Run,
     return lead, plan.BriefParts(title, lines, rest)
 
 
-async def _stored_brief(org: str, user: UserContext, email: str,
-                       now: datetime) -> tuple[str, plan.BriefParts] | None:
-    """The member's stored brief of today, in the bound tenant, or None
-    when no run is ``ready`` or ``delivered``. The run's date is the
-    planner's calendar date (``brief_today.brief_local_date``), not the feed
-    day. The store scopes each read to the member and the bound org."""
-    from gateway.db import tenant_session as _tenant_session
-    from gateway.routes.brief_today import brief_local_date
+async def _stored_brief(org: str, user: UserContext, email: str, now: datetime,
+                       today: date) -> tuple[date, str, plan.BriefParts] | None:
+    """The member's stored brief, in the bound tenant: the run's date, the
+    lead and the parts. None when no run is served
+    (``brief_today.read_today``), or when the run is dated before *today*,
+    the feed day. The store scopes each read to the member and the bound
+    org."""
+    from gateway.routes.brief_today import read_today
 
-    run_date = await brief_local_date(org, user, now)
-    async with _tenant_session() as db:
-        run = await brief_store.read_run(db, email, kind="brief", local_date=run_date)
-        if run is None or run.state not in STORED_STATES:
-            return None
-        claims = await brief_store.read_claims(db, email, run.id)
-    return stored_parts(run, claims)
+    found = await read_today(org, user, email, "brief", now)
+    if found is None:
+        return None
+    run, claims = found
+    if run.local_date < today:
+        return None
+    got = stored_parts(run, claims)
+    if got is None:
+        return None
+    lead, parts = got
+    return run.local_date, lead, parts
+
+
+async def _stored_or_none(org: str, user: UserContext, email: str, now: datetime,
+                          today: date) -> tuple[date, str, plan.BriefParts] | None:
+    """:func:`_stored_brief`, and None when it fails. A failed read logs
+    ``chat_brief.stored_failed`` with the error class only, and the route
+    composes from the feed. It never answers 500."""
+    try:
+        return await _stored_brief(org, user, email, now, today)
+    except Exception as exc:
+        _log.warning("chat_brief.stored_failed", error=type(exc).__name__)
+        return None
 
 
 # ── The reads ────────────────────────────────────────────────────────────────
@@ -344,18 +366,22 @@ async def post_brief(
     # Two devices that pass this read at the same moment can each post a
     # brief into their own chat. That is accepted: the stamp is a day mark,
     # not a lock, and the second brief is the same text in a second chat.
-    if brief_done_today(await _marks(email), today, now):
-        return _nothing(response)
+    marks = await _marks(email)
 
     # BR-2c-1: the stored run first, only with the switch on. Off, the
     # route reads no store, so its answer is the answer before BR-2c-1.
-    stored = await _stored_brief(org, user, email, now) if brief_flags.in_app(org) else None
+    stored = (await _stored_or_none(org, user, email, now, today)
+              if brief_flags.in_app(org) else None)
     if stored is not None:
-        # The stamp and the row id keep the feed day, as the once-a-day
-        # rule above reads it.
-        lead, parts = stored
-        day = today
+        # The stamp and the row id are the run's date, so one run makes one
+        # post. The feed day moves with the day start, and the run's date
+        # does not.
+        day, lead, parts = stored
+        if marks.get(BRIEF_STAMP_KEY) == day.isoformat():
+            return _nothing(response)
     else:
+        if brief_done_today(marks, today, now):
+            return _nothing(response)
         snap = await loop.snapshot(org, user, now)
         if not snap.complete:
             # Not the day's answer yet. A retry mark keeps the next fresh chats
