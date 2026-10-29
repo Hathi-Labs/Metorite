@@ -173,7 +173,7 @@ async def _run_slot(org: str, member: str, local_date: date, slot_at: datetime,
     if isinstance(user, str):
         return await _skip(org, member, local_date, claim, now, f"member_{user}")
     async with tenant_session(org) as db:
-        prefs = await assistant_profile.member_app_prefs(db, org, member, planner.KIND)
+        prefs = await assistant_profile.member_app_prefs(db, org, member, planner.APP)
         why = _why_not(prefs, slot_at)
         if why is None:
             created = await store.create_run(db, member, kind=planner.KIND,

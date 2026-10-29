@@ -66,6 +66,9 @@ PLAN_KIND = "brief.plan"
 RUN_KIND = "brief.run"
 #: The kind of the run that this slice plans (``store.KINDS``).
 KIND = "brief"
+#: The app whose preferences the brief reads (``APP_PREFERENCES``). The
+#: close-out of BR-2b reads the same app.
+APP = "brief"
 #: A slot inside this window ahead of the planner's clock gets a run.
 HORIZON = timedelta(minutes=30)
 #: A slot this far behind the planner's clock, with no row, still gets a
@@ -127,7 +130,7 @@ def member_of(email: str, prefs: dict[str, Any]) -> Member:
 async def members(db: Any, org: str) -> list[Member]:
     """The active members of the bound org, in address order, one for each
     address in any case (``assistant_profile.members_app_prefs``)."""
-    rows = await assistant_profile.members_app_prefs(db, org, KIND)
+    rows = await assistant_profile.members_app_prefs(db, org, APP)
     return [member_of(email, prefs) for email, prefs in rows]
 
 
