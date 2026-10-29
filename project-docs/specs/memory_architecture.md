@@ -1,5 +1,23 @@
 # Memory Architecture — one model for seven stores
 
+> **⚠️ RE-SCOPED 2026-10-29 by D132 (and D128 item 7). Mem0 is NOT a tier. Graphiti is NOT a tier.**
+> Mira remembers through three stores:
+> 1. **The member profile** holds what Mira knows about one member. See
+>    [`personalization.md`](personalization.md) and D110 (`user_settings.assistant_profile`).
+> 2. **Org knowledge** is Knowledge plus the pointer graph. See
+>    [`knowledge_base.md`](knowledge_base.md), [`knowledge_curation.md`](knowledge_curation.md)
+>    (D-KC-8) and D128. The `NOTES.md` of a shared agent moves here (H-237).
+> 3. **Chat history** is searched with full text (MEM-2, D132.3).
+>
+> Mem0 and Graphiti retire after KG-6 (KG-11). Until then `MEM0_ENABLED` and `GRAPHITI_ENABLED`
+> stay off (D128.7). **These sections no longer hold:** §1 rows 1 and 2, §2 (the vector tier),
+> §3 rows "Durable-recalled" and "Relational", §4 (the Mem0 bullet and the vector tier in the
+> fact life), §5.2, §6.4 and §6.5 where they name Mem0 or Graphiti, and the Mem0 and
+> Graphiti phasing in §9. **These parts still hold:** the blob-store file tier (§6.1, §6.2),
+> provenance (§6.3), the correction experience (§6.7), compartments and clearance (§7), and
+> run capture (§6.6). Each retired section carries its own RETIRED marker.
+> WS-9 board row: see `work_plan.md` §2.
+
 **Status:** Draft / RFC · **Date:** 2026-07-26 · **Owner:** vjvarada
 
 How every agent remembers: what tier a fact belongs in, where it physically lives, how it
@@ -33,6 +51,8 @@ vs shared instancing)
 
 ## 1. We don't have a memory system. We have seven.
 
+> **RETIRED in part (2026-10-29, D132):** rows 1 (Mem0) and 2 (Graphiti) are RETIRED (D132.4). The other rows hold.
+
 Each of these was the right answer to the problem in front of it. None of them share a
 vocabulary for scope, lifetime, retrieval, or budget — which is why "how does memory work"
 currently has no single answer.
@@ -53,6 +73,8 @@ caches, logs, or domain records. The confusion is that they all get called "memo
 ---
 
 ## 2. Two philosophies, and the rule for choosing
+
+> **RETIRED in part (2026-10-29, D132):** the vector tier (Mem0) is RETIRED (D132.4). Org knowledge (D128) and the member profile (D110) take its place. The file-tier rule holds.
 
 The `agent-startup-guru` pattern (a curated memory bank in files) and our Mem0 layer (semantic
 recall) look like alternatives. They aren't — they have opposite properties, and a good agent
@@ -85,8 +107,8 @@ the others can. That's what makes it the right home for supersession (§6.5).
 | **Working** | This run's scratch | In-context | The run | context window | always present |
 | **Session** | This thread's turns | `chat_message` + Redis block | The thread | last N turns | always present, windowed |
 | **Durable-explicit** | Curated knowledge the agent must always have | `agent_blob` → `agent-data/` | Forever, until compacted | **hard cap, ~2k tokens** | deterministic injection (§6.2) |
-| **Durable-recalled** | The long tail of learned facts | Mem0 / pgvector | Forever, until superseded | top-k per compartment | semantic |
-| **Relational** | Entities, edges, validity intervals | Graphiti / Neo4j | Forever, bi-temporal | bounded traversal | graph + semantic |
+| ~~**Durable-recalled**~~ | ~~The long tail of learned facts~~ | ~~Mem0 / pgvector~~ | **RETIRED (D132.4, KG-11).** The member profile (D110) and org knowledge (D128, D-KC-8) hold these facts now | — | — |
+| ~~**Relational**~~ | ~~Entities, edges, validity intervals~~ | ~~Graphiti / Neo4j~~ | **RETIRED (D128.6, D132.4, KG-11).** The pointer graph in Postgres (`kb_entities`, `kb_links`) replaces it | — | — |
 | **Structured** | Domain records — tasks, emails, deals | App tables | Per the domain | — | SQL |
 
 Everything above the line (working, session) is bounded by construction. Everything below it
@@ -95,6 +117,8 @@ needs an explicit budget, and only one tier currently has one at all.
 ---
 
 ## 4. How a fact actually persists
+
+> **RETIRED in part (2026-10-29, D132):** the Mem0 bullet and the vector-tier steps in the fact life are RETIRED (D132.4). The Postgres-is-truth rule holds.
 
 **Postgres is authoritative for every durable tier. Disk and Redis are caches, always.**
 
@@ -148,6 +172,8 @@ memory scope.
 > `docs/multiplayer/memory-clearance.md` §2.1.
 
 ### 5.2 Graphiti writes are partitioned, reads are not
+
+> **RETIRED in part (2026-10-29, D132):** RETIRED (D132.4). Graphiti is off and retires at KG-11, so this fault will not ship. Org scoping is KG-9.
 
 `agent.py:1366` writes episodes with `group_id=user_id`; `graphiti_client.py:144` searches
 with no group filter at all. Retrieval spans every user's episodes.
@@ -267,6 +293,8 @@ with the exact context it had (§6.6).
 
 ### 6.4 Promotion, compaction, decay
 
+> **RETIRED in part (2026-10-29, D132):** promotion into and demotion to the Mem0 vector tier are RETIRED (D132.4). The file-tier budget and decay rules hold.
+
 Concrete rules for the ladder in §4:
 
 - **Extraction is gated.** Save decisions and durable facts, not chatter. Generalise the rule
@@ -283,6 +311,8 @@ Concrete rules for the ladder in §4:
   `agent_file_history` is already append-only and the audit trail matters more than the bytes.
 
 ### 6.5 Supersession
+
+> **RETIRED in part (2026-10-29, D132):** the Graphiti path is RETIRED (D132.4). Supersession of a fact now belongs to the pointer graph (D128).
 
 Two contradictory facts must never both inject. Give every durable fact `valid_from` and
 `superseded_by`, and filter at assembly: group by subject, keep the newest, and mention the
@@ -374,24 +404,51 @@ framework doc already concluded.
 
 ---
 
-## 9. Phasing
+## 9. Phasing (re-scoped 2026-10-29 by D132)
 
-Interleaves with the multiplayer plan; the numbering matches
+Mem0 and Graphiti are not tiers (see the banner). This section lists what is left of WS-9.
+It interleaves with the multiplayer plan, and the numbering matches
 [`../../docs/multiplayer/README.md`](../../docs/multiplayer/README.md) §8.
 
-| Phase | Work |
-|---|---|
-| **0** | ✅ done 2026-07-30 — Authorize `routes/memory.py` (§5.1) · scope Graphiti reads or disable the timeline call until scoped (§5.2) |
-| **3a′** | ✅ **This doc's half is done.** Blob instance-keying + run-path wiring landed as migration **136** (`groups_sessions_authority.md` §6 step 2), alongside the memory-compartment work as required — splitting them would have left the more dangerous tier unpartitioned. **The compartment remainder is not this spec's.** It is owned by [`docs/multiplayer/memory-clearance.md` §7](../../docs/multiplayer/memory-clearance.md) (compartment registry · `subject:` compartments · the `prefs`/`user` backfill), dispatched as **WS-10**, with its surface design in §7.1 and its gate labels in §7. Do not restate it here; link to it. |
-| **3b** | Deterministic budgeted file-tier injection (§6.2) · provenance markers (§6.3) · extraction gate (§6.4) |
-| **3c** | The memory chip and in-place correction (§6.7) · run-block capture for replay (§6.6) |
-| **4** | Compaction and decay (§6.4) · supersession — decide Graphiti-on vs interim field (§6.5) |
+### 9.1 The tiers that stay
 
-**Acceptance for 3a′** — same shape as the compartment test, at the storage layer rather than
-the answer layer: two users of one personal agent both call `save_note`; assert their
-`agent_blob` rows differ by `instance`, that neither user's `recall_notes` or injected header
-returns the other's content, and that `rehydrate_workspace` restores only the caller's
-instance.
+| Tier | Store | Owner of the fact |
+|---|---|---|
+| Working and session | Context window, `chat_message` | This spec §3 |
+| Durable-explicit | `agent_blob` file tier (`agent-data/`) | This spec §6.1 and §6.2. The `NOTES.md` of a shared agent moves to org knowledge (H-237) |
+| Member profile | `user_settings.assistant_profile` | [`personalization.md`](personalization.md), D110 |
+| Org knowledge | Knowledge pages and the pointer graph | [`knowledge_base.md`](knowledge_base.md), [`knowledge_curation.md`](knowledge_curation.md), D128 |
+| Chat history | `chat_session`, `chat_message` | Full text search, MEM-2 (D132.3) |
+| Structured | App tables | The app that owns them |
+
+Compartments, clearance and `subject:` grants (§7) still apply to the file tier and to chat history.
+D132 does not change them.
+
+### 9.2 The tiers that retire
+
+| Tier | Status |
+|---|---|
+| Durable-recalled (Mem0) | **RETIRED by D132.4.** The code and `MEM0_ENABLED` stay off until KG-11 removes them |
+| Relational (Graphiti) | **RETIRED by D128.6 and D132.4.** KG-11 removes it with the empty `acb_graph` tables |
+
+### 9.3 The phases
+
+| Phase | Work | State |
+|---|---|---|
+| **0** | Authorize `routes/memory.py` (§5.1). Scope Graphiti reads (§5.2) | ✅ done 2026-07-30. Graphiti half is moot (RETIRED) |
+| **3a′** | Blob instance-keying and run-path wiring, migration **136**. The compartment remainder is WS-10's: [`docs/multiplayer/memory-clearance.md` §7](../../docs/multiplayer/memory-clearance.md). Do not restate it here | ✅ done |
+| **3b** | Deterministic budgeted file-tier injection (§6.2). Provenance markers (§6.3). Extraction gate (§6.4) | Open. The file tier part holds. The Mem0 extraction gate is **RETIRED** |
+| **3c** | Memory chip and in-place correction (§6.7). Run-block capture (§6.6) | Open. Re-aim §6.7 at the member profile (D110) and org knowledge, not Mem0. `PATCH /memory/{scope}/{memory_id}` on Mem0 is **RETIRED** |
+| **4** | Compaction and decay (§6.4). Supersession (§6.5) | Open for the file tier. The Graphiti-or-interim-field choice of §6.5 is **closed by D132**: neither is built. Supersession of a fact belongs to the pointer graph (KG) |
+
+**Acceptance for 3a′** (unchanged). Two users of one personal agent both call `save_note`. Assert that
+their `agent_blob` rows differ by `instance`. Assert that neither user's `recall_notes` or injected
+header returns the other's content. Assert that `rehydrate_workspace` restores only the caller's instance.
+
+**What is left of WS-9.** Only the file-tier work of 3b and 4 and the correction UX of 3c on the
+profile and org knowledge. Those slices need a new acceptance section before dispatch (the 2026-08-02
+audit found none). The owner of that rewrite is the next WS-9 task. If no slice survives, WS-9 closes
+into WS-KG at KG-11.
 
 ---
 
