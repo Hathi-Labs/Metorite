@@ -99,7 +99,33 @@ def test_the_deploy_runs_only_when_release_moved(deploy: dict) -> None:
 def test_every_job_that_touches_the_box_hangs_off_the_deploy(deploy: dict, name: str) -> None:
     job = deploy["jobs"][name]
     assert "deploy" in _needs(job)
-    assert "needs.deploy.result == 'success'" in _if(job) or _if(job) == "success()"
+    assert "needs.deploy.result == 'success'" in _if(job)
+
+
+def _after(jobs: dict, root: str) -> set[str]:
+    """Every job that needs ``root``, directly or through another job."""
+    out: set[str] = set()
+    grew = True
+    while grew:
+        grew = False
+        for name, job in jobs.items():
+            if name not in out and ({root} | out) & set(_needs(job)):
+                out.add(name)
+                grew = True
+    return out
+
+
+def test_no_job_after_a_skipped_job_reads_a_bare_success(deploy: dict) -> None:
+    """``success()`` is FALSE when any ancestor job SKIPPED. ``release-window``
+    skips on every dispatch, and ``test`` skips on a ``skip_tests`` dispatch.
+    So each job after them starts its ``if`` with ``always()`` and tests the
+    result that it needs. A bare ``success()`` skipped the smoke test on the
+    dispatch of 2026-10-29 (run 40888027282)."""
+    jobs = deploy["jobs"]
+    after = _after(jobs, "release-window") | _after(jobs, "test")
+    assert {"publish-release", "deploy", "pull-delivery", "chat-smoke", "smoke"} <= after
+    bare = sorted(n for n in after if not _if(jobs[n]).startswith("${{ always()"))
+    assert not bare, f"these jobs skip when an earlier job skips: {bare}"
 
 
 # ── 2. The schedule and the dispatch publish release, behind the tests ───────
