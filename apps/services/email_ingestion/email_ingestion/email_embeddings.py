@@ -47,6 +47,21 @@ DEFAULT_BATCH = 32
 _MAX_EMBED_CHARS = 8000
 
 
+#: The candidate predicate: messages with a body but no current embedding, OR
+#: whose stored embedding was made from a different content_hash (body edited
+#: or backfilled). ``select_pending_embeddings`` and ``count_pending`` share it,
+#: so the estimate of the backfill counts what the backfill selects.
+_PENDING_FROM_WHERE = """FROM email_messages em
+             LEFT JOIN email_embeddings ee ON ee.message_id = em.id
+            WHERE em.account_id = :aid
+              AND em.body_text IS NOT NULL AND em.body_text <> ''
+              AND (ee.message_id IS NULL
+                   OR ee.content_hash <> encode(
+                        sha256(convert_to(
+                            coalesce(em.subject,'') || E'\\n\\n'
+                            || coalesce(em.body_text,''), 'UTF8')), 'hex'))"""
+
+
 def _embed_text(subject: str | None, body: str | None) -> str:
     """The text we embed for a message: subject + body head. Kept in one place so
     the content_hash and the embedded text can never diverge."""
@@ -176,15 +191,7 @@ async def select_pending_embeddings(
         """SELECT em.id, em.subject, em.body_text,
                   (SELECT ea.user_id FROM email_accounts ea
                     WHERE ea.id = em.account_id) AS owner
-             FROM email_messages em
-             LEFT JOIN email_embeddings ee ON ee.message_id = em.id
-            WHERE em.account_id = :aid
-              AND em.body_text IS NOT NULL AND em.body_text <> ''
-              AND (ee.message_id IS NULL
-                   OR ee.content_hash <> encode(
-                        sha256(convert_to(
-                            coalesce(em.subject,'') || E'\\n\\n'
-                            || coalesce(em.body_text,''), 'UTF8')), 'hex'))
+           """ + _PENDING_FROM_WHERE + """
             ORDER BY em.received_at DESC NULLS LAST
             LIMIT :lim"""),
         {"aid": account_id, "lim": batch},
@@ -205,6 +212,23 @@ async def select_pending_embeddings(
         texts=tuple(_embed_text(r.subject, r.body_text) for r in rows),
         owner=_owner_of(rows),
     )
+
+
+async def count_pending(db: Any, account_id: str) -> tuple[int, int]:
+    """How many messages wait, and the token estimate of their text.
+
+    For ``--estimate`` of the backfill. The estimate is ``min(chars, 8000) / 4``
+    for each message, the same cap as ``_embed_text``. It sends nothing and
+    needs no flag. Takes the caller's session, opens none and never commits."""
+    row = (await db.execute(text(
+        "SELECT count(*) AS n, coalesce(sum(least(length(coalesce(em.subject,'')"
+        " || E'\\n\\n' || coalesce(em.body_text,'')), :cap)), 0) AS chars "
+        + _PENDING_FROM_WHERE),
+        {"aid": account_id, "cap": _MAX_EMBED_CHARS},
+    )).fetchone()
+    n = int(row.n) if row is not None else 0
+    chars = int(row.chars) if row is not None else 0
+    return n, chars // 4
 
 
 async def compute_embeddings(
