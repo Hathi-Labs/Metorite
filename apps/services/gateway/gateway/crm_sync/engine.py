@@ -582,6 +582,12 @@ class RunHandle:
     #: module whatever :data:`MODULE_READ_EVERY` says, and an offset-paged one
     #: in full. The row says so in ``counts[RUN_FINAL_KEY]``.
     final: bool = False
+    #: CRM-Z10b round 5: the keys that the admin left out of the switch. The
+    #: final sync treats them as held, so it neither reads nor walks them.
+    final_skip: frozenset[str] = frozenset()
+    #: CRM-Z10b round 5: the final sync's own budget (:func:`final_budget`).
+    #: ``execute`` takes it when the caller passes no ``credit_budget``.
+    credit_budget: int | None = None
 
 
 @dataclass(frozen=True)
@@ -636,6 +642,7 @@ def _enabled(org: str) -> bool:
 
 async def acquire(
     org: str, *, only: frozenset[str] | None = None, final: bool = False,
+    leave_out: frozenset[str] = frozenset(),
 ) -> RunHandle:
     """Take the run lock for ``org`` and plan the run.
 
@@ -644,12 +651,17 @@ async def acquire(
 
     ``final`` is the final sync of the switch from Zoho (CRM-Z10b). It reads
     each generic module with no wait of :data:`MODULE_READ_EVERY`, and it
-    writes :data:`RUN_FINAL_KEY`, which phase 2 of the switch needs.
+    writes :data:`RUN_FINAL_KEY`, which phase 2 of the switch needs. It has
+    its own budget (:func:`final_budget`, round 5). ``leave_out`` names the
+    keys that the admin left out of the switch: the final sync treats them as
+    held, so it neither reads nor walks them (round 5).
 
     Raises :class:`NotConnected` with no live connection and
     :class:`SyncRunning` when a run holds the lock. It makes no provider call.
     """
     now = _now()
+    skip = frozenset(leave_out) if final else frozenset()
+    budget: int | None = None
     async with tenant_session(org) as db:
         connection = await store.get(db, org, PROVIDER, OWNING_APP)
         if connection is None or connection.status != store.STATUS_CONNECTED:
@@ -662,8 +674,10 @@ async def acquire(
         cursors = await runs.read_cursors(db, org, f"{PROVIDER}:")
         last_ok = await runs.last_success_at(db, org)
         entries = await holds.read(db, org)
-        held = holds.held_keys(entries)
+        held = holds.held_keys(entries) | skip
         kind, reconcile = plan(cursors, now, last_ok, held)
+        if final:
+            budget = await final_budget(db, org)
         if final:
             # CRM-Z10b round 4: an offset-paged core entity has no cursor to
             # move, so only its walk reads it. The final sync runs the 24 h
@@ -685,7 +699,9 @@ async def acquire(
             # ``planned_ms``: the time of this plan by the gateway's clock. A
             # read that ENDS in this run stamps a later ``checked_at`` by the
             # same clock, so phase 2 compares two stamps of one clock.
-            counts[RUN_FINAL_KEY] = {"final": 1, "planned_ms": _ms(now)}
+            counts[RUN_FINAL_KEY] = {
+                "final": 1, "planned_ms": _ms(now), "budget": int(budget or 0),
+            }
         run_id = await runs.start(
             db, org, connection.id, kind, counts=counts, estimate=saved_estimate,
         )
@@ -693,7 +709,33 @@ async def acquire(
         org=org, run_id=run_id, kind=kind, connection_id=connection.id,
         reconcile=reconcile, cursors=cursors, counts=counts, estimate=saved_estimate,
         scopes=tuple(connection.scopes or ()), holds=entries, only=only, final=final,
+        final_skip=skip, credit_budget=budget,
     )
+
+
+#: The credits that the final syncs of the switch spent in the last 24 hours.
+_FINAL_SPENT_SQL = (
+    "SELECT COALESCE(sum(credits_used), 0) FROM crm_sync_runs "
+    "WHERE organization_id = CAST(:org AS uuid) "
+    "AND started_at > now() - interval '24 hours' "
+    "AND counts -> 'run_final' IS NOT NULL"
+)
+
+
+async def final_budget(db: Any, org: str) -> int:
+    """The final sync's own budget (CRM-Z10b round 5): one day's share of
+    the edition (:func:`daily_budget`), less what the final syncs of the last
+    24 hours spent. So the switch spends up to one day's share once in 24
+    hours, whatever the scheduled runs spent. Without it, an org whose paced
+    runs spend the whole daily budget would start each final sync with no
+    credit, and it could never switch.
+
+    ⚠️ :data:`CREDITS_FLOOR` still stops the run on what Zoho reports, so a
+    final sync never drains the org's Zoho account (``_Ctx.call``).
+    """
+    profile = await profiles.latest(db, org)
+    spent = int((await db.execute(text(_FINAL_SPENT_SQL), {"org": org})).scalar() or 0)
+    return max(daily_budget(profile.profile if profile else None) - spent, 0)
 
 
 def _final_walks(cursors: dict[str, CursorRow], held: frozenset[str]) -> frozenset[str]:
@@ -736,7 +778,8 @@ class _Ctx:
         #: CRM-Q16: the hold entries, the keys held now, and the keys of an
         #: "on its own" run.
         self.holds: dict[str, dict[str, Any]] = dict(handle.holds)
-        self.held: frozenset[str] = holds.held_keys(self.holds)
+        # CRM-Z10b round 5: the keys left out of the switch count as held.
+        self.held: frozenset[str] = holds.held_keys(self.holds) | handle.final_skip
         self.only = handle.only
         #: CRM-Z10b: the final sync of the switch reads every generic module.
         self.final = handle.final
@@ -3738,8 +3781,13 @@ async def execute(
 
     It never raises for a failure of the run. It writes the failure to the row
     as a status and a safe code. ``credit_budget`` overrides the default
-    budget, for a test.
+    budget, for a test. With none, a final sync takes its own budget
+    (``handle.credit_budget``, CRM-Z10b round 5). A budget that is not the
+    default skips only the discovery allowance. :data:`CREDITS_FLOOR` holds
+    for every run.
     """
+    if credit_budget is None:
+        credit_budget = handle.credit_budget  # the final sync's own (round 5)
     ctx = _Ctx(handle, should_stop=should_stop, credit_budget=credit_budget)
     status, error = runs.STATUS_OK, None
     try:
