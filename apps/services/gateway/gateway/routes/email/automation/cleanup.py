@@ -60,6 +60,7 @@ from gateway.routes.email.automation.senders import (
     canonical_cleanup_category,
 )
 from gateway.routes.email.core import (
+    NOT_OUTBOUND_SQL,
     _assert_account_owner,
     _instantiate_provider,
     _log,
@@ -352,7 +353,7 @@ async def _internal_domains(db: Any, account_id: str) -> frozenset[str]:
 # rules run, which has no scope limit. That is the one thing this trades away.
 _CLEANUP_SCOPE = f"""
     em.account_id = :aid AND {_NOT_DISPOSED}
-    AND LOWER(COALESCE(em.folder,'')) <> 'sent'
+    AND {NOT_OUTBOUND_SQL}
     AND COALESCE(em.from_address->>'email','') <> ''
     -- Belt and braces: self-addressed mail can sit outside Sent. "Self" is
     -- each mailbox of the member (D-EM-27, EM-T8e-1), so mail from another
