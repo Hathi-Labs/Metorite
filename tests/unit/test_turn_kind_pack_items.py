@@ -142,7 +142,9 @@ def test_the_executor_asks_the_offer_and_applies_the_answer_in_one_place() -> No
     executor = "apps/services/orchestrator/orchestrator/executor.py"
     assert _calls(executor, "_apply_turn_pack_items") == {"run_agent_stream"}
     # ``_ask_run_tier`` is nested in the stream run, so both names show.
-    assert _calls(executor, "_pack_loader_offer") == {"_ask_run_tier", "run_agent_stream"}
+    # OA-8f: ``_log_pack_request_tools`` also reads it, to count the load tool.
+    assert _calls(executor, "_pack_loader_offer") == {
+        "_ask_run_tier", "run_agent_stream", "_log_pack_request_tools"}
     src = (REPO / executor).read_text(encoding="utf-8")
     start = src.index("async def _tier_policy_for_run")
     assert 'pack_offer' in src[start:start + 1500]

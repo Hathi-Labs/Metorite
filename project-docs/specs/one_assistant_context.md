@@ -9,7 +9,9 @@ OA-8a is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-8a" in §4.3
 
 OA-8b is BUILT, dark behind `TOOL_PACKS` (2026-10-28, "As built, OA-8b" in §4.3.2). The flag flip is OWNER-GATE.
 
-OA-8e RAN LIVE and is NOT MET (2026-10-28, `docs/one_assistant_measure_oa8e_2026-10-28.md`, harness at `9912eee5a`). On the app turns that are not email, the pack arm passed 38 of 70 and delegation 52 of 70 (CRM 14 of 24 against 19 of 24, Projects 21 of 38 against 29 of 38). Stop results 1, 2 and 11 occur. The pack arm is 2.6 times faster per turn and 32 percent cheaper. Causes: the model loads a pack it lacks only 3 times in 70 turns and never in the miss chats, it skips the bulk pack for several new tasks, it hands off after it loaded the plan or structure pack, and on a Projects page the plan and structure packs do not fit beside the core pack. The run also shows harness defects to repair first: fixture gaps, checks that count a refused call, the `crm_report` annotation, and dev-database reach through the memory tools. The fan-out chats and the `packs+spawn` arm were skipped. OA-10 must not start.
+OA-8f is BUILT, dark behind `ORCHESTRATOR_FLOOR_TRIM` (2026-10-28, "As built, OA-8f" in §4.3.2). The count fixes and the pack cues need no flag. The flag flip is OWNER-GATE.
+
+OA-8e RAN LIVE and is NOT MET (2026-10-28, `docs/one_assistant_measure_oa8e_2026-10-28.md`, harness at `9912eee5a`). On the app turns that are not email, the pack arm passed 38 of 70 and delegation 52 of 70 (CRM 14 of 24 against 19 of 24, Projects 21 of 38 against 29 of 38). Stop results 1, 2 and 11 occur. The pack arm is 2.6 times faster per turn and 32 percent cheaper. Causes: the model loads a pack it lacks only 3 times in 70 turns and never in the miss chats, it skips the bulk pack for several new tasks, it hands off after it loaded the plan or structure pack, and on a Projects page the plan and structure packs do not fit beside the core pack. The run also shows harness defects to repair first: fixture gaps, checks that count a refused call, the `crm_report` annotation, and dev-database reach through the memory tools. The fan-out chats and the `packs+spawn` arm were skipped. OA-10 must not start. Phase 3 (2026-10-29) wires the fan-out chats and the `packs+spawn` arm in the harness (fixtures for the web tools, a worker plan, ten invoices, the `spawned`, `not_spawned` and `items_contract` checks, stop results 9 and 10). No second live run yet.
 
 OA-9b and the OA-9a worker half are BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-28, "As built, OA-9b" in §4.5). The flag flip is OWNER-GATE.
 
@@ -365,8 +367,8 @@ OWNER-GATE.
   `profile_interview`, not five. §6.8 now says so, and the memory table has 11
   tools. A held chat that asks the untrusted-answer card also asks it for
   `spawn_subagents`, as for `call_agents_parallel`.
-- **Not built.** The persona lines (OA-9e), the packs in a child (OA-9c) and
-  the writes in a child (OA-9d).
+- **Not built.** The packs in a child (OA-9c) and the writes in a child
+  (OA-9d). The persona lines (OA-9e) are built, dark (§6.9).
 - **Fences.** `test_subagent_worker.py`, `test_spawn_subagents.py` and
   `test_subagent_blocked_tools.py`. The pin
   `test_nothing_calls_the_contract_before_oa_9b` is gone on purpose. A pin on
@@ -1381,6 +1383,18 @@ The orchestrator offers each registry agent as a tool (`orchestrator/agents.py:7
 - The held set of a Projects pack is empty. No Projects tool is an egress tool, so a held pack keeps all its tools, as the owner's held run does.
 - **Open gap (found by the OA-8e harness, 2026-10-28).** On a Projects, Tasks or Calendar page the core pack takes the room. At the base of the harness (58 tools) the plan pack (35), the structure pack (34) and the `email` pack (31) do not fit beside it under the cap of 110. The loader does not offer them, and the Projects specialist stays. So plan and structure work on those pages still hands off to `projects_assistant`, unless a word of the pack loads it in place of the core pack. OA-10 must decide this before it retires the hand-off for Projects. The OA-8e report counts these turns by owner and reason (`app_handoff_turns`, stop result 11). The live base may differ: the line `executor.pack_request_tools` gives it.
 
+**As built, OA-8f (2026-10-28).**
+- **Why.** The live run of OA-8e logged `base_tools=65` on staging, and the run sent 59 tools. In seven days of production, 220 orchestrator tool calls used 23 of the 64 base tools. Ten floor tools had no call. On 2026-10-29 the journal of 8 days found `search_company` 50 times and `email_assistant` 41 times with the same pattern. It found 0 calls of `load_design_system`, `load_artifact_kit`, `decide` and `manage_todo_list`.
+- **Floor trim.** The flag `ORCHESTRATOR_FLOOR_TRIM` (default off, one reader: `tool_packs.floor_trim_enabled`) makes the orchestrator opt out of ten tools. They are `list_integrations`, `get_errors`, `run_diagnostics`, `save_note`, `recall_notes`, `load_artifact_kit`, `load_design_system`, `manage_todo_list`, `call_agents_parallel` and `decide`. The set is `tool_packs.FLOOR_TRIM_TOOLS`. It rides the seam `_floor_opt_out` through `_floor_trim`, so the estimate, the scope and the final list agree. `call_agent` stays, because `LOAD_NO_PATH` and the Projects route line name it. With the flag off, the tool list and the persona are byte for byte as before. Only the orchestrator trims.
+- **Text check.** No persona line, pack rule or persona bullet names a trimmed tool. The orchestrator is a native MAF agent, so it gets no injected-tools addendum. That addendum goes to Copilot SDK agents only. So no text needed a condition on the flag. The fence scans the persona and the rules.
+- **Exact count.** The estimate `_pack_base_count` now leaves out the three CRM facts tools that `_add_crm_facts_block` removes for an org off `CRM_QUESTIONS_ORGS` (`_facts_removed`). `choose` takes a new argument `specialists`, and it subtracts the specialist tool that a chosen pack replaces. `_apply_tool_packs` counts the load tool only when an allowed pack stays unloaded, and then it chooses again with that tool counted. The log `executor.pack_plan` gives `planned_tools`, the count after the packs and the specialists that leave. The log `executor.pack_request_tools` counts the load tool, which a context provider holds. A new log, `executor.request_tools`, reads each model request. It gives the count sent, the count of different names and a short hash of the names. It includes provider and MCP tools. A granted app tool and an MCP tool stay outside the estimate, because their read needs the database or the network.
+- **The staging shape.** The estimate was 65 (55, the 7 profile tools, search, `decide` and the loader). It is 62 now. The loader then reaches three owners and takes their three specialist tools out, so the run sends 59, and `planned_tools` says 59. The fence is `test_the_estimate_equals_the_sent_count_on_the_staging_shape`.
+- **Pairs under 110.** With the trim off, six of the 21 pairs of packs fit on the staging shape. With the trim on, 14 fit at the staging base of 52, so eight pairs are new. Five are `email` with `projects`, `email-setup` with `projects` and with `projects-bulk`, `projects` with `projects-structure`, and `projects` with `projects-bulk` (104 tools). Three more fit at 110: `email` with `email-setup`, `email` with `projects-bulk`, and `projects` with `projects-plan`. For an org on the CRM list, which keeps the three facts tools, the numbers are six and nine.
+- **The misses of OA-8e.** `pm_new_tasks` loaded the core pack from the Projects page. The model then called `create_task` three times (three cards) and never loaded `projects-bulk`. The core rules now say: for two or more new tasks at once, make the set in one step. Load `projects-bulk` when the loader offers it, and else give the set to `projects-assistant` with `call_agent`. `pm_miss` and `pm_capacity_open` loaded no pack in one repeat. In the other repeats they loaded `projects` or `projects-plan`, and then handed the work to the Projects assistant (`model_choice`). `crm_miss` was no product miss. The model answered with the CRM reads that the base holds. The check expected the pack `crm-records`, which holds the writes and the timeline. That is a check problem for the harness.
+- **Review fixes (round 1).** The core bulk rule names no tool of another pack. The real bases are 61, and 64 for an org on the CRM list. There the plan does not offer `projects-bulk` beside the core pack. So the rule gives the set to `projects-assistant` with `call_agent`. With the trim on (base 52) the plan offers it. The two email `when` lines keep the cues of OA-7h run 4. The flag is in the owner-only list of `env_guard.py`.
+- **Catalog.** The tool `load_skill_tools` gives each pack one line in the member's words, from `Pack.when`. The catalog uses it in place of the long summary. The `crm-records` line says that plain reads need no load. The fence is `tests/unit/test_pack_cues.py`.
+- **Not done.** The removal of `spawn_copilot_agent`, `search_timeline`, `recall_timeline` and `save_episode`, a move of the CRM reads, a `profile` pack and a change of `MAX_REQUEST_TOOLS` (110).
+
 **OA-8c. WhatsApp.**
 - **Acceptance.**
   - The held set of the pack equals the held set of the owner (`tests/unit/test_no_egress_tool_audit.py:86-89`).
@@ -1909,7 +1923,7 @@ The main assistant sends a batch write through the batch tool of the app. That t
 | OA-9b | `spawn_subagents`, read-only children, `_fan_out`, the caps, Stop, the flag | MEDIUM | Yes |
 | OA-9c | Packs in children, through OA-7b | MEDIUM | After OA-7b |
 | OA-9d | One batch card for each fan-out, and children that write | HIGH | After OA-9c |
-| OA-9e | The persona lines and the `fanout` scenarios | LOW | With OA-9b |
+| OA-9e | The persona lines and the `fanout` scenarios | LOW | With OA-9b. Persona lines built 2026-10-29, dark. Scenarios not built (§6.9) |
 
 **OA-9a.**
 - **Files.** The parser is built (PR #1388). The worker half is:
@@ -2017,6 +2031,14 @@ The anchors of §6.1 to §6.6 were set on 2026-10-26, and some have moved. Each 
 | The batch fallback with `head_task` | `:191-207` | `:206-213` |
 
 The cite `orchestrator/agents.py:159`, "rule 3" in §6.3, matches no text in that file now. Look for the rule that says to call independent tools in one step before OA-9e pins the persona lines.
+
+**As built, OA-9e (2026-10-29, dark).**
+- **Status.** Built. The persona block shows only with `SPAWN_SUBAGENTS_ORGS` naming the org. No box sets the flag.
+- **The cite.** The persona never held the line "call independent tools in one step". Only the docstring of `spawn_subagents` says it (`agent_tools.py`). The new block now says it too, in one clause.
+- **Where.** `_SPAWN_BLOCK` in `orchestrator/agents.py`. `_orchestrator_instructions` takes `spawn=True` and puts the block before "THE SHAPE OF A ROUTINE REPLY." The agent build reads `_spawn_subagents_enabled(organization_id)` once, so the block and the tool agree. With the flag off the persona is `_PULL_INSTRUCTIONS`, byte for byte.
+- **Split.** The persona carries the when. The docstring carries the how (the job keys, the tools, the tiers). The block does not copy the docstring.
+- **Fence.** `tests/unit/test_spawn_persona.py`. It pins the lines on, the byte-identical persona off, the length cap of 90 words, and the match with the docstring.
+- **Not built.** The `fanout` scenarios of OA-8e, which need a live model.
 
 ## 7. Coordination with the chat-speed work
 

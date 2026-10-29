@@ -51,7 +51,7 @@ import { mailboxMarksOf } from "@/lib/mailboxMark";
 import MailboxMark from "@/components/MailboxMark";
 import { ANSWER_CAPTION, typedAnswers, typedAnswerTarget } from "@/lib/typedAnswer";
 import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
-import { attachStickToBottom, nearAfterScroll } from "@/lib/stickToBottom";
+import { attachStickToBottom, nearAfterScroll, showJumpToBottom } from "@/lib/stickToBottom";
 import { segmentsForCache } from "@/lib/chatPlacement";
 import {
   CONFIRMATION_RESOLVED,
@@ -1564,7 +1564,7 @@ export default function AgentChat({
       const nearBottom = nearAfterScroll(isNearBottomRef.current, lastTop, el);
       lastTop = el.scrollTop;
       isNearBottomRef.current = nearBottom;
-      setShowScrollBtn(!nearBottom && el.scrollHeight > el.clientHeight + 200);
+      setShowScrollBtn(showJumpToBottom(nearBottom));
       // Near the top → lazy-load the previous page of history.
       if (el.scrollTop < 140) loadOlderHistoryRef.current();
     };
@@ -1589,7 +1589,7 @@ export default function AgentChat({
       // a fold by hand can leave the bottom with no scroll event.
       setNearBottom: (near) => {
         isNearBottomRef.current = near;
-        setShowScrollBtn(!near && thread.scrollHeight > thread.clientHeight + 200);
+        setShowScrollBtn(showJumpToBottom(near));
       },
       lastManualToggleAt: () => lastManualToggleRef.current,
     });

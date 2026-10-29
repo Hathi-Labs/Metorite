@@ -546,6 +546,20 @@ DESCENDANTS_CTE = """WITH RECURSIVE walk AS (
 ), sub AS (SELECT id, min(depth) AS depth FROM walk GROUP BY id) """
 
 
+class TaskListResponse(ListResponse):
+    """``ListResponse`` plus the opt-in lane sizes (#918).
+
+    A sibling for the task list only, because ``ListResponse`` is shared by
+    every collection endpoint. Both fields are ``None`` unless the caller sent
+    ``with_status_counts``.
+    """
+
+    #: status id -> tasks in the whole filtered set, not only this page.
+    status_counts: dict[str, int] | None = None
+    #: status id -> its stage, for the lanes in ``status_counts``.
+    status_categories: dict[str, str | None] | None = None
+
+
 @router.get("/tasks")
 async def list_tasks(
     user: UserContext = Depends(get_current_user),
@@ -610,7 +624,11 @@ async def list_tasks(
     # `disposition`, `context`, `energy` and `defer_until`
     # (`mine.attach_my_overlay`).
     with_overlay: bool = False,
-) -> ListResponse:
+    # #918. Opt in to the true size of each status lane across the WHOLE
+    # filtered set, so a board column counts what the server holds and not
+    # only the rows of one page.
+    with_status_counts: bool = False,
+) -> TaskListResponse:
     """The one task-list endpoint every surface reads through.
 
     Paca's lesson: list, board and any saved view are the same query with
@@ -764,7 +782,28 @@ async def list_tasks(
         if with_overlay:
             # WS-64 OP-11 — the caller's own overlay, one query for the page.
             await attach_my_overlay(db, vis, page_rows)
-        return ListResponse(rows=page_rows, total=int(total))
+        counts: dict[str, int] | None = None
+        categories: dict[str, str | None] | None = None
+        if with_status_counts:
+            # #918. The SAME `where` and params as the row query, so the
+            # visibility clause and the tenant binding are the same.
+            counts = {
+                str(r[0]): int(r[1])
+                for r in (await db.execute(
+                    text(
+                        f"{walk_cte}SELECT t.status_id, count(*)"
+                        f" FROM pm_tasks t{walk_join}{where}"
+                        f" GROUP BY t.status_id"
+                    ),
+                    params,
+                )).fetchall()
+                if r[0] is not None
+            }
+            categories = await status_categories_of(db, vis, list(counts))
+        return TaskListResponse(
+            rows=page_rows, total=int(total),
+            status_counts=counts, status_categories=categories,
+        )
 
 
 #: The stage of each status on one page, in one read. The tenant is on the
@@ -783,17 +822,24 @@ async def attach_status_category(db: Any, vis: Any, rows: list[dict]) -> None:
     row in a fallback column, never drops it.
     """
     ids = sorted({str(r["status_id"]) for r in rows if r.get("status_id")})
+    found = await status_categories_of(db, vis, ids)
+    for row in rows:
+        row["status_category"] = found.get(str(row.get("status_id") or ""))
+
+
+async def status_categories_of(
+    db: Any, vis: Any, ids: list[str],
+) -> dict[str, str | None]:
+    """The stage of each status id, in one read. Unknown ids are absent."""
     if not ids:
-        return
-    found = {
+        return {}
+    return {
         str(r.id): r.category
         for r in (await db.execute(
             text(_STATUS_CATEGORY_SQL),
-            {"ids": ids, "vis_org": vis.params.get("vis_org")},
+            {"ids": sorted(ids), "vis_org": vis.params.get("vis_org")},
         )).fetchall()
     }
-    for row in rows:
-        row["status_category"] = found.get(str(row.get("status_id") or ""))
 
 
 @router.get("/tasks/{task_id}")

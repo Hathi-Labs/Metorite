@@ -8,7 +8,7 @@
  *   Search · Stage · Owner · one chip for each filter in force · + Filter ·
  *   Clear · "23 deals"
  *
- * The search box is a list only (CRM-X1). The Stage control is a list only,
+ * The search box is for a list and the deals board (CRM-X1). The Stage control is a list only,
  * because the lanes of a board are the stages. A chip reopens the editor of
  * its field and has a remove button. "+ Filter" opens one panel that lists
  * every field the member can filter by, in groups, with a search box.
@@ -97,8 +97,8 @@ export type FilterBarProps = {
   /** Draw the Owner control. */
   showOwner?: boolean;
   /**
-   * Draw the search box (CRM-X1). A list only: the board read takes no `q`,
-   * so a box on a board would change nothing.
+   * Draw the search box (CRM-X1). A list and the deals board take `?q=`. The
+   * leads board reads by status and takes none, so it draws no box.
    */
   search?: boolean;
   /** The stage chips of the list (`chipsFor`). With none, no Stage control. */

@@ -222,6 +222,9 @@ NOT_ON_THE_CALENDAR = {
     # no other AI session holds. The board never sends it, so the calendar
     # cannot drop it silently.
     "unheld",
+    # #918. Not a filter: it asks the list to also answer the size of each
+    # status lane for the board's column heads. The rows are the same.
+    "with_status_counts",
 }
 
 

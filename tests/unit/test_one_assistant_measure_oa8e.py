@@ -11,7 +11,7 @@ This file holds the harness, not the live run.
 * ``pack_flag`` turns on EVERY pack of an owner. A dropped pack fails a test.
 * Each new check has a case that passes and a case that fails, and each one
   names its mutation.
-* The fan-out chats are listed and skipped until ``spawn_subagents`` exists.
+* The fan-out chats run on the ``pack`` and ``packs+spawn`` arms (phase 3).
 
 Run::
 
@@ -67,7 +67,7 @@ def test_every_work_plan_passes_on_both_arms(scripted) -> None:
     assert problems == [], problems
     ran = [s for s in WORK_SCENARIOS if not s.skip]
     assert len(rows) == 2 * sum(len(s.turns) for s in ran)
-    assert {r["arm"] for r in rows} == {"delegation", "pack"}
+    assert {r["arm"] for r in rows} == {"delegation", "pack", "packs+spawn"}
 
 
 def test_the_set_has_the_turns_the_spec_asks_for() -> None:
@@ -87,7 +87,7 @@ def test_every_turn_is_short_so_no_turn_kind_request_goes_out() -> None:
     and (b) are the ones that load the pack. Mutation: add a 12-word turn → red."""
     for sc in WORK_SCENARIOS:
         if sc.set == "fanout":
-            continue  # a research job is long by nature, and it is skipped today
+            continue  # a research job is long by nature
         for turn in sc.turns:
             words = len(turn.words.split())
             assert words < SHORT_MESSAGE_WORDS, (sc.id, words, turn.words)
@@ -140,30 +140,176 @@ def test_the_words_of_each_pack_are_the_ones_a_turn_expects() -> None:
 # ── the fan-out chats wait for OA-9b ─────────────────────────────────────────
 
 
-def test_the_fanout_chats_are_listed_and_skipped_until_spawn_exists(capsys) -> None:
-    """Mutation: clear ``skip`` of one fan-out chat → it runs, the scripted plan
-    is empty, and this test is red. When OA-9b merges, ``spawn_built`` reads True
-    and ``test_spawn_subagents_is_not_built`` fails: build the arm then."""
-    assert len(FANOUT_SCENARIOS) == 3 and all(s.skip for s in FANOUT_SCENARIOS)
-    assert all(s.set == "fanout" for s in FANOUT_SCENARIOS)
-    assert not any(s.skip for s in WORK_SCENARIOS if s.set != "fanout")
-    assert run.runnable(tuple(FANOUT_SCENARIOS)) == ()
-    code = run.main(["--scripted", "--scenarios", "fan_companies,fan_tasks,fan_invoices",
-                     "--arms", f"delegation,pack,{run.SPAWN_ARM}"])
-    out = capsys.readouterr().out
-    assert code == 0 and out.count("SKIP: fan_") == 3 and f"SKIP: the arm {run.SPAWN_ARM}" in out
+def test_the_fanout_chats_run_on_the_pack_and_the_spawn_arm() -> None:
+    """Phase 3: five fan-out chats, no skip. A research chat spawns on the spawn
+    arm and reads page by page on the pack arm. Delegation holds no spawn tool.
+    Mutation: give one fan-out chat ``skip`` text → ``runnable`` drops it → red."""
+    assert len(FANOUT_SCENARIOS) == 5 and all(s.set == "fanout" for s in FANOUT_SCENARIOS)
+    assert not any(s.skip for s in WORK_SCENARIOS)
+    assert run.runnable(tuple(FANOUT_SCENARIOS)) == tuple(FANOUT_SCENARIOS)
+    assert run.arms_for(FANOUT_SCENARIOS[0], run.ALL_ARMS) == ("pack", run.SPAWN_ARM)
+    assert run.arms_for(scenario("crm_pipeline"), run.ALL_ARMS) == ("delegation", "pack")
+    assert run.arms_for(scenario("crm_pipeline"), (run.SPAWN_ARM,)) == ()
 
 
-def test_spawn_exists_but_the_fanout_stays_skipped_with_a_reason() -> None:
-    """OA-9b is merged, so the tool exists. The fan-out chats need fixtures for
-    ``web_search`` and ``fetch_page``, a worker plan and an arm flag, which is
-    more than small wiring, so they stay skipped and say why.
-    Mutation: set ``skip`` of one fan-out chat to "" → it runs with an empty plan
-    → red."""
-    assert run.spawn_built() is True
-    for sc in FANOUT_SCENARIOS:
-        assert sc.skip and "not wired" in sc.skip, sc.id
-    assert "not wired" in run.SPAWN_NOT_WIRED
+@pytest.mark.parametrize("sid", ["fan_companies", "fan_invoices"])
+def test_a_research_chat_spawns_and_its_children_parse(sid: str) -> None:
+    """The spawn arm holds the tool, the model spawns, five children read fixture
+    pages, and the answer of each parses (§6.4). The pack arm reads page by page.
+    Mutation: ``WorkerModel`` answers plain text → ``items_contract`` red."""
+    sc = scenario(sid)
+    models = run.scripted_models(sc, run.SPAWN_ARM)
+    (row,) = run.run_chat(sc, run.SPAWN_ARM, models=models)
+    assert row["passed"] and row["spawned"] == 1 and row["items_problems"] == [], row["checks"]
+    assert row["checks"]["spawned"] is True and row["checks"]["items_contract"] is True
+    assert "spawn_subagents" in _names(models[ORCHESTRATOR].bodies[0])
+    assert row["web_fetches"] == 5 + (5 if sid == "fan_invoices" else 0) and row["web_unknown"] == []
+    assert any(e["event"] == "measure.fanout" and e["ms"] >= 0 for e in row["pack_events"])
+    models = run.scripted_models(sc, "pack")
+    (solo,) = run.run_chat(sc, "pack", models=models)
+    assert solo["passed"] and solo["spawned"] == 0 and solo["checks"]["spawned"] is None
+    assert "spawn_subagents" not in _names(models[ORCHESTRATOR].bodies[0])
+    assert not any(e["event"] == "measure.fanout" for e in solo["pack_events"])
+
+
+@pytest.mark.parametrize("sid", ["fan_tasks", "fan_one_read", "fan_three_searches"])
+def test_one_read_one_task_and_three_searches_do_not_spawn(sid: str) -> None:
+    """Mutation: make the plan spawn → ``not_spawned`` red."""
+    from acb_common import get_settings
+
+    (row,) = run.run_chat(scenario(sid), run.SPAWN_ARM)
+    assert row["passed"] and row["checks"]["not_spawned"] is True and row["spawned"] == 0
+    assert get_settings().spawn_subagents_orgs == ""  # the flag lived in the chat only
+
+
+def test_the_invoices_total_comes_from_the_fixtures() -> None:
+    from evals.one_assistant_measure import fanout
+
+    assert fanout.INVOICE_TOTAL == 233_400 and len(fanout.INVOICES) == 10
+    (row,) = run.run_chat(scenario("fan_invoices"), run.SPAWN_ARM)
+    assert row["checks"]["totals_the_invoices"] is True
+
+
+def test_a_child_reaches_no_local_database_and_no_real_site(monkeypatch) -> None:
+    """A child holds the read tools of its parent, and the parent holds
+    ``retrieve_entity_context`` in some runs. A job that names it is refused
+    here, and where a child could call it, ``no_local_database`` makes it read
+    nothing. The web tools answer from fixtures, so nothing leaves the box. The
+    sentinels on the data readers and on the real web code fail the test if one
+    runs.
+    Mutation: remove ``no_local_database`` or ``WebFixtures.install`` from
+    ``run_chat`` → a sentinel raises → red."""
+    from acb_skills import web_tools
+    from orchestrator.agents import retrieve_entity_context
+
+    from evals.one_assistant_measure import fanout
+
+    def sentinel(*_a, **_k):
+        raise AssertionError("a child reached the local database or the web")
+
+    scope = retrieve_entity_context.__globals__
+    monkeypatch.setitem(scope, "retrieve", sentinel)
+    monkeypatch.setitem(scope, "_sales_context_fn", sentinel)
+    monkeypatch.setattr(web_tools, "_serpapi_search", sentinel)
+    sc = scenario("fan_companies")
+    jobs = json.dumps([
+        {"job": "Find Orbit in the company graph.", "tools": ["retrieve_entity_context"],
+         "tier": "fast"},
+        {"job": f"Read {fanout.company_url('Orbit Labs')}", "tools": ["fetch_page"], "tier": "fast"}])
+    turn = Turn("Research Orbit across the company graph and the web, please",
+                (Check("spawned"),), Plan((("spawn_subagents", {"jobs": jobs}),), "No match."))
+    one = type(sc)("fan_local", "a child asks for the entity graph", (turn,), set="fanout")
+    models = run.scripted_models(one, run.SPAWN_ARM)
+    models["worker"] = fanout.WorkerModel(call_tool="retrieve_entity_context")
+    (row,) = run.run_chat(one, run.SPAWN_ARM, models=models)
+    result = json.dumps(models[ORCHESTRATOR].bodies[-1]["messages"][-1], ensure_ascii=False)
+    # The orchestrator of the harness does not hold the tool, so no child gets it.
+    assert "did not run: this chat has no tool 'retrieve_entity_context'" in result
+    held = {n for body in models["worker"].bodies for n in _names(body)}
+    assert "retrieve_entity_context" not in held and "fetch_page" in held
+    assert row["error"] is None and row["sent"] == [] and row["web_fetches"] == 1
+    # The real web tools are back after the chat, and the fixtures are gone.
+    assert web_tools.web_search.__module__ == web_tools.__name__
+
+
+def test_the_spawn_and_items_checks_pass_and_fail() -> None:
+    """Mutations: ``_spawned`` ignores the arm → the None cases go red;
+    ``items_contract_problems`` ignores ``unstructured`` → the bad block passes."""
+    spawn = ck.SPAWN_ARM
+    assert _one("spawned", None, _obs(arm=spawn, spawned=1)) is True
+    assert _one("spawned", None, _obs(arm=spawn)) is False
+    assert _one("spawned", None, _obs(arm="pack", spawned=1)) is None
+    assert _one("not_spawned", None, _obs(arm=spawn)) is True
+    assert _one("not_spawned", None, _obs(arm=spawn, spawned=1)) is False
+    assert _one("not_spawned", None, _obs(arm="pack")) is None
+    good = ("Job 1 (\"Read a\"):\n- [quoted] Orbit makes sensors (source: https://o.example/a)\n\n"
+            "Job 2 (\"Read b\"):\n- [inferred] guess (source: inferred)")
+    bad = "Job 1 (\"Read a\"):\n- [inferred] free text (source: unstructured)"
+    err = "Job 1 (\"Read a\"): Error: no answer in 120s, so the job was stopped."
+    assert ck.items_contract_problems([good]) == []
+    assert ck.items_contract_problems([bad]) and ck.items_contract_problems([err])
+    assert ck.items_contract_problems(["No job ran."]) == ["no job block"]
+    assert _auto("items_contract", _obs(arm=spawn, spawn_results=[good])) is True
+    assert _auto("items_contract", _obs(arm=spawn, spawn_results=[bad])) is False
+    assert _auto("items_contract", _obs(arm=spawn)) is None
+    assert _auto("items_contract", _obs(arm="pack", spawn_results=[good])) is None
+    events = [{"type": "TOOL_CALL_START", "toolCallId": "a", "toolCallName": "spawn_subagents"},
+              {"type": "TOOL_CALL_RESULT", "toolCallId": "a", "content": good},
+              {"type": "TOOL_CALL_RESULT", "toolCallId": "b", "content": "other"}]
+    assert ck.spawn_results_of(events) == [good]
+
+
+def test_the_stop_results_9_and_10_read_the_spawn_arm(scripted) -> None:
+    """Mutation: compare with ``<`` the other way → the slow case goes green."""
+    rows, _ = scripted
+    summary = run.summarise(rows)
+    spawn = summary[run.SPAWN_ARM]
+    assert spawn["fanout_calls"] >= 2 and spawn["fanout_ms_mean"] is not None
+    assert spawn["not_spawned_turns"] == 3 and spawn["spawned_on_not_spawned"] == 0
+    states = {n: s for n, s, _ in run.stop_results(summary)}
+    assert states[10] == "ok" and states[9] in ("ok", "STOP")
+    slow = json.loads(json.dumps(summary))
+    slow[run.SPAWN_ARM]["research_total_median"] = 99.0
+    slow["pack"]["research_total_median"] = 1.0
+    assert {n: s for n, s, _ in run.stop_results(slow)}[9] == "STOP"
+    over = json.loads(json.dumps(summary))
+    over[run.SPAWN_ARM].update(not_spawned_turns=9, spawned_on_not_spawned=2)
+    assert {n: s for n, s, _ in run.stop_results(over)}[10] == "STOP"
+    over[run.SPAWN_ARM].update(spawned_on_not_spawned=1)
+    assert {n: s for n, s, _ in run.stop_results(over)}[10] == "ok"
+    assert "packs+spawn" in run.report({"summary": summary})
+
+
+def test_base_tools_that_cover_the_need_satisfy_right_pack() -> None:
+    """The ``crm_miss`` chats: the model answered right with the read tools of
+    the base (``crm_list_records``, ``crm_get_record``), and ``right_pack`` failed
+    a correct answer. A read of the ``crm`` family now counts. A hand-off, a
+    write and a tool of another family do not. The facts of the answer are judged
+    by their own checks.
+    Mutation: empty ``base_cover`` → the first case is red; let a hand-off pass
+    on the cover → the hand-off case is red."""
+    base = [("crm_list_records", {}, "Contacts: Priya Menon"), ("crm_get_record", {}, "ok")]
+    assert _one("right_pack", "crm-records", _obs(work_calls=base)) is True
+    assert _one("right_pack", "crm-records", _obs(work_calls=[base[0]])) is True
+    lost = [("crm_list_records", {}, "Error: Requested function not found.")]
+    assert _one("right_pack", "crm-records", _obs(work_calls=lost)) is False
+    assert _one("right_pack", "crm-records", _obs()) is False
+    # A hand-off still fails when the pack was reachable, base tool or not.
+    assert _one("right_pack", "crm-records", _obs(
+        work_calls=base, handoffs={CRM: ["x"]}, needs="crm-records",
+        reachable=frozenset({"crm-records"}))) is False
+    # A tool outside the family does not cover the pack, and Projects has no cover.
+    assert _one("right_pack", "crm-records", _obs(work_calls=[("my_work", {}, "ok")])) is False
+    assert _one("right_pack", "projects", _obs(work_calls=base)) is False
+    cover = ck.BASE_COVER["crm-records"]
+    assert "crm_list_records" in cover and not cover & {"create_lead", "update_deal_status",
+                                                         "convert_lead", "log_activity"}
+    # The wrong answer from base tools still fails its own check.
+    turn = scenario("crm_miss").turns[0]
+    wrong = ck.check_turn(turn, _obs(work_calls=base, answer="I cannot tell."))
+    assert wrong["right_pack"] is True and wrong["names_the_person"] is False
+    right = ck.check_turn(turn, _obs(work_calls=base, answer="Priya Menon at Orbit Labs."))
+    assert right["names_the_person"] is True and right["right_pack"] is True
 
 
 # ── the pack flag ────────────────────────────────────────────────────────────
@@ -190,10 +336,15 @@ def test_the_pack_flag_turns_on_every_pack_of_each_owner() -> None:
     # CRM page: the loader reaches the email and Projects packs, so both
     # specialists leave. The CRM assistant has one pack, and it is loaded.
     ("crm_pipeline", {EA, PROJECTS}, {EA, CRM, PROJECTS}, set()),
-    # Tasks page: the core Projects pack stands in the request (81 tools at the
-    # base of this harness). The email pack and the plan and structure packs do
-    # not fit beside it, so their specialists stay.
-    ("pm_find_task", {CRM}, {CRM}, {EA, PROJECTS}),
+    # Tasks page: the core Projects pack stands in the request. With the exact
+    # count of OA-8f the harness base is 55 (the 3 CRM facts tools are not
+    # counted for an org off the CRM list, and the count was 58 before). The
+    # plan sees 78 tools: 55, the load tool (1) and the 23 core tools. Each
+    # email pack fits beside that with the one email specialist tool gone
+    # (77 + 31 = 108 and 77 + 28 = 105), so the loader reaches
+    # ``email-assistant`` too. The plan (35) and structure (34) packs still do
+    # not fit (113 and 112), so ``projects-assistant`` stays.
+    ("pm_find_task", {CRM, EA}, {CRM, EA}, {PROJECTS}),
 ])
 def test_the_loader_reaches_the_owners_that_it_can_and_the_rest_keep_the_specialist(
         sid: str, via: set[str], gone: set[str], stays: set[str]) -> None:
@@ -562,13 +713,6 @@ def test_the_request_may_not_pass_the_cap() -> None:
     assert _auto("tools_per_call", _obs(arm="delegation")) is None
 
 
-def test_spawned_and_not_spawned() -> None:
-    assert _one("spawned", None, _obs(spawned=2)) is True
-    assert _one("spawned", None, _obs()) is False
-    assert _one("not_spawned", None, _obs()) is True
-    assert _one("not_spawned", None, _obs(spawned=1)) is False
-
-
 def test_the_tool_call_readers() -> None:
     calls = [("crm_assistant", json.dumps({"task": "Move the deal"})),
              ("call_agent", json.dumps({"agent_name": PROJECTS, "message": "Archive"})),
@@ -616,7 +760,7 @@ def test_the_summary_reports_the_sets_the_loader_and_the_stop_results(scripted) 
     text = run.report({"summary": summary})
     assert "Stop result of" in text and "OA-8e" in text and "| crm | pack |" in text
     states = {n: state for n, state, _ in run.stop_results(summary)}
-    assert states[1] == "ok" and states[2] == "ok" and states[9] == "n/a"
+    assert states[1] == "ok" and states[2] == "ok" and states[9] in ("ok", "STOP")
 
 
 def test_a_guard_failure_on_any_row_stops_oa_10(scripted) -> None:

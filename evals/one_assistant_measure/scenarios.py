@@ -156,6 +156,10 @@ class Plan:
     #: hand-off, because no pack of the owner fits the request beside the packs
     #: that are loaded (the cap of 110 tools). The ``delegation`` arm is the same.
     handoff: bool = False
+    #: OA-8e phase 3. The calls of the arm that holds no ``spawn_subagents``.
+    #: Empty: that arm plays :attr:`calls`. A research turn plays one spawn call
+    #: on the spawn arm, and the same reads one by one on the others.
+    solo: tuple[tuple[str, dict[str, Any]], ...] = ()
 
 
 @dataclass(frozen=True)

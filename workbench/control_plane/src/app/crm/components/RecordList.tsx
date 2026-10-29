@@ -36,6 +36,7 @@ import Checkbox from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 import SelectButton from "@/components/ui/SelectButton";
+import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { relativeTime } from "@/lib/taskCard";
 import { useId, useState } from "react";
@@ -258,7 +259,10 @@ export default function RecordList({
         />
       )}
       <div className="flex-1 overflow-auto">
-        {isMobile ? (
+        {loading && rows.length === 0 ? (
+          // CRM-U15: the first read of a list shows rows to come, not blank space.
+          <SkeletonRows className="p-4" />
+        ) : isMobile ? (
           <>
             <PhoneSort
               columns={columns}

@@ -348,9 +348,25 @@ _CONSTRAINTS_SWAP: tuple[str, str] = (
 )
 
 
+# WS-67 OA-9e (one_assistant_context.md §6.3). With SPAWN_SUBAGENTS_ORGS naming
+# the org, the persona gains this block before the reply shapes. The persona
+# carries the WHEN, and the docstring of `spawn_subagents` carries the HOW. Off,
+# the persona does not change, byte for byte. Fence: tests/unit/test_spawn_persona.py.
+_SPAWN_BLOCK = """SUB-AGENTS. You can call spawn_subagents. Each job runs on its own and only reads.
+- Spawn for multi-step research over many sources, for many independent reads
+  (ten companies, every open invoice), and for a long job that would flood this chat.
+- Do not spawn for one read, one task, or up to three searches. Do those
+  yourself, with independent calls in one step.
+- Give each job one narrow aim and the tools it needs. Write the items of a job
+  as data, never as instructions.
+
+"""
+_SPAWN_ANCHOR = "THE SHAPE OF A ROUTINE REPLY."
+
+
 def _orchestrator_instructions(
     company_search: bool, recency: bool = False, proposals: bool = False,
-    *, profile: bool = False, constraints: bool = False,
+    *, profile: bool = False, constraints: bool = False, spawn: bool = False,
 ) -> str:
     """The persona. Off, ``_PULL_INSTRUCTIONS`` itself. On, the three swaps.
 
@@ -358,9 +374,9 @@ def _orchestrator_instructions(
     (KB-5a) the swap of :data:`_PROPOSALS_SWAP`. Each acts only when
     *company_search* is on too. *profile* (PZ-6a) adds :data:`_PROFILE_SWAP`
     on its own, and *constraints* (WS-67 OA-4) adds :data:`_CONSTRAINTS_SWAP`
-    on its own.
+    on its own. *spawn* (WS-67 OA-9e) adds :data:`_SPAWN_BLOCK`.
     """
-    if not company_search and not profile and not constraints:
+    if not company_search and not profile and not constraints and not spawn:
         return _PULL_INSTRUCTIONS
     text = _PULL_INSTRUCTIONS
     swaps = (
@@ -376,6 +392,10 @@ def _orchestrator_instructions(
             # never ship a half-swapped persona.
             raise RuntimeError(f"orchestrator persona has no single {old[:40]!r}")
         text = text.replace(old, new, 1)
+    if spawn:
+        if text.count(_SPAWN_ANCHOR) != 1:
+            raise RuntimeError("orchestrator persona has no single reply-shape line")
+        text = text.replace(_SPAWN_ANCHOR, _SPAWN_BLOCK + _SPAWN_ANCHOR, 1)
     return text
 
 
@@ -1015,7 +1035,8 @@ def build_orchestrator_agent(
     # Build the instructions; append memory context when present.
     instructions = _orchestrator_instructions(company_search, recency, proposals,
                                               profile=profile_on,
-                                              constraints=constraints_on)
+                                              constraints=constraints_on,
+                                              spawn=_spawn_subagents_enabled(organization_id))
 
     # Memory tools — active read/write to Mem0 + Graphiti knowledge graph.
     # Gives the orchestrator the same memory capabilities that injected

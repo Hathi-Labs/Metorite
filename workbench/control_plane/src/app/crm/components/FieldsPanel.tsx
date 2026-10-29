@@ -37,7 +37,7 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useEffect, useId, useRef, useState } from "react";
-import { isLocked, LOCK_TIP } from "../lib/connect";
+import { CONVERT_DISABLED_REASON, isLocked } from "../lib/connect";
 import { useCrmModeValue } from "../lib/modeContext";
 import { formValue, type FieldLayout } from "../lib/fieldLayout";
 import {
@@ -68,6 +68,7 @@ import {
 import type { CrmRefusal } from "../lib/store";
 import FieldInput from "./FieldInput";
 import FieldValue from "./FieldValue";
+import LockedValue from "./LockedValue";
 import RelatedLists from "./RelatedLists";
 import { OVERVIEW_FIELDS } from "../lib/modules";
 import { NO_RELATED, type RelatedLists as Related } from "../lib/related";
@@ -384,12 +385,29 @@ export default function FieldsPanel({
 
   return (
     <div className="flex flex-col">
-      {entity === "leads" && !mirrored && (
+      {entity === "leads" && (
         <div className="flex items-center justify-end gap-2 border-b border-border px-4 py-3">
           {converted ? (
             <span className="rounded-full bg-success/10 px-2 py-0.5 text-[10px] text-success">
               converted
             </span>
+          ) : mirrored ? (
+            // CRM-U15: Mirror shows Convert greyed out, with the reason.
+            // The reason is text, not only a tooltip, so a phone and a keyboard see it.
+            <>
+              <span id="convert-reason" className="text-xs text-muted-foreground">
+                {CONVERT_DISABLED_REASON}
+              </span>
+              <Button
+                variant="primary"
+                size="sm"
+                disabled
+                title={CONVERT_DISABLED_REASON}
+                aria-describedby="convert-reason"
+              >
+                Convert
+              </Button>
+            </>
           ) : (
             <Button variant="primary" size="sm" onClick={onConvert}>
               Convert
@@ -619,14 +637,7 @@ function EditableField({
       </dt>
       <dd className="min-w-0 flex-1">
         {locked ? (
-          <span className="flex items-start gap-1.5 text-xs text-foreground" title={LOCK_TIP}>
-            <span className="min-w-0 flex-1 break-words">{shown}</span>
-            <Icon
-              name="Lock"
-              className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground"
-              aria-label={LOCK_TIP}
-            />
-          </span>
+          <LockedValue>{shown}</LockedValue>
         ) : editing ? (
           <div className="flex items-center gap-1">
             {/* The shared primitive, never a raw field (design rule 3, CRM-X4). */}
@@ -673,12 +684,25 @@ function EditableField({
             />
           </span>
         ) : (
-          <button
-            onClick={begin}
-            className="w-full break-words text-left text-xs text-foreground hover:text-primary tech-transition"
-          >
-            {shown}
-          </button>
+          // A pencil on hover and on keyboard focus, as the email and phone
+          // rows show one (CRM-U15). The value stays a button too.
+          <span className="group/edit flex items-start gap-1.5 text-xs text-foreground">
+            <button
+              onClick={begin}
+              className="min-w-0 flex-1 break-words text-left text-xs text-foreground hover:text-primary tech-transition"
+            >
+              {shown}
+            </button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon="Pencil"
+              aria-hidden
+              tabIndex={-1}
+              className="opacity-0 group-hover/edit:opacity-100 group-focus-within/edit:opacity-100 [@media(hover:none)]:opacity-100"
+              onClick={begin}
+            />
+          </span>
         )}
       </dd>
     </div>
@@ -916,16 +940,9 @@ function LayoutFieldRow({
       <dd className="min-w-0 flex-1">
         {locked ? (
           // The C4p lock, with the value of `layoutValue`.
-          <span className="flex items-start gap-1.5 text-xs text-foreground" title={LOCK_TIP}>
-            <span className="min-w-0 flex-1 break-words">
-              <FieldValue value={shown} />
-            </span>
-            <Icon
-              name="Lock"
-              className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground"
-              aria-label={LOCK_TIP}
-            />
-          </span>
+          <LockedValue>
+            <FieldValue value={shown} />
+          </LockedValue>
         ) : editing ? (
           <div
             className="flex items-start gap-1"
@@ -971,7 +988,7 @@ function LayoutFieldRow({
             />
           </div>
         ) : (
-          <span className="flex items-start gap-1.5 text-xs text-foreground">
+          <span className="group/edit flex items-start gap-1.5 text-xs text-foreground">
             <span className="min-w-0 flex-1 break-words">
               <FieldValue value={shown} />
             </span>
@@ -981,6 +998,7 @@ function LayoutFieldRow({
               size="icon-xs"
               icon="Pencil"
               aria-label={`Edit ${def.label.toLowerCase()}`}
+              className="opacity-0 group-hover/edit:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
               onClick={begin}
             />
           </span>
