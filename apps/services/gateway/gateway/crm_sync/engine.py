@@ -237,6 +237,15 @@ READ_DROPS_KEY = "read_drops"
 #: this key to 1 in the counts of the entity, so Sync health can say that
 #: the sync of that entity is paused until those records change.
 TIE_TOO_WIDE_CODE = "tie_too_wide"
+#: CRM-Z10b round 6: the delete check of a walk (``_drop_stale``) refused, and
+#: the walk read fewer records than Zoho holds (``empty_walk``, or
+#: ``short_walk``). The READ is not complete, so the switch from Zoho waits.
+#: Set to 1 in the counts of the entity, as :data:`TIE_TOO_WIDE_CODE` is.
+WALK_SHORT_FLAG = "walk_short"
+#: CRM-Z10b round 6: the delete check refused after a complete read
+#: (``count_unknown`` or ``large_delete``). It kept rows that Zoho may have
+#: deleted, which D133 accepts, so the switch does not wait for it.
+DELETE_KEPT_FLAG = "delete_kept"
 
 #: The cursor row of the field rules (CRM-Q7a). Its state holds the rules the
 #: sync applied, and the entities that wait for a full read because a rule on
@@ -2361,7 +2370,9 @@ async def _drop_stale(
     Offset paging can skip a row when the provider changes under the walk, so a
     row goes only when its stamp is older than the start of the previous complete
     walk. A refusal keeps the rows and their stamps, logs ``reconcile_refused``
-    with the figures and counts in ``refused``. It returns False for a refusal,
+    with the figures and counts in ``refused``. It also flags the entity:
+    :data:`WALK_SHORT_FLAG` when the walk read fewer records than Zoho holds,
+    else :data:`DELETE_KEPT_FLAG` (CRM-Z10b round 6). It returns False for a refusal,
     and the caller then keeps its old previous-walk time. A record that failed
     to write is never deleted.
     """
@@ -2394,6 +2405,10 @@ async def _drop_stale(
         reason = "large_delete"
     if reason:
         ctx.bump(entity, "refused")
+        # CRM-Z10b round 6: the causes count apart. A walk that read fewer
+        # records than Zoho holds is not a complete read, and the switch
+        # waits for it. A refusal after a complete read only kept rows.
+        ctx.flag(entity, WALK_SHORT_FLAG if _walk_short(local, walked, known) else DELETE_KEPT_FLAG)
         _log.warning(
             "crm.sync.reconcile_refused entity=%s reason=%s walked=%s known=%s "
             "local=%s stale=%s", entity, reason, walked, known, local, len(stale),
@@ -2403,6 +2418,17 @@ async def _drop_stale(
         removed = await delete_from_source(db, table, EXT_SOURCE, sorted(stale))
         ctx.bump(entity, "deleted", removed)
     return True
+
+
+def _walk_short(local: int, walked: int, known: int | None) -> bool:
+    """True when a walk read fewer records than Zoho holds (CRM-Z10b round 6):
+    it read none while rows exist here (``empty_walk``), or fewer than the
+    count of Zoho (``short_walk``). With no count, an empty walk is short
+    too. A ``count_unknown`` walk that read records, and a ``large_delete``,
+    follow a complete read."""
+    empty = bool(local) and walked == 0
+    short = known is not None and walked < known
+    return empty or short
 
 
 async def _deleted_pass(ctx: _Ctx, entity: str) -> None:
