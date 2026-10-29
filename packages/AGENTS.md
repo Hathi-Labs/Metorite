@@ -50,6 +50,10 @@ Shared settings, logging, the activity and cost feed, and utilities.
 - After its commit it calls `acb_auth.access.mirror_identity_membership` for the owner. The import stays inside the function. `persist_org_billing_profile` and `mark_console_mirrored` are best-effort and never raise.
 - Provisioning fences: `tests/unit/test_org_provisioning.py`, `tests/unit/test_h6_rbac_rekey.py` and `tests/unit/test_signup_reconciler.py`.
 
+- **`app_manifests/` holds the ONE route manifest of each app** (MCP-P1a, D136, `external_agent_access.md` §19.3). Mira's chat client and the MCP door both read it. It is pure data and imports the standard library only, so `acb_auth`, the edge and the gateway can import it.
+- `base.py` holds the types and the readers. `build_call` is the one builder of a door call. `knowledge.py` holds the Knowledge rows, and `acb_skills/knowledge_manifest.py` re-exports them. Each A, B or C row names a door `op` or an `off_door` reason (AD-2), and an `App` with neither fails at import.
+- Fences: `tests/unit/test_app_door_coverage.py`, `tests/unit/test_knowledge_chat_coverage.py`.
+
 Each module below holds ONE rule. Do not copy its rule into a caller.
 - `today.py`: today's date of a chat run. Fence: `tests/unit/test_crm_answer_consistency.py`.
 - `priority.py`: the server-side priority matrix (D78). The gateway and the chat skills import it. Fences: `tests/unit/test_chat_priority_levels.py`, `tests/unit/test_priority_shared.py`.
@@ -91,6 +95,8 @@ Authentication, roles and org access control.
 - `agent_tokens.py` is the ONE store of the tokens of an outside agent, and it keeps only the SHA-256 of each. `agent_token` and `agent_client` are RLS-EXEMPT. A token act opens an unbound session, reads the row, and binds the tenant from that row.
 - ⚠️ Lock order is always the connection row (`FOR NO KEY UPDATE`), then the tokens. A spend is one `UPDATE ... WHERE used_at IS NULL`. A reused refresh token revokes the connection. Fence: `tests/unit/test_agent_connection_tokens.py` (R8).
 - `agent_oauth.py` holds the OAuth rules that the edge and the gateway share. It does no I/O, and `enabled()`, `org_allowed()` and `writes_enabled` are the one readers of their settings. Fences: `tests/unit/test_agent_oauth_server.py`, `tests/unit/test_mcp_edge_coverage.py`, `tests/unit/test_agent_client_stamp.py`.
+- MCP-P1a: `agent_oauth.door_apps()` is the one reader of `agent_door_apps`. `door_route` gives the door pairs from `app_manifests`, never from a hand list (AD-3). `covered_by` is the one cover rule of a scope, and `door_available` is the one availability rule of a door op. The metadata documents name the scope of an app only while the door flag names the app.
+- Branch 0 admits a door pair, and `deps._door_gate` checks the door flag, AD-18, the app scope and the caps. A door write of class B or C that is not a proposal gets 403 `approval_required` until MCP-P1b. Each door call writes one audit row (`_audit_door`). Fence: `tests/unit/test_mcp_edge_app_door.py` (`test_a_write_with_no_approval_fails_closed`).
 - `agent_signing.py` is the ONE canonical string and the ONE HMAC of the signed request from the agent edge to the gateway. Branch 0 of `deps.get_current_user` never falls through to the bearer branches, and it reads no host input.
 - 🔴 Before a change to branch 0, `agent_signing.py`, the `Visibility` narrowing in `core.py` or their fences merges, it needs an adversarial review AND an independent verification. `test_branch_zero_digest_is_pinned` fails until the reviewed commit updates the digest.
 - Branch 0 fences: `tests/unit/test_mcp_edge_signing.py`, `tests/unit/test_mcp_edge_authority.py` (R8), `tests/unit/test_tenant_request_binding.py`, `tests/unit/_branch_zero_tripwire.py`, `tests/unit/test_mcp_edge_writes.py` (R8).

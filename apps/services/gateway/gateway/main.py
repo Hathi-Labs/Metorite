@@ -2083,6 +2083,17 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+try:
+    # WS-MCP MCP-P1a — the two list routes of the app door
+    # (external_agent_access.md §19.4): `GET /agent-access/apps` and
+    # `GET /agent-access/apps/{app}`. A signed agent of branch 0 reads them,
+    # and nobody else. Ships dark: 404 while `agent_door_apps` names no app.
+    from gateway.routes.agent_apps import router as _agent_apps_router
+
+    app.include_router(_agent_apps_router)
+except Exception:  # pragma: no cover
+    pass
+
 # ---------- Health ----------
 
 class Health(BaseModel):

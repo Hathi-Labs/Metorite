@@ -83,7 +83,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from acb_auth import agent_oauth
-from acb_common import get_logger, get_settings
+from acb_common import app_manifests, get_logger, get_settings
 from acb_common.priority import importance_for
 
 from agent_edge import cursor as cursor_mod
@@ -95,6 +95,7 @@ from agent_edge.gateway_client import (
     GatewayUnreachable,
     RouteRefused,
     actor_via,
+    send_call,
 )
 from agent_edge.gateway_client import get as gateway_get
 from agent_edge.gateway_client import write as gateway_write
@@ -1008,6 +1009,15 @@ class Tool:
     #: True for ``delete_task`` (EA-6h). It shows only while the member's
     #: switch is on, which :func:`listed_for` reads at ``tools/list``.
     switch: bool = False
+    #: MCP-P1a (spec §19.4). True for the four tools of the app door. They
+    #: show only while ``agent_oauth.door_apps`` names an app.
+    door: bool = False
+    #: MCP-P1a. ``read`` or ``write`` for ``app_read`` and ``app_write``,
+    #: whose scope is ``<app>:read`` or ``<app>:write`` of the input ``app``
+    #: (:func:`scope_of`). Their route is the route of the op, so the rules
+    #: 3 and 4 of ``test_mcp_edge_coverage.py`` do not read them, and
+    #: ``tests/unit/test_mcp_edge_app_door.py`` holds them.
+    app_scope: str = ""
 
     def describe(self) -> dict[str, Any]:
         """The ``tools/list`` entry of this tool."""
@@ -5087,6 +5097,675 @@ RELEASE_TASK = Tool(
 )
 
 
+# ── The app door (MCP-P1a, spec §19.4) ──────────────────────────────────────
+#
+# Four fixed tools serve each app of ``acb_common.app_manifests``. The
+# manifest of an app is the ONE allowlist of both doors (D136), and no second
+# list names a door op. ``app_manifests.build_call`` builds each call, and
+# ``gateway_client.send_call`` sends its bytes. This module maps each answer,
+# as it does for every other tool (EA3-9): each string of a result is
+# untrusted text unless the row names its key in ``plain`` (AD-10), and a
+# result has at most :data:`DOOR_RESULT_MAX_BYTES` (AD-12).
+#
+# AD-18. A write of class B or C that is not a proposal needs the member's
+# approval. MCP-P1b builds that path. Until then the edge refuses each such
+# op before any request (:data:`TEXT_NEEDS_APPROVAL`), and branch 0 refuses
+# it with the coded 403 ``approval_required``.
+
+DOOR_APPS_ROUTE = "/agent-access/apps"
+DOOR_APP_ROUTE = "/agent-access/apps/{app}"
+
+#: The texts of the door (§19.4). Each one is a fixed edge text, and none
+#: copies a text of the gateway (EA3-16).
+TEXT_NO_APP = "Metorite has no app with that name. Call list_apps."
+TEXT_TOOLS_APP = "This app has tools of its own. Use those tools, not app_read or app_write."
+TEXT_APP_OFF = "Agents cannot use this app in this organization."
+TEXT_APPS_OFF = "Agents cannot use the apps of this organization now."
+TEXT_NO_OP = "This app has no operation with that name. Call describe_app."
+TEXT_USE_WRITE = "Use app_write for a change."
+TEXT_USE_READ = "Use app_read for a read."
+TEXT_NEEDS_APPROVAL = (
+    "This change needs the member's approval, and Metorite cannot ask the member"
+    " for it yet. Nothing changed.")
+TEXT_NOT_APPROVED = "Metorite refused this change, because the member has not approved it."
+TEXT_DOOR_INPUT = "Metorite could not use that input. Check: {names}."
+TEXT_DOOR_INPUT_ANY = "Metorite could not use that input. Check the input."
+TEXT_DOOR_NOT_FOUND = "{app} has nothing at that id."
+TEXT_DOOR_CONFLICT = "The record changed, or its state refuses this change. Read it again."
+TEXT_DOOR_READ_CAP = "Too many reads from this connection. Wait a few minutes."
+TEXT_NO_PAGES = "This operation has no pages. Send no cursor and no limit."
+TEXT_PAGE_ARGS = "Send the page size as limit and the cursor as cursor, not inside args."
+TEXT_NO_REQUEST = (
+    "Metorite has no request with that id. To ask for a change, send op, args and"
+    " idempotency_key.")
+TEXT_TWO_FORMS = (
+    "Send op, args and idempotency_key to ask, or request_id to wait. Do not send both.")
+TEXT_WAIT_NEEDS_REQUEST = "The input 'wait_seconds' goes with request_id."
+TEXT_UNAVAILABLE = "Agents cannot use this operation now."
+TEXT_DOOR_KEY_REUSED = (
+    "This idempotency_key was used for a different change. Send a new key.")
+TEXT_DOOR_KEY_UNKNOWN = (
+    "A call with this idempotency_key got no answer, so Metorite cannot tell if"
+    " it made the change. Read the app before you use a new key.")
+
+#: The code of an op that ``describe_app`` marks unavailable, and its text.
+#: The gateway sends the code, and the edge sends the text.
+WHY_NOT_TEXTS: Mapping[str, str] = {
+    agent_oauth.APPROVAL_REQUIRED_CODE: TEXT_NEEDS_APPROVAL,
+    agent_oauth.DOOR_WRITES_OFF_CODE: TEXT_WRITES_OFF,
+}
+
+#: AD-12. A door page holds at most :data:`DOOR_PAGE_MAX` rows, and one result
+#: at most :data:`DOOR_RESULT_MAX_BYTES` of JSON.
+DOOR_PAGE_MAX = 50
+DOOR_PAGE_DEFAULT = 20
+DOOR_RESULT_MAX_BYTES = 256 * 1024
+
+#: The largest args schema of one op that ``describe_app`` passes on, in
+#: bytes of JSON. The gateway cuts a larger one to its field names (AD-9).
+DOOR_SCHEMA_MAX_BYTES = 16 * 1024
+
+#: AD-10, the second guard. A key whose name holds one of these words leaves
+#: no answer, at any depth. The first guard is that no X route is a door op.
+SECRET_WORDS: tuple[str, ...] = ("token", "secret", "password", "credential", "api_key")
+
+#: An ISO-8601 date or time, one of the plain shapes of AD-10.
+_ISO_TIME_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]{1,9})?)?"
+    r"(?:Z|[+-][0-9]{2}:?[0-9]{2})?)?")
+
+#: The names of a 422 ``loc`` that only say where a field is.
+_LOC_PLACES = frozenset({"body", "query", "path", "header", "cookie"})
+
+_DOOR_KEY_TEXTS = _KeyTexts(reused=TEXT_DOOR_KEY_REUSED, unknown=TEXT_DOOR_KEY_UNKNOWN)
+
+
+def plain_shape(value: str) -> bool:
+    """True for a plain shape of AD-10: an id, an ISO-8601 time, or a token
+    of ``[A-Za-z0-9_.:-]`` with at most 64 characters."""
+    return bool(_KEY_RE.fullmatch(value) or _ISO_TIME_RE.fullmatch(value))
+
+
+def door_value(value: Any, plain: frozenset[str], key: str | None = None) -> Any:
+    """One value of a door answer, mapped by AD-10.
+
+    Each string becomes ``{"untrusted_text": ...}``, at any depth. A string
+    under a key that *plain* names stays plain only in a plain shape. A
+    number, a boolean and null stay. A dict keeps each key of a key shape
+    (:data:`_KEY_RE`) whose name holds no word of :data:`SECRET_WORDS`, and
+    drops the others with their values. A list maps each item under the key
+    of the list.
+    """
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for name, item in value.items():
+            if not isinstance(name, str) or not _KEY_RE.fullmatch(name):
+                continue
+            if any(word in name.lower() for word in SECRET_WORDS):
+                continue
+            out[name] = door_value(item, plain, name)
+        return out
+    if isinstance(value, list):
+        return [door_value(item, plain, key) for item in value]
+    if isinstance(value, str):
+        if key in plain and plain_shape(value):
+            return value
+        return untrusted(value)
+    if value is None or isinstance(value, bool) or _number(value):
+        return value
+    return untrusted(_compact(value))
+
+
+def _json_size(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def door_cut(result: Any, limit: int = DOOR_RESULT_MAX_BYTES) -> tuple[Any, bool]:
+    """``(result, truncated)``: *result* cut to at most *limit* bytes of JSON
+    (AD-12).
+
+    A result that fits stays whole. Else each list of the top level loses
+    rows from its end, the longest list first, until the result fits. A
+    result that still does not fit is ``None``.
+    """
+    if _json_size(result) <= limit:
+        return result, False
+    if isinstance(result, dict):
+        cut = dict(result)
+        lists = sorted((k for k, v in cut.items() if isinstance(v, list)),
+                       key=lambda k: -_json_size(cut[k]))
+        for name in lists:
+            rows = list(cut[name])
+            while rows and _json_size(cut) > limit:
+                rows = rows[: len(rows) // 2] if len(rows) > 1 else []
+                cut[name] = rows
+            if _json_size(cut) <= limit:
+                return cut, True
+    if isinstance(result, list):
+        rows = list(result)
+        while rows and _json_size(rows) > limit:
+            rows = rows[: len(rows) // 2] if len(rows) > 1 else []
+        if _json_size(rows) <= limit:
+            return rows, True
+    return None, True
+
+
+def _door_app(app_id: Any) -> app_manifests.App:
+    """The door app *app_id*, or the fixed tool error of §19.4."""
+    found = app_manifests.app(app_id)
+    if found is None:
+        raise ToolError(TEXT_NO_APP)
+    if found.door != "ops":
+        raise ToolError(TEXT_TOOLS_APP)
+    if not agent_oauth.door_serves(found.id):
+        raise ToolError(TEXT_APP_OFF)
+    return found
+
+
+def _door_op(app_id: Any, op: Any, *, write: bool) -> app_manifests.DoorOp:
+    """The door op of the call, or the fixed tool error of §19.4.
+
+    AD-18: a write of class B or C that is not a proposal is refused here,
+    before any request, because no approval can exist before MCP-P1b.
+    """
+    found = _door_app(app_id)
+    door = app_manifests.door_ops(found).get(op) if isinstance(op, str) else None
+    if door is None:
+        raise ToolError(TEXT_NO_OP)
+    if write and door.kind == "read":
+        raise ToolError(TEXT_USE_READ)
+    if not write and door.kind != "read":
+        raise ToolError(TEXT_USE_WRITE)
+    if write and door.asks != "never":
+        raise ToolError(TEXT_NEEDS_APPROVAL)
+    return door
+
+
+def _door_call(door: app_manifests.DoorOp, args: Mapping[str, Any]) -> app_manifests.Call:
+    """``app_manifests.build_call``, with each refusal as a fixed tool error
+    that names only a key of the caller's own ``args``."""
+    try:
+        return app_manifests.build_call(door.app, door.name, args)
+    except app_manifests.BadCall as bad:
+        name = f"args.{bad.name}"
+        if bad.why == "missing":
+            raise ToolError(f"The input {name!r} is required.") from None
+        if bad.why == "key":
+            raise ToolError(f"The input {name!r} is not a valid key.") from None
+        if bad.why == "type":
+            raise ToolError(
+                f"The input {name!r} must be a string, a number or a boolean.") from None
+        raise ToolError(f"The input {name!r} has the wrong form.") from None
+
+
+def _input_names(detail: Any) -> list[str]:
+    """The field names of a 422, from the ``loc`` of each error, never its
+    message. Only a name of the key shape counts, and at most five."""
+    names: list[str] = []
+    for item in detail if isinstance(detail, list) else ():
+        loc = item.get("loc") if isinstance(item, dict) else None
+        if not isinstance(loc, list):
+            continue
+        for part in reversed(loc):
+            if isinstance(part, str) and part not in _LOC_PLACES:
+                if _KEY_RE.fullmatch(part) and part not in names:
+                    names.append(part)
+                break
+    return names[:5]
+
+
+def _door_body(answer: Answer, door: app_manifests.DoorOp, *, write: bool) -> Any:
+    """The body of a 2xx answer of a door call, or the mapping of §19.4."""
+    status = answer.status
+    detail = answer.body.get("detail") if isinstance(answer.body, dict) else None
+    if 200 <= status < 300:
+        if answer.body is None:
+            raise ToolError(TEXT_BUSY)
+        return answer.body
+    if status == 401:
+        raise GatewayUnauthorized()
+    if status == 403:
+        if detail == agent_oauth.APP_OFF_CODE:
+            raise ToolError(TEXT_APP_OFF)
+        if detail == agent_oauth.APPROVAL_REQUIRED_CODE:
+            raise ToolError(TEXT_NOT_APPROVED)
+        if detail == agent_oauth.WRITES_DISABLED_CODE:
+            raise ToolError(TEXT_WRITES_OFF)
+        raise ToolError(TEXT_WRITE_FORBIDDEN if write else TEXT_FORBIDDEN)
+    if status == 404:
+        raise ToolError(TEXT_DOOR_NOT_FOUND.format(app=door.app.name))
+    if status in (409, 412):
+        raise ToolError(TEXT_DOOR_CONFLICT)
+    if status == 422:
+        names = _input_names(detail)
+        raise ToolError(TEXT_DOOR_INPUT.format(names=", ".join(names)) if names
+                        else TEXT_DOOR_INPUT_ANY)
+    if status == 429:
+        raise ToolError(TEXT_CAP if write else TEXT_DOOR_READ_CAP)
+    if 400 <= status < 500:
+        raise ToolError(TEXT_BAD_REQUEST)
+    raise ToolError(TEXT_BUSY)
+
+
+async def _door_send(ctx: Context, call: app_manifests.Call, door: app_manifests.DoorOp,
+                     *, write: bool) -> Any:
+    """Send one door call, and map its answer (:func:`_door_body`)."""
+    try:
+        answer = await send_call(ctx.key, ctx.caller.lookup, call, session=ctx.session)
+    except GatewayNotSent:
+        raise _NotSent(TEXT_BUSY) from None
+    except GatewayUnreachable:
+        raise ToolError(TEXT_BUSY) from None
+    except RouteRefused:
+        raise ToolError(TEXT_BAD_REQUEST) from None
+    body = _door_body(answer, door, write=write)
+    if write:
+        _landed()
+    return body
+
+
+def _plain_of(door: app_manifests.DoorOp) -> frozenset[str]:
+    return frozenset(door.route.plain)
+
+
+_APP_ID_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": f"^{app_manifests.APP_ID_PATTERN}$",
+    "description": "The id of an app, from list_apps, for example knowledge."}
+_OP_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": f"^{app_manifests.OP_PATTERN}$",
+    "description": "The name of an operation, from describe_app."}
+_ARGS_INPUT: dict[str, Any] = {
+    "type": "object",
+    "description": "The inputs of the operation, as the args schema of describe_app says."}
+
+_LIST_APPS_INPUT: dict[str, Any] = {
+    "type": "object", "properties": {}, "additionalProperties": False}
+_APP_ROW_SCHEMA = _object({
+    "id": {"type": "string"}, "name": {"type": "string"}, "reach": {"type": "string"},
+    "door": {"type": "string", "enum": ["ops", "tools"]},
+    "read": {"type": "boolean"}, "write": {"type": "boolean"},
+    "available": {"type": "boolean"}, "why_not": _NULLABLE_STRING,
+    "waiting": {"type": "array", "items": {"type": "object"}},
+})
+_LIST_APPS_OUTPUT = _object({"apps": {"type": "array", "items": _APP_ROW_SCHEMA}})
+
+
+async def _list_apps(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``list_apps``: one GET of :data:`DOOR_APPS_ROUTE`.
+
+    The name, the reach and the door of each row come from the edge's own
+    copy of the manifests, never from the answer. The gateway decides which
+    apps the member may see, and ``read`` and ``write`` hold only when the
+    gateway and this token's own scopes both say so.
+    """
+    body = await _get(ctx, DOOR_APPS_ROUTE, TEXT_APPS_OFF)
+    rows = body.get("apps") if isinstance(body, dict) else None
+    if not isinstance(rows, list):
+        raise ToolError(TEXT_BUSY)
+    scopes = frozenset(ctx.caller.scopes)
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        found = app_manifests.app(row.get("id")) if isinstance(row, dict) else None
+        if found is None or (found.door == "ops" and not agent_oauth.door_serves(found.id)):
+            continue
+        tools_door = found.door == "tools"
+        read_scope = agent_oauth.PROJECTS_READ if tools_door else found.read_scope
+        write_scope = agent_oauth.PROJECTS_WRITE if tools_door else found.write_scope
+        writable = tools_door or write_scope in found.scopes
+        available = _bool(row.get("available"))
+        out.append({
+            "id": found.id,
+            "name": found.name,
+            "reach": found.reach,
+            "door": found.door,
+            "read": _bool(row.get("read")) and read_scope in scopes,
+            "write": writable and _bool(row.get("write")) and write_scope in scopes,
+            "available": available,
+            "why_not": None if available else WHY_NOT_TEXTS.get(
+                str(row.get("why_not")), TEXT_UNAVAILABLE),
+            # MCP-P1b fills it with the open requests of this connection.
+            "waiting": [],
+        })
+    return {"apps": out}
+
+
+LIST_APPS = Tool(
+    name="list_apps",
+    title="List the apps",
+    description=(
+        "List the apps of Metorite that this connection can reach, beside"
+        " Projects. Each row says the door of the app: ops for app_read and"
+        " app_write, or tools for an app with tools of its own, such as"
+        " Projects. read and write say whether this connection holds the scope"
+        " of the app. Call describe_app to see the operations of an app."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=None,
+    input_schema=_LIST_APPS_INPUT,
+    output_schema=_LIST_APPS_OUTPUT,
+    route=DOOR_APPS_ROUTE,
+    params={},
+    not_found=TEXT_APPS_OFF,
+    run=_list_apps,
+    door=True,
+)
+
+_DESCRIBE_APP_INPUT: dict[str, Any] = {
+    "type": "object", "properties": {"app": _APP_ID_INPUT},
+    "required": ["app"], "additionalProperties": False}
+_OP_ROW_SCHEMA = _object({
+    "op": {"type": "string"}, "title": {"type": "string"},
+    "class": {"type": "string", "enum": ["A", "B", "C"]},
+    "kind": {"type": "string", "enum": ["read", "proposal", "write"]},
+    "asks": {"type": "string", "enum": ["never", "each_call"]},
+    "sends": {"type": "boolean"}, "args": {"type": "object"},
+    "paged": {"type": "boolean"}, "available": {"type": "boolean"},
+    "why_not": _NULLABLE_STRING,
+})
+_DESCRIBE_APP_OUTPUT = _object({
+    "id": {"type": "string"}, "name": {"type": "string"}, "reach": {"type": "string"},
+    "finish_in": _NULLABLE_STRING,
+    "ops": {"type": "array", "items": _OP_ROW_SCHEMA},
+})
+
+
+def _args_schema(value: Any) -> dict[str, Any]:
+    """The args schema that the gateway built from the live route (AD-9).
+
+    It is code of the gateway, never data of an app. A value that is not an
+    object, or one over :data:`DOOR_SCHEMA_MAX_BYTES`, gives an object schema
+    with no fields.
+    """
+    if not isinstance(value, dict) or _json_size(value) > DOOR_SCHEMA_MAX_BYTES:
+        return {"type": "object"}
+    return value
+
+
+async def _describe_app(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``describe_app``: one GET of :data:`DOOR_APP_ROUTE`.
+
+    The op rows come from the edge's own manifest. The gateway adds the args
+    schema of each op and the state of the organization. An op is available
+    only when the gateway AND the shared rule (``agent_oauth.door_available``)
+    say so, and an op that the gateway does not name is not available.
+    """
+    found = _door_app(args["app"])
+    body = await _get(ctx, DOOR_APP_ROUTE, TEXT_APP_OFF, path_params={"app": found.id})
+    listed = body.get("ops") if isinstance(body, dict) else None
+    if not isinstance(listed, list):
+        raise ToolError(TEXT_BUSY)
+    remote = {row.get("op"): row for row in listed if isinstance(row, dict)}
+    ops: list[dict[str, Any]] = []
+    for door in app_manifests.door_ops(found).values():
+        row = remote.get(door.name)
+        available, code = agent_oauth.door_available(door)
+        if available and (row is None or not _bool(row.get("available"))):
+            available = False
+            code = str(row.get("why_not")) if row is not None else None
+        ops.append({
+            "op": door.name,
+            "title": door.route.title,
+            "class": door.route.cls,
+            "kind": door.kind,
+            "asks": door.asks,
+            "sends": door.route.sends,
+            "args": _args_schema(row.get("args") if row is not None else None),
+            "paged": door.route.page is not None,
+            "available": available,
+            "why_not": None if available else WHY_NOT_TEXTS.get(code or "", TEXT_UNAVAILABLE),
+        })
+    return {"id": found.id, "name": found.name, "reach": found.reach,
+            "finish_in": found.finish_in or None, "ops": ops}
+
+
+DESCRIBE_APP = Tool(
+    name="describe_app",
+    title="Describe an app",
+    description=(
+        "Describe one app of list_apps: its operations, the class and the kind"
+        " of each, and the JSON Schema of its args. Send an op of kind read to"
+        " app_read, and an op of kind proposal or write to app_write. A"
+        " proposal files a draft that a person finishes in the app. asks"
+        " each_call means that the member must approve each call. When"
+        " available is false, why_not gives the reason." + _UNTRUSTED_NOTE
+    ),
+    required_scope=None,
+    input_schema=_DESCRIBE_APP_INPUT,
+    output_schema=_DESCRIBE_APP_OUTPUT,
+    route=DOOR_APP_ROUTE,
+    params={"app": "app"},
+    not_found=TEXT_APP_OFF,
+    run=_describe_app,
+    door=True,
+)
+
+_APP_READ_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "app": _APP_ID_INPUT,
+        "op": _OP_INPUT,
+        "args": _ARGS_INPUT,
+        "cursor": {"type": "string", "maxLength": cursor_mod.MAX_CHARS,
+                   "description": "The next_cursor of the page before. Send the same app,"
+                                  " op and args."},
+        "limit": {"type": "integer", "minimum": 1, "maximum": DOOR_PAGE_MAX,
+                  "description": f"Rows in a page, at most {DOOR_PAGE_MAX}. Only for a"
+                                 " paged op."},
+    },
+    "required": ["app", "op"],
+    "additionalProperties": False,
+}
+_APP_READ_OUTPUT = _object({
+    "result": {}, "next_cursor": _NULLABLE_STRING, "truncated": {"type": "boolean"}})
+
+
+async def _app_read(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``app_read``: one GET of the route of a class A op, as the member.
+
+    A paged op takes ``limit`` and ``cursor``. The edge puts them into the
+    route's own query keys, and it wraps the route's next cursor in a signed
+    cursor of :mod:`agent_edge.cursor`, bound to the tool, the app, the op,
+    the args and the connection.
+    """
+    door = _door_op(args["app"], args["op"], write=False)
+    sent = dict(args.get("args") or {})
+    page = door.route.page
+    tool = f"app_read:{door.app.id}.{door.name}"
+    connection = ctx.caller.lookup.connection_id
+    size = 0
+    number = 1
+    if page is None:
+        if "cursor" in args or "limit" in args:
+            raise ToolError(TEXT_NO_PAGES)
+    else:
+        if page.limit in sent or page.cursor in sent:
+            raise ToolError(TEXT_PAGE_ARGS)
+        if "cursor" in args:
+            try:
+                position = cursor_mod.decode(ctx.key, args["cursor"], tool=tool,
+                                             arguments=args, connection_id=connection)
+            except cursor_mod.BadCursor as exc:
+                _log.info("agent_edge.bad_cursor", tool=tool, reason=str(exc),
+                          connection_id=connection)
+                raise ToolError(TEXT_BAD_CURSOR) from None
+            if position.after is None:
+                raise ToolError(TEXT_BAD_CURSOR)
+            size, number = min(position.size, DOOR_PAGE_MAX), position.page
+            sent[page.cursor] = position.after
+        else:
+            size = int(args.get("limit", DOOR_PAGE_DEFAULT))
+        sent[page.limit] = size
+    body = await _door_send(ctx, _door_call(door, sent), door, write=False)
+    next_cursor: str | None = None
+    more = False
+    if page is not None and isinstance(body, dict):
+        after = body.pop(page.next, None)
+        if isinstance(after, str) and after:
+            more = True
+            try:
+                next_cursor = cursor_mod.encode(
+                    ctx.key, tool=tool, page=number + 1, size=size, arguments=args,
+                    connection_id=connection, after=after)
+            except ValueError:
+                next_cursor = None
+    result, truncated = door_cut(door_value(body, _plain_of(door)))
+    return {"result": result, "next_cursor": next_cursor,
+            "truncated": truncated or (more and next_cursor is None)}
+
+
+APP_READ = Tool(
+    name="app_read",
+    title="Read from an app",
+    description=(
+        "Run one read operation of an app, as the signed-in member. Take app"
+        " and op from list_apps and describe_app, and send args as the args"
+        " schema of the op says. The member's own access decides each row."
+        " For a paged op, send limit, then send next_cursor as cursor for the"
+        " next page. truncated true means that Metorite cut the result."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=None,
+    input_schema=_APP_READ_INPUT,
+    output_schema=_APP_READ_OUTPUT,
+    route="",
+    params={},
+    not_found=TEXT_NO_OP,
+    run=_app_read,
+    door=True,
+    app_scope="read",
+)
+
+_APP_WRITE_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "app": _APP_ID_INPUT,
+        "op": _OP_INPUT,
+        "args": _ARGS_INPUT,
+        "idempotency_key": {
+            "type": "string", "pattern": idempotency.KEY_PATTERN,
+            "description": "A new key for each change. The same key with the same"
+                           " input gives the first answer and makes one change."},
+        "request_id": {
+            "type": "string", "pattern": _UUID_PATTERN,
+            "description": "The request_id of a change that waits for the member."},
+        "wait_seconds": {
+            "type": "integer", "minimum": 0, "maximum": MAX_WAIT_SECONDS,
+            "description": "With request_id: how long to wait for the member."},
+    },
+    "required": ["app"],
+    "additionalProperties": False,
+}
+_APP_WRITE_OUTPUT = _object({
+    "state": {"type": "string", "enum": ["done", "awaiting", "declined", "expired"]},
+    "result": {}, "finish_in": _NULLABLE_STRING, "replayed": {"type": "boolean"},
+    "truncated": {"type": "boolean"},
+})
+
+#: The annotations of ``app_write`` (§19.4). One tool covers class C too, so
+#: ``destructiveHint`` is true and a client may ask the person first. A call
+#: with no key would make a second change, so it is not idempotent.
+APP_WRITE_ANNOTATIONS: Mapping[str, bool] = {
+    "readOnlyHint": False,
+    "destructiveHint": True,
+    "idempotentHint": False,
+    "openWorldHint": False,
+}
+
+
+def _replayed_id(body: Any) -> str:
+    """The id of the object that a proposal made, for its idempotency slot."""
+    found = body.get("id") if isinstance(body, dict) else None
+    return found if isinstance(found, str) else ""
+
+
+async def _app_write(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``app_write``: a proposal goes to the route of its op at once (AD-8).
+
+    Each other write needs the approval path of MCP-P1b, so the edge refuses
+    it here with no request (AD-18). A ``request_id`` names no request
+    before MCP-P1b. The ``idempotency_key`` holds the slot of
+    :func:`_claim_slot`, so a retry with the same key and input gives the
+    first answer and makes one proposal.
+    """
+    found = _door_app(args["app"])
+    asking = any(name in args for name in ("op", "args", "idempotency_key"))
+    if "request_id" in args:
+        if asking:
+            raise ToolError(TEXT_TWO_FORMS)
+        raise ToolError(TEXT_NO_REQUEST)
+    if "wait_seconds" in args:
+        raise ToolError(TEXT_WAIT_NEEDS_REQUEST)
+    for name in ("op", "idempotency_key"):
+        if name not in args:
+            raise ToolError(f"The input {name!r} is required.")
+    door = _door_op(found.id, args["op"], write=True)
+    sent = dict(args.get("args") or {})
+    if _holds_nul(sent):
+        raise ToolError(text_nul("args"))
+    call = _door_call(door, sent)
+    claim = await _claim_slot(ctx, f"app_write.{found.id}.{door.name}",
+                              str(args["idempotency_key"]), args, _DOOR_KEY_TEXTS)
+    if claim.earlier is not None:
+        return {"state": "done", "result": {"id": claim.earlier},
+                "finish_in": found.finish_in or None, "replayed": True,
+                "truncated": False}
+    posted = _Sent()
+
+    async def write() -> Any:
+        posted.post = True
+        return await _door_send(ctx, call, door, write=True)
+
+    body = await _keyed_write(claim, posted, write, _replayed_id)
+    result, truncated = door_cut(door_value(body, _plain_of(door)))
+    return {"state": "done", "result": result, "finish_in": found.finish_in or None,
+            "replayed": False, "truncated": truncated}
+
+
+APP_WRITE = Tool(
+    name="app_write",
+    title="Change something in an app",
+    description=(
+        "Run one change of an app, as the signed-in member. Take app and op"
+        " from describe_app, send args as its args schema says, and send a new"
+        " idempotency_key. An op of kind proposal files a draft at once, and a"
+        " person accepts or rejects it in the app (finish_in says where). An op"
+        " of kind write waits for the member's approval. Metorite cannot ask"
+        " for that approval yet, so such an op is not available."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=None,
+    input_schema=_APP_WRITE_INPUT,
+    output_schema=_APP_WRITE_OUTPUT,
+    route="",
+    params={},
+    not_found=TEXT_NO_OP,
+    run=_app_write,
+    method="POST",
+    annotations=dict(APP_WRITE_ANNOTATIONS),
+    door=True,
+    app_scope="write",
+)
+
+
+def scope_of(tool: Tool, arguments: Any) -> str | None:
+    """The scope of one call of *tool*, for check 8 of §9.6.
+
+    Its ``required_scope``, or for ``app_read`` and ``app_write`` the scope
+    ``<app>:read`` or ``<app>:write`` of ``arguments.app`` (§19.4). An app
+    that no manifest holds, that the door flag does not name, or that has
+    no such scope gives ``None``: the call then answers its tool error, and
+    no 403 starts a step-up that cannot help.
+    """
+    if not tool.app_scope:
+        return tool.required_scope
+    app_id = arguments.get("app") if isinstance(arguments, dict) else None
+    found = app_manifests.door_app(app_id)
+    if found is None or not agent_oauth.door_serves(found.id):
+        return None
+    wanted = found.read_scope if tool.app_scope == "read" else found.write_scope
+    return wanted if wanted in found.scopes else None
+
+
 # ── The registry ────────────────────────────────────────────────────────────
 
 #: Every tool of the edge, by name, in the order of ``tools/list``. The two
@@ -5098,6 +5777,8 @@ RELEASE_TASK = Tool(
 #: tools of EA-12b come last, then ``request_task_archive`` of EA-6g, which
 #: shows only while the runs flag is on too. ``delete_task`` of EA-6h is last.
 #: It shows only while the member's switch is on (:func:`listed_for`).
+#: MCP-P1a: the four tools of the app door come last. They show only while
+#: ``agent_door_apps`` names an app, and ``app_write`` needs the writes flag.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK,
@@ -5106,6 +5787,7 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RELEASE_TASK,
     DELETE_TASK,
+    LIST_APPS, DESCRIBE_APP, APP_READ, APP_WRITE,
 )}
 
 
@@ -5113,13 +5795,20 @@ def offered(tool: Tool) -> bool:
     """A read always. A write only while the writes flag is on (fix round 1),
     read through the ONE reader, ``agent_oauth.writes_enabled``. An
     agent-run tool only while the runs flag is on too (EA-12b), read through
-    the ONE reader, ``agent_oauth.runs_enabled``."""
+    the ONE reader, ``agent_oauth.runs_enabled``. A tool of the app door only
+    while ``agent_oauth.door_apps`` names an app (MCP-P1a, AD-15)."""
+    if tool.door and not agent_oauth.door_apps():
+        return False
     if tool.runs and not agent_oauth.runs_enabled():
         return False
     return tool.method == "GET" or agent_oauth.writes_enabled()
 
 
 def _covered(tool: Tool, scopes: frozenset[str]) -> bool:
+    """True when *scopes* hold the tool's scope and the tool is offered.
+    ``app_read`` and ``app_write`` show with no app scope, because their scope
+    is the one of the app in each call (:func:`scope_of`), and check 8 asks
+    for it then (MCP-P1a, §19.4)."""
     return (tool.required_scope is None or tool.required_scope in scopes) and offered(tool)
 
 
@@ -5175,6 +5864,8 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
     off answers :data:`TEXT_RUNS_OFF`. Neither makes a gateway request.
     """
     if not offered(tool):
+        if tool.door and not agent_oauth.door_apps():
+            return error_result(TEXT_APPS_OFF)
         if tool.runs and not agent_oauth.runs_enabled():
             return error_result(TEXT_RUNS_OFF)
         return error_result(TEXT_WRITES_OFF)
@@ -5208,6 +5899,9 @@ __all__ = [
     "AGENT_MOVE_REFUSED",
     "ANCESTOR_DESCRIPTION_CHARS",
     "ANCESTOR_KEYS",
+    "APP_READ",
+    "APP_WRITE",
+    "APP_WRITE_ANNOTATIONS",
     "ARCHIVE_REQUEST_ROUTE",
     "ASK_ON_TASK",
     "ASSIGNEES_ROUTE",
@@ -5232,6 +5926,13 @@ __all__ = [
     "DELETE_ANNOTATIONS",
     "DELETE_BODY_KEYS",
     "DELETE_TASK",
+    "DESCRIBE_APP",
+    "DOOR_APPS_ROUTE",
+    "DOOR_APP_ROUTE",
+    "DOOR_PAGE_DEFAULT",
+    "DOOR_PAGE_MAX",
+    "DOOR_RESULT_MAX_BYTES",
+    "DOOR_SCHEMA_MAX_BYTES",
     "FIELD_KEYS",
     "FINISH_AGENT_RUN",
     "GET_AGENT_RUN",
@@ -5244,6 +5945,7 @@ __all__ = [
     "IMPORTANCE_VALUES",
     "LINK_KEYS",
     "LIST_AGENT_RUNS",
+    "LIST_APPS",
     "LIST_PROJECTS",
     "LIST_TASKS",
     "LIST_TASK_KEYS",
@@ -5277,6 +5979,7 @@ __all__ = [
     "RUN_STATUSES",
     "SEARCH_HIT_KEYS",
     "SEARCH_TASKS",
+    "SECRET_WORDS",
     "SESSION_TEXTS",
     "SET_ASSIGNEES",
     "SET_ASSIGNEES_KEYS",
@@ -5288,6 +5991,8 @@ __all__ = [
     "SUBTASK_NOT_BELOW",
     "SUBTASK_WORDS",
     "TAG_KEYS",
+    "TEXT_APPS_OFF",
+    "TEXT_APP_OFF",
     "TEXT_ARCHIVE_CONFLICT",
     "TEXT_ASSIGNEES_PERSONAL",
     "TEXT_ASSIGNEES_REFUSED",
@@ -5303,6 +6008,13 @@ __all__ = [
     "TEXT_CREATE_CLOSED",
     "TEXT_DELETE_OFF",
     "TEXT_DELETE_TITLE",
+    "TEXT_DOOR_CONFLICT",
+    "TEXT_DOOR_INPUT",
+    "TEXT_DOOR_INPUT_ANY",
+    "TEXT_DOOR_KEY_REUSED",
+    "TEXT_DOOR_KEY_UNKNOWN",
+    "TEXT_DOOR_NOT_FOUND",
+    "TEXT_DOOR_READ_CAP",
     "TEXT_FORBIDDEN",
     "TEXT_KEY_REUSED",
     "TEXT_KEY_RUNNING",
@@ -5314,6 +6026,13 @@ __all__ = [
     "TEXT_MOVE_OTHER_PROJECT",
     "TEXT_MOVE_OWN_PARENT",
     "TEXT_MOVE_TOO_DEEP",
+    "TEXT_NEEDS_APPROVAL",
+    "TEXT_NOT_APPROVED",
+    "TEXT_NO_APP",
+    "TEXT_NO_OP",
+    "TEXT_NO_PAGES",
+    "TEXT_NO_REQUEST",
+    "TEXT_PAGE_ARGS",
     "TEXT_PARENT_COMMENT_NOT_FOUND",
     "TEXT_PARENT_COMMENT_OTHER_TASK",
     "TEXT_PARENT_NOT_A_COMMENT",
@@ -5334,7 +6053,13 @@ __all__ = [
     "TEXT_TASK_HELD",
     "TEXT_TASK_HELD_SAME_CLIENT",
     "TEXT_TASK_NOT_FOUND",
+    "TEXT_TOOLS_APP",
+    "TEXT_TWO_FORMS",
+    "TEXT_UNAVAILABLE",
     "TEXT_UPDATE_EMPTY",
+    "TEXT_USE_READ",
+    "TEXT_USE_WRITE",
+    "TEXT_WAIT_NEEDS_REQUEST",
     "TEXT_WRITES_OFF",
     "TEXT_WRITE_FORBIDDEN",
     "TIMELINE_ROW_KEYS",
@@ -5347,6 +6072,7 @@ __all__ = [
     "WAITING_REASONS",
     "WHOAMI",
     "WHOAMI_KEYS",
+    "WHY_NOT_TEXTS",
     "WRITE_ANNOTATIONS",
     "Context",
     "GatewayUnauthorized",
@@ -5358,12 +6084,16 @@ __all__ = [
     "check_input",
     "comment",
     "delete_switch_on",
+    "door_cut",
+    "door_value",
     "field_value",
     "listed",
     "listed_for",
     "offered",
+    "plain_shape",
     "reference",
     "run_activity",
+    "scope_of",
     "session_text",
     "task_held_text",
     "text_nul",

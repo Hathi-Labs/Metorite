@@ -1113,16 +1113,30 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: ``session_key``. ``agent_signing.py`` gains the edge's session id helpers.
 #: The tripwire and the scan allow the one new header. The pins before it
 #: were 3.12 ``781888b3…5dbbb29`` and 3.13 ``17748943…ad2a1c44``.
+#:
+#: MCP-P1a (2026-10-30, external_agent_access.md §19, D136) adds the app door.
+#: A pair that a door op of the manifests reaches passes the method and route
+#: steps (AD-3). After the stamp, `_door_gate` checks the door flag, refuses a
+#: class B or C write that is not a proposal with 403 `approval_required`
+#: (AD-18), checks the app scope (AD-4) and counts the read or write cap
+#: (AD-13). `_claim_write` takes the scope as an argument. Each door call
+#: writes one audit row (AD-14). It reads nothing new from the request: the
+#: scan and the tripwire are as before. The pins before it were 3.12
+#: ``9b8e2e6d…9b85d7b88`` and 3.13 ``92e125e9…7b2b2a70``.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    (3, 12): "9b8e2e6de448013b71fab5c06df9aaf1d016009d33c3722d7bcff609b85d7b88",
-    (3, 13): "92e125e9532a2863b1371757fcad284df8aeccd579de19485eb4532e7b2b2a70",
+    (3, 12): "8b11f0fee19a3c6bc402637a00929c596442a16b1bc9677b200b8c630a5d6d71",
+    (3, 13): "78ffade4008dc5a3b90abf6364985ee06b5784fe445b792622ca443dd0d8cdf7",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
 #: the request, so the scan does not read them. The connection read and the
 #: write guard (nonce and cap) are part of the boundary all the same, so the
 #: digest covers them, and an edit to either one fails the digest test.
-_BRANCH_ZERO_HELPERS = ("_read_connection", "_claim_write")
+#: MCP-P1a adds the four helpers of the app door: the claim dispatch, the door
+#: gate (the door flag, AD-18, the app scope and the caps), the door read cap
+#: and the audit row. None of them sees the request.
+_BRANCH_ZERO_HELPERS = ("_read_connection", "_claim_write", "_claim_call", "_door_gate",
+                        "_claim_door_read", "_audit_door")
 
 
 def _branch_zero_digest() -> str:
