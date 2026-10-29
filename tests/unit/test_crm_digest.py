@@ -97,6 +97,14 @@ def _numbers() -> dict[str, Any]:
     }
 
 
+async def _not_mirror(_org):
+    return False
+
+
+async def _mirror(_org):
+    return True
+
+
 class _Boom:
     """A seam that must not be reached. Any call raises."""
 
@@ -245,6 +253,7 @@ class TestTheQueries:
 
         monkeypatch.setattr(aggregate, "compute", fake_compute)
         monkeypatch.setattr(dg, "_types", fake_types)
+        monkeypatch.setattr(dg, "_is_mirror", _not_mirror)
         monkeypatch.setattr(nl, "mode", lambda _org: "off")
         got = await dg.gather(ORG, WEEK)
         assert [s["entity"] for s in seen] == [q.entity for q in dg.DIGEST_QUERIES]
@@ -316,6 +325,7 @@ class TestAMissingPart:
 
         monkeypatch.setattr(aggregate, "compute", fake_compute)
         monkeypatch.setattr(dg, "_types", fake_types)
+        monkeypatch.setattr(dg, "_is_mirror", _not_mirror)
         monkeypatch.setattr(nl, "mode", lambda _org: "off")
         got = await dg.gather(ORG, WEEK)
         keys = {p["key"] for p in got["parts"]}
@@ -325,6 +335,84 @@ class TestAMissingPart:
         prompt = dg.messages_for(got)[1]["content"]
         assert "New leads in the week" in prompt and '"missing"' in prompt
         assert "missing" in dg.SYSTEM
+
+
+class TestAMirrorOrg:
+    """CRM #873: a Mirror org keeps no created date, so the four "new" parts
+    are named missing and no created-date call goes out."""
+
+    def _numbers_of_a_mirror_org(self) -> dict[str, Any]:
+        return {
+            "parts": [
+                {"key": "open_deals_by_stage", "title": "Open deals by stage",
+                 "unit": "deals", "rows": [{"label": "Qualify", "value": "12"},
+                                           {"label": "Stage 2", "value": "7"}]},
+                {"key": "won_lost", "title": "Deals won or lost", "unit": "deals",
+                 "rows": [{"label": "Won", "value": "4"}]},
+            ],
+            "missing": [q.title for q in dg.DIGEST_QUERIES if q.needs_created],
+        }
+
+    def test_exactly_the_four_created_queries_need_a_created_date(self):
+        assert {q.key for q in dg.DIGEST_QUERIES if q.needs_created} == {
+            "new_leads", "new_deals", "new_contacts", "new_organizations"}
+        assert all(q.needs_created == (q.group_by == "created_month")
+                   for q in dg.DIGEST_QUERIES)
+
+    async def test_no_created_date_call_goes_out(self, monkeypatch):
+        seen: list[str] = []
+
+        async def fake_compute(entity, **kw):
+            seen.append(kw["group_by"])
+            return aggregate.AggregateResponse(entity=entity, measure="count",
+                                               groups=[], total=1)
+
+        async def fake_types(_org):
+            return {}
+
+        monkeypatch.setattr(aggregate, "compute", fake_compute)
+        monkeypatch.setattr(dg, "_types", fake_types)
+        monkeypatch.setattr(dg, "_is_mirror", _mirror)
+        monkeypatch.setattr(nl, "mode", lambda _org: "off")
+        got = await dg.gather(ORG, WEEK)
+        assert "created_month" not in seen and len(seen) == 4
+        assert got["missing"] == ["New leads in the week", "New deals in the week",
+                                  "New contacts in the week",
+                                  "New organizations in the week"]
+        assert {p["key"] for p in got["parts"]} == {
+            "open_deals_by_stage", "open_amount_by_stage", "amount_by_close_month",
+            "won_lost"}
+
+    def test_the_prompt_names_the_missing_parts_and_bans_a_number_for_them(self):
+        assert "not available" in dg.SYSTEM and "Write no number for it" in dg.SYSTEM
+        assert "no range of days" in dg.SYSTEM
+
+    @pytest.mark.parametrize("text", [
+        # The missing parts, in words.
+        "12 deals sit in Qualify and 7 in Stage 2. New leads, new deals, new "
+        "contacts and new organizations are not available this week.",
+        "Four parts are not available. Won: 4.",
+        # The week by name (a range of days with one month).
+        "The week of 19 October: 12 deals sit in Qualify.",
+        "For 5-11 October, 12 deals sit in Qualify.",
+        "For 5 to 11 October 2026, 12 deals sit in Qualify.",
+        "For 19 \u2013 25 Oct, 12 deals sit in Qualify.",
+        "For Oct 5-11, 12 deals sit in Qualify.",
+    ])
+    def test_a_mirror_summary_with_the_gaps_in_words_passes(self, text):
+        assert dg.check(text, self._numbers_of_a_mirror_org()) == []
+
+    @pytest.mark.parametrize(("text", "bad"), [
+        ("New leads: 0 this week. 12 deals sit in Qualify.", "0"),
+        ("8 parts are in the digest, 4 are not available.", "8"),
+        ("Week 43: 12 deals sit in Qualify.", "43"),
+        ("The week of 5-11 October holds 19 open deals.", "19"),
+        ("5-11 deals moved. 12 deals sit in Qualify.", "5"),
+        ("Qualify holds 63% of the open deals.", "63%"),
+    ])
+    def test_an_invented_figure_is_still_rejected(self, text, bad):
+        got = dg.check(text, self._numbers_of_a_mirror_org())
+        assert any(bad in g for g in got), got
 
 
 # ── Item 7: the labels, in ``on`` only ──────────────────────────────────────
@@ -351,6 +439,7 @@ class TestTheLabels:
 
         monkeypatch.setattr(aggregate, "compute", fake_compute)
         monkeypatch.setattr(dg, "_types", fake_types)
+        monkeypatch.setattr(dg, "_is_mirror", _not_mirror)
         monkeypatch.setattr(dg, "tenant_session", fake_session)
         monkeypatch.setattr(nl, "mode", lambda _org: mode)
         monkeypatch.setattr(nl, "week_counts", fake_counts)

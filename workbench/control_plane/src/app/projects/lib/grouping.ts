@@ -12,6 +12,7 @@
  */
 
 import { STATUS_CATEGORIES, categoryLabel } from "@/lib/statusCategory";
+import { statusLaneOf } from "./statusOrder";
 import { personDisplayName } from "@/lib/personName";
 
 import { AGENT_LANES, agentLaneKey } from "./agentRuns";
@@ -661,10 +662,11 @@ export function groupTasks(
 
   if (by === "status") {
     const ordered = [...ctx.statuses].sort((a, b) => a.position - b.position);
+    const lane = statusLaneOf(ordered);
     return ordered.map((status) => ({
       key: status.id,
       label: status.name,
-      tasks: tasks.filter((t) => t.status_id === status.id),
+      tasks: tasks.filter((t) => lane(t) === status.id),
     }));
   }
 
@@ -698,8 +700,10 @@ export function groupTasks(
     return [...known, ...strays].map((category) => ({
       key: category,
       label: categoryLabel(category),
+      // A subproject's own lane is not in `byId`: its row carries the stage
+      // (#834), so it lands in its stage and never vanishes.
       tasks: tasks.filter(
-        (t) => byId.get(t.status_id)?.category === category
+        (t) => (byId.get(t.status_id)?.category ?? t.status_category) === category
       ),
     }));
   }

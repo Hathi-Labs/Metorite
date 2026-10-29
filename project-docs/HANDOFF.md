@@ -168,12 +168,6 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** run `rg -n "belt for ONE release" scripts/backup_db.sh`. A hit means this is open.
 - **Added:** 2026-10-10 · branch `sec-bh6-build`
 
-### H-293 · Decide whether agent runs move to their own service, so a deploy stops none · [OWNER]
-- **Metorite:** #769. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** run `rg -n "D-1" project-docs/specs/chat_run_continuity.md`. If
-  the §5 row still says **OWNER-GATE**, the decision is open.
-- **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
-
 ### H-292 · Show the org's plan, credits and AI usage in Settings → Organization · [AGENT] · OWNER note
 - **Metorite:** #518. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** run `rg -n "usage|credit|billing" workbench/control_plane/src/app/settings/organization/OrganizationAdmin.tsx`.

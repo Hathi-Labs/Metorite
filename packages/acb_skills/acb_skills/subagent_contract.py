@@ -4,9 +4,16 @@ Spec ``project-docs/specs/one_assistant_context.md`` §6 (D117 item 5), slice
 OA-9a, "GO for the parser only" (§4.5). Fence:
 ``tests/unit/test_subagent_contract.py``.
 
-**Dark, with no caller.** OA-9b builds ``spawn_subagents`` and its fan-out on
-these two parsers. Until then nothing imports this module, and the fence
-says so. It opens no connection, reads no Redis and calls no model (R5).
+**The caller and the flag.** OA-9b builds ``spawn_subagents``
+(``agent_tools``) on these parsers, and it is the one caller. The tool is dark
+behind ``SPAWN_SUBAGENTS_ORGS`` (:func:`spawn_subagents_on`, OWNER-ONLY). This
+module opens no connection, reads no Redis and calls no model (R5).
+
+**The worker (§4.5, OA-9a and OA-9b).** The internal agent ``worker`` runs a
+job. :func:`bind_job` puts the job on the frame of the parent. The worker
+reads it with :func:`bound_job`, and :func:`worker_refusal` refuses a run that
+has no job. :func:`child_pin` is the allow-list pair that keeps a child to the
+tools of its job.
 
 **The jobs in (§6.2, §6.5).** :func:`parse_jobs` checks the ``jobs`` argument
 of ``spawn_subagents``. At most :data:`MAX_JOBS` jobs run, and each job past
@@ -29,7 +36,9 @@ assistant states each ``inferred`` item as a guess.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import Any
@@ -37,9 +46,14 @@ from typing import Any
 from acb_skills.tool_annotations import get_annotations
 
 __all__ = [
+    "CHILD_LOOP_BUDGET_S",
+    "CHILD_SOURCE",
     "DEFAULT_TIER",
+    "EXTRA_CALL_TOOLS",
     "FANOUT_TIMEOUT_S",
+    "INTERNAL_AGENTS",
     "ITEM_KEYS",
+    "JOB_KEY",
     "JOB_KEYS",
     "JOB_TIMEOUT_S",
     "KINDS",
@@ -47,18 +61,29 @@ __all__ = [
     "MAX_JOBS",
     "MAX_NAMED_OVERFLOW",
     "MAX_SPAWNS_PER_TURN",
+    "FREE_SOURCES",
+    "source_allowed",
     "MEMBER_TOOLS",
     "SPAWN_TOOL",
     "TIERS",
     "UNSTRUCTURED",
     "WEB_TOOLS",
+    "WORKER_NAME",
     "Item",
     "Job",
     "JobPlan",
     "annotated_read_only",
+    "bind_job",
+    "bound_job",
+    "child_pin",
+    "child_tool_scope",
     "parse_items",
     "parse_jobs",
+    "spawn_lock",
+    "spawn_subagents_on",
+    "take_spawn",
     "unstructured",
+    "worker_refusal",
 ]
 
 # ── The caps of §6.2 ────────────────────────────────────────────────────────
@@ -81,6 +106,11 @@ MAX_CHILD_ROUNDS = 4
 
 #: A job stops after this many seconds and gives an error item.
 JOB_TIMEOUT_S = 120.0
+
+#: The time that the tool loop of a child may use. It is below
+#: :data:`JOB_TIMEOUT_S`, which also holds the loads, so the final call with
+#: no tools runs before the job clock stops the child (§6.6).
+CHILD_LOOP_BUDGET_S = 90.0
 
 #: A whole fan-out stops after this many seconds.
 FANOUT_TIMEOUT_S = 180.0
@@ -115,6 +145,20 @@ _LABEL_CHARS = 60
 #: Tools that ask the member or show a card. They are marked read-only, but a
 #: child has no member to ask (§6.5: each card is the main assistant's).
 MEMBER_TOOLS = frozenset({"ask_questions", "ask_user", "request_confirmation", "share_artifact"})
+
+#: Tools that add model calls of their own, and so break the 4-round cap of a
+#: child (§6.6). ``decide`` runs a second model call inside the tool.
+EXTRA_CALL_TOOLS = frozenset({"decide"})
+
+#: The source that a child item gets when its own source is not one that the
+#: parser can check (§6.4). The kind is ``inferred`` too. A page can tell a
+#: child to write any source, such as ``member``, so the check is an allow list.
+CHILD_SOURCE = "sub-agent (unverified)"
+
+#: The sources of a child item that need no job: the two marks of the parser.
+FREE_SOURCES = frozenset({"inferred", "unstructured"})
+
+_URL_SOURCE = re.compile(r"https?://[A-Za-z0-9.-]+(?::[0-9]+)?(?:[/?#][^\s]*)?")
 
 _CALL_SHAPE = (
     f"Error: jobs must be a JSON array of 1 to {MAX_JOBS} jobs. Each job is an object "
@@ -262,6 +306,10 @@ def _refusal(
         if name in handoff:
             return (f"a sub-agent cannot start another agent, so it cannot hold "
                     f"'{_clip(name)}'."), None
+        if name in EXTRA_CALL_TOOLS:
+            return (f"'{_clip(name)}' makes model calls of its own, and a "
+                    "sub-agent has a fixed number of model calls. Do that step "
+                    "yourself."), None
         if name not in parent:
             return (f"this chat has no tool '{_clip(name)}', and a sub-agent gets "
                     "only tools of this chat."), None
@@ -368,7 +416,20 @@ def _value_of(raw: Any) -> str | None:
     return json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
 
 
-def _items_of(payload: Any) -> list[Item] | None:
+def source_allowed(source: str, tools: Collection[str]) -> bool:
+    """True when *source* is one that a child item may carry (§6.4).
+
+    An allow list: an ASCII ``http`` or ``https`` URL, the name of a tool that
+    the job holds (the web pair always counts), or ``inferred``. Anything else
+    is a claim that nothing backs, such as ``member``, ``the member's request``
+    or a look-alike with a Cyrillic letter. The match is exact.
+    """
+    if source in FREE_SOURCES or source in WEB_TOOLS or source in tools:
+        return True
+    return bool(_URL_SOURCE.fullmatch(source))
+
+
+def _items_of(payload: Any, tools: Collection[str] | None = None) -> list[Item] | None:
     """The items of the contract object, or ``None`` when it is another shape."""
     if not isinstance(payload, dict) or set(payload) != {"items"}:
         return None
@@ -389,11 +450,16 @@ def _items_of(payload: Any) -> list[Item] | None:
         value = _value_of(row["value"])
         if value is None:
             return None
-        items.append(Item(value=value, kind=kind, source=source.strip()))
+        source = source.strip()
+        if tools is not None and not source_allowed(source, tools):
+            # A page can tell the child to write any source, the member too.
+            # A source that nothing backs makes the item a guess (§6.4).
+            kind, source = "inferred", CHILD_SOURCE
+        items.append(Item(value=value, kind=kind, source=source))
     return items
 
 
-def parse_items(text: str | bytes | None) -> list[Item]:
+def parse_items(text: str | bytes | None, tools: Collection[str] | None = None) -> list[Item]:
     """The items of a child's answer, in its order (§6.4).
 
     The answer must be exactly one JSON object with the one key ``items``, a
@@ -404,11 +470,183 @@ def parse_items(text: str | bytes | None) -> list[Item]:
     Any other answer, a code fence around the object too, becomes ONE item
     from :func:`unstructured`. One bad item does the same to the whole answer,
     so a mark of ``quoted`` never stands beside text that the parse lost.
+
+    With *tools* (the tools of the job), a source that :func:`source_allowed`
+    refuses becomes :data:`CHILD_SOURCE`, and its kind becomes ``inferred``.
+    ``None`` skips that check, for a caller with no job.
     """
     raw = _as_text(text)
     try:
         payload = json.loads(raw, object_pairs_hook=_one_of_each)
     except (ValueError, RecursionError):
         return [unstructured(raw)]
-    items = _items_of(payload)
+    items = _items_of(payload, tools)
     return items if items is not None else [unstructured(raw)]
+
+
+# ── The worker and its job (§4.5 OA-9a and OA-9b, §6.1, §6.8) ──────────────
+
+#: The internal agent that runs one job. It is in no registry list that a
+#: picker or a specialist tool reads (``gateway.routes.agent._INTERNAL_AGENTS``).
+WORKER_NAME = "worker"
+
+#: The names that only a bound job may run. ``worker_refusal`` refuses each of
+#: them on a frame that binds no job.
+INTERNAL_AGENTS = frozenset({WORKER_NAME})
+
+#: The artifact-context key of the job that a worker runs. Only
+#: :func:`bind_job` sets it, on the frame of one child, so a model never names
+#: it (R11). A value that is not a :class:`Job` reads as no job.
+JOB_KEY = "subagent_job"
+
+#: The tool scope of a worker whose job names no tool. It is the scope of
+#: ``agent-worker/config.json``. The pair of :func:`child_pin` holds the child
+#: to its job whatever the scope says.
+_DEFAULT_CHILD_SCOPE = ("web_search", "fetch_page")
+
+NO_JOB_REFUSAL = (
+    "The worker agent runs only the job of a spawn_subagents call. Call "
+    "spawn_subagents with a job, or do the step yourself."
+)
+
+
+def bind_job(job: Job) -> None:
+    """Bind *job* on THIS frame, for the worker that starts on it (§6.1).
+
+    Call it inside the task of one child. A task copies the context when it
+    starts, so no sibling and no parent sees the job.
+    """
+    from acb_skills.write_artifact import derive_artifact_context
+
+    derive_artifact_context(**{JOB_KEY: job})
+
+
+def bound_job() -> Job | None:
+    """The job bound on this frame, or ``None``. Fails closed."""
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        value = artifact_context().get(JOB_KEY)
+    except Exception:
+        return None
+    return value if isinstance(value, Job) else None
+
+
+def worker_refusal(name: object) -> str | None:
+    """Why the agent *name* cannot run on this frame, or ``None`` (§4.5, OA-9a 3).
+
+    An internal agent runs only for a bound job. Three callers ask it before
+    any load: ``agent_tools.call_agent``, ``executor._run_sub_agent_streaming``
+    and ``executor.run_agent``. It never raises, and any other name gets
+    ``None``.
+    """
+    if str(name or "") not in INTERNAL_AGENTS:
+        return None
+    return None if bound_job() is not None else NO_JOB_REFUSAL
+
+
+def child_tool_scope(agent_name: object, scope: list[str] | None) -> list[str] | None:
+    """The injection scope of *agent_name*: the tools of its job for a worker.
+
+    Any other agent gets *scope* back. A worker with no job tool gets the
+    default scope, because an empty list would read as "inject every tool"
+    (§4.5, OA-9a 4).
+    """
+    if str(agent_name or "") not in INTERNAL_AGENTS:
+        return scope
+    job = bound_job()
+    if job is not None and job.tools:
+        return list(job.tools)
+    return list(_DEFAULT_CHILD_SCOPE)
+
+
+def child_pin(allowed: Collection[str]) -> list[Any]:
+    """The allow-list pair that keeps a child to its own tools (§4.5, OA-9b 1).
+
+    A tool whose name is not in *allowed* is taken out of each model request
+    and refused when called, so its body never runs. The pair does not depend
+    on the parser or on the floor opt-out. It covers what arrives after both:
+    the three floor tools that no opt-out removes, a granted app tool, an MCP
+    tool and a tool that ``add_tools`` adds. The shape is that of
+    ``code_session._session_tool_pin``.
+    """
+    from acb_skills.tool_guard import RefuseTools, WithholdTools, tool_name
+
+    names = frozenset(allowed)
+
+    def foreign(item: Any) -> bool:
+        return tool_name(item) not in names
+
+    def answer(name: str) -> str:
+        return f"{name} is not a tool of this sub-agent job. Nothing ran."
+
+    return [WithholdTools(foreign), RefuseTools(foreign, answer)]
+
+
+# ── The flag and the spawn count (§6.2) ─────────────────────────────────────
+
+
+def spawn_subagents_on(org: object) -> bool:
+    """True when ``spawn_subagents`` is on for organization *org*. Fails closed.
+
+    ``SPAWN_SUBAGENTS_ORGS`` is a comma list of organization ids, or ``*``
+    for each one. Empty means off. An empty *org* gives False, and so does a
+    fault in the settings read. The caller passes the bound tenant of the run
+    and never a value from request input (R5). Any value other than empty on
+    a box is OWNER-ONLY (``work_plan.md`` §6 D4).
+    """
+    org_id = str(org or "").strip().lower()
+    if not org_id:
+        return False
+    try:
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "spawn_subagents_orgs", "") or "")
+    except Exception:
+        return False
+    entries = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    return "*" in entries or org_id in entries
+
+
+#: The spawn calls of each run, by run id. A run is one turn, and it lives in
+#: one process. The table keeps the newest runs only.
+_SPAWNS: dict[str, int] = {}
+_SPAWNS_KEPT = 2048
+
+
+#: One lock for each run, so two spawn calls of one model step run one after
+#: the other. Then at most :data:`MAX_JOBS` children of a run run at once
+#: (§6.2), and not 2 x 5. The table keeps the newest runs only.
+_SPAWN_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def spawn_lock(run_id: object) -> asyncio.Lock:
+    """The lock that serializes the spawn calls of the run *run_id*."""
+    key = str(run_id or "")
+    lock = _SPAWN_LOCKS.pop(key, None) or asyncio.Lock()
+    _SPAWN_LOCKS[key] = lock
+    while len(_SPAWN_LOCKS) > _SPAWNS_KEPT:
+        old = next(iter(_SPAWN_LOCKS))
+        if _SPAWN_LOCKS[old].locked():
+            break
+        _SPAWN_LOCKS.pop(old)
+    return lock
+
+
+def take_spawn(run_id: object) -> bool:
+    """Count one spawn call of the run *run_id*. False when the run used its 2.
+
+    The run id comes from the run binding of the executor, never from the
+    model. A call with no run id is refused (fail closed).
+    """
+    key = str(run_id or "")
+    if not key:
+        return False
+    used = _SPAWNS.pop(key, 0)
+    if used >= MAX_SPAWNS_PER_TURN:
+        _SPAWNS[key] = used
+        return False
+    _SPAWNS[key] = used + 1
+    while len(_SPAWNS) > _SPAWNS_KEPT:
+        _SPAWNS.pop(next(iter(_SPAWNS)))
+    return True

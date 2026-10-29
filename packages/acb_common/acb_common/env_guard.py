@@ -155,6 +155,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # only the owner writes them (work_plan.md §6 D4). The `TOOL_` prefix
     # covers both too.
     "TOOL_PACKS", "TOOL_PACKS_ORGS",
+    # WS-67 OA-9b: the orgs whose main assistant may spawn sub-agents. Each
+    # child spends model tokens at the org's cost, so only the owner writes it
+    # (work_plan.md §6 D4).
+    "SPAWN_SUBAGENTS_ORGS",
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",
@@ -276,6 +280,12 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-66 RM-1: reminders. CALENDAR_REMINDERS is the switch of the reminder
     # routes, so a tenant that set it could turn them on for every org.
     "CALENDAR_REMINDERS",
+    # WS-BRIEF BR-1a: the shared job queue. JOB_QUEUE is the switch of the job
+    # worker, so a tenant that set it could start the worker for every org.
+    "JOB_QUEUE",
+    # WS-BRIEF AUTO-2: the ledger of unattended runs. UNATTENDED_LEDGER is its
+    # switch, so a tenant that set it could turn the ledger on for every org.
+    "UNATTENDED_LEDGER",
     # Agent runtime, sandbox and models.
     "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",

@@ -171,6 +171,8 @@ function QuoteToggle({
       }`}
     >
       <Icon name="MoreHorizontal" size={14} />
+      {/* The words, not only "•••", so the member sees there is more (#891). */}
+      <span>{label}</span>
     </button>
   );
 }
@@ -186,11 +188,23 @@ function QuoteToggle({
  *    images: blocked by default (defeats tracking pixels), allowed once the
  *    user clicks "Show images".
  */
-function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean }) {
+function HtmlFrame({
+  html,
+  quoted = false,
+  images,
+}: {
+  html: string;
+  quoted?: boolean;
+  /** One "Show images" choice for the whole message, held by the caller, so
+   *  the quoted part never asks again (#891). Absent, the frame holds its own. */
+  images?: { show: boolean; onShow: () => void };
+}) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(quoted ? 160 : 400);
   const [mounted, setMounted] = useState(false);
-  const [showImages, setShowImages] = useState(false);
+  const [ownShowImages, setOwnShowImages] = useState(false);
+  const showImages = images ? images.show : ownShowImages;
+  const setShowImages = (v: boolean) => (images ? v && images.onShow() : setOwnShowImages(v));
   // How the body draws in dark mode (`lib/bodyLook.ts`). Light mode and the
   // light version draw the original sheet.
   const lightVersion = useContext(LightVersionContext);
@@ -368,6 +382,8 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
 function HtmlMessage({ html }: { html: string }) {
   const [mounted, setMounted] = useState(false);
   const [showQuoted, setShowQuoted] = useState(false);
+  const [showImages, setShowImages] = useState(false);
+  const images = { show: showImages, onShow: () => setShowImages(true) };
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => setMounted(true), []);
   /* eslint-enable react-hooks/set-state-in-effect */
@@ -377,6 +393,7 @@ function HtmlMessage({ html }: { html: string }) {
   if (html !== prevHtml) {
     setPrevHtml(html);
     setShowQuoted(false);
+    setShowImages(false);
   }
 
   // Splitting parses HTML — only meaningful in the browser. Before mount we
@@ -386,15 +403,15 @@ function HtmlMessage({ html }: { html: string }) {
     [mounted, html]
   );
 
-  if (!split.quoted) return <HtmlFrame html={html} />;
+  if (!split.quoted) return <HtmlFrame html={html} images={images} />;
 
   return (
     <div className="w-full">
-      <HtmlFrame html={split.main} />
+      <HtmlFrame html={split.main} images={images} />
       <QuoteToggle open={showQuoted} onClick={() => setShowQuoted((v) => !v)} />
       {showQuoted && (
         <div className="border-l-2 border-border pl-2 mt-1">
-          <HtmlFrame html={split.quoted} quoted />
+          <HtmlFrame html={split.quoted} quoted images={images} />
         </div>
       )}
     </div>

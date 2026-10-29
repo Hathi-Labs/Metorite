@@ -109,6 +109,7 @@ def test_one_framer_in_the_tree() -> None:
     "apps/services/gateway/gateway/routes/email/automation/drafting.py",
     "apps/services/gateway/gateway/routes/email/automation/engine.py",
     "apps/services/gateway/gateway/routes/email/automation/insights_extract.py",
+    "packages/acb_skills/acb_skills/agent_tools.py",
 ])
 def test_each_framing_module_uses_the_helper(rel: str) -> None:
     source = (REPO / rel).read_text(encoding="utf-8")

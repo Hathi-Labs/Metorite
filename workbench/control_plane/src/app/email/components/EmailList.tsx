@@ -635,7 +635,10 @@ export function EmailList({
                       />
                     ))}
                   </div>
-                ) : (
+                ) : ["sent", "drafts", "outbox"].includes(
+                    (email.folder || "").trim().toLowerCase()) ? null : (
+                  // Outbound mail never gets a rule label, so it is never
+                  // "Uncategorized" (#467; core.NOT_INBOUND_FOLDERS).
                   <div className="flex flex-wrap gap-1 mt-0.5">
                     <span
                       role="button"

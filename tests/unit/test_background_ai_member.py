@@ -814,7 +814,7 @@ _RUN_AGENT_WITHOUT_SESSION_USER: dict[tuple[str, str], tuple[int, str]] = {
     ("packages/acb_skills/acb_skills/agent_tools.py", "call_agent"): (
         1, "a delegated run on its parent's task; it inherits the parent's "
            "member"),
-    ("packages/acb_skills/acb_skills/agent_tools.py", "_run_one"): (
+    ("packages/acb_skills/acb_skills/agent_tools.py", "_run_branch"): (
         1, "call_agents_parallel: one delegated run per task, each on a task "
            "that copies the parent's context and so its member"),
     ("packages/acb_skills/acb_skills/agent_tools.py", "call_agent_background"): (

@@ -456,6 +456,27 @@ class Settings(BaseSettings):
     # gate `enforcement-flip`. Fence: tests/unit/test_reminders_r8.py.
     calendar_reminders: bool = False
 
+    # ── The shared job queue (WS-BRIEF BR-1a, 2026-10-28) ───────────────────
+    #
+    # `job_queue` is the switch of the job worker in the gateway, default
+    # OFF. With it off, `start_job_worker()` starts no task and a tick claims
+    # nothing. BR-1a adds no producer, so the switch only stops an idle poll.
+    # The one reader is `worker_enabled()` in gateway/jobs/worker.py.
+    # Reference: docs/job_queue.md. A flip on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_job_queue.py.
+    job_queue: bool = False
+
+    # ── The ledger of unattended runs (WS-BRIEF AUTO-2, 2026-10-28) ─────────
+    #
+    # `unattended_ledger` is the switch of the ledger, default OFF. With it
+    # off, gateway/jobs/unattended.py writes no row and Reach behaves as
+    # before. With it on, a Reach brief commits a ledger row before the send,
+    # so a restart never sends it twice. The one reader is
+    # `ledger_enabled()` in gateway/jobs/unattended.py. Reference:
+    # docs/job_queue.md §9. A flip on a box is gate `enforcement-flip`.
+    # Fence: tests/unit/test_unattended_ledger.py.
+    unattended_ledger: bool = False
+
     # ── The Knowledge app (WS-61 KB-1, 2026-10-15) ──────────────────────────
     #
     # `/knowledge` serves an organization only when both settings allow it.
@@ -775,6 +796,18 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_tool_packs_registry.py.
     tool_packs: str = ""
     tool_packs_orgs: str = ""
+
+    # ── Dynamic sub-agents of the one assistant (WS-67 OA-9b, D117) ─────────
+    #
+    # `spawn_subagents_orgs` lists the organization ids whose main assistant
+    # holds `spawn_subagents`, or `*` for each one. Empty means off. The one
+    # reader is `acb_skills.subagent_contract.spawn_subagents_on`, and it fails
+    # closed. A child only reads, but it runs model calls at the org's cost.
+    #
+    # 🔴 OWNER-ONLY on a box: any value other than empty (`work_plan.md` §6
+    # D4). The dev-phase window does not open it.
+    # Fence: tests/unit/test_spawn_subagents.py.
+    spawn_subagents_orgs: str = ""
 
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #
@@ -1788,10 +1821,27 @@ class Settings(BaseSettings):
         return (self.litellm_master_key or "").strip() or "sk-local"
 
 
+#: The one instance that the next build of ``get_settings`` returns, set by
+#: :func:`install_settings` and taken by that build.
+_NEXT: list[Settings] = []
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Cached accessor; call from anywhere."""
-    return Settings()  # type: ignore[call-arg]
+    return _NEXT.pop() if _NEXT else Settings()  # type: ignore[call-arg]
+
+
+def install_settings(new: Settings) -> None:
+    """Make *new* the cached settings (``gateway/flag_reload.py``).
+
+    The flag reload builds *new* from the running settings and the reloaded
+    flags only. A plain ``cache_clear()`` would build from the environment
+    and the env file again, so a key added to the file after the start would
+    go live with no restart."""
+    _NEXT[:] = [new]
+    get_settings.cache_clear()
+    get_settings()
 
 
 #: The modes of ``CRM_ANSWER_CHECK`` (WS-53 CRM-Q29).

@@ -27,6 +27,7 @@ Mutations this file catches (R7). Each case names its own in its docstring.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -404,14 +405,28 @@ def test_the_handoff_list_is_the_one_delegation_list() -> None:
     assert sc._handoff_tools() == DELEGATION_TOOLS | {sc.SPAWN_TOOL}
 
 
-def test_nothing_calls_the_contract_before_oa_9b() -> None:
-    """The parser ships dark. OA-9b replaces this pin with its one caller.
-    Catches M11."""
+#: The modules that import the contract (WS-67 OA-9b). The pin
+#: ``test_nothing_calls_the_contract_before_oa_9b`` was built to fail when
+#: OA-9b imports the module, and it is removed on purpose. A new caller must
+#: join this list in the same change, so the owner of the contract sees it.
+_CONTRACT_CALLERS = [
+    "apps/agents/agent-worker/agents.py",
+    "apps/services/orchestrator/orchestrator/_tool_injection.py",
+    "apps/services/orchestrator/orchestrator/agents.py",
+    "apps/services/orchestrator/orchestrator/executor.py",
+    "packages/acb_skills/acb_skills/agent_tools.py",
+    "packages/acb_skills/acb_skills/tier_policy.py",
+]
+
+
+def test_the_callers_of_the_contract_are_the_known_ones() -> None:
+    """OA-9b replaces ``test_nothing_calls_the_contract_before_oa_9b``. Catches M11."""
     callers = []
     for base in ("apps", "packages"):
         for path in (ROOT / base).rglob("*.py"):
             if "node_modules" in path.parts or path.name == "subagent_contract.py":
                 continue
-            if "subagent_contract" in path.read_text(encoding="utf-8", errors="replace"):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if re.search(r"from acb_skills(\.subagent_contract| import subagent_contract)", text):
                 callers.append(path.relative_to(ROOT).as_posix())
-    assert callers == []
+    assert sorted(callers) == _CONTRACT_CALLERS

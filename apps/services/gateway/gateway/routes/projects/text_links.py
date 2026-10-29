@@ -124,7 +124,7 @@ _RANKS = re.compile(
     re.IGNORECASE | re.ASCII,
 )
 _OTHER_KINDS = frozenset({
-    "pr", "prs", "pull", "order", "orders", "invoice", "invoices", "po", "receipt", "account",
+    "pr", "prs", "mr", "mrs", "pull", "order", "orders", "invoice", "invoices", "po", "receipt", "account",
     "sprint", "build", "release", "version", "v", "step", "phase", "batch", "room", "case",
     "rank", "ranked", "episode", "chapter", "section", "slide", "figure", "channel",
 })
@@ -156,7 +156,17 @@ def _is_inside_url(value: str, index: int) -> bool:
     return "://" in word or re.match(r"\(?www\.", word, re.IGNORECASE) is not None
 
 
+#: Rule 7: a pull request, a merge request or a GitHub URL just before the `#`,
+#: with optional space or a colon between. "task #834" is not here.
+_PULL_BEFORE = re.compile(
+    rf"(?:\b(?:prs?|mrs?|pull[{_JS_SPACE}-]*requests?)|github\.com/\S*)[{_JS_SPACE}]*:?[{_JS_SPACE}]*$",
+    re.IGNORECASE,
+)
+
+
 def _is_other_kind(value: str, start: int, end: int) -> bool:
+    if _PULL_BEFORE.search(value[max(0, start - 200):start]):
+        return True
     before = _BEFORE_WORD.search(value[max(0, start - 24):start])
     if before and before.group(1).lower() in _OTHER_KINDS:
         return True

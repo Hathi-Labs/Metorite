@@ -36,13 +36,18 @@ function useUndoToastMounted(): boolean {
   return useSyncExternalStore(subscribeMounted, () => mounted > 0, () => false);
 }
 
+/** A change whose live writes have not answered offers no Undo yet (UXD-1). */
+function shownSnapshot<S extends { pending?: boolean }>(snap: S | null): S | null {
+  return snap?.pending ? null : snap;
+}
+
 /**
  * Keep THE toast in step with the store's snapshot. `keys` says whether the
  * Ctrl+Z key is bound where it is read. `enabled: false` holds still.
  * `resay` re-says the toast with no key hint when the reader leaves.
  */
 function useUndoToastSync(keys: boolean, enabled = true, resay = true) {
-  const undoSnapshot = useTaskStore((s) => s.undoSnapshot);
+  const undoSnapshot = useTaskStore((s) => shownSnapshot(s.undoSnapshot));
   const undoLastChange = useTaskStore((s) => s.undoLastChange);
   const dismissUndo = useTaskStore((s) => s.dismissUndo);
   const openFocus = useTaskStore((s) => s.openFocus);
@@ -65,7 +70,7 @@ function useUndoToastSync(keys: boolean, enabled = true, resay = true) {
     // the toast over, and that page has said it with its keys already.
     if (!resay) return;
     return () => {
-      syncUndoToast(useTaskStore.getState().undoSnapshot, toast, store, { keys: false });
+      syncUndoToast(shownSnapshot(useTaskStore.getState().undoSnapshot), toast, store, { keys: false });
     };
   }, [enabled, resay, undoSnapshot, toast, undoLastChange, dismissUndo, openFocus, keys]);
 }
@@ -114,7 +119,9 @@ export function UndoToast() {
    * it is the outstanding work, not a missing wire.
    */
   useEffect(() => {
-    if (!undoSnapshot || sharedId) return;
+    // A change whose live writes have not answered has no Undo yet, on the
+    // key too (UXD-1). Else a refusal's Retry would put back an undone move.
+    if (!undoSnapshot || sharedId || undoSnapshot.pending) return;
     const onKey = (e: KeyboardEvent) => {
       if (isTypingTarget(e.target as HTMLElement | null)) return;
       if (isUndoShortcut(e)) {

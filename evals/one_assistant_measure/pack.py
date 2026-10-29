@@ -36,6 +36,20 @@ REFUSED = (
 )
 EA_DIR = Path(__file__).resolve().parents[2] / "apps" / "agents" / "agent-email-assistant"
 
+#: The other two owners of a pack (WS-67 OA-8e). Their agents are the CRM
+#: assistant (``crm-records``) and the Projects assistant (four packs).
+CRM = "crm-assistant"
+PROJECTS = "projects-assistant"
+#: Every owner whose packs the work scenarios turn on.
+OWNERS = (EA, CRM, PROJECTS)
+#: The specialist tool of each owner in the delegation arm.
+DELEGATE_TOOLS = {owner: owner.replace("-", "_") for owner in OWNERS}
+_DIRS = {
+    EA: EA_DIR,
+    CRM: Path(__file__).resolve().parents[2] / "apps" / "agents" / "agent-crm",
+    PROJECTS: Path(__file__).resolve().parents[2] / "apps" / "agents" / "agent-projects",
+}
+
 
 def email_config() -> dict[str, Any]:
     return json.loads((EA_DIR / "config.json").read_text(encoding="utf-8"))
@@ -44,3 +58,9 @@ def email_config() -> dict[str, Any]:
 def email_tool_names() -> frozenset[str]:
     """The email assistant's own tools, as ``own_tool_scope`` names them."""
     return frozenset(email_config().get("own_tool_scope") or ())
+
+
+def owner_tool_names(owner: str) -> frozenset[str]:
+    """The own tools of *owner*, as its ``config.json`` names them."""
+    config = json.loads((_DIRS[owner] / "config.json").read_text(encoding="utf-8"))
+    return frozenset(config.get("own_tool_scope") or ())
