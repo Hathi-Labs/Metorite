@@ -165,7 +165,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-WA | **WhatsApp** | 🟡 gated · M2 | `specs/whatsapp_message_manager.md` · `specs/whatsapp_assistant_channel.md` | Metorite: epic 476 · D115 freeze, lifted for brief task 8 only (D122.3) · next BR-8a, E-20 |
 | WS-KB | **Knowledge** | 🟢 active · M2 | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | Metorite: project Knowledge · no P0 or P1 · next H-401, KC-1 |
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_base.md` §20 · `specs/company_context.md` (KG-0 writes `specs/knowledge_graph.md`) | Metorite: epic 783 (Knowledge) · D128 · gate MEM-3 (the memory shape) · next KG-0, KG-1, KG-9 |
-| WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` (SW-0 writes the coordination spec) | Metorite: epics 321 (coordination, D135), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · MCP-P1a built dark 2026-10-30 (§19) · next SW-0, MCP-P1b and MCP-P2a, then SW-23 and SW-24 |
+| WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` · `specs/agent_coordination.md` (D140) | Metorite: epics 321 (coordination, D135 and D140), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · MCP-P1a built dark 2026-10-30 (`external_agent_access.md` §19) · next tasks 1045 and 1054, SW-4, SW-10b (the sweep on staging first), then SW-29a and SW-30a, and MCP-P1b and MCP-P2a |
 | WS-STU | **Studio**: tool packs, workflows, AI apps | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 491 (Agent Tooling) · D127 · next STU-0, then SKL-1 and SKL-2 after SBX-1 |
 | WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) | Metorite: epic 492, sub-epic UX-D · UI-G1 is built · next UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
 | WS-WH | **Writing Help** | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 493 · next WA-1 |
@@ -4819,6 +4819,25 @@ harness gets used with the AI Studio as well."
 3. **A coding workflow (CA-15).** The harness ships the loop: understand, plan, implement, verify, review by a separate sub-agent, deliver.
 
 **What stays open.** Decisions 2 to 5 of `maf_coding_engine.md` §18.7 wait for the owner. They are the amendment of §6.2, the egress profiles, the OpenHands pilot and the first org.
+
+### D140 — Agents coordinate on one board: one execution slot, the member as the only authority, a live path for each held task, and a delegate beside the assignees (2026-10-30)
+
+The owner asked on 2026-10-30, in chat, to "research how Linear uses its project management app for agents". The owner also asked to build out the Projects and MCP tasks "to have full capability for agent orchestration". Board: **WS-MCP**. Owning spec: `specs/agent_coordination.md` §4. Metorite: epic 321, task 331 (SW-0). It extends D135 and changes no rule of D97 or D-PM-4.
+
+**Owner calls:** items 1 to 4. The owner set them in task 331, under D135. **Agent defaults:** items 5 to 10. They come from the Linear research of 2026-10-30 and task 1045, and they stand unless the owner objects.
+
+1. **The execution slot sits beside the assignees.** D-PM-4 stays, so a task keeps many assignees. The slot is the one open run of a task, which the index of migration 289 enforces. `held_by` is its read.
+2. **The member is the only authority.** A session label, an agent label, a delegate, a plan and guidance are display or context data. None of them reaches an authorization check.
+3. **The liveness contract.** Each open task that an agent holds has a live path. Recovery nudges the member once, then escalates to a person. It never reassigns.
+4. **Pull first, push later.** Wake-ups land as `needs_agent` runs that `list_agent_runs` and `my_work` serve. Outbound push waits for WS-56.
+5. **A delegate beside the assignees.** A task names at most one agent as its delegate. The human assignee stays accountable. The default holds until the owner answers Q2 of the spec's §8. A member may delegate to another member's agent only when that agent is shared. Its member or an admin shares it. Q2 stays open for the owner.
+6. **Agent guidance, nearest first.** A task gets the guidance of its project, then of each parent up to its space, then of the org. Each block names its source and version. It never overrides the server's rules.
+7. **A run plan is a whole-list replace.** At most 30 steps of 200 characters, each `pending`, `in_progress`, `completed` or `canceled`.
+8. **The `waiting` state is capped at 120 minutes.** After that time, with no new activity, the run reads `stale`. The cap never passes one lease.
+9. **The stranded sweep goes on in staging first.** The nudge verb (task 1054), the `waiting` state (1045a) and the linked events (1045b) land before the flip. Production follows the staging test.
+10. **The lease is two hours, from the newest activity of any author.** A question keeps the task for three leases. This replaces the 15-minute TTL of the first text of SW-4.
+
+**What stays open.** Five questions wait for the owner (`agent_coordination.md` §8). They are the `agent:<name>` assignee and the delegate, a shared agent, the first cloud agent, cost and goals, and who may end another member's run.
 
 
 ## 4. Single-owner registry (who owns duplicated work)
