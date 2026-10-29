@@ -97,7 +97,7 @@ describe("board-shows-the-count", () => {
   const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf-8");
 
   it("the board asks for the counts", () => {
-    const bag = boardReadParams({ projectId: "p", filters: EMPTY_FILTERS, sort: null, viewId: null, subtasks: null });
+    const bag = boardReadParams({ projectId: "p", filters: EMPTY_FILTERS, sort: null, viewId: null, subtasks: null, waitingOnMe: false, agentFocus: null, agentWork: false });
     expect(bag.with_status_counts).toBe(true);
   });
 

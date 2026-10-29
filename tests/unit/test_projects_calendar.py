@@ -222,6 +222,11 @@ NOT_ON_THE_CALENDAR = {
     # no other AI session holds. The board never sends it, so the calendar
     # cannot drop it silently.
     "unheld",
+    # Task #986. The board's agent filters (the strip's focus and "Agent
+    # work"). They were browser filters over the loaded board rows, and the
+    # calendar never applied them. Moving them to SQL leaves the calendar as it
+    # was; a calendar filter is a separate slice.
+    "agent_focus", "agent_worked",
     # #918. Not a filter: it asks the list to also answer the size of each
     # status lane for the board's column heads. The rows are the same.
     "with_status_counts",

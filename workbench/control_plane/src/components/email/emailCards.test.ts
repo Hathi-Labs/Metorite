@@ -34,6 +34,7 @@ vi.mock("@/app/email/lib/api", async (load) => ({ ...(await load<object>()), ...
 import {
   changedSettings,
   fmtVal,
+  readsOnly,
   ruleActions,
   ruleConditions,
   sendDraftReply,
@@ -167,5 +168,24 @@ describe("clipWords, the client twin of clip_words", () => {
 
   it("one long token is cut at the limit", () => {
     expect(clipWords("x".repeat(30), 10)).toBe(`${"x".repeat(9)}…`);
+  });
+});
+
+describe("run_rules is a read unless it changed mail (task 1003)", () => {
+  const ev = (args: Record<string, unknown>) =>
+    ({ id: "t", name: "run_rules", args, status: "done" }) as never;
+
+  it("a preview, an estimate and a status are reads", () => {
+    expect(readsOnly(ev({}))).toBe(true);
+    expect(readsOnly(ev({ scope: "new", dry_run: true }))).toBe(true);
+    expect(readsOnly(ev({ scope: "estimate" }))).toBe(true);
+    expect(readsOnly(ev({ scope: "status" }))).toBe(true);
+  });
+
+  it("a run that applies, a past run and a retry change mail", () => {
+    expect(readsOnly(ev({ scope: "new", dry_run: false }))).toBe(false);
+    expect(readsOnly(ev({ scope: "past" }))).toBe(false);
+    expect(readsOnly(ev({ scope: "retry_failed" }))).toBe(false);
+    expect(readsOnly(ev({ scope: "message", dry_run: "false" }))).toBe(false);
   });
 });
