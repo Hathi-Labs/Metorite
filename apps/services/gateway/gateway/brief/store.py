@@ -36,7 +36,8 @@ has a claim, so a retry of the same claims makes no second set.
 row only when it is in that state (``UPDATE ... WHERE state = :from``), and
 only along :data:`TRANSITIONS`: ``planned`` to ``gathered`` to ``ready``,
 ``planned`` to ``empty``, and ``planned`` to ``failed`` (a slot that gets
-no brief, with the reason). So a second gather of a run that moved on
+no brief, with the reason). BR-2c-1 adds ``ready`` to ``delivered``, which
+the read route makes and which stamps ``delivered_at``. So a second gather of a run that moved on
 changes nothing. :func:`set_lead` writes the lead, and :func:`link_run` the
 ledger row of AUTO-2 of the current try.
 
@@ -66,11 +67,12 @@ SECTIONS: tuple[str, ...] = ("now", "needs_you", "numbers", "done", "moved", "ac
 #: The bound of the CHECK ``brief_claims_source_ids_max``.
 MAX_SOURCE_IDS = 50
 #: The moves that :func:`set_state` makes with a ``from_state`` guard
-#: (``core_brief.md`` §4.2). Each is ``(from, to)``. ``delivered`` (BR-2c)
-#: and ``phrasing`` (BR-2a-2) add their own rows when they ship.
+#: (``core_brief.md`` §4.2). Each is ``(from, to)``. ``ready`` to
+#: ``delivered`` is BR-2c-1: the first read of ``GET /brief/today`` that
+#: serves the run. ``phrasing`` (BR-2a-2) adds its own rows when it ships.
 TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
     ("planned", "gathered"), ("gathered", "ready"), ("planned", "empty"),
-    ("planned", "failed")})
+    ("planned", "failed"), ("ready", "delivered")})
 #: The two sources of a lead, as the CHECK ``brief_runs_lead_source`` holds them.
 LEAD_SOURCES: tuple[str, ...] = ("template", "model")
 
