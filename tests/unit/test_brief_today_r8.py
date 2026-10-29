@@ -23,28 +23,35 @@ Without the database every test here SKIPS. A skip is not a pass.
 a. A ``ready`` run of member A is served to A with its claims in order. The
    same request is 404 for member B of the org, and for the same address
    in org B. An ``empty`` and a ``failed`` run are 404.
-b. The first read sets ``delivered_at`` once. A second read, and a read
-   that lost the guard, leave it.
+b. The GET is a pure read. A ``ready`` and a ``delivered`` run are served
+   with the stored state, and the row is the same before and after the
+   read, with the switch on and with it off.
 c. A member in Asia/Kolkata and one in America/New_York each read their own
    run on their own calendar date, at one instant.
+d. A run of the day before is served after a zone change, and after a
+   brief time near midnight that the look-back wrote on the day before.
+   An ``empty`` run of today is 404, and the run of the day before does
+   not come back. A run whose slot is still ahead is not served.
 f. No read enqueues a job, and the ``jobs`` table does not change.
 
 **The mutations (R7).** Commit before each, and restore with git after.
 
 * M1. ``store._READ_RUN_SQL``: drop ``AND member_email = :m``.
   ``test_r8_a_ready_run_is_served_to_its_member_only`` goes red.
-* M2. ``brief_today._deliver``: drop ``from_state="ready"`` (and the move
-  goes through the unguarded UPDATE).
-  ``test_r8_the_first_read_delivers_once_and_keeps_the_stamp`` goes red.
+* M2. ``brief_today.read_today``: move a served ``ready`` run to
+  ``delivered`` (a write in the GET).
+  ``test_r8_the_get_is_a_pure_read[ready]`` goes red.
 * M3. ``brief_today.brief_local_date``: answer ``day.feed_day(now)``.
   ``test_r8_each_member_reads_their_own_run_on_their_own_date`` goes red,
   with two more.
+* M4. ``brief_today.LOOK_BACK_DAYS = 0``.
+  ``test_r8_a_run_of_the_day_before_is_served`` goes red.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -138,12 +145,13 @@ def _claim(position: int, text_: str) -> store.ClaimIn:
 
 async def _seed(org: str, member: str, *, local_date: date = D, state_: str = "ready",
                 lead: str = "Your day, Tue 10 Mar. 3 things need you.",
-                lines: tuple[str, ...] = ("first", "second", "third")) -> str:
+                lines: tuple[str, ...] = ("first", "second", "third"),
+                slot_at: datetime = SLOT) -> str:
     """One run of *member* in *org*, moved to *state_* through the store's
     own guarded moves. The claims go in out of order, on purpose."""
     async with tenant_session(org) as db:
         run = (await store.create_run(db, member, kind="brief", local_date=local_date,
-                                      slot_at=SLOT)).run
+                                      slot_at=slot_at)).run
         if state_ in ("empty", "failed"):
             await store.set_state(db, member, run.id, state_, now=SLOT, from_state="planned",
                                   error="slot_missed" if state_ == "failed" else None)
@@ -153,6 +161,9 @@ async def _seed(org: str, member: str, *, local_date: date = D, state_: str = "r
         await store.set_state(db, member, run.id, "gathered", now=SLOT, from_state="planned")
         await store.set_lead(db, member, run.id, lead, source="template")
         await store.set_state(db, member, run.id, "ready", now=SLOT, from_state="gathered")
+        if state_ == "delivered":
+            await store.set_state(db, member, run.id, "delivered", now=SLOT,
+                                  from_state="ready")
     return run.id
 
 
@@ -173,6 +184,17 @@ def _row(world: Any, run_id: str) -> Any:
         return c.execute(text(
             "SELECT state, delivered_at FROM brief_runs WHERE id = CAST(:i AS uuid)"),
             {"i": run_id}).first()
+
+
+def _whole(world: Any, run_id: str) -> tuple[Any, list[Any]]:
+    """The whole row of the run and its claims, every column."""
+    with world.admin_engine.connect() as c:
+        run = c.execute(text("SELECT * FROM brief_runs WHERE id = CAST(:i AS uuid)"),
+                        {"i": run_id}).first()
+        claims = list(c.execute(text(
+            "SELECT * FROM brief_claims WHERE run_id = CAST(:i AS uuid) ORDER BY position"),
+            {"i": run_id}).fetchall())
+    return run, claims
 
 
 def _jobs(world: Any) -> int:
@@ -199,11 +221,11 @@ async def test_r8_a_ready_run_is_served_to_its_member_only(world) -> None:
                                 "source_app": "email", "source_kind": "needs_reply",
                                 "href": "/email?thread=t0"}
     assert (ana["kind"], ana["local_date"], ana["state"], ana["lead"], ana["lead_source"]) == (
-        "brief", "2099-03-10", "delivered", "Your day, Tue 10 Mar. 3 things need you.",
+        "brief", "2099-03-10", "ready", "Your day, Tue 10 Mar. 3 things need you.",
         "template")
     assert ana["ready_at"] == SLOT.isoformat()
-    # Ben's and org B's reads moved nothing. Ana's read delivered the run.
-    assert _row(p, run_id).state == "delivered"
+    # No read moved the run.
+    assert _row(p, run_id).state == "ready" and _row(p, run_id).delivered_at is None
     assert _jobs(p) == jobs
 
 
@@ -236,31 +258,25 @@ async def test_r8_no_run_and_an_unknown_kind(world) -> None:
     assert (none, closeout, bad) == (404, 404, 422)
 
 
-async def test_r8_the_first_read_delivers_once_and_keeps_the_stamp(world, monkeypatch) -> None:
+@pytest.mark.parametrize("state_", ["ready", "delivered"])
+async def test_r8_the_get_is_a_pure_read(world, monkeypatch, state_) -> None:
+    """The run sets ``delivered``, and the GET never writes. The row and its
+    claims are the same before and after two reads, with the switch on and
+    with it off."""
     p = world
     async with tenant_engine_scope(_dsn(p.app_url)):
-        run_id = await _seed(p.org_a, ANA)
+        run_id = await _seed(p.org_a, ANA, state_=state_)
+        before = _whole(p, run_id)
         first = await _get(_user(ANA, p.org_a))
-        stamp = _row(p, run_id).delivered_at
         monkeypatch.setattr(brief_today, "_now", lambda: LATER)
         second = await _get(_user(ANA, p.org_a))
-        # A read that saw the run as ``ready`` before the first read moved it
-        # (two tabs at once): its move loses the guard and the stamp stays.
-        token = bind_tenant(p.org_a)
-        try:
-            async with tenant_session() as db:
-                stale = await store.read_run(db, ANA, kind="brief", local_date=D)
-            assert stale is not None
-            stale_ready = store.Run(**{**stale.__dict__, "state": "ready"})
-            raced = await brief_today._deliver(ANA, stale_ready, LATER)
-        finally:
-            release_tenant(token)
-    assert stamp == NOW
-    assert first["state"] == "delivered" and second["state"] == "delivered"
-    assert first["claims"] == second["claims"]
-    assert raced == "delivered"
-    row = _row(p, run_id)
-    assert row.state == "delivered" and row.delivered_at == NOW
+        after_on = _whole(p, run_id)
+        off = await _with_settings(_on(p.org_a, brief_in_app=False), _get, _user(ANA, p.org_a))
+    assert first["state"] == second["state"] == state_
+    assert first == second
+    assert off == 404
+    assert after_on == before == _whole(p, run_id)
+    assert before[0].state == state_
 
 
 async def test_r8_each_member_reads_their_own_run_on_their_own_date(world) -> None:
@@ -271,7 +287,8 @@ async def test_r8_each_member_reads_their_own_run_on_their_own_date(world) -> No
     async with tenant_engine_scope(_dsn(p.app_url)):
         await _seed(p.org_a, ANA, local_date=D, lines=("ana today",))
         await _seed(p.org_a, ANA, local_date=D_NY, lines=("ana yesterday",),
-                    lead="Your day, Mon 9 Mar. 1 thing needs you.")
+                    lead="Your day, Mon 9 Mar. 1 thing needs you.",
+                    slot_at=SLOT - timedelta(days=1))
         await _seed(p.org_a, NED, local_date=D_NY, lines=("ned today",),
                     lead="Your day, Mon 9 Mar. 1 thing needs you.")
         await _seed(p.org_a, NED, local_date=D, lines=("ned tomorrow",))
@@ -290,3 +307,49 @@ async def test_r8_the_switch_off_is_404_and_delivers_nothing(world) -> None:
     assert (off, not_listed) == (404, 404)
     row = _row(p, run_id)
     assert row.state == "ready" and row.delivered_at is None
+
+
+@pytest.mark.parametrize("case", ["zone_change", "near_midnight"])
+async def test_r8_a_run_of_the_day_before_is_served(world, case) -> None:
+    """A read at 08:00 in Kolkata on 10 March finds a run dated 9 March.
+
+    * ``zone_change``: Ana was in New York at 07:30 on 9 March, so the run
+      has the date of New York. She is in Kolkata now.
+    * ``near_midnight``: a brief time of 23:45 on 9 March in Kolkata, which
+      the planner's look-back ran after midnight, on the date of the slot.
+    """
+    p = world
+    slot = (datetime(2099, 3, 9, 7, 30, tzinfo=NEW_YORK) if case == "zone_change"
+            else datetime(2099, 3, 9, 23, 45, tzinfo=KOLKATA))
+    async with tenant_engine_scope(_dsn(p.app_url)):
+        run_id = await _seed(p.org_a, ANA, local_date=D_NY, slot_at=slot,
+                             lines=("from the ninth",),
+                             lead="Your day, Mon 9 Mar. 1 thing needs you.")
+        got = await _get(_user(ANA, p.org_a))
+    assert isinstance(got, dict), got
+    assert (got["local_date"], [c["text"] for c in got["claims"]]) == (
+        "2099-03-09", ["from the ninth"])
+    assert _row(p, run_id).state == "ready"
+
+
+async def test_r8_an_empty_run_of_today_does_not_bring_back_the_day_before(world) -> None:
+    """The newest run is the one to serve. An ``empty`` run of today is 404,
+    and the ``ready`` run of the day before does not come back."""
+    p = world
+    async with tenant_engine_scope(_dsn(p.app_url)):
+        await _seed(p.org_a, ANA, local_date=D_NY, slot_at=SLOT - timedelta(days=1),
+                    lines=("yesterday",), lead="Your day, Mon 9 Mar. 1 thing needs you.")
+        before = await _get(_user(ANA, p.org_a))
+        await _seed(p.org_a, ANA, state_="empty")
+        after = await _get(_user(ANA, p.org_a))
+    # Before today's run, the newest run is the one of the day before.
+    assert isinstance(before, dict) and before["local_date"] == "2099-03-09"
+    assert after == 404
+
+
+async def test_r8_a_run_whose_slot_is_ahead_is_not_served(world) -> None:
+    p = world
+    async with tenant_engine_scope(_dsn(p.app_url)):
+        await _seed(p.org_a, ANA, slot_at=NOW + timedelta(minutes=5))
+        got = await _get(_user(ANA, p.org_a))
+    assert got == 404

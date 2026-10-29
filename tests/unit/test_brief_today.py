@@ -3,8 +3,8 @@ database.
 
 Spec: ``project-docs/specs/core_brief.md`` §5 items 2 and 3, §10 row 5.
 Code: ``gateway/routes/brief_today.py``, ``gateway/routes/chat_brief.py``
-(``stored_parts``), ``gateway/brief/flags.py`` (``in_app``) and
-``gateway/brief/store.py`` (the ``ready`` to ``delivered`` move). The
+(``stored_parts``, ``_stored_or_none``), ``gateway/brief/flags.py``
+(``in_app``) and ``gateway/brief/store.py`` (``read_latest_run``). The
 database half is ``tests/unit/test_brief_today_r8.py``.
 
 What this holds:
@@ -13,11 +13,15 @@ What this holds:
   the tenant env writes, and ``flags.in_app`` needs the switch AND the org.
 * The route is 404 with the switch off, for any ``kind``. With it on, an
   unknown ``kind`` is 422.
-* A served ``ready`` run moves to ``delivered`` once, through the guarded
-  move. A lost guard still serves. A ``delivered`` run makes no move.
+* The route is a pure read: it serves a ``ready`` and a ``delivered`` run
+  with the stored state, and it calls no write of the store.
+* The read asks for the newest run dated today or the day before, whose
+  slot is not after the clock.
 * The route never calls ``queue.enqueue``, and names no queue at all.
 * ``stored_parts`` gives the pills in position order, and the title and the
   "more" count of the template lead.
+* A failed stored read of the chat logs ``chat_brief.stored_failed`` and
+  answers None, so the chat composes from the feed.
 """
 
 from __future__ import annotations
@@ -110,7 +114,7 @@ def fake(monkeypatch):
     """The store, the date and the clock of the route, as fakes. ``box``
     holds the run that the read finds, and records each move."""
     box: dict[str, Any] = {"run": _run(), "claims": [_claim(1, "b"), _claim(0, "a")],
-                           "moves": [], "moved": True, "fail": False}
+                           "writes": []}
 
     class _Db:
         pass
@@ -122,18 +126,18 @@ def fake(monkeypatch):
         async def __aexit__(self, *exc):
             return False
 
-    async def read_run(db, member, *, kind, local_date):
-        box["read"] = (member, kind, local_date)
+    async def read_latest_run(db, member, *, kind, first_date, last_date, now):
+        box["read"] = (member, kind, first_date, last_date, now)
         return box["run"]
 
     async def read_claims(db, member, run_id):
         return list(box["claims"])
 
-    async def set_state(db, member, run_id, state, *, now, error=None, from_state=None):
-        if box["fail"]:
-            raise RuntimeError("db down")
-        box["moves"].append((member, run_id, state, from_state, now))
-        return box["moved"]
+    def writer(name):
+        async def write(*a, **kw):
+            box["writes"].append(name)
+            raise AssertionError(f"GET /brief/today must not call store.{name}")
+        return write
 
     async def local_date(org, user, now):
         return D
@@ -144,9 +148,11 @@ def fake(monkeypatch):
     import gateway.db as gdb
 
     monkeypatch.setattr(gdb, "tenant_session", lambda *a, **kw: _Session())
-    monkeypatch.setattr(store, "read_run", read_run)
+    monkeypatch.setattr(store, "read_latest_run", read_latest_run)
     monkeypatch.setattr(store, "read_claims", read_claims)
-    monkeypatch.setattr(store, "set_state", set_state)
+    for name in ("set_state", "set_lead", "create_run", "add_claims", "link_run",
+                 "discard_planned", "prune_runs"):
+        monkeypatch.setattr(store, name, writer(name))
     monkeypatch.setattr(brief_today, "brief_local_date", local_date)
     monkeypatch.setattr(brief_today, "_now", lambda: NOW)
     monkeypatch.setattr(queue, "enqueue", refuse)
@@ -167,7 +173,7 @@ def test_the_switch_off_is_404_for_any_kind(fake, monkeypatch) -> None:
     for kind in ("brief", "closeout", "nonsense"):
         res = client.get(f"/brief/today?kind={kind}")
         assert res.status_code == 404, kind
-    assert "read" not in fake and fake["moves"] == []
+    assert "read" not in fake and fake["writes"] == []
 
 
 def test_an_unknown_kind_is_422(fake) -> None:
@@ -176,11 +182,15 @@ def test_an_unknown_kind_is_422(fake) -> None:
     assert "read" not in fake
 
 
-def test_a_ready_run_is_served_in_order_and_delivered_once(fake) -> None:
+#: The read's window: the day before to today, and the slot not after now.
+_WINDOW = ("ana@x.test", "brief", date(2099, 3, 9), D, NOW)
+
+
+def test_a_ready_run_is_served_in_order_with_no_write(fake) -> None:
     res = _client().get("/brief/today")
     assert res.status_code == 200, res.text
     assert res.json() == {
-        "kind": "brief", "local_date": "2099-03-10", "state": "delivered",
+        "kind": "brief", "local_date": "2099-03-10", "state": "ready",
         "lead": "Your day, Tue 10 Mar. 2 things need you.", "lead_source": "template",
         "ready_at": READY_AT.isoformat(),
         "claims": [
@@ -190,29 +200,23 @@ def test_a_ready_run_is_served_in_order_and_delivered_once(fake) -> None:
              "source_kind": "needs_reply", "href": "/email?thread=t1"},
         ],
     }
-    # The member is the session's, and the date is the route's own.
-    assert fake["read"] == ("ana@x.test", "brief", D)
-    assert fake["moves"] == [("ana@x.test", "run-1", "delivered", "ready", NOW)]
+    # The member is the session's, and the window is the route's own.
+    assert fake["read"] == _WINDOW
+    assert fake["writes"] == []
 
 
-def test_a_lost_guard_still_serves(fake) -> None:
-    fake["moved"] = False
-    res = _client().get("/brief/today?kind=brief")
-    assert res.status_code == 200 and res.json()["state"] == "delivered"
-    assert len(fake["moves"]) == 1
-
-
-def test_a_failed_stamp_still_serves_and_says_ready(fake) -> None:
-    fake["fail"] = True
-    res = _client().get("/brief/today")
-    assert res.status_code == 200 and res.json()["state"] == "ready"
-
-
-def test_a_delivered_run_is_served_with_no_move(fake) -> None:
+def test_a_delivered_run_is_served_with_no_write(fake) -> None:
     fake["run"] = _run("delivered", delivered_at=READY_AT)
     res = _client().get("/brief/today")
     assert res.status_code == 200 and res.json()["state"] == "delivered"
-    assert fake["moves"] == []
+    assert fake["writes"] == []
+
+
+def test_the_route_names_no_write_of_the_store() -> None:
+    src = Path(brief_today.__file__).read_text(encoding="utf-8")
+    for word in ("set_state", "set_lead", "create_run", "add_claims", "link_run",
+                 "discard_planned", "prune_runs", "_deliver", "UPDATE", "INSERT"):
+        assert word not in src, word
 
 
 @pytest.mark.parametrize("state", ["planned", "gathered", "phrasing", "empty", "failed"])
@@ -220,7 +224,7 @@ def test_a_run_that_is_not_ready_is_404(fake, state) -> None:
     fake["run"] = _run(state)
     res = _client().get("/brief/today")
     assert res.status_code == 404 and res.json()["detail"] == brief_today.NO_BRIEF
-    assert fake["moves"] == []
+    assert fake["writes"] == []
 
 
 def test_no_run_is_404(fake) -> None:
@@ -232,7 +236,7 @@ def test_no_run_is_404(fake) -> None:
 def test_the_request_cannot_name_a_member_an_org_or_a_date(fake) -> None:
     res = _client().get("/brief/today?member=ben@x.test&organization_id=x&local_date=2099-01-01")
     assert res.status_code == 200
-    assert fake["read"] == ("ana@x.test", "brief", D)
+    assert fake["read"] == _WINDOW
     params = set(inspect.signature(brief_today.get_today).parameters)
     assert params == {"kind", "user"}
 
@@ -293,5 +297,48 @@ def test_the_chat_reads_the_store_only_behind_the_switch() -> None:
     """The flag-off path of ``post_brief`` names the store nowhere: the one
     read sits behind ``brief_flags.in_app``. The R8 suite runs it."""
     src = inspect.getsource(chat_brief.post_brief)
-    assert "_stored_brief(org, user, email, now) if brief_flags.in_app(org) else None" in src
-    assert src.count("_stored_brief(") == 1 and "brief_store." not in src
+    assert ("(await _stored_or_none(org, user, email, now, today)\n"
+            "              if brief_flags.in_app(org) else None)") in src
+    assert src.count("_stored_or_none(") == 1 and "brief_store." not in src
+    assert "_stored_brief(" not in src
+
+
+@pytest.mark.parametrize("where", ["read_day", "org_zone", "store"])
+async def test_a_failed_stored_read_logs_and_answers_none(monkeypatch, where) -> None:
+    """P2-a: a failure in the stored read (the day read, the org zone, or
+    the store) answers None, so the chat composes from the feed. The log
+    names the error class only."""
+    from zoneinfo import ZoneInfo
+
+    from gateway import my_day_loop
+    from gateway.brief import planner
+    from gateway.routes.shell import state
+
+    class _Session:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def boom(*a, **kw):
+        raise RuntimeError("secret detail ana@x.test")
+
+    async def read_day(org, user):
+        return state.Day(ZoneInfo("Asia/Kolkata"), 9, 18)
+
+    async def org_zone(db):
+        return ZoneInfo("UTC")
+
+    import gateway.db as gdb
+
+    monkeypatch.setattr(gdb, "tenant_session", lambda *a, **kw: _Session())
+    monkeypatch.setattr(my_day_loop, "_read_day", boom if where == "read_day" else read_day)
+    monkeypatch.setattr(planner, "_org_zone", boom if where == "org_zone" else org_zone)
+    monkeypatch.setattr(store, "read_latest_run", boom)
+    logged: list[tuple[str, dict]] = []
+    monkeypatch.setattr(chat_brief._log, "warning",
+                        lambda event, **kw: logged.append((event, kw)))
+    got = await chat_brief._stored_or_none(ORG, _user(), "ana@x.test", NOW, D)
+    assert got is None
+    assert logged == [("chat_brief.stored_failed", {"error": "RuntimeError"})]

@@ -645,6 +645,46 @@ def test_r8_the_delivery_moves_a_ready_run_once_and_stamps_the_time(world) -> No
     assert got.state == "delivered" and got.delivered_at == T and got.ready_at == T
 
 
+def test_r8_the_latest_run_is_the_newest_slot_in_the_window(world) -> None:
+    """BR-2c-1: ``read_latest_run`` answers the newest run of the member in
+    the dates given, by ``slot_at``, in any state, and never a run whose
+    slot is after *now*. Another member and org B read none of it."""
+    from datetime import timedelta
+
+    org = world.p.org_a
+    day_before = date(2099, 3, 9)
+
+    async def go() -> tuple:
+        async with tenant_session(org) as db:
+            old = (await store.create_run(db, ANA, kind="brief", local_date=day_before,
+                                          slot_at=T - timedelta(days=1))).run
+            new = (await store.create_run(db, ANA, kind="brief", local_date=D,
+                                          slot_at=T)).run
+            await store.set_state(db, ANA, new.id, "empty", now=T, from_state="planned")
+            window = {"kind": "brief", "first_date": day_before, "last_date": D}
+            newest = await store.read_latest_run(db, ANA, now=T, **window)
+            before_new = await store.read_latest_run(db, ANA, now=T - timedelta(minutes=1),
+                                                     **window)
+            only_old = await store.read_latest_run(db, ANA, kind="brief",
+                                                   first_date=day_before,
+                                                   last_date=day_before, now=T)
+            ben = await store.read_latest_run(db, BEN, now=T, **window)
+            closeout = await store.read_latest_run(db, ANA, now=T, **{
+                **window, "kind": "closeout"})
+        async with tenant_session(world.p.org_b) as db:
+            org_b = await store.read_latest_run(db, ANA, now=T, **window)
+        return old.id, new.id, newest, before_new, only_old, ben, closeout, org_b
+
+    old_id, new_id, newest, before_new, only_old, ben, closeout, org_b = _go(world, go)
+    assert newest is not None and (newest.id, newest.state) == (new_id, "empty")
+    assert before_new is not None and before_new.id == old_id
+    assert only_old is not None and only_old.id == old_id
+    assert (ben, closeout, org_b) == (None, None, None)
+    with pytest.raises(store.BriefStoreError):
+        asyncio.run(store.read_latest_run(None, ANA, kind="brief", first_date=D,
+                                          last_date=D, now=datetime(2099, 3, 10)))
+
+
 def test_r8_the_lead_and_the_ledger_link_write_for_the_member(world) -> None:
     """The lead writes for the member only. The link follows the ledger row
     of the current try (repair round 1, P2-e): a retry after a release links

@@ -41,6 +41,9 @@ Without the database every test here SKIPS. A skip is not a pass.
 * M9. ``assistant_profile.MEMBERS_APP_SQL``: order by ``(s.assistant_profile
   IS NULL)`` again, as round 1 did. ``test_r8_the_planner_the_get_and_the_
   put_take_one_row_of_two_cases[upper]`` goes red.
+* M10 (BR-2c-1). ``run._gather``: drop the step that moves ``ready`` to
+  ``delivered``. ``test_r8_with_the_in_app_surface_on_the_run_delivers``
+  goes red.
 """
 
 from __future__ import annotations
@@ -579,6 +582,28 @@ def test_r8_a_member_with_no_open_card_gets_empty(world) -> None:
     ben = next(r for r in _runs(world) if r.member_email == BEN)
     assert ben.state == "empty" and ben.lead is None and ben.lead_source is None
     assert _claims(world, str(ben.id)) == [] and ben.ready_at is None
+
+
+@pytest.mark.parametrize("in_app", [True, False])
+def test_r8_with_the_in_app_surface_on_the_run_delivers(world, monkeypatch, in_app) -> None:
+    """BR-2c-1. ``delivered`` means "on an in-app surface", and the run
+    sets it. With ``BRIEF_IN_APP`` on, the run ends ``delivered`` with
+    ``delivered_at``, and no read of any route took part: a member who never
+    opens the app still has it. Off, the run ends ``ready``. An ``empty``
+    run stays ``empty`` either way."""
+    monkeypatch.setattr(flags, "get_settings", lambda: SimpleNamespace(
+        brief_enabled=True, brief_orgs=world.p.org_a, brief_in_app=in_app))
+    world.cards[ANA] = [card("email:acc:t1"), card("tasks:0042", "overdue")]
+    world.cards[BEN] = []
+    _seed_and_run(world)
+    ana = next(r for r in _runs(world) if r.member_email == ANA)
+    ben = next(r for r in _runs(world) if r.member_email == BEN)
+    assert ana.ready_at == T1 and ana.lead is not None
+    if in_app:
+        assert ana.state == "delivered" and ana.delivered_at == T1
+    else:
+        assert ana.state == "ready" and ana.delivered_at is None
+    assert ben.state == "empty" and ben.delivered_at is None
 
 
 def test_r8_a_card_with_an_unknown_prefix_is_skipped(world) -> None:
