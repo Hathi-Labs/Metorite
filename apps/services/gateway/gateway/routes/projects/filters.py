@@ -1465,6 +1465,34 @@ def agent_focus_clause(focus: str) -> str:
     )
 
 
+def agent_filter_clauses(
+    agent_focus: str | None, agent_worked: bool, me: str,
+) -> tuple[list[str], dict[str, Any]]:
+    """The WHERE pieces and bind params of the two agent filters (task #986).
+
+    ONE helper for ``GET /projects/tasks`` and the CSV export, so a file holds
+    the rows that the board shows. An unknown focus is a **422** that lists the
+    allowed values. *me* is the SESSION's member (``actor(user)``), never a
+    name from the request (R11). Neither filter is in a saved view.
+    """
+    clauses: list[str] = []
+    params: dict[str, Any] = {}
+    if agent_focus is not None:
+        if agent_focus not in AGENT_FOCI:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown agent focus '{agent_focus}'. One of: {list(AGENT_FOCI)}.",
+            )
+        clauses.append(agent_focus_clause(agent_focus))
+        params[AGENT_FOCUS_ME] = me.strip().lower()
+    if agent_worked:
+        from gateway.routes.projects.agent_worked import agent_worked_sql
+
+        # "Now" is every row that exists, as `attach_agent_worked` reads it.
+        clauses.append(agent_worked_sql("t.id", "'infinity'::timestamptz"))
+    return clauses, params
+
+
 #: The ``before`` of a read at this moment (see :func:`attach_agent_worked`).
 _READ_HORIZON = datetime(9999, 1, 1, tzinfo=UTC)
 

@@ -32,7 +32,6 @@ from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE, client_label
 from acb_common import get_logger
 from acb_common.priority import importance_for
 from fastapi import Depends, Header, HTTPException, Query
-from gateway.routes.projects.agent_worked import agent_worked_sql
 from gateway.routes.projects.authority import (
     assert_may_delete_task,
     assert_may_move_task,
@@ -108,9 +107,7 @@ from gateway.routes.projects.custom_fields import (
     load_definitions,
 )
 from gateway.routes.projects.filters import (
-    AGENT_FOCI,
-    AGENT_FOCUS_ME,
-    agent_focus_clause,
+    agent_filter_clauses,
     attach_agent_state,
     attach_assignees,
     attach_parent_context,
@@ -678,11 +675,10 @@ async def list_tasks(
                 status_code=422, detail="parent_task_id is not a valid id.",
             ) from None
 
-    if agent_focus is not None and agent_focus not in AGENT_FOCI:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unknown agent focus '{agent_focus}'. One of: {list(AGENT_FOCI)}.",
-        )
+    # Task #986. Validated here too, so a bad value is a 422 before any read.
+    agent_clauses, agent_params = agent_filter_clauses(
+        agent_focus, agent_worked, actor(user),
+    )
 
     mine = check_scope(scope)
 
@@ -749,12 +745,8 @@ async def list_tasks(
             clauses.append(triage_exclusion_clause())
         if unheld:
             clauses.append(unheld_clause())
-        if agent_focus:
-            clauses.append(agent_focus_clause(agent_focus))
-            params[AGENT_FOCUS_ME] = actor(user).strip().lower()
-        if agent_worked:
-            # "Now" is every row that exists, as `attach_agent_worked` reads it.
-            clauses.append(agent_worked_sql("t.id", "'infinity'::timestamptz"))
+        clauses.extend(agent_clauses)
+        params.update(agent_params)
 
         where = " WHERE " + " AND ".join(clauses)
         total = (await db.execute(

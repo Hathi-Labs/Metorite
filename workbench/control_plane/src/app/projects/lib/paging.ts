@@ -94,7 +94,6 @@ export function boardReadParams(input: {
   /** The "Agent work" toggle. */
   agentWork: boolean;
 }): Record<string, string | number | boolean> {
-  const focus = agentFocusParam(input.waitingOnMe, input.agentFocus);
   return {
     project_id: input.projectId,
     include_subtree: true,
@@ -108,8 +107,7 @@ export function boardReadParams(input: {
     ...(input.viewId ? { view_id: input.viewId } : {}),
     ...subtaskReadParams(input.subtasks),
     // Task #986. Omitted when off, so a board without them keeps its read key.
-    ...(focus ? { agent_focus: focus } : {}),
-    ...(input.agentWork ? { agent_worked: true } : {}),
+    ...agentReadParams(input.waitingOnMe, input.agentFocus, input.agentWork),
     // #918. The true size of each status lane, so a column counts the whole
     // filtered set and not only the rows of one page.
     with_status_counts: true,
@@ -123,6 +121,23 @@ export function boardReadParams(input: {
  */
 export function agentFocusParam(waitingOnMe: boolean, agentFocus: AgentFocus | null): AgentFocus | null {
   return waitingOnMe ? "waiting" : agentFocus;
+}
+
+/**
+ * The two agent parameters of `GET /projects/tasks` AND of the CSV export
+ * (`export.ts`), from the three states of the page. ONE builder, so the file
+ * and the board cannot disagree. Empty while all three are off.
+ */
+export function agentReadParams(
+  waitingOnMe: boolean,
+  agentFocus: AgentFocus | null,
+  agentWork: boolean,
+): Record<string, string | boolean> {
+  const focus = agentFocusParam(waitingOnMe, agentFocus);
+  return {
+    ...(focus ? { agent_focus: focus } : {}),
+    ...(agentWork ? { agent_worked: true } : {}),
+  };
 }
 
 /** Is the server holding rows this client has not asked for yet? */

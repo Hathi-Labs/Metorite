@@ -2204,6 +2204,10 @@ function ProjectsWorkspace() {
           sort: tableSort,
           // D-PM-38 — a Hidden board exports its top-level rows only.
           subtasks: storedMode,
+          // Task #986: the file holds the rows the board shows.
+          waitingOnMe,
+          agentFocus,
+          agentWork,
         })
       );
       if (!res.ok) {
@@ -2230,7 +2234,7 @@ function ProjectsWorkspace() {
     } catch (err) {
       setError(String((err as Error).message));
     }
-  }, [selected, filters, shownFields, tableSort, storedMode]);
+  }, [selected, filters, shownFields, tableSort, storedMode, waitingOnMe, agentFocus, agentWork]);
 
   // WS-27q — the calendar's own fetch, because it reads a WINDOW rather than a
   // page. `grid` is derived so the effect re-runs when the period steps, and

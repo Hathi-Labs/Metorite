@@ -179,6 +179,28 @@ class TestTheFocusIsAWhereClause:
                                            "&agent_focus=working")
         assert named.status_code == 404
 
+    async def test_the_export_holds_the_working_tasks_beyond_page_one(self, w):
+        import csv
+        import io
+
+        org = w.p.org_a
+        one = b.task(w.p, org, A_EMAIL, w.proj, title="export-me-1")
+        two = b.task(w.p, org, A_EMAIL, w.proj, title="export-me-2")
+        b.run(w.p, org, one, A_EMAIL, "in_progress")
+        b.run(w.p, org, two, A_EMAIL, "in_progress")
+        _old(w, one, two)
+        _filler(w)
+        async with b._session(w.p) as call:
+            got = await call(w.a, "GET", f"/projects/export/tasks.csv?project_id={w.proj['id']}"
+                                         "&include_subtree=true&agent_focus=working")
+            bad = await call(w.a, "GET", "/projects/export/tasks.csv?agent_focus=nonsense")
+        assert got.status_code == 200, got.text
+        rows = list(csv.reader(io.StringIO(got.text.lstrip("﻿"))))
+        titles = [r for row in rows[1:] for r in row if r.startswith("export-me-")]
+        assert sorted(titles) == ["export-me-1", "export-me-2"]
+        assert len(rows) == 3  # the header and the two tasks
+        assert bad.status_code == 422
+
     async def test_an_unknown_focus_is_422(self, w):
         status, body = await _list(w, w.a, "agent_focus=nonsense")
         assert status == 422
