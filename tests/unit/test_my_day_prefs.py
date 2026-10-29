@@ -108,8 +108,9 @@ def _put(body: Any, user: UserContext | None = None):
 
 
 class TestTheAllowlist:
-    def test_the_three_keys_are_the_spec_s(self) -> None:
-        assert prefs.PREF_KEYS == ("mutes", "open_in_app", "corrections")
+    def test_the_keys_are_the_spec_s(self) -> None:
+        assert prefs.PREF_KEYS == ("mutes", "open_in_app", "corrections",
+                                   "hide_push_details")
         assert set(prefs._CLEAN) == set(prefs.PREF_KEYS)
 
     @pytest.mark.parametrize("body", [
@@ -325,3 +326,29 @@ class TestTheRead:
         fake.fail = True
         res = _client(_user()).get("/shell/feed/prefs")
         assert res.status_code == 503
+
+
+class TestHidePushDetails:
+    """WS-66 RE-9a: ``hide_push_details`` is a boolean, written and read back."""
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_the_flag_is_written_and_read_back(self, fake: _FakeDB, value: bool) -> None:
+        res = _put({"key": "hide_push_details", "value": value})
+        assert res.status_code == 200, res.text
+        assert res.json()["hide_push_details"] is value
+        [(_, params)] = _writes(fake)
+        assert (params["pkey"], json.loads(params["pval"])) == ("hide_push_details", value)
+        # The other keys stay in the answer.
+        assert res.json()["corrections"] == ["Acme mail never needs me"]
+        fake.row = {"hide_push_details": value}
+        assert _client(_user()).get("/shell/feed/prefs").json() == {"hide_push_details": value}
+
+    @pytest.mark.parametrize("value", [1, 0, "true", "false", None, [], ["x"], {}])
+    def test_a_value_that_is_not_a_boolean_is_refused(self, fake: _FakeDB, value: Any) -> None:
+        res = _put({"key": "hide_push_details", "value": value})
+        assert res.status_code == 422, res.text
+        assert fake.sql == []
+
+    def test_a_stored_value_of_the_wrong_shape_drops_from_the_read(self, fake: _FakeDB) -> None:
+        fake.row = {"hide_push_details": "yes"}
+        assert _client(_user()).get("/shell/feed/prefs").json() == {}

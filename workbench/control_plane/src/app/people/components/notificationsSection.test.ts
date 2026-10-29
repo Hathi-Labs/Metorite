@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next-auth/react", () => ({ signOut: vi.fn(async () => undefined) }));
 
+import { loadHideDetails, saveHideDetails } from "@/lib/hidePushDetails";
 import { type PushView, loadPushView } from "@/lib/push";
 
 import { NotificationsPanel, NotificationsSection } from "./NotificationsSection";
@@ -127,5 +128,72 @@ describe("what the panel draws for each view", () => {
       expect(html).toContain("Notifications on this device");
       expect(html).not.toContain('type="checkbox"');
     }
+  });
+});
+
+describe("Hide details on the lock screen (WS-66 RE-9a)", () => {
+  const ready: PushView = { kind: "ready", on: false };
+  const withHide = (hideDetails: boolean | null) =>
+    renderToStaticMarkup(
+      createElement(NotificationsPanel, {
+        view: ready,
+        busy: false,
+        note: null,
+        onToggle: () => undefined,
+        onTest: () => undefined,
+        hideDetails,
+        onHideDetails: () => undefined,
+      }),
+    );
+
+  it("draws the toggle, unchecked by default and checked when the key is on", () => {
+    const off = withHide(false);
+    expect(off).toContain("Hide details on the lock screen");
+    expect(off.match(/<input[^>]*type="checkbox"/g)).toHaveLength(2);
+    expect(off).not.toMatch(/\schecked=""/);
+    expect(withHide(true)).toMatch(/<input[^>]*aria-label="Hide details on the lock screen"[^>]*\schecked=""|<input[^>]*\schecked=""[^>]*aria-label="Hide details on the lock screen"/);
+  });
+
+  it("draws no toggle before the read answers", () => {
+    expect(withHide(null)).not.toContain("Hide details on the lock screen");
+    expect(panel(ready)).not.toContain("Hide details on the lock screen");
+  });
+
+  it("saves the key and reads it back through the prefs route", async () => {
+    const stored: Record<string, unknown> = {};
+    const calls: Array<{ method: string; body?: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        expect(url).toBe("/api/shell/feed/prefs");
+        const method = init?.method ?? "GET";
+        calls.push({ method, body: init?.body as string | undefined });
+        if (method === "PUT") {
+          const { key, value } = JSON.parse(init?.body as string);
+          stored[key] = value;
+        }
+        return Response.json({ ...stored });
+      }),
+    );
+    expect(await loadHideDetails()).toBe(false);
+    expect(await saveHideDetails(true)).toBe(true);
+    expect(calls[1]).toEqual({
+      method: "PUT",
+      body: JSON.stringify({ key: "hide_push_details", value: true }),
+    });
+    expect(await loadHideDetails()).toBe(true);
+    expect(await saveHideDetails(false)).toBe(false);
+    expect(await loadHideDetails()).toBe(false);
+  });
+
+  it("a failed read or save gives null, never a guess", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({}, { status: 503 })));
+    expect(await loadHideDetails()).toBeNull();
+    expect(await saveHideDetails(true)).toBeNull();
+    vi.stubGlobal("fetch", vi.fn(async (): Promise<Response> => {
+      throw new TypeError("Failed to fetch");
+    }));
+    expect(await loadHideDetails()).toBeNull();
+    expect(await saveHideDetails(true)).toBeNull();
   });
 });

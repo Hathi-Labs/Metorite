@@ -29,6 +29,7 @@ import { useCallback, useEffect, useState } from "react";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
+import { loadHideDetails, saveHideDetails } from "@/lib/hidePushDetails";
 import {
   BLOCKED_MESSAGE,
   type PushView,
@@ -47,6 +48,8 @@ export function NotificationsSection() {
   const [view, setView] = useState<PushView>({ kind: "hidden" });
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<Note>(null);
+  // WS-66 RE-9a. `null` until the read answers, and after a failed read.
+  const [hideDetails, setHideDetails] = useState<boolean | null>(null);
 
   // Reads only (`loadPushView`): the server's answer first, then the support,
   // the permission, the browser's subscription and THIS member's row of it.
@@ -57,7 +60,25 @@ export function NotificationsSection() {
 
   useEffect(() => {
     void reload();
+    void loadHideDetails().then(setHideDetails);
   }, [reload]);
+
+  // The tap saves at once. The box shows what the server stored, and a failed
+  // save leaves the old value with a note.
+  async function onHideDetails(next: boolean) {
+    setBusy(true);
+    setNote(null);
+    try {
+      const stored = await saveHideDetails(next);
+      if (stored === null) {
+        setNote({ ok: false, message: "Could not save that. Try again." });
+      } else {
+        setHideDetails(stored);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
 
   // The ONE path to the permission prompt: the member's tap.
   async function onToggle(next: boolean) {
@@ -87,7 +108,17 @@ export function NotificationsSection() {
     }
   }
 
-  return <NotificationsPanel view={view} busy={busy} note={note} onToggle={onToggle} onTest={onTest} />;
+  return (
+    <NotificationsPanel
+      view={view}
+      busy={busy}
+      note={note}
+      onToggle={onToggle}
+      onTest={onTest}
+      hideDetails={hideDetails}
+      onHideDetails={onHideDetails}
+    />
+  );
 }
 
 /** What the section draws for one view. No state, no fetch, no effect. */
@@ -97,12 +128,17 @@ export function NotificationsPanel({
   note,
   onToggle,
   onTest,
+  hideDetails = null,
+  onHideDetails,
 }: {
   view: PushView;
   busy: boolean;
   note: Note;
   onToggle: (next: boolean) => Promise<void> | void;
   onTest: () => Promise<void> | void;
+  /** The `hide_push_details` pref. `null` draws no toggle (not read yet). */
+  hideDetails?: boolean | null;
+  onHideDetails?: (next: boolean) => Promise<void> | void;
 }) {
   if (view.kind === "hidden" || view.kind === "loading") return null;
 
@@ -153,6 +189,25 @@ export function NotificationsPanel({
               </span>
             </span>
           </label>
+          {hideDetails !== null && onHideDetails && (
+            <label className="mt-3 flex items-start gap-2.5">
+              <Checkbox
+                checked={hideDetails}
+                disabled={busy}
+                onChange={(e) => void onHideDetails(e.target.checked)}
+                aria-label="Hide details on the lock screen"
+              />
+              <span className="space-y-0.5">
+                <span className="block text-xs font-medium text-foreground">
+                  Hide details on the lock screen
+                </span>
+                <span className="block text-[11px] text-muted-foreground">
+                  A reminder shows only your organization name. It does not show the
+                  title or the time. This applies to all your devices.
+                </span>
+              </span>
+            </label>
+          )}
           {view.on && (
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <Button size="sm" variant="secondary" icon="Send" loading={busy} onClick={() => void onTest()}>
