@@ -67,6 +67,12 @@ export type SwitchState = {
    * here whether the mode changed, so a close reloads it.
    */
   committed: boolean;
+  /**
+   * The final run of a start whose sync took longer than the dialog waits
+   * (`SYNC_TOO_LONG`). The next press reads that run first, and starts no
+   * new one while it runs (review P3).
+   */
+  runId: string | null;
   error: string | null;
   result: SwitchResult | null;
 };
@@ -79,7 +85,7 @@ export type SwitchEvent =
   | { type: "submit" }
   | { type: "phase"; phase: "sync" | "switch" }
   | { type: "done"; result: SwitchResult }
-  | { type: "failed"; message: string; gaps?: IncompleteRow[] };
+  | { type: "failed"; message: string; gaps?: IncompleteRow[]; runId?: string | null };
 
 /** The first state for one preview. */
 export function initialSwitch(preview: CutoverPreview): SwitchState {
@@ -93,6 +99,7 @@ export function initialSwitch(preview: CutoverPreview): SwitchState {
     busy: false,
     phase: null,
     committed: false,
+    runId: null,
     error: null,
     result: null,
   };
@@ -159,6 +166,7 @@ export function switchReducer(state: SwitchState, event: SwitchEvent): SwitchSta
         busy: false,
         phase: null,
         error: event.message,
+        runId: event.runId ?? null,
       };
       return event.gaps && event.gaps.length > 0 ? withGaps(failed, event.gaps) : failed;
     }
@@ -173,8 +181,16 @@ export function switchReducer(state: SwitchState, event: SwitchEvent): SwitchSta
 export const SWITCH_FAILED =
   "Metorite did not get an answer from the switch, so it may be done. Press the button again to finish it.";
 
-/** The start of the final sync failed with no reason from the gateway. */
-export const START_FAILED = "The final sync did not start. Try again.";
+/**
+ * The start got no answer, such as a lost 202 (review P3). The final sync may
+ * run now, so these words never say that it did not start.
+ */
+export const START_FAILED =
+  "Metorite did not get an answer. The final sync may run now. Wait a minute, then try again.";
+
+/** The newest run is not the final run any more, so it is not the final sync. */
+export const OTHER_RUN =
+  "Another sync started after the final sync. Nothing changed. Press the button again.";
 
 /** The words of a final sync that stopped, by its safe code. */
 const SYNC_STOPPED: Record<string, string> = {
@@ -189,8 +205,9 @@ export function syncStoppedWords(code: string | null): string {
   return (code && SYNC_STOPPED[code]) || "The final sync did not finish. Nothing changed. Try again.";
 }
 
+/** The dialog keeps the run, and the next press waits for the same sync. */
 export const SYNC_TOO_LONG =
-  "The final sync takes longer than 10 minutes. Nothing changed. Close this window, and try again later.";
+  "The final sync takes longer than 10 minutes. Nothing changed yet. Press the button again to wait for the same sync.";
 
 export type SwitchDeps = {
   start: (body: SwitchBody) => Promise<StartResult>;
@@ -202,7 +219,8 @@ export type SwitchDeps = {
 
 export type SwitchOutcome =
   | { result: SwitchResult }
-  | { error: string; gaps?: IncompleteRow[] };
+  /** `runId`: the final run that still runs, for the next press. */
+  | { error: string; gaps?: IncompleteRow[]; runId?: string };
 
 /** The `code` of a gateway refusal (`CrmError`), or undefined. */
 function codeOf(err: unknown): string | undefined {
@@ -249,41 +267,65 @@ async function commitStep(body: SwitchBody, deps: SwitchDeps): Promise<SwitchOut
 }
 
 /**
+ * The run that a press may wait for: the *kept* run of an earlier press,
+ * while the status still names it and it runs or is ready. Else `null`, and
+ * the press starts a new final sync.
+ */
+async function keptRun(kept: string | null, deps: SwitchDeps): Promise<string | null> {
+  if (!kept) return null;
+  const now = await deps.status().catch(() => null);
+  if (!now || now.run_id !== kept) return null;
+  return now.state === "running" || now.state === "ready" ? kept : null;
+}
+
+/**
  * Step 4: start the final sync, read the status every 3 seconds until it is
  * ready, then switch with the run that the start began. Returns the result,
  * or the words of the failure. It never throws.
+ *
+ * *kept* is the run of an earlier press whose sync took too long. While it
+ * runs, this press waits for it and starts no new one (review P3). A sync
+ * that took too long hands its run back in `runId`.
  *
  * A start that answers `not_mirror` can follow a switch whose answer got
  * lost. Then the status says `done`, and the switch is sent again: the
  * gateway answers `already_done` and closes Zoho.
  */
-export async function runSwitch(leaveOut: string[], deps: SwitchDeps): Promise<SwitchOutcome> {
+export async function runSwitch(
+  leaveOut: string[],
+  deps: SwitchDeps,
+  kept: string | null = null,
+): Promise<SwitchOutcome> {
   const body: SwitchBody = { confirm: SWITCH_WORD, leave_out: [...leaveOut] };
   deps.onPhase?.("sync");
-  let started: StartResult;
-  try {
-    started = await deps.start(body);
-  } catch (err) {
-    if (codeOf(err) === "not_mirror") {
-      const now = await deps.status().catch(() => null);
-      if (now?.state === "done") return commitStep(body, deps);
+  let runId = await keptRun(kept, deps);
+  if (runId === null) {
+    try {
+      runId = (await deps.start(body)).run_id;
+    } catch (err) {
+      if (codeOf(err) === "not_mirror") {
+        const now = await deps.status().catch(() => null);
+        if (now?.state === "done") return commitStep(body, deps);
+      }
+      return { error: wordsOf(err, START_FAILED) };
     }
-    return { error: wordsOf(err, START_FAILED) };
   }
   try {
     let ready = false;
     for (let read = 0; read < POLL_LIMIT && !ready; read++) {
       await deps.wait(POLL_MS);
       const status = await deps.status();
-      if (status.state === "ready" || status.state === "done") ready = true;
+      if (status.state === "done") ready = true;
+      else if (status.run_id !== runId) return { error: OTHER_RUN };
+      else if (status.state === "ready") ready = true;
       else if (status.state === "failed") return { error: syncStoppedWords(status.error) };
       else if (status.state === "idle") return { error: syncStoppedWords(null) };
     }
-    if (!ready) return { error: SYNC_TOO_LONG };
+    if (!ready) return { error: SYNC_TOO_LONG, runId };
   } catch (err) {
-    return { error: wordsOf(err, syncStoppedWords(null)) };
+    return { error: wordsOf(err, syncStoppedWords(null)), runId };
   }
-  return commitStep({ ...body, run_id: started.run_id }, deps);
+  return commitStep({ ...body, run_id: runId }, deps);
 }
 
 /** What Zoho said, in a member's words (§3.4 phase 3). */

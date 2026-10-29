@@ -281,15 +281,21 @@ export default function CutoverDialog({
   async function go() {
     if (!canSwitch(state)) return;
     send({ type: "submit" });
-    const out = await runSwitch(state.leaveOut, {
-      start: startCutover,
-      status: getCutoverStatus,
-      commit: switchToMetorite,
-      wait,
-      onPhase: (phase) => send({ type: "phase", phase }),
-    });
+    const out = await runSwitch(
+      state.leaveOut,
+      {
+        start: startCutover,
+        status: getCutoverStatus,
+        commit: switchToMetorite,
+        wait,
+        onPhase: (phase) => send({ type: "phase", phase }),
+      },
+      state.runId,
+    );
     if ("result" in out) send({ type: "done", result: out.result });
-    else send({ type: "failed", message: out.error || SWITCH_FAILED, gaps: out.gaps });
+    else {
+      send({ type: "failed", message: out.error || SWITCH_FAILED, gaps: out.gaps, runId: out.runId });
+    }
   }
 
   const close = () => closeSwitch(state, { reload: invalidateCrmMode, close: onClose });

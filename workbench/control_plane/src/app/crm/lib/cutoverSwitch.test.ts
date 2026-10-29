@@ -16,9 +16,11 @@ import type { CutoverPreview, CutoverStatus, SwitchResult } from "./cutover";
 import {
   FINISH_FAILED,
   FINISH_NOT_SWITCHED,
+  OTHER_RUN,
   POLL_MS,
   START_FAILED,
   SWITCH_FAILED,
+  SYNC_TOO_LONG,
   SWITCH_WORD,
   canSwitch,
   closeSwitch,
@@ -217,9 +219,11 @@ function refusal(code: string, message: string, extra: Record<string, unknown> =
   return new CrmError(message, 409, code, undefined, { code, message, ...extra });
 }
 
-function status(state: CutoverStatus["state"], error: string | null = null): CutoverStatus {
+function status(
+  state: CutoverStatus["state"], error: string | null = null, runId = "r1",
+): CutoverStatus {
   return {
-    state, run_id: "r1", started_at: null, finished_at: null, error,
+    state, run_id: runId, started_at: null, finished_at: null, error,
     age_seconds: null, zoho_connection: "connected",
   };
 }
@@ -279,7 +283,7 @@ describe("CRM-Z10b the switch dialog", () => {
 
   it("always waits for its own run, and stops on a failed one", async () => {
     const commit = vi.fn(async () => RESULT);
-    const read = vi.fn(async () => status("ready"));
+    const read = vi.fn(async () => status("ready", null, "r2"));
     const own = await runSwitch([], {
       start: async () => ({ run_id: "r2" }),
       status: read, commit, wait: async () => undefined,
@@ -304,6 +308,59 @@ describe("CRM-Z10b the switch dialog", () => {
       status: async () => status("ready"), commit, wait: async () => undefined,
     });
     expect(lost).toEqual({ error: START_FAILED });
+    // Review P3: after a lost 202, the words never say that it did not start.
+    expect(START_FAILED).toBe(
+      "Metorite did not get an answer. The final sync may run now. Wait a minute, then try again.",
+    );
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the run of a slow sync, and the next press waits for it (review P3)", async () => {
+    const commit = vi.fn(async () => RESULT);
+    const start = vi.fn(async () => ({ run_id: "r7" }));
+    const slow = await runSwitch([], {
+      start, status: async () => status("running", null, "r7"), commit,
+      wait: async () => undefined,
+    });
+    expect(slow).toEqual({ error: SYNC_TOO_LONG, runId: "r7" });
+    expect(commit).not.toHaveBeenCalled();
+    // The reducer keeps the run for the next press.
+    let s = initialSwitch(preview({ incomplete: [] }));
+    s = switchReducer(switchReducer(s, { type: "next" }), { type: "type", text: SWITCH_WORD });
+    s = switchReducer(switchReducer(s, { type: "submit" }), {
+      type: "failed", message: SYNC_TOO_LONG, runId: "r7",
+    });
+    expect(s.runId).toBe("r7");
+    // The next press reads that run first, and starts no new sync.
+    const reads = [status("running", null, "r7"), status("running", null, "r7"),
+      status("ready", null, "r7")];
+    const again = await runSwitch([], {
+      start, status: async () => reads.shift()!, commit, wait: async () => undefined,
+    }, s.runId);
+    expect(again).toEqual({ result: RESULT });
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(commit).toHaveBeenCalledWith({ confirm: SWITCH_WORD, leave_out: [], run_id: "r7" });
+    // A failure with no run clears it.
+    expect(switchReducer(s, { type: "failed", message: "No." }).runId).toBeNull();
+  });
+
+  it("starts a new sync when the kept run is gone, and stops when another run takes over", async () => {
+    const commit = vi.fn(async () => RESULT);
+    const start = vi.fn(async () => ({ run_id: "r9" }));
+    // The kept run failed meanwhile: this press starts its own run.
+    const reads = [status("failed", "budget", "r7"), status("ready", null, "r9")];
+    const fresh = await runSwitch([], {
+      start, status: async () => reads.shift()!, commit, wait: async () => undefined,
+    }, "r7");
+    expect(fresh).toEqual({ result: RESULT });
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(commit).toHaveBeenLastCalledWith({ confirm: SWITCH_WORD, leave_out: [], run_id: "r9" });
+    // Another run is the newest while the dialog waits: no switch.
+    const other = await runSwitch([], {
+      start, status: async () => status("running", null, "r10"), commit,
+      wait: async () => undefined,
+    });
+    expect(other).toEqual({ error: OTHER_RUN });
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
@@ -377,11 +434,14 @@ describe("CRM-Z10b the switch dialog", () => {
     const modules = [
       { key: "module:Quotes", label: "Quotes", reason: "short" },
       { key: "tasks", label: "Tasks", reason: "something new" },
+      { key: "module:Products", label: "Products", reason: "not_read" },
       { label: "No key" },
     ];
     expect(gapsOf(refusal("module_incomplete", "Tick them.", { modules }))).toEqual([
       { key: "module:Quotes", label: "Quotes", reason: "short" },
       { key: "tasks", label: "Tasks", reason: "failed" },
+      // Review P1: a module that the final sync did not read keeps its reason.
+      { key: "module:Products", label: "Products", reason: "not_read" },
     ]);
     expect(gapsOf(refusal("run_open", "A sync runs now.", { modules }))).toEqual([]);
     expect(gapsOf(new Error("plain"))).toEqual([]);

@@ -21,7 +21,9 @@ export type ModuleState =
   | "importing"
   | "failed"
   | "short"
-  | "refused";
+  | "refused"
+  /** Phase 2 only: the final sync did not read the module (review P1). */
+  | "not_read";
 
 /** One module that is not complete (CRM-Z10b). The dialog offers "Leave out". */
 export type IncompleteRow = {
@@ -92,6 +94,8 @@ export const STATE_WORDS: Record<Exclude<ModuleState, "complete">, string> = {
   failed: "Some records did not save",
   short: "Metorite could not read every record",
   refused: "Zoho refused some records",
+  not_read:
+    "The final sync did not read it, often because Zoho's daily API limit is almost used. Try again tomorrow, or leave it out",
 };
 
 /** "3 hours ago", "2 days ago". Plain words for the age of the last good sync. */
