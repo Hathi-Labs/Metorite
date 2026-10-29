@@ -1515,7 +1515,7 @@ The PR and CI data come from `github_integration.md` (WS-54). This section draws
 
 **What EA-13 does not build.** A server filter for "Agent work" (the toggle filters loaded rows). A dismiss of a failed run (EA12-12). A new run state. A status move on a pull request event, which `github_integration.md` §12 owns.
 
-**7. The agent card (EA-13g, PLANNED 2026-10-27, Metorite 842).** Owner ask: the card of a task that an agent holds looks different from a human's card. The look comes from `AGENT_STATES`, and it adds no palette.
+**7. The agent card (EA-13g, BUILT 2026-10-29 on the board card, Metorite 842; staging look check owed).** Owner ask: the card of a task that an agent holds looks different from a human's card. The look comes from `AGENT_STATES`, and it adds no palette.
 
 | Run state | The card |
 |---|---|
