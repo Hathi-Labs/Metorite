@@ -147,7 +147,7 @@ import {
 } from "@/lib/sidePanelFit";
 import { drawerStep } from "./lib/drawerOwner";
 import { moveFollowUp } from "./lib/moveRefresh";
-import { useLiveRefresh } from "./lib/liveRefresh";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 import { invalidate } from "@/lib/dataCache";
 import { useFrontendTool } from "@/hooks/useFrontendTool";
 import {
@@ -3189,7 +3189,7 @@ function ProjectsWorkspace() {
     // My work reloads itself (`MyWorkHost`). The board reloads here, in the
     // mode the member is looking at.
     if (!myWorkOpen) void refreshRef.current();
-  });
+  }, "projects");
 
   // `?project=<id>` selects a node (WS-27bm S6): the link `open_in_app`
   // returns for a member who is not on this page. Consumed after the select,

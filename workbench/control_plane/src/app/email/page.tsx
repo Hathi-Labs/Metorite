@@ -68,6 +68,7 @@ import {
 } from "./lib/mailbox";
 import { keepStorage, readStorageKept, withRemovalMeter } from "./lib/storage";
 import { isSearchActive } from "./lib/searchFilters";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 import { tasksLink } from "@/app/projects/lib/tasksRedirect";
 
 /** D99: the chat bar's one assistant replaces this app's chat scene. */
@@ -255,8 +256,13 @@ export default function EmailPage() {
     };
   }, [selectedAccountId, softRefresh]);
 
+  // Task #124: the assistant wrote to the mailbox (a draft, a label, a send).
+  // Read the list now instead of at the next 20 s tick. The open thread has
+  // its own listener in `EmailDetail`.
+  useLiveRefresh(() => softRefresh(), "email");
+
   // Derived data
-  const selectedAccount = accounts.find((a) => a.id === selectedAccountId) ?? null;
+  const selectedAccount =accounts.find((a) => a.id === selectedAccountId) ?? null;
   // The count of the header in All inboxes. A separate mailbox is not in All
   // inboxes, so it does not count (EM-T8g-2 item 2).
   const pooledCount = pooledMailboxes(accounts).length;

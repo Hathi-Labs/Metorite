@@ -219,7 +219,7 @@ async def test_a_delegated_share_copies_the_file_into_the_chat(runs) -> None:
             await _settle()
     copy = f"outputs/{slug}/reports/summary (1).md"
     assert [a["path"] for a in first["artifacts"]] == [copy], first
-    assert first["download_url"] == f"/api/agent/workspace/{t}/file?path={copy}"
+    assert first["download_url"] == f"/api/agent/workspace/{t}/file?path={copy.replace(' (1)', '%20%281%29')}"
     assert theirs.read_text(encoding="utf-8") == "THE CHAT'S OWN"
     assert (ws / copy).read_text(encoding="utf-8") == BRIEF
     # The same bytes again: the same copy, never a third file.

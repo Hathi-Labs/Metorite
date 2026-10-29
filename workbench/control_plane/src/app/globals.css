@@ -743,6 +743,56 @@ select optgroup {
   }
 }
 
+/* EA-13g: an agent's card looks alive while the agent holds it. The `<li>` of
+   a board card carries `data-agent-edge` (`agentCardLook`). Every edge is 2px.
+   Only "live" moves, because motion means "working". Under reduced motion the
+   live edge stays lit and still. Tokens only. */
+[data-agent-edge] {
+  border-radius: 0.5rem;
+}
+[data-agent-edge="dashed-accent"] { border: 2px dashed var(--primary); }
+[data-agent-edge="warning"] { border: 2px solid var(--warning); }
+[data-agent-edge="muted"] { border: 2px dashed var(--muted-foreground); }
+[data-agent-edge="destructive"] { border: 2px solid var(--destructive); }
+[data-agent-edge="live"] {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  padding: 2px;
+  background: var(--primary);
+}
+[data-agent-edge="live"] > [role="button"] {
+  z-index: 1;
+}
+@keyframes agent-edge-travel {
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to   { transform: translate(-50%, -50%) rotate(360deg); }
+}
+@keyframes agent-live-dot {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-agent-edge="live"] {
+    background: color-mix(in srgb, var(--primary) 30%, transparent);
+  }
+  [data-agent-edge="live"]::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 300%;
+    aspect-ratio: 1;
+    z-index: 0;
+    background: conic-gradient(from 0deg, transparent 0 70%, var(--primary) 100%);
+    transform: translate(-50%, -50%);
+    animation: agent-edge-travel 3s linear infinite;
+  }
+  .agent-live-dot {
+    animation: agent-live-dot 1.6s ease-in-out infinite;
+  }
+}
+
 /* ── Signature rich-text editor (Tiptap / ProseMirror) ───────────────────
    Scoped under .sig-rich (the SignatureEditor body). Covers the pieces the
    library renders unstyled: tables + the column-resize affordance, selected
