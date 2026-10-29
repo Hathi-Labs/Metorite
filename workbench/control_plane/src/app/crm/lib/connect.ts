@@ -322,8 +322,17 @@ export function shouldPoll(status: SyncStatus | null, watching: boolean): boolea
 
 type Row = Record<string, unknown>;
 
-export const LOCK_TIP = "Synced from Zoho. Change it in Zoho.";
-export const ONLY_IN_METORITE = "Only in Metorite";
+/** The line under a Mirror field that a member clicks (CRM-U15). */
+export const LOCK_TIP = "Edit this in Zoho.";
+export const ONLY_IN_METORITE = "Not in Zoho";
+
+/** The one sentence of the Mirror strip, drawn once under the app bar (CRM-U15). */
+export const MIRROR_LINE =
+  "This is a read-only copy of your Zoho. You can add notes, calls and tasks here. Create and edit records in Zoho.";
+/** Why New is greyed out in Mirror. */
+export const NEW_DISABLED_REASON = "Create records in Zoho";
+/** Why Convert is greyed out in Mirror. */
+export const CONVERT_DISABLED_REASON = "Convert leads in Zoho";
 
 /** The source a mirrored record came from, or `null` for a native record. */
 export function extSource(record: Row | null | undefined): string | null {

@@ -1487,14 +1487,16 @@ The PR and CI data come from `github_integration.md` (WS-54). This section draws
 
 **4. Oversight (EA-13e, EA3-43, EA3-49).**
 
-- **The "Agent work" filter.** A toggle in `FilterBar.tsx`, beside "Waiting on me". The list rows gain `agent_worked`, read through `agent_worked.AGENT_WORKED_SQL` (`github_integration.md` §12.2) at the time of the read. The toggle filters the loaded rows, as "Waiting on me" does.
+- **The "Agent work" filter.** A toggle in `FilterBar.tsx`, beside "Waiting on me". The list rows gain `agent_worked`, read through `agent_worked.AGENT_WORKED_SQL` (`github_integration.md` §12.2) at the time of the read. The toggle sends `agent_worked=true` to `GET /projects/tasks`, so the server filters every page, not only the loaded rows (task 986).
 - **The group-by.** `GroupBy` (`app/projects/lib/grouping.ts:25`) and the gateway's `filters.GROUP_BY` (`filters.py:495`) gain `agent`. The lanes are Needs you, Answered, Working, Queued, Idle, Stopping, Failed and No agent. A drop between agent lanes writes nothing, because a person does not set a run state.
 - **The summary strip.** `GET /projects/{project_id}/agent-summary` returns five counts over the visible tasks of the project and its subprojects:
   - `queued`: an open run reads `queued`.
   - `working`: an open run reads `working`, `answered` or `stale`.
   - `waiting_on_you`: the "Waiting on me" rule of §12.1.
   - `in_review`: an open task with an `open` or `draft` pull request reference.
-  - `merged_this_week`: pull request references with `merged_at` in the last 7 days.
+  - `merged_this_week`: tasks with a pull request reference whose `merged_at` is in the last 7 days. It counts tasks, not references, so it equals the list's `total`.
+
+  **One text for the count and the list (task 986).** `filters.agent_focus_clause` gives the SQL of each focus. The strip counts through it, and `GET /projects/tasks?agent_focus=<focus>` filters through it, with "waiting" bound to the session's member. So a count is the `total` of the list behind its button. The board sends the focus on page 1, on "Load more" and on each column read. Fence: `tests/unit/test_projects_agent_focus_r8.py`.
 
   The route is class A in `skill_projects/manifest.py`, with a `PLANNED` read tool, or `test_projects_chat_coverage.py` fails. `AgentWorkStrip.tsx` draws the counts above the board when any count is not zero. Each count is a button that sets the matching filter.
 - **"Ask an agent" on the card.** `TaskCardActions.tsx` gains the item, and it opens `AskAgentDialog.tsx` for the task. `BulkBar.tsx` gains it for the selected tasks, at most 20. The dialog takes one instruction and one connection, and sends one `agentRunsApi.start` for each task with its own key. It shows the result of each task, and a 409 shows the server's text on that row. No new route.
@@ -1515,7 +1517,7 @@ The PR and CI data come from `github_integration.md` (WS-54). This section draws
 
 **What EA-13 does not build.** A server filter for "Agent work" (the toggle filters loaded rows). A dismiss of a failed run (EA12-12). A new run state. A status move on a pull request event, which `github_integration.md` §12 owns.
 
-**7. The agent card (EA-13g, PLANNED 2026-10-27, Metorite 842).** Owner ask: the card of a task that an agent holds looks different from a human's card. The look comes from `AGENT_STATES`, and it adds no palette.
+**7. The agent card (EA-13g, BUILT 2026-10-29 on the board card, Metorite 842; staging look check owed).** Owner ask: the card of a task that an agent holds looks different from a human's card. The look comes from `AGENT_STATES`, and it adds no palette.
 
 | Run state | The card |
 |---|---|

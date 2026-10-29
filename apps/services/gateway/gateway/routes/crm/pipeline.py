@@ -21,7 +21,7 @@ empties the funnel report the whole model exists to make free.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query, Request
@@ -69,10 +69,18 @@ from gateway.routes.crm.core import (
     resolve_owner,
     router,
     row_to_dict,
+    search_where,
     status_wire,
     update_row,
 )
+from gateway.routes.crm.currency import (
+    CURRENCY_SQL,
+    DEFAULT_CURRENCY,
+    normalise_currency,
+    ordered_currencies,
+)
 from gateway.routes.crm.field_studio import custom_for_create
+from gateway.routes.crm.reports import MoneyTotals
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -365,7 +373,12 @@ _LANE_SQL = "status_id = CAST(:status_id AS uuid)"
 class PipelineLane(BaseModel):
     status: StatusModel
     rows: list[dict]
+    #: Deals of every currency. A count is not an amount.
     count: int
+    #: ``amount`` and ``weighted`` are in :attr:`currency` ONLY (the primary
+    #: one: INR first, then code order). The other currencies of the lane sit
+    #: in :attr:`others`, empty for a lane of one currency (task 887).
+    currency: str = DEFAULT_CURRENCY
     amount: float
     #: Sum of amount * probability/100 over this lane — 0 on a lane whose type is
     #: not in ``WEIGHTED_TYPES``, because won revenue is closed and a lost or
@@ -375,6 +388,7 @@ class PipelineLane(BaseModel):
     #: ``?pipeline_id=``, and for a stage the pipeline does not list that still
     #: holds its deals. The board orders its columns with it (``lib/board.ts``).
     pipeline_position: int | None = None
+    others: list[MoneyTotals] = []
 
 
 class PipelineResponse(BaseModel):
@@ -484,6 +498,10 @@ async def get_pipeline(
     close_from: str | None = None,
     close_to: str | None = None,
     card_sort: CardSort = "stage_age",
+    q: str | None = None,
+    lane_status_id: str | None = None,
+    # Annotated keeps the default a real 0 when a test calls the route directly.
+    lane_offset: Annotated[int, Query(ge=0)] = 0,
     user: UserContext = Depends(get_current_user),
     request: Request = None,  # type: ignore[assignment]
 ) -> PipelineResponse:
@@ -503,6 +521,16 @@ async def get_pipeline(
     (``me`` is the caller), ``source``, the date ranges, and
     ``custom.<key>=<value>``. They are the same code as the list route's
     (``core.extra_filters``), so a view that filters a list filters the board.
+
+    **``?q=``** (CRM-X1) is the search of the lists. It is the same predicate
+    (``core.search_where``), so it narrows every lane, its count and its
+    totals, as the other filters do.
+
+    **``?lane_status_id=`` + ``?lane_offset=``** read the next page of ONE
+    lane ("Show more"). The answer holds that lane only, with the same
+    filters, order and totals as the full board. Totals never change with the
+    offset. The card sorts end in ``id DESC``, so pages have no gap and no
+    repeat.
 
     **No deal disappears.** A deal of the pipeline can sit in a stage that the
     pipeline does not list (a mirrored Zoho stage that left the pipeline). That
@@ -544,6 +572,10 @@ async def get_pipeline(
         if source:
             where += " AND source = :source"
             params["source"] = source
+        search_clause, search_params = search_where(DEALS, q)
+        if search_clause:
+            where += f" AND {search_clause}"
+            params.update(search_params)
         more_where, more_params = await extra_filters(
             db, DEALS, ExtraFilterInput(
                 created_from=created_from, created_to=created_to,
@@ -557,6 +589,9 @@ async def get_pipeline(
         params.update(more_params)
         # ⚠️ After the LAST filter: the held-lane read reuses `where` whole.
         lanes = await _board_lanes(db, wanted, where, params)
+        if lane_status_id:
+            only = checked_uuid(lane_status_id, "lane_status_id")
+            lanes = [lane for lane in lanes if str(lane.id) == only]
 
         inner_order, outer_order = _CARD_ORDERS[card_sort]
         read: list[tuple[Any, Any, list[dict[str, Any]]]] = []
@@ -568,23 +603,35 @@ async def get_pipeline(
                 # rather than interpolated like every other caller value here.
                 "stage_probability": int(getattr(lane, "probability", 0) or 0),
             }
-            agg = (await db.execute(
+            # ONE grouped read of the WHOLE lane: a row for each currency
+            # (HANDOFF H-333, task 887). The app holds no exchange rate, so no
+            # figure adds two currencies. The count adds the counts of every
+            # currency. Two statements for each lane at any number of codes.
+            found = (await db.execute(
                 text(
-                    "SELECT count(*) AS count, COALESCE(SUM(amount), 0) AS amount, "
-                    f"{WEIGHTED_SQL} FROM crm_deals WHERE {where}"
+                    f"SELECT {CURRENCY_SQL} AS currency, count(*) AS count, "
+                    f"COALESCE(SUM(amount), 0) AS amount, {WEIGHTED_SQL} "
+                    f"FROM crm_deals WHERE {where} GROUP BY {CURRENCY_SQL}"
                 ),
                 scope,
-            )).fetchone()
+            )).fetchall()
+            by_code = {normalise_currency(getattr(r, "currency", None)): r for r in found}
+            sums: list[tuple[str, Any]] = [
+                (code, by_code[code])
+                for code in ordered_currencies(by_code) or [DEFAULT_CURRENCY]
+                if code in by_code
+            ] or [(DEFAULT_CURRENCY, None)]
+            agg = (sum(int(getattr(row, "count", 0) or 0) for _, row in sums), sums)
             inner = (
                 f"SELECT {_lane_select(card_sort)} FROM crm_deals WHERE {where} "
-                f"ORDER BY {inner_order} LIMIT :limit"
+                f"ORDER BY {inner_order} LIMIT :limit OFFSET :offset"
             )
             rows = (await db.execute(
                 # Cards print the account name; the board must not make the
                 # browser join a paged organization list to render them
                 # (WS-26c dw 2).
                 text(project_joined(DEALS, inner, outer_order)),
-                {**scope, "limit": per_lane},
+                {**scope, "limit": per_lane, "offset": lane_offset},
             )).fetchall()
             wired = [row_to_dict(r, DealModel) for r in rows]
             await attach_ext_urls(db, DEALS.table, wired)
@@ -596,20 +643,31 @@ async def get_pipeline(
             db, DEALS, [row for _, _, wired in read for row in wired],
         )
         out: list[PipelineLane] = []
-        for lane, agg, wired in read:
+        for lane, (total, sums), wired in read:
+            # The open/ongoing restriction is applied per LANE rather than
+            # inside the SUM: a lane IS one status, so the filter is a
+            # property of the lane and expressing it in the predicate would
+            # be a WHERE clause that is either always true or always false.
+            weighted_lane = getattr(lane, "type", "open") in WEIGHTED_TYPES
+            money = [
+                MoneyTotals(
+                    currency=code,
+                    amount=float(getattr(row, "amount", 0) or 0),
+                    weighted=(
+                        float(getattr(row, "weighted", 0) or 0)
+                        if weighted_lane else 0.0
+                    ),
+                )
+                for code, row in sums
+            ]
             out.append(PipelineLane(
                 status=status_wire(lane),
                 rows=wired,
-                count=int(getattr(agg, "count", 0) or 0),
-                amount=float(getattr(agg, "amount", 0) or 0),
-                # The open/ongoing restriction is applied per LANE rather than
-                # inside the SUM: a lane IS one status, so the filter is a
-                # property of the lane and expressing it in the predicate would
-                # be a WHERE clause that is either always true or always false.
-                weighted=(
-                    float(getattr(agg, "weighted", 0) or 0)
-                    if getattr(lane, "type", "open") in WEIGHTED_TYPES else 0.0
-                ),
+                count=total,
+                currency=money[0].currency,
+                amount=money[0].amount,
+                weighted=money[0].weighted,
+                others=money[1:],
                 pipeline_position=getattr(lane, "pipeline_position", None),
             ))
         return PipelineResponse(lanes=out)

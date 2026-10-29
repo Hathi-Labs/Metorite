@@ -69,7 +69,7 @@ describe("wireLiveRefresh", () => {
 });
 
 describe("the wiring", () => {
-  const src = (p: string) => fs.readFileSync(path.join(__dirname, "..", "..", "..", p), "utf-8");
+  const src = (p: string) => fs.readFileSync(path.join(__dirname, "..", p), "utf-8");
 
   it("the Projects page and My work both use the one hook", () => {
     expect(src("app/projects/page.tsx")).toContain("useLiveRefresh(");

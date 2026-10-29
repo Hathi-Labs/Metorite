@@ -993,6 +993,30 @@ def checked_uuid(value: str, what: str) -> str:
         ) from None
 
 
+def search_where(entity: Entity, q: str | None) -> tuple[str | None, dict[str, Any]]:
+    """The ONE search predicate of ``?q=`` and its bound values (CRM-X1).
+
+    The list contract and the board read (``GET /crm/pipeline``) both call it,
+    so a search finds the same deals on both. ``(None, {})`` when there is
+    nothing to search for.
+    """
+    if not (q and (entity.search or entity.search_sql)):
+        return None, {}
+    params: dict[str, Any] = {"q": f"%{q.strip()}%"}
+    terms = [*(f"{col} ILIKE :q" for col in entity.search), *entity.search_sql]
+    digits = "".join(ch for ch in q if ch.isascii() and ch.isdigit())
+    if entity.phone_search and len(digits) >= MIN_PHONE_DIGITS:
+        # The digits are their own bound parameter. The column names are
+        # constants of the entity. No index serves this, and none is
+        # needed at the size of one tenant's CRM.
+        params["q_digits"] = f"%{digits}%"
+        terms += [
+            f"regexp_replace({col}, '\\D', '', 'g') LIKE :q_digits"
+            for col in entity.phone_search
+        ]
+    return f"({' OR '.join(terms)})", params
+
+
 def list_contract(
     entity: Entity,
     *,
@@ -1033,20 +1057,10 @@ def list_contract(
     clauses: list[str] = list(extra_where)
     params: dict[str, Any] = dict(extra_params or {})
 
-    if q and (entity.search or entity.search_sql):
-        params["q"] = f"%{q.strip()}%"
-        terms = [*(f"{col} ILIKE :q" for col in entity.search), *entity.search_sql]
-        digits = "".join(ch for ch in q if ch.isascii() and ch.isdigit())
-        if entity.phone_search and len(digits) >= MIN_PHONE_DIGITS:
-            # The digits are their own bound parameter. The column names are
-            # constants of the entity. No index serves this, and none is
-            # needed at the size of one tenant's CRM.
-            params["q_digits"] = f"%{digits}%"
-            terms += [
-                f"regexp_replace({col}, '\\D', '', 'g') LIKE :q_digits"
-                for col in entity.phone_search
-            ]
-        clauses.append(f"({' OR '.join(terms)})")
+    search_clause, search_params = search_where(entity, q)
+    if search_clause:
+        clauses.append(search_clause)
+        params.update(search_params)
     if status_id:
         if not entity.status_table:
             # Contacts and organizations have no pipeline. Ignoring the filter

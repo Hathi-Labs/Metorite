@@ -41,6 +41,7 @@ import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
 import { Board } from "@/components/board/Board";
 import { BoardColumn, BoardHeaderCell } from "@/components/board/BoardColumn";
 import { AvatarStack, TaskMeta } from "@/components/TaskMeta";
+import { agentCardLook } from "../lib/agentCardLook";
 import { AgentPill } from "./AgentPill";
 import { DropGap } from "@/components/DropGap";
 import { EmptyState } from "@/components/EmptyState";
@@ -78,6 +79,7 @@ import {
 } from "../lib/grouping";
 import { mergePlans, quickAddPrefill } from "../lib/quickAdd";
 import { columnCountTitle, visibleTasks } from "../lib/subtaskView";
+import { columnMoreCount } from "../lib/paging";
 import {
   type Swimlane,
   buildSwimlanes,
@@ -241,6 +243,16 @@ interface Props {
    * add is the top Capture. Default true.
    */
   canQuickAdd?: boolean;
+  /**
+   * #918. The true size of each column across the whole filtered set, from
+   * the server, or null. A column counts these and not only the rows it
+   * holds. `paging.columnSizes` builds it.
+   */
+  columnTotals?: ReadonlyMap<string, number> | null;
+  /** #918. Read the next rows of one column. `held` is the rows it holds. */
+  onLoadColumn?: (columnKey: string, held: number) => void;
+  /** #918. The column whose own read is in flight. */
+  loadingColumn?: string | null;
 }
 
 export function TaskBoard({
@@ -278,6 +290,9 @@ export function TaskBoard({
   projectPath,
   statusesFor,
   canQuickAdd = true,
+  columnTotals = null,
+  onLoadColumn,
+  loadingColumn = null,
 }: Props) {
   // A copied link names this organization, so it opens in the right account.
   const orgId = useAccess().access.organization?.id ?? null;
@@ -363,6 +378,30 @@ export function TaskBoard({
     [columns, groupBy, statuses]
   );
 
+  /**
+   * #918. The foot of a column that holds fewer rows than the server counts:
+   * one control that reads the next rows of that column alone.
+   */
+  const columnMore = (columnKey: string, held: number) => {
+    const total = columnTotals?.get(columnKey);
+    const next = columnMoreCount(held, total);
+    if (!onLoadColumn || next === 0) return null;
+    return (
+      <li className="list-none" data-column-more={columnKey}>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="w-full"
+          loading={loadingColumn === columnKey}
+          disabled={loadingColumn !== null}
+          onClick={() => onLoadColumn(columnKey, held)}
+        >
+          {`Load ${next} more`}
+        </Button>
+      </li>
+    );
+  };
+
   // WS-64 OP-1 — the status tabs of the phone board, and the one status it shows.
   const [chosenTab, setChosenTab] = useState<string | null>(null);
   const tabs = useMemo<StatusTab[]>(
@@ -370,9 +409,9 @@ export function TaskBoard({
       columns.map((column) => ({
         key: column.key,
         label: column.label,
-        count: column.tasks.length,
+        count: columnTotals?.get(column.key) ?? column.tasks.length,
       })),
-    [columns]
+    [columns, columnTotals]
   );
   const shownTab = activeTabKey(tabs, chosenTab);
   const swipe = useRef<{ x: number; y: number } | null>(null);
@@ -798,6 +837,15 @@ export function TaskBoard({
     // and the click that put the caret back also opens the task panel.
     const editing = renamingThis || composingHere;
 
+    // EA-13g: one look for each run state. `globals.css` draws the edge.
+    const agentLook = agentCardLook(task.agent_state, {
+      clientVia: task.agent_client_via,
+      memberEmail: task.agent_member_email,
+      note: task.agent_note,
+      viewerEmail: me,
+      labels: personLabels,
+    });
+
     return (
     // ⚠️ `data-card`, not a Tailwind group. The strip's reveal cannot use
     // `group-hover:` at all — Tailwind v4 wraps that in
@@ -815,6 +863,7 @@ export function TaskBoard({
     <li
       key={task.id}
       data-card
+      data-agent-edge={agentLook.edge ?? undefined}
       className="rounded-md"
       // WS-64 OP-1: a finger that rests on a touch card opens its menu.
       onTouchStart={
@@ -974,6 +1023,18 @@ export function TaskBoard({
               labels={personLabels}
             />
           </div>
+        ) : null}
+        {agentLook.line ? (
+          <p
+            data-agent-line
+            className="mt-1 flex min-w-0 items-center gap-1 text-[10px] text-muted-foreground"
+            title={agentLook.line}
+          >
+            {agentLook.edge === "live" ? (
+              <span aria-hidden className="agent-live-dot h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+            ) : null}
+            <span className="truncate">{agentLook.line}</span>
+          </p>
         ) : null}
         <TaskMeta chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)} />
         {/* WS-64 OP-11 — My tasks names the project of each card. */}
@@ -1150,6 +1211,7 @@ export function TaskBoard({
                   onAdd={shelf || !canQuickAdd ? undefined : (title) => quickAdd(title, column.key, null)}
                 >
                   {cellCards(column.key, column.tasks, null)}
+                  {columnMore(column.key, column.tasks.length)}
                 </BoardColumn>
               ))}
           </div>
@@ -1167,7 +1229,8 @@ export function TaskBoard({
               header={{
                 accent: columnAccents[columnIndex],
                 title: column.label,
-                count: column.tasks.length,
+                // #918: the server's count of the lane, not the rows held.
+                count: columnTotals?.get(column.key) ?? column.tasks.length,
                 countTitle: columnCountTitle(column.tasks, column.label),
               }}
               dropTarget={isDropTarget(null, column.key)}
@@ -1190,6 +1253,7 @@ export function TaskBoard({
               onAdd={shelf || !canQuickAdd ? undefined : (title) => quickAdd(title, column.key, null)}
             >
               {cellCards(column.key, column.tasks, null)}
+              {columnMore(column.key, column.tasks.length)}
             </BoardColumn>
           ))}
         </Board>
@@ -1206,7 +1270,7 @@ export function TaskBoard({
                   header={{
                     accent: columnAccents[columnIndex],
                     title: column.label,
-                    count: column.tasks.length,
+                    count: columnTotals?.get(column.key) ?? column.tasks.length,
                     countTitle: columnCountTitle(column.tasks, column.label),
                   }}
                 />

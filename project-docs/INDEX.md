@@ -94,7 +94,7 @@ limitations). Do not add product specs to `docs/`.
 | `specs/multi_agent_orchestration.md` | WS-12 — **Phase 4 ONLY** (D6); rest superseded |
 | `specs/agent_architecture.md` | WS-8 |
 | `specs/maf_coding_engine.md` | **WS-43** — **the MAF coding engine and the sandbox terminal** (owner decision, 2026-10-03). Records **D82** (`code_task` runs on a MAF harness session, not on the Copilot SDK, which amends `agent_architecture.md` §11) and **D83** (T2 is un-parked for the sandbox terminal only, which amends D16 and D10.1). One sandbox broker owns the Docker socket. One container serves one organization, agent and thread. It has no network by default, and only an approved request opens an allowlist proxy. WS-43b (the image and its Docker test workflow) and WS-43k (the no-Copilot fence) are built, and WS-43c (the sandbox broker, PR #591) and WS-43t1 (PR #595) are built and dark. WS-43d (Projects track step 1, D86) is built and dark, merged in PR #603. WS-43u (Projects track step 2, the instructions for code) is built and dark (2026-10-04, in review): only a run that holds `run_command` reads the sandbox rules. H-227 (the uploads and the S8 documents of a shared agent are thread-scoped, §16.3) is built (2026-10-04, in review), and WS-43w waits on its deploy. WS-43v (Projects track step 3, the light eval) has its harness and checkers in PR #607, and its sweep waits on WS-43d and WS-43u. The owner kept delegation in a covered run (2026-10-03), so the spec no longer says that no data leaves the platform, and H-236 built the network control on such a run and every run under it (2026-10-04). It fails closed, and it is the prerequisite of the owner flip WS-43w. Every other slice is spec only. WS-43a (the eval) comes first, and every slice ships dark. ⚠️ D83 does not un-park P5-c, P5-d or the pooled-cutover T2. 🆕 **D84 (2026-10-03, §15): the GitHub Copilot SDK leaves the platform.** WS-43k to WS-43s plan every other Copilot use and the removal. WS-43t1 and WS-43t2 (native session persistence, §15.9) come first, and the confirm-turn moves wait on their production soak. WS-43t2 (the session store, migration 228) is built and dark (2026-10-08). 🆕 **D85 (2026-10-03, §7.9): a shared agent gets no shell tool until `covers()` is true for it, and a guard always refuses its Copilot CLI shell, in every mode.** The interim block is built and LIVE, and its fence is WS43-F23. |
-| `specs/memory_architecture.md` | WS-9 |
+| `specs/memory_architecture.md` | WS-9 — re-scoped 2026-10-29 by D132. Mem0 and Graphiti are not tiers (they retire at KG-11). See the banner in the spec. |
 | `specs/observability_e2.md` | WS-6 |
 | `specs/permissions_sandbox_b6.md` | WS-3 |
 | `../docs/multiplayer/memory-clearance.md` *(in `docs/`!)* | WS-10 (S1 only — floor control CUT, D25.4) |
@@ -133,7 +133,9 @@ limitations). Do not add product specs to `docs/`.
 `specs/llm_caching_memory.md` · `specs/mcp_plugin_integration.md` *(Phase A
 shipped; B/C research)* · `specs/task_manager_hr_planning_and_memory.md` *(HR
 data layer WS-28 reads)* · `specs/multi_tenancy_leak_audit.md` *(the 14-finding
-audit feeding WS-29 MT-1i)*
+audit feeding WS-29 MT-1i)* · `research/` *(research records that own no work.
+`research/README.md` lists all ten, for example the Plane and Paca reviews.
+#956 restored them on 2026-10-29.)*
 
 ## DEFERRED / PARKED / HISTORICAL — banner-marked; nothing dispatches from these
 

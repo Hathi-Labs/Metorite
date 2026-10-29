@@ -1336,6 +1336,29 @@ def _apply_turn_pack_items(agents: list[Any], tier_run: Any) -> None:
                    error_type=type(exc).__name__)
 
 
+def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
+    """*agents*, with the first one on a per-run view that logs the tools of
+    each model request (WS-67 OA-8f, ``executor.request_tools``): the count
+    actually sent and a short hash of the names, with the tools of a context
+    provider and of an MCP server. Only the orchestrator, and never raises.
+    The view comes from ``agent_with_providers``, as the loader's does."""
+    if agent_name != _PACK_AGENT or not agents:
+        return agents
+    try:
+        from agent_framework import Agent
+
+        if not isinstance(agents[0], Agent):
+            return agents
+        from acb_skills.tool_guard import LogRequestToolsProvider
+
+        from orchestrator._native_run_context import agent_with_providers
+
+        agents[0] = agent_with_providers(agents[0], [LogRequestToolsProvider(agent_name)])
+    except Exception as exc:  # a log never costs the turn
+        _log.warning("executor.request_tools_log_off", error_type=type(exc).__name__)
+    return agents
+
+
 def _log_pack_request_tools(agents: list[Any]) -> None:
     """Log the tool count of a run that loaded packs, after the injection.
 
@@ -1347,6 +1370,10 @@ def _log_pack_request_tools(agents: list[Any]) -> None:
     except ImportError:
         return
     count = len(_agent_tool_names(agents[0])) if agents else 0
+    # OA-8f: the load tool rides in a context provider, so no pool holds it.
+    # The estimate counts it (``_apply_tool_packs``), so the true count does too.
+    if agents and _pack_loader_offer(agents[0]):
+        count += 1
     log = _log.warning if count > MAX_REQUEST_TOOLS else _log.info
     log("executor.pack_request_tools", tools=count, cap=MAX_REQUEST_TOOLS)
 
@@ -1368,14 +1395,36 @@ def _pack_delegation_refusal(agent_name: str) -> str | None:
     return refused
 
 
-def _without_pack_keys() -> dict[str, Any]:
+def _without_pack_keys(agent_name: str = "") -> dict[str, Any]:
     """The changes that take the pack keys out of a derived run context, so a
-    delegated run never inherits the run key or the record of its parent."""
+    delegated run never inherits the run key or the record of its parent.
+
+    WS-67 OA-9c: a spawn child (*agent_name* is the worker) gets the run key
+    that the spawn minted for the pack tools of its job instead
+    (:func:`_job_pack_keys`). It never gets the parent's key or the record."""
     try:
         from acb_skills.tool_packs import PACK_RUN_KEY, PACKS_KEY
     except ImportError:
         return {}
-    return {PACK_RUN_KEY: None, PACKS_KEY: None}
+    return {PACK_RUN_KEY: None, PACKS_KEY: None, **_job_pack_keys(agent_name)}
+
+
+def _job_pack_keys(agent_name: str, ctx: Any = None) -> dict[str, Any]:
+    """The run key of the pack tools of a spawn child, for the child's own
+    binding, or ``{}`` (WS-67 OA-9c).
+
+    ``subagent_contract.job_pack_run`` reads the job of *ctx* (this frame
+    when None). Only the worker, with a job that holds pack tools, gets a key.
+    The streaming sub-run derives it, and the batch run binds it again after
+    ``bind_artifact_context`` replaces the context. The key ends with the
+    child's run."""
+    try:
+        from acb_skills.subagent_contract import job_pack_run
+        from acb_skills.tool_packs import PACK_RUN_KEY
+    except ImportError:
+        return {}
+    key = job_pack_run(agent_name, ctx)
+    return {PACK_RUN_KEY: key} if key else {}
 
 
 def _worker_refusal(agent_name: str) -> str | None:
@@ -2338,8 +2387,10 @@ async def _run_sub_agent_streaming(
     _sub_no_egress = _run_no_egress(agent_name, _parent_ctx_sub)
     # WS-67 OA-7c: a delegated run never inherits the run key or the record of
     # its parent's packs, so its own hand-offs are never refused for them.
+    # OA-9c: a spawn child takes the key of its own pack tools instead.
     derive_artifact_context(
-        no_egress=_sub_no_egress, **_without_pack_keys(), **_without_job_key(agent_name),
+        no_egress=_sub_no_egress, **_without_pack_keys(agent_name),
+        **_without_job_key(agent_name),
     )
     # WS-17 EM-G11f3: a run of an agent that reads mail marks the CALLING
     # session now, before it does any work, so a cancel or an error cannot
@@ -4997,6 +5048,9 @@ async def _run_agent_inner(
                 run_tools=_run_tools,
                 # WS-67 OA-9b hardening: a run with a parent is a sub-run.
                 **({"sub_run": True} if _parent_ctx.get("run_id") else {}),
+                # WS-67 OA-9c: a spawn child's own pack tools act in this run,
+                # by the key that the spawn minted for its job. {} otherwise.
+                **_job_pack_keys(agent_name, _parent_ctx),
             )
             try:
                 _ws_root = Path(_effective_agent_dir)
@@ -5937,6 +5991,7 @@ async def run_agent_stream(
             _run_tools = await _add_crm_facts_block(
                 agents, _run_tools, no_egress=_stream_no_egress, mark_run=True)
             _log_agent_tools_resolved(agent_name, agents, _own_tools)
+            agents = _log_request_tools_view(agents, agent_name)
             if _pack_apply is not None:
                 # WS-67 OA-7c: the true tool count beside the estimate of the
                 # cap. Pack names stay out of `_run_tools` (OA-9c reads the

@@ -20,7 +20,7 @@ Three things live here.
 
 ⚠️ **Each rule is a rule that already exists, joined.** The labels are RA-1's
 (`analytics.finish_labels_sql`, over Throughput's ``cyc``). "Working" is
-`filters.AGENT_RUN_STATE_SQL` with `agent_summary.WORKING_STATES`, the rule of
+`filters.AGENT_RUN_STATE_SQL` with `filters.WORKING_STATES`, the rule of
 the board strip. "Agent work" on a pull request is
 `agent_worked.AGENT_WORKED_SQL`. The agent of a finish and its member come
 from `analytics_waiting.agent_of`. "An agent act" is `analytics.agent_act_sql`.
@@ -46,7 +46,6 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import Any
 
-from gateway.routes.projects.agent_summary import WORKING_STATES
 from gateway.routes.projects.agent_worked import agent_worked_sql
 from gateway.routes.projects.analytics import (
     FINISH_AGENT,
@@ -68,7 +67,7 @@ from gateway.routes.projects.analytics_waiting import (
     answered_at_sql,
     percentile_cont,
 )
-from gateway.routes.projects.filters import AGENT_RUN_STATE_SQL, agent_runs_enabled
+from gateway.routes.projects.filters import AGENT_RUN_STATE_SQL, WORKING_STATES, agent_runs_enabled
 from gateway.routes.projects.report_scope import filter_person_rows
 from sqlalchemy import text
 
@@ -517,7 +516,7 @@ def runs_now_sql(open_where: str) -> str:
     member: how many work, and how many are silent.
 
     "Working" is the board strip's rule: the run state of
-    `filters.AGENT_RUN_STATE_SQL` is one of `agent_summary.WORKING_STATES`.
+    `filters.AGENT_RUN_STATE_SQL` is one of `filters.WORKING_STATES`.
     A silent run (:func:`silent_run_sql`) is not working. It binds
     ``:working_states`` and ``:silent_s``.
     """

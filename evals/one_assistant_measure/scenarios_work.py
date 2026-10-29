@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from evals.one_assistant_measure import fanout
 from evals.one_assistant_measure.scenarios import (
     OFFICE,
     PRIYA,
@@ -33,10 +34,6 @@ from evals.one_assistant_measure.workgateway import (
     TASK_IDS,
     cid,
 )
-
-#: The fan-out chats wait for ``spawn_subagents``, the tool of OA-9b.
-FANOUT_SKIP = ("spawn_subagents exists (OA-9b), but the fan-out fixtures, the worker plan "
-               "and the arm flag are not wired (run.SPAWN_NOT_WIRED)")
 
 CRM_PAGE = "## Where the member is now\nThe member is in the CRM app (/crm)."
 
@@ -73,7 +70,9 @@ CRM_SCENARIOS: tuple[Scenario, ...] = (
         Turn("Which of those are mine?",
              (Check("ran_tool", ("get_pipeline",), "read_my_board"),
               Check("answer_all", (r"Orbit", r"Kestrel", r"Helix"), "names_my_deals"),
-              Check("answer_none", (r"Vantage",), "leaves_out_kiran_deal"),
+              Check("answer_not_mine", ("Vantage", (r"\bKiran\b", r"\bnot yours\b", r"\bnot (?:one of )?(?:your|the member)",
+                                                 r"\bbelongs? to\b", r"\bsomeone else\b", r"\banother\b")),
+                    "leaves_out_kiran_deal"),
               Check("no_unasked_write", 0)),
              Plan((("get_pipeline", {"owner": "member@example.com"}),),
                   "Three deals are yours: Orbit Labs sensor retrofit, Kestrel pilot and "
@@ -210,14 +209,14 @@ PROJECTS_SCENARIOS: tuple[Scenario, ...] = (
     # On a Projects page the core pack (23 tools) is loaded, and the plan pack
     # (35) does not fit beside it under the cap of 110. The loader does not
     # offer it, so the specialist stays and the route goes to it (OA-8e finding).
-    _pm("pm_capacity", "Plan pack on the Projects page: no room, the route goes to the owner", (
+    _pm("pm_capacity", "Plan pack on the Projects page: the model loads it (the base trim leaves room)", (
         Turn("Who is overloaded right now?",
              (Check("ran_tool", ("analytics_load",), "read_the_load"),
               Check("answer_all", (r"Ananya", r"overdue"), "names_the_person"),
               Check("right_pack", "projects-plan"), Check("no_unasked_write", 0)),
              Plan((("analytics_load", {}),),
                   "Ananya has 2 open tasks and both are overdue. You have 3 open tasks, "
-                  "none overdue.", handoff=True)),
+                  "none overdue.")),
     )),
     # With no surface the core pack is not loaded, so the plan pack fits and the
     # model loads it (layer b).
@@ -247,14 +246,14 @@ PROJECTS_SCENARIOS: tuple[Scenario, ...] = (
     )),
     # projects-structure on a Projects page: no room beside the core pack, so
     # the route goes to the owner, as for the plan pack.
-    _pm("pm_status", "Structure pack on the Projects page: the route goes to the owner", (
+    _pm("pm_status", "Structure pack on the Projects page: the model loads it (the base trim leaves room)", (
         Turn("Rename the In review status to QA",
              (Check("work_write", ("PATCH", r"^/projects/statuses/", "QA"), "status_renamed"),
               Check("right_pack", "projects-structure"), Check("no_unasked_write", 1),
               Check("answer_all", (r"QA",))),
              Plan((("update_status", {"project_id": NODE_WEB, "status": "In review",
                                       "name": "QA"}),),
-                  "Updated status QA in Website Relaunch.", handoff=True)),
+                  "Updated status QA in Website Relaunch.")),
     )),
     # projects-structure by a word ("task tags"): choose() lets it replace the
     # core pack, so the pack loads at layer (a).
@@ -278,7 +277,7 @@ PROJECTS_SCENARIOS: tuple[Scenario, ...] = (
         Turn("Archive tasks 13, 14 and 15",
              (Check("work_write", ("POST", r"^/projects/tasks/bulk$", "archive"), "archived"),
               Check("right_pack", "projects-bulk"), Check("no_unasked_write", 1),
-              Check("answer_all", (r"\b3\b",), "says_how_many")),
+              Check("count_stated", (3, (13, 14, 15)), "says_how_many")),
              Plan((("bulk_update", {"task_ids": ",".join(_T[n] for n in (13, 14, 15)),
                                     "action": "archive"}),),
                   "Applied to 3 of 3 tasks.")),
@@ -293,7 +292,7 @@ PROJECTS_SCENARIOS: tuple[Scenario, ...] = (
     )),
     _pm("pm_calendar", "Calendar surface: what is due", (
         Turn("What is due this week?",
-             (Check("ran_tool", ("my_work",), "read_my_work"),
+             (Check("ran_tool", ("my_work", "calendar", "list_tasks"), "read_my_work"),
               Check("answer_all", (r"launch brief", r"Vendor call"), "names_the_due_tasks"),
               Check("right_pack", "projects"), Check("no_unasked_write", 0)),
              Plan((("my_work", {}),),
@@ -359,7 +358,7 @@ MIXED_SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         "mix_call_then_task", "Log a call on the deal, then make a task (two cards)", (
             Turn("Log this call on Orbit: Priya wants 5 percent off",
-                 (Check("work_write", ("POST", r"^/crm/deals/[^/]+/activities$", "5 percent"),
+                 (Check("body_figure", ("POST", r"^/crm/deals/[^/]+/activities$", 5),
                         "call_logged"),
                   Check("right_pack", "crm-records"), Check("no_unasked_write", 1)),
                  Plan((("search_crm", {"query": "Orbit", "entity": "deals"}),
@@ -377,25 +376,58 @@ MIXED_SCENARIOS: tuple[Scenario, ...] = (
         ), set="mixed", surface="crm", page=page_for("crm")),
 )
 
-# ── Fan-out: 3 chats, skipped until OA-9b ────────────────────────────────────
+# ── Fan-out: 5 chats (OA-8e phase 3, §6.3) ───────────────────────────────────
+#
+# A research turn spawns on the ``packs+spawn`` arm, and on the ``pack`` arm
+# the model reads each page itself (``Plan.solo``). A turn of one read, one
+# task or three searches must not spawn. The web pages are fixtures
+# (:mod:`.fanout`), so a child reaches no real site.
+
+_ABOUT = [fanout.company_url(c) for c in fanout.COMPANIES]
+_INV = [f"{fanout.INVOICE_BASE}{n}" for n, _, _ in fanout.INVOICES]
+_PAIRS = [_INV[i:i + 2] for i in range(0, 10, 2)]
+
+
+def _fan(sid: str, title: str, turn: Turn) -> Scenario:
+    return Scenario(sid, title, (turn,), set="fanout", surface="", page="")
+
 
 FANOUT_SCENARIOS: tuple[Scenario, ...] = (
-    Scenario(
-        "fan_companies", "Five companies, each researched with a page read", (
-            Turn("Research these five companies and compare them: Orbit, Kestrel, Vantage, "
-                 "Helix and Nimbus",
-                 (Check("spawned"),), Plan()),
-        ), set="fanout", skip=FANOUT_SKIP),
-    Scenario(
-        "fan_tasks", "Five tasks from a list", (
-            Turn("Make a task for each of these: brief, copy, assets, QA pass and launch",
-                 (Check("spawned"),), Plan()),
-        ), set="fanout", skip=FANOUT_SKIP),
-    Scenario(
-        "fan_invoices", "Ten invoices totalled", (
-            Turn("Total the ten invoices in my inbox from October",
-                 (Check("spawned"),), Plan()),
-        ), set="fanout", skip=FANOUT_SKIP),
+    _fan("fan_companies", "Five companies, each researched with a page read", Turn(
+        "Research these five companies and compare them: Orbit, Kestrel, Vantage, Helix and "
+        "Nimbus. Their about pages are " + ", ".join(_ABOUT) + ".",
+        (Check("spawned"), Check("items_contract"), Check("no_unasked_write", 0),
+         Check("answer_all", tuple(c.split()[0] for c in fanout.COMPANIES), "names_each_company")),
+        Plan((("spawn_subagents", {"jobs": fanout.jobs_for(_ABOUT)}),),
+             "Orbit, Kestrel, Vantage, Helix and Nimbus all make industrial sensors. Orbit has "
+             "40 staff, Kestrel 50, Vantage 60, Helix 70 and Nimbus 80.",
+             solo=tuple(("fetch_page", {"url": u}) for u in _ABOUT)))),
+    _fan("fan_invoices", "Ten invoices totalled", Turn(
+        "Total these ten invoices: " + ", ".join(_INV) + ".",
+        (Check("spawned"), Check("items_contract"), Check("no_unasked_write", 0),
+         Check("figure", fanout.INVOICE_TOTAL, "totals_the_invoices")),
+        Plan((("spawn_subagents", {"jobs": json.dumps([
+            {"job": f"Read {a} and {b} and give each amount due.", "tools": ["fetch_page"],
+             "tier": "fast"} for a, b in _PAIRS])}),),
+             f"The ten invoices total Rs {fanout.INVOICE_TOTAL:,}.",
+             solo=tuple(("fetch_page", {"url": u}) for u in _INV)))),
+    _fan("fan_tasks", "Five tasks from a list: a write, so no spawn", Turn(
+        "Make a task for each of these in Website Relaunch: brief, copy, assets, QA pass and launch",
+        (Check("not_spawned"), Check("work_write", ("POST", r"^/projects/tasks$"), "tasks_made"),
+         Check("no_unasked_write", 1)),
+        Plan((("create_tasks", {"project_id": NODE_WEB, "tasks": json.dumps(
+            [{"title": t} for t in ("Brief", "Copy", "Assets", "QA pass", "Launch")])}),),
+             "Made 5 tasks in Website Relaunch."))),
+    _fan("fan_one_read", "One page read: no spawn", Turn(
+        f"What does {fanout.PRICE_URL} say about the Basic plan?",
+        (Check("not_spawned"), Check("answer_all", (r"4,999",), "gives_the_price")),
+        Plan((("fetch_page", {"url": fanout.PRICE_URL}),), "The Basic plan costs Rs 4,999 a month."))),
+    _fan("fan_three_searches", "Three searches: no spawn", Turn(
+        "Search the web for Orbit, Kestrel and Helix",
+        (Check("not_spawned"), Check("answer_all", (r"Orbit", r"Kestrel", r"Helix"))),
+        Plan((("web_search", {"query": "Orbit Labs"}), ("web_search", {"query": "Kestrel Labs"}),
+              ("web_search", {"query": "Helix Foods"})),
+             "Orbit Labs, Kestrel Labs and Helix Foods each make industrial sensors."))),
 )
 
 WORK_SCENARIOS: tuple[Scenario, ...] = (

@@ -797,6 +797,21 @@ class Settings(BaseSettings):
     tool_packs: str = ""
     tool_packs_orgs: str = ""
 
+    # ── The floor trim of the one assistant (WS-67 OA-8f) ──────────────────
+    #
+    # ON takes ten floor tools out of the orchestrator's request: the tools
+    # that no member turn called in production (`tool_packs.FLOOR_TRIM_TOOLS`).
+    # Evidence, 2026-10-29: over 8 days of the journal, a pattern that found
+    # `search_company` 50 times and `email_assistant` 41 times found 0 calls
+    # of `load_design_system`, `load_artifact_kit`, `decide` and
+    # `manage_todo_list`. The other six had none in the first 7 days.
+    # The room they free lets two packs fit under `MAX_REQUEST_TOOLS`. OFF
+    # leaves the tool list and the persona byte-identical. The one reader is
+    # `acb_skills.tool_packs.floor_trim_enabled`. It sends nothing out and
+    # spends nothing, so it is AGENT-SAFE.
+    # Fence: tests/unit/test_floor_trim.py.
+    orchestrator_floor_trim: bool = False
+
     # ── Dynamic sub-agents of the one assistant (WS-67 OA-9b, D117) ─────────
     #
     # `spawn_subagents_orgs` lists the organization ids whose main assistant

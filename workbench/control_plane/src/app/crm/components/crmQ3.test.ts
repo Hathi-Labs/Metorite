@@ -41,7 +41,7 @@ describe("the Leads board", () => {
   const statuses = [status("s2", "Contacted", 1), status("s1", "New", 0)];
   const lanes = (ext: string | null) =>
     toLeadLanes(statuses, { s1: { rows: [lead("l1", "Acme lead", ext)], total: 7 } });
-  const draw = (over: { ext?: string | null; readOnly?: boolean; onCreate?: () => void } = {}) =>
+  const draw = (over: { ext?: string | null; readOnly?: boolean } = {}) =>
     renderToStaticMarkup(
       createElement(KanbanBoard, {
         entity: "leads",
@@ -50,7 +50,6 @@ describe("the Leads board", () => {
         readOnly: over.readOnly,
         onMove: noop,
         onOpen: noop,
-        onCreate: over.onCreate,
       }),
     );
 
@@ -80,8 +79,7 @@ describe("the Leads board", () => {
     expect(html).not.toContain('draggable="true"');
   });
 
-  it("names the create button for a lead", () => {
-    expect(draw({ onCreate: noop })).toContain("New lead");
+  it("draws no dashed end-of-board New lead tile (CRM-U15)", () => {
     expect(draw()).not.toContain("New lead");
   });
 

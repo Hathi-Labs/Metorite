@@ -11,7 +11,7 @@ This file holds the harness, not the live run.
 * ``pack_flag`` turns on EVERY pack of an owner. A dropped pack fails a test.
 * Each new check has a case that passes and a case that fails, and each one
   names its mutation.
-* The fan-out chats are listed and skipped until ``spawn_subagents`` exists.
+* The fan-out chats run on the ``pack`` and ``packs+spawn`` arms (phase 3).
 
 Run::
 
@@ -67,7 +67,7 @@ def test_every_work_plan_passes_on_both_arms(scripted) -> None:
     assert problems == [], problems
     ran = [s for s in WORK_SCENARIOS if not s.skip]
     assert len(rows) == 2 * sum(len(s.turns) for s in ran)
-    assert {r["arm"] for r in rows} == {"delegation", "pack"}
+    assert {r["arm"] for r in rows} == {"delegation", "pack", "packs+spawn"}
 
 
 def test_the_set_has_the_turns_the_spec_asks_for() -> None:
@@ -87,7 +87,7 @@ def test_every_turn_is_short_so_no_turn_kind_request_goes_out() -> None:
     and (b) are the ones that load the pack. Mutation: add a 12-word turn → red."""
     for sc in WORK_SCENARIOS:
         if sc.set == "fanout":
-            continue  # a research job is long by nature, and it is skipped today
+            continue  # a research job is long by nature
         for turn in sc.turns:
             words = len(turn.words.split())
             assert words < SHORT_MESSAGE_WORDS, (sc.id, words, turn.words)
@@ -125,14 +125,16 @@ def test_every_check_kind_of_the_set_exists() -> None:
 
 def test_the_words_of_each_pack_are_the_ones_a_turn_expects() -> None:
     """Layer (a) by a word: these turns hold a word of the pack, and the
-    others hold none. A change to ``_PROJECTS_WORDS`` shows here."""
+    others hold none. A change to ``_PROJECTS_WORDS`` shows here. OA-8g added
+    "overloaded" and "add tasks", so ``pm_capacity`` and ``pm_new_tasks`` load
+    by a word since run 3."""
     by_word = {"pm_stuck": "projects-plan", "pm_tags": "projects-structure",
-               "pm_archive": "projects-bulk", "crm_open_deals": "crm-records"}
+               "pm_archive": "projects-bulk", "crm_open_deals": "crm-records",
+               "pm_capacity": "projects-plan", "pm_new_tasks": "projects-bulk"}
     for sid, slug in by_word.items():
         words = [t.words for t in scenario(sid).turns]
         assert any(tool_packs.matched_layer(slug, w) == "words" for w in words), sid
-    for sid, slug in {"pm_capacity": "projects-plan", "pm_status": "projects-structure",
-                      "pm_new_tasks": "projects-bulk", "crm_miss": "crm-records",
+    for sid, slug in {"pm_status": "projects-structure", "crm_miss": "crm-records",
                       "pm_miss": "projects"}.items():
         assert tool_packs.matched_layer(slug, scenario(sid).turns[0].words) is None, sid
 
@@ -140,30 +142,176 @@ def test_the_words_of_each_pack_are_the_ones_a_turn_expects() -> None:
 # ── the fan-out chats wait for OA-9b ─────────────────────────────────────────
 
 
-def test_the_fanout_chats_are_listed_and_skipped_until_spawn_exists(capsys) -> None:
-    """Mutation: clear ``skip`` of one fan-out chat → it runs, the scripted plan
-    is empty, and this test is red. When OA-9b merges, ``spawn_built`` reads True
-    and ``test_spawn_subagents_is_not_built`` fails: build the arm then."""
-    assert len(FANOUT_SCENARIOS) == 3 and all(s.skip for s in FANOUT_SCENARIOS)
-    assert all(s.set == "fanout" for s in FANOUT_SCENARIOS)
-    assert not any(s.skip for s in WORK_SCENARIOS if s.set != "fanout")
-    assert run.runnable(tuple(FANOUT_SCENARIOS)) == ()
-    code = run.main(["--scripted", "--scenarios", "fan_companies,fan_tasks,fan_invoices",
-                     "--arms", f"delegation,pack,{run.SPAWN_ARM}"])
-    out = capsys.readouterr().out
-    assert code == 0 and out.count("SKIP: fan_") == 3 and f"SKIP: the arm {run.SPAWN_ARM}" in out
+def test_the_fanout_chats_run_on_the_pack_and_the_spawn_arm() -> None:
+    """Phase 3: five fan-out chats, no skip. A research chat spawns on the spawn
+    arm and reads page by page on the pack arm. Delegation holds no spawn tool.
+    Mutation: give one fan-out chat ``skip`` text → ``runnable`` drops it → red."""
+    assert len(FANOUT_SCENARIOS) == 5 and all(s.set == "fanout" for s in FANOUT_SCENARIOS)
+    assert not any(s.skip for s in WORK_SCENARIOS)
+    assert run.runnable(tuple(FANOUT_SCENARIOS)) == tuple(FANOUT_SCENARIOS)
+    assert run.arms_for(FANOUT_SCENARIOS[0], run.ALL_ARMS) == ("pack", run.SPAWN_ARM)
+    assert run.arms_for(scenario("crm_pipeline"), run.ALL_ARMS) == ("delegation", "pack")
+    assert run.arms_for(scenario("crm_pipeline"), (run.SPAWN_ARM,)) == ()
 
 
-def test_spawn_exists_but_the_fanout_stays_skipped_with_a_reason() -> None:
-    """OA-9b is merged, so the tool exists. The fan-out chats need fixtures for
-    ``web_search`` and ``fetch_page``, a worker plan and an arm flag, which is
-    more than small wiring, so they stay skipped and say why.
-    Mutation: set ``skip`` of one fan-out chat to "" → it runs with an empty plan
-    → red."""
-    assert run.spawn_built() is True
-    for sc in FANOUT_SCENARIOS:
-        assert sc.skip and "not wired" in sc.skip, sc.id
-    assert "not wired" in run.SPAWN_NOT_WIRED
+@pytest.mark.parametrize("sid", ["fan_companies", "fan_invoices"])
+def test_a_research_chat_spawns_and_its_children_parse(sid: str) -> None:
+    """The spawn arm holds the tool, the model spawns, five children read fixture
+    pages, and the answer of each parses (§6.4). The pack arm reads page by page.
+    Mutation: ``WorkerModel`` answers plain text → ``items_contract`` red."""
+    sc = scenario(sid)
+    models = run.scripted_models(sc, run.SPAWN_ARM)
+    (row,) = run.run_chat(sc, run.SPAWN_ARM, models=models)
+    assert row["passed"] and row["spawned"] == 1 and row["items_problems"] == [], row["checks"]
+    assert row["checks"]["spawned"] is True and row["checks"]["items_contract"] is True
+    assert "spawn_subagents" in _names(models[ORCHESTRATOR].bodies[0])
+    assert row["web_fetches"] == 5 + (5 if sid == "fan_invoices" else 0) and row["web_unknown"] == []
+    assert any(e["event"] == "measure.fanout" and e["ms"] >= 0 for e in row["pack_events"])
+    models = run.scripted_models(sc, "pack")
+    (solo,) = run.run_chat(sc, "pack", models=models)
+    assert solo["passed"] and solo["spawned"] == 0 and solo["checks"]["spawned"] is None
+    assert "spawn_subagents" not in _names(models[ORCHESTRATOR].bodies[0])
+    assert not any(e["event"] == "measure.fanout" for e in solo["pack_events"])
+
+
+@pytest.mark.parametrize("sid", ["fan_tasks", "fan_one_read", "fan_three_searches"])
+def test_one_read_one_task_and_three_searches_do_not_spawn(sid: str) -> None:
+    """Mutation: make the plan spawn → ``not_spawned`` red."""
+    from acb_common import get_settings
+
+    (row,) = run.run_chat(scenario(sid), run.SPAWN_ARM)
+    assert row["passed"] and row["checks"]["not_spawned"] is True and row["spawned"] == 0
+    assert get_settings().spawn_subagents_orgs == ""  # the flag lived in the chat only
+
+
+def test_the_invoices_total_comes_from_the_fixtures() -> None:
+    from evals.one_assistant_measure import fanout
+
+    assert fanout.INVOICE_TOTAL == 233_400 and len(fanout.INVOICES) == 10
+    (row,) = run.run_chat(scenario("fan_invoices"), run.SPAWN_ARM)
+    assert row["checks"]["totals_the_invoices"] is True
+
+
+def test_a_child_reaches_no_local_database_and_no_real_site(monkeypatch) -> None:
+    """A child holds the read tools of its parent, and the parent holds
+    ``retrieve_entity_context`` in some runs. A job that names it is refused
+    here, and where a child could call it, ``no_local_database`` makes it read
+    nothing. The web tools answer from fixtures, so nothing leaves the box. The
+    sentinels on the data readers and on the real web code fail the test if one
+    runs.
+    Mutation: remove ``no_local_database`` or ``WebFixtures.install`` from
+    ``run_chat`` → a sentinel raises → red."""
+    from acb_skills import web_tools
+    from orchestrator.agents import retrieve_entity_context
+
+    from evals.one_assistant_measure import fanout
+
+    def sentinel(*_a, **_k):
+        raise AssertionError("a child reached the local database or the web")
+
+    scope = retrieve_entity_context.__globals__
+    monkeypatch.setitem(scope, "retrieve", sentinel)
+    monkeypatch.setitem(scope, "_sales_context_fn", sentinel)
+    monkeypatch.setattr(web_tools, "_serpapi_search", sentinel)
+    sc = scenario("fan_companies")
+    jobs = json.dumps([
+        {"job": "Find Orbit in the company graph.", "tools": ["retrieve_entity_context"],
+         "tier": "fast"},
+        {"job": f"Read {fanout.company_url('Orbit Labs')}", "tools": ["fetch_page"], "tier": "fast"}])
+    turn = Turn("Research Orbit across the company graph and the web, please",
+                (Check("spawned"),), Plan((("spawn_subagents", {"jobs": jobs}),), "No match."))
+    one = type(sc)("fan_local", "a child asks for the entity graph", (turn,), set="fanout")
+    models = run.scripted_models(one, run.SPAWN_ARM)
+    models["worker"] = fanout.WorkerModel(call_tool="retrieve_entity_context")
+    (row,) = run.run_chat(one, run.SPAWN_ARM, models=models)
+    result = json.dumps(models[ORCHESTRATOR].bodies[-1]["messages"][-1], ensure_ascii=False)
+    # The orchestrator of the harness does not hold the tool, so no child gets it.
+    assert "did not run: this chat has no tool 'retrieve_entity_context'" in result
+    held = {n for body in models["worker"].bodies for n in _names(body)}
+    assert "retrieve_entity_context" not in held and "fetch_page" in held
+    assert row["error"] is None and row["sent"] == [] and row["web_fetches"] == 1
+    # The real web tools are back after the chat, and the fixtures are gone.
+    assert web_tools.web_search.__module__ == web_tools.__name__
+
+
+def test_the_spawn_and_items_checks_pass_and_fail() -> None:
+    """Mutations: ``_spawned`` ignores the arm → the None cases go red;
+    ``items_contract_problems`` ignores ``unstructured`` → the bad block passes."""
+    spawn = ck.SPAWN_ARM
+    assert _one("spawned", None, _obs(arm=spawn, spawned=1)) is True
+    assert _one("spawned", None, _obs(arm=spawn)) is False
+    assert _one("spawned", None, _obs(arm="pack", spawned=1)) is None
+    assert _one("not_spawned", None, _obs(arm=spawn)) is True
+    assert _one("not_spawned", None, _obs(arm=spawn, spawned=1)) is False
+    assert _one("not_spawned", None, _obs(arm="pack")) is None
+    good = ("Job 1 (\"Read a\"):\n- [quoted] Orbit makes sensors (source: https://o.example/a)\n\n"
+            "Job 2 (\"Read b\"):\n- [inferred] guess (source: inferred)")
+    bad = "Job 1 (\"Read a\"):\n- [inferred] free text (source: unstructured)"
+    err = "Job 1 (\"Read a\"): Error: no answer in 120s, so the job was stopped."
+    assert ck.items_contract_problems([good]) == []
+    assert ck.items_contract_problems([bad]) and ck.items_contract_problems([err])
+    assert ck.items_contract_problems(["No job ran."]) == ["no job block"]
+    assert _auto("items_contract", _obs(arm=spawn, spawn_results=[good])) is True
+    assert _auto("items_contract", _obs(arm=spawn, spawn_results=[bad])) is False
+    assert _auto("items_contract", _obs(arm=spawn)) is None
+    assert _auto("items_contract", _obs(arm="pack", spawn_results=[good])) is None
+    events = [{"type": "TOOL_CALL_START", "toolCallId": "a", "toolCallName": "spawn_subagents"},
+              {"type": "TOOL_CALL_RESULT", "toolCallId": "a", "content": good},
+              {"type": "TOOL_CALL_RESULT", "toolCallId": "b", "content": "other"}]
+    assert ck.spawn_results_of(events) == [good]
+
+
+def test_the_stop_results_9_and_10_read_the_spawn_arm(scripted) -> None:
+    """Mutation: compare with ``<`` the other way → the slow case goes green."""
+    rows, _ = scripted
+    summary = run.summarise(rows)
+    spawn = summary[run.SPAWN_ARM]
+    assert spawn["fanout_calls"] >= 2 and spawn["fanout_ms_mean"] is not None
+    assert spawn["not_spawned_turns"] == 3 and spawn["spawned_on_not_spawned"] == 0
+    states = {n: s for n, s, _ in run.stop_results(summary)}
+    assert states[10] == "ok" and states[9] in ("ok", "STOP")
+    slow = json.loads(json.dumps(summary))
+    slow[run.SPAWN_ARM]["research_total_median"] = 99.0
+    slow["pack"]["research_total_median"] = 1.0
+    assert {n: s for n, s, _ in run.stop_results(slow)}[9] == "STOP"
+    over = json.loads(json.dumps(summary))
+    over[run.SPAWN_ARM].update(not_spawned_turns=9, spawned_on_not_spawned=2)
+    assert {n: s for n, s, _ in run.stop_results(over)}[10] == "STOP"
+    over[run.SPAWN_ARM].update(spawned_on_not_spawned=1)
+    assert {n: s for n, s, _ in run.stop_results(over)}[10] == "ok"
+    assert "packs+spawn" in run.report({"summary": summary})
+
+
+def test_base_tools_that_cover_the_need_satisfy_right_pack() -> None:
+    """The ``crm_miss`` chats: the model answered right with the read tools of
+    the base (``crm_list_records``, ``crm_get_record``), and ``right_pack`` failed
+    a correct answer. A read of the ``crm`` family now counts. A hand-off, a
+    write and a tool of another family do not. The facts of the answer are judged
+    by their own checks.
+    Mutation: empty ``base_cover`` → the first case is red; let a hand-off pass
+    on the cover → the hand-off case is red."""
+    base = [("crm_list_records", {}, "Contacts: Priya Menon"), ("crm_get_record", {}, "ok")]
+    assert _one("right_pack", "crm-records", _obs(work_calls=base)) is True
+    assert _one("right_pack", "crm-records", _obs(work_calls=[base[0]])) is True
+    lost = [("crm_list_records", {}, "Error: Requested function not found.")]
+    assert _one("right_pack", "crm-records", _obs(work_calls=lost)) is False
+    assert _one("right_pack", "crm-records", _obs()) is False
+    # A hand-off still fails when the pack was reachable, base tool or not.
+    assert _one("right_pack", "crm-records", _obs(
+        work_calls=base, handoffs={CRM: ["x"]}, needs="crm-records",
+        reachable=frozenset({"crm-records"}))) is False
+    # A tool outside the family does not cover the pack, and Projects has no cover.
+    assert _one("right_pack", "crm-records", _obs(work_calls=[("my_work", {}, "ok")])) is False
+    assert _one("right_pack", "projects", _obs(work_calls=base)) is False
+    cover = ck.BASE_COVER["crm-records"]
+    assert "crm_list_records" in cover and not cover & {"create_lead", "update_deal_status",
+                                                         "convert_lead", "log_activity"}
+    # The wrong answer from base tools still fails its own check.
+    turn = scenario("crm_miss").turns[0]
+    wrong = ck.check_turn(turn, _obs(work_calls=base, answer="I cannot tell."))
+    assert wrong["right_pack"] is True and wrong["names_the_person"] is False
+    right = ck.check_turn(turn, _obs(work_calls=base, answer="Priya Menon at Orbit Labs."))
+    assert right["names_the_person"] is True and right["right_pack"] is True
 
 
 # ── the pack flag ────────────────────────────────────────────────────────────
@@ -190,10 +338,16 @@ def test_the_pack_flag_turns_on_every_pack_of_each_owner() -> None:
     # CRM page: the loader reaches the email and Projects packs, so both
     # specialists leave. The CRM assistant has one pack, and it is loaded.
     ("crm_pipeline", {EA, PROJECTS}, {EA, CRM, PROJECTS}, set()),
-    # Tasks page: the core Projects pack stands in the request (81 tools at the
-    # base of this harness). The email pack and the plan and structure packs do
-    # not fit beside it, so their specialists stay.
-    ("pm_find_task", {CRM}, {CRM}, {EA, PROJECTS}),
+    # Tasks page: the core Projects pack stands in the request. With the exact
+    # count of OA-8f the harness base is 55 (the 3 CRM facts tools are not
+    # counted for an org off the CRM list, and the count was 58 before). The
+    # plan sees 78 tools: 55, the load tool (1) and the 23 core tools. Each
+    # email pack fits beside that with the one email specialist tool gone
+    # (77 + 31 = 108 and 77 + 28 = 105), so the loader reaches
+    # ``email-assistant`` too. The plan (35) and structure (34) packs still do
+    # not fit (113 and 112), so ``projects-assistant`` stays.
+    # With the base trim on (OA-8f, run 2 onward) every pack fits, so no specialist stays.
+    ("pm_find_task", {CRM, EA, PROJECTS}, {CRM, EA, PROJECTS}, set()),
 ])
 def test_the_loader_reaches_the_owners_that_it_can_and_the_rest_keep_the_specialist(
         sid: str, via: set[str], gone: set[str], stays: set[str]) -> None:
@@ -258,8 +412,7 @@ def test_the_surface_loads_the_pack_with_no_word_and_no_load_call() -> None:
 
 
 def test_a_miss_is_loaded_by_the_model_at_layer_b() -> None:
-    for sid, slug in (("crm_miss", "crm-records"), ("pm_miss", "projects"),
-                      ("pm_capacity_open", "projects-plan")):
+    for sid, slug in (("crm_miss", "crm-records"), ("pm_miss", "projects")):
         sc = scenario(sid)
         models = run.scripted_models(sc, "pack")
         (row,) = run.run_chat(sc, "pack", models=models)
@@ -269,20 +422,23 @@ def test_a_miss_is_loaded_by_the_model_at_layer_b() -> None:
             e["event"] == "tool_packs.loaded" for e in row["pack_events"]), sid
 
 
-def test_a_pack_that_does_not_fit_sends_the_route_to_the_owner() -> None:
-    """On the Projects page the core pack stands in the request, and the plan
-    and structure packs do not fit under the cap of 110 tools. The loader does
-    not offer them, so the specialist stays and the hand-off is legal. This is
-    the finding of the first scripted run: it is a gap of the packs, and the
-    live run reports its cost. Mutation: raise ``MAX_REQUEST_TOOLS`` → the
-    pack loads and the plan's hand-off is wrong → red."""
-    for sid, slug in (("pm_capacity", "projects-plan"), ("pm_status", "projects-structure")):
-        (row,) = run.run_chat(scenario(sid), "pack")
-        assert row["specialist_handoffs"] == {PROJECTS: 1}, (sid, row["specialist_handoffs"])
-        assert row["checks"]["right_pack"] is True
-        assert row["checks"]["no_projects_delegation"] is True, row["checks"]
-        plan = next(e for e in row["pack_events"] if e["event"] == "executor.pack_plan")
-        assert slug not in plan["offered"], plan
+def test_with_the_base_trim_the_plan_and_structure_packs_load_on_a_projects_page() -> None:
+    """Run 1 had no room for them beside the core pack, and the route went to the
+    owner. With the trim of OA-8f (both arms, run 2 onward) the loader offers
+    them and the model loads them, so no hand-off is owed.
+    Mutation: set `orchestrator_floor_trim` False in `PRODUCTION` → the
+    structure pack is not offered → red. Since OA-8g, "overloaded" loads the
+    plan pack by a word on the first request, so ``pm_capacity`` needs no load."""
+    (row,) = run.run_chat(scenario("pm_status"), "pack")
+    assert row["specialist_handoffs"] == {} and row["loaded_by_model"] == ["projects-structure"], row
+    assert row["passed"], row["checks"]
+    plan = next(e for e in row["pack_events"] if e["event"] == "executor.pack_plan")
+    assert "projects-structure" in plan["offered"], plan
+    (row,) = run.run_chat(scenario("pm_capacity"), "pack")
+    assert row["specialist_handoffs"] == {} and row["loaded_by_model"] == [], row
+    assert row["passed"], row["checks"]
+    plan = next(e for e in row["pack_events"] if e["event"] == "executor.pack_plan")
+    assert "projects-plan" in plan["packs"], plan
 
 
 def test_a_word_of_the_pack_loads_it_in_place_of_the_core_pack() -> None:
@@ -378,6 +534,10 @@ def test_a_move_in_mirror_mode_is_refused_by_the_gateway() -> None:
 # ── the checks, a pass and a fail each ───────────────────────────────────────
 
 
+#: One request at the gateway, for a test of a write call that succeeded.
+_W = [("POST", "/projects/tasks", {})]
+
+
 def _obs(**kw: Any) -> ck.Observation:
     return ck.Observation(arm=kw.pop("arm", "pack"), **kw)
 
@@ -409,11 +569,11 @@ def test_an_unasked_write_fails_a_read_turn() -> None:
     write = [("update_deal_status", {}, "Moved")]
     sent = [("PATCH", "/crm/deals/x", {})]
     assert _one("no_unasked_write", 0, _obs(work_calls=[("get_pipeline", {}, "ok")])) is True
-    assert _one("no_unasked_write", 0, _obs(work_calls=write)) is False
+    assert _one("no_unasked_write", 0, _obs(work_calls=write, work_writes=sent)) is False
     assert _one("no_unasked_write", 0, _obs(work_writes=sent)) is False
     assert _one("no_unasked_write", 1, _obs(work_calls=write, work_writes=sent)) is True
     two = [("update_deal_status", {}, "a"), ("log_activity", {}, "b")]
-    assert _one("no_unasked_write", 1, _obs(work_calls=two)) is False
+    assert _one("no_unasked_write", 1, _obs(work_calls=two, work_writes=sent)) is False
     # A batch tool writes one row for each task, and is one write.
     rows = [("POST", "/projects/tasks", {})] * 3
     assert _one("no_unasked_write", 1, _obs(
@@ -493,13 +653,14 @@ def test_mirror_respected_fails_a_record_write() -> None:
     mirror = {"mirror": True}
     assert _auto("mirror_respected", _obs()) is None
     assert _auto("mirror_respected", _obs(**mirror)) is True
+    note = [("POST", f"/crm/deals/{wg.cid(1)}/activities", {})]
     for name in ("create_lead", "update_deal_status", "convert_lead"):
-        assert _auto("mirror_respected", _obs(**mirror, work_calls=[(name, {}, "x")])) is False
+        assert _auto("mirror_respected", _obs(
+            **mirror, work_calls=[(name, {}, "x")], work_writes=note)) is False
     for write in (("POST", "/crm/leads", {}), ("PATCH", f"/crm/deals/{wg.cid(1)}", {}),
                   ("POST", f"/crm/leads/{wg.cid(21)}/convert", {})):
         assert _auto("mirror_respected", _obs(**mirror, work_writes=[write])) is False
     # A logged note saves in Metorite only, and stays legal.
-    note = [("POST", f"/crm/deals/{wg.cid(1)}/activities", {})]
     assert _auto("mirror_respected", _obs(
         **mirror, work_calls=[("log_activity", {}, "x")], work_writes=note)) is True
 
@@ -510,27 +671,27 @@ def test_one_card_per_write_needs_a_card_for_each_write_tool() -> None:
     assert _auto("one_card_per_write", _obs()) is None
     assert _auto("one_card_per_write", _obs(work_calls=[("get_pipeline", {}, "ok")])) is None
     assert _auto("one_card_per_write", _obs(
-        work_calls=write, write_cards=[(("update_deal_status",), 1)])) is True
-    assert _auto("one_card_per_write", _obs(work_calls=write)) is False
+        work_writes=_W, work_calls=write, write_cards=[(("update_deal_status",), 1)])) is True
+    assert _auto("one_card_per_write", _obs(work_writes=_W, work_calls=write)) is False
     assert _auto("one_card_per_write", _obs(
-        work_calls=write, write_cards=[(("update_deal_status",), 2)])) is False
+        work_writes=_W, work_calls=write, write_cards=[(("update_deal_status",), 2)])) is False
     both = [*write, ("log_activity", {}, "ok")]
     one, two = ("update_deal_status",), ("log_activity",)
-    assert _auto("one_card_per_write", _obs(work_calls=both, write_cards=[
+    assert _auto("one_card_per_write", _obs(work_writes=_W, work_calls=both, write_cards=[
         (one, 1), (two, 1)])) is True
     # P2-a, hidden failure 1: two writes, one card. The total passed it.
-    assert _auto("one_card_per_write", _obs(work_calls=both, write_cards=[
+    assert _auto("one_card_per_write", _obs(work_writes=_W, work_calls=both, write_cards=[
         (one, 1), (two, 0)])) is False
     # Hidden failure 2: two writes, two cards, both on one write.
-    assert _auto("one_card_per_write", _obs(work_calls=both, write_cards=[
+    assert _auto("one_card_per_write", _obs(work_writes=_W, work_calls=both, write_cards=[
         (one, 2), (two, 0)])) is False
     # A card must be on the write that raised it, by tool name.
-    assert _auto("one_card_per_write", _obs(work_calls=write, write_cards=[(two, 1)])) is False
+    assert _auto("one_card_per_write", _obs(work_writes=_W, work_calls=write, write_cards=[(two, 1)])) is False
     # Delegation arm: both writes in one delegated run need two cards.
     assert _auto("one_card_per_write", _obs(
-        arm="delegation", work_calls=both, write_cards=[((*one, *two), 1)])) is False
+        arm="delegation", work_writes=_W, work_calls=both, write_cards=[((*one, *two), 1)])) is False
     assert _auto("one_card_per_write", _obs(
-        arm="delegation", work_calls=both, write_cards=[((*one, *two), 2)])) is True
+        arm="delegation", work_writes=_W, work_calls=both, write_cards=[((*one, *two), 2)])) is True
 
 
 def test_cards_are_bound_to_the_write_that_raised_them() -> None:
@@ -560,13 +721,6 @@ def test_the_request_may_not_pass_the_cap() -> None:
     # P3: the pack arm with no count means the tap read none: fail. Delegation: None.
     assert _auto("tools_per_call", _obs()) is False
     assert _auto("tools_per_call", _obs(arm="delegation")) is None
-
-
-def test_spawned_and_not_spawned() -> None:
-    assert _one("spawned", None, _obs(spawned=2)) is True
-    assert _one("spawned", None, _obs()) is False
-    assert _one("not_spawned", None, _obs()) is True
-    assert _one("not_spawned", None, _obs(spawned=1)) is False
 
 
 def test_the_tool_call_readers() -> None:
@@ -608,15 +762,15 @@ def test_the_summary_reports_the_sets_the_loader_and_the_stop_results(scripted) 
     summary = run.summarise(rows)
     packs, deleg = summary["pack"], summary["delegation"]
     assert {"crm", "projects", "mixed"} <= set(packs["by_set"])
-    assert packs["by_set"]["crm"]["turns"] == 12 and packs["layer_b_turns"] >= 4
+    assert packs["by_set"]["crm"]["turns"] == 12 and packs["layer_b_turns"] >= 3
     assert packs["tools_per_call_max"] <= tool_packs.MAX_REQUEST_TOOLS
     assert packs["layer_a_ms_mean"] is not None and deleg["layer_a_ms_mean"] is None
-    assert packs["specialist_handoffs"] == {PROJECTS: 2}
+    assert packs["specialist_handoffs"] == {}
     assert deleg["specialist_handoffs"][CRM] >= 10 and packs["guard_failures"] == []
     text = run.report({"summary": summary})
     assert "Stop result of" in text and "OA-8e" in text and "| crm | pack |" in text
     states = {n: state for n, state, _ in run.stop_results(summary)}
-    assert states[1] == "ok" and states[2] == "ok" and states[9] == "n/a"
+    assert states[1] == "ok" and states[2] == "ok" and states[9] in ("ok", "STOP")
 
 
 def test_a_guard_failure_on_any_row_stops_oa_10(scripted) -> None:
@@ -685,7 +839,7 @@ def test_a_run_with_no_pack_plan_line_passes_nothing(monkeypatch) -> None:
     sc = scenario("pm_capacity")  # a hand-off turn, legal when the plan is read
     (row,) = run.run_chat(sc, "pack")
     assert row["checks"]["no_projects_delegation"] is False, row["checks"]
-    assert row["checks"]["right_pack"] is False and row["passed"] is False
+    assert row["passed"] is False
     # Read as it is, the same turn passes.
     monkeypatch.setattr(run, "reachable_of", real)
     (row,) = run.run_chat(sc, "pack")
@@ -716,12 +870,18 @@ def test_the_report_counts_hand_off_turns_on_a_packed_app(scripted) -> None:
     REVIEW for a legal one and STOP for a model choice."""
     rows, _ = scripted
     summary = run.summarise(rows)
-    assert summary["pack"]["app_handoff_turns"] == {PROJECTS: {"did_not_fit": 2}}
+    assert summary["pack"]["app_handoff_turns"] == {}
     assert summary["delegation"]["app_handoff_turns"] == {}
     states = {n: (s, why) for n, s, why in run.stop_results(summary)}
-    assert states[11][0] == "REVIEW" and "2 hand-off turns" in states[11][1]
+    assert states[11][0] == "ok"
+    # One legal hand-off (no room) reads REVIEW, and a model choice reads STOP.
+    legal = [json.loads(json.dumps(r)) for r in rows]
+    victim = next(r for r in legal if r["arm"] == "pack")
+    victim["handoff_reasons"] = {PROJECTS: "did_not_fit"}
+    state, why = {n: (s, w) for n, s, w in run.stop_results(run.summarise(legal))}[11]
+    assert state == "REVIEW" and "1 hand-off turns" in why
     bad = [json.loads(json.dumps(r)) for r in rows]
-    victim = next(r for r in bad if r["arm"] == "pack" and r.get("handoff_reasons"))
+    victim = next(r for r in bad if r["arm"] == "pack")
     victim["handoff_reasons"] = {PROJECTS: "model_choice"}
     assert {n: s for n, s, _ in run.stop_results(run.summarise(bad))}[11] == "STOP"
     clean = [r for r in rows if not (r["arm"] == "pack" and r.get("handoff_reasons"))]
@@ -757,15 +917,18 @@ def test_a_refused_call_is_no_write() -> None:
         assert _auto("mirror_respected", _obs(mirror=True, work_calls=call)) is True
     assert ck.refused("Moved Kestrel pilot to Negotiation.") is False
     ran = [("update_deal_status", {}, "Moved")]
-    assert _one("no_unasked_write", 0, _obs(work_calls=ran)) is False
-    assert _auto("mirror_respected", _obs(mirror=True, work_calls=ran)) is False
+    assert _one("no_unasked_write", 0, _obs(work_calls=ran, work_writes=_W)) is False
+    assert _auto("mirror_respected", _obs(
+        mirror=True, work_calls=ran,
+        work_writes=[("POST", f"/crm/deals/{wg.cid(1)}/activities", {})])) is False
     # One write that ran and one that was refused: one card, on the one that ran.
     both = [("complete", {}, bad), ("complete", {}, "Done: #22")]
     assert _auto("one_card_per_write", _obs(
-        work_calls=both, write_cards=[(("complete",), 0), (("complete",), 1)])) is True
-    assert _one("no_unasked_write", 1, _obs(work_calls=both)) is True
+        work_writes=_W, work_calls=both,
+        write_cards=[(("complete",), 0), (("complete",), 1)])) is True
+    assert _one("no_unasked_write", 1, _obs(work_calls=both, work_writes=_W)) is True
     # A write that ran and showed no card still fails.
-    assert _auto("one_card_per_write", _obs(work_calls=[both[1]])) is False
+    assert _auto("one_card_per_write", _obs(work_calls=[both[1]], work_writes=_W)) is False
 
 
 def test_crm_report_reads_as_a_read_in_the_checks() -> None:
@@ -925,3 +1088,165 @@ def test_the_crm_read_tools_run_against_the_fake_without_a_404() -> None:
             memory_tools._memory_user_id.reset(token)
     assert gate.unknown == [], gate.unknown
     assert all(a and "404" not in a for a in answers), answers
+
+
+def test_both_arms_run_with_the_base_trim_on() -> None:
+    """Run 2 of OA-8e ships the trimmed base on BOTH arms, in the eval process
+    only. Mutation: drop the key from ``PRODUCTION`` → red."""
+    from acb_common import get_settings
+
+    assert run.PRODUCTION["orchestrator_floor_trim"] is True
+    seen: list[tuple[str, bool]] = []
+    for arm in ("delegation", "pack"):
+        run.run_chat(scenario("crm_deal_story"), arm,
+                     on_turn=lambda _r, a=arm: seen.append((a, get_settings().orchestrator_floor_trim)))
+    assert seen == [("delegation", True), ("pack", True)]
+    assert get_settings().orchestrator_floor_trim is False
+
+
+# ── fix round 3: hosts, refusals, wording ────────────────────────────────────
+
+
+def test_the_fixture_hosts_look_like_businesses_and_the_guard_still_refuses_a_real_host() -> None:
+    """Item 1. The `.example` hosts read as placeholders, and the model would
+    not fetch. The new hosts are invented business names. The fixtures answer
+    the tools, and an httpx request to any host (also these) still meets the
+    trap of the scripted run.
+    Mutation: put `.example` back in `INVOICE_BASE` → the first assert is red."""
+    import asyncio
+
+    import httpx
+
+    from evals.one_assistant_measure import fanout
+    from evals.routing.harness import RoutingHarness
+
+    urls = [*fanout.PAGES, fanout.PRICE_URL]
+    assert all(".example" not in u and u.startswith("https://") for u in urls)
+    assert fanout.PRICE_URL in fanout.PAGES and len(fanout.PAGES) == 16
+
+    async def go() -> list[str]:
+        out = []
+        async with httpx.AsyncClient() as client:
+            for url in (fanout.PRICE_URL, "https://www.python.org/"):
+                try:
+                    await client.get(url)
+                    out.append("sent")
+                except AssertionError:
+                    out.append("trap")
+        return out
+
+    with RoutingHarness() as harness:
+        assert asyncio.run(go()) == ["trap", "trap"]
+        assert len(harness.sent) == 2
+    for sid in ("fan_invoices", "fan_one_read"):
+        (row,) = run.run_chat(scenario(sid), run.SPAWN_ARM if sid == "fan_invoices" else "pack")
+        assert row["passed"] and row["web_unknown"] == [], (sid, row["checks"])
+
+
+@pytest.mark.parametrize(("text", "want"), [
+    ("Error: Requested function \"update_deal_status\" not found.", True),
+    ("Refused: task_id must be a UUID.", True),
+    ("Not run. In this chat the CRM tools are yours.", True),
+    # The real texts of the Projects and CRM tools (forms.py, writes.py, crm agent).
+    ("\u00abWebsite Relaunch\u00bb is a space. A space holds projects, not tasks, so nothing "
+     "was created.\nNext: ask the member which project to use.", True),
+    ("Row 2 has no title. Every task needs one. Nothing was created.", True),
+    ("The form was not submitted, so nothing was changed.", True),
+    ("There is no deal stage called 'X', so nothing was moved. The stages are: A, B.", True),
+    ("Nothing was logged. An activity needs a subject.", True),
+    ("Meera has already been converted. Nothing was changed.", True),
+    # Real results.
+    ("Created 3 tasks in Website Relaunch:\n- #31 QA pass", False),
+    ("Moved Kestrel pilot to Negotiation.", False),
+    ("Applied to 3 of 3 tasks.", False),
+    ("Logged call on Orbit: Call with Priya", False),
+])
+def test_refused_reads_the_refusal_texts_the_tools_return(text: str, want: bool) -> None:
+    """Item 2. Mutation: drop `_NOTHING_HAPPENED` from `refused` → the "nothing
+    was created" cases are red."""
+    assert ck.refused(text) is want
+
+
+def test_a_refused_create_in_a_space_is_no_write_and_no_card_is_owed() -> None:
+    space = "A space holds projects, not tasks, so nothing was created."
+    call = [("create_task", {}, space)]
+    assert _auto("one_card_per_write", _obs(work_calls=call)) is None
+    assert _one("no_unasked_write", 0, _obs(work_calls=call)) is True
+
+
+def test_a_delegated_run_that_wrote_nothing_is_no_write() -> None:
+    """Item 3. Run 2, `crm_mirror` 2 r1: the delegated run called the dropped
+    `update_deal_status`, and no write reached the gateway. A write counts only
+    when a write call succeeded and a gateway write followed.
+    Mutation: return the calls without the gateway test in `_write_calls` → red."""
+    child = [("update_deal_status", {}, "Moved the deal.")]
+    kw = {"mirror": True, "sub_work_calls": child}
+    assert _auto("mirror_respected", _obs(**kw)) is True
+    assert _one("no_unasked_write", 0, _obs(sub_work_calls=child)) is True
+    assert _auto("one_card_per_write", _obs(sub_work_calls=child)) is None
+    sent = [("PATCH", f"/crm/deals/{wg.cid(1)}", {})]
+    assert _auto("mirror_respected", _obs(**kw, work_writes=sent)) is False
+    assert _one("no_unasked_write", 0, _obs(sub_work_calls=child, work_writes=sent)) is False
+    assert _auto("one_card_per_write", _obs(sub_work_calls=child, work_writes=sent)) is False
+
+
+def test_wording_checks_accept_the_correct_forms() -> None:
+    """Item 4. Each case passes a correct answer and fails a wrong one.
+    Mutations: `says_how_many` back to a bare `\\b3\\b` → "#13, #14 and #15" fails;
+    `call_logged` back to the text "5 percent" → "5%" fails."""
+    how = next(c for c in scenario("pm_archive").turns[1].checks if c.name == "says_how_many")
+    for text, want in (("Applied to 3 of 3 tasks.", True),
+                       ("Archived #13, #14 and #15.", True),
+                       ("Archived #13 and #14.", False),
+                       ("Archived 30 tasks.", False),
+                       ("Done.", False)):
+        assert ck.KINDS[how.kind](_obs(answer=text), how.arg) is want, text
+    kiran = next(c for c in scenario("crm_pipeline").turns[1].checks
+                 if c.name == "leaves_out_kiran_deal")
+    for text, want in (("Three are yours: Orbit, Kestrel and Helix.", True),
+                       ("Yours are Orbit, Kestrel, Helix. The Vantage rollout belongs to Kiran.", True),
+                       ("- **Vantage rollout** is Kiran's, not yours.", True),
+                       ("Yours: Orbit, Vantage rollout and Helix.", False),
+                       ("- Vantage rollout, INR 800,000", False)):
+        assert ck.KINDS[kiran.kind](_obs(answer=text), kiran.arg) is want, text
+    logged = next(c for c in scenario("mix_call_then_task").turns[0].checks
+                  if c.name == "call_logged")
+    path = f"/crm/deals/{wg.cid(1)}/activities"
+    for body, want in (({"type": "call", "body": "Priya wants 5 percent off."}, True),
+                       ({"type": "call", "body": "Priya wants 5% off."}, True),
+                       ({"type": "call", "subject": "A 5 per cent cut"}, True),
+                       ({"type": "call", "body": "Priya wants 15% off."}, False),
+                       ({"type": "call", "body": "No figure."}, False)):
+        got = ck.KINDS[logged.kind](_obs(work_writes=[("POST", path, body)]), logged.arg)
+        assert got is want, body
+    cal = next(c for c in scenario("pm_calendar").turns[0].checks if c.name == "read_my_work")
+    for tool, want in (("my_work", True), ("calendar", True), ("list_tasks", True),
+                       ("people_for", False)):
+        assert ck.KINDS[cal.kind](_obs(work_calls=[(tool, {}, "ok")]), cal.arg) is want, tool
+
+
+def test_a_re_score_never_turns_a_pass_into_a_fail() -> None:
+    """Item 5. The re-score reads what a row stores: the answer, the names of
+    the work tools and the gateway writes. Mutation: let it set `True` rows to
+    `False` → the last assert is red."""
+    bare = {"model_calls": [], "pack_events": [], "first_text_s": None, "total_s": None, "error": None,
+            "set": "crm", "handoffs": []}
+    row = {**bare, "scenario": "crm_mirror", "turn": 2, "arm": "pack", "repeat": 1,
+           "answer": "Zoho owns it.", "tasks": [], "work_tools": ["update_deal_status"], "work_writes": [], "passed": False,
+           "checks": {"ran": True, "no_unasked_write": False, "mirror_respected": False,
+                      "one_card_per_write": False, "names_zoho_or_offers_a_note": False}}
+    cal = {**bare, "scenario": "pm_calendar", "turn": 1, "arm": "pack", "repeat": 1,
+           "answer": "Draft the launch brief, Review landing page copy and Vendor call prep.",
+           "tasks": [], "work_tools": ["calendar"], "work_writes": [], "passed": False,
+           "checks": {"ran": True, "read_my_work": False, "right_pack": True}}
+    data = {"rows": [row, cal], "stopped": None}
+    changes = run.rescore(data)
+    assert row["checks"]["no_unasked_write"] is True and row["checks"]["mirror_respected"] is True
+    assert row["checks"]["one_card_per_write"] is None
+    assert row["checks"]["names_zoho_or_offers_a_note"] is True and row["passed"] is True
+    assert cal["checks"]["read_my_work"] is True and cal["passed"] is True
+    assert len(changes) >= 5
+    wrote = {**row, "work_writes": ["PATCH /crm/deals/x"], "checks": {"no_unasked_write": False}}
+    wrote["answer"] = "x"
+    run.rescore({"rows": [wrote], "stopped": None})
+    assert wrote["checks"]["no_unasked_write"] is False

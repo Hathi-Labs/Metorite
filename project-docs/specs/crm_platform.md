@@ -12019,3 +12019,17 @@ What the slice does:
 Fences: `tests/unit/test_crm_stage_card_order_r8.py` (R8), `tests/unit/test_crm_upsert_from_source_fence.py` (the new door is sync-only).
 
 Known gap: some tenants send no `Modified_Time` on Deals (see `crm_sources/zoho/client.py`, `list_changed`). For them `ext_modified_at` is NULL. "Recently changed" then uses `updated_at`.
+
+### 20.19 CRM-U15: plain everyday screens (2026-10-29)
+
+**Status.** ✅ Built 2026-10-29 on branch `crm-u15-plain-screens`. Not merged. Not deployed. Frontend only.
+
+The owner asked for a CRM that is "straightforward and easy to understand". The code audit of 2026-10-28 found five problems on the daily screens. This slice fixes them.
+
+1. **One clear Mirror line.** A thin strip under the app bar says once: "This is a read-only copy of your Zoho. You can add notes, calls and tasks here. Create and edit records in Zoho." Native shows nothing. A field row has no lock icon. A click on a locked value shows "Edit this in Zoho." New and Convert stay on screen, greyed out, with the reason "Create records in Zoho" and "Convert leads in Zoho". A card that cannot move stays undraggable. Notes, calls and tasks stay open. Files: `MirrorBanner.tsx` (`MirrorNote`), `LockedValue.tsx`, `FieldsPanel.tsx`, `FieldInput.tsx`, `page.tsx`, `lib/connect.ts`. Fence: `crmU15.test.ts`, "part A".
+2. **A pencil in Native.** An editable field row in Native shows a pencil on hover and on keyboard focus. The tick and X still save. There is no save on blur. Files: `FieldsPanel.tsx`. Fence: `crmU15.test.ts`, "part B".
+3. **Plain words.** These change: the Convert dialog, the board hint, and "Not in Zoho" (was "Only in Metorite"). The filter groups are "Dates / Choices / Numbers / Other". Each Reports block has one short line. Its method sits behind an info icon. Zoho labels stay (D133). Files: `ConvertModal.tsx`, `KanbanBoard.tsx`, `Reports.tsx`, `lib/connect.ts`, `lib/filterFields.ts`. Fence: `crmU15.test.ts`, "part C".
+4. **No stale or doubled controls.** The dashed end-of-board "New deal" tile is gone. The hint names "Board options". The stale "+" comment is gone. No lane quick add. Files: `KanbanBoard.tsx`, `page.tsx`. Fence: `crmU15.test.ts`, "part D".
+5. **Loading and error.** A list and a board show a skeleton on the first read. The error banner has Retry. A failed board read clears the lanes, and the board says "The board did not load." Files: `RecordList.tsx`, `KanbanBoard.tsx`, `page.tsx`, `lib/store.ts`. Fence: `crmU15.test.ts`, "part E".
+
+Left out on purpose: a lane quick add and the settings screens (CRM-U13). The strip has no Zoho link, because no page-level address exists. The record sheet keeps its own link.

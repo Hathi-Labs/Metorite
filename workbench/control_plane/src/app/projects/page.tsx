@@ -147,7 +147,7 @@ import {
 } from "@/lib/sidePanelFit";
 import { drawerStep } from "./lib/drawerOwner";
 import { moveFollowUp } from "./lib/moveRefresh";
-import { useLiveRefresh } from "./lib/liveRefresh";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 import { invalidate } from "@/lib/dataCache";
 import { useFrontendTool } from "@/hooks/useFrontendTool";
 import {
@@ -156,7 +156,10 @@ import {
   orderBearingView,
   type planDrop,
 } from "./lib/board";
-import { appendTasks, boardReadParams, nextTaskPage } from "./lib/paging";
+import {
+  appendTasks, boardReadParams, columnReadFilter, columnSizes, nextBoardPage, nextTaskPage,
+  type StatusCounts,
+} from "./lib/paging";
 import {
   type CalendarLayout,
   calendarGrid,
@@ -783,6 +786,14 @@ const MODE_OPTIONS: readonly ModeOption<ViewMode>[] = VIEW_MODES.map((entry) => 
   icon: entry.icon,
 }));
 
+/** #918. The lane sizes of a task-list answer, or null when it sent none. */
+function countsOf(res: {
+  status_counts?: Record<string, number> | null;
+  status_categories?: Record<string, string | null> | null;
+}): StatusCounts | null {
+  return res.status_counts ? { counts: res.status_counts, categories: res.status_categories ?? {} } : null;
+}
+
 function ProjectsWorkspace() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -852,6 +863,17 @@ function ProjectsWorkspace() {
   const [taskTotal, setTaskTotal] = useState<number | null>(null);
   /** A `Load more` read is in flight. Separate from the board's own loading. */
   const [loadingMore, setLoadingMore] = useState(false);
+  /** #918. The true size of each status lane across the whole filtered set. */
+  const [statusCounts, setStatusCounts] = useState<StatusCounts | null>(null);
+  /** #918. Rows that only a column read brought. The board's own pages have
+   *  not reached them, so the board's next page leaves them out
+   *  (`paging.nextBoardPage`). */
+  const [laneOnly, setLaneOnly] = useState<ReadonlySet<string>>(() => new Set());
+  /** #918. The column whose own read is in flight, or null. */
+  const [loadingColumn, setLoadingColumn] = useState<string | null>(null);
+  /** #918. Moves on each `loadProject`, so a column read of the old
+   *  question drops its rows. */
+  const readGen = useRef(0);
   /**
    * How many tasks are on the shelf for the board in view, or null.
    *
@@ -1985,12 +2007,19 @@ function ProjectsWorkspace() {
         sort: tableSort,
         viewId: boardViewId,
         subtasks: storedMode,
+        // Task #986: the three agent filters are WHERE clauses on the server.
+        // They are part of the params, so they are part of every read key.
+        waitingOnMe,
+        agentFocus,
+        agentWork,
       }),
-    [filters, tableSort, boardViewId, storedMode]
+    [filters, tableSort, boardViewId, storedMode, waitingOnMe, agentFocus, agentWork]
   );
 
   const loadProject = useCallback(
     async (project: ProjectRow) => {
+      // #918: a column read that started before this one is stale now.
+      readGen.current += 1;
       setError(null);
       // Filters travel to the server, never applied to the page after it
       // arrives: paging happens in SQL, so a filter applied here would return
@@ -2012,13 +2041,23 @@ function ProjectsWorkspace() {
        * with another filter's rows.
        */
       const heldStatuses = peek<{ rows: StatusRow[] }>(statusesKey);
-      const heldTasks = peek<{ rows: TaskRow[] }>(tasksKey);
+      const heldTasks = peek<{
+        rows: TaskRow[];
+        status_counts?: Record<string, number> | null;
+        status_categories?: Record<string, string | null> | null;
+      }>(tasksKey);
       if (heldStatuses) setStatuses(heldStatuses.data.rows);
-      if (heldTasks) setTasks(heldTasks.data.rows);
+      if (heldTasks) {
+        setTasks(heldTasks.data.rows);
+        // The counts of the same answer, so a switch never shows the last
+        // project's counts over this project's rows (#918).
+        setStatusCounts(countsOf(heldTasks.data));
+      }
 
       // The shelf's size, under the same filters. `page_size: 1` because only
       // `total` is wanted — the rows are the board's job, not this read's.
-      const shelfParams = { ...taskParams, archived_only: true, page_size: 1 };
+      // The shelf wants `total` only, so it asks for no lane counts (#918).
+      const shelfParams = { ...taskParams, archived_only: true, page_size: 1, with_status_counts: false };
       const shelfKey = projectsKey("tasks", shelfParams);
 
       try {
@@ -2031,6 +2070,8 @@ function ProjectsWorkspace() {
         ]);
         setStatuses(statusRes.rows);
         setTasks(taskRes.rows);
+        setStatusCounts(countsOf(taskRes));
+        setLaneOnly(new Set());
         // ⚠️ Reset, never merge. This runs on a fresh project, a changed
         // filter and a changed sort — each of which is a DIFFERENT question,
         // so pages read for the old one must not survive into the new answer.
@@ -2078,12 +2119,21 @@ function ProjectsWorkspace() {
     try {
       const params = {
         ...taskParamsFor(selected),
-        page: nextTaskPage(tasks.length),
+        // #918: the rows a column read brought are not the board's pages.
+        page: nextBoardPage(tasks.length, laneOnly.size),
       };
       const res = await read(projectsKey("tasks", params), () =>
         projectsApi.tasks(params)
       );
       setTasks((current) => appendTasks(current, res.rows));
+      // The board's own page now holds these rows.
+      setLaneOnly((current) => {
+        if (!res.rows.some((r) => current.has(r.id))) return current;
+        const next = new Set(current);
+        for (const r of res.rows) next.delete(r.id);
+        return next;
+      });
+      if (res.status_counts) setStatusCounts(countsOf(res));
       // The count can have moved while the member read page 1. Take the
       // server's newest answer rather than keeping the one from the first read.
       setTaskTotal(res.total ?? null);
@@ -2092,7 +2142,49 @@ function ProjectsWorkspace() {
     } finally {
       setLoadingMore(false);
     }
-  }, [selected, loadingMore, tasks.length, taskParamsFor]);
+  }, [selected, loadingMore, tasks.length, laneOnly, taskParamsFor]);
+
+  /**
+   * #918. Read the next rows of ONE column. The column's rows held now are
+   * the first rows of that lane in the board's order, so the next page of
+   * the lane's own read follows on with no gap (`paging.columnReadFilter`).
+   * A column that one filter cannot name reads the board's next page.
+   */
+  const loadMoreInColumn = useCallback(async (columnKey: string, held: number) => {
+    if (!selected || loadingColumn) return;
+    const filter = columnReadFilter(groupBy, columnKey, statuses, statusCounts);
+    if (!filter) { void loadMoreTasks(); return; }
+    setLoadingColumn(columnKey);
+    setError(null);
+    try {
+      const params = { ...taskParamsFor(selected), ...filter, page: nextTaskPage(held) };
+      const gen = readGen.current;
+      const res = await read(projectsKey("tasks", params), () => projectsApi.tasks(params));
+      // A filter, sort or project change while this read ran: its rows
+      // answer the old question, so they never land (#918).
+      if (gen !== readGen.current) return;
+      const known = new Set(tasks.map((t) => t.id));
+      const added = res.rows.filter((r) => !known.has(r.id)).map((r) => r.id);
+      setTasks((current) => appendTasks(current, res.rows));
+      if (added.length) {
+        setLaneOnly((lo) => {
+          const next = new Set(lo);
+          for (const id of added) next.add(id);
+          return next;
+        });
+      }
+    } catch (err) {
+      setError(String((err as Error).message));
+    } finally {
+      setLoadingColumn(null);
+    }
+  }, [selected, loadingColumn, groupBy, statuses, statusCounts, tasks, taskParamsFor, loadMoreTasks]);
+
+  /** #918. The true size of each column, or null for another grouping. */
+  const columnTotals = useMemo(
+    () => columnSizes(groupBy, statuses, statusCounts),
+    [groupBy, statuses, statusCounts],
+  );
 
   // WS-27ae — export the filter that is on screen, with the columns it shows.
   //
@@ -2112,6 +2204,10 @@ function ProjectsWorkspace() {
           sort: tableSort,
           // D-PM-38 — a Hidden board exports its top-level rows only.
           subtasks: storedMode,
+          // Task #986: the file holds the rows the board shows.
+          waitingOnMe,
+          agentFocus,
+          agentWork,
         })
       );
       if (!res.ok) {
@@ -2138,7 +2234,7 @@ function ProjectsWorkspace() {
     } catch (err) {
       setError(String((err as Error).message));
     }
-  }, [selected, filters, shownFields, tableSort, storedMode]);
+  }, [selected, filters, shownFields, tableSort, storedMode, waitingOnMe, agentFocus, agentWork]);
 
   // WS-27q — the calendar's own fetch, because it reads a WINDOW rather than a
   // page. `grid` is derived so the effect re-runs when the period steps, and
@@ -2477,6 +2573,8 @@ function ProjectsWorkspace() {
     () =>
       groupTasks(
         visibleTasks(
+          // Task #986: the server filters by these now (`boardReadParams`), so
+          // this is only a paint-time guard for rows held from before a switch.
           tasks.filter(
             (t) =>
               (!waitingOnMe || isWaitingOnMe(t, me)) &&
@@ -3091,7 +3189,7 @@ function ProjectsWorkspace() {
     // My work reloads itself (`MyWorkHost`). The board reloads here, in the
     // mode the member is looking at.
     if (!myWorkOpen) void refreshRef.current();
-  });
+  }, "projects");
 
   // `?project=<id>` selects a node (WS-27bm S6): the link `open_in_app`
   // returns for a member who is not on this page. Consumed after the select,
@@ -4277,6 +4375,12 @@ function ProjectsWorkspace() {
   // WS-64 OP-1 — the compact chrome. Off by default: the page then draws the old
   // filter row, the old strip and the old banner, exactly as before.
   const compactChrome = compactChromeEnabled();
+  // The server takes ONE focus (`agent_focus`), so the toggle and the strip
+  // clear each other, as `onAgentFocus` already does.
+  const onWaitingOnMe = (next: boolean) => {
+    setWaitingOnMe(next);
+    if (next) setAgentFocus(null);
+  };
   const onAgentFocus = (next: AgentFocus | null) => {
     setWaitingOnMe(next === "waiting");
     setAgentFocus(next === "waiting" ? null : next);
@@ -4517,7 +4621,7 @@ function ProjectsWorkspace() {
           onSubtasks={(next) => void changeSubtasks(next)}
           me={me}
           waitingOnMe={waitingOnMe}
-          onWaitingOnMe={agentRunsOn ? setWaitingOnMe : undefined}
+          onWaitingOnMe={agentRunsOn ? onWaitingOnMe : undefined}
           agentWork={agentWork}
           onAgentWork={agentRunsOn ? setAgentWork : undefined}
           people={people}
@@ -4770,6 +4874,9 @@ function ProjectsWorkspace() {
           ) : mode === "board" ? (
             <TaskBoard
           personLabels={personLabels}
+              columnTotals={columnTotals}
+              loadingColumn={loadingColumn}
+              onLoadColumn={(key, held) => void loadMoreInColumn(key, held)}
               phone={compactChrome && isMobile}
               groups={groups}
               groupBy={groupBy}

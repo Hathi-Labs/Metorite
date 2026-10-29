@@ -53,9 +53,33 @@ export type ListQuery = {
   close_to?: string;
   /** CRM-X3, the board only: the order of the cards in a deal lane. */
   card_sort?: CardSort;
+  /** The board only: read ONE lane from `lane_offset` ("Show more"). */
+  lane_status_id?: string;
+  lane_offset?: number;
   /** CRM-Q8: `custom.<key>.in` = the chosen options, joined by commas. */
   [custom: `custom.${string}`]: string | undefined;
 };
+
+/**
+ * The search of a board (CRM-X1). The deals board takes the `?q=` of the list,
+ * and the gateway applies the one search predicate to every lane.
+ */
+export function boardSearchQuery(view: CrmView): ListQuery {
+  const q = view.q.trim();
+  return q ? { q } : {};
+}
+
+/**
+ * The lane ids and the new rows of a "Show more" answer: the rows on screen,
+ * then the next page's rows that are not on screen. The totals are the lane's
+ * own and never change with a page.
+ */
+export function appendLaneRows<L extends { rows: { id?: unknown }[] }>(
+  lane: L,
+  next: readonly { id?: unknown }[],
+): L {
+  return { ...lane, rows: appendPage(lane.rows, next) };
+}
 
 /** The filters that are the same on a list and on a board (CRM-Q8). */
 export function extraQuery(entity: EntitySlug, view: CrmView): ListQuery {

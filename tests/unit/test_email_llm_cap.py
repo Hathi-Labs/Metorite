@@ -1142,8 +1142,17 @@ async def test_another_model_failure_still_writes_the_auto_fallback(
 
 #: The leaf model awaits. Each one sits lexically inside `llm_slot`. The
 #: `decide` leaf is `acb_llm.decide`, found by its import alias.
+#: `embed_on_door` is the embed door of Knowledge (KG-2), imported under
+#: that alias in `email_embeddings.py`. It makes one Router call and holds
+#: no slot of its own, so it is a leaf.
 MODEL_CALLEES = frozenset(
-    {"acompletion_with_fallback", "acompletion_stream_text", "aembedding", "run_agent"}
+    {
+        "acompletion_with_fallback",
+        "acompletion_stream_text",
+        "aembedding",
+        "embed_on_door",
+        "run_agent",
+    }
 )
 
 #: The `decide` facade. It takes its own permit at its leaf inside
@@ -1371,6 +1380,7 @@ def test_the_exempt_calls_are_named_and_outside_the_callee_list() -> None:
         "async def f():\n    await acompletion_with_fallback(model='x')\n",
         "async def f():\n    await acompletion_stream_text(model='x', on_delta=None)\n",
         "async def f():\n    await litellm.aembedding(model='x', input=[])\n",
+        "async def f():\n    await embed_on_door(['x'])\n",
         "async def f():\n    await asyncio.wait_for(run_agent('a', {}), timeout=1)\n",
         "from acb_llm import decide as facade\nasync def f():\n    await facade(1, 2)\n",
         "import acb_llm\nfrom acb_llm import decide\nasync def f():\n    await decide(1, 2)\n",
@@ -1383,6 +1393,7 @@ def test_the_exempt_calls_are_named_and_outside_the_callee_list() -> None:
         "completion",
         "stream",
         "embedding",
+        "embed-door",
         "run_agent",
         "decide-alias",
         "decide-bare",

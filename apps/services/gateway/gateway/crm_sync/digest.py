@@ -21,6 +21,13 @@ that no source gives is not stored, and the try counts. An empty field reads
 read a number written as a word (its known limit), so the prompt asks for
 digits.
 
+**One currency in each money part** (HANDOFF H-333, task 888). The aggregate
+splits ``sum_amount`` on deals by currency and adds no two. So a CRM with
+deals in INR and USD gets one part for each currency (:func:`_parts`). Each
+part has its own code as its unit, and :func:`fmt` writes it (``USD 4,500``).
+One currency gives one part, as before, in the code of the answer. A module
+amount has no currency, so it keeps the unit ``INR`` of its query.
+
 **When it runs.** Only for an org on ``CRM_DIGEST_ORGS``
 (:func:`enabled_for`). The scheduler starts it after a sync run, outside the
 run lock. It goes on only when the week has no digest yet, and only after
@@ -62,6 +69,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as clock
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -256,21 +264,28 @@ KIND_WORDS: Mapping[str, str] = {
 # ── The one formatter (item 9) ──────────────────────────────────────────────
 
 
+#: The unit of a money part: a currency code. Every other unit is a lower case
+#: word (``deals``, ``leads``), so the two never meet.
+_CODE = re.compile(r"^[A-Z]{3}$")
+
+
 def fmt(value: Any, unit: str = "") -> str:
     """The text of one number of the digest, for the prompt and the table.
 
     It calls ``acb_common.number_check.format_figure``, the ONE formatter of
-    a figure (CRM-Q29), which the ONE check reads back. A part in ``INR``
-    gives money (``INR 12,34,567``), and each other part a plain number
-    (``12,34,567``). A whole value takes no decimals, and any other takes
-    two. None (a field with no value) is :data:`NO_VALUES`, never 0."""
+    a figure (CRM-Q29), which the ONE check reads back. A part in a currency
+    code (``INR``, ``USD``) gives money (``INR 12,34,567``, ``USD 4,500``), and
+    each other part a plain number (``12,34,567``). A whole value takes no
+    decimals, and any other takes two. None (a field with no value) is :data:`NO_VALUES`, never 0."""
     if value is None:
         return NO_VALUES
     if isinstance(value, bool):
         raise TypeError("a boolean is not a number of the digest")
     number = Decimal(str(value))
     decimals = 0 if number == number.to_integral_value() else 2
-    return format_figure(number, MONEY if unit == "INR" else PLAIN, decimals=decimals)
+    if _CODE.match(unit):
+        return format_figure(number, MONEY, decimals=decimals, currency=unit)
+    return format_figure(number, PLAIN, decimals=decimals)
 
 
 _MONTH_KEY = re.compile(r"^(\d{4})-(0[1-9]|1[0-2])$")
@@ -298,14 +313,21 @@ def _list_params(**filters: Any) -> Any:
     return ListParams(direction="desc", page=1, page_size=50, **filters)
 
 
-def _part(query: DigestQuery, answer: Any, types: Mapping[str, str]) -> dict[str, Any]:
+def _part(query: DigestQuery, answer: Any, types: Mapping[str, str], *,
+          unit: str | None = None, key: str | None = None,
+          title: str | None = None) -> dict[str, Any]:
     """One part of the numbers, from one aggregate answer. Code selects and
-    formats. It adds up nothing: each value is a value of the answer."""
+    formats. It adds up nothing: each value is a value of the answer.
+
+    *unit*, *key* and *title* replace those of the query for one currency of a
+    money query (:func:`_parts`)."""
+    unit = unit or query.unit
     rows: list[dict[str, str]] = []
-    part: dict[str, Any] = {"key": query.key, "title": query.title, "unit": query.unit}
+    part: dict[str, Any] = {"key": key or query.key, "title": title or query.title,
+                            "unit": unit}
     if query.show == "total":
         part["rows"] = rows
-        part["total"] = fmt(answer.total, query.unit)
+        part["total"] = fmt(answer.total, unit)
         return part
     overlay = getattr(answer, "overlay", None)
     if overlay:
@@ -318,21 +340,73 @@ def _part(query: DigestQuery, answer: Any, types: Mapping[str, str]) -> dict[str
         if query.types is not None and kind == UNSORTED_LANE:
             # The Unsorted lane holds the stage values with no map: a stated
             # gap, never a number of the open or the closed deals.
-            part["unsorted"] = fmt(group.value, query.unit)
+            part["unsorted"] = fmt(group.value, unit)
             continue
         if query.types is not None and kind not in query.types:
             continue
-        rows.append({"label": month_words(str(group.label)), "value": fmt(group.value, query.unit)})
+        rows.append({"label": month_words(str(group.label)), "value": fmt(group.value, unit)})
     part["rows"] = rows
     if query.types is None:
-        part["total"] = fmt(answer.total, query.unit)
+        part["total"] = fmt(answer.total, unit)
         if answer.omitted:
-            rows.append({"label": "All other groups", "value": fmt(answer.other, query.unit)})
+            rows.append({"label": "All other groups", "value": fmt(answer.other, unit)})
             part["other_groups"] = fmt(answer.omitted)
     elif answer.omitted:
         # A folded group has no type here, so it can be in no typed row.
         part["cut"] = True
     return part
+
+
+def _in_currency(answer: Any, other: Any) -> Any:
+    """The answer as ONE other currency holds it: the groups that have a value
+    in it, and its own total and ``other``. A view over the answer, so it adds
+    up nothing (task 888)."""
+    groups = []
+    for group in answer.groups:
+        found = next(
+            (o for o in getattr(group, "others", None) or [] if o.currency == other.currency),
+            None,
+        )
+        if found is not None:
+            groups.append(SimpleNamespace(
+                key=group.key, label=group.label, value=found.value,
+                type=getattr(group, "type", None)))
+    return SimpleNamespace(
+        groups=groups, total=other.total, other=other.other,
+        omitted=answer.omitted, overlay=None)
+
+
+def _parts(query: DigestQuery, answer: Any, types: Mapping[str, str]) -> list[dict[str, Any]]:
+    """The parts of one query: one, or for a money query of a CRM with more
+    than one currency, one part for each currency. Each part carries its own
+    code as the unit, and no part adds one currency to another (task 888).
+    The aggregate gives ``currency`` for ``sum_amount`` on deals only. A module
+    amount has no currency, so it stays one part in the unit of the query."""
+    currency = getattr(answer, "currency", None)
+    others = getattr(answer, "others", None) or []
+    if query.measure != "sum_amount" or not currency:
+        return [_part(query, answer, types)]
+    if not others:
+        return [_part(query, answer, types, unit=currency)]
+    # A group with no value in the main currency, and a value in another, is
+    # that other part's row. "INR 0" for it would say that nothing is there.
+    main = SimpleNamespace(
+        groups=[g for g in answer.groups
+                if g.value or not getattr(g, "others", None)],
+        total=answer.total, other=answer.other, omitted=answer.omitted,
+        overlay=getattr(answer, "overlay", None))
+    parts = [_part(query, main, types, unit=currency,
+                   title=f"{query.title} in {currency}")]
+    for other in others:
+        part = _part(query, _in_currency(answer, other), types, unit=other.currency,
+                     key=f"{query.key}_{other.currency.lower()}",
+                     title=f"{query.title} in {other.currency}")
+        # A typed part with no row of its type says nothing (a currency whose
+        # deals sit in the other lanes only).
+        if query.types is not None and not part["rows"] and "unsorted" not in part:
+            continue
+        parts.append(part)
+    return parts
 
 
 async def _types(org: str) -> dict[str, str]:
@@ -387,7 +461,7 @@ async def gather(org: str, week: Week) -> dict[str, Any]:
                       status=getattr(exc, "status_code", None))
             missing.append(query.title)
             continue
-        parts.append(_part(query, answer, types))
+        parts.extend(_parts(query, answer, types))
     if note_labels.mode(org) == "on":
         try:
             start, end = week.bounds()

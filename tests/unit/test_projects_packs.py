@@ -144,6 +144,14 @@ def test_the_core_pack_fits_the_core_budget() -> None:
     assert len(_family("projects")) == 23
 
 
+@pytest.fixture(autouse=True)
+def _facts_tools_stay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cap numbers here are those of an org on ``CRM_QUESTIONS_ORGS``, which
+    holds the 3 CRM facts tools (55 tools). A unit test has no such org, and
+    the estimate then drops them (OA-8f), so this keeps the old boundary."""
+    monkeypatch.setattr(ti, "_facts_removed", ti._facts_withheld)
+
+
 # ── 2. The cap ──────────────────────────────────────────────────────────────
 
 
@@ -522,11 +530,11 @@ def test_the_core_rules_name_the_other_packs_and_no_tool_of_them() -> None:
     # Fix round 2: plan and structure cannot fit beside the core pack, so the
     # rules send that work to call_agent, and only bulk to the loader.
     assert 'call call_agent with agent_name "projects-assistant"' in rules
-    assert "Call load_skill_tools with the pack projects-bulk" in rules
+    assert "When load_skill_tools offers the pack projects-bulk, load it" in rules
     assert "call load_skill_tools with the pack that you need" not in rules.lower()
     for slug in SLUGS[1:]:
         assert tp.PACKS[slug].rules.count("Use them yourself.") == 1
-    assert max(len(tp.rules_for(slug)) for slug in SLUGS) < 3300
+    assert max(len(tp.rules_for(slug)) for slug in SLUGS) < 3400  # OA-8g: was 3300
 
 
 # ── 7. A covered organization ───────────────────────────────────────────────

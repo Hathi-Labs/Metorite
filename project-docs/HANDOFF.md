@@ -341,13 +341,6 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-07 · WS-17 EM-T13b-2 review round 1 (branch
   `email-t13b-2`)
 
-### H-259 · Make a failed nightly backup reach a person · [AGENT]
-- **Metorite:** #550. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n "acb-backup" .github/workflows/vps-health.yml`
-  → no hit means this is open.
-- **Added:** 2026-10-06 · the backup verify-drop fix (branch
-  `backup-verify-drop`)
-
 ### H-257 · Keep a node with a hidden parent out of the top level of the tree drag · [AGENT]
 - **Metorite:** #483. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "parentId === null\) return \[\.\.\.roots\]" workbench/control_plane/src/app/projects/lib/treeDrop.ts`
@@ -1309,12 +1302,6 @@ line — never reclaim a number by deleting the other entry.
   → `c` is the cascade. This entry is then open.
 - **Added:** 2026-09-20 · the task lifecycle session
 
-### H-168 · The gateway refuses the LLM key on `/v1/embeddings` · [AGENT]
-- **Metorite:** #683. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `grep -n '"/v1/embeddings"' apps/services/gateway/gateway/main.py`
-  → one hit, on the route only, and not in `PUBLIC_ROUTES`, means this is open.
-- **Added:** 2026-09-23 · the review of PR #407
-
 ### H-161 · The seats matrix cannot PROPOSE, because the queue is the wrong shape · [OWNER]
 - **Metorite:** #773. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "CREATE TABLE IF NOT EXISTS access_request" -A 12
@@ -1630,12 +1617,6 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** on prod, read the counts of DEWiN's last run. If `tasks` shows
   `unlinked` equal to `seen` (1,145 on 2026-10-15), this entry is open.
 - **Added:** 2026-10-16 · WS-53, DEWiN import
-
-### H-329 · The email embedder sends a key that the gateway refuses · [AGENT]
-- **Metorite:** #683. The task holds the full entry (moved 2026-10-28, D118).
-- **Check:** `rg -n "llm_api_key" apps/services/email_ingestion/email_ingestion/email_embeddings.py`.
-  A hit in the request headers means this is open.
-- **Added:** 2026-10-16 · WS-61 KB-3
 
 ### H-331 · `test_fifteen_for_each_source` fails in the full unit run, and passes alone · [AGENT]
 - **Metorite:** #772. The task holds the full entry (moved 2026-10-28, D118).

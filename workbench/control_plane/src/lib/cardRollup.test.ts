@@ -430,3 +430,28 @@ describe("a manual open beats the automatic rule", () => {
     expect(html).toContain('aria-expanded="true"');
   });
 });
+
+describe("a receipt opens folded (owner, 2026-10-29)", () => {
+  // "show the notes closed by default, unless you actually want the user to
+  // read a particular AGUI card or note." Mutation: drop the receipt rule
+  // and the first test goes red.
+  it("is closed even when it is the newest", () => {
+    expect(rollupOpen({ pending: false, receipt: true, newest: true, long: false })).toBe(false);
+  });
+
+  it("a card that waits beats the receipt", () => {
+    expect(rollupOpen({ pending: true, receipt: true, newest: true, long: false })).toBe(true);
+  });
+
+  it("a manual open beats the receipt", () => {
+    expect(rollupOpen({ pending: false, receipt: true, manual: "open", newest: false, long: false })).toBe(true);
+  });
+
+  it("a held card keeps its state over the receipt", () => {
+    expect(rollupOpen({ pending: false, receipt: true, held: true, newest: true, long: false })).toBe(true);
+  });
+
+  it("a card that is not a receipt still opens when it is newest", () => {
+    expect(rollupOpen({ pending: false, newest: true, long: false })).toBe(true);
+  });
+});
