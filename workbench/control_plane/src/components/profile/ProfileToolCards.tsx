@@ -74,7 +74,10 @@ export function drawsReceipt(e: ToolEvent): boolean {
 
 /** The reason of a mark `answered` with nothing saved. `assistant_profile.NO_ANSWER`. */
 const NO_ANSWER = "no_answer";
-/** The start of a line that only the model reads. `profile_tools.RETRY_WITH_COPY`. */
+/**
+ * The start of a line that only the model reads. `profile_tools.FOR_ASSISTANT`.
+ * That line and every line after it are for the model, so the card drops them.
+ */
 const FOR_MODEL = "For the assistant:";
 
 /** True when a tool of this name draws a profile receipt. */
@@ -167,15 +170,22 @@ export function readProfileResult(result: string): {
   const undo = parseUndo(first);
   const said = undo ? null : parseStatus(first);
   const machine = undo !== null || said !== null;
+  const body = machine ? lines.slice(1) : lines;
+  // The first model-only line ends the member's text. The same-kind facts and
+  // their ids come after it (task 1002).
+  const forModel = body.findIndex((l) => l.trim().startsWith(FOR_MODEL));
   return {
     // The "To undo: profile_undo()." clause is for the model on WhatsApp.
     // The card has its button, and never names a tool to the member.
-    text: (machine ? lines.slice(1) : lines)
+    // `clean()` strips the guillemets from the member's own text, so every
+    // guillemet in a reply is a fence. The member reads curly quotes instead.
+    text: (forModel < 0 ? body : body.slice(0, forModel))
       .filter((l) => !l.trim().startsWith(UNDO_PREFIX.trim()))
-      .filter((l) => !l.trim().startsWith(FOR_MODEL))
       .map((l) => l.replace(/\s*To undo: .*$/, ""))
       .join("\n")
-      .trim(),
+      .trim()
+      .replaceAll("«", "“")
+      .replaceAll("»", "”"),
     undo,
     status: undo ? "saved" : (said?.status ?? "unknown"),
     reason: said?.reason ?? "",
