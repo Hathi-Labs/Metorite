@@ -1627,6 +1627,444 @@ class TestTheEmailOtpTokenIsReachableUnbound:
 
 
 # ==========================================================================
+# H6a — the parity and gap fence of the sign-in cutover (WS-TS, D120,
+# 2026-10-29). R8 on the phase-4-promoted two-org catalog. The resolve tests
+# run as the non-privileged `acb_app` role, session UNBOUND, flag ON, through
+# the REAL `deps._with_resolved_access` composition. The parity read runs as
+# `acb_app` BOUND to each org in turn, because `app_user` is FORCE-RLS'd and
+# an unbound read of it is empty by design.
+# ==========================================================================
+
+#: Every `app_user` row of the bound org that has NO shadow twin: no
+#: `user_identity` on `lower(email)`, or no `org_membership` of the SAME org
+#: with the SAME status. Zero rows after migrations 182 and 183 is parity.
+_PARITY_GAP_SQL = """
+    SELECT au.email                 AS email,
+           au.organization_id::text AS org,
+           au.status                AS status,
+           (ui.id IS NULL)          AS no_identity,
+           (m.user_id IS NULL)      AS no_membership
+      FROM app_user au
+      LEFT JOIN user_identity ui ON lower(ui.email) = lower(au.email)
+      LEFT JOIN org_membership m
+             ON m.user_id = ui.id
+            AND m.organization_id = au.organization_id
+            AND m.status IS NOT DISTINCT FROM COALESCE(au.status, 'active')
+     WHERE au.organization_id IS NOT NULL
+       AND (ui.id IS NULL OR m.user_id IS NULL)
+     ORDER BY lower(au.email)
+"""
+
+
+def _migration(prefix: str) -> Path:
+    """The one numbered migration file with this ``NNN_`` prefix (R1)."""
+    found = sorted((_ROOT / "infra" / "postgres").glob(f"{prefix}_*.sql"))
+    assert len(found) == 1, f"expected one {prefix}_*.sql, found {found}"
+    return found[0]
+
+
+def _run_migration(admin_engine, prefix: str) -> None:
+    """Replay one migration verbatim, as the migration runner would."""
+    sql = _migration(prefix).read_text(encoding="utf-8")
+    with admin_engine.begin() as conn, conn.connection.dbapi_connection.cursor() as cur:
+        cur.execute(sql)
+
+
+def _seed_plain_app_user(admin_engine, *, org_id: str, email: str,
+                         status: str = "active") -> None:
+    """An ``app_user`` row with no role, as the RLS-bypassing admin."""
+    with admin_engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO app_user (email, display_name, role, status, "
+            "organization_id) VALUES (:e, :e, 'employee', :s, :org)"),
+            {"e": email, "s": status, "org": org_id})
+
+
+def _unseed_plain_app_user(admin_engine, email: str) -> None:
+    with admin_engine.begin() as conn:
+        conn.execute(text("DELETE FROM app_user WHERE lower(email) = lower(:e)"),
+                     {"e": email})
+        conn.execute(text(
+            "DELETE FROM access_request WHERE lower(email) = lower(:e)"),
+            {"e": email})
+
+
+def _purge_shadow_as_admin(admin_engine, email: str) -> None:
+    with admin_engine.begin() as conn:
+        conn.execute(text(
+            "DELETE FROM org_membership m USING user_identity ui "
+            " WHERE m.user_id = ui.id AND lower(ui.email) = lower(:e)"),
+            {"e": email})
+        conn.execute(text(
+            "DELETE FROM user_identity WHERE lower(email) = lower(:e)"),
+            {"e": email})
+
+
+def _gaps_bound_to(app_engine, org_id: str) -> tuple[int, list[dict]]:
+    """``(visible app_user rows, parity gaps)`` as ``acb_app`` bound to one org."""
+    with app_engine.connect() as c, c.begin():
+        c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                  {"o": org_id})
+        visible = c.execute(text("SELECT count(*) FROM app_user")).scalar_one()
+        gaps = [dict(r) for r in c.execute(text(_PARITY_GAP_SQL)).mappings()]
+    return visible, gaps
+
+
+async def _count_bound(sql: str, params: dict) -> int:
+    """One COUNT on the seam's bound session (`tenant_session`, the GUC seam)."""
+    from acb_common.db import tenant_session
+
+    async with tenant_session() as db:
+        return (await db.execute(text(sql), params)).scalar_one()
+
+
+@_DB_GATE
+class TestH6aIdentityParity:
+    """The parity and gap fence of the sign-in read cutover (H6a, D120).
+
+    Acceptance (a), (c), (d) and (e) of the H6a slice. Each test names its
+    mutation (R7). The flag-ON path is the one under test. The flag-OFF path
+    bricks on this catalog by design, and
+    ``TestTheReadCutoverIdentityLeg`` keeps that RED test.
+    """
+
+    @staticmethod
+    def _app_dsn(promoted) -> str:
+        return promoted.app_url.render_as_string(hide_password=False)
+
+    # ── (a) parity ────────────────────────────────────────────────────────
+    def test_every_app_user_row_has_its_shadow_after_182_and_183(
+        self, promoted, app_engine
+    ):
+        """(a) R7 name: ``shadow-parity``. After migrations 182 and 183 replay,
+        every ``app_user`` row has a ``user_identity`` on ``lower(email)`` and an
+        ``org_membership`` of the same org and status. Four shapes are seeded:
+        a clean active member with no shadow, a MIXED-CASE address whose
+        identity exists in lower case, a suspended member whose shadow is stale
+        (active), and a removed member with no shadow. Mutation: a join on
+        ``ui.email = au.email`` misses the mixed-case row and this goes RED."""
+        admin = promoted.admin_engine
+        clean = "parity.clean@h3rls.test"
+        mixed = "Parity.Mixed@h3rls.test"
+        stale = "parity.stale@h3rls.test"
+        removed = "parity.removed@h3rls.test"
+        emails = (clean, mixed, stale, removed)
+        try:
+            # The identity of the mixed-case member exists FIRST, in lower
+            # case, with an 'invited' membership that 183 must align.
+            with admin.begin() as conn:
+                uid = conn.execute(text(
+                    "INSERT INTO user_identity (email, display_name) "
+                    "VALUES (:e, '') RETURNING id"),
+                    {"e": mixed.lower()}).scalar_one()
+                conn.execute(text(
+                    "INSERT INTO org_membership (organization_id, user_id, "
+                    "status) VALUES (:org, :uid, 'invited')"),
+                    {"org": promoted.org_b, "uid": uid})
+                # The stale member: shadow says active, app_user says suspended.
+                uid2 = conn.execute(text(
+                    "INSERT INTO user_identity (email, display_name) "
+                    "VALUES (:e, '') RETURNING id"), {"e": stale}).scalar_one()
+                conn.execute(text(
+                    "INSERT INTO org_membership (organization_id, user_id, "
+                    "status) VALUES (:org, :uid, 'active')"),
+                    {"org": promoted.org_a, "uid": uid2})
+            _seed_plain_app_user(admin, org_id=promoted.org_a, email=clean)
+            _seed_plain_app_user(admin, org_id=promoted.org_b, email=mixed)
+            _seed_plain_app_user(admin, org_id=promoted.org_a, email=stale,
+                                 status="suspended")
+            _seed_plain_app_user(admin, org_id=promoted.org_a, email=removed,
+                                 status="removed")
+
+            # Before the replay the gaps are real: the fence can see them.
+            _, before_a = _gaps_bound_to(app_engine, promoted.org_a)
+            _, before_b = _gaps_bound_to(app_engine, promoted.org_b)
+            assert {g["email"].lower() for g in before_a + before_b} >= {
+                clean, mixed.lower(), stale, removed}, (
+                "the parity read is blind: it found no gap before 182/183")
+
+            _run_migration(admin, "182")
+            _run_migration(admin, "183")
+
+            seen_a, after_a = _gaps_bound_to(app_engine, promoted.org_a)
+            seen_b, after_b = _gaps_bound_to(app_engine, promoted.org_b)
+            assert seen_a >= 3 and seen_b >= 1, (
+                "the bound parity read saw no app_user rows: the gate is empty")
+            assert after_a == [] and after_b == [], (
+                f"shadow parity gaps after 182+183: {after_a + after_b}")
+
+            # One identity per human, never a case-variant twin.
+            with admin.connect() as c:
+                twins = c.execute(text(
+                    "SELECT count(*) FROM user_identity "
+                    " WHERE lower(email) = lower(:e)"), {"e": mixed}).scalar_one()
+            assert twins == 1, f"{twins} user_identity rows for one address"
+        finally:
+            for e in emails:
+                _unseed_plain_app_user(admin, e)
+                _purge_shadow_as_admin(admin, e)
+
+    # ── (c) two orgs ──────────────────────────────────────────────────────
+    async def test_one_active_and_one_suspended_membership_binds_the_active_org(
+        self, promoted, monkeypatch
+    ):
+        """(c) R7 name: ``active-wins-over-suspended``. One email, active in org
+        A and suspended in org B, binds org A through the full path, with its
+        real role. Bound, the session sees no org B ``app_user`` row. Mutation:
+        an identity leg that ignores ``status`` sees two rows and denies."""
+        from acb_common.db import get_session_factory
+
+        monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+        admin = promoted.admin_engine
+        email = "h6a.two.orgs@h3rls.test"
+        role_slug = "h6a-c-role"
+        _seed_active_member(admin, org_id=promoted.org_a, email=email,
+                            role_slug=role_slug)
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            factory = get_session_factory()
+            try:
+                await mirror_identity_membership(
+                    email=email, org_id=promoted.org_a, status="active")
+                await mirror_identity_membership(
+                    email=email, org_id=promoted.org_b, status="suspended")
+                access_mod.invalidate()
+                clear_tenant()
+
+                enriched = await _with_resolved_access(
+                    UserContext(email=email, role=UserRole.EMPLOYEE))
+
+                assert str(enriched.organization_id) == promoted.org_a, (
+                    f"bound {enriched.organization_id!r}, not the ACTIVE org")
+                assert enriched.access.is_active is True
+                assert role_slug in enriched.access.roles
+                foreign = await _count_bound(
+                    "SELECT count(*) FROM app_user WHERE organization_id = :b",
+                    {"b": promoted.org_b})
+                assert foreign == 0, "an org B app_user row is visible bound to A"
+            finally:
+                clear_tenant()
+                access_mod.invalidate()
+                await _purge_shadow_rows(factory, email)
+                _unseed_member(admin, email=email, role_slug=role_slug,
+                               org_id=promoted.org_a)
+                _unseed_plain_app_user(admin, email)
+
+    async def test_two_active_memberships_deny_through_the_full_path(
+        self, promoted, monkeypatch
+    ):
+        """(c) R7 name: ``two-orgs-deny-end-to-end``. One email, ACTIVE in both
+        orgs and no host: ``(None, None)``, nothing binds, and the role leg
+        refuses. Mutation: a ``LIMIT 1`` identity leg binds one org."""
+        from acb_common.db import get_session_factory
+
+        monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+        admin = promoted.admin_engine
+        email = "h6a.both.active@h3rls.test"
+        role_slug = "h6a-c2-role"
+        _seed_active_member(admin, org_id=promoted.org_a, email=email,
+                            role_slug=role_slug)
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            factory = get_session_factory()
+            try:
+                await mirror_identity_membership(
+                    email=email, org_id=promoted.org_a, status="active")
+                await mirror_identity_membership(
+                    email=email, org_id=promoted.org_b, status="active")
+                access_mod.invalidate()
+                clear_tenant()
+
+                assert await resolve_identity(email) == (None, None)
+                enriched = await _with_resolved_access(
+                    UserContext(email=email, role=UserRole.EMPLOYEE))
+
+                assert enriched.organization_id is None, (
+                    "a two-org human was bound instead of denied (P2a)")
+                assert enriched.access.is_active is False
+            finally:
+                clear_tenant()
+                access_mod.invalidate()
+                await _purge_shadow_rows(factory, email)
+                _unseed_member(admin, email=email, role_slug=role_slug,
+                               org_id=promoted.org_a)
+                _unseed_plain_app_user(admin, email)
+
+    # ── (d) suspended and purged ──────────────────────────────────────────
+    async def test_a_suspended_member_is_refused_through_the_full_path(
+        self, promoted, monkeypatch
+    ):
+        """(d) R7 name: ``suspended-refused-end-to-end``. A member suspended on
+        the real path (``app_user.status`` and the forward status mirror) binds
+        NO tenant and resolves no access. Mutation: an identity leg that ignores
+        ``status`` binds org A and this goes RED."""
+        from acb_auth.access import mirror_membership_status
+        from acb_common.db import get_session_factory
+
+        monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+        admin = promoted.admin_engine
+        email = "h6a.suspended@h3rls.test"
+        role_slug = "h6a-d-role"
+        _seed_active_member(admin, org_id=promoted.org_a, email=email,
+                            role_slug=role_slug)
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            factory = get_session_factory()
+            try:
+                await mirror_identity_membership(
+                    email=email, org_id=promoted.org_a, status="active")
+                with admin.begin() as conn:
+                    conn.execute(text(
+                        "UPDATE app_user SET status = 'suspended' "
+                        " WHERE lower(email) = lower(:e)"), {"e": email})
+                await mirror_membership_status(
+                    email=email, org_id=promoted.org_a, status="suspended")
+                access_mod.invalidate()
+                clear_tenant()
+
+                enriched = await _with_resolved_access(
+                    UserContext(email=email, role=UserRole.EMPLOYEE))
+
+                assert enriched.organization_id is None, (
+                    "a SUSPENDED member bound a tenant: the identity leg "
+                    "does not filter on status")
+                assert enriched.access.is_active is False
+            finally:
+                clear_tenant()
+                access_mod.invalidate()
+                await _purge_shadow_rows(factory, email)
+                _unseed_member(admin, email=email, role_slug=role_slug,
+                               org_id=promoted.org_a)
+                _unseed_plain_app_user(admin, email)
+
+    async def test_a_purged_member_is_refused_and_keeps_its_identity(
+        self, promoted, monkeypatch
+    ):
+        """(d) R7 name: ``purged-refused-identity-survives``. After the purge
+        (``app_user`` gone, ``purge_identity_shadow`` ran) the member resolves
+        to no tenant and no access, holds NO active ``org_membership``, and the
+        global ``user_identity`` row survives. Mutation: a purge that leaves the
+        membership admits the ghost, and a purge that deletes the identity
+        breaks the survive assertion."""
+        from acb_auth.access import purge_identity_shadow
+        from acb_common.db import get_session_factory
+
+        monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+        admin = promoted.admin_engine
+        email = "h6a.purged@h3rls.test"
+        role_slug = "h6a-d2-role"
+        _seed_active_member(admin, org_id=promoted.org_a, email=email,
+                            role_slug=role_slug)
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            factory = get_session_factory()
+            try:
+                await mirror_identity_membership(
+                    email=email, org_id=promoted.org_a, status="active")
+                access_mod.invalidate()
+                clear_tenant()
+                before = await _with_resolved_access(
+                    UserContext(email=email, role=UserRole.EMPLOYEE))
+                assert before.access.is_active is True, "the seed did not admit"
+                clear_tenant()
+
+                # The purge, in the order members.py uses: app_user first,
+                # then the best-effort shadow delete.
+                _unseed_member(admin, email=email, role_slug=role_slug,
+                               org_id=promoted.org_a)
+                await purge_identity_shadow(email=email, org_id=promoted.org_a)
+                access_mod.invalidate()
+
+                after = await _with_resolved_access(
+                    UserContext(email=email, role=UserRole.EMPLOYEE))
+                assert after.organization_id is None, "a purged member bound"
+                assert after.access.is_active is False
+
+                with admin.connect() as c:
+                    active = c.execute(text(
+                        "SELECT count(*) FROM org_membership m "
+                        "  JOIN user_identity ui ON ui.id = m.user_id "
+                        " WHERE lower(ui.email) = lower(:e) "
+                        "   AND m.status = 'active'"), {"e": email}).scalar_one()
+                    identity = c.execute(text(
+                        "SELECT count(*) FROM user_identity "
+                        " WHERE lower(email) = lower(:e)"), {"e": email}).scalar_one()
+                assert active == 0, "a purged member keeps an ACTIVE membership"
+                assert identity == 1, "the purge deleted the global identity"
+            finally:
+                clear_tenant()
+                access_mod.invalidate()
+                await _purge_shadow_rows(factory, email)
+                _unseed_member(admin, email=email, role_slug=role_slug,
+                               org_id=promoted.org_a)
+                _unseed_plain_app_user(admin, email)
+
+    # ── (e) no cross-tenant read ──────────────────────────────────────────
+    async def test_a_member_bound_to_org_a_reads_no_org_b_row(
+        self, promoted, monkeypatch
+    ):
+        """(e) R7 name: ``no-cross-tenant-read-after-bind``. A member of org A,
+        bound by the cutover, sees its own ``app_user`` and ``user_role`` rows
+        and NONE of org B's, by ``organization_id`` and by the identity re-key.
+        Mutation: a policy without ``FORCE`` lets the owner role read org B."""
+        from acb_common.db import get_session_factory
+
+        monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+        admin = promoted.admin_engine
+        a_email = "h6a.reader.a@h3rls.test"
+        b_email = "h6a.reader.b@h3rls.test"
+        _seed_active_member(admin, org_id=promoted.org_a, email=a_email,
+                            role_slug="h6a-e-role-a")
+        _seed_active_member(admin, org_id=promoted.org_b, email=b_email,
+                            role_slug="h6a-e-role-b")
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            factory = get_session_factory()
+            try:
+                await mirror_identity_membership(
+                    email=a_email, org_id=promoted.org_a, status="active")
+                await mirror_identity_membership(
+                    email=b_email, org_id=promoted.org_b, status="active")
+                access_mod.invalidate()
+                clear_tenant()
+
+                enriched = await _with_resolved_access(
+                    UserContext(email=a_email, role=UserRole.EMPLOYEE))
+                assert str(enriched.organization_id) == promoted.org_a
+
+                own_users = await _count_bound(
+                    "SELECT count(*) FROM app_user WHERE lower(email) = lower(:e)",
+                    {"e": a_email})
+                own_roles = await _count_bound(
+                    "SELECT count(*) FROM user_role ur JOIN app_user au "
+                    "  ON au.id = ur.user_id WHERE lower(au.email) = lower(:e)",
+                    {"e": a_email})
+                assert own_users == 1 and own_roles == 1, (
+                    "the bound session cannot read its OWN rows: the zeros "
+                    "below would be vacuous")
+
+                b_users = await _count_bound(
+                    "SELECT count(*) FROM app_user WHERE organization_id = :b",
+                    {"b": promoted.org_b})
+                b_roles = await _count_bound(
+                    "SELECT count(*) FROM user_role WHERE organization_id = :b",
+                    {"b": promoted.org_b})
+                b_rekey = await _count_bound(
+                    "SELECT count(*) FROM user_role ur JOIN user_identity ui "
+                    "  ON ui.id = ur.user_identity_id "
+                    " WHERE lower(ui.email) = lower(:e)", {"e": b_email})
+                assert (b_users, b_roles, b_rekey) == (0, 0, 0), (
+                    f"org B rows visible bound to A: app_user={b_users} "
+                    f"user_role={b_roles} re-keyed={b_rekey}")
+            finally:
+                clear_tenant()
+                access_mod.invalidate()
+                await _purge_shadow_rows(factory, a_email)
+                await _purge_shadow_rows(factory, b_email)
+                _unseed_member(admin, email=a_email, role_slug="h6a-e-role-a",
+                               org_id=promoted.org_a)
+                _unseed_member(admin, email=b_email, role_slug="h6a-e-role-b",
+                               org_id=promoted.org_b)
+                _unseed_plain_app_user(admin, a_email)
+                _unseed_plain_app_user(admin, b_email)
+
+
+# ==========================================================================
 # Structural — no database, and these must NEVER skip (they arm the R8 gate).
 # ==========================================================================
 class TestThisSuiteIsArmed:
