@@ -24,6 +24,13 @@ What it proves:
    sends no request for it (AD-18). A test variant of the Knowledge manifest
    gives the real page PATCH an op for this.
 5. Each door call writes one audit row (AD-14).
+6. D-EA-4 (§19.8): a connection with ``include_personal`` false sees no
+   ``me`` space and no page of one. A connection with it true sees them, and
+   so does the member's own request with no agent.
+
+Mutation (R7): restore the ``me`` arm for an agent in
+``routes/knowledge/core.py`` (make ``_hides_personal`` answer False) ->
+``test_a_connection_without_personal_sees_no_me_page``.
 
 Run::
 
@@ -140,15 +147,36 @@ class _Seeder:
                  o=self.org, p=pid, b=body, t=title, a=OWNER)
         return pid
 
-    def connection(self, member: str, scopes: tuple[str, ...]) -> tuple[str, str]:
+    def me_space(self, owner: str) -> str:
+        """The ``me`` space of *owner*, as ``core.INSERT_ME_SPACE_SQL`` makes it."""
+        return str(self.one(
+            "INSERT INTO kb_spaces (organization_id, slug, name, purpose, kind, owner_email)"
+            " VALUES (CAST(:o AS uuid), 'me', 'My notes', 'Your private drafts.', 'me', :w)"
+            " RETURNING id", o=self.org, w=owner))
+
+    def draft(self, space: str, title: str, body: str, author: str) -> str:
+        """A draft of *author* in *space*, with its first version."""
+        pid = str(self.one(
+            "INSERT INTO kb_pages (organization_id, space_id, title, body_md, state,"
+            " author_email) VALUES (CAST(:o AS uuid), CAST(:s AS uuid), :t, :b, 'draft', :a)"
+            " RETURNING id", o=self.org, s=space, t=title, b=body, a=author))
+        self.one("INSERT INTO kb_page_versions (organization_id, page_id, version, body_md,"
+                 " title, author_email, reason) VALUES (CAST(:o AS uuid), CAST(:p AS uuid),"
+                 " 1, :b, :t, :a, 'create') RETURNING id",
+                 o=self.org, p=pid, b=body, t=title, a=author)
+        return pid
+
+    def connection(self, member: str, scopes: tuple[str, ...],
+                   include_personal: bool = False) -> tuple[str, str]:
         """A live connection and one access token for it: ``(id, raw token)``."""
         cid = str(self.one(
             "INSERT INTO agent_connection (organization_id, member_email, client_id,"
             " client_name, client_origin, scopes, pinned_projects, include_personal,"
             " expires_at) VALUES (CAST(:o AS uuid), :m, 'https://client.example/meta.json',"
-            " 'Client', :origin, CAST(:scopes AS text[]), CAST(:pins AS uuid[]), false,"
+            " 'Client', :origin, CAST(:scopes AS text[]), CAST(:pins AS uuid[]), :personal,"
             " now() + interval '1 day') RETURNING id",
-            o=self.org, m=member, origin=ORIGIN, scopes=list(scopes), pins=[]))
+            o=self.org, m=member, origin=ORIGIN, scopes=list(scopes), pins=[],
+            personal=include_personal))
         raw = agent_tokens.new_token()
         self.one("INSERT INTO agent_token (organization_id, connection_id, kind, token_hash,"
                  " expires_at, client_id, resource, scope) VALUES (CAST(:o AS uuid),"
@@ -200,14 +228,17 @@ def world():
         a.member(email, ["feature:knowledge"])
     team = a.space("team", "Team", {MEMBER_A: "write"})
     other = a.space("other", "Other", {MEMBER_B: "read"})
-    w = SimpleNamespace(admin=eng, org=org, seeder=a, team=team, other=other,
+    me = a.me_space(MEMBER_A)
+    w = SimpleNamespace(admin=eng, org=org, seeder=a, team=team, other=other, me=me,
                         page_a=a.page(team, "Team plan", "# Plan"),
-                        page_b=a.page(other, "Other plan", "# Secret"), c={}, tok={})
-    for name, member, scopes in (
-            ("a", MEMBER_A, ("knowledge:read", "knowledge:write")),
-            ("a_projects", MEMBER_A, ("projects:read",)),
-            ("b", MEMBER_B, ("knowledge:read",))):
-        w.c[name], w.tok[name] = a.connection(member, scopes)
+                        page_b=a.page(other, "Other plan", "# Secret"),
+                        page_me=a.draft(me, "Private note", "# Mine", MEMBER_A), c={}, tok={})
+    for name, member, scopes, personal in (
+            ("a", MEMBER_A, ("knowledge:read", "knowledge:write"), False),
+            ("a_personal", MEMBER_A, ("knowledge:read",), True),
+            ("a_projects", MEMBER_A, ("projects:read",), False),
+            ("b", MEMBER_B, ("knowledge:read",), False)):
+        w.c[name], w.tok[name] = a.connection(member, scopes, include_personal=personal)
     w.app_dsn = admin_url.set(
         database=dedicated, username=_APP_ROLE, password=_APP_PW,
     ).render_as_string(hide_password=False)
@@ -301,6 +332,19 @@ async def _signed(world, name: str, method: str, path: str, body: bytes = b"") -
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gateway_app),
                                      base_url="http://gateway.test") as client:
             return await client.request(method, path, headers=headers, content=body)
+    return await _in_scope(world, go)
+
+
+async def _as_member(world, who: str, path: str) -> httpx.Response:
+    """One GET as the member *who* in the app: the internal bearer and the
+    member's email (branch 1a). No ``UserContext.agent`` is set."""
+    from gateway.main import app as gateway_app
+
+    async def go() -> httpx.Response:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gateway_app),
+                                     base_url="http://gateway.test") as client:
+            return await client.get(path, headers={"Authorization": f"Bearer {INTERNAL}",
+                                                   "X-User-Email": who})
     return await _in_scope(world, go)
 
 
@@ -405,6 +449,52 @@ class TestTheDoor:
             assert set(event.payload) == {"organization_id", "connection_id", "member",
                                           "via", "app", "op", "class", "request_id",
                                           "decision"}
+
+    async def test_a_connection_without_personal_sees_no_me_page(self, live):
+        """D-EA-4, §19.8. ``include_personal`` false: the member's ``me`` space
+        and its draft do not show through ``get_page``, ``list_spaces`` or
+        ``list_recent``. The hidden page answers the text of any hidden page,
+        so its existence does not leak."""
+        hidden = await _result(live, "a", "app_read", app="knowledge", op="get_page",
+                               args={"page_id": live.page_me})
+        other = await _result(live, "a", "app_read", app="knowledge", op="get_page",
+                              args={"page_id": live.page_b})
+        assert _text(hidden) == _text(other) == "Knowledge has nothing at that id."
+        spaces = _ok(await _result(live, "a", "app_read", app="knowledge", op="list_spaces"))
+        rows = spaces["result"]["spaces"]
+        assert live.team in {s["id"] for s in rows}
+        assert live.me not in {s["id"] for s in rows}
+        assert "me" not in {s["kind"] for s in rows}
+        recent = _ok(await _result(live, "a", "app_read", app="knowledge", op="list_recent"))
+        ids = {p["id"] for p in recent["result"]["pages"]}
+        assert live.page_a in ids and live.page_me not in ids
+
+    async def test_a_connection_with_personal_sees_the_me_page(self, live):
+        """The control of the test above: ``include_personal`` true shows the
+        same page through the same three ops."""
+        page = _ok(await _result(live, "a_personal", "app_read", app="knowledge",
+                                 op="get_page", args={"page_id": live.page_me}))
+        assert page["result"]["id"] == live.page_me
+        assert page["result"]["title"] == {"untrusted_text": "Private note"}
+        spaces = _ok(await _result(live, "a_personal", "app_read", app="knowledge",
+                                   op="list_spaces"))
+        assert live.me in {s["id"] for s in spaces["result"]["spaces"]}
+        recent = _ok(await _result(live, "a_personal", "app_read", app="knowledge",
+                                   op="list_recent"))
+        assert live.page_me in {p["id"] for p in recent["result"]["pages"]}
+
+    async def test_the_members_own_request_still_sees_the_me_page(self, live):
+        """The narrowing reads ``user.agent`` only. The member's own request
+        in the app (branch 1a, no agent) still opens the ``me`` page."""
+        r = await _as_member(live, MEMBER_A, f"/knowledge/pages/{live.page_me}")
+        assert r.status_code == 200, r.text
+        assert r.json()["title"] == "Private note"
+        r = await _as_member(live, MEMBER_A, "/knowledge/spaces")
+        assert r.status_code == 200, r.text
+        assert live.me in {s["id"] for s in r.json()["spaces"]}
+        r = await _as_member(live, MEMBER_A, "/knowledge/recent")
+        assert r.status_code == 200, r.text
+        assert live.page_me in {p["id"] for p in r.json()["pages"]}
 
     async def test_the_suite_runs_as_a_role_that_cannot_bypass_rls(self, live):
         engine = create_engine(make_url(live.app_dsn).set(drivername="postgresql+psycopg"))

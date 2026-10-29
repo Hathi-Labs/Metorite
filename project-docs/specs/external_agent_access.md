@@ -2915,7 +2915,9 @@ The write of the audit row is best effort, as `log.py` says. The run rows are th
 
 - The member and the organization come from the connection row, in branch 0 (§10.1 steps 4 to 7). No door input names a member, an organization or a connection. Each request model has `extra = "forbid"`.
 - The app route binds the tenant through the `get_db()` seam, as it does for a member in the app. The door adds no database site.
-- The seam of the app decides each row. CRM uses `require_crm_access` (`routes/crm/access.py:98`) after the kill switch and `feature:crm`. Email uses `mailbox_predicate` of the one mailbox seam (`routes/email/mailbox_access.py:103`). Knowledge uses `visible_pages_clause` (`routes/knowledge/core.py:220`).
+- The seam of the app decides each row. CRM uses `require_crm_access` (`routes/crm/access.py:98`) after the kill switch and `feature:crm`. Email uses `mailbox_predicate` of the one mailbox seam (`routes/email/mailbox_access.py:103`). Knowledge uses `visible_pages_clause` (`routes/knowledge/core.py:240`).
+- **The personal opt-in (D-EA-4) narrows the seam of each app.** In Knowledge, `visible_pages_clause` and `readable_spaces_clause` drop each `me` space, and each page in one, for a connection whose `include_personal` is false (`_hides_personal`, `routes/knowledge/core.py:225`). They read `user.agent` as `_narrow_for_agent` of Projects does, so a member's own request does not change. A hidden `me` page answers the 404 of any hidden page. Fence: `tests/unit/test_mcp_edge_app_door_r8.py`.
+- Pins do not apply to Knowledge. A pin holds a project id, and Knowledge holds no project.
 - An app run is a row of `pm_agent_runs`, under FORCE ROW LEVEL SECURITY. The request route takes `organization_id` from the session, never from the body.
 - The admin switch is a row of `org_settings`, which is tenant-scoped (migration 234). The limits use the tenant Redis wrapper.
 - The member of an app run and its own connection read it. Only its own connection spends it (AD-16).
