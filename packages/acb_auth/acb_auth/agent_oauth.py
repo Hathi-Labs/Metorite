@@ -563,8 +563,18 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: ``set_assignees``, the one ``PUT`` of the set. The task move is the route
 #: of the ``parent_task_id`` of ``update_task``, and the route refuses a
 #: signed move to another project.
+#: WS-55 MCP-G1 adds four pairs. The node POST and PATCH are the routes of
+#: ``create_project`` and ``update_project``, and the routes refuse a lead, a
+#: kind and each setting of a signed agent. The move preview and the move are
+#: the routes of ``preview_move_tasks`` and ``move_tasks``. The preview writes
+#: nothing, and it is a write pair only because it is a POST. ⚠️ The grant
+#: routes, the node move and the node archive stay OUT of both sets.
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("POST", "/projects/nodes"),
+    ("PATCH", "/projects/nodes/{project_id}"),
+    ("POST", "/projects/tasks/move/preview"),
+    ("POST", "/projects/tasks/move"),
     ("PATCH", "/projects/tasks/{task_id}"),
     ("PUT", "/projects/tasks/{task_id}/assignees"),
     ("POST", "/projects/tasks/{task_id}/move"),
