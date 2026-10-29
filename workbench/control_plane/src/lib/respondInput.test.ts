@@ -44,6 +44,22 @@ describe("the answer POST hears it", () => {
     expect(sent.as).toBe("alice@a.test");
   });
 
+  it("a 400 or 422 keeps the card, with the server's reason (#916)", async () => {
+    for (const status of [400, 422]) {
+      const fetchFn = vi.fn(async () => new Response(JSON.stringify({ detail: "Pick a row." }), { status }));
+      expect(await sendRespondInputResult(BODY, fetchFn as unknown as typeof fetch)).toEqual({
+        outcome: "retry", resend: null, reason: "The server refused the answer: Pick a row.",
+      });
+    }
+  });
+
+  it("a 401 and a 403 still drop", async () => {
+    for (const status of [401, 403]) {
+      const fetchFn = vi.fn(async () => new Response("{}", { status }));
+      expect((await sendRespondInputResult(BODY, fetchFn as unknown as typeof fetch)).outcome).toBe("drop");
+    }
+  });
+
   it("a plain 409 is still a drop", async () => {
     const fetchFn = vi.fn(async () => new Response(JSON.stringify({ detail: "No pending question" }), { status: 409 }));
     expect(await sendRespondInputResult(BODY, fetchFn as unknown as typeof fetch)).toEqual({
