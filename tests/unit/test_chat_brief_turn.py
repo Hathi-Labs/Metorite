@@ -12,6 +12,9 @@ What this holds without a database:
   ``mint=True`` nowhere (``test_rooms.py`` keeps that literal in
   ``routes/agent.py`` alone), and it is registered in ``main.py``.
 
+* WS-BRIEF BR-2c-1: the stored run gives the same parts as the composition
+  of the same cards, the "more" count included (``stored_parts``).
+
 The database half is ``test_chat_brief_turn_r8.py``.
 """
 from __future__ import annotations
@@ -154,3 +157,44 @@ class TestTheSeams:
         module = pathlib.Path(chat_brief.__file__).read_text(encoding="utf-8")
         for word in ("litellm", "tier_", "decide(", "complete(", "acompletion"):
             assert word not in module, word
+
+
+class TestTheStoredRun:
+    """BR-2c-1: a run that the gather wrote from some cards gives the chat
+    the same title, lines and rest as ``plan.brief_parts`` of those cards."""
+
+    @staticmethod
+    def _stored(cards: list[dict]):
+        from gateway.brief import gather, store
+
+        parts = plan.brief_parts(cards, TODAY, now=NOW)
+        assert parts is not None
+        claims = [store.Claim(
+            id=f"c{c.position}", run_id="r", position=c.position, section=c.section,
+            text=c.text, source_app=c.source_app, source_kind=c.source_kind,
+            source_id=c.source_id, source_ids=(), href=c.href, value=None,
+            value_path=None, fingerprint=c.fingerprint) for c in gather.claims(cards, NOW)]
+        run = store.Run(
+            id="r", member_email="a@x.test", kind="brief", local_date=TODAY, slot_at=NOW,
+            state="ready", lead=plan.brief_lead(parts), lead_source="template",
+            lead_claim_ids=(), model_request_id=None, unattended_run_id=None, error=None,
+            created_at=NOW, ready_at=NOW, delivered_at=None)
+        return parts, chat_brief.stored_parts(run, list(reversed(claims)))
+
+    def test_the_stored_parts_are_the_composed_parts(self):
+        cards = [{**card("email:a:t1"), "href": "/email?thread=t1"},
+                 {**card("tasks:1", "overdue", title="Send the deck", facts={"days_late": 2},
+                         score=40), "href": "/tasks?task=1"}]
+        parts, stored = self._stored(cards)
+        assert stored is not None
+        lead, got = stored
+        assert lead == plan.brief_lead(parts)
+        assert got == parts
+        assert chat_brief.brief_event(got) == chat_brief.brief_event(parts)
+
+    def test_the_rest_survives_the_store(self):
+        cards = [{**card(f"tasks:{i}", "overdue", title=f"Task {i}", score=60 - i,
+                         facts={"days_late": 1}), "href": f"/tasks?task={i}"}
+                 for i in range(9)]
+        parts, stored = self._stored(cards)
+        assert stored is not None and stored[1] == parts and parts.rest == 2
