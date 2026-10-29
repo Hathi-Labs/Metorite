@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
-from gateway.routes.projects.core import task_visibility_clause, wire
+from gateway.routes.projects.core import CLOSING_CATEGORIES, task_visibility_clause, wire
 from sqlalchemy import text
 
 #: `pm_task_statuses.category`. Mirrored from the CHECK the migrations leave in
@@ -1381,6 +1381,116 @@ async def attach_pr_chip(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, 
         if hit is not None:
             row["pr"] = _pr_chip(hit)
     return rows
+
+
+#: The states that read as "working" on the strip: the agent has the task, and
+#: the run is live, answered or idle (EA3-43). ONE copy: the summary strip, the
+#: analytics and :func:`agent_focus_clause` read it here.
+WORKING_STATES: tuple[str, ...] = ("working", "answered", "stale")
+
+#: The five foci of the agent strip, in the order it draws them. ``waiting`` is
+#: "Waiting on me". The list filter ``agent_focus`` accepts exactly these.
+AGENT_FOCI: tuple[str, ...] = ("queued", "working", "waiting", "review", "merged")
+
+#: The one named parameter of :func:`agent_focus_clause`: the lower-cased
+#: address of the SESSION's member. The route binds it, never the request (R11).
+AGENT_FOCUS_ME = "af_me"
+
+#: The foci that read the agent run state, and so need the runs flag.
+_RUN_FOCI = frozenset({"queued", "working", "waiting"})
+
+
+def _state_exists(condition: str) -> str:
+    """``EXISTS`` over the ONE pill row of the task ``t`` (:func:`agent_state_sql`)."""
+    return (
+        f"EXISTS (SELECT 1 FROM ({agent_state_sql('r.task_id = t.id')}) s"
+        f" WHERE {condition})"
+    )
+
+
+def _pull_request_exists(condition: str) -> str:
+    return (
+        "EXISTS (SELECT 1 FROM pm_task_refs ar WHERE ar.task_id = t.id"
+        " AND ar.kind = 'pull_request' AND ar.provider = 'github'"
+        f" AND {condition})"
+    )
+
+
+def agent_focus_clause(focus: str) -> str:
+    """The WHERE predicate of one agent-strip focus, over the task alias ``t``.
+
+    ⚠️ **ONE text for the strip and the list.** ``agent_summary`` counts the
+    tasks that this predicate keeps, and ``GET /projects/tasks?agent_focus=``
+    filters by it, so a count and the rows behind it cannot disagree. Paging
+    happens in SQL, so the filter has to be a WHERE clause too.
+
+    * ``queued``: the pill state is ``queued``. ``working``: it is one of
+      :data:`WORKING_STATES`. Both read :func:`agent_state_sql`, the text that
+      fills the card pill.
+    * ``waiting``: the "Waiting on me" rule of §12.1. The pill state is
+      ``awaiting`` and the run is the caller's (``:af_me``, bound by the
+      route), or the caller is assigned to the task.
+    * ``review``: an open or draft GitHub pull request, and the task is not in
+      a closing category. ``merged``: a pull request merged in the last 7 days.
+
+    While ``agent_runs_enabled`` is off the three run foci keep nothing, as
+    the cards show no pill. The two pull request foci do not read the flag.
+    An unknown focus is a ``ValueError``: the route turns it into a 422.
+    """
+    if focus not in AGENT_FOCI:
+        raise ValueError(f"Unknown agent focus '{focus}'. One of: {list(AGENT_FOCI)}.")
+    if focus in _RUN_FOCI and not agent_runs_enabled():
+        return "false"
+    if focus == "queued":
+        return _state_exists("s.state = 'queued'")
+    if focus == "working":
+        working = ", ".join(f"'{s}'" for s in WORKING_STATES)
+        return _state_exists(f"s.state IN ({working})")
+    if focus == "waiting":
+        return _state_exists(
+            "s.state = 'awaiting'"
+            f" AND (lower(s.member_email) = :{AGENT_FOCUS_ME}"
+            "  OR EXISTS (SELECT 1 FROM pm_task_assignees a"
+            f"             WHERE a.task_id = s.task_id AND lower(a.assignee) = :{AGENT_FOCUS_ME}))"
+        )
+    if focus == "review":
+        closed = ", ".join(f"'{c}'" for c in sorted(CLOSING_CATEGORIES))
+        return (
+            _pull_request_exists("ar.state IN ('open', 'draft')")
+            + " AND EXISTS (SELECT 1 FROM pm_task_statuses ast"
+            f" WHERE ast.id = t.status_id AND ast.category NOT IN ({closed}))"
+        )
+    return _pull_request_exists(
+        "ar.state = 'merged' AND ar.merged_at >= now() - interval '7 days'"
+    )
+
+
+def agent_filter_clauses(
+    agent_focus: str | None, agent_worked: bool, me: str,
+) -> tuple[list[str], dict[str, Any]]:
+    """The WHERE pieces and bind params of the two agent filters (task #986).
+
+    ONE helper for ``GET /projects/tasks`` and the CSV export, so a file holds
+    the rows that the board shows. An unknown focus is a **422** that lists the
+    allowed values. *me* is the SESSION's member (``actor(user)``), never a
+    name from the request (R11). Neither filter is in a saved view.
+    """
+    clauses: list[str] = []
+    params: dict[str, Any] = {}
+    if agent_focus is not None:
+        if agent_focus not in AGENT_FOCI:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown agent focus '{agent_focus}'. One of: {list(AGENT_FOCI)}.",
+            )
+        clauses.append(agent_focus_clause(agent_focus))
+        params[AGENT_FOCUS_ME] = me.strip().lower()
+    if agent_worked:
+        from gateway.routes.projects.agent_worked import agent_worked_sql
+
+        # "Now" is every row that exists, as `attach_agent_worked` reads it.
+        clauses.append(agent_worked_sql("t.id", "'infinity'::timestamptz"))
+    return clauses, params
 
 
 #: The ``before`` of a read at this moment (see :func:`attach_agent_worked`).

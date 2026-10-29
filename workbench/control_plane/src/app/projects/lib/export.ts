@@ -17,6 +17,8 @@
  */
 
 import { type Filters, type SubtaskMode, toQuery } from "./grouping";
+import type { AgentFocus } from "./agentRuns";
+import { agentReadParams } from "./paging";
 import { subtaskReadParams } from "./subtaskView";
 import { type TableSort, sortQuery } from "./table";
 
@@ -34,6 +36,10 @@ export interface ExportRequest {
    * file holds the rows the board shows. Absent reads as "no mode".
    */
   subtasks?: SubtaskMode | null;
+  /** Task #986 — the board's agent filters, so the file holds the rows on screen. */
+  waitingOnMe?: boolean;
+  agentFocus?: AgentFocus | null;
+  agentWork?: boolean;
 }
 
 /**
@@ -56,6 +62,10 @@ export function exportQuery(request: ExportRequest): Record<string, string> {
     // A query string holds text, so the flag is the word "true".
     ...(subtaskReadParams(request.subtasks).top_level ? { top_level: "true" } : {}),
   };
+  const agent = agentReadParams(
+    request.waitingOnMe ?? false, request.agentFocus ?? null, request.agentWork ?? false,
+  );
+  for (const [key, value] of Object.entries(agent)) params[key] = String(value);
   if (request.projectId) {
     params.project_id = request.projectId;
     params.include_subtree = "true";
