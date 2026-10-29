@@ -16,7 +16,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 | The run cap — 5 live runs per member (D-3) | **BUILT** 2026-10-10, branch `ws51-run-cap-and-todos`, no flag |
 | §4.9 — a message sent during a run always steers it | **BUILT** 2026-10-12, branch `composer-always-steer`, no flag |
 | §4.10 — one run status in the open chat | **BUILT** 2026-10-19, branch `chat-run-status`, no flag |
-| D-1 — a separate run worker | **OWNER-GATE** |
+| D-1 — a separate run worker | **DEFERRED** 2026-10-29 on evidence (§5). Not built |
 
 **This spec owns** how a member sees and resumes an assistant run that they
 are not watching. That covers the run list, the badges, the "needs input"
@@ -1199,11 +1199,31 @@ asks for the list again at once, so the dot clears with "Done".
 
 | Id | Decision | Recommendation | Gate |
 |---|---|---|---|
-| D-1 | A separate run-worker service, so a deploy never stops a run | Build after S2, which makes a stop cheap to resume | **OWNER-GATE** |
+| D-1 | A separate run-worker service, so a deploy never stops a run | **DEFERRED** 2026-10-29: the evidence below shows no need | Built only when the owner asks |
 | D-2 | Opt-in web push for "needs input" | **DECIDED** 2026-10-10: opt-in per member. Slice S7, not built | AGENT-SAFE |
 | D-3 | Caps on concurrent runs | **DECIDED** 2026-10-10: 5 per member, no org cap. **BUILT** (§4.8) | AGENT-SAFE |
 
-An agent must refuse D-1 by name until the owner decides.
+An agent must refuse to build D-1 by name until the owner asks for it.
+
+**Why the agent deferred D-1 (2026-10-29).** The owner asked an agent to settle the
+open items on 2026-10-29. The agent measured production, and it found no
+need for a second service:
+
+- **No restart cut a run.** In 8 days, production started the gateway 19
+  times. Each stop runs `gateway-drain.sh` first, and each of the 19 logged
+  `gateway-drain: 0 runs`.
+- **The release lands when nobody works.** In the 21 days to 2026-10-29,
+  members sent no chat message and started no agent run from 22:00 to
+  02:00 UTC. The daily release restarted the gateway between 23:49 and
+  01:33 UTC. `staging_and_daily_release.md` §4.1a keeps it in that window.
+- **A flag flip no longer restarts.** A `*_ORGS` or `*_MODES` flip reloads
+  in place since #1448 (`docs/flag_reload.md`).
+
+**Reopen D-1 when** a production stop logs a `gateway-drain:` line other than
+`0 runs` or `every run ended`. The other lines say that the stop went ahead
+while runs were live, or while the count did not answer. Run
+`sudo journalctl -u acb-gateway --since "7 days ago" -o cat | grep gateway-drain`
+on the box to see each stop.
 
 ---
 

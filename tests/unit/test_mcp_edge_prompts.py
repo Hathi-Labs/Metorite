@@ -511,6 +511,27 @@ class TestTheInstructionsOfTheRoutine:
         assert {"claim_task", "set_task_status", "add_comment"} <= WRITE_TOOLS
 
 
+class TestPullRequestRule:
+    """MCP-G11 (#845). Mutation: drop ``PR_RULE`` from ``instructions`` or ``_rules``."""
+
+    PHRASES = ("Never write a pull request as PR #N",
+               "Write the URL of the pull request, or call add_task_reference")
+
+    async def test_the_instructions_tell_the_agent_to_write_the_url(self, armed):
+        text = await _instructions()
+        for phrase in self.PHRASES:
+            assert phrase in text, phrase
+
+    async def test_the_prompt_message_tells_the_agent_to_write_the_url(self, armed):
+        text = await _prompt_text()
+        for phrase in self.PHRASES:
+            assert phrase in text, phrase
+
+    async def test_a_read_only_connection_does_not_get_the_write_tool_name(self, armed):
+        text = await _instructions(READ_ONLY)
+        assert "PR #N" not in text
+
+
 class TestAskedWork:
     """MCP-Ga (D135): work that a person asks for in chat gets a task first.
 

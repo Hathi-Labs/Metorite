@@ -114,6 +114,28 @@ const HITL_CONTROL_EVENTS = new Set([
  */
 const NAVIGATE_EVENT = "navigate";
 
+/** Tell the run state that a tool began or ended, so a Stop can say how many
+ *  changes the run made (`lib/runStatus.ts`, UXD-4b). */
+function noteToolForRun(threadId: string, evt: { type?: unknown; id?: unknown; name?: unknown; success?: unknown }): void {
+  const id = String(evt.id ?? "");
+  if (!id) return;
+  if (evt.type === "tool_start") {
+    dispatchRun(threadId, { type: "toolStart", at: Date.now(), id, name: String(evt.name ?? "") });
+  } else if (evt.type === "tool_end") {
+    // `tool_end` may carry no name: read it from the thread's tool event.
+    const name = String(evt.name ?? "") || toolNameOf(threadId, id);
+    dispatchRun(threadId, { type: "toolDone", at: Date.now(), id, name, ok: !!evt.success });
+  }
+}
+
+function toolNameOf(threadId: string, id: string): string {
+  for (const m of getSessionState(threadId).messages) {
+    const t = (m.toolEvents ?? []).find((x) => x.id === id);
+    if (t) return t.name;
+  }
+  return "";
+}
+
 /** The `cardAnswer` field of a chat request: the answered card that the
  *  turn carries (`lib/cardAnswer.ts`), or nothing. Exported for its test. */
 export function cardAnswerField(m: Pick<ChatMessage, "customEvents">): { cardAnswer?: unknown } {
@@ -718,6 +740,7 @@ export function useAgentChat({
               case "tool_args":
               case "tool_partial":
                 upd((m) => applyStreamEvent(m, evt, fold));
+                noteToolForRun(threadId, evt);
                 // D99: the one assistant moves the page to the app whose
                 // specialist it calls (`lib/shell/assistant.ts`). Live loop
                 // ONLY: a reconnect replays old events, and a replay must not
@@ -1247,6 +1270,7 @@ export function useAgentChat({
               case "tool_args":
               case "tool_partial":
                 updLast((m) => applyStreamEvent(m, evt, fold));
+                noteToolForRun(threadId, evt);
                 break;
               // Nested delegation timeline — same shared reducer as the live
               // loop.  Without these cases a refresh mid-delegation dropped
