@@ -1615,13 +1615,28 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     module = slug.startswith(MODULE_PREFIX)
     # On a module the amount is a field, so only a currency field is rupees.
     money = (measure in _MONEY_MEASURES and not module) or data.get("field_type") == "currency"
+    # Task 888: a deal sum is for ONE currency, named by the route. A module
+    # amount has no currency column, so it reads INR as before.
+    code = str(data.get("currency") or "INR") if measure in _MONEY_MEASURES and not module else "INR"
 
     def fmt(value: Any) -> str:
         if value is None:
             return "no value"
         if money:
-            return f"INR {float(value):,.0f}"
+            return f"{code} {float(value):,.0f}"
         return f"{float(value):,.0f}" if measure == "count" else _number(float(value))
+
+    def fmt_with(value: Any, others: Any, key: str) -> str:
+        """*value* in the main currency, then each other currency with its own
+        code ("INR 12 and USD 4"). Never one sum over the currencies."""
+        main = fmt(value)
+        if value is None or not money:
+            return main
+        more = [f"{o.get('currency')} {float(o.get(key) or 0):,.0f}"
+                for o in others or [] if isinstance(o, dict)]
+        if not more:
+            return main
+        return " and ".join([", ".join([main, *more[:-1]]), more[-1]])
 
     what = _measure_words(measure, field, data)
     plural = f"{ENTITY_LABELS[slug]}s" if slug in ENTITY_LABELS else _entity_label(slug)
@@ -1633,7 +1648,7 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     if not group_by and not group_field:
         # One total over every filtered record: one line.
         head = _one_total(f"{plural}, {what}", data, field or data.get("field"),
-                          measure, fmt)
+                          measure, lambda v: fmt_with(v, data.get("others"), "total"))
         lines = await _total_tail(head, slug, data, overlay)
         lines.extend([*filters, *mine, *await _revenue_lines(slug, measure, box)])
         return "\n".join(lines) + note
@@ -1647,15 +1662,20 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     if overlay and slug in ENTITY_LABELS:
         # CRM-Q20-3a: the route read the module that plays the slot.
         lines.append(_from_module(slug, str(overlay.get("module"))))
-    lines.extend(f"- {g['label']}: {fmt(g.get('value'))}" for g in shown.items)
-    lines.append(f"{_OVERALL.get(measure, 'Total')}: {fmt(data.get('total'))}.")
+    lines.extend(
+        f"- {g['label']}: {fmt_with(g.get('value'), g.get('others'), 'value')}"
+        for g in shown.items
+    )
+    lines.append(f"{_OVERALL.get(measure, 'Total')}: "
+                 f"{fmt_with(data.get('total'), data.get('others'), 'total')}.")
     if shown.line:
         lines.append(shown.line)
     omitted = int(data.get("omitted") or 0)
     if omitted:
         # Past the route's 50 largest groups. The total counts them.
         lines.append(
-            f"Other ({omitted} smaller groups): {fmt(data.get('other'))}. "
+            f"Other ({omitted} smaller groups): "
+            f"{fmt_with(data.get('other'), data.get('others'), 'other')}. "
             "The total counts them. Narrow the filter to see them."
         )
     zone = data.get("zone")

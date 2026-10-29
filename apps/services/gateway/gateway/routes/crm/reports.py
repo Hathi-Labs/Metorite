@@ -16,6 +16,8 @@ order), named in ``currency``. The other currencies' own figures sit in
 ``others``, each with its own code. A CRM with one currency has ``others == []``
 and the same numbers as before. The currencies are read as rows and tallied in
 Python, and each aggregate gets a bound ``currency = :currency`` predicate.
+The code is normalised (``upper(trim(currency))``, with ``''`` and NULL read as
+INR) by ``currency.py``, which the aggregate and the digest share.
 
 **Read-only.** Nothing here writes a row, reaches Zoho, reads a flag or needs a
 migration: every number is a query over what ``crm_status_changes``,
@@ -89,6 +91,12 @@ from gateway.routes.crm.core import (
     status_wire,
     wire,
 )
+from gateway.routes.crm.currency import (
+    CURRENCY_SQL,
+    DEFAULT_CURRENCY,
+    normalise_currency,
+    ordered_currencies,
+)
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -121,11 +129,6 @@ UNATTRIBUTED_LOST = "Not recorded"
 MAX_OWNERS = 25
 
 SECONDS_PER_DAY = 86_400.0
-
-#: The column default of ``crm_deals.currency`` (migration 144), and so the
-#: currency that leads every report. The app holds no organization currency.
-DEFAULT_CURRENCY = "INR"
-
 
 # ── Models ──────────────────────────────────────────────────────────────────
 
@@ -283,17 +286,11 @@ async def _deal_stages(db: Any) -> list[Any]:
     return await read_statuses(db, "crm_deal_statuses")
 
 
-def _ordered_currencies(codes: Any) -> list[str]:
-    """The distinct codes, :data:`DEFAULT_CURRENCY` first, then in code order."""
-    found = {str(code) for code in codes if code is not None}
-    return sorted(found, key=lambda code: (code != DEFAULT_CURRENCY, code))
-
-
 async def _currencies(db: Any) -> list[str]:
     """The currencies the deals carry. Read as rows and tallied here, with no
     ``GROUP BY`` (module docstring). Never empty: no deal reads as the default."""
     rows = (await db.execute(text("SELECT currency FROM crm_deals"), {})).fetchall()
-    return _ordered_currencies(getattr(r, "currency", None) for r in rows) or [
+    return ordered_currencies(getattr(r, "currency", None) for r in rows) or [
         DEFAULT_CURRENCY
     ]
 
@@ -327,7 +324,7 @@ async def _lane_totals(
     caller values are always bound parameters.
     """
     where = " AND ".join((
-        "status_id = CAST(:status_id AS uuid)", "currency = :currency", *extra_where,
+        "status_id = CAST(:status_id AS uuid)", f"{CURRENCY_SQL} = :currency", *extra_where,
     ))
     scope = {
         **(params or {}),
@@ -640,7 +637,7 @@ async def win_loss_report(
         won = [d for d in closed if types.get(str(d.status_id)) == "won"]
         lost = [d for d in closed if types.get(str(d.status_id)) == "lost"]
         cycles = [c for c in (_cycle_days(d) for d in won + lost) if c is not None]
-        codes = _ordered_currencies(
+        codes = ordered_currencies(
             getattr(d, "currency", None) for d in won + lost
         ) or [DEFAULT_CURRENCY]
         primary = codes[0]
@@ -674,7 +671,7 @@ def _amount(deals: list[Any], currency: str) -> float:
     """The sum of the deals that carry ``currency``. Never a cross-currency sum."""
     return float(sum(
         float(getattr(d, "amount", 0) or 0)
-        for d in deals if str(getattr(d, "currency", None)) == currency
+        for d in deals if normalise_currency(getattr(d, "currency", None)) == currency
     ))
 
 
@@ -744,7 +741,7 @@ async def _lost_breakdown(
     primary = codes[0]
 
     def share(label: str, deals: list[Any], attributed: bool) -> LostReasonShare:
-        present = {str(getattr(d, "currency", None)) for d in deals}
+        present = {normalise_currency(getattr(d, "currency", None)) for d in deals}
         return LostReasonShare(
             label=label,
             deals=len(deals),
@@ -783,7 +780,7 @@ async def owner_leaderboard(
     async with _tenant_session() as db:
         lanes = await _deal_stages(db)
         ranked, omitted, held = await _owners(db)
-        codes = _ordered_currencies(c for found in held.values() for c in found) or [
+        codes = ordered_currencies(c for found in held.values() for c in found) or [
             DEFAULT_CURRENCY
         ]
         until = now()
@@ -840,9 +837,8 @@ async def _owners(
         stored = getattr(row, "owner_email", None)
         email = None if stored is None else str(stored).strip().lower()
         tally[email] = tally.get(email, 0) + 1
-        code = getattr(row, "currency", None)
-        if code is not None:
-            held.setdefault(email, set()).add(str(code))
+        held.setdefault(email, set()).add(
+            normalise_currency(getattr(row, "currency", None)))
     ranked = sorted(tally, key=lambda e: (-tally[e], e is None, e or ""))
     return ranked[:MAX_OWNERS], max(0, len(ranked) - MAX_OWNERS), held
 

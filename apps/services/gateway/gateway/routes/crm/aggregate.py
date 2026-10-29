@@ -69,6 +69,22 @@ and a ``datetime`` bucket take the month on the clock of the CRM zone,
 value, and the answer names it in ``zone``. ``close_month`` and a ``date``
 field keep their day, because a date has no time.
 
+**One currency at a time** (HANDOFF H-333, task 888). A deal carries a
+``currency`` and the app holds no exchange rate. So ``sum_amount`` and
+``weighted`` on DEALS never add two currencies. The statement runs once for each
+currency present in the filtered rows, with a bound ``currency = :agg_currency``
+predicate. The ``value`` of each group and the ``total`` hold the PRIMARY
+currency (INR first, then the other codes in code order), named in ``currency``.
+The other currencies sit in ``others``, with a code on each: in each group, and
+in the response for the ``total`` and the ``other``. One currency gives no
+``others`` on the wire, so the answer of today does not change. ``count`` is not
+money and counts every currency. ``currency.py`` normalises the code
+(``upper(trim(currency))``, with ``''`` and NULL read as INR). The
+``sum_amount`` of a MODULE (the catalogue amount, CRM-Q31-2) and the
+``weighted`` of an overlay have NO currency column, so they stay as they were:
+one sum, and no ``currency``. The weekly digest and the AI tool read this
+split, so they follow the same rule.
+
 **Weighted ₹ reuses ``core.WEIGHTED_SQL``.** That expression binds the lane's
 own probability as ``:stage_probability``, so the weighted measure runs one
 grouped statement for each open or ongoing deal lane and adds the results.
@@ -116,6 +132,7 @@ from gateway.routes.crm.core import (
     resolve_owner,
     router,
 )
+from gateway.routes.crm.currency import CURRENCY_SQL, ordered_currencies
 from gateway.routes.crm.field_sql import (
     DATE_TYPES,
     FIELD_MEASURES,
@@ -255,6 +272,21 @@ MIRROR_DWELL_REASON = (
 )
 
 
+class CurrencyValue(BaseModel):
+    """The value of ONE group in ONE currency that is not the primary one."""
+
+    currency: str
+    value: float | None
+
+
+class CurrencyTotal(BaseModel):
+    """The ``total`` and the ``other`` of ONE currency that is not the primary."""
+
+    currency: str
+    total: float | None
+    other: float | None = 0
+
+
 class AggregateGroup(BaseModel):
     #: The raw key: a status id, an email, a month (YYYY-MM), a quarter
     #: (YYYY-Qn), a year, a field value or a lookup id.
@@ -266,6 +298,10 @@ class AggregateGroup(BaseModel):
     #: CRM-Q20-3a: the lane type of a status group of an overlay: ``open``,
     #: ``won``, ``lost`` or ``unsorted``. Absent from every other answer.
     type: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: The value in each currency that is not the response's ``currency``.
+    #: Absent with one currency (task 888).
+    others: list[CurrencyValue] = Field(
+        default_factory=list, exclude_if=lambda value: not value)
 
 
 class AggregateResponse(BaseModel):
@@ -292,6 +328,12 @@ class AggregateResponse(BaseModel):
     total: float | None
     #: The measure over the groups past :data:`MAX_GROUPS`.
     other: float | None = 0
+    #: ``sum_amount`` and ``weighted`` on deals only: the currency that
+    #: ``total``, ``other`` and each group ``value`` are in. Absent otherwise.
+    currency: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: The ``total`` and ``other`` of each other currency. Absent with one.
+    others: list[CurrencyTotal] = Field(
+        default_factory=list, exclude_if=lambda value: not value)
     #: The count of groups past :data:`MAX_GROUPS`.
     omitted: int = 0
     #: The CRM zone of every month and datetime bucket (CRM-Q25b): the zone
@@ -479,6 +521,8 @@ class _Acc:
     name: str | None = None
     #: The count of records in the group (``count(*)``).
     rows: int = 0
+    #: The value in each currency that is not the primary one (task 888).
+    others: dict[str, float] = dc_field(default_factory=dict)
 
 
 def _key(value: Any) -> str | None:
@@ -517,6 +561,48 @@ async def _weighted(
     return out
 
 
+async def _currencies_of(db: Any, where: str, params: dict[str, Any]) -> list[str]:
+    """The currencies that the filtered deals carry, normalised, INR first.
+    Read as rows and tallied here. Never empty: no deal reads as the default."""
+    rows = (await db.execute(
+        text(f"SELECT DISTINCT {CURRENCY_SQL} AS currency FROM crm_deals{where}"),
+        params,
+    )).fetchall()
+    return (
+        ordered_currencies(getattr(r, "currency", None) for r in rows)
+        or ordered_currencies([None])
+    )
+
+
+def split_currencies(
+    per: dict[str, dict[str | None, _Acc]],
+) -> tuple[dict[str | None, _Acc], str, list[str]]:
+    """One answer from the per-currency reads (task 888).
+
+    *per* maps each currency, in order, to its groups. The PRIMARY currency is
+    the first one that holds a value other than 0, else the first. The groups
+    of the primary keep their value. Every other live currency lands in
+    ``acc.others``. The record counts of EVERY currency add up, so ``records``
+    stays the count of the matched deals. Pure, so the hermetic tests call it."""
+    live = [
+        c for c, groups in per.items()
+        if any((a.value or 0) != 0 for a in groups.values())
+    ]
+    live = live or list(per)[:1]
+    primary = live[0]
+    merged = dict(per[primary])
+    for code, groups in per.items():
+        if code == primary:
+            continue
+        for key, acc in groups.items():
+            mine = merged.setdefault(key, _Acc(value=0.0, name=acc.name))
+            mine.rows += acc.rows
+            mine.name = mine.name or acc.name
+            if code in live and acc.value:
+                mine.others[code] = float(acc.value)
+    return merged, primary, live[1:]
+
+
 def _combine(measure: str, accs: list[_Acc]) -> float | None:
     """The measure over *accs*: a sum, the mean of every value, or the least
     or greatest group value."""
@@ -552,6 +638,10 @@ class _Read:
     types: dict[str, str] = dc_field(default_factory=dict)
     #: §18.16 part 6: the stored values that each text filter counted.
     matched: dict[str, list[str]] = dc_field(default_factory=dict)
+    #: Task 888: the currency of ``values`` for a money measure on deals, and
+    #: the other currencies that the accs hold in ``others``.
+    currency: str | None = None
+    codes: list[str] = dc_field(default_factory=list)
 
 
 def _is_timeout(exc: DBAPIError) -> bool:
@@ -617,24 +707,26 @@ async def _read(
         key_sql, label_sql, group_clause = "NULL", "NULL", ""
     # The fixed month groups read the zone too. A bound value, never text.
     bound[ZONE_PARAM] = zone
-    if measure == "weighted":
-        values = await _weighted(db, key_sql, label_sql, where_sql, bound, group_clause)
-    else:
-        value_sql, sum_sql, count_sql = MEASURES.get(measure, ""), "0", "0"
-        if measured is not None and scope is not None:
-            sql = measure_sql(scope, measured, field_measure)
-            value_sql, sum_sql, count_sql = sql.value, sql.sum, sql.count
-            bound.update(sql.params)
-            source = from_source(source, sql.source)
+    money = module is None and found is not None and measure in DEAL_MEASURES
+    codes: list[str] = []
+    currency: str | None = None
+    value_sql, sum_sql, count_sql = MEASURES.get(measure, ""), "0", "0"
+    if measured is not None and scope is not None:
+        sql = measure_sql(scope, measured, field_measure)
+        value_sql, sum_sql, count_sql = sql.value, sql.sum, sql.count
+        bound.update(sql.params)
+        source = from_source(source, sql.source)
+
+    async def fetch(where_sql: str, args: dict[str, Any]) -> dict[str | None, _Acc]:
         rows = (await db.execute(
             text(
                 f"SELECT {key_sql} AS key, {label_sql} AS label, "
                 f"{value_sql} AS value, {sum_sql} AS s, {count_sql} AS n, "
                 f"count(*) AS c FROM {table}{source}{where_sql}{group_clause}"
             ),
-            bound,
+            args,
         )).fetchall()
-        values = {
+        return {
             _key(r.key): _Acc(
                 value=None if r.value is None else float(r.value),
                 s=float(r.s or 0), n=int(r.n or 0), name=r.label,
@@ -642,6 +734,22 @@ async def _read(
             )
             for r in rows
         }
+
+    if money:
+        # Task 888: one read for each currency. Never one sum over all of them.
+        per: dict[str, dict[str | None, _Acc]] = {}
+        for code in await _currencies_of(db, where_sql, bound):
+            scoped = _and(where_sql, f"{CURRENCY_SQL} = :agg_currency")
+            args = {**bound, "agg_currency": code}
+            per[code] = (
+                await _weighted(db, key_sql, label_sql, scoped, args, group_clause)
+                if measure == "weighted" else await fetch(scoped, args)
+            )
+        values, currency, codes = split_currencies(per)
+    elif measure == "weighted":
+        values = await _weighted(db, key_sql, label_sql, where_sql, bound, group_clause)
+    else:
+        values = await fetch(where_sql, bound)
     labels = await _labels(db, found, group_by) if found and group_by else {}
     order = (
         await _status_order(db, found) if found and group_by == "status" else {}
@@ -650,7 +758,8 @@ async def _read(
         used_keys(scope, [field, group_field, *(name for name, _value in pairs)])
         if module is not None and scope is not None else {}
     )
-    return _Read(values, labels, order, measured, grouped, zone, keys, matched=matched)
+    return _Read(values, labels, order, measured, grouped, zone, keys, matched=matched,
+                 currency=currency, codes=codes)
 
 
 async def _seed_aliases(db: Any, module: str, pairs: list[tuple[str, str]],
@@ -886,6 +995,10 @@ async def compute(
                 ),
                 value=_rounded(acc.value),
                 type=read.types.get(key or "") if read.types else None,
+                others=[
+                    CurrencyValue(currency=code, value=_rounded(acc.others[code]))
+                    for code in read.codes if code in acc.others
+                ],
             ),
             acc,
         )
@@ -920,6 +1033,18 @@ async def compute(
             if rest else 0
         ),
         omitted=len(rest),
+        currency=read.currency,
+        others=[
+            CurrencyTotal(
+                currency=code,
+                total=_rounded(sum(a.others.get(code, 0.0) for _g, a in groups)),
+                other=(
+                    _rounded(sum(a.others.get(code, 0.0) for _g, a in rest))
+                    if rest else 0
+                ),
+            )
+            for code in read.codes
+        ],
         zone=read.zone,
         values=values,
         records=(

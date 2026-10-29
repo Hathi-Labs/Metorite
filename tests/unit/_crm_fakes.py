@@ -87,6 +87,13 @@ _LOWER_EQ = re.compile(
     r"lower\((?P<wrap>trim|btrim)?\(?\s*(?P<column>\w+)\s*\)?\)\s*=\s*:(?P<param>\w+)",
     re.I,
 )
+#: The currency rule of ``currency.CURRENCY_SQL`` compared with a parameter. It is
+#: read as the EXPRESSION and then APPLIED (:func:`normalise_currency`), so a
+#: route that drops the ``upper(trim())`` or the INR default changes the answer.
+_CURRENCY_EQ = re.compile(
+    r"COALESCE\(NULLIF\(upper\(trim\(currency\)\),\s*''\),\s*'INR'\)\s*=\s*:(\w+)",
+    re.I,
+)
 #: ``<col> = :param`` — never inside a lower() or a CAST.
 _PLAIN_EQ = re.compile(r"(?<!lower\()\b(\w+)\s*=\s*:(\w+)\b")
 #: ``<col> = 'literal'``
@@ -1013,6 +1020,15 @@ class FakeCrmDB:
                 r for r in rows
                 if r.get(column) is not None
                 and _normalized(str(r.get(column)), wrap) == want
+            ]
+        for param in _CURRENCY_EQ.findall(where):
+            seen = True
+            want = str(args.get(param))
+            # The rule, written out here on purpose: a model of the SQL that
+            # imported the route's helper would agree with the route's bug.
+            rows = [
+                r for r in rows
+                if (str(r.get("currency") or "").strip().upper() or "INR") == want
             ]
         for column, param in _PLAIN_EQ.findall(where):
             seen = True
