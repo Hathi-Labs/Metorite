@@ -29,7 +29,9 @@ import { NO_RELATED, RELATED_PAGE, type RelatedLists } from "./related";
 import {
   LIST_PAGE_SIZE,
   MAX_PAGE_SIZE,
+  appendLaneRows,
   appendPage,
+  boardSearchQuery,
   exportQuery,
   extraQuery,
   listQuery,
@@ -79,6 +81,15 @@ function listKey(entity: EntitySlug, view: CrmView): string {
 
 /** The number of the last board read. A slower, older read never wins. */
 let latestBoard = 0;
+
+/** The deals board's query: its filters, the search and the card sort. */
+function boardQuery(view: CrmView & { cardSort?: CardSort }) {
+  return {
+    ...extraQuery("deals", view),
+    ...boardSearchQuery(view),
+    ...cardSortQuery(view.cardSort),
+  };
+}
 
 type CrmState = {
   lanes: BoardLane[];
@@ -154,6 +165,13 @@ type CrmState = {
   loadList: (entity: EntitySlug, view: CrmView, keepDepth?: boolean) => Promise<void>;
   /** CRM-X1: the next page of the list on screen, added under its rows. */
   loadMore: () => Promise<void>;
+  /**
+   * The next page of ONE deal lane, added under its cards ("Show more"). The
+   * board's filters, search and card sort ride along. The lane totals stay.
+   */
+  loadLaneMore: (statusId: string) => Promise<void>;
+  /** The lane whose next page is being read, or null. */
+  moreLane: string | null;
   /**
    * WS-26i-export — the visible list, as a CSV.
    *
@@ -280,6 +298,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   total: 0,
   page: 1,
   loadingMore: false,
+  moreLane: null,
   hasMore: false,
   dealStatuses: [],
   leadStatuses: [],
@@ -344,7 +363,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
     const mine = ++latestBoard;
     set({ loading: true, lastView: view });
     try {
-      const extra = { ...extraQuery("deals", view), ...cardSortQuery(view.cardSort) };
+      const extra = boardQuery(view);
       const pipeline =
         Object.keys(extra).length > 0
           ? await api.getPipeline(view.owner, view.pipelineId, extra)
@@ -356,6 +375,32 @@ export const useCrmStore = create<CrmState>((set, get) => ({
       set({ error: message(err) });
     } finally {
       if (mine === latestBoard) set({ loading: false });
+    }
+  },
+
+  async loadLaneMore(statusId) {
+    const { lastView: view, lanes, moreLane } = get();
+    const lane = lanes.find((l) => l.status.id === statusId);
+    if (!view || !lane || moreLane || lane.rows.length >= lane.count) return;
+    const asked = latestBoard;
+    set({ moreLane: statusId });
+    try {
+      const page = await api.getPipeline(view.owner, view.pipelineId, {
+        ...boardQuery(view),
+        lane_status_id: statusId,
+        lane_offset: lane.rows.length,
+      });
+      // A reload of the board, or a newer view, ended this read.
+      if (asked !== latestBoard) return;
+      const next = page.lanes.find((l) => l.status.id === statusId)?.rows ?? [];
+      set({
+        lanes: get().lanes.map((l) => (l.status.id === statusId ? appendLaneRows(l, next) : l)),
+        error: null,
+      });
+    } catch (err) {
+      if (asked === latestBoard) set({ error: message(err) });
+    } finally {
+      set({ moreLane: null });
     }
   },
 

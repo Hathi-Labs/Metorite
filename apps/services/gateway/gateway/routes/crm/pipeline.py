@@ -69,6 +69,7 @@ from gateway.routes.crm.core import (
     resolve_owner,
     router,
     row_to_dict,
+    search_where,
     status_wire,
     update_row,
 )
@@ -484,6 +485,9 @@ async def get_pipeline(
     close_from: str | None = None,
     close_to: str | None = None,
     card_sort: CardSort = "stage_age",
+    q: str | None = None,
+    lane_status_id: str | None = None,
+    lane_offset: int = Query(0, ge=0),
     user: UserContext = Depends(get_current_user),
     request: Request = None,  # type: ignore[assignment]
 ) -> PipelineResponse:
@@ -503,6 +507,16 @@ async def get_pipeline(
     (``me`` is the caller), ``source``, the date ranges, and
     ``custom.<key>=<value>``. They are the same code as the list route's
     (``core.extra_filters``), so a view that filters a list filters the board.
+
+    **``?q=``** (CRM-X1) is the search of the lists. It is the same predicate
+    (``core.search_where``), so it narrows every lane, its count and its
+    totals, as the other filters do.
+
+    **``?lane_status_id=`` + ``?lane_offset=``** read the next page of ONE
+    lane ("Show more"). The answer holds that lane only, with the same
+    filters, order and totals as the full board. Totals never change with the
+    offset. The card sorts end in ``id DESC``, so pages have no gap and no
+    repeat.
 
     **No deal disappears.** A deal of the pipeline can sit in a stage that the
     pipeline does not list (a mirrored Zoho stage that left the pipeline). That
@@ -544,6 +558,10 @@ async def get_pipeline(
         if source:
             where += " AND source = :source"
             params["source"] = source
+        search_clause, search_params = search_where(DEALS, q)
+        if search_clause:
+            where += f" AND {search_clause}"
+            params.update(search_params)
         more_where, more_params = await extra_filters(
             db, DEALS, ExtraFilterInput(
                 created_from=created_from, created_to=created_to,
@@ -557,6 +575,9 @@ async def get_pipeline(
         params.update(more_params)
         # ⚠️ After the LAST filter: the held-lane read reuses `where` whole.
         lanes = await _board_lanes(db, wanted, where, params)
+        if lane_status_id:
+            only = checked_uuid(lane_status_id, "lane_status_id")
+            lanes = [lane for lane in lanes if str(lane.id) == only]
 
         inner_order, outer_order = _CARD_ORDERS[card_sort]
         read: list[tuple[Any, Any, list[dict[str, Any]]]] = []
@@ -577,14 +598,14 @@ async def get_pipeline(
             )).fetchone()
             inner = (
                 f"SELECT {_lane_select(card_sort)} FROM crm_deals WHERE {where} "
-                f"ORDER BY {inner_order} LIMIT :limit"
+                f"ORDER BY {inner_order} LIMIT :limit OFFSET :offset"
             )
             rows = (await db.execute(
                 # Cards print the account name; the board must not make the
                 # browser join a paged organization list to render them
                 # (WS-26c dw 2).
                 text(project_joined(DEALS, inner, outer_order)),
-                {**scope, "limit": per_lane},
+                {**scope, "limit": per_lane, "offset": lane_offset},
             )).fetchall()
             wired = [row_to_dict(r, DealModel) for r in rows]
             await attach_ext_urls(db, DEALS.table, wired)

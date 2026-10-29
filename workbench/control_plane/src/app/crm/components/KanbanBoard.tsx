@@ -26,6 +26,7 @@ import { BoardColumn } from "@/components/board/BoardColumn";
 import Icon from "@/components/Icon";
 import { TaskCardShell, TaskCardTitle } from "@/components/TaskCardShell";
 import { TaskMeta } from "@/components/TaskMeta";
+import Button from "@/components/ui/Button";
 import type { MetaChip } from "@/lib/taskCard";
 import { useState } from "react";
 import {
@@ -64,6 +65,8 @@ export default function KanbanBoard({
   mode = null,
   cursorId = null,
   emptyNote,
+  onMore,
+  moreLane = null,
 }: {
   /** Which record the cards are. Deals unless stated. */
   entity?: "deals" | "leads";
@@ -88,6 +91,13 @@ export default function KanbanBoard({
    * why: a filter, a module that Zoho turned off, or no record yet.
    */
   emptyNote?: string;
+  /**
+   * "Show more" in a lane whose count is larger than its cards: read the
+   * next page of that lane. Omitted, no lane draws the button.
+   */
+  onMore?: (statusId: string) => void;
+  /** The lane whose next page is loading (the button shows its spinner). */
+  moreLane?: string | null;
 }) {
   const [dragging, setDragging] = useState<Card | null>(null);
   const [over, setOver] = useState<string | null>(null);
@@ -158,6 +168,18 @@ export default function KanbanBoard({
               hidden={isRetired(lane.status)}
               empty={lane.rows.length === 0 ? "Nothing here" : undefined}
               totals={<LaneTotals lane={lane} isDeals={isDeals} />}
+              footer={
+                onMore && lane.rows.length < lane.count ? (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    loading={moreLane === lane.status.id}
+                    onClick={() => onMore(lane.status.id)}
+                  >
+                    {showMoreLabel(lane.count - lane.rows.length)}
+                  </Button>
+                ) : undefined
+              }
               onDragOver={(e) => {
                 e.preventDefault();
                 setOver(lane.status.id);
@@ -222,6 +244,11 @@ export default function KanbanBoard({
       </Board>
     </>
   );
+}
+
+/** The label of the lane foot button: how many cards the lane still holds. */
+export function showMoreLabel(remaining: number): string {
+  return `Show more (${remaining} more)`;
 }
 
 /**

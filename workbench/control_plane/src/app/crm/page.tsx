@@ -953,7 +953,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                 view={view}
                 onChange={go}
                 owners={owners}
-                search={!boardOn}
+                search={!boardOn || view.tab === "deals"}
                 stages={boardOn ? [] : chips}
                 fieldDefs={barDefs}
                 mirror={ctx.mode === "mirror"}
@@ -1041,6 +1041,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                 go(openRecord(view, param, id));
               }}
               onCreate={mayCreate ? () => setCreating(view.tab === "leads" ? "leads" : "deals") : undefined}
+              // The deals board pages a lane; the leads board reads by list.
+              onMore={view.tab === "deals" ? (id) => void store.loadLaneMore(id) : undefined}
+              moreLane={store.moreLane}
             />
           ) : view.tab === "module" && view.module ? (
             // A generic Zoho module (CRM-Q6b): the shared list, read only.
