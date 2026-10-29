@@ -137,6 +137,11 @@ _ROUTINE_INSTRUCTIONS = (
     " set_task_status with a status of the category in_progress whose name"
     " says review. Move the task to done only after the merge, and not when"
     " GitHub already did. The prompt work_on_task gives the full steps."
+    # MCP-G1. The tools of the project tree and of a move between projects.
+    " To make a space, a project or a subproject, call create_project. Change"
+    " one with update_project. To move tasks to another project, call"
+    " preview_move_tasks, show the person what the move drops, and then call"
+    " move_tasks with its preview_id."
 )
 
 #: The protocol of EA-15c (§12.4): one order of steps for each session. The
