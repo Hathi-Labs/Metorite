@@ -1,9 +1,15 @@
 # The shared job queue
 
 **Status:** BR-1a is BUILT and dark (WS-BRIEF, Metorite #582, epic #479).
-The switch `JOB_QUEUE` is OFF. No producer exists yet. BR-1b adds the first
-producers. AUTO-2 (Metorite #814) adds the ledger of unattended runs in
-section 9. It is BUILT and dark, and its switch `UNATTENDED_LEDGER` is OFF.
+BR-1b-a is BUILT and dark (Metorite #642): the detached mode, `jobs.prune` and
+the timeout label. Its review round 1 added the settle clock, `give_up`, one
+try for a detached kind, and the cap and belt of the prune.
+
+AUTO-2 (Metorite #814) adds the ledger of unattended runs in section 9. It is
+BUILT and dark, and its switch `UNATTENDED_LEDGER` is OFF.
+
+The switch `JOB_QUEUE` is OFF. No producer exists yet. The rest of BR-1b
+moves the first producers.
 
 This page is the engineering reference of the queue. It is not a product
 spec, so `project-docs/INDEX.md` does not list it.
@@ -37,6 +43,9 @@ time. The state is in Postgres only, so a job survives a restart.
 5. The settle runs in the same transaction. A pass sets `done`. A failure sets
    `queued` with a backoff, or `failed` at the last try. `last_error`
    keeps the error.
+6. The settle reads the clock again after the handler returns. So the
+   backoff of a slow try starts at the end of the try. So a try of 240
+   seconds does not come back in the same tick. The other orgs do not wait.
 
 The writes of a handler and `done` commit together, or neither commits.
 
@@ -52,12 +61,40 @@ The writes of a handler and `done` commit together, or neither commits.
 - **A handler must use only the session that it receives.** A second session
   is a second transaction. Its writes commit when the try fails, and its
   locks can wait on the row lock of the run.
-- **A handler runs while a session is open.** Do not call a model or a
-  provider inside a handler. Section 5a gives the rules for BR-1b.
+- **A `session` handler runs while a session is open.** Do not call a model
+  or a provider inside it. Use the `detached` mode for that work.
+- **A `detached` handler runs with no session open.** Register it with
+  `worker.register(kind, handler, mode="detached")`. The handler is
+  `async handler(org, payload, claim)`. The worker commits the claim, and
+  then calls the handler with no session and no pooled connection. The
+  handler opens its own short `tenant_session(org)` for each step. In the
+  last one, it runs `hold`, writes the result and runs `complete`. Section 5a
+  gives the steps.
+- **A detached handler must settle its job.** After the handler returns, the
+  worker reads the row. A row that is still `running` with the token of the
+  claim fails the try with `Unsettled: the handler returned without
+  settling`. A handler that raises fails the try in a new session.
+- **A detached kind gets one try, unless you say otherwise.** The default is
+  `idempotent=False`. Then the worker gives up the claim of try 2 or later
+  before the handler runs. The job is then `failed`, and `last_error` holds
+  `worker.NOT_IDEMPOTENT`. Register with `idempotent=True` only when a
+  second try is safe. An example is a handler that reads an intent mark
+  first.
+- **A detached handler must await all of its work.** It must not start a
+  task with `create_task`, and it must not leave work to run after it
+  returns. The time limit cancels the current task only, so a task that the
+  handler starts runs on past the limit and past the settle.
+- **A handler that must not try again calls `queue.give_up`.**
+  `queue.give_up(db, claim, error, now=...)` sets `failed` for good, with
+  tries left or not. The fence token guards it, as for `fail`. It answers
+  False when the claim is gone. It logs `jobs.failed` at error. Name the
+  reason before the first colon of `error`, because the log line holds that
+  part only.
 - **A handler runs for at most `worker.HANDLER_TIMEOUT` (240 seconds).** At the
   limit the worker cancels the handler, and the try fails as an error
-  does. `last_error` then says `HandlerTimeout: the handler timed out`. A test
-  fences the order `HANDLER_TIMEOUT` < `queue.LEASE` (5 minutes) < the
+  does. `last_error` then says `HandlerTimeout: the handler timed out`. The
+  label stays when the limit cancels a database call and the session then
+  breaks. A test fences the order `HANDLER_TIMEOUT` < `queue.LEASE` (5 minutes) < the
   600 second `idle_in_transaction_session_timeout` of `acb_common.db`.
 - **A lost settle rolls back.** When `complete` changes no row after `hold`
   passed, the worker raises inside the session. The writes of the handler do
@@ -88,13 +125,20 @@ The writes of a handler and `done` commit together, or neither commits.
 | Event | Level | When |
 |---|---|---|
 | `jobs.attempt_failed` | warning | A try failed, and the queue retries it |
-| `jobs.failed` | error | The last try failed. The job is `failed` for good |
+| `jobs.failed` | error | The last try failed, or a handler or the worker gave the job up (`outcome="given_up"`). The job is `failed` for good |
 | `jobs.lease_expired` | warning | A lost lease with tries left. The claim takes the row again |
 | `jobs.lease_expired` | error | A lost lease at the last try. The job is `failed` |
 | `jobs.complete_lost` | warning | `complete` changed no row. The worker rolled back the writes of the handler |
+| `jobs.lease_lost` | info | Another claim holds the row. The worker settles nothing |
+| `jobs.run_failed` | warning | The session of a run broke. The worker settles the try in a new session |
+| `jobs.claim_failed` | warning | A run raised out of `run_one`. The worker stops the batch of that org |
+| `jobs.prune_seed_failed` | warning | The daily seed of `jobs.prune` failed. The next tick tries again |
+| `jobs.pruned` | info | The prune job deleted rows, with the count |
 | `jobs.tick` | info | One line for each tick that ran a job, with the counts |
 
-No log line holds a payload or an error text. A line holds the error type only.
+No log line holds a payload or an error text. A line holds the error type
+only. For a give-up, the line holds the text before the first colon of the
+error, which is its name.
 
 ## 5. How to add a kind (BR-1b)
 
@@ -113,26 +157,88 @@ await queue.enqueue(db, "email.send_later", {"draft_id": draft_id},
 
 A kind matches `[a-z][a-z0-9_.]{0,63}`.
 
-## 5a. Rules for BR-1b handlers
+## 5a. The detached mode (BR-1b-a, built)
 
-The adversarial review of BR-1a recorded this contract. BR-1b builds to it.
+The adversarial review of BR-1a recorded this contract. BR-1b-a built it.
 
-1. **Work that touches only the database** may use the in-session handler of
+1. **Work that touches only the database** may use the `session` handler of
    section 5.
-2. **A call to a provider, a model or a send** must use a detached mode. BR-1a
-   does not build it. BR-1b builds it.
-3. In the detached mode, the handler first commits an intent mark on the
-   domain row.
-4. Then it calls the provider with no session open. Where the provider takes
+2. **A call to a provider, a model or a send** must use the `detached` mode.
+3. The handler first reads its domain row. When it holds an intent mark and
+   no result, the call possibly ran. Then the handler does not call again.
+4. Otherwise the handler commits an intent mark on the domain row, in its own
+   short session.
+5. Then it calls the provider with no session open. Where the provider takes
    an idempotency key, it sends the job id.
-5. Then it opens a new session. It runs `hold`, writes the result and runs
-   `complete`.
-6. On a retry, the handler reads the intent mark first. A mark with no result
-   means the call possibly ran.
-7. A job that must run at most once uses `max_attempts=1`.
+6. Then it opens a new session. It runs `hold`, writes the result and runs
+   `complete`. When `hold` answers False, another claim took the row, and the
+   handler writes nothing.
+7. When step 3 finds a mark with no result, the handler calls `give_up` with
+   a named error. The job is then `failed`, and `jobs.failed` tells a person.
+   Never settle an uncertain send as `done`. That loses it with no signal.
+8. A kind that follows steps 3 and 7 registers with `idempotent=True`. A kind
+   that does not keeps the default, so the worker gives it one try only.
 
-**No retention exists yet.** The `done` and `failed` rows stay. BR-1b adds a
-`jobs.prune` kind that deletes old rows.
+**The intent mark is a column on the domain row.** No helper and no shared
+table exist for it. The owner of the domain table adds the column, for
+example `phrasing_at` on a brief run. The mark commits before the call. A
+test proves the pattern with a plain table:
+`test_r8_an_intent_mark_stops_a_second_provider_call`.
+
+```python
+async def send(org: str, payload: dict, claim: queue.Claim) -> None:
+    async with tenant_session(org) as db:
+        row = await read_draft(db, payload["draft_id"])
+    if row.sent_mark is not None:                # the call possibly ran
+        async with tenant_session(org) as db:
+            await queue.give_up(db, claim, "UncertainSend: the provider "
+                                "call possibly ran, so no second call", now=now())
+        return
+    async with tenant_session(org) as db:
+        await mark_sent_intent(db, row.id)       # commits on exit
+    result = await provider.send(row, idempotency_key=claim.id)
+    async with tenant_session(org) as db:
+        if not await queue.hold(db, claim):
+            return
+        await write_result(db, row.id, result)
+        await queue.complete(db, claim, now=now())
+
+worker.register("email.send_later", send, mode="detached", idempotent=True)
+```
+
+## 5b. Retention: `jobs.prune` (BR-1b-a, built)
+
+- **What it deletes.** The `done` and `failed` rows of the bound org that
+  finished more than 30 days ago (`queue.RETENTION`). It deletes 500 rows in
+  each statement (`queue.PRUNE_BATCH`), and 10 statements in one run at most
+  (`queue.PRUNE_MAX_BATCHES`). So one run takes at most 5000 rows, and the
+  next day takes the rest of a backlog. A `queued` or `running` row stays, at
+  any age.
+- **Two binds.** RLS binds each DELETE to the org, as for every statement
+  of the queue. The DELETE also names the bound tenant
+  (`organization_id = queue._BOUND_ORG`). So a session that bypasses RLS,
+  such as the owner role, still deletes the rows of the bound org only. With
+  no tenant bound, it deletes nothing.
+- **Where it runs.** `worker.py` registers `jobs.prune` at import, as a
+  `session` handler. So it runs only when `JOB_QUEUE` is on.
+- **The schedule.** `worker.run_org` seeds one job for each org and each UTC
+  day, with the dedupe key `prune:<day>` and `max_attempts=3`. A cache in
+  memory holds the seeded day of each org. So only the first tick of a day
+  writes. Every later tick of that day costs no statement for the seed. Two
+  workers with two caches still give one live job, because of the dedupe
+  key.
+- **One live prune job for each org and day.** A restart empties the cache.
+  When the job of the day is already `done`, the dedupe key does not match
+  it. So the next tick can seed a second job for that day. That job is
+  harmless: it finds no old rows, or only a few.
+- **Why a daily seed, and not a job that queues the next one.** A chain of
+  jobs breaks for good when one link fails. A seed on each day starts again
+  on the next day.
+- **A hook for another table.** `worker.prune_hooks` is a list of
+  `async hook(db, today)` callables. The prune job runs each one after its
+  own delete, on the same session. A hook that raises fails the try, and the
+  whole prune rolls back. BR-4 adds the retention of the brief runs here,
+  with its own 90 day cut-off (`core_brief.md` §3.4).
 
 ## 6. The switch
 
@@ -140,6 +246,16 @@ The adversarial review of BR-1a recorded this contract. BR-1b builds to it.
 `start_job_worker()` starts no task and `run_tick()` does nothing. The one
 reader is `worker.worker_enabled()`. A flip on a box is the gate
 `enforcement-flip`. `env_guard` refuses the key from a tenant.
+
+**The load with the switch ON.** `jobs.prune` is registered at import, so
+the worker always has a kind to claim. Each tick of 15 seconds costs these
+statements:
+
+- One discovery read of the orgs.
+- For each org, one claim session. A tick with no due job costs only that
+  session for the org.
+- For each org, one more session on the first tick of each UTC day, for the
+  seed of the prune job. Then the prune job runs once for each org and day.
 
 ## 7. Acceptance of BR-1a
 
@@ -167,10 +283,37 @@ The review round adds these tests:
 | The worker reads the clock for each job | `test_r8_the_worker_reads_the_clock_for_each_job` |
 | A lost settle rolls back the handler | `test_r8_a_complete_that_changes_no_row_rolls_back_the_handler` |
 
-## 8. Out of scope of BR-1a
+BR-1b-a adds these tests:
 
-- BR-1b: move the reminder loop, send-later and the agent-run sweeps onto the
-  queue.
+| Rule | Test |
+|---|---|
+| A detached handler runs with no session and no pooled connection | `test_r8_a_detached_handler_runs_with_no_session_open` |
+| A detached handler that lost its lease settles nothing | `test_r8_a_detached_handler_that_lost_its_lease_settles_nothing` |
+| An intent mark stops a second provider call | `test_r8_an_intent_mark_stops_a_second_provider_call` |
+| A detached handler must settle its job | `test_r8_a_detached_handler_must_settle_its_job` |
+| A detached handler that hangs fails as `HandlerTimeout` | `test_r8_a_detached_handler_that_hangs_times_out` |
+| A hang in the database keeps the `HandlerTimeout` label | `test_r8_a_handler_that_hangs_in_the_database_fails_as_a_timeout` |
+| Prune deletes only the old terminal rows of the bound org | `test_r8_prune_deletes_only_old_terminal_rows_of_the_bound_org` |
+| One prune job for each org and day, and no statement after the seed | `test_r8_run_org_seeds_one_prune_job_for_each_org_and_day` |
+| No prune job with no prune handler | `test_r8_no_prune_job_is_seeded_with_no_prune_handler` |
+| The register modes, and the prune kind at import | `test_register_takes_a_mode_and_refuses_another`, `test_the_prune_kind_is_registered_at_import` |
+
+The review round 1 of BR-1b-a adds these tests:
+
+| Rule | Test |
+|---|---|
+| The backoff of a slow try starts at its end | `test_r8_a_slow_try_takes_its_backoff_from_its_end` |
+| An uncertain send fails with a named error and `jobs.failed` | `test_r8_an_intent_mark_stops_a_second_provider_call` |
+| A detached kind that is not idempotent gets one try | `test_r8_a_detached_kind_that_is_not_idempotent_gets_one_try` |
+| One prune run takes a capped number of rows | `test_r8_one_prune_run_takes_a_capped_number_of_rows` |
+| A prune that bypasses RLS takes the bound org only | `test_r8_a_prune_on_a_session_that_bypasses_rls_takes_the_bound_org_only` |
+
+## 8. Out of scope of BR-1a and BR-1b-a
+
+- The rest of BR-1b: move the reminder loop, send-later and the agent-run
+  sweeps onto the queue. No producer of provider work exists yet.
+- The retention of the brief runs. BR-4 adds it as a prune hook.
+- A heartbeat that extends the lease of a long detached handler.
 - AUTO-2: at-most-once unattended runs. Section 9 has it.
 - The 07:30 brief and the 18:30 close-out.
 - Any change to the apscheduler uses, any producer and any UI.
