@@ -209,6 +209,16 @@ describe("the four states", () => {
     expect(out).toContain("text-muted-foreground");
     expect(out).not.toContain(">Undo<");
     expect(out).not.toContain("declined");
+    // The title says it, so the summary does not say "Not saved" a second time.
+    expect(out.match(/>Not saved</g)).toHaveLength(1);
+  });
+
+  it("names no tool and no machine word in a title (PZ-11)", () => {
+    const set = html(SET, "profile_set");
+    const alias = html(ALIAS, "profile_alias");
+    expect(set).toContain("Changed how I answer");
+    expect(alias).toContain("Changed a name for a person");
+    expect(set + alias).not.toMatch(/Profile preference|Profile alias/);
   });
 
   it("an undo is its own receipt, with no Undo button", () => {

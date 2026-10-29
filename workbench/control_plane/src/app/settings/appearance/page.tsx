@@ -23,7 +23,6 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
 import { useTheme } from "next-themes";
 import Icon from "@/components/Icon";
 import Tabs from "@/components/Tabs";
@@ -125,18 +124,15 @@ function AppearanceHeader() {
 /** The way into Settings → Assistant settings, while it has no nav pane (WS-63 PZ-7). */
 function AssistantLinkRow() {
   return (
-    <Link
-      href="/settings/assistant"
-      className="flex items-center justify-between gap-3 rounded-lg border border-border bg-card px-4 py-3 tech-transition hover:bg-secondary"
-    >
-      <span className="min-w-0">
-        <span className="block text-sm font-semibold text-foreground">Assistant settings</span>
-        <span className="block text-xs text-muted-foreground">
-          What the assistant remembers about you and how it talks to you
-        </span>
-      </span>
-      <Icon name="ChevronRight" size={15} className="shrink-0 text-muted-foreground" />
-    </Link>
+    <section>
+      <SectionHeading
+        title="Assistant settings"
+        description="What the assistant remembers about you and how it talks to you."
+      />
+      <Button variant="secondary" size="sm" icon="Sparkles" href="/settings/assistant">
+        Open Assistant settings
+      </Button>
+    </section>
   );
 }
 

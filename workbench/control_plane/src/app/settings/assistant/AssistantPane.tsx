@@ -18,16 +18,18 @@
  * form on a 503 would invite a save over a profile the member has.
  */
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import Badge, { type BadgeTone } from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Checkbox } from "@/components/ui/Checkbox";
-import { Input } from "@/components/ui/Input";
+import { Input, Textarea } from "@/components/ui/Input";
 import { SelectButton } from "@/components/ui/SelectButton";
 import { Skeleton, SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
+import { peopleApi } from "@/app/people/lib/api";
 import { saveBlob } from "@/lib/export";
 import { startGetToKnowMe } from "@/lib/shell/interviewMessage";
 
@@ -39,6 +41,7 @@ import {
   FORMALITIES,
   GREETINGS,
   KIND_LABELS,
+  LANGUAGES,
   LENGTHS,
   ProfileError,
   addAlias,
@@ -47,6 +50,7 @@ import {
   deleteAlias,
   deleteFact,
   errorText,
+  fallbackAddress,
   fetchExport,
   fetchProfile,
   forgetAll,
@@ -55,6 +59,7 @@ import {
   nearCap,
   patchAlias,
   patchFact,
+  reconcileDraft,
   resetArea,
   resetInterview,
   saveAddress,
@@ -112,6 +117,13 @@ export interface AssistantPaneViewProps extends PaneHandlers {
   confirmResetInterview: boolean;
   onCancelResetInterview: () => void;
   onConfirmResetInterview: () => void;
+  /**
+   * Counts each Forget everything. A new value resets every draft field to the
+   * server value, so no old text stays in an input with Save enabled.
+   */
+  epoch?: number;
+  /** The name the assistant uses while the Name field is empty, when known. */
+  fallbackName?: { name: string; from: "preferred" | "display" } | null;
 }
 
 const noop = async () => true;
@@ -133,17 +145,31 @@ export const NO_HANDLERS: PaneHandlers = {
   onResetInterview: () => {},
 };
 
+/** The jump links at the top, and the id each section answers to. */
+const JUMPS = [
+  { id: "assistant-memory", label: "Memory" },
+  { id: "assistant-address", label: "How I address you" },
+  { id: "assistant-style", label: "How I answer" },
+  { id: "assistant-facts", label: "What I remember" },
+  { id: "assistant-interview", label: "Get to know me" },
+  { id: "assistant-names", label: "Names for people" },
+  { id: "assistant-download", label: "Download" },
+  { id: "assistant-forget", label: "Forget" },
+] as const;
+
 function Section({
+  id,
   title,
   description,
   children,
 }: {
+  id?: string;
   title: string;
   description?: string;
   children: React.ReactNode;
 }) {
   return (
-    <section className="space-y-3">
+    <section id={id} className="scroll-mt-4 space-y-3">
       <div>
         <h3 className="text-sm font-semibold text-foreground">{title}</h3>
         {description ? <p className="mt-0.5 text-xs text-muted-foreground">{description}</p> : null}
@@ -161,11 +187,11 @@ function RowError({ text }: { text?: string }) {
   ) : null;
 }
 
+/** A counter shows only near its cap. Far from it, it is noise. */
 function Counter({ used, cap, unit }: { used: number; cap: number; unit?: string }) {
+  if (!nearCap(used, cap)) return null;
   return (
-    <span
-      className={`text-[11px] ${nearCap(used, cap) ? "text-warning" : "text-muted-foreground"}`}
-    >
+    <span className="text-[11px] text-warning">
       {used} of {cap}
       {unit ? ` ${unit}` : ""}
     </span>
@@ -192,9 +218,11 @@ function Choice({
   disabled?: boolean;
   onChange: (value: string) => void;
 }) {
+  // A stored value that the list lacks (a tag set in chat) still shows.
+  const all = value && !values.includes(value) ? [...values, value] : values;
   const options = [
     ...(none ? [{ value: "", label: none }] : []),
-    ...values.map((x) => ({ value: x, label: labels?.[x] ?? x[0].toUpperCase() + x.slice(1) })),
+    ...all.map((x) => ({ value: x, label: labels?.[x] ?? x[0].toUpperCase() + x.slice(1) })),
   ];
   return (
     <SelectButton
@@ -218,14 +246,33 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+/**
+ * One draft field. It follows the server value while the member has not
+ * changed it, and it always takes the server value after Forget everything
+ * (`reconcileDraft`). `useState(server)` alone ran once, and left the old text
+ * in the input with Save enabled.
+ */
+function useDraft<T extends string = string>(server: T, epoch: number): [T, (next: T) => void] {
+  const [draft, setDraft] = useState<T>(server);
+  const [seen, setSeen] = useState({ server: server as string, epoch });
+  if (seen.server !== server || seen.epoch !== epoch) {
+    setSeen({ server, epoch });
+    const next = reconcileDraft(draft, seen, server, epoch);
+    if (next !== null) setDraft(next as T);
+  }
+  return [draft, setDraft];
+}
+
 // ── Address ───────────────────────────────────────────────────────────────
 
 function AddressSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
-  const [name, setName] = useState(p.address.name ?? "");
+  const [name, setName] = useDraft(p.address.name ?? "", v.epoch ?? 0);
   const a: Address = p.address;
   const busy = v.busy.address;
+  const fb = v.fallbackName;
   return (
     <Section
+      id="assistant-address"
       title="How the assistant addresses you"
       description="The assistant uses these when it greets you and writes for you."
     >
@@ -236,7 +283,7 @@ function AddressSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
               inputSize="sm"
               value={name}
               maxLength={CAPS.name}
-              placeholder="What to call you"
+              placeholder={fb ? `Empty: ${fb.name}` : "What to call you"}
               onChange={(e) => setName(e.target.value)}
               className="w-full"
             />
@@ -251,6 +298,19 @@ function AddressSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
             </Button>
           </div>
           <Counter used={name.length} cap={CAPS.name} unit="characters" />
+          {name.trim() === "" ? (
+            <p className="text-[11px] text-muted-foreground">
+              {fb
+                ? `Empty: I call you ${fb.name}, ${
+                    fb.from === "preferred" ? "your preferred name" : "the first word of your name"
+                  } in `
+                : "Empty: I use your preferred name, or the first word of your name, from "}
+              <Link href="/people/me" className="text-foreground underline underline-offset-2">
+                My Profile
+              </Link>
+              .
+            </p>
+          ) : null}
         </Field>
         <Field label="Tone">
           <Choice
@@ -283,11 +343,11 @@ function AddressSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
 function StyleSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
   const s: Style = p.style;
   const notes = s.notes ?? [];
-  const [language, setLanguage] = useState(s.language ?? "");
-  const [note, setNote] = useState("");
+  const [note, setNote] = useDraft<string>("", v.epoch ?? 0);
   const busy = v.busy.style;
   return (
     <Section
+      id="assistant-style"
       title="How the assistant answers"
       description="Length, language and up to five notes on your style."
     >
@@ -302,26 +362,16 @@ function StyleSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
             onChange={(x) => v.onStyle({ length: (x || null) as Style["length"] })}
           />
         </Field>
-        <Field label="Language (for example en or hi)">
-          <div className="flex items-center gap-2">
-            <Input
-              inputSize="sm"
-              value={language}
-              maxLength={CAPS.language}
-              placeholder="Same as my message"
-              onChange={(e) => setLanguage(e.target.value)}
-              className="w-full"
-            />
-            <Button
-              size="sm"
-              variant="secondary"
-              loading={busy}
-              disabled={busy || language.trim() === (s.language ?? "")}
-              onClick={() => v.onStyle({ language })}
-            >
-              Save
-            </Button>
-          </div>
+        <Field label="Language">
+          <Choice
+            label="Language"
+            value={s.language ?? ""}
+            values={Object.keys(LANGUAGES)}
+            labels={LANGUAGES}
+            none="Same as my message"
+            disabled={busy}
+            onChange={(x) => v.onStyle({ language: x || null })}
+          />
         </Field>
       </div>
       <div className="space-y-2">
@@ -384,24 +434,27 @@ function StyleSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
 
 function FactRow({ f, v }: { f: Fact; v: AssistantPaneViewProps }) {
   const [editing, setEditing] = useState(false);
-  const [text, setText] = useState(f.text);
+  const [text, setText] = useDraft(f.text, v.epoch ?? 0);
   const busy = v.busy[f.id];
   const when = shortDate(f.at);
   const src = sourceLabel(f.source);
   return (
     <li className="space-y-1.5 rounded-lg border border-border bg-card px-3 py-2">
-      <div className="flex flex-wrap items-start justify-between gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1 space-y-1">
           {editing ? (
-            <div className="flex items-center gap-2">
-              <Input
+            <div className="space-y-2">
+              <Textarea
                 inputSize="sm"
+                rows={3}
                 value={text}
                 maxLength={CAPS.fact}
                 onChange={(e) => setText(e.target.value)}
                 className="w-full"
                 aria-label="Fact text"
               />
+              <div className="flex items-center gap-2">
+              <Counter used={text.length} cap={CAPS.fact} unit="characters" />
               <Button
                 size="sm"
                 loading={busy}
@@ -423,6 +476,7 @@ function FactRow({ f, v }: { f: Fact; v: AssistantPaneViewProps }) {
               >
                 Cancel
               </Button>
+              </div>
             </div>
           ) : (
             <p className="break-words text-sm text-foreground">{f.text}</p>
@@ -434,7 +488,7 @@ function FactRow({ f, v }: { f: Fact; v: AssistantPaneViewProps }) {
           </div>
         </div>
         {editing ? null : (
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 sm:shrink-0">
             <Choice
               label="Fact kind"
               value={f.kind}
@@ -455,18 +509,21 @@ function FactRow({ f, v }: { f: Fact; v: AssistantPaneViewProps }) {
 }
 
 function FactsSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
-  const [text, setText] = useState("");
-  const [kind, setKind] = useState<FactKind>("about");
+  const [text, setText] = useDraft<string>("", v.epoch ?? 0);
+  const [kind, setKind] = useDraft<FactKind>("about", v.epoch ?? 0);
   const full = p.facts.length >= CAPS.facts;
   const busy = v.busy["new-fact"];
   return (
     <Section
+      id="assistant-facts"
       title="What the assistant remembers"
       description="Each fact shows where it came from and when. Edit or delete any of them."
     >
-      <div className="flex justify-end">
-        <Counter used={p.facts.length} cap={CAPS.facts} unit="facts" />
-      </div>
+      {nearCap(p.facts.length, CAPS.facts) ? (
+        <div className="flex justify-end">
+          <Counter used={p.facts.length} cap={CAPS.facts} unit="facts" />
+        </div>
+      ) : null}
       {p.facts.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           Nothing yet. Tell the assistant &quot;remember that…&quot; in chat, or add a fact here.
@@ -493,7 +550,7 @@ function FactsSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
           value={kind}
           values={FACT_KINDS}
           labels={KIND_LABELS}
-              width="w-36"
+          width="w-36"
           onChange={(x) => setKind(x as FactKind)}
         />
         <Button
@@ -530,6 +587,7 @@ function InterviewSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
   const areas = p.interview?.areas ?? {};
   return (
     <Section
+      id="assistant-interview"
       title="Get to know me"
       description="The assistant asks one question a day, and never twice about an area you answered. Each answer becomes a fact above. Resetting keeps the facts."
     >
@@ -556,15 +614,19 @@ function InterviewSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
           return (
             <li
               key={a.id}
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card px-3 py-1.5"
+              className="flex flex-col gap-1.5 rounded-lg border border-border bg-card px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3"
             >
-              <span className="min-w-0 truncate text-sm text-foreground">{a.label}</span>
+              <span className="min-w-0">
+                <span className="block text-sm text-foreground">{a.label}</span>
+                <span className="block text-xs text-muted-foreground">{a.question}</span>
+              </span>
               <span className="flex shrink-0 items-center gap-2">
                 <Badge tone={STATE_TONES[key]}>{STATE_LABELS[key]}</Badge>
                 {state ? (
                   <Button
                     size="sm"
-                    variant="ghost"
+                    variant="secondary"
+                    icon="RotateCcw"
                     loading={busy}
                     disabled={busy}
                     aria-label={`Reset ${a.label}`}
@@ -588,8 +650,8 @@ function InterviewSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
 
 function AliasRow({ a, v }: { a: Alias; v: AssistantPaneViewProps }) {
   const [editing, setEditing] = useState(false);
-  const [alias, setAlias] = useState(a.alias);
-  const [email, setEmail] = useState(a.email);
+  const [alias, setAlias] = useDraft(a.alias, v.epoch ?? 0);
+  const [email, setEmail] = useDraft(a.email, v.epoch ?? 0);
   const busy = v.busy[a.id];
   const changed = alias.trim() !== a.alias || email.trim() !== a.email;
   return (
@@ -636,18 +698,21 @@ function AliasRow({ a, v }: { a: Alias; v: AssistantPaneViewProps }) {
 }
 
 function AliasesSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
-  const [alias, setAlias] = useState("");
-  const [email, setEmail] = useState("");
+  const [alias, setAlias] = useDraft<string>("", v.epoch ?? 0);
+  const [email, setEmail] = useDraft<string>("", v.epoch ?? 0);
   const full = p.aliases.length >= CAPS.aliases;
   const busy = v.busy["new-alias"];
   return (
     <Section
+      id="assistant-names"
       title="Names for people"
       description="Say &quot;Mum&quot; or &quot;my accountant&quot; and the assistant knows whom you mean."
     >
-      <div className="flex justify-end">
-        <Counter used={p.aliases.length} cap={CAPS.aliases} unit="names" />
-      </div>
+      {nearCap(p.aliases.length, CAPS.aliases) ? (
+        <div className="flex justify-end">
+          <Counter used={p.aliases.length} cap={CAPS.aliases} unit="names" />
+        </div>
+      ) : null}
       {p.aliases.length === 0 ? (
         <p className="text-xs text-muted-foreground">No names yet.</p>
       ) : (
@@ -708,7 +773,25 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
   const p = v.profile;
   return (
     <div className="space-y-8">
-      <Section title="Memory">
+      <nav aria-label="Sections on this page" className="flex flex-wrap gap-1.5">
+        {JUMPS.map((j) => (
+          <Button
+            key={j.id}
+            size="sm"
+            variant="ghost"
+            onClick={() =>
+              document.getElementById(j.id)?.scrollIntoView({ behavior: "smooth", block: "start" })
+            }
+          >
+            {j.label}
+          </Button>
+        ))}
+      </nav>
+      <Section id="assistant-memory" title="Memory">
+        <p className="text-xs text-muted-foreground">
+          The assistant reads this before each of your chats, on the web and on WhatsApp. Other
+          members never see it. Learning is {p.learning ? "on" : "off"}.
+        </p>
         <label className="flex items-start gap-2.5">
           <Checkbox
             checked={p.learning}
@@ -734,6 +817,7 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
       <InterviewSection p={p} v={v} />
       <AliasesSection p={p} v={v} />
       <Section
+        id="assistant-download"
         title="Download my profile"
         description="A copy of everything on this page, for you to keep. It holds nothing about anybody else."
       >
@@ -760,6 +844,7 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
         <RowError text={v.errors["export-json"] || v.errors["export-text"]} />
       </Section>
       <Section
+        id="assistant-forget"
         title="Forget everything"
         description="Clears every setting, fact and name above at once. You cannot undo this."
       >
@@ -804,6 +889,25 @@ export default function AssistantPane() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [confirmForget, setConfirmForget] = useState(false);
   const [confirmResetInterview, setConfirmResetInterview] = useState(false);
+  const [epoch, setEpoch] = useState(0);
+  const [fallbackName, setFallbackName] = useState<AssistantPaneViewProps["fallbackName"]>(null);
+
+  // The name the assistant uses while the Name field is empty. A failed read
+  // leaves the plain rule, with no value.
+  useEffect(() => {
+    let live = true;
+    peopleApi
+      .me()
+      .then((res) => {
+        if (live && res.state === "resolved" && res.person) {
+          setFallbackName(fallbackAddress(res.person.preferred_name, res.person.name));
+        }
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const load = useCallback(async () => {
     setStatus("loading");
@@ -859,11 +963,26 @@ export default function AssistantPane() {
         const f = await patchFact(id, patch);
         if (f) setProfile((p) => (p ? { ...p, facts: p.facts.map((x) => (x.id === id ? f : x)) } : p));
       }),
-    onDeleteFact: (id) =>
-      run(id, async () => {
+    onDeleteFact: async (id) => {
+      const gone = base.facts.find((x) => x.id === id);
+      const ok = await run(id, async () => {
         await deleteFact(id);
         setProfile((p) => (p ? { ...p, facts: p.facts.filter((x) => x.id !== id) } : p));
-      }),
+      });
+      if (ok && gone) {
+        toast.show({
+          variant: "success",
+          title: "Fact deleted",
+          description: gone.text.length > 80 ? `${gone.text.slice(0, 80)}…` : gone.text,
+          action: {
+            label: "Undo",
+            onClick: () => void handlers.onAddFact(gone.text, gone.kind),
+          },
+          timeout: 8000,
+        });
+      }
+      return ok;
+    },
     onAddAlias: (alias, email) =>
       run("new-alias", async () => {
         const a = await addAlias(alias, email);
@@ -903,6 +1022,8 @@ export default function AssistantPane() {
       profile={base}
       busy={busy}
       errors={errors}
+      epoch={epoch}
+      fallbackName={fallbackName}
       confirmForget={confirmForget}
       onCancelForget={() => setConfirmForget(false)}
       confirmResetInterview={confirmResetInterview}
@@ -916,7 +1037,10 @@ export default function AssistantPane() {
         if (ok) toast.show({ variant: "success", title: "The interview is reset" });
       }}
       onConfirmForget={async () => {
-        const ok = await run("forget", async () => setProfile(await forgetAll()));
+        const ok = await run("forget", async () => {
+          setProfile(await forgetAll());
+          setEpoch((n) => n + 1);
+        });
         setConfirmForget(false);
         if (ok) toast.show({ variant: "success", title: "The assistant forgot everything" });
       }}

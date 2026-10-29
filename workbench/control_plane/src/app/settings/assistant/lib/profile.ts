@@ -276,6 +276,53 @@ export function mergeStyle(current: Style, edit: { [K in keyof Style]?: Style[K]
   return compact({ ...current, ...edit } as Style);
 }
 
+/**
+ * The next value of a draft field when the server value or the reset epoch may
+ * have changed. Null keeps the draft.
+ *
+ * A new epoch (Forget everything) always takes the server value. Otherwise a
+ * draft that still equals the server value it started from follows the new
+ * one, and a draft the member changed is theirs and stays.
+ */
+export function reconcileDraft(
+  draft: string,
+  seen: { server: string; epoch: number },
+  server: string,
+  epoch: number,
+): string | null {
+  if (epoch !== seen.epoch) return server;
+  if (server === seen.server) return null;
+  return draft === seen.server ? server : null;
+}
+
+/** The languages the picker offers, as BCP 47 tags the gateway accepts. */
+export const LANGUAGES: Record<string, string> = {
+  en: "English",
+  hi: "Hindi",
+  kn: "Kannada",
+  ta: "Tamil",
+  te: "Telugu",
+  mr: "Marathi",
+  bn: "Bengali",
+  gu: "Gujarati",
+  ml: "Malayalam",
+};
+
+/**
+ * The name the assistant uses when the profile holds none (D-PZ-5): the
+ * member's preferred name, then the first word of the display name. Null when
+ * neither is known.
+ */
+export function fallbackAddress(
+  preferred: string | null | undefined,
+  display: string | null | undefined,
+): { name: string; from: "preferred" | "display" } | null {
+  const p = (preferred ?? "").trim();
+  if (p) return { name: p, from: "preferred" };
+  const first = (display ?? "").trim().split(/\s+/)[0];
+  return first ? { name: first, from: "display" } : null;
+}
+
 /** True when a counter should warn: at or past 80% of its cap. */
 export function nearCap(used: number, cap: number): boolean {
   return used >= Math.ceil(cap * 0.8);
@@ -353,9 +400,9 @@ export function withoutInterview(p: Profile): Profile {
 
 /** What the list shows for one area: its label and the state words. */
 export const STATE_LABELS: Record<InterviewState | "open", string> = {
-  open: "Open",
+  open: "Not asked yet",
   asked: "Asked",
   answered: "Answered",
   skipped: "Skipped",
-  never: "Never ask",
+  never: "Stopped asking",
 };

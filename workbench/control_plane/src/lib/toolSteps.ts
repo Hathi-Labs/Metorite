@@ -111,6 +111,9 @@ const V = {
   recall: ["Recalling", "Recalled"],
   remember: ["Remembering", "Remembered"],
   use: ["Using", "Used"],
+  remove: ["Removing", "Removed"],
+  change: ["Changing", "Changed"],
+  undo: ["Undoing", "Undid"],
 } as const satisfies Record<string, Verb>;
 
 /**
@@ -138,6 +141,13 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   // reads them as "Asked Code task" (review round 1).
   code_task: { kind: "other", verb: V.ran, object: "a coding task" },
   spawn_copilot_agent: { kind: "delegate", verb: V.ask, object: "a Copilot agent" },
+  // ── Assistant profile (WS-63): plain words, never the tool name ──────────
+  profile_remember: { kind: "edit", verb: V.save, object: "to your profile" },
+  profile_forget: { kind: "edit", verb: V.remove, object: "from your profile" },
+  profile_set: { kind: "edit", verb: V.change, object: "how I answer" },
+  profile_alias: { kind: "edit", verb: V.change, object: "a name for a person" },
+  profile_undo: { kind: "edit", verb: V.undo, object: "your last profile change" },
+  profile_interview: { kind: "other", verb: V.update, object: "your get-to-know-me list" },
   // ── Projects (skill-projects): the reads ─────────────────────────────────
   projects_tree: { kind: "read", verb: V.read, object: "the project tree" },
   project_summary: { kind: "read", verb: V.read, object: "a project summary" },

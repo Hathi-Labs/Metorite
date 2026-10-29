@@ -36,6 +36,7 @@
  */
 
 import { useState } from "react";
+import Link from "next/link";
 import Button from "@/components/ui/Button";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { DismissableCard } from "@/components/ToolCardShell";
@@ -46,9 +47,9 @@ import { curlyQuotes } from "@/lib/receiptText";
 /** Each profile write, by the label of its receipt. */
 const ACTION_META: Record<string, { icon: string; label: string }> = {
   profile_remember: { icon: "Bookmark", label: "Noted" },
-  profile_forget: { icon: "Trash2", label: "Forgot from your profile" },
-  profile_set: { icon: "SlidersHorizontal", label: "Profile preference set" },
-  profile_alias: { icon: "Users", label: "Profile alias changed" },
+  profile_forget: { icon: "Trash2", label: "Removed from your profile" },
+  profile_set: { icon: "SlidersHorizontal", label: "Changed how I answer" },
+  profile_alias: { icon: "Users", label: "Changed a name for a person" },
   profile_undo: { icon: "Undo2", label: "Undid your last profile change" },
   // PZ-27, PZ-30. The tool is routed so a FAILED call still draws "Not saved".
   // A mark (`profile: saved`) and a read draw no card: the interview is a
@@ -238,6 +239,14 @@ export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
   const title = failed || declined ? "Not saved" : status === "duplicate" ? "Already saved" : label;
   const icon = failed || declined ? "X" : status === "duplicate" ? "Check" : replaced ? "Replace" : meta.icon;
 
+  // The first line of the text, unless it only repeats the title ("Not saved"
+  // over "Not saved."). The body still shows the lines after it.
+  const first = text.split("\n")[0];
+  const plain = (x: string) => x.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+  const repeats = plain(first) === plain(title);
+  const summary = repeats ? undefined : first;
+  const bodyText = repeats ? text.split("\n").slice(1).join("\n").trim() : text;
+
   const onUndo = async () => {
     if (!undo || state === "busy" || state === "done") return;
     setState("busy");
@@ -245,7 +254,7 @@ export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
   };
 
   return (
-    <RollupCard id={`tool:${e.id}`} title={title} icon={icon} summary={text.split("\n")[0]} receipt={!failed} header="own">
+    <RollupCard id={`tool:${e.id}`} title={title} icon={icon} summary={summary} receipt={!failed} header="own">
       <div
         className={`rounded-lg border px-2.5 py-2 ${
           failed ? "border-destructive/40 bg-destructive/5" : "border-sidebar-border bg-secondary/40"
@@ -253,8 +262,8 @@ export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
       >
         <RollupHeader className={`text-[11px] ${tone}`} />
         <RollupBody>
-          {text && (
-            <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap break-words">{text}</div>
+          {bodyText && (
+            <div className="mt-0.5 text-xs text-muted-foreground whitespace-pre-wrap break-words">{bodyText}</div>
           )}
           {status === "saved" && !failed && undo && (
             <div className="mt-1 flex items-center gap-2">
@@ -264,11 +273,19 @@ export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
                 icon="Undo2"
                 onClick={onUndo}
                 disabled={state === "busy" || state === "done"}
-                className="gap-1 text-[10px] text-primary"
+                className="gap-1 text-xs text-primary"
               >
                 {state === "done" ? "Undone" : "Undo"}
               </Button>
-              {state === "failed" && <span className="text-[10px] text-destructive">Undo failed. Change it in Settings.</span>}
+              {state === "failed" && (
+                <span className="text-xs text-destructive">
+                  Undo failed.{" "}
+                  <Link href="/settings/assistant" className="underline underline-offset-2">
+                    Change it in Assistant settings
+                  </Link>
+                  .
+                </span>
+              )}
             </div>
           )}
         </RollupBody>

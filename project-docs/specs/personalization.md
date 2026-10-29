@@ -20,6 +20,12 @@ the due line in the block. See §14.4 "PZ-26 as built".
 chat, the interview list in Settings → Assistant settings and the chat receipt. See
 §14.4 "PZ-27 as built". The visual review is UNVERIFIED.
 
+**PZ-11 step 4, the look, BUILT 2026-10-30.** A visual audit found 14
+defects on the profile surfaces. A forgotten profile now clears every draft.
+The fact row stacks on a phone. The chat names each profile write in plain
+words. The page says what the assistant does with the data, and the Name field
+says which name it uses. The production flip stays an owner act.
+
 **PZ-30 BUILT 2026-10-27, dark.** The interview reads as a talk, not a form.
 See §14.4 "PZ-30 as built".
 

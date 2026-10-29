@@ -104,20 +104,22 @@ export default function InterviewOffer({
     <div
       role="region"
       aria-label="Get to know me"
-      className="relative w-full max-w-sm rounded-xl border border-border bg-card px-4 py-3 text-left"
+      className="w-full max-w-sm rounded-xl border border-border bg-card px-4 py-3 text-left"
     >
-      <Button
-        size="icon"
-        variant="ghost"
-        icon="X"
-        aria-label="Not now"
-        className="absolute right-1 top-1"
-        onClick={() => {
-          hideForSession();
-          setHidden(true);
-        }}
-      />
-      <p className="pr-8 text-sm font-medium text-foreground">Want me to get to know you?</p>
+      <div className="flex items-start justify-between gap-2">
+        <p className="min-w-0 text-sm font-medium text-foreground">Want me to get to know you?</p>
+        <Button
+          size="icon"
+          variant="ghost"
+          icon="X"
+          aria-label="Not now"
+          className="-mr-2 -mt-1.5 shrink-0"
+          onClick={() => {
+            hideForSession();
+            setHidden(true);
+          }}
+        />
+      </div>
       <p className="mt-0.5 text-xs text-muted-foreground">
         I ask one short question a day. Your answers help me write and plan the way you like. You
         see and edit them in{" "}

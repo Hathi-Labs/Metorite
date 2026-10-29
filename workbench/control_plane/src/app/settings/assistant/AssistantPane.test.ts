@@ -54,7 +54,8 @@ describe("AssistantPaneView", () => {
     expect(html).toContain("Nothing yet.");
     expect(html).toContain("No names yet.");
     expect(html).toContain("No notes yet.");
-    expect(html).toContain(`0 of ${CAPS.facts} facts`);
+    // A counter far from its cap is noise, so it does not show.
+    expect(html).not.toContain(`0 of ${CAPS.facts} facts`);
   });
 
   it("draws facts with kind, source and date, and aliases with no source", () => {
@@ -67,7 +68,9 @@ describe("AssistantPaneView", () => {
     expect(html).toContain("Mum");
     expect(html).toContain("mum@example.com");
     expect(html).toContain("Answer first");
-    expect(html).toContain("2 of 40 facts");
+    expect(html).not.toContain("2 of 40 facts");
+    const crowded = Array.from({ length: 33 }, (_, i) => ({ id: `c${i}`, text: `fact ${i}`, kind: "work" as const }));
+    expect(draw({ profile: { ...EMPTY_PROFILE, facts: crowded } })).toContain("33 of 40 facts");
   });
 
   it("says that off stops writing and the assistant still reads", () => {
@@ -162,7 +165,7 @@ describe("the interview section (PZ-27)", () => {
     for (const label of ["Your role", "Your goals", "A good day", "How you decide", "People you work with"]) {
       expect(html).toContain(label);
     }
-    for (const word of ["Answered", "Asked", "Skipped", "Never ask", "Open"]) expect(html).toContain(word);
+    for (const word of ["Answered", "Asked", "Skipped", "Stopped asking", "Not asked yet"]) expect(html).toContain(word);
     expect(html).toContain("bg-success/10");
     expect(html).toContain("bg-warning/10");
   });
@@ -203,5 +206,84 @@ describe("the interview section (PZ-27)", () => {
     const m = /onResetArea: \(id\) =>[\s\S]*?\}\),\n/.exec(src);
     expect(m?.[0]).toContain("resetArea(id)");
     expect(m?.[0]).not.toMatch(/Confirm/);
+  });
+});
+
+// ── PZ-11 step 4: the look ────────────────────────────────────────────────
+describe("Forget everything leaves no old draft behind", () => {
+  it("draws an empty Name input with Save disabled once the profile is empty", async () => {
+    const { reconcileDraft } = await import("./lib/profile");
+    // The member saw Name = Vijay, then forgot everything: the epoch moved on.
+    expect(reconcileDraft("Vijay", { server: "Vijay", epoch: 0 }, "", 1)).toBe("");
+    // A dirty draft is thrown away on a forget, and kept on an unrelated save.
+    expect(reconcileDraft("Vi", { server: "Vijay", epoch: 0 }, "", 1)).toBe("");
+    expect(reconcileDraft("Vi", { server: "Vijay", epoch: 0 }, "Vijay", 0)).toBeNull();
+    const html = draw({ profile: EMPTY_PROFILE, epoch: 1 });
+    const name = html.match(/<input[^>]*placeholder="What to call you"[^>]*>/)?.[0] ?? "";
+    expect(name).toContain('value=""');
+    // The Save button that follows the Name input is disabled.
+    expect(html).toMatch(/placeholder="What to call you"[^>]*\/><button[^>]*disabled=""[^>]*>[\s\S]*?Save/);
+  });
+
+  it("every draft field reads its value through the one hook", () => {
+    const src = readFileSync(new URL("./AssistantPane.tsx", import.meta.url), "utf-8");
+    expect(src).not.toMatch(/useState\((p\.address|s\.language|f\.text|a\.alias|a\.email)/);
+    expect(src).toMatch(/setEpoch\(\(n\) => n \+ 1\)/);
+  });
+});
+
+describe("the page says what the assistant does with this data", () => {
+  it("says when the assistant reads it, who sees it, and the learning state", () => {
+    const on = draw({});
+    expect(on).toContain("before each of your chats, on the web and on WhatsApp");
+    expect(on).toContain("Other members never see it");
+    expect(on).toContain("Learning is on");
+    expect(draw({ profile: full })).toContain("Learning is off");
+  });
+
+  it("has jump links to the sections", () => {
+    const html = draw({});
+    expect(html).toContain('aria-label="Sections on this page"');
+    for (const id of ["memory", "address", "style", "facts", "interview", "names", "download", "forget"]) {
+      expect(html).toContain(`id="assistant-${id}"`);
+    }
+  });
+});
+
+describe("the name the assistant uses", () => {
+  it("names the fallback and where it comes from, with a link to My Profile", () => {
+    const html = draw({ fallbackName: { name: "Vijay", from: "preferred" } });
+    expect(html).toContain('placeholder="Empty: Vijay"');
+    expect(html).toContain("Empty: I call you Vijay, your preferred name in");
+    expect(html).toContain('href="/people/me"');
+  });
+
+  it("states the plain rule when no read gave the value", () => {
+    const html = draw({});
+    expect(html).toContain("Empty: I use your preferred name");
+    expect(html).toContain('href="/people/me"');
+  });
+});
+
+describe("language, facts and interview, in plain words", () => {
+  it("offers the language as a named list, and no codes in the label", () => {
+    const html = draw({ profile: { ...EMPTY_PROFILE, style: { language: "kn" } } });
+    expect(html).not.toContain("for example en or hi");
+    expect(html).toContain("Kannada");
+  });
+
+  it("shows the question of each interview area under its label", () => {
+    const html = draw({});
+    expect(html).toContain("What is your role, and what takes most of your week?");
+  });
+
+  it("a fact row stacks its controls under the text on a phone", () => {
+    const html = draw({ profile: full });
+    expect(html).toContain("flex flex-col gap-2 sm:flex-row");
+  });
+
+  it("deletes a fact with an Undo toast that adds it back", () => {
+    const src = readFileSync(new URL("./AssistantPane.tsx", import.meta.url), "utf-8");
+    expect(src).toMatch(/label: "Undo"[\s\S]{0,120}onAddFact\(gone\.text, gone\.kind\)/);
   });
 });

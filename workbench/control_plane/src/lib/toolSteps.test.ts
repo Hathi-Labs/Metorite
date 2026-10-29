@@ -121,6 +121,16 @@ describe("describeToolStep — a step in words", () => {
     expect(step("skill_projects.create_task").label).toBe("Created a task");
   });
 
+  it("names each profile write in plain words, never by its tool name", () => {
+    expect(step("profile_remember").label).toBe("Saved to your profile");
+    expect(step("profile_forget").label).toBe("Removed from your profile");
+    expect(step("profile_set").label).toBe("Changed how I answer");
+    expect(step("profile_alias").label).toBe("Changed a name for a person");
+    for (const n of ["profile_remember", "profile_forget", "profile_set", "profile_alias", "profile_undo", "profile_interview"]) {
+      expect(step(n).label).not.toMatch(/profile_|Used profile/);
+    }
+  });
+
   it("still draws a tool it does not know, by its name", () => {
     expect(step("frobnicate_widget").label).toBe("Used frobnicate widget");
   });
