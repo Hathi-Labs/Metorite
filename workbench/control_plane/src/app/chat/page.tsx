@@ -57,6 +57,7 @@ import type { IntegrationStatus } from "@/app/api/integrations/status/route";
 import { filterWord, shellBarOn } from "@/lib/shell/registry";
 import { ShellJob, jobFields } from "@/lib/shell/doJob";
 import { openAssistant, useAssistant } from "@/lib/shell/assistant";
+import { reminderParam } from "@/lib/shell/reminderOpen";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 
 // Agent names that receive the Metorite persona (general-purpose brain).
@@ -1363,10 +1364,13 @@ function ChatPageInner() {
 /**
  * D99: with the chat bar on, `/chat` is the address of the one assistant's
  * full view (`navigation_shell.md` §7.1). The page opens it and takes the
- * job out of the address. It reads three doors: `?do=open-chat` (an activity
- * row or a toast), `?do=new-chat` (the command bar's job) and `?q=` (words
- * for the member to check and send). Closing the full view here goes home,
- * because the page under it is empty.
+ * job out of the address. It reads four doors: `?do=open-chat` (an activity
+ * row or a toast), `?do=new-chat` (the command bar's job), `?q=` (words
+ * for the member to check and send) and `?reminder=` (a tap on a reminder,
+ * WS-66 RM-4, `calendar_events_reminders.md` §5.7). A reminder always opens
+ * a fresh chat, with or without `do=new-chat`, and the dock asks the server
+ * for its first message. Closing the full view here goes home, because the
+ * page under it is empty.
  */
 function ChatFullView() {
   const params = useSearchParams();
@@ -1376,11 +1380,13 @@ function ChatFullView() {
   useEffect(() => {
     const job = params.get("do");
     const fields = jobFields(params);
+    const reminder = reminderParam(params);
     openAssistant({
       mode: "full",
-      sessionId: job === OPEN_CHAT_JOB && fields.session ? fields.session : undefined,
+      sessionId: job === OPEN_CHAT_JOB && fields.session && !reminder ? fields.session : undefined,
       draft: params.get("q") ?? undefined,
-      fresh: job === "new-chat",
+      fresh: job === "new-chat" || Boolean(reminder),
+      reminder,
     });
     router.replace("/chat");
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on arrival

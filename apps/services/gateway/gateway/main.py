@@ -1854,6 +1854,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-66 RM-4 — a tap on a reminder link opens the chat with a first
+    # message that code built (`calendar_events_reminders.md` §5.7). Shares
+    # /chat's prefix, in its own module, as the brief does.
+    from gateway.routes.chat_reminder import router as _chat_reminder_router
+
+    app.include_router(_chat_reminder_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # Rooms share /chat's prefix — a room IS a chat session — but live in their
     # own module because membership, presence, and the live room stream are a
     # different concern from history CRUD.

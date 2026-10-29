@@ -101,6 +101,14 @@ import {
 
 import { requestBrief } from "./briefTurn";
 import { chatFirstOn } from "./chatFlag";
+import {
+  claimReminderOpen,
+  noteReminder,
+  opensReminder,
+  reminderFactsShown,
+  requestReminderOpen,
+  useKnownReminder,
+} from "./reminderOpen";
 import { markChatFirstMessage } from "./shellPrefs";
 import {
   dockFloats,
@@ -117,6 +125,7 @@ import {
   holdsForBrief,
   consumeAsk,
   consumeDraft,
+  consumeReminder,
   effectiveMode,
   focusAssistant,
   markBriefAsked,
@@ -126,6 +135,7 @@ import {
   onPageChange,
   openAssistant,
   paneAt,
+  publishAssistantFacts,
   raiseOnNeed,
   setAssistantMode,
   setAssistantSession,
@@ -138,6 +148,7 @@ import {
   useCurrentFacts,
   useViewportWidth,
   wantsBrief,
+  type AssistantFacts,
   type AssistantMode,
 } from "./assistant";
 import { surfaceOfPane } from "./surface";
@@ -280,6 +291,51 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     return () => { cancelled = true; };
   }, [scope, open, st.sessionId, refresh]);
 
+  const activeIdForBrief = st.sessionId ?? "";
+  const activeCount = sessions.find((s) => s.id === activeIdForBrief)?.messageCount;
+
+  // A reminder link (WS-66 RM-4, §5.7). `/chat?reminder=<id>` asked for a
+  // fresh chat AND the reminder, so the open waits until the effect above
+  // made that chat: the two fresh counts agree. Then it asks the server
+  // once (`claimReminderOpen`). The server opens the reminder and writes
+  // the first row (D-PM-39). The chat holds as for the brief, with the same
+  // cap, so its first load reads the row. This effect comes before the
+  // brief's, so the brief never lands in a reminder's chat.
+  const [reminderChat, setReminderChat] = useState<{ sessionId: string; reminderId: string; facts: AssistantFacts } | null>(null);
+  useLayoutEffect(() => {
+    const reminderId = st.reminder;
+    if (!scope || !open || !reminderId || !activeIdForBrief || activeCount === undefined) return;
+    if (handledFresh.current !== st.freshSeq) return;
+    const id = activeIdForBrief;
+    consumeReminder();
+    if (!claimReminderOpen(id, reminderId)) return;
+    setBriefHold(id);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      setBriefHold((held) => (held === id ? null : held));
+      refresh();
+    };
+    const timer = setTimeout(release, BRIEF_HOLD_MS);
+    void requestReminderOpen(id, reminderId)
+      .then((opened) => {
+        if (!opened) return;
+        noteReminder(opened.reminder, "open");
+        // The chat takes the reminder's name: "Reminder · Get a haircut".
+        enrichSession(id, {
+          title: opened.context.label || undefined,
+          messageCount: 1,
+          lastPreview: opened.preview,
+        });
+        setReminderChat({ sessionId: id, reminderId: opened.reminder.id, facts: opened.context });
+      })
+      .finally(() => {
+        clearTimeout(timer);
+        release();
+      });
+  }, [scope, open, st.reminder, st.freshSeq, activeIdForBrief, activeCount, refresh]);
+
   // The brief as the first turn (CF-5). Asked once per page per day, and
   // only through the rule. The server decides whether a brief exists and
   // writes the row (D-PM-39); a 204 or a fault opens the chat empty.
@@ -287,10 +343,10 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   // the chat, and the chat's first load reads the row. The hold ends when
   // the route answers, or after BRIEF_HOLD_MS, whichever comes first
   // (review of #1216): a slow feed never holds the composer.
-  const activeIdForBrief = st.sessionId ?? "";
-  const activeCount = sessions.find((s) => s.id === activeIdForBrief)?.messageCount;
+  // A chat that a reminder opens, or will open, gets no brief (RM-4).
   useLayoutEffect(() => {
     if (!scope || !open || !activeIdForBrief || activeCount === undefined) return;
+    if (st.reminder || opensReminder(activeIdForBrief)) return;
     if (!wantsBrief({
       chatFirst: surface.chatFirst, phone: surface.phone,
       messageCount: activeCount, askedFor: briefAskedToday(),
@@ -322,8 +378,21 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
         clearTimeout(timer);
         release();
       });
-  }, [scope, open, activeIdForBrief, activeCount, surface.chatFirst, surface.phone, refresh]);
+  }, [scope, open, st.reminder, activeIdForBrief, activeCount, surface.chatFirst, surface.phone, refresh]);
   /* eslint-enable react-hooks/set-state-in-effect */
+
+  // The reminder's context block (RM-4, §5.7 item 4). While its chat is on
+  // screen, the dock publishes the facts that the server built, so a typed
+  // answer reaches the model with the reminder. They leave when the member
+  // opens another chat or closes the assistant, and when a chip closes the
+  // reminder (`reminderFactsShown`). Undo brings them back.
+  const knownForFacts = useKnownReminder(reminderChat?.reminderId ?? "");
+  const factsOn = reminderFactsShown(knownForFacts);
+  const activeIdForFacts = st.sessionId ?? "";
+  useEffect(() => {
+    if (!open || !reminderChat || reminderChat.sessionId !== activeIdForFacts || !factsOn) return;
+    return publishAssistantFacts(reminderChat.facts);
+  }, [open, reminderChat, activeIdForFacts, factsOn]);
 
   const activeId = st.sessionId ?? "";
   const recover = useCallback(

@@ -274,6 +274,8 @@ describe("a template with its own head draws it as the card's one header", () =>
     chart: "ChartCard",
     // A report the agent makes (2026-10-16): its body is ReportView.
     report: "ReportTemplate",
+    // A reminder that a tap opened (WS-66 RM-4).
+    reminderCard: "ReminderCard",
   };
 
   it("names every chat template", () => {
