@@ -287,6 +287,9 @@ NOT_ON_THE_EXPORT = {
     # no other AI session holds. The board never sends it, and a file of
     # "tasks no agent holds" is a snapshot that is stale on download.
     "unheld",
+    # #918. Not a filter: it asks the list to also answer the size of each
+    # status lane for the board's column heads. The rows are the same.
+    "with_status_counts",
 }
 
 

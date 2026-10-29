@@ -1568,11 +1568,13 @@ def group_indian(whole: int) -> str:
     return sign + ",".join([head, *pairs, tail])
 
 
-def format_figure(value: Decimal | int | float, kind: str = PLAIN, *, decimals: int = 0) -> str:
+def format_figure(value: Decimal | int | float, kind: str = PLAIN, *, decimals: int = 0,
+                  currency: str = "INR") -> str:
     """The ONE formatter of a figure for a prompt (CRM-Q28 item 9).
 
-    Money: ``INR 12,34,567``. Percent: ``45.3%``. Plain: ``12,34,567``. It
-    rounds half up to *decimals* places. :func:`check` reads each form back.
+    Money: ``INR 12,34,567``, or the code in *currency* (``USD 4,500``).
+    Percent: ``45.3%``. Plain: ``12,34,567``. It rounds half up to *decimals*
+    places. :func:`check` reads each form back.
     """
     quantum = Decimal(1).scaleb(-decimals)
     number = Decimal(str(value)).quantize(quantum, rounding=ROUND_HALF_UP)
@@ -1580,7 +1582,7 @@ def format_figure(value: Decimal | int | float, kind: str = PLAIN, *, decimals: 
     whole, _, frac = f"{abs(number):f}".partition(".")
     text = sign + group_indian(int(whole)) + (f".{frac}" if frac else "")
     if kind == MONEY:
-        return f"INR {text}"
+        return f"{currency} {text}"
     if kind == PERCENT:
         return f"{text}%"
     return text

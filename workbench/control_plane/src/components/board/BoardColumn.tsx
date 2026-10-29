@@ -47,6 +47,8 @@ export interface BoardColumnProps extends FrameProps {
   dropTarget?: boolean;
   /** Draws "+ Add" at the foot. The shared `QuickAdd` collects the title. */
   onAdd?: (title: string) => Promise<void>;
+  /** A line at the foot of the lane, under the cards ("Show more"). */
+  footer?: React.ReactNode;
   /** The name of the add control, for example `Add to “In progress”`. */
   addLabel?: string;
   /** Controls at the right end of the header. */
@@ -70,6 +72,7 @@ export function BoardColumn({
   dropTarget = false,
   onAdd,
   addLabel = "Add",
+  footer,
   headerActions,
   hidden = false,
   overlay,
@@ -105,6 +108,7 @@ export function BoardColumn({
           </EmptyBox>
         ) : null}
       </Body>
+      {footer ? <div className="flex justify-center pt-1">{footer}</div> : null}
       {onAdd ? (
         <div className="pt-1">
           <QuickAdd label={addLabel} onAdd={onAdd} />

@@ -45,6 +45,7 @@
  */
 
 import { type Filters, type SubtaskMode, toQuery } from "./grouping";
+import { statusLaneOf } from "./statusOrder";
 import { subtaskReadParams } from "./subtaskView";
 import { type TableSort, sortQuery } from "./table";
 
@@ -89,6 +90,9 @@ export function boardReadParams(input: {
     // the read key, and a present-but-undefined entry is a different key.
     ...(input.viewId ? { view_id: input.viewId } : {}),
     ...subtaskReadParams(input.subtasks),
+    // #918. The true size of each status lane, so a column counts the whole
+    // filtered set and not only the rows of one page.
+    with_status_counts: true,
   };
 }
 
@@ -166,4 +170,86 @@ export function appendTasks<T extends { id: string }>(
 ): T[] {
   const held = new Set(current.map((row) => row.id));
   return [...current, ...incoming.filter((row) => !held.has(row.id))];
+}
+
+
+// ── #918: the true size of each column, and paging per column ────────────
+
+/** The server's answer for the lane sizes (`with_status_counts`). */
+export interface StatusCounts {
+  counts: Readonly<Record<string, number>>;
+  /** status id -> its stage, for a lane the board does not draw. */
+  categories: Readonly<Record<string, string | null>>;
+}
+
+/**
+ * The true size of each column on a board grouped by status or by stage.
+ *
+ * A status id the board draws counts in its own column. A subproject's own
+ * lane counts in the column it draws in (`statusLaneOf`, #834). By stage, a
+ * column is the sum of every lane of that stage. Null when the server sent no
+ * counts or the board groups by any other axis: the column then counts the
+ * rows it holds, as before.
+ */
+export function columnSizes(
+  groupBy: string,
+  lanes: readonly { id: string; category: string; position: number }[],
+  sc: StatusCounts | null,
+): Map<string, number> | null {
+  if (!sc || (groupBy !== "status" && groupBy !== "category")) return null;
+  const laneOf = statusLaneOf(lanes);
+  const byId = new Map(lanes.map((l) => [l.id, l]));
+  const out = new Map<string, number>();
+  for (const [statusId, n] of Object.entries(sc.counts)) {
+    const category = byId.get(statusId)?.category ?? sc.categories[statusId] ?? null;
+    const key = groupBy === "status"
+      ? laneOf({ status_id: statusId, status_category: category })
+      : category;
+    if (!key) continue;
+    out.set(key, (out.get(key) ?? 0) + n);
+  }
+  return out;
+}
+
+/**
+ * The filter that reads more rows of ONE column, or null when one filter
+ * cannot name the whole column. A status column that also holds a
+ * subproject's own lane needs two status ids, and the read takes one, so it
+ * falls back to the board's own "Load more".
+ */
+export function columnReadFilter(
+  groupBy: string,
+  columnKey: string,
+  lanes: readonly { id: string; category: string; position: number }[],
+  sc: StatusCounts | null,
+): Record<string, string> | null {
+  if (groupBy === "category") return { status_category: columnKey };
+  if (groupBy !== "status" || !sc) return null;
+  const laneOf = statusLaneOf(lanes);
+  const byId = new Map(lanes.map((l) => [l.id, l]));
+  const members = Object.keys(sc.counts).filter((id) =>
+    laneOf({ status_id: id, status_category: byId.get(id)?.category ?? sc.categories[id] ?? null })
+      === columnKey);
+  return members.every((id) => id === columnKey) ? { status_id: columnKey } : null;
+}
+
+/**
+ * The page of the board's own read to ask for next.
+ *
+ * ⚠️ A column read adds rows that the board's pages have not reached, so
+ * `tasks.length` is no longer a prefix of the board's order, and a page
+ * counted from it would skip rows. The board's pages hold `held - laneOnly`
+ * rows: every row except the ones only a column read brought.
+ */
+export function nextBoardPage(held: number, laneOnly: number, pageSize: number = TASK_PAGE_SIZE): number {
+  return nextTaskPage(Math.max(0, held - laneOnly), pageSize);
+}
+
+/**
+ * How many rows the "Load N more" at a column's foot names: what one read of
+ * that column can bring, or 0 when the column holds its whole lane.
+ */
+export function columnMoreCount(held: number, total: number | undefined, pageSize: number = TASK_PAGE_SIZE): number {
+  if (total === undefined || total <= held) return 0;
+  return Math.min(total - held, Math.max(pageSize, 1));
 }

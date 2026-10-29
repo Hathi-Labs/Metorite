@@ -265,6 +265,25 @@ async def test_pipeline_report_never_adds_two_currencies(db: FakeCrmDB) -> None:
 
 
 @pytest.mark.asyncio
+async def test_pipeline_report_normalises_the_currency_code(db: FakeCrmDB) -> None:
+    """Task 888: an empty, NULL, padded or lower case code is read the way the
+    screen reads it, so ``''``, NULL and ``'inr'`` add to INR and ``' usd '``
+    is USD (HANDOFF H-333 verifier finding 1)."""
+    lanes = seeded_board(db)
+    deal(db, lanes["qualification"], amount=1000, probability=50)
+    deal(db, lanes["qualification"], amount=100, probability=50, currency="")
+    deal(db, lanes["qualification"], amount=10, probability=50, currency=None)
+    deal(db, lanes["qualification"], amount=1, probability=50, currency="inr")
+    deal(db, lanes["qualification"], amount=200, probability=50, currency=" usd ")
+    deal(db, lanes["proposal"], amount=400, probability=50, currency="USD")
+
+    report = await crm_reports.pipeline_report(user=USER)
+
+    assert (report.currency, report.amount) == ("INR", 1111)
+    assert [(o.currency, o.amount) for o in report.others] == [("USD", 600)]
+
+
+@pytest.mark.asyncio
 async def test_a_crm_with_only_usd_leads_with_usd(db: FakeCrmDB) -> None:
     lanes = seeded_board(db)
     deal(db, lanes["qualification"], amount=200, probability=50, currency="USD")
@@ -342,7 +361,7 @@ def test_every_money_sum_in_reports_is_bound_to_a_currency() -> None:
             source[call.start():i]
         )
     # The one statement that holds the SUM carries the predicate.
-    assert '"currency = :currency"' in source
+    assert 'f"{CURRENCY_SQL} = :currency"' in source
     root = Path(__file__).resolve().parents[2]
     for folder in ("packages", "apps"):
         for path in (root / folder).rglob("*.py"):
