@@ -185,6 +185,13 @@ _NOT_FIGURES = re.compile(
         r"\(\d{2,5}\)\s?\d{3,4}[\s-]?\d{3,5}",           # (080) 2345-6789
         r"\b\d{5}[\s-]\d{5}\b",                           # 98450 12345
         r"\b\d{3,4}-\d{3,4}-\d{4}\b",                     # 080-2345-6789
+        # a range of days with one month: "5-11 October", "19 to 25 Oct 2026",
+        # "Oct 5-11". The week label of a digest (CRM #873). A range of days
+        # with no month ("5-11 deals") stays a figure.
+        rf"\b\d{{1,2}}(?:st|nd|rd|th)?\s*(?:[-\u2013]|\bto\b)\s*\d{{1,2}}(?:st|nd|rd|th)?"
+        rf"\s+{_MONTHS}(?:,?\s+\d{{4}})?\b",
+        rf"\b{_MONTHS}\s+\d{{1,2}}(?:st|nd|rd|th)?\s*(?:[-\u2013]|\bto\b)\s*"
+        rf"\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?\b",
         rf"\b\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTHS}(?:,?\s+\d{{4}})?\b",
         rf"\b{_MONTHS}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?\b",
         rf"\b{_MONTHS}\s+\d{{4}}\b",
