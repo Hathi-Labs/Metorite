@@ -9,7 +9,7 @@ OA-8a is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-8a" in §4.3
 
 OA-8b is BUILT, dark behind `TOOL_PACKS` (2026-10-28, "As built, OA-8b" in §4.3.2). The flag flip is OWNER-GATE.
 
-OA-8f is BUILT, dark behind `ORCHESTRATOR_FLOOR_TRIM` (2026-10-28, "As built, OA-8f" in §4.3.2). The count fixes and the pack cues need no flag. The flag flip is OWNER-GATE.
+OA-8f is BUILT, dark behind `ORCHESTRATOR_FLOOR_TRIM` (2026-10-28, "As built, OA-8f" in §4.3.2). The count fixes and the pack cues need no flag. The flag flip is OWNER-GATE.
 
 OA-8g is BUILT (2026-10-29, "As built, OA-8g" in §4.3.2). It repairs the pack rules, two load word lists and the spawn cue that OA-8e run 2 found. The Projects packs and the sub-agents stay dark. The CRM rule change rides with the CRM pack.
 
