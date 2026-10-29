@@ -102,8 +102,11 @@ import {
 import { requestBrief } from "./briefTurn";
 import { chatFirstOn } from "./chatFlag";
 import {
+  REMINDER_HOLD_MS,
   claimReminderOpen,
+  isOpenFailure,
   noteReminder,
+  openFailureWords,
   opensReminder,
   reminderFactsShown,
   requestReminderOpen,
@@ -317,10 +320,17 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
       setBriefHold((held) => (held === id ? null : held));
       refresh();
     };
-    const timer = setTimeout(release, BRIEF_HOLD_MS);
+    // The hold lasts until the open settles. The BFF stops at 15 s, so this
+    // backstop never ends the hold before the answer: a late first row still
+    // shows, because the chat reads its thread once per chat.
+    const timer = setTimeout(release, REMINDER_HOLD_MS);
     void requestReminderOpen(id, reminderId)
       .then((opened) => {
         if (!opened) return;
+        if (isOpenFailure(opened)) {
+          setNotice(openFailureWords(opened));
+          return;
+        }
         noteReminder(opened.reminder, "open");
         // The chat takes the reminder's name: "Reminder · Get a haircut".
         enrichSession(id, {

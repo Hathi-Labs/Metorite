@@ -99,16 +99,38 @@ function readFacts(value: unknown): AssistantFacts | null {
 }
 
 /**
+ * How long the chat waits for the open. The BFF route stops its own wait at
+ * 15 s, so its answer, good or bad, always comes first. This is the backstop.
+ * The brief keeps its own short `BRIEF_HOLD_MS`, because a brief is optional.
+ * A reminder's first row is the whole point of the link.
+ */
+export const REMINDER_HOLD_MS = 16_000;
+
+/** An open that failed. `gone` is a 404: not the member's reminder, or no such id. */
+export interface ReminderOpenFailed {
+  failed: true;
+  gone: boolean;
+}
+
+/** The words over a chat whose reminder did not open. */
+export function openFailureWords(failure: ReminderOpenFailed): string {
+  return failure.gone
+    ? "This reminder is not yours, or it no longer exists."
+    : "Metorite could not open this reminder. Tap the link again.";
+}
+
+/**
  * Ask the server to open `reminderId` in the chat `sessionId`. The body is
  * the id alone: the server reads the row and builds every word. Null on a
- * 204 (a shared room), on any error and on a network fault. Then the chat
- * opens empty, and nothing is retried.
+ * 204 (a shared room), where nothing is wrong. A 404, any other error and a
+ * network fault answer `{failed: true}`, so the dock can say so. Nothing is
+ * retried.
  */
 export async function requestReminderOpen(
   sessionId: string,
   reminderId: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<ReminderOpened | null> {
+): Promise<ReminderOpened | ReminderOpenFailed | null> {
   try {
     const res = await fetchImpl(reminderOpenPath(sessionId), {
       method: "POST",
@@ -116,11 +138,13 @@ export async function requestReminderOpen(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reminder_id: reminderId }),
     });
-    if (res.status !== 200) return null;
+    if (res.status === 204) return null;
+    if (res.status === 404) return { failed: true, gone: true };
+    if (res.status !== 200) return { failed: true, gone: false };
     const body = (await res.json()) as Record<string, unknown> | null;
     const reminder = readReminderRow(body?.reminder);
     const context = readFacts(body?.context);
-    if (!body || !reminder || !context) return null;
+    if (!body || !reminder || !context) return { failed: true, gone: false };
     return {
       posted: body.posted === true,
       preview: str(body.preview) ?? "",
@@ -128,8 +152,13 @@ export async function requestReminderOpen(
       context,
     };
   } catch {
-    return null;
+    return { failed: true, gone: false };
   }
+}
+
+/** Whether an answer of `requestReminderOpen` is a failure. */
+export function isOpenFailure(got: ReminderOpened | ReminderOpenFailed | null): got is ReminderOpenFailed {
+  return got !== null && "failed" in got;
 }
 
 // One ask for each chat and reminder, and the chats that opened a reminder.
@@ -157,8 +186,11 @@ export function opensReminder(sessionId: string): boolean {
 
 // ── The store ────────────────────────────────────────────────────────────────
 
-/** Who wrote the newest row of a reminder: the open, or a chip. */
-export type ReminderVia = "open" | "chip";
+/**
+ * Who wrote the newest row of a reminder: the open, a chip, or the receipt
+ * of a tool (or a 409) that told the card the reminder changed elsewhere.
+ */
+export type ReminderVia = "open" | "chip" | "receipt";
 
 export interface KnownReminder {
   row: ReminderRow;
@@ -172,6 +204,57 @@ const _listeners = new Set<() => void>();
 export function noteReminder(row: ReminderRow, via: ReminderVia): void {
   _known.set(row.id, { row, via });
   _listeners.forEach((l) => l());
+}
+
+/**
+ * Keep a new state for a reminder that something else changed: the model
+ * through a tool, or a 409 that said the reminder is closed. The rest of the
+ * row stays as the page knew it.
+ */
+export function noteReminderState(id: string, state: string, resolution: string | null): void {
+  const key = id.toLowerCase();
+  const was = _known.get(key)?.row;
+  const row: ReminderRow = was
+    ? { ...was, state, resolution }
+    : { id: key, title: "", kind: "action", state, resolution, fire_at: null, tz: null };
+  noteReminder(row, "receipt");
+}
+
+const RECEIPT_TOOLS: ReadonlySet<string> = new Set([
+  "resolve_reminder", "reopen_reminder", "reschedule_reminder", "promote_reminder", "update_reminder",
+]);
+
+/**
+ * The reminder that a tool receipt says changed, or null. The receipt prints
+ * `reminder_id: <uuid>` and, but for `promote_reminder`, a line
+ * `state <word> · kind <word>` (`writes.py::_reminder_receipt`). A promote
+ * ends the reminder as done with the resolution `promoted`.
+ */
+export function reminderFromReceipt(
+  tool: string,
+  result: string,
+): { id: string; state: string; resolution: string | null } | null {
+  if (!RECEIPT_TOOLS.has(tool)) return null;
+  const id = result.match(/^\s*reminder_id:\s*([0-9a-f-]{36})\s*$/im)?.[1];
+  if (!id || !UUID_RE.test(id)) return null;
+  if (tool === "promote_reminder") return { id: id.toLowerCase(), state: "done", resolution: "promoted" };
+  const state = result.match(/^\s*state\s+([a-z_]+)\s*·/im)?.[1];
+  if (!state) return null;
+  const resolution = tool === "resolve_reminder" && (state === "done" || state === "dropped") ? state : null;
+  return { id: id.toLowerCase(), state, resolution };
+}
+
+/** Write the state that a tool receipt reports into the store. True when it wrote one. */
+export function noteReminderReceipt(tool: string, result: string): boolean {
+  const changed = reminderFromReceipt(tool, result);
+  if (!changed) return false;
+  noteReminderState(changed.id, changed.state, changed.resolution);
+  return true;
+}
+
+/** The reminder a 409 names as closed, from its words, or null. */
+function closedStateOf409(detail: string | null): string | null {
+  return detail?.match(/^This reminder is closed \(([a-z_]+)\)/)?.[1] ?? null;
 }
 
 /** The newest row of a reminder that this page knows, read once. */
@@ -227,7 +310,7 @@ export function isReopenable(state: string | null | undefined, resolution: strin
  */
 export function reminderFactsShown(known: KnownReminder | null): boolean {
   if (!known) return true;
-  return known.via !== "chip" || isOpenReminder(known.row.state);
+  return known.via === "open" || isOpenReminder(known.row.state);
 }
 
 // ── The chips ────────────────────────────────────────────────────────────────
@@ -328,6 +411,11 @@ export async function runReminderAct(
       noteReminder(row, "chip");
       return { ok: true, row };
     }
+    // A 409 that says the reminder is closed: the model or another tab closed
+    // it. Keep the state, so the card draws no chip that can only fail again.
+    const detail = body && typeof body === "object" ? str((body as Record<string, unknown>).detail) : null;
+    const closedState = res.status === 409 ? closedStateOf409(detail) : null;
+    if (closedState) noteReminderState(id, closedState, null);
     return { ok: false, words: refusalWords(res.status, body) };
   } catch {
     return { ok: false, words: "Metorite could not reach the server. Check the connection, then try again." };

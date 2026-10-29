@@ -34,6 +34,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { TEMPLATE_REGISTRY } from "@/components/genUITemplates";
 import {
+  BRIEF_HOLD_MS,
   __resetAssistantForTests,
   assistantState,
   closeAssistant,
@@ -43,6 +44,11 @@ import {
 import {
   LATER_TURN,
   REMINDER_CHIPS,
+  REMINDER_HOLD_MS,
+  isOpenFailure,
+  noteReminderReceipt,
+  openFailureWords,
+  reminderFromReceipt,
   TASK_TURN,
   __resetReminderOpenForTests,
   actOfWords,
@@ -145,10 +151,41 @@ describe("the open sends the id alone, and the server builds every word", () => 
       context: { label: "Reminder · Get a haircut", facts: [`reminder_id: ${RID}`, "Title: «Get a haircut»"] },
     });
     expect(reminderOpenPath("a/b")).toBe("/api/chat/sessions/a%2Fb/reminder-open");
-    for (const reply of [[204, null], [404, { detail: "Reminder not found" }], [200, { posted: true }]] as Array<[number, unknown]>) {
-      expect(await requestReminderOpen("c1", RID, fakeFetch(reply).impl)).toBeNull();
-    }
-    expect(await requestReminderOpen("c1", RID, (async () => { throw new Error("offline"); }) as typeof fetch)).toBeNull();
+    // A 204 is a shared room: nothing is wrong, and nothing shows.
+    expect(await requestReminderOpen("c1", RID, fakeFetch([204, null]).impl)).toBeNull();
+  });
+
+  it("a failed open says so, and the chat does not stay blank", async () => {
+    const down = { failed: true, gone: false } as const;
+    expect(await requestReminderOpen("c1", RID, fakeFetch([503, { error: "down" }]).impl)).toEqual(down);
+    expect(await requestReminderOpen("c1", RID, fakeFetch([200, { posted: true }]).impl)).toEqual(down);
+    expect(await requestReminderOpen("c1", RID, (async () => { throw new Error("offline"); }) as typeof fetch)).toEqual(down);
+    expect(isOpenFailure(down)).toBe(true);
+    expect(isOpenFailure(null)).toBe(false);
+    expect(openFailureWords(down)).toBe("Metorite could not open this reminder. Tap the link again.");
+    // The dock puts the words in its one notice, and keeps nothing else of the open.
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toContain("setNotice(openFailureWords(opened));");
+    expect(dock.indexOf("isOpenFailure(opened)")).toBeLessThan(dock.indexOf("noteReminder(opened.reminder"));
+  });
+
+  it("a 404 open says the reminder is not the member's, or is gone", async () => {
+    const got = await requestReminderOpen("c1", RID, fakeFetch([404, { detail: "Reminder not found" }]).impl);
+    expect(got).toEqual({ failed: true, gone: true });
+    expect(isOpenFailure(got) ? openFailureWords(got) : "").toBe("This reminder is not yours, or it no longer exists.");
+  });
+
+  it("a late open still shows the card: the hold lasts as long as the BFF waits", () => {
+    expect(REMINDER_HOLD_MS).toBeGreaterThan(15_000);
+    expect(REMINDER_HOLD_MS).toBeGreaterThan(BRIEF_HOLD_MS);
+    const route = read("app/api/chat/sessions/[sessionId]/reminder-open/route.ts");
+    expect(route).toContain("AbortSignal.timeout(15_000)");
+    const dock = read("lib/shell/AssistantDock.tsx");
+    const open = dock.indexOf("requestReminderOpen(");
+    // The reminder's own timer is the long one, and the brief keeps the short one.
+    expect(dock.lastIndexOf("setTimeout(release, REMINDER_HOLD_MS);", open)).toBeGreaterThan(-1);
+    expect(dock.slice(open - 400, open)).not.toContain("BRIEF_HOLD_MS");
+    expect(dock.slice(open)).toContain("setTimeout(release, BRIEF_HOLD_MS);");
   });
 
   it("the BFF route sends the gateway the id alone", () => {
@@ -280,6 +317,48 @@ describe("the chips", () => {
     expect(actOfWords("Something else")).toBeNull();
   });
 
+  it("a receipt of a tool that closed the reminder moves the store row, and the card has no chips", () => {
+    // The text of `writes.py::_reminder_receipt`, after `resolve_reminder`.
+    const receipt = [
+      "Done: «Get a haircut» at 15:00 today (Asia/Kolkata).",
+      "  state done · kind action · private, yours. A reminder, not a task.",
+      `  reminder_id: ${RID}`,
+    ].join("\n");
+    noteReminder(ROW, "open");
+    expect(reminderFromReceipt("resolve_reminder", receipt)).toEqual({ id: RID, state: "done", resolution: "done" });
+    expect(reminderFromReceipt("resolve_reminder", receipt.replace("state done", "state dropped"))?.resolution).toBe("dropped");
+    expect(reminderFromReceipt("reopen_reminder", receipt.replace("state done", "state due"))).toEqual({ id: RID, state: "due", resolution: null });
+    expect(reminderFromReceipt("list_reminders", receipt)).toBeNull();
+    expect(reminderFromReceipt("resolve_reminder", "answer is done or drop.")).toBeNull();
+    // The promote prints no state line. It ends the reminder as promoted.
+    const promoted = `Made a private task from «Get a haircut».\n  full_id: ${RID}\n  reminder_id: ${RID}`;
+    expect(reminderFromReceipt("promote_reminder", promoted)).toEqual({ id: RID, state: "done", resolution: "promoted" });
+
+    expect(noteReminderReceipt("resolve_reminder", receipt)).toBe(true);
+    const known = knownReminder(RID)!;
+    expect(known.row.state).toBe("done");
+    expect(known.row.title).toBe("Get a haircut");
+    expect(reminderActs({ state: known.row.state, resolution: known.row.resolution, via: known.via })).toEqual([]);
+    expect(reminderFactsShown(known)).toBe(false);
+    // The card draws from the store, and the receipt card writes to it.
+    expect(read("components/genUITemplates.tsx")).toContain("reminderActs({ state, resolution, via: known?.via })");
+    const cards = read("components/projects/ProjectToolCards.tsx");
+    expect(cards).toContain("noteReminderReceipt(e.name, result);");
+  });
+
+  it("a 409 that says the reminder is closed hides the chips", async () => {
+    noteReminder(ROW, "open");
+    const closed = await runReminderAct(RID, "drop", fakeFetch([409, { detail: "This reminder is closed (done). It cannot change." }]).impl);
+    expect(closed.ok).toBe(false);
+    const known = knownReminder(RID)!;
+    expect(known.row.state).toBe("done");
+    expect(reminderActs({ state: known.row.state, resolution: known.row.resolution, via: known.via })).toEqual([]);
+    // Another 409 (not a closed one) leaves the row as it was.
+    noteReminder(ROW, "open");
+    await runReminderAct(RID, "undo", fakeFetch([409, { detail: "Only a reminder that is done or dropped can reopen. This one is due" }]).impl);
+    expect(knownReminder(RID)?.row.state).toBe("due");
+  });
+
   it("a refusal says what happened, never a raw status", async () => {
     const closed = await runReminderAct(RID, "done", fakeFetch([409, { detail: "This reminder is closed (done). It cannot change." }]).impl);
     expect(closed).toEqual({ ok: false, words: "This reminder is closed (done). It cannot change." });
@@ -289,6 +368,7 @@ describe("the chips", () => {
     expect(down.ok ? "" : down.words).toBe("Metorite could not save your answer. Try again.");
     const bad = await runReminderAct("not-a-uuid", "done", fakeFetch().impl);
     expect(bad.ok).toBe(false);
-    expect(knownReminder(RID)).toBeNull();
+    // Only the closed 409 changed the store, and it kept the state it named.
+    expect(knownReminder(RID)?.row.state).toBe("done");
   });
 });
