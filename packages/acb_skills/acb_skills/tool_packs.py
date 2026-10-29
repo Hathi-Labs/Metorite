@@ -408,7 +408,7 @@ No Projects agent exists to hand a task to.
 - A private task is create_personal_task, in the member's own personal
   project. For "remind me", "my own task" or "a private task", call it at
   once. Do not ask which project. A new task with no project named and no
-  open project in the context is private too. In the Tasks or Calendar
+  open project in the context is private too. In the My Tasks or Calendar
   app, a new task with no project named is private. So is one made
   from a mail, a call or a chat. Call it at once there. Do not ask which
   project. The member's own triage is set_my_overlay, and it never touches the

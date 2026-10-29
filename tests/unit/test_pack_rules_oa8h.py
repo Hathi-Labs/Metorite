@@ -19,7 +19,7 @@ def _flat(text: str) -> str:
 def test_a_task_in_the_tasks_or_calendar_app_is_private() -> None:
     """Mutation: drop the sentence, or write "ask which project" -> red."""
     rules = _flat(tp._PROJECTS_RULES)
-    assert ("In the Tasks or Calendar app, a new task with no project named is private."
+    assert ("In the My Tasks or Calendar app, a new task with no project named is private."
             in rules)
 
 
