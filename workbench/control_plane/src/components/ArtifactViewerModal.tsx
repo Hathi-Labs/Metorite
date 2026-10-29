@@ -641,9 +641,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
               </>
             )}
           </div>
-          <Button variant="ghost" size="none" radius="keep" layout="" onClick={onClose} title="Close" aria-label="Close" className="order-2 shrink-0 rounded p-1 text-lg leading-none sm:order-3">
-            ×
-          </Button>
+          <Button variant="ghost" size="icon-xs" icon="X" layout="" onClick={onClose} title="Close" aria-label={`Close ${entry.name}`} className="order-2 shrink-0 text-muted-foreground hover:text-foreground sm:order-3" />
         </div>
 
         {/* Body — pb-safe keeps content above iOS home indicator */}

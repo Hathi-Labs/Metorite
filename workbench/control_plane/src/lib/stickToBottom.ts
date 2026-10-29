@@ -61,6 +61,15 @@ export function nearAfterScroll(wasNear: boolean, prevScrollTop: number, el: Scr
   return wasNear || isNearBottom(el);
 }
 
+/**
+ * Does the jump-to-bottom link show? Whenever the member is not at the
+ * bottom. An old extra test (content 200 px taller than the viewport) hid it
+ * for a member 80 to 200 px above the bottom.
+ */
+export function showJumpToBottom(near: boolean): boolean {
+  return !near;
+}
+
 /** Does a resize put the member back at the bottom? */
 export function pinOnResize(wasNearBottom: boolean, msSinceManualToggle: number): boolean {
   return wasNearBottom && msSinceManualToggle >= MANUAL_TOGGLE_QUIET_MS;
