@@ -1383,11 +1383,13 @@ def _pack_delegation_refusal(agent_name: str) -> str | None:
 
     The rule is ``tool_packs.delegation_refusal``: the chat run holds a pack
     that replaces the agent. It reads the run binding of the CALLING run,
-    never a tool argument. Never raises."""
+    never a tool argument. Never raises. Its one caller starts the hand-off
+    when the answer is None, so it asks with ``starts=True`` (WS-67 OA-8i):
+    a pack write of the owner later in this run then refuses."""
     try:
         from acb_skills.tool_packs import delegation_refusal
 
-        refused = delegation_refusal(agent_name)
+        refused = delegation_refusal(agent_name, starts=True)
     except Exception:
         return None
     if refused:

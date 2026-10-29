@@ -560,6 +560,9 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 ))
             thread = record.thread_id
             main_calls, sub_calls = ck.work_calls_of(record.events, ck.work_tool_names())
+            # OA-8i: a hand-off that the product refused ran no work. It is
+            # counted on its own, and only the hand-offs that ran are checked.
+            refused_handoffs = ck.refused_handoffs_of(record.events)
             used_calls = harness.model_calls[marks[2]:]
             obs = ck.Observation(
                 arm=arm, answer=record.answer, email_calls=ck.email_calls_of(record.events),
@@ -568,7 +571,9 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 cards=member.cards[marks[1]:], gateway=gateway.calls[marks[0]:],
                 error=record.error, turn=index + 1,
                 work_calls=main_calls, sub_work_calls=sub_calls,
-                work_writes=work.writes(marks[7]), handoffs=ck.handoffs_of(record.tool_calls),
+                work_writes=work.writes(marks[7]),
+                handoffs=ck.without(ck.handoffs_of(record.tool_calls), refused_handoffs),
+                handoffs_refused=refused_handoffs,
                 loaded=ck.loads_of(record.tool_calls),
                 owners=owners_of(sc) if arm in PACK_ARMS and sc.set != "email" else (),
                 mirror=sc.mode == "mirror",
@@ -598,6 +603,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 "set": sc.set, "surface": sc.surface,
                 "work_tools": [n for n, _, _ in [*obs.work_calls, *obs.sub_work_calls]],
                 "specialist_handoffs": {k: len(v) for k, v in obs.handoffs.items()},
+                "handoffs_refused": {k: len(v) for k, v in obs.handoffs_refused.items()},
                 "loaded_by_model": obs.loaded,
                 "handoff_reasons": {
                     owner: ck.handoff_reason(owner, obs.needs, obs.reachable)
@@ -872,9 +878,12 @@ def extra_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
         return round(sum(t["cached"] for t in ts) / prompt, 4) if prompt else None
 
     kinds: dict[str, int] = defaultdict(int)
+    refused: dict[str, int] = defaultdict(int)
     for r in rs:
         for agent, n in (r.get("specialist_handoffs") or {}).items():
             kinds[agent] += n
+        for agent, n in (r.get("handoffs_refused") or {}).items():
+            refused[agent] += n
     return {
         "app_turns": len(app),
         "layer_b_turns": len(layer_b),
@@ -888,6 +897,7 @@ def extra_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
         "cache_share_load_turns": share(loaded_turns),
         "cache_share_other_turns": share(other_turns),
         "specialist_handoffs": dict(kinds),
+        "handoffs_refused": dict(refused),
         "app_handoff_turns": app_handoff_turns(rs),
         "fanout_ms_mean": _mean(fan_ms), "fanout_ms_p90": _p90(fan_ms),
         "fanout_calls": len(fan_ms),
@@ -977,8 +987,11 @@ def stop_results(summary: dict[str, Any]) -> list[tuple[int, str, str]]:
         by = packs.get("app_handoff_turns") or {}
         total = sum(n for reasons in by.values() for n in reasons.values())
         fault = sum(reasons.get("model_choice", 0) for reasons in by.values())
+        # OA-8i: a refused hand-off ran no work, so it does not count here.
+        tried = sum((packs.get("handoffs_refused") or {}).values())
         out.append((11, "STOP" if fault else ("REVIEW" if total else "ok"),
-                    f"{total} hand-off turns on a packed app, {fault} by model choice: {by}"))
+                    f"{total} hand-off turns on a packed app, {fault} by model choice: {by}. "
+                    f"Refused hand-offs, not counted: {tried}"))
     spawn = summary.get(SPAWN_ARM)
     base = summary.get("pack")
     slow = (spawn or {}).get("research_total_median"), (base or {}).get("research_total_median")
@@ -1075,6 +1088,7 @@ def report(data: dict[str, Any]) -> str:
                 ("Cache share, turns with a model load", "cache_share_load_turns"),
                 ("Cache share, other turns", "cache_share_other_turns"),
                 ("Hand-offs to an owner", "specialist_handoffs"),
+                ("Hand-offs that the product refused", "handoffs_refused"),
                 ("Hand-off turns on a packed app, by owner and reason", "app_handoff_turns")):
             lines.append(f"| {label} | " + " | ".join(str(s[a].get(key)) for a in arms) + " |")
         lines += ["", "| Stop result of §4.3.3 | State | Why |", "|---|---|---|"]

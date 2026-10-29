@@ -31,12 +31,17 @@ and :func:`delegation_refusal` refuses a hand-off to an owner that a pack
 replaces. OA-7e adds layer (b): the meta tool ``load_skill_tools``
 (:func:`load_tool`), its :class:`LoadSkillTools` middleware and the
 :class:`LoadSkillToolsProvider` that ``_tool_injection`` puts on the view of
-the run. OA-7f adds the pack items of the turn-kind question. This module
+the run. OA-7f adds the pack items of the turn-kind question. OA-8i adds the
+guard against a second write in one turn: :class:`PackRun` records a write
+tool of a pack and a hand-off to an owner, :func:`delegation_refusal` refuses
+the hand-off after the write, and :func:`pack_write_refusal` refuses the
+write after the hand-off. This module
 never imports the orchestrator or the gateway. It reaches Redis only through
 the tenant wrapper (R5). Fences: ``tests/unit/test_tool_packs_registry.py``,
 ``tests/unit/test_pack_guards.py``, ``tests/unit/test_tool_packs_choice.py``,
-``tests/unit/test_tool_packs_off.py`` and
-``tests/unit/test_load_skill_tools.py``.
+``tests/unit/test_tool_packs_off.py``,
+``tests/unit/test_load_skill_tools.py`` and
+``tests/unit/test_pack_no_double_write.py``.
 """
 from __future__ import annotations
 
@@ -93,6 +98,7 @@ __all__ = [
     "owner_scope",
     "owner_tools",
     "pack",
+    "pack_write_refusal",
     "packs_on",
     "persona_for",
     "plan_loader",
@@ -683,6 +689,11 @@ def owner_packs(owner: str) -> tuple[str, ...]:
                  if is_pack(slug) and str(SKILL_FAMILIES[slug].get("owner")) == str(owner))
 
 
+def _pack_owners() -> frozenset[str]:
+    """The agent names that own a registered pack."""
+    return frozenset(str(SKILL_FAMILIES[slug].get("owner")) for slug in PACKS if is_pack(slug))
+
+
 def rules_for(slug: str) -> str:
     """The rules block of pack *slug*, or "" when *slug* is no pack."""
     found = pack(slug)
@@ -957,6 +968,14 @@ class PackRun:
     #: OA-7e. The packs that ``load_skill_tools`` added in this run, in load
     #: order, each with its held answer. Only :meth:`add` writes it.
     later: dict[str, bool] = field(default_factory=dict, compare=False, repr=False)
+    #: OA-8i. For each owner, the first write tool of its packs that this run
+    #: called: a tool that the risk registry does not mark read-only. The
+    #: call counts when it reaches the owner's gate, also when the member
+    #: then cancels its card. Only :meth:`write_refusal` writes it.
+    wrote: dict[str, str] = field(default_factory=dict, compare=False, repr=False)
+    #: OA-8i. The owners of a pack that a hand-off of this run reached. Only
+    #: :meth:`handoff_starts` writes it.
+    handed: set[str] = field(default_factory=set, compare=False, repr=False)
 
     @classmethod
     def of(
@@ -1005,15 +1024,65 @@ class PackRun:
         that call on the hand-off to that owner is refused too. The rule is
         the one of :meth:`of` (:func:`_refusals_for`). OA-7i: an owner in
         :attr:`via_loader` that the run does not hold in full answers
-        :data:`LOADER_HANDOFF_REFUSED`, which names the packs to load."""
+        :data:`LOADER_HANDOFF_REFUSED`, which names the packs to load.
+
+        OA-8i: when no rule above refuses, a hand-off to an owner after this
+        run called a write tool of its packs answers
+        :data:`WROTE_HANDOFF_REFUSED` (:meth:`wrote_refusal`). So the rule only
+        adds a refusal, and every answer above stays as it was."""
         name = str(agent_name or "")
         found = self.refusals.get(name)
         if not found and self.later:
             found = _refusals_for(self.holds()).get(name)
-        if found:
-            return found
-        if name in self.via_loader and name not in self.via_failed:
-            return _loader_handoff_refusal(name, self.holds())
+        if not found and name in self.via_loader and name not in self.via_failed:
+            found = _loader_handoff_refusal(name, self.holds())
+        return found or self.wrote_refusal(name)
+
+    def wrote_refusal(self, agent_name: str) -> str | None:
+        """OA-8i. The answer to a hand-off to *agent_name* after this run
+        called a write tool of a pack of that owner, or None.
+
+        A hand-off that started before the write keeps its answer. The write
+        tool refuses in that order (:meth:`write_refusal`), so the two sets
+        never both name an owner. The check of :attr:`handed` keeps the answer
+        of an ask after a hand-off ran (``call_agents_parallel`` asks again to
+        frame each answer)."""
+        name = str(agent_name or "")
+        tool = self.wrote.get(name)
+        if not tool or name in self.handed:
+            return None
+        return WROTE_HANDOFF_REFUSED.format(tool=tool)
+
+    def handoff_starts(self, agent_name: str) -> None:
+        """OA-8i. Record that a hand-off of this run to *agent_name* passed
+        its refusal and starts. Only an owner of a pack is recorded."""
+        name = str(agent_name or "")
+        if name in _pack_owners():
+            self.handed.add(name)
+
+    def write_refusal(self, owner: str, tool: str) -> str | None:
+        """OA-8i. The answer to the write tool *tool* of a pack of *owner*
+        after a hand-off to that owner started in this run, or None.
+
+        The refusal holds only while the specialist tool of the owner stays
+        in the run (the owner is not in :attr:`replaced`). Then the request
+        holds two routes to the same tools, as in OA-8e run 4. Where a pack
+        took the specialist tool away, a hand-off reaches the owner only for
+        the work of a pack that the run cannot hold (``call_agent`` after
+        :data:`LOAD_NO_PATH`, or the setup route of the email rules). A pack
+        call after it must run: OA-7i acceptance 8, and no email tool is
+        marked read-only.
+
+        With no hand-off, None records the write, so a later hand-off to the
+        owner refuses (:meth:`wrote_refusal`). The check and the record run
+        with no await between them, so of two calls in one model step, one
+        write and one hand-off, exactly one runs."""
+        name = str(owner or "")
+        if name in self.handed:
+            if name in self.replaced:
+                return None
+            return HANDED_WRITE_REFUSED.format(tool=tool)
+        self.wrote.setdefault(name, str(tool))
         return None
 
     def add(self, slug: str, held: bool) -> None:
@@ -1531,7 +1600,9 @@ def _rules_block(
     return block
 
 
-def delegation_refusal(agent_name: Any, ctx: Mapping[str, Any] | None = None) -> str | None:
+def delegation_refusal(
+    agent_name: Any, ctx: Mapping[str, Any] | None = None, *, starts: bool = False,
+) -> str | None:
     """The answer to a hand-off to *agent_name* from a run that holds every
     pack of that agent, or None.
 
@@ -1550,6 +1621,15 @@ def delegation_refusal(agent_name: Any, ctx: Mapping[str, Any] | None = None) ->
     OA-7e: a load in the middle of the turn can complete the packs of an
     owner (``email-setup`` after ``email``). From that call on, the hand-off
     to the owner is refused in this run too (:meth:`PackRun.refusal`).
+
+    OA-8i: after a write tool of a pack of the owner ran in this run, the
+    hand-off answers :data:`WROTE_HANDOFF_REFUSED`. *starts* is True at a
+    seam that starts the hand-off when the answer is None: the streaming
+    seam, ``call_agent`` and each branch of ``call_agents_parallel``. Then a
+    None answer records the hand-off on the record
+    (:meth:`PackRun.handoff_starts`), with no await between the answer and
+    the record. The ask after a fan-out, which only frames an answer, passes
+    no *starts*.
     """
     if ctx is None:
         try:
@@ -1561,7 +1641,52 @@ def delegation_refusal(agent_name: Any, ctx: Mapping[str, Any] | None = None) ->
     run = (ctx or {}).get(PACKS_KEY)
     if not isinstance(run, PackRun):
         return None
-    return run.refusal(str(agent_name or ""))
+    name = str(agent_name or "")
+    refused = run.refusal(name)
+    if refused is None and starts:
+        run.handoff_starts(name)
+    elif starts and refused is not None and refused == run.wrote_refusal(name):
+        _log.info("tool_packs.handoff_after_write_refused", owner=name, tool=run.wrote.get(name))
+    return refused
+
+
+def pack_write_refusal(
+    owner: Any, tool: Any, ctx: Mapping[str, Any] | None = None,
+) -> str | None:
+    """OA-8i. The answer to a call of the pack tool *tool* of *owner*, or None.
+
+    THE one rule against a second write in one turn, on the side of the pack
+    call (``_tool_injection._pack_call``). A tool that the risk registry marks
+    read-only is never refused and never recorded. The test is
+    ``subagent_contract.annotated_read_only``, the one that OA-9c reads, and a
+    tool with no entry counts as a write. A write tool after a hand-off to
+    *owner* started in this run answers :data:`HANDED_WRITE_REFUSED`, while
+    the specialist tool of *owner* stays in the run
+    (:meth:`PackRun.write_refusal`). Else the write is recorded, and a later
+    hand-off to *owner* in this run refuses (:meth:`PackRun.wrote_refusal`).
+    A run with no record (the flag is off, a child of a spawn) gets None and
+    records nothing. Never raises.
+    """
+    try:
+        from acb_skills.subagent_contract import annotated_read_only
+
+        name = str(tool or "")
+        if annotated_read_only(name):
+            return None
+        if ctx is None:
+            from acb_skills.write_artifact import artifact_context
+
+            ctx = artifact_context()
+        run = (ctx or {}).get(PACKS_KEY)
+        if not isinstance(run, PackRun):
+            return None
+        refused = run.write_refusal(str(owner or ""), name)
+    except Exception as exc:  # the guard only refuses, so a fault refuses nothing
+        _log.warning("tool_packs.write_check_failed", error=type(exc).__name__)
+        return None
+    if refused is not None:
+        _log.info("tool_packs.write_after_handoff_refused", owner=str(owner or ""), tool=name)
+    return refused
 
 
 # ── OA-7e: layer (b), the meta tool ``load_skill_tools`` (§4.2.2) ───────────
@@ -1649,6 +1774,26 @@ LOAD_NO_PATH = (
     "agent_name \"{owner}\" and the task. That hand-off is open now. If "
     "spawn_subagents is in your tools, you may call it with a job that names "
     "the pack \"{slug}\"."
+)
+#: OA-8i. The answer to a hand-off to an owner after this run called a write
+#: tool of a pack of that owner. OA-8e run 4 (``mix_task_from_mail``): the
+#: one assistant made a task with its own tool, then handed the same task to
+#: the specialist, which made it again. Like the other refusals, it names no
+#: other assistant.
+WROTE_HANDOFF_REFUSED = (
+    "Not run. In this turn you already did this work with your own tool "
+    "{tool}. A hand-off would do it a second time. Tell the member the result "
+    "of {tool}. If the member cancelled its card, tell the member that "
+    "nothing changed, and do not try again. If the member also asked for "
+    "work that your tools cannot do, ask the member to send it in a new "
+    "message."
+)
+#: OA-8i. The answer of a write tool of a pack after a hand-off to the owner
+#: of the pack started in this run.
+HANDED_WRITE_REFUSED = (
+    "Not run. In this turn a hand-off already has this work, so {tool} would "
+    "do it a second time. Tell the member the result of the hand-off. If "
+    "that result does not cover this step, hand this step over the same way."
 )
 
 #: Builds ONE pack for ONE run: ``_tool_injection._pack_tools`` with the run
