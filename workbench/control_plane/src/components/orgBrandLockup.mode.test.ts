@@ -113,7 +113,7 @@ describe("with no logo, the comet", () => {
   });
 
   it("follows a pinned mode, for the Settings preview", () => {
-    expect(out({ compact: true, height: 24, mode: "light" })).toContain("[stop-color:#07133c]");
+    expect(out({ compact: true, height: 24, mode: "light" })).toContain("[fill:#000000]");
     expect(out({ compact: true, height: 24, mode: "light" })).not.toContain("[.light_&amp;]");
   });
 });
