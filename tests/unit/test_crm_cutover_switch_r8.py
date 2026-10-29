@@ -73,6 +73,7 @@ from tests.unit.test_crm_reset_r8 import (  # noqa: F401
 from tests.unit.test_crm_sync_engine_r8 import (  # noqa: F401
     ZOHO_A,
     _import_hidden,
+    _make_due_for_reconcile,
     ns,
     seed_basic,
     stamp,
@@ -1674,3 +1675,126 @@ async def test_deals_that_wait_for_their_contacts_block_unless_left_out(
     assert left.status_code == 200, left.text
     assert left.json()["status"] == "switched"
     assert _settings(p, p.org_a).mode == "native"
+
+
+# ── Round 5: the final run's budget, Leave out, the delete check ────────────
+
+
+def _paced_day(p: Any, credits: int) -> None:
+    """One row that stands for the paced runs of the last 24 hours."""
+    with p.admin_engine.begin() as c:
+        conn = c.execute(text(
+            "SELECT id FROM integration_connections WHERE organization_id = "
+            "CAST(:o AS uuid) LIMIT 1"), {"o": p.org_a}).scalar()
+        c.execute(text(
+            "INSERT INTO crm_sync_runs (organization_id, connection_id, kind, status, "
+            "started_at, finished_at, heartbeat_at, counts, credits_used) VALUES "
+            "(CAST(:o AS uuid), :c, 'incremental', 'ok', now() - interval '3 hours', "
+            "now() - interval '3 hours', now() - interval '3 hours', '{}'::jsonb, :n)"),
+            {"o": p.org_a, "c": conn, "n": credits})
+
+
+async def test_the_final_run_has_its_own_budget_after_a_paced_day(nsc, app_engine) -> None:  # noqa: F811
+    """Round 5, P2. An org at the 500-credit floor whose paced runs spent the
+    whole daily budget in the last 24 hours. A scheduled run now stops at
+    once on ``budget``. The final sync has its own budget, one day's share,
+    so it completes. A second final sync in the same 24 hours gets only what
+    is left of that share. ``CREDITS_FLOOR`` still stops a final sync when
+    Zoho reports few credits left."""
+    from gateway.crm_sync import engine
+
+    _assert_non_priv(app_engine)
+    p = nsc
+    seed_basic(ZOHO_A, "a")
+    await _connect_engine(p, p.org_a, ZOHO_A)
+    assert (await engine.run_org(p.org_a)).status == "ok"
+    _paced_day(p, engine.DAILY_CREDIT_BUDGET)
+    scheduled = await engine.run_org(p.org_a)
+    assert (scheduled.status, scheduled.error) == ("stopped", "budget"), scheduled
+    handle = await engine.acquire(p.org_a, final=True)
+    assert handle.credit_budget == engine.DAILY_CREDIT_BUDGET
+    assert handle.counts[engine.RUN_FINAL_KEY]["budget"] == engine.DAILY_CREDIT_BUDGET
+    final = await engine.execute(handle)
+    assert (final.status, final.error) == ("ok", None)
+    assert 0 < final.credits_used <= engine.DAILY_CREDIT_BUDGET
+    # Every key is read. The fake answers no roles read, so its one deal waits.
+    assert set(await _final_state(p, final.run_id)) <= {"deal_contacts"}
+    # One day's share once: the next final sync gets what is left of it.
+    again = await engine.acquire(p.org_a, final=True)
+    assert again.credit_budget == engine.DAILY_CREDIT_BUDGET - final.credits_used
+    # Zoho reports few credits left after the first read: the floor stops it.
+    ZOHO_A.low_credits.add("Accounts")
+    floored = await engine.execute(again)
+    assert (floored.status, floored.error) == ("stopped", "budget")
+
+
+async def test_a_left_out_offset_paged_key_is_not_walked(nsc, app_engine) -> None:  # noqa: F811
+    """Round 5, P3-2. Accounts pages by offset, and its walk stops each final
+    sync on ``budget`` (here: Zoho reports few credits on each Accounts
+    read). The admin ticks Companies in Leave out. Phase 1 passes the tick to
+    ``engine.acquire(final=True)``, so the final sync treats the key as held:
+    it neither walks nor reads Accounts, and the switch completes."""
+    from gateway.crm_sync import engine
+
+    _assert_non_priv(app_engine)
+    p = nsc
+    await _import_hidden(p)
+    ZOHO_A.low_credits.add("Accounts")
+    blocked = await engine.execute(await engine.acquire(p.org_a, final=True))
+    assert (blocked.status, blocked.error) == ("stopped", "budget")
+    reads = ZOHO_A.reads.get("Accounts", 0)
+    admin = _admin(p.org_a)
+    start = await _request(p, admin, "POST", "/crm/cutover/start",
+                           {"confirm": "SWITCH", "leave_out": ["organizations"]})
+    assert start.status_code == 202, start.text
+    (handle,) = p.final_runs
+    assert "organizations" in handle.final_skip and "company" not in handle.reconcile
+    final = await engine.execute(handle)
+    assert (final.status, final.error) == ("ok", None)
+    assert ZOHO_A.reads.get("Accounts", 0) == reads, "the final sync read Accounts"
+    r = await _request(p, admin, "POST", "/crm/cutover", {
+        "confirm": "SWITCH", "run_id": final.run_id, "leave_out": ["organizations"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "switched"
+
+
+async def test_a_refused_delete_check_does_not_block_the_switch(nsc, app_engine) -> None:  # noqa: F811
+    """Round 5, P3-3. Zoho gives no count, so the delete check of the final
+    walk refuses to delete (``count_unknown``) and counts ``refused``. The
+    read itself is complete, and D133 keeps the records that Zoho deletes.
+    So phase 2 finds every key read, the row stays, and the switch goes on.
+    The run log keeps the warning."""
+    from gateway.crm_sync import engine
+
+    _assert_non_priv(app_engine)
+    p = nsc
+    await _import_hidden(p, 5)
+    ZOHO_A.drop("Accounts", "Aa5", tombstone=False)
+    ZOHO_A.no_count = True
+    _make_due_for_reconcile(p)
+    assert (await engine.run_org(p.org_a)).status == "ok"  # the first strike
+    final = await engine.execute(await engine.acquire(p.org_a, final=True))
+    assert final.status == "ok"
+    assert final.counts["organizations"]["refused"] == 1
+    assert await _final_state(p, final.run_id) == {}
+    r = await _request(p, _admin(p.org_a), "POST", "/crm/cutover",
+                       {"confirm": "SWITCH", "run_id": final.run_id})
+    assert r.status_code == 200, r.text
+    assert _company_name(p, "Aa5") == "Co-5"
+
+
+def test_roles_waiting_counts_the_queue_only() -> None:
+    """Round 5, P3-1. ``deal_contacts.skipped`` also counts a deal dropped
+    after three failed reads and a deal deleted since. Neither waits, so the
+    count is the length of the queue only."""
+    from types import SimpleNamespace
+
+    from gateway.crm_sync import engine
+    from gateway.routes.crm import cutover
+
+    run = SimpleNamespace(counts={"deal_contacts": {"skipped": 5}})
+    empty = {engine.ROLES_MODULE: SimpleNamespace(state={"pending": []})}
+    queued = {engine.ROLES_MODULE: SimpleNamespace(state={"pending": ["d1", "d2"]})}
+    assert cutover.roles_waiting(run, empty) == 0
+    assert cutover.roles_waiting(run, {}) == 0
+    assert cutover.roles_waiting(run, queued) == 2

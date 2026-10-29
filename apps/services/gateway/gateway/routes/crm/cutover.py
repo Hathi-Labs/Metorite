@@ -27,9 +27,11 @@ key, the count is ``None`` and the card shows a dash.
 call the same function. A count key is not complete when it is held
 (CRM-Q16), unavailable (CRM-Q15) in its cursor or in the run, still importing
 (``in_progress``), has records to retry (the cursor's ``failed`` map), reads
-short (``sync.short_reads``), or the run counted ``failed`` or ``refused``
-for it. The run is the newest good run, or the final run in phase 2. The
-switch waits for such a key unless the admin leaves it out (D133).
+short (``sync.short_reads``), or the run counted ``failed`` for it. The run
+is the newest good run, or the final run in phase 2. The switch waits for
+such a key unless the admin leaves it out (D133). Round 5: a ``refused``
+count no longer waits. Only the delete check of a walk counts it, after a
+complete read, and D133 keeps the records that Zoho deletes.
 
 ⚠️ **Phase 2 also needs the final run to have READ each key** (reason
 ``not_read``, review P1, verifier P3-1, round 4). The rule takes each key
@@ -45,8 +47,7 @@ module that waits for its fields (``fields_pending``) is not read either.
 ⚠️ **Phase 2 also waits for the contacts of the deals** (``deal_contacts``,
 reason ``roles_waiting``, round 4). The roles step reads one deal for each
 credit and stops at ``engine.ROLES_RESERVE``. While deals wait in its queue,
-or the final run counts ``deal_contacts.skipped``, phase 2 answers 409 with
-a row that says how many. After the switch no run reads them, so the admin
+phase 2 answers 409 with a row that says how many. After the switch no run reads them, so the admin
 waits for more syncs or leaves them out. The preview and phase 1 apply
 neither rule, but phase 1 takes such a Leave out tick.
 
@@ -488,11 +489,12 @@ async def module_state(
     """Each count key that is not complete, with its reason. THE one rule.
 
     The preview and both POST routes call it. ``run`` is the run whose counts
-    decide ``failed``, ``refused`` and a run's ``unavailable``: the final run
-    in phase 2, else the newest good run. A key with two reasons gets the
-    first of: held, unavailable, importing, failed, short, refused, not_read.
-    ``final`` is phase 2 only, and it adds ``not_read`` (:func:`_not_read`).
-    It reads and writes nothing else.
+    decide ``failed`` and a run's ``unavailable``: the final run in phase 2,
+    else the newest good run. A key with two reasons gets the first of:
+    held, unavailable, importing, failed, short, not_read, roles_waiting.
+    ``final`` is phase 2 only, and it adds ``not_read`` (:func:`_not_read`)
+    and ``roles_waiting`` (:func:`roles_waiting`). It reads and writes
+    nothing else.
     """
     from gateway.crm_sync import engine, holds, runs
     from gateway.routes.crm.sync import short_reads
@@ -527,7 +529,9 @@ async def module_state(
         ("failed", [k for k, s in states if s.get("failed")]),
         ("failed", [k for k, c in counts if c.get("failed", 0) > 0]),
         ("short", short),
-        ("refused", [k for k, c in counts if c.get("refused", 0) > 0]),
+        # Round 5 (P3-3): no "refused" here. Only the delete check of a walk
+        # counts it, after a complete read: it kept rows that Zoho may have
+        # deleted, and D133 keeps such records. The run log keeps the warning.
         ("not_read", not_read),
         ("roles_waiting", roles),
     ):
@@ -614,15 +618,16 @@ def roles_waiting(run: Any, cursors: dict[str, Any]) -> int:
     """Phase 2: the deals that still wait for their contacts from Zoho
     (round 4, P2-3). The roles step reads one deal for each credit, and it
     stops at ``engine.ROLES_RESERVE``. The rest wait in the queue of
-    ``engine.ROLES_MODULE``, and the final run counts them ``skipped`` under
-    ``deal_contacts``. After the switch no run reads them, so such a deal
-    keeps no linked contacts from Zoho."""
+    ``engine.ROLES_MODULE``. After the switch no run reads them, so such a
+    deal keeps no linked contacts from Zoho.
+
+    Round 5: the queue only. ``deal_contacts.skipped`` also counts a deal
+    dropped after three failed reads and a deal deleted since, and neither
+    waits. A deal that the budget skipped stays in the queue."""
     from gateway.crm_sync import engine
 
     queue = cursors.get(engine.ROLES_MODULE)
-    pending = len((queue.state or {}).get("pending") or ()) if queue is not None else 0
-    skipped = _step((run.counts or {}).get(ROLES_KEY)).get("skipped", 0)
-    return pending or skipped
+    return len((queue.state or {}).get("pending") or ()) if queue is not None else 0
 
 
 async def _profile_modules(db: Any, org: str) -> Any:
@@ -1083,7 +1088,8 @@ async def start_cutover(
         await _check_keys(db, org, leave_out)
     try:
         # The final sync: each module now, with no wait of an hour (round 3).
-        handle = await engine.acquire(org, final=True)
+        # Round 5: the final sync skips the keys that the admin left out.
+        handle = await engine.acquire(org, final=True, leave_out=leave_out)
     except runs.SyncRunning as exc:
         raise _refuse(
             409, "sync_running", "A sync runs now. Wait for it to finish.",
