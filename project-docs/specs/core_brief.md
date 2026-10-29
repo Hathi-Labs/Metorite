@@ -1,18 +1,21 @@
 # Core brief — the 07:30 brief, the 18:30 close-out, and silence between
 
-**Status: PROPOSED, 2026-10-28.** Verified against code on 2026-10-28, at
-`origin/main` `bd0efea9c`.
+**Status: ACTIVE, BR-2a-1 BUILT 2026-10-29 (dark).** Verified against code
+on 2026-10-28, at `origin/main` `bd0efea9c`.
 
-Four slices are built and dark. BR-1a is the job queue
+Five slices are built and dark. BR-1a is the job queue
 (`docs/job_queue.md`). BR-1b-a is its detached mode and `jobs.prune`
 (Metorite #642). AUTO-2 is the ledger of unattended runs (Metorite #814).
-Nothing else in this spec is built.
 
 **BR-4 slice 1 BUILT 2026-10-28** (migration 315, `gateway/brief/store.py`,
 dark, no producer). The member purge deletes the runs of the member.
 
-The owner answered §9 on 2026-10-29 (epic #479). The answers replace the
-RECOMMENDED defaults, and the BR-2a-1 PR writes them into §9.
+**BR-2a-1 BUILT 2026-10-29** (Metorite #583): the planner, the gather and
+the template lead, in `gateway/brief/{flags,planner,gather,run}.py`, behind
+`BRIEF_ENABLED` and `BRIEF_ORGS` (both OFF). The seed hooks of
+`docs/job_queue.md` §5c carry the 15-minute planner. The prune hook keeps 90
+days. No model call, no send, no UI. The owner answered §9 on 2026-10-29
+(epic #479), and this slice wrote the answers into §9.
 
 **Board.** Workstream **WS-BRIEF** (`work_plan.md` §2.1). Metorite epic
 **#479**, items BR-2a to BR-7b. AUTO-2 is Metorite **#814**.
@@ -369,19 +372,33 @@ lists each act path that writes no `audit_event` row. Each one is a finding.
 
 ---
 
-## 9. Open questions for the owner
+## 9. The owner's decisions
 
-Each answer below is a recommendation, not a decision. Product shape is the owner's call.
+The owner decided Q1 to Q6 on 2026-10-29 (epic #479). Q7 stays a
+recommendation.
+
+| # | Question | DECIDED 2026-10-29 |
+|---|---|---|
+| Q1 | Who gets a brief? | Every active member of the org, with an opt-out. The eligible set is the active members minus the members who turned the brief off |
+| Q2 | Which surfaces in v1? | My Day and the chat's first turn. No bell entry |
+| Q3 | The credit budget for each brief? | 2 model calls a day at most for each member. With no credit, the template brief |
+| Q4 | What may interrupt? | The five rules of §6 |
+| Q5 | Fixed times, or the member's? | 07:30 and 18:30 in the member's zone by default. Each member can change both. The brief stores three preferences (`enabled`, `brief_time`, `closeout_time`) through `acb_common.assistant_profile.app_prefs`, and a later slice adds the settings UI |
+| Q6 | How long to keep a brief? | 90 days. The prune hook of `brief/run.py` deletes older runs |
 
 | # | Question | RECOMMENDED |
 |---|---|---|
-| Q1 | Who gets a brief? | Org admins on by default. Every other member opts in |
-| Q2 | Which surfaces in v1? | My Day and the chat's first turn. No bell entry |
-| Q3 | The credit budget for each brief? | 2 calls a day at most. With no credit, the template brief |
-| Q4 | What may interrupt? | The five rules of §6 |
-| Q5 | Fixed times, or the member's? | 07:30 and 18:30 by default. The member can change both in My Profile |
-| Q6 | How long to keep a brief? | 90 days |
 | Q7 | Outside the app, when? | Web push after BR-2d meets its target for one week |
+
+### 9.1 Gaps that the BR-2a-1 audit found
+
+1. **The 15-minute seed.** §4.1 names a planner every 15 minutes, and no
+   recurring seam existed: only `jobs.prune` was seeded, once a day. BR-2a-1
+   added `worker.seed_hooks` (`docs/job_queue.md` §5c), one additive list
+   beside the prune seed, and started no second loop.
+2. **The admin source.** The RECOMMENDED Q1 named "org admins", and no spec
+   said which column held the role. Q1 as decided makes it moot: the planner
+   reads every active member from `app_user`, minus the opt-outs.
 
 ---
 
@@ -393,7 +410,7 @@ and the at-most-once rule needs AUTO-2's `UNATTENDED_LEDGER`.
 | # | Slice | Needs | Flag | Gate |
 |---|---|---|---|---|
 | 1 | BR-4: the two tables and the store module | BR-1a | none | AGENT-SAFE |
-| 2 | BR-2a-1: the planner and the gather, with the template lead | 1, AUTO-2 (#814), the BR-1b detached mode (#642) | `BRIEF_ENABLED`, `BRIEF_ORGS` | AGENT-SAFE to build. The production flip: `enforcement-flip` |
+| 2 | BR-2a-1: the planner and the gather, with the template lead. **BUILT 2026-10-29, dark** | 1, AUTO-2 (#814), the BR-1b detached mode (#642) | `BRIEF_ENABLED`, `BRIEF_ORGS` | AGENT-SAFE to build. The production flip: `enforcement-flip` |
 | 3 | BR-4b: the claim fence | 2 | none | AGENT-SAFE |
 | 4 | BR-2a-2: the phrase step | 3 | `BRIEF_COMPOSE` | AGENT-SAFE to build. **OWNER-GATE** to flip in production (credits, §3a rule 3) |
 | 5 | BR-2c: in-app delivery and the read route | 2 | `BRIEF_IN_APP`, `NEXT_PUBLIC_BRIEF_CARD` | AGENT-SAFE. The production flip: `enforcement-flip` |
