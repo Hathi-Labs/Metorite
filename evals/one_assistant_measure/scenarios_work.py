@@ -412,7 +412,7 @@ FANOUT_SCENARIOS: tuple[Scenario, ...] = (
              f"The ten invoices total Rs {fanout.INVOICE_TOTAL:,}.",
              solo=tuple(("fetch_page", {"url": u}) for u in _INV)))),
     _fan("fan_tasks", "Five tasks from a list: a write, so no spawn", Turn(
-        "Make a task for each of these: brief, copy, assets, QA pass and launch",
+        "Make a task for each of these in Website Relaunch: brief, copy, assets, QA pass and launch",
         (Check("not_spawned"), Check("work_write", ("POST", r"^/projects/tasks$"), "tasks_made"),
          Check("no_unasked_write", 1)),
         Plan((("create_tasks", {"project_id": NODE_WEB, "tasks": json.dumps(
