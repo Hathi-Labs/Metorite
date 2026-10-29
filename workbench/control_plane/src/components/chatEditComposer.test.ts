@@ -55,7 +55,8 @@ describe("the edit composer is a variant of the chat composer", () => {
     const chat = readFileSync(join(__dirname, "AgentChat.tsx"), "utf8");
     // One control, Send or Stop (owner, 2026-10-12, `lib/chatSteer.ts`).
     expect(chat).toMatch(/<ChatSendButton\s+action=\{primary\}/);
-    expect(chat).toContain('disabled={primary === "send" ? !input.trim() || loadingHistory : false}');
+    // A Stop that waits for the server is disabled until it answers (UXD-4).
+    expect(chat).toContain('disabled={primary === "send" ? !input.trim() || loadingHistory : stopping}');
     expect(chat.match(/<ChatSendButton\b/g)).toHaveLength(1);
   });
 });

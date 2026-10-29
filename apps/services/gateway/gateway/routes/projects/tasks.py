@@ -757,10 +757,43 @@ async def list_tasks(
         await attach_parent_context(db, vis, page_rows)
         # WS-64 OP-8 — the app hides Delete where this is false.
         await attach_can_delete(db, user, page_rows, kind="task")
+        # #834 — the stage of each row's status. A subproject may keep its own
+        # lanes (migration 196), and the parent board knows only its own, so
+        # it files a task by this stage instead of losing it.
+        await attach_status_category(db, vis, page_rows)
         if with_overlay:
             # WS-64 OP-11 — the caller's own overlay, one query for the page.
             await attach_my_overlay(db, vis, page_rows)
         return ListResponse(rows=page_rows, total=int(total))
+
+
+#: The stage of each status on one page, in one read. The tenant is on the
+#: read beside RLS (R5).
+_STATUS_CATEGORY_SQL = (
+    "SELECT s.id, s.category FROM pm_task_statuses s"
+    " WHERE s.id = ANY(CAST(:ids AS uuid[]))"
+    "   AND s.organization_id = CAST(:vis_org AS uuid)"
+)
+
+
+async def attach_status_category(db: Any, vis: Any, rows: list[dict]) -> None:
+    """Stamp ``status_category`` on each row: the stage of its status.
+
+    A status the read cannot find leaves ``None``. The client then keeps the
+    row in a fallback column, never drops it.
+    """
+    ids = sorted({str(r["status_id"]) for r in rows if r.get("status_id")})
+    if not ids:
+        return
+    found = {
+        str(r.id): r.category
+        for r in (await db.execute(
+            text(_STATUS_CATEGORY_SQL),
+            {"ids": ids, "vis_org": vis.params.get("vis_org")},
+        )).fetchall()
+    }
+    for row in rows:
+        row["status_category"] = found.get(str(row.get("status_id") or ""))
 
 
 @router.get("/tasks/{task_id}")

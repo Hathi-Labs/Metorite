@@ -250,7 +250,8 @@ async def _email(
     # defaults, and a direct call that left one out would pass the `Query`
     # object itself. `test_shell_search.py` fails if the route gains one.
     # `hybrid` stays off: with it on, the route embeds the query, which is a
-    # model call, and §20.4 says no model runs.
+    # model call, and §20.4 says no model runs. `with_total` is off: a hit
+    # list needs no count, and the count doubled the time (WS-KG KG-3a).
     answer = await search_messages(
         q=q, account_id=None, folder="all", label=None, labels=None,
         uncategorized=False, from_addr=None, to_addr=None,
@@ -258,7 +259,7 @@ async def _email(
         received_before=None, is_read=None,
         is_starred=None, has_attachments=None, sender_category=None,
         importance=None, hybrid=False, light=True, page=1, page_size=k,
-        user=user,
+        with_total=False, user=user,
     )
     out = []
     for m in (answer.get("emails") or [])[:k]:

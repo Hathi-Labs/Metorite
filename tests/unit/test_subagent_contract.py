@@ -415,6 +415,7 @@ _CONTRACT_CALLERS = [
     "apps/services/orchestrator/orchestrator/agents.py",
     "apps/services/orchestrator/orchestrator/executor.py",
     "packages/acb_skills/acb_skills/agent_tools.py",
+    "packages/acb_skills/acb_skills/tier_policy.py",
 ]
 
 

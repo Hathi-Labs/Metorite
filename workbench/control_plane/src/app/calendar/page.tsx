@@ -7,6 +7,7 @@ import { TaskFocusModal } from "@/app/tasks/components/TaskFocusModal";
 import { SchedulePopup } from "@/app/tasks/components/SchedulePopup";
 import { DeleteConfirmModal } from "@/app/tasks/components/DeleteConfirmModal";
 import { UndoToast } from "@/app/tasks/components/UndoToast";
+import { SyncFailureToast } from "@/app/tasks/components/SyncFailureToast";
 
 /**
  * Calendar — the Personal Center app for *when* your work happens.
@@ -65,6 +66,7 @@ export default function CalendarPage() {
       <SchedulePopup />
       <DeleteConfirmModal />
       <UndoToast />
+      <SyncFailureToast />
     </div>
   );
 }

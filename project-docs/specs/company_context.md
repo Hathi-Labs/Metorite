@@ -6,7 +6,10 @@ read seam. This spec owns what goes INTO the seam: the stamp, the recency
 rule, the digest, the connectors, their health and the sweep.
 
 **Built.** CX-1 BUILT 2026-10-18 (branch `ws61-cx1-recency`, no migration).
-It is dark behind `CONTEXT_RECENCY`. CX-1b to CX-7 are not built.
+It is dark behind `CONTEXT_RECENCY`. CX-2 is SUPERSEDED by KG-1 (2026-10-28, WS-KG),
+which is built (`evals/search_company/`). KG-3a is BUILT 2026-10-28 (migration
+314, no flag), and its backfill has not run on staging or production. CX-1b,
+CX-3 to CX-7 and KG-3b are not built.
 
 **Read first.** `knowledge_base.md` §0, §6 and §20. `work_plan.md` D104 and
 D105. This spec changes neither decision. It adds the rules that make the
@@ -563,7 +566,7 @@ question to one cheap call per record version.
 
 | Flag | Default | What it opens | Gate |
 |---|---|---|---|
-| `CONTEXT_RECENCY` | off | §3, §4.1, §4.2 and §4.5 in `GET /search/company`, the stamp on its hits, and the three persona sentences of §4.3. Off gives today's output byte for byte, and `Hit.as_dict` emits no `stamp`. Default off because `COMPANY_SEARCH_ENABLED` is on in production, so a default of on would reach members with the next release | AGENT-SAFE. It spends nothing. Turn on after staging shows CX-2's eval holds |
+| `CONTEXT_RECENCY` | off | §3, §4.1, §4.2 and §4.5 in `GET /search/company`, the stamp on its hits, and the three persona sentences of §4.3. Off gives today's output byte for byte, and `Hit.as_dict` emits no `stamp`. Default off because `COMPANY_SEARCH_ENABLED` is on in production, so a default of on would reach members with the next release | AGENT-SAFE. It spends nothing. Turn on after staging shows the KG-1 eval holds |
 | `KNOWLEDGE_DISTILL` | off | §5 for Knowledge pages. Already named by `knowledge_base.md` §13 | owner, it spends credits |
 | `CHAT_DIGEST_ORGS` | empty | §8 for the named orgs. A star is every org | owner, it spends credits and reads conversations |
 | `CONNECTOR_FRESHNESS` | off | the `connector_quiet` card | AGENT-SAFE to build. MD-10's rule for the card kind |
@@ -578,14 +581,17 @@ Each ticket ships dark behind §11, on its own branch.
 |---|---|---|---|
 | **CX-1** ✅ BUILT 2026-10-18 | The stamp of §3 on every source (the task search returns `updated_at`, and the Knowledge read returns `review_at`), the decay of §4.1 in `company.py`, the review factor of §4.2 on the `GET /search/company` path only, the `after` filter of §4.5, the searched and skipped header and the stamp in the `search_company` output (§4.3), and grounding sentences 1 to 3. Behind `CONTEXT_RECENCY`. `/knowledge/search` and the command bar keep today's `fuse` | An older task with a higher rank and a newer task with a lower rank swap places when the flag turns on, so the fence proves the decay and not the existing tie-break. An old exact match still shows. A page past its review date ranks below a current page with the same text. `after` drops an older hit. The header names a skipped app. `test_shell_search.py` is unchanged and green. The flag off gives byte-identical output | AGENT-SAFE |
 | **CX-1b** | The Knowledge lexical half asks for any of the words (§4.6), and supersession (§4.4): the `superseded_by` link, its factor, the banner and the page menu act | A question with one word that is not in the page still finds the page. An exact token still ranks its page first. A replaced page ranks below its replacement and shows the banner | AGENT-SAFE |
-| **CX-2** | The eval of §9: the seed, 40 questions, the hit@5 report, as an R8 suite | The suite prints hit@5 for the seam with `CONTEXT_RECENCY` off and on, and fails when "on" scores lower than "off" | AGENT-SAFE |
+| **CX-2** ⛔ SUPERSEDED by KG-1, 2026-10-28 | The eval of §9: the seed, 40 questions, the hit@5 report, as an R8 suite. Not built. KG-1 is the eval of §9, and it has no file `test_context_eval_r8.py`. To compare "off" and "on", run KG-1 twice, once for each value of `CONTEXT_RECENCY`, and write both numbers in the pull request | Replaced. See KG-1 | AGENT-SAFE |
+| **KG-1** ✅ BUILT 2026-10-28 (WS-KG, Metorite #785, epic 783) | The retrieval eval of `GET /search/company`, in `evals/search_company/`. A synthetic set of 50 questions (10 for each of email, CRM, tasks, Knowledge and people) with gold ids from the seed. It scores recall at 5, p50 and p95 latency by nearest rank, the empty sources and the skipped sources. It has three modes: `--check`, `--fixture` (in process, R8 database) and `--live URL --as EMAIL --set PATH` (HTTP, the real set off the repo). No model runs and no embedding call goes out | `uv run python -m evals.search_company.run --fixture` prints the score and exits 0. The unit test fails when the scorer is mutated. The R8 suite fails when a source returns nothing for its 10 questions. The report holds no question text in live mode. CI runs `--check` in `skill-eval.yml` and the tests in pr-check. The baseline of the real set is a comment on epic 783 | AGENT-SAFE to build and to run on the fixture. The run on the real set reads staging only, and the set stays in `~/.metorite/evals/kg1/` |
+| **KG-3a** ✅ BUILT 2026-10-28 (WS-KG, Metorite #788, epic 783) | Email search inside the time budget of a source. Under FORCE RLS, Postgres uses a clause as an index condition only when each of its functions is LEAKPROOF. `to_tsvector` and `@@` are not, so no index served the app role, and each search parsed every body (2.5 to 5.0 s per COUNT on staging). Migration 314 adds the nullable column `email_messages.fts` and a trigger that fills it. The search reads `COALESCE(em.fts, <the expression>)` for the Email app and for company retrieval. Company retrieval skips the COUNT (`with_total=False`). `scripts/backfill_email_fts.py` fills the old rows in batches through the tenant seam. `docs/rls_and_indexes.md` holds the rule | On 20 000 rows as the NOSUPERUSER NOBYPASSRLS role, the email source answers in under 0.75 s, the median of 5 runs, and the plan tests the stored column first (`test_email_fts_column_r8.py`). The Email app gets the same rows, ranks, snippets and total with the column filled and with it NULL. The backfill is idempotent and resumable, and it stays in its org. `--fixture` exits 0 with recall 1.000. After the deploy and the backfill, the `--live` run on staging shows email above 0/10 and p50 under 1.5 s, as a comment on epic 783 | AGENT-SAFE to build. The migration ships with the nightly deploy. The backfill on staging and production is a run on the box |
+| **KG-3b** | After KG-2. Hybrid (vector) search for the sources that have none, email included. One global sort by the CX-1 score in place of the round-robin `_interleave`, behind `CONTEXT_RECENCY`. A cache of query embeddings | The KG-1 eval runs twice, once for each value of `CONTEXT_RECENCY`, and the pull request writes both numbers. A paraphrase of an email subject finds the mail. With the flag off, the output is byte-identical | AGENT-SAFE to build. An embedding spends credits, so the flip: owner |
 | **CX-3** | Knowledge digests (replaces the text of KB-8). The digest pass in `kb_index/sweep.py`, the digest rows of §5.3, the atom check, the mask and the cost card of §5.2, the cap, on `tier-fast`, and the two-list fusion of §4.6 | A published page of 400 words gets its digest rows after 10 still minutes. A question in other words, which shares no word with the body, finds the page lexically. An atom whose quote is not in the page is dropped. A draft gets no digest. An edit writes a new digest and removes the old one. With the flag off, nothing calls the model | AGENT-SAFE to build. The flip: owner |
 | **CX-4** | Session digests and the `chat` source of §8: the migration for `chat_session_digests` and the full-text index, the idle pass, the source, the skip rules | A member finds last month's decision by a question in other words. A member who is not a participant finds nothing. A `no_egress` session gets no digest | AGENT-SAFE to build. The flip: owner |
 | **CX-5** | The connector contract of §6: `last_new_at` on the connection rows, the `expected_every` table, the freshness check and the `connector_quiet` card, the freshness half of the §4.3 header, and grounding sentence 4 | A connected mailbox with no new mail for 7 days makes one card for an admin, and no second card that week | AGENT-SAFE to build. The card kind: MD-10's rule |
 | **CX-6** | Atom to proposal (§8.3), after KB-5 | A `decision` atom in a session digest offers a proposal card. Accepting it writes a draft page with the session as its origin | AGENT-SAFE |
 | **CX-7** | Sources prefer a digest's summary as the snippet (§5.3), app by app, as each app's digest ships | The email source shows the insight's summary when the message has one | AGENT-SAFE, in each app's slice |
 
-The order is CX-1 and CX-1b, CX-2, CX-3, then CX-5, CX-4, CX-6. CX-7 follows each app.
+The order is CX-1 and CX-1b, KG-1 (in place of CX-2), CX-3, then CX-5, CX-4, CX-6. CX-7 follows each app.
 
 ---
 
@@ -597,7 +603,11 @@ The order is CX-1 and CX-1b, CX-2, CX-3, then CX-5, CX-4, CX-6. CX-7 follows eac
   and the supersession factor.
 - `tests/unit/test_context_mask.py` (CX-3): the mask and the skip list.
 - `tests/unit/test_shell_search.py`: unchanged, and green.
-- `tests/unit/test_context_eval_r8.py` (CX-2): the hit@5 rule of §9.
+- `tests/unit/test_search_company_eval.py` and `test_search_company_eval_r8.py`
+  (KG-1, which supersedes CX-2): the recall rule of §9, the percentiles, the
+  empty-source report, and the route on a real database.
+- `tests/unit/test_email_fts_column_r8.py` (KG-3a): the trigger, the same
+  answer filled or NULL, the backfill, the plan and the 0.75 s budget.
 - `tests/unit/test_kb_digest.py` (CX-3): the atom check, the draft rule, the
   rewrite on change, and no model call with the flag off.
 - `tests/unit/test_company_search_sources.py`: every source, `chat`
@@ -613,10 +623,11 @@ uv run pytest tests/unit/test_company_search_recency.py tests/unit/test_kb_query
   tests/unit/test_company_search_sources.py tests/unit/test_company_search_tool.py \
   tests/unit/test_shell_search.py tests/unit/test_kb_one_index.py -q
 
-# The R8 suites and the eval (CX-2), with a real database
+# The R8 suites and the eval (KG-1, in place of CX-2), with a real database
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_company_search_r8.py tests/unit/test_kb_search_r8.py \
-  tests/unit/test_context_eval_r8.py -q
+  tests/unit/test_search_company_eval_r8.py tests/unit/test_email_fts_column_r8.py -q -p no:xdist
+uv run python -m evals.search_company.run --fixture
 
 # CX-3
 uv run pytest tests/unit/test_kb_digest.py tests/unit/test_context_mask.py -q
@@ -657,4 +668,4 @@ It changes no price and no product surface. D104 and D105 stand unchanged.
 | CQ1 | Should the digest run on `tier-fast`? | Yes. It is the cheap tier that exists |
 | CQ2 | Should session digests be on for every org? | No. Off until the owner names orgs, because they read conversations and spend credits |
 | CQ3 | On production, turn on digests before vectors? | Yes. Digests first, then vectors where the eval shows a gain |
-| CQ4 | The decay constants of §4.1 | As written, until the eval of CX-2 says otherwise |
+| CQ4 | The decay constants of §4.1 | As written, until the eval of KG-1 says otherwise |
