@@ -128,7 +128,21 @@ def reload_flags(path: Path | None = None) -> ReloadResult:
             loaded.pop(key, None)
     _state["loaded"] = loaded
     _state["at"] = datetime.now(UTC).isoformat(timespec="seconds")
+    _recheck(applied)
     return ReloadResult(applied=applied, restart=restart)
+
+
+def _recheck(applied: tuple[str, ...]) -> None:
+    """Run the start-up checks that a reloaded flag affects. A decide mode
+    turned on with no router leaves each email undecided, and only
+    ``check_decide_wiring`` says why (review round 2). It never raises."""
+    if not any("DECIDE" in key for key in applied):
+        return
+    try:
+        from gateway.routes.email.scheduler_hooks import check_decide_wiring
+        check_decide_wiring()
+    except Exception as exc:  # noqa: BLE001 - a check never fails a reload
+        _log.warning("flags.recheck_failed", error=type(exc).__name__)
 
 
 def _on_hup() -> None:

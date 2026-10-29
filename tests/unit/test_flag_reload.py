@@ -145,6 +145,22 @@ def test_settings_that_do_not_validate_change_nothing(env, monkeypatch) -> None:
     assert get_settings() is before, "a refused reload replaced the settings"
 
 
+def test_a_decide_flag_runs_the_wiring_check_again(env, monkeypatch) -> None:
+    """Review round 2. The check runs once at start, and it is the only
+    alarm for a decide mode with no router. A reload that changes a decide
+    flag runs it again, and any other reload does not."""
+    from gateway.routes.email import scheduler_hooks
+
+    ran: list[int] = []
+    monkeypatch.setattr(scheduler_hooks, "check_decide_wiring", lambda: ran.append(1))
+    env(**{**_START, "CRM_ORGS": "globex"})
+    fr.reload_flags()
+    assert ran == []
+    env(**{**_START, "CRM_ORGS": "globex", "DECIDE_FEATURE_MODES": "email.x=on"})
+    assert fr.reload_flags().applied == ("DECIDE_FEATURE_MODES",)
+    assert ran == [1]
+
+
 @pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="no SIGHUP on this platform")
 def test_sighup_runs_the_reload(env) -> None:
     env(**{**_START, "CRM_ORGS": "initech"})
@@ -251,14 +267,28 @@ def _calls(node: ast.AST) -> set[str]:
     return out
 
 
+def _import_time(node: ast.AST) -> list[ast.AST]:
+    """The parts of a module statement that run at import: all of a plain
+    statement, a class body less its methods, and the decorators and default
+    values of a function (review round 2)."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        a = node.args
+        return [*node.decorator_list, *a.defaults, *[d for d in a.kw_defaults if d]]
+    if isinstance(node, ast.ClassDef):
+        out: list[ast.AST] = [*node.decorator_list, *node.bases]
+        for stmt in node.body:
+            out += _import_time(stmt)
+        return out
+    return [node]
+
+
 def test_no_module_reads_a_reloadable_flag_at_import() -> None:
     hits = []
     for rel, tree in _trees().items():
         for node in tree.body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                continue
-            for field in _flags_read(node):
-                hits.append(f"{rel}:{node.lineno} {field}")
+            for part in _import_time(node):
+                for field in _flags_read(part):
+                    hits.append(f"{rel}:{getattr(part, 'lineno', node.lineno)} {field}")
     assert hits == [], f"a module reads a reloadable flag at import: {hits}"
 
 
@@ -417,7 +447,13 @@ def test_the_fences_can_fail(tmp_path, monkeypatch) -> None:
         "from acb_common import get_settings\n"
         "S = get_settings()\n"
         "ORGS = os.environ.get('CRM_ORGS', '')\n"
-        "NAMES = frozenset({'CRM_ORGS'})\n", encoding="utf-8")
+        "NAMES = frozenset({'CRM_ORGS'})\n"
+        "class Gate:\n"
+        "    ORGS = get_settings().knowledge_orgs\n"
+        "    def run(self):\n"
+        "        return get_settings().reach_orgs\n"
+        "def allowed(org, orgs=get_settings().tool_packs_orgs):\n"
+        "    return org in orgs\n", encoding="utf-8")
     me = sys.modules[__name__]
     monkeypatch.setattr(me, "_SCAN", [pkg])
     monkeypatch.setattr(me, "_ROOT", tmp_path)
@@ -425,6 +461,9 @@ def test_the_fences_can_fail(tmp_path, monkeypatch) -> None:
         test_no_module_reads_a_reloadable_flag_at_import()
     assert "pkg/m.py:4 crm_orgs" in str(got.value)
     assert "pkg/m.py:5" not in str(got.value), "a list of names is not a read"
+    assert "pkg/m.py:7 knowledge_orgs" in str(got.value), "a class body runs at import"
+    assert "reach_orgs" not in str(got.value), "a method body runs per call"
+    assert "pkg/m.py:10 tool_packs_orgs" in str(got.value), "a default runs at import"
     with pytest.raises(AssertionError) as got:
         test_no_module_keeps_a_copy_of_the_settings()
     assert "pkg/m.py:3" in str(got.value)
