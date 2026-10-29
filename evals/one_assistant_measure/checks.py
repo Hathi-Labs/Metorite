@@ -676,6 +676,18 @@ def _handoff_legit(obs: Observation, owner: str) -> bool:
     return handoff_reason(owner, obs.needs, obs.reachable) != "model_choice"
 
 
+def _figure(obs: Observation, arg: Any) -> bool:
+    """The answer states a figure whose value is *arg* (rupees). The ONE parser
+    of lakh, crore and grouped digits is ``acb_common.number_check``; this
+    harness has no regex of its own for them (``test_number_check.py``)."""
+    from decimal import Decimal
+
+    from acb_common.number_check import find_figures
+
+    want = Decimal(str(arg))
+    return any(f.value == want and not f.unreadable for f in find_figures(obs.answer))
+
+
 def _answer_none(obs: Observation, arg: Any) -> bool:
     return not any(_found(p, obs.answer) for p in arg)
 
@@ -785,6 +797,7 @@ KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
     "no_unasked_write": _no_unasked_write,
     "work_write": _work_write,
     "answer_none": _answer_none,
+    "figure": _figure,
     "right_pack": _right_pack,
     "no_crm_delegation": _no_crm_delegation,
     "no_projects_delegation": _no_projects_delegation,

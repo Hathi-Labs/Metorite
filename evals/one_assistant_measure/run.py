@@ -1178,7 +1178,7 @@ def merge(paths: list[Path], out: Path) -> dict[str, Any]:
 #: because a results file keeps no tool arguments, cards or gateway calls.
 RESCORED = frozenset({
     "answer_all", "answer_some", "no_name_claim", "no_reference_subject",
-    "admits_unreadable", "no_content_claim", "task_no_guess", "answer_none",
+    "admits_unreadable", "no_content_claim", "task_no_guess", "answer_none", "figure",
 })
 
 

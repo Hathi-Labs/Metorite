@@ -803,15 +803,12 @@ def test_crm_report_reads_as_a_read_in_the_checks() -> None:
 def test_the_amount_check_takes_the_indian_forms(text: str, want: bool) -> None:
     """Item 4. The first live run failed `crm_pipeline` on both arms, because
     the model wrote "4.5 lakh" and the check wanted "450,000".
-    Mutation: return only the western form from ``amount`` → the lakh cases are
+    The check calls ``acb_common.number_check.find_figures``, the one parser.
+    Mutation: compare the text of the figure to "450,000" → the lakh cases are
     red."""
-    from evals.one_assistant_measure.scenarios_work import amount
-
-    assert (re.search(amount(450_000), text, re.IGNORECASE) is not None) is want
     turn = scenario("crm_pipeline").turns[0]
-    check = next(c for c in turn.checks if c.name == "names_the_stage_and_amount")
-    got = ck.KINDS[check.kind](_obs(answer=f"Negotiation. {text}"), check.arg)
-    assert got is want
+    check = next(c for c in turn.checks if c.name == "gives_the_amount")
+    assert ck.KINDS[check.kind](_obs(answer=f"Negotiation. {text}"), check.arg) is want
 
 
 def test_a_run_reads_no_local_database() -> None:
