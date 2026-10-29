@@ -215,7 +215,8 @@ export default function SetupHubSection({
   const [choosing, setChoosing] = useState(false);
   const state = hubState(mode, connection);
   // The cutover card's own preview read: one cache key, so no second request.
-  // When the card shows both switches, the hub leaves its copy out.
+  // When the card shows both switches, the hub leaves its copy out. A card
+  // that throws then draws that copy in its place (`holdsStartEmpty`).
   const cutover = useCachedResource<CutoverPreview>(
     mode === "mirror" ? PREVIEW_KEY : null,
     getCutoverPreview,
@@ -276,7 +277,11 @@ export default function SetupHubSection({
       />
       {/* CRM-Z10b: in Native mode too, for "Finish closing Zoho". */}
       {(mode === "mirror" || mode === "native") && (
-        <CutoverCard mode={mode} onStartEmpty={() => act(ACTIONS["switch-to-metorite"])} />
+        <CutoverCard
+          mode={mode}
+          onStartEmpty={() => act(ACTIONS["switch-to-metorite"])}
+          holdsStartEmpty={switchInCard}
+        />
       )}
       <ConfirmDialog
         open={disconnecting !== null}

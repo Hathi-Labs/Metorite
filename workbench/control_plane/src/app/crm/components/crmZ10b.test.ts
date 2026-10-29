@@ -4,7 +4,7 @@
 // `lib/cutoverSwitch.ts`.
 import { readFileSync } from "node:fs";
 
-import { createElement } from "react";
+import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -28,7 +28,12 @@ import {
   hubState,
   type HubState,
 } from "../lib/setup";
-import CutoverCard, { CutoverCardView, FinishClosingView } from "./CutoverCard";
+import CutoverCard, {
+  CutoverBoundary,
+  CutoverCardView,
+  FinishClosingView,
+  StartEmptyFallback,
+} from "./CutoverCard";
 import { CutoverBody } from "./CutoverDialog";
 import { SetupHubView } from "./SetupHub";
 
@@ -271,6 +276,34 @@ describe("CRM-Z10b the two switches have names that say what happens to the reco
       expect(timesIn(off, START_EMPTY.label), state).toBe(1);
       expect(buttonWith(off, START_EMPTY.label)).not.toContain("text-destructive");
     }
+  });
+
+  it("keeps start empty on the screen when the card throws (verifier P3-4)", () => {
+    expect(CutoverBoundary.getDerivedStateFromError()).toEqual({ failed: true });
+    const fallback = createElement(StartEmptyFallback, { onStartEmpty: noop });
+    const failed = (boundary: InstanceType<typeof CutoverBoundary>) => {
+      boundary.state = { failed: true };
+      return boundary.render() as ReactElement | null;
+    };
+    // The hub left its copy to the card, and the card threw: the boundary
+    // draws that one switch in the card's place.
+    const held = failed(new CutoverBoundary({ children: "card", fallback }));
+    const hub = renderToStaticMarkup(createElement(SetupHubView, {
+      state: "mirror-connected", mode: "mirror", connection: conn("connected"), sync: null,
+      counts: null, busy: { syncing: false, connecting: false }, onAction: noop,
+      switchInCard: true,
+    }));
+    const screen = hub + renderToStaticMarkup(held!);
+    expect(timesIn(screen, START_EMPTY.label)).toBe(1);
+    expect(timesIn(screen, KEEP_RECORDS_SWITCH.label)).toBe(0);
+    expect(buttonWith(screen, START_EMPTY.label)).not.toMatch(/ disabled=""/);
+    // With no fallback (the hub kept its copy), a throw draws nothing.
+    expect(failed(new CutoverBoundary({ children: "card" }))).toBeNull();
+    // No throw: the card draws itself.
+    expect(new CutoverBoundary({ children: "card", fallback }).render()).toBe("card");
+    // The hub hands its choice to the card, from the same preview read.
+    const source = readFileSync(new URL("./SetupHub.tsx", import.meta.url), "utf8");
+    expect(source).toMatch(/holdsStartEmpty=\{switchInCard\}/);
   });
 });
 

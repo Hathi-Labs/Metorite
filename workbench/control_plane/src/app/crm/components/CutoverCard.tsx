@@ -282,8 +282,14 @@ export function FinishClosingView({
   );
 }
 
-/** Nothing in the card may take Setup down. A throw draws nothing. */
-export class CutoverBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+/**
+ * Nothing in the card may take Setup down. A throw draws `fallback`, which is
+ * nothing unless the card held the hub's start-empty switch.
+ */
+export class CutoverBoundary extends Component<
+  { children: ReactNode; fallback?: ReactNode },
+  { failed: boolean }
+> {
   state = { failed: false };
 
   static getDerivedStateFromError() {
@@ -291,8 +297,32 @@ export class CutoverBoundary extends Component<{ children: ReactNode }, { failed
   }
 
   render() {
-    return this.state.failed ? null : this.props.children;
+    return this.state.failed ? (this.props.fallback ?? null) : this.props.children;
   }
+}
+
+/**
+ * The hub's start-empty switch, when the card failed to draw (verifier P3-4).
+ * The hub leaves that switch to the card while the card shows both switches.
+ * A card that throws must not take it off the screen until a reload.
+ */
+export function StartEmptyFallback({ onStartEmpty }: { onStartEmpty: () => void }) {
+  return (
+    <section
+      id="crm-cutover"
+      className="rounded-xl border border-border bg-card/40"
+      aria-label="Move to Metorite"
+    >
+      <div className="flex flex-wrap items-center gap-3 px-4 py-2">
+        <p className="min-w-0 flex-1 basis-60 text-[11px] text-muted-foreground">
+          {START_EMPTY.explain}
+        </p>
+        <Button variant="secondary" size="sm" onClick={onStartEmpty}>
+          {START_EMPTY.label}
+        </Button>
+      </div>
+    </section>
+  );
 }
 
 /** The cache key of the preview. `SetupHub` reads the same key (`switchesInCard`). */
@@ -344,16 +374,24 @@ function FinishClosingRead() {
 export default function CutoverCard({
   mode,
   onStartEmpty,
+  holdsStartEmpty = false,
 }: {
   mode: CrmMode;
   /** Opens the start-over dialog of the hub with `ACTIONS["switch-to-metorite"]`. */
   onStartEmpty: () => void;
+  /**
+   * The hub left its start-empty switch to this card (`switchesInCard`). A
+   * card that throws then draws that switch alone (`StartEmptyFallback`).
+   */
+  holdsStartEmpty?: boolean;
 }) {
   // The preview the dialog opened with. The dialog keeps it as a snapshot.
   const [opened, setOpened] = useState<CutoverPreview | null>(null);
   const switched = useCutoverDone(mode === "native");
   return (
-    <CutoverBoundary>
+    <CutoverBoundary
+      fallback={holdsStartEmpty ? <StartEmptyFallback onStartEmpty={onStartEmpty} /> : null}
+    >
       {mode === "native"
         ? switched && <FinishClosingRead />
         : <CutoverRead onSwitch={setOpened} onStartEmpty={onStartEmpty} />}
