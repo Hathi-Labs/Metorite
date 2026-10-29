@@ -10,7 +10,9 @@
   `routes/projects/reminders.py`). **RM-2 (the loop and the smart slot) is
   BUILT, 2026-10-26, dark** (`gateway/reminders/`). **RM-3 (the chat tools) is BUILT,
   2026-10-26, dark**: the tools refuse before a card while
-  `CALENDAR_REMINDERS` is off. RM-4 to RM-10 are not built. Verified
+  `CALENDAR_REMINDERS` is off. **RM-4 (a tap opens the chat) is BUILT,
+  2026-10-29, dark** (`routes/chat_reminder.py`, `reminders/context.py`,
+  `lib/shell/reminderOpen.ts`). RM-5 to RM-10 are not built. Verified
   against code on 2026-10-25 (`origin/main` `894ddad27`): no `reminders`
   table and no `remind_at` existed then.
 - **Board row:** **WS-CAL**. WS-66 for reminders and web push sits under
@@ -583,6 +585,61 @@ AI about what to do next."
 6. **No answer after the open.** The ladder of §5.4 goes on. An open is not
    an answer.
 
+**As built (RM-4, 2026-10-29).** Dark behind `CALENDAR_REMINDERS`. The
+server builds every word, and no model runs.
+
+- **The link.** `ChatFullView` reads `?reminder=<id>` and opens a fresh
+  chat. `/chat?reminder=<id>` and `/chat?do=new-chat&reminder=<id>` both
+  work. The page takes only a UUID. The old page (`ChatPageInner`, the
+  `NEXT_PUBLIC_SHELL_CHAT` flag off) does not read the link.
+- **One call.** The dock waits for the fresh chat, then calls
+  `POST /chat/sessions/{id}/reminder-open` once, with `{reminder_id}`. It
+  holds the chat as for the brief, with the same 4 s cap. A reminder's chat
+  gets no brief.
+- **The route** is `routes/chat_reminder.py`. The flag off gives 404 before
+  the body is read. The member needs `feature:projects`. The route keeps
+  each session check of `post_brief`. A room shared with a second person
+  gets 204, with no row and no ledger write.
+- **The ONE open** is `reminders.open_reminder`. It loads the member's own
+  row, or answers 404. When the reminder is open, it writes one `opened`
+  row. A `notice` in state `due` then closes as `done`. Its `done` row
+  records `from_state` and `via: open`, so `/reopen` undoes it. An `action`
+  reminder stays `due`. A closed reminder writes nothing and answers with
+  its state, not 409.
+- **The first row** goes in through the brief's mint path
+  (`chat_brief._post_row`). Its id is `reminder-<id>`, so the same chat never
+  gets a second row and never writes a second `opened` row. A new tap opens
+  a new chat and writes one more `opened` row.
+- **The words** come from `gateway/reminders/context.py`. The time is in the
+  row's `tz`, else the member's saved zone. A task shows its title and its
+  status, and a project its name, through the member's own visible read. An
+  object that the member cannot open shows its kind only. RM-4 reads no
+  email thread, CRM contact or WhatsApp chat.
+- **The context block** is a list of facts. The dock publishes them while
+  that chat is on screen. Each title, note and status sits in «marks». The
+  facts name the reminder id and carry at most 8 ledger rows. They leave when
+  the member opens another chat, or when a chip closes the reminder. Undo
+  brings them back. A typed answer goes to the model with them (item 4), and
+  the run path did not change.
+- **The chips** are the `reminderCard` template, drawn with the brief's pill
+  row. Done and Drop call `/resolve`. Not yet calls `/reschedule` with
+  `smart` and says the new time, for example "Moved to Sat 10:00". Later
+  sends "Snooze this reminder" to the model, which asks for a time. Make it
+  a task sends "Make it a task", so the model shows the one confirm of
+  `promote_reminder`. No chip calls `/promote`.
+- **Undo** (decision of 2026-10-29). After Done or Drop, the card offers one
+  Undo chip, which calls `/reopen`. `UndoToast.tsx` binds the task store, so
+  it does not fit. The chip is the pill row that the card already draws. A
+  reminder that arrived closed, such as a `notice` that the open closed,
+  offers no chip.
+- **Not in RM-4.** Not yet and Later have no Undo, and Later has no time
+  picker. After a reload, the card draws the state of its row and reads no
+  newer state. RE-9 sends the real push that a member taps.
+- **Fences.** `tests/unit/test_reminder_context.py`,
+  `tests/unit/test_reminders_r8.py` (the open cases) and
+  `src/app/chat/reminderOpen.test.ts`. The vitest config runs
+  `*.test.ts` only, so the fence is not the `.tsx` file of §10.1.
+
 ### 5.8 The chat tools
 
 **The routes** live in a new module, `routes/projects/reminders.py`, under
@@ -962,7 +1019,7 @@ _DB_GATE`, because `deploy.yml` has no ladder database.
 | **RM-2** The loop and the smart slot — ✅ **BUILT 2026-10-26, dark** | After RM-1 | §5.4 and §5.5. The three card kinds in `feed.py` and in `REACH_CLASS`. The D114.3 exception in the Reach budget | A reminder for 15:00 fires at 15:00, and its check-back comes at 16:00. No answer moves it to the brief, then to one new slot. After 2 cycles it is `unconfirmed`. No step 2 to 5 lands in quiet hours. Two workers never fire one row twice | `tests/unit/test_reminder_loop.py` (R8, frozen clock), `tests/unit/test_reminder_slot.py`, `test_reach_plan.py` |
 | **RM-3** The chat tools — ✅ **BUILT 2026-10-26, dark** | After RM-1 | §5.8 in `skill_projects`: seven tools on the one confirm card, until CF-6. The `set-reminder` command-bar job and the `capture` change wait for CE-3 and RM-5 (§5.8) | "Remind me at 5 to get a haircut" saves one row at 17:00 in my zone, and the reply quotes that time and zone. A time with no offset is refused | `test_projects_chat_coverage.py`, `tests/unit/test_reminder_tools.py`, `test_projects_agent_writes.py`, `test_wac_writes.py` |
 | **RE-9** Push as a Reach channel | After PN-1, RM-2 | `proactive_reach.md` RE-9 on the PN-1 sender. The reminder payload of D114.4 and "Hide details on the lock screen". Settle the case of one browser with several accounts (§5.9) first | A `reminder_due` card reaches the device within 90 s of `fire_at`. A hidden-details member gets no title in the payload | `test_reach_plan.py` and `tests/unit/test_reach_push.py` |
-| **RM-4** A tap opens the chat | After RM-3 | §5.7: `/chat?reminder=<id>`, the code-built first message, the chips, the `reminder` context block | A tap on a push opens the chat with the reminder message and no model call. Done from a chip ends the reminder and offers Undo | `src/app/chat/reminderOpen.test.tsx` (new) and `tests/unit/test_reminder_context.py` |
+| **RM-4** A tap opens the chat — ✅ **BUILT 2026-10-29, dark** (AGENT-SAFE) | After RM-3 | §5.7: `/chat?reminder=<id>`, the code-built first message, the chips, the `reminder` context block. As built: §5.7 | A tap on a push opens the chat with the reminder message and no model call. Done from a chip ends the reminder and offers Undo | `src/app/chat/reminderOpen.test.ts` (new, `.ts` because vitest runs `*.test.ts` only), `tests/unit/test_reminder_context.py` and `tests/unit/test_reminders_r8.py` |
 | **RM-5** The Calendar UI | After RM-1 | The pin and the Month chip of §6.2. The Reminders panel: Upcoming, Waiting on you, Unconfirmed. The bell glyph of §6.5 | A reminder draws as a line with no height and takes no capacity. Drag moves `fire_at` | Vitest for the pin and the panel, the conformance suite, and a visual review |
 | **RM-6** Closed by evidence | Later | The linked task goes to done, or the member sends an email on the linked thread. The reminder closes and says so | A done task closes its reminder, with an `evidence` ledger row | `test_reminder_evidence.py` |
 | **RM-7** Conditional follow-ups | Later | "Remind me if Ravi has not replied by Friday". A reply cancels it | An inbound reply before Friday cancels the reminder | `test_reminder_conditions.py` |
