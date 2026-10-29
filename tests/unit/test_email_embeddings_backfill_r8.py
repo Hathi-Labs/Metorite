@@ -67,7 +67,7 @@ class _Door:
         from acb_llm.routed import run_attribution
 
         att = run_attribution()
-        self.calls.append({"n": len(texts), "member": att.get("user"),
+        self.calls.append({"n": len(texts), "member": att.get("member"),
                            "module": att.get("module_slug")})
         return [None if any(r in t for r in self.refuse) else [0.01 * (i + 1)] * 1536
                 for i, t in enumerate(texts)]
