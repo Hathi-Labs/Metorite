@@ -348,11 +348,13 @@ def test_a_child_may_hold_a_read_tool_of_a_pack() -> None:
     assert sc.child_may_hold("remember")
 
 
-@pytest.mark.parametrize("tool", sorted({*sc.MEMBER_TOOLS, *sc.EXTRA_CALL_TOOLS,
-                                         "call_agent", "spawn_subagents", "delegate_to_agent"}))
+@pytest.mark.parametrize("tool", sorted({*sc.MEMBER_TOOLS, *sc.DISPLAY_TOOLS,
+                                         *sc.EXTRA_CALL_TOOLS, "call_agent",
+                                         "spawn_subagents", "delegate_to_agent"}))
 def test_a_child_never_holds_a_pack_tool_that_sub_1_blocks(tool: str) -> None:
-    """Even a lying read-only answer cannot pass a member tool, a tool with model
-    calls of its own, or a delegation tool."""
+    """Even a lying read-only answer cannot pass a member tool, a tool that
+    draws a card or moves the page, a tool with model calls of its own, or a
+    delegation tool."""
     assert not sc.child_may_hold(tool, read_only=lambda _n: True)
 
 

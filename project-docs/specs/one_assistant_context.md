@@ -427,7 +427,9 @@ and the flag stays off. Fences: `tests/unit/test_spawn_hardening.py`,
 **As built, OA-9c.** Packs in a child are BUILT, dark behind
 `SPAWN_SUBAGENTS_ORGS` (2026-10-29). Nothing sets the flag. The flip is
 OWNER-GATE. The OA-9a refusal of each `packs` value is gone. The parser now
-checks each pack against the parent.
+checks each pack against the parent. An email child holds no tool today,
+because no email tool says `read_only=True`. So OA-9c serves CRM and
+Projects reads only.
 - **Naming.** A job names its packs with the `packs` key. A child inherits no
   pack. `parse_jobs` accepts a slug only when `PackRun.holds()` of the parent
   names it, so a child never holds a pack that its parent lacks (SUB-1 rule 1).
@@ -447,6 +449,14 @@ checks each pack against the parent.
   names. So a child holds no write in an open chat either. The registry keys
   on the tool name, and the last module that names a tool wins. A fence keeps
   the own mark of each pack tool equal to its registry mark.
+- **No card from a child (review fix).** Several read tools draw a card or
+  move the member's page. A child copies the run queue of its parent, so its
+  card would reach the member's chat and miss `parse_items`.
+  `subagent_contract.DISPLAY_TOOLS` names them, beside `MEMBER_TOOLS`, and
+  `child_may_hold` and `parse_jobs` refuse each one. No single marker names
+  them, so a fence scans each pack tool and each platform tool for a call to
+  `emit_generative_ui`, `emit_frontend_tool` or `resolve_run_queue`. A
+  read-only tool that reaches one and is not in the set fails the fence.
 - **The run key.** The spawn mints one key for each child with
   `secrets.token_urlsafe(24)`. It is never the key of the parent and never the
   key of a sibling. `Job.pack_run` holds it, and `repr` does not show it.
@@ -464,12 +474,14 @@ checks each pack against the parent.
   live list plus the load. A job past the cap does not run.
 - **A pack with no read tool.** Such a pack stops its job with one line. A
   call with no job left uses no spawn.
-- **Stranger text.** A job can name a pack of an owner in
-  `UNTRUSTED_INPUT_AGENTS`. Then each pack of the call builds held. When such
-  a job runs, the spawn marks the chat on the parent frame before any child
-  starts (EM-G11f3). Each child of that call then starts with `no_egress`
-  bound. So an email child holds no web tool, and no pack call of a child
-  clears `no_egress`.
+- **Stranger text.** The held answer of a call is true when a job that runs
+  holds a pack of an owner in `UNTRUSTED_INPUT_AGENTS`. The spawn computes it
+  once and uses it for the build, the mark and the start of each child. With
+  it, each pack of the call builds held, the spawn marks the chat on the
+  parent frame before any child starts (EM-G11f3), and each child starts with
+  `no_egress` bound. So an email child holds no web tool, and no pack call of
+  a child clears `no_egress`. When the job with such a pack stops at the
+  build, the jobs that run build again open, and the chat stays clear.
 - **A difference from the main assistant.** The main assistant builds the
   email pack open in a clean chat, and its first email call runs open. A
   child builds it held. The tool set is the same today, because no read tool
@@ -484,9 +496,9 @@ checks each pack against the parent.
 | `email` | None. No email tool says `read_only=True` |
 | `email-setup` | None, for the same reason |
 | `crm-records` | 5: `crm_search_notes`, `get_pipeline`, `get_record`, `get_timeline`, `search_crm` |
-| `projects` | 13: `calendar`, `find_tasks`, `list_tasks`, `my_task`, `my_work`, `open_in_app`, `people_for`, `project_summary`, `projects_tree`, `render_board`, `render_tasks`, `task_detail`, `vocabulary` |
-| `projects-plan` | 17: `analytics_finished`, `analytics_load`, `analytics_outlook`, `analytics_stuck`, `analytics_throughput`, `find_conflicts`, `fit_for_task`, `needs_attention`, `rebalance`, `recurrence`, `render_timeline`, `report_list`, `report_recipients`, `report_render`, `task_dataset`, `team_capacity`, `waiting_agent_requests` |
-| `projects-structure` | 8: `intake_queue`, `my_areas`, `my_contexts`, `notifications`, `project_access`, `project_views`, `show_view`, `watchers` |
+| `projects` | 10: `calendar`, `find_tasks`, `list_tasks`, `my_task`, `my_work`, `people_for`, `project_summary`, `projects_tree`, `task_detail`, `vocabulary` |
+| `projects-plan` | 16: `analytics_finished`, `analytics_load`, `analytics_outlook`, `analytics_stuck`, `analytics_throughput`, `find_conflicts`, `fit_for_task`, `needs_attention`, `rebalance`, `recurrence`, `report_list`, `report_recipients`, `report_render`, `task_dataset`, `team_capacity`, `waiting_agent_requests` |
+| `projects-structure` | 7: `intake_queue`, `my_areas`, `my_contexts`, `notifications`, `project_access`, `project_views`, `watchers` |
 | `projects-bulk` | 2: `list_reminders`, `my_led_projects` |
 
 - **Open.**
@@ -497,13 +509,10 @@ checks each pack against the parent.
     marks that thread and writes its working set there. The mark on the
     parent frame holds the chat. This path runs only after an email tool is
     read-only.
-  - Five Projects read tools draw a card or move the page: `render_board`,
-    `render_tasks`, `render_timeline`, `open_in_app` and `show_view`. They ask
-    the member nothing, so SUB-1 does not block them. Whether a child may draw
-    a card is a product call.
-- **Fences.** `test_pack_guards.py` holds the child cases, the real builder
-  and the table above. `test_spawn_subagents.py` holds the spawn rules and
-  one run from end to end through the real sub-run seam.
+- **Fences.** `test_pack_guards.py` holds the child cases, the real builder,
+  the table above and the scan of the display tools. `test_spawn_subagents.py`
+  holds the spawn rules and one run from end to end through the real sub-run
+  seam, with the permission gate off and on.
   `test_subagent_contract.py`, `test_subagent_worker.py` and
   `test_subagent_blocked_tools.py` hold the parser, the pin and SUB-1.
 

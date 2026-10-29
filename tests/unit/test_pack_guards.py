@@ -1178,27 +1178,73 @@ PROJECTS_DIR = "apps/agents/agent-projects"
 _WRITE = {"read_only": False, "destructive": False, "idempotent": False, "open_world": False}
 
 #: The tools that each real pack gives a child (2026-10-29). The one marker
-#: decides: ``read_only=True`` in the risk registry. No email tool says it, so
-#: an email pack gives a child no tool and its job does not run.
+#: decides: ``read_only=True`` in the risk registry, less the SUB-1 names and
+#: ``DISPLAY_TOOLS``. No email tool says read-only, so an email pack gives a
+#: child no tool and its job does not run.
 CHILD_TOOLS: dict[str, frozenset[str]] = {
     "email": frozenset(),
     "email-setup": frozenset(),
     "crm-records": frozenset({
         "crm_search_notes", "get_pipeline", "get_record", "get_timeline", "search_crm"}),
     "projects": frozenset({
-        "calendar", "find_tasks", "list_tasks", "my_task", "my_work", "open_in_app",
-        "people_for", "project_summary", "projects_tree", "render_board", "render_tasks",
-        "task_detail", "vocabulary"}),
+        "calendar", "find_tasks", "list_tasks", "my_task", "my_work", "people_for",
+        "project_summary", "projects_tree", "task_detail", "vocabulary"}),
     "projects-plan": frozenset({
         "analytics_finished", "analytics_load", "analytics_outlook", "analytics_stuck",
         "analytics_throughput", "find_conflicts", "fit_for_task", "needs_attention",
-        "rebalance", "recurrence", "render_timeline", "report_list", "report_recipients",
+        "rebalance", "recurrence", "report_list", "report_recipients",
         "report_render", "task_dataset", "team_capacity", "waiting_agent_requests"}),
     "projects-structure": frozenset({
         "intake_queue", "my_areas", "my_contexts", "notifications", "project_access",
-        "project_views", "show_view", "watchers"}),
+        "project_views", "watchers"}),
     "projects-bulk": frozenset({"list_reminders", "my_led_projects"}),
 }
+
+#: The calls that put an event on the run's stream: a card, a page move, a
+#: panel. A tool that reaches one draws something in the member's chat.
+_DISPLAY_EMITTERS = frozenset({"emit_generative_ui", "emit_frontend_tool", "resolve_run_queue"})
+#: The packages whose functions the scan follows. A call into any other
+#: package (httpx, the standard library) is never a display emitter.
+_SCAN_ROOTS = ("skill_projects", "acb_skills", "acb_common", "orchestrator",
+               "_native_maf_probe", "_tool_pack_owner")
+
+
+def _code_names(code: Any) -> set[str]:
+    """Each global and attribute name that *code* and its nested code read."""
+    import types
+
+    names = set(code.co_names)
+    for const in code.co_consts:
+        if isinstance(const, types.CodeType):
+            names |= _code_names(const)
+    return names
+
+
+def _display_path(fn: Any, seen: set[int] | None = None) -> str:
+    """The call path from tool *fn* to a display emitter, or ``""``.
+
+    It reads the tool, its ``func`` and each ``__wrapped__`` layer, and it
+    follows each function that a layer names in its module globals, inside
+    :data:`_SCAN_ROOTS`. So ``render_board > _emit > emit_generative_ui``."""
+    seen = set() if seen is None else seen
+    layer = getattr(fn, "func", fn)
+    while layer is not None and id(layer) not in seen:
+        seen.add(id(layer))
+        code = getattr(layer, "__code__", None)
+        if code is not None:
+            names = _code_names(code)
+            hit = sorted(names & _DISPLAY_EMITTERS)
+            if hit:
+                return f"{layer.__qualname__} > {hit[0]}"
+            for name in sorted(names):
+                target = getattr(layer, "__globals__", {}).get(name)
+                if (inspect.isfunction(target)
+                        and str(target.__module__).startswith(_SCAN_ROOTS)):
+                    found = _display_path(target, seen)
+                    if found:
+                        return f"{layer.__qualname__} > {found}"
+        layer = getattr(layer, "__wrapped__", None)
+    return ""
 
 
 def _owners(monkeypatch, **by_owner: Any) -> None:
@@ -1279,9 +1325,9 @@ async def test_an_email_child_builds_held_in_an_open_chat(monkeypatch) -> None:
 
     with _run():
         main = await _build("email", stub)
-        (job,), stopped = await at._with_pack_tools(
+        (job,), stopped, held = await at._with_pack_tools(
             (sc.Job(1, "Read.", (), "fast", packs=("email",)),), artifact_context())
-    assert main.held is False and stopped == ()
+    assert main.held is False and stopped == () and held is True
     with _run(run_id="child-run", **{PACK_RUN_KEY: job.pack_run}):
         await job.pack_tools[0](email_id="m-1")
     assert seen == [True]
@@ -1333,6 +1379,56 @@ async def test_the_tools_that_each_real_pack_gives_a_child(monkeypatch, slug: st
     assert why == "" and {tool_name(t) for t in job.pack_tools} == want
 
 
+def _pack_owners() -> dict[str, Any]:
+    return {EA: _module(), CRM: _crm_module(), PROJECTS: load_agent_module(PROJECTS_DIR)}
+
+
+def test_each_pack_tool_that_draws_is_a_display_tool() -> None:
+    """OA-9c review: a child's card would reach the member's chat, because a
+    child copies the parent's run queue. No single marker names the tools that
+    draw, so this scan does. Each read-only pack tool that reaches a display
+    emitter must be in ``DISPLAY_TOOLS`` (or ``MEMBER_TOOLS``), so a new
+    display tool fails here and never reaches a child. Mutation: drop
+    ``render_board`` from ``DISPLAY_TOOLS`` -> red."""
+    from acb_skills import tool_packs
+    from acb_skills.tool_guard import tool_name
+
+    owners = _pack_owners()
+    draws: dict[str, str] = {}
+    for slug in sf.pack_slugs():
+        found = tool_packs.pack(slug)
+        assert found is not None
+        for fn in tool_packs.owner_tools(slug, owners[found.owner]):
+            path = _display_path(fn)
+            if path:
+                draws[tool_name(fn)] = path
+    read_draws = {n for n in draws if sc.annotated_read_only(n)}
+    assert {"render_board", "render_tasks", "render_timeline", "open_in_app",
+            "show_view"} <= read_draws, f"non-vacuity: the scan finds the views {draws}"
+    loose = {n: draws[n] for n in read_draws - sc.DISPLAY_TOOLS - sc.MEMBER_TOOLS}
+    assert loose == {}, f"a read-only pack tool draws, and a child could hold it: {loose}"
+    assert not any(sc.child_may_hold(n) for n in draws)
+
+
+def test_each_platform_tool_that_draws_is_blocked_for_a_child() -> None:
+    """The same scan over the platform tools that a job can name, and the
+    orchestrator's ``show_in_app``. Each read-only one that draws is blocked
+    by the parser (``DISPLAY_TOOLS`` or ``MEMBER_TOOLS``)."""
+    import orchestrator.agents as pkg
+
+    tools = [*ti._collect_injectable_platform_tools("orchestrator"), pkg._mod.show_in_app]
+    draws = {ti._tool_name(fn): _display_path(fn) for fn in tools}
+    draws = {n: p for n, p in draws.items() if p}
+    assert {"show_in_app", "share_artifact", "emit_generative_ui"} <= set(draws), draws
+    loose = {n: p for n, p in draws.items() if sc.annotated_read_only(n)
+             and n not in sc.DISPLAY_TOOLS | sc.MEMBER_TOOLS}
+    assert loose == {}
+    for name in draws:
+        plan = sc.parse_jobs(json.dumps([{"job": "Show.", "tools": [name]}]),
+                             parent_tools={name})
+        assert plan.jobs == (), f"the parser lets a child hold {name}"
+
+
 def test_each_pack_tools_own_mark_equals_its_registry_mark() -> None:
     """``child_may_hold`` reads the risk registry BY NAME, as ``parse_jobs``
     does. The registry keeps the last module that named a tool. So a module of
@@ -1345,7 +1441,7 @@ def test_each_pack_tools_own_mark_equals_its_registry_mark() -> None:
     from acb_skills import tool_packs
     from acb_skills.tool_guard import tool_name
 
-    owners = {EA: _module(), CRM: _crm_module(), PROJECTS: load_agent_module(PROJECTS_DIR)}
+    owners = _pack_owners()
     own: dict[str, bool] = {}
     for slug in sf.pack_slugs():
         found = tool_packs.pack(slug)

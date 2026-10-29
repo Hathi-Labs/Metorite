@@ -55,6 +55,7 @@ __all__ = [
     "CHILD_LOOP_BUDGET_S",
     "CHILD_SOURCE",
     "DEFAULT_TIER",
+    "DISPLAY_TOOLS",
     "EXTRA_CALL_TOOLS",
     "FANOUT_TIMEOUT_S",
     "INTERNAL_AGENTS",
@@ -155,6 +156,25 @@ _LABEL_CHARS = 60
 #: Tools that ask the member or show a card. They are marked read-only, but a
 #: child has no member to ask (§6.5: each card is the main assistant's).
 MEMBER_TOOLS = frozenset({"ask_questions", "ask_user", "request_confirmation", "share_artifact"})
+
+#: Tools that draw a card, open a panel or move the member's page (OA-9c
+#: review). Several say read-only, because they change no data. But each one
+#: puts an event on the run's stream. A child copies the parent's run queue,
+#: so its card would reach the member's chat and never pass ``parse_items``.
+#: Each card is the main assistant's (§6.5), so a child holds none of them.
+#: No single marker names them. ``whatsapp_ui.WITHHELD_TOOLS`` is the web
+#: delivery set of the platform only, and a pack tool draws through
+#: ``emit_generative_ui`` or ``emit_frontend_tool``. So this set names each
+#: one. ``tests/unit/test_pack_guards.py`` scans every pack tool and every
+#: platform tool for a call to an emitter, so a new display tool fails there.
+DISPLAY_TOOLS = frozenset({
+    # the platform's card and its page move (WS-62 CF-3)
+    "emit_generative_ui", "show_in_app",
+    # the Projects reads that draw a card (skill_projects.views)
+    "render_board", "render_tasks", "render_timeline",
+    # the Projects reads that move the member's page (skill_projects.nav)
+    "open_in_app", "show_view",
+})
 
 #: Tools that add model calls of their own, and so break the 4-round cap of a
 #: child (§6.6). ``decide`` runs a second model call inside the tool.
@@ -354,7 +374,7 @@ def _refusal(
     if tools is None:
         return "its tools must be a list of tool names.", None
     for name in tools:
-        if name in MEMBER_TOOLS:
+        if name in MEMBER_TOOLS or name in DISPLAY_TOOLS:
             return (f"a sub-agent cannot ask the member or show a card, so it cannot "
                     f"hold '{_clip(name)}'."), None
         if name in handoff:
@@ -665,11 +685,14 @@ def child_may_hold(name: str, read_only: Callable[[str], bool] = annotated_read_
     It is the test of :func:`parse_jobs` for a named tool, less the check
     against the parent's ``run_tools``: the risk registry marks the tool
     read-only (:func:`annotated_read_only`), and SUB-1 does not block it. So
-    it asks no member, starts no agent and makes no model call of its own. A
-    tool with no entry in the registry is not read-only, so it stays out.
+    it asks no member, draws no card (:data:`DISPLAY_TOOLS`), starts no agent
+    and makes no model call of its own. A tool with no entry in the registry
+    is not read-only, so it stays out.
     """
     name = str(name or "")
-    if not name or name in MEMBER_TOOLS or name in EXTRA_CALL_TOOLS:
+    if not name or name in MEMBER_TOOLS or name in DISPLAY_TOOLS:
+        return False
+    if name in EXTRA_CALL_TOOLS:
         return False
     if name in _handoff_tools():
         return False

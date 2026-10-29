@@ -72,6 +72,12 @@ ASK_THE_MEMBER = [
     "ask_questions", "ask_user", "request_confirmation", "share_artifact",
     "emit_generative_ui",
 ]
+#: OA-9c review: the tools that draw a card or move the member's page. Several
+#: say read-only. ``emit_generative_ui`` is in ``ASK_THE_MEMBER`` above.
+DRAW_A_CARD = [
+    "show_in_app", "render_board", "render_tasks", "render_timeline", "open_in_app",
+    "show_view",
+]
 SPECIALISTS = [
     "apis_config", "app_builder", "crm_assistant", "email_assistant",
     "projects_assistant", "whatsapp_assistant",
@@ -80,7 +86,8 @@ DELEGATION = [
     "call_agent", "call_agents_parallel", "call_agent_background", "delegate_to_agent",
     "spawn_subagents", "spawn_copilot_agent", *SPECIALISTS,
 ]
-EVERY_BLOCKED = [*MEMORY_WRITES, *SENDS, *AUTOMATION, *ASK_THE_MEMBER, *DELEGATION]
+EVERY_BLOCKED = [*MEMORY_WRITES, *SENDS, *AUTOMATION, *ASK_THE_MEMBER, *DRAW_A_CARD,
+                 *DELEGATION]
 
 PAIR_ANSWER = "is not a tool of this sub-agent job. Nothing ran."
 
@@ -149,6 +156,23 @@ def test_a_child_cannot_delegate(tool: str) -> None:
     _assert_blocked(tool)
 
 
+@pytest.mark.parametrize("tool", DRAW_A_CARD)
+def test_a_child_cannot_draw_a_card_or_move_the_page(tool: str) -> None:
+    """OA-9c review: a child's card would reach the member's chat directly."""
+    _assert_blocked(tool)
+
+
+@pytest.mark.parametrize("tool", sorted(sc.DISPLAY_TOOLS))
+def test_a_display_tool_never_reaches_a_child_with_a_lying_read_only(tool: str) -> None:
+    """Layer 1 and the pack filter refuse a display tool even when the read-only
+    answer says yes. Mutation: drop ``DISPLAY_TOOLS`` from ``child_may_hold``
+    -> red."""
+    assert not sc.child_may_hold(tool, read_only=lambda _n: True)
+    plan = sc.parse_jobs(json.dumps([{"job": "Show it.", "tools": [tool]}]),
+                         parent_tools={tool}, read_only=lambda _n: True)
+    assert plan.jobs == () and "show a card" in plan.refused[0]
+
+
 # ── The control: the pair does not block everything ─────────────────────────
 
 
@@ -212,7 +236,8 @@ def test_the_pair_stops_each_blocked_tool_with_the_parser_off(tool: str) -> None
     a granted app, an MCP server, ``add_tools``). A parser fed a lying
     ``read_only`` would accept a job that names a plain tool, so the parser is
     not what holds the child: the pair is. The job names ``remember`` only."""
-    if tool not in sc.MEMBER_TOOLS and tool not in eg.DELEGATION_TOOLS | set(SPECIALISTS):
+    if (tool not in sc.MEMBER_TOOLS | sc.DISPLAY_TOOLS
+            and tool not in eg.DELEGATION_TOOLS | set(SPECIALISTS)):
         lying = sc.parse_jobs(
             json.dumps([{"job": "Do a thing.", "tools": [tool]}]),
             parent_tools={tool}, read_only=lambda _n: True,
@@ -261,6 +286,7 @@ def test_the_tables_match_production() -> None:
     assert set(MEMORY_WRITES[:5]) == set(eg.STORE_WRITES)
     assert set(MEMORY_WRITES[5:]) == {t.__name__ for t in PROFILE_WRITES}
     assert set(ASK_THE_MEMBER) == set(sc.MEMBER_TOOLS) | {"emit_generative_ui"}
+    assert set(DRAW_A_CARD) | {"emit_generative_ui"} == set(sc.DISPLAY_TOOLS)
     assert set(DELEGATION[:5]) == set(eg.DELEGATION_TOOLS)
     assert len(DELEGATION) == 12
     assert len(MEMORY_WRITES) == 11 and len(SENDS) == 9 and len(AUTOMATION) == 11

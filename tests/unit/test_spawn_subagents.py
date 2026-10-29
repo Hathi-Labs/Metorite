@@ -1006,6 +1006,25 @@ def test_an_email_pack_that_gives_no_tool_marks_nothing(packs) -> None:
     assert eg.read_untrusted_answer(artifact_context()) is False
 
 
+def test_the_held_answer_is_one_for_the_jobs_that_run(packs) -> None:
+    """Review NIT 2: an email job that gives no tool does not run, so no child
+    reads stranger text. Then the CRM job that runs builds again open, no child
+    starts held and the chat stays clear. The build, the mark and the start of
+    a child read one answer. Mutation: keep the first held build -> the CRM
+    child holds tools built held -> red."""
+    fake, build = packs
+    build.by_slug["email"] = ["probe_write_a"]
+    _run(at.spawn_subagents(_jobs(_job("Mail.", packs=["email"]),
+                                  _job("Deal.", packs=["crm-records"]))))
+    assert [(slug, ctx["no_egress"]) for slug, ctx, _h in build.calls] == [
+        ("email", True), ("crm-records", True), ("crm-records", False)]
+    (job,) = [j for j in fake.jobs if j is not None]
+    assert job.number == 2 and _names(job) == ["probe_read_a", "probe_read_b"]
+    assert job.pack_run == build.calls[-1][1]["pack_run"], "the open build's key"
+    assert fake.held == [False]
+    assert eg.read_untrusted_answer(artifact_context()) is False
+
+
 def test_a_held_chat_builds_the_pack_held(packs) -> None:
     """The parent frame binds ``no_egress``: the builder reads it."""
     fake, build = packs
@@ -1058,14 +1077,19 @@ def test_the_docstring_names_the_packs_key() -> None:
 # ── OA-9c end to end: the real builder, the real sub-run seam, the real worker ─
 
 
-def test_a_real_child_runs_its_pack_tool_under_its_own_key(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("mode", ["approve_all", "enforce"])
+def test_a_real_child_runs_its_pack_tool_under_its_own_key(
+    tmp_path, monkeypatch, mode: str,
+) -> None:
     """``spawn_subagents`` -> the real ``_pack_tools`` on a stub CRM owner ->
     ``_run_sub_agent_streaming`` -> ``run_agent`` -> the real worker and pair.
 
     The pack tool acts only when the run key that the spawn minted reaches the
     batch run of the child, through two bindings. Mutations: drop
     ``_job_pack_keys`` from the batch binding, or bind ``None`` in
-    ``_without_pack_keys`` -> the body runs 0 times."""
+    ``_without_pack_keys`` -> the body runs 0 times. In ``enforce`` mode
+    ``_pack_call`` puts the permission gate (``_gate_injected_tool``) around
+    the read, and the read still runs with no card (review NIT 3)."""
     import shutil
     import types
 
@@ -1085,12 +1109,22 @@ def test_a_real_child_runs_its_pack_tool_under_its_own_key(tmp_path, monkeypatch
         ran.append("log_activity")
         return "logged"
 
+    get_record.__tool_risk__ = dict(_RO)  # type: ignore[attr-defined]
+    log_activity.__tool_risk__ = dict(_RW)  # type: ignore[attr-defined]
     monkeypatch.setitem(ta.TOOL_ANNOTATIONS, "get_record", dict(_RO))
     monkeypatch.setitem(ta.TOOL_ANNOTATIONS, "log_activity", dict(_RW))
     stub = types.SimpleNamespace(_agent_tools=lambda: [get_record, log_activity])
     monkeypatch.setattr(ti, "_pack_owner_module",
                         lambda owner: stub if owner == "crm-assistant" else None)
-    monkeypatch.setenv("AGENT_PERMISSION_MODE", "approve_all")
+    monkeypatch.setenv("AGENT_PERMISSION_MODE", mode)
+    gated: list[str] = []
+    real_gate = ti._gate_injected_tool
+
+    def _spy_gate(fn: Any) -> Any:
+        gated.append(getattr(fn, "__name__", ""))
+        return real_gate(fn)
+
+    monkeypatch.setattr(ti, "_gate_injected_tool", _spy_gate)
     monkeypatch.setattr(get_settings(), "agents_clone_dir", str(tmp_path / "agents"))
     monkeypatch.setattr(get_settings(), "spawn_subagents_orgs", ORG)
     monkeypatch.setattr(at, "_delegating_names", lambda: frozenset())
@@ -1173,3 +1207,7 @@ def test_a_real_child_runs_its_pack_tool_under_its_own_key(tmp_path, monkeypatch
     assert any("Deal D-1 is won" in a for a in answers), answers
     assert not any("logged" in a for a in answers), "the write is not even in the pool"
     assert "fact 1" in text
+    if mode == "enforce":
+        assert "get_record" in gated, "the pack call ran behind the permission gate"
+    else:
+        assert "get_record" not in gated

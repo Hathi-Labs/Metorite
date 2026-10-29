@@ -713,20 +713,19 @@ async def _child_pack_tools(job: Any, ctx: Any, *, held: bool) -> tuple[str, Any
     return "", dataclasses.replace(job, pack_tools=tuple(kept), pack_run=run_key)
 
 
-async def _with_pack_tools(jobs: Any, ctx: Any) -> tuple[tuple[Any, ...], tuple[str, ...]]:
-    """The jobs that run, each with its pack tools, and one line for each job
-    that the build stops (OA-9c). A job with no pack passes unchanged.
+def _reads_any(jobs: Any) -> bool:
+    """True when a job of *jobs* names a pack of an owner that reads stranger
+    text. THE held answer of a spawn call (OA-9c)."""
+    return any(_reads_strangers(slug) for job in jobs for slug in job.packs)
 
-    When a job of the call names a pack of an owner that reads stranger text,
-    each pack of the call builds held. The spawn then marks the chat before
-    any child starts (:func:`_mark_before_children`), so each child of the
-    call runs held, and no pack call of a child can clear ``no_egress``.
-    """
+
+async def _build_children(
+    jobs: Any, ctx: Any, *, held: bool,
+) -> tuple[list[Any], list[str]]:
+    """Build the pack tools of each job of *jobs* (:func:`_child_pack_tools`).
+    Gives the jobs that run and one line for each job that the build stops."""
     from acb_skills import subagent_contract as sc
 
-    if not any(job.packs for job in jobs):
-        return tuple(jobs), ()
-    held = any(_reads_strangers(slug) for job in jobs for slug in job.packs)
     ready: list[Any] = []
     stopped: list[str] = []
     for job in jobs:
@@ -738,19 +737,48 @@ async def _with_pack_tools(jobs: Any, ctx: Any) -> tuple[tuple[Any, ...], tuple[
             stopped.append(sc.job_refusal(job, why))
         else:
             ready.append(built)
-    return tuple(ready), tuple(stopped)
+    return ready, stopped
 
 
-async def _mark_before_children(jobs: Any, ctx: Any) -> bool:
+async def _with_pack_tools(
+    jobs: Any, ctx: Any,
+) -> tuple[tuple[Any, ...], tuple[str, ...], bool]:
+    """The jobs that run, each with its pack tools, one line for each job that
+    the build stops, and the held answer of the call (OA-9c). A job with no
+    pack passes unchanged.
+
+    The held answer is :func:`_reads_any` of the jobs that RUN, and the spawn
+    uses it in three places: the build of each pack, the mark of the chat
+    (:func:`_mark_before_children`) and the start of each child
+    (:func:`_spawn_run`). So no pack call of a child can clear ``no_egress``.
+    The build comes first, so a job whose pack of stranger text gives no tool
+    can stop. Then no child of the call reads stranger text, and the jobs that
+    run build again open, so the one answer holds for each of them.
+    """
+    if not any(job.packs for job in jobs):
+        return tuple(jobs), (), False
+    held = _reads_any(jobs)
+    ready, stopped = await _build_children(jobs, ctx, held=held)
+    if held and not _reads_any(ready):
+        by_number = {job.number: job for job in jobs}
+        ready, again = await _build_children(
+            [by_number[job.number] for job in ready], ctx, held=False)
+        stopped.extend(again)
+        held = False
+    return tuple(ready), tuple(stopped), held
+
+
+async def _mark_before_children(jobs: Any, ctx: Any) -> None:
     """Mark the chat before a child that holds a pack of an owner that reads
     stranger text starts (WS-17 EM-G11f3, as for a run of that owner).
 
     A child's own pack call marks the child's own thread, so this mark on the
     PARENT frame is the one that holds the chat: later egress of the chat
-    asks the untrusted card, and a later delegation binds ``no_egress``.
-    True when the call holds such a pack. Then the spawn holds each child of
-    the call too (:func:`_spawn_run`, *held*), whether the write of the mark
-    worked or not. Never raises."""
+    asks the untrusted card, and a later delegation binds ``no_egress``. The
+    spawn calls it only when the held answer of the call is True
+    (:func:`_with_pack_tools`), and *jobs* are the jobs that run. The spawn
+    holds each child of the call too, whether the write of the mark worked or
+    not. Never raises."""
     from acb_skills import tool_packs
     from acb_skills.egress import mark_untrusted_session
 
@@ -761,7 +789,6 @@ async def _mark_before_children(jobs: Any, ctx: Any) -> bool:
     for owner in sorted(owners):
         with contextlib.suppress(Exception):  # the mark never costs the call
             await mark_untrusted_session(owner, ctx)
-    return bool(owners)
 
 
 async def spawn_subagents(jobs: str) -> str:
@@ -814,13 +841,14 @@ async def spawn_subagents(jobs: str) -> str:
         # OA-9c: the pack tools of each child, built on THIS frame before any
         # child starts. A job that the build stops does not run, and a call
         # with no job left uses no spawn.
-        ready, stopped = await _with_pack_tools(plan.jobs, ctx)
+        ready, stopped, held = await _with_pack_tools(plan.jobs, ctx)
         plan = dataclasses.replace(plan, jobs=ready, refused=(*plan.refused, *stopped))
         if not plan.jobs:
             return plan.notes() or "No job ran."
         if not sc.take_spawn(ctx.get("run_id")):
             return _SPAWN_LIMIT
-        held = await _mark_before_children(plan.jobs, ctx)
+        if held:
+            await _mark_before_children(plan.jobs, ctx)
         return await _spawn_run(plan, sc, artifact_context_scope, held=held)
 
 
