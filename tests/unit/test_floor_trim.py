@@ -78,7 +78,7 @@ def _inject(agents: list[Any]) -> tuple[set[str], str]:
 # ── The set and the reader ──────────────────────────────────────────────────
 
 
-def test_the_trim_set_is_the_nine_floor_tools() -> None:
+def test_the_trim_set_is_the_ten_floor_tools() -> None:
     """Mutation: lose a name, or add ``call_agent`` → red. Every name is a floor
     tool that an agent may opt out of, and none is a kept tool."""
     assert NINE == tp.FLOOR_TRIM_TOOLS
@@ -104,7 +104,7 @@ def test_off_the_orchestrator_opts_out_of_nothing(monkeypatch) -> None:
     assert ti._floor_opt_out("orchestrator", None) == frozenset()
 
 
-def test_on_the_orchestrator_opts_out_of_the_nine_and_only_it(monkeypatch) -> None:
+def test_on_the_orchestrator_opts_out_of_the_ten_and_only_it(monkeypatch) -> None:
     """The ten join the config's own opt-out. Another agent is not touched.
     Mutation: drop the agent-name check → the Projects agent loses the ten
     (``save_note`` among them) and an agent with no opt-out loses tools → red."""
@@ -120,7 +120,7 @@ def test_on_the_orchestrator_opts_out_of_the_nine_and_only_it(monkeypatch) -> No
 # ── The injection ───────────────────────────────────────────────────────────
 
 
-def test_off_the_run_holds_the_nine(orchestrator, monkeypatch) -> None:  # noqa: F811
+def test_off_the_run_holds_the_ten(orchestrator, monkeypatch) -> None:  # noqa: F811
     """Non-vacuity, and the flag-off fence: with the flag off the ten are in
     the tool list. Mutation: the trim applies with the flag off → red."""
     _flag(monkeypatch, False)
@@ -128,7 +128,7 @@ def test_off_the_run_holds_the_nine(orchestrator, monkeypatch) -> None:  # noqa:
     assert names >= NINE, sorted(NINE - names)
 
 
-def test_on_the_run_holds_none_of_the_nine_and_keeps_the_rest(orchestrator, monkeypatch) -> None:  # noqa: F811
+def test_on_the_run_holds_none_of_the_ten_and_keeps_the_rest(orchestrator, monkeypatch) -> None:  # noqa: F811
     """With the flag on, the tool list loses exactly the ten, and nothing else
     changes. ``call_agent`` stays. Mutation: trim a tenth tool, or keep one of
     the ten → red."""
@@ -146,7 +146,7 @@ def test_on_the_run_holds_none_of_the_nine_and_keeps_the_rest(orchestrator, monk
     assert not NINE & after
 
 
-def test_on_the_prompt_names_none_of_the_nine(orchestrator, monkeypatch) -> None:  # noqa: F811
+def test_on_the_prompt_names_none_of_the_ten(orchestrator, monkeypatch) -> None:  # noqa: F811
     """The persona of the orchestrator and the rules of each pack name no
     trimmed tool. (The orchestrator is a native MAF agent, so the injected-tools
     addendum is not part of its prompt: it goes to Copilot SDK agents only. The

@@ -32,7 +32,7 @@ from acb_skills import tool_packs as tp
 #: The line of each pack, in the member's terms. A change here is a reviewed
 #: change of what the model reads in every call of ``load_skill_tools``.
 WHEN = {
-    "email": "Load for mail: read, search, summarise, reply, forward, send later, drafts, follow-ups, my inbox.",
+    "email": "Load for mail: read, search, summarise, reply, send, forward, send later, drafts, follow-ups, my inbox.",
     "email-setup": "Load to set up mail: rules, settings, knowledge, writing style, senders and categories.",
     "crm-records": (
         "Load to change deals, leads and contacts, or to read a record's timeline. "
@@ -148,9 +148,9 @@ def test_the_bulk_rule_has_a_path_at_each_real_base(
 def test_the_email_when_lines_keep_the_cues_of_run_4() -> None:
     """A turn with no pack word ("What follow-ups am I waiting on?") reaches the
     pack through the catalog, so the line keeps the words that OA-7h run 4
-    measured. Mutation: drop "follow-ups" from the ``email`` line → red."""
+    measured. Mutation: drop "follow-ups" or the bare "send" from the ``email`` line → red."""
     mail = tp.PACKS["email"].when.lower()
-    for word in ("follow-ups", "forward", "send later", "summarise"):
+    for word in ("follow-ups", "forward", "send", "send later", "summarise"):
         assert word in mail, word
     setup = tp.PACKS["email-setup"].when.lower()
     for word in ("settings", "knowledge", "rules", "writing style"):

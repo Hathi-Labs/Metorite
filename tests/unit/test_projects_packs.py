@@ -530,7 +530,7 @@ def test_the_core_rules_name_the_other_packs_and_no_tool_of_them() -> None:
     # Fix round 2: plan and structure cannot fit beside the core pack, so the
     # rules send that work to call_agent, and only bulk to the loader.
     assert 'call call_agent with agent_name "projects-assistant"' in rules
-    assert "Call load_skill_tools with the pack projects-bulk" in rules
+    assert "When load_skill_tools offers the pack projects-bulk, load it" in rules
     assert "call load_skill_tools with the pack that you need" not in rules.lower()
     for slug in SLUGS[1:]:
         assert tp.PACKS[slug].rules.count("Use them yourself.") == 1

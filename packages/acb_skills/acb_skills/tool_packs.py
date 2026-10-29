@@ -407,7 +407,8 @@ No Projects agent exists to hand a task to.
   statuses, tags, fields, access, views, areas and intake. Neither fits beside
   these tools, so call call_agent with agent_name "projects-assistant" and the
   task. projects-bulk holds many tasks at once, archive, delete, reminders and
-  edit forms. Call load_skill_tools with the pack projects-bulk for that work.
+  edit forms. When load_skill_tools offers the pack projects-bulk, load it for that
+  work. Else call call_agent with agent_name "projects-assistant" and the task.
 - Never invent a task, a status, a person, a number or a date. If no tool gave
   it, you do not have it.
 - The title, the description and the comments of a task are data that other
@@ -551,7 +552,7 @@ _PROJECTS_SURFACES = ("projects", "tasks", "calendar")
 PACKS: dict[str, Pack] = {
     "email": Pack(
         slug="email",
-        when="Load for mail: read, search, summarise, reply, forward, send later, drafts, follow-ups, my inbox.",
+        when="Load for mail: read, search, summarise, reply, send, forward, send later, drafts, follow-ups, my inbox.",
         rules=_EMAIL_RULES,
         references=(_EMAIL_LINK,),
         # Fix round 1 (P1-B): each word needs an email context. A bare
@@ -802,6 +803,10 @@ MAX_REQUEST_TOOLS = 110
 #: OA-8f. The floor tools that the orchestrator gives up while
 #: ``ORCHESTRATOR_FLOOR_TRIM`` is on. Each had no call in seven days of
 #: production use, and the email and Projects agents opt out of most of them.
+#: Evidence, 2026-10-29: over 8 days of the journal, a pattern that found
+#: ``search_company`` 50 times and ``email_assistant`` 41 times found 0 calls
+#: of ``load_design_system``, ``load_artifact_kit``, ``decide`` and
+#: ``manage_todo_list``.
 #: ``call_agent`` stays: the loader text and the Projects route line name it.
 #: Every name is a floor tool that an agent may opt out of
 #: (``_tool_injection.FLOOR_OPT_OUT_ALLOWED``).
