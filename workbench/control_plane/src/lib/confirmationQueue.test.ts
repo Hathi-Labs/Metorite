@@ -197,8 +197,9 @@ describe("the answer POST: restore only on a failure a retry can pass", () => {
     expect(s.cards).toHaveLength(9);
   });
 
-  it("every 4xx drops, every 5xx retries", () => {
-    expect([400, 401, 403, 404, 409, 422].map(respondFailure)).toEqual(Array(6).fill("drop"));
+  it("a 400 or 422 retries, every other 4xx drops, every 5xx retries", () => {
+    expect([401, 403, 404, 409].map(respondFailure)).toEqual(Array(4).fill("drop"));
+    expect([400, 422].map(respondFailure)).toEqual(["retry", "retry"]);
     expect([500, 502, 503, 504].map(respondFailure)).toEqual(Array(4).fill("retry"));
     expect(respondFailure(undefined)).toBe("retry");
   });

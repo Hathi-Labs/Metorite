@@ -143,6 +143,8 @@ const PURGE_LABELS: Record<string, string> = {
   knowledge_favorites: "starred Knowledge page",
   // WS-66 RM-1: the member's private reminders, with their ledger.
   reminders: "private reminder",
+  // WS-BRIEF BR-4: a brief or close-out of the member, with its claims.
+  brief_runs: "daily brief",
   // WS-63 PZ-9: the member's settings row, with the assistant profile.
   member_settings: "personal settings record",
   // WS-66 PN-1: a browser or Home Screen app that gets the member's pushes.

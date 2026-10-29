@@ -1439,3 +1439,38 @@ DROP POLICY IF EXISTS kb_node_access_tenant_isolation ON kb_node_access;
 CREATE POLICY kb_node_access_tenant_isolation ON kb_node_access
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE jobs FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS jobs_tenant_isolation ON jobs;
+CREATE POLICY jobs_tenant_isolation ON jobs
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE unattended_incidents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE unattended_incidents FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS unattended_incidents_tenant_isolation ON unattended_incidents;
+CREATE POLICY unattended_incidents_tenant_isolation ON unattended_incidents
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE unattended_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE unattended_runs FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS unattended_runs_tenant_isolation ON unattended_runs;
+CREATE POLICY unattended_runs_tenant_isolation ON unattended_runs
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE brief_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE brief_runs FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS brief_runs_tenant_isolation ON brief_runs;
+CREATE POLICY brief_runs_tenant_isolation ON brief_runs
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE brief_claims ENABLE ROW LEVEL SECURITY;
+ALTER TABLE brief_claims FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS brief_claims_tenant_isolation ON brief_claims;
+CREATE POLICY brief_claims_tenant_isolation ON brief_claims
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

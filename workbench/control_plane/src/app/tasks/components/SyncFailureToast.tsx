@@ -25,6 +25,8 @@ export function SyncFailureToast() {
       key: `tasks-sync:${failure.at}`,
       variant: "error",
       title: failure.message,
+      // A failure that can run again offers it (UXD-1).
+      ...(failure.retry ? { action: { label: "Retry", onClick: failure.retry } } : {}),
     });
     clear();
   }, [failure, toast, clear]);

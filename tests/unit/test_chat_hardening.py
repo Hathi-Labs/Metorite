@@ -174,7 +174,10 @@ def test_sub_agent_events_persisted_and_replayed():
     route = (REPO / "workbench/control_plane/src/app/api/agent/chat/route.ts").read_text(encoding="utf-8")
     # Server-side accumulation + attachment to the persisted delegate tool.
     assert "subAgent.text +=" in route
-    assert "subAgentTools: subAgent.tools" in route
+    # WS-67 OA-9b hardening: the fold moved into ``takeHandoff`` (chatStream.ts).
+    assert "takeHandoff(name, subAgent)" in route
+    stream = (REPO / "workbench/control_plane/src/lib/chatStream.ts").read_text(encoding="utf-8")
+    assert "subAgentTools: acc.tools" in stream
     assert "...subAgentFields," in route
 
     hook = (REPO / "workbench/control_plane/src/hooks/useAgentChat.ts").read_text(encoding="utf-8")

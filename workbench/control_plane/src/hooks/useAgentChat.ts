@@ -77,6 +77,7 @@ import {
 } from "@/lib/chatEdit";
 import { cardAnswerFrom, cardAnswerMarker, CARD_ANSWER_EVENT, type CardAnswer } from "@/lib/cardAnswer";
 import { isQuietArtifact } from "@/lib/artifactCards";
+import { cancelRun, stopConfirmed, stopFailed, stopStarted } from "@/lib/chatStop";
 
 // Re-export types for backward compatibility with AgentChat.tsx imports.
 export type { ChatMessage, ToolEvent };
@@ -226,8 +227,13 @@ interface UseAgentChatReturn {
   steerMessage: (content: string, opts?: { cardAnswer?: CardAnswer | null }) => Promise<SteerOutcome>;
   clearMessages: () => void;
   /** Resolves when the server has answered the cancel, so an edit can wait
-   *  for the old run to stop before it starts the new one. */
-  stopGeneration: () => Promise<void>;
+   *  for the old run to stop before it starts the new one. It resolves with
+   *  the reason of a failed cancel, else null (UXD-4). */
+  stopGeneration: () => Promise<string | null>;
+  /** A Stop waits for the server's answer (UXD-4). */
+  stopping: boolean;
+  /** Why the last Stop did not stop the run, or null. */
+  stopError: string | null;
   /** Replace the messages array (used to hydrate from Postgres on mount). */
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   /** True while polling is actively recovering a stream that was interrupted
@@ -459,7 +465,7 @@ export function useAgentChat({
       // effect writes, exactly as they were. Only the loading state moves.
       setSessionState(threadId, (prev) => {
         if (supersedes) {
-          return { ...prev, isLoading: true, error: null, abortController: controller };
+          return { ...prev, isLoading: true, error: null, abortController: controller, stopError: null };
         }
         if (!held) {
           return {
@@ -479,7 +485,7 @@ export function useAgentChat({
         const idx = prev.messages.findIndex((m) => m.id === userMsg.id);
         const messages = prev.messages.map((m) => (m.id === userMsg.id ? userMsg : m));
         messages.splice(idx + 1, 0, assistantMsg);
-        return { ...prev, messages, isLoading: true, error: null, abortController: controller };
+        return { ...prev, messages, isLoading: true, error: null, abortController: controller, stopError: null };
       });
 
       // The one run state: a run starts (`lib/runStatus.ts`). A card of an
@@ -1500,38 +1506,39 @@ export function useAgentChat({
     void attach(ctrl, () => ctrl.signal.aborted);
   }, [wantAttach, attach]);
 
-  const stopGeneration = useCallback((): Promise<void> => {
-    const current = getSessionState(threadId);
-    // 1. Abort the local SSE fetch (stops the browser reading the stream).
-    current.abortController?.abort();
-    // 2. Tell the backend to ACTUALLY cancel the run.  Without this the agent
+  const stopGeneration = useCallback((): Promise<string | null> => {
+    // 1. Tell the backend to ACTUALLY cancel the run.  Without this the agent
     //    keeps executing detached server-side (burning tokens, writing files)
-    //    because it's decoupled from the HTTP response lifecycle.  The Stop
-    //    button does not wait on it. An edit awaits the returned promise, so
-    //    the new run starts only after the old one stopped.
-    const settled = fetch("/api/agent/cancel", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ threadId }),
-      keepalive: true,
-    }).then(() => undefined, () => undefined);
-    // 3. Immediately clear loading/recovering state so the UI reflects idle
-    //    (don't wait for the next polling tick to clear the stale flag).
-    setSessionState(threadId, (prev) => ({
-      ...prev,
-      abortController: null,
-      isLoading: false,
-      recovering: false,
-      runStatus: "idle",
-      // A Stop asks for no follow-up, and a steer answer still on its way
-      // owes none (`stopEpoch`). The server answers every tab "stopped".
-      steerOwed: false,
-      stopEpoch: (prev.stopEpoch ?? 0) + 1,
-    }));
-    cancelFollowUp(threadId);
-    dispatchRun(threadId, { type: "stop", at: Date.now() });
-    clearCardLog(threadId);
-    return settled;
+    //    because it's decoupled from the HTTP response lifecycle. The chat
+    //    says "Stopping" until the server answers, and never says "stopped"
+    //    for a cancel that failed (UXD-4, `lib/chatStop.ts`). An edit awaits
+    //    the returned promise, so the new run starts only after the old one
+    //    stopped. It resolves with the reason of a failure, else null.
+    // The stream this Stop is for. A run that ends by itself in the wait,
+    // and a new send after it, must not be stopped by this late answer.
+    const stoppedStream = getSessionState(threadId).abortController;
+    setSessionState(threadId, stopStarted);
+    return cancelRun(threadId).then((out) => {
+      if (!out.ok) {
+        // The run stays live: its stream keeps reading, and Stop tries again.
+        setSessionState(threadId, (prev) => stopFailed(prev, out.reason));
+        return out.reason;
+      }
+      const streamNow = getSessionState(threadId).abortController;
+      if (streamNow && streamNow !== stoppedStream) {
+        setSessionState(threadId, (prev) => ({ ...prev, stopping: false }));
+        return null;
+      }
+      // 2. Abort the local SSE fetch (stops the browser reading the stream).
+      getSessionState(threadId).abortController?.abort();
+      // 3. Clear loading/recovering state so the UI reflects idle (don't wait
+      //    for the next polling tick to clear the stale flag).
+      setSessionState(threadId, stopConfirmed);
+      cancelFollowUp(threadId);
+      dispatchRun(threadId, { type: "stop", at: Date.now() });
+      clearCardLog(threadId);
+      return null;
+    });
   }, [threadId]);
 
   // ── Reconnection & cross-device polling ─────────────────────────────
@@ -1858,5 +1865,6 @@ export function useAgentChat({
   return {
     messages, isLoading, error, sendMessage, steerMessage, clearMessages, stopGeneration, setMessages,
     recovering, runStatus, outage, retryHeld, run: sessionState.run,
+    stopping: !!sessionState.stopping, stopError: sessionState.stopError ?? null,
   };
 }

@@ -73,6 +73,9 @@ interface ComposePanelProps {
    *  user doesn't silently lose what they'd attached before undoing. */
   initialAttachments?: SendAttachment[];
   initialArtifacts?: ArtifactAttachmentRef[];
+  /** Why the last send of this message failed. It shows next to Send when
+   *  the composer opens again (UXD-2). */
+  initialSendError?: string;
 }
 
 export function ComposePanel({
@@ -93,6 +96,7 @@ export function ComposePanel({
   messageId,
   initialAttachments,
   initialArtifacts,
+  initialSendError,
 }: ComposePanelProps) {
   const [to, setTo] = useState(defaultTo);
   const [cc, setCc] = useState(defaultCc);
@@ -239,6 +243,9 @@ export function ComposePanel({
     // compose passes none, so this stays empty as before.
     setAttachments(initialAttachments ?? []);
     setArtifacts(initialArtifacts ?? []);
+    // A failed send opens again with its reason, and Send tries again.
+    setSendError(initialSendError ?? null);
+    setSending(false);
     setAiOpen(false);
     setAiInstruction("");
     ai.reset(); // a new compose window starts a fresh drafting session

@@ -278,7 +278,10 @@ describe("the hook", () => {
     expect(followUpDue({ steerOwed: false, isLoading: false, recovering: false, outage: false }, "copilot")).toBe(false);
     expect(followUpDue({ steerOwed: true, isLoading: false, recovering: false, outage: false }, "litellm")).toBe(false);
     expect(hook).toMatch(/if \(!followUpDue\(st, modeRef\.current\)\) return;\s*setSessionState\(threadId, \(prev\) => \(\{ \.\.\.prev, steerOwed: false \}\)\);\s*void sendMessage\("", \{ steerFollowUp: true \}\);/);
-    expect(hook).toMatch(/runStatus: "idle",\s*steerOwed: false,/);
+    // The Stop's idle step lives in `lib/chatStop.ts` since UXD-4.
+    const stop = code(read("./chatStop.ts"));
+    expect(stop).toMatch(/runStatus: "idle",[\s\S]*?steerOwed: false,/);
+    expect(hook).toMatch(/setSessionState\(threadId, stopConfirmed\);/);
   });
 
   it("a steer that started a run follows that response, in place of its bubble", () => {
@@ -429,7 +432,8 @@ describe("a Stop asks for no follow-up (round 2 of the review of #920)", () => {
 
   it("the hook's Stop cancels the follow-up and moves the stop count", () => {
     const hook = code(read("../hooks/useAgentChat.ts"));
-    expect(hook).toMatch(/steerOwed: false,\s*stopEpoch: \(prev\.stopEpoch \?\? 0\) \+ 1,\s*\}\)\);\s*cancelFollowUp\(threadId\);/);
+    expect(code(read("./chatStop.ts"))).toMatch(/steerOwed: false,\s*stopEpoch: \(prev\.stopEpoch \?\? 0\) \+ 1,/);
+    expect(hook).toMatch(/setSessionState\(threadId, stopConfirmed\);\s*cancelFollowUp\(threadId\);/);
   });
 });
 
