@@ -447,6 +447,27 @@ class Settings(BaseSettings):
     # gate `enforcement-flip`. Fence: tests/unit/test_reminders_r8.py.
     calendar_reminders: bool = False
 
+    # ── The shared job queue (WS-BRIEF BR-1a, 2026-10-28) ───────────────────
+    #
+    # `job_queue` is the switch of the job worker in the gateway, default
+    # OFF. With it off, `start_job_worker()` starts no task and a tick claims
+    # nothing. BR-1a adds no producer, so the switch only stops an idle poll.
+    # The one reader is `worker_enabled()` in gateway/jobs/worker.py.
+    # Reference: docs/job_queue.md. A flip on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_job_queue.py.
+    job_queue: bool = False
+
+    # ── The ledger of unattended runs (WS-BRIEF AUTO-2, 2026-10-28) ─────────
+    #
+    # `unattended_ledger` is the switch of the ledger, default OFF. With it
+    # off, gateway/jobs/unattended.py writes no row and Reach behaves as
+    # before. With it on, a Reach brief commits a ledger row before the send,
+    # so a restart never sends it twice. The one reader is
+    # `ledger_enabled()` in gateway/jobs/unattended.py. Reference:
+    # docs/job_queue.md §9. A flip on a box is gate `enforcement-flip`.
+    # Fence: tests/unit/test_unattended_ledger.py.
+    unattended_ledger: bool = False
+
     # ── The Knowledge app (WS-61 KB-1, 2026-10-15) ──────────────────────────
     #
     # `/knowledge` serves an organization only when both settings allow it.

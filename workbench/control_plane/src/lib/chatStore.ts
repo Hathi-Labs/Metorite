@@ -151,6 +151,12 @@ export interface SessionStreamState {
   /** Counts the Stops of this thread. A steer answer that comes back after a
    *  Stop owes no follow-up (round 2 of the review of #920). */
   stopEpoch?: number;
+  /** A Stop waits for the server's answer (UXD-4). The Stop button shows
+   *  that it is working, and the run stays live in the UI until then. */
+  stopping?: boolean;
+  /** Why the last Stop did not stop the run. Shown beside the button; the
+   *  next Stop tries again (UXD-4). */
+  stopError?: string | null;
   /** The ONE run state of this chat (`lib/runStatus.ts`). Every indicator
    *  of an open chat reads it: the status row, the composer's Stop, the
    *  header dot and the placeholder. Written only through `dispatchRun`. */

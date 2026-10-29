@@ -42,6 +42,8 @@ export type ConfirmationAnswer = "APPROVE" | "REJECT" | RowsApproval | ReplyAppr
 
 interface ConfirmationQueueProps {
   cards: PendingConfirmation[];
+  /** Why the last answer of a card failed, by key (UXD-3). */
+  errors?: ReadonlyMap<string, string>;
   onAnswer: (card: PendingConfirmation, answer: ConfirmationAnswer) => void;
   /** The card to show first. Tests and the visual rig set it. */
   initialIndex?: number;
@@ -72,7 +74,7 @@ export function pickShown(cards: PendingConfirmation[], shown: Shown): number {
   return found >= 0 ? found : shownIndex(shown.index, cards.length);
 }
 
-export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }: ConfirmationQueueProps) {
+export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0 }: ConfirmationQueueProps) {
   const [shown, setShown] = useState<Shown>({ key: null, index: initialIndex });
   // The member's ticks of every card with rows, by key. The queue holds
   // them, so a page away and back keeps them (PR #691 review). The logic is
@@ -97,6 +99,7 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
       detail={card.detail}
       context={card.context}
       fenced={card.fenced}
+      error={errors?.get(card.key)}
       rows={view.rows}
       onToggle={(id, on) => tick({ type: "toggle", card, id, on })}
       position={{

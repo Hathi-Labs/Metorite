@@ -1996,6 +1996,14 @@ async def register_agent(
             detail="Agent name must be 2-50 lowercase letters, digits, or hyphens (no leading/trailing hyphens).",
         )
 
+    # WS-67 OA-9b hardening: the name of an internal agent is reserved. A
+    # registered ``worker`` would share ``cache_root/worker`` with the spawn child.
+    if req.name.strip().lower() in {a["name"] for a in _INTERNAL_AGENTS}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Agent name {req.name!r} is reserved for the platform.",
+        )
+
     dynamic = _load_dynamic_agents()
     all_names = {a["name"] for a in _AGENT_REGISTRY} | {a["name"] for a in dynamic}
     if req.name in all_names:

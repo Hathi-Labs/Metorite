@@ -511,6 +511,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.reminder_loop_skipped", error=str(exc))
 
+    # Start the shared job worker (gateway/jobs/worker.py; reference
+    # docs/job_queue.md, WS-BRIEF BR-1a). Every 15 s it claims and runs the
+    # due jobs of each org. Dark by default: with JOB_QUEUE off it starts no
+    # task. Fence: test_job_queue.py.
+    try:
+        from gateway.jobs.worker import start_job_worker
+        _log.info("gateway.job_worker", started=await start_job_worker())
+    except Exception as exc:
+        _log.warning("gateway.job_worker_skipped", error=str(exc))
+
     # Start the Knowledge embed sweep (gateway/kb_index/sweep.py; spec
     # knowledge_base.md §6.4, WS-61 KB-3c). Every 120 s it embeds the chunks
     # that have no vector, for each org on KNOWLEDGE_EMBED. The kill switch
@@ -669,6 +679,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.reminders.loop import stop_reminder_loop
         await stop_reminder_loop()
+    except Exception:
+        pass
+
+    # Stop the shared job worker and wait for a tick in progress.
+    try:
+        from gateway.jobs.worker import stop_job_worker
+        await stop_job_worker()
     except Exception:
         pass
 

@@ -1468,6 +1468,7 @@ export default function EmailPage() {
         messageId={composeDefaults?.messageId}
         initialAttachments={composeDefaults?.attachments}
         initialArtifacts={composeDefaults?.artifacts}
+        initialSendError={composeDefaults?.sendError}
       />
 
       {/* Add a mailbox — the same choices as the empty state */}
