@@ -70,7 +70,7 @@ test("every app icon in the folded rail keeps 18px while the rail scrolls", asyn
   // The case under test: the app list is taller than the window.
   expect(await nav(page).evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
   // The folded rail's bar takes no width, so the icons sit in its centre.
-  expect(await nav(page).evaluate((el) => el.offsetWidth - el.clientWidth)).toBe(0);
+  expect(await nav(page).evaluate((el) => (el as HTMLElement).offsetWidth - el.clientWidth)).toBe(0);
 
   const icons = nav(page).locator("a[data-nav-row] > svg, [data-nav-add-apps] button > svg");
   expect(await icons.count()).toBeGreaterThan(3);
@@ -85,7 +85,7 @@ test("an icon keeps 18px even when a bar takes the rail's width", async ({ page 
   await nav(page).evaluate((el) => {
     el.style.scrollbarWidth = "thin";
   });
-  expect(await nav(page).evaluate((el) => el.offsetWidth - el.clientWidth)).toBeGreaterThan(0);
+  expect(await nav(page).evaluate((el) => (el as HTMLElement).offsetWidth - el.clientWidth)).toBeGreaterThan(0);
 
   const icons = nav(page).locator("a[data-nav-row] > svg, [data-nav-add-apps] button > svg");
   const widths = await icons.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().width));
