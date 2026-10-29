@@ -70,7 +70,14 @@ from tests.unit.test_crm_reset_r8 import (  # noqa: F401
     _seed,
     x0,
 )
-from tests.unit.test_crm_sync_engine_r8 import ns  # noqa: F401
+from tests.unit.test_crm_sync_engine_r8 import (  # noqa: F401
+    ZOHO_A,
+    _import_hidden,
+    ns,
+    seed_basic,
+    stamp,
+)
+from tests.unit.test_crm_sync_engine_r8 import _connect as _connect_engine
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
     app_engine,
@@ -147,16 +154,35 @@ def _done_cursors(p: Any, org: str) -> None:
                 {"o": org, "m": f"zoho:{entity}"})
 
 
+def _reads_ended(p: Any, org: str) -> None:
+    """Each imported cursor of *org* says that a read ended now
+    (``checked_at``), as each read of a sync run writes it at its end."""
+    from datetime import UTC, datetime
+
+    _exec(p, "UPDATE crm_sync_cursors SET cursor_state = COALESCE(cursor_state, "
+             "'{}'::jsonb) || jsonb_build_object('checked_at', CAST(:at AS text)) "
+             "WHERE organization_id = CAST(:o AS uuid) AND module LIKE 'zoho%' "
+             "AND position('deleted' in module) = 0 AND initial_done_at IS NOT NULL",
+          o=org, at=datetime.now(UTC).isoformat())
+
+
 def _final_run(p: Any, org: str, *, start_min: int = 5, end_min: int | None = 4,
                status: str = "ok", counts: dict[str, Any] | None = None,
                final: bool = True) -> str:
     """One run of *org*, the newest. ``end_min`` None leaves it open.
 
     With *final* the row carries the mark of the final sync of the switch
-    (``counts["run_final"]``, round 3), as ``engine.acquire(final=True)``
-    writes it. ``final=False`` is a scheduled or a one-module run."""
+    (``counts["run_final"]``, round 3) with the time of its plan, as
+    ``engine.acquire(final=True)`` writes it. Each imported cursor then says
+    that its read ended in this run (round 4). ``final=False`` is a
+    scheduled or a one-module run, and it reads nothing here."""
+    from datetime import UTC, datetime, timedelta
+
     if final:
-        counts = {**(counts or {}), "run_final": {"final": 1}}
+        planned = datetime.now(UTC) - timedelta(minutes=start_min)
+        counts = {**(counts or {}), "run_final": {
+            "final": 1, "planned_ms": int(planned.timestamp() * 1000)}}
+        _reads_ended(p, org)
     with p.admin_engine.begin() as c:
         conn = c.execute(text(
             "SELECT id FROM integration_connections WHERE organization_id = "
@@ -922,6 +948,7 @@ async def test_records_to_retry_and_a_short_read_each_block(zb, app_engine) -> N
     _exec(zb, "UPDATE crm_sync_cursors SET cursor_state = CAST(:s AS jsonb) "
               "WHERE organization_id = CAST(:o AS uuid) AND module = 'zoho:contact'",
           o=zb.org_a, s=json.dumps({"in_progress": False, "short_by": 3}))
+    _reads_ended(zb, zb.org_a)  # the final run read both again (round 4)
     r = await _switch(zb)
     assert r.status_code == 409, r.text
     assert {(m["key"], m["reason"]) for m in r.json()["detail"]["modules"]} == {
@@ -1080,7 +1107,7 @@ async def test_phase_one_starts_the_final_run_and_the_status_follows_it(zb, app_
     assert handle.final is True
     stored = _one(zb, "SELECT counts -> 'run_final' FROM crm_sync_runs WHERE "
                       "id = CAST(:i AS uuid)", i=run_id)[0]
-    assert stored == {"final": 1}
+    assert stored["final"] == 1 and isinstance(stored["planned_ms"], int)
     status = (await _call(zb, admin, "GET", "/crm/cutover/status")).json()
     assert (status["state"], status["run_id"]) == ("running", run_id)
     # A second start while it runs: the run lock refuses it.
@@ -1100,6 +1127,7 @@ async def test_phase_one_starts_the_final_run_and_the_status_follows_it(zb, app_
     assert newer != run_id and len(zb.final_runs) == 2
     _exec(zb, "UPDATE crm_sync_runs SET status = 'ok', finished_at = now() "
               "WHERE id = CAST(:i AS uuid)", i=newer)
+    _reads_ended(zb, zb.org_a)  # the reads of the final run ended
     # The first run is not the newest now, so it is not the final sync.
     before = _hashes(zb)
     stale = await _switch(zb, _body(zb, run_id=run_id))
@@ -1129,6 +1157,7 @@ async def test_a_fresh_one_module_run_is_not_the_final_sync(zb, app_engine) -> N
     assert r.status_code == 409 and r.json()["detail"]["code"] == "run_open"
     _exec(zb, "UPDATE crm_sync_runs SET status = 'ok', finished_at = now() "
               "WHERE id = CAST(:i AS uuid)", i=final)
+    _reads_ended(zb, zb.org_a)  # the reads of the final run ended
     before = _hashes(zb)
     for run_id in (one_module, None):
         r = await _switch(zb, _body(zb, run_id=run_id))
@@ -1227,10 +1256,10 @@ async def test_a_module_that_the_final_sync_completed_does_not_block(zb, app_eng
 _MODULES = ("module:Install_Base", "module:Products")
 
 
-@pytest.fixture
-def mzc(mz, monkeypatch):  # noqa: F811 — a fixture
-    """``mz`` with the cutover list on. Phase 3 is a stub here: these tests
-    make no call to the accounts host of the fake Zoho."""
+def _cutover_on(p: Any, monkeypatch: Any) -> None:
+    """The cutover list on, for the engine worlds. Phase 3 is a stub: these
+    tests make no call to the accounts host of a fake Zoho. Phase 1 keeps
+    its run handle in ``p.final_runs``, and the test runs it."""
     from acb_common import get_settings
     from gateway.routes.crm import cutover
 
@@ -1242,8 +1271,21 @@ def mzc(mz, monkeypatch):  # noqa: F811 — a fixture
     monkeypatch.setattr(cutover, "disconnect_zoho_reporting", _no_close)
     handles: list[Any] = []
     monkeypatch.setattr(cutover, "_start_final_run", handles.append)
-    mz[0].final_runs = handles
+    p.final_runs = handles
+
+
+@pytest.fixture
+def mzc(mz, monkeypatch):  # noqa: F811 — a fixture
+    """``mz`` (the fake Zoho of the module suite) with the cutover list on."""
+    _cutover_on(mz[0], monkeypatch)
     return mz
+
+
+@pytest.fixture
+def nsc(ns, monkeypatch):  # noqa: F811 — a fixture
+    """``ns`` (the fake Zoho of the engine suite) with the cutover list on."""
+    _cutover_on(ns, monkeypatch)
+    return ns
 
 
 async def _imported(p: Any, a: Any) -> None:
@@ -1291,16 +1333,18 @@ async def test_a_final_run_that_hit_the_reserve_is_not_the_final_sync(
     p, a, _b = mzc
     await _imported(p, a)
     admin = _admin(p.org_a)
-    normal = await _engine_run(p.org_a)
-    assert normal.status == "ok" and set(_MODULES) <= set(normal.counts)
-    assert await _final_state(p, normal.run_id) == {}, "a normal run reads each key"
+    # Round 4: a healthy final run ends a read of every key, so phase 2 finds
+    # nothing. The proof is the end of each read, not a key in the counts.
+    healthy = await engine.execute(await engine.acquire(p.org_a, final=True))
+    assert healthy.status == "ok" and set(_MODULES) <= set(healthy.counts)
+    assert await _final_state(p, healthy.run_id) == {}, "a final run reads each key"
 
     monkeypatch.setattr(engine, "MODULES_RESERVE", 10**9)  # the reserve, at once
     # A final sync (round 3 reads each module now), and the reserve still stops it.
     final = await engine.execute(await engine.acquire(p.org_a, final=True))
     monkeypatch.setattr(engine, "MODULES_RESERVE", 20)
     assert (final.status, final.error) == ("ok", None)
-    assert final.counts[engine.RUN_FINAL_KEY] == {"final": 1}
+    assert final.counts[engine.RUN_FINAL_KEY]["final"] == 1
     assert not set(_MODULES) & set(final.counts), final.counts
     before, settings = _hashes(p), _mode_and_zoho(p)
     assert settings == ("mirror", None, "connected")
@@ -1352,8 +1396,9 @@ async def test_a_one_module_run_is_not_the_final_sync(mzc, app_engine) -> None: 
     stored = _one(p, "SELECT counts -> 'run_only' FROM crm_sync_runs WHERE "
                      "id = CAST(:i AS uuid)", i=alone.run_id)[0]
     assert stored == {"module:Products": 1}
+    # The run has no plan time of a final run, so phase 2 takes no read of it
+    # (round 4), and each key outside the one module is not read in any case.
     state = await _final_state(p, alone.run_id)
-    assert "module:Products" not in state
     assert {"deals", "contacts", "organizations", "leads", "module:Install_Base"} <= {
         k for k, why in state.items() if why == "not_read"}, state
     before, settings = _hashes(p), _mode_and_zoho(p)
@@ -1378,8 +1423,6 @@ async def test_the_final_run_reads_a_module_read_ten_minutes_ago(mzc, app_engine
     module now, so the edit is in Metorite after the switch."""
     from gateway.crm_sync import engine
 
-    from tests.unit.test_crm_sync_engine_r8 import stamp
-
     _assert_non_priv(app_engine)
     p, a, _b = mzc
     await _imported(p, a)
@@ -1401,7 +1444,7 @@ async def test_the_final_run_reads_a_module_read_ten_minutes_ago(mzc, app_engine
     assert handle.final is True
     final = await engine.execute(handle)
     assert final.status == "ok"
-    assert final.counts[engine.RUN_FINAL_KEY] == {"final": 1}
+    assert final.counts[engine.RUN_FINAL_KEY]["final"] == 1
     assert final.counts["module:Products"]["upserted"] == 1
     r = await _request(p, admin, "POST", "/crm/cutover",
                        {"confirm": "SWITCH", "run_id": final.run_id})
@@ -1415,16 +1458,219 @@ def test_a_module_that_waits_for_its_fields_is_not_read() -> None:
     (``fields_pending``) as ``skipped``, and reads no record of it. That can
     follow an import: a reconnect lost the module's scope for a while, then
     discovery ran short of credits. Phase 2 finds it ``not_read``."""
+    from datetime import UTC, datetime, timedelta
     from types import SimpleNamespace
 
     from gateway.routes.crm import cutover
 
-    done = SimpleNamespace(initial_done_at="2026-10-29T00:00:00+00:00", state={})
+    planned = datetime(2026, 10, 30, 10, 0, tzinfo=UTC)
+    ended = {"checked_at": (planned + timedelta(seconds=5)).isoformat()}
+    done = SimpleNamespace(initial_done_at="2026-10-29T00:00:00+00:00", state=ended)
     cursors = {"zoho:module:Products": done, "zoho:module:Install_Base": done,
                "zoho:deal": done}
     profile = [{"api_name": "Products", "generic": True, "fields_pending": True},
                {"api_name": "Install_Base", "generic": True}]
-    run = SimpleNamespace(counts={"module:Products": {"skipped": 1},
-                                  "module:Install_Base": {"seen": 0},
-                                  "deals": {"seen": 0}})
+    run = SimpleNamespace(counts={
+        "module:Products": {"skipped": 1}, "module:Install_Base": {"seen": 0},
+        "deals": {"seen": 0},
+        "run_final": {"final": 1, "planned_ms": int(planned.timestamp() * 1000)}})
     assert cutover._not_read(run, cursors, profile) == ["module:Products"]
+
+
+def test_the_proof_of_a_read_is_its_end_in_this_run() -> None:
+    """Round 4. A key in ``counts`` proves no read: every core key is always
+    there, and an import inherits module keys. A cursor whose read ended
+    before the plan of the final run (or never) was not read. A run with no
+    plan time read nothing, as far as the switch knows."""
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from gateway.routes.crm import cutover
+
+    planned = datetime(2026, 10, 30, 10, 0, tzinfo=UTC)
+    after = SimpleNamespace(initial_done_at="x", state={
+        "checked_at": (planned + timedelta(milliseconds=1)).isoformat()})
+    before = SimpleNamespace(initial_done_at="x", state={
+        "checked_at": (planned - timedelta(minutes=1)).isoformat()})
+    never = SimpleNamespace(initial_done_at="x", state={})
+    cursors = {"zoho:deal": after, "zoho:company": before, "zoho:lead": never,
+               "zoho:module:Products": before, "zoho:module:Gone": before}
+    profile = [{"api_name": "Products", "generic": True}]
+    counts = {"deals": {"seen": 0}, "organizations": {"seen": 0}, "leads": {"seen": 0},
+              "module:Products": {"seen": 3}}
+    final = SimpleNamespace(counts={
+        **counts, "run_final": {"final": 1, "planned_ms": int(planned.timestamp() * 1000)}})
+    assert cutover._not_read(final, cursors, profile) == [
+        "leads", "module:Products", "organizations"]
+    assert cutover._not_read(SimpleNamespace(counts=counts), cursors, profile) == [
+        "deals", "leads", "module:Products", "organizations"]
+
+
+# ── Round 4: the final run reads by offset, the walk, the roles queue ───────
+
+
+def _module_names(p: Any, module: str) -> dict[str, Any]:
+    return {r[0]: r[1] for r in _q(p, "SELECT ext_id, name FROM crm_module_records "
+                                      "WHERE organization_id = CAST(:o AS uuid) "
+                                      "AND module = :m", o=p.org_a, m=module)}
+
+
+async def test_the_final_run_reads_an_offset_paged_module_in_full(mzc, app_engine) -> None:  # noqa: F811
+    """Round 4, P2-1. Install_Base hides ``Modified_Time``, so it pages by
+    offset and has no cursor to move. A record added after its last full
+    read reaches Metorite only by a full read. The final run makes one."""
+    from gateway.crm_sync import engine
+
+    _assert_non_priv(app_engine)
+    p, a, _b = mzc
+    _seed_modules(a)
+    a.hide.add("Install_Base")
+    await _connect_all(p, p.org_a, a)
+    assert (await _engine_run(p.org_a)).status == "ok"
+    a.add("Install_Base", "i2", 30, Name="A-Install 2")
+    final = await engine.execute(await engine.acquire(p.org_a, final=True))
+    assert final.status == "ok"
+    assert "i2" in _module_names(p, "Install_Base"), "the final run skipped the module"
+    assert await _final_state(p, final.run_id) == {}
+
+
+async def test_a_stopped_offset_read_starts_again_from_page_one(
+    mzc, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """Round 4, P3-a. A re-read by offset stopped at the reserve after page
+    1. A normal run goes on from page 2. Then a member edits a record of page
+    1 in Zoho. The final run reads from page 1 again, so the edit arrives."""
+    from gateway.crm_sync import engine
+
+    _assert_non_priv(app_engine)
+    p, a, _b = mzc
+    _seed_modules(a)
+    a.hide.add("Install_Base")
+    for i in range(2, 5):  # i1 from the seed and three more: two pages of 2
+        a.add("Install_Base", f"i{i}", 30 + i, Name=f"A-Install {i}")
+    await _connect_all(p, p.org_a, a)
+    assert (await _engine_run(p.org_a)).status == "ok"
+    _exec(p, "UPDATE crm_sync_cursors SET last_reconciled_at = now() - interval "
+             "'25 hours' WHERE organization_id = CAST(:o AS uuid) "
+             "AND module = 'zoho:module:Install_Base'", o=p.org_a)
+
+    def low_after_first_page(_reads: int) -> None:
+        monkeypatch.setattr(engine, "MODULES_RESERVE", 10**9)
+        a.on_read.pop("Install_Base", None)
+
+    a.on_read["Install_Base"] = low_after_first_page
+    assert (await _engine_run(p.org_a)).status == "ok"
+    monkeypatch.setattr(engine, "MODULES_RESERVE", 20)
+    state = _one(p, "SELECT cursor_state FROM crm_sync_cursors WHERE organization_id = "
+                    "CAST(:o AS uuid) AND module = 'zoho:module:Install_Base'", o=p.org_a)[0]
+    assert state["in_progress"] is True and state.get("reread") is True, state
+    record = next(r for r in a.data["Install_Base"] if r["id"] == "i1")
+    record["Name"] = "A-Install EDITED"
+    final = await engine.execute(await engine.acquire(p.org_a, final=True))
+    assert final.status == "ok"
+    assert _module_names(p, "Install_Base")["i1"] == "A-Install EDITED"
+    assert await _final_state(p, final.run_id) == {}
+
+
+async def test_an_import_kind_final_run_inherits_no_module_read(
+    mzc, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """Round 4, P3-b. The admin leaves out a core key whose first import is
+    open, so the final run is of kind ``import``. It inherits the module keys
+    of the import that stopped before it. The final run then reads no module
+    (the reserve). The module keys sit in its counts, but no read ENDED, so
+    phase 2 finds each module ``not_read``."""
+    from gateway.crm_sync import engine
+
+    _assert_non_priv(app_engine)
+    p, a, _b = mzc
+    await _imported(p, a)
+    with p.admin_engine.begin() as c:
+        conn = c.execute(text(
+            "SELECT id FROM integration_connections WHERE organization_id = "
+            "CAST(:o AS uuid) LIMIT 1"), {"o": p.org_a}).scalar()
+        c.execute(text(
+            "INSERT INTO crm_sync_runs (organization_id, connection_id, kind, status, "
+            "started_at, finished_at, heartbeat_at, counts) VALUES (CAST(:o AS uuid), "
+            ":c, 'import', 'stopped', now() - interval '2 hours', now() - interval "
+            "'110 minutes', now() - interval '110 minutes', CAST(:k AS jsonb))"),
+            {"o": p.org_a, "c": conn, "k": json.dumps(
+                {key: {"seen": 2, "upserted": 2} for key in _MODULES})})
+    _exec(p, "UPDATE crm_sync_cursors SET initial_done_at = NULL WHERE "
+             "organization_id = CAST(:o AS uuid) AND module = 'zoho:lead'", o=p.org_a)
+    monkeypatch.setattr(engine, "MODULES_RESERVE", 10**9)
+    final = await engine.execute(await engine.acquire(p.org_a, final=True))
+    monkeypatch.setattr(engine, "MODULES_RESERVE", 20)
+    assert (final.kind, final.status) == ("import", "ok")
+    assert set(_MODULES) <= set(final.counts), "the import did not inherit the keys"
+    state = await _final_state(p, final.run_id)
+    assert {key: state.get(key) for key in _MODULES} == dict.fromkeys(_MODULES, "not_read")
+
+
+def _company_name(p: Any, ext_id: str) -> Any:
+    return _one(p, "SELECT name FROM crm_companies WHERE organization_id = "
+                   "CAST(:o AS uuid) AND ext_id = :e", o=p.org_a, e=ext_id)[0]
+
+
+async def test_the_final_run_walks_an_offset_paged_core_entity(nsc, app_engine) -> None:  # noqa: F811
+    """Round 4, P2-2. Zoho hides ``Modified_Time`` on Accounts, so a normal
+    run reads it only on the walk of every 24 hours. The final run walks it
+    now, so an edit of the last day arrives, and phase 2 finds every key
+    read."""
+    from gateway.crm_sync import engine
+
+    _assert_non_priv(app_engine)
+    p = nsc
+    await _import_hidden(p)
+    assert _company_name(p, "Aa1") == "Co-1"
+    record = next(r for r in ZOHO_A.data["Accounts"] if r["id"] == "Aa1")
+    record["Account_Name"] = "Co-1 EDITED"
+    reads = ZOHO_A.reads.get("Accounts", 0)
+    handle = await engine.acquire(p.org_a, final=True)
+    assert "company" in handle.reconcile
+    final = await engine.execute(handle)
+    assert final.status == "ok"
+    assert ZOHO_A.reads.get("Accounts", 0) > reads, "the final run did not read Accounts"
+    assert _company_name(p, "Aa1") == "Co-1 EDITED"
+    assert await _final_state(p, final.run_id) == {}
+
+
+async def test_deals_that_wait_for_their_contacts_block_unless_left_out(
+    nsc, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """Round 4, P2-3. A deal changed just before the switch, so it waits at
+    the end of the roles queue. The final run reaches the reserve of the
+    roles step and ends ``ok``. After the switch no run would read its
+    contacts. Phase 2 answers 409 with a ``deal_contacts`` row that says how
+    many deals wait, and it writes nothing. "Leave out" overrides it."""
+    from gateway.crm_sync import engine
+
+    _assert_non_priv(app_engine)
+    p = nsc
+    seed_basic(ZOHO_A, "a")
+    await _connect_engine(p, p.org_a, ZOHO_A)
+    assert (await engine.run_org(p.org_a)).status == "ok"
+    deal = next(r for r in ZOHO_A.data["Deals"] if r["id"] == "ad1")
+    deal.update(Modified_Time=stamp(500), Deal_Name="a-Deal edited")
+    monkeypatch.setattr(engine, "ROLES_RESERVE", 10**9)
+    final = await engine.execute(await engine.acquire(p.org_a, final=True))
+    monkeypatch.setattr(engine, "ROLES_RESERVE", 20)
+    assert final.status == "ok"
+    assert final.counts["deal_contacts"]["skipped"] >= 1
+    admin = _admin(p.org_a)
+    before = _hashes(p)
+    r = await _request(p, admin, "POST", "/crm/cutover",
+                       {"confirm": "SWITCH", "run_id": final.run_id})
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "module_incomplete"
+    (row,) = [m for m in detail["modules"] if m["key"] == "deal_contacts"]
+    assert row["reason"] == "roles_waiting" and row["count"] >= 1
+    assert row["label"] == "Contacts linked to deals"
+    assert {m["key"] for m in detail["modules"]} == {"deal_contacts"}, detail
+    assert _hashes(p) == before
+    left = await _request(p, admin, "POST", "/crm/cutover", {
+        "confirm": "SWITCH", "run_id": final.run_id, "leave_out": ["deal_contacts"]})
+    assert left.status_code == 200, left.text
+    assert left.json()["status"] == "switched"
+    assert _settings(p, p.org_a).mode == "native"

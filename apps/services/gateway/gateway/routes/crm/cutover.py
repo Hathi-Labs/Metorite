@@ -32,14 +32,23 @@ for it. The run is the newest good run, or the final run in phase 2. The
 switch waits for such a key unless the admin leaves it out (D133).
 
 ⚠️ **Phase 2 also needs the final run to have READ each key** (reason
-``not_read``, review P1 and verifier P3-1). The rule takes each key whose
-cursor has finished its first import. A one-module run ("Sync it on its
-own") names its keys in ``counts[engine.RUN_ONLY_KEY]``, and every other key
-is not read. A normal run writes a ``module:<ApiName>`` key for each generic
-module that it reads. So a module of the newest profile with no key was not
-read, for example when the run reached ``engine.MODULES_RESERVE``. The run
-still ends ``ok`` then. A module that waits for its fields (``fields_pending``)
-is not read either. The preview and phase 1 do not apply this rule.
+``not_read``, review P1, verifier P3-1, round 4). The rule takes each key
+whose cursor has finished its first import: each core key, and each generic
+module of the newest profile. The proof of a read is its END in this run:
+each read stamps ``checked_at`` at its end, and the final run notes the time
+of its plan (``counts["run_final"]["planned_ms"]``, one clock). A key in
+``counts`` proves nothing. A run that reached ``engine.MODULES_RESERVE``
+still ends ``ok``, and an import-kind run inherits old module keys. A
+one-module run (``counts[engine.RUN_ONLY_KEY]``) reads no other key, and a
+module that waits for its fields (``fields_pending``) is not read either.
+
+⚠️ **Phase 2 also waits for the contacts of the deals** (``deal_contacts``,
+reason ``roles_waiting``, round 4). The roles step reads one deal for each
+credit and stops at ``engine.ROLES_RESERVE``. While deals wait in its queue,
+or the final run counts ``deal_contacts.skipped``, phase 2 answers 409 with
+a row that says how many. After the switch no run reads them, so the admin
+waits for more syncs or leaves them out. The preview and phase 1 apply
+neither rule, but phase 1 takes such a Leave out tick.
 
 **The switch (CRM-Z10b).** ⚠️ Dark behind ``CRM_CUTOVER_ORGS`` (404 off the
 list), admin only (403), and the admin types ``SWITCH`` (422
@@ -55,7 +64,9 @@ refuses an unknown field.
    (``scheduler.spawn`` would). ⚠️ It starts the run as the final sync
    (``engine.acquire(final=True)``): the run reads each generic module now,
    also one that a run read less than ``engine.MODULE_READ_EVERY`` ago, and an
-   offset-paged one in full. The row says so in ``counts["run_final"]``.
+   offset-paged one in full. It walks each offset-paged core entity now
+   (the 24 h walk), and a stopped read by offset starts again from page 1.
+   The row says so in ``counts["run_final"]``.
 2. ``POST /crm/cutover`` runs phase 2 in ONE transaction. The lock order is the
    order of the start over (``settings._start_over``): the advisory connect
    lock, then ``crm_settings`` ``FOR UPDATE``. It checks the mode, no open
@@ -148,10 +159,17 @@ _CORE: tuple[tuple[str, str, str, str], ...] = (
 #: step keys ``converted_leads`` and ``deal_contacts`` are not records.
 _KEYS: frozenset[str] = frozenset({k for k, *_ in _CORE} | {"tasks"})
 
+#: The step key of the contacts of each deal (``engine.ROLES_MODULE`` holds
+#: its queue). It is no record key, but phase 2 can find it waiting
+#: (``roles_waiting``, round 4), and the admin can leave it out.
+ROLES_KEY = "deal_contacts"
+
 #: The reasons a key is not complete. When a key has two, the first wins.
-#: ``not_read`` is for phase 2 only: the final run did not read the key.
+#: ``not_read`` and ``roles_waiting`` are for phase 2 only: the final run did
+#: not read the key, or deals still wait for their contacts.
 Reason = Literal[
     "held", "unavailable", "importing", "failed", "short", "refused", "not_read",
+    "roles_waiting",
 ]
 
 #: The tables that carry an owner and a ``custom`` column.
@@ -498,6 +516,7 @@ async def module_state(
         _not_read(run, cursors, await _profile_modules(db, org))
         if final and run is not None else []
     )
+    roles = [ROLES_KEY] if final and run is not None and roles_waiting(run, cursors) else []
     # Each reason, in the order that decides which one a key shows.
     found: dict[str, Reason] = {}
     for reason, keys in (
@@ -510,6 +529,7 @@ async def module_state(
         ("short", short),
         ("refused", [k for k, c in counts if c.get("refused", 0) > 0]),
         ("not_read", not_read),
+        ("roles_waiting", roles),
     ):
         for key in keys:
             found.setdefault(key, reason)  # type: ignore[arg-type]
@@ -519,24 +539,31 @@ async def module_state(
 def _not_read(run: Any, cursors: dict[str, Any], modules_body: Any) -> list[str]:
     """Phase 2: each key that the final *run* did not read (the module doc).
 
-    A key counts when its cursor finished the first import. A held or an
-    unavailable key keeps its own reason, because it comes first. With
-    ``counts[engine.RUN_ONLY_KEY]`` (a one-module run), each key outside it
-    was not read, a core key too. Else a ``module:<ApiName>`` key of a
-    generic module of the newest profile was not read when the run wrote no
-    key for it. The run writes every core key, so a normal run reads them.
+    A key counts when its cursor finished the first import: each core key,
+    and each generic module of the newest profile. A held or an unavailable
+    key keeps its own reason, because it comes first.
 
-    A generic module that waits for its fields (``fields_pending`` in the
-    profile) was not read either: the run counts it ``skipped`` and reads no
-    record. Its fields wait when discovery ran short of credits and the
-    previous profile did not mirror the module. That can follow an import,
-    after a reconnect that lost the module's scope for a while.
+    ⚠️ The proof of a read is its END in this run (round 4), never a key in
+    ``counts``: every core key is always in ``counts``, and an import-kind
+    run inherits the module keys of the import before it. Each read that
+    ends stamps ``checked_at`` in its cursor by the gateway's clock. The
+    final run notes the time of its plan by the same clock
+    (``counts[engine.RUN_FINAL_KEY]["planned_ms"]``). So a cursor whose
+    ``checked_at`` is older, or missing, was not read in this run. A run
+    with no plan time read nothing, as far as the switch knows.
+
+    Two more rules. With ``counts[engine.RUN_ONLY_KEY]`` (a one-module run),
+    each key outside it was not read. A generic module that waits for its
+    fields (``fields_pending`` in the profile) was not read either: its
+    fields wait when discovery ran short of credits and the previous profile
+    did not mirror it, for example after a reconnect that lost its scope.
     """
     from gateway.crm_sync import engine
 
     run_counts = run.counts or {}
     only = run_counts.get(engine.RUN_ONLY_KEY)
     only_keys = set(only) if isinstance(only, dict) else None
+    planned = _planned_at(run_counts.get(engine.RUN_FINAL_KEY))
     rows = [
         m for m in (modules_body if isinstance(modules_body, list) else [])
         if isinstance(m, dict) and m.get("generic") and m.get("api_name")
@@ -548,12 +575,54 @@ def _not_read(run: Any, cursors: dict[str, Any], modules_body: Any) -> list[str]
         key = _count_key_of(module)
         if key is None or row.initial_done_at is None:
             continue
-        if only_keys is not None:
-            if key not in only_keys:
-                missed.add(key)
-        elif key in generic and (key not in run_counts or key in pending):
+        if key.startswith(MODULE_KEY_PREFIX) and key not in generic:
+            continue  # the profile no longer lists it, so no run reads it
+        if (
+            (only_keys is not None and key not in only_keys)
+            or not _read_ended(row, planned)
+            or key in pending
+        ):
             missed.add(key)
     return sorted(missed)
+
+
+def _planned_at(mark: Any) -> datetime | None:
+    """The plan time of a final run, from ``counts[engine.RUN_FINAL_KEY]``."""
+    ms = mark.get("planned_ms") if isinstance(mark, dict) else None
+    if not isinstance(ms, int) or isinstance(ms, bool):
+        return None
+    return datetime.fromtimestamp(ms / 1000, UTC)
+
+
+def _read_ended(row: Any, planned: datetime | None) -> bool:
+    """True when a read of this cursor ended at or after *planned*."""
+    if planned is None:
+        return False
+    raw = (row.state or {}).get("checked_at")
+    try:
+        checked = datetime.fromisoformat(str(raw)) if raw else None
+    except ValueError:
+        return False
+    if checked is None:
+        return False
+    if checked.tzinfo is None:
+        checked = checked.replace(tzinfo=UTC)
+    return checked >= planned
+
+
+def roles_waiting(run: Any, cursors: dict[str, Any]) -> int:
+    """Phase 2: the deals that still wait for their contacts from Zoho
+    (round 4, P2-3). The roles step reads one deal for each credit, and it
+    stops at ``engine.ROLES_RESERVE``. The rest wait in the queue of
+    ``engine.ROLES_MODULE``, and the final run counts them ``skipped`` under
+    ``deal_contacts``. After the switch no run reads them, so such a deal
+    keeps no linked contacts from Zoho."""
+    from gateway.crm_sync import engine
+
+    queue = cursors.get(engine.ROLES_MODULE)
+    pending = len((queue.state or {}).get("pending") or ()) if queue is not None else 0
+    skipped = _step((run.counts or {}).get(ROLES_KEY)).get("skipped", 0)
+    return pending or skipped
 
 
 async def _profile_modules(db: Any, org: str) -> Any:
@@ -569,6 +638,7 @@ def _key_labels(modules_body: Any) -> dict[str, str]:
         for key, _table, fallback, slug in _CORE
     }
     words["tasks"] = "Tasks"
+    words[ROLES_KEY] = "Contacts linked to deals"
     for m in modules_body if isinstance(modules_body, list) else ():
         if isinstance(m, dict) and m.get("api_name"):
             words[f"{MODULE_KEY_PREFIX}{m['api_name']}"] = str(m.get("label") or m["api_name"])
@@ -836,8 +906,12 @@ _NOT_MIRROR = ("not_mirror", "The switch is for a CRM that mirrors Zoho.")
 
 def _check_leave_out(
     incomplete: dict[str, Reason], leave_out: frozenset[str], words: dict[str, str],
+    waiting_deals: int = 0,
 ) -> None:
-    """422 for a key that is not on the list, 409 for a key that waits."""
+    """422 for a key that is not on the list, 409 for a key that waits.
+
+    The row of ``deal_contacts`` also says how many deals wait (``count``).
+    """
     unknown = sorted(leave_out - set(incomplete))
     if unknown:
         raise _refuse(
@@ -852,7 +926,10 @@ def _check_leave_out(
             409, "module_incomplete",
             "Some modules are not complete. Fix them, or tick them in Leave out.",
             modules=[
-                {"key": k, "label": _label_of(k, words), "reason": incomplete[k]}
+                {
+                    "key": k, "label": _label_of(k, words), "reason": incomplete[k],
+                    **({"count": waiting_deals} if k == ROLES_KEY else {}),
+                }
                 for k in waiting
             ],
         )
@@ -879,14 +956,16 @@ async def _known_keys(db: Any, org: str, words: dict[str, str]) -> frozenset[str
     }
 
 
-async def _imported_modules(db: Any, org: str, modules_body: Any) -> frozenset[str]:
-    """The generic modules of the profile whose first import is done: the
-    keys that phase 2 can find ``not_read`` in a normal run."""
+async def _phase_two_keys(db: Any, org: str, modules_body: Any) -> frozenset[str]:
+    """The keys that only phase 2 can find not complete: each key whose
+    first import is done (``not_read``), and ``deal_contacts``
+    (``roles_waiting``). Phase 1 takes a Leave out tick for each of them,
+    so the admin can tick it after a 409 of phase 2 and press again."""
     from gateway.crm_sync import engine, runs
 
     cursors = await runs.read_cursors(db, org, f"{engine.PROVIDER}:")
-    # A run that counted nothing: each such module is "not read" in it.
-    return frozenset(_not_read(SimpleNamespace(counts={}), cursors, modules_body))
+    # A run with no plan time read nothing, so each such key is "not read".
+    return frozenset(_not_read(SimpleNamespace(counts={}), cursors, modules_body)) | {ROLES_KEY}
 
 
 async def _import_open(db: Any, org: str, skip: frozenset[str]) -> bool:
@@ -919,20 +998,26 @@ async def _check_keys(
     phase 2 (the final *run*), a known key that is complete is one that the
     final sync made complete, so it is dropped and not refused. A key that
     the org does not know is a 422 in both. Returns the keys left out in fact.
-    Only phase 2 adds ``not_read`` (``final``). So phase 1 also takes an
-    imported generic module, which only phase 2 can find not read: the admin
-    ticks it after a 409 of phase 2, and presses again.
+    Only phase 2 adds ``not_read`` and ``roles_waiting`` (``final``). So
+    phase 1 also takes a tick for such a key (:func:`_phase_two_keys`): the
+    admin ticks it after a 409 of phase 2, and presses again.
     """
+    from gateway.crm_sync import engine, runs
+
     modules_body = await _profile_modules(db, org)
     incomplete = await module_state(db, org, run, final=run is not None)
     words = _key_labels(modules_body)
+    waiting_deals = 0
+    if run is not None and ROLES_KEY in incomplete:
+        cursors = await runs.read_cursors(db, org, f"{engine.PROVIDER}:")
+        waiting_deals = roles_waiting(run, cursors)
     extra = leave_out - set(incomplete)
     if run is not None:
         extra -= await _known_keys(db, org, words)
     else:
-        extra -= await _imported_modules(db, org, modules_body)
+        extra -= await _phase_two_keys(db, org, modules_body)
     if extra:
-        _check_leave_out(incomplete, leave_out, words)
+        _check_leave_out(incomplete, leave_out, words, waiting_deals)
     left_out = leave_out & frozenset(incomplete)
     if await _import_open(db, org, left_out):
         raise _refuse(
@@ -940,7 +1025,7 @@ async def _check_keys(
             "The first import from Zoho has not finished. Wait for it, then "
             "switch.",
         )
-    _check_leave_out(incomplete, left_out, words)
+    _check_leave_out(incomplete, left_out, words, waiting_deals)
     return left_out
 
 
