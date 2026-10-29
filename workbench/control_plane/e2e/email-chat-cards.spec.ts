@@ -305,7 +305,7 @@ test.describe("the Email waiting card draws the shared header, and no toggle whi
     // an act sat there, so a folded card lost its buttons and said nothing.
     await startTurn(page, [...RULE_EVENT, ...SETTINGS]);
     const rule = page.locator('[data-rollup-card="tool:t-rule"]');
-    await rule.locator("[data-rollup-toggle]").click();
+    // The rule is a receipt, so it opens folded (task 1003). No click needed.
     await expect(rule.locator('[data-rollup="closed"]')).toHaveCount(1);
     await rule.getByRole("button", { name: "Disable", exact: true }).click();
     await expect(rule.getByText("Disabled.", { exact: true })).toBeVisible();

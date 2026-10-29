@@ -21,6 +21,8 @@ OA-9b and the OA-9a worker half are BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2
 
 OA-9b hardening is BUILT (2026-10-28, "As built, OA-9b hardening" in §4.5). It closes the seven faults of the Opus review. The flag flip stays OWNER-GATE.
 
+OA-9c is BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-29, "As built, OA-9c" in §4.5). A child can hold the read tools of a pack that the main assistant holds. No email tool says `read_only=True`, so an email pack gives a child no tool yet. The flag flip stays OWNER-GATE.
+
 OA-3 is built, dark behind `ATTACHMENT_OCR`, and §4.1 holds three conditions
 for the flip. OA-6 is DECIDED (D117,
 2026-10-26): yes, for all apps. §4.2 (OA-7), §4.3 (OA-8) and §6 (OA-9) hold
@@ -371,8 +373,9 @@ OWNER-GATE.
   `profile_interview`, not five. §6.8 now says so, and the memory table has 11
   tools. A held chat that asks the untrusted-answer card also asks it for
   `spawn_subagents`, as for `call_agents_parallel`.
-- **Not built.** The packs in a child (OA-9c) and the writes in a child
-  (OA-9d). The persona lines (OA-9e) are built, dark (§6.9).
+- **Not built.** The packs in a child (OA-9c, built 2026-10-29, below) and
+  the writes in a child (OA-9d). The persona lines (OA-9e) are built, dark
+  (§6.9).
 - **Fences.** `test_subagent_worker.py`, `test_spawn_subagents.py` and
   `test_subagent_blocked_tools.py`. The pin
   `test_nothing_calls_the_contract_before_oa_9b` is gone on purpose. A pin on
@@ -424,6 +427,98 @@ and the flag stays off. Fences: `tests/unit/test_spawn_hardening.py`,
   docstring says that a job with no `tools` key holds no tool.
 - **Not built.** A child that shows its own name in place of `Worker` in the
   row title. The row reads "Asking Worker". Copy is a product call.
+
+**As built, OA-9c.** Packs in a child are BUILT, dark behind
+`SPAWN_SUBAGENTS_ORGS` (2026-10-29). Nothing sets the flag. The flip is
+OWNER-GATE. The OA-9a refusal of each `packs` value is gone. The parser now
+checks each pack against the parent. An email child holds no tool today,
+because no email tool says `read_only=True`. So OA-9c serves CRM and
+Projects reads only.
+- **Naming.** A job names its packs with the `packs` key. A child inherits no
+  pack. `parse_jobs` accepts a slug only when `PackRun.holds()` of the parent
+  names it, so a child never holds a pack that its parent lacks (SUB-1 rule 1).
+  The record holds only the packs that passed `packs_on` and the admin
+  toggles (§6.2), so the spawn reads no flag of its own.
+- **Fail closed.** `agent_tools._parent_packs` reads the record at
+  `tool_packs.PACKS_KEY` on the parent frame. With no record, or a read that
+  fails, a job that names a pack does not run. A job with no `packs` key runs
+  as in OA-9b.
+- **The build.** `agent_tools._child_pack_tools` calls
+  `_tool_injection._pack_tools`, the one builder of OA-7b, on the parent
+  frame. The builder decides the held answer and drops the egress tools of a
+  held build. The spawn copies no part of that rule.
+- **Which tools.** The child keeps a pack tool only when
+  `subagent_contract.child_may_hold` lets it through. That test reads the
+  read-only mark of the risk registry (`annotated_read_only`), less the SUB-1
+  names. So a child holds no write in an open chat either. The registry keys
+  on the tool name, and the last module that names a tool wins. A fence keeps
+  the own mark of each pack tool equal to its registry mark.
+- **No card from a child (review fix).** Several read tools draw a card or
+  move the member's page. A child copies the run queue of its parent, so its
+  card would reach the member's chat and miss `parse_items`.
+  `subagent_contract.DISPLAY_TOOLS` names them, beside `MEMBER_TOOLS`, and
+  `child_may_hold` and `parse_jobs` refuse each one. No single marker names
+  them, so a fence scans each pack tool and each platform tool for a call to
+  `emit_generative_ui`, `emit_frontend_tool` or `resolve_run_queue`. A
+  read-only tool that reaches one and is not in the set fails the fence.
+- **The run key.** The spawn mints one key for each child with
+  `secrets.token_urlsafe(24)`. It is never the key of the parent and never the
+  key of a sibling. `Job.pack_run` holds it, and `repr` does not show it.
+- **Where the key goes.** `executor._without_pack_keys` gives the worker the
+  key of its job and never the record. The worker runs as a batch run, and
+  `bind_artifact_context` replaces its context. So the batch run binds the key
+  again, through `executor._job_pack_keys`. The key ends with the run of the
+  child, when the context scope of the child closes.
+- **The pin.** The pack tools are the worker's own tools (`tools=`).
+  `subagent_contract.child_allowed` gives the pair the tools of the job and
+  the pack tool names. The injection scope stays the tools of the job,
+  because it narrows only the platform tools.
+- **The cap.** The tools of the job plus the pack tools must fit
+  `tool_packs.MAX_REQUEST_TOOLS` (110). Layer (b) counts the same way: the
+  live list plus the load. A job past the cap does not run.
+- **A pack with no read tool.** Such a pack stops its job with one line. A
+  call with no job left uses no spawn.
+- **Stranger text.** The held answer of a call is true when a job that runs
+  holds a pack of an owner in `UNTRUSTED_INPUT_AGENTS`. The spawn computes it
+  once and uses it for the build, the mark and the start of each child. With
+  it, each pack of the call builds held, the spawn marks the chat on the
+  parent frame before any child starts (EM-G11f3), and each child starts with
+  `no_egress` bound. So an email child holds no web tool, and no pack call of
+  a child clears `no_egress`. When the job with such a pack stops at the
+  build, the jobs that run build again open, and the chat stays clear.
+- **A difference from the main assistant.** The main assistant builds the
+  email pack open in a clean chat, and its first email call runs open. A
+  child builds it held. The tool set is the same today, because no read tool
+  of a pack is an egress tool.
+- **The items.** A pack tool that the child held is a source that its item
+  may name (`source_allowed`).
+- **The docstring.** The docstring of `spawn_subagents` names the `packs` key
+  in one line. With the flag off, the persona stays byte-identical.
+
+| Pack | The tools that a child holds |
+|---|---|
+| `email` | None. No email tool says `read_only=True` |
+| `email-setup` | None, for the same reason |
+| `crm-records` | 5: `crm_search_notes`, `get_pipeline`, `get_record`, `get_timeline`, `search_crm` |
+| `projects` | 10: `calendar`, `find_tasks`, `list_tasks`, `my_task`, `my_work`, `people_for`, `project_summary`, `projects_tree`, `task_detail`, `vocabulary` |
+| `projects-plan` | 16: `analytics_finished`, `analytics_load`, `analytics_outlook`, `analytics_stuck`, `analytics_throughput`, `find_conflicts`, `fit_for_task`, `needs_attention`, `rebalance`, `recurrence`, `report_list`, `report_recipients`, `report_render`, `task_dataset`, `team_capacity`, `waiting_agent_requests` |
+| `projects-structure` | 7: `intake_queue`, `my_areas`, `my_contexts`, `notifications`, `project_access`, `project_views`, `watchers` |
+| `projects-bulk` | 2: `list_reminders`, `my_led_projects` |
+
+- **Open.**
+  - The email packs give a child no tool. A fix marks the email read tools
+    `read_only=True`. That mark is an input of the permission gate of the
+    email assistant, so the fix is a slice of its own.
+  - A batch sub-run binds its own minted thread. So the email call of a child
+    marks that thread and writes its working set there. The mark on the
+    parent frame holds the chat. This path runs only after an email tool is
+    read-only.
+- **Fences.** `test_pack_guards.py` holds the child cases, the real builder,
+  the table above and the scan of the display tools. `test_spawn_subagents.py`
+  holds the spawn rules and one run from end to end through the real sub-run
+  seam, with the permission gate off and on.
+  `test_subagent_contract.py`, `test_subagent_worker.py` and
+  `test_subagent_blocked_tools.py` hold the parser, the pin and SUB-1.
 
 **As built, OA-7c.** Layer (a) and the sticky state put packs in a live run.
 Three inputs choose the packs: the sticky packs of the chat, a reference in
@@ -1799,7 +1894,7 @@ context has no live tool list. The decorator emits `ExperimentalWarning`.
 - **OA-9a.** The contract parser accepts good items, and it turns other output into one `inferred` item. The `worker` refuses with no job, and the picker and the specialist list do not show it. Its open set is its job, and its held set is the job without the egress tools. Fences: `tests/unit/test_subagent_contract.py` for the parser, and `tests/unit/test_subagent_worker.py` for the worker.
 - **OA-9b.** Five jobs run at once, and a sixth gets a name and does not run. Stop during a fan-out of 3 cancels all 3. A child holds only read tools, no tool that its parent lacks, and it is held in a marked chat. A child stops after 4 model calls. Only the main assistant holds `spawn_subagents`. Fence: `tests/unit/test_spawn_subagents.py`.
 - **SUB-1.** A child cannot call a memory write, a send, an automation tool, a tool that asks the member or a delegation tool. Each of them gets its own case. Fence: `tests/unit/test_subagent_blocked_tools.py` (§6.8). It is part of the OA-9b gate.
-- **OA-9c.** A child with the `email` pack gets the same held or open set as the main assistant. Fence: `tests/unit/test_pack_guards.py`.
+- **OA-9c.** A child with the `email` pack gets the same held or open set as the main assistant, read tools only. A pack of an owner that reads stranger text builds held for a child (§4.5, "As built, OA-9c"). Fence: `tests/unit/test_pack_guards.py`.
 - **OA-9d.** Three children that write show one card with three rows. A rejected row writes nothing, and Stop writes nothing. Fence: a test in the style of `tests/unit/test_delegated_confirmation_card.py`.
 - **OA-9e.** The persona lines of §6.3 show with the flag on, and not with it off. In OA-8e, the main assistant spawns for multi-step research, and not for one read, one task or three searches.
 
@@ -1949,7 +2044,7 @@ The main assistant sends a batch write through the batch tool of the app. That t
 |---|---|---|---|
 | OA-9a | `subagent_contract.py`, and the internal `worker` with `tools` only | MEDIUM | Yes |
 | OA-9b | `spawn_subagents`, read-only children, `_fan_out`, the caps, Stop, the flag | MEDIUM | Yes |
-| OA-9c | Packs in children, through OA-7b | MEDIUM | After OA-7b |
+| OA-9c | Packs in children, through OA-7b | HIGH | After OA-7b. Built 2026-10-29, dark |
 | OA-9d | One batch card for each fan-out, and children that write | HIGH | After OA-9c |
 | OA-9e | The persona lines and the `fanout` scenarios | LOW | With OA-9b. Persona lines built 2026-10-29, dark. Scenarios not built (§6.9) |
 
@@ -1993,9 +2088,25 @@ The main assistant sends a batch write through the batch tool of the app. That t
   - The existing tests of `call_agents_parallel` stay green.
   - The test `test_nothing_calls_the_contract_before_oa_9b` in `test_subagent_contract.py` becomes a pin on the one caller, `spawn_subagents`.
 
-**OA-9c.**
-- **Acceptance.** A child with `packs=["email"]` gets the held or open set that the main assistant would get.
-- **Fence.** A child case in `tests/unit/test_pack_guards.py`.
+**OA-9c. AGENT-SAFE to build (audit of 2026-10-29). The flag flip is OWNER-GATE (`work_plan.md` §6 D4).** Risk HIGH: it touches the egress hold, the untrusted-mail mark and the tool set of a child. Built 2026-10-29 ("As built, OA-9c" in §4.5).
+- **Decisions.**
+  - **Naming.** The job names its packs with the `packs` key. A child inherits no pack.
+  - **Which packs.** Only a slug in `PackRun.holds()` of the parent record at `tool_packs.PACKS_KEY`. The spawn reads it on the parent frame before any child starts. With no record, a job that names a pack does not run.
+  - **Which tools.** The result of `_pack_tools`, then only the tools that the risk registry marks read-only. The spawn copies no part of the held rule. So a child holds no write in an open chat either.
+  - **The run key.** The spawn mints a fresh key for each child. It is never the key of the parent or of a sibling.
+  - **The pin.** The pack tool names join the allow-list pair. The injection scope stays the tools of the job.
+  - **The cap.** The tools of the job plus the pack tools must fit `MAX_REQUEST_TOOLS` (110). A child makes at most 4 model rounds.
+  - **The hand-off.** A child still holds no delegation tool and no `load_skill_tools`.
+- **Done when.**
+  - A child of a held chat with `packs=["email"]` holds the held set, less each tool that is not read-only.
+  - A child of an open chat holds the open set, read tools only, and no send.
+  - A job that names a pack that the parent lacks does not run.
+  - A pack tool that is not read-only is absent.
+  - A child past 110 tools does not run.
+  - A job with no `packs` key runs as in OA-9b.
+  - The pin `test_a_job_that_names_a_pack_does_not_run_until_oa_9c` has its replacement.
+- **Command.** `uv run pytest tests/unit/test_pack_guards.py tests/unit/test_spawn_subagents.py tests/unit/test_subagent_blocked_tools.py tests/unit/test_subagent_contract.py tests/unit/test_subagent_worker.py -q`, then `uv run ruff check` and `uv run mypy` on the changed files. R8 does not apply, because no SQL changes.
+- **Fence.** The child cases in `tests/unit/test_pack_guards.py`, and the spawn cases in `tests/unit/test_spawn_subagents.py`.
 
 **OA-9d.**
 - **Files.** `acb_skills/ask_tools.py` (the card group) and the card UI.
