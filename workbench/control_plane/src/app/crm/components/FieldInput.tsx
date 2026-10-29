@@ -22,17 +22,16 @@
 
 import { useEffect, useId, useState } from "react";
 
-import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
 import { SelectButton, type SelectOption } from "@/components/ui/SelectButton";
 import * as api from "../lib/api";
-import { LOCK_TIP } from "../lib/connect";
 import { fieldOptions, formatField, type FieldDef } from "../lib/fields";
 import { formValue, fromWire, isLookupTarget, lookupValue, toWire } from "../lib/fieldLayout";
 import type { EntitySlug } from "../lib/types";
 import FieldValue from "./FieldValue";
+import LockedValue from "./LockedValue";
 
 export type FieldInputProps = {
   def: FieldDef;
@@ -111,16 +110,9 @@ export default function FieldInput({
 
   if (locked) {
     return (
-      <span className="flex items-start gap-1.5 text-xs text-foreground" title={LOCK_TIP}>
-        <span className="min-w-0 flex-1 break-words">
-          <FieldValue value={formatField(def, value)} />
-        </span>
-        <Icon
-          name="Lock"
-          className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground"
-          aria-label={LOCK_TIP}
-        />
-      </span>
+      <LockedValue>
+        <FieldValue value={formatField(def, value)} />
+      </LockedValue>
     );
   }
 
