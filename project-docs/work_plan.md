@@ -4764,6 +4764,8 @@ Owner directive, 2026-10-28, in chat: "Via the MCP, external coding agents shoul
 4. **D124 holds.** One scope per app, an approval card per write or delete, untrusted text, an audit row and an admin switch.
 5. **When.** MCP-P0 to MCP-P4 come in M3, after Phase 2 (D124.4). Studio over the MCP (MCP-P5) comes in M4, after the sandbox. Metorite epic 495 holds the slices.
 
+*Amended 2026-10-29 (owner, in chat):* `"ensure that the MCP also has the ability to at least connect to CRM and email as well in a full-fledged manner, so an external agent can query all aspects of emails and CRM aspects with the MCP as well."` *So MCP-P0 to MCP-P2 move from M3, after Phase 2 (item 5), to now. Item 5 still holds for MCP-P3 to MCP-P5. `external_agent_access.md` §19 holds the design and the slices, and MCP-Q2 there asks whether the admin switch of MCP-P3 moves too.*
+
 ### D137 — The Deals board shows the columns in the order of the settings list. Mirror mode defaults to the order of the Zoho pipeline. It amends the 2026-10-12 order rule and CRM-U6 item 1 (2026-10-27)
 
 Owner report, 2026-10-27, in chat: the deal stages were "very complicated" to configure, and the Kanban columns do not show "like it is currently showing up in ZOHO". The owner asked for the Zoho order, or an easy setting. Workstream: **WS-CRM**. Owning spec: `specs/crm_platform.md` §20.15 (CRM-U11).
