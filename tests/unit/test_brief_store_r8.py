@@ -595,12 +595,12 @@ def test_r8_a_guarded_move_changes_only_a_row_in_the_from_state(world) -> None:
         out = []
         async with tenant_session(org) as db:
             run = (await store.create_run(db, ANA, kind="brief", local_date=D, slot_at=T)).run
-            out.append(await store.set_state(db, ANA, run.id, "empty", now=T,
-                                             from_state="gathered"))  # not planned
             out.append(await store.set_state(db, ANA, run.id, "gathered", now=T,
                                              from_state="planned"))
             out.append(await store.set_state(db, ANA, run.id, "gathered", now=T,
                                              from_state="planned"))  # moved on
+            out.append(await store.set_state(db, ANA, run.id, "empty", now=T,
+                                             from_state="planned"))  # a legal pair, wrong row
             out.append(await store.set_state(db, ANA, run.id, "ready", now=T,
                                              from_state="gathered"))
             out.append((await store.read_run(db, ANA, kind="brief", local_date=D)).state)
@@ -613,7 +613,7 @@ def test_r8_a_guarded_move_changes_only_a_row_in_the_from_state(world) -> None:
                                              from_state="planned"))
         return out
 
-    assert _go(world, go) == [False, True, False, True, "ready", False]
+    assert _go(world, go) == [True, False, False, True, "ready", False]
 
 
 def test_r8_the_lead_and_the_ledger_link_write_once_for_the_member(world) -> None:
