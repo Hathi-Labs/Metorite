@@ -94,6 +94,7 @@ export default function RecordSheet({
   entity,
   record,
   statuses,
+  places,
   timeline,
   dealContacts,
   saving,
@@ -109,6 +110,8 @@ export default function RecordSheet({
   entity: EntitySlug;
   record: Row | null;
   statuses: Status[];
+  /** The places of the pipeline the record sits in, for the stage menu order. */
+  places?: ReadonlyMap<string, number>;
   timeline: TimelineEntry[];
   dealContacts: DealContact[];
   saving: boolean;
@@ -187,6 +190,7 @@ export default function RecordSheet({
           entity={entity}
           record={record}
           statuses={statuses}
+          places={places}
           timeline={timeline}
           dealContacts={dealContacts}
           saving={saving}
@@ -220,6 +224,7 @@ export function RecordPage({
   entity,
   record,
   statuses,
+  places,
   timeline,
   dealContacts,
   saving,
@@ -250,6 +255,8 @@ export function RecordPage({
   entity: EntitySlug;
   record: Row;
   statuses: Status[];
+  /** The places of the record's pipeline, for the stage menu order (task #838). */
+  places?: ReadonlyMap<string, number>;
   timeline: TimelineEntry[];
   dealContacts: DealContact[];
   saving: boolean;
@@ -316,6 +323,8 @@ export function RecordPage({
           <StatusPill
             status={status}
             statuses={statuses}
+            entity={entity}
+            places={places}
             onChange={onMoveStatus}
             disabled={saving || mirrored}
           />

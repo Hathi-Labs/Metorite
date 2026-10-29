@@ -522,8 +522,20 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     else openAlone(openModuleRecord(view, link.module, link.id));
   }
 
+  // The places of the pipeline on screen. The chips, the stage menu and the
+  // board all read them (task #838).
+  const places = useMemo(() => placesOf(pipelines, pipelineId), [pipelines, pipelineId]);
+  // A deal sits in its own pipeline. One with none gets the default one.
+  const recordPipeline =
+    view.record?.entity === "deals"
+      ? (store.record as { pipeline_id?: string | null } | null)?.pipeline_id ?? null
+      : null;
+  const recordPlaces = useMemo(
+    () => placesOf(pipelines, recordPipeline ?? pipelineId),
+    [pipelines, recordPipeline, pipelineId],
+  );
   const chips = listEntity
-    ? chipsFor(listEntity, statusesFor(listEntity), view)
+    ? chipsFor(listEntity, statusesFor(listEntity), view, ctx.mode, places)
     : [];
   /** CRM-Q20-2: the suggestion of the core list on screen, list or board. */
   const slotSuggestion = isEntity(view.tab) ? suggestionFor(suggestionList, view.tab) : null;
@@ -559,7 +571,6 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // The one column order, for this mode (lib/board.ts `orderLanes`, D137).
   // The places come from the pipeline on screen, or from the default one when
   // the board sends no `pipeline_id`. CRM settings orders its list the same way.
-  const places = useMemo(() => placesOf(pipelines, pipelineId), [pipelines, pipelineId]);
   const dealLanes = visibleLanes(orderLanes(store.lanes, ctx.mode, places), showEmpty);
   const dealBoard = boardOn && view.tab === "deals";
   const mayCreate = canCreate(ctx.mode);
@@ -1161,6 +1172,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           labels={labels}
           record={store.record}
           statuses={statusesFor(view.record.entity)}
+          places={recordPlaces}
           timeline={store.timeline}
           dealContacts={store.dealContacts}
           saving={store.saving}
