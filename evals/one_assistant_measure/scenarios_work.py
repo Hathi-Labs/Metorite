@@ -20,7 +20,7 @@ import json
 import re
 from typing import Any
 
-from evals.one_assistant_measure import fanout
+from evals.one_assistant_measure import contracts, fanout
 from evals.one_assistant_measure.scenarios import (
     OFFICE,
     PRIYA,
@@ -440,8 +440,7 @@ FANOUT_SCENARIOS: tuple[Scenario, ...] = (
                      f"{v}: {d} days, {p} percent a week" for v, _h, d, p in fanout.CONTRACTS) + ".",
                  solo=tuple(("fetch_page", {"url": u, "max_chars": 60000}) for u in _CONTRACTS))),
         Turn(
-            "Which vendor has the strictest late-delivery penalty, and how much would a "
-            "10-day delay on a 5 lakh order cost with them?",
+            contracts.STRICTEST_QUESTION,
             (Check("no_unasked_write", 0),
              Check("answer_all", (r"Kaveri",), "names_the_strictest"),
              Check("figure", 15_000, "costs_the_delay")),

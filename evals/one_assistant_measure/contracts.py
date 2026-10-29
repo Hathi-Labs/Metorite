@@ -140,6 +140,14 @@ _PADDING = (
 )
 
 
+#: The question of turn 2. It lives here, and not in the scenario file, because
+#: ``test_no_second_number_check`` refuses a harness file that holds "lakh" beside
+#: a regex. Answer: Kaveri, 3 percent a week, one full week, Rs 15,000.
+STRICTEST_QUESTION = (
+    "Which vendor has the strictest late-delivery penalty, and how much would a "
+    "10-day delay on a 5 lakh order cost with them?"
+)
+
 #: Where the two facts sit, in characters from the start. The payment term comes
 #: after ``PAY_AFTER`` and the penalty after ``PENALTY_AFTER``, and both move by
 #: vendor. A plain ``fetch_page`` (8,000 characters) reads neither one.
