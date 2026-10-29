@@ -75,7 +75,17 @@ const VERB: Record<string, string> = {
   comment: "commented on",
   // WS-55 EA-12c — an outside agent asks the member on a task (§12.1).
   agent_question: "asked you about",
+  // Task 1054 — the stranded-run nudge: the run went quiet, the member decides.
+  nudge: "has gone quiet on",
 };
+
+/** ` since 14:31` from the notice time, or nothing when the time is missing or bad. */
+function quietSince(row: NotificationRow): string {
+  const at = row.created_at ? new Date(row.created_at) : null;
+  if (!at || Number.isNaN(at.getTime())) return "";
+  const hhmm = at.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
+  return ` since ${hhmm}`;
+}
 
 /**
  * One line of prose for a notification.
@@ -88,6 +98,7 @@ export function describe(row: NotificationRow): string {
   const who = actorLabel(row.actor);
   const verb = VERB[row.kind] ?? "updated";
   const task = taskLabel(row);
+  if (row.kind === "nudge") return `${who} ${verb} ${task}${quietSince(row)}. Resume or release it.`;
   return `${who} ${verb} ${task}`;
 }
 
