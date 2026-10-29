@@ -18,9 +18,9 @@ import pytest
 
 pytest.importorskip("agent_framework", reason="MAF not installed")
 
+import orchestrator.agents as _pkg
 from acb_common import get_settings
 from acb_skills import agent_tools as at
-import orchestrator.agents as _pkg
 
 ag = _pkg._mod  # the package loads agents.py as _mod
 
