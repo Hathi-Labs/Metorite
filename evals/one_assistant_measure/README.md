@@ -333,10 +333,35 @@ defects of the harness. All six are repaired, and none changes a product file.
 6. `--spent-before-from a.json,b.json` sums what each chunk spent by itself.
    Do not pass the `spent_usd` of a chunk, because it holds the chunks before it.
 
-OA-9b is merged, so `spawn_subagents` exists. The fan-out chats and the
-`packs+spawn` arm stay listed and skipped (`run.SPAWN_NOT_WIRED`). They need
-fixtures for `web_search` and `fetch_page`, a plan for the worker, ten invoices
-and an arm flag, which is more than small wiring.
+The fan-out chats and the `packs+spawn` arm are wired in phase 3 (below).
+
+## Phase 3: the fan-out chats and the `packs+spawn` arm
+
+`packs+spawn` is the `pack` arm plus `SPAWN_SUBAGENTS_ORGS=<the eval org>`,
+set in the eval process only. A fan-out chat (`set = fanout`) runs on `pack`
+and `packs+spawn`. Delegation holds no spawn tool, so it does not run them.
+
+| Chat | Turn | Must |
+|---|---|---|
+| `fan_companies` | Research five companies, with their about pages | spawn, and every child item parses |
+| `fan_invoices` | Total ten invoices (two to a job, five jobs) | spawn, parse, and total 233,400 |
+| `fan_tasks` | Five tasks from a list | not spawn (a write), one card |
+| `fan_one_read` | One page read | not spawn |
+| `fan_three_searches` | Three web searches | not spawn |
+
+A child reads only fixtures (`fanout.py`): the web tools `web_search` and
+`fetch_page` are replaced for each chat, so a live run reaches only the
+Router. `no_local_database` still closes the entity graph. The worker's
+scripted model (`fanout.WorkerModel`) decides from its request, because five
+children share it. A research turn plays one `spawn_subagents` call on the
+spawn arm, and `Plan.solo` (page by page) on the `pack` arm.
+
+New checks: `spawned` and `not_spawned` (None off the spawn arm),
+`items_contract` (no child answer that the parser could not read, no job error
+and no job without an item), and the wall time of each fan-out (`measure.fanout`
+in the log tap, `fanout_ms_mean` in the summary). Stop results 9 and 10 read
+them. The `right_pack` check also accepts the read tools of the `crm` family in
+the base for `crm-records` (`checks.BASE_COVER`). A hand-off never passes on that.
 
 ## The live run of OA-8e (phase 2, not run)
 
