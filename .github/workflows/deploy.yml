@@ -58,7 +58,8 @@ on:
     # `staging` and deploys nothing. Production converges on `release`.
   # ── THE DAILY RELEASE (WS-38, spec §4.1) ────────────────────────────────
   # 21:30 UTC is 03:00 IST, the hour our members use least. One restart a
-  # day lands there. GitHub can start a scheduled run late by some minutes.
+  # day lands there. GitHub starts a scheduled run late, by hours (see the
+  # `release-window` job). A run that is too late waits a day (spec §4.1a).
   # Set the repository variable RELEASE_HOLD=1 to skip a day (spec §4.3).
   schedule:
     - cron: "30 21 * * *"
@@ -187,6 +188,54 @@ jobs:
           echo "::warning title=Release held::RELEASE_HOLD=1. Production stays on its current release. Clear the variable to resume."
           echo "Release HELD by RELEASE_HOLD=1. Production did not move." >> "$GITHUB_STEP_SUMMARY"
 
+  # ── A late run waits a day (WS-38, spec §4.1a) ──────────────────────────
+  # GitHub starts a scheduled run late. Measured 2026-10-22 to 2026-10-29:
+  # this 21:30 UTC run started 1.9 to 3.6 h late, and later on most nights.
+  # The other schedules of this repo started 4.5 to 7 h late. In the 21 days
+  # to 2026-10-29, members sent no chat message and started no agent run
+  # from 22:00 to 02:00 UTC. A restart after that lands in working hours,
+  # where members see "Gateway error 502".
+  #
+  # So a schedule run moves `release` only when it reaches this job between
+  # 21:00 and 02:00 UTC (02:30 to 07:30 IST). This job runs after the tests,
+  # just before `publish-release`, so the clock it reads is the clock of
+  # the restart, about 5 min later. Outside the window, production stays on
+  # its current release, and the next night ships the tip of main. A skipped
+  # day is a safe result (spec §4.2). After 30 h, `vps-health.yml` reports
+  # it as "The daily release did not run".
+  #
+  # A dispatch is never held. It is a person's deliberate act, as with
+  # RELEASE_HOLD. A step that fails here holds the release: `open` is then
+  # empty, and `publish-release` reads empty as closed.
+  # Fence: tests/unit/test_daily_release.py.
+  release-window:
+    name: "Release window"
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    if: ${{ always() && github.event_name == 'schedule' && vars.RELEASE_HOLD != '1' }}
+    outputs:
+      open: ${{ steps.clock.outputs.open }}
+    steps:
+      - name: Read the clock
+        id: clock
+        env:
+          # Minutes of the UTC day. The window opens at 21:00 and closes at
+          # 02:00 on the next day.
+          OPEN_MIN: "1260"
+          CLOSE_MIN: "120"
+        run: |
+          set -euo pipefail
+          hm="$(date -u +%H%M)"
+          now=$(( 10#${hm:0:2} * 60 + 10#${hm:2:2} ))
+          if [ "$now" -ge "$OPEN_MIN" ] || [ "$now" -lt "$CLOSE_MIN" ]; then
+            echo "open=true" >> "$GITHUB_OUTPUT"
+            echo "The release window is open at ${hm} UTC."
+          else
+            echo "open=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Release waits a day::GitHub started this run late. At ${hm} UTC a restart lands in working hours, so production stays on its current release. The next night ships the tip of main."
+            echo "Release WAITS: the run reached the window at ${hm} UTC, outside 21:00 to 02:00 UTC. Production did not move." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   # ── Publish the ref the PRODUCTION box polls (WS-25) ──────────────────
   # ⚠️ WS-38: this runs on the daily schedule and on a manual dispatch, never
   # on a push. On those runs the unit tests GATE it again. On a push they are
@@ -216,12 +265,13 @@ jobs:
   publish-release:
     name: "Publish release ref"
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs: [lint, test, release-window]
     if: >-
       ${{ always()
       && github.ref == 'refs/heads/main'
       && github.event_name != 'push'
       && !(github.event_name == 'schedule' && vars.RELEASE_HOLD == '1')
+      && (github.event_name != 'schedule' || needs.release-window.outputs.open == 'true')
       && needs.lint.result == 'success'
       && (needs.test.result == 'success'
           || (github.event_name == 'workflow_dispatch' && inputs.skip_tests && needs.test.result == 'skipped')) }}

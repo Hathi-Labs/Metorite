@@ -30,7 +30,7 @@ disagree, the parent spec wins until the owner records a decision.
 | 0.1 | `main` took **480 merges** from 2026-10-01 to 2026-10-15. That is about **32 a day**, and **57** on 2026-10-09 | `git log origin/main --first-parent --since=2026-10-01 --oneline \| wc -l` |
 | 0.2 | **Every merge is a production deploy.** `deploy.yml` runs on each push to `main`, and `publish-release` moves `release` on each green run | `.github/workflows/deploy.yml` (the `on:` block and the `publish-release` job) |
 | 0.3 | **48 new tenant migrations** landed in the same 15 days. Each one reached production data on the day it merged, with no rehearsal on production-shaped rows | `git diff --name-only --diff-filter=A <sha at 2026-10-01> origin/main -- infra/postgres` |
-| 0.4 | **A deploy restart ends every live agent run**, because the runs execute inside `acb-gateway` | `HANDOFF.md` H-293 · `specs/chat_run_continuity.md` §5 |
+| 0.4 | **A deploy restart ends every live agent run**, because the runs execute inside `acb-gateway` | `specs/chat_run_continuity.md` §5 (D-1, deferred 2026-10-29) |
 | 0.5 | **The gateway cold start takes 15 to 23 seconds.** Caddy holds a request for 30 seconds, and after that a member sees "Metorite is updating" | `deploy/hostinger/caddy/Caddyfile` (the H-60 comment) |
 | 0.6 | **A deploy with a pending migration takes a full `pg_dump`** of the production database. That load helped drain the free-plan database on 2026-10-07 | the incident record behind `#707` |
 | 0.7 | The pull script already reads the ref it applies from an environment variable, `RELEASE_REF`. A staging box needs no new script, only `RELEASE_REF=staging` | `scripts/vps_pull.sh` line 42 |
@@ -146,6 +146,30 @@ result as a push to the owner's ntfy topic. The push names the promoted SHA, the
 migrations it applied, and the `/version` SHA it read back. If the owner wants a watched release,
 use 10:30 IST and accept one restart in working hours. This is the owner's call
 (§7, decision S-B).
+
+### 4.1a A late run waits a day
+
+*Added 2026-10-29.* GitHub starts a scheduled run late. From 2026-10-22 to
+2026-10-29, the 21:30 UTC run started 1.9 to 3.6 hours late, and later on most
+nights. The other schedules of this repo started 4.5 to 7 hours late. So the
+restart landed between 23:49 and 01:33 UTC, not at 21:30.
+
+That time was safe by luck. In the 21 days to 2026-10-29, members sent no chat
+message and started no agent run from 22:00 to 02:00 UTC (03:30 to 07:30 IST).
+At 08:00 IST, members are back, and a restart shows them "Gateway error 502".
+
+**The rule.** A schedule run moves `release` only when it reaches the
+`release-window` job between **21:00 and 02:00 UTC** (02:30 to 07:30 IST). That
+job runs after the tests, so its clock is the clock of the restart, about 5
+minutes later. Outside the window, production stays on its current release, and
+the next night ships the tip of `main`. The run shows a "Release waits a day"
+warning. After 30 hours, the `vps-health.yml` delivery check reports it.
+
+- A dispatch never waits, as with `RELEASE_HOLD` (§4.3).
+- This rule does not move the release hour. The hour stays the owner's (S-B). If
+  GitHub makes the run wait on many nights, the owner can move the cron earlier.
+- Fence: `tests/unit/test_daily_release.py`. It runs the job's own script with a
+  stubbed clock at each edge of the window.
 
 ### 4.2 What the promotion picks
 
@@ -344,6 +368,7 @@ The owner said "go ahead with the development" on 2026-10-16. Phase 1 uses the
 | `deploy.yml`, the schedule | lint, then the unit tests as a **gate**, then `publish-release`, then the deploy of that exact commit | same |
 | `deploy.yml`, a dispatch | as the schedule, plus a `reason` input. `skip_tests` is the one way past the tests | same |
 | `RELEASE_HOLD=1` | a repository variable. The schedule moves nothing, and a `Release held` job says so. A dispatch still runs | same |
+| `release-window` (2026-10-29) | a schedule run that reaches the release outside 21:00 to 02:00 UTC moves nothing, and says so (§4.1a). A dispatch still runs | same |
 | `vps_apply.sh` | deploys `DEPLOY_REF` when a caller names it, else `origin/release`. It refuses a commit that is not on `main` | `tests/unit/test_deploy_target_ref.py` |
 | `vps-health.yml`, `delivery` | compares the box with `release`. It fails when `main` holds a commit that has waited 30 hours for a release | `test_daily_release.py` |
 
@@ -530,8 +555,9 @@ and no agent on it can read customer data.
 
 ## 8. What this does not fix
 
-- **A daily restart still ends the live agent runs at that moment.** The fix is to
-  run agents in their own service (H-293, decision D-1 of `chat_run_continuity.md`).
+- **A daily restart can still end a run that lasts past the 60 s drain.** The fix
+  is to run agents in their own service (decision D-1 of `chat_run_continuity.md`).
+  On 2026-10-29, no stop in 8 days had cut a run, so D-1 waits (§5 there).
   The daily clock cuts the count from about 32 a day to 1, at the quietest hour.
 - **A staging box that nobody opens soaks nothing.** The four smoke checks are the
   floor. The real soak is staff using `dev.metorite.com` during the day, which is
@@ -578,5 +604,5 @@ gh api repos/Hathi-Labs/Metorite/environments --jq '.environments[].name'
 - `specs/deploy_delivery_path.md` — WS-25, the pull timer and `release`
 - `specs/customer_console.md` — §4 the AI Router · §6 the sign-in resolve
 - `specs/chat_run_continuity.md` — §5 D-1, agent runs in their own service
-- `HANDOFF.md` — H-38 (D-D), H-293 (agent runs and deploys)
+- `HANDOFF.md` — H-38 (D-D)
 - `deploy/hostinger/README.md` — the box plans and `bootstrap.sh`

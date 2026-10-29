@@ -14,6 +14,9 @@ What this file fences, in ``.github/workflows/deploy.yml``:
 3. ``RELEASE_HOLD=1`` stops the schedule and says so. It does not stop a
    dispatch, which is a person's deliberate act.
 4. The deploy waits for ``release`` to move, and sends that exact commit.
+5. A schedule run that GitHub starts so late that it reaches the release
+   after 02:00 UTC waits a day, and says so (spec §4.1a). A dispatch never
+   waits.
 
 And in ``.github/workflows/vps-health.yml``: the hourly delivery check
 compares the box with ``release``, not with ``main``. Under the daily clock a
@@ -25,7 +28,10 @@ in ``test_deploy_target_ref.py``.
 
 from __future__ import annotations
 
+import os
 import pathlib
+import shutil
+import subprocess
 
 import pytest
 import yaml
@@ -150,6 +156,72 @@ def test_a_held_day_says_so(deploy: dict) -> None:
 def test_the_deploy_sends_its_own_sha(deploy: dict) -> None:
     raw = _DEPLOY.read_text(encoding="utf-8")
     assert '"DEPLOY_REF=${GITHUB_SHA} DEPLOY_FORCE=' in raw
+
+
+# ── 5. A late schedule run waits a day ──────────────────────────────────────
+
+
+def test_a_late_schedule_run_waits_a_day(deploy: dict) -> None:
+    job = deploy["jobs"]["release-window"]
+    assert _if(job) == (
+        "${{ always() && github.event_name == 'schedule' && vars.RELEASE_HOLD != '1' }}"
+    ), "the schedule only, and not on a held day, which release-hold reports"
+    # After the tests, so the clock it reads is the clock of the restart.
+    assert {"lint", "test"} <= set(_needs(job))
+    assert job["outputs"]["open"] == "${{ steps.clock.outputs.open }}"
+    publish = deploy["jobs"]["publish-release"]
+    assert "release-window" in _needs(publish)
+    # Empty reads as closed, so a failed window step holds the release.
+    assert (
+        "(github.event_name != 'schedule' || needs.release-window.outputs.open == 'true')"
+    ) in _if(publish), "a dispatch never waits, and a schedule run waits outside the window"
+
+
+def test_the_window_holds_the_planned_hour(deploy: dict) -> None:
+    env = deploy["jobs"]["release-window"]["steps"][0]["env"]
+    open_min, close_min = int(env["OPEN_MIN"]), int(env["CLOSE_MIN"])
+    assert (open_min, close_min) == (21 * 60, 2 * 60), "21:00 to 02:00 UTC (spec §4.1a)"
+    (cron,) = [c["cron"] for c in _on(deploy)["schedule"]]
+    minute, hour = (int(p) for p in cron.split()[:2])
+    assert hour * 60 + minute >= open_min, "an on-time run must find the window open"
+
+
+def _bash() -> str | None:
+    if os.name == "nt":
+        # Git's bash, not WSL's bash.exe, as in test_gateway_drain.py.
+        git_bash = pathlib.Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git/bin/bash.exe"
+        return str(git_bash) if git_bash.is_file() else None
+    return shutil.which("bash")
+
+
+_BASH = _bash()
+
+
+@pytest.mark.skipif(_BASH is None, reason="no bash on this machine")
+@pytest.mark.parametrize(("clock", "is_open"), [
+    ("2059", False), ("2100", True), ("2130", True), ("2359", True),
+    ("0000", True), ("0159", True), ("0200", False),
+    # 08 and 09 are not octal. 10# reads them as base 10.
+    ("0806", False), ("0959", False), ("1200", False),
+])
+def test_the_window_reads_the_clock(deploy: dict, tmp_path: pathlib.Path,
+                                    clock: str, is_open: bool) -> None:
+    step = deploy["jobs"]["release-window"]["steps"][0]
+    assert 'hm="$(date -u +%H%M)"' in step["run"], "it reads the real clock"
+    out, summary = tmp_path / "out", tmp_path / "summary"
+    # A shell function shadows `date`, so the step's own text runs unchanged.
+    script = f"date() {{ echo {clock}; }}\n" + step["run"]
+    env = {**os.environ, **step["env"],
+           "GITHUB_OUTPUT": str(out), "GITHUB_STEP_SUMMARY": str(summary)}
+    done = subprocess.run([_BASH, "-c", script], env=env, capture_output=True,
+                          text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+    assert out.read_text(encoding="utf-8").strip() == f"open={'true' if is_open else 'false'}"
+    if is_open:
+        assert not summary.exists()
+    else:
+        assert "::warning title=Release waits a day::" in done.stdout
+        assert "Release WAITS" in summary.read_text(encoding="utf-8")
 
 
 # ── The hourly delivery check reads release ──────────────────────────────────
