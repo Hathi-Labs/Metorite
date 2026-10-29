@@ -84,8 +84,7 @@ BASELINE: frozenset[str] = frozenset(
         "drawio_integration_review.md",
         # A suffix shorthand for saas_multitenancy_implementation.md. Name it in full.
         "_implementation.md",
-        # Planned outputs that nobody has written yet (KG-0, a framework-uplift done-when).
-        "knowledge_graph.md",
+        # A planned output that nobody has written yet (a framework-uplift done-when).
         "framework-uplift-resolution.md",
     }
 )
