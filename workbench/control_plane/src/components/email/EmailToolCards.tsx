@@ -879,14 +879,17 @@ function RuleResultCard({
   // receipt and opens folded (task 1003). The folded row says what it does.
   const ruleSummary = [conds.length ? `${conds.length} condition${conds.length > 1 ? "s" : ""}` : "",
     actions.length ? `${actions.length} action${actions.length > 1 ? "s" : ""}` : ""]
-    .filter(Boolean).join(", ") || title;
+    .filter(Boolean).join(", ");
+  // The folded row keeps the one warning of the open card (task 1003).
+  const ruleSummaryFull = [ruleSummary || title, a.automated === false ? "proposes for approval" : ""]
+    .filter(Boolean).join(" · ");
   const tone = receiptTone(false);
   return (
     <RollupCard
       id={`tool:${e.id}`}
       title={title}
       icon="Sparkles"
-      summary={ruleSummary}
+      summary={ruleSummaryFull}
       receipt={e.status !== "error" && state !== "failed"}
       header="own"
     >
@@ -2234,6 +2237,21 @@ function InfoResultCard({ event: e }: { event: ToolEvent }) {
 
 // ── Generic action card ───────────────────────────────────────────────────────
 
+/**
+ * `run_rules` is a read when the member asked for a preview, an estimate or a
+ * status. It changes mail only for `past` and `retry_failed`, and for `new`
+ * or `message` with `dry_run` false (`agents.py` `run_rules`). A read is not a
+ * receipt, so its card opens (task 1003).
+ */
+export function readsOnly(e: ToolEvent): boolean {
+  if (e.name !== "run_rules" && e.name !== "run_rules_now") return false;
+  const a = (e.args ?? {}) as Record<string, unknown>;
+  const scope = String(a.scope ?? "new").trim().toLowerCase();
+  if (scope === "estimate" || scope === "status") return true;
+  if (scope === "past" || scope === "retry_failed" || scope === "retry") return false;
+  return String(a.dry_run ?? "true").trim().toLowerCase() !== "false";
+}
+
 /** Confirmation card for any mutating tool — icon + label + result summary. */
 function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const meta = ACTION_META[e.name] ?? { icon: "Wrench", label: e.name.replace(/_/g, " ") };
@@ -2249,7 +2267,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
       title={meta.label}
       icon={iconName}
       summary={withoutIds(detail.split(/\r?\n/)[0] ?? "")}
-      receipt={!failed}
+      receipt={!failed && !readsOnly(e)}
       header="own"
     >
     <div data-email-card="action" className={tone.frame}>

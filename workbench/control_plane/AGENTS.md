@@ -265,8 +265,9 @@ Eleven rules on top of the three above. Each one exists because somebody broke i
    `chatSteer.test.ts` and `e2e/chat-steer.spec.ts`.
    **A long chat card rolls up through one seam,** `components/RollupCard.tsx`
    (owner, 2026-10-10). `src/lib/cardRollup.ts` holds the rules. The newest
-   card stays open. A card that waits on the member never folds. A toggle by
-   hand wins. A long card folds when it is not the newest. Wrap a new flow card in it, and do
+   card stays open, unless it is a receipt (`receipt` prop, owner 2026-10-29): a
+   receipt of a write that worked opens folded. A card that waits on the member never
+   folds. A toggle by hand wins. A long card folds when it is not the newest. Wrap a new flow card in it, and do
    not add a second fold. The transcript follows its bottom on each change
    of size (`src/lib/stickToBottom.ts`). Fences: `cardRollup.test.ts`,
    `stickToBottom.test.ts` and `e2e/chat-card-rollup.spec.ts`.

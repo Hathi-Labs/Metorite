@@ -819,6 +819,8 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   // A receipt is a card of the transcript: its arrival rolls up the long
   // cards above it (`components/RollupCard.tsx`). It is short, so it draws
   // no toggle of its own. Its title row is the header (`header="own"`).
+  // The folded row names the task(s), not the bare lead line ("Created:").
+  const foldedSummary = tasks.length ? tasks.map((r) => `${r.number} ${unfenced(r.title)}`).join(" · ") : unfenced(detail).split(NL)[0];
   // A write that is done, or that the member cancelled, opens folded. A
   // failed, partial or refused one still opens (task 1003).
   return (
@@ -826,7 +828,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
       id={`tool:${e.id}`}
       title={heading}
       icon={icon}
-      summary={unfenced(detail).split(NL)[0]}
+      summary={foldedSummary}
       receipt={outcome === "done" || outcome === "cancelled"}
       header="own"
     >

@@ -41,6 +41,7 @@ import type { ToolEvent } from "@/components/MarkdownMessage";
 import { DismissableCard } from "@/components/ToolCardShell";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
+import { curlyQuotes } from "@/lib/receiptText";
 
 /** Each profile write, by the label of its receipt. */
 const ACTION_META: Record<string, { icon: string; label: string }> = {
@@ -179,13 +180,12 @@ export function readProfileResult(result: string): {
     // The card has its button, and never names a tool to the member.
     // `clean()` strips the guillemets from the member's own text, so every
     // guillemet in a reply is a fence. The member reads curly quotes instead.
-    text: (forModel < 0 ? body : body.slice(0, forModel))
+    text: curlyQuotes((forModel < 0 ? body : body.slice(0, forModel))
       .filter((l) => !l.trim().startsWith(UNDO_PREFIX.trim()))
       .map((l) => l.replace(/\s*To undo: .*$/, ""))
       .join("\n")
       .trim()
-      .replaceAll("«", "“")
-      .replaceAll("»", "”"),
+    ),
     undo,
     status: undo ? "saved" : (said?.status ?? "unknown"),
     reason: said?.reason ?? "",

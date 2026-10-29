@@ -37,6 +37,7 @@ import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { placementOf } from "@/lib/chatPlacement";
+import { memberLine } from "@/lib/receiptText";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
