@@ -32,6 +32,9 @@ Without the database every test here SKIPS. A skip is not a pass.
   ``test_r8_an_opted_out_member_gets_no_job`` goes red.
 * M5. ``planner.slot``: ``today = day.feed_day(now)``.
   ``test_r8_the_slot_date_is_the_calendar_date`` goes red.
+* M7. ``run._skip``: drop the ``MOVED`` branch, so a moved row turns
+  ``failed``. ``test_r8_a_time_moved_between_a_failed_try_and_the_retry_
+  gives_the_brief_at_the_new_time`` goes red.
 """
 
 from __future__ import annotations
@@ -660,6 +663,32 @@ def test_r8_the_run_reads_the_preferences_again(world, monkeypatch, change, reas
         (run,) = _runs(world, ANA)
         assert run.state == "ready"
         assert run.slot_at == datetime(2099, 3, 10, 9, 0, tzinfo=KOLKATA)
+
+
+def test_r8_a_time_moved_between_a_failed_try_and_the_retry_gives_the_brief_at_the_new_time(
+        world, monkeypatch) -> None:
+    """Mutation M7 (repair round 2, P2-1). The first try made the ``planned``
+    row and read an incomplete snapshot. ANA moves her brief to 09:00 before
+    the retry. The retry finds the slot moved, and its row goes, so the day
+    stays open. The planner plans 09:00, and the run gathers it: one ready
+    row and one ledger row for the day."""
+    _ledger_on(monkeypatch, True)
+    world.cards[ANA] = [card("email:acc:t1")]
+    world.complete = False
+    _seed_and_run(world)
+    assert [r.state for r in _runs(world, ANA)] == ["planned"]
+    _set_prefs(world, ANA, world.p.org_a, {"brief_time": "09:00"})
+    world.complete = True
+    _tick(world, world.p.org_a, T1 + queue.backoff(1) + timedelta(seconds=1))
+    assert _runs(world, ANA) == [] and _ledger(world, ANA) == []
+    _tick(world, world.p.org_a, datetime(2099, 3, 10, 8, 45, tzinfo=KOLKATA))
+    _tick(world, world.p.org_a, datetime(2099, 3, 10, 8, 56, tzinfo=KOLKATA))
+    (run,) = _runs(world, ANA)
+    assert run.state == "ready" and run.error is None
+    assert run.slot_at == datetime(2099, 3, 10, 9, 0, tzinfo=KOLKATA)
+    assert len(_claims(world, str(run.id))) == 1
+    (row,) = _ledger(world, ANA)
+    assert row.state == "ok" and str(run.unattended_run_id) == str(row.id)
 
 
 def test_r8_a_lost_claim_does_not_finish_the_ledger_slot(world, monkeypatch) -> None:

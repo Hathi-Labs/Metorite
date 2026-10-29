@@ -39,6 +39,12 @@ only along :data:`TRANSITIONS`: ``planned`` to ``gathered`` to ``ready``,
 no brief, with the reason). So a second gather of a run that moved on
 changes nothing. :func:`set_lead` writes the lead, and :func:`link_run` the
 ledger row of AUTO-2 of the current try.
+
+**A moved slot (BR-2a-1, repair round 2).** :func:`discard_planned` deletes
+a run that is still ``planned`` and has no claim. The run calls it when the
+member moved the brief time after an earlier try made the row. So the day
+has no row, and the planner plans the new time. A ``failed`` row would hold
+the UNIQUE of the day, and the brief of the new time would be lost.
 """
 
 from __future__ import annotations
@@ -139,6 +145,15 @@ _READ_CLAIMS_SQL = (
     "JOIN brief_runs r ON r.organization_id = c.organization_id AND r.id = c.run_id "
     f"WHERE c.organization_id = {_BOUND_ORG} AND r.member_email = :m "
     "AND c.run_id = CAST(:run AS uuid) ORDER BY c.position, c.id"
+)
+
+#: Only a run that gathered nothing goes: the state is ``planned``, and no
+#: claim names it.
+_DISCARD_PLANNED_SQL = (
+    f"DELETE FROM brief_runs r WHERE r.organization_id = {_BOUND_ORG} "
+    "AND r.member_email = :m AND r.id = CAST(:id AS uuid) AND r.state = 'planned' "
+    "AND NOT EXISTS (SELECT 1 FROM brief_claims c "
+    "WHERE c.organization_id = r.organization_id AND c.run_id = r.id)"
 )
 
 #: The claims go by the ``ON DELETE CASCADE`` of ``brief_claims_run_fk``.
@@ -314,6 +329,15 @@ async def link_run(db: Any, member: str, run_id: str, unattended_run_id: str) ->
     member has the id."""
     result: Any = await db.execute(text(_LINK_RUN_SQL), {
         "u": unattended_run_id, "m": _member(member), "id": run_id})
+    return bool(getattr(result, "rowcount", 0))
+
+
+async def discard_planned(db: Any, member: str, run_id: str) -> bool:
+    """Delete the run *run_id* of *member* when it is ``planned`` and has no
+    claim. A run that moved on, or that has a claim, stays. Answers True
+    when the row went."""
+    result: Any = await db.execute(text(_DISCARD_PLANNED_SQL), {
+        "m": _member(member), "id": run_id})
     return bool(getattr(result, "rowcount", 0))
 
 

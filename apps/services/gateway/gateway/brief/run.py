@@ -17,9 +17,11 @@ The order, for the run of *member* on *local_date*:
    the queue retries. A member who is gone gets no row: a ``planned`` row of
    an earlier try turns ``failed`` with the reason (``member_departed``).
 4. The member's preferences, read again now (``assistant_profile.
-   member_app_prefs``). A member who turned the brief off (``opted_out``),
-   or who moved the brief time away from this slot (``moved``), gets no
-   brief, and the planner plans the new time.
+   member_app_prefs``). A member who turned the brief off (``opted_out``)
+   gets no brief. A member who moved the brief time away from this slot
+   (``moved``) gets no brief at this slot. A ``planned`` row of an earlier
+   try goes (``store.discard_planned``), so the day has no row, and the
+   planner plans the new time.
 5. ``store.create_run``, and the link to the ledger row of this try. A run
    that is past ``planned`` ends the job with no second gather.
 6. ``loop.snapshot``. An incomplete read raises, so the queue retries, and
@@ -59,6 +61,9 @@ _log = get_logger("brief.run")
 
 #: The ledger job of a brief run: ``brief.<kind>``.
 LEDGER_JOB = f"brief.{planner.KIND}"
+#: The reason of a slot whose brief time moved. Its row goes, and the day
+#: stays open for the new time.
+MOVED = "moved"
 #: The days a run stays (``core_brief.md`` §9 Q6, owner 2026-10-29).
 RETENTION_DAYS = 90
 
@@ -108,17 +113,21 @@ _FINISHED = frozenset({"ready", "empty", "exists"})
 
 async def _skip(org: str, member: str, local_date: date, claim: queue.Claim,
                 now: datetime, reason: str) -> str:
-    """End a slot that gets no brief. A ``planned`` row of an earlier try
-    turns ``failed`` with *reason*, and no row is made. Answers ``skipped``,
-    or ``lost`` when the claim is gone."""
+    """End a slot that gets no brief, and make no row. A ``planned`` row of
+    an earlier try turns ``failed`` with *reason*. For :data:`MOVED` the
+    row goes instead, so the day stays open for the new time. Answers
+    ``skipped``, or ``lost`` when the claim is gone."""
     _log.info("brief.run_skipped", reason=reason)
     async with tenant_session(org) as db:
         if not await queue.hold(db, claim):
             return "lost"
         found = await store.read_run(db, member, kind=planner.KIND, local_date=local_date)
         if found is not None and found.state == "planned":
-            await store.set_state(db, member, found.id, "failed", now=now, error=reason,
-                                  from_state="planned")
+            if reason == MOVED:
+                await store.discard_planned(db, member, found.id)
+            else:
+                await store.set_state(db, member, found.id, "failed", now=now,
+                                      error=reason, from_state="planned")
         await queue.complete(db, claim, now=now)
     return "skipped"
 
@@ -129,7 +138,7 @@ def _why_not(prefs: dict[str, Any], slot_at: datetime) -> str | None:
     if not prefs["enabled"]:
         return "opted_out"
     if slot_at.strftime("%H:%M") != prefs["brief_time"]:
-        return "moved"
+        return MOVED
     return None
 
 

@@ -227,7 +227,10 @@ BR-1b builds.
 1. AUTO-2 `begin` takes the slot `(brief.<kind>, <member>:<local_date>)`. A
    taken slot ends the run (`fresh=False`).
 2. It resolves the member, and reads the brief preferences again. A member
-   who is gone, turned the brief off or moved its time gets no row. It then
+   who is gone, turned the brief off or moved its time gets no row. A
+   `planned` row of an earlier try turns `failed`, with the reason. A moved
+   time is the exception: that row goes, so the planner plans the new time
+   on the same day. It then
    writes the `brief_runs` row in state `planned`. A run that gathers
    nothing, a cancel included, gives the ledger slot back.
 3. **Gather**, with no session held (§4.3). It writes the claims and sets
