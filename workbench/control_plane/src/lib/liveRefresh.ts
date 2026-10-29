@@ -23,6 +23,19 @@ import { ASSISTANT_WROTE_EVENT, eventNamesApp, type LiveApp } from "@/lib/assist
 /** The least gap between two reads that a wake (focus, visible) can cause. */
 export const LIVE_REFRESH_MS = 15_000;
 
+/**
+ * How long a burst of assistant writes waits before ONE read (task #124).
+ * A run that makes twenty tasks raises twenty events in a few seconds. Each
+ * one moves the read on, so the app reads once, just after the last write,
+ * and not twenty times.
+ */
+export const WRITE_SETTLE_MS = 400;
+
+interface Timers {
+  set: (fn: () => void, ms: number) => unknown;
+  clear: (handle: unknown) => void;
+}
+
 interface Doc {
   visibilityState: string;
   addEventListener: (type: string, fn: () => void) => void;
@@ -40,7 +53,10 @@ interface Win {
  */
 export function wireLiveRefresh(
   run: () => void,
-  opts: { doc?: Doc; win?: Win; everyMs?: number; clock?: () => number; app?: LiveApp } = {},
+  opts: {
+    doc?: Doc; win?: Win; everyMs?: number; clock?: () => number; app?: LiveApp;
+    settleMs?: number; timers?: Timers;
+  } = {},
 ): () => void {
   const doc = opts.doc ?? (typeof document !== "undefined" ? (document as Doc) : undefined);
   const win = opts.win ?? (typeof window !== "undefined" ? (window as Win) : undefined);
@@ -59,17 +75,29 @@ export function wireLiveRefresh(
     run();
   };
   // The assistant wrote through a tool (task #124). It names the apps it
-  // changed, and this surface reads only when its own app is among them.
+  // changed, and this surface reads only when its own app is among them. A
+  // burst of writes folds into one read, after `settleMs` with no new write.
+  const settleMs = opts.settleMs ?? WRITE_SETTLE_MS;
+  const timers: Timers = opts.timers ?? {
+    set: (fn, ms) => setTimeout(fn, ms),
+    clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+  };
+  let settle: unknown = null;
   const onWrote = (e?: unknown) => {
     if (!opts.app) return;
     if (!eventNamesApp((e as { detail?: unknown } | undefined)?.detail, opts.app)) return;
-    onChanged();
+    if (settle !== null) timers.clear(settle);
+    settle = timers.set(() => {
+      settle = null;
+      onChanged();
+    }, settleMs);
   };
   win.addEventListener(PROJECTS_CHANGED_EVENT, onChanged);
   win.addEventListener(ASSISTANT_WROTE_EVENT, onWrote);
   win.addEventListener("focus", onWake);
   doc.addEventListener("visibilitychange", onWake);
   return () => {
+    if (settle !== null) timers.clear(settle);
     win.removeEventListener(PROJECTS_CHANGED_EVENT, onChanged);
     win.removeEventListener(ASSISTANT_WROTE_EVENT, onWrote);
     win.removeEventListener("focus", onWake);

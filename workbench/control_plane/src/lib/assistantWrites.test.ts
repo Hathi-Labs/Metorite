@@ -106,13 +106,42 @@ describe("wireLiveRefresh and the assistant event", () => {
     return { doc, win, fire, handlers };
   }
 
-  it("reads at once when the event names this app", () => {
+  /** Timers a test runs by hand. */
+  function hand() {
+    const queue = new Map<number, () => void>();
+    let next = 0;
+    return {
+      timers: {
+        set: (fn: () => void) => { next += 1; queue.set(next, fn); return next; },
+        clear: (h: unknown) => { queue.delete(h as number); },
+      },
+      flush: () => { const fns = [...queue.values()]; queue.clear(); fns.forEach((f) => f()); },
+      size: () => queue.size,
+    };
+  }
+
+  it("reads once the writes settle, when the event names this app", () => {
     const r = rig();
+    const t = hand();
     let n = 0;
-    wireLiveRefresh(() => n++, { doc: r.doc, win: r.win, app: "crm" });
+    wireLiveRefresh(() => n++, { doc: r.doc, win: r.win, app: "crm", timers: t.timers });
     r.fire(ASSISTANT_WROTE_EVENT, { apps: ["crm"] });
+    expect(n).toBe(0);
+    t.flush();
     expect(n).toBe(1);
     r.fire(ASSISTANT_WROTE_EVENT, { apps: ["email"] });
+    t.flush();
+    expect(n).toBe(1);
+  });
+
+  it("a burst of twenty writes folds into ONE read", () => {
+    const r = rig();
+    const t = hand();
+    let n = 0;
+    wireLiveRefresh(() => n++, { doc: r.doc, win: r.win, app: "projects", timers: t.timers });
+    for (let i = 0; i < 20; i += 1) r.fire(ASSISTANT_WROTE_EVENT, { apps: ["projects"] });
+    expect(t.size()).toBe(1);
+    t.flush();
     expect(n).toBe(1);
   });
 
