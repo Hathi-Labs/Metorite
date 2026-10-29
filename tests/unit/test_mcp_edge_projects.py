@@ -29,6 +29,16 @@ Run::
 * P1. ``G/tree.py``: ``create_node`` drops ``_refuse_pinned_space``.
   ``test_r3_a_pinned_connection_makes_no_space`` fails: the signed POST of a
   pinned connection answers 201.
+
+Fix round 1 adds these.
+
+* P4. ``G/move.py``: ``move_tasks`` drops the refusal of a wider audience.
+  ``test_r11_an_agent_cannot_widen_who_sees_a_task`` and
+  ``test_r13_a_personal_task_stays_personal_for_an_agent`` fail: the signed
+  move answers 200.
+* P5. ``E/tools.py``: ``_check_parent_level`` refuses when it cannot read the
+  node above a folder. ``test_r14_a_connection_pinned_to_a_folder_makes_a_project``
+  and ``test_a_folder_whose_parent_is_hidden_lets_the_gateway_decide`` fail.
 """
 from __future__ import annotations
 
@@ -66,6 +76,7 @@ SPACE = _uuid(6001)
 SUBPROJECT = _uuid(6003)
 FOLDER = _uuid(6004)
 FOLDER_IN_PROJECT = _uuid(6005)
+FOLDER_HIDDEN_ABOVE = _uuid(6007)
 ARCHIVED = _uuid(6006)
 NEW_NODE = _uuid(6100)
 DEST = _uuid(6200)
@@ -112,6 +123,7 @@ def _plan(**kw: Any) -> dict[str, Any]:
         "types": [{"from": {"id": TYPE, "name": "Bug"}, "to": None}],
         "tags": {"carried": ["ui"], "unregistered": ["ui"]},
         "task_count": 1,
+        "audience": "same",
     }
     body.update(kw)
     return body
@@ -131,6 +143,8 @@ class _Gateway(t._Gateway):
             _node(ARCHIVED, "project", SPACE, archived_at=V1),
             _node(DEST, "project", SPACE),
             _node(DEST_FOLDER, "folder", SPACE),
+            # A pin on this folder hides the node above it (fix round 1, P2).
+            _node(FOLDER_HIDDEN_ABOVE, "folder", _uuid(4044)),
         )}
         self.made: list[dict[str, Any]] = []
         self.preview_body: dict[str, Any] = _plan()
@@ -256,6 +270,11 @@ class TestTheToolRecords:
         assert set(tools.PROJECT_CREATE_BODY_KEYS) == set(tree.AGENT_NODE_CREATE_FIELDS)
         assert set(tools.PROJECT_UPDATE_BODY_KEYS) == set(tree.AGENT_NODE_PATCH_FIELDS)
         assert tools.MAX_MOVE_TASKS <= bulk.MAX_BULK
+        # Fix round 1: the audience of a move.
+        assert tools.AUDIENCES == (move.AUDIENCE_SAME, move.AUDIENCE_NARROWER,
+                                   move.AUDIENCE_WIDER)
+        assert tools.AUDIENCE_WIDER == move.AUDIENCE_WIDER
+        assert tools.AUDIENCE_WIDENS_CODE == move.AGENT_AUDIENCE_WIDENS
         assert set(tools._MOVE_SELECTION_INPUT) | {"accept_drops", "accepted_drops"} == set(
             move.MoveIn.model_fields)
         # No tool names a lead: the lead is a grant write (D-OP-11).
@@ -268,7 +287,8 @@ class TestTheToolRecords:
         assert "cannot change who sees" in create and "no space" in create
         move = tools.MOVE_TASKS.description
         assert "preview_move_tasks" in move and "get a yes" in move
-        assert "who can see a task" in move
+        assert "more people is refused" in move
+        assert "never widens who sees a task" in tools.PREVIEW_MOVE_TASKS.description
         preview = tools.PREVIEW_MOVE_TASKS.description
         assert "change nothing" in preview and "show the result to the person" in preview
         assert "untrusted_text" in move and "untrusted_text" in create
@@ -348,6 +368,16 @@ class TestCreateProject:
                                                 "parent_id": parent})
         assert _text(result) == text
         assert _writes(edge.gateway) == []
+
+    async def test_a_folder_whose_parent_is_hidden_lets_the_gateway_decide(self, edge):
+        """Fix round 1 (P2). The edge does not refuse on a node that it cannot
+        read. The grammar of the gateway decides the level."""
+        result = await _tool("create_project", {"name": "x", "level": "project",
+                                                "parent_id": FOLDER_HIDDEN_ABOVE})
+        assert result["isError"] is False, result
+        assert [r.path for r in edge.gateway.requests][:3] == [
+            f"/projects/nodes/{FOLDER_HIDDEN_ABOVE}", f"/projects/nodes/{_uuid(4044)}",
+            "/projects/nodes"]
 
     async def test_a_folder_takes_the_level_of_the_node_above_it(self, edge):
         result = await _tool("create_project", {"name": "x", "level": "project",
@@ -515,6 +545,7 @@ class TestPreviewMoveTasks:
         ({"subtasks": {"count": 1, "hidden": 0, "refused": [
             {"task_id": TASK2, "ref": "#9", "reason": "r"}]}}, {}, "subtask_private"),
         ({}, {"status_map": {S_TODO: _uuid(4042)}}, "status_map_unknown"),
+        ({"audience": "wider"}, {}, "audience_widens"),
         ({"statuses": [{"from": {"id": S_TODO, "name": "To do", "category": "todo"},
                         "to": None}]}, {}, "status_unmapped"),
     ])
@@ -651,7 +682,21 @@ class TestMoveTasks:
         body = json.loads(_writes(edge.gateway)[-1].body)
         assert body["accept_drops"] is False and body["accepted_drops"] == []
 
+    @pytest.mark.parametrize("audience", ["same", "narrower", None])
+    async def test_an_audience_that_does_not_widen_does_not_block(self, edge, audience):
+        edge.gateway.preview_body = _plan(audience=audience)
+        out = (await _tool("preview_move_tasks", _move_args()))["structuredContent"]
+        assert out["audience"] == audience and out["can_move"] is True
+
+    async def test_an_unknown_audience_reads_as_null(self, edge):
+        edge.gateway.preview_body = _plan(audience="everybody")
+        out = (await _tool("preview_move_tasks", _move_args()))["structuredContent"]
+        assert out["audience"] is None
+
     @pytest.mark.parametrize("status,detail,text", [
+        (403, {"error": "audience_widens", "message": "m"},
+         tools.MOVE_BLOCKED_TEXTS["audience_widens"]),
+        (403, {"error": "something_else"}, tools.TEXT_WRITE_FORBIDDEN),
         (409, "The destination changed since you looked.", tools.TEXT_MOVE_CHANGED),
         (403, tools.TEXT_MOVE_NOT_ALLOWED, tools.TEXT_MOVE_NOT_ALLOWED),
         (422, "That status does not belong to this project.", tools.TEXT_MOVE_STATUS_MAP),
@@ -733,17 +778,53 @@ def world():
           " organization_id) VALUES (CAST(:p AS uuid), :s, :a, CAST(:o AS uuid))"
           " RETURNING project_id", p=restricted, s=ANN, a=OWNER, o=org)
     source, dest = a.project("Source", in_space=True), a.project("Destination", in_space=True)
+    # Fix round 1. A project of the group `crew` (the member and Ann), a
+    # project open to the whole organization, a project with a child of the
+    # same grants (the owner's case: an epic of "Metorite Application" into
+    # "Meeting Notetaker"), a personal project of the member, and a folder.
+    group = a.one("INSERT INTO org_group (organization_id, slug, display_name)"
+                  " VALUES (CAST(:o AS uuid), 'crew', 'crew') RETURNING id", o=org)
+    a.one("INSERT INTO org_group_member (group_id, user_id, organization_id)"
+          " SELECT CAST(:g AS uuid), id, CAST(:o AS uuid) FROM app_user WHERE email = :e"
+          " RETURNING group_id", g=str(group), o=org, e=ANN)
+    grouped, everyone = a.project("Grouped", in_space=True), a.project("Everyone", in_space=True)
+    for project, subject in ((grouped, "group:crew"), (everyone, "org")):
+        a.one("INSERT INTO pm_project_grants (project_id, subject, created_by,"
+              " organization_id) VALUES (CAST(:p AS uuid), :s, :a, CAST(:o AS uuid))"
+              " RETURNING project_id", p=project, s=subject, a=OWNER, o=org)
+    app = a.project("Metorite Application", in_space=True)
+    notetaker = str(a.one(
+        "INSERT INTO pm_projects (name, status, source, created_by, organization_id,"
+        " timezone, owns_statuses, parent_project_id) VALUES ('Meeting Notetaker',"
+        " 'active', 'manual', :a, CAST(:o AS uuid), 'UTC', false, CAST(:p AS uuid))"
+        " RETURNING id", a=OWNER, o=org, p=app))
+    mine = a.project("g1 mine")
+    a.one("UPDATE pm_projects SET personal_owner = :m WHERE id = CAST(:p AS uuid)"
+          " RETURNING id", m=MEMBER, p=mine)
+    folder_space = a.project("Folder space")
+    folder = str(a.one(
+        "INSERT INTO pm_projects (name, status, source, created_by, organization_id,"
+        " timezone, owns_statuses, parent_project_id, kind) VALUES ('g1 folder',"
+        " 'active', 'manual', :a, CAST(:o AS uuid), 'UTC', false, CAST(:p AS uuid),"
+        " 'folder') RETURNING id", a=OWNER, o=org, p=folder_space))
     s = SimpleNamespace(
         p1=a.status(p1, "To do", "todo", 0),
         source=a.status(source, "To do", "todo", 0),
         dest=a.status(dest, "To do", "todo", 0),
+        grouped=a.status(grouped, "To do", "todo", 0),
+        everyone=a.status(everyone, "To do", "todo", 0),
+        app=a.status(app, "To do", "todo", 0),
+        mine=a.status(mine, "To do", "todo", 0),
     )
     world_ = SimpleNamespace(admin=eng, org=org, org2=org2, seeder=a, p1=p1,
                              restricted=restricted, source=source, dest=dest,
-                             foreign=foreign, s=s, c={}, tok={}, task=a.task)
+                             foreign=foreign, grouped=grouped, everyone=everyone,
+                             app=app, notetaker=notetaker, mine=mine, folder=folder,
+                             s=s, c={}, tok={}, task=a.task)
     for name, scopes, pins in (("write", w.WRITE_SCOPES, ()),
                                ("read", ("projects:read",), ()),
-                               ("pinned", w.WRITE_SCOPES, (p1,))):
+                               ("pinned", w.WRITE_SCOPES, (p1,)),
+                               ("folder", w.WRITE_SCOPES, (folder,))):
         world_.c[name], world_.tok[name] = a.connection(scopes=scopes, pins=pins)
     world_.app_dsn = admin_url.set(
         database=dedicated, username=_APP_ROLE, password=_APP_PW,
@@ -1008,3 +1089,79 @@ class TestTheRulesOnARealDatabase:
             refused = await _send(live, method, path, body=body, signed="read")
             assert refused.status_code == 401, (path, refused.text)
         assert _scalar(live, "SELECT count(*) FROM pm_projects WHERE name = 'g1 read'") == 0
+
+    async def test_r11_an_agent_cannot_widen_who_sees_a_task(self, live):
+        """Fix round 1 (P1). From a project of a group into a project open to
+        the organization: Bob, who holds no grant, would see the task."""
+        task = live.task(live.grouped, live.s.grouped, "g1 hr only")
+        _mine(live, task)
+        args = {"task_ids": [task], "destination_project_id": live.everyone}
+        preview = await _mcp(live, "write", "preview_move_tasks", args)
+        assert preview["isError"] is False, preview
+        shown = preview["structuredContent"]
+        assert shown["audience"] == "wider"
+        assert shown["blocked"] == ["audience_widens"] and shown["can_move"] is False
+        moved = await _mcp(live, "write", "move_tasks", {**args,
+                                                        "preview_id": shown["preview_id"]})
+        assert _msg(moved) == tools.MOVE_BLOCKED_TEXTS["audience_widens"]
+        # The gateway's own guard, for a signed move that skips the edge.
+        r = await _send(live, "POST", "/projects/tasks/move", signed="write",
+                        body={**args, "accept_drops": False, "accepted_drops": []})
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"]["error"] == tools.AUDIENCE_WIDENS_CODE
+        assert _project_of(live, task) == live.grouped
+        # The member's own move in the app is unchanged: no audience, and it lands.
+        mp = await _as(live, MEMBER, "POST", "/projects/tasks/move/preview", body=args)
+        assert mp.status_code == 200, mp.text
+        assert mp.json()["audience"] is None
+        r = await _as(live, MEMBER, "POST", "/projects/tasks/move", body=args)
+        assert r.status_code == 200, r.text
+        assert _project_of(live, task) == live.everyone
+
+    async def test_r12_a_move_into_a_child_with_the_same_grants_lands(self, live):
+        """The owner's case: an epic of "Metorite Application" moves into its
+        new child "Meeting Notetaker", with its subtask."""
+        epic = live.task(live.app, live.s.app, "g1 notetaker epic")
+        sub = live.task(live.app, live.s.app, "g1 notetaker sub")
+        live.seeder.one("UPDATE pm_tasks SET parent_task_id = CAST(:e AS uuid)"
+                        " WHERE id = CAST(:s AS uuid) RETURNING id", e=epic, s=sub)
+        _mine(live, epic)
+        args = {"task_ids": [epic], "destination_project_id": live.notetaker}
+        preview = await _mcp(live, "write", "preview_move_tasks", args)
+        shown = preview["structuredContent"]
+        assert shown["audience"] == "same" and shown["can_move"] is True, shown
+        moved = await _mcp(live, "write", "move_tasks", {**args,
+                                                        "preview_id": shown["preview_id"]})
+        assert moved["isError"] is False, moved
+        assert moved["structuredContent"]["subtasks_moved"] == 1
+        assert _project_of(live, epic) == _project_of(live, sub) == live.notetaker
+        # A narrower move is allowed too: from the organization to the member.
+        open_task = live.task(live.everyone, live.s.everyone, "g1 to fewer people")
+        _mine(live, open_task)
+        fewer = await _mcp(live, "write", "preview_move_tasks", {
+            "task_ids": [open_task], "destination_project_id": live.dest})
+        assert fewer["structuredContent"]["audience"] == "narrower"
+        assert fewer["structuredContent"]["can_move"] is True
+
+    async def test_r13_a_personal_task_stays_personal_for_an_agent(self, live):
+        """A task of the member's personal project into a team project is
+        wider, even when the team project's grants give only the member."""
+        task = live.task(live.mine, live.s.mine, "g1 private note")
+        _mine(live, task)
+        args = {"task_ids": [task], "destination_project_id": live.dest}
+        preview = await _mcp(live, "write", "preview_move_tasks", args)
+        assert preview["structuredContent"]["audience"] == "wider", preview
+        r = await _send(live, "POST", "/projects/tasks/move", signed="write",
+                        body={**args, "accept_drops": False, "accepted_drops": []})
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"]["error"] == tools.AUDIENCE_WIDENS_CODE
+        assert _project_of(live, task) == live.mine
+
+    async def test_r14_a_connection_pinned_to_a_folder_makes_a_project(self, live):
+        """Fix round 1 (P2). The pin hides the space above the folder, and the
+        grammar of the gateway decides the level."""
+        result = await _mcp(live, "folder", "create_project", {
+            "name": "g1 in the folder", "level": "project", "parent_id": live.folder})
+        assert result["isError"] is False, result
+        made = result["structuredContent"]["project"]
+        assert made["level"] == "project" and made["parent_id"] == live.folder

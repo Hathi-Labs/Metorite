@@ -342,7 +342,8 @@ DELETE_ANNOTATIONS: Mapping[str, bool] = {
 ASSIGN_ANNOTATIONS: Mapping[str, bool] = {**WRITE_ANNOTATIONS, "destructiveHint": True}
 
 #: The annotations of ``move_tasks`` (MCP-G1). A move drops each value that
-#: has no field in the destination, and it can change who sees a task, so
+#: has no field in the destination, and it can hide a task from somebody who
+#: saw it (fix round 1: it never shows a task to anybody new). So
 #: ``destructiveHint`` is true and the client may ask the person first. A
 #: second call finds the tasks there already and moves nothing more.
 MOVE_ANNOTATIONS: Mapping[str, bool] = {**WRITE_ANNOTATIONS, "destructiveHint": True}
@@ -469,6 +470,7 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
                  details: Mapping[tuple[int, str], str] | None = None,
                  coded: Mapping[str, str | Callable[[Mapping[str, Any]], str]] | None = None,
                  prefixes: Mapping[tuple[int, str], str] | None = None,
+                 coded_statuses: tuple[int, ...] = (422,),
                  ) -> tuple[int, Any]:
     """One write through ``gateway_client.write``: ``(status, body)`` of a
     2xx answer, or raise the write mapping of :func:`_body_of`. *texts* gives
@@ -489,7 +491,11 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
     *prefixes* (MCP-G1) maps a status and the START of the gateway's own
     ``detail`` to a fixed text, for a refusal whose detail names rows, such
     as the one-source rule of a move (D-PM-30). It goes after *details*. The
-    edge reads the detail to choose a text, and never sends it."""
+    edge reads the detail to choose a text, and never sends it.
+
+    *coded_statuses* (MCP-G1 fix round 1) names the statuses that *coded*
+    reads. The default is 422 only. ``move_tasks`` adds 403, for the coded
+    refusal ``audience_widens`` of the gateway."""
     try:
         answer = await gateway_write(
             ctx.key, ctx.caller.lookup, method, template, json_body=json_body,
@@ -516,7 +522,7 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
         # `held_by`, as (U) text. SW-13c: the hint of an own run of another
         # connection, with its id only in the shape of an id.
         raise ToolError(task_held_text(detail))
-    if coded and answer.status == 422:
+    if coded and answer.status in coded_statuses:
         code = detail.get("error") if isinstance(detail, dict) else None
         if isinstance(code, str) and code in coded:
             text = coded[code]
@@ -4391,9 +4397,6 @@ TEXT_LEVEL_MISMATCH = (
 TEXT_LEVEL_FLOOR = (
     "A subproject is the lowest level, so it cannot hold a project. Use tasks"
     " and subtasks for the work.")
-TEXT_LEVEL_UNKNOWN = (
-    "Metorite cannot tell the level under that folder, because this member"
-    " cannot see the node above it. Send another parent_id.")
 TEXT_PARENT_ARCHIVED = (
     "That parent is archived. Make the project under a node that is not archived.")
 TEXT_TREE_RACE = (
@@ -4505,6 +4508,11 @@ async def _check_parent_level(ctx: Context, parent_id: str, asked: str) -> None:
     One read of the parent, and one more for a folder: a folder takes the
     level of the node above it. A parent that the member cannot see, also
     one that a pin hides, is "Project not found." (§7.1).
+
+    Fix round 1 (P2). When the member cannot see the node above a folder,
+    such as under a pin on the folder, the edge does not refuse. The grammar
+    of the gateway (``core.assert_node_grammar``) decides the level, and the
+    result of the call gives it.
     """
     parent = await _node(ctx, parent_id, TEXT_PROJECT_NOT_FOUND)
     if parent.get("archived_at") is not None:
@@ -4514,7 +4522,12 @@ async def _check_parent_level(ctx: Context, parent_id: str, asked: str) -> None:
         above = _id(parent.get("parent_project_id"))
         if above is None:
             raise ToolError(TEXT_BUSY)
-        level = (await _node(ctx, above, TEXT_LEVEL_UNKNOWN)).get("level")
+        try:
+            level = (await _node(ctx, above, TEXT_PROJECT_NOT_FOUND)).get("level")
+        except ToolError as exc:
+            if exc.text != TEXT_PROJECT_NOT_FOUND:
+                raise
+            return
     if level == "subproject":
         raise ToolError(TEXT_LEVEL_FLOOR)
     made = _LEVEL_BELOW.get(str(level))
@@ -4714,10 +4727,23 @@ TEXT_MOVE_STATUS_MAP = (
     "status_map names a status that is not in destination_statuses of the preview.")
 TEXT_MOVE_MAP_FORM = "The input {name!r} has a key of the wrong form."
 
+#: The audience of a move (fix round 1), copies of ``move.AUDIENCE_SAME``,
+#: ``move.AUDIENCE_NARROWER`` and ``move.AUDIENCE_WIDER``. The gateway gives
+#: it to an agent only. ``wider`` blocks the move: an agent never widens who
+#: sees a task. ``test_mcp_edge_projects.py`` pins the copies equal.
+AUDIENCE_WIDER = "wider"
+AUDIENCES: tuple[str, ...] = ("same", "narrower", AUDIENCE_WIDER)
+#: A copy of ``move.AGENT_AUDIENCE_WIDENS``, the code of the 403 of the move.
+AUDIENCE_WIDENS_CODE = "audience_widens"
+
 #: The reasons that hold a move back, in the order that the preview checks
 #: them, each with the text of ``move_tasks``. ``preview_move_tasks`` returns
 #: the codes in ``blocked``.
 MOVE_BLOCKED_TEXTS: Mapping[str, str] = {
+    "audience_widens": (
+        "This move would show the tasks to people who cannot see them now. An"
+        " agent never widens who sees a task, so a person must make this move in"
+        " the Metorite app. Nothing moved."),
     "already_there": "Those tasks are already in that project. Nothing moved.",
     "required_missing": (
         "The destination needs fields that these tasks do not hold."
@@ -4807,7 +4833,7 @@ PREVIEW_KEYS: tuple[str, ...] = (
     "task_ids", "task_count", "source_project_id", "destination_project_id",
     "include_subtasks", "crosses_root", "crosses_status_set", "statuses",
     "destination_statuses", "types", "field_map", "orphan_fields", "drops", "tags",
-    "subtasks", "required_missing", "blocked", "can_move", "preview_id",
+    "subtasks", "required_missing", "audience", "blocked", "can_move", "preview_id",
 )
 #: The keys of the result of ``move_tasks`` (§9.2), and no other.
 MOVED_KEYS: tuple[str, ...] = (
@@ -4848,6 +4874,7 @@ _PREVIEW_OUTPUT: dict[str, Any] = _object({
     "subtasks": _object({"count": {"type": "integer"}, "hidden": {"type": "integer"},
                          "refused": _IDS_SCHEMA}),
     "required_missing": _UNTRUSTED_ARRAY,
+    "audience": {"type": ["string", "null"], "enum": [*AUDIENCES, None]},
     "blocked": {"type": "array", "items": {"type": "string",
                                            "enum": list(MOVE_BLOCKED_TEXTS)}},
     "can_move": {"type": "boolean"},
@@ -4915,6 +4942,8 @@ def _move_blocks(shown: Mapping[str, Any], selection: Mapping[str, Any]) -> list
     with a fixed text, so no text of the gateway reaches the agent.
     """
     out: list[str] = []
+    if shown["audience"] == AUDIENCE_WIDER:
+        out.append("audience_widens")
     source = shown["source_project_id"]
     if source is not None and source == shown["destination_project_id"]:
         out.append("already_there")
@@ -4970,6 +4999,7 @@ def _shown_preview(body: Mapping[str, Any], selection: Mapping[str, Any]) -> dic
                      "hidden": _int_or_none(subtasks.get("hidden")) or 0,
                      "refused": _ids([r.get("task_id") for r in _dicts(subtasks.get("refused"))])},
         "required_missing": _untrusted_list(body.get("required_missing")),
+        "audience": body.get("audience") if body.get("audience") in AUDIENCES else None,
     }
     blocked = _move_blocks(shown, selection)
     shown["blocked"] = blocked
@@ -5062,11 +5092,13 @@ PREVIEW_MOVE_TASKS = Tool(
         " where each status lands (statuses), the statuses of the destination,"
         " where each task type and custom field lands, each value that the move"
         " drops (drops), the tags, the subtasks that move along, and the"
-        " required fields that the tasks do not hold. blocked lists each reason"
+        " required fields that the tasks do not hold. audience says whether the"
+        " move shows the tasks to more people (wider), to fewer (narrower) or to"
+        " the same people. An agent never widens who sees a task, so a wider move"
+        " is blocked, and a person makes it in the Metorite app. blocked lists each reason"
         " that holds the move back, and can_move is true when there is none."
-        " Send the preview_id to move_tasks with the same selection. A move to"
-        " another project can change who can see a task: the tasks then have the"
-        " access of the destination." + _UNTRUSTED_NOTE
+        " Send the preview_id to move_tasks with the same selection."
+        + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_PREVIEW_INPUT,
@@ -5114,7 +5146,9 @@ async def _move_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         ctx, "POST", MOVE_TASKS_ROUTE, TEXT_TASK_NOT_FOUND,
         json_body={**_move_body(selection), "accept_drops": bool(drops),
                    "accepted_drops": drops},
-        texts={409: TEXT_MOVE_CHANGED}, details=_BULK_MOVE_DETAILS, prefixes=_BULK_MOVE_PREFIXES)
+        texts={409: TEXT_MOVE_CHANGED}, details=_BULK_MOVE_DETAILS, prefixes=_BULK_MOVE_PREFIXES,
+        coded={AUDIENCE_WIDENS_CODE: MOVE_BLOCKED_TEXTS["audience_widens"]},
+        coded_statuses=(403, 422))
     return _moved(answer)
 
 
@@ -5130,7 +5164,8 @@ MOVE_TASKS = Tool(
         " default, every subtask moves along. A value with no field in the"
         " destination drops, and the timeline of the task keeps it. Only the"
         " person who created a task, the project lead or a Projects admin can"
-        " move it. A move can change who can see a task. Returns the moved task"
+        " move it. A move that would show the tasks to more people is refused: a"
+        " person makes it in the Metorite app. Returns the moved task"
         " ids and the dropped fields." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
@@ -6048,6 +6083,9 @@ __all__ = [
     "ASSIGNEE_PERSONAL_CODE",
     "ASSIGNEE_REFUSED_CODE",
     "ASSIGN_ANNOTATIONS",
+    "AUDIENCES",
+    "AUDIENCE_WIDENS_CODE",
+    "AUDIENCE_WIDER",
     "AUTHOR_AGENT",
     "AUTHOR_PERSON",
     "CLAIM_TASK",
@@ -6163,7 +6201,6 @@ __all__ = [
     "TEXT_LEVEL_FLOOR",
     "TEXT_LEVEL_MISMATCH",
     "TEXT_LEVEL_NEEDS_PARENT",
-    "TEXT_LEVEL_UNKNOWN",
     "TEXT_MOVE_ALONE",
     "TEXT_MOVE_CHANGED",
     "TEXT_MOVE_CYCLE",
