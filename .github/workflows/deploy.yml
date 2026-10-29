@@ -205,8 +205,11 @@ jobs:
   # it as "The daily release did not run".
   #
   # A dispatch is never held. It is a person's deliberate act, as with
-  # RELEASE_HOLD. A step that fails here holds the release: `open` is then
-  # empty, and `publish-release` reads empty as closed.
+  # RELEASE_HOLD. A rerun of a schedule run (run_attempt 2 or more) is a
+  # person's act too, so it is not held either. The runbooks at the top of
+  # this file and in `pull-delivery` say "re-run this workflow".
+  # A step that fails here holds the release: `open` is then empty, and
+  # `publish-release` reads empty as closed.
   # Fence: tests/unit/test_daily_release.py.
   release-window:
     name: "Release window"
@@ -227,12 +230,15 @@ jobs:
           set -euo pipefail
           hm="$(date -u +%H%M)"
           now=$(( 10#${hm:0:2} * 60 + 10#${hm:2:2} ))
-          if [ "$now" -ge "$OPEN_MIN" ] || [ "$now" -lt "$CLOSE_MIN" ]; then
+          if [ "${GITHUB_RUN_ATTEMPT:-1}" != "1" ]; then
+            echo "open=true" >> "$GITHUB_OUTPUT"
+            echo "Attempt ${GITHUB_RUN_ATTEMPT} is a person's rerun, so it releases at ${hm} UTC."
+          elif [ "$now" -ge "$OPEN_MIN" ] || [ "$now" -lt "$CLOSE_MIN" ]; then
             echo "open=true" >> "$GITHUB_OUTPUT"
             echo "The release window is open at ${hm} UTC."
           else
             echo "open=false" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Release waits a day::GitHub started this run late. At ${hm} UTC a restart lands in working hours, so production stays on its current release. The next night ships the tip of main."
+            echo "::warning title=Release waits a day::GitHub started this run late. At ${hm} UTC a restart lands in working hours, so production stays on its current release. The next night ships the tip of main. To release now, re-run this workflow."
             echo "Release WAITS: the run reached the window at ${hm} UTC, outside 21:00 to 02:00 UTC. Production did not move." >> "$GITHUB_STEP_SUMMARY"
           fi
 

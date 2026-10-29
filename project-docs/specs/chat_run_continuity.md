@@ -1219,8 +1219,9 @@ need for a second service:
 - **A flag flip no longer restarts.** A `*_ORGS` or `*_MODES` flip reloads
   in place since #1448 (`docs/flag_reload.md`).
 
-**Reopen D-1 when** a production stop logs `gateway-drain: N run(s) still
-going after 60s`. Run
+**Reopen D-1 when** a production stop logs a `gateway-drain:` line other than
+`0 runs` or `every run ended`. The other lines say that the stop went ahead
+while runs were live, or while the count did not answer. Run
 `sudo journalctl -u acb-gateway --since "7 days ago" -o cat | grep gateway-drain`
 on the box to see each stop.
 

@@ -30,7 +30,7 @@ disagree, the parent spec wins until the owner records a decision.
 | 0.1 | `main` took **480 merges** from 2026-10-01 to 2026-10-15. That is about **32 a day**, and **57** on 2026-10-09 | `git log origin/main --first-parent --since=2026-10-01 --oneline \| wc -l` |
 | 0.2 | **Every merge is a production deploy.** `deploy.yml` runs on each push to `main`, and `publish-release` moves `release` on each green run | `.github/workflows/deploy.yml` (the `on:` block and the `publish-release` job) |
 | 0.3 | **48 new tenant migrations** landed in the same 15 days. Each one reached production data on the day it merged, with no rehearsal on production-shaped rows | `git diff --name-only --diff-filter=A <sha at 2026-10-01> origin/main -- infra/postgres` |
-| 0.4 | **A deploy restart ends every live agent run**, because the runs execute inside `acb-gateway` | `specs/chat_run_continuity.md` §5 (D-1, deferred 2026-10-29) |
+| 0.4 | **A deploy restart ends every live agent run that outlasts the 60 s drain**, because the runs execute inside `acb-gateway` | `specs/chat_run_continuity.md` §5 (D-1, deferred 2026-10-29) |
 | 0.5 | **The gateway cold start takes 15 to 23 seconds.** Caddy holds a request for 30 seconds, and after that a member sees "Metorite is updating" | `deploy/hostinger/caddy/Caddyfile` (the H-60 comment) |
 | 0.6 | **A deploy with a pending migration takes a full `pg_dump`** of the production database. That load helped drain the free-plan database on 2026-10-07 | the incident record behind `#707` |
 | 0.7 | The pull script already reads the ref it applies from an environment variable, `RELEASE_REF`. A staging box needs no new script, only `RELEASE_REF=staging` | `scripts/vps_pull.sh` line 42 |
@@ -165,9 +165,12 @@ minutes later. Outside the window, production stays on its current release, and
 the next night ships the tip of `main`. The run shows a "Release waits a day"
 warning. After 30 hours, the `vps-health.yml` delivery check reports it.
 
-- A dispatch never waits, as with `RELEASE_HOLD` (§4.3).
+- A dispatch never waits, as with `RELEASE_HOLD` (§4.3). A person's rerun of a
+  schedule run (`run_attempt` 2 or more) never waits either.
 - This rule does not move the release hour. The hour stays the owner's (S-B). If
   GitHub makes the run wait on many nights, the owner can move the cron earlier.
+  Then move `OPEN_MIN` in the same change, or an on-time run waits every night.
+  The fence fails when the cron is outside the window.
 - Fence: `tests/unit/test_daily_release.py`. It runs the job's own script with a
   stubbed clock at each edge of the window.
 

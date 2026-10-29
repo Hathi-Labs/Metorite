@@ -169,6 +169,8 @@ def test_a_late_schedule_run_waits_a_day(deploy: dict) -> None:
     # After the tests, so the clock it reads is the clock of the restart.
     assert {"lint", "test"} <= set(_needs(job))
     assert job["outputs"]["open"] == "${{ steps.clock.outputs.open }}"
+    # A renamed step id would leave `open` empty, and hold every night.
+    assert [s.get("id") for s in job["steps"]] == ["clock"]
     publish = deploy["jobs"]["publish-release"]
     assert "release-window" in _needs(publish)
     # Empty reads as closed, so a failed window step holds the release.
@@ -183,7 +185,12 @@ def test_the_window_holds_the_planned_hour(deploy: dict) -> None:
     assert (open_min, close_min) == (21 * 60, 2 * 60), "21:00 to 02:00 UTC (spec §4.1a)"
     (cron,) = [c["cron"] for c in _on(deploy)["schedule"]]
     minute, hour = (int(p) for p in cron.split()[:2])
-    assert hour * 60 + minute >= open_min, "an on-time run must find the window open"
+    planned = hour * 60 + minute
+    # The window spans midnight. Move OPEN_MIN with the cron, or an on-time
+    # run is held every night.
+    assert planned >= open_min or planned < close_min, (
+        "an on-time run must find the window open"
+    )
 
 
 def _bash() -> str | None:
@@ -198,20 +205,23 @@ _BASH = _bash()
 
 
 @pytest.mark.skipif(_BASH is None, reason="no bash on this machine")
-@pytest.mark.parametrize(("clock", "is_open"), [
-    ("2059", False), ("2100", True), ("2130", True), ("2359", True),
-    ("0000", True), ("0159", True), ("0200", False),
+@pytest.mark.parametrize(("clock", "attempt", "is_open"), [
+    ("2059", "1", False), ("2100", "1", True), ("2130", "1", True), ("2359", "1", True),
+    ("0000", "1", True), ("0159", "1", True), ("0200", "1", False),
     # 08 and 09 are not octal. 10# reads them as base 10.
-    ("0806", False), ("0959", False), ("1200", False),
+    ("0806", "1", False), ("0959", "1", False), ("1200", "1", False),
+    # A person's rerun of a held run releases, as a dispatch does.
+    ("1000", "2", True), ("0806", "3", True),
 ])
 def test_the_window_reads_the_clock(deploy: dict, tmp_path: pathlib.Path,
-                                    clock: str, is_open: bool) -> None:
+                                    clock: str, attempt: str, is_open: bool) -> None:
     step = deploy["jobs"]["release-window"]["steps"][0]
     assert 'hm="$(date -u +%H%M)"' in step["run"], "it reads the real clock"
     out, summary = tmp_path / "out", tmp_path / "summary"
     # A shell function shadows `date`, so the step's own text runs unchanged.
     script = f"date() {{ echo {clock}; }}\n" + step["run"]
-    env = {**os.environ, **step["env"],
+    # GITHUB_RUN_ATTEMPT is pinned: a rerun of CI itself sets it to 2.
+    env = {**os.environ, **step["env"], "GITHUB_RUN_ATTEMPT": attempt,
            "GITHUB_OUTPUT": str(out), "GITHUB_STEP_SUMMARY": str(summary)}
     done = subprocess.run([_BASH, "-c", script], env=env, capture_output=True,
                           text=True, timeout=30)
