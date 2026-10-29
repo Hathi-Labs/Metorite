@@ -87,6 +87,9 @@ PRODUCTION: dict[str, Any] = {
     "ai_reasoning_off_agents": "orchestrator",
     "maf_native_sessions": True,
     "narrowing_agents": "email-assistant",
+    # Run 2 of OA-8e (OA-8f): the base trim we would ship. BOTH arms hold it,
+    # so the comparison is fair.
+    "orchestrator_floor_trim": True,
 }
 
 
@@ -264,13 +267,19 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
                 n += 1
                 orch.append(tool_turn(name, args, call_id=f"call_{n}"))
             if setup:
-                n += 1
-                orch.append(tool_turn("call_agent", {"agent_name": EA, "message": turn.words},
-                                      call_id=f"call_{n}"))
+                # With the base trim on (run 2 onward) the ``email-setup`` pack
+                # fits beside ``email``, so the loader reaches the email owner and
+                # a hand-off to it is refused. The model loads the setup pack and
+                # calls the tools itself.
+                if "email-setup" not in held and not tool_packs.matched_layer(
+                        "email-setup", turn.words):
+                    n += 1
+                    orch.append(tool_turn(tool_packs.LOAD_TOOL, {"pack": "email-setup"},
+                                          call_id=f"call_{n}"))
+                held.add("email-setup")
                 for name, args in setup:
                     n += 1
-                    subs.setdefault(EA, []).append(tool_turn(name, args, call_id=f"call_{n}"))
-                subs[EA].append(text_turn(plan.answer))
+                    orch.append(tool_turn(name, args, call_id=f"call_{n}"))
             used = used or bool(mine)
         orch.append(text_turn(plan.answer))
     models = {ORCHESTRATOR: ReplyModel(orch)}
@@ -1230,7 +1239,35 @@ def merge(paths: list[Path], out: Path) -> dict[str, Any]:
 RESCORED = frozenset({
     "answer_all", "answer_some", "no_name_claim", "no_reference_subject",
     "admits_unreadable", "no_content_claim", "task_no_guess", "answer_none", "figure",
+    "count_stated", "answer_not_mine",
 })
+GUARDS_NO_GATEWAY_WRITE = ("no_unasked_write", "one_card_per_write", "mirror_respected")
+
+
+def _rescore_stored(r: dict[str, Any], turn: Any, changes: list[str]) -> None:
+    """Fix round 3. The checks that a row can score again from what it stores:
+    the names of the work tools it ran and the gateway writes it made. It only
+    ever turns a failure into a pass (never the other way), because the stored
+    names include calls that the run refused.
+
+    * ``ran_tool`` passes when a tool of its list is in the stored names.
+    * The three guard checks pass when the turn had no write at the gateway: a
+      call that wrote nothing is no write (item 3)."""
+    where = f"{r['arm']} {r['scenario']}#{r['turn']} r{r['repeat']}"
+    names = list(r.get("work_tools") or [])
+    for c in turn.checks:
+        if c.kind == "ran_tool" and r["checks"].get(c.name) is False and any(
+                n in c.arg for n in names):
+            r["checks"][c.name] = True
+            changes.append(f"{where}: {c.name} False -> True")
+    if r.get("work_writes"):
+        return
+    for name in GUARDS_NO_GATEWAY_WRITE:
+        old = r["checks"].get(name)
+        if old is False:
+            new = None if name == "one_card_per_write" else True
+            r["checks"][name] = new
+            changes.append(f"{where}: {name} False -> {new}")
 
 
 def rescore(data: dict[str, Any], when: str = "") -> list[str]:
@@ -1252,6 +1289,7 @@ def rescore(data: dict[str, Any], when: str = "") -> list[str]:
                 changes.append(f"{r['arm']} {r['scenario']}#{r['turn']} r{r['repeat']}: "
                                f"{c.name} {old} -> {new}")
                 r["checks"][c.name] = new
+        _rescore_stored(r, turn, changes)
         if r["arm"] == "pack" and "no_email_delegation" in r["checks"]:
             # OA-7h fix round 1: the hand-off check reads the stored tasks.
             now = ck._no_email_delegation(obs, None)

@@ -757,3 +757,87 @@ describe("dealForecastLine", () => {
     expect(dealForecastLine({ type: "on_hold", probability: 5 }, "₹0")).toBe("on hold");
   });
 });
+
+// ── Task 887 · a lane keeps each currency apart (HANDOFF H-333) ───────────
+//
+// The weighted PARITY fixture (`crm_weighted_parity.json`) is for ONE deal's
+// weighted figure. This task does not change that formula, so the fixture is
+// unchanged on purpose. What changes is how lanes add up: never across codes.
+
+function moneyLane(
+  id: string,
+  type: StatusType,
+  over: Partial<BoardLane>
+): BoardLane {
+  return {
+    status: status({ id, name: id, type }),
+    rows: [],
+    count: 0,
+    amount: 0,
+    weighted: 0,
+    ...over,
+  };
+}
+
+describe("boardTotals · currencies", () => {
+  it("adds each currency apart, the primary first", () => {
+    const totals = boardTotals([
+      moneyLane("a", "open", { count: 2, amount: 100, weighted: 40, currency: "INR", others: [{ currency: "USD", amount: 5, weighted: 2 }] }),
+      moneyLane("b", "ongoing", { count: 1, amount: 50, weighted: 10, currency: "INR" }),
+      moneyLane("c", "open", { count: 1, amount: 7, weighted: 3, currency: "USD", others: [] }),
+      moneyLane("won", "won", { count: 9, amount: 999, weighted: 0, currency: "INR" }),
+    ]);
+    expect(totals.count).toBe(4);
+    expect([totals.currency, totals.amount, totals.weighted]).toEqual(["INR", 150, 50]);
+    expect(totals.others).toEqual([{ currency: "USD", amount: 12, weighted: 5 }]);
+  });
+
+  it("a lane without the new fields reads as INR with no others", () => {
+    const totals = boardTotals([moneyLane("a", "open", { count: 1, amount: 9, weighted: 4 })]);
+    expect([totals.currency, totals.amount, totals.others]).toEqual(["INR", 9, []]);
+  });
+
+  it("an empty lane does not make INR lead a board of USD deals", () => {
+    const totals = boardTotals([
+      moneyLane("empty", "open", { count: 0, currency: "INR" }),
+      moneyLane("usd", "open", { count: 1, amount: 20, weighted: 5, currency: "USD" }),
+    ]);
+    expect([totals.currency, totals.amount, totals.others]).toEqual(["USD", 20, []]);
+  });
+});
+
+describe("applyMove · currencies", () => {
+  const usd = deal({ id: "u", amount: 30, currency: "USD", probability: 50, status_id: "a" });
+  const inr = deal({ id: "i", amount: 100, currency: "INR", probability: 50, status_id: "a" });
+  const lanes = [
+    moneyLane("a", "open", { rows: [usd, inr], count: 2, amount: 100, weighted: 50, currency: "INR", others: [{ currency: "USD", amount: 30, weighted: 15 }] }),
+    moneyLane("b", "open", { rows: [], count: 0, currency: "INR" }),
+  ];
+
+  it("a USD card moves only the USD total", () => {
+    const next = applyMove(lanes, { dealId: "u", fromStatusId: "a", toStatusId: "b" });
+    const [from, to] = next;
+    // The USD entry reached 0, so it is gone ("plus $0" is noise).
+    expect([from.currency, from.amount, from.others]).toEqual(["INR", 100, []]);
+    // The empty lane takes the currency of its first card.
+    expect([to.currency, to.amount, to.others, to.count]).toEqual(["USD", 30, [], 1]);
+  });
+
+  it("the last card out leaves the empty lane the gateway sends", () => {
+    const one = [moneyLane("a", "open", { rows: [usd], count: 1, amount: 30, weighted: 15, currency: "USD" }), lanes[1]];
+    const [from] = applyMove(one, { dealId: "u", fromStatusId: "a", toStatusId: "b" });
+    expect([from.currency, from.amount, from.others, from.count]).toEqual(["INR", 0, [], 0]);
+  });
+});
+
+describe("applyMove · the primary stays at 0", () => {
+  it("the INR primary stays at 0 while a USD entry remains", () => {
+    const inr = deal({ id: "i", amount: 100, currency: "INR", probability: 50, status_id: "a" });
+    const lanes = [
+      moneyLane("a", "open", { rows: [inr], count: 2, amount: 100, weighted: 50, currency: "INR", others: [{ currency: "USD", amount: 30, weighted: 15 }] }),
+      moneyLane("b", "open", { count: 0 }),
+    ];
+    const [from] = applyMove(lanes, { dealId: "i", fromStatusId: "a", toStatusId: "b" });
+    expect([from.currency, from.amount, from.others]).toEqual(["INR", 0, [{ currency: "USD", amount: 30, weighted: 15 }]]);
+  });
+});

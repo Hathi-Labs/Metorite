@@ -341,13 +341,6 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-07 · WS-17 EM-T13b-2 review round 1 (branch
   `email-t13b-2`)
 
-### H-259 · Make a failed nightly backup reach a person · [AGENT]
-- **Metorite:** #550. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n "acb-backup" .github/workflows/vps-health.yml`
-  → no hit means this is open.
-- **Added:** 2026-10-06 · the backup verify-drop fix (branch
-  `backup-verify-drop`)
-
 ### H-257 · Keep a node with a hidden parent out of the top level of the tree drag · [AGENT]
 - **Metorite:** #483. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "parentId === null\) return \[\.\.\.roots\]" workbench/control_plane/src/app/projects/lib/treeDrop.ts`

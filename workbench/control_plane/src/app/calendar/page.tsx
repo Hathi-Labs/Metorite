@@ -7,6 +7,7 @@ import { TaskFocusModal } from "@/app/tasks/components/TaskFocusModal";
 import { SchedulePopup } from "@/app/tasks/components/SchedulePopup";
 import { DeleteConfirmModal } from "@/app/tasks/components/DeleteConfirmModal";
 import { UndoToast } from "@/app/tasks/components/UndoToast";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 import { SyncFailureToast } from "@/app/tasks/components/SyncFailureToast";
 
 /**
@@ -58,6 +59,12 @@ export default function CalendarPage() {
   useEffect(() => {
     void hydrate();
   }, [hydrate]);
+
+  // Task #124: the assistant scheduled, moved or completed a task. Calendar
+  // reads the one task store, so it re-reads the list now. `reloadItems` is
+  // quiet and keeps the real rows when the read fails.
+  const reloadItems = useTaskStore((s) => s.reloadItems);
+  useLiveRefresh(() => void reloadItems(), "calendar");
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">
