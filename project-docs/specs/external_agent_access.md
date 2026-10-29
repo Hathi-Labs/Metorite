@@ -83,6 +83,8 @@ Written 2026-10-10 from a read-only survey of the tree at commit `f62f2bb16`. Ev
 
 **Owner of the topic:** this file. `mcp_plugin_integration.md` owns the other direction, where Metorite is an MCP **client** that reads outside servers. Do not merge the two.
 
+**Agent coordination (D140, 2026-10-30).** `agent_coordination.md` owns the coordination model and the order of the SW slices. §12 here stays the record of what is built.
+
 ---
 
 ## 1. The answer in one screen
