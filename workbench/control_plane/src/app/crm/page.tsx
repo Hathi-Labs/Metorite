@@ -55,7 +55,7 @@ import CrmRail, { type RailSettings } from "./components/CrmRail";
 import CrmViewBar from "./components/CrmViewBar";
 import FilterBar from "./components/FilterBar";
 import FirstOpen from "./components/FirstOpen";
-import { ImportProgress, SetupLink, StalledBanner } from "./components/MirrorBanner";
+import { ImportProgress, MirrorNote, SetupLink, StalledBanner } from "./components/MirrorBanner";
 import KanbanBoard from "./components/KanbanBoard";
 import MoveModal from "./components/MoveModal";
 import PipelineSettings from "./components/PipelineSettings";
@@ -80,6 +80,7 @@ import {
   canCreate,
   returnTarget,
   mirrorStalled,
+  NEW_DISABLED_REASON,
   modeLine,
   returnNotice,
   startFailureMessage,
@@ -784,13 +785,16 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
   // The app's verb sits next to its name, as Capture does in My Tasks. It is
   // the quick-create entry the old header held, at the bar's size.
-  // In Mirror mode a record is made in Zoho, so the verb is gone (spec §3.3).
+  // In Mirror mode a record is made in Zoho. The verb stays, greyed out, and
+  // says why (spec §3.3, CRM-U15).
   const actions =
-    mayCreate && view.tab !== "settings" && view.tab !== "reports" && view.tab !== "module" ? (
+    view.tab !== "settings" && view.tab !== "reports" && view.tab !== "module" ? (
       <Button
         variant="secondary"
         size="sm"
         icon="Plus"
+        disabled={!mayCreate}
+        title={mayCreate ? undefined : NEW_DISABLED_REASON}
         onClick={() => setCreating(isEntity(view.tab) ? view.tab : "deals")}
       >
         New
@@ -882,6 +886,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         ) : null}
 
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          {ctx.mode === "mirror" && <MirrorNote />}
           {ctx.mode === "mirror" && mirrorStalled(ctx.connection) && (
             // CRM-X0: the banner leads to the setup hub, which offers the fix.
             <StalledBanner
@@ -969,6 +974,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             // broken, and a stale row after a 409 reads as success.
             <div className="flex shrink-0 items-start gap-2 border-b border-destructive/30 bg-destructive/10 px-4 py-2">
               <p className="flex-1 text-xs text-destructive">{store.error}</p>
+              <Button variant="ghost" size="sm" icon="RefreshCw" onClick={reload}>
+                Retry
+              </Button>
               <Button
                 variant="ghost"
                 size="icon-xs"
@@ -1040,10 +1048,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                 setCameFrom({ param, lane: lane?.status.id ?? null });
                 go(openRecord(view, param, id));
               }}
-              onCreate={mayCreate ? () => setCreating(view.tab === "leads" ? "leads" : "deals") : undefined}
               // The deals board pages a lane; the leads board reads by list.
               onMore={view.tab === "deals" ? (id) => void store.loadLaneMore(id) : undefined}
               moreLane={store.moreLane}
+              failed={store.error !== null}
             />
           ) : view.tab === "module" && view.module ? (
             // A generic Zoho module (CRM-Q6b): the shared list, read only.
