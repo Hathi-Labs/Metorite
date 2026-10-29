@@ -1,0 +1,1074 @@
+{
+ "name": "search_company synthetic set",
+ "note": "Synthetic. No real person, company or mail. Gold is a record key, and the seed turns it into an id.",
+ "records": [
+  {
+   "key": "email-01",
+   "source": "email",
+   "fields": {
+    "subject": "Freight audit findings for Harbourline",
+    "body": "The audit of Harbourline freight invoices found three duplicate charges.",
+    "from_name": "Priya Nandakumar",
+    "from_email": "priya@example.test",
+    "days_ago": 12
+   }
+  },
+  {
+   "key": "email-02",
+   "source": "email",
+   "fields": {
+    "subject": "Renewal terms for the Kestrel warehouse lease",
+    "body": "Kestrel wants a five year term with an annual escalator.",
+    "from_name": "Tomas Veldkamp",
+    "from_email": "tomas@example.test",
+    "days_ago": 30
+   }
+  },
+  {
+   "key": "email-03",
+   "source": "email",
+   "fields": {
+    "subject": "Revised quote 4471 for Oakridge Instruments",
+    "body": "Please find the revised quote for the calibration rigs.",
+    "from_name": "Amara Oyelaran",
+    "from_email": "amara@example.test",
+    "days_ago": 5
+   }
+  },
+  {
+   "key": "email-04",
+   "source": "email",
+   "fields": {
+    "subject": "Customs hold on the shipment at Tanjong port",
+    "body": "The container is held at Tanjong pending a certificate of origin.",
+    "from_name": "Dmitri Albescu",
+    "from_email": "dmitri@example.test",
+    "days_ago": 2
+   }
+  },
+  {
+   "key": "email-05",
+   "source": "email",
+   "fields": {
+    "subject": "Offsite agenda for the Meridian planning week",
+    "body": "Draft agenda and travel notes for the Meridian planning week.",
+    "from_name": "Hana Bergstrom",
+    "from_email": "hana@example.test",
+    "days_ago": 45
+   }
+  },
+  {
+   "key": "email-06",
+   "source": "email",
+   "fields": {
+    "subject": "Invoice dispute with Brightwater Plastics",
+    "body": "Brightwater disputes the March invoice and asks for a credit note.",
+    "from_name": "Rohan Castellanos",
+    "from_email": "rohan@example.test",
+    "days_ago": 8
+   }
+  },
+  {
+   "key": "email-07",
+   "source": "email",
+   "fields": {
+    "subject": "Onboarding checklist for Zephyr Logistics",
+    "body": "Zephyr needs the vendor form and a bank letter before the first order.",
+    "from_name": "Ingrid Lowenthal",
+    "from_email": "ingrid@example.test",
+    "days_ago": 20
+   }
+  },
+  {
+   "key": "email-08",
+   "source": "email",
+   "fields": {
+    "subject": "Penetration test report from Sablecore",
+    "body": "Sablecore found two medium issues in the customer portal.",
+    "from_name": "Kenji Ashworth",
+    "from_email": "kenji@example.test",
+    "days_ago": 3
+   }
+  },
+  {
+   "key": "email-09",
+   "source": "email",
+   "fields": {
+    "subject": "Purchase order 9082 for Lindenhall packaging",
+    "body": "Lindenhall confirms delivery of the packaging in two weeks.",
+    "from_name": "Sipho Marchetti",
+    "from_email": "sipho@example.test",
+    "days_ago": 60
+   }
+  },
+  {
+   "key": "email-10",
+   "source": "email",
+   "fields": {
+    "subject": "Thank you from Quillfeather Labs after the demo",
+    "body": "Quillfeather liked the demo and wants a pilot in spring.",
+    "from_name": "Lucia Ferreyra",
+    "from_email": "lucia@example.test",
+    "days_ago": 1
+   }
+  },
+  {
+   "key": "email-x1",
+   "source": "email",
+   "fields": {
+    "subject": "Freight rates for the Pelican yard",
+    "body": "Rates for the coming quarter are attached.",
+    "from_name": "Facilities Desk",
+    "from_email": "desk@example.test",
+    "days_ago": 10
+   }
+  },
+  {
+   "key": "email-x2",
+   "source": "email",
+   "fields": {
+    "subject": "Lease checklist for the Aldermoor office",
+    "body": "Please review the checklist before signing.",
+    "from_name": "Facilities Desk",
+    "from_email": "desk@example.test",
+    "days_ago": 20
+   }
+  },
+  {
+   "key": "email-x3",
+   "source": "email",
+   "fields": {
+    "subject": "Quote request from Ferngully",
+    "body": "Ferngully asks for a price on the standard rig.",
+    "from_name": "Facilities Desk",
+    "from_email": "desk@example.test",
+    "days_ago": 30
+   }
+  },
+  {
+   "key": "email-x4",
+   "source": "email",
+   "fields": {
+    "subject": "Weekly newsletter from the facilities team",
+    "body": "Parking changes and a new coffee machine.",
+    "from_name": "Facilities Desk",
+    "from_email": "desk@example.test",
+    "days_ago": 40
+   }
+  },
+  {
+   "key": "task-01",
+   "source": "tasks",
+   "fields": {
+    "title": "Draft the Corvina onboarding guide",
+    "description": "",
+    "days_ago": 3
+   }
+  },
+  {
+   "key": "task-02",
+   "source": "tasks",
+   "fields": {
+    "title": "Fix the Tidewater export timeout",
+    "description": "",
+    "days_ago": 6
+   }
+  },
+  {
+   "key": "task-03",
+   "source": "tasks",
+   "fields": {
+    "title": "Order spare nozzles for the Falkner printer",
+    "description": "",
+    "days_ago": 9
+   }
+  },
+  {
+   "key": "task-04",
+   "source": "tasks",
+   "fields": {
+    "title": "Renew the Ostrava vendor contract",
+    "description": "",
+    "days_ago": 12
+   }
+  },
+  {
+   "key": "task-05",
+   "source": "tasks",
+   "fields": {
+    "title": "Review the Maplecroft safety checklist",
+    "description": "",
+    "days_ago": 15
+   }
+  },
+  {
+   "key": "task-06",
+   "source": "tasks",
+   "fields": {
+    "title": "Schedule the Windmere board review",
+    "description": "",
+    "days_ago": 18
+   }
+  },
+  {
+   "key": "task-07",
+   "source": "tasks",
+   "fields": {
+    "title": "Migrate the Pinecrest billing script",
+    "description": "",
+    "days_ago": 21
+   }
+  },
+  {
+   "key": "task-08",
+   "source": "tasks",
+   "fields": {
+    "title": "Update the Rookwood price list",
+    "description": "",
+    "days_ago": 24
+   }
+  },
+  {
+   "key": "task-09",
+   "source": "tasks",
+   "fields": {
+    "title": "Collect feedback from Thistle pilot users",
+    "description": "",
+    "days_ago": 27
+   }
+  },
+  {
+   "key": "task-10",
+   "source": "tasks",
+   "fields": {
+    "title": "Plan the Eastgate trade show booth",
+    "description": "",
+    "days_ago": 30
+   }
+  },
+  {
+   "key": "task-x1",
+   "source": "tasks",
+   "fields": {
+    "title": "Draft the onboarding guide for interns",
+    "description": "",
+    "days_ago": 7
+   }
+  },
+  {
+   "key": "task-x2",
+   "source": "tasks",
+   "fields": {
+    "title": "Fix the export timeout in reports",
+    "description": "",
+    "days_ago": 14
+   }
+  },
+  {
+   "key": "task-x3",
+   "source": "tasks",
+   "fields": {
+    "title": "Order spare nozzles for the main printer",
+    "description": "",
+    "days_ago": 21
+   }
+  },
+  {
+   "key": "task-x4",
+   "source": "tasks",
+   "fields": {
+    "title": "Renew the office lease",
+    "description": "",
+    "days_ago": 28
+   }
+  },
+  {
+   "key": "person-01",
+   "source": "people",
+   "fields": {
+    "name": "Priya Nandakumar",
+    "role": "Procurement Lead",
+    "department": "Operations",
+    "bio": "Priya Nandakumar works in Operations."
+   }
+  },
+  {
+   "key": "person-02",
+   "source": "people",
+   "fields": {
+    "name": "Tomas Veldkamp",
+    "role": "Site Engineer",
+    "department": "Manufacturing",
+    "bio": "Tomas Veldkamp works in Manufacturing."
+   }
+  },
+  {
+   "key": "person-03",
+   "source": "people",
+   "fields": {
+    "name": "Amara Oyelaran",
+    "role": "Finance Controller",
+    "department": "Finance",
+    "bio": "Amara Oyelaran works in Finance."
+   }
+  },
+  {
+   "key": "person-04",
+   "source": "people",
+   "fields": {
+    "name": "Kenji Ashworth",
+    "role": "Security Analyst",
+    "department": "IT",
+    "bio": "Kenji Ashworth works in IT."
+   }
+  },
+  {
+   "key": "person-05",
+   "source": "people",
+   "fields": {
+    "name": "Lucia Ferreyra-Holt",
+    "role": "Account Executive",
+    "department": "Sales",
+    "bio": "Lucia Ferreyra-Holt works in Sales."
+   }
+  },
+  {
+   "key": "person-06",
+   "source": "people",
+   "fields": {
+    "name": "Dmitri Albescu",
+    "role": "Warehouse Supervisor",
+    "department": "Logistics",
+    "bio": "Dmitri Albescu works in Logistics."
+   }
+  },
+  {
+   "key": "person-07",
+   "source": "people",
+   "fields": {
+    "name": "Hana Bergstrom",
+    "role": "Product Designer",
+    "department": "Design",
+    "bio": "Hana Bergstrom works in Design."
+   }
+  },
+  {
+   "key": "person-08",
+   "source": "people",
+   "fields": {
+    "name": "Rohan Castellanos",
+    "role": "Quality Inspector",
+    "department": "Quality",
+    "bio": "Rohan Castellanos works in Quality."
+   }
+  },
+  {
+   "key": "person-09",
+   "source": "people",
+   "fields": {
+    "name": "Ingrid Lowenthal",
+    "role": "People Partner",
+    "department": "HR",
+    "bio": "Ingrid Lowenthal works in HR."
+   }
+  },
+  {
+   "key": "person-10",
+   "source": "people",
+   "fields": {
+    "name": "Sipho Marchetti",
+    "role": "Data Analyst",
+    "department": "Analytics",
+    "bio": "Sipho Marchetti works in Analytics."
+   }
+  },
+  {
+   "key": "person-x1",
+   "source": "people",
+   "fields": {
+    "name": "Priya Raman",
+    "role": "Procurement Clerk",
+    "department": "Operations",
+    "bio": ""
+   }
+  },
+  {
+   "key": "person-x2",
+   "source": "people",
+   "fields": {
+    "name": "Tomas Berg",
+    "role": "Site Surveyor",
+    "department": "Manufacturing",
+    "bio": ""
+   }
+  },
+  {
+   "key": "person-x3",
+   "source": "people",
+   "fields": {
+    "name": "Kenji Mori",
+    "role": "Security Auditor",
+    "department": "IT",
+    "bio": ""
+   }
+  },
+  {
+   "key": "person-x4",
+   "source": "people",
+   "fields": {
+    "name": "Rohan Dutta",
+    "role": "Quality Reviewer",
+    "department": "Quality",
+    "bio": ""
+   }
+  },
+  {
+   "key": "crm-01",
+   "source": "crm",
+   "fields": {
+    "kind": "lead",
+    "lead_name": "Anika Sorensen",
+    "organization_name": "Fjordline Marine",
+    "email": "anika@fjordline.example"
+   }
+  },
+  {
+   "key": "crm-02",
+   "source": "crm",
+   "fields": {
+    "kind": "lead",
+    "lead_name": "Bruno Halvorsen",
+    "organization_name": "Copperfield Mining",
+    "email": "bruno@copperfield.example"
+   }
+  },
+  {
+   "key": "crm-03",
+   "source": "crm",
+   "fields": {
+    "kind": "lead",
+    "lead_name": "Chidi Okeke",
+    "organization_name": "Brasswell Foundry",
+    "email": "chidi@brasswell.example"
+   }
+  },
+  {
+   "key": "crm-04",
+   "source": "crm",
+   "fields": {
+    "kind": "lead",
+    "lead_name": "Dalia Mendes",
+    "organization_name": "Starling Textiles",
+    "email": "dalia@starling.example"
+   }
+  },
+  {
+   "key": "crm-05",
+   "source": "crm",
+   "fields": {
+    "kind": "deal",
+    "name": "Larkspur annual maintenance",
+    "next_step": "Send the renewal quote"
+   }
+  },
+  {
+   "key": "crm-06",
+   "source": "crm",
+   "fields": {
+    "kind": "deal",
+    "name": "Quarry Road expansion pilot",
+    "next_step": "Book the site visit"
+   }
+  },
+  {
+   "key": "crm-07",
+   "source": "crm",
+   "fields": {
+    "kind": "deal",
+    "name": "Nightjar retrofit bundle",
+    "next_step": "Confirm the scope"
+   }
+  },
+  {
+   "key": "crm-08",
+   "source": "crm",
+   "fields": {
+    "kind": "contact",
+    "first_name": "Esperanza",
+    "last_name": "Quillon",
+    "email": "e.quillon@example.test"
+   }
+  },
+  {
+   "key": "crm-09",
+   "source": "crm",
+   "fields": {
+    "kind": "contact",
+    "first_name": "Gustav",
+    "last_name": "Pemberton-Hale",
+    "email": "g.pemberton@example.test"
+   }
+  },
+  {
+   "key": "crm-10",
+   "source": "crm",
+   "fields": {
+    "kind": "company",
+    "name": "Ironbark Hydraulics",
+    "industry": "Machinery"
+   }
+  },
+  {
+   "key": "crm-x1",
+   "source": "crm",
+   "fields": {
+    "kind": "company",
+    "name": "Ironbark Timber",
+    "industry": "Forestry"
+   }
+  },
+  {
+   "key": "crm-x2",
+   "source": "crm",
+   "fields": {
+    "kind": "lead",
+    "lead_name": "Yusuf Haldane",
+    "organization_name": "Mooncrest Foods",
+    "email": "yusuf@mooncrest.example"
+   }
+  },
+  {
+   "key": "crm-x3",
+   "source": "crm",
+   "fields": {
+    "kind": "deal",
+    "name": "Harrow Lane service plan",
+    "next_step": "Wait for the budget"
+   }
+  },
+  {
+   "key": "crm-x4",
+   "source": "crm",
+   "fields": {
+    "kind": "contact",
+    "first_name": "Ottilie",
+    "last_name": "Frane",
+    "email": "o.frane@example.test"
+   }
+  },
+  {
+   "key": "page-01",
+   "source": "knowledge",
+   "fields": {
+    "title": "Returns and refund policy",
+    "body": "Customers may request a refund within thirty days. Refunds are paid to the original payment method."
+   }
+  },
+  {
+   "key": "page-02",
+   "source": "knowledge",
+   "fields": {
+    "title": "Warehouse safety induction",
+    "body": "All visitors must complete the forklift induction before they enter the loading bay."
+   }
+  },
+  {
+   "key": "page-03",
+   "source": "knowledge",
+   "fields": {
+    "title": "Expense claim process",
+    "body": "Submit receipts through the portal. Claims above fifty thousand rupees need director approval."
+   }
+  },
+  {
+   "key": "page-04",
+   "source": "knowledge",
+   "fields": {
+    "title": "Supplier onboarding standard",
+    "body": "New suppliers sign the code of conduct and share a tax certificate."
+   }
+  },
+  {
+   "key": "page-05",
+   "source": "knowledge",
+   "fields": {
+    "title": "Incident response runbook",
+    "body": "Page the on-call engineer and open a bridge call within ten minutes."
+   }
+  },
+  {
+   "key": "page-06",
+   "source": "knowledge",
+   "fields": {
+    "title": "Leave and holiday calendar",
+    "body": "Employees receive twenty four days of paid leave each year."
+   }
+  },
+  {
+   "key": "page-07",
+   "source": "knowledge",
+   "fields": {
+    "title": "Brand voice guide",
+    "body": "Write short sentences and avoid jargon in customer emails."
+   }
+  },
+  {
+   "key": "page-08",
+   "source": "knowledge",
+   "fields": {
+    "title": "Pricing approval matrix",
+    "body": "Discounts above fifteen percent need approval from the sales director."
+   }
+  },
+  {
+   "key": "page-09",
+   "source": "knowledge",
+   "fields": {
+    "title": "Data retention schedule",
+    "body": "Delete customer exports after ninety days unless a contract says otherwise."
+   }
+  },
+  {
+   "key": "page-10",
+   "source": "knowledge",
+   "fields": {
+    "title": "Calibration procedure for rigs",
+    "body": "Calibrate each rig every quarter and record the result in the log."
+   }
+  },
+  {
+   "key": "page-x1",
+   "source": "knowledge",
+   "fields": {
+    "title": "Holiday party plan",
+    "body": "The party is on the last Friday of the year."
+   }
+  },
+  {
+   "key": "page-x2",
+   "source": "knowledge",
+   "fields": {
+    "title": "Rig storage rules",
+    "body": "Store each rig on the lower racks."
+   }
+  },
+  {
+   "key": "page-x3",
+   "source": "knowledge",
+   "fields": {
+    "title": "Customer email templates",
+    "body": "Templates for common replies."
+   }
+  },
+  {
+   "key": "page-x4",
+   "source": "knowledge",
+   "fields": {
+    "title": "Approval of travel",
+    "body": "Travel needs a manager."
+   }
+  }
+ ],
+ "questions": [
+  {
+   "id": "q001",
+   "source": "email",
+   "text": "Harbourline freight audits",
+   "gold": [
+    "email-01"
+   ]
+  },
+  {
+   "id": "q002",
+   "source": "email",
+   "text": "Kestrel warehouse lease",
+   "gold": [
+    "email-02"
+   ]
+  },
+  {
+   "id": "q003",
+   "source": "email",
+   "text": "Oakridge Instruments quote",
+   "gold": [
+    "email-03"
+   ]
+  },
+  {
+   "id": "q004",
+   "source": "email",
+   "text": "Tanjong customs hold",
+   "gold": [
+    "email-04"
+   ]
+  },
+  {
+   "id": "q005",
+   "source": "email",
+   "text": "Meridian planning offsite",
+   "gold": [
+    "email-05"
+   ]
+  },
+  {
+   "id": "q006",
+   "source": "email",
+   "text": "Brightwater invoice dispute",
+   "gold": [
+    "email-06"
+   ]
+  },
+  {
+   "id": "q007",
+   "source": "email",
+   "text": "Zephyr onboarding checklist",
+   "gold": [
+    "email-07"
+   ]
+  },
+  {
+   "id": "q008",
+   "source": "email",
+   "text": "Sablecore penetration test",
+   "gold": [
+    "email-08"
+   ]
+  },
+  {
+   "id": "q009",
+   "source": "email",
+   "text": "Lindenhall packaging purchase order",
+   "gold": [
+    "email-09"
+   ]
+  },
+  {
+   "id": "q010",
+   "source": "email",
+   "text": "Quillfeather demo",
+   "gold": [
+    "email-10"
+   ]
+  },
+  {
+   "id": "q011",
+   "source": "crm",
+   "text": "Fjordline",
+   "gold": [
+    "crm-01"
+   ]
+  },
+  {
+   "id": "q012",
+   "source": "crm",
+   "text": "Copperfield",
+   "gold": [
+    "crm-02"
+   ]
+  },
+  {
+   "id": "q013",
+   "source": "crm",
+   "text": "Brasswell",
+   "gold": [
+    "crm-03"
+   ]
+  },
+  {
+   "id": "q014",
+   "source": "crm",
+   "text": "Starling Textiles",
+   "gold": [
+    "crm-04"
+   ]
+  },
+  {
+   "id": "q015",
+   "source": "crm",
+   "text": "Larkspur",
+   "gold": [
+    "crm-05"
+   ]
+  },
+  {
+   "id": "q016",
+   "source": "crm",
+   "text": "Quarry Road",
+   "gold": [
+    "crm-06"
+   ]
+  },
+  {
+   "id": "q017",
+   "source": "crm",
+   "text": "Nightjar",
+   "gold": [
+    "crm-07"
+   ]
+  },
+  {
+   "id": "q018",
+   "source": "crm",
+   "text": "Quillon",
+   "gold": [
+    "crm-08"
+   ]
+  },
+  {
+   "id": "q019",
+   "source": "crm",
+   "text": "Pemberton",
+   "gold": [
+    "crm-09"
+   ]
+  },
+  {
+   "id": "q020",
+   "source": "crm",
+   "text": "Ironbark",
+   "gold": [
+    "crm-10"
+   ]
+  },
+  {
+   "id": "q021",
+   "source": "tasks",
+   "text": "Corvina onboarding guide",
+   "gold": [
+    "task-01"
+   ]
+  },
+  {
+   "id": "q022",
+   "source": "tasks",
+   "text": "Tidewater export timeout",
+   "gold": [
+    "task-02"
+   ]
+  },
+  {
+   "id": "q023",
+   "source": "tasks",
+   "text": "Falkner printer nozzles",
+   "gold": [
+    "task-03"
+   ]
+  },
+  {
+   "id": "q024",
+   "source": "tasks",
+   "text": "Ostrava vendor contract",
+   "gold": [
+    "task-04"
+   ]
+  },
+  {
+   "id": "q025",
+   "source": "tasks",
+   "text": "Maplecroft safety checklist",
+   "gold": [
+    "task-05"
+   ]
+  },
+  {
+   "id": "q026",
+   "source": "tasks",
+   "text": "Windmere board review",
+   "gold": [
+    "task-06"
+   ]
+  },
+  {
+   "id": "q027",
+   "source": "tasks",
+   "text": "Pinecrest billing script",
+   "gold": [
+    "task-07"
+   ]
+  },
+  {
+   "id": "q028",
+   "source": "tasks",
+   "text": "Rookwood price list",
+   "gold": [
+    "task-08"
+   ]
+  },
+  {
+   "id": "q029",
+   "source": "tasks",
+   "text": "Thistle pilot feedback",
+   "gold": [
+    "task-09"
+   ]
+  },
+  {
+   "id": "q030",
+   "source": "tasks",
+   "text": "Eastgate trade show",
+   "gold": [
+    "task-10"
+   ]
+  },
+  {
+   "id": "q031",
+   "source": "knowledge",
+   "text": "refund within thirty days",
+   "gold": [
+    "page-01"
+   ]
+  },
+  {
+   "id": "q032",
+   "source": "knowledge",
+   "text": "forklift induction visitors",
+   "gold": [
+    "page-02"
+   ]
+  },
+  {
+   "id": "q033",
+   "source": "knowledge",
+   "text": "expense claim director approval",
+   "gold": [
+    "page-03"
+   ]
+  },
+  {
+   "id": "q034",
+   "source": "knowledge",
+   "text": "supplier code of conduct",
+   "gold": [
+    "page-04"
+   ]
+  },
+  {
+   "id": "q035",
+   "source": "knowledge",
+   "text": "on-call bridge call",
+   "gold": [
+    "page-05"
+   ]
+  },
+  {
+   "id": "q036",
+   "source": "knowledge",
+   "text": "paid leave days",
+   "gold": [
+    "page-06"
+   ]
+  },
+  {
+   "id": "q037",
+   "source": "knowledge",
+   "text": "brand voice short sentences",
+   "gold": [
+    "page-07"
+   ]
+  },
+  {
+   "id": "q038",
+   "source": "knowledge",
+   "text": "discount approval sales director",
+   "gold": [
+    "page-08"
+   ]
+  },
+  {
+   "id": "q039",
+   "source": "knowledge",
+   "text": "retention of customer exports",
+   "gold": [
+    "page-09"
+   ]
+  },
+  {
+   "id": "q040",
+   "source": "knowledge",
+   "text": "calibrate rig quarter",
+   "gold": [
+    "page-10"
+   ]
+  },
+  {
+   "id": "q041",
+   "source": "people",
+   "text": "Nandakumar",
+   "gold": [
+    "person-01"
+   ]
+  },
+  {
+   "id": "q042",
+   "source": "people",
+   "text": "Site Engineer",
+   "gold": [
+    "person-02"
+   ]
+  },
+  {
+   "id": "q043",
+   "source": "people",
+   "text": "Oyelaran",
+   "gold": [
+    "person-03"
+   ]
+  },
+  {
+   "id": "q044",
+   "source": "people",
+   "text": "Security Analyst",
+   "gold": [
+    "person-04"
+   ]
+  },
+  {
+   "id": "q045",
+   "source": "people",
+   "text": "Ferreyra",
+   "gold": [
+    "person-05"
+   ]
+  },
+  {
+   "id": "q046",
+   "source": "people",
+   "text": "Albescu",
+   "gold": [
+    "person-06"
+   ]
+  },
+  {
+   "id": "q047",
+   "source": "people",
+   "text": "Bergstrom",
+   "gold": [
+    "person-07"
+   ]
+  },
+  {
+   "id": "q048",
+   "source": "people",
+   "text": "Quality Inspector",
+   "gold": [
+    "person-08"
+   ]
+  },
+  {
+   "id": "q049",
+   "source": "people",
+   "text": "Lowenthal",
+   "gold": [
+    "person-09"
+   ]
+  },
+  {
+   "id": "q050",
+   "source": "people",
+   "text": "Marchetti",
+   "gold": [
+    "person-10"
+   ]
+  }
+ ]
+}

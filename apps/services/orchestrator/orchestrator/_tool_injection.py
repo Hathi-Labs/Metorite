@@ -2790,9 +2790,14 @@ def _apply_answer_check(agents: list[Any], agent_name: str | None) -> None:
     is ``off``, and skips the check with a warning while it is on.
     """
     from acb_common.settings import crm_answer_check_mode
+    from acb_skills.subagent_contract import INTERNAL_AGENTS
 
     mode = crm_answer_check_mode()
     if mode == "off":
+        return
+    if str(agent_name or "") in INTERNAL_AGENTS:
+        # WS-67 OA-9b hardening item 5: the check can retry, which adds a
+        # model call to the fixed number of a spawn child.
         return
     try:
         from acb_skills.answer_check import AnswerCheckProvider, holds_crm_tool

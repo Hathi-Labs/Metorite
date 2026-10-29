@@ -13,6 +13,8 @@ OA-8f is BUILT, dark behind `ORCHESTRATOR_FLOOR_TRIM` (2026-10-28, "As built, OA
 
 OA-9b and the OA-9a worker half are BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-28, "As built, OA-9b" in §4.5). The flag flip is OWNER-GATE.
 
+OA-9b hardening is BUILT (2026-10-28, "As built, OA-9b hardening" in §4.5). It closes the seven faults of the Opus review. The flag flip stays OWNER-GATE.
+
 OA-3 is built, dark behind `ATTACHMENT_OCR`, and §4.1 holds three conditions
 for the flip. OA-6 is DECIDED (D117,
 2026-10-26): yes, for all apps. §4.2 (OA-7), §4.3 (OA-8) and §6 (OA-9) hold
@@ -371,6 +373,51 @@ OWNER-GATE.
   the known callers replaces it. 19 of 20 mutations fail the fences. The
   survivor takes out the egress filter of the injection only, and
   `_apply_no_egress` holds the same set as a second layer.
+
+**As built, OA-9b hardening.** The Opus review of OA-9b found seven faults. None
+was a P1 or a P2. Note 1 was a gate for the flag flip. All seven are closed,
+and the flag stays off. Fences: `tests/unit/test_spawn_hardening.py`,
+`workbench/control_plane/src/lib/spawnHandoff.test.ts` and
+`tests/unit/test_chat_fold_handoffs.py`.
+- **1. The chat UI.** `spawn_subagents` and `delegate_to_agent` are hand-offs.
+  `chatStream.isHandoffTool` and `takeHandoff` decide it, for the live
+  reducer and for the checkpoint that `route.ts` saves. The gateway fold
+  writes the final stored row at the run end, and it replaces the checkpoint.
+  So `gateway/chat_fold.py` holds the same rule (`take_handoff`). A unit test
+  reads the names out of `isHandoffTool` and compares them with
+  `HANDOFF_TOOLS`, as sets, in both directions. Each child step stays on its
+  own spawn row. The spawn row keeps no child text, because that text is item
+  JSON for the parent model. A later specialist row or `call_agent` row gets
+  its own steps. None of them are labelled `worker`. In the live view, an
+  error of one spawn child adds a failed step for that child. The step key is
+  its run id. The row stays active. The stored row does not hold that step.
+  The spawn result holds the failure as an item.
+- **2. Nested spawns.** A run that is a sub-run never spawns, at any depth.
+  The test reads `_delegation_chain` and the `sub_run` key that the executor
+  binds on a delegated run. The spawn calls of one run run one after the other
+  (`subagent_contract.spawn_lock`). So at most 5 children of a run run at once,
+  and §6.2 holds.
+- **3. Tier routing.** `tier_routing_on` returns False for an internal agent,
+  also with `AI_TIER_ROUTING=*`. §6.6 holds.
+- **4. The clock of a child.** The MAF loop budget is
+  `subagent_contract.CHILD_LOOP_BUDGET_S` (90 s). The job clock stays 120 s.
+  So the final call with no tools runs before `wait_for` stops the child.
+- **5. Calls past 4.** A worker run never self-anneals and never mutates a
+  repo, in the generic failure clause and in the `AgentLoadError` clause. The CRM answer check skips the worker. A job that names `decide` does
+  not run (`EXTRA_CALL_TOOLS`).
+- **6. Untrusted items.** The spawn result is one block of
+  `UntrustedFrame` (the label `SUB AGENT ITEMS`), with the data note before it.
+  `parse_items` checks the source of each item against an allow list
+  (`source_allowed`). A source may be an ASCII http or https URL, a tool name
+  that the job holds, or `inferred`. Any other source becomes
+  `sub-agent (unverified)`, and the kind becomes `inferred`. So `member` and
+  each look-alike of it cannot pass.
+- **7. The loader.** `loader._ensure_local_git_repo` takes the `_repo_locks`
+  lock of the cache dir name around the copy and the git seed.
+- **Also.** `register_agent` refuses the name `worker` (HTTP 409). The tool
+  docstring says that a job with no `tools` key holds no tool.
+- **Not built.** A child that shows its own name in place of `Worker` in the
+  row title. The row reads "Asking Worker". Copy is a product call.
 
 **As built, OA-7c.** Layer (a) and the sticky state put packs in a live run.
 Three inputs choose the packs: the sticky packs of the chat, a reference in

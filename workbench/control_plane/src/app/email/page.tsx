@@ -16,13 +16,12 @@ import { openAssistant, useAssistantFacts } from "@/lib/shell/assistant";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { emailAssistantFacts } from "./lib/assistantFacts";
 import { askRailSession } from "@/lib/railSessions";
-import { shellBarOn } from "@/lib/shell/registry";
+import { isTypingTarget } from "@/lib/keyboard";
 import { SearchBar } from "./components/SearchBar";
 import { MailboxActions } from "./components/MailboxActions";
 import { EmailDetail } from "./components/EmailDetail";
 import { EmailAssistantChat } from "./components/EmailAssistantChat";
 import { ComposePanel } from "./components/ComposePanel";
-import { CommandPalette, Command } from "./components/CommandPalette";
 import { TaskCaptureModal } from "./components/TaskCaptureModal";
 import { AutomationView } from "./components/automation/AutomationView";
 import { ConnectChoices } from "./components/ConnectChoices";
@@ -40,7 +39,7 @@ import { SyncBanner } from "./components/SyncBanner";
 import { EmailDeepLink } from "./components/EmailDeepLink";
 import Modal from "@/components/ui/Modal";
 import {
-  useEmailStore, isRealFolder, backfillKey, foldersInScope, scopeBusy, ALL_INBOXES,
+  useEmailStore, isRealFolder, backfillKey, scopeBusy, ALL_INBOXES,
 } from "./lib/emailStore";
 import { Email, EmailAccount, AutomationFeature } from "./lib/types";
 import {
@@ -81,7 +80,6 @@ export default function EmailPage() {
   const [leftOpen, setLeftOpen] = useState(true);
   const [listOpen, setListOpen] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [paletteOpen, setPaletteOpen] = useState(false);
   // The mailbox the disconnect dialog asks about. `null` closes the dialog.
   const [disconnecting, setDisconnecting] = useState<EmailAccount | null>(null);
   // The mailbox whose name and colour the member edits (EM-T8b).
@@ -721,25 +719,12 @@ export default function EmailPage() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // Command palette — works even while typing in a field.
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setPaletteOpen((v) => !v);
-        return;
-      }
-      if (e.key === "Escape") {
-        setPaletteOpen(false);
-        return;
-      }
+      // ⌘K belongs to the shell's command bar (D89). This page never
+      // listens for it.
       // Don't hijack typing, modifier combos, or when a modal owns the keys.
-      const t = e.target as HTMLElement | null;
-      const typing =
-        !!t &&
-        (t.tagName === "INPUT" ||
-          t.tagName === "TEXTAREA" ||
-          t.isContentEditable);
+      const typing = isTypingTarget(e.target as HTMLElement | null);
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (composeOpen || showAddModal || noAccounts || disconnecting || editingMailbox || removingAccount || paletteOpen) return;
+      if (composeOpen || showAddModal || noAccounts || disconnecting || editingMailbox || removingAccount) return;
       // An automation scene (Assistant / Chat / Email Cleaner / …) replaces the
       // inbox panes and owns its own shortcuts — don't act on the background
       // selectedEmail while one is open.
@@ -788,41 +773,7 @@ export default function EmailPage() {
   }, [
     selectedEmail, navigateList, openCompose, handleToolbarAction,
     updateEmail, deleteEmail, composeOpen, showAddModal, noAccounts,
-    disconnecting, editingMailbox, removingAccount, paletteOpen, automationFeature,
-  ]);
-
-  // Command palette entries (Cmd/Ctrl+K).
-  const commands = useMemo<Command[]>(() => {
-    const cmds: Command[] = [
-      { id: "compose", label: "Compose new email", hint: "C", run: () => openCompose() },
-    ];
-    const em = selectedEmail;
-    if (em) {
-      cmds.push(
-        { id: "reply", label: "Reply", hint: "R", run: () => handleToolbarAction("reply", em) },
-        { id: "reply-all", label: "Reply all", hint: "A", run: () => handleToolbarAction("reply-all", em) },
-        { id: "forward", label: "Forward", hint: "F", run: () => handleToolbarAction("forward", em) },
-        { id: "archive", label: "Archive", hint: "E", run: () => updateEmail(em.id, { folder: "archive" }) },
-        { id: "delete", label: "Delete", hint: "#", run: () => deleteEmail(em.id) },
-        { id: "star", label: em.isStarred ? "Remove star" : "Star", hint: "S", run: () => updateEmail(em.id, { isStarred: !em.isStarred }) },
-        { id: "read", label: em.isRead ? "Mark as unread" : "Mark as read", hint: "U", run: () => updateEmail(em.id, { isRead: !em.isRead }) },
-        { id: "flag", label: em.isFlagged ? "Clear flag" : "Flag / mark important", run: () => updateEmail(em.id, { isFlagged: !em.isFlagged }) },
-      );
-    }
-    for (const f of foldersInScope(folders, viewAll)) {
-      cmds.push({ id: `go-${f.key}`, label: `Go to ${f.label}`, run: () => handleFolderSelect(f.key) });
-    }
-    if (selectedAccountId) {
-      cmds.push({
-        id: "sync",
-        label: viewAll ? "Sync each mailbox now" : "Sync now",
-        run: () => useEmailStore.getState().syncScope(),
-      });
-    }
-    return cmds;
-  }, [
-    selectedEmail, folders, selectedAccountId, openCompose, viewAll,
-    handleToolbarAction, updateEmail, deleteEmail, handleFolderSelect,
+    disconnecting, editingMailbox, removingAccount, automationFeature,
   ]);
 
   // ── Render ──
@@ -920,18 +871,6 @@ export default function EmailPage() {
                 </>
               )}
               <MailboxActions selectedEmail={selectedEmail} />
-              {/* With the shell bar on, ⌘K is the command bar's, and this
-                  button would open a second palette (§6.7 rule 1). */}
-              {shellBarOn() ? null : (
-                <>
-                  <div className="w-px h-4 bg-border" />
-                  <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => setPaletteOpen(true)} title="Command palette (Ctrl/Cmd+K)" className="gap-1 px-2 py-1 rounded">
-                    <span className="text-[10px] border border-border rounded px-1 leading-tight">
-                      ⌘K
-                    </span>
-                  </Button>
-                </>
-              )}
             </>
           }
         />
@@ -1359,12 +1298,6 @@ export default function EmailPage() {
 
       </div>
 
-      <CommandPalette
-        open={paletteOpen}
-        onClose={() => setPaletteOpen(false)}
-        commands={commands}
-      />
-
       {/* Add-to-Tasks clarify popup */}
       {taskCapturePopupEmailId && (() => {
         const popupEmail = emails.find((e) => e.id === taskCapturePopupEmailId);
@@ -1468,6 +1401,7 @@ export default function EmailPage() {
         messageId={composeDefaults?.messageId}
         initialAttachments={composeDefaults?.attachments}
         initialArtifacts={composeDefaults?.artifacts}
+        initialSendError={composeDefaults?.sendError}
       />
 
       {/* Add a mailbox — the same choices as the empty state */}

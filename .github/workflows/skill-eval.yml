@@ -92,6 +92,15 @@ jobs:
       - name: Routing eval of the one assistant (scripted)
         run: uv run python -m evals.routing.run --scripted
 
+      # WS-KG KG-1 (company_context.md §12): the retrieval eval of
+      # GET /search/company. This job has no database, so it checks that the
+      # synthetic set is whole (50 questions, 10 for each source, every gold
+      # key seeded). The route on a real database is the R8 suite
+      # test_search_company_eval_r8.py in pr-check, and --fixture is the same
+      # code. No model, no network.
+      - name: Search-company eval (the synthetic set is whole)
+        run: uv run python -m evals.search_company.run --check
+
   inspect:
     name: "Inspect AI scenario harness (smoke)"
     runs-on: ubuntu-latest

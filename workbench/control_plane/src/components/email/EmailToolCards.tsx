@@ -37,6 +37,7 @@
 
 import ShowMore from "@/components/ui/ShowMore";
 import Button from "@/components/ui/Button";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import Badge from "@/components/ui/Badge";
 import { Textarea } from "@/components/ui/Input";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
@@ -702,8 +703,12 @@ function DraftResultCard({
     }
   };
 
+  // The send asks once, in the shared dialog, never the browser's
+  // confirm box (UXD-3). Undo send (task 901) will replace the ask.
+  const [asking, setAsking] = useState(false);
   const send = async () => {
-    if (!canAct || !confirm(head.from ? `Send this reply from ${head.from}?` : "Send this reply now?")) return;
+    if (!canAct) return;
+    setAsking(false);
     setState("sending");
     try {
       // "saved": the save named no draft id to send, so it stays in Drafts.
@@ -749,9 +754,19 @@ function DraftResultCard({
             >
               Save to Drafts
             </Button>
-            <Button size="sm" icon="Send" loading={state === "sending"} onClick={send} disabled={!canAct || acting}>
+            <Button size="sm" icon="Send" loading={state === "sending"} onClick={() => setAsking(true)} disabled={!canAct || acting}>
               Send
             </Button>
+            <ConfirmDialog
+              open={asking}
+              title="Send this reply?"
+              body={head.from ? `It goes from ${head.from}.` : "It goes now."}
+              confirmLabel="Send"
+              confirmVariant="primary"
+              icon="Send"
+              onConfirm={() => void send()}
+              onCancel={() => setAsking(false)}
+            />
           </>
         )}
         {state === "error" && (
@@ -836,8 +851,10 @@ function RuleResultCard({
   const op = String(a.conditional_operator ?? "OR").toUpperCase() === "AND" ? "and" : "or";
   const [state, setState] = useState<"idle" | "busy" | "deleted" | "disabled" | "failed">("idle");
 
+  const [asking, setAsking] = useState(false);
   const del = async () => {
-    if (!ruleId || !confirm(`Delete rule "${name}"?`)) return;
+    if (!ruleId) return;
+    setAsking(false);
     setState("busy");
     try {
       await deleteRule(ruleId);
@@ -880,9 +897,20 @@ function RuleResultCard({
                 Disable
               </Button>
             )}
-            <Button variant="secondary" size="none" className={DENSE} onClick={del}>
+            <Button variant="secondary" size="none" className={DENSE} onClick={() => setAsking(true)}>
               Delete
             </Button>
+            <ConfirmDialog
+              open={asking}
+              title="Delete this rule?"
+              subject={name}
+              body="The rule stops at once. Mail it already moved stays where it is."
+              confirmLabel="Delete"
+              confirmVariant="destructive"
+              icon="Trash2"
+              onConfirm={() => void del()}
+              onCancel={() => setAsking(false)}
+            />
           </>
         )}
         {state === "busy" && <AppIcon name="Loader2" size={12} className="animate-spin text-muted-foreground" />}
@@ -1976,6 +2004,8 @@ function RulesOverviewCard({
   const [rules, setRules] = useState(parsed.rules);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState(false);
+  // The row whose Delete waits in the shared dialog (UXD-3).
+  const [asking, setAsking] = useState<ParsedRuleRow | null>(null);
 
   // Unparseable output (error text, older format) → the plain-text card.
   if (parsed.rules.length === 0) return <InfoResultCard event={e} />;
@@ -1997,7 +2027,8 @@ function RulesOverviewCard({
   };
 
   const del = async (row: ParsedRuleRow) => {
-    if (busy || !confirm(`Delete rule "${row.name}"?`)) return;
+    setAsking(null);
+    if (busy) return;
     setBusy(row.id);
     setError(false);
     try {
@@ -2061,7 +2092,7 @@ function RulesOverviewCard({
                   <Button
                     variant="ghost"
                     size="icon-xs"
-                    onClick={() => del(r)}
+                    onClick={() => setAsking(r)}
                     title="Delete this rule"
                     aria-label="Delete this rule"
                     className="flex-shrink-0"
@@ -2088,6 +2119,17 @@ function RulesOverviewCard({
           </div>
         ))}
       </ShowMore>
+      <ConfirmDialog
+        open={asking !== null}
+        title="Delete this rule?"
+        subject={asking?.name ?? null}
+        body="The rule stops at once. Mail it already moved stays where it is."
+        confirmLabel="Delete"
+        confirmVariant="destructive"
+        icon="Trash2"
+        onConfirm={() => { if (asking) void del(asking); }}
+        onCancel={() => setAsking(null)}
+      />
       {parsed.settings && (
         <div className="mt-1.5 text-[10px] text-muted-foreground">
           {parsed.settings}

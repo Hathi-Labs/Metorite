@@ -62,6 +62,7 @@ __all__ = [
     "EMBEDDING_COLUMNS",
     "KEPT_FOLDERS_SQL",
     "MESSAGE_COLUMNS",
+    "MESSAGE_DERIVED_COLUMNS",
     "REMOVE_CHUNK",
     "OlderMail",
     "RemovedChunk",
@@ -100,6 +101,13 @@ MESSAGE_COLUMNS: tuple[str, ...] = (
     # WS-65 SM-1: the author of a local draft of a shared mailbox.
     "drafted_by",
 )
+#: The columns of variable length that the meter does NOT count. Each one is
+#: derived search data, like an index, and the meter counts no index. KG-3a
+#: (migration 314) added ``fts``, the stored copy of the search vector. A
+#: count of it would grow each mailbox after the backfill, and a mailbox near
+#: its limit would lose older mail with no change by the member. The R8 fence
+#: reads this tuple too, so a new column must go in one of the two lists.
+MESSAGE_DERIVED_COLUMNS: tuple[str, ...] = ("fts",)
 ATTACHMENT_COLUMNS: tuple[str, ...] = (
     "filename", "mime_type", "provider_attachment_id", "download_url",
     "storage_path",

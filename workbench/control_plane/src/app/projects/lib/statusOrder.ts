@@ -30,6 +30,30 @@ export interface Placeable {
   position: number;
 }
 
+/**
+ * The status column a task draws in, on a board whose lanes are `ordered`.
+ *
+ * #834. A parent board draws the lanes of its own status set. Since migration
+ * 196 a subproject may keep its own lanes, and a task in one of them matched no
+ * column and vanished from the parent board with no word. Such a task now
+ * lands in the first lane (by position) of the same stage, which the server
+ * stamps on each row (`status_category`). A task with no known stage lands in
+ * the first lane, so it is still on the board.
+ */
+export function statusLaneOf(
+  lanes: readonly Pick<Placeable, "id" | "category" | "position">[],
+): (t: { status_id?: string | null; status_category?: string | null }) => string | undefined {
+  const ordered = [...lanes].sort((a, b) => a.position - b.position);
+  const own = new Set(ordered.map((s) => s.id));
+  const firstOfStage = new Map<string, string>();
+  for (const s of ordered) if (!firstOfStage.has(s.category)) firstOfStage.set(s.category, s.id);
+  const fallback = ordered[0]?.id;
+  return (t) => {
+    if (t.status_id && own.has(t.status_id)) return t.status_id;
+    return (t.status_category && firstOfStage.get(t.status_category)) || fallback;
+  };
+}
+
 /** One row to PATCH, and its new position. */
 export interface PositionPatch {
   id: string;

@@ -31,6 +31,7 @@ import { chatFirstOn } from "@/lib/shell/chatFlag";
 import { type FeedAnswer, feedKey, fetchFeed } from "@/lib/shell/feed";
 import { useCachedResource } from "@/lib/useCachedResource";
 import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
+import ConfirmationReceipts from "@/components/ConfirmationReceipts";
 import AskPin from "@/components/AskPin";
 import { scrollToEnd } from "@/lib/scrollWithin";
 import { HITL_TARGET, pendingAsk, waitingTargets } from "@/lib/askPin";
@@ -60,6 +61,7 @@ import {
   type PendingConfirmation,
 } from "@/lib/confirmationQueue";
 import { sendRespondInputResult } from "@/lib/respondInput";
+import { createRejectHold } from "@/lib/rejectHold";
 import { cardsToRestore, cardsToSettle, fetchPendingAsksOrNull } from "@/lib/pendingAsks";
 import { planCardRedraw } from "@/lib/cardReplay";
 import { identity as boundIdentity } from "@/lib/dataCache";
@@ -585,6 +587,7 @@ export default function AgentChat({
   const restoreCappedText = useCallback((text: string) => restoreCappedRef.current(text), []);
   const {
     messages, isLoading, error, sendMessage, steerMessage, stopGeneration, setMessages,
+    stopping, stopError,
     outage, retryHeld, run,
   } = useAgentChat({
     agentName: currentAgentName,
@@ -985,6 +988,19 @@ export default function AgentChat({
     confirmationReducer,
     EMPTY_CONFIRMATIONS,
   );
+  // Rejects held for Undo (`lib/rejectHold.ts`). A session switch or an
+  // unmount sends every held REJECT at once: the rule that keeps a run from
+  // parking. The cleanup runs before `sessionIdRef` moves on.
+  const [rejectHold] = useState(() => createRejectHold());
+  const heldCardsRef = useRef(new Map<string, PendingConfirmation>());
+  useEffect(() => () => { rejectHold.flushAll(); }, [sessionId, rejectHold]);
+  // A closed tab inside the window sends the held REJECT too. The POST is
+  // `keepalive`, so the browser finishes it after the page is gone.
+  useEffect(() => {
+    const flush = () => rejectHold.flushAll();
+    window.addEventListener("pagehide", flush);
+    return () => window.removeEventListener("pagehide", flush);
+  }, [rejectHold]);
 
   // ── HITL elicitation state (VS Code ask_questions parity) ────────────
   // When requestId is set the tool is blocking (MAF Tier 2 path — the
@@ -1279,14 +1295,16 @@ export default function AgentChat({
   const postRespondInput = useCallback(
     (
       payload: { request_id: string; answer: string; was_freeform: boolean; declined?: boolean },
-      restoreCard: () => void,
-      settle?: (outcome: "ok" | "drop" | "resent") => void,
+      restoreCard: (reason?: string) => void,
+      settle?: (outcome: "ok" | "drop" | "resent", reason?: string) => void,
+      /** A held Reject sends for the session that held it (`lib/rejectHold.ts`). */
+      sessionOverride?: string,
     ) => {
-      const forSession = sessionIdRef.current;
+      const forSession = sessionOverride ?? sessionIdRef.current;
       // The account this tab drew the card for. The route refuses the answer
       // when the browser is signed in to another account now (WS-51 S2).
       const drawnFor = boundIdentity();
-      void sendRespondInputResult({ ...payload, thread_id: forSession, as: drawnFor }).then(({ outcome, resend, display, otherAccount }) => {
+      void sendRespondInputResult({ ...payload, thread_id: forSession, as: drawnFor }).then(({ outcome, resend, display, otherAccount, reason }) => {
         // Only touch the cards if the user is still on the session that asked.
         if (sessionIdRef.current !== forSession) return;
         if (otherAccount) {
@@ -1297,7 +1315,9 @@ export default function AgentChat({
             timestamp: Date.now(),
           }]);
         }
-        if (outcome === "retry") { restoreCard(); return; }
+        // The card says why, beside its buttons (UXD-3). An other-account
+        // refusal has its own notice above.
+        if (outcome === "retry") { restoreCard(otherAccount ? undefined : reason); return; }
         if (resend) {
           // The model reads the envelope. The member reads the answered
           // card (owner report, 2026-10-13, `lib/cardAnswer.ts`). An old
@@ -1345,7 +1365,7 @@ export default function AgentChat({
           });
           return;
         }
-        settle?.(outcome);
+        settle?.(outcome, reason);
       });
     },
     [setMessages],
@@ -1691,8 +1711,10 @@ export default function AgentChat({
 
   /** Stop: it halts the run. There is no "stop and send". */
   const handleStop = useCallback(() => {
+    // One cancel at a time: Esc during "Stopping" does not send a second.
+    if (stopping) return;
     void stopGeneration();
-  }, [stopGeneration]);
+  }, [stopGeneration, stopping]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1909,15 +1931,44 @@ export default function AgentChat({
       submitText(`${answer}: ${card.key}`);
       return;
     }
-    dispatchConfirmation({ type: "answering", key: card.key });
-    noteCardAnswered(sessionId, card.requestId, answer);
-    postRespondInput(
-      { request_id: card.requestId, answer, was_freeform: false },
-      () => dispatchConfirmation(settleAnswer(card, "retry")),
-      // "resent": the run died with an update and the answer went out as a
-      // message. The card leaves, as on any answer no run can take.
-      (outcome) => dispatchConfirmation(settleAnswer(card, outcome === "resent" ? "drop" : outcome)),
-    );
+    const requestId = card.requestId;
+    const rejecting = answer === "REJECT";
+    // The card leaves with a word: one line says "Applying", then what
+    // became of the answer (UXD-3). It draws under the newest message.
+    dispatchConfirmation({
+      type: "answering",
+      key: card.key,
+      label: card.detail || card.title,
+      intent: rejecting ? "rejected" : "approved",
+      afterId: visibleMessages.length ? visibleMessages[visibleMessages.length - 1].id : null,
+      ...(rejecting ? { undo: true } : {}),
+    });
+    const heldFor = sessionId;
+    const send = () => {
+      dispatchConfirmation({ type: "released", key: card.key });
+      noteCardAnswered(sessionId, requestId, answer);
+      postRespondInput(
+        { request_id: requestId, answer, was_freeform: false },
+        (reason) => dispatchConfirmation(settleAnswer(card, "retry", reason)),
+        // "resent": the run died with an update and the answer went out as a
+        // message. The card leaves, as on any answer no run can take, and its
+        // line goes with it: the notice of the resend says what happened.
+        (outcome, reason) => dispatchConfirmation(
+          outcome === "resent" ? settleAnswer(card, "drop") : settleAnswer(card, outcome, reason)),
+        heldFor,
+      );
+    };
+    if (!rejecting) { send(); return; }
+    // Undo for 5 s (#916). The REJECT waits, and a session switch or an
+    // unmount sends it at once (the effect below), so a run never stays parked.
+    heldCardsRef.current.set(card.key, card);
+    rejectHold.start(card.key, () => { heldCardsRef.current.delete(card.key); send(); });
+  };
+  const undoReject = (key: string) => {
+    const card = heldCardsRef.current.get(key);
+    if (!rejectHold.undo(key) || !card) return;
+    heldCardsRef.current.delete(key);
+    dispatchConfirmation({ type: "restore", card });
   };
   const hasConfirmations = confirmations.cards.length > 0;
   // No card pins above the composer (owner report, 2026-10-23). A reply
@@ -2007,7 +2058,7 @@ export default function AgentChat({
       <RollupCard id={HITL_TARGET} title="Waiting for you" pending>
       <div data-chat-ask={HITL_TARGET} className="space-y-2 outline-none">
         {hasConfirmations && (
-          <ConfirmationQueue cards={confirmations.cards} onAnswer={answerConfirmation} />
+          <ConfirmationQueue cards={confirmations.cards} errors={confirmations.errors} onAnswer={answerConfirmation} />
         )}
 
         {elicitation && (
@@ -2359,6 +2410,11 @@ export default function AgentChat({
                   .map((mk, k) => (
                     <MailboxMark key={`mbx-${msg.id}-${k}`} label={mk.label} />
                   ))}
+                {/* What became of each answered approval card (UXD-3). */}
+                <ConfirmationReceipts
+                  receipts={confirmations.receipts.filter((r) => r.afterId === msg.id)}
+                  onUndo={undoReject}
+                />
                 {/* Inline HITL card — anchored to the asking assistant turn. */}
                 {msg.id === hitlAnchorId && renderHitlCards()}
               </div>
@@ -2368,6 +2424,15 @@ export default function AgentChat({
           {/* Fallback: a HITL prompt arrived before any assistant bubble exists
               (rare — e.g. a tool asks before any text streamed). Render at the
               list tail so the card is never lost. */}
+          {/* A line whose message is gone (a reload or a checkpoint swap gave
+              it a new id) draws at the tail, so it is never lost (UXD-3). A
+              message above the shown slice keeps its line in the history. */}
+          <ConfirmationReceipts
+            onUndo={undoReject}
+            receipts={confirmations.receipts.filter(
+              (r) => !r.afterId || !messages.some((m) => m.id === r.afterId),
+            )}
+          />
           {hitlAnchorId === null && renderHitlCards()}
 
           {/* No follow-up pills under a cut answer or during an update: the
@@ -2784,11 +2849,27 @@ export default function AgentChat({
               <ChatSendButton
                 action={primary}
                 onClick={primary === "stop" ? handleStop : undefined}
-                disabled={primary === "send" ? !input.trim() || loadingHistory : false}
+                // A Stop waits for the server's answer (UXD-4).
+                loading={primary === "stop" && stopping}
+                label={primary === "stop" && stopping ? "Stopping the reply" : undefined}
+                title={primary === "stop" && stopping ? "Stopping…" : undefined}
+                disabled={primary === "send" ? !input.trim() || loadingHistory : stopping}
                 large={phoneChrome}
               />
             </div>
           </div>
+
+          {/* A Stop that did not stop the run: it is still live, and the
+              next Stop (or Esc) tries again (UXD-4). */}
+          {stopError && isRunActive && !stopping && (
+            <p role="alert" data-chat-stop-error className="mt-1.5 flex items-start gap-1.5 px-1 text-[11px] text-destructive">
+              <Icon name="AlertCircle" size={12} className="mt-0.5 shrink-0" />
+              <span className="min-w-0">{stopError}</span>
+              <Button type="button" variant="text" size="none" onClick={handleStop} className="shrink-0 font-medium">
+                Retry
+              </Button>
+            </p>
+          )}
 
           {/* A steer the server refused, or a model that cannot take one.
               The words are back in the box. */}
