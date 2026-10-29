@@ -43,7 +43,7 @@ f. No read enqueues a job, and the ``jobs`` table does not change.
   ``test_r8_the_get_is_a_pure_read[ready]`` goes red.
 * M3. ``brief_today.brief_local_date``: answer ``day.feed_day(now)``.
   ``test_r8_each_member_reads_their_own_run_on_their_own_date`` goes red,
-  with two more.
+  with four more.
 * M4. ``brief_today.LOOK_BACK_DAYS = 0``.
   ``test_r8_a_run_of_the_day_before_is_served`` goes red.
 """

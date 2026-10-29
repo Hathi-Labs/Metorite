@@ -36,6 +36,8 @@ In ``post_brief``, read the stored run with the switch off too (drop
 goes red. In ``post_brief``, set ``day = today`` (the feed day) after the
 stored run gives its date.
 ``test_a_stored_run_posts_once_across_the_day_start`` goes red.
+In ``_stored_or_none``, drop the ``try``.
+``test_a_failed_stored_read_posts_the_composition`` goes red.
 
 Run::
 
