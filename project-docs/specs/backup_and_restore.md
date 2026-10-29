@@ -4,6 +4,18 @@
 run proved the timer. **The off-box copy is BUILT (2026-10-08).** It stays
 OFF until the owner does the four steps in §4.2 (H-123).
 
+**2026-10-29, H-259 / WS-25d:** a failed nightly backup now reaches a person.
+The job `backup-timer` in `vps-health.yml` reads `acb-backup.service` and
+`acb-backup.timer` each hour. It opens one issue, "Nightly backup failed", in
+three cases. The unit failed, the timer is off, or the last success is older
+than 26 h. It closes the issue when the state is clean.
+
+The rule is
+`scripts/backup_alert_state.sh`. The fence is
+`tests/unit/test_backup_alert_wiring.py`. The dispatch input
+`simulate_backup_failure` proves the path with a fake state. The live proof
+waits for a dispatch after merge. The box has no alert unit, and `deploy/` has no change.
+
 **2026-10-08, owner decision:** the off-box copy goes to a private Supabase
 Storage bucket, through its S3 endpoint. The box encrypts each night to the
 owner's PUBLIC key before the upload. Only the nightly unit uploads
