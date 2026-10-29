@@ -5,6 +5,10 @@ and 2, NS-3 slices A, B and C, NS-4a, NS-4b, NS-6 slice 6a, NS-7, NS-10, NS-10b 
 since 2026-10-08. NS-2 slice 1 is ON in production since 2026-10-09
 (`NEXT_PUBLIC_SHELL_NAV=1`, owner decision). Board row **WS-44**.
 
+Email (2026-10-29, task #914): its own `CommandPalette`, its ⌘K listener and its
+`⌘K` button are gone. Its "Write an email" job is the one command that the shell
+carries. Fence: `src/app/email/emailShellSeam.test.ts`.
+
 NS-2 slice 2 (2026-10-09) adds three jobs and the job route fence. It rides
 the shell bar flag, which is on.
 

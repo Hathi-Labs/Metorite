@@ -346,7 +346,8 @@ test.describe("the reply card in the main chat", () => {
     await ask(page);
     const card = page.locator("[data-reply-card]");
     await card.locator("[data-reply-discard]").click();
-    await expect.poll(() => answers(page)).toHaveLength(1);
+    // A Discard is a Reject: it waits 5 s for Undo (#916) before the POST.
+    await expect.poll(() => answers(page), { timeout: 15_000 }).toHaveLength(1);
     expect((await answers(page))[0]).toMatchObject({ request_id: RID, answer: "REJECT" });
     await expect(card).toHaveCount(0);
     await expect(page.getByText(RESULTS.REJECT).first()).toBeVisible({ timeout: 15_000 });

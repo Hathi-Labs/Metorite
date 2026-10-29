@@ -430,6 +430,18 @@ class TestTheOneMine:
                          {"scope": "mine", "page_size": 2, "sort": "created_at"})
         assert page["total"] == len(MINE_A) and len(page["rows"]) == 2
 
+    async def test_every_row_carries_the_stage_of_its_status(self, armed):
+        """#834. The list read stamps ``status_category`` with no overlay, so a
+        parent board can file a subproject's own lane by its stage. The read
+        runs under FORCE RLS as the app role, and C's row keeps C's stage."""
+        rows = {r["id"]: r for r in await _list_mine(armed, A)}
+        assert all(r.get("status_category") for r in rows.values()), rows
+        assert rows[armed.t["a_done"]]["status_category"] == "done"
+        assert rows[armed.t["a_open"]]["status_category"] == "todo"
+        c_rows = await _list_mine(armed, C)
+        assert [r["status_category"] for r in c_rows] and all(
+            r["status_category"] for r in c_rows)
+
     async def test_an_unknown_scope_is_a_422(self, armed):
         r = await _get(armed, A, "/projects/tasks", {"scope": B})
         assert r.status_code == 422

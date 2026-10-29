@@ -86,6 +86,7 @@ describe("the card acts in the mailbox of the draft", () => {
   });
 
   it("names the From mailbox in the send confirmation", () => {
-    expect(src).toContain("Send this reply from ${head.from}?");
+    // The shared dialog asks, never the browser's confirm box (UXD-3).
+    expect(src).toContain("It goes from ${head.from}.");
   });
 });

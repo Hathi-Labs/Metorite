@@ -824,9 +824,22 @@ HUMAN_SENDER_CATEGORIES_LOWER: list[str] = [
 # all": a user's own hand-made label doesn't make a message categorized as far
 # as the rules are concerned, and treating it as such would hide exactly the
 # mail the cleaner exists to find.
+#
+# OUTBOUND MAIL IS NEVER UNCATEGORIZED (#467). The rules run reads inbox mail
+# only, so a message the member wrote or has not sent yet never gets a label,
+# and "carries no label" would put every one of them in the chip and the count.
+# Cleanup categories describe inbound mail. ``NOT_INBOUND_FOLDERS`` names the
+# canonical folder keys of such mail, and the Email Cleaner's scope reads the
+# same fragment (``NOT_OUTBOUND_SQL``), so the two views cannot disagree.
+NOT_INBOUND_FOLDERS = ("sent", "drafts", "outbox")
+NOT_OUTBOUND_SQL = (
+    "LOWER(COALESCE(em.folder, '')) NOT IN ("
+    + ", ".join(f"'{f}'" for f in NOT_INBOUND_FOLDERS) + ")"
+)
 UNCATEGORIZED_SQL = (
+    f"({NOT_OUTBOUND_SQL} AND "
     "NOT EXISTS (SELECT 1 FROM unnest(COALESCE(em.categories, '{}')) AS c"
-    " WHERE LOWER(TRIM(c)) = ANY(:known_labels))"
+    " WHERE LOWER(TRIM(c)) = ANY(:known_labels)))"
 )
 
 # "Uncategorized" is a STATE — the absence of any known label — never a label
