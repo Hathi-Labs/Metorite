@@ -14,8 +14,10 @@ dark, no producer). The member purge deletes the runs of the member.
 the template lead, in `gateway/brief/{flags,planner,gather,run}.py`, behind
 `BRIEF_ENABLED` and `BRIEF_ORGS` (both OFF). The seed hooks of
 `docs/job_queue.md` §5c carry the 15-minute planner. The prune hook keeps 90
-days. No model call, no send, no UI. The owner answered §9 on 2026-10-29
-(epic #479), and this slice wrote the answers into §9.
+days. No model call, no send, no UI. The member sets the brief through
+`PUT /auth/me/assistant-profile` (key `apps`). The owner answered all seven
+questions of §9 on 2026-10-29 (epic #479, "Owner decisions"), and §9 holds
+the answers.
 
 **Board.** Workstream **WS-BRIEF** (`work_plan.md` §2.1). Metorite epic
 **#479**, items BR-2a to BR-7b. AUTO-2 is Metorite **#814**.
@@ -42,11 +44,9 @@ between them.
 | **Silence** | 07:30 to 18:30 | Nothing interrupts, unless a rule of §6 says so |
 | **The close-out** | 18:30, the member's time zone | What got done, what Mira did, and what moved to tomorrow |
 
-**Who is a brief member.** The brief says "each owner". D119 does not define
-the word. This spec reads it as a member who runs a part of the company.
-RECOMMENDED (§9 Q1): each org `admin` (the legacy `executive`,
-`acb_auth/permissions.py:201`) is on by default, and every other member can
-opt in on My Profile.
+**Who is a brief member.** DECIDED (§9 Q1, owner 2026-10-29): every active
+member of the org, with an opt-out. The brief is on by default, and each
+member can turn it off (`apps.brief.enabled`).
 
 **Every claim has a source (BR-4).** Each line and each number opens its
 source record in one click. A sentence that names no source does not ship.
@@ -56,7 +56,8 @@ source record in one click. A sentence that names no source does not ship.
 - The brief record and the claim record (§3).
 - The schedule, the run and the at-most-once rule (§4).
 - The gather, the selection and the phrase step (§4).
-- In-app delivery: My Day, the chat's first turn (§5).
+- Delivery: the My Day card, the chat's first turn, the bell entry, and web
+  push through Reach last (§5).
 - The delivery monitor (§7), the exception rules (§6) and the policy fence (§8).
 
 ### 1.2 Non-goals
@@ -205,8 +206,13 @@ record.
 
 1. **The planner** is one job kind, `brief.plan`, that runs every 15 minutes
    for each org of `BRIEF_ORGS`.
-2. For each brief member, it finds each slot in the next 30 minutes. It reads
-   the zone and the working days from `Day` and `work_schedule`.
+2. For each brief member, it finds the slot in its window. The window
+   starts 2 hours back (`LOOKBACK`) and ends 30 minutes ahead (`HORIZON`).
+   It reads the zone and the working days from `Day` and `work_schedule`. A
+   member with no zone takes the org's `default_timezone`. So a planner
+   outage shorter than 2 hours loses no brief. An older slot with no row gets
+   one `failed` row, with the error `slot_missed`. The plan then logs
+   `brief.slot_missed` (warning).
 3. For each slot, it enqueues `brief.run`. `run_at` is the slot minus 5
    minutes. The dedupe key is `brief:<member>:<kind>:<local_date>`.
 4. **No manual trigger** (BR-2c). No route enqueues a brief run. "Send my
@@ -220,7 +226,10 @@ BR-1b builds.
 
 1. AUTO-2 `begin` takes the slot `(brief.<kind>, <member>:<local_date>)`. A
    taken slot ends the run (`fresh=False`).
-2. It writes the `brief_runs` row in state `planned`.
+2. It resolves the member, and reads the brief preferences again. A member
+   who is gone, turned the brief off or moved its time gets no row. It then
+   writes the `brief_runs` row in state `planned`. A run that gathers
+   nothing, a cancel included, gives the ledger slot back.
 3. **Gather**, with no session held (§4.3). It writes the claims and sets
    `gathered`, or `empty` when no claim exists.
 4. **Phrase** (§4.4). It sets `phrasing` first. That is the intent mark.
@@ -288,10 +297,11 @@ words.
    its rules of once a day and phone only (D-CF-2, D-CF-3).
 3. **A read route.** `GET /brief/today?kind=brief|closeout` answers the run
    and its claims, for the member of the session only.
-4. **The bell.** No entry in v1. The bell holds what needs the member, and a
-   brief is not one. RECOMMENDED, §9 Q2.
-5. **Outside the app.** Web push (PN-1) and WhatsApp send through Reach,
-   later, and an owner gate holds each one.
+4. **The bell.** One entry in v1 (§9 Q2, owner 2026-10-29). The entry says
+   that the brief is ready, and it opens the brief.
+5. **Outside the app.** Web push (PN-1) is in v1, and it ships last (§9 Q2
+   and Q7). It sends through Reach, behind `BRIEF_PUSH` and its owner gate.
+   WhatsApp stays later (D115).
 
 "Delivered" means the run is `ready` and the read route serves it. The
 member does not need to open the app.
@@ -317,9 +327,13 @@ Rule(id="approval_waiting", kind="approval",
 - A member can mute a rule in `my_day_prefs`. A member cannot add a rule in
   v1.
 
-**The rules of v1** (RECOMMENDED, §9 Q4). Five kinds may interrupt:
-`approval` after 2 hours, `agent_asks`, `notify_me`, `block_soon` and
-`source_sync_failed`.
+**The rules of v1** (DECIDED, §9 Q4, owner 2026-10-29). Four interrupts:
+
+1. An approval waits on the member for more than 2 hours (`approval`).
+2. An agent asks the member a question (`agent_asks`).
+3. A block starts soon, and the member asked to be told (`block_soon` with
+   `notify_me`).
+4. A source sync failed (`source_sync_failed`).
 
 **The limits.** The budget of `proactive_reach.md` §6.1, unchanged: 3 a day,
 a 15-minute batch window, and quiet hours. A held card is a claim of the next
@@ -374,21 +388,18 @@ lists each act path that writes no `audit_event` row. Each one is a finding.
 
 ## 9. The owner's decisions
 
-The owner decided Q1 to Q6 on 2026-10-29 (epic #479). Q7 stays a
-recommendation.
+The owner decided all seven questions on 2026-10-29 (epic #479, the comment
+"Owner decisions").
 
 | # | Question | DECIDED 2026-10-29 |
 |---|---|---|
-| Q1 | Who gets a brief? | Every active member of the org, with an opt-out. The eligible set is the active members minus the members who turned the brief off |
-| Q2 | Which surfaces in v1? | My Day and the chat's first turn. No bell entry |
-| Q3 | The credit budget for each brief? | 2 model calls a day at most for each member. With no credit, the template brief |
-| Q4 | What may interrupt? | The five rules of §6 |
-| Q5 | Fixed times, or the member's? | 07:30 and 18:30 in the member's zone by default. Each member can change both. The brief stores three preferences (`enabled`, `brief_time`, `closeout_time`) through `acb_common.assistant_profile.app_prefs`, and a later slice adds the settings UI |
+| Q1 | Who gets a brief? | Every active member of the org, with an opt-out. The eligible set is the active members minus the members who turned the brief off. It is not for the admins only |
+| Q2 | Which surfaces in v1? | The My Day card, the chat's first turn, a bell entry, and web push. Web push sends through Reach, and it ships last |
+| Q3 | The credit budget for each brief? | At most 2 `tier-fast` calls for each member and working day. With no credit, the template brief |
+| Q4 | What may interrupt? | All four of §6: an approval that waits more than 2 hours, an agent that asks, a block that starts soon (with notify-me), and a source sync that failed |
+| Q5 | Fixed times, or the member's? | 07:30 and 18:30 in the member's zone by default. Each member can change both. The brief stores three preferences (`enabled`, `brief_time`, `closeout_time`) through `acb_common.assistant_profile` (`app_prefs`, and `PUT /auth/me/assistant-profile` with the key `apps`). A later slice adds the settings UI |
 | Q6 | How long to keep a brief? | 90 days. The prune hook of `brief/run.py` deletes older runs |
-
-| # | Question | RECOMMENDED |
-|---|---|---|
-| Q7 | Outside the app, when? | Web push after BR-2d meets its target for one week |
+| Q7 | Outside the app, when? | Web push is in v1, and it ships last, after the in-app surfaces |
 
 ### 9.1 Gaps that the BR-2a-1 audit found
 
@@ -396,9 +407,22 @@ recommendation.
    recurring seam existed: only `jobs.prune` was seeded, once a day. BR-2a-1
    added `worker.seed_hooks` (`docs/job_queue.md` §5c), one additive list
    beside the prune seed, and started no second loop.
-2. **The admin source.** The RECOMMENDED Q1 named "org admins", and no spec
-   said which column held the role. Q1 as decided makes it moot: the planner
-   reads every active member from `app_user`, minus the opt-outs.
+2. **The admin source.** The old recommendation of Q1 named "org admins",
+   and no spec said which column held the role. Q1 as decided makes it
+   moot. The planner reads every active member from `app_user`, minus the
+   opt-outs, through `assistant_profile.members_app_prefs`.
+3. **A stored UTC means no zone.** The DEFAULT of `user_settings.timezone`
+   is UTC, so a stored UTC and no zone look the same. The planner gives both
+   the org's `default_timezone`. A member who chose UTC in an org with
+   another default gets the org's zone.
+4. **A missed row on the first day.** An org can turn on after its slots
+   passed. A slot from 2 to 8 hours before the first plan then gets a
+   `slot_missed` row. BR-2d must not count those rows against its target.
+5. **The settings and a removal.** Forget-all keeps `apps`. A removal
+   (`personalization.md` §7 point 6) still forgets the whole profile. So a
+   member who comes back gets the defaults, with the brief on.
+6. **No chat write of `apps`.** In v1 only Settings sets the brief. A chat
+   tool for "move my brief to 8" is a later slice.
 
 ---
 
@@ -417,7 +441,7 @@ and the at-most-once rule needs AUTO-2's `UNATTENDED_LEDGER`.
 | 6 | BR-2d: the monitor | 2, AUTO-2 | none | AGENT-SAFE |
 | 7 | BR-2b with BR-7b: the close-out | 2 | `BRIEF_CLOSEOUT` | AGENT-SAFE. The production flip: `enforcement-flip` |
 | 8 | BR-7a: the effect registry and its fence | BR-1a | none | AGENT-SAFE |
-| 9 | BR-5: the exception rules | 2 | `BRIEF_EXCEPTIONS` | AGENT-SAFE to build. The production flip waits on Q4 |
+| 9 | BR-5: the exception rules | 2 | `BRIEF_EXCEPTIONS` | AGENT-SAFE to build. The production flip: `enforcement-flip` (Q4 is decided) |
 | 10 | BR-3a: one week on pilot data | 5 | none | **OWNER-GATE**: the pilot orgs and their inboxes are the owner's |
 | 11 | Web push of the brief, through Reach | 6 | `BRIEF_PUSH` | **OWNER-GATE**: it reaches a person through a third party |
 
@@ -435,7 +459,7 @@ Each item is a "done when". Each fence runs red first, then green.
 | # | Done when | Fence |
 |---|---|---|
 | 1 | The migration applies on a real database, with FORCE RLS on both tables. An empty `source_id` or `href` fails its CHECK. A member reads no run of another member, and org B reads no row of org A | `test_brief_store_r8.py` |
-| 2 | On a fake clock, a member in `Asia/Kolkata` gets one run at 07:30 local, and none on a day off. Two planner ticks and a restart in a run give one row and one ledger entry. Each line equals `plan.line` of its card, with its `signal_id` and `href`. The run calls no model | `test_brief_run.py`, `test_brief_run_r8.py` |
+| 2 | On a fake clock, a member in `Asia/Kolkata` gets one run at 07:30 local, and none on a day off. Two planner ticks and a restart in a run give one row and one ledger entry. A timeout of the handler gives the slot back, and the retry gathers once. A planner outage under 2 hours loses no brief, and an older slot leaves a `slot_missed` row. Each line equals `plan.line` of its card, with its `signal_id` and `href`. The run calls no model | `test_brief_run.py`, `test_brief_run_r8.py` |
 | 3 | The check refuses a sentence that cites no claim, and a sentence with a number that no cited claim holds. A `delivered` run with a line that has no claim row fails the R8 test | `test_brief_claims_fence.py` |
 | 4 | With 4 claims, one call goes out with `source="brief"`. A refused answer, a model error or a balance refusal keeps the template lead, and the run still delivers. A retry after `phrasing` makes no second call. On staging, `model_request_id` joins a `usage_event` row | `test_brief_run.py` |
 | 5 | The chat's first turn and the My Day card show the stored lines, and a diff against `plan.brief_parts` of the same cards is empty. A chip opens the record of each claim. `GET /brief/today` answers 404 for a run of another member. With `BRIEF_IN_APP` off, both surfaces answer as before, byte for byte | `test_chat_brief_turn_r8.py`, `linkChips.test.ts` |
