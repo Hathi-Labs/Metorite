@@ -1517,6 +1517,7 @@ The orchestrator offers each registry agent as a tool (`orchestrator/agents.py:7
 - **Specialist gap, not changed here.** The Projects assistant instructions (`apps/agents/agent-projects/instructions.md`, lines 15 to 21) say "Otherwise ask the member which project". They have no private default for a task from a mail. The delegation arm of `mix_task_from_mail` fails 0 of 3 on that gap. The same file says "A member who wants five projects archived answers five cards" and has no rule to use `bulk_update` for many tasks. A later slice may repair both.
 - **`projects_ai_chat.md`.** §3.2 lines 180 and 206 to 208 do not conflict. "Add a task: call the vendor" is a team task in the Projects app. A personal task and a capture with no project are already the member's own project.
 - **Fence.** `tests/unit/test_pack_rules_oa8h.py` and `tests/unit/test_pack_cues.py`. Run 4 of OA-8e measures the effect.
+- **Specialist repaired (2026-10-29, owner-approved).** The Projects assistant instructions now say: a new task with no project named is private, so call `create_personal_task` at once. The specialist may not see the page, so the rule uses the request and the open project. An open project keeps its tasks. For two or more tasks, call `bulk_update` once. The fence is `tests/unit/test_projects_assistant_private_default.py`.
 
 **OA-8c. WhatsApp.**
 - **Acceptance.**
