@@ -2564,6 +2564,7 @@ The connect card of EA-4b and `docs/external_agents_connect.md` show this table.
   2. P3-2. The writer compares the wanted set and the stored rows in lower case. A legacy row in another case is the same person, and test r21 holds it (A29).
   3. P3-3 to P3-6. The texts say "a project grant or the admin read right", and the long sentences are split.
 - 2026-10-29 — MCP-P0 (Metorite task #864). §19 specifies D136: one manifest, two doors. It covers the manifest contract, the four tools, the approval path of a write, the scopes per app and the admin switch. It also covers the CRM and Email classes and the slices MCP-P1a to MCP-P5. The owner moved MCP-P0 to MCP-P2 forward on 2026-10-29. No code changed.
+- 2026-10-30 — MCP-P0 fix round 1, after the spec audit (MCP-P1a GO-NARROWED, MCP-P2a NO-GO). MCP-P1a fails closed for each write that needs an approval (AD-18). MCP-P2a opens no B or C op except `save_draft`. Each op that can cause mail to leave is `sends` (AD-19). §19.13 gains the gates, the verify commands and the dependencies. §19.1 gains the non-goals. A read that calls a model is off the door. This round also fixes the stale anchors.
 
 ## 19. One manifest, two doors: every app over the MCP (MCP-P0, D136)
 
@@ -2581,6 +2582,17 @@ Each app keeps ONE route manifest. Mira's chat tools read it, and the MCP door r
 - **The order.** Knowledge first, because its manifest exists. Then CRM and Email. Then each new app, in its first release (§19.13).
 - **The Projects tools stay.** The typed tools of §9 stay the Projects door. `list_apps` shows Projects with the door `tools`.
 
+**Non-goals of §19.**
+
+- No typed tool for each app. Only the four tools serve the apps.
+- No change to the Projects tools, to `MCP_ROUTES` or to the rules of §9.5.
+- No model call through the door, and no AI credits (AD-11, D-EA-7).
+- No push to the agent: no webhook and no MCP elicitation (EA3-33).
+- No card for many calls, and no timed approval. Each B or C call asks once. The trust ladder of D131 is later work.
+- No raw send, no HTML body and no file download over the door (§19.10).
+- No door for WhatsApp, Calendar, Meetings, People or Studio here. Each joins with its own manifest (MCP-P4, MCP-P5).
+- No change to the cards of Mira in the chat.
+
 ### 19.2 What exists today
 
 | Fact | Anchor |
@@ -2588,8 +2600,8 @@ Each app keeps ONE route manifest. Mira's chat tools read it, and the MCP door r
 | The Projects manifest is the chat allowlist and its coverage record. The chat client refuses a route that it does not carry | `apps/skills/skill-projects/skill_projects/manifest.py:66` (`Route`), `:122` (`MANIFEST`), `:1672` (`allowed`), and `skill_projects/client.py:164` |
 | The Knowledge manifest has the same shape, with `planned` and `also` | `packages/acb_skills/acb_skills/knowledge_manifest.py:49`, `:130` and `:230`. Its client calls `allowed` at `knowledge_tools.py:215` and `:239` |
 | Each coverage test walks the real router in both directions | `tests/unit/test_projects_chat_coverage.py:59` and `:69`, `tests/unit/test_knowledge_chat_coverage.py:57` and `:67` |
-| CRM and Email have no manifest. Each router serves 136 routes on 2026-10-29 | `gateway.routes.crm.router` and `gateway.routes.email.router`, counted from the live routers |
-| The edge reads no manifest. Its allowlist is the hand-written `MCP_ROUTES`, and a fence holds each pair to the Projects class | `packages/acb_auth/acb_auth/agent_oauth.py:567` and `:593`, and rule 2 of `tests/unit/test_mcp_edge_coverage.py` (§9.5) |
+| CRM and Email have no manifest. On 2026-10-29 the CRM router serves 136 method and path pairs from 136 decorators. The Email router serves 136 pairs from 135 decorators, because one `api_route` serves GET and POST | `gateway.routes.crm.router` and `gateway.routes.email.router`, counted from the live routers. The `api_route` is `routes/email/transport/sync.py:376` |
+| The edge reads no manifest. Its allowlist is the hand-written `MCP_ROUTES`, and a fence holds each pair to the Projects class | `MCP_WRITE_ROUTES` at `packages/acb_auth/acb_auth/agent_oauth.py:567`, `MCP_ROUTES` at `:593`, and rule 2 of `tests/unit/test_mcp_edge_coverage.py` (§9.5) |
 | The scopes are one fixed tuple | `agent_oauth.py:56` to `:67` |
 | Branch 0 checks `projects:write` for each write and no scope for a read | `packages/acb_auth/acb_auth/deps.py:620`, and the risk line of §17 |
 | The edge refuses a path parameter that is not a UUID | `apps/services/agent_edge/agent_edge/gateway_client.py:58` and `:102` |
@@ -2640,7 +2652,7 @@ Why a new home: `acb_auth` and the edge cannot import `acb_skills`, because its 
 | `off_door` | Why the MCP door does not serve this row | Required on an A, B or C row with no `op` |
 | `title` | One line for `describe_app` | Required with `op` |
 | `proposal` | True when the op only files a pending object that the member finishes in the app | Class B only (AD-8) |
-| `sends` | True when the op sends mail or a message to a person | Class C only, behind the sends flag (AD-15) |
+| `sends` | True when the op can cause mail or a message to leave Metorite | Class C only, behind the sends flag. Any op that can cause mail to leave is `sends` (AD-19) |
 | `plain` | The keys of the answer that may leave as plain strings | The shapes of AD-10 only |
 | `query` | The query keys of a write route | Optional |
 | `path_shapes` | A pattern for each path parameter that is not a UUID, for example `{module}` | Optional |
@@ -2728,6 +2740,7 @@ The answer holds no data of the app, so the route needs a live token only.
 | A 409 of `assert_writable`: `mirrored_record`, `mirror_mode_create` or `mirror_mode_settings` | `isError: true`, "This CRM mirrors Zoho. Change the record in Zoho." |
 | A 422 | `isError: true`, "Metorite could not use that input. Check: <names>." The names are the `loc` keys of the answer, never its message |
 | A 404 | `isError: true`, "<App> has nothing at that id." |
+| A 403 with `approval_required` | `isError: true`, "Metorite refused this change, because the member has not approved it." |
 | The spend does not match the approval, a 409 with `approval_mismatch` | `isError: true`, "This change is not the change that the member approved. Ask again." |
 | The request is spent or expired, a 409 | `isError: true`, "That approval is used or expired. Ask again." |
 | Too many open requests, a 429 with `too_many_requests` | `isError: true`, "Too many changes wait for the member. Wait for an answer first." |
@@ -2739,7 +2752,7 @@ The manifest row picks one of two paths. Neither path runs a write before the me
 **Path 1, a proposal (AD-8).** The op files a pending object, and the app holds it for the member. The member decides in the app, on the screen that shows the exact content.
 
 - Knowledge `POST /knowledge/proposals` files a proposed page or edit. Only a person accepts it, from the web, and the accept route refuses `mcp` (`routes/knowledge/proposals.py`, F2).
-- Email `PUT /email/drafts` stores a draft in the member's mailbox (`drafting.py:3550`). It sends nothing. A send is its own class C op.
+- Email `PUT /email/drafts` stores a draft in the member's mailbox (`apps/services/gateway/gateway/routes/email/automation/drafting.py:3550`). It sends nothing. A send is its own class C op.
 - The call answers at once, with `state: "done"` and `finish_in`. No run opens.
 - While `KNOWLEDGE_PROPOSALS` is off, the proposal route answers 404, and the door gives its 404 text.
 
@@ -2761,6 +2774,8 @@ The manifest row picks one of two paths. Neither path runs a write before the me
 
 **The new pairs.** `MCP_ROUTES` gains `GET /agent-access/apps`, `GET /agent-access/apps/{app}` and `GET /agent-access/requests/{request_id}`. `MCP_WRITE_ROUTES` gains `POST /agent-access/apps/{app}/requests`. The list `GET /agent-access/requests` serves the member only, and it stays out. Rule 2 of `test_mcp_edge_coverage.py` names the four new pairs as exceptions, as it names `GET /auth/me`.
 
+**Before MCP-P1b lands, the door fails closed (AD-18).** The door then serves reads and proposals only. Branch 0 refuses each other B or C door call with 403 `approval_required`, because no request can exist yet. The edge refuses such an op before any request, with `available: false` in `describe_app`. So no merge order of the slices can open a write with no approval.
+
 **The timeout.** A request lives 24 hours, the `ARCHIVE_REQUEST_TTL` of `agent_runs.py:183`. Each read and the spend check `expires_at`, and no sweeper runs. An approval that no agent spends expires with its request, and nothing changes.
 
 **How the agent learns the result.** The agent polls with `app_write`, because the edge keeps no state and Claude Code takes no push (§12.1, EA3-33). A later session finds its open requests in the `waiting` key of `list_apps`. The answer of the member is a row, so no session can lose it.
@@ -2769,7 +2784,7 @@ The manifest row picks one of two paths. Neither path runs a write before the me
 
 **The fields that the server owns.** These fields come from the server, never from the args.
 
-- A send of a draft (`POST /email/drafts/send`, `drafting.py:3931`) gets `expect`. The route reads the recipients and the seal of the draft (`draft_text_seal`, `drafting.py:3802`). So an edit of the draft after the card sends nothing (`DraftExpect`, `drafting.py:3680`).
+- A send of a draft (`POST /email/drafts/send`, `routes/email/automation/drafting.py:3931`) gets `expect`. The route reads the recipients and the seal of the draft (`draft_text_seal`, `automation/drafting.py:3802`). So an edit of the draft after the card sends nothing (`DraftExpect`, `automation/drafting.py:3680`).
 - A PATCH with no `expected_version` gets `If-Match` from the row that the request route read.
 
 **The card.** It shows the stored request only, never words of the agent.
@@ -2777,7 +2792,7 @@ The manifest row picks one of two paths. Neither path runs a write before the me
 - The client: the curated label and the verified host (EA-13d).
 - The app, the op title and one class line. B reads "You can undo this in <App>." C reads "This is hard to undo."
 - The target, which the display hook of the app names, and the exact payload as fields and values. A PATCH shows the old value beside the new one when the hook reads it.
-- For a send: each recipient with its class from `classify_addresses` (`held_card.py:272`). A new address carries the new mark and the lookalike warning. The card also shows the subject and the text of the seal.
+- For a send: each recipient with its class from `classify_addresses` (`apps/services/gateway/gateway/routes/email/automation/held_card.py:272`). A new address carries the new mark and the lookalike warning. The card also shows the subject and the text of the seal.
 - The expiry, and the buttons Approve and Decline.
 
 MCP-Q3 asks the owner where the card shows (§19.14).
@@ -2789,7 +2804,7 @@ MCP-Q3 asks the owner where the card shows (§19.14).
 **The scopes.** Each app with a door op has `<id>:read`. An app with a B or C door op also has `<id>:write`, which covers `<id>:read`.
 
 - `SUPPORTED_SCOPES` and `RESOURCE_SCOPES` (`agent_oauth.py:62` and `:67`) gain them from `app_manifests`, after the three fixed scopes.
-- `_expand` in `bearer.py:78` applies the cover rule to each app.
+- `_expand` in `apps/services/agent_edge/agent_edge/bearer.py:78` applies the cover rule to each app.
 - The RFC 9728 document (`agent_edge/metadata.py:46`) lists them.
 
 **An existing connection** keeps its scopes. The scope of a new app is OFF until the member grants it. A call for that app gets the 403 `insufficient_scope`, and Claude Code then steps up. The consent page shows the new line, and it shows the lines that the connection holds as held.
@@ -2838,7 +2853,7 @@ The write of the audit row is best effort, as `log.py` says. The run rows are th
 
 ### 19.9 CRM: the classes (MCP-P2)
 
-The router is `gateway.routes.crm`, with 136 routes on 2026-10-29. The kinds are `leads`, `deals`, `contacts` and `organizations`. In Mirror mode (Zoho), `assert_writable` (`routes/crm/core.py:1907`) refuses each native write to mirrored data, and the door adds no rule of its own. A native note on a mirrored record passes there, as it does in the app (`core.py:1924`).
+The router is `gateway.routes.crm`, with 136 method and path pairs on 2026-10-29. The kinds are `leads`, `deals`, `contacts` and `organizations`. In Mirror mode (Zoho), `assert_writable` (`routes/crm/core.py:1907`) refuses each native write to mirrored data, and the door adds no rule of its own. A native note on a mirrored record passes there, as it does in the app (`core.py:1924`).
 
 | Family | Routes, and the module | Class | Door |
 |---|---|---|---|
@@ -2860,7 +2875,9 @@ The router is `gateway.routes.crm`, with 136 routes on 2026-10-29. The kinds are
 
 ### 19.10 Email: the classes (MCP-P2)
 
-The router is `gateway.routes.email`, with 136 routes on 2026-10-29. Every send is class C and asks for each act, so a send to an outside person always asks (D124.2, D131.7). The door sends a stored draft only, so the card can seal its text. Rules and labels take the classes of the app.
+The router is `gateway.routes.email`, with 136 method and path pairs from 135 decorators on 2026-10-29. Every send is class C and asks for each act, so a send to an outside person always asks (D124.2, D131.7). The door sends a stored draft only, so the card can seal its text. Labels take the classes of the app.
+
+**The sends rule (AD-19).** Any op that can cause mail to leave is `sends`, and it is class C. `AGENT_DOOR_SENDS` gates each one. The rule covers an op whose own route sends, and an op that stores an action that sends later. So each write of the rules family is `sends`, because a rule can reply or forward by itself. A published workflow that a change starts stays the residual of §9.2, as it is for a member's own change.
 
 | Family | Routes, and the module | Class | Door |
 |---|---|---|---|
@@ -2869,19 +2886,20 @@ The router is `gateway.routes.email`, with 136 routes on 2026-10-29. Every send 
 | Search | `GET /email/search` | A | `search` |
 | Attachments and contacts | `GET /email/attachments/{attachment_id}/text` and `GET /email/contacts/*` | A | One op for each row |
 | Digests and insights | `GET` of the digest, the insights, Reply Zero, the analytics, the senders, the newsletters, the cold senders and the scheduled drafts | A | One op for each row |
-| Rules, read and test | `GET` of the rules, the policies, the guidance, the patterns and the history. `POST /email/rules/test` and `/test/recent` write nothing, so they are reads | A | One op for each row |
-| Drafts | `PUT /email/drafts` (`drafting.py:3550`) | B | `save_draft`, a proposal. The draft waits in Email |
+| Rules, read | `GET` of the rules, the policies, the guidance, the patterns and the history | A | One op for each row |
+| Rule tests | `POST /email/rules/test` and `/test/recent` write nothing, but they run the AI classifier (`routes/email/automation/runner.py:100`, `:120`) | A in the app | `off_door`: AD-11 |
+| Drafts | `PUT /email/drafts` (`routes/email/automation/drafting.py:3550`) | B | `save_draft`, a proposal. The draft waits in Email |
 | Sends | `POST /email/drafts/send`, `POST /email/drafts/schedule` and `POST /email/forward` | C | `send_draft`, `schedule_draft` and `forward`, each with `sends` |
 | A raw send | `POST /email/send` | B in the app | `off_door`: "The door sends a stored draft only, so the card can seal its text." |
 | Scheduled sends, cancel | `POST /email/drafts/scheduled/{schedule_id}/cancel` | B | `cancel_scheduled` |
 | Message state | `PATCH /email/messages/{message_id}`, its `/snooze`, and `POST /email/reply-zero/resolve` | B | One op for each row |
 | Message removal and bulk change | `DELETE /email/messages/{message_id}` and `POST /email/messages/bulk` | C | One op for each row |
 | Labels and folders, write | `POST /email/accounts/{account_id}/folders` and `PATCH /email/accounts/{account_id}/labels` | B | One op for each row |
-| Rules, write | `POST /email/rules`, `PATCH /email/rules/{rule_id}`, `POST /email/rules/copy`, the guidance POST, the feedback and the pattern review | B | One op for each row. The card says "This rule sends mail by itself." when an action sends or forwards |
-| Rules, delete, reset and bulk | Each rule DELETE, `POST /email/rules/batch`, `/reset` and `/install-presets` | C | One op for each row |
-| Rule runs | `POST /email/rules/run`, `/run-message`, `/process-past` and `/history/retry-failed` | C | One op for each row. A run can act on many mails and send |
+| Rules, write | `POST /email/rules`, `PATCH /email/rules/{rule_id}`, `POST /email/rules/copy`, `/batch` and `/install-presets`, the guidance POST, the feedback and the pattern review | C | One op for each row, each with `sends` (AD-19). A rule can reply or forward by itself, and the feedback and the guidance change which rule fires. The card says "This rule can send mail by itself." |
+| Rules, delete and reset | Each rule DELETE and `POST /email/rules/reset` | C | One op for each row. A delete sends nothing, so it has no `sends` |
+| Rule runs | `POST /email/rules/run`, `/run-message`, `/process-past` and `/history/retry-failed` | C | One op for each row, each with `sends`. A run can act on many mails and send |
 | Rule decisions | `POST /email/rules/history/{exec_id}/approve`, `/reject` and `/undo` | X | "The member reviews what the rules did, in Email." |
-| Senders | `POST /email/newsletters` and `POST /email/cold-senders`, B. `POST /email/unsubscribe`, C, because it reaches the sender | B, C | One op for each row |
+| Senders | `POST /email/newsletters` and `POST /email/cold-senders`, B. `POST /email/unsubscribe`, C, because it reaches the sender | B, C | One op for each row. `unsubscribe` has `sends` |
 | Settings of Mira for mail | The writes of the assistant settings, the always-copy list, the voice profile, the email knowledge and the learned patterns | B or C in the app | `off_door`: "These writes change how Mira works on every later mail. An always-copy entry copies each later send to an address." |
 | AI runs | `POST /email/draft-reply`, `/compose-assist`, `/rules/generate`, `/assistant/writing-style/generate`, `/voice-profile/build`, `/messages/summaries`, `/cleanup/auto-categorize`, `/senders/categorize`, `/reply-zero/reclassify` and `/follow-ups/scan` | A or B in the app | `off_door`: AD-11 |
 | The cards of Mira | `/email/held-card`, `/email/reply-card`, `POST /email/drafts/save` (the draft card of the chat), `GET /email/reply-recipients`, `GET /email/recent-reply` and `GET /email/drafts/seal` | As in the app | `off_door`: "The door has its own card. The request route reads the seal itself." |
@@ -2889,6 +2907,8 @@ The router is `gateway.routes.email`, with 136 routes on 2026-10-29. Every send 
 | Accounts, OAuth, sync, webhooks, storage, cleanup and the digest send | `accounts.py`, `oauth.py`, `sync.py`, `storage.py`, `cleanup.py` and `POST /email/digest/send` | X | §19.11 |
 
 The classes "B in the app" and "A or B in the app" are a first reading. MCP-P2a sets each row from the router and from the email agent of Mira (`apps/agents/agent-email-assistant/agents.py`), and the fence then holds it.
+
+**The Door column of §19.9 and §19.10 is the state after MCP-P2b.** In MCP-P2a, each B and C row except `save_draft` carries `off_door`: "Waits for the approval path of MCP-P1b." MCP-P2b replaces each such reason with its `op`.
 
 ### 19.11 What stays X on every app
 
@@ -2902,7 +2922,7 @@ No manifest may give a door op to these routes. The fence of MCP-P2a and MCP-P4 
 - **Provider callbacks and webhooks.** A provider calls them, not a member.
 - **A bulk export or a reset.** A file of all the data leaves through the app, and a reset destroys data.
 
-### 19.12 The engineering decisions (AD-1 to AD-17)
+### 19.12 The engineering decisions (AD-1 to AD-19)
 
 The orchestrator took these on 2026-10-29. None is a product or pricing call, and none reopens D124 or D136.
 
@@ -2918,19 +2938,21 @@ The orchestrator took these on 2026-10-29. None is a product or pricing call, an
 | AD-8 | A proposal op runs at once with no card, because the app holds the result for the member. The fence holds that a proposal is class B and that its route publishes and sends nothing | §19.5, MCP-Q1 |
 | AD-9 | `describe_app` builds each args schema from `route.dependant`, never from a hand list | §19.4 |
 | AD-10 | Each string of a door answer is `untrusted_text`, except a `plain` key with a plain shape | §19.7 |
-| AD-11 | A route that calls a model or spends AI credits is `off_door`. The outside agent brings its own model, and a door call costs no credits (D-EA-7) | §19.9, §19.10 |
+| AD-11 | A route that calls a model or spends AI credits is `off_door`, a read included. The door never meters a model call. The outside agent brings its own model, and a door call costs no credits (D-EA-7) | §19.9, §19.10 |
 | AD-12 | A page holds at most 50 rows, and a result at most 256 KiB | §19.7 |
 | AD-13 | Door reads: 300 in 600 seconds. Open requests: 20. Writes keep the cap of EA3-30 | §19.7 |
 | AD-14 | Branch 0 writes one audit row for each door call. The run rows are the durable record of each write | §19.7 |
-| AD-15 | **The flags.** `AGENT_DOOR_APPS` lists the apps that the door serves, and empty serves none. `AGENT_DOOR_SENDS` (default off) lets a `sends` op run. Both units read each one through one reader in `agent_oauth`, as `AGENT_ACCESS_ORGS` does | §19.4, §19.13 |
+| AD-15 | **The flags.** `AGENT_DOOR_APPS` lists the apps that the door serves, and empty serves none. `AGENT_DOOR_SENDS` (default off) lets a `sends` op run. Both units read each one through one reader in `agent_oauth`, as `AGENT_ACCESS_ORGS` does. §19.13 gives the gate of each flip | §19.4, §19.13 |
 | AD-16 | The door routes serve an app run. Its member reads and decides it, and only its own connection reads and spends it as an agent. The routes of §12.1, the pill, the board, `my_work`, Needs attention and the stranded sweep serve task runs only | §19.5, §19.8 |
 | AD-17 | The digest of a call is the SHA-256 of `v1`, the method, the template, the path, the sorted query, the body hash and the connection id, one on each line | §19.5 |
+| AD-18 | **Fail closed before the spend.** From MCP-P1a, branch 0 refuses each B or C door call that is not a proposal with 403 `approval_required`, unless it carries a spent approval. Before MCP-P1b no approval can exist, so each such call fails | §19.5, §19.13 |
+| AD-19 | **The sends rule.** Any op that can cause mail to leave is `sends` and class C, and `AGENT_DOOR_SENDS` gates it. Its own route sends, or it stores an action that sends later | §19.10 |
 
 **The digest of a call (AD-17).** `agent_signing.py` builds it beside the signed string, from the same canonical parts. It leaves out the time, the nonce and the session, so an approved call keeps its digest across a retry.
 
 **What AD-6 changes in branch 0.** Branch 0 gains the door pairs, the app scope, the read limit, the admin switch, the approval line and the spend. So the digest test of §10.1 changes on purpose. The change needs an adversarial review and an independent verification (§10.1, "Process control").
 
-- A door write with no approval line gets 403 with the code `approval_required`, never 401, so the client keeps its token.
+- A door write with no approval line gets 403 with the code `approval_required`, never 401, so the client keeps its token. MCP-P1a builds this refusal first (AD-18), and MCP-P1b adds the spend.
 - A spend that does not match gets 409 with the code `approval_mismatch`. The request stays approved, so the right call can still spend it.
 - A spend of a spent, declined or expired request gets 409.
 - After the spend, a route that refuses the call changes nothing, and the request stays spent. The agent asks again with a new request.
@@ -2946,27 +2968,51 @@ The orchestrator took these on 2026-10-29. None is a product or pricing call, an
 
 ### 19.13 The slices, in order
 
-Each slice is HIGH tier unless it names another tier, so it runs the full loop. Each code slice ships dark behind the door flag of AD-15. An agent builds each one, and the owner turns on Email sends (§3a rule 3).
+Each slice is HIGH tier unless it names another tier, so it runs the full loop. Each code slice ships dark behind the door flag of AD-15. The gates table below names who may turn on each flag.
 
 | # | Slice | Done when | Fence |
 |---|---|---|---|
-| MCP-P1a | **The generic door, with reads and proposals. Knowledge first.** `acb_common/app_manifests/` with `base.py` and `knowledge.py`, and the re-export. The four tools in `agent_edge/tools.py`. `GET /agent-access/apps` and `GET /agent-access/apps/{app}`. In branch 0: the door pairs, the app scope, the read limit and the audit row. The scopes `knowledge:read` and `knowledge:write` | An agent lists its apps, describes Knowledge, reads a page and files a proposed edit. The edit waits in the Knowledge Review view. A call with no Knowledge scope gets the 403 `insufficient_scope` and reveals no data. The member's visibility decides each row on R8 | `tests/unit/test_app_door_coverage.py` (AD-2, AD-3, the builder and the schema). `tests/unit/test_mcp_edge_app_door.py` pins the four tools, the texts, AD-10 and AD-12. `tests/unit/test_mcp_edge_app_door_r8.py` with `pytestmark = _DB_GATE`. `test_knowledge_chat_coverage.py` stays green with no edit. `test_branch_zero_digest_is_pinned` changes on purpose |
+| MCP-P1a | **The generic door, with reads and proposals. Knowledge first.** `acb_common/app_manifests/` with `base.py` and `knowledge.py`, and the re-export. The four tools in `agent_edge/tools.py`. `GET /agent-access/apps` and `GET /agent-access/apps/{app}`. In branch 0: the door pairs, the app scope, the read limit, the audit row and the refusal of AD-18. The scopes `knowledge:read` and `knowledge:write` | An agent lists its apps, describes Knowledge, reads a page and files a proposed edit. The edit waits in the Knowledge Review view. A call with no Knowledge scope gets the 403 `insufficient_scope` and reveals no data. The member's visibility decides each row on R8. A B or C door op that is not a proposal gets 403 `approval_required` at branch 0, and the edge sends no request for it | `tests/unit/test_app_door_coverage.py` (AD-2, AD-3, the builder and the schema). `tests/unit/test_mcp_edge_app_door.py` pins the four tools, the texts, AD-10 and AD-12. `tests/unit/test_mcp_edge_app_door_r8.py` with `pytestmark = _DB_GATE`. `test_knowledge_chat_coverage.py` stays green with no edit. `test_branch_zero_digest_is_pinned` changes on purpose. `test_a_write_with_no_approval_fails_closed` registers a test manifest with one B op, and it is red under the mutation that drops AD-18 |
 | MCP-P1b | **The approval path.** The migration of AD-5. `POST /agent-access/apps/{app}/requests`, the two request reads, the decision route, the spend of AD-6, the digest of AD-17, the card and its home (MCP-Q3) | An agent asks for a class B write. The member approves on the card, and the agent sends it once. A decline, an expiry, a second spend, a changed body and a spend by another connection each change nothing. No app run shows on the board, in `my_work` or in Needs attention | `tests/unit/test_app_requests_r8.py` with `_DB_GATE`, each rule red under a named mutation. A vitest suite for the card. The digest test changes on purpose |
-| MCP-P2a | **The CRM and Email manifests, with reads and drafts.** `app_manifests/crm.py` and `email.py` from §19.9 and §19.10. A coverage test for each that walks the real router. The `save_draft` proposal | An agent reads a deal, its contact and the contact's last mail. It saves a reply draft that waits in Email, and nothing is sent. A member with no CRM access gets nothing from CRM. A mailbox that the member cannot open gives nothing. Each CRM and Email row that Mira's tools reach names the tool, or `planned` names MCP-P2c | `tests/unit/test_crm_door_coverage.py` and `tests/unit/test_email_door_coverage.py`, each red on an unclassed route and on a route of §19.11 with an op. `tests/unit/test_mcp_edge_crm_email_r8.py` with `_DB_GATE` |
-| MCP-P2b | **CRM writes and Email sends, through MCP-P1b.** The display hooks of CRM and Email. The `expect` of a send. `AGENT_DOOR_SENDS` | A CRM edit and a CRM delete each wait for the card. In Mirror mode, the edge refuses a record write before any request, and no card opens. A send waits for the card, and an edit of the draft after the card sends nothing. The card marks an outside address. With `AGENT_DOOR_SENDS` off, `describe_app` marks each send unavailable | `tests/unit/test_app_requests_crm_email_r8.py` with `_DB_GATE`. The owner turns on `AGENT_DOOR_SENDS` |
-| MCP-P2c | **Tier MEDIUM. Mira's CRM and Email tools read the manifests.** The CRM agent and the email agent of Mira call `allowed` before each request, as `skill_projects/client.py:164` does | Each route that Mira's CRM or Email tools send is a row that names the tool. The client refuses a route that the manifest does not give to the tool | A recording fake gateway in the suites of the two agents, as `test_projects_agent_writes.py` does. It does not gate the door |
+| MCP-P2a | **The CRM and Email manifests, with reads and drafts.** It needs MCP-P1a only. `app_manifests/crm.py` and `email.py` from §19.9 and §19.10. A coverage test for each that walks the real router. The `save_draft` proposal. Each other B and C row carries the `off_door` reason of §19.10 | An agent reads a deal, its contact and the contact's last mail. It saves a reply draft that waits in Email, and nothing is sent. A member with no CRM access gets nothing from CRM. A mailbox that the member cannot open gives nothing. Each CRM and Email row that Mira's tools reach names the tool, or `planned` names MCP-P2c. No B or C row has an `op`, except `save_draft`. No class A door op calls a model | `tests/unit/test_crm_door_coverage.py` and `tests/unit/test_email_door_coverage.py`, each red on an unclassed route, on a route of §19.11 with an op, and on a B or C `op` other than `save_draft`. `test_no_door_read_calls_a_model` calls each class A door op once on R8, with a tripwire on `acompletion` (`packages/acb_llm/acb_llm/client.py:20`). A call that reaches it fails and names the op. `tests/unit/test_mcp_edge_crm_email_r8.py` with `_DB_GATE` |
+| MCP-P2b | **CRM writes and Email sends, through MCP-P1b.** It replaces each `off_door` reason of MCP-P2a with its `op`. The display hooks of CRM and Email. The `expect` of a send. `AGENT_DOOR_SENDS` | A CRM edit and a CRM delete each wait for the card. In Mirror mode, the edge refuses a record write before any request, and no card opens. A send waits for the card, and an edit of the draft after the card sends nothing. The card marks an outside address. With `AGENT_DOOR_SENDS` off, `describe_app` marks each `sends` op unavailable, and branch 0 refuses it. That covers a rule write, an unsubscribe and a rule run too | `tests/unit/test_app_requests_crm_email_r8.py` with `_DB_GATE`. `test_every_op_that_can_send_is_sends` holds AD-19 by route list |
+| MCP-P2c | **Tier MEDIUM. Mira's CRM and Email tools read the manifests.** The CRM agent and the email agent of Mira call `allowed` before each request, as `skill_projects/client.py:164` does | Each route that Mira's CRM or Email tools send is a row that names the tool. The client refuses a route that the manifest does not give to the tool | `tests/unit/test_mira_crm_email_manifest_client.py`, a recording fake gateway, as `test_projects_agent_writes.py` does. It does not gate the door |
 | MCP-P3 | **Scopes per app on the consent page, and the admin switch.** The `check` answer with the app lines. The switch in Integrations, AI agents, and its read in branch 0 | A connection made before CRM had a manifest does not reach CRM until the member grants the new line. The test records what Claude Code does when the member clears that line. An admin switch turned off refuses the app at once, for each connection. The visual review passes on the consent page and on Integrations, AI agents | `consent.test.ts`, `e2e/connect-authorize.spec.ts`, and `tests/unit/test_agent_app_switch_r8.py` with `_DB_GATE` |
 | MCP-P4 | **LOW tier. No live app without a manifest.** `tests/unit/test_app_manifest_coverage.py` reads the live set of `src/lib/nav.ts` (`launch_surface.md` §2). Each live pane names a manifest through `App.pane`, or it has a `PLANNED` row that names a Metorite task | A new live pane with no manifest fails, and the failure names the pane. The test starts green, because Calendar, People, Meetings, WhatsApp and the others hold `PLANNED` rows | The test itself, red under a named mutation that adds a live pane |
 | MCP-P5 | Studio over the MCP, after STU-0, the sandbox slices and MCP-P1b. Its manifest joins the door. A publish stays a person's act on a card (D127.2) | Its own spec | Its own spec |
 
-**The order and the overlap.**
+**The order and the dependencies.**
 
-- MCP-P1a comes first, because each later slice reads `app_manifests`.
-- MCP-P1b and MCP-P2a can build in parallel after MCP-P1a. MCP-P1b touches branch 0 and `agent_runs.py`. MCP-P2a touches the two new manifest modules and their tests.
+- MCP-P1a comes first, because each later slice reads `app_manifests`. It fails closed for each write that needs an approval (AD-18).
+- MCP-P1b needs MCP-P1a. MCP-P2a needs MCP-P1a only. The two can build in parallel, in either merge order, because MCP-P2a opens no B or C op except `save_draft`. MCP-P1b touches branch 0 and `agent_runs.py`. MCP-P2a touches the two new manifest modules and their tests.
 - MCP-P2b needs MCP-P1b and MCP-P2a. MCP-P2c needs MCP-P2a only.
-- MCP-P3 can build after MCP-P1a. MCP-Q2 asks whether it goes live with MCP-P2.
+- MCP-P3 needs MCP-P1a. CRM and Email go live on production only after MCP-P3, by the owner's flip (the gates below).
 - MCP-P4 can land at any time after MCP-P1a.
 - A slice that edits branch 0 merges alone. MCP-P1a and MCP-P1b both edit it, so MCP-P1b merges main after MCP-P1a lands.
+
+**The gates (contract point 7).**
+
+| Act | Gate | Why |
+|---|---|---|
+| Build and merge each slice | AGENT-SAFE | Each slice ships dark. A merge moves staging only (WS-38) |
+| Each door flag on staging | AGENT-SAFE | Staging sends no mail and calls no CRM (CLAUDE.md §4) |
+| `AGENT_DOOR_APPS` with `knowledge` on production | AGENT-SAFE under a dated `enforcement-flip` grant (CLAUDE.md §3a). Name the flag and the box in the same message | Reads and proposals change nothing outside the app |
+| `AGENT_DOOR_APPS` with `crm` or `email` on production | OWNER-GATE until MCP-P3 is live | The admin switch of D124.3 does not exist before MCP-P3 |
+| `AGENT_DOOR_SENDS` on production | OWNER-GATE, always | It lets an agent send real mail to a real person (CLAUDE.md §3a rule 3) |
+| A production deploy | The daily release moves production (WS-38). A manual dispatch of `deploy.yml` is OWNER-GATE | One path to production |
+| The migration of AD-5 on production | The daily release applies it, after the backup check | R6, CLAUDE.md §3a rule 1 |
+
+**The verify commands.** Export the R8 database first: run `bash scripts/dev_db.sh`, then `eval "$(bash scripts/dev_db.sh --export)"`. With `-rs`, the run lists each skipped test, so a run with no database cannot read green.
+
+| Slice | Command |
+|---|---|
+| MCP-P1a | `uv run pytest -q -p no:cacheprovider tests/unit/test_app_door_coverage.py tests/unit/test_mcp_edge_app_door.py tests/unit/test_mcp_edge_app_door_r8.py tests/unit/test_knowledge_chat_coverage.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_tenant_request_binding.py -rs` |
+| MCP-P1b | `uv run pytest -q -p no:cacheprovider tests/unit/test_app_requests_r8.py tests/unit/test_agent_runs_r8.py tests/unit/test_tenant_request_binding.py -rs`, and `npx vitest run` on the card suite in `workbench/control_plane` |
+| MCP-P2a | `uv run pytest -q -p no:cacheprovider tests/unit/test_crm_door_coverage.py tests/unit/test_email_door_coverage.py tests/unit/test_mcp_edge_crm_email_r8.py -rs` |
+| MCP-P2b | `uv run pytest -q -p no:cacheprovider tests/unit/test_app_requests_crm_email_r8.py tests/unit/test_email_door_coverage.py -rs` |
+| MCP-P2c | `uv run pytest -q -p no:cacheprovider tests/unit/test_mira_crm_email_manifest_client.py -rs` |
+| MCP-P3 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_app_switch_r8.py tests/unit/test_agent_oauth_server.py -rs`. In `workbench/control_plane`: `npx vitest run src/app/connect/authorize/consent.test.ts` and `npx playwright test e2e/connect-authorize.spec.ts` |
+| MCP-P4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_app_manifest_coverage.py -rs` |
 
 ### 19.14 Open questions for the owner
 
@@ -2975,7 +3021,7 @@ Each slice is HIGH tier unless it names another tier, so it runs the full loop. 
 | MCP-Q1 | Is a proposal its own card? A Knowledge proposal or an Email draft then files at once, and the member decides in the app (AD-8) | **Yes.** The app shows the exact content, and nothing leaves until the member acts. A card on top asks twice for one act |
 | MCP-Q2 | Does the admin switch of MCP-P3 go live with MCP-P2, before M3? | **Yes.** D124.3 makes the switch a safety rule, and mail is the widest reach. Build the switch first, and the consent lines after it |
 | MCP-Q3 | Where does the member answer the card of an app request? | **One list in Integrations, AI agents, "Waiting for you".** Each member reaches it (§5.4). The bell and the asking rows of My Day link to it. An app can draw the card on its own screen later |
-| MCP-Q4 | Is the Email door on or off by default for an organization? | **On for reads and drafts,** once the member grants the scope. Sends stay off until the owner turns on `AGENT_DOOR_SENDS`. After that, every send still asks |
+| MCP-Q4 | Is the Email door on or off by default for an organization? | **On for reads and drafts,** once the member grants the scope and MCP-P3 is live. Each `sends` op stays off until the owner turns on `AGENT_DOOR_SENDS`. After that, every such op still asks |
 | MCP-Q5 | Do the existing Projects write tools join the card rule of D124.2? | **No.** They keep the rules of EA-6. A Projects write is undoable and the timeline names its client. A card for each status move stops the coding routine. A class C act keeps its approval |
 
 ### 19.15 What this section changes in the rest of this spec
