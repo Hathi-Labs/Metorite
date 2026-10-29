@@ -1816,6 +1816,25 @@ async def test_an_empty_final_walk_blocks_the_switch(nsc, app_engine) -> None:  
     assert _settings(p, p.org_a).mode == "mirror"
 
 
+async def test_an_empty_final_walk_with_no_count_blocks_the_switch(nsc, app_engine) -> None:  # noqa: F811
+    """Round 6. As the empty walk above, and Zoho also gives no count. The
+    delete check logs ``count_unknown`` first, but the walk read no record
+    while rows exist here, so it is no complete read. Only the empty-walk
+    rule sees it (no count, so no ``short_walk``), and phase 2 waits."""
+    from gateway.crm_sync import engine
+
+    _assert_non_priv(app_engine)
+    p = nsc
+    await _import_hidden(p)
+    ZOHO_A.truncate["Accounts"] = 1
+    ZOHO_A.no_count = True
+    final = await engine.execute(await engine.acquire(p.org_a, final=True))
+    assert final.status == "ok"
+    assert final.counts["organizations"][engine.WALK_SHORT_FLAG] == 1
+    assert engine.DELETE_KEPT_FLAG not in final.counts["organizations"]
+    assert await _final_state(p, final.run_id) == {"organizations": "walk_short"}
+
+
 async def test_a_short_final_walk_blocks_the_switch(nsc, app_engine) -> None:  # noqa: F811
     """Round 6. Zoho holds five accounts and stops after page 1 of the final
     walk, so the walk reads two (``short_walk``). The records it did not
