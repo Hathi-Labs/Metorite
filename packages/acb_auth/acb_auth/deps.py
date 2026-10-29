@@ -764,6 +764,10 @@ async def _door_gate(
 
     In order, after the connection and the stamp passed:
 
+    0. A write while the writes flag is off gets the coded 403 of
+       :func:`_writes_disabled`, as step 3b gives a write of
+       ``MCP_WRITE_ROUTES``. It runs here, so the refusal has a connection
+       for its audit row.
     1. The door flag names the app, else the coded 403 ``app_off``.
     2. AD-18: a write of class B or C that is not a proposal gets the coded
        403 ``approval_required``. Before MCP-P1b no approval can exist, so
@@ -778,6 +782,9 @@ async def _door_gate(
     refusal writes its audit row (:func:`_audit_door`) before it returns or
     raises. The caller writes the row of an allowed call at the end.
     """
+    if nonce is not None and not agent_oauth.writes_enabled():
+        _audit_door(connection, door, via, agent_oauth.WRITES_DISABLED_CODE)
+        raise _writes_disabled()
     if not agent_oauth.door_serves(door.app.id):
         _audit_door(connection, door, via, agent_oauth.APP_OFF_CODE)
         _log.info("auth.agent_refused", reason=agent_oauth.APP_OFF_CODE)
@@ -835,10 +842,11 @@ async def _agent_user(request: Request) -> UserContext:
     The app door (MCP-P1a, spec §19). A pair that a door op of the manifests
     reaches is a door pair (``agent_oauth.door_route``, AD-3). It passes the
     method and route steps in place of ``MCP_ROUTES``. After the stamp,
-    :func:`_door_gate` checks the door flag, the refusal of AD-18, the app
-    scope (AD-4) and the read or write cap (AD-13). Each door call writes
-    ONE audit row (AD-14): the gate writes a refusal, the seat check its own,
-    and the end writes ``allowed``.
+    :func:`_door_gate` checks the writes flag of a door write, the door flag,
+    the refusal of AD-18, the app scope (AD-4) and the read or write cap
+    (AD-13). Each door call that reaches a live connection writes ONE audit
+    row (AD-14): the stamp check and the gate write a refusal, the seat check
+    its own, and the end writes ``allowed``.
 
     ⚠️ A database outage is not a refusal. It answers the ONE 503 of
     :func:`_identity_unavailable`, with ``Retry-After: 2``, and it never
@@ -896,8 +904,10 @@ async def _agent_user(request: Request) -> UserContext:
 
     # 3b. A signed write while the writes flag is off (EA3-29, fix round 1):
     # the coded 403, never the 401, so the edge keeps the client's token.
-    # After the signature, so only a key holder learns the flag's state.
-    if nonce is not None and not agent_oauth.writes_enabled():
+    # After the signature, so only a key holder learns the flag's state. A
+    # door write meets the same check first in `_door_gate`, after the
+    # connection and the stamp, so that it writes its audit row (AD-14).
+    if nonce is not None and door is None and not agent_oauth.writes_enabled():
         raise _writes_disabled()
 
     # 4. The live connection, read in the SIGNED organization.
@@ -925,6 +935,9 @@ async def _agent_user(request: Request) -> UserContext:
         or actor_via != expected_via
         or not agent_oauth.ACTOR_VIA_PATTERN.fullmatch(expected_via)
     ):
+        # AD-14: a refused door call writes its row too. The row holds the
+        # row's own stamp, never the header value.
+        _audit_door(connection, door, expected_via, "actor_via")
         return _refuse_agent("actor_via", **ids)
 
     # 5a, a door pair (MCP-P1a): the door flag, AD-18, the app scope and the

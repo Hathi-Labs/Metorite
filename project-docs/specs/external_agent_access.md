@@ -2633,11 +2633,15 @@ The connect card of EA-4b and `docs/external_agents_connect.md` show this table.
   2. The edge has the four tools. The gateway has the two list routes in `routes/agent_apps.py`.
   3. Branch 0 admits a door pair and checks the door flag, AD-18, the app scope and the caps in `deps._door_gate`. Each door call writes one audit row.
   4. Two choices that this section did not record. The metadata documents name the scope of an app only while the door flag names the app. An authorize request with no `scope` follows the same rule. So an app that ships dark adds no line to the consent page. A dict key of a door answer that is not of the key shape leaves no answer (AD-10).
+- 2026-10-30 — MCP-P1a fix round 1, after the adversarial review (HIGH tier).
+  1. P1. The Knowledge seam reads the personal opt-in (D-EA-4). A connection with `include_personal` false sees no `me` space and no page of one (§19.8).
+  2. P2. The edge clamps `limit` for each op to 50, and it cuts each list of an answer to 50 rows (AD-12). `describe_app` shows the bound of the edge.
+  3. A refusal at the stamp, and a door write while the writes flag is off, each write their audit row (§19.7).
 - 2026-10-30 — MCP-P0 fix round 1, after the spec audit (MCP-P1a GO-NARROWED, MCP-P2a NO-GO). MCP-P1a fails closed for each write that needs an approval (AD-18). MCP-P2a opens no B or C op except `save_draft`. Each op that can cause mail to leave is `sends` (AD-19). §19.13 gains the gates, the verify commands and the dependencies. §19.1 gains the non-goals. A read that calls a model is off the door. This round also fixes the stale anchors.
 
 ## 19. One manifest, two doors: every app over the MCP (MCP-P0, D136)
 
-**Status: MCP-P1a BUILT 2026-10-30 (Metorite task #865), dark behind `agent_door_apps`. MCP-P1b to MCP-P5 are SPECIFIED and not built.** D124 and D136 set the shape (`work_plan.md` §3). On 2026-10-29 the owner moved MCP-P0 to MCP-P2 forward, so CRM and Email come now (the D136 amendment). The anchors below were read at `43c82a75f`. Read them again at dispatch, because specs go stale.
+**Status: MCP-P1a BUILT 2026-10-30 (Metorite task #865), dark behind `agent_door_apps`, with fix round 1 of the adversarial review. MCP-P1b to MCP-P5 are SPECIFIED and not built.** D124 and D136 set the shape (`work_plan.md` §3). On 2026-10-29 the owner moved MCP-P0 to MCP-P2 forward, so CRM and Email come now (the D136 amendment). The anchors below were read at `43c82a75f`. Read them again at dispatch, because specs go stale.
 
 ### 19.1 The answer
 
@@ -2783,7 +2787,7 @@ The gateway route builds the list. It leaves out three kinds of app. The door fl
 
 The answer holds no data of the app, so the route needs a live token only.
 
-**The args schema (AD-9).** The gateway reads the parameters of each door op from `route.dependant`, as `tests/unit/test_projects_field_parity.py` does. The schema holds the path parameters, the query parameters and the fields of the body model, with their types, limits and defaults. `If-Match` shows as `expected_version`. The identity headers of `skill_projects/manifest.py:658` never show. A schema over 16 KiB keeps its top-level fields only, and it says so.
+**The args schema (AD-9).** The gateway reads the parameters of each door op from `route.dependant`, as `tests/unit/test_projects_field_parity.py` does. The schema holds the path parameters, the query parameters and the fields of the body model, with their types, limits and defaults. `If-Match` shows as `expected_version`. The identity headers of `skill_projects/manifest.py:658` never show. A schema over 16 KiB keeps its top-level fields only, and it says so. The edge shows the `maximum` and the `default` of a `limit` field as 50 at most, the bound of AD-12, and not the larger bound of the route.
 
 **What `app_read` returns.** `result` is the JSON answer of the route, mapped by AD-10 and cut by AD-12. `next_cursor` is an opaque cursor of `agent_edge/cursor.py` with the tool `app_read:<app>.<op>`, or null. The edge refuses a cursor of another op, another filter or another connection, as §9.1 says. `limit` is at most 50, and a cursor fixes the page size.
 
@@ -2900,6 +2904,10 @@ MCP-Q3 asks the owner where the card shows (§19.14).
 
 The write of the audit row is best effort, as `log.py` says. The run rows are the durable record of each write: the request, the decision and the spend.
 
+- A refusal at step 5, the stamp, writes a row with the decision `actor_via`. The row holds the stamp of the connection row, never the header value.
+- A door write meets the writes flag in `deps._door_gate`, after the connection and the stamp. So its refusal writes a row with the decision `agent_writes_disabled`. A write of `MCP_WRITE_ROUTES` keeps step 3b.
+- A call that fails before the connection read writes no row, because branch 0 knows no member yet. Such a call has a bad signature or headers, a route outside both sets, or no live connection.
+
 **The limits (AD-13).**
 
 | Limit | Value | Where |
@@ -2907,7 +2915,7 @@ The write of the audit row is best effort, as `log.py` says. The run rows are th
 | Door reads | 300 in 600 seconds for each connection | Branch 0, in tenant Redis. A 429 with `Retry-After` |
 | Writes | The cap of EA3-30, 120 in 600 seconds. A request and its spend count as two | Branch 0 |
 | Open app requests | 20 for each connection | The request route. A 429 with `too_many_requests` |
-| Rows of one page | 50 | The edge clamps `limit` |
+| Rows of one page | 50 | The edge clamps `limit` for each op, paged or not, and cuts each list of the answer to 50 rows. AD-12 wins over the 100 rows of §10.2, because it is the smaller number |
 | One result | 256 KiB | The edge cuts the answer and sets `truncated: true` |
 | One `describe_app` answer | 64 KiB | The gateway route |
 

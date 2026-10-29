@@ -6021,10 +6021,19 @@ WHY_NOT_TEXTS: Mapping[str, str] = {
 }
 
 #: AD-12. A door page holds at most :data:`DOOR_PAGE_MAX` rows, and one result
-#: at most :data:`DOOR_RESULT_MAX_BYTES` of JSON.
+#: at most :data:`DOOR_RESULT_MAX_BYTES` of JSON. The threat table of §10.2
+#: names a 100-row cap for the whole access. AD-12 is the smaller, so the door
+#: uses 50.
 DOOR_PAGE_MAX = 50
 DOOR_PAGE_DEFAULT = 20
 DOOR_RESULT_MAX_BYTES = 256 * 1024
+
+#: The ``args`` key of the row limit of a read route. The edge clamps it to
+#: :data:`DOOR_PAGE_MAX` for each op, paged or not (AD-12). A route keeps its
+#: own larger bound for the app.
+DOOR_LIMIT_ARG = "limit"
+_DOOR_LIMIT_TEXT_RE = re.compile(r"[0-9]{1,9}")
+TEXT_DOOR_LIMIT = f"The input 'args.{DOOR_LIMIT_ARG}' must be a whole number."
 
 #: The largest args schema of one op that ``describe_app`` passes on, in
 #: bytes of JSON. The gateway cuts a larger one to its field names (AD-9).
@@ -6113,6 +6122,41 @@ def door_cut(result: Any, limit: int = DOOR_RESULT_MAX_BYTES) -> tuple[Any, bool
         if _json_size(rows) <= limit:
             return rows, True
     return None, True
+
+
+def door_limit(value: Any) -> int:
+    """A ``limit`` of ``args``, clamped to at most :data:`DOOR_PAGE_MAX` (AD-12).
+
+    An integer, or a string of digits, which the route would read as one. A
+    boolean, a float and any other string are a tool error, so no value can
+    reach the route as a bigger number than the cap.
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        return min(value, DOOR_PAGE_MAX)
+    if isinstance(value, str) and _DOOR_LIMIT_TEXT_RE.fullmatch(value):
+        return min(int(value), DOOR_PAGE_MAX)
+    raise ToolError(TEXT_DOOR_LIMIT)
+
+
+def door_rows(result: Any, limit: int = DOOR_PAGE_MAX) -> tuple[Any, bool]:
+    """``(result, truncated)``: each list of the top level of *result* cut to
+    at most *limit* rows (AD-12).
+
+    The clamp of :func:`door_limit` holds only for a route that reads
+    ``limit``. A route with no row limit of its own, or with a default over
+    the cap, still gives at most *limit* rows through the door.
+    """
+    if isinstance(result, list):
+        return (result[:limit], True) if len(result) > limit else (result, False)
+    if not isinstance(result, dict):
+        return result, False
+    cut = False
+    out: dict[str, Any] = {}
+    for name, value in result.items():
+        if isinstance(value, list) and len(value) > limit:
+            value, cut = value[:limit], True
+        out[name] = value
+    return out, cut
 
 
 def _door_app(app_id: Any) -> app_manifests.App:
@@ -6339,11 +6383,24 @@ def _args_schema(value: Any) -> dict[str, Any]:
 
     It is code of the gateway, never data of an app. A value that is not an
     object, or one over :data:`DOOR_SCHEMA_MAX_BYTES`, gives an object schema
-    with no fields.
+    with no fields. The ``limit`` field shows the bound of the edge
+    (:func:`door_limit`, AD-12), not the larger bound of the route.
     """
     if not isinstance(value, dict) or _json_size(value) > DOOR_SCHEMA_MAX_BYTES:
         return {"type": "object"}
-    return value
+    properties = value.get("properties")
+    field = properties.get(DOOR_LIMIT_ARG) if isinstance(properties, dict) else None
+    if not isinstance(field, dict):
+        return value
+    clamped = dict(field)
+    if not _number(clamped.get("maximum")) or clamped["maximum"] > DOOR_PAGE_MAX:
+        clamped["maximum"] = DOOR_PAGE_MAX
+    # The rows of an answer stop at the cap too (`door_rows`), so a larger
+    # default of the route reads as the cap.
+    if "default" in clamped and (
+            not _number(clamped["default"]) or clamped["default"] > DOOR_PAGE_MAX):
+        clamped["default"] = DOOR_PAGE_MAX
+    return {**value, "properties": {**properties, DOOR_LIMIT_ARG: clamped}}
 
 
 async def _describe_app(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
@@ -6431,6 +6488,10 @@ async def _app_read(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     route's own query keys, and it wraps the route's next cursor in a signed
     cursor of :mod:`agent_edge.cursor`, bound to the tool, the app, the op,
     the args and the connection.
+
+    AD-12 holds for each op. The page size of a paged op, and a ``limit`` in
+    the ``args`` of any op, are at most :data:`DOOR_PAGE_MAX`. Each list of
+    the answer then holds at most that many rows (:func:`door_rows`).
     """
     door = _door_op(args["app"], args["op"], write=False)
     sent = dict(args.get("args") or {})
@@ -6439,12 +6500,14 @@ async def _app_read(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     connection = ctx.caller.lookup.connection_id
     size = 0
     number = 1
+    if page is not None and (page.limit in sent or page.cursor in sent):
+        raise ToolError(TEXT_PAGE_ARGS)
+    if sent.get(DOOR_LIMIT_ARG) is not None:
+        sent[DOOR_LIMIT_ARG] = door_limit(sent[DOOR_LIMIT_ARG])
     if page is None:
         if "cursor" in args or "limit" in args:
             raise ToolError(TEXT_NO_PAGES)
     else:
-        if page.limit in sent or page.cursor in sent:
-            raise ToolError(TEXT_PAGE_ARGS)
         if "cursor" in args:
             try:
                 position = cursor_mod.decode(ctx.key, args["cursor"], tool=tool,
@@ -6458,7 +6521,9 @@ async def _app_read(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
             size, number = min(position.size, DOOR_PAGE_MAX), position.page
             sent[page.cursor] = position.after
         else:
-            size = int(args.get("limit", DOOR_PAGE_DEFAULT))
+            # The input schema refuses more than the cap. This clamp is the
+            # second guard, so a schema change cannot open a larger page.
+            size = min(int(args.get("limit", DOOR_PAGE_DEFAULT)), DOOR_PAGE_MAX)
         sent[page.limit] = size
     body = await _door_send(ctx, _door_call(door, sent), door, write=False)
     next_cursor: str | None = None
@@ -6473,9 +6538,10 @@ async def _app_read(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
                     connection_id=connection, after=after)
             except ValueError:
                 next_cursor = None
-    result, truncated = door_cut(door_value(body, _plain_of(door)))
+    rows, cut = door_rows(door_value(body, _plain_of(door)))
+    result, truncated = door_cut(rows)
     return {"result": result, "next_cursor": next_cursor,
-            "truncated": truncated or (more and next_cursor is None)}
+            "truncated": truncated or cut or (more and next_cursor is None)}
 
 
 APP_READ = Tool(
@@ -6803,6 +6869,7 @@ __all__ = [
     "DESCRIBE_APP",
     "DOOR_APPS_ROUTE",
     "DOOR_APP_ROUTE",
+    "DOOR_LIMIT_ARG",
     "DOOR_PAGE_DEFAULT",
     "DOOR_PAGE_MAX",
     "DOOR_RESULT_MAX_BYTES",
@@ -6903,6 +6970,7 @@ __all__ = [
     "TEXT_DOOR_INPUT_ANY",
     "TEXT_DOOR_KEY_REUSED",
     "TEXT_DOOR_KEY_UNKNOWN",
+    "TEXT_DOOR_LIMIT",
     "TEXT_DOOR_NOT_FOUND",
     "TEXT_DOOR_READ_CAP",
     "TEXT_FORBIDDEN",
@@ -7000,6 +7068,8 @@ __all__ = [
     "comment",
     "delete_switch_on",
     "door_cut",
+    "door_limit",
+    "door_rows",
     "door_value",
     "field_value",
     "listed",

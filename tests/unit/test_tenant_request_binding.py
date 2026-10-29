@@ -1123,9 +1123,16 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: writes one audit row (AD-14). It reads nothing new from the request: the
 #: scan and the tripwire are as before. The pins before it were 3.12
 #: ``9b8e2e6d…9b85d7b88`` and 3.13 ``92e125e9…7b2b2a70``.
+#:
+#: MCP-P1a fix round 1 (2026-10-30, §19.7, AD-14): a refused door call writes
+#: its audit row at step 5 (the stamp) too. A door write meets the writes
+#: flag in `_door_gate`, after the connection and the stamp, so that refusal
+#: has a connection for its row. Step 3b keeps the writes of
+#: ``MCP_WRITE_ROUTES``. Nothing new is read from the request. The pins
+#: before it were 3.12 ``8b11f0fe…0a5d6d71`` and 3.13 ``78ffade4…d0d8cdf7``.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    (3, 12): "8b11f0fee19a3c6bc402637a00929c596442a16b1bc9677b200b8c630a5d6d71",
-    (3, 13): "78ffade4008dc5a3b90abf6364985ee06b5784fe445b792622ca443dd0d8cdf7",
+    (3, 12): "8eff3015f10c979d7196a647ead3cb1d6d2dc82465e663b7179c9b51f25d2bc9",
+    (3, 13): "340a6d01171301493d9906d103a883db37ea42b509abda376c9d0fe0d2bd756a",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see

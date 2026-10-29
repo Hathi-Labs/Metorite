@@ -34,7 +34,15 @@ Mutations this file catches (R7):
 * return ``tool.required_scope`` from ``tools.scope_of`` for every tool ->
   ``test_check_8_asks_for_the_app_scope``;
 * map a plain key with no shape check ->
-  ``test_ad10_a_plain_key_in_another_shape_is_untrusted``.
+  ``test_ad10_a_plain_key_in_another_shape_is_untrusted``;
+* return the value of ``tools.door_limit`` with no clamp ->
+  ``test_an_op_with_no_pages_sends_the_cap``;
+* drop the ``min`` of the page size in ``tools._app_read`` ->
+  ``test_a_paged_op_sends_the_cap``;
+* drop the ``_audit_door`` call of step 5 in ``deps._agent_user`` ->
+  ``test_a_bad_stamp_writes_one_audit_row``;
+* drop the ``_audit_door`` call of the writes flag in ``deps._door_gate`` ->
+  ``test_a_write_with_writes_off_writes_one_audit_row``.
 """
 from __future__ import annotations
 
@@ -416,12 +424,13 @@ class TestAppRead:
         assert r.status_code == 401
 
     async def test_ad12_a_big_answer_is_cut_and_says_so(self, edge):
-        rows = [{"id": f"r{i}", "title": "x" * 2000} for i in range(400)]
+        # Fewer rows than the row cap, so only the byte cap cuts them.
+        rows = [{"id": f"r{i}", "title": "x" * 10_000} for i in range(40)]
         edge.gateway.answers[("GET", "/knowledge/pages")] = (200, {"pages": rows})
         out = _ok(await _tool("app_read", {"app": "knowledge", "op": "list_pages"}))
         assert out["truncated"] is True
         size = len(json.dumps(out["result"], ensure_ascii=False).encode("utf-8"))
-        assert 0 < len(out["result"]["pages"]) < 400
+        assert 0 < len(out["result"]["pages"]) < 40
         assert size <= tools.DOOR_RESULT_MAX_BYTES
 
     def test_ad12_a_result_that_cannot_fit_is_none(self):
@@ -476,6 +485,66 @@ class TestPages:
                                           "limit": 51})
         assert result["isError"] is True
         assert edge.gateway.door() == []
+
+
+class TestAd12TheRowCap:
+    """AD-12: a page holds at most 50 rows, for each op. The threat table of
+    §10.2 names 100 for the whole access. AD-12 is the smaller number."""
+
+    async def test_an_op_with_no_pages_sends_the_cap(self, edge):
+        """``get_source_tree`` has no pages, and its route takes ``limit`` up
+        to 2000. The edge sends at most the cap, and a smaller value as it is."""
+        tree = f"/knowledge/sources/{SPACE}/tree"
+        edge.gateway.answers[("GET", tree)] = (200, {"nodes": [], "truncated": False})
+        for sent in (2000, "2000", 7):
+            _ok(await _tool("app_read", {"app": "knowledge", "op": "get_source_tree",
+                                         "args": {"source_id": SPACE, "limit": sent}}))
+        cap = str(tools.DOOR_PAGE_MAX)
+        assert [r.pairs["limit"] for r in edge.gateway.door()] == [cap, cap, "7"]
+
+    async def test_a_limit_that_is_not_a_whole_number_is_refused(self, edge):
+        for sent in ("2e3", " 2000", 2000.0, True):
+            result = await _tool("app_read", {"app": "knowledge", "op": "get_source_tree",
+                                              "args": {"source_id": SPACE, "limit": sent}})
+            assert _text(result) == tools.TEXT_DOOR_LIMIT, sent
+        assert edge.gateway.door() == []
+
+    async def test_a_paged_op_sends_the_cap(self, edge):
+        """The input schema refuses a page of 2000 with no request. The run
+        clamps it too, so a change of the schema cannot open a larger page."""
+        edge.gateway.answers[("GET", "/knowledge/recent")] = (
+            200, {"pages": [], "next_cursor": None})
+        arguments = {"app": "knowledge", "op": "list_recent", "limit": 2000}
+        assert (await _tool("app_read", arguments))["isError"] is True
+        assert edge.gateway.door() == []
+        await tools.APP_READ.run(_ctx(DOOR_SCOPES), arguments)
+        assert edge.gateway.door()[-1].pairs == {"limit": str(tools.DOOR_PAGE_MAX)}
+
+    async def test_each_list_of_an_answer_holds_the_cap(self, edge):
+        """``list_pages`` takes no ``limit``, and its route lists up to 500
+        rows. The edge cuts each list of the answer to the cap."""
+        rows = [{"id": f"r{i}"} for i in range(120)]
+        edge.gateway.answers[("GET", "/knowledge/pages")] = (200, {"pages": rows})
+        out = _ok(await _tool("app_read", {"app": "knowledge", "op": "list_pages"}))
+        assert len(out["result"]["pages"]) == tools.DOOR_PAGE_MAX
+        assert out["truncated"] is True
+        edge.gateway.answers[("GET", "/knowledge/pages")] = (200, {"pages": rows[:50]})
+        out = _ok(await _tool("app_read", {"app": "knowledge", "op": "list_pages"}))
+        assert len(out["result"]["pages"]) == 50 and out["truncated"] is False
+
+    async def test_describe_app_shows_the_bound_of_the_edge(self, edge):
+        edge.gateway.answers[("GET", "/agent-access/apps/knowledge")] = (200, {"ops": [
+            {"op": "get_source_tree", "available": True, "args": {
+                "type": "object", "properties": {
+                    "source_id": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 2000,
+                              "default": 500}}}}]})
+        out = _ok(await _tool("describe_app", {"app": "knowledge"}))
+        tree = next(r for r in out["ops"] if r["op"] == "get_source_tree")
+        assert tree["args"]["properties"] == {
+            "source_id": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": tools.DOOR_PAGE_MAX,
+                      "default": tools.DOOR_PAGE_MAX}}
 
 
 class TestAppWrite:
@@ -691,9 +760,10 @@ def _gateway(world: _World) -> FastAPI:
     return app
 
 
-async def _send(world: _World, method: str, path: str, body: bytes = b"") -> httpx.Response:
+async def _send(world: _World, method: str, path: str, body: bytes = b"",
+                via: str = VIA) -> httpx.Response:
     headers = agent_signing.signed_headers(
-        SIGNING_KEY, organization_id=ORG, connection_id=CONN, actor_via=VIA,
+        SIGNING_KEY, organization_id=ORG, connection_id=CONN, actor_via=via,
         method=method, path=path, query="", body=body)
     if method != "GET":
         headers["Content-Type"] = "application/json"
@@ -787,6 +857,25 @@ class TestBranchZero:
         assert r.status_code == 403
         assert r.json() == {"detail": agent_oauth.WRITES_DISABLED_CODE}
         assert world.calls == []
+
+    async def test_a_write_with_writes_off_writes_one_audit_row(self, world, monkeypatch):
+        """AD-14, §19.7: a refused door call writes its row too. The writes
+        flag of a door write is checked after the connection and the stamp,
+        so the refusal has a connection for its row."""
+        monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", False)
+        r = await _send(world, "POST", "/testdoor/drafts", b"{}")
+        assert r.status_code == 403
+        assert _decisions(world) == [("file_draft", agent_oauth.WRITES_DISABLED_CODE)]
+        assert world.audit[0].payload["via"] == VIA
+
+    async def test_a_bad_stamp_writes_one_audit_row(self, world):
+        """AD-14 at step 5. The row holds the connection's own stamp, never
+        the value of the header."""
+        r = await _send(world, "GET", f"/testdoor/items/{ITEM}", via="mcp:other.example")
+        assert r.status_code == 401, r.text
+        assert world.calls == []
+        assert _decisions(world) == [("get_item", "actor_via")]
+        assert world.audit[0].payload["via"] == VIA
 
     async def test_a_suspended_member_gets_one_seat_row(self, world, monkeypatch):
         async def nobody(email, **_):
