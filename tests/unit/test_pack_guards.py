@@ -1201,8 +1201,10 @@ CHILD_TOOLS: dict[str, frozenset[str]] = {
 }
 
 #: The calls that put an event on the run's stream: a card, a page move, a
-#: panel. A tool that reaches one draws something in the member's chat.
-_DISPLAY_EMITTERS = frozenset({"emit_generative_ui", "emit_frontend_tool", "resolve_run_queue"})
+#: panel. A tool that reaches one draws something in the member's chat. The
+#: last two are the direct push that `todo_tools` and `ask_tools` use.
+_DISPLAY_EMITTERS = frozenset({"emit_generative_ui", "emit_frontend_tool", "resolve_run_queue",
+                               "_active_run_queue", "_push_sse_to_stream"})
 #: The packages whose functions the scan follows. A call into any other
 #: package (httpx, the standard library) is never a display emitter.
 _SCAN_ROOTS = ("skill_projects", "acb_skills", "acb_common", "orchestrator",
