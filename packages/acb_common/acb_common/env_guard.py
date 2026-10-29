@@ -283,6 +283,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-BRIEF BR-1a: the shared job queue. JOB_QUEUE is the switch of the job
     # worker, so a tenant that set it could start the worker for every org.
     "JOB_QUEUE",
+    # WS-BRIEF AUTO-2: the ledger of unattended runs. UNATTENDED_LEDGER is its
+    # switch, so a tenant that set it could turn the ledger on for every org.
+    "UNATTENDED_LEDGER",
     # Agent runtime, sandbox and models.
     "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",
