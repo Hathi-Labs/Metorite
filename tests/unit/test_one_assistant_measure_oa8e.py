@@ -125,14 +125,16 @@ def test_every_check_kind_of_the_set_exists() -> None:
 
 def test_the_words_of_each_pack_are_the_ones_a_turn_expects() -> None:
     """Layer (a) by a word: these turns hold a word of the pack, and the
-    others hold none. A change to ``_PROJECTS_WORDS`` shows here."""
+    others hold none. A change to ``_PROJECTS_WORDS`` shows here. OA-8g added
+    "overloaded" and "add tasks", so ``pm_capacity`` and ``pm_new_tasks`` load
+    by a word since run 3."""
     by_word = {"pm_stuck": "projects-plan", "pm_tags": "projects-structure",
-               "pm_archive": "projects-bulk", "crm_open_deals": "crm-records"}
+               "pm_archive": "projects-bulk", "crm_open_deals": "crm-records",
+               "pm_capacity": "projects-plan", "pm_new_tasks": "projects-bulk"}
     for sid, slug in by_word.items():
         words = [t.words for t in scenario(sid).turns]
         assert any(tool_packs.matched_layer(slug, w) == "words" for w in words), sid
-    for sid, slug in {"pm_capacity": "projects-plan", "pm_status": "projects-structure",
-                      "pm_new_tasks": "projects-bulk", "crm_miss": "crm-records",
+    for sid, slug in {"pm_status": "projects-structure", "crm_miss": "crm-records",
                       "pm_miss": "projects"}.items():
         assert tool_packs.matched_layer(slug, scenario(sid).turns[0].words) is None, sid
 
@@ -410,8 +412,7 @@ def test_the_surface_loads_the_pack_with_no_word_and_no_load_call() -> None:
 
 
 def test_a_miss_is_loaded_by_the_model_at_layer_b() -> None:
-    for sid, slug in (("crm_miss", "crm-records"), ("pm_miss", "projects"),
-                      ("pm_capacity_open", "projects-plan")):
+    for sid, slug in (("crm_miss", "crm-records"), ("pm_miss", "projects")):
         sc = scenario(sid)
         models = run.scripted_models(sc, "pack")
         (row,) = run.run_chat(sc, "pack", models=models)
@@ -425,14 +426,19 @@ def test_with_the_base_trim_the_plan_and_structure_packs_load_on_a_projects_page
     """Run 1 had no room for them beside the core pack, and the route went to the
     owner. With the trim of OA-8f (both arms, run 2 onward) the loader offers
     them and the model loads them, so no hand-off is owed.
-    Mutation: set `orchestrator_floor_trim` False in `PRODUCTION` → the plan
-    and structure packs are not offered → red."""
-    for sid, slug in (("pm_capacity", "projects-plan"), ("pm_status", "projects-structure")):
-        (row,) = run.run_chat(scenario(sid), "pack")
-        assert row["specialist_handoffs"] == {} and row["loaded_by_model"] == [slug], (sid, row)
-        assert row["passed"], row["checks"]
-        plan = next(e for e in row["pack_events"] if e["event"] == "executor.pack_plan")
-        assert slug in plan["offered"], plan
+    Mutation: set `orchestrator_floor_trim` False in `PRODUCTION` → the
+    structure pack is not offered → red. Since OA-8g, "overloaded" loads the
+    plan pack by a word on the first request, so ``pm_capacity`` needs no load."""
+    (row,) = run.run_chat(scenario("pm_status"), "pack")
+    assert row["specialist_handoffs"] == {} and row["loaded_by_model"] == ["projects-structure"], row
+    assert row["passed"], row["checks"]
+    plan = next(e for e in row["pack_events"] if e["event"] == "executor.pack_plan")
+    assert "projects-structure" in plan["offered"], plan
+    (row,) = run.run_chat(scenario("pm_capacity"), "pack")
+    assert row["specialist_handoffs"] == {} and row["loaded_by_model"] == [], row
+    assert row["passed"], row["checks"]
+    plan = next(e for e in row["pack_events"] if e["event"] == "executor.pack_plan")
+    assert "projects-plan" in plan["packs"], plan
 
 
 def test_a_word_of_the_pack_loads_it_in_place_of_the_core_pack() -> None:
@@ -756,7 +762,7 @@ def test_the_summary_reports_the_sets_the_loader_and_the_stop_results(scripted) 
     summary = run.summarise(rows)
     packs, deleg = summary["pack"], summary["delegation"]
     assert {"crm", "projects", "mixed"} <= set(packs["by_set"])
-    assert packs["by_set"]["crm"]["turns"] == 12 and packs["layer_b_turns"] >= 4
+    assert packs["by_set"]["crm"]["turns"] == 12 and packs["layer_b_turns"] >= 3
     assert packs["tools_per_call_max"] <= tool_packs.MAX_REQUEST_TOOLS
     assert packs["layer_a_ms_mean"] is not None and deleg["layer_a_ms_mean"] is None
     assert packs["specialist_handoffs"] == {}

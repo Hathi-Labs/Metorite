@@ -534,7 +534,7 @@ def test_the_core_rules_name_the_other_packs_and_no_tool_of_them() -> None:
     assert "call load_skill_tools with the pack that you need" not in rules.lower()
     for slug in SLUGS[1:]:
         assert tp.PACKS[slug].rules.count("Use them yourself.") == 1
-    assert max(len(tp.rules_for(slug)) for slug in SLUGS) < 3300
+    assert max(len(tp.rules_for(slug)) for slug in SLUGS) < 3400  # OA-8g: was 3300
 
 
 # ── 7. A covered organization ───────────────────────────────────────────────
