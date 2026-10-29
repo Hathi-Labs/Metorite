@@ -50,7 +50,8 @@ def test_flag_on_the_persona_gains_the_block(monkeypatch) -> None:
 def test_the_block_says_when_to_spawn() -> None:
     block = ag._SPAWN_BLOCK
     assert "multi-step research" in block
-    assert "many independent reads" in block
+    assert "four or more" in block and "independent reads or searches" in block
+    assert "ten companies" not in block  # OA-8g: the threshold is four
     assert "flood this chat" in block
 
 
