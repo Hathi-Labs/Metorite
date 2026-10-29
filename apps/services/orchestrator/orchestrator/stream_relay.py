@@ -1550,9 +1550,14 @@ async def run_detached(
             return False
         author = str(command.get("author") or "someone")
         sid = str(command.get("signal_id") or "")
+        # PZ-31: only a real True is typed. A command from a process that
+        # predates the flag has none, so its steer grounds nothing.
+        typed = command.get("typed") is True
         try:
             from orchestrator.steer import buffer_guidance  # noqa: PLC0415
-            buffered = buffer_guidance(thread_id, author, text, signal_id=sid)
+            buffered = buffer_guidance(
+                thread_id, author, text, signal_id=sid, typed=typed,
+            )
         except Exception:  # noqa: BLE001
             return False
         if not buffered:

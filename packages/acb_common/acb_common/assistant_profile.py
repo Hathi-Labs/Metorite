@@ -516,8 +516,8 @@ WRITE_TOOL_NAMES: frozenset[str] = frozenset({
 
 # ── The member's TYPED words (PZ-6a fix round 2, D-PZ-2) ───────────────────
 
-#: The member's typed text of THIS turn, and nothing else. The route binds it
-#: from the request BEFORE any server rewrite of ``message``: the Continue
+#: The member's typed text of THIS request, and nothing else. The route binds
+#: it from the request BEFORE any server rewrite of ``message``: the Continue
 #: note, the supersede note and a replayed steer never reach it. It is ""
 #: for a Continue turn, a card answer sent as a message, a steer follow-up,
 #: an approved WhatsApp Confirm and a forwarded WhatsApp text. Two binders:
@@ -526,9 +526,42 @@ WRITE_TOOL_NAMES: frozenset[str] = frozenset({
 #: a background, scheduled or workflow run included, reads "" and so
 #: grounds nothing. It is never read from a payload (R5). The CRM-Q29 seam
 #: ``member_message`` stays as it was, for the answer check.
+#: PZ-31: the member's own typed steers of the run are typed words too. They
+#: live in a separate holder (:func:`count_member_steers`).
 #: Fence: ``tests/unit/test_profile_write_tools.py``.
 MEMBER_TYPED: contextvars.ContextVar[str] = contextvars.ContextVar(
     "assistant_profile_member_typed", default="")
+
+
+class _Steers:
+    """The run member, and the typed steers of that member that the run read.
+
+    One object for each :func:`member_typed` binding. The run's tasks and
+    tool calls copy the context, so they share this one object, and a steer
+    that one tool result carries reaches every later tool call (PZ-31). A
+    ``.set()`` of a plain string in a tool call would reach no other call.
+    """
+
+    __slots__ = ("member", "words")
+
+    def __init__(self) -> None:
+        #: The run member, lower case. "" counts no steer.
+        self.member = ""
+        #: The text of each steer that counts, in the order the run read it.
+        self.words: list[str] = []
+
+
+#: The holder of the run's own typed steers (PZ-31). :func:`member_typed`
+#: binds a new one that counts no steer. Only the chat route names the run
+#: member, through :func:`count_member_steers`. The default is None, never a
+#: mutable object, so two runs never share one holder.
+_STEERS: contextvars.ContextVar[_Steers | None] = contextvars.ContextVar(
+    "assistant_profile_member_steers", default=None)
+#: The most steers that one run counts. A steer after it grounds nothing.
+STEERS_MAX = 32
+#: The line between two parts of the typed words. A digit, an address or a
+#: link cannot cross it, so two parts never join into one number.
+_PART_BREAK = "\n;\n"
 
 #: A typed text longer than this grounds nothing: it is a paste, not a
 #: sentence. The member can say the fact in their own words.
@@ -557,20 +590,102 @@ def typed_text(text: Any) -> str:
 @contextlib.contextmanager
 def member_typed(text: Any) -> Iterator[None]:
     """Bind the member's typed text of one turn. Closing restores the value
-    it found, and never raises."""
+    it found, and never raises.
+
+    It also binds a new steer holder that counts no steer (PZ-31). So a
+    binder inside a run, such as the WhatsApp Confirm scope, never reads the
+    steers of the run around it."""
     token = MEMBER_TYPED.set(typed_text(text))
+    steers = _STEERS.set(_Steers())
     try:
         yield
     finally:
+        try:
+            _STEERS.reset(steers)
+        except (ValueError, RuntimeError):
+            _STEERS.set(None)
         try:
             MEMBER_TYPED.reset(token)
         except (ValueError, RuntimeError):
             MEMBER_TYPED.set("")
 
 
+def _member_key(value: Any) -> str:
+    """An address as the steer rule compares it: no outer space, lower case."""
+    return str(value or "").strip().lower()
+
+
+def count_member_steers(member: Any, replayed: Any = ()) -> int:
+    """Name the run member whose own typed steers ground a write (PZ-31).
+
+    The chat route calls it once, inside :func:`member_typed`, with the
+    member of the session (``user.email``), never a payload value (R5).
+    The first name holds, so a later call cannot point the holder at
+    another member. *replayed* is the list of steers that the run took
+    from the durable store at its start. Each one counts as
+    :func:`add_steered_words` says.
+
+    Returns the count of replayed steers that count. Never raises.
+    """
+    holder = _STEERS.get()
+    who = _member_key(member)
+    if holder is None or not who:
+        return 0
+    if not holder.member:
+        holder.member = who
+    if holder.member != who:
+        return 0
+    counted = 0
+    for signal in replayed or ():
+        if not isinstance(signal, dict):
+            continue
+        if add_steered_words(signal.get("author"), signal.get("text"),
+                             typed=signal.get("typed")):
+            counted += 1
+    return counted
+
+
+def add_steered_words(author: Any, text: Any, *, typed: Any) -> bool:
+    """Count one steer as typed words of this run, and say whether it counts.
+
+    A steer counts only when all of these hold:
+
+    * the run named its member (:func:`count_member_steers`);
+    * *typed* is ``True``. The steer route stores ``False`` for a card
+      answer and a Continue turn. A steer stored before PZ-31 has no flag,
+      and so it counts for nothing;
+    * *author* is the run member. Another member's steer never grounds a
+      write.
+
+    ``orchestrator.steer.decorate_tool_result`` calls it when a tool result
+    carries a steer to the model. Never raises.
+    """
+    holder = _STEERS.get()
+    if holder is None or typed is not True or not holder.member:
+        return False
+    if _member_key(author) != holder.member:
+        return False
+    words = str(text or "").strip()
+    if not words or len(holder.words) >= STEERS_MAX:
+        return False
+    holder.words.append(words)
+    return True
+
+
 def typed_words() -> str:
-    """The member's typed words of this turn, or ``""``."""
-    return MEMBER_TYPED.get()
+    """The member's typed words of this turn, or ``""``.
+
+    That is the typed text of the request, then the member's own typed
+    steers that the run read (PZ-31). :func:`typed_text` checks the steers
+    as one text, so one pasted mail among them grounds no steer."""
+    own = MEMBER_TYPED.get()
+    holder = _STEERS.get()
+    if holder is None or not holder.words:
+        return own
+    steered = typed_text(_PART_BREAK.join(list(holder.words)))
+    if not steered:
+        return own
+    return f"{own}{_PART_BREAK}{steered}" if own else steered
 
 
 #: The refusal of a value that the member did not say in this turn, as the
