@@ -994,6 +994,13 @@ export default function AgentChat({
   const [rejectHold] = useState(() => createRejectHold());
   const heldCardsRef = useRef(new Map<string, PendingConfirmation>());
   useEffect(() => () => { rejectHold.flushAll(); }, [sessionId, rejectHold]);
+  // A closed tab inside the window sends the held REJECT too. The POST is
+  // `keepalive`, so the browser finishes it after the page is gone.
+  useEffect(() => {
+    const flush = () => rejectHold.flushAll();
+    window.addEventListener("pagehide", flush);
+    return () => window.removeEventListener("pagehide", flush);
+  }, [rejectHold]);
 
   // ── HITL elicitation state (VS Code ask_questions parity) ────────────
   // When requestId is set the tool is blocking (MAF Tier 2 path — the

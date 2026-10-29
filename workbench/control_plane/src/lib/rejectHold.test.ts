@@ -139,3 +139,14 @@ describe("reject-hold-receipt", () => {
     expect(renderToStaticMarkup(createElement(ConfirmationReceipts, { receipts: s.receipts }))).not.toContain("Undo");
   });
 });
+
+describe("a closed tab never drops a held REJECT", () => {
+  it("AgentChat flushes on pagehide, and the POST is keepalive", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const chat = readFileSync(fileURLToPath(new URL("../components/AgentChat.tsx", import.meta.url)), "utf-8");
+    expect(chat).toMatch(/addEventListener\("pagehide", flush\)/);
+    const post = readFileSync(fileURLToPath(new URL("./respondInput.ts", import.meta.url)), "utf-8");
+    expect(post).toMatch(/keepalive: true/);
+  });
+});

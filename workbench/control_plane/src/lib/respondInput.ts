@@ -166,6 +166,9 @@ export async function sendRespondInputResult(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      // A held REJECT can go out on `pagehide` (#916). keepalive lets the
+      // browser finish it after the page is gone.
+      keepalive: true,
     });
   } catch (err) {
     console.error("respond-input failed — restoring HITL card", err);
