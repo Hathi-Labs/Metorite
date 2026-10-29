@@ -189,10 +189,10 @@ These are the rows of the board before D118. Each row keeps its ID, so a spec th
 | WS-4 | Event-bus consumer and durable queue (BO-20) | 🟢 open | none, the BO checklist is in git | now in WS-BRIEF (BR-1a) |
 | WS-5 | CI gates real (BO-17, BO-18) | 🟢 open | none, the BO checklist is in git | now in WS-PL (WS-5a) |
 | WS-6 | Observability wiring and attribution (BO-5) | 🟢 open | `specs/observability_e2.md` §7 | now in WS-TO |
-| WS-7 | Memory activation and search (BO-21, BO-22) | 🟢 open | `specs/llm_caching_memory.md` | now in WS-CHAT |
+| WS-7 | Memory activation and search (BO-21, BO-22) | 🟢 open | `specs/llm_caching_memory.md` (2026-10-29: Mem0 and Graphiti retire after KG-6 per D132, so read its Mem0 parts as RETIRED) | now in WS-CHAT |
 | WS-8 | Agent architecture A0 to C | 🟢 open | `specs/agent_architecture.md` §12.2 | now in WS-CHAT |
-| WS-9 | Memory tiers 3b, 3c and 4 | 🟢 open | `specs/memory_architecture.md` §9 | now in WS-CHAT |
-| WS-10 | Multiplayer remainder: S1 compartments | 🟢 open | `docs/multiplayer/memory-clearance.md` §7 | now in WS-CHAT |
+| WS-9 | Memory tiers 3b, 3c and 4 | 🟢 open | `specs/memory_architecture.md` §9 (re-scoped 2026-10-29 by D132: Mem0 and Graphiti are not tiers, see its banner. Left: file-tier 3b and 4, and the 3c correction UX on the profile and org knowledge. If no slice survives, the row closes into WS-KG at KG-11) | now in WS-CHAT |
+| WS-10 | Multiplayer remainder: S1 compartments | 🟢 open | `docs/multiplayer/memory-clearance.md` §7 (2026-10-29: compartments still hold under D132, but the Mem0 scopes in it are RETIRED) | now in WS-CHAT |
 | WS-11 | Workflows slice 3: gallery, fan-in, loops | ⏸ parked | `specs/workflows_app.md` §8.3 | after Phase 2 (D119.3) · now in WS-STU (STU-2) |
 | WS-12 | Framework uplift, Phase 4 only (D6) | 🟢 open | `specs/multi_agent_orchestration.md` | now in WS-CHAT |
 | WS-13 | Centers B: groups become real | ⏸ parked | `specs/department_centers.md` | parked by D49 · now in WS-TS |
