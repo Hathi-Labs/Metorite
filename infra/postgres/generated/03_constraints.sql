@@ -2473,3 +2473,27 @@ ALTER TABLE unattended_runs ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE unattended_runs ADD CONSTRAINT unattended_runs_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS unattended_runs_org_idx ON unattended_runs (organization_id);
+
+-- brief_runs
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM brief_runs WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: brief_runs still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE brief_runs ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE brief_runs ADD CONSTRAINT brief_runs_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS brief_runs_org_idx ON brief_runs (organization_id);
+
+-- brief_claims
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM brief_claims WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: brief_claims still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE brief_claims ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE brief_claims ADD CONSTRAINT brief_claims_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS brief_claims_org_idx ON brief_claims (organization_id);

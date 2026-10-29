@@ -632,3 +632,9 @@ UPDATE unattended_incidents SET organization_id = (SELECT id FROM organization W
 
 UPDATE unattended_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
+
+UPDATE brief_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE brief_claims SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
