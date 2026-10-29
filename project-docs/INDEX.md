@@ -133,10 +133,9 @@ limitations). Do not add product specs to `docs/`.
 `specs/llm_caching_memory.md` · `specs/mcp_plugin_integration.md` *(Phase A
 shipped; B/C research)* · `specs/task_manager_hr_planning_and_memory.md` *(HR
 data layer WS-28 reads)* · `specs/multi_tenancy_leak_audit.md` *(the 14-finding
-audit feeding WS-29 MT-1i)* · `research/` *(research records that own no work:
-the Plane and Paca reviews, the note-taker, multiplayer and organization
-research, the framework and hardening reviews, and the competitor comparison.
-`research/README.md` lists them, and #956 restored them on 2026-10-29.)*
+audit feeding WS-29 MT-1i)* · `research/` *(research records that own no work.
+`research/README.md` lists all ten, for example the Plane and Paca reviews.
+#956 restored them on 2026-10-29.)*
 
 ## DEFERRED / PARKED / HISTORICAL — banner-marked; nothing dispatches from these
 
