@@ -438,6 +438,37 @@ def test_r8_a_failed_first_try_and_a_retry_give_one_claim_set(world, monkeypatch
     assert all(r.state == "ok" for r in rows)
 
 
+def test_r8_a_gather_past_the_handler_timeout_gives_the_slot_back(world, monkeypatch) -> None:
+    """Mutation M6 (repair round 1, P1-1). The worker's time limit cancels
+    the handler, and a cancel is not an ``Exception``. The handler still
+    gives the ledger slot back, so the retry begins it fresh and gathers
+    once: one claim set and one ledger row, ``ok``."""
+    _ledger_on(monkeypatch, True)
+    monkeypatch.setattr(worker, "HANDLER_TIMEOUT", 0.5)
+    world.cards[ANA] = [card("email:acc:t1"), card("tasks:0042", "overdue")]
+    real = loop.snapshot
+    hangs = {"left": 1}
+
+    async def slow(org: str, user: Any, now: datetime | None = None) -> loop.Snapshot:
+        if user.email == ANA and hangs["left"]:
+            hangs["left"] -= 1
+            await asyncio.sleep(30)
+        return await real(org, user, now)
+
+    monkeypatch.setattr(loop, "snapshot", slow)
+    assert _seed_and_run(world) == Counter(done=2, retry=1)
+    job = next(j for j in _jobs(world, planner.RUN_KIND) if j.payload["member"] == ANA)
+    assert job.state == "queued" and job.last_error.startswith("HandlerTimeout")
+    assert [r.state for r in _runs(world, ANA)] == ["planned"]
+    assert _ledger(world, ANA) == []  # given back, under the cancel
+    later = T1 + queue.backoff(1) + timedelta(seconds=1)
+    assert _tick(world, world.p.org_a, later) == Counter(done=1)
+    (run,) = _runs(world, ANA)
+    assert run.state == "ready" and len(_claims(world, str(run.id))) == 2
+    (row,) = _ledger(world, ANA)
+    assert row.state == "ok" and str(run.unattended_run_id) == str(row.id)
+
+
 def test_r8_a_slot_that_the_ledger_holds_is_not_gathered_again(world, monkeypatch) -> None:
     """A run that a crash cut: the ledger row is ``started`` under another
     runner. ``begin`` marks it unknown and the job settles done with no

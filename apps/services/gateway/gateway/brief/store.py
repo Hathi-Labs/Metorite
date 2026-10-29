@@ -37,7 +37,7 @@ row only when it is in that state (``UPDATE ... WHERE state = :from``), and
 only along :data:`TRANSITIONS`: ``planned`` to ``gathered`` to ``ready``,
 and ``planned`` to ``empty``. So a second gather of a run that moved on
 changes nothing. :func:`set_lead` writes the lead, and :func:`link_run` the
-ledger row of AUTO-2.
+ledger row of AUTO-2 of the current try.
 """
 
 from __future__ import annotations
@@ -107,11 +107,14 @@ _SET_LEAD_SQL = (
     "AND id = CAST(:id AS uuid)"
 )
 
-#: The link to the ledger row, once: a run that has one keeps it.
+#: The link to the ledger row of the current try. A retry after a release
+#: (``unattended.release`` deletes the row of the failed try) links its own
+#: row, so the link never names a row that is gone.
 _LINK_RUN_SQL = (
     "UPDATE brief_runs SET unattended_run_id = CAST(:u AS uuid) "
     f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
-    "AND id = CAST(:id AS uuid) AND unattended_run_id IS NULL"
+    "AND id = CAST(:id AS uuid) "
+    "AND unattended_run_id IS DISTINCT FROM CAST(:u AS uuid)"
 )
 
 #: The run must be of the bound org and of the member, or no row goes in.
@@ -303,8 +306,10 @@ async def set_lead(db: Any, member: str, run_id: str, lead: str, *, source: str,
 
 
 async def link_run(db: Any, member: str, run_id: str, unattended_run_id: str) -> bool:
-    """Link the run *run_id* of *member* to its ledger row of AUTO-2, once.
-    A run that has a link keeps it, and the answer is then False."""
+    """Link the run *run_id* of *member* to the ledger row of AUTO-2 of the
+    current try. A retry after a released try links its new row. The answer
+    is False when the run already names that row, or when no run of the
+    member has the id."""
     result: Any = await db.execute(text(_LINK_RUN_SQL), {
         "u": unattended_run_id, "m": _member(member), "id": run_id})
     return bool(getattr(result, "rowcount", 0))

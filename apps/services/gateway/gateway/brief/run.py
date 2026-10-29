@@ -36,6 +36,7 @@ phrase step is BR-2a-2. The two kinds register at import, and
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -65,6 +66,16 @@ class IdentityReadFailed(Exception):
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+async def _give_back(org: str, ledger: unattended.Run) -> None:
+    """Give the ledger slot back (``unattended.release``), shielded from a
+    cancel. A release that fails is logged, and the caller's own error
+    stays the error of the attempt."""
+    try:
+        await asyncio.shield(unattended.release(org, ledger))
+    except Exception as exc:
+        _log.warning("brief.release_failed", error=type(exc).__name__)
 
 
 def _payload(payload: dict[str, Any]) -> tuple[str, date, datetime]:
@@ -142,8 +153,12 @@ async def run(org: str, payload: dict[str, Any], claim: queue.Claim) -> None:
             await _settle_done(org, claim, now)
         else:
             await _gather(org, member, created.run, claim, now)
-    except Exception:
-        await unattended.release(org, ledger)
+    except BaseException:
+        # A cancel is a BaseException: the worker's HANDLER_TIMEOUT cancels
+        # the handler, and so does a stop. The slot goes back in each case,
+        # under a shield, so a second cancel cannot cut the release. The
+        # ``brief_runs`` row stays ``planned``, so the retry gathers it.
+        await _give_back(org, ledger)
         raise
     await unattended.finish(org, ledger, state="ok", now=now)
 

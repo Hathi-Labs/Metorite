@@ -616,9 +616,14 @@ def test_r8_a_guarded_move_changes_only_a_row_in_the_from_state(world) -> None:
     assert _go(world, go) == [True, False, False, True, "ready", False]
 
 
-def test_r8_the_lead_and_the_ledger_link_write_once_for_the_member(world) -> None:
+def test_r8_the_lead_and_the_ledger_link_write_for_the_member(world) -> None:
+    """The lead writes for the member only. The link follows the ledger row
+    of the current try (repair round 1, P2-e): a retry after a release links
+    its new row, the same row again changes nothing, and another member
+    links nothing."""
     org = world.p.org_a
     ledger_id = str(uuid.uuid4())
+    retry_id = str(uuid.uuid4())
 
     async def go() -> tuple:
         async with tenant_session(org) as db:
@@ -631,11 +636,15 @@ def test_r8_the_lead_and_the_ledger_link_write_once_for_the_member(world) -> Non
             with pytest.raises(store.BriefStoreError):
                 await store.set_lead(db, ANA, run.id, " ", source="template")
             first = await store.link_run(db, ANA, run.id, ledger_id)
-            second = await store.link_run(db, ANA, run.id, str(uuid.uuid4()))
+            linked = (await store.read_run(db, ANA, kind="brief", local_date=D)).unattended_run_id
+            again = await store.link_run(db, ANA, run.id, ledger_id)
+            relink = await store.link_run(db, ANA, run.id, retry_id)
+            not_yours = await store.link_run(db, BEN, run.id, str(uuid.uuid4()))
             got = await store.read_run(db, ANA, kind="brief", local_date=D)
-        return other, lead, first, second, got
+        return other, lead, (first, again, relink, not_yours), linked, got
 
-    other, lead, first, second, got = _go(world, go)
-    assert (other, lead, first, second) == (False, True, True, False)
+    other, lead, links, linked, got = _go(world, go)
+    assert (other, lead) == (False, True)
+    assert links == (True, False, True, False) and linked == ledger_id
     assert got.lead == "Your day. 2 things need you." and got.lead_source == "template"
-    assert got.lead_claim_ids == () and got.unattended_run_id == ledger_id
+    assert got.lead_claim_ids == () and got.unattended_run_id == retry_id
