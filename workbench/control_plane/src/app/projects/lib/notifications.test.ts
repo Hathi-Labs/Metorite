@@ -294,10 +294,13 @@ suite("every kind the gateway can write has its own verb (task 1054)", () => {
     expect(describe(row({ kind: kind as NotificationRow["kind"] }))).not.toContain(" updated ");
   });
 
-  it("reads the nudge as a quiet run with a way out", () => {
+  it("reads the nudge as a quiet run with a way out, and claims no quiet-since time", () => {
+    // The notice time is when the sweep nudged, after the lease ran out, not
+    // when the run went quiet. A "since <time>" from it would understate the
+    // silence, so the line names no time. The bell row shows its own time.
     const created_at = new Date(2026, 9, 30, 14, 31).toISOString();
-    expect(describe(row({ kind: "nudge", actor: "mcp:claude.ai:claude-code", created_at }))).toBe(
-      "Claude Code has gone quiet on #12 Fix the extruder since 14:31. Resume or release it.",
-    );
+    const line = describe(row({ kind: "nudge", actor: "mcp:claude.ai:claude-code", created_at }));
+    expect(line).toBe("Claude Code has gone quiet on #12 Fix the extruder. Resume or release it.");
+    expect(line).not.toContain("since");
   });
 });
