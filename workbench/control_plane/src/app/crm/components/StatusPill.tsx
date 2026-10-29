@@ -21,7 +21,7 @@ import Icon from "@/components/Icon";
 import AnchoredPanel from "@/components/ui/AnchoredPanel";
 import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { stageAccent } from "../lib/board";
+import { orderStatuses, stageAccent } from "../lib/board";
 import { pickable } from "../lib/emptyStages";
 import { useCrmModeValue } from "../lib/modeContext";
 import type { Status } from "../lib/types";
@@ -31,11 +31,17 @@ export default function StatusPill({
   statuses,
   onChange,
   disabled = false,
+  entity = "deals",
+  places,
 }: {
   status: Status | null;
   statuses: Status[];
   onChange?: (statusId: string) => void;
   disabled?: boolean;
+  /** Which stage list this is. Leads keep their own order. */
+  entity?: string;
+  /** The places of the pipeline on screen (`placesOf`), for the board order. */
+  places?: ReadonlyMap<string, number>;
 }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement | null>(null);
@@ -43,9 +49,12 @@ export default function StatusPill({
   const [trigger, setTrigger] = useState<HTMLButtonElement | null>(null);
   const menuId = useId();
   // CRM-C3: a hidden stage is offered only when it is the current one.
+  // The mode comes from the page (`lib/modeContext.ts`, CRM-C2). Task #838:
+  // the menu uses the board's order, so it matches the lanes.
+  const mode = useCrmModeValue();
   const sorted = useMemo(
-    () => pickable([...statuses].sort((a, b) => a.position - b.position), status?.id),
-    [statuses, status?.id],
+    () => pickable(orderStatuses(entity, statuses, mode, places), status?.id),
+    [statuses, status?.id, entity, mode, places],
   );
   // The option the keyboard is on. Focus stays on the pill: the menu is
   // portalled outside the record sheet's focus trap, so moving DOM focus
@@ -120,8 +129,6 @@ export default function StatusPill({
   const readOnly = disabled || !onChange || statuses.length === 0;
 
   const label = status?.name ?? "No status";
-  // The mode comes from the page (`lib/modeContext.ts`, CRM-C2).
-  const mode = useCrmModeValue();
   const tone = status ? stageAccent(status, mode).dot : "bg-muted-foreground";
 
   if (readOnly) {

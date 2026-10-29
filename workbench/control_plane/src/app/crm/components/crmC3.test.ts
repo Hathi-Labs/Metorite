@@ -69,7 +69,7 @@ describe("the pickers", () => {
     const ids = (statusId: string | null) =>
       chipsFor("deals", rows, { ...DEFAULT_VIEW, tab: "deals", statusId }).map((c) => c.id);
     expect(ids(null)).toEqual(["all", "Open", "Won"]);
-    expect(ids("Hidden")).toEqual(["all", "Open", "Hidden", "Won"]);
+    expect(ids("Hidden")).toEqual(["all", "Open", "Won", "Hidden"]);
   });
 
   it("the lost dialog never offers a hidden reason", () => {
@@ -92,7 +92,7 @@ describe("the pickers", () => {
     // The pill draws its menu only when open, and the runner has no DOM, so
     // its wiring is read as source: the menu is `pickable` over the current id.
     const pill = read("./StatusPill.tsx");
-    expect(pill).toContain("pickable([...statuses]");
+    expect(pill).toContain("pickable(orderStatuses(");
     expect(pill).toContain(", status?.id)");
   });
 });
