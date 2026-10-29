@@ -339,10 +339,19 @@ async def test_the_apply_takes_an_evicted_pack_out_of_the_state(store, orchestra
 # ── 4. The cap ──────────────────────────────────────────────────────────────
 
 
-def _measured_base(agents: list[Any]) -> int:
-    return ti._pack_base_count(
-        agents[0], agent_name="orchestrator", tool_scope=list(CONFIG["tool_scope"]),
-        agent_config=CONFIG, disabled=frozenset())
+def _measured_base(agents: list[Any], *, facts_stay: bool = True) -> int:
+    """The estimate of the real orchestrator. By default the run holds the 3
+    CRM facts tools, as an org on ``CRM_QUESTIONS_ORGS`` does, so the numbers
+    of 2026-10-27 (55 tools) hold. With *facts_stay* False the estimate drops
+    them as a run of an org off the list does (OA-8f)."""
+    if not facts_stay:
+        return ti._pack_base_count(
+            agents[0], agent_name="orchestrator", tool_scope=list(CONFIG["tool_scope"]),
+            agent_config=CONFIG, disabled=frozenset())
+    from unittest import mock
+
+    with mock.patch.object(ti, "_facts_removed", ti._facts_withheld):
+        return _measured_base(agents, facts_stay=False)
 
 
 async def test_the_cap_holds_110_tools_with_the_measured_base(orchestrator) -> None:
@@ -432,27 +441,29 @@ async def test_the_base_count_equals_the_injected_count_with_no_app_grant(
 ) -> None:
     """Fix round 1 (Q1): the apply stays before ``_inject_agent_tools``, so
     the cap reads an estimate. With no app grant the estimate equals the
-    count after the injection. ``_add_crm_facts_block`` can only take tools
-    away after it, and the executor logs the true count and warns past the
-    cap. Mutation: drop the CRM facts from the withheld names of the
-    estimate → it counts 2 tools that the run never holds → red for an org
-    that is not on the CRM list. Mutation: count the agent's own tools only
-    → red in both cases."""
+    count after the injection AND after ``_add_crm_facts_block`` (OA-8f: the
+    facts tools that the block removes are not in the estimate). The executor
+    logs the true count and warns past the cap. Mutation: drop the facts
+    removal from the estimate → it counts 3 tools that the run never holds →
+    red in both cases. Mutation: count the agent's own tools only → red in
+    both cases."""
     from acb_common import get_settings
 
     if facts == "org-not-on-the-crm-list":
         monkeypatch.setattr(get_settings(), "crm_questions_orgs", "org-other", raising=False)
     monkeypatch.setattr("orchestrator.app_tools.load_app_action_tools", lambda _name: [])
     with _tenant():
-        base = _measured_base(orchestrator)
+        base = _measured_base(orchestrator, facts_stay=False)
         ti._inject_agent_tools(
             orchestrator, tool_scope=list(CONFIG["tool_scope"]), agent_name="orchestrator",
             agent_config=CONFIG, no_egress=False,
         )
         injected = _names(orchestrator)
         await ti._add_crm_facts_block(orchestrator, frozenset(injected), no_egress=False)
-    assert base == len(injected), (base, len(injected))
-    assert len(_names(orchestrator)) <= base
+    assert base == len(_names(orchestrator)), (base, len(injected))
+    # A box with no list injects the 3 facts tools and the block takes them
+    # away. An org off the list never gets them in the first place.
+    assert len(injected) - base == (3 if facts == "crm-questions-off" else 0)
 
 
 # ── 5. The order ────────────────────────────────────────────────────────────

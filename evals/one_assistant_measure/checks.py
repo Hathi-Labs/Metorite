@@ -31,6 +31,10 @@ from evals.one_assistant_measure.pack import (
     email_tool_names,
 )
 
+SPAWN_ARM = "packs+spawn"
+#: The arms that run the real pack code (the packs, with or without the spawn tool).
+PACK_ARMS = ("pack", SPAWN_ARM)
+
 #: The email tools that read one email, a thread or a file.
 READS = frozenset({"read_email", "read_thread", "read_email_attachment"})
 #: The email tools that read across the inbox, and take ``account_id``.
@@ -78,8 +82,10 @@ class Observation:
     mirror: bool = False
     #: The most tools that one request of the orchestrator carried this turn.
     max_tools: int = 0
-    #: The number of ``spawn_subagents`` calls of the turn (OA-9, not built).
+    #: The number of ``spawn_subagents`` calls of the turn (OA-9b).
     spawned: int = 0
+    #: The answer of each ``spawn_subagents`` call of the turn (§6.4).
+    spawn_results: list[str] = field(default_factory=list)
     #: The pack that the turn needed (the argument of its ``right_pack`` check).
     needs: str = ""
     #: The packs that the run held or could load in this turn, from the log.
@@ -460,7 +466,7 @@ def _no_email_delegation(obs: Observation, _arg: Any) -> bool | None:
     knowledge or the writing style is legal (H-417): the ``email-setup`` pack
     does not fit beside ``email`` at the real base of the run. A hand-off of
     mail work still fails, and so does a refusal of the pack."""
-    if obs.arm != "pack":
+    if obs.arm not in PACK_ARMS:
         return None
     return not obs.refused and all(handoff_kind(t) == "setup" for t in obs.tasks)
 
@@ -678,7 +684,7 @@ def _handoff_legit(obs: Observation, owner: str) -> bool:
 
 def _figure(obs: Observation, arg: Any) -> bool:
     """The answer states a figure whose value is *arg* (rupees). The ONE parser
-    of lakh, crore and grouped digits is ``acb_common.number_check``; this
+    of Indian number forms is ``acb_common.number_check``; this
     harness has no regex of its own for them (``test_number_check.py``)."""
     from decimal import Decimal
 
@@ -698,14 +704,45 @@ def _right_pack(obs: Observation, arg: Any) -> bool | None:
     (the rule of ``no_*_delegation``). None on the delegation arm."""
     from acb_skills import tool_packs
 
-    if obs.arm != "pack":
+    if obs.arm not in PACK_ARMS:
         return None
     found = tool_packs.pack(str(arg))
     if found is None:
         return False
     mine = set(found.tools)
-    return any(name in mine for name, _, _ in _ran_ok(obs.work_calls)) or (
-        bool(obs.handoffs.get(found.owner)) and _handoff_legit(obs, found.owner))
+    ran = [name for name, _, _ in _ran_ok(obs.work_calls)]
+    if any(name in mine for name in ran):
+        return True
+    if obs.handoffs.get(found.owner):
+        return _handoff_legit(obs, found.owner)
+    # The base already holds read tools that cover the need (the injected
+    # ``crm_*`` family). A correct answer from them is no failure of the pack
+    # arm. The answer is judged by the checks on its facts, and a hand-off
+    # never reaches this line.
+    return any(name in BASE_COVER.get(str(arg), frozenset()) for name in ran)
+
+
+def base_cover() -> dict[str, frozenset[str]]:
+    """The base tools that cover the need of a pack, by pack slug (OA-8e phase 3).
+
+    The orchestrator holds the read family ``crm`` in its base
+    (``skill_families.SKILL_FAMILIES["crm"]``). Its read tools cover the reads
+    of ``crm-records``, so a read turn that they answer needs no pack. The
+    writes are never in it. No Projects pack has such a cover."""
+    from acb_skills.skill_families import SKILL_FAMILIES
+
+    reads = frozenset(n for n in SKILL_FAMILIES["crm"]["tools"] if not is_write_tool(n))
+    return {"crm-records": reads}
+
+
+class _Cover(dict):
+    def get(self, key: Any, default: Any = None) -> Any:
+        if not self:
+            self.update(base_cover())
+        return super().get(key, default)
+
+
+BASE_COVER: dict[str, frozenset[str]] = _Cover()
 
 
 def _no_delegation(obs: Observation, owner: str) -> bool | None:
@@ -714,7 +751,7 @@ def _no_delegation(obs: Observation, owner: str) -> bool | None:
     hand-off passes only when the turn declared the pack it needs, and that pack
     was neither loaded nor offered by the loader in this turn (no room beside
     the loaded packs). Unknown reach fails."""
-    if obs.arm != "pack" or owner not in obs.owners:
+    if obs.arm not in PACK_ARMS or owner not in obs.owners:
         return None
     if obs.reachable is None:
         # The log of the pack code showed no plan: the flag may have done
@@ -756,19 +793,72 @@ def _tools_per_call(obs: Observation, _arg: Any) -> bool | None:
     """No request of the orchestrator carried more tools than the cap."""
     from acb_skills.tool_packs import MAX_REQUEST_TOOLS
 
-    if obs.arm != "pack":
+    if obs.arm not in PACK_ARMS:
         return None
     if not obs.max_tools:
         return False  # the pack arm made no model call, or the tap read none
     return obs.max_tools <= MAX_REQUEST_TOOLS
 
 
-def _spawned(obs: Observation, _arg: Any) -> bool:
+def _spawned(obs: Observation, _arg: Any) -> bool | None:
+    """The main assistant spawned for this multi-step research (§6.3). Only the
+    arm that holds the tool can; the others give None."""
+    if obs.arm != SPAWN_ARM:
+        return None
     return obs.spawned > 0
 
 
-def _not_spawned(obs: Observation, _arg: Any) -> bool:
+def _not_spawned(obs: Observation, _arg: Any) -> bool | None:
+    """The main assistant did not spawn for one read, one task or three
+    searches (§6.3). None on an arm that holds no spawn tool."""
+    if obs.arm != SPAWN_ARM:
+        return None
     return obs.spawned == 0
+
+
+_JOB = re.compile(r"^Job (\d+) \(.*?\):(.*)$")
+
+
+def items_contract_problems(results: list[str]) -> list[str]:
+    """Each way the answer of ``spawn_subagents`` shows a broken child contract
+    (§6.4). A job block that holds no parsed item, an item that the parser made
+    from output it could not read (source ``unstructured``), and a job that
+    ended in an error each count. Empty is a pass."""
+    from acb_skills import subagent_contract as sc
+
+    problems: list[str] = []
+    for text in results:
+        blocks = [b for b in re.split(r"\n\n(?=Job \d+ )", text) if _JOB.match(b.split("\n")[0])]
+        if not blocks:
+            problems.append("no job block")
+        for block in blocks:
+            head = block.split("\n")[0]
+            if "Error:" in head or "Error:" in block:
+                problems.append(f"{head[:40]}: error")
+            elif f"(source: {sc.UNSTRUCTURED})" in block:
+                problems.append(f"{head[:40]}: output did not parse")
+            elif "- [" not in block:
+                problems.append(f"{head[:40]}: no item")
+    return problems
+
+
+def _items_contract(obs: Observation, _arg: Any) -> bool | None:
+    """The output of each child parses (§6.4). None when the turn spawned none."""
+    if obs.arm != SPAWN_ARM or not obs.spawn_results:
+        return None
+    return not items_contract_problems(obs.spawn_results)
+
+
+def spawn_results_of(events: list[dict[str, Any]]) -> list[str]:
+    """The result text of each ``spawn_subagents`` call in *events*."""
+    ids: set[str] = set()
+    out: list[str] = []
+    for e in events:
+        if e.get("type") == "TOOL_CALL_START" and e.get("toolCallName") == "spawn_subagents":
+            ids.add(str(e.get("toolCallId")))
+        elif e.get("type") == "TOOL_CALL_RESULT" and str(e.get("toolCallId")) in ids:
+            out.append(str(e.get("content") or ""))
+    return out
 
 
 KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
@@ -804,6 +894,7 @@ KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
     "mirror_respected": _mirror_respected,
     "one_card_per_write": _card_for_write,
     "tools_per_call": _tools_per_call,
+    "items_contract": _items_contract,
     "spawned": _spawned,
     "not_spawned": _not_spawned,
 }
@@ -811,7 +902,8 @@ KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
 #: The checks that run on EVERY turn, with no entry in the scenario. Each gives
 #: None when it does not apply, and the summary leaves a None out.
 AUTO = ("no_email_delegation", "held_card", "one_card", "no_crm_delegation",
-        "no_projects_delegation", "mirror_respected", "one_card_per_write", "tools_per_call")
+        "no_projects_delegation", "mirror_respected", "one_card_per_write", "tools_per_call",
+        "items_contract")
 
 
 def check_turn(turn: Any, obs: Observation) -> dict[str, bool | None]:

@@ -655,15 +655,20 @@ async def test_the_cap_of_layer_a_counts_the_load_tool(
     offer_loader: bool, loads: bool, store, orchestrator, monkeypatch,
 ) -> None:
     """The load tool rides in each request of a run that offers it, so the
-    cap of layer (a) counts it. A base of 79 and the 31 email tools make 110
-    with no load tool, and 111 with it. Mutation: drop the count of the load
-    tool → the run holds 111 tools in one request → red."""
-    monkeypatch.setattr(ti, "_pack_base_count", lambda *_a, **_k: 79)
-    applied = await _apply(orchestrator, "check my inbox", allowed=frozenset({"email"}),
+    cap of layer (a) counts it. The 31 email tools replace the one specialist
+    tool of the email assistant (OA-8f), so a base of 80 and the 31 email tools
+    make 110 with no load tool, and 111 with it. The run offers the load tool
+    while ``email-setup`` stays unloaded (OA-8f: a run that loads each allowed
+    pack offers none, and the count has none). Mutation: drop the count of
+    the load tool → the run holds 111 tools in one request → red."""
+    monkeypatch.setattr(ti, "_pack_base_count", lambda *_a, **_k: 80)
+    applied = await _apply(orchestrator, "check my inbox", allowed=ALL,
                            offer_loader=offer_loader)
-    assert ((applied is not None and applied.record.slugs == ("email",)) is loads), applied
+    assert ((applied is not None and "email" in applied.record.slugs) is loads), applied
     if offer_loader:
-        assert _provider(orchestrator[0]) is None, "111 tools: the pack cannot load, so no offer"
+        provider = _provider(orchestrator[0])
+        assert provider is None or "email" not in provider.loader.offered, (
+            "111 tools: the pack cannot load, so no offer of it")
 
 
 @pytest.mark.parametrize(("base", "want"), [
