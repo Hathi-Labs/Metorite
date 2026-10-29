@@ -76,6 +76,7 @@ from gateway.routes.crm.core import (
 from gateway.routes.crm.currency import (
     CURRENCY_SQL,
     DEFAULT_CURRENCY,
+    normalise_currency,
     ordered_currencies,
 )
 from gateway.routes.crm.field_studio import custom_for_create
@@ -602,26 +603,24 @@ async def get_pipeline(
                 # rather than interpolated like every other caller value here.
                 "stage_probability": int(getattr(lane, "probability", 0) or 0),
             }
-            # ONE read of the currencies of the WHOLE lane, then one sum for
-            # each currency (HANDOFF H-333, task 887). The app holds no
-            # exchange rate, so no figure adds two currencies. The count adds the
-            # counts of every currency.
+            # ONE grouped read of the WHOLE lane: a row for each currency
+            # (HANDOFF H-333, task 887). The app holds no exchange rate, so no
+            # figure adds two currencies. The count adds the counts of every
+            # currency. Two statements for each lane at any number of codes.
             found = (await db.execute(
-                text(f"SELECT currency FROM crm_deals WHERE {where}"), scope,
+                text(
+                    f"SELECT {CURRENCY_SQL} AS currency, count(*) AS count, "
+                    f"COALESCE(SUM(amount), 0) AS amount, {WEIGHTED_SQL} "
+                    f"FROM crm_deals WHERE {where} GROUP BY {CURRENCY_SQL}"
+                ),
+                scope,
             )).fetchall()
-            codes = ordered_currencies(
-                getattr(r, "currency", None) for r in found
-            ) or [DEFAULT_CURRENCY]
-            sums: list[tuple[str, Any]] = []
-            for code in codes:
-                sums.append((code, (await db.execute(
-                    text(
-                        "SELECT count(*) AS count, COALESCE(SUM(amount), 0) AS amount, "
-                        f"{WEIGHTED_SQL} FROM crm_deals "
-                        f"WHERE {where} AND {CURRENCY_SQL} = :currency"
-                    ),
-                    {**scope, "currency": code},
-                )).fetchone()))
+            by_code = {normalise_currency(getattr(r, "currency", None)): r for r in found}
+            sums: list[tuple[str, Any]] = [
+                (code, by_code[code])
+                for code in ordered_currencies(by_code) or [DEFAULT_CURRENCY]
+                if code in by_code
+            ] or [(DEFAULT_CURRENCY, None)]
             agg = (sum(int(getattr(row, "count", 0) or 0) for _, row in sums), sums)
             inner = (
                 f"SELECT {_lane_select(card_sort)} FROM crm_deals WHERE {where} "

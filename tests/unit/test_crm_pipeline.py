@@ -1155,27 +1155,35 @@ async def test_show_more_does_not_change_the_currency_totals(
     assert len(later.lanes[0].rows) == 2
 
 
-async def test_every_lane_sum_names_its_currency_in_a_bound_predicate(
+async def test_the_lane_aggregate_is_grouped_by_the_currency_rule(
     db: FakeCrmDB,
 ) -> None:
-    """Structural: no lane SUM runs without the currency predicate, and the
-    weighted formula is still the one from ``core`` (not a copy)."""
+    """Structural: ONE grouped statement for each lane, whatever the count of
+    currencies, and no SUM without the GROUP BY of the one currency rule. So a
+    sum over two currencies cannot be written here. The weighted formula is
+    still the one from ``core`` (not a copy)."""
     stages = _deal_pipeline(db)
     _seed_deal(db, stages["Proposal"], amount=1.0)
     _seed_deal(db, stages["Proposal"], amount=1.0, currency="USD")
+    _seed_deal(db, stages["Proposal"], amount=1.0, currency="EUR")
 
     await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
     sums = db.statements_touching("AS weighted")
 
     assert sums
-    assert all(f"{crm_pipeline.CURRENCY_SQL} = :currency" in s for s in sums)
+    rule = crm_pipeline.CURRENCY_SQL
+    assert all(f"GROUP BY {rule}" in s and f"{rule} AS currency" in s for s in sums)
+    assert all("SUM(amount)" in s for s in sums)
     assert crm_core.WEIGHTED_SQL in sums[0]
-    sent = {
-        params["currency"] for statement, params in db.calls
-        if "AS weighted" in statement
-        and params.get("status_id") == str(stages["Proposal"].id)
-    }
-    assert sent == {"INR", "USD"}
+    # One aggregate for each lane (4 lanes), however many currencies it holds.
+    assert len(sums) == len(stages)
+    # The lane read is a grouped aggregate plus the page: 2 statements a lane.
+    lane_reads = [
+        stmt for stmt, params in db.calls
+        if "FROM crm_deals" in stmt and "status_id" in params
+        and "SELECT currency FROM" not in stmt
+    ]
+    assert len(lane_reads) == 2 * len(stages)
 
 
 # ── WS-26c · kanban cards carry the account name (done-when 2) ─────────────

@@ -478,8 +478,11 @@ function shiftMoney(
   };
   const all = [...parts, next].sort(byCurrency);
   // A lane left with no card reads as the empty lane the gateway sends.
-  const [lead, ...others] =
+  const [lead, ...rest] =
     lane.count + sign <= 0 ? [{ currency: DEFAULT_CURRENCY, amount: 0, weighted: 0 }] : all;
+  // An `others` entry that reaches 0 is gone ("plus $0" is noise). The primary
+  // stays, even at 0.
+  const others = rest.filter((part) => part.amount !== 0 || part.weighted !== 0);
   return { currency: lead.currency, amount: lead.amount, weighted: lead.weighted, others };
 }
 
