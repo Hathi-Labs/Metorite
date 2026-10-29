@@ -431,6 +431,8 @@ checks each pack against the parent.
 - **Naming.** A job names its packs with the `packs` key. A child inherits no
   pack. `parse_jobs` accepts a slug only when `PackRun.holds()` of the parent
   names it, so a child never holds a pack that its parent lacks (SUB-1 rule 1).
+  The record holds only the packs that passed `packs_on` and the admin
+  toggles (§6.2), so the spawn reads no flag of its own.
 - **Fail closed.** `agent_tools._parent_packs` reads the record at
   `tool_packs.PACKS_KEY` on the parent frame. With no record, or a read that
   fails, a job that names a pack does not run. A job with no `packs` key runs
@@ -442,14 +444,17 @@ checks each pack against the parent.
 - **Which tools.** The child keeps a pack tool only when
   `subagent_contract.child_may_hold` lets it through. That test reads the
   read-only mark of the risk registry (`annotated_read_only`), less the SUB-1
-  names. So a child holds no write in an open chat either.
+  names. So a child holds no write in an open chat either. The registry keys
+  on the tool name, and the last module that names a tool wins. A fence keeps
+  the own mark of each pack tool equal to its registry mark.
 - **The run key.** The spawn mints one key for each child with
   `secrets.token_urlsafe(24)`. It is never the key of the parent and never the
   key of a sibling. `Job.pack_run` holds it, and `repr` does not show it.
 - **Where the key goes.** `executor._without_pack_keys` gives the worker the
-  key of its job and never the record. The batch run binds the key again after
-  `bind_artifact_context`, through `executor._job_pack_keys`. The key ends
-  with the run of the child, when the context scope of the child closes.
+  key of its job and never the record. The worker runs as a batch run, and
+  `bind_artifact_context` replaces its context. So the batch run binds the key
+  again, through `executor._job_pack_keys`. The key ends with the run of the
+  child, when the context scope of the child closes.
 - **The pin.** The pack tools are the worker's own tools (`tools=`).
   `subagent_contract.child_allowed` gives the pair the tools of the job and
   the pack tool names. The injection scope stays the tools of the job,

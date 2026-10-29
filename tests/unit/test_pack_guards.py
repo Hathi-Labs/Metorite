@@ -1333,6 +1333,34 @@ async def test_the_tools_that_each_real_pack_gives_a_child(monkeypatch, slug: st
     assert why == "" and {tool_name(t) for t in job.pack_tools} == want
 
 
+def test_each_pack_tools_own_mark_equals_its_registry_mark() -> None:
+    """``child_may_hold`` reads the risk registry BY NAME, as ``parse_jobs``
+    does. The registry keeps the last module that named a tool. So a module of
+    another agent with a tool of the same name could mark a pack write
+    read-only. With every in-repo agent loaded, each pack tool's own mark must
+    equal its registry mark. Mutation: register ``get_record`` as a write in
+    another module -> red."""
+    from pathlib import Path
+
+    from acb_skills import tool_packs
+    from acb_skills.tool_guard import tool_name
+
+    owners = {EA: _module(), CRM: _crm_module(), PROJECTS: load_agent_module(PROJECTS_DIR)}
+    own: dict[str, bool] = {}
+    for slug in sf.pack_slugs():
+        found = tool_packs.pack(slug)
+        assert found is not None
+        for fn in tool_packs.owner_tools(slug, owners[found.owner]):
+            risk = getattr(getattr(fn, "func", fn), "__tool_risk__", None) or {}
+            own[tool_name(fn)] = risk.get("read_only") is True
+    root = Path(__file__).resolve().parents[2]
+    for agents_py in sorted((root / "apps/agents").glob("*/agents.py")):
+        load_agent_module(agents_py.parent.relative_to(root).as_posix())
+    assert len(own) >= 150, "non-vacuity: the three owners build their tools"
+    clash = {n: ro for n, ro in own.items() if sc.annotated_read_only(n) is not ro}
+    assert clash == {}
+
+
 def test_the_child_build_calls_the_one_builder_and_copies_no_body() -> None:
     """OA-9c calls ``_pack_tools`` and copies none of the held rule. Mutation:
     decide the held set in the spawn -> a body name shows here -> red."""

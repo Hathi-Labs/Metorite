@@ -270,6 +270,32 @@ def test_a_run_that_is_not_the_worker_never_inherits_the_job() -> None:
     assert executor._without_job_key("worker") == {}
 
 
+def test_a_spawn_child_takes_the_key_of_its_own_pack_tools() -> None:
+    """OA-9c: the sub-run of the worker derives the key that the spawn minted
+    for its pack tools, never the parent's key or the record. Any other agent,
+    and a job with no pack tool, gets both dropped. Mutation: ``_without_pack_keys``
+    ignores the job -> the worker's frame binds ``None`` -> red."""
+    from acb_skills.tool_packs import PACK_RUN_KEY, PACKS_KEY
+    from orchestrator import executor
+
+    dropped = {PACK_RUN_KEY: None, PACKS_KEY: None}
+    job = sc.Job(1, "Read.", (), "fast", packs=("crm-records",),
+                 pack_tools=(counted("get_record", []),), pack_run="key-child")
+    with artifact_context_scope():
+        bind_artifact_context(run_id="r", **{PACK_RUN_KEY: "key-parent", PACKS_KEY: object()})
+        assert executor._without_pack_keys("worker") == dropped
+        sc.bind_job(_job("remember"))
+        assert executor._without_pack_keys("worker") == dropped
+        sc.bind_job(job)
+        assert executor._without_pack_keys("worker") == {PACK_RUN_KEY: "key-child",
+                                                         PACKS_KEY: None}
+        assert executor._without_pack_keys("projects-assistant") == dropped
+        assert executor._without_pack_keys() == dropped
+    assert executor._job_pack_keys("worker", {sc.JOB_KEY: job}) == {PACK_RUN_KEY: "key-child"}
+    assert executor._job_pack_keys("email-assistant", {sc.JOB_KEY: job}) == {}
+    assert executor._job_pack_keys("worker", {}) == {}
+
+
 def test_the_lookups_by_name_all_use_the_internal_first_list() -> None:
     """The two runs that load a sub-agent by name (``_run_sub_agent_streaming``
     and ``_run_agent_inner``) read ``_registry_entries()``, and neither builds
