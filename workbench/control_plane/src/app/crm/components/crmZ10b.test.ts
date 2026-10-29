@@ -197,6 +197,23 @@ describe("CRM-Z10b a 409 that names modules", () => {
     expect(buttonWith(draw(s, clean), "Next")).not.toMatch(/ disabled=""/);
     expect(s.typed).toBe(SWITCH_WORD);
   });
+
+  it("says how many deals wait for their contacts (round 4, P2-3)", () => {
+    const clean = preview({ incomplete: [], not_complete: [], records: [preview().records[0]] });
+    let s = switchReducer(initialSwitch(clean), { type: "next" });
+    s = switchReducer(switchReducer(s, { type: "type", text: SWITCH_WORD }), { type: "submit" });
+    s = switchReducer(s, {
+      type: "failed",
+      message: "Some modules are not complete. Fix them, or tick them in Leave out.",
+      gaps: [{ key: "deal_contacts", label: "Contacts linked to deals", reason: "roles_waiting", count: 4 }],
+      runId: "r1",
+    });
+    const html = draw(s, clean);
+    expect(html).toContain("Leave out Contacts linked to deals");
+    expect(html).toContain("4 deals still wait for their contacts from Zoho.");
+    expect(html).toContain("A deal you leave out keeps no linked contacts from Zoho");
+    expect(s.runId).toBe("r1");
+  });
 });
 
 // ── The two switches (D133 as amended 2026-10-29) ───────────────────────────

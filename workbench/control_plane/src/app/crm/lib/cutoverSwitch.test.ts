@@ -12,7 +12,7 @@ import { resolveHue } from "@/lib/statusAccent";
 
 import { CrmError } from "./api";
 import { orderLanes, stageAccent, toLeadLanes } from "./board";
-import type { CutoverPreview, CutoverStatus, SwitchResult } from "./cutover";
+import { reasonWords, type CutoverPreview, type CutoverStatus, type SwitchResult } from "./cutover";
 import {
   FINISH_FAILED,
   FINISH_NOT_SWITCHED,
@@ -344,6 +344,57 @@ describe("CRM-Z10b the switch dialog", () => {
     expect(switchReducer(s, { type: "failed", message: "No." }).runId).toBeNull();
   });
 
+  it("keeps the final run after a 409 with modules, and the next press switches with it (P3-c)", async () => {
+    const start = vi.fn(async () => ({ run_id: "r5" }));
+    const tick = refusal("module_incomplete", "Tick them.", {
+      modules: [{ key: "module:Quotes", label: "Quotes", reason: "not_read" }],
+    });
+    const refused = vi.fn(async () => { throw tick; });
+    const first = await runSwitch([], {
+      start, status: async () => status("ready", null, "r5"), commit: refused,
+      wait: async () => undefined,
+    });
+    expect(first).toMatchObject({ runId: "r5", gaps: [{ key: "module:Quotes" }] });
+    // The reducer keeps the run with the ticks.
+    let s = initialSwitch(preview({ incomplete: [] }));
+    s = switchReducer(switchReducer(s, { type: "next" }), { type: "type", text: SWITCH_WORD });
+    s = switchReducer(switchReducer(s, { type: "submit" }), {
+      type: "failed", message: "Tick them.", gaps: "gaps" in first ? first.gaps : [], runId: "r5",
+    });
+    expect(s.runId).toBe("r5");
+    // The admin ticks Quotes and presses again: the run is ready, so the
+    // switch goes at once with it, and no new run starts.
+    const commit = vi.fn(async () => RESULT);
+    const read = vi.fn(async () => status("ready", null, "r5"));
+    const second = await runSwitch(["module:Quotes"], {
+      start, status: read, commit, wait: async () => undefined,
+    }, s.runId);
+    expect(second).toEqual({ result: RESULT });
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(commit).toHaveBeenCalledWith({
+      confirm: SWITCH_WORD, leave_out: ["module:Quotes"], run_id: "r5",
+    });
+    // The run is no longer fresh (the status says idle): a new run starts.
+    const reads = [status("idle", null, "r5"), status("ready", null, "r6")];
+    start.mockImplementation(async () => ({ run_id: "r6" }));
+    const third = await runSwitch(["module:Quotes"], {
+      start, status: async () => reads.shift()!, commit, wait: async () => undefined,
+    }, "r5");
+    expect(third).toEqual({ result: RESULT });
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(commit).toHaveBeenLastCalledWith({
+      confirm: SWITCH_WORD, leave_out: ["module:Quotes"], run_id: "r6",
+    });
+    // A 409 that names no module keeps no run.
+    const stale = await runSwitch([], {
+      start, status: async () => status("ready", null, "r6"),
+      commit: async () => { throw refusal("final_sync_missing", "Start the switch again."); },
+      wait: async () => undefined,
+    }, "r6");
+    expect(stale).toEqual({ error: "Start the switch again." });
+  });
+
   it("starts a new sync when the kept run is gone, and stops when another run takes over", async () => {
     const commit = vi.fn(async () => RESULT);
     const start = vi.fn(async () => ({ run_id: "r9" }));
@@ -435,14 +486,23 @@ describe("CRM-Z10b the switch dialog", () => {
       { key: "module:Quotes", label: "Quotes", reason: "short" },
       { key: "tasks", label: "Tasks", reason: "something new" },
       { key: "module:Products", label: "Products", reason: "not_read" },
+      { key: "deal_contacts", label: "Contacts linked to deals", reason: "roles_waiting", count: 3 },
       { label: "No key" },
     ];
-    expect(gapsOf(refusal("module_incomplete", "Tick them.", { modules }))).toEqual([
+    const rows = gapsOf(refusal("module_incomplete", "Tick them.", { modules }));
+    expect(rows).toEqual([
       { key: "module:Quotes", label: "Quotes", reason: "short" },
       { key: "tasks", label: "Tasks", reason: "failed" },
       // Review P1: a module that the final sync did not read keeps its reason.
       { key: "module:Products", label: "Products", reason: "not_read" },
+      // Round 4 (P2-3): the deals that wait for their contacts, with a count.
+      { key: "deal_contacts", label: "Contacts linked to deals", reason: "roles_waiting", count: 3 },
     ]);
+    expect(reasonWords(rows[3])).toBe(
+      "3 deals still wait for their contacts from Zoho. Wait for the next syncs to read them, " +
+        "or leave them out. A deal you leave out keeps no linked contacts from Zoho",
+    );
+    expect(reasonWords({ ...rows[3], count: 1 })).toMatch(/^1 deal still waits for its contacts/);
     expect(gapsOf(refusal("run_open", "A sync runs now.", { modules }))).toEqual([]);
     expect(gapsOf(new Error("plain"))).toEqual([]);
   });

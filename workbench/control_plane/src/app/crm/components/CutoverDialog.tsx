@@ -28,10 +28,10 @@ import { Input } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 
 import {
-  STATE_WORDS,
   formatNumber,
   getCutoverStatus,
   movingTotal,
+  reasonWords,
   startCutover,
   switchToMetorite,
   type CutoverPreview,
@@ -154,7 +154,7 @@ export function CutoverBody({
                   <label htmlFor={id} className="min-w-0 flex-1 break-words">
                     <span className="text-foreground">{`Leave out ${row.label}`}</span>
                     <span className="block text-[11px] text-muted-foreground">
-                      {STATE_WORDS[row.reason]}
+                      {reasonWords(row)}
                     </span>
                   </label>
                 </li>

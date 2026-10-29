@@ -244,17 +244,29 @@ export function gapsOf(err: unknown): IncompleteRow[] {
   if (!Array.isArray(modules)) return [];
   const rows: IncompleteRow[] = [];
   for (const item of modules) {
-    const row = item as { key?: unknown; label?: unknown; reason?: unknown } | null;
+    const row = item as
+      | { key?: unknown; label?: unknown; reason?: unknown; count?: unknown }
+      | null;
     if (!row || typeof row.key !== "string" || !row.key) continue;
     const reason = typeof row.reason === "string" && row.reason in STATE_WORDS
       ? (row.reason as IncompleteRow["reason"])
       : "failed";
-    rows.push({ key: row.key, label: typeof row.label === "string" ? row.label : row.key, reason });
+    const count = typeof row.count === "number" && row.count > 0 ? row.count : undefined;
+    rows.push({
+      key: row.key,
+      label: typeof row.label === "string" ? row.label : row.key,
+      reason,
+      ...(count !== undefined ? { count } : {}),
+    });
   }
   return rows;
 }
 
-/** Phases 2 and 3. A refusal that names modules carries them. */
+/**
+ * Phases 2 and 3. A refusal that names modules carries them, and the run
+ * (round 4, P3-c): after the ticks, the next press switches with the same
+ * final run while phase 2 still takes it. A new run would have less budget.
+ */
 async function commitStep(body: SwitchBody, deps: SwitchDeps): Promise<SwitchOutcome> {
   deps.onPhase?.("switch");
   try {
@@ -262,20 +274,27 @@ async function commitStep(body: SwitchBody, deps: SwitchDeps): Promise<SwitchOut
   } catch (err) {
     const gaps = gapsOf(err);
     const error = wordsOf(err, SWITCH_FAILED);
-    return gaps.length > 0 ? { error, gaps } : { error };
+    if (gaps.length === 0) return { error };
+    return body.run_id ? { error, gaps, runId: body.run_id } : { error, gaps };
   }
 }
 
 /**
- * The run that a press may wait for: the *kept* run of an earlier press,
- * while the status still names it and it runs or is ready. Else `null`, and
- * the press starts a new final sync.
+ * The run that a press may use: the *kept* run of an earlier press, while
+ * the status still names it and it runs (`ready` false) or is ready (`ready`
+ * true). Else `null`, and the press starts a new final sync. Phase 2 still
+ * decides: a run that is no longer the newest, or not fresh, is 409
+ * `final_sync_missing`, and that answer keeps no run.
  */
-async function keptRun(kept: string | null, deps: SwitchDeps): Promise<string | null> {
+async function keptRun(
+  kept: string | null,
+  deps: SwitchDeps,
+): Promise<{ runId: string; ready: boolean } | null> {
   if (!kept) return null;
   const now = await deps.status().catch(() => null);
   if (!now || now.run_id !== kept) return null;
-  return now.state === "running" || now.state === "ready" ? kept : null;
+  if (now.state === "ready") return { runId: kept, ready: true };
+  return now.state === "running" ? { runId: kept, ready: false } : null;
 }
 
 /**
@@ -283,9 +302,11 @@ async function keptRun(kept: string | null, deps: SwitchDeps): Promise<string | 
  * ready, then switch with the run that the start began. Returns the result,
  * or the words of the failure. It never throws.
  *
- * *kept* is the run of an earlier press whose sync took too long. While it
- * runs, this press waits for it and starts no new one (review P3). A sync
- * that took too long hands its run back in `runId`.
+ * *kept* is the run of an earlier press: one whose sync took too long
+ * (review P3), or one that phase 2 answered with modules to leave out
+ * (round 4, P3-c). While it runs, this press waits for it. While it is
+ * ready, this press switches with it at once. Either way it starts no new
+ * run. Such a press hands its run back in `runId`.
  *
  * A start that answers `not_mirror` can follow a switch whose answer got
  * lost. Then the status says `done`, and the switch is sent again: the
@@ -298,7 +319,9 @@ export async function runSwitch(
 ): Promise<SwitchOutcome> {
   const body: SwitchBody = { confirm: SWITCH_WORD, leave_out: [...leaveOut] };
   deps.onPhase?.("sync");
-  let runId = await keptRun(kept, deps);
+  const held = await keptRun(kept, deps);
+  if (held?.ready) return commitStep({ ...body, run_id: held.runId }, deps);
+  let runId = held?.runId ?? null;
   if (runId === null) {
     try {
       runId = (await deps.start(body)).run_id;

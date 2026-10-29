@@ -23,13 +23,17 @@ export type ModuleState =
   | "short"
   | "refused"
   /** Phase 2 only: the final sync did not read the module (review P1). */
-  | "not_read";
+  | "not_read"
+  /** Phase 2 only: deals still wait for their contacts from Zoho (round 4). */
+  | "roles_waiting";
 
 /** One module that is not complete (CRM-Z10b). The dialog offers "Leave out". */
 export type IncompleteRow = {
   key: string;
   label: string;
   reason: Exclude<ModuleState, "complete">;
+  /** `roles_waiting` only: how many deals wait for their contacts. */
+  count?: number;
 };
 
 export type RecordRow = {
@@ -96,7 +100,23 @@ export const STATE_WORDS: Record<Exclude<ModuleState, "complete">, string> = {
   refused: "Zoho refused some records",
   not_read:
     "The final sync did not read it, often because Zoho's daily API limit is almost used. Try again tomorrow, or leave it out",
+  roles_waiting:
+    "Some deals still wait for their contacts from Zoho. Wait for the next syncs to read them, or leave them out. A deal you leave out keeps no linked contacts from Zoho",
 };
+
+/**
+ * The words of one row of the Leave out step. A `roles_waiting` row with a
+ * count says how many deals wait (round 4, P2-3). Each other row says its
+ * reason.
+ */
+export function reasonWords(row: IncompleteRow): string {
+  if (row.reason !== "roles_waiting" || !row.count) return STATE_WORDS[row.reason];
+  const deals = row.count === 1 ? "1 deal still waits for its" : `${formatNumber(row.count)} deals still wait for their`;
+  return (
+    `${deals} contacts from Zoho. Wait for the next syncs to read them, or leave them out. ` +
+    "A deal you leave out keeps no linked contacts from Zoho"
+  );
+}
 
 /** "3 hours ago", "2 days ago". Plain words for the age of the last good sync. */
 export function ageWords(seconds: number | null): string {
