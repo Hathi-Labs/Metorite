@@ -29,9 +29,9 @@ from typing import Any
 
 import pytest
 from acb_auth import UserContext, UserRole, build_access, get_current_user
+from acb_common.assistant_profile import APP_PREFERENCES
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from acb_common.assistant_profile import APP_PREFERENCES
 from gateway.routes.admin import assistant_profile as ap
 from gateway.routes.admin.me import me_router
 
