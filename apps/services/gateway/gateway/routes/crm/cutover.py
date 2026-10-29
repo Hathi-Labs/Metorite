@@ -38,7 +38,8 @@ own") names its keys in ``counts[engine.RUN_ONLY_KEY]``, and every other key
 is not read. A normal run writes a ``module:<ApiName>`` key for each generic
 module that it reads. So a module of the newest profile with no key was not
 read, for example when the run reached ``engine.MODULES_RESERVE``. The run
-still ends ``ok`` then. The preview and phase 1 do not apply this rule.
+still ends ``ok`` then. A module that waits for its fields (``fields_pending``)
+is not read either. The preview and phase 1 do not apply this rule.
 
 **The switch (CRM-Z10b).** ⚠️ Dark behind ``CRM_CUTOVER_ORGS`` (404 off the
 list), admin only (403), and the admin types ``SWITCH`` (422
@@ -51,14 +52,18 @@ refuses an unknown field.
    returns the ``run_id``. A good run that is fresh does not count: a "Sync
    it on its own" run reads one module only, and the run row does not say
    so. It starts NO label, vector, mapping, question or digest step
-   (``scheduler.spawn`` would).
+   (``scheduler.spawn`` would). ⚠️ It starts the run as the final sync
+   (``engine.acquire(final=True)``): the run reads each generic module now,
+   also one that a run read less than ``engine.MODULE_READ_EVERY`` ago, and an
+   offset-paged one in full. The row says so in ``counts["run_final"]``.
 2. ``POST /crm/cutover`` runs phase 2 in ONE transaction. The lock order is the
    order of the start over (``settings._start_over``): the advisory connect
    lock, then ``crm_settings`` ``FOR UPDATE``. It checks the mode, no open
    run, and that the newest run IS the run of phase 1 (the ``run_id`` of the
    body), ended well in the last 15 minutes by the database clock. Any other
    newest run is 409 ``final_sync_missing``, also a scheduled run that ended
-   after the final run. Then it checks each key again. Then
+   after the final run. A run with no ``counts["run_final"]`` is 409
+   ``final_sync_missing`` too. Then it checks each key again. Then
    :func:`fold_cutover_overlay` (THE FOLD),
    the labels, :func:`own_cutover_fields`, the watermark rewind (§3.4.1) and
    the mode. A write that meets the switch is 409 ``crm_changed``. One audit
@@ -520,17 +525,24 @@ def _not_read(run: Any, cursors: dict[str, Any], modules_body: Any) -> list[str]
     was not read, a core key too. Else a ``module:<ApiName>`` key of a
     generic module of the newest profile was not read when the run wrote no
     key for it. The run writes every core key, so a normal run reads them.
+
+    A generic module that waits for its fields (``fields_pending`` in the
+    profile) was not read either: the run counts it ``skipped`` and reads no
+    record. Its fields wait when discovery ran short of credits and the
+    previous profile did not mirror the module. That can follow an import,
+    after a reconnect that lost the module's scope for a while.
     """
     from gateway.crm_sync import engine
 
     run_counts = run.counts or {}
     only = run_counts.get(engine.RUN_ONLY_KEY)
     only_keys = set(only) if isinstance(only, dict) else None
-    generic = {
-        f"{MODULE_KEY_PREFIX}{m['api_name']}"
-        for m in (modules_body if isinstance(modules_body, list) else [])
+    rows = [
+        m for m in (modules_body if isinstance(modules_body, list) else [])
         if isinstance(m, dict) and m.get("generic") and m.get("api_name")
-    }
+    ]
+    generic = {f"{MODULE_KEY_PREFIX}{m['api_name']}" for m in rows}
+    pending = {f"{MODULE_KEY_PREFIX}{m['api_name']}" for m in rows if m.get("fields_pending")}
     missed: set[str] = set()
     for module, row in cursors.items():
         key = _count_key_of(module)
@@ -539,7 +551,7 @@ def _not_read(run: Any, cursors: dict[str, Any], modules_body: Any) -> list[str]
         if only_keys is not None:
             if key not in only_keys:
                 missed.add(key)
-        elif key in generic and key not in run_counts:
+        elif key in generic and (key not in run_counts or key in pending):
             missed.add(key)
     return sorted(missed)
 
@@ -985,7 +997,8 @@ async def start_cutover(
         _check_connection(await store.get(db, org, PROVIDER, OWNING_APP))
         await _check_keys(db, org, leave_out)
     try:
-        handle = await engine.acquire(org)
+        # The final sync: each module now, with no wait of an hour (round 3).
+        handle = await engine.acquire(org, final=True)
     except runs.SyncRunning as exc:
         raise _refuse(
             409, "sync_running", "A sync runs now. Wait for it to finish.",
@@ -1175,9 +1188,11 @@ async def _switch(
 
     *run_id* is the run that phase 1 started. The newest run must be that
     run, so a one-module run or a scheduled run that ended after it fails
-    closed with ``final_sync_missing``.
+    closed with ``final_sync_missing``. It must also carry
+    ``counts[engine.RUN_FINAL_KEY]``, so a run that phase 1 did not start
+    as the final sync fails closed in the same way.
     """
-    from gateway.crm_sync import runs
+    from gateway.crm_sync import engine, runs
 
     async with _tenant_session() as db:
         await db.execute(text(_CONNECT_LOCK_SQL), {"key": f"crm.connect:{org}:{PROVIDER}"})
@@ -1194,9 +1209,13 @@ async def _switch(
                 409, "run_open", "A sync runs now. Wait for it to finish. Nothing changed.",
             )
         final = (await db.execute(text(_FINAL_RUN_SQL), {"o": org, "m": FRESH_MINUTES})).first()
+        run = runs._row(final) if final is not None else None
         if (
-            final is None or not final.fresh or not run_id
+            final is None or run is None or not final.fresh or not run_id
             or str(final.id) != run_id
+            # Round 3: only a run that phase 1 started as the final sync
+            # (``engine.acquire(final=True)``) read each module now.
+            or not (run.counts or {}).get(engine.RUN_FINAL_KEY)
         ):
             raise _refuse(
                 409, "final_sync_missing",
@@ -1204,7 +1223,6 @@ async def _switch(
                 f"must end well in the last {FRESH_MINUTES} minutes. Start the "
                 "switch again. Nothing changed.",
             )
-        run = runs._row(final)
         left_out = await _check_keys(db, org, leave_out, run)
         counts = await count_records(db, org)
         counts["deal_contacts"] = int(

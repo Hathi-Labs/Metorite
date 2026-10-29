@@ -148,8 +148,15 @@ def _done_cursors(p: Any, org: str) -> None:
 
 
 def _final_run(p: Any, org: str, *, start_min: int = 5, end_min: int | None = 4,
-               status: str = "ok", counts: dict[str, Any] | None = None) -> str:
-    """One run of *org*, the newest. ``end_min`` None leaves it open."""
+               status: str = "ok", counts: dict[str, Any] | None = None,
+               final: bool = True) -> str:
+    """One run of *org*, the newest. ``end_min`` None leaves it open.
+
+    With *final* the row carries the mark of the final sync of the switch
+    (``counts["run_final"]``, round 3), as ``engine.acquire(final=True)``
+    writes it. ``final=False`` is a scheduled or a one-module run."""
+    if final:
+        counts = {**(counts or {}), "run_final": {"final": 1}}
     with p.admin_engine.begin() as c:
         conn = c.execute(text(
             "SELECT id FROM integration_connections WHERE organization_id = "
@@ -1069,6 +1076,11 @@ async def test_phase_one_starts_the_final_run_and_the_status_follows_it(zb, app_
     assert r.json() == {"run_id": run_id}
     (handle,) = zb.final_runs
     assert handle.run_id == run_id
+    # Round 3: phase 1 starts the run as the final sync, and the row says so.
+    assert handle.final is True
+    stored = _one(zb, "SELECT counts -> 'run_final' FROM crm_sync_runs WHERE "
+                      "id = CAST(:i AS uuid)", i=run_id)[0]
+    assert stored == {"final": 1}
     status = (await _call(zb, admin, "GET", "/crm/cutover/status")).json()
     assert (status["state"], status["run_id"]) == ("running", run_id)
     # A second start while it runs: the run lock refuses it.
@@ -1107,7 +1119,7 @@ async def test_a_fresh_one_module_run_is_not_the_final_sync(zb, app_engine) -> N
     _assert_non_priv(app_engine)
     await _ready(zb, final=False)
     admin = _admin(zb.org_a)
-    one_module = _final_run(zb, zb.org_a, start_min=2, end_min=1)
+    one_module = _final_run(zb, zb.org_a, start_min=2, end_min=1, final=False)
     r = await _call(zb, admin, "POST", "/crm/cutover/start", SWITCH)
     assert r.status_code == 202, r.text
     final = r.json()["run_id"]
@@ -1138,13 +1150,32 @@ async def test_a_run_that_ends_after_the_final_run_fails_closed(zb, app_engine) 
     nothing. The admin starts the switch again."""
     _assert_non_priv(app_engine)
     await _ready(zb)
-    _final_run(zb, zb.org_a, start_min=2, end_min=1)
+    _final_run(zb, zb.org_a, start_min=2, end_min=1, final=False)
     before = _hashes(zb)
     r = await _switch(zb)
     assert r.status_code == 409, r.text
     assert r.json()["detail"]["code"] == "final_sync_missing"
     assert _hashes(zb) == before
     assert _settings(zb, zb.org_a).mode == "mirror"
+    assert not _actions(zb, "crm.cutover") and _revokes(zb) == []
+
+
+async def test_a_scheduled_run_with_its_own_id_is_not_the_final_sync(zb, app_engine) -> None:  # noqa: F811
+    """Round 3. A scheduled run is the newest run, it ended ``ok`` a minute
+    ago, and a hand-made POST sends its own id. It has no
+    ``counts["run_final"]``, so phase 1 did not start it as the final sync,
+    and it may have skipped a module for the hour. 409
+    ``final_sync_missing``, and nothing changes."""
+    _assert_non_priv(app_engine)
+    await _ready(zb, final=False)
+    scheduled = _final_run(zb, zb.org_a, start_min=2, end_min=1, final=False)
+    before = _hashes(zb)
+    r = await _switch(zb, _body(zb, run_id=scheduled))
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "final_sync_missing"
+    assert _hashes(zb) == before
+    assert _settings(zb, zb.org_a).mode == "mirror"
+    assert _connection(zb, zb.org_a).status == "connected"
     assert not _actions(zb, "crm.cutover") and _revokes(zb) == []
 
 
@@ -1265,9 +1296,11 @@ async def test_a_final_run_that_hit_the_reserve_is_not_the_final_sync(
     assert await _final_state(p, normal.run_id) == {}, "a normal run reads each key"
 
     monkeypatch.setattr(engine, "MODULES_RESERVE", 10**9)  # the reserve, at once
-    final = await _engine_run(p.org_a)
+    # A final sync (round 3 reads each module now), and the reserve still stops it.
+    final = await engine.execute(await engine.acquire(p.org_a, final=True))
     monkeypatch.setattr(engine, "MODULES_RESERVE", 20)
     assert (final.status, final.error) == ("ok", None)
+    assert final.counts[engine.RUN_FINAL_KEY] == {"final": 1}
     assert not set(_MODULES) & set(final.counts), final.counts
     before, settings = _hashes(p), _mode_and_zoho(p)
     assert settings == ("mirror", None, "connected")
@@ -1302,8 +1335,10 @@ async def test_a_one_module_run_is_not_the_final_sync(mzc, app_engine) -> None: 
     """Verifier P3-1. "Sync it on its own" reads one module, and the row looks
     like a full run: every core key counts zero, as a full run with no change
     does. The engine names the keys of such a run in ``counts["run_only"]``.
-    A hand-made POST with its id is 409, and each key that it did not read,
-    the core keys too, is ``not_read``. Nothing changes."""
+    A hand-made POST with its id is 409 ``final_sync_missing``, because the
+    run has no ``counts["run_final"]`` (round 3). The ``run_only`` rule
+    stays as a second fence: each key that the run did not read, the core
+    keys too, is ``not_read``. Nothing changes."""
     from gateway.crm_sync import engine
 
     _assert_non_priv(app_engine)
@@ -1313,6 +1348,7 @@ async def test_a_one_module_run_is_not_the_final_sync(mzc, app_engine) -> None: 
     alone = await engine.execute(handle)
     assert alone.status == "ok"
     assert alone.counts[engine.RUN_ONLY_KEY] == {"module:Products": 1}
+    assert engine.RUN_FINAL_KEY not in alone.counts
     stored = _one(p, "SELECT counts -> 'run_only' FROM crm_sync_runs WHERE "
                      "id = CAST(:i AS uuid)", i=alone.run_id)[0]
     assert stored == {"module:Products": 1}
@@ -1324,8 +1360,71 @@ async def test_a_one_module_run_is_not_the_final_sync(mzc, app_engine) -> None: 
     r = await _request(p, _admin(p.org_a), "POST", "/crm/cutover",
                        {"confirm": "SWITCH", "run_id": alone.run_id})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"]["code"] == "module_incomplete"
-    assert {"deals", "module:Install_Base"} <= {
-        m["key"] for m in r.json()["detail"]["modules"]}
+    assert r.json()["detail"]["code"] == "final_sync_missing"
     assert _hashes(p) == before
     assert _mode_and_zoho(p) == settings == ("mirror", None, "connected")
+
+
+def _product_name(p: Any, ext_id: str) -> Any:
+    return _one(p, "SELECT name FROM crm_module_records WHERE organization_id = "
+                   "CAST(:o AS uuid) AND module = 'Products' AND ext_id = :e",
+                o=p.org_a, e=ext_id)[0]
+
+
+async def test_the_final_run_reads_a_module_read_ten_minutes_ago(mzc, app_engine) -> None:  # noqa: F811
+    """Round 3. A run read Products 10 minutes ago, then a member edits a
+    product in Zoho. A normal run waits ``MODULE_READ_EVERY`` (an hour), so
+    the edit is not in Metorite. The final sync of the switch reads every
+    module now, so the edit is in Metorite after the switch."""
+    from gateway.crm_sync import engine
+
+    from tests.unit.test_crm_sync_engine_r8 import stamp
+
+    _assert_non_priv(app_engine)
+    p, a, _b = mzc
+    await _imported(p, a)
+    _exec(p, "UPDATE crm_sync_cursors SET cursor_state = jsonb_set(cursor_state, "
+             "'{checked_at}', to_jsonb((now() - interval '10 minutes')::text)) "
+             "WHERE organization_id = CAST(:o AS uuid) AND module LIKE 'zoho:module:%' "
+             "AND module NOT LIKE '%deleted' AND cursor_state ? 'checked_at'", o=p.org_a)
+    assert _product_name(p, "p1") == "A-Widget"
+    product = next(r for r in a.data["Products"] if r["id"] == "p1")
+    product.update(Modified_Time=stamp(40), Product_Name="A-Widget 2")
+    # A scheduled run skips Products for the hour: the edit is not in.
+    scheduled = await _engine_run(p.org_a)
+    assert scheduled.status == "ok"
+    assert _product_name(p, "p1") == "A-Widget", "the hour rule changed"
+    admin = _admin(p.org_a)
+    start = await _request(p, admin, "POST", "/crm/cutover/start", SWITCH)
+    assert start.status_code == 202, start.text
+    (handle,) = p.final_runs
+    assert handle.final is True
+    final = await engine.execute(handle)
+    assert final.status == "ok"
+    assert final.counts[engine.RUN_FINAL_KEY] == {"final": 1}
+    assert final.counts["module:Products"]["upserted"] == 1
+    r = await _request(p, admin, "POST", "/crm/cutover",
+                       {"confirm": "SWITCH", "run_id": final.run_id})
+    assert r.status_code == 200, r.text
+    assert _settings(p, p.org_a).mode == "native"
+    assert _product_name(p, "p1") == "A-Widget 2"
+
+
+def test_a_module_that_waits_for_its_fields_is_not_read() -> None:
+    """Round 3. A run counts a module that waits for its fields
+    (``fields_pending``) as ``skipped``, and reads no record of it. That can
+    follow an import: a reconnect lost the module's scope for a while, then
+    discovery ran short of credits. Phase 2 finds it ``not_read``."""
+    from types import SimpleNamespace
+
+    from gateway.routes.crm import cutover
+
+    done = SimpleNamespace(initial_done_at="2026-10-29T00:00:00+00:00", state={})
+    cursors = {"zoho:module:Products": done, "zoho:module:Install_Base": done,
+               "zoho:deal": done}
+    profile = [{"api_name": "Products", "generic": True, "fields_pending": True},
+               {"api_name": "Install_Base", "generic": True}]
+    run = SimpleNamespace(counts={"module:Products": {"skipped": 1},
+                                  "module:Install_Base": {"seen": 0},
+                                  "deals": {"seen": 0}})
+    assert cutover._not_read(run, cursors, profile) == ["module:Products"]
