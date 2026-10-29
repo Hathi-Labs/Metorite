@@ -94,6 +94,26 @@ describe("part A: the Mirror line", () => {
     expect(CONVERT_DISABLED_REASON).toBe("Convert leads in Zoho");
   });
 
+  it("describes a locked value for a screen reader from the start, and keeps Space off the page scroll", () => {
+    const html = renderToStaticMarkup(createElement(LockedValue, null, "x"));
+    const id = /aria-describedby="([^"]+)"/.exec(html)?.[1];
+    expect(id).toBeTruthy();
+    expect(html).toContain(`id="${id}"`);
+    expect(html).toContain("sr-only");
+    expect(html).toContain(LOCK_TIP);
+    const src = read("./LockedValue.tsx");
+    expect(src).toContain("e.preventDefault()");
+    expect(src).toContain('e.key === " "');
+  });
+
+  it("writes the Convert reason as text beside the greyed button", () => {
+    const html = panel("leads", { id: "l1", lead_name: "Ann", ext_source: "zoho" });
+    expect(html).toMatch(/<span id="convert-reason"[^>]*>Convert leads in Zoho<\/span>/);
+    expect(html).toContain('aria-describedby="convert-reason"');
+    const native = panel("leads", { id: "l1", lead_name: "Ann", ext_source: null });
+    expect(native).not.toContain("convert-reason");
+  });
+
   it("shows Convert enabled in Native", () => {
     const html = panel("leads", { id: "l1", lead_name: "Ann", ext_source: null });
     expect(html).toMatch(/<button[^>]*>Convert<\/button>/);
@@ -132,9 +152,12 @@ describe("part A: the Mirror line", () => {
 describe("part B: the pencil", () => {
   it("gives a Native editable row a pencil, and keeps tick and X", () => {
     const html = panel("organizations", { id: "1", name: "Acme", ext_source: null });
-    expect(html).toMatch(/aria-label="Edit name"/);
     expect(html).toContain("group-hover/edit:opacity-100");
-    expect(html).toContain("focus-visible:opacity-100");
+    // One tab stop per row: the pencil is out of the tab order and hidden from
+    // a screen reader. It shows when the value button has focus, and on a touch screen.
+    expect(html).toMatch(/<button[^>]*tabindex="-1"[^>]*aria-hidden="true"|<button[^>]*aria-hidden="true"[^>]*tabindex="-1"/);
+    expect(html).toContain("group-focus-within/edit:opacity-100");
+    expect(html).toContain("[@media(hover:none)]:opacity-100");
     const src = read("./FieldsPanel.tsx");
     expect(src).toContain('aria-label="Save"');
     expect(src).toContain('aria-label="Cancel"');
@@ -224,25 +247,36 @@ describe("part E: loading and error", () => {
     expect(typeof RecordList).toBe("function");
   });
 
-  it("clears the lanes when a board read fails", async () => {
-    const view = { ...DEFAULT_VIEW, tab: "deals" as const, layout: "board" as const };
-    getPipeline.mockResolvedValueOnce({
+  const board = (rows: unknown[]) =>
+    ({
       lanes: [
         {
           status: { id: "s1", name: "Open", color: "blue", position: 0, type: "open", is_default: true },
-          rows: [{ id: "d1", name: "Old deal" }],
-          count: 1,
+          rows,
+          count: rows.length,
           amount: 0,
           weighted: 0,
         },
       ],
-    } as never);
+    }) as never;
+
+  it("keeps the lanes when a re-read of the same view fails", async () => {
+    const view = { ...DEFAULT_VIEW, tab: "deals" as const, layout: "board" as const, q: "acme" };
+    getPipeline.mockResolvedValueOnce(board([{ id: "d1", name: "Old deal" }]));
     await useCrmStore.getState().loadBoard(view);
-    expect(useCrmStore.getState().lanes).toHaveLength(1);
     getPipeline.mockRejectedValueOnce(new Error("The board is down"));
-    await useCrmStore.getState().loadBoard(view);
-    expect(useCrmStore.getState().lanes).toEqual([]);
+    await useCrmStore.getState().loadBoard({ ...view });
+    expect(useCrmStore.getState().lanes).toHaveLength(1);
     expect(useCrmStore.getState().error).toContain("The board is down");
+  });
+
+  it("clears the lanes when the failed read is for another view", async () => {
+    const view = { ...DEFAULT_VIEW, tab: "deals" as const, layout: "board" as const };
+    getPipeline.mockResolvedValueOnce(board([{ id: "d1", name: "Old deal" }]));
+    await useCrmStore.getState().loadBoard(view);
+    getPipeline.mockRejectedValueOnce(new Error("The board is down"));
+    await useCrmStore.getState().loadBoard({ ...view, q: "other" });
+    expect(useCrmStore.getState().lanes).toEqual([]);
   });
 
   it("says the board did not load, rather than 'no stage'", () => {

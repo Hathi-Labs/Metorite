@@ -393,15 +393,21 @@ export default function FieldsPanel({
             </span>
           ) : mirrored ? (
             // CRM-U15: Mirror shows Convert greyed out, with the reason.
-            <Button
-              variant="primary"
-              size="sm"
-              disabled
-              title={CONVERT_DISABLED_REASON}
-              aria-label={`Convert. ${CONVERT_DISABLED_REASON}`}
-            >
-              Convert
-            </Button>
+            // The reason is text, not only a tooltip, so a phone and a keyboard see it.
+            <>
+              <span id="convert-reason" className="text-xs text-muted-foreground">
+                {CONVERT_DISABLED_REASON}
+              </span>
+              <Button
+                variant="primary"
+                size="sm"
+                disabled
+                title={CONVERT_DISABLED_REASON}
+                aria-describedby="convert-reason"
+              >
+                Convert
+              </Button>
+            </>
           ) : (
             <Button variant="primary" size="sm" onClick={onConvert}>
               Convert
@@ -691,8 +697,9 @@ function EditableField({
               variant="ghost"
               size="icon-xs"
               icon="Pencil"
-              aria-label={`Edit ${field.label.toLowerCase()}`}
-              className="opacity-0 group-hover/edit:opacity-100 focus-visible:opacity-100"
+              aria-hidden
+              tabIndex={-1}
+              className="opacity-0 group-hover/edit:opacity-100 group-focus-within/edit:opacity-100 [@media(hover:none)]:opacity-100"
               onClick={begin}
             />
           </span>
@@ -991,7 +998,7 @@ function LayoutFieldRow({
               size="icon-xs"
               icon="Pencil"
               aria-label={`Edit ${def.label.toLowerCase()}`}
-              className="opacity-0 group-hover/edit:opacity-100 focus-visible:opacity-100"
+              className="opacity-0 group-hover/edit:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
               onClick={begin}
             />
           </span>
