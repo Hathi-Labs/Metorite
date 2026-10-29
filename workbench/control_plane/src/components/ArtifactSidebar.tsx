@@ -15,6 +15,7 @@ import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { workspaceFileUrl } from "@/lib/artifactKind";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -440,6 +441,10 @@ export default function ArtifactSidebar({
       setLoading(false);
     }
   }, [sessionId]);
+
+  // Task #124: the assistant made a file in another chat surface (the dock).
+  // This panel lists the same workspace, so it reads the tree again now.
+  useLiveRefresh(() => void fetchTree(), "artifacts");
 
   // Reload when session changes
   useEffect(() => {

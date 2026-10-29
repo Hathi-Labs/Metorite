@@ -122,6 +122,8 @@ import {
 import { plusLabel } from "./lib/reports";
 import { useCompactMoney } from "./lib/useCompactMoney";
 import { setRefusalSink, useCrmStore } from "./lib/store";
+import { invalidate } from "@/lib/dataCache";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 import type { EntitySlug, Lead, Status } from "./lib/types";
 import {
   applySort,
@@ -462,6 +464,13 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     else if (view.tab === "module") setModuleReload((n) => n + 1);
     else if (listEntity) void store.loadList(listEntity, loadView);
   }
+  // Task #124: the assistant wrote a lead, a deal or an activity. Drop the
+  // cached CRM reads and re-read the tab the member looks at, with no click.
+  // `reload` is a fresh closure each render, so the hook keeps the latest.
+  useLiveRefresh(() => {
+    invalidate("crm:");
+    reload();
+  }, "crm");
   const statusesFor = (entity: EntitySlug | null): Status[] =>
     entity === "deals"
       ? store.dealStatuses
