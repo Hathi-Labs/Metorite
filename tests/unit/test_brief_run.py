@@ -256,9 +256,9 @@ def test_main_imports_the_brief_before_the_worker_starts() -> None:
     assert main.index("import gateway.brief.run") < main.index("await start_job_worker()")
 
 
-def test_the_store_moves_are_the_three_of_the_gather() -> None:
-    assert {("planned", "gathered"), ("gathered", "ready"),
-                                 ("planned", "empty")} == store.TRANSITIONS
+def test_the_store_moves_are_the_four_of_the_run() -> None:
+    assert {("planned", "gathered"), ("gathered", "ready"), ("planned", "empty"),
+            ("planned", "failed")} == store.TRANSITIONS
     assert store.LEAD_SOURCES == ("template", "model")
 
 

@@ -469,6 +469,83 @@ def test_r8_a_gather_past_the_handler_timeout_gives_the_slot_back(world, monkeyp
     assert row.state == "ok" and str(run.unattended_run_id) == str(row.id)
 
 
+def test_r8_a_member_who_left_before_the_run_gets_no_row(world, monkeypatch) -> None:
+    """Repair round 1, P2-c. The run resolves the member BEFORE it makes a
+    row, so a member who left after the plan gets no ``planned`` row. The
+    slot goes back to the ledger, and no snapshot runs."""
+    _ledger_on(monkeypatch, True)
+    world.cards[ANA] = [card("email:acc:t1")]
+    _tick(world, world.p.org_a, T0)
+    world.resolve_as[ANA] = "departed"
+    _tick(world, world.p.org_a, T1)
+    assert _runs(world, ANA) == [] and _ledger(world, ANA) == []
+    job = next(j for j in _jobs(world, planner.RUN_KIND) if j.payload["member"] == ANA)
+    assert job.state == "done"
+    assert world.reads["snapshot"] == 1  # BEN only
+
+
+def test_r8_a_planned_row_of_a_member_who_left_turns_failed(world, monkeypatch) -> None:
+    """Repair round 1, P2-c. The first try made the row and then failed. The
+    member leaves before the retry, so the row turns ``failed`` with the
+    reason, and never stays ``planned``."""
+    _ledger_on(monkeypatch, True)
+    world.cards[ANA] = [card("email:acc:t1")]
+    world.complete = False
+    _seed_and_run(world)
+    assert [r.state for r in _runs(world, ANA)] == ["planned"]
+    world.complete = True
+    world.resolve_as[ANA] = "departed"
+    _tick(world, world.p.org_a, T1 + queue.backoff(1) + timedelta(seconds=1))
+    (run,) = _runs(world, ANA)
+    assert run.state == "failed" and run.error == "member_departed"
+    assert _claims(world, str(run.id)) == [] and _ledger(world, ANA) == []
+
+
+@pytest.mark.parametrize("change, reason", [
+    ({"enabled": False}, "opted_out"), ({"brief_time": "09:00"}, "moved")])
+def test_r8_the_run_reads_the_preferences_again(world, monkeypatch, change, reason) -> None:
+    """Repair round 1, P2-d. The member turns the brief off, or moves it,
+    between the plan and the run. The run reads the preferences again and
+    gathers nothing: no row, no snapshot, and the slot goes back."""
+    _ledger_on(monkeypatch, True)
+    world.cards[ANA] = [card("email:acc:t1")]
+    _tick(world, world.p.org_a, T0)
+    _set_prefs(world, ANA, world.p.org_a, change)
+    _tick(world, world.p.org_a, T1)
+    assert _runs(world, ANA) == [] and _ledger(world, ANA) == []
+    assert world.reads["snapshot"] == 1  # BEN only
+    if reason == "moved":
+        # The planner plans the new time, and the run gathers it.
+        _tick(world, world.p.org_a, datetime(2099, 3, 10, 8, 45, tzinfo=KOLKATA))
+        _tick(world, world.p.org_a, datetime(2099, 3, 10, 8, 56, tzinfo=KOLKATA))
+        (run,) = _runs(world, ANA)
+        assert run.state == "ready"
+        assert run.slot_at == datetime(2099, 3, 10, 9, 0, tzinfo=KOLKATA)
+
+
+def test_r8_a_lost_claim_does_not_finish_the_ledger_slot(world, monkeypatch) -> None:
+    """Repair round 1, P2-c. The claim is gone when the gather would write.
+    Nothing commits, and the ledger slot goes back instead of ``ok``, so the
+    try that holds the job can begin it."""
+    _ledger_on(monkeypatch, True)
+    world.cards[ANA] = [card("email:acc:t1")]
+    real = queue.hold
+    lose = {"left": 1}
+
+    async def hold(db: Any, claim: queue.Claim) -> bool:
+        if claim.kind == planner.RUN_KIND and claim.payload.get("member") == ANA \
+                and world.reads["snapshot"] and lose["left"]:
+            lose["left"] -= 1
+            return False
+        return await real(db, claim)
+
+    monkeypatch.setattr(queue, "hold", hold)
+    _seed_and_run(world)
+    (run,) = _runs(world, ANA)
+    assert run.state == "planned" and _claims(world, str(run.id)) == []
+    assert _ledger(world, ANA) == []
+
+
 def test_r8_a_slot_that_the_ledger_holds_is_not_gathered_again(world, monkeypatch) -> None:
     """A run that a crash cut: the ledger row is ``started`` under another
     runner. ``begin`` marks it unknown and the job settles done with no

@@ -13,21 +13,29 @@ The order, for the run of *member* on *local_date*:
 2. ``unattended.begin(org, "brief.brief", "<member>:<local_date>")``. A
    taken slot (``fresh=False``) ends the run. With the ledger off, ``begin``
    answers fresh with no id, and the UNIQUE of ``brief_runs`` holds once.
-3. ``store.create_run``, and the link to the ledger row. A run that is past
-   ``planned`` ends the job with no second gather.
-4. ``loop.resolve``. A reason string skips the member. ``identity_failed``
-   raises, so the queue retries.
-5. ``loop.snapshot``. An incomplete read raises, so the queue retries, and
+3. ``loop.resolve``, BEFORE any row exists. ``identity_failed`` raises, so
+   the queue retries. A member who is gone gets no row: a ``planned`` row of
+   an earlier try turns ``failed`` with the reason (``member_departed``).
+4. The member's preferences, read again now (``assistant_profile.
+   member_app_prefs``). A member who turned the brief off (``opted_out``),
+   or who moved the brief time away from this slot (``moved``), gets no
+   brief, and the planner plans the new time.
+5. ``store.create_run``, and the link to the ledger row of this try. A run
+   that is past ``planned`` ends the job with no second gather.
+6. ``loop.snapshot``. An incomplete read raises, so the queue retries, and
    no claim comes from a read that lost a source.
-6. One claim for each shown card (``gather.claims``), then ``gathered``, the
+7. One claim for each shown card (``gather.claims``), then ``gathered``, the
    template lead (``plan.brief_lead``), and ``ready``. No card: ``empty``,
    no lead and no claims. The writes and ``complete`` commit together.
-7. ``unattended.finish(ok)``.
+8. ``unattended.finish(ok)``, only for a gather that committed or a run that
+   was past ``planned``.
 
-On an exception before ``ready``, the handler gives the ledger slot back
-(``unattended.release``) and raises, so a retry can begin the slot again. A
-crash after ``begin`` leaves an orphan, and AUTO-2 marks it ``unknown``: that
-brief is lost for the day on purpose, and BR-2d reports it.
+**The ledger slot goes back** (``unattended.release``) when the run gathered
+nothing: an exception, a cancel (the worker's ``HANDLER_TIMEOUT``), a skip,
+or a lost claim. So a retry or a moved slot can begin it again. The release
+runs under ``asyncio.shield``. A crash after ``begin`` leaves an orphan, and
+AUTO-2 marks it ``unknown``: that brief is lost for the day on purpose, and
+BR-2d reports it.
 
 This slice calls no model and sends nothing. ``delivered`` is BR-2c, and the
 phrase step is BR-2a-2. The two kinds register at import, and
@@ -40,7 +48,7 @@ import asyncio
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from acb_common import get_logger
+from acb_common import assistant_profile, get_logger
 from acb_common.db import tenant_session
 
 from gateway.brief import flags, gather, planner, store
@@ -93,18 +101,43 @@ async def _settle_done(org: str, claim: queue.Claim, now: datetime) -> None:
             await queue.complete(db, claim, now=now)
 
 
-async def _gather(org: str, member: str, run: store.Run, claim: queue.Claim,
+#: The outcomes after which the ledger slot is done. Any other outcome
+#: gathered nothing, so the slot goes back.
+_FINISHED = frozenset({"ready", "empty", "exists"})
+
+
+async def _skip(org: str, member: str, local_date: date, claim: queue.Claim,
+                now: datetime, reason: str) -> str:
+    """End a slot that gets no brief. A ``planned`` row of an earlier try
+    turns ``failed`` with *reason*, and no row is made. Answers ``skipped``,
+    or ``lost`` when the claim is gone."""
+    _log.info("brief.run_skipped", reason=reason)
+    async with tenant_session(org) as db:
+        if not await queue.hold(db, claim):
+            return "lost"
+        found = await store.read_run(db, member, kind=planner.KIND, local_date=local_date)
+        if found is not None and found.state == "planned":
+            await store.set_state(db, member, found.id, "failed", now=now, error=reason,
+                                  from_state="planned")
+        await queue.complete(db, claim, now=now)
+    return "skipped"
+
+
+def _why_not(prefs: dict[str, Any], slot_at: datetime) -> str | None:
+    """Why the member's preferences of now refuse this slot, or None. The
+    slot carries the member's offset, so its clock reads their brief time."""
+    if not prefs["enabled"]:
+        return "opted_out"
+    if slot_at.strftime("%H:%M") != prefs["brief_time"]:
+        return "moved"
+    return None
+
+
+async def _gather(org: str, member: str, user: Any, run: store.Run, claim: queue.Claim,
                   now: datetime) -> str:
-    """Steps 4 to 6. Answers the final state, or ``skipped``/``lost``."""
+    """Steps 6 and 7. Answers ``ready``, ``empty``, or ``lost``."""
     from gateway.reach import loop
 
-    user = await loop.resolve(org, member)
-    if user == "identity_failed":
-        raise IdentityReadFailed(member)
-    if isinstance(user, str):
-        _log.info("brief.run_skipped", reason=user)
-        await _settle_done(org, claim, now)
-        return "skipped"
     snap = await loop.snapshot(org, user, now)
     if not snap.complete:
         raise SnapshotIncomplete(member)
@@ -128,6 +161,34 @@ async def _gather(org: str, member: str, run: store.Run, claim: queue.Claim,
     return state
 
 
+async def _run_slot(org: str, member: str, local_date: date, slot_at: datetime,
+                    claim: queue.Claim, ledger: unattended.Run, now: datetime) -> str:
+    """Steps 3 to 7. Answers the outcome: ``ready``, ``empty``, ``exists``,
+    ``skipped`` or ``lost``."""
+    from gateway.reach import loop
+
+    user = await loop.resolve(org, member)
+    if user == "identity_failed":
+        raise IdentityReadFailed(member)
+    if isinstance(user, str):
+        return await _skip(org, member, local_date, claim, now, f"member_{user}")
+    async with tenant_session(org) as db:
+        prefs = await assistant_profile.member_app_prefs(db, org, member, planner.KIND)
+        why = _why_not(prefs, slot_at)
+        if why is None:
+            created = await store.create_run(db, member, kind=planner.KIND,
+                                             local_date=local_date, slot_at=slot_at)
+            if ledger.id is not None:
+                await store.link_run(db, member, created.run.id, ledger.id)
+    if why is not None:
+        return await _skip(org, member, local_date, claim, now, why)
+    if created.run.state != "planned":
+        _log.info("brief.run_exists", state=created.run.state)
+        await _settle_done(org, claim, now)
+        return "exists"
+    return await _gather(org, member, user, created.run, claim, now)
+
+
 async def run(org: str, payload: dict[str, Any], claim: queue.Claim) -> None:
     """The detached handler of :data:`planner.RUN_KIND`."""
     member, local_date, slot_at = _payload(payload)
@@ -143,16 +204,7 @@ async def run(org: str, payload: dict[str, Any], claim: queue.Claim) -> None:
         await _settle_done(org, claim, now)
         return
     try:
-        async with tenant_session(org) as db:
-            created = await store.create_run(db, member, kind=planner.KIND,
-                                             local_date=local_date, slot_at=slot_at)
-            if ledger.id is not None:
-                await store.link_run(db, member, created.run.id, ledger.id)
-        if created.run.state != "planned":
-            _log.info("brief.run_exists", state=created.run.state)
-            await _settle_done(org, claim, now)
-        else:
-            await _gather(org, member, created.run, claim, now)
+        outcome = await _run_slot(org, member, local_date, slot_at, claim, ledger, now)
     except BaseException:
         # A cancel is a BaseException: the worker's HANDLER_TIMEOUT cancels
         # the handler, and so does a stop. The slot goes back in each case,
@@ -160,7 +212,11 @@ async def run(org: str, payload: dict[str, Any], claim: queue.Claim) -> None:
         # ``brief_runs`` row stays ``planned``, so the retry gathers it.
         await _give_back(org, ledger)
         raise
-    await unattended.finish(org, ledger, state="ok", now=now)
+    if outcome in _FINISHED:
+        await unattended.finish(org, ledger, state="ok", now=now)
+    else:
+        # Nothing was gathered: a skip, or a claim that another try holds.
+        await _give_back(org, ledger)
 
 
 async def prune(db: Any, today: date) -> None:

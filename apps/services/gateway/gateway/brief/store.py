@@ -35,7 +35,8 @@ has a claim, so a retry of the same claims makes no second set.
 **The moves (BR-2a-1).** :func:`set_state` with ``from_state`` changes the
 row only when it is in that state (``UPDATE ... WHERE state = :from``), and
 only along :data:`TRANSITIONS`: ``planned`` to ``gathered`` to ``ready``,
-and ``planned`` to ``empty``. So a second gather of a run that moved on
+``planned`` to ``empty``, and ``planned`` to ``failed`` (a slot that gets
+no brief, with the reason). So a second gather of a run that moved on
 changes nothing. :func:`set_lead` writes the lead, and :func:`link_run` the
 ledger row of AUTO-2 of the current try.
 """
@@ -62,7 +63,8 @@ MAX_SOURCE_IDS = 50
 #: (``core_brief.md`` §4.2). Each is ``(from, to)``. ``delivered`` (BR-2c)
 #: and ``phrasing`` (BR-2a-2) add their own rows when they ship.
 TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
-    ("planned", "gathered"), ("gathered", "ready"), ("planned", "empty")})
+    ("planned", "gathered"), ("gathered", "ready"), ("planned", "empty"),
+    ("planned", "failed")})
 #: The two sources of a lead, as the CHECK ``brief_runs_lead_source`` holds them.
 LEAD_SOURCES: tuple[str, ...] = ("template", "model")
 

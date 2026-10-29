@@ -107,12 +107,105 @@ def app_prefs(raw: Any, app: str) -> dict[str, Any]:
     :func:`stored_profile` is: a key of the wrong shape takes its default,
     and a key that the app did not declare drops. An app that declared
     nothing raises."""
-    declared = APP_PREFERENCES[app]
     raw = _as_dict(raw)
     apps = raw.get("apps") if isinstance(raw, dict) else None
-    stored = apps.get(app) if isinstance(apps, dict) else None
+    return _one_app(apps.get(app) if isinstance(apps, dict) else None, app)
+
+
+def _one_app(stored: Any, app: str) -> dict[str, Any]:
+    """The stored object of one app over its declared defaults."""
+    declared = APP_PREFERENCES[app]
+    stored = _as_dict(stored)
     stored = stored if isinstance(stored, dict) else {}
     return {key: _app_pref(stored.get(key), default) for key, default in declared.items()}
+
+
+def all_app_prefs(raw: Any) -> dict[str, dict[str, Any]]:
+    """The preferences of every declared app, as the GET of the profile
+    answers them under ``apps``."""
+    return {app: app_prefs(raw, app) for app in APP_PREFERENCES}
+
+
+def clean_app_prefs(value: Any) -> dict[str, Any]:
+    """The strict write of the key ``apps`` (``PUT /auth/me/assistant-profile``).
+
+    *value* is ``{<app>: {<key>: <value>, ...}}``, with ONE declared app and
+    at least one declared key of it. A key whose default is a bool takes a
+    bool. A time key takes ``HH:MM`` from 00:00 to 23:59. Any other shape
+    raises ValueError. The write merges these keys into ``apps.<app>``, and
+    every other key stays."""
+    if not isinstance(value, dict) or len(value) != 1:
+        raise ValueError("apps holds exactly one app")
+    ((app, prefs),) = value.items()
+    declared = APP_PREFERENCES.get(app) if isinstance(app, str) else None
+    if declared is None:
+        raise ValueError(f"the app is one of {', '.join(APP_PREFERENCES)}")
+    if not isinstance(prefs, dict) or not prefs:
+        raise ValueError("an app takes at least one preference")
+    out: dict[str, Any] = {}
+    for key, one in prefs.items():
+        if key not in declared:
+            raise ValueError(f"the preferences of {app} are {', '.join(declared)}")
+        if isinstance(declared[key], bool):
+            if not isinstance(one, bool):
+                raise ValueError(f"{key} is true or false")
+        elif clock_time(one) is None:
+            raise ValueError(f"{key} is a time from 00:00 to 23:59, as HH:MM")
+        out[key] = one
+    return {app: out}
+
+
+#: The stored object of one app for one member. ``:org`` is the bound org and
+#: ``:m`` the verified member, both from the caller and never from a payload
+#: (R5). The row rule of :data:`READ_SQL`. The read returns ``apps.<app>``
+#: only, and never the rest of the profile.
+APP_READ_SQL = (
+    "SELECT assistant_profile -> 'apps' -> CAST(:app AS text) FROM user_settings "
+    "WHERE organization_id = CAST(:org AS uuid) AND lower(user_id) = lower(:m) "
+    "ORDER BY (assistant_profile IS NULL), (user_id <> lower(user_id)), user_id "
+    "LIMIT 1"
+)
+
+#: The stored object of one app for each ACTIVE member of ``:org``, one row
+#: for each member. ``DISTINCT ON`` holds one row for each address in any
+#: case, so two case-variant rows of ``user_settings`` give one member and
+#: one answer, by the row rule of :data:`READ_SQL`. A case-variant row can
+#: never add a second, opted-in copy of a member who opted out.
+MEMBERS_APP_SQL = (
+    "SELECT DISTINCT ON (lower(u.email)) lower(u.email), "
+    "s.assistant_profile -> 'apps' -> CAST(:app AS text) "
+    "FROM app_user u LEFT JOIN user_settings s "
+    "ON s.organization_id = u.organization_id AND lower(s.user_id) = lower(u.email) "
+    "WHERE u.organization_id = CAST(:org AS uuid) AND u.status = 'active' "
+    "ORDER BY lower(u.email), (s.assistant_profile IS NULL), "
+    "(s.user_id <> lower(s.user_id)), s.user_id"
+)
+
+
+async def member_app_prefs(db: Any, org: str, member: str, app: str) -> dict[str, Any]:
+    """The preferences of *app* for *member*, read in the caller's session.
+
+    The caller opened ``tenant_session(org)`` and resolved *member* from a
+    trusted source. The read takes ``apps.<app>`` only (:data:`APP_READ_SQL`)."""
+    from sqlalchemy import text
+
+    if app not in APP_PREFERENCES:  # an app that declared nothing raises before the read
+        raise KeyError(app)
+    row = (await db.execute(text(APP_READ_SQL), {"app": app, "org": org, "m": member})).first()
+    return _one_app(row[0] if row is not None else None, app)
+
+
+async def members_app_prefs(db: Any, org: str, app: str) -> list[tuple[str, dict[str, Any]]]:
+    """The active members of *org* with the preferences of *app*, in address
+    order, one entry for each member (:data:`MEMBERS_APP_SQL`). The one bulk
+    reader of app preferences: an app job reads its members here, and never
+    from the column (§12.6). The caller's session binds the tenant."""
+    from sqlalchemy import text
+
+    if app not in APP_PREFERENCES:
+        raise KeyError(app)
+    rows = (await db.execute(text(MEMBERS_APP_SQL), {"app": app, "org": org})).all()
+    return [(str(r[0]), _one_app(r[1], app)) for r in rows]
 
 #: The interview (PZ-26, ``personalization.md`` §14.3). One table: the id of
 #: each area and its starting question, in the order the interview asks. The
