@@ -91,6 +91,16 @@ function boardQuery(view: CrmView & { cardSort?: CardSort }) {
   };
 }
 
+/**
+ * What makes two Deals board reads the same view: the owner, the pipeline,
+ * the filters, the search and the card sort. A re-read of the same view that
+ * fails keeps the lanes on screen (CRM-U15).
+ */
+function boardKey(view: (CrmView & { cardSort?: CardSort }) | null): string | null {
+  if (!view || view.tab !== "deals" || view.layout !== "board") return null;
+  return JSON.stringify([view.owner ?? null, view.pipelineId ?? null, boardQuery(view)]);
+}
+
 type CrmState = {
   lanes: BoardLane[];
   /** The Leads board: one lane per Lead Status (CRM-Q3). */
@@ -361,6 +371,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
     // `lastView` keeps `cardSort` too, so a re-read after a write keeps the
     // member's lane order (CRM-X3).
     const mine = ++latestBoard;
+    const sameView = boardKey(get().lastView) === boardKey(view);
     set({ loading: true, lastView: view });
     try {
       const extra = boardQuery(view);
@@ -372,7 +383,9 @@ export const useCrmStore = create<CrmState>((set, get) => ({
       set({ lanes: toBoardLanes(pipeline), error: null });
     } catch (err) {
       if (mine !== latestBoard) return;
-      set({ error: message(err) });
+      // CRM-U15: a failed read of ANOTHER view clears the old lanes, because they
+      // would be wrong under the banner. A failed re-read of the same view keeps them.
+      set(sameView ? { error: message(err) } : { lanes: [], error: message(err) });
     } finally {
       if (mine === latestBoard) set({ loading: false });
     }

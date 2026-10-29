@@ -27,6 +27,7 @@ import Icon from "@/components/Icon";
 import { TaskCardShell, TaskCardTitle } from "@/components/TaskCardShell";
 import { TaskMeta } from "@/components/TaskMeta";
 import Button from "@/components/ui/Button";
+import { SkeletonBoard } from "@/components/ui/Skeleton";
 import type { MetaChip } from "@/lib/taskCard";
 import { useState } from "react";
 import {
@@ -47,6 +48,7 @@ import { cardLabel } from "../lib/cardLabel";
 import { isLocked, type CrmMode } from "../lib/connect";
 import { isRetired } from "../lib/emptyStages";
 import { money, shortEmail, stageAgeLabel } from "../lib/format";
+import { plusLabel } from "../lib/reports";
 import { useCompactMoney } from "../lib/useCompactMoney";
 import { nextActivityChip } from "../lib/nextActivity";
 import type { Deal, Lead, Status } from "../lib/types";
@@ -60,13 +62,13 @@ export default function KanbanBoard({
   readOnly = false,
   onMove,
   onOpen,
-  onCreate,
   hiddenEmpty = 0,
   mode = null,
   cursorId = null,
   emptyNote,
   onMore,
   moreLane = null,
+  failed = false,
 }: {
   /** Which record the cards are. Deals unless stated. */
   entity?: "deals" | "leads";
@@ -78,8 +80,6 @@ export default function KanbanBoard({
    *  gateway refuses a lost move without one BEFORE writing anything. */
   onMove: (move: DealMove, target: Status) => void;
   onOpen: (id: string) => void;
-  /** Omitted in Mirror mode, where a record is made in Zoho (CRM-Z7). */
-  onCreate?: () => void;
   /** How many empty stages the page hid (`lib/emptyStages.ts`). */
   hiddenEmpty?: number;
   /** The CRM mode. In Mirror mode a lane colour skips the stored `gray` (CRM-C2). */
@@ -98,10 +98,28 @@ export default function KanbanBoard({
   onMore?: (statusId: string) => void;
   /** The lane whose next page is loading (the button shows its spinner). */
   moreLane?: string | null;
+  /** The last read failed. With no lane to show, the board says so (CRM-U15). */
+  failed?: boolean;
 }) {
   const [dragging, setDragging] = useState<Card | null>(null);
   const [over, setOver] = useState<string | null>(null);
   const isDeals = entity === "deals";
+
+  if (loading && lanes.length === 0) {
+    // CRM-U15: the first read of a board shows lanes to come, not blank space.
+    return <SkeletonBoard className="flex-1" />;
+  }
+
+  if (!loading && lanes.length === 0 && failed) {
+    // CRM-U15: the read failed and the old lanes are gone. The banner above
+    // holds the error and Retry. This line stops the "no stage" hint, which
+    // would say something false.
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+        <p className="text-sm text-muted-foreground">The board did not load.</p>
+      </div>
+    );
+  }
 
   if (!loading && lanes.length === 0 && hiddenEmpty > 0) {
     // Every stage is empty and hidden. Say so, and do not claim that no
@@ -110,8 +128,8 @@ export default function KanbanBoard({
       <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
         <p className="text-sm text-muted-foreground">{emptyNote ?? "No deals match this view."}</p>
         <p className="max-w-sm text-xs text-muted-foreground">
-          {hiddenEmpty} empty {hiddenEmpty === 1 ? "stage is" : "stages are"} hidden. Use
-          &quot;Empty stages&quot; in the bar to show them.
+          {hiddenEmpty} empty {hiddenEmpty === 1 ? "stage is" : "stages are"} hidden. Turn on
+          &quot;Empty stages&quot; in Board options to show {hiddenEmpty === 1 ? "it" : "them"}.
         </p>
       </div>
     );
@@ -135,8 +153,8 @@ export default function KanbanBoard({
         </p>
         <p className="max-w-sm text-xs text-muted-foreground">
           {isDeals
-            ? "Stages are data, not code. Change them in CRM settings, without a deploy."
-            : "Lead statuses are data, not code. Change them in CRM settings."}
+            ? "Stages are set in CRM settings."
+            : "Lead statuses are set in CRM settings."}
         </p>
       </div>
     );
@@ -145,7 +163,7 @@ export default function KanbanBoard({
   return (
     <>
       {!loading && emptyNote ? (
-        // The lanes stay, so a stage and its + stay in reach (CRM-Q17b item 4).
+        // The lanes stay, so the stages stay in view (CRM-Q17b item 4).
         <p role="status" className="shrink-0 border-b border-border px-4 py-2 text-xs text-muted-foreground">
           {emptyNote}
         </p>
@@ -232,15 +250,6 @@ export default function KanbanBoard({
             </BoardColumn>
           );
         })}
-        {onCreate && (
-          <button
-            onClick={onCreate}
-            className="flex h-9 w-[180px] shrink-0 items-center justify-center gap-1.5 self-start rounded-lg border border-dashed border-border text-xs text-muted-foreground hover:border-primary/40 hover:text-foreground tech-transition"
-          >
-            <Icon name="Plus" className="w-3.5 h-3.5" />
-            {isDeals ? "New deal" : "New lead"}
-          </button>
-        )}
       </Board>
     </>
   );
@@ -261,10 +270,12 @@ export function showMoreLabel(remaining: number): string {
  */
 function LaneTotals({ lane, isDeals }: { lane: BoardLane | LeadLane; isDeals: boolean }) {
   const compact = useCompactMoney();
+  // The lane's other currencies (task 887). The app adds no two currencies.
+  const plus = isDeals ? plusLabel(lane.others, (o) => o.amount) : "";
   const lines = isDeals
     ? {
-        first: `${compact(lane.amount)} total`,
-        second: dealForecastLine(lane.status, compact(lane.weighted)),
+        first: `${compact(lane.amount, lane.currency)} total`,
+        second: dealForecastLine(lane.status, compact(lane.weighted, lane.currency)),
       }
     : (() => {
         const lead = leadForecastLines(lane);
@@ -274,6 +285,11 @@ function LaneTotals({ lane, isDeals }: { lane: BoardLane | LeadLane; isDeals: bo
     <span className="flex flex-col gap-0.5 tabular-nums" data-testid="lane-stat-block">
       <span className="text-xs font-medium text-foreground">{lines.first}</span>
       <span className="text-muted-foreground">{lines.second}</span>
+      {isDeals && plus && (
+        <span className="text-muted-foreground" data-testid="lane-other-currencies">
+          {plus}
+        </span>
+      )}
       {lane.rows.length < lane.count && (
         <span className="text-muted-foreground">showing {lane.rows.length}</span>
       )}

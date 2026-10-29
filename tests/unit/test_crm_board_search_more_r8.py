@@ -141,3 +141,51 @@ async def test_a_lane_offset_reads_the_next_page_with_stable_totals(ns, app_engi
     assert bad.status_code == 422
     bad = await _call(ns, _admin(a), "GET", "/crm/pipeline?lane_status_id=nope")
     assert bad.status_code == 422
+
+
+async def test_a_lane_keeps_each_currency_apart(ns, app_engine) -> None:  # noqa: F811
+    """Task 887 (H-333): one lane of INR and USD deals gives a total for each
+    currency, over the WHOLE lane and not over the page, and another
+    organization's deal reaches no figure."""
+    tag = uuid.uuid4().hex[:6]
+    a, b = ns.org_a, ns.org_b
+    await _native(ns, a)
+    await _native(ns, b)
+    with ns.admin_engine.begin() as c:
+        for currency, amount, probability, count in (
+            ("INR", 10, 50, 60), ("USD", 1, 20, 60), (" usd ", 5, 100, 1),
+            ("", 4, 50, 1),
+        ):
+            c.execute(text(
+                "INSERT INTO crm_deals (organization_id, name, amount, "
+                "probability, currency, status_id) "
+                f"SELECT CAST(:o AS uuid), 'C{tag}-' || :n || '-' || g, :amount, "
+                f":p, :cur, {_FIRST_STAGE} FROM generate_series(1, :k) g"),
+                {"o": a, "n": amount, "amount": amount, "p": probability,
+                 "cur": currency, "k": count})
+        c.execute(text(
+            "INSERT INTO crm_deals (organization_id, name, amount, probability, "
+            f"currency, status_id) VALUES (CAST(:o AS uuid), 'C{tag}-bee', 99999, "
+            f"100, 'USD', {_FIRST_STAGE})"), {"o": b})
+
+    lanes = await _board(ns, a, f"?q=C{tag}")
+    lane = next(item for item in lanes if item["count"] == 122)
+    sid = lane["status"]["id"]
+    assert len(lane["rows"]) == 50
+    # INR is the primary: 60 * 10 plus the blank code at 4. Weighted at 50%.
+    assert (lane["currency"], lane["amount"], lane["weighted"]) == ("INR", 604.0, 302.0)
+    # USD: 60 * 1 plus the padded " usd " at 5. Weighted: 60 * 20% + 5.
+    assert [(o["currency"], o["amount"], o["weighted"]) for o in lane["others"]] == [
+        ("USD", 65.0, 17.0),
+    ]
+    # A later page holds the same totals. B's USD deal is in no figure.
+    page = await _board(
+        ns, a, f"?q=C{tag}&lane_status_id={sid}&lane_offset=100",
+    )
+    assert len(page) == 1 and len(page[0]["rows"]) == 22
+    assert (page[0]["count"], page[0]["currency"], page[0]["amount"]) == (122, "INR", 604.0)
+    assert page[0]["others"] == lane["others"]
+    # Organization B sees its own USD deal alone, as the primary currency.
+    bee = await _board(ns, b, f"?q=C{tag}")
+    held = next(item for item in bee if item["count"] == 1)
+    assert (held["currency"], held["amount"], held["others"]) == ("USD", 99999.0, [])
