@@ -117,9 +117,12 @@
 
 > **Built from §3.4 (CRM-Z10):** CRM-Z10b, the switch from the Zoho mirror to
 > Native mode, which keeps every record. Built 2026-10-28 on
-> `crm-z10b-switch`, not merged. It is dark behind `CRM_CUTOVER_ORGS`, which
-> ships empty. It adds no migration. The CRM-Z10b row of the §3.4 slice table
-> holds the status, and §3.4.1 and §3.4.2 hold the watermark and the fold.
+> `crm-z10b-switch`, repaired 2026-10-29 after the review, not merged. It is
+> dark behind `CRM_CUTOVER_ORGS`, which ships empty. It adds no migration.
+> Its label is "Switch to Metorite, keep the Zoho records", and the CRM-X0
+> action is now "Switch to Metorite, start empty" (D133, amended 2026-10-29).
+> The CRM-Z10b row of the §3.4 slice table holds the status, and §3.4.1 and
+> §3.4.2 hold the watermark and the fold.
 > Fences: `tests/unit/test_crm_cutover_switch_r8.py` and
 > `app/crm/lib/cutoverSwitch.test.ts`.
 
@@ -304,7 +307,7 @@ boundary, and the UI is a courtesy.
 | From | To | Allowed | How |
 |---|---|---|---|
 | no mode | Native or Mirror | Yes | The setup choice |
-| Mirror | Native | Yes | "Switch to Metorite" in the cutover card (CRM-Z10b): a final sync, then the mode flips and the connection closes. This is WS-26e's cutover, made a per-org action (CRM-Z10) |
+| Mirror | Native | Yes | Two switches, and each name says what happens to the records (D133, amended 2026-10-29). "Switch to Metorite, keep the Zoho records" (CRM-Z10b): a final sync, then the mode flips, every record stays, and the connection closes. This is WS-26e's cutover, made a per-org action (CRM-Z10). "Switch to Metorite, start empty" (CRM-X0): every record goes, after a download offer and a typed `DELETE`, and an empty Native CRM opens |
 | Native | Mirror | Only while the org has 0 native records | A mirror over native data is a merge, and v1 has no merge |
 | Native or Mirror | no mode | Yes, with 0 records and no live connection | Change CRM setup (CRM-U5b) |
 
@@ -330,7 +333,7 @@ The slices, in Metorite under sub-epic CRM-Z10 of epic #477:
 | CRM-Z10d | Custom modules stay visible in Native mode and become editable. `PATCH /crm/modules/{module}/records/{id}` takes `name`, `owner_email` and `fields`, and it checks each key against `crm_field_defs` of `module:<ApiName>`. `crm_module_records` joins `MIRROR_RECORD_TABLES`. `mirrored_modules()` returns the profile modules in Native mode when the org holds module records, and the AI catalogue lists them. No create, delete or field-def edit in v1. **Status 2026-10-28:** the gateway is merged (#1422). The sheet (`ModuleRecordSheet`) edits the name, the owner and each field in Native mode, and it stays read only in Mirror mode | R8: a Mirror PATCH gives 409, a Native PATCH gives 200, and the counts match after a cutover |
 | CRM-Z10e | Attachments. Not a gate for the switch (owner, 2026-10-28, D133). The preview says that they stay in Zoho. Later: Z10e-1 picks the scope, the table and the storage. Z10e-2 adds `list_attachments` and `download_attachment` to the `CrmSource` seam, with the scope in `ZOHO_READ_SCOPES`, and each org reconnects once. Z10e-3 adds a tenant table `crm_attachments` to `RESET_TABLES` and the purge tests | Count and `sum(size_bytes)` equal Zoho's, and each `sha256` matches |
 | CRM-Z10g | ✅ Built 2026-10-28 on `crm-z10g-labels`, not merged (migration 311, `gateway/routes/crm/settings.py`, `app/crm/components/RecordNamesCard.tsx`, `tests/unit/test_crm_labels_r8.py`). The migration also adds `cutover_at` and `cutover_by` for CRM-Z10b. Native labels (D133.1). `crm_settings.labels` JSONB NULL (migration, expand only). `GET /crm/mode` serves it in Native mode, with no `CRM_FILL_RANK_ORGS` gate. An admin rename route and control | R8: a renamed label shows in `GET /crm/mode` and survives a restart |
-| CRM-Z10b | ✅ Built 2026-10-28 on `crm-z10b-switch`, not merged, dark behind `CRM_CUTOVER_ORGS` (default empty, the grammar of `CRM_ORGS`, and it needs `CRM_MIRROR_ORGS` too). Files: `gateway/routes/crm/cutover.py`, `app/crm/components/CutoverDialog.tsx`, `app/crm/lib/cutoverSwitch.ts`. *Corrected 2026-10-28:* it adds NO migration, because migration 311 of CRM-Z10g holds `labels`, `cutover_at` and `cutover_by`. The switch has three phases. (1) `POST /crm/cutover/start` checks the mode, the Zoho token (409 `needs_reconnect`), the open import and each module. Then it runs the final sync through the normal engine, each page in its own transaction. It starts no label, vector, mapping, question or digest step. A good run of the last 15 minutes skips the sync. `GET /crm/cutover/status` reports the run. (2) `POST /crm/cutover` runs ONE transaction. It takes the advisory connect lock FIRST, then `crm_settings` `FOR UPDATE`, in the order of the start over. It checks the mode, no open run, a good final run that ended in the last 15 minutes by the database clock, and each module again. Then it folds the overlay in the Mirror board order (§3.4.2), copies the names of the newest source profile to `crm_settings.labels`, sets `source = 'metorite'` on `crm_field_defs`, rewinds the watermark (§3.4.1), and sets `mode = 'native'`, `cutover_at`, `cutover_by` and no `connection_id`. One audit line, `crm.cutover`, after the commit. (3) After the commit, `connection.disconnect_zoho_reporting` revokes the token and deletes the credential. *Corrected:* the old `disconnect_zoho` never fails on a revoke, so the answer now says what Zoho said: `confirmed`, `not_confirmed` or `not_configured`. With `not_confirmed`, the customer removes Metorite from the connected apps in Zoho. A failure of phase 3 leaves a Native org with a live token, and "Finish closing Zoho" runs it again. A second audit line, `crm.cutover.disconnect`. A module is not complete when it is held, unavailable, still importing, has records to retry, reads short, or the run counted `failed` or `refused`. *Corrected:* one function, `cutover.module_state`, decides it for the preview and the switch. The admin may tick any such module in "Leave out", a core module too. The write guard, the overlay routes and the auto-lead step read the mode `FOR SHARE`, so a write that read `mirror` finishes before the fold. A second call answers `already_done`. The admin types `SWITCH`. It never calls `seed_native_pipeline`. The records, the pipelines and their stages, the lost reasons, `ext_source`, `ext_id` and the sync history stay | R8 (`tests/unit/test_crm_cutover_switch_r8.py`, items 1 to 21 of the audit): the counts and each `(ext_source, ext_id)` are equal before and after. The mode is `native`, `connection_id` is NULL, the switch stores the names, and Zoho saw one revoke. The fold keeps the board of the five fixture cases. The watermark rewinds, also during a cycle that holds the mode. A second call changes nothing. An open run, a stale final run and each refusal write nothing. A failure rolls back all of phase 2. A run that raced the commit stops with `mode_changed`. Two calls at one time switch once. vitest (`cutoverSwitch.test.ts`): the Mirror board of each case equals its Native board, column and hue |
+| CRM-Z10b | ✅ Built 2026-10-28 on `crm-z10b-switch`, repaired 2026-10-29 after the review (one P0, one P1, two P2), not merged, dark behind `CRM_CUTOVER_ORGS` (default empty, the grammar of `CRM_ORGS`, and it needs `CRM_MIRROR_ORGS` too). The button and the dialog title are "Switch to Metorite, keep the Zoho records" (D133, amended 2026-10-29). Files: `gateway/routes/crm/cutover.py`, `app/crm/components/CutoverDialog.tsx`, `app/crm/lib/cutoverSwitch.ts`. *Corrected 2026-10-28:* it adds NO migration, because migration 311 of CRM-Z10g holds `labels`, `cutover_at` and `cutover_by`. The switch has three phases. (1) `POST /crm/cutover/start` checks the mode, the Zoho token (409 `needs_reconnect`), the open import and each module. Then it runs the final sync through the normal engine, each page in its own transaction. It starts no label, vector, mapping, question or digest step. *Corrected 2026-10-29 (review P0):* it always starts its own full run and returns its `run_id`. A good run that is fresh is no shortcut, because a "Sync it on its own" run reads one module, and its row looks the same. `GET /crm/cutover/status` reports the run. (2) `POST /crm/cutover` runs ONE transaction. It takes the advisory connect lock FIRST, then `crm_settings` `FOR UPDATE`, in the order of the start over. It checks the mode, no open run, and that the newest run IS the run of phase 1 (the `run_id` of the body), ended well in the last 15 minutes by the database clock. Any other newest run, a scheduled run that ended after the final run too, is 409 `final_sync_missing`, and nothing changes. A Native org with a cutover stamp skips these checks, so a retry needs no `run_id`. Then it checks each module again. Then it folds the overlay in the Mirror board order (§3.4.2), copies the names of the newest source profile to `crm_settings.labels`, sets `source = 'metorite'` on `crm_field_defs`, rewinds the watermark (§3.4.1), and sets `mode = 'native'`, `cutover_at`, `cutover_by` and no `connection_id`. One audit line, `crm.cutover`, after the commit. (3) After the commit, `connection.disconnect_zoho_reporting` revokes the token and deletes the credential. *Corrected 2026-10-29 (F2):* it holds the connect lock from its status read to its UPDATE, so two calls at one time revoke once and write one audit line. *Corrected:* the old `disconnect_zoho` never fails on a revoke, so the answer now says what Zoho said: `confirmed`, `not_confirmed` or `not_configured`. With `not_confirmed`, the customer removes Metorite from the connected apps in Zoho. A failure of phase 3 leaves a Native org with a live token, and "Finish closing Zoho" runs it again. *Corrected 2026-10-29:* that button reads the status first and posts only when it says `done` (F6). The card reads the status only when `GET /crm/mode` says `cutover_done` (F3). After a lost answer, a second press of the dialog sees `not_mirror`, reads `done` and sends the switch again (review P2). A 409 `module_incomplete` adds its modules to the "Leave out" step (review P2). A second audit line, `crm.cutover.disconnect`. A module is not complete when it is held, unavailable, still importing, has records to retry, reads short, or the run counted `failed` or `refused`. *Corrected:* one function, `cutover.module_state`, decides it for the preview and the switch. The admin may tick any such module in "Leave out", a core module too. The write guard, the overlay routes and the auto-lead step read the mode `FOR SHARE`, so a write that read `mirror` finishes before the fold. A second call answers `already_done`. The admin types `SWITCH`. It never calls `seed_native_pipeline`. The records, the pipelines and their stages, the lost reasons, `ext_source`, `ext_id` and the sync history stay | R8 (`tests/unit/test_crm_cutover_switch_r8.py`, items 1 to 21 of the audit): the counts and each `(ext_source, ext_id)` are equal before and after. The mode is `native`, `connection_id` is NULL, the switch stores the names, and Zoho saw one revoke. The fold keeps the board of the five fixture cases. The watermark rewinds, also during a cycle that holds the mode. A second call changes nothing. An open run, a stale final run and each refusal write nothing. A failure rolls back all of phase 2. A run that raced the commit stops with `mode_changed`. Two calls at one time switch once. A one-module run, a commit with the id of another run, and a run that ended after the final run are each 409 `final_sync_missing` and write nothing. Two closes of Zoho at one time revoke once. vitest (`cutoverSwitch.test.ts`): the Mirror board of each case equals its Native board, column and hue. The run id goes to phase 2, a lost answer finishes on the second press, and "Finish closing Zoho" posts only after the switch. vitest (`components/crmZ10b.test.ts`): the two labels are unique, and both choices show once each with `can_switch` |
 | CRM-Z10f | ✅ Decided 2026-10-27 (D133). A cutover org keeps its source labels. The admin can rename them. It amends D95.2 for cutover orgs | Recorded in `work_plan.md` §3 |
 
 The production runs for Fracktal and Shaurrya Tele are the owner's (CRM-Z10-run). Fracktal goes first. Shaurrya Tele goes second, because its custom modules also need CRM-Z10d (D133).
@@ -372,7 +375,15 @@ Fences: `tests/fixtures/crm_cutover_board_order.json` holds five cases. The R8 s
 5. The switch accepts a duplicate lead from Zoho mail between `T0` and the revoke.
 6. The "Open in Zoho" links go away, because the disconnect drops the keys that build them.
 
-**Open before the production run (CRM-Z10-run).** The setup hub also offers an action called "Switch to Metorite" (CRM-X0). That action starts over: it deletes every record, then opens a new Native CRM. Two actions with one label and opposite effects must not sit on one page (`DESIGN_SYSTEM.md` §10). The owner picks a new label for the CRM-X0 action before `CRM_CUTOVER_ORGS` names an org.
+**Two switches, two names (D133, amended 2026-10-29).** *Closed 2026-10-29: this was open before the production run.* The setup hub offered a CRM-X0 action with the label of the CRM-Z10b switch. The two had opposite effects (`DESIGN_SYSTEM.md` §10). The owner keeps both options, and each name now says what happens to the records:
+
+- **"Switch to Metorite, keep the Zoho records"** is the CRM-Z10b switch. The admin types `SWITCH`.
+- **"Switch to Metorite, start empty"** is the CRM-X0 action. It removes every record. The admin types `DELETE`, after the download offer.
+- Each label is also the title of its dialog, and both labels live in `app/crm/lib/setup.ts`.
+- With `can_switch` (the org is on `CRM_CUTOVER_ORGS`), the cutover card shows both, each once. The switch that keeps the records is the main button. The switch that starts empty has the danger tone. One line under each says what happens to the records. The hub then leaves its copy of the start-empty switch out.
+- With no `can_switch` (the default), the card shows no switch. The hub shows the start-empty switch in its old place.
+
+Fences: `components/crmZ10b.test.ts` (each label is unique, both choices show once each with `can_switch`, only the start-empty switch without it) and `components/crmX0.test.ts` (the scan of the hub's files covers the cutover files again).
 
 Fence: an R8 test with a mail stamped before `T0` (no lead) and one after it (a lead).
 
@@ -9081,12 +9092,15 @@ each drop in the UI. An agent never drops the records of a live org.
    | State | Main action | Other actions |
    |---|---|---|
    | No mode | Choose: Connect Zoho, or Use Metorite | None |
-   | Mirror, connected | Sync now | Disconnect. Switch to Metorite. Start over |
-   | Mirror, disconnected or needs a reconnect | Reconnect Zoho (keeps the records) | Switch to Metorite. Start over |
+   | Mirror, connected | Sync now | Disconnect. Switch to Metorite, start empty. Start over |
+   | Mirror, disconnected or needs a reconnect | Reconnect Zoho (keeps the records) | Switch to Metorite, start empty. Start over |
    | Native | None | Connect Zoho. Start over |
 
    The mirror banner and the title-bar line link to this card. No other
-   card offers "Change setup".
+   card offers "Change setup". *Amended 2026-10-29 (D133):* the label was
+   "Switch to Metorite". When the org is on `CRM_CUTOVER_ORGS`, the cutover
+   card under the hub shows this switch with the CRM-Z10b switch, and the
+   hub leaves it out (§3.4).
 
 2. **Reconnect keeps the records.** A reconnect to the SAME Zoho org resumes
    the sync with the records in place. The callback compares the Zoho org id
@@ -9104,8 +9118,8 @@ each drop in the UI. An agent never drops the records of a live org.
    access rule applies. It streams, so a large CRM does not fill memory.
 
 5. **The start-over dialog.** Each change that needs an empty CRM opens it.
-   These changes are Switch to Metorite, Connect Zoho from Native mode,
-   Start over, and a different Zoho org.
+   These changes are Switch to Metorite, start empty, Connect Zoho from
+   Native mode, Start over, and a different Zoho org.
    - Step 1 shows the counts for each entity, and says that the change
      removes them.
    - Step 2 offers "Download a copy" (item 4). The dialog marks it as done
@@ -11935,7 +11949,7 @@ fence file is needed (`engineering_practice.md` §7a).
 
 | Section | Who | What it holds | From today |
 |---|---|---|---|
-| Connection | admin | The Zoho link and its state, Sync now, sync trouble, and who can open the CRM. "Advanced" folds the record counts, the module table and holds, the runs, the credits, Disconnect, Switch to Metorite and Start over | Setup and sync, Sync health, Access |
+| Connection | admin | The Zoho link and its state, Sync now, sync trouble, and who can open the CRM. "Advanced" folds the record counts, the module table and holds, the runs, the credits, Disconnect, the two switches to Metorite (§3.4) and Start over | Setup and sync, Sync health, Access |
 | Needs your input | admin | Each thing the AI asks, in one list, with a count on the rail | Open questions, Suggestions, the Field map proposals, "Your choices in the chat" |
 | Fields | admin | Mirror: each Zoho field and where it shows in Metorite, one row each, with one control. Native: the field studio, and a tab "When a lead converts" | Fields, Field mapping |
 | Pipeline | each member reads, an admin changes | Three tabs: Deal stages, Lead statuses, Lost reasons | three sections |
