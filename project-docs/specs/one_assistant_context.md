@@ -9,7 +9,7 @@ OA-8a is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-8a" in §4.3
 
 OA-8b is BUILT, dark behind `TOOL_PACKS` (2026-10-28, "As built, OA-8b" in §4.3.2). The flag flip is OWNER-GATE.
 
-OA-8e RAN LIVE and is NOT MET (2026-10-28, `docs/one_assistant_measure_oa8e_2026-10-28.md`, harness at `9912eee5a`). On the app turns that are not email, the pack arm passed 38 of 70 and delegation 52 of 70 (CRM 14 of 24 against 19 of 24, Projects 21 of 38 against 29 of 38). Stop results 1, 2 and 11 occur. The pack arm is 2.6 times faster per turn and 32 percent cheaper. Causes: the model loads a pack it lacks only 3 times in 70 turns and never in the miss chats, it skips the bulk pack for several new tasks, it hands off after it loaded the plan or structure pack, and on a Projects page the plan and structure packs do not fit beside the core pack. The run also shows harness defects to repair first: fixture gaps, checks that count a refused call, the `crm_report` annotation, and dev-database reach through the memory tools. The fan-out chats and the `packs+spawn` arm were skipped. OA-10 must not start.
+OA-8e RAN LIVE and is NOT MET (2026-10-28, `docs/one_assistant_measure_oa8e_2026-10-28.md`, harness at `9912eee5a`). On the app turns that are not email, the pack arm passed 38 of 70 and delegation 52 of 70 (CRM 14 of 24 against 19 of 24, Projects 21 of 38 against 29 of 38). Stop results 1, 2 and 11 occur. The pack arm is 2.6 times faster per turn and 32 percent cheaper. Causes: the model loads a pack it lacks only 3 times in 70 turns and never in the miss chats, it skips the bulk pack for several new tasks, it hands off after it loaded the plan or structure pack, and on a Projects page the plan and structure packs do not fit beside the core pack. The run also shows harness defects to repair first: fixture gaps, checks that count a refused call, the `crm_report` annotation, and dev-database reach through the memory tools. The fan-out chats and the `packs+spawn` arm were skipped. OA-10 must not start. Phase 3 (2026-10-29) wires the fan-out chats and the `packs+spawn` arm in the harness (fixtures for the web tools, a worker plan, ten invoices, the `spawned`, `not_spawned` and `items_contract` checks, stop results 9 and 10). No second live run yet.
 
 OA-9b and the OA-9a worker half are BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-28, "As built, OA-9b" in §4.5). The flag flip is OWNER-GATE.
 
@@ -365,8 +365,8 @@ OWNER-GATE.
   `profile_interview`, not five. §6.8 now says so, and the memory table has 11
   tools. A held chat that asks the untrusted-answer card also asks it for
   `spawn_subagents`, as for `call_agents_parallel`.
-- **Not built.** The persona lines (OA-9e), the packs in a child (OA-9c) and
-  the writes in a child (OA-9d).
+- **Not built.** The packs in a child (OA-9c) and the writes in a child
+  (OA-9d). The persona lines (OA-9e) are built, dark (§6.9).
 - **Fences.** `test_subagent_worker.py`, `test_spawn_subagents.py` and
   `test_subagent_blocked_tools.py`. The pin
   `test_nothing_calls_the_contract_before_oa_9b` is gone on purpose. A pin on
@@ -1909,7 +1909,7 @@ The main assistant sends a batch write through the batch tool of the app. That t
 | OA-9b | `spawn_subagents`, read-only children, `_fan_out`, the caps, Stop, the flag | MEDIUM | Yes |
 | OA-9c | Packs in children, through OA-7b | MEDIUM | After OA-7b |
 | OA-9d | One batch card for each fan-out, and children that write | HIGH | After OA-9c |
-| OA-9e | The persona lines and the `fanout` scenarios | LOW | With OA-9b |
+| OA-9e | The persona lines and the `fanout` scenarios | LOW | With OA-9b. Persona lines built 2026-10-29, dark. Scenarios not built (§6.9) |
 
 **OA-9a.**
 - **Files.** The parser is built (PR #1388). The worker half is:
@@ -2017,6 +2017,14 @@ The anchors of §6.1 to §6.6 were set on 2026-10-26, and some have moved. Each 
 | The batch fallback with `head_task` | `:191-207` | `:206-213` |
 
 The cite `orchestrator/agents.py:159`, "rule 3" in §6.3, matches no text in that file now. Look for the rule that says to call independent tools in one step before OA-9e pins the persona lines.
+
+**As built, OA-9e (2026-10-29, dark).**
+- **Status.** Built. The persona block shows only with `SPAWN_SUBAGENTS_ORGS` naming the org. No box sets the flag.
+- **The cite.** The persona never held the line "call independent tools in one step". Only the docstring of `spawn_subagents` says it (`agent_tools.py`). The new block now says it too, in one clause.
+- **Where.** `_SPAWN_BLOCK` in `orchestrator/agents.py`. `_orchestrator_instructions` takes `spawn=True` and puts the block before "THE SHAPE OF A ROUTINE REPLY." The agent build reads `_spawn_subagents_enabled(organization_id)` once, so the block and the tool agree. With the flag off the persona is `_PULL_INSTRUCTIONS`, byte for byte.
+- **Split.** The persona carries the when. The docstring carries the how (the job keys, the tools, the tiers). The block does not copy the docstring.
+- **Fence.** `tests/unit/test_spawn_persona.py`. It pins the lines on, the byte-identical persona off, the length cap of 90 words, and the match with the docstring.
+- **Not built.** The `fanout` scenarios of OA-8e, which need a live model.
 
 ## 7. Coordination with the chat-speed work
 
