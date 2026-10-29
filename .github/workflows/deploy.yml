@@ -365,7 +365,8 @@ jobs:
     needs: [lint, publish-release]
     # `always()` keeps the old hotfix lesson: a dependent guarded by plain
     # success() is skipped when an ancestor is skipped, and the deploy then
-    # silently does nothing. `test` is no longer an ancestor (see its note).
+    # silently does nothing. `test` and `release-window` are ancestors through
+    # `publish-release`, and either one can skip on a dispatch.
     # `main` only, for the reason `publish-release` gives.
     # WS-38: publish-release carries every condition (main, not a push, not
     # held, the gates). A deploy runs exactly when `release` moved.
@@ -1052,7 +1053,10 @@ jobs:
     name: "Smoke test"
     runs-on: ubuntu-latest
     needs: deploy
-    if: success()
+    # `always()`, because `success()` is FALSE when any ancestor job SKIPPED.
+    # `release-window` skips on every dispatch, so a bare `success()` skipped
+    # this probe on each manual release (run 40888027282, 2026-10-29).
+    if: ${{ always() && needs.deploy.result == 'success' }}
     steps:
       - name: Health check
         # Informational only. The deploy job already gates on the gateway,
