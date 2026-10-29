@@ -2,7 +2,8 @@
 
 **Status: ACTIVE, 2026-10-29 (D128, D132).** Board row **WS-KG**, Metorite
 epic 783. This spec is KG-0. It owns the slices KG-0 to KG-14. Verified
-against the code on 2026-10-29, at `origin/main` `6a90740da`.
+against the code on 2026-10-29, at `origin/main` `0988e0de9`. The highest
+migration on main is 315.
 
 **Built.** KG-1 (`585046f02`), KG-2 (`ccdf3c109`, dark, backfill open) and
 KG-3a (`a373b0152`, migration 314) are merged. KG-3b and KG-4 to KG-14 are
@@ -120,7 +121,7 @@ migration (R6). It takes the next free number at build time (R1).
 | `target_kind` | CHECK: `page`, `task`, `project`, `crm_record`, `email_thread`, `meeting`, `artifact`, `url` | The CHECK also takes the node kinds of §3.1. The old values stay valid, and no writer uses `crm_record` or `email_thread` |
 | `target_id` | TEXT | Unchanged |
 | `source_kind`, `source_id` | — | New, nullable. The other end of a graph row |
-| `relation` | — | New, nullable. One value of §4.1 |
+| `relation` | — | New, nullable. One value of §4.1. No CHECK: the code constant `RELATIONS` is the list, so a new relation needs no migration |
 | `provenance` | — | New, nullable. CHECK: `EXTRACTED`, `INFERRED`, `AMBIGUOUS` |
 | `confidence` | — | New, nullable. 0 to 1 |
 | `removed_at`, `removed_by` | — | New, nullable. The admin removal of §4.4 |
@@ -160,8 +161,10 @@ column. KG-5 writes aliases (`kb_entities.aliases`) through a function of
 
 ### 4.1 The relations
 
-`gateway/kb_entities/graph.py` (new at KG-4) holds the list as a code
-constant. The list is closed. The left side holds the evidence (§4.3).
+`RELATIONS` in `gateway/kb_entities/graph.py` (new at KG-4) is the list.
+The list is closed, and the database holds no CHECK on `relation`. A test
+pins `RELATIONS` to the table below (§9, KG-4). The left side holds the
+evidence (§4.3).
 
 | Relation | From → to | Read from | Slice | Provenance |
 |---|---|---|---|---|
@@ -171,17 +174,21 @@ constant. The list is closed. The left side holds the evidence (§4.3).
 | `contact_company` | `contact` → `company` | `crm_contacts.company_id` | KG-4 | EXTRACTED |
 | `activity_on` | `deal`, `contact` or `company` → the other records that one activity names | `crm_activities` (`deal_id`, `contact_id`, `company_id`) | KG-4 | EXTRACTED |
 | `origin` | `task` → `email` or `whatsapp` | `pm_tasks.origin` (migration 211) | KG-4 | EXTRACTED |
-| `task_ref` | `task` → `task`, `page` or `artifact` | `pm_task_refs` (migration 255) | KG-4 | EXTRACTED |
+| `task_link` | `task` → `task` | `pm_task_links` (migration 146: `source_task_id`, `target_task_id`, `link_type`). `organization_id` is NOT NULL with FORCE RLS since migration 161 | KG-4 | EXTRACTED |
 | `attendee` | `meeting` → `person` | KG-4: an id of `meeting.attendee_ids` that is a row of `people`. KG-5: an exact match on the addresses of `meeting.attendees` (migration 99) | KG-4, KG-5 | EXTRACTED, or AMBIGUOUS |
-| `participant` | `email` or `whatsapp` → `person` or `contact` | KG-4: a stored id only. KG-5: an exact address or phone match | KG-4, KG-5 | EXTRACTED, or AMBIGUOUS with two candidates |
+| `participant` | `email` or `whatsapp` → `person` or `contact` | An exact address or phone match. No email or WhatsApp table holds a person or contact id | KG-5 | EXTRACTED, or AMBIGUOUS with two candidates |
 | `domain_company` | `email` → `company` | the sender domain against the CRM company domain | KG-5 | EXTRACTED, or AMBIGUOUS |
 | `mentions` | `page` or `email` → any node | a code match on aliases and names | KG-10 | INFERRED |
 | `relates_to` | `page` → `entity` or a record | the cheap tier, on a Knowledge page save | KG-10 | INFERRED |
 
 Re-verify each column name at dispatch, because the code is the fact.
-`meeting.attendee_ids` has no foreign key, and it dates from the legacy
-schema of `01_schema.sql`. So KG-4 checks each id against `people` before it
-writes an edge.
+
+- `meeting.attendee_ids` has no foreign key, and it dates from the legacy
+  schema of `01_schema.sql`. So KG-4 checks each id against `people` before
+  it writes an edge.
+- `pm_task_refs` (migration 255) holds outside links only: a pull request,
+  an issue, a commit, a branch, a comment, a document or a URL. So no task
+  to page and no task to artifact edge exists. See Q6.
 
 ### 4.2 Provenance and confidence
 
@@ -213,6 +220,11 @@ contact, so another member learns nothing from the email of Meera.
 A holder of `knowledge:manage` removes an edge. The row stays, with
 `removed_at` and `removed_by`. A sweep skips a key that has a removed row, so
 it never writes the edge again. Search and the entity card skip it too.
+
+Removal applies to a graph row only, with `page_id` NULL. A page-authored
+row belongs to its page. `sync_page_links` deletes and writes those rows
+again on each save, so a `removed_at` there would not last. To remove such a
+link, a member edits the page.
 
 ---
 
@@ -366,9 +378,9 @@ here in the same pull request (R4).
 | **KG-2** (task 787) | ✅ BUILT 2026-10-29, `ccdf3c109`, dark. The backfill and its cost are open | Email embeddings through the embed door, and `scripts/backfill_email_embeddings.py`. `company_context.md` §12 holds the as-built record | No embed call outside `embed.py`. Both orgs hold vectors. The cost is a comment on task 787 | `test_no_embed_outside_door.py`, `test_email_embeddings_backfill_r8.py` | `uv run pytest tests/unit/test_no_embed_outside_door.py -q` | HIGH · The backfill and `email_semantic_search_enabled`: **OWNER-GATE** (approved 2026-10-29) |
 | **KG-3a** (task 788) | ✅ BUILT 2026-10-28, `a373b0152`, migration 314 | Email search under FORCE RLS, a stored tsvector. The backfill ran (task 920) | The email source answers inside its 1.5 s | `test_email_fts_column_r8.py` | `uv run pytest tests/unit/test_email_fts_column_r8.py -p no:xdist -rs -q` | HIGH · AGENT-SAFE |
 | **KG-3b** (task 788) | Open. After the KG-2 backfill | Hybrid search for each source with vectors, email first. One global sort by the CX-1 score (reciprocal rank fusion, k = 60) in place of `_interleave`, behind `CONTEXT_RECENCY`. A cache of the query embedding for the turn. The `--fixture` verdict gains the p50 and p95 limits of §7.3 | The eval runs with `CONTEXT_RECENCY` off and on, and the pull request writes both. A paraphrase of an email subject finds the mail. With the flag off, the output is byte-identical | `test_company_search_fusion.py` (new), `test_search_company_eval.py` | `uv run pytest tests/unit/test_company_search_fusion.py tests/unit/test_search_company_eval.py -q` | STANDARD · AGENT-SAFE to build. The embed spend: **OWNER-GATE** |
-| **KG-4** (task 789) | Open. Next | The expand migration of §3.2. The sweep of §4.1 that writes the KG-4 relations as EXTRACTED, with no model. The edge read and the removal of §4.4 in `gateway/kb_entities/graph.py`. Behind `GRAPH_SWEEP_ORGS` | R8: each KG-4 relation appears on a seeded org. Org B reads and writes no edge of org A. A second sweep writes 0 rows. A removed edge stays removed after a sweep. The page-link reads give the same answer as before | `test_kg_links_r8.py` (new). `test_kg_links_writer.py` (new): one writer for each form, no graph row with `page_id`, every relation names its evidence end, and the list matches the CHECK. `test_tenant_coverage.py`, `test_kb_backlinks_r8.py` | `uv run pytest tests/unit/test_kg_links_writer.py tests/unit/test_kg_links_r8.py tests/unit/test_kb_backlinks_r8.py -p no:xdist -rs -q` | HIGH (migration, RLS) · AGENT-SAFE |
+| **KG-4** (task 789) | Open. Next | The expand migration of §3.2. The sweep of §4.1 that writes the KG-4 relations as EXTRACTED, with no model. The edge read and the removal of §4.4 in `gateway/kb_entities/graph.py`. Behind `GRAPH_SWEEP_ORGS`. `participant` moved to KG-5, because no stored id names a participant | R8: each KG-4 relation appears on a seeded org. Org B reads and writes no edge of org A. A second sweep writes 0 rows. A removed edge stays removed after a sweep. The page-link reads give the same answer as before | `test_kg_links_r8.py` (new). `test_kg_links_writer.py` (new): one writer for each form, no graph row with `page_id`, every relation names its evidence end, no write of a relation outside `RELATIONS`, and `RELATIONS` equals the pinned list of §4.1. `test_tenant_coverage.py`, `test_kb_backlinks_r8.py` | `uv run pytest tests/unit/test_kg_links_writer.py tests/unit/test_kg_links_r8.py tests/unit/test_kb_backlinks_r8.py -p no:xdist -rs -q` | HIGH (migration, RLS) · AGENT-SAFE |
 | **KG-5** (task 790) | Open. After KG-4 | Exact identifiers to records, with no model: an address or a phone to a person or a contact, a domain to a company. Aliases through the registry. AMBIGUOUS rows for two candidates | R8 covers the exact case, the ambiguous case and the free-mail case. The eval improves on the person and company questions | `test_kg_resolve_r8.py` (new), `test_kc_entities.py` | `uv run pytest tests/unit/test_kg_resolve_r8.py tests/unit/test_kc_entities.py -p no:xdist -rs -q` | HIGH (tenancy, identity) · AGENT-SAFE |
-| **KG-6** (task 791) | Open. After KG-3b and KG-4 | The graph step of §5, `Source.open` for each source (§6), the budget and the time of §7. Behind `GRAPH_SEARCH_ORGS` | A private task, another member's email, a CRM record without CRM access, a page in a closed space and a project outside a `group:<slug>` grant never appear as neighbours. The eval shows the gain, and p95 stays under 3 s. With the flag off, the output is byte-identical | `test_kg_neighbours_r8.py` (new), `test_company_search_graph.py` (new: the budget, the cap, the order, the flag off), `test_company_search_sources.py` | `uv run pytest tests/unit/test_company_search_graph.py tests/unit/test_company_search_sources.py tests/unit/test_kg_neighbours_r8.py -p no:xdist -rs -q` | HIGH (visibility) · AGENT-SAFE |
+| **KG-6** (task 791) | Open. After KG-3b and KG-4 | The graph step of §5, `Source.open` for each source (§6), the budget and the time of §7. Behind `GRAPH_SEARCH_ORGS`. The graph output never goes through `routes/knowledge/core.read_links`, because that read checks visibility for page targets only | A private task, another member's email, a CRM record without CRM access, a page in a closed space and a project outside a `group:<slug>` grant never appear as neighbours. The eval shows the gain, and p95 stays under 3 s. With the flag off, the output is byte-identical | `test_kg_neighbours_r8.py` (new), `test_company_search_graph.py` (new: the budget, the cap, the order, the flag off), `test_company_search_sources.py` | `uv run pytest tests/unit/test_company_search_graph.py tests/unit/test_company_search_sources.py tests/unit/test_kg_neighbours_r8.py -p no:xdist -rs -q` | HIGH (visibility) · AGENT-SAFE |
 | **KG-7** (task 792) | Open. After KG-6 | `get_entity`: a name or a citation in, one entity with its aliases and its neighbours across apps out, each item a link. It reuses the KG-6 read and budget. It joins the core tool pack. No model | On staging, Mira answers "what is going on with <customer>" with one tool call. The eval holds 10 such questions | `test_get_entity_tool.py` (new): no model call, a refusal with no member, the KG-6 visibility | `uv run pytest tests/unit/test_get_entity_tool.py tests/unit/test_kg_neighbours_r8.py -p no:xdist -rs -q` | STANDARD · AGENT-SAFE |
 | **KG-8** (task 793) | Open. After KG-7 | `search_company` and `get_entity` on the Metorite MCP, as reads with no approval (D124), with the member's own visibility | An external agent finds a Fracktal email, deal and page on staging. The MCP returns no record the member cannot open | `test_mcp_edge_coverage.py`, `test_mcp_company_search_r8.py` (new) | `uv run pytest tests/unit/test_mcp_edge_coverage.py tests/unit/test_mcp_company_search_r8.py -p no:xdist -rs -q` | HIGH (auth surface) · AGENT-SAFE |
 | **KG-9** (task 786) | Open. Next, beside KG-4 | A startup check: the memory layer refuses to start while two orgs or more exist and its store has no org scope. See Q2 for the org key | A test turns `MEM0_ENABLED` on with two orgs, and the memory layer refuses to start | `test_memory_tenant_guard.py` (new), `test_memory_compartments.py` | `uv run pytest tests/unit/test_memory_tenant_guard.py tests/unit/test_memory_compartments.py -q` | HIGH (tenancy) · AGENT-SAFE |
@@ -420,6 +432,7 @@ the owner or a decision gives one. Build to the default.
 | Q3 | D136.2 fixes the MCP tool set (`list_apps`, `describe_app`, `app_read`, `app_write`). Does KG-8 add two named tools? | Yes. Search spans apps, and D136.2 bounds the growth for each app. MCP-P0 then lists the two as platform tools |
 | Q4 | How often does the KG-4 sweep run? | Once a night for each org, with a cursor on the changed rows. A page link keeps its write-time path |
 | Q5 | Is there a numeric recall bar for the live set? | No fixed bar. The no-regression rule of `company_context.md` §9 binds, and each slice states the gain it claims |
+| Q6 | A task ref that is a URL of a Knowledge page or an artifact: does it give an edge? | Not in KG-4. KG-10 may parse those URLs in its code match and write `mentions` |
 
 ---
 
