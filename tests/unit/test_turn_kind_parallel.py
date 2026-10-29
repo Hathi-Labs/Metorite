@@ -60,6 +60,7 @@ from tests.unit.test_tier_policy import (
     SECRET,
     _flags,
     _fresh_settings,  # noqa: F401 — an autouse fixture, used by name
+    _is_turn_question,
     _ok,
     _routed,  # noqa: F401 — a fixture, used by name
     _routes,
@@ -641,13 +642,7 @@ class TestARealRun:
         _parallel(monkeypatch, None)
         monkeypatch.setattr(tier_policy.RunTierPolicy, "open_start", _boom)
         order: list[str] = []
-
-        async def reply(body: dict[str, Any]) -> Any:
-            await asyncio.sleep(0.05)
-            order.append("answer")
-            return _turn_reply("code")(body)
-
-        _wire(monkeypatch, reply)
+        _wire(monkeypatch, _after_the_flag_read(monkeypatch, order))
         model = ScriptedModel([text_turn("done")],
                               on_request=lambda _i, _b: order.append("request"))
         logs = _tap(monkeypatch)
@@ -661,13 +656,43 @@ class TestARealRun:
         assert not [r for r in logs if r.get("event") in quiet]
 
     def test_a_flag_for_another_agent_changes_nothing(self, monkeypatch) -> None:
+        """The answer is slow, so a parallel start WOULD begin here."""
         _parallel(monkeypatch, "crm-assistant")
         monkeypatch.setattr(tier_policy.RunTierPolicy, "open_start", _boom)
-        _wire(monkeypatch, _turn_reply("code"))
-        model = ScriptedModel([text_turn("done")])
+        order: list[str] = []
+        _wire(monkeypatch, _after_the_flag_read(monkeypatch, order))
+        model = ScriptedModel([text_turn("done")],
+                              on_request=lambda _i, _b: order.append("request"))
         events, _ = drive_native(PA, PA_DIR, monkeypatch, model, message=SECRET)
         _ok(events)
+        assert order == ["answer", "request"]
         assert [b["model"] for b in model.bodies] == ["tier-powerful"]
+
+
+def _after_the_flag_read(monkeypatch, order: list[str]) -> Callable[[dict[str, Any]], Any]:
+    """System 1 answers ``code`` only after the tier site read the flag.
+
+    So the answer is still out when the run decides whether to start in
+    parallel, and a flag that the run ignores goes red every time. The wait
+    is bounded, so a run that never reads the flag does not hang."""
+    executor = pytest.importorskip("orchestrator.executor")
+    read = asyncio.Event()
+    real = executor._turn_kind_parallel
+
+    def spy(agent_name: str) -> bool:
+        read.set()
+        return real(agent_name)
+
+    monkeypatch.setattr(executor, "_turn_kind_parallel", spy)
+
+    async def reply(body: dict[str, Any]) -> Any:
+        if _is_turn_question(body):
+            await asyncio.wait_for(read.wait(), timeout=5.0)
+            await asyncio.sleep(0.02)
+            order.append("answer")
+        return _turn_reply("code")(body)
+
+    return reply
 
 
 def _announce(streaming: asyncio.Event, script: Script) -> Script:
