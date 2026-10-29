@@ -42,7 +42,6 @@ const OUTLINE_DEBT: Record<string, number> = {
   "app/calendar/components/CalendarSettings.tsx": 5,
   "app/calendar/components/PlanDayPanel.tsx": 3,
   "app/chat/page.tsx": 1,
-  "app/email/components/CommandPalette.tsx": 1,
   "app/email/components/ComposePanel.tsx": 4,
   "app/email/components/ConversationView.tsx": 1,
   "app/email/components/DraftAssistant.tsx": 1,
