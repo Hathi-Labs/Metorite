@@ -92,6 +92,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     configure_logging(settings.log_level)
     _log.info("gateway.startup", env=settings.acb_env)
 
+    # A flag flip is a SIGHUP, not a restart (gateway/flag_reload.py). After
+    # the logging set-up, so its lines are formatted. `/version` reports it.
+    try:
+        from gateway import flag_reload
+        if flag_reload.install():
+            _log.info("flags.reload_installed")
+    except Exception as exc:  # noqa: BLE001 - without it, a flip restarts, as before
+        _log.warning("flags.reload_not_installed", error=type(exc).__name__)
+
     # Ownership bootstrap: if NO member holds `owner`, provision the first
     # EXECUTIVE_EMAILS address (creating its app_user row). Startup is the
     # first place the database AND the environment are both readable —
@@ -2119,6 +2128,12 @@ class Version(BaseModel):
     #: shows whether a box serves them. With it off, every reminder route
     #: answers 404. Off by default.
     calendar_reminders: bool = False
+    #: True when a SIGHUP reloads the flags of this process with no restart
+    #: (`gateway/flag_reload.py`). Check it BEFORE a SIGHUP: a gateway
+    #: without the handler ends on that signal. `flags_reloaded_at` is the
+    #: last reload that applied its keys, or null.
+    flag_reload: bool = False
+    flags_reloaded_at: str | None = None
 
 
 def _runtime_checks() -> dict[str, dict]:
@@ -2214,6 +2229,7 @@ async def version() -> Version:
     `web_push` is the gateway's `WEB_PUSH_ENABLED` (WS-66 PN-1), through
     its one reader, `gateway.push.flags`.
     """
+    from gateway import flag_reload
     from gateway.push import flags as push_flags
     from gateway.routes.projects.reminders import reminders_enabled
 
@@ -2226,6 +2242,8 @@ async def version() -> Version:
         applied_at=applied_at,
         web_push=push_flags.enabled(),
         calendar_reminders=reminders_enabled(),
+        flag_reload=flag_reload.installed(),
+        flags_reloaded_at=flag_reload.last_reload(),
     )
 
 

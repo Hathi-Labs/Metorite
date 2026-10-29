@@ -1812,10 +1812,27 @@ class Settings(BaseSettings):
         return (self.litellm_master_key or "").strip() or "sk-local"
 
 
+#: The one instance that the next build of ``get_settings`` returns, set by
+#: :func:`install_settings` and taken by that build.
+_NEXT: list[Settings] = []
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Cached accessor; call from anywhere."""
-    return Settings()  # type: ignore[call-arg]
+    return _NEXT.pop() if _NEXT else Settings()  # type: ignore[call-arg]
+
+
+def install_settings(new: Settings) -> None:
+    """Make *new* the cached settings (``gateway/flag_reload.py``).
+
+    The flag reload builds *new* from the running settings and the reloaded
+    flags only. A plain ``cache_clear()`` would build from the environment
+    and the env file again, so a key added to the file after the start would
+    go live with no restart."""
+    _NEXT[:] = [new]
+    get_settings.cache_clear()
+    get_settings()
 
 
 #: The modes of ``CRM_ANSWER_CHECK`` (WS-53 CRM-Q29).
