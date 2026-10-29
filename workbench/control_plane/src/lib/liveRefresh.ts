@@ -1,5 +1,9 @@
 /**
- * Projects · live refresh stopgap (WS-64 #128).
+ * Live refresh for every app (WS-64 #128, task #124).
+ *
+ * The assistant's tool writes raise `ASSISTANT_WROTE_EVENT`
+ * (`lib/assistantWrites.ts`), and a surface that names its `app` reads at once.
+ * That is the one path for all apps.
  *
  * A write made by another process (an MCP client, an agent run on the
  * server) never raises `PROJECTS_CHANGED_EVENT`. That event comes only from
@@ -14,6 +18,7 @@
 import { useEffect, useRef } from "react";
 
 import { PROJECTS_CHANGED_EVENT } from "@/components/projects/ProjectToolCards";
+import { ASSISTANT_WROTE_EVENT, eventNamesApp, type LiveApp } from "@/lib/assistantWrites";
 
 /** The least gap between two reads that a wake (focus, visible) can cause. */
 export const LIVE_REFRESH_MS = 15_000;
@@ -24,8 +29,8 @@ interface Doc {
   removeEventListener: (type: string, fn: () => void) => void;
 }
 interface Win {
-  addEventListener: (type: string, fn: () => void) => void;
-  removeEventListener: (type: string, fn: () => void) => void;
+  addEventListener: (type: string, fn: (e?: unknown) => void) => void;
+  removeEventListener: (type: string, fn: (e?: unknown) => void) => void;
 }
 
 /**
@@ -35,7 +40,7 @@ interface Win {
  */
 export function wireLiveRefresh(
   run: () => void,
-  opts: { doc?: Doc; win?: Win; everyMs?: number; clock?: () => number } = {},
+  opts: { doc?: Doc; win?: Win; everyMs?: number; clock?: () => number; app?: LiveApp } = {},
 ): () => void {
   const doc = opts.doc ?? (typeof document !== "undefined" ? (document as Doc) : undefined);
   const win = opts.win ?? (typeof window !== "undefined" ? (window as Win) : undefined);
@@ -53,21 +58,34 @@ export function wireLiveRefresh(
     last = clock();
     run();
   };
+  // The assistant wrote through a tool (task #124). It names the apps it
+  // changed, and this surface reads only when its own app is among them.
+  const onWrote = (e?: unknown) => {
+    if (!opts.app) return;
+    if (!eventNamesApp((e as { detail?: unknown } | undefined)?.detail, opts.app)) return;
+    onChanged();
+  };
   win.addEventListener(PROJECTS_CHANGED_EVENT, onChanged);
+  win.addEventListener(ASSISTANT_WROTE_EVENT, onWrote);
   win.addEventListener("focus", onWake);
   doc.addEventListener("visibilitychange", onWake);
   return () => {
     win.removeEventListener(PROJECTS_CHANGED_EVENT, onChanged);
+    win.removeEventListener(ASSISTANT_WROTE_EVENT, onWrote);
     win.removeEventListener("focus", onWake);
     doc.removeEventListener("visibilitychange", onWake);
   };
 }
 
-/** Call the latest `run` on a chat write or a throttled wake. */
-export function useLiveRefresh(run: () => void): void {
+/**
+ * Call the latest `run` on a chat write or a throttled wake. `app` names the
+ * surface. Pass it and the surface also reads when the assistant wrote to that
+ * app through a tool, with no receipt card on screen (task #124).
+ */
+export function useLiveRefresh(run: () => void, app?: LiveApp): void {
   const ref = useRef(run);
   useEffect(() => {
     ref.current = run;
   });
-  useEffect(() => wireLiveRefresh(() => ref.current()), []);
+  useEffect(() => wireLiveRefresh(() => ref.current(), { app }), [app]);
 }
