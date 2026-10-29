@@ -158,7 +158,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-TO | **Trust and Operations**: enforced controls, restore, compliance | 🟢 active · M1 | `specs/box_hardening.md` | Metorite: epic 521 (Platform & CI/CD) · SBX-0 decided (D130, `specs/agent_sandbox.md`) · next WS-1e, WS-3, BH-3 with SBX-1, the WS-37 spec (D119.4) |
 | WS-PL | **Platform and CI**: delivery, staging, branch protection | 🟢 active · M1 | `specs/development_and_delivery_framework.md` | Metorite: project Platform & CI/CD · next WS-38a, WS-38e, WS-5a |
 | WS-PT | **Projects and Tasks** | 🟢 active · M1 | `specs/project_management_app.md` · `specs/one_projects_app.md` | Metorite: project Projects/Tasks App · no P0 or P1 · next H-257, H-387 |
-| WS-CAL | **Calendar**: events, reminders, external sync | 🟢 active · M1 | `specs/calendar_focus_os.md` · `specs/calendar_events_reminders.md` | Metorite: project Calendar App · next CE-0, WS-21-P4 (read-only first, D119.6) |
+| WS-CAL | **Calendar**: events, reminders, external sync | 🟢 active · M1 | `specs/calendar_focus_os.md` · `specs/calendar_events_reminders.md` | Metorite: project Calendar App · CE-0 decided (D138, 2026-10-29) · next RM-4, CE-1, CE-3, CE-4, then CE-10 with CE-11 |
 | WS-PP | **People and Profile** | 🟢 active · M1 | `specs/people_center_app.md` | Metorite: project My Profile · next E-58 |
 | WS-EM | **Email** | 🟢 active · M0 | `specs/email_app_master_plan.md` · `specs/shared_mailbox.md` | Metorite: project My Email · Gmail in test mode (D122.4) · next E-05, E-09, E-11 |
 | WS-CRM | **CRM**: native mode, the Zoho mirror, and the cutover from one to the other | 🟢 active · M1 | `specs/crm_platform.md` | Metorite: epic 477, cutover sub-epic CRM-Z10 · CRM-Z10f decided (D133) · next H-333, CRM-Z10a to Z10e (the switch, owner ask 2026-10-28), CRM-U13, the whole-app UX batch, H-366 |
@@ -4782,6 +4782,24 @@ The rule:
 3. **A saved order wins until the admin picks "Same as Zoho".** That choice clears it.
 4. **Native mode: the admin's order.** A new stage lands before the first won or lost stage.
 5. **The win chance never moves a column.** CRM-U6 item 1 stands on this point.
+
+### D138 — The Calendar holds events in one new table, an attendee sees a meeting, and Google and Outlook sync both ways from the start (2026-10-29)
+
+The owner answered CE-0 on 2026-10-29, in chat. The questions are Q1 to Q10 of `specs/calendar_events_reminders.md` §11. Workstream: **WS-CAL**. Owning spec: `specs/calendar_events_reminders.md` §3, §4 and §8.
+
+1. **Q1. One new table, `calendar_entries`.** It holds events, meetings and read-only copies of Google and Outlook events. A task block stays on `pm_task_personal`. This amends D54.5. The Calendar now has a store of its own for time that is not a to-do.
+2. **Q2. A colleague sees an event only as an attendee.** Nobody else sees it. There is no team calendar and no free and busy view. This amends D54.4 narrowly.
+3. **Q4. The lead times.** 30 minutes before a task block, as today. 10 minutes before an event.
+4. **Q5. The composer opens on Task** for a new member.
+5. **Q6. Google and Outlook ship together in CE-10.** This changes the default of the spec, which put Google first.
+6. **Q7. Write-out ships with read.** CE-11 lands beside CE-10, not 2 weeks after it. It writes only the events that a member made in Metorite. This changes the default of the spec.
+7. **Q8. A guest with no connected account.** Metorite stores the name and the address, sends nothing, and offers Connect.
+8. **Q9. A task block does not go to the provider as busy time.** A later opt-in for each member can add it. The owner did not answer Q9 directly, so the default of the spec stands.
+9. **Q10. The new acts use the gate `feature:tasks`** (D54.1).
+
+**What stays gated.** The owner gates of the spec's §8.3 stand. They are the Google and Azure scopes, Google's review of a sensitive scope, the client secrets, and each flip of `CALENDAR_SYNC_READ` and `CALENDAR_SYNC_WRITE` for a real member. A write-out makes the provider send invites to real people, so CLAUDE.md §3a rule 3 binds that flip.
+
+**What it unblocks.** CE-4, the event store. After CE-4, CE-5 to CE-9 and CE-12. An agent can build CE-10 and CE-11 as dark code. The owner gates bind only their live use.
 
 
 ## 4. Single-owner registry (who owns duplicated work)
