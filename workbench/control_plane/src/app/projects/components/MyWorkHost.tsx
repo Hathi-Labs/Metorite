@@ -38,7 +38,7 @@ import { useUndoScope } from "@/components/UndoProvider";
 
 import { tasksEntryView } from "@/app/tasks/lib/today";
 
-import { useLiveRefresh } from "../lib/liveRefresh";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 import { myWorkView, watchInsideFocus, type MyWorkId } from "../lib/myWork";
 
 export default function MyWorkHost({
@@ -103,7 +103,7 @@ export default function MyWorkHost({
     void reloadItems().then(() => {
       if (useTaskStore.getState().selectedView === "done") void loadDone();
     });
-  });
+  }, "projects");
 
   // The store loads when a My work view opens, and not before.
   useEffect(() => {

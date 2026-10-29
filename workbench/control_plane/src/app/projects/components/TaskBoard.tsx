@@ -41,6 +41,7 @@ import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
 import { Board } from "@/components/board/Board";
 import { BoardColumn, BoardHeaderCell } from "@/components/board/BoardColumn";
 import { AvatarStack, TaskMeta } from "@/components/TaskMeta";
+import { agentCardLook } from "../lib/agentCardLook";
 import { AgentPill } from "./AgentPill";
 import { DropGap } from "@/components/DropGap";
 import { EmptyState } from "@/components/EmptyState";
@@ -836,6 +837,15 @@ export function TaskBoard({
     // and the click that put the caret back also opens the task panel.
     const editing = renamingThis || composingHere;
 
+    // EA-13g: one look for each run state. `globals.css` draws the edge.
+    const agentLook = agentCardLook(task.agent_state, {
+      clientVia: task.agent_client_via,
+      memberEmail: task.agent_member_email,
+      note: task.agent_note,
+      viewerEmail: me,
+      labels: personLabels,
+    });
+
     return (
     // ⚠️ `data-card`, not a Tailwind group. The strip's reveal cannot use
     // `group-hover:` at all — Tailwind v4 wraps that in
@@ -853,6 +863,7 @@ export function TaskBoard({
     <li
       key={task.id}
       data-card
+      data-agent-edge={agentLook.edge ?? undefined}
       className="rounded-md"
       // WS-64 OP-1: a finger that rests on a touch card opens its menu.
       onTouchStart={
@@ -1012,6 +1023,18 @@ export function TaskBoard({
               labels={personLabels}
             />
           </div>
+        ) : null}
+        {agentLook.line ? (
+          <p
+            data-agent-line
+            className="mt-1 flex min-w-0 items-center gap-1 text-[10px] text-muted-foreground"
+            title={agentLook.line}
+          >
+            {agentLook.edge === "live" ? (
+              <span aria-hidden className="agent-live-dot h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+            ) : null}
+            <span className="truncate">{agentLook.line}</span>
+          </p>
         ) : null}
         <TaskMeta chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)} />
         {/* WS-64 OP-11 — My tasks names the project of each card. */}

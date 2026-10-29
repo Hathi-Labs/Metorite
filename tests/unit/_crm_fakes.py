@@ -65,6 +65,12 @@ _MAX_RE = re.compile(r"SELECT\s+max\((\w+)\)", re.I)
 #: which column falls back to which parameter, what it is divided by) rather
 #: than reproduced in Python: a mirror that hard-coded ``amount * probability``
 #: would keep agreeing after the route stopped inheriting the stage default.
+#: ``GROUP BY COALESCE(NULLIF(upper(trim(currency)), ''), 'INR')`` (task 887).
+_CURRENCY_GROUP = re.compile(
+    r"GROUP BY\s+COALESCE\(NULLIF\(upper\(trim\(currency\)\),\s*''\),\s*'INR'\)",
+    re.I,
+)
+
 _WEIGHTED_SUM_RE = re.compile(
     r"SUM\(\s*(\w+)\s*\*\s*COALESCE\(\s*(\w+)\s*,\s*:(\w+)\s*\)\s*/\s*([\d.]+)\s*\)",
     re.I,
@@ -714,6 +720,22 @@ class FakeCrmDB:
         matched = self._paged(statement, matched, args)
         upper = statement.upper()
 
+        if "COUNT(*) AS COUNT" in upper and _CURRENCY_GROUP.search(statement):
+            # The lane aggregate, grouped by the currency rule (task 887): one
+            # row per normalised code. The rule is written out here, as in
+            # `_matching`, so a model of the SQL does not import the route's.
+            groups: dict[str, list[dict]] = {}
+            for r in matched:
+                code = str(r.get("currency") or "").strip().upper() or "INR"
+                groups.setdefault(code, []).append(r)
+            return _Result([
+                SimpleNamespace(
+                    currency=code, count=len(rows),
+                    amount=sum(float(r.get("amount") or 0) for r in rows),
+                    weighted=_weighted(statement, rows, args),
+                )
+                for code, rows in groups.items()
+            ])
         if "COUNT(*) AS COUNT" in upper:
             total = sum(float(r.get("amount") or 0) for r in matched)
             return _Result([SimpleNamespace(

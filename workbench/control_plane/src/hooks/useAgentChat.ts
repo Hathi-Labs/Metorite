@@ -44,6 +44,7 @@ import { planReplay, rejectFor } from "@/lib/runReplay";
 import type { ChatMessage, ToolEvent } from "@/lib/chatStore";
 import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { emitAgentEvent } from "@/lib/agentEvents";
+import { noteToolEnd, noteToolStart } from "@/lib/assistantWrites";
 import { agentAuthor } from "@/lib/projectsAgent";
 import { applyStateSnapshot, applyStateDelta } from "@/hooks/useAgentState";
 import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, withCustomEvent, type StreamFold } from "@/lib/chatStream";
@@ -747,6 +748,13 @@ export function useAgentChat({
                 // move the page again.
                 if (evt.type === "tool_start") {
                   emitAgentEvent("onDelegate", { name: String(evt.name ?? ""), threadId });
+                  noteToolStart(String(evt.id ?? ""), String(evt.name ?? ""));
+                }
+                // Task #124: a write that ended tells the open app to read
+                // again. Live loop ONLY, so a replay never does.
+                if (evt.type === "tool_end") {
+                  const endId = String(evt.id ?? "");
+                  noteToolEnd(endId, String(evt.name ?? "") || toolNameOf(threadId, endId), !!evt.success);
                 }
                 break;
               // Nested delegation timeline — shared reducer (also used by the
@@ -757,6 +765,12 @@ export function useAgentChat({
               case "sub_agent_error":
                 upd((m) => applySubAgentEvent(m, evt));
                 emitAgentEvent("onDelegate", { name: String(evt.agentName ?? ""), threadId });
+                // Task #124: a specialist's step is a tool call too.
+                if (evt.type === "sub_agent_tool_start") {
+                  noteToolStart(String(evt.id ?? ""), String(evt.name ?? ""));
+                } else if (evt.type === "sub_agent_tool_end") {
+                  noteToolEnd(String(evt.id ?? ""), undefined, evt.success !== false);
+                }
                 break;
               case "done":
                 sawDone = true;
