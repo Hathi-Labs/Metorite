@@ -11,6 +11,7 @@
  */
 
 import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
 import { receiptText, type ConfirmationReceipt } from "@/lib/confirmationQueue";
 
 const LOOK: Record<ConfirmationReceipt["kind"], { icon: string; tone: string }> = {
@@ -21,7 +22,14 @@ const LOOK: Record<ConfirmationReceipt["kind"], { icon: string; tone: string }> 
   closed: { icon: "Info", tone: "text-muted-foreground" },
 };
 
-export default function ConfirmationReceipts({ receipts }: { receipts: readonly ConfirmationReceipt[] }) {
+export default function ConfirmationReceipts({
+  receipts,
+  onUndo,
+}: {
+  receipts: readonly ConfirmationReceipt[];
+  /** Cancels a held Reject (`lib/rejectHold.ts`). Without it no Undo draws. */
+  onUndo?: (key: string) => void;
+}) {
   if (receipts.length === 0) return null;
   return (
     <ul className="mt-1 space-y-0.5" aria-label="Answered approvals">
@@ -40,6 +48,14 @@ export default function ConfirmationReceipts({ receipts }: { receipts: readonly 
               className={`mt-0.5 shrink-0 ${look.tone}${r.kind === "applying" ? " motion-safe:animate-spin" : ""}`}
             />
             <span className="min-w-0 break-words">{receiptText(r)}</span>
+            {r.undo && onUndo && (
+              <>
+                <span aria-hidden>—</span>
+                <Button variant="text" size="none" data-confirmation-undo={r.key} onClick={() => onUndo(r.key)}>
+                  Undo
+                </Button>
+              </>
+            )}
           </li>
         );
       })}

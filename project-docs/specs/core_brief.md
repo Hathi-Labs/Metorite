@@ -1,13 +1,18 @@
 # Core brief — the 07:30 brief, the 18:30 close-out, and silence between
 
 **Status: PROPOSED, 2026-10-28.** Verified against code on 2026-10-28, at
-`origin/main` `bd0efea9c`. Nothing in this spec is built, except BR-1a (the
-job queue, `docs/job_queue.md`) and BR-4 slice 1. The owner has not accepted
-§9. Until the owner does, an agent may build only the slices that §9 does not
-block.
+`origin/main` `bd0efea9c`.
+
+Four slices are built and dark. BR-1a is the job queue
+(`docs/job_queue.md`). BR-1b-a is its detached mode and `jobs.prune`
+(Metorite #642). AUTO-2 is the ledger of unattended runs (Metorite #814).
+Nothing else in this spec is built.
 
 **BR-4 slice 1 BUILT 2026-10-28** (migration 315, `gateway/brief/store.py`,
 dark, no producer). The member purge deletes the runs of the member.
+
+The owner answered §9 on 2026-10-29 (epic #479). The answers replace the
+RECOMMENDED defaults, and the BR-2a-1 PR writes them into §9.
 
 **Board.** Workstream **WS-BRIEF** (`work_plan.md` §2.1). Metorite epic
 **#479**, items BR-2a to BR-7b. AUTO-2 is Metorite **#814**.
@@ -182,8 +187,10 @@ record.
   their own runs.
 - One expand-only migration adds both tables, with the next free number at
   build time (R1, R6). Nothing existing changes.
-- Retention: `jobs.prune` (BR-1b) deletes runs older than 90 days. It calls
-  `brief.store.prune_runs`. RECOMMENDED, §9 Q6.
+- Retention: runs older than 90 days go (§9 Q6, owner 2026-10-29). BR-1b-a
+  built `jobs.prune` and its hook list, `worker.prune_hooks`
+  (`docs/job_queue.md` §5b). The job deletes old `jobs` rows only. BR-2a-1
+  appends a hook that calls `brief.store.prune_runs` with a 90 day cut-off.
 - A claim position holds one claim. A retry of the same claims writes no
   second set.
 
@@ -398,8 +405,8 @@ and the at-most-once rule needs AUTO-2's `UNATTENDED_LEDGER`.
 | 11 | Web push of the brief, through Reach | 6 | `BRIEF_PUSH` | **OWNER-GATE**: it reaches a person through a third party |
 
 The BR-1b detached mode is the part of BR-1b (#642) that slice 2 needs, and
-it can ship before the rest of BR-1b. `docs/job_queue.md` §5a holds its
-rules.
+it can ship before the rest of BR-1b. BR-1b-a built it, dark, on
+2026-10-28. `docs/job_queue.md` §5a holds its rules.
 
 BR-1b acceptance: BR-1b's `jobs.prune` calls `brief.store.prune_runs` with a
 90-day cut-off (Q6).

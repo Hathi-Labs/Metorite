@@ -8,9 +8,13 @@
  * - `ok`: the server took the answer.
  * - `retry`: a network fault or a 5xx. The tool may still be waiting, so
  *   the caller restores the card and the member can try again.
- * - `drop`: any 4xx. 409 says no question waits on that id, and 403 says
- *   this member cannot answer it. A restored card fails the same way on
- *   every click. That loop is what the member saw on 2026-10-06.
+ * - `retry` also holds for a 400 or a 422 (#916): the server refused THIS
+ *   answer, and the member can change it (a row, a value). The card stays
+ *   open with the reason beside its buttons.
+ * - `drop`: any other 4xx. 409 says no question waits on that id, 403 says
+ *   this member cannot answer it, and 401 says the session ended. A restored
+ *   card fails the same way on every click. That loop is what the member saw
+ *   on 2026-10-06.
  * - A 409 `run_restarted` is a `drop` that carries `resend`: the run that
  *   asked died with an app update, and the gateway hands back the question
  *   and the answer as one message. The caller sends THAT, not the bare
@@ -134,9 +138,14 @@ export function respondFailureText(status: number | undefined, body = ""): strin
   return detail ? `The server refused the answer: ${detail}` : "The server refused the answer.";
 }
 
-/** What a failed POST means. `status` is undefined for a network fault. */
+/**
+ * What a failed POST means. `status` is undefined for a network fault.
+ * A network fault, a 5xx, a 400 and a 422 keep the card (`retry`). Any other
+ * 4xx (401, 403, 404, 409) drops it, because a click cannot fix those.
+ */
 export function respondFailure(status: number | undefined): "retry" | "drop" {
   if (status === undefined) return "retry";
+  if (status === 400 || status === 422) return "retry";
   return status >= 500 ? "retry" : "drop";
 }
 
@@ -157,6 +166,9 @@ export async function sendRespondInputResult(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      // A held REJECT can go out on `pagehide` (#916). keepalive lets the
+      // browser finish it after the page is gone.
+      keepalive: true,
     });
   } catch (err) {
     console.error("respond-input failed — restoring HITL card", err);

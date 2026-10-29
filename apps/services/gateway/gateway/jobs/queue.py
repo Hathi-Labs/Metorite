@@ -12,10 +12,11 @@ session of another tenant fails the WITH CHECK.
 **The states.** ``queued`` → ``running`` (a claim) → ``done`` or, after a
 failure, ``queued`` again with a backoff, or ``failed`` at the last attempt.
 A ``running`` row whose ``lease_until`` has passed goes to the next claim.
+:func:`prune` deletes the old ``done`` and ``failed`` rows (BR-1b).
 
 **The fence token.** Each claim writes a new ``locked_by``. :func:`hold`,
-:func:`complete` and :func:`fail` match it, so a worker that lost its lease
-changes nothing.
+:func:`complete`, :func:`fail` and :func:`give_up` match it, so a worker
+that lost its lease changes nothing.
 
 **The clock.** Each scheduling time is a ``now`` that the caller passes. A
 test freezes it. ``created_at`` and ``updated_at`` take the server clock,
@@ -53,6 +54,14 @@ BACKOFF_CAP = timedelta(hours=1)
 ERROR_CHARS = 2000
 #: The bound of the CHECK ``jobs_dedupe_key``.
 DEDUPE_CHARS = 200
+#: The age of a ``done`` or ``failed`` row that :func:`prune` deletes.
+RETENTION = timedelta(days=30)
+#: The rows that one DELETE of :func:`prune` takes, at most.
+PRUNE_BATCH = 500
+#: The DELETE statements of one :func:`prune` run, at most. So one run takes
+#: at most ``PRUNE_MAX_BATCHES * PRUNE_BATCH`` rows, and a backlog goes down
+#: day by day.
+PRUNE_MAX_BATCHES = 10
 
 #: The CHECK ``jobs_kind``.
 _KIND = re.compile(r"[a-z][a-z0-9_.]{0,63}")
@@ -137,7 +146,8 @@ def _as_dict(value: Any) -> dict[str, Any]:
 
 # ── The SQL ─────────────────────────────────────────────────────────────────
 #
-# No statement names an org. RLS binds each one to `tenant_session(org)`.
+# No statement takes an org as a parameter. RLS binds each one to
+# `tenant_session(org)`. `_PRUNE_SQL` also names the bound tenant, as a belt.
 # ⚠️ A parameter inside a CASE or a function has no column type, so asyncpg
 # sends it as text. Each one carries a CAST (R8 found it).
 
@@ -206,6 +216,33 @@ _FAIL_SQL = (
     "WHERE id = CAST(:id AS uuid) AND state = 'running' "
     "AND locked_by = CAST(:token AS uuid) "
     "RETURNING state"
+)
+
+#: A give-up: the job fails for good, with tries left or not. The fence
+#: token guards it, as for ``_FAIL_SQL``.
+_GIVE_UP_SQL = (
+    "UPDATE jobs SET state = 'failed', locked_by = NULL, lease_until = NULL, "
+    "finished_at = :now, last_error = :error, updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND state = 'running' "
+    "AND locked_by = CAST(:token AS uuid) "
+    "RETURNING id"
+)
+
+#: The bound tenant, as the repo writes it (``reach/outbox.py``). No tenant
+#: gives NULL, and NULL matches no row.
+_BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
+
+#: One batch of the old terminal rows. RLS binds it to the org of the
+#: session, as every statement here. A queued or running row never matches.
+#: The DELETE is the one statement here that also names the bound tenant: a
+#: session that bypasses RLS (the owner role, a superuser) must still delete
+#: the rows of the bound org only.
+_PRUNE_SQL = (
+    "DELETE FROM jobs WHERE id IN ("
+    "  SELECT id FROM jobs WHERE state IN ('done', 'failed') "
+    f"  AND organization_id = {_BOUND_ORG} "
+    "  AND finished_at < :before "
+    "  ORDER BY finished_at LIMIT CAST(:batch AS integer))"
 )
 
 _GET_SQL = (
@@ -331,3 +368,49 @@ async def fail(db: Any, job: Claim, error: str, *, now: datetime) -> str | None:
         "retry_at": now + backoff(job.attempts), "error": error[:ERROR_CHARS],
     })).scalar_one_or_none()
     return None if state is None else str(state)
+
+
+async def give_up(db: Any, job: Claim, error: str, *, now: datetime) -> bool:
+    """Settle *job* as ``failed`` for good, with tries left or not. Answers
+    False when the claim is gone or the row is of another tenant.
+
+    Use it when a retry is not safe: a detached handler that finds an intent
+    mark with no result, for example. *error* names the reason, and is kept
+    cut to :data:`ERROR_CHARS`. A give-up logs ``jobs.failed`` at error, as a
+    last failed try does. The line holds the text before the first colon of
+    *error* only, so name the reason there."""
+    found = (await db.execute(text(_GIVE_UP_SQL), {
+        "id": job.id, "token": job.token, "now": now, "error": error[:ERROR_CHARS],
+    })).scalar_one_or_none()
+    if found is None:
+        return False
+    _log.error("jobs.failed", job_id=job.id, kind=job.kind, attempts=job.attempts,
+               org=job.organization_id, error=error.split(":", 1)[0][:80],
+               outcome="given_up")
+    return True
+
+
+# ── Retention (BR-1b) ───────────────────────────────────────────────────────
+
+
+async def prune(db: Any, *, now: datetime, retention: timedelta = RETENTION,
+                batch: int | None = None) -> int:
+    """Delete the ``done`` and ``failed`` rows of the bound org that finished
+    before ``now - retention``, in batches. Answers the rows deleted.
+
+    One run takes at most :data:`PRUNE_MAX_BATCHES` batches. The next daily
+    run takes the rest of a backlog. A ``queued`` or ``running`` row stays, at
+    any age. The org is never an argument: RLS and the bound tenant of the
+    session bind each DELETE to ``tenant_session(org)``."""
+    size = PRUNE_BATCH if batch is None else batch
+    if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+        raise JobError("batch must be a positive integer")
+    before = _aware(now, "now") - retention
+    total = 0
+    for _ in range(PRUNE_MAX_BATCHES):
+        result = await db.execute(text(_PRUNE_SQL), {"before": before, "batch": size})
+        done = int(result.rowcount or 0)
+        total += done
+        if done < size:
+            break
+    return total

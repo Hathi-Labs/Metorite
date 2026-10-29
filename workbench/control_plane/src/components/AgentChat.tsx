@@ -61,6 +61,7 @@ import {
   type PendingConfirmation,
 } from "@/lib/confirmationQueue";
 import { sendRespondInputResult } from "@/lib/respondInput";
+import { createRejectHold } from "@/lib/rejectHold";
 import { cardsToRestore, cardsToSettle, fetchPendingAsksOrNull } from "@/lib/pendingAsks";
 import { planCardRedraw } from "@/lib/cardReplay";
 import { identity as boundIdentity } from "@/lib/dataCache";
@@ -987,6 +988,19 @@ export default function AgentChat({
     confirmationReducer,
     EMPTY_CONFIRMATIONS,
   );
+  // Rejects held for Undo (`lib/rejectHold.ts`). A session switch or an
+  // unmount sends every held REJECT at once: the rule that keeps a run from
+  // parking. The cleanup runs before `sessionIdRef` moves on.
+  const [rejectHold] = useState(() => createRejectHold());
+  const heldCardsRef = useRef(new Map<string, PendingConfirmation>());
+  useEffect(() => () => { rejectHold.flushAll(); }, [sessionId, rejectHold]);
+  // A closed tab inside the window sends the held REJECT too. The POST is
+  // `keepalive`, so the browser finishes it after the page is gone.
+  useEffect(() => {
+    const flush = () => rejectHold.flushAll();
+    window.addEventListener("pagehide", flush);
+    return () => window.removeEventListener("pagehide", flush);
+  }, [rejectHold]);
 
   // ── HITL elicitation state (VS Code ask_questions parity) ────────────
   // When requestId is set the tool is blocking (MAF Tier 2 path — the
@@ -1283,8 +1297,10 @@ export default function AgentChat({
       payload: { request_id: string; answer: string; was_freeform: boolean; declined?: boolean },
       restoreCard: (reason?: string) => void,
       settle?: (outcome: "ok" | "drop" | "resent", reason?: string) => void,
+      /** A held Reject sends for the session that held it (`lib/rejectHold.ts`). */
+      sessionOverride?: string,
     ) => {
-      const forSession = sessionIdRef.current;
+      const forSession = sessionOverride ?? sessionIdRef.current;
       // The account this tab drew the card for. The route refuses the answer
       // when the browser is signed in to another account now (WS-51 S2).
       const drawnFor = boundIdentity();
@@ -1915,25 +1931,44 @@ export default function AgentChat({
       submitText(`${answer}: ${card.key}`);
       return;
     }
+    const requestId = card.requestId;
+    const rejecting = answer === "REJECT";
     // The card leaves with a word: one line says "Applying", then what
     // became of the answer (UXD-3). It draws under the newest message.
     dispatchConfirmation({
       type: "answering",
       key: card.key,
       label: card.detail || card.title,
-      intent: answer === "REJECT" ? "rejected" : "approved",
+      intent: rejecting ? "rejected" : "approved",
       afterId: visibleMessages.length ? visibleMessages[visibleMessages.length - 1].id : null,
+      ...(rejecting ? { undo: true } : {}),
     });
-    noteCardAnswered(sessionId, card.requestId, answer);
-    postRespondInput(
-      { request_id: card.requestId, answer, was_freeform: false },
-      (reason) => dispatchConfirmation(settleAnswer(card, "retry", reason)),
-      // "resent": the run died with an update and the answer went out as a
-      // message. The card leaves, as on any answer no run can take, and its
-      // line goes with it: the notice of the resend says what happened.
-      (outcome, reason) => dispatchConfirmation(
-        outcome === "resent" ? settleAnswer(card, "drop") : settleAnswer(card, outcome, reason)),
-    );
+    const heldFor = sessionId;
+    const send = () => {
+      dispatchConfirmation({ type: "released", key: card.key });
+      noteCardAnswered(sessionId, requestId, answer);
+      postRespondInput(
+        { request_id: requestId, answer, was_freeform: false },
+        (reason) => dispatchConfirmation(settleAnswer(card, "retry", reason)),
+        // "resent": the run died with an update and the answer went out as a
+        // message. The card leaves, as on any answer no run can take, and its
+        // line goes with it: the notice of the resend says what happened.
+        (outcome, reason) => dispatchConfirmation(
+          outcome === "resent" ? settleAnswer(card, "drop") : settleAnswer(card, outcome, reason)),
+        heldFor,
+      );
+    };
+    if (!rejecting) { send(); return; }
+    // Undo for 5 s (#916). The REJECT waits, and a session switch or an
+    // unmount sends it at once (the effect below), so a run never stays parked.
+    heldCardsRef.current.set(card.key, card);
+    rejectHold.start(card.key, () => { heldCardsRef.current.delete(card.key); send(); });
+  };
+  const undoReject = (key: string) => {
+    const card = heldCardsRef.current.get(key);
+    if (!rejectHold.undo(key) || !card) return;
+    heldCardsRef.current.delete(key);
+    dispatchConfirmation({ type: "restore", card });
   };
   const hasConfirmations = confirmations.cards.length > 0;
   // No card pins above the composer (owner report, 2026-10-23). A reply
@@ -2378,6 +2413,7 @@ export default function AgentChat({
                 {/* What became of each answered approval card (UXD-3). */}
                 <ConfirmationReceipts
                   receipts={confirmations.receipts.filter((r) => r.afterId === msg.id)}
+                  onUndo={undoReject}
                 />
                 {/* Inline HITL card — anchored to the asking assistant turn. */}
                 {msg.id === hitlAnchorId && renderHitlCards()}
@@ -2392,6 +2428,7 @@ export default function AgentChat({
               it a new id) draws at the tail, so it is never lost (UXD-3). A
               message above the shown slice keeps its line in the history. */}
           <ConfirmationReceipts
+            onUndo={undoReject}
             receipts={confirmations.receipts.filter(
               (r) => !r.afterId || !messages.some((m) => m.id === r.afterId),
             )}
