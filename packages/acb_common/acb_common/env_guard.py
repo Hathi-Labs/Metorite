@@ -286,6 +286,10 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-BRIEF AUTO-2: the ledger of unattended runs. UNATTENDED_LEDGER is its
     # switch, so a tenant that set it could turn the ledger on for every org.
     "UNATTENDED_LEDGER",
+    # WS-BRIEF BR-2a-1: the core brief. BRIEF_ENABLED and BRIEF_ORGS open the
+    # brief for an org, so a tenant that set them could open it for every org
+    # on the box. The prefix covers the later BRIEF_* switches too.
+    "BRIEF_",
     # Agent runtime, sandbox and models.
     "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",
