@@ -19,7 +19,8 @@
  *    retry: a network fault or a 5xx. A 4xx (a 409) removes the card, and a
  *    restored card would get a 409 on every click. The POST and that rule
  *    are `lib/respondInput.ts`. `settleAnswer` turns its outcome into the
- *    action for the card.
+ *    action for the card. A 400 or a 422 also restores it: the member can
+ *    change the answer (#916).
  * 5. A 4xx does NOT remember the id. The gateway also answers 409 when the
  *    control bus is slow or has no listener (`dispatch_control`), and then
  *    the tool still waits. Only the server's `confirmation_resolved` closes
@@ -260,6 +261,9 @@ export interface ConfirmationReceipt {
   reason?: string;
   /** The message the line draws under: the last one when the member answered. */
   afterId?: string | null;
+  /** A held Reject (`lib/rejectHold.ts`): the POST has not gone, and the line
+   *  offers Undo. `released` clears it once the POST goes. */
+  undo?: boolean;
 }
 
 export interface ConfirmationQueueState {
@@ -287,6 +291,8 @@ export const EMPTY_CONFIRMATIONS: ConfirmationQueueState = {
 export function receiptText(r: ConfirmationReceipt): string {
   switch (r.kind) {
     case "applying":
+      // A held Reject already reads as done, and offers Undo (#916).
+      if (r.undo) return `Rejected · ${r.label}`;
       return r.intent === "rejected" ? `Rejecting… ${r.label}` : `Applying… ${r.label}`;
     case "approved":
       return `Approved · ${r.label}`;
@@ -329,7 +335,11 @@ export type ConfirmationAction =
       label?: string;
       intent?: "approved" | "rejected";
       afterId?: string | null;
+      /** A Reject held for Undo (`lib/rejectHold.ts`). */
+      undo?: boolean;
     }
+  /** The hold ended and the REJECT POST goes: the line stops offering Undo. */
+  | { type: "released"; key: string }
   | { type: "answered"; key: string }
   /** The POST got a 4xx. The card stays gone until a replay shows it again.
    *  `reason` turns its receipt into "Not applied"; none (a resend) drops it. */
@@ -413,6 +423,7 @@ export function confirmationReducer(
             kind: "applying",
             intent: action.intent ?? "approved",
             afterId: action.afterId ?? null,
+            ...(action.undo ? { undo: true } : {}),
           }
         : null;
       return {
@@ -425,6 +436,11 @@ export function confirmationReducer(
           : state.receipts,
       };
     }
+    case "released":
+      return {
+        ...state,
+        receipts: settleReceipt(state.receipts, action.key, (r) => ({ ...r, undo: undefined })),
+      };
     case "answered":
       // The server took the answer. Its `confirmation_resolved` follows, and
       // this keeps a replay that arrives first from reopening the card.
@@ -432,7 +448,7 @@ export function confirmationReducer(
         ...state,
         resolved: withAdded(state.resolved, action.key),
         answering: withRemoved(state.answering, action.key),
-        receipts: settleReceipt(state.receipts, action.key, (r) => ({ ...r, kind: r.intent })),
+        receipts: settleReceipt(state.receipts, action.key, (r) => ({ ...r, kind: r.intent, undo: undefined })),
       };
     case "dropped":
       return {

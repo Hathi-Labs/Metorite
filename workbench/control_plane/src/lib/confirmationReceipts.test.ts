@@ -130,17 +130,30 @@ describe("approve-card-retry-reason", () => {
 });
 
 describe("approve-card-refused-reason", () => {
-  it("turns the line into Not applied, with what to change", async () => {
+  it("a 422 keeps the card open with what to change", async () => {
     const res = await sendRespondInputResult(
       { request_id: "r1", answer: "APPROVE", was_freeform: false, thread_id: "t" },
       (async () => new Response(JSON.stringify({ detail: "The due date is in the past." }), { status: 422 })) as typeof fetch,
     );
-    expect(res.outcome).toBe("drop");
+    expect(res.outcome).toBe("retry");
     expect(res.reason).toBe("The server refused the answer: The due date is in the past.");
+    const back = run([answering("approved"), settleAnswer(card, res.outcome, res.reason)], asked);
+    expect(back.cards).toEqual([card]);
+    expect(back.receipts).toEqual([]);
+    expect(back.errors.get("r1")).toBe(res.reason);
+  });
+
+  it("a 403 still turns the line into Not applied", async () => {
+    const res = await sendRespondInputResult(
+      { request_id: "r1", answer: "APPROVE", was_freeform: false, thread_id: "t" },
+      (async () => new Response(JSON.stringify({ detail: "Not yours." }), { status: 403 })) as typeof fetch,
+    );
+    expect(res.outcome).toBe("drop");
+    expect(res.reason).toMatch(/^You cannot answer/);
 
     const done = run([answering("approved"), settleAnswer(card, "drop", res.reason)], asked);
     expect(lines(done)).toEqual([
-      'Not applied · Create task "Call the supplier". The server refused the answer: The due date is in the past.',
+      'Not applied · Create task "Call the supplier". You cannot answer this request. Ask its owner to answer it.',
     ]);
     expect(done.cards).toEqual([]);
   });
