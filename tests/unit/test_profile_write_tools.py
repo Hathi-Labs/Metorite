@@ -2124,9 +2124,12 @@ class TestPz31SteeredWords:
 
     @pytest.mark.parametrize("typed", [False, None, "true", 1])
     def test_a_steer_that_is_not_typed_grounds_nothing(self, own_chat, steer_mod, typed) -> None:
-        """(c) A card answer stores False. Only a real True counts."""
+        """(c) A card answer stores False. Only a real True counts, at the
+        run start and at a tool result."""
         with ap.member_typed(""):
-            ap.count_member_steers(MEMBER)
+            replayed = [{"author": MEMBER, "text": ANSWER, "typed": typed}]
+            assert ap.count_member_steers(MEMBER, replayed) == 0
+            assert ap.add_steered_words(MEMBER, ANSWER, typed=typed) is False
             _read_at_a_tool_result(steer_mod, MEMBER, ANSWER, typed=typed)
             assert ap.typed_words() == ""
             out = _run(pt.profile_remember(ANSWER_PHRASE, "work"))
