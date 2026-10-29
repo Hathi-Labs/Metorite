@@ -1404,8 +1404,8 @@ The orchestrator offers each registry agent as a tool (`orchestrator/agents.py:7
 - **Load words.** The plan pack gains "overloaded", "overbooked" and "capacity". The bulk pack gains "add tasks", "create tasks", "make tasks", "task for each" and "tasks for each". They are phrases and whole words. No bare "task" or "add" joins them.
 - **CRM rules.** `convert_lead`: call it at once with a proposed `deal_name`, the lead's company. The card confirms the name, and the model does not ask in text. Mirror mode: do not load another pack to move the deal.
 - **Spawn cue.** `_SPAWN_BLOCK` says to spawn for "four or more independent reads or searches (five companies, every invoice)". It keeps "Do not spawn for one read, one task, or up to three searches". The block is 90 words, the same cap.
-- **Size.** The characters of each rules block, before and after, are: CRM 2835 to 3062, core 3001 to 3369, plan 2089 to 2220, structure 1889 to 2020, bulk 2292 to 2423. The size pin on the core block moves from 3300 to 3400.
-- **Mixed turns.** The rows give three causes. Two were a refused `create_task` in a space and a question about the project. The private-task bullet covers the second. The refused-create card count is a harness defect. One was a hand-off and a timeout, which the hand-off bullet covers.
+- **Size.** The characters of each rules block, before and after, are as follows. CRM 2835 to 3062. Core 3001 to 3369. Plan 2089 to 2220. Structure 1889 to 2020. Bulk 2292 to 2423. The size pin on the core block moves from 3300 to 3400.
+- **Mixed turns.** Three causes show in the rows. Two were a refused `create_task` in a space and a question about the project. The private-task bullet covers the second. The refused-create card count is a harness defect. One was a hand-off and a timeout, which the hand-off bullet covers.
 - **Fence.** `tests/unit/test_pack_rules_oa8g.py` and `tests/unit/test_spawn_persona.py`. Run 3 of OA-8e measures the effect.
 
 **OA-8c. WhatsApp.**

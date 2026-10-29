@@ -8,7 +8,6 @@ Run: ``uv run pytest tests/unit/test_pack_rules_oa8g.py -q``.
 from __future__ import annotations
 
 import pytest
-
 from acb_skills import tool_packs as tp
 
 SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk")
