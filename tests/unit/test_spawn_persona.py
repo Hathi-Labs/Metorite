@@ -69,3 +69,38 @@ def test_persona_and_docstring_agree() -> None:
     doc = at.spawn_subagents.__doc__ or ""
     assert "several steps" in doc and "fill this chat" in doc
     assert "one tool call" in doc and "in one step" in doc
+
+
+# ── The wiring: the real agent build reads the flag per org ────────────────
+
+
+class _FakeAgent:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+
+
+def _built_instructions(monkeypatch, org: str) -> str:
+    monkeypatch.setattr(ag, "Agent", _FakeAgent)
+    monkeypatch.setattr(ag, "_make_openai_client", lambda *a, **k: object())
+    monkeypatch.setattr(ag, "_load_specialist_agents_as_tools", lambda: [])
+    agent = ag.build_orchestrator_agent(with_history=False, organization_id=org)
+    return agent.kwargs["instructions"]
+
+
+def test_the_agent_build_follows_the_flag_per_org(monkeypatch) -> None:
+    """Mutation: pass ``spawn=True`` at the build -> the off and other-org cases fail."""
+    monkeypatch.setattr(get_settings(), "spawn_subagents_orgs", "")
+    off = _built_instructions(monkeypatch, ORG)
+    assert "SUB-AGENTS." not in off
+
+    monkeypatch.setattr(get_settings(), "spawn_subagents_orgs", ORG)
+    on = _built_instructions(monkeypatch, ORG)
+    assert on.count(ag._SPAWN_BLOCK) == 1
+    assert on.replace(ag._SPAWN_BLOCK, "", 1) == off
+
+    monkeypatch.setattr(
+        get_settings(), "spawn_subagents_orgs", "0a0a0a0a-0000-4000-8000-0000000000ee"
+    )
+    other = _built_instructions(monkeypatch, ORG)
+    assert "SUB-AGENTS." not in other
+    assert other == off
