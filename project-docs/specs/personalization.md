@@ -273,12 +273,19 @@ write merged with `jsonb_set`.
 | Route | Does |
 |---|---|
 | `GET /auth/me/assistant-profile` | The profile, or the empty profile |
-| `PUT /auth/me/assistant-profile` | Body `{key, value}`. `key` is `learning`, `address` or `style` |
+| `PUT /auth/me/assistant-profile` | Body `{key, value}`. `key` is `learning`, `address`, `style` or `apps`. A chat write cannot set `learning` or `apps` |
 | `POST /auth/me/assistant-profile/facts` | Add one fact. Returns its `id` |
 | `PATCH /auth/me/assistant-profile/facts/{id}` | Change the text or the kind |
 | `DELETE /auth/me/assistant-profile/facts/{id}` | Forget one fact |
 | `POST`, `PATCH`, `DELETE` `.../aliases[/{id}]` | The same for aliases |
-| `DELETE /auth/me/assistant-profile` | Forget everything. The column becomes NULL |
+| `DELETE /auth/me/assistant-profile` | Forget everything. The member's words go. The app settings (`apps`) stay |
+
+**The app settings (`apps`, §12.6, WS-BRIEF BR-2a-1).** A PUT of `apps`
+takes `{<app>: {<key>: <value>}}` for one app that
+`acb_common.assistant_profile.APP_PREFERENCES` declares. It merges those keys
+into `apps.<app>`. A bool key takes a bool, and a time takes `HH:MM` from
+00:00 to 23:59. The GET answers `apps`, each app over its defaults. The
+brief's keys are the first: `enabled`, `brief_time` and `closeout_time`.
 
 A member with no `user_settings` row gets one on the first write, with the
 calendar seed, as `prefs.py` does.
@@ -664,6 +671,10 @@ conversation (WS-47). That org's profile applies.
    it.
 4. **Forget everything** clears the column, at once. No soft delete. The
    profile is the member's own words, and the member asked to remove them.
+   The app settings (`apps`) stay, because they are settings and not words.
+   A forget must never turn an opt-out of the brief back on. The fences are
+   `test_forget_keeps_the_app_settings` (R8) and
+   `TestTheForget.test_delete_keeps_the_app_settings`.
 5. **Private.** No admin route reads another member's profile. No export
    includes it. A shared room gets no block.
 6. **Leaving the org.** When a member's access ends, the assistant forgets
