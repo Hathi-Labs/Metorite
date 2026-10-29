@@ -1150,7 +1150,7 @@ register(Provider("knowledge", ("knowledge",), _knowledge, KNOWLEDGE_KINDS, need
 # moved it to a new slot. The app is the Calendar. `reminders.my_open_cards`
 # opens ONE tenant session, and this file opens none. With CALENDAR_REMINDERS
 # off the source is absent before any read. The act is a link that opens a new
-# chat now and carries the `reminder` id of §5.7 for RM-4 (`reminder_href`).
+# chat with the `reminder` id of §5.7, which RM-4 reads (`reminder_href`).
 # The acts in place of §5.6 wait for the client (D101). Fence:
 # `tests/unit/test_reminder_loop.py`.
 
@@ -1162,10 +1162,9 @@ def reminder_href(reminder_id: str) -> str:
     """The link of a reminder card (§5.7 item 1).
 
     ``do=new-chat`` is the chat's own door to a fresh chat
-    (``app/chat/page.tsx`` ``ChatFullView``), so the link works before RM-4:
-    it opens a new chat, and never the chat that was open last. Today the
-    page drops the rest of the address. RM-4 makes it read ``reminder`` and
-    write the first message."""
+    (``app/chat/page.tsx`` ``ChatFullView``). Since RM-4 the page also reads
+    ``reminder``: it opens a fresh chat with or without ``do``, and the
+    server writes the first message (``routes/chat_reminder.py``)."""
     return f"/chat?do=new-chat&reminder={quote(reminder_id, safe='')}"
 
 

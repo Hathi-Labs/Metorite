@@ -41,6 +41,7 @@ entry says ONE or THE, a second copy is a defect.
 - `components/AppShell.tsx`: the responsive shell. No ancestor of the shell scrolls. Do not call `scrollIntoView` in the email app, the shell or the chat. Use `revealWithin` or `scrollToEnd` from `lib/scrollWithin.ts`. Fence: `lib/scrollWithin.test.ts`.
 - `lib/nav.ts`: `visibleSections(allowedFeatures)` drops panes the member cannot reach.
 - `lib/shell/`: `needs.ts`, `feed.ts` and `feedState.ts` are the one browser clients of their routes. ⚠️ An account switch never clears the read cache. Fences: `feed.test.ts`, `accountSwitchLeave.test.ts`.
+- `lib/shell/reminderOpen.ts`: a reminder link (`/chat?reminder=<id>`, RM-4). It is the one client of `/reminder-open` and of the reminder chips. The server builds every word, and the body holds the id only. No chip calls `/promote`. Fence: `app/chat/reminderOpen.test.ts`.
 - `lib/shell/navNeeds.ts`: the sidebar row counts. Do not add a second fetch of `/api/shell/needs` or a second poll (`joinNeedsPoll`). Fence: `navNeeds.test.ts`.
 - `lib/shell/presets.ts` + `shellPrefs.ts`: a star never grants, because `starredHrefs` picks only from `visibleSections`. `shellPrefs.ts` is the one client of `/api/auth/me/shell`. Fence: `presets.test.ts`.
 - `lib/centers.ts`: THE Center registry. A slug here needs its feature in `acb_auth.permissions.FEATURES` (checklist: `department_centers.md` §2). Fences: `tests/unit/test_org_access_control.py`, `lib/centers.test.ts`.

@@ -72,3 +72,14 @@ Add a section per feature as you build it. Example:
 | K-46 | Tell the caller when `MAX_BACKLINKS` cuts the "Linked from" list | The route lists at most 200 sources and sets no `truncated` flag (K-1 review, 2026-10-26) | The answer carries `truncated`, and a test with 201 sources shows it true |
 | K-47 | `diff-reviewer` on the rest of wave 2: KB-2b, KB-2e, KB-2k and KB-2m | K-1 reviewed KB-2h only. The other four rows have no adversarial review (K-1 review, 2026-10-26) | The reviewer reports no P0 on each of the four |
 
+
+### Reminders (WS-66)
+
+| # | Item | Why | Done when |
+|---|---|---|---|
+| RM-H1 | Keep the aside of a chat card head on one line | At 390 px the aside "Tomorrow 09:30" of a `reminderCard` wraps to two lines, and the title cuts early. `TemplateHead` (`genUITemplates.tsx`) has no no-wrap rule, so every card with an aside does the same (RM-4 visual review, 2026-10-29) | A capture at 390 px shows the aside on one line and the title cut after it |
+| RM-H2 | Write one `opened` ledger row when a chat post fails and the member taps again | `open_reminder` commits the ledger row before `_post_row`. A 503 from the post and a retry write a second `opened` row. Two parallel taps do the same. The chat row stays unique (RM-4 verify, 2026-10-29) | An R8 test shows a failed post and a retry leave one `opened` row |
+| RM-H3 | Stop the model from emitting a `reminderCard` | The catalog lists it, because the lockstep fence needs every template. Its summary tells the model not to emit it, and nothing enforces that. A chip acts only on a tap, and only on the member's own reminder (RM-4 verify, 2026-10-29) | The run path drops a model-emitted `reminderCard`, with a test |
+| RM-H4 | Show the new time in the card head after Not yet | The head reads `data.when` only. After Not yet it keeps the old time, and after a remount the "Moved to" line is gone too. A second Not yet then moves the reminder again (RM-4 UI review, 2026-10-29) | The head reads the `fire_at` of the store row, with a test |
+| RM-H5 | Name the chat's Undo inside a card, or move it to the shared toast | The `reminderCard` Undo is a pill, and `ProfileToolCards` uses a text button. DESIGN_SYSTEM.md §12 beat 4 names one undo stack (`lib/undo.ts`). Neither form has Ctrl+Z or a time window (RM-4 UI review, 2026-10-29) | §12 names the in-card Undo and its control, or the chip uses `useToast().show({ action })` |
+| RM-H6 | Stop a replayed tool receipt from overwriting a newer chip state | A receipt counts as fresh for 60 s (`FRESH_RECEIPT_MS`). The model reschedules, the member taps Done, and a remount inside 60 s writes "open" back. The five chips return, and the next tap's 409 hides them again (RM-4 repair verify, 2026-10-29) | The store keeps the newer of a chip state and a receipt, with a test |
