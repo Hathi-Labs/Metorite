@@ -824,7 +824,9 @@ async def test_r8_the_flag_off_answers_404_on_every_route(world, monkeypatch) ->
 # brings it back to `due`. A second member and a second org get 404 and no
 # row. A second open is safe.
 #
-# **The mutations (R7).** Each turned the named test red. Commit before each.
+# **The mutations (R7).** Each turned the named test red. They ran in memory
+# (the function's source, changed and executed in its module), so no file of
+# the tree changed.
 #
 # * M6. `reminders.open_reminder`: write `opened` for a closed reminder too
 #   (drop `and row.state in OPEN_STATES`).
@@ -833,6 +835,9 @@ async def test_r8_the_flag_off_answers_404_on_every_route(world, monkeypatch) ->
 #   `test_r8_a_second_open_is_safe_and_writes_no_second_row`.
 # * M8. `reminders.open_reminder`: close an `action` reminder on open too.
 #   `test_r8_an_open_writes_one_row_and_an_action_stays_due`.
+# * M9. `reminders._subject_of`: read the linked task by its id alone, with
+#   no `load_visible_task`.
+#   `test_r8_a_linked_task_shows_only_to_a_member_who_can_open_it`.
 
 
 @pytest.fixture

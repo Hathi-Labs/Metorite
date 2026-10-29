@@ -20,15 +20,17 @@ What this holds without a database:
 
 The database half is ``test_reminders_r8.py``.
 
-**The mutations (R7).** Each turned the named test red.
+**The mutations (R7).** Each turned the named test red. They ran in memory
+(the function's source, changed and executed in its module), so no file of
+the tree changed.
 
-* M1. ``context.data``: keep the marks of the text.
+* M1. ``context.plain``: keep the « and » of the text.
   ``test_member_text_is_fenced_once_and_cannot_close_the_fence``.
 * M2. ``context.history``: drop the ``[:LEDGER_TAIL]`` cut.
   ``test_the_ledger_tail_is_capped_and_oldest_first``.
-* M3. ``context._subject_fact``: print the title of a hidden object.
+* M3. ``context._subject_fact``: drop the ``hidden`` branch.
   ``test_a_hidden_object_shows_nothing_of_itself``.
-* M4. ``chat_reminder``: drop ``dependencies=[Depends(_require_reminders)]``.
+* M4. ``chat_reminder._require_reminders``: let it pass with the flag off.
   ``test_the_flag_off_answers_404_before_the_body``.
 """
 
