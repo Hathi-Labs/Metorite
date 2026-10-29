@@ -34,7 +34,11 @@
 > join, `CRM_AUTO_LEAD`, and every write tool are explicitly NOT in it — see §9.
 > **Report currencies (H-333, built on branch `crm-h333-currency`, 2026-10-28)** — the four report
 > routes in `routes/crm/reports.py` never add two currencies. Each money figure has a `currency`
-> and an `others` list. The board lane totals are not yet fixed (Metorite #887).
+> and an `others` list. The Deals board lanes (`GET /crm/pipeline`) keep each currency apart the
+> same way (Metorite #887, built on branch `crm-887-lane-currency`, 2026-10-29). A lane has a
+> `currency`, and its `amount` and `weighted` are in that currency. A lane of one currency has
+> `others == []`. The lane header shows "plus ..." for the rest, and the app-bar subtitle adds
+> lanes of one currency only.
 >
 > **Same rule on three more surfaces (Metorite #888, built on branch `crm-888-currency`, 2026-10-29)** —
 > `GET /crm/aggregate` splits `sum_amount` and `weighted` on deals by currency. The value of each group

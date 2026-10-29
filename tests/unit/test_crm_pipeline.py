@@ -1040,6 +1040,144 @@ async def test_the_weighted_aggregate_binds_the_stage_default(
     assert proposal_call["stage_probability"] == 50
 
 
+# ── Task 887 · a lane keeps each currency apart (H-333) ────────────────────
+#
+# The app holds no exchange rate. So a lane total is for ONE currency (the
+# primary: INR first), and the rest sit in ``others``.
+
+async def test_a_lane_of_one_currency_has_no_others(db: FakeCrmDB) -> None:
+    stages = _deal_pipeline(db)
+    _seed_deal(db, stages["Proposal"], amount=100_000.0, probability=20)
+    _seed_deal(db, stages["Proposal"], amount=200_000.0, probability=50)
+
+    board = await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
+    proposal = next(x for x in board.lanes if x.status.name == "Proposal")
+
+    assert proposal.others == []
+    assert proposal.currency == "INR"
+    assert (proposal.count, proposal.amount) == (2, 300_000.0)
+    assert proposal.weighted == 20_000.0 + 100_000.0
+    empty = next(x for x in board.lanes if x.status.name == "Qualification")
+    assert (empty.currency, empty.amount, empty.others) == ("INR", 0.0, [])
+
+
+async def test_a_mixed_lane_sums_each_currency_apart(db: FakeCrmDB) -> None:
+    stages = _deal_pipeline(db)
+    _seed_deal(db, stages["Proposal"], amount=100_000.0, probability=20)
+    _seed_deal(db, stages["Proposal"], amount=4_000.0, currency="USD", probability=50)
+    _seed_deal(db, stages["Proposal"], amount=500.0, currency="EUR", probability=10)
+
+    board = await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
+    proposal = next(x for x in board.lanes if x.status.name == "Proposal")
+
+    assert proposal.count == 3
+    assert (proposal.currency, proposal.amount, proposal.weighted) == (
+        "INR", 100_000.0, 20_000.0,
+    )
+    assert [(o.currency, o.amount, o.weighted) for o in proposal.others] == [
+        ("EUR", 500.0, 50.0), ("USD", 4_000.0, 2_000.0),
+    ]
+
+
+async def test_the_primary_currency_is_inr_even_at_zero(db: FakeCrmDB) -> None:
+    """INR leads when a deal of the lane carries it, even for an amount of 0."""
+    stages = _deal_pipeline(db)
+    _seed_deal(db, stages["Proposal"], amount=0.0, currency="INR")
+    _seed_deal(db, stages["Proposal"], amount=900.0, currency="USD")
+
+    board = await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
+    proposal = next(x for x in board.lanes if x.status.name == "Proposal")
+
+    assert (proposal.currency, proposal.amount) == ("INR", 0.0)
+    assert [(o.currency, o.amount) for o in proposal.others] == [("USD", 900.0)]
+
+
+async def test_a_lane_with_only_usd_leads_with_usd(db: FakeCrmDB) -> None:
+    stages = _deal_pipeline(db)
+    _seed_deal(db, stages["Proposal"], amount=900.0, currency="USD")
+
+    board = await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
+    proposal = next(x for x in board.lanes if x.status.name == "Proposal")
+
+    assert (proposal.currency, proposal.amount, proposal.others) == ("USD", 900.0, [])
+
+
+async def test_a_blank_or_padded_code_reads_by_the_one_rule(db: FakeCrmDB) -> None:
+    stages = _deal_pipeline(db)
+    _seed_deal(db, stages["Proposal"], amount=10.0, currency="")
+    _seed_deal(db, stages["Proposal"], amount=5.0, currency="inr")
+    _seed_deal(db, stages["Proposal"], amount=7.0, currency=" usd ")
+    _seed_deal(db, stages["Proposal"], amount=3.0, currency="USD")
+
+    board = await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
+    proposal = next(x for x in board.lanes if x.status.name == "Proposal")
+
+    assert (proposal.currency, proposal.amount) == ("INR", 15.0)
+    assert [(o.currency, o.amount) for o in proposal.others] == [("USD", 10.0)]
+
+
+async def test_a_terminal_mixed_lane_forecasts_nothing_in_any_currency(
+    db: FakeCrmDB,
+) -> None:
+    stages = _deal_pipeline(db)
+    _seed_deal(db, stages["Closed Won"], amount=100.0, probability=100)
+    _seed_deal(db, stages["Closed Won"], amount=50.0, currency="USD", probability=100)
+
+    board = await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
+    won = next(x for x in board.lanes if x.status.name == "Closed Won")
+
+    assert won.weighted == 0.0
+    assert [o.weighted for o in won.others] == [0.0]
+    assert (won.amount, won.others[0].amount) == (100.0, 50.0)
+
+
+async def test_show_more_does_not_change_the_currency_totals(
+    db: FakeCrmDB,
+) -> None:
+    stages = _deal_pipeline(db)
+    for _ in range(3):
+        _seed_deal(db, stages["Proposal"], amount=100.0)
+    for _ in range(3):
+        _seed_deal(db, stages["Proposal"], amount=10.0, currency="USD")
+    lane_id = str(stages["Proposal"].id)
+
+    first = await crm_pipeline.get_pipeline(
+        owner=None, per_lane=2, lane_status_id=lane_id, lane_offset=0, user=USER,
+    )
+    later = await crm_pipeline.get_pipeline(
+        owner=None, per_lane=2, lane_status_id=lane_id, lane_offset=4, user=USER,
+    )
+
+    for board in (first, later):
+        lane = board.lanes[0]
+        assert (lane.count, lane.currency, lane.amount) == (6, "INR", 300.0)
+        assert [(o.currency, o.amount) for o in lane.others] == [("USD", 30.0)]
+    assert len(later.lanes[0].rows) == 2
+
+
+async def test_every_lane_sum_names_its_currency_in_a_bound_predicate(
+    db: FakeCrmDB,
+) -> None:
+    """Structural: no lane SUM runs without the currency predicate, and the
+    weighted formula is still the one from ``core`` (not a copy)."""
+    stages = _deal_pipeline(db)
+    _seed_deal(db, stages["Proposal"], amount=1.0)
+    _seed_deal(db, stages["Proposal"], amount=1.0, currency="USD")
+
+    await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
+    sums = db.statements_touching("AS weighted")
+
+    assert sums
+    assert all(f"{crm_pipeline.CURRENCY_SQL} = :currency" in s for s in sums)
+    assert crm_core.WEIGHTED_SQL in sums[0]
+    sent = {
+        params["currency"] for statement, params in db.calls
+        if "AS weighted" in statement
+        and params.get("status_id") == str(stages["Proposal"].id)
+    }
+    assert sent == {"INR", "USD"}
+
+
 # ── WS-26c · kanban cards carry the account name (done-when 2) ─────────────
 
 async def test_a_board_card_carries_its_organization_name(
