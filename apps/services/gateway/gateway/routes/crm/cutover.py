@@ -29,9 +29,16 @@ call the same function. A count key is not complete when it is held
 (``in_progress``), has records to retry (the cursor's ``failed`` map), reads
 short (``sync.short_reads``), or the run counted ``failed`` for it. The run
 is the newest good run, or the final run in phase 2. The switch waits for
-such a key unless the admin leaves it out (D133). Round 5: a ``refused``
-count no longer waits. Only the delete check of a walk counts it, after a
-complete read, and D133 keeps the records that Zoho deletes.
+such a key unless the admin leaves it out (D133).
+
+⚠️ **The delete check of a walk** (``engine._drop_stale``) counts
+``refused`` for four causes, and they count apart (round 6). A walk that
+read fewer records than Zoho holds (``empty_walk``, ``short_walk``) is no
+complete read: the engine flags ``walk_short``, and the key waits (reason
+``walk_short``). A refusal after a complete read (``count_unknown`` with
+records read, ``large_delete``) only kept rows that Zoho may have
+deleted, which D133 accepts: the engine flags ``delete_kept``, and nothing
+waits. ``refused`` itself is no reason, and the preview keeps its number.
 
 ⚠️ **Phase 2 also needs the final run to have READ each key** (reason
 ``not_read``, review P1, verifier P3-1, round 4). The rule takes each key
@@ -169,7 +176,8 @@ ROLES_KEY = "deal_contacts"
 #: ``not_read`` and ``roles_waiting`` are for phase 2 only: the final run did
 #: not read the key, or deals still wait for their contacts.
 Reason = Literal[
-    "held", "unavailable", "importing", "failed", "short", "refused", "not_read",
+    "held", "unavailable", "importing", "failed", "short", "refused", "walk_short",
+    "not_read",
     "roles_waiting",
 ]
 
@@ -491,7 +499,8 @@ async def module_state(
     The preview and both POST routes call it. ``run`` is the run whose counts
     decide ``failed`` and a run's ``unavailable``: the final run in phase 2,
     else the newest good run. A key with two reasons gets the first of:
-    held, unavailable, importing, failed, short, not_read, roles_waiting.
+    held, unavailable, importing, failed, short, walk_short, not_read,
+    roles_waiting.
     ``final`` is phase 2 only, and it adds ``not_read`` (:func:`_not_read`)
     and ``roles_waiting`` (:func:`roles_waiting`). It reads and writes
     nothing else.
@@ -529,9 +538,11 @@ async def module_state(
         ("failed", [k for k, s in states if s.get("failed")]),
         ("failed", [k for k, c in counts if c.get("failed", 0) > 0]),
         ("short", short),
-        # Round 5 (P3-3): no "refused" here. Only the delete check of a walk
-        # counts it, after a complete read: it kept rows that Zoho may have
-        # deleted, and D133 keeps such records. The run log keeps the warning.
+        # Round 6: a walk that read fewer records than Zoho holds is no
+        # complete read (engine.WALK_SHORT_FLAG). A refusal after a complete
+        # read (engine.DELETE_KEPT_FLAG) waits for nothing.
+        ("walk_short", [k for k, c in counts if c.get("walk_short", 0) > 0]),
+        # No "refused" here: see the module doc (round 6).
         ("not_read", not_read),
         ("roles_waiting", roles),
     ):
@@ -1085,11 +1096,12 @@ async def start_cutover(
         if getattr(settings, "mode", None) != "mirror":
             raise _refuse(409, *_NOT_MIRROR)
         _check_connection(await store.get(db, org, PROVIDER, OWNING_APP))
-        await _check_keys(db, org, leave_out)
+        # Round 6: only the ticks that phase 1 takes (a key not complete).
+        left_out = await _check_keys(db, org, leave_out)
     try:
         # The final sync: each module now, with no wait of an hour (round 3).
         # Round 5: the final sync skips the keys that the admin left out.
-        handle = await engine.acquire(org, final=True, leave_out=leave_out)
+        handle = await engine.acquire(org, final=True, leave_out=left_out)
     except runs.SyncRunning as exc:
         raise _refuse(
             409, "sync_running", "A sync runs now. Wait for it to finish.",

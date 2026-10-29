@@ -1759,11 +1759,12 @@ async def test_a_left_out_offset_paged_key_is_not_walked(nsc, app_engine) -> Non
 
 
 async def test_a_refused_delete_check_does_not_block_the_switch(nsc, app_engine) -> None:  # noqa: F811
-    """Round 5, P3-3. Zoho gives no count, so the delete check of the final
-    walk refuses to delete (``count_unknown``) and counts ``refused``. The
-    read itself is complete, and D133 keeps the records that Zoho deletes.
-    So phase 2 finds every key read, the row stays, and the switch goes on.
-    The run log keeps the warning."""
+    """Round 5, P3-3, and round 6. Zoho gives no count, so the delete check
+    of the final walk refuses to delete (``count_unknown``) and counts
+    ``refused``. The walk read records, so the engine flags ``delete_kept``,
+    not ``walk_short``. D133 keeps the records that Zoho deletes. So phase 2
+    finds every key read, the row stays, and the switch goes on. The run
+    log keeps the warning."""
     from gateway.crm_sync import engine
 
     _assert_non_priv(app_engine)
@@ -1776,11 +1777,108 @@ async def test_a_refused_delete_check_does_not_block_the_switch(nsc, app_engine)
     final = await engine.execute(await engine.acquire(p.org_a, final=True))
     assert final.status == "ok"
     assert final.counts["organizations"]["refused"] == 1
+    assert final.counts["organizations"][engine.DELETE_KEPT_FLAG] == 1
+    assert engine.WALK_SHORT_FLAG not in final.counts["organizations"]
     assert await _final_state(p, final.run_id) == {}
     r = await _request(p, _admin(p.org_a), "POST", "/crm/cutover",
                        {"confirm": "SWITCH", "run_id": final.run_id})
     assert r.status_code == 200, r.text
     assert _company_name(p, "Aa5") == "Co-5"
+
+
+async def test_an_empty_final_walk_blocks_the_switch(nsc, app_engine) -> None:  # noqa: F811
+    """Round 6 (the reviewer's probe). Zoho answers 204 on page 1 of the final
+    walk of Accounts, which pages by offset. The walk reads nothing, while
+    rows exist here (``empty_walk``). Every edit since the last full walk
+    would be lost, then Zoho revoked. So the engine flags ``walk_short``,
+    phase 2 answers 409, and nothing changes."""
+    from gateway.crm_sync import engine
+
+    _assert_non_priv(app_engine)
+    p = nsc
+    await _import_hidden(p)
+    record = next(r for r in ZOHO_A.data["Accounts"] if r["id"] == "Aa1")
+    record["Account_Name"] = "Co-1 EDITED"
+    ZOHO_A.truncate["Accounts"] = 1
+    final = await engine.execute(await engine.acquire(p.org_a, final=True))
+    assert final.status == "ok"
+    assert final.counts["organizations"][engine.WALK_SHORT_FLAG] == 1
+    assert _company_name(p, "Aa1") == "Co-1"
+    assert await _final_state(p, final.run_id) == {"organizations": "walk_short"}
+    before = _hashes(p)
+    r = await _request(p, _admin(p.org_a), "POST", "/crm/cutover",
+                       {"confirm": "SWITCH", "run_id": final.run_id})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "module_incomplete"
+    assert r.json()["detail"]["modules"] == [
+        {"key": "organizations", "label": "Companies", "reason": "walk_short"}]
+    assert _hashes(p) == before
+    assert _settings(p, p.org_a).mode == "mirror"
+
+
+async def test_a_short_final_walk_blocks_the_switch(nsc, app_engine) -> None:  # noqa: F811
+    """Round 6. Zoho holds five accounts and stops after page 1 of the final
+    walk, so the walk reads two (``short_walk``). The records it did not
+    read may carry edits. The engine flags ``walk_short``, and phase 2
+    answers 409 with every table as before."""
+    from gateway.crm_sync import engine
+
+    _assert_non_priv(app_engine)
+    p = nsc
+    await _import_hidden(p, 5)
+    ZOHO_A.truncate["Accounts"] = 2  # pages of 2: page 2 answers 204
+    final = await engine.execute(await engine.acquire(p.org_a, final=True))
+    assert final.status == "ok"
+    assert final.counts["organizations"][engine.WALK_SHORT_FLAG] == 1
+    assert await _final_state(p, final.run_id) == {"organizations": "walk_short"}
+    before = _hashes(p)
+    r = await _request(p, _admin(p.org_a), "POST", "/crm/cutover",
+                       {"confirm": "SWITCH", "run_id": final.run_id})
+    assert r.status_code == 409, r.text
+    assert {m["key"]: m["reason"] for m in r.json()["detail"]["modules"]} == {
+        "organizations": "walk_short"}
+    assert _hashes(p) == before
+
+
+async def test_a_large_delete_refusal_does_not_block_the_switch(nsc, app_engine) -> None:  # noqa: F811
+    """Round 6. Four of twelve accounts left Zoho with no tombstone. The final
+    walk reads every record that Zoho holds, and its delete check refuses to
+    delete a third of the rows (``large_delete``). The read is complete, and
+    D133 keeps the records that Zoho deletes, so the switch goes on and the
+    rows stay."""
+    from gateway.crm_sync import engine
+
+    _assert_non_priv(app_engine)
+    p = nsc
+    await _import_hidden(p, 12)
+    for i in range(9, 13):
+        ZOHO_A.drop("Accounts", f"Aa{i}", tombstone=False)
+    _make_due_for_reconcile(p)
+    assert (await engine.run_org(p.org_a)).status == "ok"  # the first strike
+    final = await engine.execute(await engine.acquire(p.org_a, final=True))
+    assert final.status == "ok"
+    assert final.counts["organizations"]["refused"] == 1
+    assert final.counts["organizations"][engine.DELETE_KEPT_FLAG] == 1
+    assert engine.WALK_SHORT_FLAG not in final.counts["organizations"]
+    assert await _final_state(p, final.run_id) == {}
+    r = await _request(p, _admin(p.org_a), "POST", "/crm/cutover",
+                       {"confirm": "SWITCH", "run_id": final.run_id})
+    assert r.status_code == 200, r.text
+    assert _company_name(p, "Aa12") == "Co-12"
+
+
+async def test_phase_one_passes_only_the_ticks_it_takes(zb, app_engine) -> None:  # noqa: F811
+    """Round 6, P3-a. The admin ticks Deals, which phase 1 finds complete.
+    Phase 1 takes the tick (only phase 2 can find Deals not read), but it
+    passes the final sync only the ticks of keys that are not complete. So
+    the final sync still reads Deals."""
+    _assert_non_priv(app_engine)
+    await _ready(zb, final=False)
+    r = await _call(zb, _admin(zb.org_a), "POST", "/crm/cutover/start",
+                    {"confirm": "SWITCH", "leave_out": ["deals"]})
+    assert r.status_code == 202, r.text
+    (handle,) = zb.final_runs
+    assert handle.final_skip == frozenset()
 
 
 def test_roles_waiting_counts_the_queue_only() -> None:
