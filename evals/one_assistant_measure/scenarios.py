@@ -152,6 +152,10 @@ class Plan:
 
     calls: tuple[tuple[str, dict[str, Any]], ...] = ()
     answer: str = ""
+    #: OA-8e. On the ``pack`` arm the calls go to the OWNER's specialist by a
+    #: hand-off, because no pack of the owner fits the request beside the packs
+    #: that are loaded (the cap of 110 tools). The ``delegation`` arm is the same.
+    handoff: bool = False
 
 
 @dataclass(frozen=True)
@@ -171,6 +175,18 @@ class Scenario:
     #: Earlier turns of the chat, as the browser sends them, before turn 1.
     history: tuple[dict[str, str], ...] = ()
     tags: tuple[str, ...] = field(default_factory=tuple)
+    #: OA-8e. The set of the chat: ``email``, ``crm``, ``projects``, ``mixed``
+    #: or ``fanout``. Only ``email`` runs with the email pack alone.
+    set: str = "email"
+    #: OA-8e. The app the member is in, as the dock sends it: ``crm``,
+    #: ``projects``, ``tasks``, ``calendar``, ``email``, or "" for none. The
+    #: run binds it as the surface of the turn (layer (a), input 2).
+    surface: str = ""
+    #: OA-8e. ``native`` or ``mirror``: the CRM mode of the organization.
+    mode: str = "native"
+    #: OA-8e. A reason to leave the chat out of a run, or "". A skipped chat
+    #: is listed and never run. The fan-out chats wait for OA-9b.
+    skip: str = ""
 
 
 def _link(m: Mail) -> str:
@@ -367,7 +383,15 @@ SCENARIOS: tuple[Scenario, ...] = (
 
 
 def scenario(sid: str) -> Scenario:
-    for s in SCENARIOS:
+    """The chat *sid*, from the email set or the work set (OA-8e)."""
+    for s in all_scenarios():
         if s.id == sid:
             return s
     raise KeyError(sid)
+
+
+def all_scenarios() -> tuple[Scenario, ...]:
+    """The email chats, then the CRM, Projects, mixed and fan-out chats."""
+    from evals.one_assistant_measure.scenarios_work import WORK_SCENARIOS
+
+    return (*SCENARIOS, *WORK_SCENARIOS)
