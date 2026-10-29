@@ -13,7 +13,8 @@ handler may open no second session. For each eligible member it finds the
 brief slot in the next :data:`HORIZON`, and enqueues ``brief.run`` with
 ``run_at`` = the slot minus :data:`LEAD`, and the dedupe key
 ``brief:<member>:brief:<local_date>``. Two planner ticks see the same slot,
-and the dedupe key keeps one job.
+and the dedupe key keeps one live job. A slot whose ``brief_runs`` row exists
+already ran, or is running, and gets no second job.
 
 **Who (Q1, owner 2026-10-29).** Every active member of the org, minus the
 members who turned the brief off. The list is one read of ``app_user``
@@ -42,7 +43,7 @@ from acb_common import assistant_profile, get_logger
 from acb_common.db import tenant_session
 from sqlalchemy import text
 
-from gateway.brief import flags
+from gateway.brief import flags, store
 from gateway.jobs import queue
 
 _log = get_logger("brief.planner")
@@ -168,6 +169,8 @@ async def plan(org: str, payload: dict[str, Any], claim: queue.Claim) -> None:
             return
         planned = 0
         for m, local_date, when in due:
+            if await store.read_run(db, m.email, kind=KIND, local_date=local_date) is not None:
+                continue  # the slot ran, or its job runs now
             out = await queue.enqueue(
                 db, RUN_KIND,
                 {"member": m.email, "local_date": local_date.isoformat(),
