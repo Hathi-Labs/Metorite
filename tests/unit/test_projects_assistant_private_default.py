@@ -46,3 +46,5 @@ def test_many_tasks_go_in_one_bulk_update_and_archive_means_archive() -> None:
     assert "For two or more tasks, call `bulk_update` once with every id." in t
     assert 'do not ask "archive or delete"' in t
     assert "many tasks go in one `bulk_update` card" in t
+    # Mutation: widen the question to every archive -> red.
+    assert 'Ask that only for "remove", "get rid of" and "clean up".' in t
