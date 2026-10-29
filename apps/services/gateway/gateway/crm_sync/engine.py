@@ -578,6 +578,10 @@ class RunHandle:
     #: CRM-Q16: the count keys that this run reads, and no other. ``None`` is
     #: a normal run. A key here is read also when it is held.
     only: frozenset[str] | None = None
+    #: CRM-Z10b: the final sync of the switch from Zoho. It reads each generic
+    #: module whatever :data:`MODULE_READ_EVERY` says, and an offset-paged one
+    #: in full. The row says so in ``counts[RUN_FINAL_KEY]``.
+    final: bool = False
 
 
 @dataclass(frozen=True)
@@ -630,11 +634,17 @@ def _enabled(org: str) -> bool:
     return flags.mirror_sync_enabled() and flags.crm_mirror_allowed(org)
 
 
-async def acquire(org: str, *, only: frozenset[str] | None = None) -> RunHandle:
+async def acquire(
+    org: str, *, only: frozenset[str] | None = None, final: bool = False,
+) -> RunHandle:
     """Take the run lock for ``org`` and plan the run.
 
     ``only`` limits the run to those count keys (CRM-Q16, "sync it on its
     own"). The caller checks the keys first.
+
+    ``final`` is the final sync of the switch from Zoho (CRM-Z10b). It reads
+    each generic module with no wait of :data:`MODULE_READ_EVERY`, and it
+    writes :data:`RUN_FINAL_KEY`, which phase 2 of the switch needs.
 
     Raises :class:`NotConnected` with no live connection and
     :class:`SyncRunning` when a run holds the lock. It makes no provider call.
@@ -662,13 +672,15 @@ async def acquire(org: str, *, only: frozenset[str] | None = None) -> RunHandle:
             # The row says which keys this run reads (CRM-Z10b). Each page
             # writes ``counts`` again, and the key stays with it.
             counts[RUN_ONLY_KEY] = {key: 1 for key in sorted(only)}
+        if final:
+            counts[RUN_FINAL_KEY] = {"final": 1}
         run_id = await runs.start(
             db, org, connection.id, kind, counts=counts, estimate=saved_estimate,
         )
     return RunHandle(
         org=org, run_id=run_id, kind=kind, connection_id=connection.id,
         reconcile=reconcile, cursors=cursors, counts=counts, estimate=saved_estimate,
-        scopes=tuple(connection.scopes or ()), holds=entries, only=only,
+        scopes=tuple(connection.scopes or ()), holds=entries, only=only, final=final,
     )
 
 
@@ -694,6 +706,8 @@ class _Ctx:
         self.holds: dict[str, dict[str, Any]] = dict(handle.holds)
         self.held: frozenset[str] = holds.held_keys(self.holds)
         self.only = handle.only
+        #: CRM-Z10b: the final sync of the switch reads every generic module.
+        self.final = handle.final
         #: CRM-Q16: the provider count by COUNT KEY, from ``_estimate``. The
         #: estimate itself is by slug, and ``activities`` there includes tasks.
         self.key_counts: dict[str, int] | None = None
@@ -907,6 +921,11 @@ ACTIVITY_RECOVERED_KEY = "activity_recovered"
 #: it, so phase 2 never takes such a run as the final sync. It is no entity
 #: either (``routes/crm/sync.py`` ``NOT_ENTITY_KEYS``), and a test pins it.
 RUN_ONLY_KEY = "run_only"
+#: The counts key of the final sync of the switch from Zoho (CRM-Z10b):
+#: ``{"final": 1}``, and no key for any other run. Phase 2 of the switch takes
+#: only such a run. It is no entity either (``routes/crm/sync.py``
+#: ``NOT_ENTITY_KEYS``), and a test pins it with :data:`RUN_ONLY_KEY`.
+RUN_FINAL_KEY = "run_final"
 
 _LOCAL_ID_SQL = (
     "SELECT id FROM {table} WHERE organization_id = CAST(:org AS uuid) "
@@ -1794,8 +1813,10 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # A generic module is never walked: it has no ``ext_seen_at`` stamp, and
     # its deletes come from the deleted list only (CRM-Q6a).
     walking = entity in ctx.reconcile and not generic and not parent_only
-    rereading = generic and _module_reread(ctx, row)
-    if generic and not rereading and _module_read_recently(ctx, row):
+    rereading = generic and (_module_reread(ctx, row) or _final_reread(ctx, row))
+    # CRM-Z10b: the final sync of the switch reads each module, also one that
+    # it read less than MODULE_READ_EVERY ago. An edit of that hour is in it.
+    if generic and not rereading and not ctx.final and _module_read_recently(ctx, row):
         return
     # A rejected or stale field rule on a fixed column (CRM-Q7a): one full read
     # writes the fixed map's value again. It stamps nothing and deletes
@@ -2038,6 +2059,17 @@ def _module_reread(ctx: _Ctx, row: CursorRow) -> bool:
         return False
     done = row.last_reconciled_at
     return done is None or ctx.started - done >= RECONCILE_EVERY
+
+
+def _final_reread(ctx: _Ctx, row: CursorRow) -> bool:
+    """True when the final sync of the switch (CRM-Z10b) must read an
+    offset-paged module in full: it has no cursor to move, so only a full
+    read sees its changes. This costs about one full read of the module."""
+    state = row.state or {}
+    return (
+        ctx.final and row.initial_done_at is not None
+        and bool(state.get("offset_paged")) and not state.get("in_progress")
+    )
 
 
 def _module_read_recently(ctx: _Ctx, row: CursorRow) -> bool:
