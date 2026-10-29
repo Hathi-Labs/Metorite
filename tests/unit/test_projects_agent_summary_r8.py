@@ -175,7 +175,7 @@ class TestTheFiveCounts:
         assert got["in_review"] == 2
         assert got["merged_this_week"] == 0
 
-    async def test_s1_merged_this_week_counts_references_in_the_last_7_days(self, w):
+    async def test_s1_merged_this_week_counts_tasks_with_a_merge_in_the_last_7_days(self, w):
         org = w.p.org_a
         one, two = _t(w), _t(w, w.sub)
         b.ref(w.p, org, one, 1, "merged", merged="now() - interval '2 days'")
@@ -183,7 +183,8 @@ class TestTheFiveCounts:
         b.ref(w.p, org, two, 3, "merged", merged="now() - interval '1 hour'")
         b.ref(w.p, org, two, 4, "merged", merged="now() - interval '8 days'")
         b.ref(w.p, org, two, 5, "closed", merged="now() - interval '1 day'")
-        assert (await _counts(w))["merged_this_week"] == 3
+        # Task #986: the strip counts TASKS (the list behind a click shows tasks).
+        assert (await _counts(w))["merged_this_week"] == 2
 
     async def test_s1_the_summary_of_a_subproject_counts_only_its_own_tasks(self, w):
         org = w.p.org_a
@@ -345,10 +346,12 @@ def test_the_state_counts_read_the_pill_query() -> None:
     ``filters.agent_state_sql``, and the list pill is built from the same text."""
     from gateway.routes.projects import agent_summary, filters
 
-    assert "agent_state_sql" in inspect.getsource(agent_summary)
+    assert "agent_focus_clause" in inspect.getsource(agent_summary)
+    assert "agent_state_sql" in inspect.getsource(filters.agent_focus_clause) or (
+        "agent_state_sql" in inspect.getsource(filters._state_exists))
     assert filters.agent_state_sql(
         "r.task_id = ANY(CAST(:ids AS uuid[]))") == filters._AGENT_STATE_SQL
-    assert agent_summary.WORKING_STATES == ("working", "answered", "stale")
+    assert filters.WORKING_STATES == ("working", "answered", "stale")
 
 
 def test_the_batched_flag_is_the_one_predicate() -> None:

@@ -5808,6 +5808,8 @@ stops emitting, which is how a deleted WHERE clause survives a green suite.
 
 ### 11.16 WS-27q — the calendar (built 2026-08-08)
 
+> **Status, 2026-10-29 (task #986).** The agent filters (the strip's focus, "Waiting on me" and "Agent work") are now WHERE clauses. `GET /projects/tasks` takes `agent_focus` and `agent_worked`. `filters.agent_focus_clause` is the one text for the list and the strip.
+
 **Backlog row 9 was named "Calendar / timeline view" and this built the calendar half only.**
 Recorded here because closing the whole row was wrong: a month grid of day cells answers *what
 is due when*, and a timeline of bars on a continuous axis answers *what runs alongside what*.

@@ -2007,8 +2007,13 @@ function ProjectsWorkspace() {
         sort: tableSort,
         viewId: boardViewId,
         subtasks: storedMode,
+        // Task #986: the three agent filters are WHERE clauses on the server.
+        // They are part of the params, so they are part of every read key.
+        waitingOnMe,
+        agentFocus,
+        agentWork,
       }),
-    [filters, tableSort, boardViewId, storedMode]
+    [filters, tableSort, boardViewId, storedMode, waitingOnMe, agentFocus, agentWork]
   );
 
   const loadProject = useCallback(
@@ -2564,6 +2569,8 @@ function ProjectsWorkspace() {
     () =>
       groupTasks(
         visibleTasks(
+          // Task #986: the server filters by these now (`boardReadParams`), so
+          // this is only a paint-time guard for rows held from before a switch.
           tasks.filter(
             (t) =>
               (!waitingOnMe || isWaitingOnMe(t, me)) &&
@@ -4364,6 +4371,12 @@ function ProjectsWorkspace() {
   // WS-64 OP-1 — the compact chrome. Off by default: the page then draws the old
   // filter row, the old strip and the old banner, exactly as before.
   const compactChrome = compactChromeEnabled();
+  // The server takes ONE focus (`agent_focus`), so the toggle and the strip
+  // clear each other, as `onAgentFocus` already does.
+  const onWaitingOnMe = (next: boolean) => {
+    setWaitingOnMe(next);
+    if (next) setAgentFocus(null);
+  };
   const onAgentFocus = (next: AgentFocus | null) => {
     setWaitingOnMe(next === "waiting");
     setAgentFocus(next === "waiting" ? null : next);
@@ -4604,7 +4617,7 @@ function ProjectsWorkspace() {
           onSubtasks={(next) => void changeSubtasks(next)}
           me={me}
           waitingOnMe={waitingOnMe}
-          onWaitingOnMe={agentRunsOn ? setWaitingOnMe : undefined}
+          onWaitingOnMe={agentRunsOn ? onWaitingOnMe : undefined}
           agentWork={agentWork}
           onAgentWork={agentRunsOn ? setAgentWork : undefined}
           people={people}
