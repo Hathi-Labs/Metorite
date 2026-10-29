@@ -36,7 +36,6 @@ _ROOT = Path(__file__).resolve().parents[2]
 _SHELL = _ROOT / "apps" / "services" / "gateway" / "gateway" / "routes" / "shell"
 
 KOLKATA = ZoneInfo("Asia/Kolkata")
-DAY = state.Day(KOLKATA, 9, 18)
 #: Tuesday 10 March 2099, 07:10 in Asia/Kolkata (01:40 UTC).
 NOW = datetime(2099, 3, 10, 1, 40, tzinfo=UTC)
 D = date(2099, 3, 10)
@@ -108,36 +107,68 @@ def test_a_clock_time_is_hh_mm(value, want) -> None:
 
 
 def test_a_member_takes_the_stored_times_and_the_defaults() -> None:
-    m = planner.member_of(" Ana@Org.test ", None)
+    prefs = assistant_profile.app_prefs
+    m = planner.member_of(" Ana@Org.test ", prefs(None, "brief"))
     assert m == planner.Member("ana@org.test", True, time(7, 30), time(18, 30))
-    m = planner.member_of("ana@org.test", {"apps": {"brief": {"brief_time": "09:00"}}})
+    m = planner.member_of("ana@org.test", prefs({"apps": {"brief": {"brief_time": "09:00"}}},
+                                                "brief"))
     assert m.brief_time == time(9, 0) and m.closeout_time == time(18, 30)
-    assert planner.member_of("x@y", {"apps": {"brief": {"enabled": False}}}).enabled is False
+    off = prefs({"apps": {"brief": {"enabled": False}}}, "brief")
+    assert planner.member_of("x@y", off).enabled is False
 
 
 # ── The slot ────────────────────────────────────────────────────────────────
 
 
 def test_the_slot_is_the_brief_time_on_the_calendar_date_in_the_zone() -> None:
-    local_date, when = planner.slot(DAY, time(7, 30), NOW)
+    local_date, when = planner.slot(KOLKATA, time(7, 30), NOW)
     assert local_date == D
     assert when == datetime(2099, 3, 10, 7, 30, tzinfo=KOLKATA)
     assert when.astimezone(UTC) == datetime(2099, 3, 10, 2, 0, tzinfo=UTC)
-    assert planner.slot(DAY, time(9, 0), NOW) is None  # outside the 30 minutes
+    assert planner.slot(KOLKATA, time(9, 0), NOW) is None  # outside the 30 minutes
     at_nine = datetime(2099, 3, 10, 8, 45, tzinfo=KOLKATA)
-    assert planner.slot(DAY, time(9, 0), at_nine) == (D, datetime(2099, 3, 10, 9, 0, tzinfo=KOLKATA))
+    assert planner.slot(KOLKATA, time(9, 0), at_nine) == (
+        D, datetime(2099, 3, 10, 9, 0, tzinfo=KOLKATA))
 
 
-def test_the_slot_never_lies_in_the_past_and_crosses_midnight() -> None:
-    # 07:30 passed one minute ago: no slot today, and tomorrow's is out of the window.
-    assert planner.slot(DAY, time(7, 30), datetime(2099, 3, 10, 7, 31, tzinfo=KOLKATA)) is None
-    # A slot exactly now is in the window.
-    now = datetime(2099, 3, 10, 7, 30, tzinfo=KOLKATA)
-    assert planner.slot(DAY, time(7, 30), now) == (D, now)
+def test_the_slot_looks_back_two_hours_and_crosses_midnight() -> None:
+    """Repair round 1, P1-2: a slot that no tick planned, up to the
+    look-back ago, is still a slot."""
+    seven_thirty = datetime(2099, 3, 10, 7, 30, tzinfo=KOLKATA)
+    assert planner.slot(KOLKATA, time(7, 30), seven_thirty) == (D, seven_thirty)
+    a_minute_late = seven_thirty + timedelta(minutes=1)
+    assert planner.slot(KOLKATA, time(7, 30), a_minute_late) == (D, seven_thirty)
+    edge = seven_thirty + planner.LOOKBACK
+    assert planner.slot(KOLKATA, time(7, 30), edge) == (D, seven_thirty)
+    assert planner.slot(KOLKATA, time(7, 30), edge + timedelta(seconds=1)) is None
     # 00:10 of the 11th, seen at 23:50 of the 10th: the date is the 11th.
     late = datetime(2099, 3, 10, 23, 50, tzinfo=KOLKATA)
-    assert planner.slot(DAY, time(0, 10), late) == (
+    assert planner.slot(KOLKATA, time(0, 10), late) == (
         date(2099, 3, 11), datetime(2099, 3, 11, 0, 10, tzinfo=KOLKATA))
+    # 23:30 of the 10th, seen at 00:30 of the 11th: the date is the 10th.
+    after = datetime(2099, 3, 11, 0, 30, tzinfo=KOLKATA)
+    assert planner.slot(KOLKATA, time(23, 30), after) == (
+        D, datetime(2099, 3, 10, 23, 30, tzinfo=KOLKATA))
+
+
+def test_a_slot_past_the_look_back_is_missed_inside_the_scan() -> None:
+    seven_thirty = datetime(2099, 3, 10, 7, 30, tzinfo=KOLKATA)
+    past = seven_thirty + planner.LOOKBACK + timedelta(seconds=1)
+    assert planner.missed(KOLKATA, time(7, 30), past) == (D, seven_thirty)
+    assert planner.missed(KOLKATA, time(7, 30), seven_thirty + planner.LOOKBACK) is None
+    far = seven_thirty + planner.LOOKBACK + planner.MISSED_SCAN + timedelta(seconds=1)
+    assert planner.missed(KOLKATA, time(7, 30), far) is None
+    assert planner.missed(KOLKATA, time(7, 30), NOW) is None  # still ahead
+    assert timedelta(hours=2) == planner.LOOKBACK
+
+
+def test_a_member_with_no_zone_takes_the_org_zone() -> None:
+    """Repair round 1, P2-h. UTC is what a member with no zone reads."""
+    utc = ZoneInfo("UTC")
+    assert planner.member_zone(utc, KOLKATA) == KOLKATA
+    assert planner.member_zone(state.zone_of(None), KOLKATA) == KOLKATA
+    assert planner.member_zone(ZoneInfo("Europe/Berlin"), KOLKATA) == ZoneInfo("Europe/Berlin")
+    assert planner.member_zone(utc, utc) == utc
 
 
 def test_the_slot_date_is_the_calendar_date_and_not_the_feed_day() -> None:
@@ -145,7 +176,7 @@ def test_the_slot_date_is_the_calendar_date_and_not_the_feed_day() -> None:
     07:30 on the 10th. The brief of the 10th still names the 10th."""
     day = state.Day(KOLKATA, 9, 18)
     assert day.feed_day(NOW) == date(2099, 3, 9)
-    assert planner.slot(day, time(7, 30), NOW)[0] == D
+    assert planner.slot(day.tz, time(7, 30), NOW)[0] == D
 
 
 def test_the_dedupe_key_and_the_lead() -> None:
@@ -153,6 +184,7 @@ def test_the_dedupe_key_and_the_lead() -> None:
     assert timedelta(minutes=5) == planner.LEAD
     assert timedelta(minutes=30) == planner.HORIZON
     assert planner.HORIZON >= 2 * worker.SEED_BUCKET  # two ticks see each slot
+    assert planner.LOOKBACK > planner.HORIZON
 
 
 # ── The gather ──────────────────────────────────────────────────────────────

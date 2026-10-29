@@ -120,12 +120,30 @@ def _set_prefs(world: Any, email: str, org: str, prefs: dict[str, Any]) -> None:
             {"u": email, "org": org, "p": json.dumps({"v": 1, "apps": {"brief": prefs}})})
 
 
+def _set_org_zone(world: Any, org: str, zone: str | None) -> None:
+    """The ``default_timezone`` of the org's work-schedule policy, or no
+    policy row for None."""
+    import json
+
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM org_settings WHERE key = 'work_schedule' "
+                       "AND organization_id = CAST(:o AS uuid)"), {"o": org})
+        if zone is not None:
+            c.execute(text(
+                "INSERT INTO org_settings (organization_id, key, value) "
+                "VALUES (CAST(:o AS uuid), 'work_schedule', CAST(:v AS jsonb))"),
+                {"o": org, "v": json.dumps({"default_timezone": zone})})
+
+
 @pytest.fixture
 def world(promoted, monkeypatch):  # noqa: F811
     p = promoted
     _insert_members(p)
     w = SimpleNamespace(p=p, now=T0, cards={}, working=True, complete=True, resolve_as={},
-                        reads=Counter())
+                        reads=Counter(), days={})
+    # Org A's default zone is Kolkata (the work-schedule policy). The members
+    # of the suite store no zone, so the planner's prefilter reads this one.
+    _set_org_zone(w, p.org_a, "Asia/Kolkata")
     # The ladder's owner is an active member of org A. They opt out, so the
     # counts below are the three members of this suite.
     _set_prefs(w, p.owner_email, p.org_a, {"enabled": False})
@@ -162,7 +180,10 @@ def world(promoted, monkeypatch):  # noqa: F811
                              w.working, w.complete)
 
     async def read_day(org: str, user: Any) -> state.Day:
-        return DAY
+        got = w.days.get(user.email, DAY)
+        if isinstance(got, Exception):
+            raise got
+        return got
 
     async def working_day(user: Any, today: date) -> bool:
         return w.working
@@ -190,8 +211,11 @@ def world(promoted, monkeypatch):  # noqa: F811
         c.execute(text("DELETE FROM unattended_incidents WHERE job LIKE 'brief.%'"))
         c.execute(text("DELETE FROM jobs WHERE kind LIKE 'brief.%' AND organization_id IN "
                        "(CAST(:a AS uuid), CAST(:b AS uuid))"), {"a": p.org_a, "b": p.org_b})
-        c.execute(text("DELETE FROM user_settings WHERE user_id LIKE :t OR user_id = :o"),
+        c.execute(text("DELETE FROM user_settings WHERE lower(user_id) LIKE :t OR user_id = :o"),
                   {"t": LIKE, "o": p.owner_email})
+        c.execute(text("DELETE FROM org_settings WHERE key = 'work_schedule' AND "
+                       "organization_id IN (CAST(:a AS uuid), CAST(:b AS uuid))"),
+                  {"a": p.org_a, "b": p.org_b})
         c.execute(text("DELETE FROM app_user WHERE email LIKE :t"), {"t": LIKE})
 
 
@@ -267,10 +291,16 @@ def test_r8_a_member_in_kolkata_gets_one_run_at_their_brief_time(world) -> None:
 
 
 def test_r8_two_planner_ticks_give_one_run_job(world) -> None:
-    _tick(world, world.p.org_a, T0)
-    _tick(world, world.p.org_a, T0 + timedelta(minutes=15))
+    """Mutation M7 (repair round 1, P2-a). Both ticks fall before ``run_at``
+    (07:25), so no ``brief_runs`` row exists at the second tick, and only
+    the dedupe key keeps one live job for each member."""
+    _tick(world, world.p.org_a, datetime(2099, 3, 10, 7, 5, tzinfo=KOLKATA))
+    _tick(world, world.p.org_a, datetime(2099, 3, 10, 7, 20, tzinfo=KOLKATA))
     assert len(_jobs(world, planner.PLAN_KIND)) == 2  # one for each bucket
-    assert len(_jobs(world, planner.RUN_KIND)) == 2  # one for each member
+    assert _runs(world) == []  # no row masks the dedupe key
+    runs = _jobs(world, planner.RUN_KIND)
+    assert sorted(j.payload["member"] for j in runs) == [ANA, BEN]
+    assert all(j.state == "queued" for j in runs)
 
 
 def test_r8_a_day_off_gives_no_run(world) -> None:
@@ -309,6 +339,115 @@ def test_r8_a_departed_member_is_skipped_and_the_others_are_planned(world) -> No
     world.resolve_as[ANA] = "departed"
     _tick(world, world.p.org_a, T0)
     assert [j.payload["member"] for j in _jobs(world, planner.RUN_KIND)] == [BEN]
+
+
+def test_r8_a_planner_outage_before_the_slot_still_gives_the_brief(world) -> None:
+    """Repair round 1, P1-2. No tick ran before the slot. The first tick, at
+    08:30 local, is one hour after 07:30, inside the look-back, so it plans
+    the slot, and the run gathers it in the same tick."""
+    world.cards[ANA] = [card("email:acc:t1")]
+    late = datetime(2099, 3, 10, 8, 30, tzinfo=KOLKATA)
+    _tick(world, world.p.org_a, late)
+    runs = _jobs(world, planner.RUN_KIND)
+    assert sorted(j.payload["member"] for j in runs) == [ANA, BEN]
+    assert all(j.payload["slot_at"] == "2099-03-10T07:30:00+05:30" for j in runs)
+    ana = next(r for r in _runs(world) if r.member_email == ANA)
+    assert ana.state == "ready" and ana.slot_at == SLOT
+
+
+def test_r8_a_slot_older_than_the_look_back_is_recorded_once(world, capsys) -> None:
+    """Repair round 1, P1-2. The first tick is at 10:00 local, past the
+    look-back. No run, and each member's slot gets one ``failed`` row,
+    ``slot_missed``, with one warning. A later tick adds nothing."""
+    _tick(world, world.p.org_a, datetime(2099, 3, 10, 10, 0, tzinfo=KOLKATA))
+    assert _jobs(world, planner.RUN_KIND) == []
+    runs = _runs(world)
+    assert [(r.member_email, r.state, r.error) for r in runs] == [
+        (ANA, "failed", planner.MISSED), (BEN, "failed", planner.MISSED)]
+    assert all(r.slot_at == SLOT for r in runs)
+    first = capsys.readouterr().out
+    assert first.count("brief.slot_missed") == 2
+    _tick(world, world.p.org_a, datetime(2099, 3, 10, 10, 15, tzinfo=KOLKATA))
+    assert len(_runs(world)) == 2 and "brief.slot_missed" not in capsys.readouterr().out
+    assert world.reads["resolve"] == 2  # the second tick read no member
+
+
+def test_r8_a_case_variant_settings_row_cannot_opt_a_member_back_in(world) -> None:
+    """Repair round 1, P2-b. BEN opted out in the row of his address. A
+    second row in another case says ``enabled``. The one reader gives BEN
+    once, by the row rule of ``READ_SQL``, so BEN gets no job."""
+    import json
+
+    _set_prefs(world, BEN, world.p.org_a, {"enabled": False})
+    with world.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO user_settings (user_id, organization_id, assistant_profile) "
+            "VALUES (:u, CAST(:org AS uuid), CAST(:p AS jsonb))"),
+            {"u": BEN.upper(), "org": world.p.org_a,
+             "p": json.dumps({"v": 1, "apps": {"brief": {"enabled": True}}})})
+    _tick(world, world.p.org_a, T0)
+    assert [j.payload["member"] for j in _jobs(world, planner.RUN_KIND)] == [ANA]
+
+
+def test_r8_the_bulk_reader_returns_one_entry_and_only_the_brief_keys(world) -> None:
+    """Repair round 1, P2-b. ``members_app_prefs`` answers one entry for each
+    member, and the brief keys only: never the rest of a private profile."""
+    import json
+
+    from acb_common import assistant_profile
+
+    with world.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO user_settings (user_id, organization_id, assistant_profile) "
+            "VALUES (:u, CAST(:org AS uuid), CAST(:p AS jsonb))"),
+            {"u": ANA.upper(), "org": world.p.org_a, "p": json.dumps({
+                "v": 1, "facts": [{"id": "f1", "text": "private"}],
+                "apps": {"brief": {"brief_time": "08:15"}}})})
+
+    async def go() -> list:
+        async with tenant_session(world.p.org_a) as db:
+            return await assistant_profile.members_app_prefs(db, world.p.org_a, "brief")
+
+    got = dict(_go(world, go))
+    assert list(got).count(ANA) == 1
+    assert got[ANA] == {"enabled": True, "brief_time": "08:15", "closeout_time": "18:30"}
+    assert got[BEN] == assistant_profile.APP_PREFERENCES["brief"]
+    assert CARA not in got  # another org
+
+
+def test_r8_a_member_with_no_zone_takes_the_org_zone(world) -> None:
+    """Repair round 1, P2-h. ANA's day reads UTC: she stored no zone. The
+    org's default zone is Kolkata, so her slot is 07:30 in Kolkata. With no
+    org zone, the same tick finds no slot (07:30 UTC is hours away)."""
+    world.days[ANA] = state.Day(ZoneInfo("UTC"))
+    _tick(world, world.p.org_a, T0)
+    ana = next(j for j in _jobs(world, planner.RUN_KIND) if j.payload["member"] == ANA)
+    assert ana.payload["slot_at"] == "2099-03-10T07:30:00+05:30"
+    _set_org_zone(world, world.p.org_a, None)
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM jobs WHERE kind LIKE 'brief.%' "
+                       "AND organization_id = CAST(:a AS uuid)"), {"a": world.p.org_a})
+    world.days[BEN] = state.Day(ZoneInfo("UTC"))
+    worker._SEEDED.clear()
+    _tick(world, world.p.org_a, T0)
+    assert _jobs(world, planner.RUN_KIND) == []
+
+
+def test_r8_one_member_whose_day_read_fails_does_not_stop_the_plan(world) -> None:
+    """Repair round 1, P2-f. ANA's day read raises. The plan logs it, skips
+    her, and plans BEN. The plan job is done."""
+    world.days[ANA] = RuntimeError("the day read broke")
+    assert _tick(world, world.p.org_a, T0) == Counter(done=1)
+    assert [j.payload["member"] for j in _jobs(world, planner.RUN_KIND)] == [BEN]
+
+
+def test_r8_a_member_whose_slot_is_far_gets_no_identity_read(world) -> None:
+    """Repair round 1, P2-f. BEN's brief is at 13:00. At 07:10 no zone puts
+    it in the window, so the plan reads ANA only."""
+    _set_prefs(world, BEN, world.p.org_a, {"brief_time": "13:00"})
+    _tick(world, world.p.org_a, T0)
+    assert world.reads["resolve"] == 1
+    assert [j.payload["member"] for j in _jobs(world, planner.RUN_KIND)] == [ANA]
 
 
 # ── The run ─────────────────────────────────────────────────────────────────
