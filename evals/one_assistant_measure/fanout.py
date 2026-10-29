@@ -27,7 +27,7 @@ from typing import Any
 from evals.routing.harness import ReplyModel, text_turn, tool_turn
 
 COMPANIES = ("Orbit Labs", "Kestrel Labs", "Vantage Systems", "Helix Foods", "Nimbus Cloud")
-INVOICE_BASE = "https://billing.example/inv/"
+INVOICE_BASE = "https://accounts.metrobilling-hub.com/invoice/"
 #: The ten invoices, as ``(number, supplier, rupees)``. The total is 233,400.
 INVOICES = (
     (1, "Delta Freight", 48_500), (2, "Kaveri Packaging", 12_300), (3, "Sunrise Electricals", 7_800),
@@ -36,11 +36,11 @@ INVOICES = (
     (10, "Kaveri Packaging", 19_000),
 )
 INVOICE_TOTAL = sum(amount for _, _, amount in INVOICES)
-PRICE_URL = "https://orbitlabs.example/pricing"
+PRICE_URL = "https://www.orbitlabs-sensors.com/pricing"
 
 
 def company_url(name: str) -> str:
-    return f"https://{name.split()[0].lower()}.example/about"
+    return f"https://www.{name.split()[0].lower()}labs-sensors.com/company/about"
 
 
 def _pages() -> dict[str, str]:

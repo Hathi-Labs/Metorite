@@ -565,12 +565,26 @@ def _ran(obs: Observation) -> list[tuple[str, dict[str, Any], str]]:
 #: What a refused call answers. A tool that is not in the request (not found,
 #: dropped in Mirror mode, held) answers ``Error: Requested function ... not
 #: found``. A tool that checks its arguments first answers ``Refused:``.
-REFUSED_PREFIXES = ("Error:", "Refused")
+REFUSED_PREFIXES = ("Error:", "Refused", "Not run")
+#: A refusal says in its own words that nothing happened. These are the
+#: sentences that the tools return: ``skill_projects`` (forms.py, writes.py:
+#: "A space holds projects, not tasks, so nothing was created", "Nothing was
+#: created.") and the CRM tools ("so nothing was moved", "Nothing was
+#: logged.", "Nothing was changed."). The match is by sentence, anywhere in the
+#: result, because a refusal may follow a label ("Row 2 has no title. Nothing
+#: was created.").
+_NOTHING_HAPPENED = re.compile(
+    r"\bnothing\s+(?:was|is|has\s+been)\s+(?:created|changed|moved|logged|written|saved|done|"
+    r"converted|archived|deleted|sent|added|updated)\b|\bnothing\s+ran\b|"
+    r"\bRequested function\b.*\bnot found\b|\bis not a tool of this sub-agent\b",
+    re.IGNORECASE | re.DOTALL)
 
 
 def refused(result: str) -> bool:
-    """True when *result* is the answer to a call that the run refused."""
-    return str(result).lstrip().startswith(REFUSED_PREFIXES)
+    """True when *result* is the answer to a call that the run refused: it starts
+    as a refusal does, or it says that nothing was created or changed."""
+    text = str(result).lstrip()
+    return text.startswith(REFUSED_PREFIXES) or _NOTHING_HAPPENED.search(text) is not None
 
 
 def _ran_ok(calls: list[tuple[str, dict[str, Any], str]]) -> list[tuple[str, dict[str, Any], str]]:
@@ -586,7 +600,13 @@ def _ran_tool(obs: Observation, arg: Any) -> bool:
 
 
 def _write_calls(obs: Observation) -> list[str]:
-    """The write tools that ran. A refused call is no write."""
+    """The write tools that SUCCEEDED, in the parent or in a child. A refused call
+    is no write, and a turn with no write at the gateway had no write call that
+    succeeded: every CRM and Projects write ends in a gateway request, so a
+    delegated run that only called a dropped tool wrote nothing (run 2,
+    ``crm_mirror`` 2 r1)."""
+    if not obs.work_writes:
+        return []
     return [name for name, _, _ in _ran_ok(_ran(obs)) if is_write_tool(name)]
 
 
@@ -644,8 +664,15 @@ def _card_for_write(obs: Observation, _arg: Any) -> bool | None:
     writes = sorted(_write_calls(obs))
     if not writes:
         return None
-    # A refused write raised no card. Take its name out of the segments.
-    gone = [name for name, _, res in _ran(obs) if is_write_tool(name) and refused(res)]
+    # A write that did not succeed raised no card. Take its name out of the segments.
+    ok = list(writes)
+    gone = []
+    for name, _, _ in _ran(obs):
+        if is_write_tool(name):
+            if name in ok:
+                ok.remove(name)
+            else:
+                gone.append(name)
     segments: list[tuple[list[str], int]] = []
     for names, n in obs.write_cards:
         kept = list(names)
@@ -692,6 +719,52 @@ def _figure(obs: Observation, arg: Any) -> bool:
 
     want = Decimal(str(arg))
     return any(f.value == want and not f.unreadable for f in find_figures(obs.answer))
+
+
+def _count_stated(obs: Observation, arg: Any) -> bool:
+    """The answer states a count: its number is a figure of the answer, or the
+    answer names each item that was counted. *arg* is ``(count, (item, ...))``.
+    The number comes from ``acb_common.number_check`` (a number WORD such as
+    "three" is not a figure there, so the items are the other way)."""
+    from decimal import Decimal
+
+    from acb_common.number_check import find_figures
+
+    count, items = arg
+    if any(f.value == Decimal(str(count)) for f in find_figures(obs.answer) if not f.unreadable):
+        return True
+    return bool(items) and all(re.search(rf"(?<!\d){re.escape(str(i))}(?!\d)", obs.answer)
+                               for i in items)
+
+
+def _body_figure(obs: Observation, arg: Any) -> bool:
+    """A write reached the gateway with a figure in its body. *arg* is
+    ``(method, path regex, value)``. The parser is ``number_check``, so "5%",
+    "5 percent" and "5 per cent" are all the figure 5."""
+    from decimal import Decimal
+
+    from acb_common.number_check import find_figures
+
+    method, path, value = arg
+    for m, p, body in obs.work_writes:
+        if m != method or not re.search(path, p):
+            continue
+        text = " ".join(str(v) for v in (body.values() if isinstance(body, dict) else [body]))
+        if any(f.value == Decimal(str(value)) for f in find_figures(text) if not f.unreadable):
+            return True
+    return False
+
+
+def _answer_not_mine(obs: Observation, arg: Any) -> bool:
+    """The answer lists no record of *name* as the member's. A sentence or line
+    that names *name* passes when it also says whose it is: another person, or
+    "not yours". *arg* is ``(name, (words that disown it, ...))``."""
+    name, disown = arg
+    for s in sentences(obs.answer):
+        if re.search(rf"\b{re.escape(name)}\b", s, re.IGNORECASE) and not any(
+                re.search(w, s, re.IGNORECASE) for w in disown):
+            return False
+    return True
 
 
 def _answer_none(obs: Observation, arg: Any) -> bool:
@@ -783,7 +856,7 @@ def _mirror_respected(obs: Observation, _arg: Any) -> bool | None:
     Mirror mode."""
     if not obs.mirror:
         return None
-    if any(name in MIRROR_TOOLS for name, _, _ in _ran_ok(_ran(obs))):
+    if any(name in MIRROR_TOOLS for name in _write_calls(obs)):
         return False
     return not any(m == method and re.search(path, p)
                    for m, p, _ in obs.work_writes for method, path in MIRROR_BLOCKED)
@@ -887,6 +960,9 @@ KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
     "no_unasked_write": _no_unasked_write,
     "work_write": _work_write,
     "answer_none": _answer_none,
+    "count_stated": _count_stated,
+    "body_figure": _body_figure,
+    "answer_not_mine": _answer_not_mine,
     "figure": _figure,
     "right_pack": _right_pack,
     "no_crm_delegation": _no_crm_delegation,
