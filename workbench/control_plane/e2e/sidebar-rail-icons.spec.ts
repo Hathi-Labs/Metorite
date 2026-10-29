@@ -6,8 +6,9 @@ import { expect, test, type Page } from "@playwright/test";
  *
  * The folded rail is 56px wide. When its app list is taller than the window,
  * the nav scrolls, and a real scrollbar takes its width out of those 56px. The
- * icon is a flex item, so the browser shrank it to fit what was left: about
- * 11px against the 18px of "All apps", which sits outside the scroller.
+ * icon is a flex item, so the browser shrank it to fit what was left: 9px in
+ * this test's Chromium, against the 18px of "All apps", which sits outside
+ * the scroller.
  *
  * ⚠️ **This file must see a real scrollbar.** Playwright starts headless
  * Chromium with `--hide-scrollbars`, and a hidden bar takes no width, so the
