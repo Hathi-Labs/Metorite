@@ -156,7 +156,10 @@ import {
   orderBearingView,
   type planDrop,
 } from "./lib/board";
-import { appendTasks, boardReadParams, nextTaskPage } from "./lib/paging";
+import {
+  appendTasks, boardReadParams, columnReadFilter, columnSizes, nextBoardPage, nextTaskPage,
+  type StatusCounts,
+} from "./lib/paging";
 import {
   type CalendarLayout,
   calendarGrid,
@@ -783,6 +786,14 @@ const MODE_OPTIONS: readonly ModeOption<ViewMode>[] = VIEW_MODES.map((entry) => 
   icon: entry.icon,
 }));
 
+/** #918. The lane sizes of a task-list answer, or null when it sent none. */
+function countsOf(res: {
+  status_counts?: Record<string, number> | null;
+  status_categories?: Record<string, string | null> | null;
+}): StatusCounts | null {
+  return res.status_counts ? { counts: res.status_counts, categories: res.status_categories ?? {} } : null;
+}
+
 function ProjectsWorkspace() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -852,6 +863,14 @@ function ProjectsWorkspace() {
   const [taskTotal, setTaskTotal] = useState<number | null>(null);
   /** A `Load more` read is in flight. Separate from the board's own loading. */
   const [loadingMore, setLoadingMore] = useState(false);
+  /** #918. The true size of each status lane across the whole filtered set. */
+  const [statusCounts, setStatusCounts] = useState<StatusCounts | null>(null);
+  /** #918. Rows that only a column read brought. The board's own pages have
+   *  not reached them, so the board's next page leaves them out
+   *  (`paging.nextBoardPage`). */
+  const [laneOnly, setLaneOnly] = useState<ReadonlySet<string>>(() => new Set());
+  /** #918. The column whose own read is in flight, or null. */
+  const [loadingColumn, setLoadingColumn] = useState<string | null>(null);
   /**
    * How many tasks are on the shelf for the board in view, or null.
    *
@@ -2031,6 +2050,8 @@ function ProjectsWorkspace() {
         ]);
         setStatuses(statusRes.rows);
         setTasks(taskRes.rows);
+        setStatusCounts(countsOf(taskRes));
+        setLaneOnly(new Set());
         // ⚠️ Reset, never merge. This runs on a fresh project, a changed
         // filter and a changed sort — each of which is a DIFFERENT question,
         // so pages read for the old one must not survive into the new answer.
@@ -2078,12 +2099,21 @@ function ProjectsWorkspace() {
     try {
       const params = {
         ...taskParamsFor(selected),
-        page: nextTaskPage(tasks.length),
+        // #918: the rows a column read brought are not the board's pages.
+        page: nextBoardPage(tasks.length, laneOnly.size),
       };
       const res = await read(projectsKey("tasks", params), () =>
         projectsApi.tasks(params)
       );
       setTasks((current) => appendTasks(current, res.rows));
+      // The board's own page now holds these rows.
+      setLaneOnly((current) => {
+        if (!res.rows.some((r) => current.has(r.id))) return current;
+        const next = new Set(current);
+        for (const r of res.rows) next.delete(r.id);
+        return next;
+      });
+      if (res.status_counts) setStatusCounts(countsOf(res));
       // The count can have moved while the member read page 1. Take the
       // server's newest answer rather than keeping the one from the first read.
       setTaskTotal(res.total ?? null);
@@ -2092,7 +2122,45 @@ function ProjectsWorkspace() {
     } finally {
       setLoadingMore(false);
     }
-  }, [selected, loadingMore, tasks.length, taskParamsFor]);
+  }, [selected, loadingMore, tasks.length, laneOnly, taskParamsFor]);
+
+  /**
+   * #918. Read the next rows of ONE column. The column's rows held now are
+   * the first rows of that lane in the board's order, so the next page of
+   * the lane's own read follows on with no gap (`paging.columnReadFilter`).
+   * A column that one filter cannot name reads the board's next page.
+   */
+  const loadMoreInColumn = useCallback(async (columnKey: string, held: number) => {
+    if (!selected || loadingColumn) return;
+    const filter = columnReadFilter(groupBy, columnKey, statuses, statusCounts);
+    if (!filter) { void loadMoreTasks(); return; }
+    setLoadingColumn(columnKey);
+    setError(null);
+    try {
+      const params = { ...taskParamsFor(selected), ...filter, page: nextTaskPage(held) };
+      const res = await read(projectsKey("tasks", params), () => projectsApi.tasks(params));
+      const known = new Set(tasks.map((t) => t.id));
+      const added = res.rows.filter((r) => !known.has(r.id)).map((r) => r.id);
+      setTasks((current) => appendTasks(current, res.rows));
+      if (added.length) {
+        setLaneOnly((lo) => {
+          const next = new Set(lo);
+          for (const id of added) next.add(id);
+          return next;
+        });
+      }
+    } catch (err) {
+      setError(String((err as Error).message));
+    } finally {
+      setLoadingColumn(null);
+    }
+  }, [selected, loadingColumn, groupBy, statuses, statusCounts, tasks, taskParamsFor, loadMoreTasks]);
+
+  /** #918. The true size of each column, or null for another grouping. */
+  const columnTotals = useMemo(
+    () => columnSizes(groupBy, statuses, statusCounts),
+    [groupBy, statuses, statusCounts],
+  );
 
   // WS-27ae — export the filter that is on screen, with the columns it shows.
   //
@@ -4770,6 +4838,9 @@ function ProjectsWorkspace() {
           ) : mode === "board" ? (
             <TaskBoard
           personLabels={personLabels}
+              columnTotals={columnTotals}
+              loadingColumn={loadingColumn}
+              onLoadColumn={(key, held) => void loadMoreInColumn(key, held)}
               phone={compactChrome && isMobile}
               groups={groups}
               groupBy={groupBy}
