@@ -72,3 +72,11 @@ Add a section per feature as you build it. Example:
 | K-46 | Tell the caller when `MAX_BACKLINKS` cuts the "Linked from" list | The route lists at most 200 sources and sets no `truncated` flag (K-1 review, 2026-10-26) | The answer carries `truncated`, and a test with 201 sources shows it true |
 | K-47 | `diff-reviewer` on the rest of wave 2: KB-2b, KB-2e, KB-2k and KB-2m | K-1 reviewed KB-2h only. The other four rows have no adversarial review (K-1 review, 2026-10-26) | The reviewer reports no P0 on each of the four |
 
+
+### Reminders (WS-66)
+
+| # | Item | Why | Done when |
+|---|---|---|---|
+| RM-H1 | Visual review of the `reminderCard` and its chips | Build mode skipped it (RM-4, 2026-10-29) | The card reads right in light mode, compact density, a changed accent, and at 390 px |
+| RM-H2 | Write one `opened` ledger row when a chat post fails and the member taps again | `open_reminder` commits the ledger row before `_post_row`. A 503 from the post and a retry write a second `opened` row. Two parallel taps do the same. The chat row stays unique (RM-4 verify, 2026-10-29) | An R8 test shows a failed post and a retry leave one `opened` row |
+| RM-H3 | Stop the model from emitting a `reminderCard` | The catalog lists it, because the lockstep fence needs every template. Its summary tells the model not to emit it, and nothing enforces that. A chip acts only on a tap, and only on the member's own reminder (RM-4 verify, 2026-10-29) | The run path drops a model-emitted `reminderCard`, with a test |
