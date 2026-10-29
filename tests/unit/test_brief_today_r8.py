@@ -36,6 +36,9 @@ f. No read enqueues a job, and the ``jobs`` table does not change.
 * M2. ``brief_today._deliver``: drop ``from_state="ready"`` (and the move
   goes through the unguarded UPDATE).
   ``test_r8_the_first_read_delivers_once_and_keeps_the_stamp`` goes red.
+* M3. ``brief_today.brief_local_date``: answer ``day.feed_day(now)``.
+  ``test_r8_each_member_reads_their_own_run_on_their_own_date`` goes red,
+  with two more.
 """
 
 from __future__ import annotations
