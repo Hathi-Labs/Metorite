@@ -26,6 +26,7 @@
  * Fence (R7): `runStatus.test.ts`.
  */
 
+import { placementOf } from "@/lib/chatPlacement";
 
 // ── The phases ─────────────────────────────────────────────────────────────
 
@@ -145,6 +146,11 @@ export interface RunStatus {
    * no Stop until the server lists the run.
    */
   checking: boolean;
+  /** Ids of the write tools the run started. A replay sends an id again, so
+   *  an id counts once. */
+  writesAsked: readonly string[];
+  /** Ids of the write tools that ended with success: the changes made. */
+  writesDone: readonly string[];
 }
 
 export const IDLE_RUN: RunStatus = Object.freeze({
@@ -167,6 +173,8 @@ export const IDLE_RUN: RunStatus = Object.freeze({
   runKey: null,
   staleTail: false,
   checking: false,
+  writesAsked: [],
+  writesDone: [],
 }) as RunStatus;
 
 /** One server row, as `lib/liveRuns.ts` reads it. */
@@ -205,6 +213,10 @@ export type RunEvent =
   /** The chat mounted over a state kept in the store, with no stream that
    *  reads it: show "checking" until the server answers. */
   | { type: "remount"; at: number; streamOpen: boolean }
+  /** A tool call began. Only a write counts, as `chatPlacement` names it. */
+  | { type: "toolStart"; at: number; id: string; name: string }
+  /** A tool call ended. Only a successful write counts as a change made. */
+  | { type: "toolDone"; at: number; id: string; name: string; ok: boolean }
   /** A blocking card opened or closed in this chat. */
   | { type: "card"; at: number; open: boolean }
   /** A complete server list, taken at `at`. `run` is this thread's row. */
@@ -284,6 +296,8 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
         // A re-attach to a run this tab did not see start keeps no old step.
         step: live ? s.step : null,
         seq: live ? s.seq : 0,
+        writesAsked: live ? s.writesAsked : [],
+        writesDone: live ? s.writesDone : [],
         terminalAt: 0,
         staleTail: false,
       });
@@ -334,6 +348,20 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
       return to(s, "stopped", e.at, {
         step: null, stoppedAt: e.at, attach: false, cardOpen: false, doneMessageId: s.messageId ?? s.doneMessageId,
       });
+
+    case "toolStart":
+      if (placementOf(e.name) !== "write" || s.writesAsked.includes(e.id)) return s;
+      return { ...s, writesAsked: [...s.writesAsked, e.id] };
+
+    case "toolDone": {
+      if (!e.ok || placementOf(e.name) !== "write" || s.writesDone.includes(e.id)) return s;
+      return {
+        ...s,
+        writesDone: [...s.writesDone, e.id],
+        // A write that ended was asked, even if its start was not seen.
+        writesAsked: s.writesAsked.includes(e.id) ? s.writesAsked : [...s.writesAsked, e.id],
+      };
+    }
 
     case "attach_skipped":
       // `attachedAt` stays, so the next list asks again at once.
@@ -410,6 +438,7 @@ function reduceServer(
     const fresh: Partial<RunStatus> = isNew
       ? {
         messageId: null, step: null, seq: 0, terminalAt: 0, cardOpen: false,
+        writesAsked: [], writesDone: [],
         startedAt: parseTime(run.startedAt) ?? at,
         // The old run's streaming reply, if any, is not this run's.
         staleTail: other,
@@ -530,10 +559,22 @@ export function runView(s: RunStatus, now: number): RunView | null {
       };
     case "stopped":
       if (now - s.changedAt >= RESTING_SHOW_MS) return null;
-      return { tone: "stopped", label: "Stopped", elapsed: null };
+      return { tone: "stopped", label: stoppedLabel(s), elapsed: null };
     default:
       return null;
   }
+}
+
+/**
+ * "Stopped · made 2 of 5 changes", "Stopped · made 2 changes" when the total
+ * is not above the made count, and "Stopped" when the run made none.
+ */
+function stoppedLabel(s: RunStatus): string {
+  const made = s.writesDone.length;
+  if (made === 0) return "Stopped";
+  const asked = s.writesAsked.length;
+  if (asked > made) return `Stopped · made ${made} of ${asked} changes`;
+  return `Stopped · made ${made} ${made === 1 ? "change" : "changes"}`;
 }
 
 /** The row's spoken and written line: "Asking Projects assistant · 1m 12s". */

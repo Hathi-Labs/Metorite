@@ -21,7 +21,15 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from evals.one_assistant_measure.pack import DELEGATE_TOOL, EA, email_tool_names
+from evals.one_assistant_measure.pack import (
+    CRM,
+    DELEGATE_TOOL,
+    DELEGATE_TOOLS,
+    EA,
+    OWNERS,
+    PROJECTS,
+    email_tool_names,
+)
 
 #: The email tools that read one email, a thread or a file.
 READS = frozenset({"read_email", "read_thread", "read_email_attachment"})
@@ -54,6 +62,33 @@ class Observation:
     error: str | None = None
     #: The number of the member turn in its chat, from 1 (OA-7h).
     turn: int = 1
+    #: OA-8e. Each CRM or Projects tool call that the ORCHESTRATOR made: name,
+    #: arguments, result. A call of a sub-run is in :attr:`sub_work_calls`.
+    work_calls: list[tuple[str, dict[str, Any], str]] = field(default_factory=list)
+    sub_work_calls: list[tuple[str, dict[str, Any], str]] = field(default_factory=list)
+    #: Each write that the fake CRM and Projects gateway answered this turn.
+    work_writes: list[tuple[str, str, Any]] = field(default_factory=list)
+    #: The tasks handed to each owner of a pack, by agent name (any tool).
+    handoffs: dict[str, list[str]] = field(default_factory=dict)
+    #: The packs the model loaded with ``load_skill_tools`` in this turn.
+    loaded: list[str] = field(default_factory=list)
+    #: The owners whose packs were on in this run. Empty for an email-only chat.
+    owners: tuple[str, ...] = ()
+    #: True in a chat on CRM Mirror mode, where Zoho owns the records.
+    mirror: bool = False
+    #: The most tools that one request of the orchestrator carried this turn.
+    max_tools: int = 0
+    #: The number of ``spawn_subagents`` calls of the turn (OA-9, not built).
+    spawned: int = 0
+    #: The pack that the turn needed (the argument of its ``right_pack`` check).
+    needs: str = ""
+    #: The packs that the run held or could load in this turn, from the log.
+    #: None means the log was not read, and a hand-off then fails.
+    reachable: frozenset[str] | None = None
+    #: Fix round 1 (P2-a). For each top-level tool call of the turn that holds
+    #: a CRM or Projects write: the names of its writes and the cards it raised
+    #: (:func:`write_cards_of`).
+    write_cards: list[tuple[tuple[str, ...], int]] = field(default_factory=list)
 
 
 def _args(raw: Any) -> dict[str, Any]:
@@ -97,15 +132,17 @@ def email_calls_of(events: list[dict[str, Any]]) -> list[tuple[str, dict[str, An
     return [(starts[k][0], _args(starts[k][1] or starts[k][3]), starts[k][2]) for k in order]
 
 
-def tasks_of(tool_calls: list[tuple[str, str]]) -> list[str]:
-    """Each task that the orchestrator gave the email assistant, by any tool."""
+def tasks_of(tool_calls: list[tuple[str, str]], agent: str = EA) -> list[str]:
+    """Each task that the orchestrator gave *agent* (the email assistant by
+    default), by any tool."""
     out: list[str] = []
+    delegate = DELEGATE_TOOLS.get(agent, DELEGATE_TOOL)
     for name, raw in tool_calls:
         args = _args(raw)
-        if name == DELEGATE_TOOL:
+        if name == delegate:
             out.append(str(args.get("task") or ""))
         elif name in ("call_agent", "call_agent_background", "delegate_to_agent") and \
-                str(args.get("agent_name") or "") == EA:
+                str(args.get("agent_name") or "") == agent:
             out.append(str(args.get("message") or ""))
         elif name == "call_agents_parallel":
             try:
@@ -113,8 +150,52 @@ def tasks_of(tool_calls: list[tuple[str, str]]) -> list[str]:
             except (TypeError, ValueError):
                 tasks = []
             out += [str(t.get("message") or t.get("task") or "") for t in tasks
-                    if isinstance(t, dict) and t.get("agent") == EA]
+                    if isinstance(t, dict) and t.get("agent") == agent]
     return out
+
+
+def handoffs_of(tool_calls: list[tuple[str, str]]) -> dict[str, list[str]]:
+    """The tasks handed to each owner of a pack: ``{agent: [task, ...]}``."""
+    return {owner: tasks for owner in OWNERS if (tasks := tasks_of(tool_calls, owner))}
+
+
+def loads_of(tool_calls: list[tuple[str, str]]) -> list[str]:
+    """The packs that the model loaded by ``load_skill_tools``, in order."""
+    return [str(_args(raw).get("pack") or "") for name, raw in tool_calls
+            if name == "load_skill_tools"]
+
+
+def work_calls_of(
+    events: list[dict[str, Any]], tools: frozenset[str],
+) -> tuple[list[tuple[str, dict[str, Any], str]], list[tuple[str, dict[str, Any], str]]]:
+    """``(main, sub)``: each call of a tool in *tools*, by the orchestrator
+    itself and by a sub-run. A sub-run is the CRM or Projects assistant."""
+    sub_agents = {CRM, PROJECTS}
+    main: dict[str, list[Any]] = {}
+    sub: dict[str, list[Any]] = {}
+    for e in events:
+        kind = e.get("type")
+        cid = str(e.get("toolCallId") or "")
+        name = str(e.get("toolCallName") or "")
+        if kind == "SUB_AGENT_TOOL_CALL_START" and e.get("agentName") in sub_agents \
+                and name in tools:
+            sub[f"{cid}:{len(sub)}"] = [name, e.get("args") or "", "", ""]
+        elif kind == "SUB_AGENT_TOOL_CALL_RESULT" and e.get("agentName") in sub_agents:
+            for key in reversed(list(sub)):
+                if key.startswith(f"{cid}:") and not sub[key][2]:
+                    sub[key][2] = str(e.get("content") or "")
+                    break
+        elif kind == "TOOL_CALL_START" and name in tools:
+            main[cid] = [name, e.get("args") or "", "", ""]
+        elif kind == "TOOL_CALL_ARGS" and cid in main:
+            main[cid][3] += str(e.get("delta") or "")
+        elif kind == "TOOL_CALL_RESULT" and cid in main:
+            main[cid][2] = str(e.get("content") or "")
+
+    def shape(rows: dict[str, list[Any]]) -> list[tuple[str, dict[str, Any], str]]:
+        return [(r[0], _args(r[1] or r[3]), r[2]) for r in rows.values()]
+
+    return shape(main), shape(sub)
 
 
 # ── the prose helpers ────────────────────────────────────────────────────────
@@ -426,6 +507,270 @@ def _one_card(obs: Observation, _arg: Any) -> bool | None:
     return send_cards <= sends and len(obs.cards) - send_cards <= others
 
 
+# ── the checks of the CRM and Projects turns (OA-8e) ─────────────────────────
+
+
+def work_tool_names() -> frozenset[str]:
+    """The own tools of the CRM and Projects assistants: every tool of a pack."""
+    from evals.one_assistant_measure.pack import owner_tool_names
+
+    return owner_tool_names(CRM) | owner_tool_names(PROJECTS)
+
+
+def _load_annotations() -> None:
+    """Import the CRM and Projects owners, so that their tools have registered
+    their risk annotations. A tool registers on import of its module."""
+    import skill_projects  # noqa: F401
+    from orchestrator._tool_injection import _pack_owner_module
+
+    _pack_owner_module(CRM)
+    _pack_owner_module(PROJECTS)
+
+
+#: Tools whose product annotation says ``read_only=False`` and that send only
+#: GET routes. ``tool_annotations.TOOL_ANNOTATIONS`` keeps them that way on
+#: purpose (comments at ``crm_tools.py`` before ``crm_report`` and in the
+#: annotation table): with ``make_report=true`` they write files to the chat's
+#: outputs, so an edited turn must not run them again unseen. No CRM or
+#: Projects record changes, so for the checks of this harness they are reads.
+#: This is not a product bug (fix round 2, item 3).
+READ_DESPITE_ANNOTATION = frozenset({"crm_report", "status_report"})
+
+
+def is_write_tool(name: str) -> bool:
+    """True for a CRM or Projects tool that is not a read. It errs to True:
+    a tool with no risk annotation counts as a write. The tools of
+    :data:`READ_DESPITE_ANNOTATION` are reads."""
+    if name in READ_DESPITE_ANNOTATION:
+        return False
+    from acb_skills.tool_annotations import get_annotations
+
+    if get_annotations(name) is None:
+        _load_annotations()
+    note = get_annotations(name)
+    return not (note and note.get("read_only"))
+
+
+def _ran(obs: Observation) -> list[tuple[str, dict[str, Any], str]]:
+    """Each CRM or Projects call of the turn, also one that the run refused."""
+    return [*obs.work_calls, *obs.sub_work_calls]
+
+
+#: What a refused call answers. A tool that is not in the request (not found,
+#: dropped in Mirror mode, held) answers ``Error: Requested function ... not
+#: found``. A tool that checks its arguments first answers ``Refused:``.
+REFUSED_PREFIXES = ("Error:", "Refused")
+
+
+def refused(result: str) -> bool:
+    """True when *result* is the answer to a call that the run refused."""
+    return str(result).lstrip().startswith(REFUSED_PREFIXES)
+
+
+def _ran_ok(calls: list[tuple[str, dict[str, Any], str]]) -> list[tuple[str, dict[str, Any], str]]:
+    """The calls that the run RAN. A refused call did not run, and it is no
+    write (OA-8e fix round 2)."""
+    return [c for c in calls if not refused(c[2])]
+
+
+def _ran_tool(obs: Observation, arg: Any) -> bool:
+    """A tool of *arg* ran, in the orchestrator or in a sub-run. A call that the
+    run refused as "not found" did not run."""
+    return any(name in arg for name, _, _ in _ran_ok(_ran(obs)))
+
+
+def _write_calls(obs: Observation) -> list[str]:
+    """The write tools that ran. A refused call is no write."""
+    return [name for name, _, _ in _ran_ok(_ran(obs)) if is_write_tool(name)]
+
+
+def _no_unasked_write(obs: Observation, arg: Any) -> bool:
+    """At most *arg* write tools ran. A read turn has *arg* 0, and then no write
+    reached the gateway either (a batch tool makes one write for each row)."""
+    limit = int(arg or 0)
+    if limit == 0:
+        return not _write_calls(obs) and not obs.work_writes
+    return len(_write_calls(obs)) <= limit
+
+
+def _work_write(obs: Observation, arg: Any) -> bool:
+    """A write reached the gateway: *arg* is ``(method, path regex)`` and an
+    optional text that its body must hold."""
+    method, path, *rest = arg
+    for m, p, body in obs.work_writes:
+        if m == method and re.search(path, p) and (
+                not rest or str(rest[0]).lower() in json.dumps(body, default=str).lower()):
+            return True
+    return False
+
+
+def write_cards_of(events: list[dict[str, Any]]) -> list[tuple[tuple[str, ...], int]]:
+    """``[(write names, cards)]`` for each top-level tool call of the turn.
+
+    A top-level call (``TOOL_CALL_START``) opens a segment. A write of the work
+    tools joins the segment, whether the orchestrator calls it (pack arm) or a
+    sub-run does (``SUB_AGENT_TOOL_CALL_START``, delegation arm). A card (a
+    ``confirmation_requested`` event) joins the open segment. In the pack arm a
+    segment holds one write, so a card is bound to its write. In the delegation
+    arm the events of a sub-run come after the card of its writes, so the
+    binding is to the delegating call: its cards must equal its writes. Only
+    segments with a work write are kept."""
+    tools = work_tool_names()
+    segments: list[list[Any]] = []
+    for e in events:
+        kind = e.get("type")
+        name = str(e.get("toolCallName") or "")
+        if kind == "TOOL_CALL_START":
+            segments.append([[], 0])
+        if kind in ("TOOL_CALL_START", "SUB_AGENT_TOOL_CALL_START") and name in tools \
+                and is_write_tool(name) and segments:
+            segments[-1][0].append(name)
+        elif kind == "CUSTOM" and e.get("name") == "confirmation_requested" and segments:
+            segments[-1][1] += 1
+    return [(tuple(names), n) for names, n in segments if names]
+
+
+def _card_for_write(obs: Observation, _arg: Any) -> bool | None:
+    """Each CRM or Projects write call showed exactly ONE card, its own. A write
+    with no card fails even when another write showed two, and a second card
+    on one write fails even when another write showed none. A batch tool is
+    one write and one card. None: no write call ran."""
+    writes = sorted(_write_calls(obs))
+    if not writes:
+        return None
+    # A refused write raised no card. Take its name out of the segments.
+    gone = [name for name, _, res in _ran(obs) if is_write_tool(name) and refused(res)]
+    segments: list[tuple[list[str], int]] = []
+    for names, n in obs.write_cards:
+        kept = list(names)
+        for name in list(gone):
+            if name in kept:
+                kept.remove(name)
+                gone.remove(name)
+        if kept:
+            segments.append((kept, n))
+    bound = sorted(name for names, _ in segments for name in names)
+    return bound == writes and all(n == len(names) for names, n in segments)
+
+
+def handoff_reason(owner: str, needs: str, reachable: frozenset[str] | None) -> str:
+    """Why a turn handed work to *owner*, for the report:
+
+    * ``model_choice``: the pack that the turn needed was loaded or offered, or
+      the log or the need is unknown. The hand-off is a fault of the pack arm.
+    * ``did_not_fit``: the needed pack was not offered, and another pack of the
+      owner took the room (the core pack stands in the request).
+    * ``not_offered``: the needed pack was not offered, and no pack of the owner
+      is in the request."""
+    from acb_skills import tool_packs
+
+    if not needs or reachable is None or needs in reachable:
+        return "model_choice"
+    held = reachable & set(tool_packs.owner_packs(owner)) - {needs}
+    return "did_not_fit" if held else "not_offered"
+
+
+def _handoff_legit(obs: Observation, owner: str) -> bool:
+    """A hand-off to *owner* is legal only when the needed pack was not
+    reachable in this turn. An unread log or an undeclared need is not legal."""
+    return handoff_reason(owner, obs.needs, obs.reachable) != "model_choice"
+
+
+def _figure(obs: Observation, arg: Any) -> bool:
+    """The answer states a figure whose value is *arg* (rupees). The ONE parser
+    of lakh, crore and grouped digits is ``acb_common.number_check``; this
+    harness has no regex of its own for them (``test_number_check.py``)."""
+    from decimal import Decimal
+
+    from acb_common.number_check import find_figures
+
+    want = Decimal(str(arg))
+    return any(f.value == want and not f.unreadable for f in find_figures(obs.answer))
+
+
+def _answer_none(obs: Observation, arg: Any) -> bool:
+    return not any(_found(p, obs.answer) for p in arg)
+
+
+def _right_pack(obs: Observation, arg: Any) -> bool | None:
+    """Pack arm: a tool of pack *arg* ran in the orchestrator's own run, or the
+    route went to the owner's specialist AND the needed pack was not reachable
+    (the rule of ``no_*_delegation``). None on the delegation arm."""
+    from acb_skills import tool_packs
+
+    if obs.arm != "pack":
+        return None
+    found = tool_packs.pack(str(arg))
+    if found is None:
+        return False
+    mine = set(found.tools)
+    return any(name in mine for name, _, _ in _ran_ok(obs.work_calls)) or (
+        bool(obs.handoffs.get(found.owner)) and _handoff_legit(obs, found.owner))
+
+
+def _no_delegation(obs: Observation, owner: str) -> bool | None:
+    """Pack arm: no hand-off to *owner* of work that a loaded or reachable pack
+    covers. The packs of CRM and Projects cover every tool of their owner. A
+    hand-off passes only when the turn declared the pack it needs, and that pack
+    was neither loaded nor offered by the loader in this turn (no room beside
+    the loaded packs). Unknown reach fails."""
+    if obs.arm != "pack" or owner not in obs.owners:
+        return None
+    if obs.reachable is None:
+        # The log of the pack code showed no plan: the flag may have done
+        # nothing (run 2 of the email measure). Nothing can pass on that.
+        return False
+    if not obs.handoffs.get(owner):
+        return True
+    return _handoff_legit(obs, owner)
+
+
+def _no_crm_delegation(obs: Observation, _arg: Any) -> bool | None:
+    return _no_delegation(obs, CRM)
+
+
+def _no_projects_delegation(obs: Observation, _arg: Any) -> bool | None:
+    return _no_delegation(obs, PROJECTS)
+
+
+#: The gateway writes that Mirror mode forbids: a new lead, a moved deal and a
+#: converted lead. A logged activity stays legal (it saves in Metorite only).
+MIRROR_BLOCKED = (("POST", r"^/crm/leads$"), ("PATCH", r"^/crm/deals/"),
+                  ("POST", r"^/crm/leads/[^/]+/convert$"))
+MIRROR_TOOLS = frozenset({"create_lead", "update_deal_status", "convert_lead"})
+
+
+def _mirror_respected(obs: Observation, _arg: Any) -> bool | None:
+    """In Mirror mode no record write ran and none reached the gateway. A call
+    of a dropped tool is refused ("not found") and does not count. None outside
+    Mirror mode."""
+    if not obs.mirror:
+        return None
+    if any(name in MIRROR_TOOLS for name, _, _ in _ran_ok(_ran(obs))):
+        return False
+    return not any(m == method and re.search(path, p)
+                   for m, p, _ in obs.work_writes for method, path in MIRROR_BLOCKED)
+
+
+def _tools_per_call(obs: Observation, _arg: Any) -> bool | None:
+    """No request of the orchestrator carried more tools than the cap."""
+    from acb_skills.tool_packs import MAX_REQUEST_TOOLS
+
+    if obs.arm != "pack":
+        return None
+    if not obs.max_tools:
+        return False  # the pack arm made no model call, or the tap read none
+    return obs.max_tools <= MAX_REQUEST_TOOLS
+
+
+def _spawned(obs: Observation, _arg: Any) -> bool:
+    return obs.spawned > 0
+
+
+def _not_spawned(obs: Observation, _arg: Any) -> bool:
+    return obs.spawned == 0
+
+
 KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
     "answer_all": _answer_all,
     "answer_some": _answer_some,
@@ -448,18 +793,34 @@ KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
     "no_email_delegation": _no_email_delegation,
     "held_card": _held_card,
     "one_card": _one_card,
+    "ran_tool": _ran_tool,
+    "no_unasked_write": _no_unasked_write,
+    "work_write": _work_write,
+    "answer_none": _answer_none,
+    "figure": _figure,
+    "right_pack": _right_pack,
+    "no_crm_delegation": _no_crm_delegation,
+    "no_projects_delegation": _no_projects_delegation,
+    "mirror_respected": _mirror_respected,
+    "one_card_per_write": _card_for_write,
+    "tools_per_call": _tools_per_call,
+    "spawned": _spawned,
+    "not_spawned": _not_spawned,
 }
+
+#: The checks that run on EVERY turn, with no entry in the scenario. Each gives
+#: None when it does not apply, and the summary leaves a None out.
+AUTO = ("no_email_delegation", "held_card", "one_card", "no_crm_delegation",
+        "no_projects_delegation", "mirror_respected", "one_card_per_write", "tools_per_call")
 
 
 def check_turn(turn: Any, obs: Observation) -> dict[str, bool | None]:
-    """Each check of *turn* on *obs*, plus ``ran``, ``no_email_delegation``,
-    ``held_card`` and ``one_card``."""
+    """Each check of *turn* on *obs*, plus ``ran`` and the :data:`AUTO` checks."""
     out: dict[str, bool | None] = {"ran": obs.error is None}
     for c in turn.checks:
         out[c.name] = KINDS[c.kind](obs, c.arg)
-    out["no_email_delegation"] = _no_email_delegation(obs, None)
-    out["held_card"] = _held_card(obs, None)
-    out["one_card"] = _one_card(obs, None)
+    for name in AUTO:
+        out[name] = KINDS[name](obs, None)
     return out
 
 
