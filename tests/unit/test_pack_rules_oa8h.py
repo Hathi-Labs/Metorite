@@ -42,8 +42,9 @@ def test_the_core_rules_keep_the_oa8g_lines_and_the_size_pin() -> None:
 def test_the_route_bullet_still_names_all_three_other_packs() -> None:
     """Mutation: drop projects-bulk from the shortened bullet -> red."""
     rules = _flat(tp._PROJECTS_RULES)
-    for slug in ("projects-plan", "projects-structure", "projects-bulk"):
-        assert slug in rules
+    for slug in ("projects-plan", "projects-structure"):
+        assert f"{slug} holds" in rules
+    assert "projects-bulk holds many tasks at once" in rules
     assert 'When load_skill_tools offers one, load it. Else call call_agent with agent_name "projects-assistant" and the task.' in rules
 
 
