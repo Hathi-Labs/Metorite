@@ -7,6 +7,9 @@
  * the exact failure this ticket exists to end.
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe as suite, expect, it } from "vitest";
 
 import type { NotificationRow } from "./api";
@@ -265,5 +268,39 @@ suite("notDeliveredNotice", () => {
     const notice = notDeliveredNotice(["outsider@fracktal.in"]);
     expect(notice).toContain("outsider");
     expect(notice).toMatch(/cannot see/);
+  });
+});
+
+suite("every kind the gateway can write has its own verb (task 1054)", () => {
+  // Read from the gateway source, so the two lists cannot drift. Mutation: drop
+  // `nudge` from VERB in notifications.ts and the loop below turns red.
+  const py = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../../../../../../apps/services/gateway/gateway/routes/projects/notifications.py",
+        import.meta.url,
+      ),
+    ),
+    "utf-8",
+  );
+  const body = /NOTIFICATION_KINDS: tuple\[str, \.\.\.\] = \(([\s\S]*?)\)/.exec(py)?.[1] ?? "";
+  const kinds = [...body.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+
+  it("finds the kinds", () => {
+    expect(kinds).toContain("nudge");
+  });
+
+  it.each(kinds)("%s does not fall back to 'updated'", (kind) => {
+    expect(describe(row({ kind: kind as NotificationRow["kind"] }))).not.toContain(" updated ");
+  });
+
+  it("reads the nudge as a quiet run with a way out, and claims no quiet-since time", () => {
+    // The notice time is when the sweep nudged, after the lease ran out, not
+    // when the run went quiet. A "since <time>" from it would understate the
+    // silence, so the line names no time. The bell row shows its own time.
+    const created_at = new Date(2026, 9, 30, 14, 31).toISOString();
+    const line = describe(row({ kind: "nudge", actor: "mcp:claude.ai:claude-code", created_at }));
+    expect(line).toBe("Claude Code has gone quiet on #12 Fix the extruder. Resume or release it.");
+    expect(line).not.toContain("since");
   });
 });
