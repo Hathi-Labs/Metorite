@@ -102,6 +102,7 @@ from gateway.routes.projects.core import (
 from gateway.routes.projects.custom_fields import load_definitions
 from gateway.routes.projects.filters import (
     SHOWN_FIELDS,
+    agent_filter_clauses,
     attach_assignees,
     attach_pr_chip,
     attach_relation_counts,
@@ -320,6 +321,10 @@ async def export_tasks_csv(
     watching: bool = False,
     # D-PM-38. A view with subtasks hidden exports what it shows.
     top_level: bool = False,
+    # Task #986. Parity with the list: the board's agent filters. "waiting" is
+    # the session's member (R11).
+    agent_focus: str | None = None,
+    agent_worked: bool = False,
     #: The view's field set, CSV, in the wire vocabulary `shown_fields` is
     #: stored under. Absent = the two unconditional columns only.
     shown_fields: str | None = None,
@@ -343,6 +348,10 @@ async def export_tasks_csv(
             status_code=422,
             detail=f"Unknown sort direction '{direction}'. One of: asc, desc.",
         )
+
+    agent_clauses, agent_params = agent_filter_clauses(
+        agent_focus, agent_worked, actor(user),
+    )
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -395,6 +404,8 @@ async def export_tasks_csv(
         params.update(extra_params)
         if not include_triage:
             clauses.append(triage_exclusion_clause())
+        clauses.extend(agent_clauses)
+        params.update(agent_params)
 
         where = " WHERE " + " AND ".join(clauses)
         total = int((await db.execute(

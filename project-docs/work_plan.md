@@ -189,10 +189,10 @@ These are the rows of the board before D118. Each row keeps its ID, so a spec th
 | WS-4 | Event-bus consumer and durable queue (BO-20) | 🟢 open | none, the BO checklist is in git | now in WS-BRIEF (BR-1a) |
 | WS-5 | CI gates real (BO-17, BO-18) | 🟢 open | none, the BO checklist is in git | now in WS-PL (WS-5a) |
 | WS-6 | Observability wiring and attribution (BO-5) | 🟢 open | `specs/observability_e2.md` §7 | now in WS-TO |
-| WS-7 | Memory activation and search (BO-21, BO-22) | 🟢 open | `specs/llm_caching_memory.md` | now in WS-CHAT |
+| WS-7 | Memory activation and search (BO-21, BO-22) | 🟢 open | `specs/llm_caching_memory.md` (2026-10-29: Mem0 and Graphiti retire after KG-6 per D132, so read its Mem0 parts as RETIRED) | now in WS-CHAT |
 | WS-8 | Agent architecture A0 to C | 🟢 open | `specs/agent_architecture.md` §12.2 | now in WS-CHAT |
-| WS-9 | Memory tiers 3b, 3c and 4 | 🟢 open | `specs/memory_architecture.md` §9 | now in WS-CHAT |
-| WS-10 | Multiplayer remainder: S1 compartments | 🟢 open | `docs/multiplayer/memory-clearance.md` §7 | now in WS-CHAT |
+| WS-9 | Memory tiers 3b, 3c and 4 | 🟢 open | `specs/memory_architecture.md` §9 (re-scoped 2026-10-29 by D132: Mem0 and Graphiti are not tiers, see its banner. Left: file-tier 3b and 4, and the 3c correction UX on the profile and org knowledge. If no slice survives, the row closes into WS-KG at KG-11) | now in WS-CHAT |
+| WS-10 | Multiplayer remainder: S1 compartments | 🟢 open | `docs/multiplayer/memory-clearance.md` §7 (2026-10-29: compartments still hold under D132, but the Mem0 scopes in it are RETIRED) | now in WS-CHAT |
 | WS-11 | Workflows slice 3: gallery, fan-in, loops | ⏸ parked | `specs/workflows_app.md` §8.3 | after Phase 2 (D119.3) · now in WS-STU (STU-2) |
 | WS-12 | Framework uplift, Phase 4 only (D6) | 🟢 open | `specs/multi_agent_orchestration.md` | now in WS-CHAT |
 | WS-13 | Centers B: groups become real | ⏸ parked | `specs/department_centers.md` | parked by D49 · now in WS-TS |
@@ -4764,6 +4764,8 @@ Owner directive, 2026-10-28, in chat: "Via the MCP, external coding agents shoul
 4. **D124 holds.** One scope per app, an approval card per write or delete, untrusted text, an audit row and an admin switch.
 5. **When.** MCP-P0 to MCP-P4 come in M3, after Phase 2 (D124.4). Studio over the MCP (MCP-P5) comes in M4, after the sandbox. Metorite epic 495 holds the slices.
 
+*Amended 2026-10-29 (owner, in chat):* `"ensure that the MCP also has the ability to at least connect to CRM and email as well in a full-fledged manner, so an external agent can query all aspects of emails and CRM aspects with the MCP as well."` *So MCP-P0 to MCP-P2 move from M3, after Phase 2 (item 5), to now. Item 5 still holds for MCP-P3 to MCP-P5. `external_agent_access.md` §19 holds the design and the slices, and MCP-Q2 there asks whether the admin switch of MCP-P3 moves too.*
+
 ### D137 — The Deals board shows the columns in the order of the settings list. Mirror mode defaults to the order of the Zoho pipeline. It amends the 2026-10-12 order rule and CRM-U6 item 1 (2026-10-27)
 
 Owner report, 2026-10-27, in chat: the deal stages were "very complicated" to configure, and the Kanban columns do not show "like it is currently showing up in ZOHO". The owner asked for the Zoho order, or an easy setting. Workstream: **WS-CRM**. Owning spec: `specs/crm_platform.md` §20.15 (CRM-U11).
@@ -4800,6 +4802,23 @@ The owner answered CE-0 on 2026-10-29, in chat. The questions are Q1 to Q10 of `
 **What stays gated.** The owner gates of the spec's §8.3 stand. They are the Google and Azure scopes, Google's review of a sensitive scope, the client secrets, and each flip of `CALENDAR_SYNC_READ` and `CALENDAR_SYNC_WRITE` for a real member. A write-out makes the provider send invites to real people, so CLAUDE.md §3a rule 3 binds that flip.
 
 **What it unblocks.** CE-4, the event store. After CE-4, CE-5 to CE-9 and CE-12. An agent can build CE-10 and CE-11 as dark code. The owner gates bind only their live use.
+
+### D139 — Keep MAF and build natively. One coding harness serves `code_task` and AI Studio (2026-10-30)
+
+The owner answered decision 1 of CA-0 on 2026-10-30, in chat. Board: **WS-43**. Owning spec: `specs/maf_coding_engine.md` §18. Metorite epic: task 1027.
+
+```text
+"Yes, I like the idea of keeping MAF and building natively. I just want to
+ensure that we have built all the necessary tools and workflows that
+enable MAF to become a capable coding agent harness. The same coding
+harness gets used with the AI Studio as well."
+```
+
+1. **Keep MAF, and build natively.** The tools run in our sandbox, and the loop and keys stay in the gateway. D82, D83, D84 and D92 hold. The Copilot SDK wrapper `GitHubCopilotAgent` stays rejected.
+2. **One coding harness (CA-14).** `code_task`, AI Studio (D127), the sandbox tool builder, the App Workshop, the Agent Workshop and self-mutation all use it. A profile only narrows tools and paths. A second coding harness, tool set, permission model or event stream is a defect.
+3. **A coding workflow (CA-15).** The harness ships the loop: understand, plan, implement, verify, review by a separate sub-agent, deliver.
+
+**What stays open.** Decisions 2 to 5 of `maf_coding_engine.md` §18.7 wait for the owner. They are the amendment of §6.2, the egress profiles, the OpenHands pilot and the first org.
 
 
 ## 4. Single-owner registry (who owns duplicated work)

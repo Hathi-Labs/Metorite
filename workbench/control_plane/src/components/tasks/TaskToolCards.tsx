@@ -37,6 +37,7 @@ import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { placementOf } from "@/lib/chatPlacement";
+import { memberLine } from "@/lib/receiptText";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -476,7 +477,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   // One look with the Projects receipts: a `RollupCard` whose title row is
   // the shared header, with the icon in the card's tone.
   return (
-    <RollupCard id={`tool:${e.id}`} title={meta.label} icon={iconName} summary={detail.split(/\r?\n/)[0]} header="own">
+    <RollupCard id={`tool:${e.id}`} title={meta.label} icon={iconName} summary={memberLine(detail.split(/\r?\n/)[0] ?? "")} receipt={!failed} header="own">
     <div
       className={`rounded-lg border px-2.5 py-2 ${
         failed

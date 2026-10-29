@@ -44,6 +44,7 @@
  * draws what these return.
  */
 
+import type { AgentFocus } from "./agentRuns";
 import { type Filters, type SubtaskMode, toQuery } from "./grouping";
 import { statusLaneOf } from "./statusOrder";
 import { subtaskReadParams } from "./subtaskView";
@@ -69,6 +70,15 @@ export const TASK_PAGE_SIZE = 100;
  * ⚠️ D-PM-38: `subtasks` is the STORED Subtasks mode. Hidden adds
  * `top_level: true` (`subtaskView.subtaskReadParams`), so the server pages
  * over top-level tasks only. Fence: `paging.test.ts`.
+ *
+ * ⚠️ **The three agent filters travel to the server too** (task #986).
+ * "Waiting on me", "Agent work" and the strip's focus used to filter the rows
+ * of page 1 in the browser, so a strip that said "2 Working" drew one card
+ * while the bar said "100 of 801". Paging happens in SQL, so each is a
+ * parameter: `agent_focus` (the strip's focus, with "waiting" for "Waiting on
+ * me") and `agent_worked`. Both are part of the params, so they are part of
+ * the read key: a change of focus is a different question and starts a fresh
+ * read, and "Load more" and the column reads carry them on.
  */
 export function boardReadParams(input: {
   projectId: string;
@@ -77,6 +87,12 @@ export function boardReadParams(input: {
   /** The order-bearing view, or null while the views read is in flight. */
   viewId: string | null;
   subtasks: SubtaskMode | null;
+  /** The "Waiting on me" toggle. It wins over `agentFocus`, as the page sets one at a time. */
+  waitingOnMe: boolean;
+  /** The strip's focus, or null. */
+  agentFocus: AgentFocus | null;
+  /** The "Agent work" toggle. */
+  agentWork: boolean;
 }): Record<string, string | number | boolean> {
   return {
     project_id: input.projectId,
@@ -90,9 +106,37 @@ export function boardReadParams(input: {
     // the read key, and a present-but-undefined entry is a different key.
     ...(input.viewId ? { view_id: input.viewId } : {}),
     ...subtaskReadParams(input.subtasks),
+    // Task #986. Omitted when off, so a board without them keeps its read key.
+    ...agentReadParams(input.waitingOnMe, input.agentFocus, input.agentWork),
     // #918. The true size of each status lane, so a column counts the whole
     // filtered set and not only the rows of one page.
     with_status_counts: true,
+  };
+}
+
+/**
+ * The `agent_focus` the server is asked for: "waiting" while "Waiting on me"
+ * is on, else the strip's focus, else none. The server takes ONE focus, so the
+ * page clears the other when it sets one (`onWaitingOnMe`, `onAgentFocus`).
+ */
+export function agentFocusParam(waitingOnMe: boolean, agentFocus: AgentFocus | null): AgentFocus | null {
+  return waitingOnMe ? "waiting" : agentFocus;
+}
+
+/**
+ * The two agent parameters of `GET /projects/tasks` AND of the CSV export
+ * (`export.ts`), from the three states of the page. ONE builder, so the file
+ * and the board cannot disagree. Empty while all three are off.
+ */
+export function agentReadParams(
+  waitingOnMe: boolean,
+  agentFocus: AgentFocus | null,
+  agentWork: boolean,
+): Record<string, string | boolean> {
+  const focus = agentFocusParam(waitingOnMe, agentFocus);
+  return {
+    ...(focus ? { agent_focus: focus } : {}),
+    ...(agentWork ? { agent_worked: true } : {}),
   };
 }
 

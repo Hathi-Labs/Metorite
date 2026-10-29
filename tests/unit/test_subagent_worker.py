@@ -270,6 +270,32 @@ def test_a_run_that_is_not_the_worker_never_inherits_the_job() -> None:
     assert executor._without_job_key("worker") == {}
 
 
+def test_a_spawn_child_takes_the_key_of_its_own_pack_tools() -> None:
+    """OA-9c: the sub-run of the worker derives the key that the spawn minted
+    for its pack tools, never the parent's key or the record. Any other agent,
+    and a job with no pack tool, gets both dropped. Mutation: ``_without_pack_keys``
+    ignores the job -> the worker's frame binds ``None`` -> red."""
+    from acb_skills.tool_packs import PACK_RUN_KEY, PACKS_KEY
+    from orchestrator import executor
+
+    dropped = {PACK_RUN_KEY: None, PACKS_KEY: None}
+    job = sc.Job(1, "Read.", (), "fast", packs=("crm-records",),
+                 pack_tools=(counted("get_record", []),), pack_run="key-child")
+    with artifact_context_scope():
+        bind_artifact_context(run_id="r", **{PACK_RUN_KEY: "key-parent", PACKS_KEY: object()})
+        assert executor._without_pack_keys("worker") == dropped
+        sc.bind_job(_job("remember"))
+        assert executor._without_pack_keys("worker") == dropped
+        sc.bind_job(job)
+        assert executor._without_pack_keys("worker") == {PACK_RUN_KEY: "key-child",
+                                                         PACKS_KEY: None}
+        assert executor._without_pack_keys("projects-assistant") == dropped
+        assert executor._without_pack_keys() == dropped
+    assert executor._job_pack_keys("worker", {sc.JOB_KEY: job}) == {PACK_RUN_KEY: "key-child"}
+    assert executor._job_pack_keys("email-assistant", {sc.JOB_KEY: job}) == {}
+    assert executor._job_pack_keys("worker", {}) == {}
+
+
 def test_the_lookups_by_name_all_use_the_internal_first_list() -> None:
     """The two runs that load a sub-agent by name (``_run_sub_agent_streaming``
     and ``_run_agent_inner``) read ``_registry_entries()``, and neither builds
@@ -346,6 +372,31 @@ def test_the_worker_reads_no_floor_tool_of_its_own_scope(_approve_all) -> None:
         )
         asyncio.run(agents[0].run("do it"))
     assert wire.tool_names(0) == []
+
+
+def test_the_worker_holds_the_pack_tools_of_its_job(_approve_all) -> None:
+    """OA-9c: the pack tools of a job are the worker's own tools, and the pair
+    lets them through beside the job tools, and nothing else. Mutation: the
+    worker pins ``job.tools`` only -> the pack tool is withheld -> red."""
+    from orchestrator import _tool_injection as ti
+
+    calls: list[str] = []
+    job = sc.Job(1, "Read the deal.", ("remember",), "fast", packs=("crm-records",),
+                 pack_tools=(counted("get_record", calls),), pack_run="key-child")
+    wire = WireModel([completion(calls=[("get_record", "{}")]),
+                      completion(text='{"items": []}')])
+    with artifact_context_scope():
+        bind_artifact_context(run_id="run-p", agent_name="orchestrator", no_egress=False)
+        sc.bind_job(job)
+        agents = [build_worker(wire)]
+        ti._inject_agent_tools(
+            agents, is_sub_agent=True,
+            tool_scope=sc.child_tool_scope("worker", CONFIG["tool_scope"]),
+            agent_name="worker", agent_config=CONFIG, no_egress=False,
+        )
+        asyncio.run(agents[0].run("do it"))
+    assert sorted(wire.tool_names(0)) == ["get_record", "remember"]
+    assert calls == ["get_record"]
 
 
 def test_child_tool_scope_follows_the_job_for_the_worker_only(_frame) -> None:

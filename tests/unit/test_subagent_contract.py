@@ -16,7 +16,8 @@ Mutations this file catches (R7). Each case names its own in its docstring.
 * M3 ``_items_of`` ignores a key that is not in the contract, so text of the
   child is lost.
 * M4 ``parse_items`` drops one bad item and keeps the others.
-* M5 ``parse_jobs`` runs a job that names a pack (OA-9c is not built).
+* M5 ``parse_jobs`` runs a job that names a pack that the parent run does
+  not hold, or any pack when no record of the packs can be read (OA-9c).
 * M6 ``parse_jobs`` lets a child hold a tool that its parent lacks.
 * M7 ``parse_jobs`` lets a child hold a delegation tool or the spawn tool.
 * M8 ``annotated_read_only`` reads an unknown tool as read-only.
@@ -176,9 +177,11 @@ PARENT = frozenset({"web_search", "fetch_page", "read_page", "list_messages",
 READS = frozenset({"web_search", "fetch_page", "read_page", "list_messages"})
 
 
-def _plan(jobs: object, *, parent: frozenset[str] = PARENT) -> sc.JobPlan:
+def _plan(jobs: object, *, parent: frozenset[str] = PARENT,
+          held: frozenset[str] | None = None) -> sc.JobPlan:
     raw = jobs if isinstance(jobs, str) else json.dumps(jobs)
-    return sc.parse_jobs(raw, parent_tools=parent, read_only=READS.__contains__)
+    return sc.parse_jobs(raw, parent_tools=parent, read_only=READS.__contains__,
+                         held_packs=held)
 
 
 def test_good_jobs_run_in_order_with_the_default_tier() -> None:
@@ -275,8 +278,44 @@ def test_a_delegating_tool_gets_the_hand_off_reason() -> None:
     assert "cannot start another agent" in plan.refused[0]
 
 
-def test_a_job_that_names_a_pack_does_not_run_until_oa_9c() -> None:
-    """§4.5, OA-9b item 3. Catches M5."""
+#: The packs that the parent run holds in the OA-9c cases (``PackRun.holds()``).
+HELD = frozenset({"email", "crm-records"})
+
+
+def test_a_job_runs_with_a_pack_that_the_parent_holds() -> None:
+    """OA-9c replaces ``test_a_job_that_names_a_pack_does_not_run_until_oa_9c``.
+    A pack that the parent holds passes, once each, in order and in lower case."""
+    plan = _plan([
+        {"job": "Find the Navy PO.", "packs": ["Email", "crm-records", "email"]},
+        {"job": "Read the deal and the page.", "packs": ["crm-records"], "tools": ["read_page"]},
+        {"job": "Search the web.", "tools": ["web_search"], "packs": []},
+    ], held=HELD)
+    assert plan.refused == ()
+    assert [(j.number, j.packs, j.tools) for j in plan.jobs] == [
+        (1, ("email", "crm-records"), ()),
+        (2, ("crm-records",), ("read_page",)),
+        (3, (), ("web_search",)),
+    ]
+
+
+def test_a_pack_that_the_parent_lacks_stops_the_job() -> None:
+    """SUB-1 rule 1: a child never holds a pack that its parent lacks. Catches
+    M5: ``parse_jobs`` runs a job with a pack that the parent does not hold."""
+    plan = _plan([
+        {"job": "Plan the sprint.", "packs": ["crm-records", "projects-plan"]},
+        {"job": "Search the web.", "tools": ["web_search"]},
+    ], held=HELD)
+    assert [j.number for j in plan.jobs] == [2]
+    assert plan.refused == (
+        'Job 1 ("Plan the sprint.") did not run: this chat does not hold the tool '
+        "pack 'projects-plan', and a sub-agent gets only the packs that this chat holds.",
+    )
+
+
+def test_with_no_record_of_the_packs_a_job_that_names_one_does_not_run() -> None:
+    """Fail closed (OA-9c): ``held_packs=None`` means that no record could be
+    read, so no pack is held. A job with no pack still runs. Catches a
+    ``None`` that reads as "every pack"."""
     plan = _plan([
         {"job": "Find the Navy PO.", "packs": ["email"]},
         {"job": "Read the page.", "packs": "email", "tools": ["read_page"]},
@@ -284,11 +323,92 @@ def test_a_job_that_names_a_pack_does_not_run_until_oa_9c() -> None:
     ])
     assert [j.number for j in plan.jobs] == [3]
     assert plan.refused == (
-        'Job 1 ("Find the Navy PO.") did not run: a sub-agent cannot load a tool pack '
-        "yet. Name its tools instead.",
-        'Job 2 ("Read the page.") did not run: a sub-agent cannot load a tool pack '
-        "yet. Name its tools instead.",
+        'Job 1 ("Find the Navy PO.") did not run: this chat holds no tool pack now, '
+        "so a sub-agent cannot get one. Name its tools instead.",
+        'Job 2 ("Read the page.") did not run: its packs must be a list of tool pack names.',
     )
+    empty = _plan([{"job": "Find the Navy PO.", "packs": ["email"]}], held=frozenset())
+    assert empty.jobs == () and "does not hold the tool pack 'email'" in empty.refused[0]
+
+
+def test_a_job_with_no_pack_is_as_in_oa_9b() -> None:
+    """No ``packs`` key: the job is the OA-9b job, with ``packs`` empty."""
+    for held in (None, HELD):
+        plan = _plan([{"job": "Read the page.", "tools": ["read_page"]}], held=held)
+        assert plan.jobs == (sc.Job(1, "Read the page.", ("read_page",), "main"),)
+        assert plan.jobs[0].packs == () and plan.jobs[0].pack_tools == ()
+        assert plan.jobs[0].pack_run == ""
+
+
+# ── OA-9c: the tools that a child may hold from a pack ──────────────────────
+
+
+def test_a_child_may_hold_a_read_tool_of_a_pack() -> None:
+    assert sc.child_may_hold("get_record", read_only=lambda _n: True)
+    assert sc.child_may_hold("remember")
+
+
+@pytest.mark.parametrize("tool", sorted({*sc.MEMBER_TOOLS, *sc.DISPLAY_TOOLS,
+                                         *sc.EXTRA_CALL_TOOLS, "call_agent",
+                                         "spawn_subagents", "delegate_to_agent"}))
+def test_a_child_never_holds_a_pack_tool_that_sub_1_blocks(tool: str) -> None:
+    """Even a lying read-only answer cannot pass a member tool, a tool that
+    draws a card or moves the page, a tool with model calls of its own, or a
+    delegation tool."""
+    assert not sc.child_may_hold(tool, read_only=lambda _n: True)
+
+
+def test_a_pack_tool_with_no_read_only_mark_stays_out() -> None:
+    """The one marker: a tool with no registry entry, or ``read_only`` not
+    ``True``, is not read-only. Catches the filter reading another marker."""
+    assert not sc.child_may_hold("a_pack_tool_that_no_module_registered")
+    assert not sc.child_may_hold("write_artifact")
+    assert not sc.child_may_hold("")
+
+
+def test_child_allowed_is_the_job_tools_and_the_pack_tool_names() -> None:
+    async def get_record() -> str:
+        return ""
+
+    job = sc.Job(1, "Read.", ("web_search",), "fast", packs=("crm-records",),
+                 pack_tools=(get_record,), pack_run="k-1")
+    assert sc.child_allowed(job) == {"web_search", "get_record"}
+    assert sc.child_allowed(sc.Job(1, "Read.", ("remember",), "fast")) == {"remember"}
+    assert sc.child_allowed(None) == frozenset()
+
+
+def test_the_pack_run_key_goes_to_the_worker_only() -> None:
+    """OA-9c: the executor binds the key of a child's pack tools for the worker
+    only, and only for a job that holds pack tools."""
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    async def get_record() -> str:
+        return ""
+
+    job = sc.Job(1, "Read.", (), "fast", packs=("crm-records",),
+                 pack_tools=(get_record,), pack_run="k-child")
+    bare = sc.Job(1, "Read.", (), "fast", pack_run="k-stray")
+    assert sc.job_pack_run("worker", {sc.JOB_KEY: job}) == "k-child"
+    assert sc.job_pack_run("crm-assistant", {sc.JOB_KEY: job}) == ""
+    assert sc.job_pack_run("worker", {sc.JOB_KEY: bare}) == ""
+    assert sc.job_pack_run("worker", {sc.JOB_KEY: "not a job"}) == ""
+    assert sc.job_pack_run("worker", {}) == ""
+    with artifact_context_scope():
+        bind_artifact_context(run_id="r")
+        assert sc.job_pack_run("worker") == ""
+        sc.bind_job(job)
+        assert sc.job_pack_run("worker") == "k-child"
+
+
+def test_a_job_refusal_has_the_shape_of_the_parser() -> None:
+    job = sc.Job(2, "Read the deal.", (), "main")
+    assert sc.job_refusal(job, "why.") == 'Job 2 ("Read the deal.") did not run: why.'
+
+
+def test_the_key_and_the_tools_of_a_job_stay_out_of_its_repr() -> None:
+    """The run key is server state. A log line of a job never shows it."""
+    job = sc.Job(1, "Read.", (), "fast", pack_run="k-secret-key")
+    assert "k-secret-key" not in repr(job)
 
 
 def test_a_child_gets_no_tool_that_its_parent_lacks() -> None:

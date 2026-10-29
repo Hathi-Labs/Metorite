@@ -107,6 +107,7 @@ from gateway.routes.projects.custom_fields import (
     load_definitions,
 )
 from gateway.routes.projects.filters import (
+    agent_filter_clauses,
     attach_agent_state,
     attach_assignees,
     attach_parent_context,
@@ -628,6 +629,14 @@ async def list_tasks(
     # filtered set, so a board column counts what the server holds and not
     # only the rows of one page.
     with_status_counts: bool = False,
+    # Task #986. The agent strip's focus as a WHERE clause, so the rows, the
+    # total and the lane sizes all count the matches and not only page 1.
+    # `waiting` is the SESSION's member (`actor(user)`), never an address from
+    # the request (R11). Like `unheld`, NOT in `build_task_filters`: who works
+    # on a task changes by the hour, so a saved view cannot pin it.
+    agent_focus: str | None = None,
+    # Task #986. Only tasks that an agent has worked (`agent_worked.py`).
+    agent_worked: bool = False,
 ) -> TaskListResponse:
     """The one task-list endpoint every surface reads through.
 
@@ -665,6 +674,11 @@ async def list_tasks(
             raise HTTPException(
                 status_code=422, detail="parent_task_id is not a valid id.",
             ) from None
+
+    # Task #986. Validated here too, so a bad value is a 422 before any read.
+    agent_clauses, agent_params = agent_filter_clauses(
+        agent_focus, agent_worked, actor(user),
+    )
 
     mine = check_scope(scope)
 
@@ -731,6 +745,8 @@ async def list_tasks(
             clauses.append(triage_exclusion_clause())
         if unheld:
             clauses.append(unheld_clause())
+        clauses.extend(agent_clauses)
+        params.update(agent_params)
 
         where = " WHERE " + " AND ".join(clauses)
         total = (await db.execute(

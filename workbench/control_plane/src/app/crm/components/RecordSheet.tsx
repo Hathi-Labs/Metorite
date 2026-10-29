@@ -127,11 +127,16 @@ export default function RecordSheet({
   // CRM-C4b: the layout draws the Fields tab when it says `studio`.
   const { layout } = useFieldLayout(entity);
   const refusal = useCrmStore((s) => s.refusal);
+  const attachContact = useCrmStore((s) => s.attachContact);
 
   // A contact row names its company by id only. The name is one read of the
   // company record, through the one read cache.
+  // CRM-U16: a deal row carries `organization_name` only in a list, so the
+  // deal page reads its company the same way.
   const companyId =
-    entity === "contacts" && typeof record?.company_id === "string" ? record.company_id : null;
+    (entity === "contacts" || entity === "deals") && typeof record?.company_id === "string"
+      ? record.company_id
+      : null;
   const company = useCachedResource<Row>(
     companyId ? `crm:organizations:${companyId}` : null,
     () => api.getRecord<Row>("organizations", companyId!),
@@ -193,6 +198,12 @@ export default function RecordSheet({
           order={order}
           onStep={onStep}
           companyName={companyName}
+          labels={labels}
+          onAttach={
+            entity === "deals" && typeof record.id === "string"
+              ? (contactId) => void attachContact(record.id as string, contactId)
+              : undefined
+          }
           related={related}
           {...actions}
         />
@@ -220,6 +231,8 @@ export function RecordPage({
   order,
   onStep,
   companyName,
+  labels = null,
+  onAttach,
   now,
   onPatch,
   onMoveStatus,
@@ -249,6 +262,10 @@ export function RecordPage({
   onTab: (tab: RecordTab) => void;
   /** The name of a contact's company, which the contact row does not carry. */
   companyName: string | null;
+  /** The CRM's names of the entities, for the picker labels (CRM-U16). */
+  labels?: SourceLabels | null;
+  /** "+ Add contact" on a deal (CRM-U16). Absent on any other record. */
+  onAttach?: (contactId: string) => void;
   /** Today, for the due dates and the next activities. A test passes a fixed one. */
   now?: Date;
 } & RecordActions &
@@ -283,6 +300,8 @@ export function RecordPage({
     layout,
     refusal,
     companyName,
+    labels,
+    onAttach,
   };
 
   return (

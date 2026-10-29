@@ -37,7 +37,9 @@ WHEN = {
     "crm-records": (
         "Load to change deals, leads and contacts, or to read a record's timeline. "
         "Plain reads of the pipeline need no load."),
-    "projects": "Load for tasks, projects and my work: find, create, update, assign and complete.",
+    "projects": (
+        "Load for tasks, projects and my work: find, create, update, assign and complete. "
+        "Also for a question on a named project or task."),
     "projects-plan": "Load for team load, capacity, reports, a timeline or a plan from a goal.",
     "projects-structure": "Load to change a project's statuses, fields, tags, access or saved views.",
     "projects-bulk": "Load for two or more tasks at once, and to archive, move or delete.",

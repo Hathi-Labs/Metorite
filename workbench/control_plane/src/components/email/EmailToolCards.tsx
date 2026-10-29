@@ -875,9 +875,24 @@ function RuleResultCard({
   };
 
   const title = `${created ? "Created rule" : "Updated rule"}: ${name}`;
+  // The rule is written. Disable and Delete are optional, so the card is a
+  // receipt and opens folded (task 1003). The folded row says what it does.
+  const ruleSummary = [conds.length ? `${conds.length} condition${conds.length > 1 ? "s" : ""}` : "",
+    actions.length ? `${actions.length} action${actions.length > 1 ? "s" : ""}` : ""]
+    .filter(Boolean).join(", ");
+  // The folded row keeps the one warning of the open card (task 1003).
+  const ruleSummaryFull = [ruleSummary || title, a.automated === false ? "proposes for approval" : ""]
+    .filter(Boolean).join(" · ");
   const tone = receiptTone(false);
   return (
-    <RollupCard id={`tool:${e.id}`} title={title} icon="Sparkles" header="own">
+    <RollupCard
+      id={`tool:${e.id}`}
+      title={title}
+      icon="Sparkles"
+      summary={ruleSummaryFull}
+      receipt={e.status !== "error" && state !== "failed"}
+      header="own"
+    >
     <div data-email-card="rule" className={tone.frame}>
       {/* The result of an act sits BESIDE the header, with the buttons it
           replaces. The header's aside shows only while the card is open, so
@@ -1002,7 +1017,14 @@ function SettingsUpdatedCard({ event: e }: { event: ToolEvent }) {
   const tone = receiptTone(false);
 
   return (
-    <RollupCard id={`tool:${e.id}`} title="Settings updated" icon="Settings2" header="own">
+    <RollupCard
+      id={`tool:${e.id}`}
+      title="Settings updated"
+      icon="Settings2"
+      header="own"
+      summary={changed.map(([label, value]) => `${label}: ${value}`).join(", ") || undefined}
+      receipt
+    >
     <div data-email-card="settings" className={tone.frame}>
       <CardHead tone={tone.icon}>
         <Button variant="secondary" size="none" className={DENSE} onClick={() => router.push("/email")}>
@@ -1724,9 +1746,11 @@ function LabelUpdateCard({ event: e }: { event: ToolEvent }) {
   // The count reads after the title, on the title row ("Labels updated · 2
   // emails"), as before.
   const title = failed ? "Couldn't update labels" : "Labels updated";
+  const labelSummary = [add.length ? `Added ${add.join(", ")}` : "", remove.length ? `Removed ${remove.join(", ")}` : ""]
+    .filter(Boolean).join(". ");
 
   return (
-    <RollupCard id={`tool:${e.id}`} title={title} icon="Tag" header="own">
+    <RollupCard id={`tool:${e.id}`} title={title} icon="Tag" summary={labelSummary} receipt={!failed} header="own">
     <div data-email-card="label" className={tone.frame}>
       <CardHead
         tone={failed ? tone.icon : "text-primary"}
@@ -1790,7 +1814,7 @@ function ManageInboxCard({ event: e }: { event: ToolEvent }) {
 
   // One row, and no body: nothing folds, so it draws no toggle.
   return (
-    <RollupCard id={`tool:${e.id}`} title={title} icon={iconName} header="own">
+    <RollupCard id={`tool:${e.id}`} title={title} icon={iconName} receipt={!failed} header="own">
     <div data-email-card="manage" className={tone.frame}>
       <CardHead tone={tone.icon} />
     </div>
@@ -2213,6 +2237,21 @@ function InfoResultCard({ event: e }: { event: ToolEvent }) {
 
 // ── Generic action card ───────────────────────────────────────────────────────
 
+/**
+ * `run_rules` is a read when the member asked for a preview, an estimate or a
+ * status. It changes mail only for `past` and `retry_failed`, and for `new`
+ * or `message` with `dry_run` false (`agents.py` `run_rules`). A read is not a
+ * receipt, so its card opens (task 1003).
+ */
+export function readsOnly(e: ToolEvent): boolean {
+  if (e.name !== "run_rules" && e.name !== "run_rules_now") return false;
+  const a = (e.args ?? {}) as Record<string, unknown>;
+  const scope = String(a.scope ?? "new").trim().toLowerCase();
+  if (scope === "estimate" || scope === "status") return true;
+  if (scope === "past" || scope === "retry_failed" || scope === "retry") return false;
+  return String(a.dry_run ?? "true").trim().toLowerCase() !== "false";
+}
+
 /** Confirmation card for any mutating tool — icon + label + result summary. */
 function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const meta = ACTION_META[e.name] ?? { icon: "Wrench", label: e.name.replace(/_/g, " ") };
@@ -2228,6 +2267,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
       title={meta.label}
       icon={iconName}
       summary={withoutIds(detail.split(/\r?\n/)[0] ?? "")}
+      receipt={!failed && !readsOnly(e)}
       header="own"
     >
     <div data-email-card="action" className={tone.frame}>
