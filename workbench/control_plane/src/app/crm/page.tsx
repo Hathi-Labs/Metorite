@@ -119,6 +119,7 @@ import {
   resolvePipeline,
   showPicker,
 } from "./lib/pipelines";
+import { plusLabel } from "./lib/reports";
 import { useCompactMoney } from "./lib/useCompactMoney";
 import { setRefusalSink, useCrmStore } from "./lib/store";
 import type { EntitySlug, Lead, Status } from "./lib/types";
@@ -681,7 +682,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         // "₹4.2Cr in the pipeline" is what is on the table and "₹1.6Cr
         // weighted" is what the forecast believes, and a line that showed
         // only one of them would be answering a different question.
-        `${totals.count} open deals · ${compact(totals.amount)} in the pipeline · ${compact(totals.weighted)} weighted`
+        `${totals.count} open deals · ${compact(totals.amount, totals.currency)} in the pipeline · ${compact(totals.weighted, totals.currency)} weighted${
+          totals.others.length > 0 ? ` · ${plusLabel(totals.others, (o) => o.amount)}` : ""
+        }`
       : boardOn
         ? `${leadCount} leads by status`
         : view.tab === "settings"
