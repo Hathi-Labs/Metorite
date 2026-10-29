@@ -1,22 +1,30 @@
 # Memory Architecture — one model for seven stores
 
 > **⚠️ RE-SCOPED 2026-10-29 by D132 (and D128 item 7). Mem0 is NOT a tier. Graphiti is NOT a tier.**
+>
 > Mira remembers through three stores:
 > 1. **The member profile** holds what Mira knows about one member. See
 >    [`personalization.md`](personalization.md) and D110 (`user_settings.assistant_profile`).
 > 2. **Org knowledge** is Knowledge plus the pointer graph. See
 >    [`knowledge_base.md`](knowledge_base.md), [`knowledge_curation.md`](knowledge_curation.md)
 >    (D-KC-8) and D128. The `NOTES.md` of a shared agent moves here (H-237).
-> 3. **Chat history** is searched with full text (MEM-2, D132.3).
+> 3. **Chat history** has full text search (MEM-2, D132.3).
 >
-> Mem0 and Graphiti retire after KG-6 (KG-11). Until then `MEM0_ENABLED` and `GRAPHITI_ENABLED`
-> stay off (D128.7). **These sections no longer hold:** §1 rows 1 and 2, §2 (the vector tier),
-> §3 rows "Durable-recalled" and "Relational", §4 (the Mem0 bullet and the vector tier in the
-> fact life), §5.2, §6.4 and §6.5 where they name Mem0 or Graphiti, and the Mem0 and
-> Graphiti phasing in §9. **These parts still hold:** the blob-store file tier (§6.1, §6.2),
-> provenance (§6.3), the correction experience (§6.7), compartments and clearance (§7), and
-> run capture (§6.6). Each retired section carries its own RETIRED marker.
-> WS-9 board row: see `work_plan.md` §2.
+> Mem0 and Graphiti retire after KG-6 (KG-11). Until then, `MEM0_ENABLED` and
+> `GRAPHITI_ENABLED` stay off (D128.7).
+>
+> **These parts no longer hold:**
+> - §1 rows 1 and 2, and §2 (the vector tier).
+> - §3 rows "Durable-recalled" and "Relational".
+> - §4 (the Mem0 bullet and the vector tier in the fact life).
+> - §5.2 and §5.3 where they name Mem0 or Graphiti.
+> - §6.2, §6.4 and §6.5 where they name Mem0 or Graphiti.
+> - §8 (the Mem0 comparison) and the Mem0 and Graphiti phasing in §9.
+> - The companion link to `llm_caching_memory.md` for Mem0 scopes.
+>
+> **These parts still hold:** the blob-store file tier (§6.1 and §6.2), provenance (§6.3),
+> the correction experience (§6.7), compartments and clearance (§7), and run capture (§6.6).
+> Each affected section carries its own RETIRED marker. For the WS-9 board row, see `work_plan.md` §2.
 
 **Status:** Draft / RFC · **Date:** 2026-07-26 · **Owner:** vjvarada
 
@@ -32,7 +40,7 @@ is declarative or code, which is what keys every compartment below**) ·
 contract — the three folders) ·
 [`agent_persistence_implementation.md`](agent_persistence_implementation.md) (the blob store,
 function by function) ·
-[`llm_caching_memory.md`](llm_caching_memory.md) (Mem0 scopes + prompt caching) ·
+[`llm_caching_memory.md`](llm_caching_memory.md) (prompt caching. Its Mem0 scopes are RETIRED in part by D132) ·
 [`../../docs/multiplayer/memory-clearance.md`](../../docs/multiplayer/memory-clearance.md)
 (compartments and per-run clearance) ·
 [`../../docs/multiplayer/agent-kinds.md`](../../docs/multiplayer/agent-kinds.md) (personal
@@ -180,6 +188,8 @@ with no group filter at all. Retrieval spans every user's episodes.
 
 ### 5.3 The file tier is shared across all users of an agent — and it's whole-file
 
+> **RETIRED in part (2026-10-29, D132):** the Mem0 `agent:` comparison below is RETIRED (D132.4). The file-tier fault itself holds, and §6.1 fixes it.
+
 `agent_blob`'s primary key is `(agent_name, path)`, and the module docstring is explicit:
 *"agent_name is the only tenant key."* So there is **one `agent-data/NOTES.md` per agent, not
 per user.** Two people using the email assistant append to the same file.
@@ -259,9 +269,11 @@ view, because the room already gates who can see it.
 
 ### 6.2 Make the file tier a deterministic, bounded injection
 
+> **RETIRED in part (2026-10-29, D132):** the contrast with the Mem0 block is RETIRED (D132.4). The member profile block (D110) now sits beside the file header. The injection design holds.
+
 Stop asking the model to remember to read its own memory.
 
-At run start, alongside the Mem0 block, assemble a **memory header** from the instance's
+At run start, alongside the member profile block (D110), assemble a **memory header** from the instance's
 `agent-data/` — `NOTES.md` plus any file the agent marks always-on — capped at a hard token
 budget (default ~2 000). Inject it as a labelled block. Keep `recall_notes` for *targeted*
 re-reads with a query filter and for everything outside the always-on set.
@@ -378,6 +390,8 @@ everyone using that instance forever after.
 
 ## 8. What this means for the startup-guru pattern
 
+> **RETIRED in part (2026-10-29, D132):** the Mem0 comparison is RETIRED (D132.4). Chat history uses full text search (D132.3), and org knowledge uses Knowledge (D128).
+
 The framework doc's recommendation — *copy `agent-startup-guru`* — is right about the shape.
 A curated memory bank with an explicit management protocol is a better mental model than
 "facts go into a vector store somewhere," and it's what makes an agent feel like it's actually
@@ -483,6 +497,8 @@ into WS-KG at KG-11.
 Question 5 is a correctness issue, not a design preference — it was resolved during 3a′, as required.
 
 ## Board record (2026-08-09) — moved from work_plan.md §2
+
+> **RETIRED in part (2026-10-29, D132):** this record is history. Its Mem0 facts are RETIRED (D132.4) and do not guide new work.
 
 > Moved here in the 2026-08-09 consolidation (work_plan.md D18): board rows now
 > carry state + gates only. The narrative below is preserved verbatim from the
