@@ -48,6 +48,7 @@ import { cardLabel } from "../lib/cardLabel";
 import { isLocked, type CrmMode } from "../lib/connect";
 import { isRetired } from "../lib/emptyStages";
 import { money, shortEmail, stageAgeLabel } from "../lib/format";
+import { plusLabel } from "../lib/reports";
 import { useCompactMoney } from "../lib/useCompactMoney";
 import { nextActivityChip } from "../lib/nextActivity";
 import type { Deal, Lead, Status } from "../lib/types";
@@ -269,10 +270,12 @@ export function showMoreLabel(remaining: number): string {
  */
 function LaneTotals({ lane, isDeals }: { lane: BoardLane | LeadLane; isDeals: boolean }) {
   const compact = useCompactMoney();
+  // The lane's other currencies (task 887). The app adds no two currencies.
+  const plus = isDeals ? plusLabel(lane.others, (o) => o.amount) : "";
   const lines = isDeals
     ? {
-        first: `${compact(lane.amount)} total`,
-        second: dealForecastLine(lane.status, compact(lane.weighted)),
+        first: `${compact(lane.amount, lane.currency)} total`,
+        second: dealForecastLine(lane.status, compact(lane.weighted, lane.currency)),
       }
     : (() => {
         const lead = leadForecastLines(lane);
@@ -282,6 +285,11 @@ function LaneTotals({ lane, isDeals }: { lane: BoardLane | LeadLane; isDeals: bo
     <span className="flex flex-col gap-0.5 tabular-nums" data-testid="lane-stat-block">
       <span className="text-xs font-medium text-foreground">{lines.first}</span>
       <span className="text-muted-foreground">{lines.second}</span>
+      {isDeals && plus && (
+        <span className="text-muted-foreground" data-testid="lane-other-currencies">
+          {plus}
+        </span>
+      )}
       {lane.rows.length < lane.count && (
         <span className="text-muted-foreground">showing {lane.rows.length}</span>
       )}

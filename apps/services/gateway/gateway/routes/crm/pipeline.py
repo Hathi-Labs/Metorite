@@ -73,7 +73,14 @@ from gateway.routes.crm.core import (
     status_wire,
     update_row,
 )
+from gateway.routes.crm.currency import (
+    CURRENCY_SQL,
+    DEFAULT_CURRENCY,
+    normalise_currency,
+    ordered_currencies,
+)
 from gateway.routes.crm.field_studio import custom_for_create
+from gateway.routes.crm.reports import MoneyTotals
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -366,7 +373,12 @@ _LANE_SQL = "status_id = CAST(:status_id AS uuid)"
 class PipelineLane(BaseModel):
     status: StatusModel
     rows: list[dict]
+    #: Deals of every currency. A count is not an amount.
     count: int
+    #: ``amount`` and ``weighted`` are in :attr:`currency` ONLY (the primary
+    #: one: INR first, then code order). The other currencies of the lane sit
+    #: in :attr:`others`, empty for a lane of one currency (task 887).
+    currency: str = DEFAULT_CURRENCY
     amount: float
     #: Sum of amount * probability/100 over this lane — 0 on a lane whose type is
     #: not in ``WEIGHTED_TYPES``, because won revenue is closed and a lost or
@@ -376,6 +388,7 @@ class PipelineLane(BaseModel):
     #: ``?pipeline_id=``, and for a stage the pipeline does not list that still
     #: holds its deals. The board orders its columns with it (``lib/board.ts``).
     pipeline_position: int | None = None
+    others: list[MoneyTotals] = []
 
 
 class PipelineResponse(BaseModel):
@@ -590,13 +603,25 @@ async def get_pipeline(
                 # rather than interpolated like every other caller value here.
                 "stage_probability": int(getattr(lane, "probability", 0) or 0),
             }
-            agg = (await db.execute(
+            # ONE grouped read of the WHOLE lane: a row for each currency
+            # (HANDOFF H-333, task 887). The app holds no exchange rate, so no
+            # figure adds two currencies. The count adds the counts of every
+            # currency. Two statements for each lane at any number of codes.
+            found = (await db.execute(
                 text(
-                    "SELECT count(*) AS count, COALESCE(SUM(amount), 0) AS amount, "
-                    f"{WEIGHTED_SQL} FROM crm_deals WHERE {where}"
+                    f"SELECT {CURRENCY_SQL} AS currency, count(*) AS count, "
+                    f"COALESCE(SUM(amount), 0) AS amount, {WEIGHTED_SQL} "
+                    f"FROM crm_deals WHERE {where} GROUP BY {CURRENCY_SQL}"
                 ),
                 scope,
-            )).fetchone()
+            )).fetchall()
+            by_code = {normalise_currency(getattr(r, "currency", None)): r for r in found}
+            sums: list[tuple[str, Any]] = [
+                (code, by_code[code])
+                for code in ordered_currencies(by_code) or [DEFAULT_CURRENCY]
+                if code in by_code
+            ] or [(DEFAULT_CURRENCY, None)]
+            agg = (sum(int(getattr(row, "count", 0) or 0) for _, row in sums), sums)
             inner = (
                 f"SELECT {_lane_select(card_sort)} FROM crm_deals WHERE {where} "
                 f"ORDER BY {inner_order} LIMIT :limit OFFSET :offset"
@@ -618,20 +643,31 @@ async def get_pipeline(
             db, DEALS, [row for _, _, wired in read for row in wired],
         )
         out: list[PipelineLane] = []
-        for lane, agg, wired in read:
+        for lane, (total, sums), wired in read:
+            # The open/ongoing restriction is applied per LANE rather than
+            # inside the SUM: a lane IS one status, so the filter is a
+            # property of the lane and expressing it in the predicate would
+            # be a WHERE clause that is either always true or always false.
+            weighted_lane = getattr(lane, "type", "open") in WEIGHTED_TYPES
+            money = [
+                MoneyTotals(
+                    currency=code,
+                    amount=float(getattr(row, "amount", 0) or 0),
+                    weighted=(
+                        float(getattr(row, "weighted", 0) or 0)
+                        if weighted_lane else 0.0
+                    ),
+                )
+                for code, row in sums
+            ]
             out.append(PipelineLane(
                 status=status_wire(lane),
                 rows=wired,
-                count=int(getattr(agg, "count", 0) or 0),
-                amount=float(getattr(agg, "amount", 0) or 0),
-                # The open/ongoing restriction is applied per LANE rather than
-                # inside the SUM: a lane IS one status, so the filter is a
-                # property of the lane and expressing it in the predicate would
-                # be a WHERE clause that is either always true or always false.
-                weighted=(
-                    float(getattr(agg, "weighted", 0) or 0)
-                    if getattr(lane, "type", "open") in WEIGHTED_TYPES else 0.0
-                ),
+                count=total,
+                currency=money[0].currency,
+                amount=money[0].amount,
+                weighted=money[0].weighted,
+                others=money[1:],
                 pipeline_position=getattr(lane, "pipeline_position", None),
             ))
         return PipelineResponse(lanes=out)

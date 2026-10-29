@@ -29,6 +29,10 @@ on:
         description: "SSH in and dump firewall/network forensics"
         type: boolean
         default: false
+      simulate_backup_failure:
+        description: "Feed a fake failed backup state to the backup-timer job (opens, then closes, a [test] issue)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -377,6 +381,179 @@ jobs:
             *)  echo "::warning title=Chat smoke timer not read::ssh ended with exit $rc before the state was read."
                 exit 0 ;;
           esac
+
+  # H-259 / WS-25d: a failed nightly backup must reach a person. The box has
+  # no alert unit, so this job reads acb-backup.service and acb-backup.timer
+  # over ssh. The rule is scripts/backup_alert_state.sh. The alert is its own
+  # issue, "Nightly backup failed". It is not the outage issue.
+  backup-timer:
+    name: "The nightly backup must not be failed"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SIMULATE: ${{ inputs.simulate_backup_failure && '1' || '0' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            scripts/backup_alert_state.sh
+            scripts/ci_deploy_reach.sh
+            scripts/ci_ssh_host_key.sh
+            deploy/hostinger/known_hosts
+          sparse-checkout-cone-mode: false
+      # Holds the time of the last good read. An unreadable box for more than
+      # 26 h in a row is an error. The key is new each run, so the post step
+      # always saves. restore-keys picks the latest.
+      - name: Restore the time of the last good read
+        uses: actions/cache@v4
+        with:
+          path: .backup_last_read
+          key: backup-read-${{ github.run_id }}
+          restore-keys: |
+            backup-read-
+      - name: Read acb-backup.service on the box
+        shell: bash
+        env:
+          SSH_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
+          SSH_HOST: ${{ secrets.HOSTINGER_HOST }}
+          SSH_USER: ${{ secrets.HOSTINGER_USER }}
+          SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
+          CONNECT_BUDGET: "180"
+        run: |
+          set +e
+          set -uo pipefail
+          : > /tmp/backup_state.txt
+          if [ "$SIMULATE" = 1 ]; then
+            # A fake failed state. The real unit is never touched.
+            printf '%s\n' 'timer=active' 'Result=exit-code' 'ExecMainStatus=1' \
+              'ExecMainExitTimestamp=n/a' '---JOURNAL---' \
+              'simulated: acb-backup.service failed (workflow_dispatch test)' > /tmp/backup_state.txt
+            exit 0
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # shellcheck source=scripts/ci_deploy_reach.sh
+          . scripts/ci_deploy_reach.sh
+          ci_pin_host_key || exit 1
+
+          wrc=0
+          wait_for_ssh || wrc=$?
+          case "$wrc" in
+            0) ;;
+            1) echo "::warning title=Backup timer not read::ssh could not reach the box. See the probe job."
+               exit 0 ;;
+            *) echo "::error title=Backup timer not read::ssh failed for a reason that is not the network (wait_for_ssh $wrc)."
+               exit 1 ;;
+          esac
+
+          cat > /tmp/backup_remote.sh <<'REMOTE'
+          echo "timer=$(systemctl is-active acb-backup.timer 2>/dev/null)"
+          systemctl show acb-backup.service -p Result -p ExecMainStatus -p ExecMainExitTimestamp --no-pager 2>/dev/null
+          # The newest backup dir is the proof of a success. It outlives a reboot.
+          d="$(ls -1d /opt/acb/backups/20??-??-??T??????Z/ 2>/dev/null | sort | tail -1)"
+          if [ -n "$d" ]; then
+            m="$(sed -n 's/^taken_utc: */BackupTaken=/p' "${d}MANIFEST.txt" 2>/dev/null)"
+            [ -n "$m" ] || m="$(sudo -n sed -n 's/^taken_utc: */BackupTaken=/p' "${d}MANIFEST.txt" 2>/dev/null)"
+            printf '%s\n' "$m"
+          fi
+          # Fallback proof: the journal line "Backup complete" in the last 30 h.
+          jl="$(sudo -n journalctl -u acb-backup.service --since -30h --no-pager -o short-iso 2>/dev/null | grep 'Backup complete' | tail -1 | cut -d' ' -f1)"
+          [ -z "$jl" ] || echo "JournalComplete=$jl"
+          echo '---JOURNAL---'
+          sudo -n journalctl -u acb-backup.service -n 20 --no-pager -o short-iso 2>/dev/null
+          exit 0
+          REMOTE
+          rc=0
+          timeout -k 10 120 ssh "${CI_SSH_OPTS[@]}" "$SSH_USER@$SSH_HOST" 'bash -s' \
+            < /tmp/backup_remote.sh > /tmp/backup_state.raw || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning title=Backup timer not read::ssh ended with exit $rc before the state was read."
+            exit 0
+          fi
+          # No DSN reaches the issue.
+          sed -E 's#postgres(ql)?://[^[:space:]]*#[redacted-dsn]#g' /tmp/backup_state.raw > /tmp/backup_state.txt
+          date +%s > .backup_last_read
+
+      - name: Apply the rule
+        id: rule
+        shell: bash
+        run: |
+          set +e
+          LAST_READ_EPOCH="$(cat .backup_last_read 2>/dev/null)" \
+            bash scripts/backup_alert_state.sh < /tmp/backup_state.txt | tee /tmp/backup_verdict.txt
+          rc="${PIPESTATUS[0]}"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          case "$rc" in
+            0)  grep -q '^UNREADABLE' /tmp/backup_verdict.txt && \
+                  echo "::warning title=Backup state unreadable::$(cat /tmp/backup_verdict.txt)" ;;
+            10) ;;
+            11) echo "::error title=Backup state unreadable::$(cat /tmp/backup_verdict.txt)" ;;
+          esac
+          exit 0
+
+      - name: Reconcile the backup issue
+        if: ${{ steps.rule.outputs.rc == '0' || steps.rule.outputs.rc == '10' }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          repo="${{ github.repository }}"
+          if [ "$SIMULATE" = 1 ]; then marker='[test] '; else marker=''; fi
+          title="${marker}Nightly backup failed"
+          gh label create "backup-failed" --repo "$repo" \
+            --description "Automated nightly backup alert" --color "B60205" 2>/dev/null || true
+          # A [test] issue and a real issue never mix.
+          if [ -n "$marker" ]; then filter='select(.title | startswith("[test]"))'
+          else filter='select(.title | startswith("[test]") | not)'; fi
+          EXISTING="$(gh issue list --repo "$repo" --label backup-failed --state open \
+            --json number,title --jq "[.[] | $filter][0].number // empty")"
+
+          if [ "${{ steps.rule.outputs.rc }}" = 0 ] && [ "$SIMULATE" != 1 ]; then
+            # An unreadable box is not a clean box. Leave the issue as it is.
+            grep -q '^OK' /tmp/backup_verdict.txt || exit 0
+            if [ -n "$EXISTING" ]; then
+              gh issue comment "$EXISTING" --repo "$repo" \
+                --body "The backup state is clean as of $(date -u '+%Y-%m-%dT%H:%M:%SZ'). Closing."
+              gh issue close "$EXISTING" --repo "$repo"
+            else
+              echo "Clean, no open backup issue. Nothing to do."
+            fi
+            exit 0
+          fi
+
+          BODY_FILE="$(mktemp)"
+          {
+            echo "The nightly backup (acb-backup.service) needs a person."
+            echo
+            sed 's/^/- /' /tmp/backup_verdict.txt
+            echo
+            echo '```'
+            sed -n '/^---JOURNAL---/,$p' /tmp/backup_state.txt | sed '1d'
+            echo '```'
+            echo
+            echo "Checked at $(date -u '+%Y-%m-%dT%H:%M:%SZ'). **Run:** ${RUN_URL}"
+            echo
+            echo "Check on the box: \`systemctl status acb-backup.service acb-backup.timer\`."
+          } > "$BODY_FILE"
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$repo" --body-file "$BODY_FILE"
+            num="$EXISTING"
+          else
+            url="$(gh issue create --repo "$repo" --title "$title" \
+              --label backup-failed --body-file "$BODY_FILE")"
+            num="${url##*/}"
+          fi
+          rm -f "$BODY_FILE"
+          # A test issue closes at once. It only proves the path.
+          if [ "$SIMULATE" = 1 ]; then gh issue close "$num" --repo "$repo"; fi
+
+      - name: Fail the run if the backup needs a person
+        if: ${{ steps.rule.outputs.rc == '10' || steps.rule.outputs.rc == '11' }}
+        run: |
+          echo "::error title=Nightly backup::see the 'Nightly backup failed' issue and the verdict above."
+          exit 1
 
   # Only runs on manual dispatch with diagnose=true. SSH is the thing that
   # breaks during these outages, so this is best-effort and never fails the run.

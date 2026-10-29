@@ -54,6 +54,7 @@ import { openAssistant, useAssistantFacts } from "@/lib/shell/assistant";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { tasksAssistantFacts } from "./lib/assistantFacts";
 import { OPEN_CHAT_JOB } from "@/lib/runActivity";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 import { askRailSession } from "@/lib/railSessions";
 
 // My Tasks — 4-panel shell, mirroring the email app's layout
@@ -177,6 +178,10 @@ function TasksPageBody() {
   useEffect(() => {
     void hydrate();
   }, [hydrate]);
+
+  // Task #124: the assistant wrote to the task store. Re-read the list now.
+  const reloadItems = useTaskStore((s) => s.reloadItems);
+  useLiveRefresh(() => void reloadItems(), "tasks");
 
   // `today` is a My work view of Projects (WS-64 OP-2). /tasks has no Today
   // list, so a view left by that host maps to Next actions on mount.
