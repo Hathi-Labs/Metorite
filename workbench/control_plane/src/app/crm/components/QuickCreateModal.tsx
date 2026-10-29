@@ -35,7 +35,7 @@ import { firstField } from "../lib/focus";
 import { useId, useRef, useState, type RefObject } from "react";
 import type { FieldGroup } from "../lib/fields";
 import { useCrmModeValue } from "../lib/modeContext";
-import { linkFields, pickerNoun, type Pick } from "../lib/recordPicker";
+import { linkFields, pickerNoun, pickerPlural, type Pick } from "../lib/recordPicker";
 import {
   createGroups,
   createSubmission,
@@ -262,6 +262,7 @@ export function QuickCreateForm({
             <RecordPicker
               target="organizations"
               label={pickerNoun("organizations", labels)}
+              plural={pickerPlural("organizations", labels)}
               value={company}
               onChange={setCompany}
             />
@@ -272,6 +273,7 @@ export function QuickCreateForm({
             <RecordPicker
               target="contacts"
               label={pickerNoun("contacts", labels)}
+              plural={pickerPlural("contacts", labels)}
               value={contact}
               onChange={setContact}
               companyId={company?.id ?? null}

@@ -14,7 +14,7 @@
 
 import * as api from "./api";
 import { lookupValue } from "./fieldLayout";
-import { sourceSingular, ENTITY_NOUN, type SourceLabels } from "./views";
+import { sourceSingular, viewLabel, ENTITY_NOUN, type SourceLabels } from "./views";
 import type { EntitySlug } from "./types";
 
 /** What a pick holds: the id to send and the name to show. */
@@ -59,6 +59,11 @@ export async function searchHits(
 /** The singular name of an entity, as the CRM or its source calls it. */
 export function pickerNoun(entity: EntitySlug, labels: SourceLabels | null | undefined): string {
   return sourceSingular(entity, labels) ?? ENTITY_NOUN[entity];
+}
+
+/** The plural name of an entity, as the CRM or its source calls it. */
+export function pickerPlural(entity: EntitySlug, labels: SourceLabels | null | undefined): string {
+  return viewLabel(entity, labels);
 }
 
 /**

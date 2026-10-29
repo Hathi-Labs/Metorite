@@ -26,11 +26,11 @@ vi.mock("../lib/api", () => ({
 
 import * as api from "../lib/api";
 import { CrmModeContext } from "../lib/modeContext";
-import { linkFields, pickerNoun, searchHits } from "../lib/recordPicker";
+import { linkFields, pickerNoun, pickerPlural, searchHits } from "../lib/recordPicker";
 import { summaryFacts } from "../lib/fields";
 import { useCrmStore } from "../lib/store";
 import FieldsPanel, { AddContact } from "./FieldsPanel";
-import RecordPicker from "./RecordPicker";
+import RecordPicker, { pickerRows } from "./RecordPicker";
 import { QuickCreateForm } from "./QuickCreateModal";
 
 const noop = () => undefined;
@@ -329,47 +329,91 @@ describe("+ Add contact on the Related tab", () => {
 
 // ── The picker control ─────────────────────────────────────────────────────
 
-describe("the picker is keyboard-reachable and built from the shared controls", () => {
-  const html = renderToStaticMarkup(
-    createElement(RecordPicker, { target: "organizations", label: "Company", value: null, onChange: noop }),
-  );
+describe("the picker is one box: type, then pick", () => {
+  const draw = (over: Record<string, unknown> = {}) =>
+    renderToStaticMarkup(
+      createElement(RecordPicker, {
+        target: "organizations",
+        label: "Company",
+        plural: "Companies",
+        value: null,
+        onChange: noop,
+        ...over,
+      }),
+    );
+  const src = read("./RecordPicker.tsx");
 
-  it("draws a search box and a button, both in the tab order", () => {
-    expect(html).toMatch(/<input[^>]*aria-label="Search for company"/);
-    expect(html).toMatch(/<button[^>]*>/);
+  it("is one combobox input, and no second control to open", () => {
+    const html = draw();
+    expect(html).toMatch(/<input[^>]*role="combobox"[^>]*aria-label="Search for company"/);
+    expect(html).toContain('aria-expanded="false"');
     expect(html).not.toContain('tabindex="-1"');
     expect(html).not.toContain("<select");
+    expect(html).not.toContain("aria-haspopup");
+    expect(src).not.toContain("SelectButton");
   });
 
-  it("is built from Input and SelectButton, with no raw control or click-only element", () => {
-    const src = read("./RecordPicker.tsx");
+  it("is built from the shared Input and OptionList, with no raw control", () => {
     expect(src).toContain('from "@/components/ui/Input"');
-    expect(src).toContain('from "@/components/ui/SelectButton"');
-    expect(src).not.toMatch(/<(input|select|textarea)\b/);
+    expect(src).toContain('from "@/components/ui/OptionList"');
+    expect(src).not.toMatch(/<(input|select|textarea)/);
     expect(src).not.toMatch(/<div[^>]*onClick/);
   });
 
-  it("lists a company's contacts at once, and waits for the keys of a typed search", () => {
-    const src = read("./RecordPicker.tsx");
-    expect(src).toContain("q ? LOOKUP_WAIT_MS : 0");
+  it("opens the list as soon as hits arrive, with no click on a second control", () => {
+    // The list is open while the box has focus and has rows. A typed search opens it too.
+    expect(src).toContain("const listOpen = open && !disabled && hasList");
+    expect(src).toMatch(/onChange=\{\(e\) => \{\s+setEditing\(true\);\s+setOpen\(true\);/);
   });
 
-  it("shows the hint when a company narrows the contacts", () => {
-    const withCompany = renderToStaticMarkup(
-      createElement(RecordPicker, {
-        target: "contacts",
-        label: "Contact",
-        value: null,
-        onChange: noop,
-        companyId: "o1",
-        companyName: "Bosch",
-      }),
-    );
+  it("moves with Down and Up, picks with Enter, and closes with Escape", () => {
+    expect(src).toContain('e.key === "ArrowDown" || e.key === "ArrowUp"');
+    expect(src).toContain('e.key === "Enter" && listOpen && active >= 0');
+    expect(src).toContain('window.addEventListener("keydown", onKey, true)');
+    expect(src).toContain('e.key !== "Escape"');
+    expect(src).toContain("aria-activedescendant");
+    // A pointer pick keeps the focus in the box (OptionList takes mousedown and prevents default).
+    expect(read("../../../components/ui/OptionList.tsx")).toMatch(/onMouseDown=\{\(e\) => \{\s+e\.preventDefault\(\);\s+onPick\(index\);/);
+  });
+
+  it("hangs the list below the box, from the box and not the label", () => {
+    expect(src).toContain("anchor={box.current}");
+    expect(src).toContain("maxHeight={LIST_HEIGHT}");
+    expect(src).toMatch(/LIST_HEIGHT = 208/);
+  });
+
+  it("has no empty dash row with no value, and one Clear row last with a value", () => {
+    const hits = [{ id: "o1", name: "Bosch" }, { id: "o2", name: "Bosal" }];
+    expect(pickerRows("organizations", hits, null).map((r) => r.label)).toEqual(["Bosch", "Bosal"]);
+    expect(pickerRows("organizations", [], null)).toEqual([]);
+    const held = pickerRows("organizations", hits, { id: "o1", name: "Bosch" });
+    expect(held.map((r) => r.label)).toEqual(["Bosch", "Bosal", "Clear"]);
+    expect(held.filter((r) => r.label === "—")).toHaveLength(0);
+    expect(pickerRows("contacts", [], { id: "c1", name: "Ann" }).map((r) => r.label)).toEqual(["Clear"]);
+  });
+
+  it("says Search companies… and Search contacts…, with the CRM's plural", () => {
+    expect(draw()).toContain('placeholder="Search companies…"');
+    expect(draw({ target: "contacts", label: "Contact", plural: "Contacts" })).toContain('placeholder="Search contacts…"');
+    const labels = { organizations: { label: "Accounts", singular_label: "Account" } };
+    expect(pickerPlural("organizations", null)).toBe("Companies");
+    expect(pickerPlural("organizations", labels)).toBe("Accounts");
+    expect(draw({ plural: pickerPlural("organizations", labels) })).toContain('placeholder="Search accounts…"');
+  });
+
+  it("shows the held value in the box when the member is not typing", () => {
+    expect(draw({ value: { id: "o1", name: "Bosch" } })).toContain('value="Bosch"');
+  });
+
+  it("keeps the narrowing hint to one line, and drops it while the list is open", () => {
+    const withCompany = draw({ target: "contacts", label: "Contact", companyId: "o1", companyName: "Bosch" });
     expect(withCompany).toContain("Contacts at Bosch come first.");
-    expect(
-      renderToStaticMarkup(
-        createElement(RecordPicker, { target: "contacts", label: "Contact", value: null, onChange: noop }),
-      ),
-    ).not.toContain("come first");
+    expect(withCompany).toContain('class="truncate');
+    expect(src).toContain("narrow && !listOpen");
+    expect(draw({ target: "contacts", label: "Contact" })).not.toContain("come first");
+  });
+
+  it("focuses the box on mount in the two places that open it on purpose", () => {
+    expect(read("./FieldsPanel.tsx").match(/^\s+autoFocus\s*$/gm)?.length).toBeGreaterThanOrEqual(2);
   });
 });

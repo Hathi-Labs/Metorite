@@ -72,7 +72,7 @@ import LockedValue from "./LockedValue";
 import RecordPicker from "./RecordPicker";
 import RelatedLists from "./RelatedLists";
 import { OVERVIEW_FIELDS } from "../lib/modules";
-import { pickerNoun, type Pick } from "../lib/recordPicker";
+import { pickerNoun, pickerPlural, type Pick } from "../lib/recordPicker";
 import type { SourceLabels } from "../lib/views";
 import { NO_RELATED, type RelatedLists as Related } from "../lib/related";
 import type { DealContact, EntitySlug, Status } from "../lib/types";
@@ -279,6 +279,7 @@ export default function FieldsPanel({
             {!mirrored && onAttach && (
               <AddContact
                 label={pickerNoun("contacts", labels)}
+                plural={pickerPlural("contacts", labels)}
                 companyId={typeof record.company_id === "string" ? record.company_id : null}
                 companyName={companyName ?? (record.organization_name as string | null) ?? null}
                 attached={dealContacts.map((d) => d.contact.id)}
@@ -611,6 +612,7 @@ export function FoldedFields<R extends FieldRow>({
  */
 export function AddContact({
   label,
+  plural,
   companyId,
   companyName,
   attached,
@@ -618,6 +620,7 @@ export function AddContact({
   onAttach,
 }: {
   label: string;
+  plural?: string;
   companyId: string | null;
   companyName: string | null;
   attached: string[];
@@ -645,6 +648,8 @@ export function AddContact({
         <RecordPicker
           target="contacts"
           label={label}
+          plural={plural}
+          autoFocus
           value={null}
           companyId={companyId}
           companyName={companyName}
@@ -750,6 +755,8 @@ function EditableField({
               <RecordPicker
                 target={field.lookup}
                 label={label}
+                plural={pickerPlural(field.lookup, labels)}
+                autoFocus
                 value={heldId ? { id: heldId, name: companyShown ?? "" } : null}
                 disabled={saving}
                 onChange={(next) => {
