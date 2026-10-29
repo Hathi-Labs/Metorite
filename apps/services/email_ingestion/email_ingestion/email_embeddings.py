@@ -110,14 +110,14 @@ async def _embed_batch(
     that rule (``tests/unit/test_email_layering.py``).
     """
     try:
-        from gateway.kb_index import embed as door  # noqa: PLC0415
+        from gateway.kb_index import embed as door
 
         # EM-T4b: inside the automation scope (the cleanup backfill) the
         # cap and the daily budget bind the embed. Elsewhere this is a no-op.
         # The slot holds the leaf call and nothing else.
         async with llm_slot():
             vectors = await door.embed(texts)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("email_embed.batch_failed model=%s err=%s",
                        model, type(exc).__name__)
         return None
@@ -134,7 +134,7 @@ async def embed_query(query: str) -> list[float] | None:
     """Embed a single search query with the configured email embedding model, for
     the hybrid search path. Returns the vector, or None if semantic search is off
     or the embed fails (caller falls back to pure lexical)."""
-    from acb_common.settings import get_settings  # noqa: PLC0415
+    from acb_common.settings import get_settings
     settings = get_settings()
     if not settings.email_semantic_search_enabled or not query.strip():
         return None
@@ -183,7 +183,7 @@ async def select_pending_embeddings(
         return None
     # The door ignores the configured name and the Router picks the model, so
     # the row records the model of the door (KG-2). Lazy: lower layer.
-    from gateway.kb_index.embed import EMBED_MODEL as model  # noqa: PLC0415
+    from gateway.kb_index.embed import EMBED_MODEL as model
 
     # Candidates: messages with a body but no current embedding, OR whose stored
     # embedding was made from a different content_hash (body edited/backfilled).
@@ -241,7 +241,7 @@ async def compute_embeddings(
     count, and the caller then writes nothing this tick."""
     # H-152: a background job binds the member who owns the mailbox, or the
     # Router refuses the call. ``app="email"`` makes the usage rows separable.
-    from acb_common import job_member_scope  # noqa: PLC0415
+    from acb_common import job_member_scope
 
     with job_member_scope(pending.owner, app="email"):
         vectors = await _embed_batch(list(pending.texts), pending.model)
