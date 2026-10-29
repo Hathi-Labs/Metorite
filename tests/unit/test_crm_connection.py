@@ -910,6 +910,39 @@ async def test_a_transport_error_reports_not_confirmed(
     assert row is not None and row.status == "disconnected"
 
 
+async def test_a_slow_revoke_stops_at_the_limit_and_reports_not_confirmed(
+    world: tuple[FakeRegistry, FakeZoho], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifier P3-2: the disconnect holds the connect lock while Zoho answers.
+    ``REVOKE_TIMEOUT_SECONDS`` bounds the whole revoke. A slower Zoho is
+    ``failed:transport``, which reads as ``not_confirmed``, and the
+    disconnect still deletes the blob. The test shrinks the limit."""
+    import asyncio
+    import time
+
+    registry, _zoho = world
+    _connected_row(registry)
+
+    async def _slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(5)
+        return httpx.Response(200, json={"status": "success"})
+
+    monkeypatch.setattr(conn, "REVOKE_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(
+        conn, "_source",
+        lambda credential=None, transport=None: ZohoSource(
+            conn.zoho_oauth_config(), credential,
+            transport=httpx.MockTransport(_slow),
+        ),
+    )
+    started = time.monotonic()
+    row, outcome = await conn.disconnect_zoho_reporting(ORG_A)
+    assert time.monotonic() - started < 3, "the revoke did not stop at the limit"
+    assert outcome == "not_confirmed"
+    assert row is not None and row.status == "disconnected"
+    assert registry.rows[ORG_A]["credential"] is None
+
+
 async def test_disconnect_zoho_keeps_its_shape(
     world: tuple[FakeRegistry, FakeZoho],
 ) -> None:

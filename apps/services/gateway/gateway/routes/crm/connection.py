@@ -71,6 +71,7 @@ Zoho error code only.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -319,17 +320,27 @@ async def _old_credential_locked(db: Any, org: str) -> SourceCredential | None:
         return None
 
 
+#: The most seconds that one revoke may take, all steps of the call together
+#: (CRM-Z10b, verifier P3-2). The client's ``_TOKEN_TIMEOUT`` (30 s) bounds each
+#: step of httpx, not the call, so one revoke could take about 90 s. The
+#: disconnect holds the connect lock while Zoho answers.
+REVOKE_TIMEOUT_SECONDS = 35.0
+
+
 async def _best_effort_revoke(credential: SourceCredential | None, why: str) -> str | None:
     """Revoke at Zoho and go on, whatever happens. Log the outcome only.
 
     Returns the outcome: ``confirmed``, ``not_confirmed``, ``not_configured``
     or ``failed:<code>``. ``None`` when there was no token to revoke. A caller
-    that ignores it keeps the old behaviour.
+    that ignores it keeps the old behaviour. A revoke that takes longer than
+    :data:`REVOKE_TIMEOUT_SECONDS` stops, and it is ``failed:transport``.
     """
     if credential is None or not credential.refresh_token:
         return None
     try:
-        confirmed = await _source(credential).revoke()
+        confirmed = await asyncio.wait_for(
+            _source(credential).revoke(), REVOKE_TIMEOUT_SECONDS,
+        )
         outcome = "confirmed" if confirmed else "not_confirmed"
     except HTTPException:
         outcome = "not_configured"
@@ -626,7 +637,8 @@ async def disconnect_zoho_reporting(
     time do not both read ``connected``: the second waits, then reads
     ``disconnected`` and changes nothing. So Zoho gets one revoke, and the
     caller writes one audit line. The revoke runs inside the lock on
-    purpose. It is bounded by the token timeout of the Zoho client. A crash
+    purpose. :data:`REVOKE_TIMEOUT_SECONDS` (35 s) bounds the whole revoke,
+    and a slower one is ``failed:transport``, so ``not_confirmed``. A crash
     before the commit leaves the row and its blob, so the next call revokes
     again. The lock is the one of the consent, the start over and the switch.
     """
