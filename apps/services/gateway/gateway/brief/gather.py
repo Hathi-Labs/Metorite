@@ -37,7 +37,7 @@ _log = get_logger("brief.gather")
 
 #: The prefixes of ``signal_id`` that the feed's providers write.
 SOURCE_APPS: frozenset[str] = frozenset({
-    "tasks", "email", "crm", "calendar", "chat", "knowledge", "reminders"})
+    "tasks", "email", "approvals", "crm", "calendar", "chat", "knowledge", "reminders"})
 
 
 def source_app(signal_id: Any) -> str | None:
