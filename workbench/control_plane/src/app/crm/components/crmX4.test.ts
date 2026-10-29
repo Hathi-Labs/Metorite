@@ -195,7 +195,7 @@ describe("phone and email links (CRM-X4 item 6)", () => {
     });
     expect(html).toContain('href="tel:+918041234567"');
     expect(html).toContain('href="mailto:sales@bosch.in"');
-    expect(html).toContain("Synced from Zoho. Change it in Zoho.");
+    expect(html).toContain("Edit this in Zoho.");
   });
 });
 
@@ -272,7 +272,7 @@ describe("the record page in Mirror mode (CRM-X4 item 7)", () => {
 
   it("keeps the fields locked, and the stage pill shut", () => {
     const html = page({});
-    expect(html).toContain("Synced from Zoho. Change it in Zoho.");
+    expect(html).toContain("Edit this in Zoho.");
     // No field is a button that starts an edit, and the pill opens no menu.
     expect(html).not.toMatch(/<button[^>]*>Bosch order<\/button>/);
     expect(html).not.toContain('role="combobox"');

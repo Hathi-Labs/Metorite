@@ -131,7 +131,7 @@ describe("the locked fields", () => {
 
   it("locks a record that Zoho owns, with the tooltip", () => {
     const html = draw({ id: "1", name: "Acme", ext_source: "zoho" });
-    expect(html).toContain("Synced from Zoho. Change it in Zoho.");
+    expect(html).toContain("Edit this in Zoho.");
     expect(html).toContain("Acme");
     // No field is a button that starts an edit.
     expect(html).not.toMatch(/<button[^>]*>\s*Acme/);
@@ -197,14 +197,14 @@ describe("the board", () => {
         weighted: 0,
       },
     ] as unknown as BoardLane[];
-  const draw = (ext: string | null, onCreate?: () => void, mode: "native" | "mirror" | null = null) =>
+  const draw = (ext: string | null, _unused?: undefined, mode: "native" | "mirror" | null = null) =>
     renderToStaticMarkup(
-      createElement(KanbanBoard, { lanes: lanes(ext), loading: false, onMove: noop, onOpen: noop, onCreate, mode }),
+      createElement(KanbanBoard, { lanes: lanes(ext), loading: false, onMove: noop, onOpen: noop, mode }),
     );
 
-  it("drops the New deal button when no create handler is given", () => {
+  it("draws no dashed end-of-board New deal tile (CRM-U15)", () => {
     expect(draw(null)).not.toContain("New deal");
-    expect(draw(null, noop)).toContain("New deal");
+    expect(draw(null)).not.toContain("border-dashed");
   });
   it("does not let a mirrored deal be dragged", () => {
     expect(draw("zoho")).toContain('draggable="false"');
@@ -236,16 +236,16 @@ describe("the timeline", () => {
     );
 
   it("badges only the Metorite-only activity, only under a mirrored record", () => {
-    expect(draw(true).match(/Only in Metorite/g)).toHaveLength(1);
-    expect(draw(false)).not.toContain("Only in Metorite");
+    expect(draw(true).match(/Not in Zoho/g)).toHaveLength(1);
+    expect(draw(false)).not.toContain("Not in Zoho");
   });
 });
 
 describe("the page", () => {
   const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
-  it("hides the New verb and the board's create in Mirror mode", () => {
-    expect(page).toMatch(/mayCreate && view\.tab !== "settings"/);
-    expect(page).toMatch(/onCreate=\{mayCreate \?/);
+  it("greys out the New verb in Mirror mode and draws no board create (CRM-U15)", () => {
+    expect(page).toMatch(/disabled=\{!mayCreate\}/);
+    expect(page).not.toMatch(/onCreate=\{mayCreate \?/);
   });
   it("loads nothing for the pipeline until the gate says ready", () => {
     expect(page).toMatch(/if \(phase !== "ready"\)/);
