@@ -57,6 +57,12 @@ from tests.unit.test_crm_access_r8 import (
     _member,
 )
 from tests.unit.test_crm_cutover_preview_r8 import _hashes
+from tests.unit.test_crm_module_records_r8 import (  # noqa: F401
+    _connect_all,
+    mz,
+)
+from tests.unit.test_crm_module_records_r8 import _run as _engine_run
+from tests.unit.test_crm_module_records_r8 import _seed as _seed_modules
 from tests.unit.test_crm_reset_r8 import (  # noqa: F401
     OrgZoho,
     _connect,
@@ -64,6 +70,7 @@ from tests.unit.test_crm_reset_r8 import (  # noqa: F401
     _seed,
     x0,
 )
+from tests.unit.test_crm_sync_engine_r8 import ns  # noqa: F401
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
     app_engine,
@@ -1178,3 +1185,147 @@ async def test_a_module_that_the_final_sync_completed_does_not_block(zb, app_eng
     assert r.status_code == 200, r.text
     (line,) = _actions(zb, "crm.cutover")
     assert line.payload["leave_out"] == []
+
+
+# ── A final run that did not read a key (review P1, verifier P3-1) ──────────
+#
+# These run the REAL engine on the fake Zoho of the module suite
+# (``test_crm_module_records_r8.py``), so the run rows are the rows that a
+# sync writes, and not rows written by hand.
+
+_MODULES = ("module:Install_Base", "module:Products")
+
+
+@pytest.fixture
+def mzc(mz, monkeypatch):  # noqa: F811 — a fixture
+    """``mz`` with the cutover list on. Phase 3 is a stub here: these tests
+    make no call to the accounts host of the fake Zoho."""
+    from acb_common import get_settings
+    from gateway.routes.crm import cutover
+
+    monkeypatch.setattr(get_settings(), "crm_cutover_orgs", "*", raising=False)
+
+    async def _no_close(org: str) -> Any:
+        return None, None
+
+    monkeypatch.setattr(cutover, "disconnect_zoho_reporting", _no_close)
+    handles: list[Any] = []
+    monkeypatch.setattr(cutover, "_start_final_run", handles.append)
+    mz[0].final_runs = handles
+    return mz
+
+
+async def _imported(p: Any, a: Any) -> None:
+    """Org A: every core entity and both generic modules imported."""
+    _seed_modules(a)
+    await _connect_all(p, p.org_a, a)
+    first = await _engine_run(p.org_a)
+    assert first.status == "ok", first
+    done = {r[0] for r in _q(p, "SELECT module FROM crm_sync_cursors WHERE "
+                                "organization_id = CAST(:o AS uuid) AND "
+                                "initial_done_at IS NOT NULL", o=p.org_a)}
+    assert {f"zoho:{m}" for m in _MODULES} <= done, done
+
+
+async def _final_state(p: Any, run_id: str) -> dict[str, str]:
+    """``module_state`` of phase 2 for the run *run_id* of org A."""
+    from acb_common.db import tenant_session
+    from gateway.crm_sync import runs
+    from gateway.routes.crm import cutover
+
+    async with tenant_session(p.org_a) as db:
+        row = (await db.execute(text(
+            f"SELECT {cutover._COLUMNS} FROM crm_sync_runs WHERE id = CAST(:i AS uuid)"),
+            {"i": run_id})).first()
+        return await cutover.module_state(db, p.org_a, runs._row(row), final=True)
+
+
+def _mode_and_zoho(p: Any) -> tuple[Any, ...]:
+    return tuple(_one(p, "SELECT s.mode, s.labels, c.status FROM crm_settings s JOIN "
+                         "integration_connections c ON c.organization_id = s.organization_id "
+                         "WHERE s.organization_id = CAST(:o AS uuid)", o=p.org_a))
+
+
+async def test_a_final_run_that_hit_the_reserve_is_not_the_final_sync(
+    mzc, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """Review P1. The day's Zoho credits reach ``MODULES_RESERVE``, so the
+    module step returns with no count and no error, and the run ends ``ok``.
+    Phase 2 finds each imported module ``not_read``: 409 ``module_incomplete``
+    names them, and nothing changes. A normal run reads them. "Leave out"
+    still overrides the reason."""
+    from gateway.crm_sync import engine
+
+    _assert_non_priv(app_engine)
+    p, a, _b = mzc
+    await _imported(p, a)
+    admin = _admin(p.org_a)
+    normal = await _engine_run(p.org_a)
+    assert normal.status == "ok" and set(_MODULES) <= set(normal.counts)
+    assert await _final_state(p, normal.run_id) == {}, "a normal run reads each key"
+
+    monkeypatch.setattr(engine, "MODULES_RESERVE", 10**9)  # the reserve, at once
+    final = await _engine_run(p.org_a)
+    monkeypatch.setattr(engine, "MODULES_RESERVE", 20)
+    assert (final.status, final.error) == ("ok", None)
+    assert not set(_MODULES) & set(final.counts), final.counts
+    before, settings = _hashes(p), _mode_and_zoho(p)
+    assert settings == ("mirror", None, "connected")
+    r = await _request(p, admin, "POST", "/crm/cutover",
+                       {"confirm": "SWITCH", "run_id": final.run_id})
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "module_incomplete"
+    assert sorted((m["key"], m["reason"]) for m in detail["modules"]) == [
+        (key, "not_read") for key in _MODULES]
+    assert _hashes(p) == before
+    assert _mode_and_zoho(p) == settings
+    # The admin ticks both in "Leave out" and presses again. Phase 1 takes
+    # the ticks, though only phase 2 can find a key not read.
+    start = await _request(p, admin, "POST", "/crm/cutover/start",
+                           {"confirm": "SWITCH", "leave_out": list(_MODULES)})
+    assert start.status_code == 202, start.text
+    (handle,) = p.final_runs
+    monkeypatch.setattr(engine, "MODULES_RESERVE", 10**9)
+    again = await engine.execute(handle)
+    monkeypatch.setattr(engine, "MODULES_RESERVE", 20)
+    assert again.status == "ok" and not set(_MODULES) & set(again.counts)
+    # Leave out overrides it: the switch goes on without those modules.
+    left = await _request(p, admin, "POST", "/crm/cutover", {
+        "confirm": "SWITCH", "run_id": again.run_id, "leave_out": list(_MODULES)})
+    assert left.status_code == 200, left.text
+    assert left.json()["status"] == "switched"
+    assert _settings(p, p.org_a).mode == "native"
+
+
+async def test_a_one_module_run_is_not_the_final_sync(mzc, app_engine) -> None:  # noqa: F811
+    """Verifier P3-1. "Sync it on its own" reads one module, and the row looks
+    like a full run: every core key counts zero, as a full run with no change
+    does. The engine names the keys of such a run in ``counts["run_only"]``.
+    A hand-made POST with its id is 409, and each key that it did not read,
+    the core keys too, is ``not_read``. Nothing changes."""
+    from gateway.crm_sync import engine
+
+    _assert_non_priv(app_engine)
+    p, a, _b = mzc
+    await _imported(p, a)
+    handle = await engine.acquire(p.org_a, only=frozenset({"module:Products"}))
+    alone = await engine.execute(handle)
+    assert alone.status == "ok"
+    assert alone.counts[engine.RUN_ONLY_KEY] == {"module:Products": 1}
+    stored = _one(p, "SELECT counts -> 'run_only' FROM crm_sync_runs WHERE "
+                     "id = CAST(:i AS uuid)", i=alone.run_id)[0]
+    assert stored == {"module:Products": 1}
+    state = await _final_state(p, alone.run_id)
+    assert "module:Products" not in state
+    assert {"deals", "contacts", "organizations", "leads", "module:Install_Base"} <= {
+        k for k, why in state.items() if why == "not_read"}, state
+    before, settings = _hashes(p), _mode_and_zoho(p)
+    r = await _request(p, _admin(p.org_a), "POST", "/crm/cutover",
+                       {"confirm": "SWITCH", "run_id": alone.run_id})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "module_incomplete"
+    assert {"deals", "module:Install_Base"} <= {
+        m["key"] for m in r.json()["detail"]["modules"]}
+    assert _hashes(p) == before
+    assert _mode_and_zoho(p) == settings == ("mirror", None, "connected")

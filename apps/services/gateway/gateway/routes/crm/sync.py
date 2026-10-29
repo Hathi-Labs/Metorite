@@ -50,9 +50,12 @@ COUNT_KEYS: tuple[str, ...] = ("organizations", "contacts", "leads", "deals", "a
 #: no ``failed`` sum reads them. ``activity_drops`` counts the activities that
 #: the sync did not store, by parent module (CRM-Q23a). ``activity_recovered``
 #: counts the kept activities that the recovery step linked, by parent module
-#: (CRM-Q24). They mirror ``engine.ACTIVITY_DROPS_KEY`` and
-#: ``engine.ACTIVITY_RECOVERED_KEY``, and a test pins each pair.
-NOT_ENTITY_KEYS: frozenset[str] = frozenset({"activity_drops", "activity_recovered"})
+#: (CRM-Q24). ``run_only`` names the keys of an "on its own" run (CRM-Z10b).
+#: They mirror ``engine.ACTIVITY_DROPS_KEY``, ``engine.ACTIVITY_RECOVERED_KEY``
+#: and ``engine.RUN_ONLY_KEY``, and a test pins each pair.
+NOT_ENTITY_KEYS: frozenset[str] = frozenset(
+    {"activity_drops", "activity_recovered", "run_only"},
+)
 
 
 class SyncStatusModel(BaseModel):

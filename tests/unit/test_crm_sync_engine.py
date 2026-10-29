@@ -195,6 +195,21 @@ def test_activity_recovered_is_no_entity_of_sync_health() -> None:
     assert sync._failed(counts) == 2
 
 
+def test_run_only_is_no_entity_of_sync_health() -> None:
+    """CRM-Z10b: the keys of an "on its own" run sit in ``counts``. The key
+    joins ``NOT_ENTITY_KEYS``, pinned to the engine, so no Sync health row
+    and no ``failed`` sum reads it. A resumed import does not carry it."""
+    from gateway.routes.crm import sync
+
+    assert engine.RUN_ONLY_KEY == "run_only"
+    assert engine.RUN_ONLY_KEY in sync.NOT_ENTITY_KEYS
+    counts = {"deals": {"seen": 1, "failed": 2},
+              engine.RUN_ONLY_KEY: {"module:Products": 1, "failed": 1}}
+    assert engine.RUN_ONLY_KEY not in sync._entity_keys(counts, {})
+    assert sync._failed(counts) == 2
+    assert engine.RUN_ONLY_KEY not in engine._merge_counts(counts)
+
+
 def test_a_resumed_import_does_not_carry_the_recovered_count() -> None:
     """Each run row keeps its own recoveries, and Sync health sums the rows of
     7 days. A count carried into the next row would be summed twice."""

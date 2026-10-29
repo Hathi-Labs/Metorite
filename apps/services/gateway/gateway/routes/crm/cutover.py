@@ -31,6 +31,15 @@ short (``sync.short_reads``), or the run counted ``failed`` or ``refused``
 for it. The run is the newest good run, or the final run in phase 2. The
 switch waits for such a key unless the admin leaves it out (D133).
 
+⚠️ **Phase 2 also needs the final run to have READ each key** (reason
+``not_read``, review P1 and verifier P3-1). The rule takes each key whose
+cursor has finished its first import. A one-module run ("Sync it on its
+own") names its keys in ``counts[engine.RUN_ONLY_KEY]``, and every other key
+is not read. A normal run writes a ``module:<ApiName>`` key for each generic
+module that it reads. So a module of the newest profile with no key was not
+read, for example when the run reached ``engine.MODULES_RESERVE``. The run
+still ends ``ok`` then. The preview and phase 1 do not apply this rule.
+
 **The switch (CRM-Z10b).** ⚠️ Dark behind ``CRM_CUTOVER_ORGS`` (404 off the
 list), admin only (403), and the admin types ``SWITCH`` (422
 ``confirm_required``). The org comes from the session (R5, R11), and each body
@@ -74,6 +83,7 @@ import asyncio
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Annotated, Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_permission
@@ -134,7 +144,10 @@ _CORE: tuple[tuple[str, str, str, str], ...] = (
 _KEYS: frozenset[str] = frozenset({k for k, *_ in _CORE} | {"tasks"})
 
 #: The reasons a key is not complete. When a key has two, the first wins.
-Reason = Literal["held", "unavailable", "importing", "failed", "short", "refused"]
+#: ``not_read`` is for phase 2 only: the final run did not read the key.
+Reason = Literal[
+    "held", "unavailable", "importing", "failed", "short", "refused", "not_read",
+]
 
 #: The tables that carry an owner and a ``custom`` column.
 _OWNED_TABLES: tuple[str, ...] = ("crm_companies", "crm_contacts", "crm_leads", "crm_deals")
@@ -446,14 +459,17 @@ async def _newest_good_run(db: Any, org: str) -> Any:
     return runs._row(row) if row is not None else None
 
 
-async def module_state(db: Any, org: str, run: Any = None) -> dict[str, Reason]:
+async def module_state(
+    db: Any, org: str, run: Any = None, *, final: bool = False,
+) -> dict[str, Reason]:
     """Each count key that is not complete, with its reason. THE one rule.
 
     The preview and both POST routes call it. ``run`` is the run whose counts
     decide ``failed``, ``refused`` and a run's ``unavailable``: the final run
     in phase 2, else the newest good run. A key with two reasons gets the
-    first of: held, unavailable, importing, failed, short, refused. It reads
-    and writes nothing else.
+    first of: held, unavailable, importing, failed, short, refused, not_read.
+    ``final`` is phase 2 only, and it adds ``not_read`` (:func:`_not_read`).
+    It reads and writes nothing else.
     """
     from gateway.crm_sync import engine, holds, runs
     from gateway.routes.crm.sync import short_reads
@@ -473,6 +489,10 @@ async def module_state(db: Any, org: str, run: Any = None) -> dict[str, Reason]:
     ]
     held = sorted(holds.held_keys(await holds.read(db, org)))
     short = [item.key for item in await short_reads(db, org)]
+    not_read = (
+        _not_read(run, cursors, await _profile_modules(db, org))
+        if final and run is not None else []
+    )
     # Each reason, in the order that decides which one a key shows.
     found: dict[str, Reason] = {}
     for reason, keys in (
@@ -484,10 +504,44 @@ async def module_state(db: Any, org: str, run: Any = None) -> dict[str, Reason]:
         ("failed", [k for k, c in counts if c.get("failed", 0) > 0]),
         ("short", short),
         ("refused", [k for k, c in counts if c.get("refused", 0) > 0]),
+        ("not_read", not_read),
     ):
         for key in keys:
             found.setdefault(key, reason)  # type: ignore[arg-type]
     return found
+
+
+def _not_read(run: Any, cursors: dict[str, Any], modules_body: Any) -> list[str]:
+    """Phase 2: each key that the final *run* did not read (the module doc).
+
+    A key counts when its cursor finished the first import. A held or an
+    unavailable key keeps its own reason, because it comes first. With
+    ``counts[engine.RUN_ONLY_KEY]`` (a one-module run), each key outside it
+    was not read, a core key too. Else a ``module:<ApiName>`` key of a
+    generic module of the newest profile was not read when the run wrote no
+    key for it. The run writes every core key, so a normal run reads them.
+    """
+    from gateway.crm_sync import engine
+
+    run_counts = run.counts or {}
+    only = run_counts.get(engine.RUN_ONLY_KEY)
+    only_keys = set(only) if isinstance(only, dict) else None
+    generic = {
+        f"{MODULE_KEY_PREFIX}{m['api_name']}"
+        for m in (modules_body if isinstance(modules_body, list) else [])
+        if isinstance(m, dict) and m.get("generic") and m.get("api_name")
+    }
+    missed: set[str] = set()
+    for module, row in cursors.items():
+        key = _count_key_of(module)
+        if key is None or row.initial_done_at is None:
+            continue
+        if only_keys is not None:
+            if key not in only_keys:
+                missed.add(key)
+        elif key in generic and key not in run_counts:
+            missed.add(key)
+    return sorted(missed)
 
 
 async def _profile_modules(db: Any, org: str) -> Any:
@@ -813,6 +867,16 @@ async def _known_keys(db: Any, org: str, words: dict[str, str]) -> frozenset[str
     }
 
 
+async def _imported_modules(db: Any, org: str, modules_body: Any) -> frozenset[str]:
+    """The generic modules of the profile whose first import is done: the
+    keys that phase 2 can find ``not_read`` in a normal run."""
+    from gateway.crm_sync import engine, runs
+
+    cursors = await runs.read_cursors(db, org, f"{engine.PROVIDER}:")
+    # A run that counted nothing: each such module is "not read" in it.
+    return frozenset(_not_read(SimpleNamespace(counts={}), cursors, modules_body))
+
+
 async def _import_open(db: Any, org: str, skip: frozenset[str]) -> bool:
     """True while the first import of a key that the switch reads is open."""
     from gateway.crm_sync import engine, holds, runs
@@ -843,12 +907,18 @@ async def _check_keys(
     phase 2 (the final *run*), a known key that is complete is one that the
     final sync made complete, so it is dropped and not refused. A key that
     the org does not know is a 422 in both. Returns the keys left out in fact.
+    Only phase 2 adds ``not_read`` (``final``). So phase 1 also takes an
+    imported generic module, which only phase 2 can find not read: the admin
+    ticks it after a 409 of phase 2, and presses again.
     """
-    incomplete = await module_state(db, org, run)
-    words = _key_labels(await _profile_modules(db, org))
+    modules_body = await _profile_modules(db, org)
+    incomplete = await module_state(db, org, run, final=run is not None)
+    words = _key_labels(modules_body)
     extra = leave_out - set(incomplete)
     if run is not None:
         extra -= await _known_keys(db, org, words)
+    else:
+        extra -= await _imported_modules(db, org, modules_body)
     if extra:
         _check_leave_out(incomplete, leave_out, words)
     left_out = leave_out & frozenset(incomplete)

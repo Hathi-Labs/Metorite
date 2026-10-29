@@ -658,6 +658,10 @@ async def acquire(org: str, *, only: frozenset[str] | None = None) -> RunHandle:
         if kind == runs.KIND_IMPORT:
             saved_counts, saved_estimate = await runs.resumable_import(db, org)
         counts = _merge_counts(saved_counts)
+        if only is not None:
+            # The row says which keys this run reads (CRM-Z10b). Each page
+            # writes ``counts`` again, and the key stays with it.
+            counts[RUN_ONLY_KEY] = {key: 1 for key in sorted(only)}
         run_id = await runs.start(
             db, org, connection.id, kind, counts=counts, estimate=saved_estimate,
         )
@@ -896,6 +900,13 @@ NO_PARENT_MODULE = "(none)"
 #: not an entity either (``routes/crm/sync.py`` ``NOT_ENTITY_KEYS``), and a
 #: test pins the two. Sync health sums it over the runs of the last 7 days.
 ACTIVITY_RECOVERED_KEY = "activity_recovered"
+#: The counts key of an "on its own" run (CRM-Q16): ``{count key: 1}`` for each
+#: key that the run reads, and no key for a normal run. The run row says
+#: nothing else about it, and the core keys of a one-module run count zero
+#: as a normal run with no change does. The switch from Zoho (CRM-Z10b) reads
+#: it, so phase 2 never takes such a run as the final sync. It is no entity
+#: either (``routes/crm/sync.py`` ``NOT_ENTITY_KEYS``), and a test pins it.
+RUN_ONLY_KEY = "run_only"
 
 _LOCAL_ID_SQL = (
     "SELECT id FROM {table} WHERE organization_id = CAST(:org AS uuid) "
