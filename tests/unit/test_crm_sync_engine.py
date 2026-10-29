@@ -216,6 +216,27 @@ def test_run_only_and_run_final_are_no_entity_of_sync_health() -> None:
     assert engine.RUN_ONLY_KEY not in merged and engine.RUN_FINAL_KEY not in merged
 
 
+def test_the_final_sync_walks_each_offset_paged_core_entity_now() -> None:
+    """CRM-Z10b round 4 (P2-2): an offset-paged core entity has no cursor to
+    move, so only its walk reads it. The final sync walks each one that
+    finished its first import, and not a held or an unavailable one."""
+    done = datetime(2026, 10, 29, tzinfo=UTC)
+
+    def row(entity: str, state: dict, initial: datetime | None = done) -> tuple[str, CursorRow]:
+        module = engine.changed_module(entity)
+        return module, CursorRow(module, None, state, initial, None)
+
+    cursors = dict([
+        row("company", {"offset_paged": True}),
+        row("contact", {"offset_paged": True, "unavailable": True}),
+        row("lead", {"offset_paged": True}),
+        row("deal", {"offset_paged": False}),
+        row("note", {"offset_paged": True}, initial=None),
+    ])
+    assert engine._final_walks(cursors, frozenset()) == {"company", "lead"}
+    assert engine._final_walks(cursors, frozenset({"leads"})) == {"company"}
+
+
 def test_a_resumed_import_does_not_carry_the_recovered_count() -> None:
     """Each run row keeps its own recoveries, and Sync health sums the rows of
     7 days. A count carried into the next row would be summed twice."""

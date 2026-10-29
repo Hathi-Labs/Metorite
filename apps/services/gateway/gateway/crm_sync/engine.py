@@ -662,7 +662,16 @@ async def acquire(
         cursors = await runs.read_cursors(db, org, f"{PROVIDER}:")
         last_ok = await runs.last_success_at(db, org)
         entries = await holds.read(db, org)
-        kind, reconcile = plan(cursors, now, last_ok, holds.held_keys(entries))
+        held = holds.held_keys(entries)
+        kind, reconcile = plan(cursors, now, last_ok, held)
+        if final:
+            # CRM-Z10b round 4: an offset-paged core entity has no cursor to
+            # move, so only its walk reads it. The final sync runs the 24 h
+            # walk of each such entity now.
+            walks = _final_walks(cursors, held)
+            if walks and kind == runs.KIND_INCREMENTAL:
+                kind = runs.KIND_RECONCILE
+            reconcile = reconcile | walks
         saved_counts: dict[str, Any] = {}
         saved_estimate: dict[str, Any] | None = None
         if kind == runs.KIND_IMPORT:
@@ -673,7 +682,10 @@ async def acquire(
             # writes ``counts`` again, and the key stays with it.
             counts[RUN_ONLY_KEY] = {key: 1 for key in sorted(only)}
         if final:
-            counts[RUN_FINAL_KEY] = {"final": 1}
+            # ``planned_ms``: the time of this plan by the gateway's clock. A
+            # read that ENDS in this run stamps a later ``checked_at`` by the
+            # same clock, so phase 2 compares two stamps of one clock.
+            counts[RUN_FINAL_KEY] = {"final": 1, "planned_ms": _ms(now)}
         run_id = await runs.start(
             db, org, connection.id, kind, counts=counts, estimate=saved_estimate,
         )
@@ -682,6 +694,26 @@ async def acquire(
         reconcile=reconcile, cursors=cursors, counts=counts, estimate=saved_estimate,
         scopes=tuple(connection.scopes or ()), holds=entries, only=only, final=final,
     )
+
+
+def _final_walks(cursors: dict[str, CursorRow], held: frozenset[str]) -> frozenset[str]:
+    """The core entities that the final sync of the switch walks now: each one
+    that pages by offset, has finished its first import, and is not held or
+    unavailable (CRM-Z10b round 4)."""
+    walks: set[str] = set()
+    for entity in ENTITY_ORDER:
+        row = cursors.get(changed_module(entity))
+        if row is None or row.initial_done_at is None or count_key(entity) in held:
+            continue
+        state = row.state or {}
+        if state.get("offset_paged") and not state.get("unavailable"):
+            walks.add(entity)
+    return frozenset(walks)
+
+
+def _ms(moment: datetime) -> int:
+    """Milliseconds since the epoch, for a number in ``counts``."""
+    return int(moment.timestamp() * 1000)
 
 
 class _Ctx:
@@ -1830,6 +1862,15 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         return
     stamping = walking or row.initial_done_at is None
     resumed = bool(saved.get("in_progress")) and (bool(saved.get("walk_start")) or not stamping)
+    if (
+        resumed and ctx.final and row.initial_done_at is not None
+        and (rereading or (walking and saved.get("offset_paged")))
+    ):
+        # CRM-Z10b round 4: a read by offset that stopped (a module's re-read,
+        # or a core entity's walk) goes on from its saved page in a normal
+        # run. An edit on an earlier page would then miss the final sync, so
+        # the final sync reads from page 1 again.
+        resumed = False
     # The module was off and is asked again (CRM-Q15). When this read ENDS, its
     # children are read in full once, so their links fill in. A read that runs
     # over several runs carries the mark in its cursor, and queues only at its
@@ -2015,8 +2056,11 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                             "retry_from": _iso(_pin(failed_map)),
                             "prev_walk_start": _iso(next_prev),
                             **marks,
-                            # The hourly cadence of a generic module (CRM-Q6a).
-                            **({"checked_at": _iso(ctx.started)} if generic else {}),
+                            # The end of a read, for each entity: the hourly
+                            # cadence of a generic module (CRM-Q6a), and the
+                            # proof that phase 2 of the switch needs (CRM-Z10b
+                            # round 4: a read ended in the final sync).
+                            "checked_at": _iso(ctx.started),
                             # The kept activities of CRM-Q23b. Activities only.
                             **_recover_state(ctx, entity),
                             **short,
@@ -2064,11 +2108,11 @@ def _module_reread(ctx: _Ctx, row: CursorRow) -> bool:
 def _final_reread(ctx: _Ctx, row: CursorRow) -> bool:
     """True when the final sync of the switch (CRM-Z10b) must read an
     offset-paged module in full: it has no cursor to move, so only a full
-    read sees its changes. This costs about one full read of the module."""
+    read sees its changes. This costs about one full read of the module.
+    A read of it that stopped starts again from page 1 (round 4)."""
     state = row.state or {}
     return (
-        ctx.final and row.initial_done_at is not None
-        and bool(state.get("offset_paged")) and not state.get("in_progress")
+        ctx.final and row.initial_done_at is not None and bool(state.get("offset_paged"))
     )
 
 
