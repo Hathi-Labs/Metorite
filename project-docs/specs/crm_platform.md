@@ -11668,7 +11668,7 @@ epic #477. The spec audit of 2026-10-27 checked it against the code at
 72094831d and gave GO-NARROWED.
 
 **Follow-up, task #838 (2026-10-30).** The stage menu of a record and the stage filter
-chips follow the board order too. Both call `orderStatuses` in `lib/board.ts`, which calls `orderLanes` with the places of the pipeline on screen. The reports funnel stays on `position`.
+chips follow the board order too. Both call `orderStageList` in `lib/board.ts`, which calls `orderLanes` with the places of the pipeline on screen. The reports funnel stays on `position`.
 
 **Two scope rules from the audit.**
 

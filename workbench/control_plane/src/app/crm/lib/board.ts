@@ -159,7 +159,7 @@ export function orderLanes<T extends Pick<PipelineLane, "status" | "pipeline_pos
  * pipeline on screen. Leads keep the order of the Leads board, which
  * `toLeadLanes` also calls: a hidden stage last, then `position`.
  */
-export function orderStatuses(
+export function orderStageList(
   entity: "deals" | "leads" | string,
   statuses: readonly Status[],
   mode: CrmMode,
@@ -217,7 +217,7 @@ export function toLeadLanes(
   statuses: readonly Status[],
   pages: Readonly<Record<string, { rows: Lead[]; total: number } | undefined>>,
 ): LeadLane[] {
-  const lanes = orderStatuses("leads", statuses, null)
+  const lanes = orderStageList("leads", statuses, null)
     .map((status) => {
       const page = pages[status.id];
       return {

@@ -9,7 +9,7 @@
 // because a shared list component is what would send it. So the chips a list
 // offers are derived from the entity, and the query is built from the chips.
 
-import { orderStatuses } from "./board";
+import { orderStageList } from "./board";
 import { pickable } from "./emptyStages";
 import type { CrmMode } from "./connect";
 import type { CardSort } from "./nextActivity";
@@ -219,8 +219,8 @@ export function chipsFor(
   if (!hasPipeline(entity)) return [];
   const chips: Chip[] = [{ id: "all", label: "All" }];
   // CRM-C3: a hidden stage has no chip, unless the view is filtered to it.
-  // Task #838: the board's order (`orderStatuses`), not the raw `position`.
-  const sorted = orderStatuses(entity, statuses, mode, places);
+  // Task #838: the board's order (`orderStageList`), not the raw `position`.
+  const sorted = orderStageList(entity, statuses, mode, places);
   for (const status of pickable(sorted, view.statusId)) {
     chips.push({ id: status.id, label: status.name });
   }

@@ -21,7 +21,7 @@ import Icon from "@/components/Icon";
 import AnchoredPanel from "@/components/ui/AnchoredPanel";
 import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { orderStatuses, stageAccent } from "../lib/board";
+import { orderStageList, stageAccent } from "../lib/board";
 import { pickable } from "../lib/emptyStages";
 import { useCrmModeValue } from "../lib/modeContext";
 import type { Status } from "../lib/types";
@@ -53,7 +53,7 @@ export default function StatusPill({
   // the menu uses the board's order, so it matches the lanes.
   const mode = useCrmModeValue();
   const sorted = useMemo(
-    () => pickable(orderStatuses(entity, statuses, mode, places), status?.id),
+    () => pickable(orderStageList(entity, statuses, mode, places), status?.id),
     [statuses, status?.id, entity, mode, places],
   );
   // The option the keyboard is on. Focus stays on the pill: the menu is

@@ -1,9 +1,9 @@
 // Task #838: the stage menu and the filter chips follow the board's lane order
-// (D137). Both call `orderStatuses`, which calls `orderLanes`.
+// (D137). Both call `orderStageList`, which calls `orderLanes`.
 
 import { describe, expect, it } from "vitest";
 
-import { orderLanes, orderStatuses } from "./board";
+import { orderLanes, orderStageList } from "./board";
 import { pickable } from "./emptyStages";
 import { chipsFor } from "./filters";
 import { placesOf } from "./pipelines";
@@ -48,7 +48,7 @@ const boardIds = (statuses: Status[], mode: "mirror" | "native", p = places) =>
 
 describe("stage menu and chips follow the board", () => {
   it("Mirror, no saved order: the pipeline order, not the picklist order", () => {
-    const menu = ids(pickable(orderStatuses("deals", PICKLIST, "mirror", places)));
+    const menu = ids(pickable(orderStageList("deals", PICKLIST, "mirror", places)));
     expect(menu).toEqual(["d", "c", "a", "b"]);
     expect(menu).toEqual(boardIds(PICKLIST, "mirror"));
     const chips = chipsFor("deals", PICKLIST, DEFAULT_VIEW, "mirror", places);
@@ -59,7 +59,7 @@ describe("stage menu and chips follow the board", () => {
     const saved = PICKLIST.map((s, i) =>
       stage(s.id, s.position, { ui_position: (3 - i) * 10, admin_order: true })
     );
-    const menu = ids(orderStatuses("deals", saved, "mirror", places));
+    const menu = ids(orderStageList("deals", saved, "mirror", places));
     expect(menu).toEqual(["d", "c", "b", "a"]);
     expect(menu).toEqual(boardIds(saved, "mirror"));
     expect(
@@ -69,7 +69,7 @@ describe("stage menu and chips follow the board", () => {
 
   it("a deal with no pipeline uses the default pipeline's places", () => {
     const none = placesOf([PIPELINE], null);
-    expect(ids(orderStatuses("deals", PICKLIST, "mirror", none))).toEqual([
+    expect(ids(orderStageList("deals", PICKLIST, "mirror", none))).toEqual([
       "d",
       "c",
       "a",
@@ -79,7 +79,7 @@ describe("stage menu and chips follow the board", () => {
 
   it("no pipeline list: the source order, as the board keeps it", () => {
     const empty = placesOf(null, null);
-    expect(ids(orderStatuses("deals", PICKLIST, "mirror", empty))).toEqual([
+    expect(ids(orderStageList("deals", PICKLIST, "mirror", empty))).toEqual([
       "a",
       "b",
       "c",
@@ -89,7 +89,7 @@ describe("stage menu and chips follow the board", () => {
 
   it("a hidden stage goes last, and shows only as the current value", () => {
     const withHidden = PICKLIST.map((s) => (s.id === "c" ? { ...s, hidden: true } : s));
-    const ordered = orderStatuses("deals", withHidden, "mirror", places);
+    const ordered = orderStageList("deals", withHidden, "mirror", places);
     expect(ids(ordered)).toEqual(["d", "a", "b", "c"]);
     expect(ids(pickable(ordered))).toEqual(["d", "a", "b"]);
     expect(ids(pickable(ordered, "c"))).toEqual(["d", "a", "b", "c"]);
@@ -100,11 +100,11 @@ describe("stage menu and chips follow the board", () => {
 
   it("Native: the admin's position", () => {
     const native = [stage("a", 30), stage("b", 10), stage("c", 20)];
-    expect(ids(orderStatuses("deals", native, "native", places))).toEqual(["b", "c", "a"]);
+    expect(ids(orderStageList("deals", native, "native", places))).toEqual(["b", "c", "a"]);
   });
 
   it("leads keep the Leads board order", () => {
     const leads = [stage("x", 20), stage("y", 10, { hidden: true }), stage("z", 5)];
-    expect(ids(orderStatuses("leads", leads, "mirror", places))).toEqual(["z", "x", "y"]);
+    expect(ids(orderStageList("leads", leads, "mirror", places))).toEqual(["z", "x", "y"]);
   });
 });

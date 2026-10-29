@@ -92,7 +92,7 @@ describe("the pickers", () => {
     // The pill draws its menu only when open, and the runner has no DOM, so
     // its wiring is read as source: the menu is `pickable` over the current id.
     const pill = read("./StatusPill.tsx");
-    expect(pill).toContain("pickable(orderStatuses(");
+    expect(pill).toContain("pickable(orderStageList(");
     expect(pill).toContain(", status?.id)");
   });
 });
