@@ -553,6 +553,17 @@ class Settings(BaseSettings):
     reach_needs_you_template: str = ""
     reach_template_language: str = "en"
 
+    # ── The core brief (WS-BRIEF BR-2a-1, 2026-10-29) ────────────────────────
+    #
+    # `brief_enabled` is the switch of the brief planner and its runs, default
+    # OFF. `brief_orgs` lists the organization ids that get a brief, with a
+    # comma between ids. Empty allows none, and there is no `*`. Both must
+    # hold for an org. The one reader is `gateway.brief.flags`. A flip on a
+    # box is gate `enforcement-flip`. Spec: project-docs/specs/core_brief.md
+    # §10 row 2. Fence: tests/unit/test_brief_run.py.
+    brief_enabled: bool = False
+    brief_orgs: str = ""
+
     # ── Web push (WS-66 PN-1, 2026-10-25) ───────────────────────────────────
     #
     # `web_push_enabled` is the switch of the `/push` routes and the sender,
