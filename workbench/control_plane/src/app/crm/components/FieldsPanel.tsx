@@ -69,8 +69,11 @@ import type { CrmRefusal } from "../lib/store";
 import FieldInput from "./FieldInput";
 import FieldValue from "./FieldValue";
 import LockedValue from "./LockedValue";
+import RecordPicker from "./RecordPicker";
 import RelatedLists from "./RelatedLists";
 import { OVERVIEW_FIELDS } from "../lib/modules";
+import { pickerNoun, pickerPlural, type Pick } from "../lib/recordPicker";
+import type { SourceLabels } from "../lib/views";
 import { NO_RELATED, type RelatedLists as Related } from "../lib/related";
 import type { DealContact, EntitySlug, Status } from "../lib/types";
 
@@ -95,6 +98,12 @@ export type Field = {
    * link (CRM-X4 item 6). The rules are those of `contactValue`.
    */
   link?: "email" | "phone";
+  /**
+   * The value is a company (CRM-U16). The row reads its name, and a Native
+   * edit is a picker that saves `company_id`. Its label is the CRM's name for
+   * a company.
+   */
+  lookup?: "organizations";
 };
 
 /**
@@ -125,6 +134,7 @@ function fixedFilled(field: Field, row: Row): boolean {
 const FIELDS: Record<EntitySlug, Field[]> = {
   deals: [
     { key: "name", label: "Name" },
+    { key: "company_id", label: "Company", lookup: "organizations" },
     {
       key: "amount",
       label: "Amount",
@@ -208,6 +218,8 @@ export default function FieldsPanel({
   layout = null,
   refusal = null,
   companyName = null,
+  labels = null,
+  onAttach,
 }: {
   /** Which tab draws the panel. Overview when it is not given. */
   part?: FieldsPart;
@@ -241,6 +253,13 @@ export default function FieldsPanel({
   refusal?: CrmRefusal | null;
   /** The name of a contact's company, which the contact row does not carry. */
   companyName?: string | null;
+  /** The CRM's names of the entities (CRM-Z10g), for the picker labels. */
+  labels?: SourceLabels | null;
+  /**
+   * "+ Add contact" on a deal (CRM-U16): attach this contact. Absent, as on
+   * every record that is not a deal, the button does not draw.
+   */
+  onAttach?: (contactId: string) => void;
 }) {
   const status =
     statuses.find((s) => s.id === record.status_id) ?? null;
@@ -257,6 +276,17 @@ export default function FieldsPanel({
             <h3 className="mb-2 text-[10px] uppercase tracking-wide text-muted-foreground">
               Contacts
             </h3>
+            {!mirrored && onAttach && (
+              <AddContact
+                label={pickerNoun("contacts", labels)}
+                plural={pickerPlural("contacts", labels)}
+                companyId={typeof record.company_id === "string" ? record.company_id : null}
+                companyName={companyName ?? (record.organization_name as string | null) ?? null}
+                attached={dealContacts.map((d) => d.contact.id)}
+                disabled={saving}
+                onAttach={onAttach}
+              />
+            )}
             {dealContacts.length === 0 ? (
               <p className="text-xs text-muted-foreground">
                 No contacts on this deal.
@@ -427,6 +457,8 @@ export default function FieldsPanel({
               saving={saving}
               locked={mirrored}
               onPatch={onPatch}
+              companyName={companyName}
+              labels={labels}
             />
           ) : (
             // A custom field that this record fills, read only, as the
@@ -573,6 +605,72 @@ export function FoldedFields<R extends FieldRow>({
   );
 }
 
+/**
+ * "+ Add contact" on the Related tab of a deal (CRM-U16). It opens the contact
+ * picker, with the deal's company first. A pick attaches the contact. A
+ * contact that is on the deal already does nothing.
+ */
+export function AddContact({
+  label,
+  plural,
+  companyId,
+  companyName,
+  attached,
+  disabled,
+  onAttach,
+}: {
+  label: string;
+  plural?: string;
+  companyId: string | null;
+  companyName: string | null;
+  attached: string[];
+  disabled: boolean;
+  onAttach: (contactId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!open) {
+    return (
+      <Button
+        variant="ghost"
+        size="sm"
+        icon="Plus"
+        className="mb-2"
+        disabled={disabled}
+        onClick={() => setOpen(true)}
+      >
+        {`Add ${label.toLowerCase()}`}
+      </Button>
+    );
+  }
+  return (
+    <div className="mb-3 flex items-start gap-1">
+      <div className="min-w-0 flex-1">
+        <RecordPicker
+          target="contacts"
+          label={label}
+          plural={plural}
+          autoFocus
+          value={null}
+          companyId={companyId}
+          companyName={companyName}
+          disabled={disabled}
+          onChange={(next: Pick | null) => {
+            setOpen(false);
+            if (next && !attached.includes(next.id)) onAttach(next.id);
+          }}
+        />
+      </div>
+      <button
+        onClick={() => setOpen(false)}
+        className="p-1 rounded text-muted-foreground hover:text-foreground tech-transition"
+        aria-label="Cancel"
+      >
+        <Icon name="X" className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+}
+
 function EditableField({
   field,
   row,
@@ -580,6 +678,8 @@ function EditableField({
   saving,
   locked,
   onPatch,
+  companyName = null,
+  labels = null,
 }: {
   field: Field;
   row: Row;
@@ -588,10 +688,14 @@ function EditableField({
   /** A mirrored record: show the value, with a lock and no edit. */
   locked: boolean;
   onPatch: (body: Record<string, unknown>) => void;
+  /** The name of the company that `company_id` holds (CRM-U16). */
+  companyName?: string | null;
+  labels?: SourceLabels | null;
 }) {
   const raw = row[field.key];
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState("");
+  const label = field.lookup ? pickerNoun(field.lookup, labels) : field.label;
 
   function begin() {
     setValue(raw === null || raw === undefined ? "" : String(raw));
@@ -620,8 +724,15 @@ function EditableField({
   // value reads as text, as before.
   const linked = field.link ? contactValue(field.link, raw) : null;
   const link = linked && (linked.kind === "mailto" || linked.kind === "tel") ? linked : null;
+  const companyShown =
+    typeof row.organization_name === "string" && row.organization_name
+      ? row.organization_name
+      : companyName;
+  const heldId = typeof raw === "string" && raw ? raw : null;
   const shown = link ? (
     <FieldValue value={link} />
+  ) : field.lookup ? (
+    heldId ? companyShown || "—" : "—"
   ) : field.show ? (
     field.show(row, status)
   ) : raw === null || raw === undefined || raw === "" ? (
@@ -633,11 +744,36 @@ function EditableField({
   return (
     <div className="flex items-start gap-3 px-4 py-2">
       <dt className="w-28 shrink-0 pt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-        {field.label}
+        {label}
       </dt>
       <dd className="min-w-0 flex-1">
         {locked ? (
           <LockedValue>{shown}</LockedValue>
+        ) : editing && field.lookup ? (
+          <div className="flex items-start gap-1">
+            <div className="min-w-0 flex-1">
+              <RecordPicker
+                target={field.lookup}
+                label={label}
+                plural={pickerPlural(field.lookup, labels)}
+                autoFocus
+                value={heldId ? { id: heldId, name: companyShown ?? "" } : null}
+                disabled={saving}
+                onChange={(next) => {
+                  setEditing(false);
+                  if ((next?.id ?? null) === heldId) return;
+                  onPatch({ [field.key]: next ? next.id : null });
+                }}
+              />
+            </div>
+            <button
+              onClick={() => setEditing(false)}
+              className="p-1 rounded text-muted-foreground hover:text-foreground tech-transition"
+              aria-label="Cancel"
+            >
+              <Icon name="X" className="w-3.5 h-3.5" />
+            </button>
+          </div>
         ) : editing ? (
           <div className="flex items-center gap-1">
             {/* The shared primitive, never a raw field (design rule 3, CRM-X4). */}
