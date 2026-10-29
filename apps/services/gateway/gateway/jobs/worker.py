@@ -57,6 +57,15 @@ memory remembers the seeded day of each org, so a tick that seeded already
 costs no statement. :data:`prune_hooks` runs after the delete, on the same
 session, for the retention of another table.
 
+**Seed hooks (BR-2a-1).** :data:`seed_hooks` is a list of ``async
+hook(org, now)`` callables. :func:`run_org` runs each one once for each org
+and each :data:`SEED_BUCKET` (15 minutes) of the UTC clock, so a consumer
+that needs a job every 15 minutes seeds it here, with a dedupe key of the
+bucket. A cache in memory holds the seeded bucket of each org and hook. A
+hook that raises is logged and tried again on the next tick. It is the one
+recurring seam: no consumer starts a second loop. The hook decides for
+itself, from its own switch, whether to seed, and opens its own session.
+
 **The time limit.** A handler runs for at most :data:`HANDLER_TIMEOUT`. Past
 it, the worker cancels the handler, and the attempt fails as an error does.
 The order ``HANDLER_TIMEOUT < queue.LEASE < idle_in_transaction_session_timeout``
@@ -96,7 +105,7 @@ import contextlib
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from acb_common import get_logger, get_settings
@@ -124,6 +133,8 @@ Handler = Callable[[Any, dict[str, Any]], Awaitable[None]]
 DetachedHandler = Callable[[str, dict[str, Any], queue.Claim], Awaitable[None]]
 #: A prune hook takes the session of the prune job and the UTC day.
 PruneHook = Callable[[Any, date], Awaitable[None]]
+#: A seed hook takes the org and the clock. It opens its own session.
+SeedHook = Callable[[str, datetime], Awaitable[None]]
 
 #: The modes of :func:`register`.
 MODES: tuple[str, ...] = ("session", "detached")
@@ -402,6 +413,48 @@ async def _seed_prune(org: str, now: datetime) -> None:
     _PRUNE_SEEDED[org] = today
 
 
+# ── Seed hooks ──────────────────────────────────────────────────────────────
+
+#: The length of one seed bucket. Each hook runs once for each org and bucket.
+SEED_BUCKET = timedelta(minutes=15)
+#: More recurring seeds, each ``async hook(org, now)``. The brief planner
+#: of BR-2a-1 is here. A hook enqueues with a dedupe key of the bucket.
+seed_hooks: list[SeedHook] = []
+#: The bucket that :func:`run_org` last ran each hook for, by org and hook.
+_SEEDED: dict[tuple[str, str], str] = {}
+
+
+def seed_bucket(now: datetime) -> str:
+    """The UTC bucket of *now*, as ``YYYY-MM-DDTHH:MM``, on a
+    :data:`SEED_BUCKET` boundary."""
+    at = now.astimezone(UTC)
+    step = int(SEED_BUCKET.total_seconds())
+    floored = at - timedelta(seconds=(at.minute * 60 + at.second) % step,
+                             microseconds=at.microsecond)
+    return floored.strftime("%Y-%m-%dT%H:%M")
+
+
+def _hook_name(hook: Any) -> str:
+    return f"{getattr(hook, '__module__', '')}.{getattr(hook, '__qualname__', repr(hook))}"
+
+
+async def _run_seed_hooks(org: str, now: datetime) -> None:
+    """Run each hook of :data:`seed_hooks` that did not run for *org* in the
+    bucket of *now*. A hook that raises stays unseeded for the bucket, so the
+    next tick tries it again."""
+    bucket = seed_bucket(now)
+    for hook in list(seed_hooks):
+        key = (org, _hook_name(hook))
+        if _SEEDED.get(key) == bucket:
+            continue
+        try:
+            await hook(org, now)
+        except Exception as exc:
+            _log.warning("jobs.seed_hook_failed", hook=key[1], error=type(exc).__name__)
+            continue
+        _SEEDED[key] = bucket
+
+
 # ── One org, and the tick ───────────────────────────────────────────────────
 
 
@@ -411,7 +464,8 @@ async def run_org(org: str, now: datetime | None = None, *,
     outcome. Opens no session when no handler is registered.
 
     The cost of one call: one session for the daily prune seed, on the first
-    tick of a UTC day only (``jobs.prune`` is registered at import). Then one
+    tick of a UTC day only (``jobs.prune`` is registered at import). Then
+    each seed hook, on the first tick of a 15-minute bucket only. Then one
     claim session, and for each job that it claims, the sessions of the run.
     A call with no due job opens the one claim session only.
 
@@ -434,6 +488,8 @@ async def run_org(org: str, now: datetime | None = None, *,
                 await _seed_prune(org, clock())
             except Exception as exc:
                 _log.warning("jobs.prune_seed_failed", error=type(exc).__name__)
+        if seed_hooks:
+            await _run_seed_hooks(org, clock())
         for _ in range(BATCH):
             if _stopping.is_set():
                 break
