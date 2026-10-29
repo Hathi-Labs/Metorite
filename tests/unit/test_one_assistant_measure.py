@@ -172,12 +172,15 @@ def test_a_hand_off_of_mail_work_in_the_pack_arm_fails_its_check() -> None:
     assert row["handoffs"] == ["mail"] and row["checks"]["no_email_delegation"] is False, row
 
 
-def test_a_hand_off_for_setup_work_in_the_pack_arm_passes_its_check() -> None:
-    """With the ``email`` pack alone, the rule goes to the email assistant. The
-    scripted plan of ``five_turns`` turn 4 does so, through the real run."""
+def test_setup_work_in_the_pack_arm_loads_the_setup_pack_and_makes_no_hand_off() -> None:
+    """With the base trim on (both arms, from OA-8e run 2) the ``email-setup`` pack
+    fits beside ``email``, so the rule is made in the orchestrator's own run, and
+    the scripted plan of ``five_turns`` turn 4 loads the pack first.
+    Mutation: put the plan back to ``call_agent`` → the hand-off is refused
+    → ``rule_in`` red."""
     rows = run.run_chat(scenario("five_turns"), "pack")
     rule = rows[3]
-    assert rule["handoffs"] == ["setup"] and rule["tasks"], rule
+    assert rule["handoffs"] == [] and rule["tasks"] == [], rule
     assert rule["checks"]["no_email_delegation"] is True and rule["checks"]["rule_in"] is True
     assert all(r["checks"]["no_email_delegation"] is True for r in rows)
 
@@ -497,8 +500,9 @@ def test_the_summary_reports_the_cache_share_and_the_setup_gap() -> None:
         r["total_s"] = 2.0
     arm = run.summarise(rows)["pack"]
     assert arm["cache_share"] == 0.6
-    assert arm["setup_handoff_turns"] == 1 and arm["mail_handoff_turns"] == 0
-    assert arm["setup_handoff_cost_per_turn_usd"] == 0.01
+    # With the base trim on, the setup gap is closed: no setup hand-off remains.
+    assert arm["setup_handoff_turns"] == 0 and arm["mail_handoff_turns"] == 0
+    assert arm["setup_handoff_cost_per_turn_usd"] is None
     text = run.report({"summary": {"pack": arm, "delegation": arm}})
     assert "Cache share" in text and "`held_card`" in text and "`one_card`" in text
 
