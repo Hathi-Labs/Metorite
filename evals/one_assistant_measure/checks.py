@@ -889,7 +889,23 @@ def _not_spawned(obs: Observation, _arg: Any) -> bool | None:
     return obs.spawned == 0
 
 
-_JOB = re.compile(r"^Job (\d+) \(.*?\):(.*)$")
+_JOB = re.compile(r"^Job (\d+) \(.*?\):.*$", re.MULTILINE)
+_FRAME_END = re.compile(r"^<<<END [A-Z ]+ [0-9a-f]+>>>$", re.MULTILINE)
+
+
+def job_blocks(text: str) -> list[str]:
+    """The job blocks of one ``spawn_subagents`` result, in order.
+
+    The result is a data note, then the blocks inside one marker frame, then
+    the notes of jobs that did not run. The first header follows the open
+    marker line at once, with no blank line before it. A split on blank lines
+    misses it, so a call with one job read as "no job block" (OA-9f). A block
+    ends at the next header or at the close marker. The renderer indents a
+    value that spans lines, so a header never starts inside an item."""
+    end = _FRAME_END.search(text)
+    body = text[:end.start()] if end else text
+    starts = [m.start() for m in _JOB.finditer(body)]
+    return [body[a:b].rstrip("\n") for a, b in zip(starts, [*starts[1:], len(body)])]
 
 
 def items_contract_problems(results: list[str]) -> list[str]:
@@ -901,7 +917,7 @@ def items_contract_problems(results: list[str]) -> list[str]:
 
     problems: list[str] = []
     for text in results:
-        blocks = [b for b in re.split(r"\n\n(?=Job \d+ )", text) if _JOB.match(b.split("\n")[0])]
+        blocks = job_blocks(text)
         if not blocks:
             problems.append("no job block")
         for block in blocks:

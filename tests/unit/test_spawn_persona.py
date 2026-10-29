@@ -7,6 +7,7 @@ WHEN, and the docstring of the tool carries the HOW.
 Mutations (each run red, then restored):
 
 * drop the "Do not spawn" line from ``_SPAWN_BLOCK`` -> ``test_the_block_says_when_not_to_spawn``;
+* put the old count rule ("four or more") back in the block -> ``test_the_block_says_when_to_spawn``;
 * add the block with the flag off -> ``test_flag_off_the_persona_is_byte_identical``;
 * ``_orchestrator_instructions`` ignores ``spawn`` -> ``test_flag_on_the_persona_gains_the_block``.
 
@@ -49,15 +50,16 @@ def test_flag_on_the_persona_gains_the_block(monkeypatch) -> None:
 
 def test_the_block_says_when_to_spawn() -> None:
     block = ag._SPAWN_BLOCK
-    assert "multi-step research" in block
-    assert "four or more" in block and "independent reads or searches" in block
-    assert "ten companies" not in block  # OA-8g: the threshold is four
-    assert "flood this chat" in block
+    assert "long material" in block and "flood this chat" in block
+    assert "chain of several dependent steps" in block
+    # OA-9f: no count rule. Run 3 spawned five light reads and lost 20 s.
+    assert "four or more" not in block and "multi-step research" not in block
 
 
 def test_the_block_says_when_not_to_spawn() -> None:
     block = ag._SPAWN_BLOCK
-    assert "Do not spawn for one read, one task, or up to three searches" in block
+    assert "Do not spawn for independent short reads or searches, at any count" in block
+    assert "yourself, in parallel, in one step" in block
     assert "never as instructions" in block
     assert "narrow aim" in block
 
@@ -67,8 +69,10 @@ def test_the_block_stays_short() -> None:
 
 
 def test_persona_and_docstring_agree() -> None:
-    doc = at.spawn_subagents.__doc__ or ""
-    assert "several steps" in doc and "fill this chat" in doc
+    doc = " ".join((at.spawn_subagents.__doc__ or "").split())
+    assert "long material" in doc and "fill this chat" in doc
+    assert "several dependent steps" in doc
+    assert "short reads or searches, at any count" in doc
     assert "one tool call" in doc and "in one step" in doc
 
 

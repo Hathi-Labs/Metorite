@@ -8,7 +8,8 @@ database, so everything a child can read comes from here:
 
 * :class:`WebFixtures` replaces ``web_search`` and ``fetch_page`` in
   ``acb_skills.web_tools`` for one chat. It answers from synthetic pages:
-  five companies, ten invoices and a price page. A URL with no page answers a
+  five companies, ten invoices, five long contracts (:mod:`.contracts`) and a
+  price page. A URL with no page answers a
   plain "not found" line and is listed in :attr:`WebFixtures.unknown`.
 * :class:`WorkerModel` is the scripted model of the worker. It decides from the
   request, not from a counter, because five children share one model and ask
@@ -24,10 +25,23 @@ import re
 import time
 from typing import Any
 
+from evals.one_assistant_measure.contracts import CONTRACTS, contract_text
 from evals.routing.harness import ReplyModel, text_turn, tool_turn
 
 COMPANIES = ("Orbit Labs", "Kestrel Labs", "Vantage Systems", "Helix Foods", "Nimbus Cloud")
-INVOICE_BASE = "https://accounts.metrobilling-hub.com/invoice/"
+#: The public site of each invoice supplier. An invoice page sits on the
+#: supplier's own site (OA-9f), so that no model reads the host as a private
+#: login portal and refuses to fetch it.
+SUPPLIER_HOSTS = {
+    "Delta Freight": "www.deltafreight-logistics.com",
+    "Kaveri Packaging": "www.kaveripackaging-supplies.com",
+    "Sunrise Electricals": "www.sunriseelectricals-india.com",
+    "Orbit Labs": "www.orbitlabs-sensors.com",
+    "Helix Foods": "www.helixfoods-ingredients.com",
+    "Vantage Systems": "www.vantagesystems-automation.com",
+    "Nimbus Cloud": "www.nimbuscloud-hosting.com",
+    "Kestrel Labs": "www.kestrellabs-sensors.com",
+}
 #: The ten invoices, as ``(number, supplier, rupees)``. The total is 233,400.
 INVOICES = (
     (1, "Delta Freight", 48_500), (2, "Kaveri Packaging", 12_300), (3, "Sunrise Electricals", 7_800),
@@ -43,6 +57,15 @@ def company_url(name: str) -> str:
     return f"https://www.{name.split()[0].lower()}labs-sensors.com/company/about"
 
 
+def invoice_url(number: int) -> str:
+    """The public page of an invoice, on the supplier's own site."""
+    return f"https://{SUPPLIER_HOSTS[INVOICES[number - 1][1]]}/billing/invoice-{number}"
+
+
+def contract_url(host: str) -> str:
+    return f"https://{host}/legal/supply-agreement"
+
+
 def _pages() -> dict[str, str]:
     pages = {
         company_url(c): f"{c} makes industrial sensors. Founded in {2010 + i}. "
@@ -50,8 +73,10 @@ def _pages() -> dict[str, str]:
         for i, c in enumerate(COMPANIES)
     }
     for number, supplier, amount in INVOICES:
-        pages[f"{INVOICE_BASE}{number}"] = (
+        pages[invoice_url(number)] = (
             f"Invoice {number} from {supplier}. Amount due: Rs {amount:,}. Due 15 November 2026.")
+    for vendor, host, days, percent in CONTRACTS:
+        pages[contract_url(host)] = contract_text(vendor, days, percent)
     pages[PRICE_URL] = "Orbit Labs pricing. The Basic plan costs Rs 4,999 a month."
     return pages
 
