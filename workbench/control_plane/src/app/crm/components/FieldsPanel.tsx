@@ -822,7 +822,7 @@ function EditableField({
         ) : (
           // A pencil on hover and on keyboard focus, as the email and phone
           // rows show one (CRM-U15). The value stays a button too.
-          <span className="group/edit flex items-start gap-1.5 text-xs text-foreground">
+          <span className="group group/edit flex items-start gap-1.5 text-xs text-foreground">
             <button
               onClick={begin}
               className="min-w-0 flex-1 break-words text-left text-xs text-foreground hover:text-primary tech-transition"
@@ -835,7 +835,7 @@ function EditableField({
               icon="Pencil"
               aria-hidden
               tabIndex={-1}
-              className="opacity-0 group-hover/edit:opacity-100 group-focus-within/edit:opacity-100 [@media(hover:none)]:opacity-100"
+              className="reveal-on-hover group-focus-within/edit:opacity-100"
               onClick={begin}
             />
           </span>
@@ -1124,7 +1124,7 @@ function LayoutFieldRow({
             />
           </div>
         ) : (
-          <span className="group/edit flex items-start gap-1.5 text-xs text-foreground">
+          <span className="group flex items-start gap-1.5 text-xs text-foreground">
             <span className="min-w-0 flex-1 break-words">
               <FieldValue value={shown} />
             </span>
@@ -1134,7 +1134,7 @@ function LayoutFieldRow({
               size="icon-xs"
               icon="Pencil"
               aria-label={`Edit ${def.label.toLowerCase()}`}
-              className="opacity-0 group-hover/edit:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
+              className="reveal-on-hover"
               onClick={begin}
             />
           </span>
