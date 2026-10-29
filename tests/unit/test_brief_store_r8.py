@@ -607,13 +607,42 @@ def test_r8_a_guarded_move_changes_only_a_row_in_the_from_state(world) -> None:
             with pytest.raises(store.BriefStoreError):
                 await store.set_state(db, ANA, run.id, "ready", now=T, from_state="planned")
             with pytest.raises(store.BriefStoreError):
-                await store.set_state(db, ANA, run.id, "delivered", now=T, from_state="ready")
+                await store.set_state(db, ANA, run.id, "delivered", now=T,
+                                      from_state="gathered")
             # Another member moves nothing.
             out.append(await store.set_state(db, BEN, run.id, "empty", now=T,
                                              from_state="planned"))
         return out
 
     assert _go(world, go) == [True, False, False, True, "ready", False]
+
+
+def test_r8_the_delivery_moves_a_ready_run_once_and_stamps_the_time(world) -> None:
+    """BR-2c-1: ``ready`` to ``delivered`` is a guarded move. The first
+    stamps ``delivered_at``. A second finds no ``ready`` row and leaves the
+    stamp. Another member, and a run that is not ``ready``, move nothing."""
+    org = world.p.org_a
+    later = datetime(2099, 3, 10, 3, 0, tzinfo=UTC)
+
+    async def go() -> tuple:
+        async with tenant_session(org) as db:
+            run = (await store.create_run(db, ANA, kind="brief", local_date=D, slot_at=T)).run
+            early = await store.set_state(db, ANA, run.id, "delivered", now=T,
+                                          from_state="ready")  # still planned
+            await store.set_state(db, ANA, run.id, "gathered", now=T, from_state="planned")
+            await store.set_state(db, ANA, run.id, "ready", now=T, from_state="gathered")
+            ben = await store.set_state(db, BEN, run.id, "delivered", now=T,
+                                        from_state="ready")
+            first = await store.set_state(db, ANA, run.id, "delivered", now=T,
+                                          from_state="ready")
+            second = await store.set_state(db, ANA, run.id, "delivered", now=later,
+                                           from_state="ready")
+            got = await store.read_run(db, ANA, kind="brief", local_date=D)
+        return early, ben, first, second, got
+
+    early, ben, first, second, got = _go(world, go)
+    assert (early, ben, first, second) == (False, False, True, False)
+    assert got.state == "delivered" and got.delivered_at == T and got.ready_at == T
 
 
 def test_r8_the_lead_and_the_ledger_link_write_for_the_member(world) -> None:

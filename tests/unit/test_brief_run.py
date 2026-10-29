@@ -306,9 +306,10 @@ def test_main_imports_the_brief_before_the_worker_starts_in_its_own_try() -> Non
     assert brief[0].handlers and any(holds(t, "start_job_worker") for t in tries)
 
 
-def test_the_store_moves_are_the_four_of_the_run() -> None:
+def test_the_store_moves_are_the_four_of_the_run_and_the_delivery() -> None:
+    # BR-2c-1 adds ready to delivered: the first read of GET /brief/today.
     assert {("planned", "gathered"), ("gathered", "ready"), ("planned", "empty"),
-            ("planned", "failed")} == store.TRANSITIONS
+            ("planned", "failed"), ("ready", "delivered")} == store.TRANSITIONS
     assert store.LEAD_SOURCES == ("template", "model")
 
 

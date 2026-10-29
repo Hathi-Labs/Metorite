@@ -39,8 +39,8 @@ runs under ``asyncio.shield``. A crash after ``begin`` leaves an orphan, and
 AUTO-2 marks it ``unknown``: that brief is lost for the day on purpose, and
 BR-2d reports it.
 
-This slice calls no model and sends nothing. ``delivered`` is BR-2c, and the
-phrase step is BR-2a-2. The two kinds register at import, and
+This slice calls no model and sends nothing. ``delivered`` is the read route
+of BR-2c-1 (``routes/brief_today.py``), and the phrase step is BR-2a-2. The two kinds register at import, and
 :func:`register_jobs` adds the seed hook and the prune hook.
 """
 
