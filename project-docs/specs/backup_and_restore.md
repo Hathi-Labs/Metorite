@@ -7,8 +7,12 @@ OFF until the owner does the four steps in §4.2 (H-123).
 **2026-10-29, H-259 / WS-25d:** a failed nightly backup now reaches a person.
 The job `backup-timer` in `vps-health.yml` reads `acb-backup.service` and
 `acb-backup.timer` each hour. It opens one issue, "Nightly backup failed", in
-three cases. The unit failed, the timer is off, or the last success is older
-than 26 h. It closes the issue when the state is clean.
+three cases. The unit failed, the timer is off, or the newest backup is older
+than 26 h.
+
+The proof of a backup is the `taken_utc` line of the newest `MANIFEST.txt`.
+The job does not use the unit run time. Systemd keeps no run state over a
+reboot. The journal line "Backup complete" is the fallback. It closes the issue when the state is clean.
 
 The rule is
 `scripts/backup_alert_state.sh`. The fence is

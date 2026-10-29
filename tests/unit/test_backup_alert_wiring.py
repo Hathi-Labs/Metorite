@@ -71,13 +71,18 @@ def _run(state: str, *, last_read: datetime | None = None):
     )
 
 
-def _state(*, timer="active", result="success", hours_ago=3) -> str:
-    when = datetime.fromtimestamp(NOW.timestamp() - hours_ago * 3600, UTC)
-    stamp = when.strftime("%a %Y-%m-%d %H:%M:%S UTC")
-    return (
-        f"timer={timer}\nResult={result}\nExecMainStatus=0\n"
-        f"ExecMainExitTimestamp={stamp}\n---JOURNAL---\nsome log line\n"
-    )
+def _state(
+    *, timer="active", result="success", hours_ago: float | None = 3, journal_hours_ago=None
+) -> str:
+    """A box state. The unit timestamp is n/a, as it is after a reboot."""
+    out = f"timer={timer}\nResult={result}\nExecMainStatus=0\nExecMainExitTimestamp=n/a\n"
+    if hours_ago is not None:
+        when = datetime.fromtimestamp(NOW.timestamp() - hours_ago * 3600, UTC)
+        out += f"BackupTaken={when.strftime('%Y-%m-%dT%H%M%SZ')}\n"
+    if journal_hours_ago is not None:
+        when = datetime.fromtimestamp(NOW.timestamp() - journal_hours_ago * 3600, UTC)
+        out += f"JournalComplete={when.strftime('%Y-%m-%dT%H:%M:%S+0000')}\n"
+    return out + "---JOURNAL---\nsome log line\n"
 
 
 def test_clean_state_is_ok() -> None:
@@ -86,22 +91,69 @@ def test_clean_state_is_ok() -> None:
     assert r.stdout.startswith("OK acb-backup.service")
 
 
+def test_fresh_manifest_with_na_unit_timestamp_is_clean() -> None:
+    # The post-reboot case: systemd keeps no run state, so the stamp is n/a.
+    r = _run(_state(hours_ago=3))
+    assert r.returncode == 0, r.stdout
+
+
 def test_failed_result_alerts() -> None:
     r = _run(_state(result="failed"))
     assert r.returncode == 10
     assert "Result" in r.stdout
 
 
-def test_old_success_alerts() -> None:
+def test_old_manifest_alerts() -> None:
     r = _run(_state(hours_ago=27))
     assert r.returncode == 10
     assert "27 h old" in r.stdout
+
+
+def test_manifest_boundary_at_26_hours() -> None:
+    assert _run(_state(hours_ago=25.9)).returncode == 0
+    assert _run(_state(hours_ago=26.1)).returncode == 10
+
+
+def test_no_manifest_alerts() -> None:
+    r = _run(_state(hours_ago=None))
+    assert r.returncode == 10
+    assert "No backup manifest" in r.stdout
+
+
+def test_journal_fallback_when_manifest_unreadable() -> None:
+    assert _run(_state(hours_ago=None, journal_hours_ago=3)).returncode == 0
+    assert _run(_state(hours_ago=None, journal_hours_ago=27)).returncode == 10
+
+
+def test_future_manifest_is_fresh_with_a_skew_warning() -> None:
+    r = _run(_state(hours_ago=-2))
+    assert r.returncode == 0
+    assert "WARN" in r.stdout and "future" in r.stdout
 
 
 def test_inactive_timer_alerts() -> None:
     r = _run(_state(timer="inactive"))
     assert r.returncode == 10
     assert "timer" in r.stdout
+
+
+def test_remote_read_ignores_manual_dirs() -> None:
+    # The remote glob matches only 20??-??-??T??????Z dirs, so manual-* is out.
+    text = yaml.dump(_job())
+    assert "20??-??-??T??????Z" in text
+    assert "manual" not in text
+
+
+def test_remote_glob_picks_newest_timestamp_dir(tmp_path: Path) -> None:
+    for name in ("2026-10-28T023000Z", "2026-10-29T023119Z", "manual-20261030"):
+        (tmp_path / name).mkdir()
+    out = subprocess.run(
+        ["bash", "-c", f"ls -1d {tmp_path}/20??-??-??T??????Z/ | sort | tail -1"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
+    assert out.strip().endswith("2026-10-29T023119Z/")
 
 
 def test_empty_state_does_not_alert() -> None:

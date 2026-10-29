@@ -452,6 +452,16 @@ jobs:
           cat > /tmp/backup_remote.sh <<'REMOTE'
           echo "timer=$(systemctl is-active acb-backup.timer 2>/dev/null)"
           systemctl show acb-backup.service -p Result -p ExecMainStatus -p ExecMainExitTimestamp --no-pager 2>/dev/null
+          # The newest backup dir is the proof of a success. It outlives a reboot.
+          d="$(ls -1d /opt/acb/backups/20??-??-??T??????Z/ 2>/dev/null | sort | tail -1)"
+          if [ -n "$d" ]; then
+            m="$(sed -n 's/^taken_utc: */BackupTaken=/p' "${d}MANIFEST.txt" 2>/dev/null)"
+            [ -n "$m" ] || m="$(sudo -n sed -n 's/^taken_utc: */BackupTaken=/p' "${d}MANIFEST.txt" 2>/dev/null)"
+            printf '%s\n' "$m"
+          fi
+          # Fallback proof: the journal line "Backup complete" in the last 30 h.
+          jl="$(sudo -n journalctl -u acb-backup.service --since -30h --no-pager -o short-iso 2>/dev/null | grep 'Backup complete' | tail -1 | cut -d' ' -f1)"
+          [ -z "$jl" ] || echo "JournalComplete=$jl"
           echo '---JOURNAL---'
           sudo -n journalctl -u acb-backup.service -n 20 --no-pager -o short-iso 2>/dev/null
           exit 0
