@@ -495,8 +495,8 @@ describe("the filter bar offers the custom filters of Scope item 5 (done-when 7)
     // system row never reach it (`customFilters`).
     const fields = filterFields("deals", customFilters(layout().fields, true));
     const group = (label: string) => fields.filter((f) => f.label === label).map((f) => f.group);
-    expect(group("Tier")).toEqual(["Picklists"]);
-    expect(group("Colours")).toEqual(["Picklists"]);
+    expect(group("Tier")).toEqual(["Choices"]);
+    expect(group("Colours")).toEqual(["Choices"]);
     expect(group("Seats")).toEqual(["Numbers"]);
     expect(group("Rate")).toEqual(["Numbers"]);
     expect(group("Budget")).toEqual(["Numbers"]);

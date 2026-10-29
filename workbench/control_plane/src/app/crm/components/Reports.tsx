@@ -33,6 +33,7 @@
 import { useEffect, useState } from "react";
 
 import Icon from "@/components/Icon";
+import InfoTip from "@/components/ui/InfoTip";
 import { listDigests } from "../lib/api";
 import { stageAccent } from "../lib/board";
 import { useCrmModeValue } from "../lib/modeContext";
@@ -95,16 +96,23 @@ export default function Reports({
 function Block({
   title,
   blurb,
+  method,
   children,
 }: {
   title: string;
+  /** One short line (CRM-U15). */
   blurb: string;
+  /** How the figures are worked out. It sits behind an info icon. */
+  method?: string;
   children: React.ReactNode;
 }) {
   return (
     <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
       <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-      <p className="mt-0.5 text-xs text-muted-foreground">{blurb}</p>
+      <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+        {blurb}
+        {method && <InfoTip label={`How ${title.toLowerCase()} is worked out`}>{method}</InfoTip>}
+      </p>
       <div className="mt-4">{children}</div>
     </section>
   );
@@ -149,7 +157,8 @@ function Forecast({ reports }: { reports: CrmReports }) {
   return (
     <Block
       title="Forecast by stage"
-      blurb="Open and ongoing lanes only. Weighted amount is each deal's amount at its own probability, falling back to its stage's default — won is booked revenue, lost is nothing, and a parked deal is nobody's forecast."
+      blurb="Open deals in each stage, with the weighted amount."
+      method="Open and ongoing lanes only. Weighted amount is each deal's amount at its own probability, falling back to its stage's default. Won is booked revenue, lost is nothing, and a parked deal is nobody's forecast."
     >
       <div className="mb-4 grid grid-cols-3 gap-4">
         <Figure label="Open deals" value={String(pipeline.count)} />
@@ -236,7 +245,8 @@ function Funnel({ reports }: { reports: CrmReports }) {
   return (
     <Block
       title="Funnel"
-      blurb="A deal counts in every stage it has visited — its current one included, which is the only one an imported deal has. Conversion is “ever got past this stage”, not “went to the next one”."
+      blurb="How many deals reached each stage."
+      method="A deal counts in every stage it has visited, its current one included. An imported deal has only its current one. Conversion is “ever got past this stage”, not “went to the next one”."
     >
       {!hasFunnel(funnel) ? (
         <Empty>No deals yet, so no funnel.</Empty>
@@ -387,7 +397,7 @@ function Leaderboard({ reports }: { reports: CrmReports }) {
   return (
     <Block
       title="By owner"
-      blurb={`Who is carrying what. Won amount is ${windowLabel(owners.window_days)}, the same window as win / loss.`}
+      blurb={`Open and won deals for each owner. Won is ${windowLabel(owners.window_days)}.`}
     >
       {!hasOwners(owners) ? (
         <Empty>No deals are assigned yet.</Empty>
