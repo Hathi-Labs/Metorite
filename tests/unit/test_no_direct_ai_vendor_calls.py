@@ -157,11 +157,6 @@ _BASELINE: dict[str, _Entry] = {
         "The /v1/embeddings door calls OpenAI with OPENAI_API_KEY (S5 step 2). "
         "The prompt-cache warm-up calls litellm, behind PROMPT_CACHE_PREWARM",
     ),
-    "apps/services/email_ingestion/email_ingestion/email_embeddings.py": _Entry(
-        {"litellm verb aembedding": 1, "sdk litellm": 1},
-        "Email embeddings go to the gateway /v1/embeddings door, which skips "
-        "the Router (S5 step 2)",
-    ),
     "apps/services/whatsapp_ingestion/whatsapp_ingestion/wa_embeddings.py": _Entry(
         {"litellm verb aembedding": 1, "sdk litellm": 1},
         "WhatsApp embeddings go to the gateway /v1/embeddings door, which "
