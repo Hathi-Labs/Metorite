@@ -288,10 +288,34 @@ def _unmark(text: str) -> str:
     return _MARKUP.sub(_spaces, text)
 
 
+#: A day of a month, 1 to 31, with an optional ordinal. Not 32, and not 110.
+_DAY = r"(?:0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?"
+
+#: A range of days with one month: "5-11 October", "19 to 25 Oct 2026",
+#: "Oct 5-11". It is the week label of a digest (CRM #873). :func:`_day_range`
+#: blanks only a real range, 1 <= first < second <= 31, so "Deals 37-11
+#: October" and "closed 40-45 October" keep their figures. A range with no
+#: month ("5-11 deals") stays a figure.
+_DAY_RANGE = re.compile(
+    rf"\b(?P<a>{_DAY})\s*(?:[-\u2013]|\bto\b)\s*(?P<b>{_DAY})\s+{_MONTHS}(?:,?\s+\d{{4}})?\b"
+    rf"|\b{_MONTHS}\s+(?P<c>{_DAY})\s*(?:[-\u2013]|\bto\b)\s*(?P<d>{_DAY})(?:,?\s+\d{{4}})?\b"
+)
+_LEADING_DIGITS = re.compile(r"\d+")
+
+
+def _day_range(match: re.Match[str]) -> str:
+    """Spaces for a real range of days, else the text as it was."""
+    first = _LEADING_DIGITS.match(match.group("a") or match.group("c") or "")
+    second = _LEADING_DIGITS.match(match.group("b") or match.group("d") or "")
+    if first and second and 1 <= int(first.group()) < int(second.group()) <= 31:
+        return " " * len(match.group(0))
+    return match.group(0)
+
+
 def _blank(text: str) -> str:
     """*text* with each marker and each span that holds no figure turned
     into spaces. The length stays, so each offset still points into *text*."""
-    return _NOT_FIGURES.sub(_spaces, _unmark(text))
+    return _NOT_FIGURES.sub(_spaces, _DAY_RANGE.sub(_day_range, _unmark(text)))
 
 
 def _scale_of(token: str | None) -> Decimal:
