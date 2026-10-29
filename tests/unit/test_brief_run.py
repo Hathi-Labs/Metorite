@@ -208,6 +208,12 @@ def test_a_card_with_no_known_prefix_or_no_href_gets_no_claim(caplog) -> None:
     assert gather.claim_of(card("email:a:t1", href=None), 0, NOW) is None
     assert gather.claim_of(card("email:a:t1", href="https://x.test/"), 0, NOW) is None
     assert gather.claim_of(card("email:a:t1", href="//x.test/"), 0, NOW) is None
+    # The one in-app check (repair round 1, P2-g): a dot segment, a
+    # backslash, an API path and an encoded slash are refused too.
+    for bad in ("/projects/../crm", "/\\x.test", "/api/x", "/email/%2F%2Fx.test",
+                "/email\tx"):
+        assert gather.in_app_href(bad) is None, bad
+    assert gather.in_app_href("/email?account=a&thread=t1") == "/email?account=a&thread=t1"
     assert gather.claim_of(card("email:a:t1", group="fyi"), 0, NOW) is None
     no_fp = gather.claim_of(card("email:a:t1", fingerprint=None), 0, NOW)
     assert no_fp is not None and no_fp.fingerprint is None
@@ -283,9 +289,21 @@ def test_the_two_kinds_are_detached_and_idempotent_and_the_hooks_are_in() -> Non
     assert brief_run.LEDGER_JOB == "brief.brief"
 
 
-def test_main_imports_the_brief_before_the_worker_starts() -> None:
+def test_main_imports_the_brief_before_the_worker_starts_in_its_own_try() -> None:
+    """Repair round 1, P2-i: an import error of the brief cannot stop the
+    queue, so the import has its own ``try``, closed before the worker's."""
+    import ast
+
     main = (_ROOT / "apps/services/gateway/gateway/main.py").read_text(encoding="utf-8")
     assert main.index("import gateway.brief.run") < main.index("await start_job_worker()")
+    tries = [n for n in ast.walk(ast.parse(main)) if isinstance(n, ast.Try)]
+
+    def holds(node: ast.Try, needle: str) -> bool:
+        return any(needle in ast.unparse(stmt) for stmt in node.body)
+
+    brief = [t for t in tries if holds(t, "gateway.brief.run")]
+    assert len(brief) == 1 and not holds(brief[0], "start_job_worker")
+    assert brief[0].handlers and any(holds(t, "start_job_worker") for t in tries)
 
 
 def test_the_store_moves_are_the_four_of_the_run() -> None:

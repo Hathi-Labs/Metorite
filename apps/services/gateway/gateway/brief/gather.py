@@ -10,7 +10,8 @@ Every claim is built by code from one card of the My Day feed:
   prefix before the first colon. ⚠️ Not ``card["app"]``: a block-soon card
   has ``app="calendar"`` and ``signal_id="tasks:<id>"``, and the record is
   the task. The claim names the record.
-* ``href`` is the card's ``href``, kept only when it is an in-app path.
+* ``href`` is the card's ``href``, kept only when it is an in-app path by
+  the one check, ``orchestrator.in_app_path.is_in_app_path``.
 * ``fingerprint`` is the card's, when it has one.
 
 A card with no in-app href, or a prefix that no provider writes, gets no
@@ -29,6 +30,7 @@ from datetime import datetime
 from typing import Any
 
 from acb_common import get_logger
+from orchestrator.in_app_path import is_in_app_path
 
 from gateway.brief import store
 from gateway.reach import plan
@@ -52,10 +54,11 @@ def source_app(signal_id: Any) -> str | None:
 
 
 def in_app_href(value: Any) -> str | None:
-    """*value* when it is an in-app path (``/...`` and not ``//...``)."""
-    if not isinstance(value, str) or not value.startswith("/") or value.startswith("//"):
-        return None
-    return value
+    """*value* when it is an in-app path, by the one check of the product,
+    ``orchestrator.in_app_path.is_in_app_path`` (the twin of ``isInAppPath``
+    in the web app). It refuses ``//host``, a scheme, ``/api/...``, a dot
+    segment, a backslash and an encoded trick."""
+    return value if isinstance(value, str) and is_in_app_path(value) else None
 
 
 def claim_of(card: dict[str, Any], position: int, now: datetime) -> store.ClaimIn | None:
