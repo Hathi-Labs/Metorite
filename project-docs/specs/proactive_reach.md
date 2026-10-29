@@ -136,7 +136,7 @@ and the scale plan for all of them.
 | Opt-in | `whatsapp_member_links.opted_in_at` exists. No code reads or writes it | `infra/postgres/235_whatsapp_member_links.sql` |
 | Notify seam | None. The bell, the feed, the activity stream and the email digest are separate | — |
 | Quiet hours | None. `day_start_hour`, `day_end_hour` and `work_schedule` can serve | `gateway/work_schedule.py` |
-| Web push | None. Spec only | `chat_run_continuity.md` §S7 |
+| Web push | Built (PN-1, 2026-10-25, dark): migration 306, `gateway/push/`, `public/sw.js`. Its first sender is RE-9b | `chat_run_continuity.md` §S7, `calendar_events_reminders.md` §5.6 |
 | Email rule actions | Ten types. No notify action | `routes/email/automation/actions.py:448` |
 
 ---
@@ -335,7 +335,7 @@ with FORCE ROW LEVEL SECURITY at the `get_db()` seam (R5).
 | `organization_id` | The tenant. The RLS key |
 | `member_email` | The recipient. Always the member, never a third person |
 | `channel` | `whatsapp` or `web_push` |
-| `kind` | `brief`, `interrupt`, `day_end` or `system` (opt-in, STOP reply) |
+| `kind` | `brief`, `interrupt`, `day_end` or `system` (opt-in, STOP reply). RE-9b adds `reminder_due`, `reminder_check` and `reminder_unconfirmed` |
 | `signal_ids` | The cards this message carries, as text[] |
 | `dedupe_key` | Unique. A hash of the member, the channel, the kind, and the sorted pairs of signal and fingerprint |
 | `not_before` | The earliest send time. The batch window and quiet hours set it |
@@ -351,6 +351,17 @@ with FORCE ROW LEVEL SECURITY at the `get_db()` seam (R5).
 **Indexes.** `(state, not_before)` for the workers. `(organization_id,
 member_email, created_at)` for the budget and the report. A unique index on
 `dedupe_key`.
+
+**The channel and the budget (RE-9b, 2026-10-30).** Migration 266 allows
+only the channel `whatsapp` and the kinds `brief` and `interrupt`
+(`reach_outbox_channel_known`, `reach_outbox_kind_known`). RE-9b adds one
+expand-only migration. It takes the next free number at build time (316 on
+2026-10-30). It adds `web_push` and the three reminder kinds.
+
+The budget reads
+(`outbox._PLAN_SQL` and `_SENT_SINCE_SQL`, `reach/outbox.py:40, 56`) then
+count by channel. A push row never counts in the WhatsApp cap. `reminder_due`
+has its own counter, with a limit of 10 each day for each member.
 
 **Retention.** A sweep deletes rows older than 30 days. A monthly summary row
 keeps the counts for the cost report.
@@ -482,15 +493,29 @@ for that reason. So Reach holds a message instead of dropping it.
 ### 8.2 Web push
 
 Web push is the second channel. It reuses the subscription table and the
-VAPID key of `chat_run_continuity.md` §S7. A push payload holds no content,
-only a count and a link, as §S7 decides. It costs nothing per message. RE-9
-builds it after S7 lands.
+VAPID key of `chat_run_continuity.md` §S7. PN-1 built that transport, and
+RE-9b sends the first push on it. It costs nothing per message.
+
+A push of any other card kind holds no content, only a count and a link, as
+§S7 decides. A reminder push is the one exception (D114.4). It carries the
+title and the time of the reminder. The member can turn on "Hide details on
+the lock screen". Then the title reads "Metorite: a reminder". The payload
+holds no title or time text.
 
 > ⚠️ **2026-10-25, D114.** WS-66 builds S7's transport as PN-1. Three card
 > kinds join §4: `reminder_due` (`urgent`, outside the daily cap, at most 10
 > each day), `reminder_check` (`interrupt`, inside the cap) and
-> `reminder_unconfirmed` (`brief`). A reminder push holds its title and time
-> (D114.4). The owning text is `calendar_events_reminders.md` §5.6.
+> `reminder_unconfirmed` (`brief`). The owning text is
+> `calendar_events_reminders.md` §5.6.
+
+**Settled 2026-10-30 (RE-9).** The push channel runs when
+`WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS` are on. It does not need
+`REACH_ENABLED`, `REACH_ORGS` or `REACH_MEMBERS`. Those flags gate WhatsApp
+only.
+
+The fire step of the reminder loop plans one `web_push` outbox row. A
+send step in `gateway/reach/` sends it. WS-51 S7 reuses that step later.
+`calendar_events_reminders.md` §5.6 holds the six decisions.
 
 ### 8.3 The order of channels
 
@@ -847,7 +872,7 @@ is an owner gate (MD-10, CLAUDE.md §3a rule 3).
 | **RE-6** | The reply loop: buttons, card acts from WhatsApp, the feedback and the corrections | RE-2 | AGENT-SAFE |
 | **RE-7** | Settings → Notifications, and the "Sent to WhatsApp" mark on a feed card | RE-1 | AGENT-SAFE |
 | **RE-8** | Scale out: the `acb-reach` unit, the spread morning, the lease shards, the bus on Redis, the tier alert, and a load test of 5,000 members | RE-4 | AGENT-SAFE to build. 🔴 A new unit on the box is a deploy act |
-| **RE-9** | Web push as a second channel | RE-1, WS-51 S7 | AGENT-SAFE |
+| **RE-9** | Web push as a second channel. Split on 2026-10-30 into **RE-9a** (the push message and the hide setting, STANDARD) and **RE-9b** (the migration, the classes, the plan and send steps, HIGH). The rows are in `calendar_events_reminders.md` §10.1 | RE-1, PN-1 (built) | AGENT-SAFE |
 | **RE-10** | The producer guide: one page for a new app, and the fences of §4.1 in CI | RE-1 | AGENT-SAFE |
 
 **The first useful slice for the owner** is RE-1, RE-2 and RE-3 on the
