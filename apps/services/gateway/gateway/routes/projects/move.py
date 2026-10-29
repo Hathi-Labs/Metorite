@@ -658,6 +658,15 @@ def _refuse_unless_agreed(plan: dict[str, Any], payload: MoveIn) -> None:
             )
 
 
+#: WS-55 MCP-G1 (spec ``external_agent_access.md`` §9.2). The 422 of a signed
+#: agent move that sends no ``accepted_drops``. The edge sends the drops that
+#: its preview showed, so a move that would drop more gets the 409 below. A
+#: bare ``accept_drops`` is a yes to a question that the agent never saw.
+AGENT_MOVE_NEEDS_DROPS = (
+    "An agent move sends accepted_drops, the drops that its preview showed."
+)
+
+
 @router.post("/tasks/move")
 async def move_tasks(
     payload: MoveIn, user: UserContext = Depends(get_current_user),
@@ -667,7 +676,12 @@ async def move_tasks(
     **One transaction.** A half-moved selection is worse than a half-applied
     bulk edit, because the tasks are then in two projects and nobody can tell
     which half landed. ``bulk.py`` makes the same argument for the same reason.
+
+    WS-55 MCP-G1. A signed agent move must send ``accepted_drops``
+    (:data:`AGENT_MOVE_NEEDS_DROPS`). A member's move is unchanged.
     """
+    if getattr(user, "agent", None) is not None and payload.accepted_drops is None:
+        raise HTTPException(status_code=422, detail=AGENT_MOVE_NEEDS_DROPS)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         plan = await _plan(db, vis, payload, user)

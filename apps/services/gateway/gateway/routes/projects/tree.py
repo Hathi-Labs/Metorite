@@ -28,7 +28,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException
+from fastapi import Depends, Header, HTTPException
 from gateway.routes.projects.authority import (
     assert_may_change_lead,
     assert_may_convert_node,
@@ -78,6 +78,7 @@ from gateway.routes.projects.core import (
     remap_task_statuses,
     require_done_status,
     require_organization,
+    require_precondition,
     resolve_visibility,
     root_project_id,
     router,
@@ -90,8 +91,40 @@ from gateway.routes.projects.core import (
     validate_icon_slot,
     validate_lifecycle_settings,
 )
+from gateway.routes.projects.tasks import _narrow_agent_body
 from pydantic import BaseModel
 from sqlalchemy import text
+
+#: WS-55 MCP-G1 (spec ``external_agent_access.md`` §9.2). The body keys that
+#: a signed agent write of a node may send, by route. The MCP edge sends no
+#: other key (``create_project`` and ``update_project``), and the route
+#: refuses any other key with 422 when ``UserContext.agent`` is set. So an
+#: agent names no ``lead``, which is a grant write (D-OP-11), no kind, no
+#: setting of a space and no source. A member's request is not narrowed.
+AGENT_NODE_CREATE_FIELDS: frozenset[str] = frozenset({
+    "name", "description", "parent_project_id",
+})
+AGENT_NODE_PATCH_FIELDS: frozenset[str] = frozenset({"name", "description", "status"})
+
+#: WS-55 MCP-G1. The 403 of a new space from a connection with pins. A pinned
+#: connection reaches its pinned projects and the nodes below them only, and
+#: a new space is below none of them. The edge holds a copy, and
+#: ``test_mcp_edge_projects.py`` pins the two equal.
+AGENT_SPACE_PINNED = "A connection with pinned projects cannot make a new space."
+
+
+def _refuse_pinned_space(user: UserContext, parent_id: object) -> None:
+    """403 when a signed agent with pins makes a node with no parent (MCP-G1).
+
+    A node under a parent passes here: the parent must be visible, and the
+    visibility seam narrows it to the pins (``core._narrow_for_agent``). A
+    no-op for a member and for a connection with no pins.
+    """
+    agent = getattr(user, "agent", None)
+    if agent is None or parent_id or not agent.pinned_projects:
+        return
+    raise HTTPException(status_code=403, detail=AGENT_SPACE_PINNED)
+
 
 #: Fields whose change is worth a timeline entry. Deliberately not every column:
 #: `updated_at` moves on every write, and a diff that always has an entry is a
@@ -1028,6 +1061,10 @@ async def create_node(
     payload: ProjectIn, user: UserContext = Depends(get_current_user),
 ) -> dict:
     values = clean_payload(payload)
+    # WS-55 MCP-G1. A signed agent sends only the keys of `create_project`,
+    # and a connection with pins makes no space.
+    _narrow_agent_body(user, values, AGENT_NODE_CREATE_FIELDS)
+    _refuse_pinned_space(user, values.get("parent_project_id"))
     name = str(values.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=422, detail="A project needs a name.")
@@ -1165,8 +1202,18 @@ async def create_node(
 async def patch_node(
     project_id: str, payload: ProjectIn,
     user: UserContext = Depends(get_current_user),
+    if_match: str | None = Header(None, alias="If-Match"),
 ) -> dict:
+    """Change the fields of one node.
+
+    WS-55 MCP-G1. ``If-Match`` is the version rule of the task PATCH
+    (``core.require_precondition``). A node has no ``fields_at``, so the
+    version is ``updated_at`` with strict equality. An absent header passes
+    (D-PM-20), so each app call, which sends none, is unchanged. A signed
+    agent sends only the keys of ``update_project``.
+    """
     values = clean_payload(payload)
+    _narrow_agent_body(user, values, AGENT_NODE_PATCH_FIELDS)
     # RUN_STATES, not PROJECT_STATUSES: the latter still carries the retained
     # `archived` so the pre-restart gateway keeps validating through the deploy
     # window (R6), but accepting it HERE would let a caller set the run state to
@@ -1196,6 +1243,10 @@ async def patch_node(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         before = await load_visible_project(db, vis, project_id)
+        # MCP-G1. After the visibility load, before any write: a caller who
+        # cannot see the node gets 404 and never learns from a 412 that it
+        # exists (R5).
+        require_precondition(before, if_match, row_to_dict(before, ProjectModel))
         # WS-64 OP-8 (D-OP-11). A change of lead is a grant write.
         await assert_may_change_lead(db, user, before, values)
         _refuse_lifecycle_on_child(
