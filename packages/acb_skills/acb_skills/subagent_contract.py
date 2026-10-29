@@ -18,9 +18,14 @@ tools of its job.
 **The jobs in (§6.2, §6.5).** :func:`parse_jobs` checks the ``jobs`` argument
 of ``spawn_subagents``. At most :data:`MAX_JOBS` jobs run, and each job past
 the cap gets a name in the answer. A job runs only when each of its tools is
-a tool of the parent run, reads only, and starts no other agent. A job that
-names a tool pack does not run until OA-9c (§4.5, OA-9b item 3). Each refused
+a tool of the parent run, reads only, and starts no other agent. Each refused
 job gets one line that says why, so the model can call again.
+
+**Packs in a child (OA-9c, §6.7).** A job may name a tool pack only when the
+parent run holds it now (``tool_packs.PackRun.holds()``). With no record of
+the packs, a job that names one does not run (fail closed). The spawn then
+builds the pack through the one guarded builder on the parent frame, and the
+child keeps only the tools that :func:`child_may_hold` lets through.
 
 **Read first, writes after (§6.5).** A child reads. The parser refuses a job
 that names a tool that is not read-only, and the line tells the model to do
@@ -37,10 +42,11 @@ assistant states each ``inferred`` item as a guess.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import re
-from collections.abc import Callable, Collection
-from dataclasses import dataclass
+from collections.abc import Callable, Collection, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 from acb_skills.tool_annotations import get_annotations
@@ -75,8 +81,12 @@ __all__ = [
     "annotated_read_only",
     "bind_job",
     "bound_job",
+    "child_allowed",
+    "child_may_hold",
     "child_pin",
     "child_tool_scope",
+    "job_pack_run",
+    "job_refusal",
     "parse_items",
     "parse_jobs",
     "spawn_lock",
@@ -175,6 +185,16 @@ class Job:
     job: str
     tools: tuple[str, ...]
     tier: str
+    #: OA-9c. The tool packs of the job, in order. Each is a pack that the
+    #: parent run holds (:func:`parse_jobs`, *held_packs*).
+    packs: tuple[str, ...] = ()
+    #: OA-9c. The pack tools of the child. The spawn builds them on the parent
+    #: frame with the one guarded builder, and keeps the tools that
+    #: :func:`child_may_hold` lets through. Server state, never model input.
+    pack_tools: tuple[Any, ...] = field(default=(), compare=False, repr=False)
+    #: OA-9c. The run key of :attr:`pack_tools`. The spawn mints it for this
+    #: child only, so a pack tool of the child acts in no other run.
+    pack_run: str = field(default="", compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -269,16 +289,51 @@ def _tools_of(raw: Any) -> tuple[str, ...] | None:
     return tuple(names)
 
 
+def _packs_of(raw: Any) -> tuple[str, ...] | None:
+    """The pack slugs of a job, once each, in order and in lower case, or
+    ``None`` when bad (OA-9c). ``None`` and ``[]`` name no pack. A value that
+    is not a list, such as ``0``, ``false``, ``{}`` or ``"email"``, is bad."""
+    names = _tools_of(raw)
+    if names is None:
+        return None
+    return tuple(dict.fromkeys(name.lower() for name in names))
+
+
+def _pack_refusal(
+    raw: Any, held_packs: frozenset[str] | None,
+) -> tuple[str, tuple[str, ...]]:
+    """Why the ``packs`` of a job stop it, or ``("", slugs)`` (OA-9c).
+
+    A job may name only a pack that the parent run holds now. With no record
+    of the packs (*held_packs* ``None``), it may name none (fail closed).
+    """
+    packs = _packs_of(raw)
+    if packs is None:
+        return "its packs must be a list of tool pack names.", ()
+    if packs and held_packs is None:
+        return ("this chat holds no tool pack now, so a sub-agent cannot get one. "
+                "Name its tools instead."), ()
+    for slug in packs:
+        if slug not in (held_packs or frozenset()):
+            # SUB-1 rule 1: a child never holds a pack that its parent lacks.
+            return (f"this chat does not hold the tool pack '{_clip(slug)}', and a "
+                    "sub-agent gets only the packs that this chat holds."), ()
+    return "", packs
+
+
 def _refusal(
     raw: Any,
     parent: frozenset[str],
     read_only: Callable[[str], bool],
     handoff: frozenset[str],
+    held_packs: frozenset[str] | None = None,
 ) -> tuple[str, Job | None]:
     """Why the job *raw* cannot run, or ``("", job)`` when it can.
 
     The checks run in a fixed order, and the first one that fails names the
     reason. The returned job has ``number`` 0, and the caller sets it.
+    *held_packs* is the packs that the parent run holds, or ``None`` when no
+    record of them can be read. Then a job that names a pack does not run.
     """
     if not isinstance(raw, dict):
         return "it is not a JSON object.", None
@@ -292,10 +347,9 @@ def _refusal(
     tier = _tier_of(raw.get("tier"))
     if tier is None:
         return 'its tier must be "fast" or "main".', None
-    if raw.get("packs") not in (None, []):
-        # §4.5, OA-9b item 3: a pack in a child waits for OA-9c.
-        return ("a sub-agent cannot load a tool pack yet. Name its tools "
-                "instead."), None
+    why, packs = _pack_refusal(raw.get("packs"), held_packs)
+    if why:
+        return why, None
     tools = _tools_of(raw.get("tools"))
     if tools is None:
         return "its tools must be a list of tool names.", None
@@ -317,7 +371,7 @@ def _refusal(
             return (f"'{_clip(name)}' is not a read-only tool, and a sub-agent may "
                     "only read. Do that step yourself after the sub-agents "
                     "answer."), None
-    return "", Job(number=0, job=text.strip(), tools=tools, tier=tier)
+    return "", Job(number=0, job=text.strip(), tools=tools, tier=tier, packs=packs)
 
 
 def _one_of_each(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -344,12 +398,26 @@ def _loads(raw: Any) -> Any:
         return None
 
 
+def _refusal_line(number: int, raw: Any, why: str) -> str:
+    """The one line of a job that does not run: ``Job 2 ("...") did not run: why``."""
+    label = _label(number, raw)
+    return f"{label[0].upper()}{label[1:]} did not run: {why}"
+
+
+def job_refusal(job: Job, why: str) -> str:
+    """The line of a valid *job* that a later check stops, in the shape of
+    :func:`parse_jobs`. The spawn uses it for a pack that gives a child no
+    tool, and for a child past the tool cap (OA-9c)."""
+    return _refusal_line(job.number, {"job": job.job}, why)
+
+
 def parse_jobs(
     raw: str | list[Any],
     *,
     parent_tools: Collection[str],
     read_only: Callable[[str], bool] = annotated_read_only,
     delegating: Collection[str] = (),
+    held_packs: Collection[str] | None = None,
 ) -> JobPlan:
     """Check the ``jobs`` of one spawn call against the parent run (§6.2).
 
@@ -359,6 +427,9 @@ def parse_jobs(
     specialist tools of the parent. They get the hand-off reason.
     *read_only* says whether a tool reads only. OA-9b passes the
     parent's own view of its tools, and the default reads the risk registry.
+    *held_packs* (OA-9c) is ``PackRun.holds()`` of the parent run, read on the
+    parent frame. A job may name only those packs. ``None`` means that no
+    record could be read, and then a job that names a pack does not run.
 
     The first :data:`MAX_JOBS` jobs are checked, and a valid one runs. Each
     job past the cap gets its name in one line and does not run, as in
@@ -369,15 +440,15 @@ def parse_jobs(
         return JobPlan(error=_CALL_SHAPE)
     parent = frozenset(parent_tools)
     handoff = _handoff_tools() | frozenset(delegating)
+    packs = None if held_packs is None else frozenset(str(s) for s in held_packs)
     ready: list[Job] = []
     refused: list[str] = []
     for number, entry in enumerate(jobs[:MAX_JOBS], start=1):
-        why, job = _refusal(entry, parent, read_only, handoff)
+        why, job = _refusal(entry, parent, read_only, handoff, packs)
         if job is None:
-            label = _label(number, entry)
-            refused.append(f"{label[0].upper()}{label[1:]} did not run: {why}")
+            refused.append(_refusal_line(number, entry, why))
             continue
-        ready.append(Job(number=number, job=job.job, tools=job.tools, tier=job.tier))
+        ready.append(dataclasses.replace(job, number=number))
     left_out = jobs[MAX_JOBS:]
     if left_out:
         shown = left_out[:MAX_NAMED_OVERFLOW]
@@ -550,7 +621,9 @@ def child_tool_scope(agent_name: object, scope: list[str] | None) -> list[str] |
 
     Any other agent gets *scope* back. A worker with no job tool gets the
     default scope, because an empty list would read as "inject every tool"
-    (§4.5, OA-9a 4).
+    (§4.5, OA-9a 4). The pack tools of a job (OA-9c) are not in it: they are
+    the worker's own tools, and this scope narrows only the injected platform
+    tools. :func:`child_pin` names both.
     """
     if str(agent_name or "") not in INTERNAL_AGENTS:
         return scope
@@ -581,6 +654,66 @@ def child_pin(allowed: Collection[str]) -> list[Any]:
         return f"{name} is not a tool of this sub-agent job. Nothing ran."
 
     return [WithholdTools(foreign), RefuseTools(foreign, answer)]
+
+
+# ── Packs in a child (OA-9c, §6.7) ──────────────────────────────────────────
+
+
+def child_may_hold(name: str, read_only: Callable[[str], bool] = annotated_read_only) -> bool:
+    """True when a child may hold the pack tool *name* (OA-9c, §6.5).
+
+    It is the test of :func:`parse_jobs` for a named tool, less the check
+    against the parent's ``run_tools``: the risk registry marks the tool
+    read-only (:func:`annotated_read_only`), and SUB-1 does not block it. So
+    it asks no member, starts no agent and makes no model call of its own. A
+    tool with no entry in the registry is not read-only, so it stays out.
+    """
+    name = str(name or "")
+    if not name or name in MEMBER_TOOLS or name in EXTRA_CALL_TOOLS:
+        return False
+    if name in _handoff_tools():
+        return False
+    return bool(read_only(name))
+
+
+def child_allowed(job: Job | None) -> frozenset[str]:
+    """The tool names that the child of *job* may call (OA-9c).
+
+    The tools of the job and the names of its pack tools. The worker passes
+    this set to :func:`child_pin`, and the spawn reads it to check the source
+    of an item. Empty for no job.
+    """
+    if job is None:
+        return frozenset()
+    if not job.pack_tools:
+        return frozenset(job.tools)
+    from acb_skills.tool_guard import tool_name
+
+    return frozenset(job.tools) | frozenset(tool_name(t) for t in job.pack_tools)
+
+
+def job_pack_run(agent_name: object, ctx: Mapping[str, Any] | None = None) -> str:
+    """The run key of the pack tools of the job of *agent_name*, or ``""``.
+
+    OA-9c. *ctx* is a run context that holds the job at :data:`JOB_KEY`, or
+    ``None`` for this frame. Only an internal agent (the worker) gets a key,
+    and only for a job with pack tools. The executor binds it as the run key
+    of the child's own run, so the child's pack tools act there and nowhere
+    else. It never raises.
+    """
+    if str(agent_name or "") not in INTERNAL_AGENTS:
+        return ""
+    if ctx is None:
+        job = bound_job()
+    else:
+        try:
+            value = ctx.get(JOB_KEY)
+        except Exception:
+            return ""
+        job = value if isinstance(value, Job) else None
+    if job is None or not job.pack_tools:
+        return ""
+    return str(job.pack_run or "")
 
 
 # ── The flag and the spawn count (§6.2) ─────────────────────────────────────

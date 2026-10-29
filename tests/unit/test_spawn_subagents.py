@@ -516,11 +516,15 @@ def test_a_child_gets_no_delegation_tool_and_no_spawn_tool(spawn) -> None:
     assert fake.calls == []
 
 
-def test_a_job_that_names_a_pack_does_not_run(spawn) -> None:
+def test_a_job_that_names_a_pack_with_no_record_does_not_run(monkeypatch, spawn) -> None:
+    """OA-9c, fail closed: the frame binds no record of the packs, so a job that
+    names a pack does not run, and the builder is never asked."""
     fake = spawn()
+    asked: list[str] = []
+    monkeypatch.setattr(at, "_pack_builder", lambda: asked.append("build"))
     text = _run(at.spawn_subagents(_jobs(_job(packs=["email"]))))
-    assert fake.calls == []
-    assert "cannot load a tool pack yet" in text
+    assert fake.calls == [] and asked == []
+    assert "this chat holds no tool pack now" in text
 
 
 def test_a_read_tool_of_the_parent_reaches_the_child_job(spawn) -> None:
@@ -825,3 +829,347 @@ def test_a_real_sub_run_of_the_worker_holds_the_job_tools_only(tmp_path, monkeyp
             assert "fact 1" in text or '"items"' in text, text
     finally:
         release_tenant(token)
+
+
+# ── OA-9c: packs in a child ─────────────────────────────────────────────────
+# A job names a pack that the parent run holds now. The spawn builds it on the
+# parent frame through the one builder (here a fake, for the spawn rules), and
+# the child keeps the read tools. The real builder is in test_pack_guards.py.
+
+SESSION = "chat-spawn-packs"
+PARENT_KEY = "key-of-the-parent-run"
+_RO = {"read_only": True, "destructive": False, "idempotent": True, "open_world": False}
+_RW = {"read_only": False, "destructive": False, "idempotent": False, "open_world": False}
+
+
+def _pack_frame(*held: str, no_egress: bool = False) -> None:
+    """The parent frame of a run that holds the packs *held*, as the executor
+    binds it (``PACK_RUN_KEY`` and ``PACKS_KEY``, OA-7c)."""
+    from acb_skills import tool_packs
+
+    record = tool_packs.PackRun(
+        org=ORG, session=SESSION, member_part="m", turn=1, stored=True,
+        slugs=tuple(held), first={}, held={s: False for s in held}, refusals={})
+    bind_artifact_context(
+        run_id="run-packs", agent_name="orchestrator", session_id=SESSION,
+        member="m@x.test", no_egress=no_egress, run_tools=PARENT_TOOLS,
+        **{tool_packs.PACK_RUN_KEY: PARENT_KEY, tool_packs.PACKS_KEY: record},
+    )
+
+
+def _probe(name: str) -> Any:
+    async def _tool() -> str:
+        return name
+
+    _tool.__name__ = name
+    return _tool
+
+
+class FakeBuild:
+    """The fake of ``_tool_injection._pack_tools``: it records each call and
+    gives the tools of :attr:`by_slug`, as a ``PackBuild`` gives them."""
+
+    def __init__(self, by_slug: dict[str, list[str]]) -> None:
+        self.by_slug = by_slug
+        self.calls: list[tuple[str, dict[str, Any], frozenset[str]]] = []
+
+    async def __call__(self, slug: str, ctx: Any, *, holds: Any = frozenset()) -> Any:
+        import types
+
+        self.calls.append((slug, dict(ctx), frozenset(holds)))
+        return types.SimpleNamespace(tools=tuple(_probe(n) for n in self.by_slug.get(slug, [])))
+
+
+@pytest.fixture()
+def packs(monkeypatch, spawn):
+    """The spawn fixture, a parent frame that holds ``crm-records`` and
+    ``email``, and a fake builder. ``probe_read_*`` is read-only in the risk
+    registry, and ``probe_write_*`` is not."""
+    from acb_skills import tool_annotations as ta
+
+    for name in ("probe_read_a", "probe_read_b", "probe_read_mail"):
+        monkeypatch.setitem(ta.TOOL_ANNOTATIONS, name, dict(_RO))
+    monkeypatch.setitem(ta.TOOL_ANNOTATIONS, "probe_write_a", dict(_RW))
+    build = FakeBuild({"crm-records": ["probe_read_a", "probe_write_a", "probe_read_b"],
+                       "email": ["probe_read_mail", "probe_write_a"]})
+    monkeypatch.setattr(at, "_pack_builder", lambda: build)
+    _pack_frame("crm-records", "email")
+    fake = spawn()
+    return fake, build
+
+
+def _names(job: sc.Job) -> list[str]:
+    return [t.__name__ for t in job.pack_tools]
+
+
+def test_a_child_gets_the_read_tools_of_a_pack_that_the_parent_holds(packs) -> None:
+    """Acceptance: no write reaches the child, in an open chat too. Mutation:
+    drop the ``child_may_hold`` filter -> ``probe_write_a`` reaches the child."""
+    from acb_skills import tool_packs
+
+    fake, build = packs
+    _run(at.spawn_subagents(_jobs(_job("Read the deal.", packs=["crm-records"],
+                                       tools=["remember"]))))
+    (job,) = fake.jobs
+    assert job is not None and job.packs == ("crm-records",)
+    assert _names(job) == ["probe_read_a", "probe_read_b"]
+    assert sc.child_allowed(job) == {"remember", "probe_read_a", "probe_read_b"}
+    ((slug, ctx, holds),) = build.calls
+    assert slug == "crm-records" and holds == {"remember"}
+    assert ctx[tool_packs.PACK_RUN_KEY] == job.pack_run
+    assert ctx[tool_packs.PACKS_KEY] is None
+    assert ctx["session_id"] == SESSION and ctx["no_egress"] is False
+
+
+def test_the_child_key_is_fresh_for_each_child(packs) -> None:
+    """Never the parent's key, and never a sibling's. Mutation: reuse the
+    parent's ``PACK_RUN_KEY`` -> red."""
+    fake, _build = packs
+    _run(at.spawn_subagents(_jobs(_job("One.", packs=["crm-records"]),
+                                  _job("Two.", packs=["crm-records"]))))
+    keys = [j.pack_run for j in fake.jobs if j is not None]
+    assert len(keys) == 2 and len(set(keys)) == 2
+    assert PARENT_KEY not in keys and all(len(k) >= 24 for k in keys)
+    first, second = (j.pack_tools for j in fake.jobs if j is not None)
+    assert not set(map(id, first)) & set(map(id, second)), "each child has its own tools"
+
+
+def test_a_pack_that_the_parent_lacks_is_refused_and_builds_nothing(packs) -> None:
+    fake, build = packs
+    text = _run(at.spawn_subagents(_jobs(_job("Plan.", packs=["projects-plan"]))))
+    assert fake.calls == [] and build.calls == []
+    assert "this chat does not hold the tool pack 'projects-plan'" in text
+
+
+def test_a_pack_with_no_read_tool_stops_the_job_and_uses_no_spawn(packs) -> None:
+    """A pack that gives the child no tool stops its job with one line, and
+    the others run. A call with no job left uses no spawn."""
+    fake, build = packs
+    build.by_slug["crm-records"] = ["probe_write_a"]
+    text = _run(at.spawn_subagents(_jobs(_job("Deal.", packs=["crm-records"]),
+                                         _job("Web.", tools=["web_search"]))))
+    assert [j.number for j in fake.jobs if j is not None] == [2]
+    assert ('Job 1 ("Deal.") did not run: the tool pack \'crm-records\' has no read '
+            "tool that a sub-agent may hold here.") in text
+    for _ in range(2):  # the stopped calls used no spawn of the turn
+        _run(at.spawn_subagents(_jobs(_job("Deal.", packs=["crm-records"]))))
+    assert "fact 1" in _run(at.spawn_subagents(_jobs(_job("Web.", tools=["web_search"]))))
+
+
+def test_a_child_past_the_tool_cap_is_refused(monkeypatch, packs) -> None:
+    """The cap of a request (``MAX_REQUEST_TOOLS``) counts the tools of the
+    job plus the pack tools. Mutation: drop the count -> the child runs."""
+    from acb_skills import tool_packs
+
+    fake, _build = packs
+    monkeypatch.setattr(tool_packs, "MAX_REQUEST_TOOLS", 3)
+    job = _job("Deal.", packs=["crm-records"], tools=["web_search", "fetch_page"])
+    text = _run(at.spawn_subagents(_jobs(job)))
+    assert fake.calls == []
+    assert "its tools and packs hold 4 tools, and a sub-agent holds at most 3" in text
+    monkeypatch.setattr(tool_packs, "MAX_REQUEST_TOOLS", 4)
+    _run(at.spawn_subagents(_jobs(job)))
+    assert len(fake.calls) == 1, "at the cap the child runs"
+
+
+def test_a_pack_that_reads_strangers_marks_the_chat_and_holds_each_child(packs) -> None:
+    """The email owner reads stranger text. The spawn builds each pack of the
+    call held, marks the chat on the PARENT frame before any child starts, and
+    starts each child with ``no_egress``. Mutations: drop the mark -> the chat
+    reads clear. Drop ``_delegate_held(held)`` -> a child is open, because the
+    fixture reads the mark as clear, so the hold comes from the spawn alone."""
+    fake, build = packs
+    assert eg.read_untrusted_answer(artifact_context()) is False
+    _run(at.spawn_subagents(_jobs(_job("Mail.", packs=["email"]),
+                                  _job("Deal.", packs=["crm-records"]),
+                                  _job("Web.", tools=["web_search"]))))
+    assert eg.read_untrusted_answer(artifact_context()) is True
+    assert fake.held == [True, True, True]
+    assert [ctx["no_egress"] for _slug, ctx, _h in build.calls] == [True, True]
+    assert _names(fake.jobs[0]) == ["probe_read_mail"]
+
+
+def test_a_crm_pack_marks_nothing_and_holds_no_child(packs) -> None:
+    fake, build = packs
+    _run(at.spawn_subagents(_jobs(_job("Deal.", packs=["crm-records"]))))
+    assert eg.read_untrusted_answer(artifact_context()) is False
+    assert fake.held == [False]
+    assert [ctx["no_egress"] for _slug, ctx, _h in build.calls] == [False]
+
+
+def test_an_email_pack_that_gives_no_tool_marks_nothing(packs) -> None:
+    """A job that does not run reads nothing, so the chat stays clear."""
+    fake, build = packs
+    build.by_slug["email"] = ["probe_write_a"]
+    text = _run(at.spawn_subagents(_jobs(_job("Mail.", packs=["email"]))))
+    assert fake.calls == [] and "has no read tool" in text
+    assert eg.read_untrusted_answer(artifact_context()) is False
+
+
+def test_a_held_chat_builds_the_pack_held(packs) -> None:
+    """The parent frame binds ``no_egress``: the builder reads it."""
+    fake, build = packs
+    _pack_frame("crm-records", no_egress=True)
+    _run(at.spawn_subagents(_jobs(_job("Deal.", packs=["crm-records"]))))
+    assert [ctx["no_egress"] for _slug, ctx, _h in build.calls] == [True]
+    assert fake.held == [True]
+
+
+def test_with_no_packs_key_the_oa_9b_path_is_unchanged(monkeypatch, packs) -> None:
+    """No job names a pack: no build, and the job is the OA-9b job."""
+    fake, _build = packs
+
+    def _boom() -> Any:
+        raise AssertionError("no job names a pack, so nothing builds one")
+
+    monkeypatch.setattr(at, "_pack_builder", _boom)
+    text = _run(at.spawn_subagents(_jobs(_job(tools=["remember"]))))
+    assert "fact 1" in text
+    (job,) = fake.jobs
+    assert job.pack_tools == () and job.pack_run == "" and job.packs == ()
+
+
+def test_the_flag_off_builds_no_pack(monkeypatch, packs) -> None:
+    fake, build = packs
+    monkeypatch.setattr(get_settings(), "spawn_subagents_orgs", "")
+    text = _run(at.spawn_subagents(_jobs(_job(packs=["crm-records"]))))
+    assert text == at._SPAWN_OFF and build.calls == [] and fake.calls == []
+
+
+def test_a_pack_tool_of_the_child_is_a_source_it_may_name(packs) -> None:
+    fake, _build = packs
+
+    async def _cites(fake, job):
+        return json.dumps({"items": [
+            {"value": "Deal is won", "kind": "quoted", "source": "probe_read_a"},
+            {"value": "Other", "kind": "quoted", "source": "probe_write_a"}]})
+
+    fake.behaviours[1] = _cites
+    text = _run(at.spawn_subagents(_jobs(_job("Deal.", packs=["crm-records"]))))
+    assert "- [quoted] Deal is won (source: probe_read_a)" in text
+    assert f"- [inferred] Other (source: {sc.CHILD_SOURCE})" in text
+
+
+def test_the_docstring_names_the_packs_key() -> None:
+    doc = at.spawn_subagents.__doc__ or ""
+    assert '"packs"' in doc and "read tools" in doc
+
+
+# ── OA-9c end to end: the real builder, the real sub-run seam, the real worker ─
+
+
+def test_a_real_child_runs_its_pack_tool_under_its_own_key(tmp_path, monkeypatch) -> None:
+    """``spawn_subagents`` -> the real ``_pack_tools`` on a stub CRM owner ->
+    ``_run_sub_agent_streaming`` -> ``run_agent`` -> the real worker and pair.
+
+    The pack tool acts only when the run key that the spawn minted reaches the
+    batch run of the child, through two bindings. Mutations: drop
+    ``_job_pack_keys`` from the batch binding, or bind ``None`` in
+    ``_without_pack_keys`` -> the body runs 0 times."""
+    import shutil
+    import types
+
+    import httpx
+    from acb_skills import tool_annotations as ta
+    from acb_skills import tool_packs
+    from orchestrator import _tool_injection as ti
+    from orchestrator import executor
+
+    ran: list[str] = []
+
+    async def get_record(record_id: str = "") -> str:
+        ran.append("get_record")
+        return "Deal D-1 is won"
+
+    async def log_activity(note: str = "") -> str:
+        ran.append("log_activity")
+        return "logged"
+
+    monkeypatch.setitem(ta.TOOL_ANNOTATIONS, "get_record", dict(_RO))
+    monkeypatch.setitem(ta.TOOL_ANNOTATIONS, "log_activity", dict(_RW))
+    stub = types.SimpleNamespace(_agent_tools=lambda: [get_record, log_activity])
+    monkeypatch.setattr(ti, "_pack_owner_module",
+                        lambda owner: stub if owner == "crm-assistant" else None)
+    monkeypatch.setenv("AGENT_PERMISSION_MODE", "approve_all")
+    monkeypatch.setattr(get_settings(), "agents_clone_dir", str(tmp_path / "agents"))
+    monkeypatch.setattr(get_settings(), "spawn_subagents_orgs", ORG)
+    monkeypatch.setattr(at, "_delegating_names", lambda: frozenset())
+    agent_dir = tmp_path / "agent-worker-copy"
+    shutil.copytree(REPO_ROOT / WORKER_DIR, agent_dir,
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    config = json.loads((agent_dir / "config.json").read_text(encoding="utf-8"))
+    wires: list[WireModel] = []
+
+    async def _no_git(*_a: Any, **_k: Any) -> str:
+        return ""
+
+    for name in ("_detect_agent_commits", "_install_push_guard", "_settle_agent_push",
+                 "_get_current_head"):
+        monkeypatch.setattr(executor, name, _no_git)
+
+    class _Loaded:
+        agent_name = "worker"
+
+        def __init__(self) -> None:
+            self.agent_dir = agent_dir
+            self.config = config
+
+        def build_agents(self) -> list[Any]:
+            agents = load_agent_module(WORKER_DIR).build_agents()
+            wire = WireModel([completion(calls=[("get_record", '{"record_id": "D-1"}'),
+                                                ("log_activity", "{}")]),
+                              completion(text=_items(1))])
+            wires.append(wire)
+            oc = agents[0].client.client
+            oc._client = httpx.AsyncClient(
+                transport=httpx.MockTransport(wire), event_hooks=oc._client.event_hooks)
+            return agents
+
+        def cleanup(self) -> None:
+            return None
+
+    class _Ctx:
+        def __enter__(self) -> _Loaded:
+            return _Loaded()
+
+        def __exit__(self, *_a: Any) -> bool:
+            return False
+
+    async def _load(*_a: Any, **_k: Any) -> _Ctx:
+        return _Ctx()
+
+    async def _not_marked() -> bool:
+        return False
+
+    monkeypatch.setattr(executor, "_load_agent_off_loop", _load)
+    monkeypatch.setattr(executor, "build_integrations", lambda *a, **k: ({}, {}))
+    monkeypatch.setattr(at, "_session_marked", _not_marked)
+    import gateway.routes.agent as routes_agent
+
+    monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
+    sc._SPAWNS.clear()
+    token = bind_tenant(ORG)
+    try:
+        with artifact_context_scope():
+            record = tool_packs.PackRun(
+                org=ORG, session="thread-e2e", member_part="m", turn=1, stored=True,
+                slugs=("crm-records",), first={}, held={"crm-records": False}, refusals={})
+            bind_artifact_context(
+                run_id="run-e2e-packs", agent_name="orchestrator", session_id="thread-e2e",
+                workspace_root=str(tmp_path), no_egress=False, member="m@x.test",
+                batch_thread=False, run_tools=frozenset({"remember"}),
+                **{tool_packs.PACK_RUN_KEY: PARENT_KEY, tool_packs.PACKS_KEY: record},
+            )
+            text = asyncio.run(at.spawn_subagents(
+                _jobs(_job("Read deal D-1.", packs=["crm-records"]))))
+            assert artifact_context()[tool_packs.PACK_RUN_KEY] == PARENT_KEY
+    finally:
+        release_tenant(token)
+    assert wires, text
+    assert wires[-1].tool_names(0) == ["get_record"], "the write never reaches the child"
+    assert ran == ["get_record"], (ran, text)
+    answers = [str(m.get("content")) for m in wires[-1].bodies[1]["messages"]
+               if m.get("role") == "tool"]
+    assert any("Deal D-1 is won" in a for a in answers), answers
+    assert not any("logged" in a for a in answers), "the write is not even in the pool"
+    assert "fact 1" in text

@@ -183,6 +183,18 @@ def test_the_parser_refuses_each_blocked_tool(tool: str) -> None:
     assert len(plan.refused) == 1 and "did not run" in plan.refused[0]
 
 
+@pytest.mark.parametrize("tool", EVERY_BLOCKED)
+def test_no_blocked_tool_reaches_a_child_through_a_pack(tool: str) -> None:
+    """OA-9c: a pack tool joins a child only through ``child_may_hold``. With
+    the marks of the three pack owners loaded, each blocked tool fails it."""
+    from tests.unit._native_maf_harness import load_agent_module
+
+    for rel in ("apps/agents/agent-email-assistant", "apps/agents/agent-crm",
+                "apps/agents/agent-projects"):
+        load_agent_module(rel)
+    assert not sc.child_may_hold(tool), f"a pack could give a child {tool}"
+
+
 def test_the_parser_accepts_a_read_tool() -> None:
     plan = sc.parse_jobs(
         json.dumps([{"job": "Do a thing.", "tools": ["remember", "web_search"]}]),

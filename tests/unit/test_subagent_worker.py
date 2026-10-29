@@ -348,6 +348,31 @@ def test_the_worker_reads_no_floor_tool_of_its_own_scope(_approve_all) -> None:
     assert wire.tool_names(0) == []
 
 
+def test_the_worker_holds_the_pack_tools_of_its_job(_approve_all) -> None:
+    """OA-9c: the pack tools of a job are the worker's own tools, and the pair
+    lets them through beside the job tools, and nothing else. Mutation: the
+    worker pins ``job.tools`` only -> the pack tool is withheld -> red."""
+    from orchestrator import _tool_injection as ti
+
+    calls: list[str] = []
+    job = sc.Job(1, "Read the deal.", ("remember",), "fast", packs=("crm-records",),
+                 pack_tools=(counted("get_record", calls),), pack_run="key-child")
+    wire = WireModel([completion(calls=[("get_record", "{}")]),
+                      completion(text='{"items": []}')])
+    with artifact_context_scope():
+        bind_artifact_context(run_id="run-p", agent_name="orchestrator", no_egress=False)
+        sc.bind_job(job)
+        agents = [build_worker(wire)]
+        ti._inject_agent_tools(
+            agents, is_sub_agent=True,
+            tool_scope=sc.child_tool_scope("worker", CONFIG["tool_scope"]),
+            agent_name="worker", agent_config=CONFIG, no_egress=False,
+        )
+        asyncio.run(agents[0].run("do it"))
+    assert sorted(wire.tool_names(0)) == ["get_record", "remember"]
+    assert calls == ["get_record"]
+
+
 def test_child_tool_scope_follows_the_job_for_the_worker_only(_frame) -> None:
     assert sc.child_tool_scope("projects-assistant", ["a", "b"]) == ["a", "b"]
     assert sc.child_tool_scope("projects-assistant", None) is None

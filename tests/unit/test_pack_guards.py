@@ -41,8 +41,11 @@ import pytest
 
 pytest.importorskip("agent_framework", reason="MAF not installed")
 
+from acb_skills import agent_tools as at
 from acb_skills import egress as eg
 from acb_skills import skill_families as sf
+from acb_skills import subagent_contract as sc
+from acb_skills import tool_annotations as ta
 from acb_skills.write_artifact import (
     artifact_context,
     artifact_context_scope,
@@ -1162,3 +1165,180 @@ async def test_a_crm_pack_run_with_no_user_refuses() -> None:
         search = _named(build, "search_crm")
         with pytest.raises(RuntimeError, match="No acting user"):
             await search("Acme")
+
+
+# ── OA-9c: packs in a spawn child (§6.7, the child case of §5) ───────────────
+# The spawn builds the pack of a child on the parent frame, through this one
+# builder (``agent_tools._child_pack_tools`` -> ``_pack_tools``), with a run
+# key minted for that child. The child keeps the tools that
+# ``subagent_contract.child_may_hold`` lets through: read tools only.
+
+PROJECTS = "projects-assistant"
+PROJECTS_DIR = "apps/agents/agent-projects"
+_WRITE = {"read_only": False, "destructive": False, "idempotent": False, "open_world": False}
+
+#: The tools that each real pack gives a child (2026-10-29). The one marker
+#: decides: ``read_only=True`` in the risk registry. No email tool says it, so
+#: an email pack gives a child no tool and its job does not run.
+CHILD_TOOLS: dict[str, frozenset[str]] = {
+    "email": frozenset(),
+    "email-setup": frozenset(),
+    "crm-records": frozenset({
+        "crm_search_notes", "get_pipeline", "get_record", "get_timeline", "search_crm"}),
+    "projects": frozenset({
+        "calendar", "find_tasks", "list_tasks", "my_task", "my_work", "open_in_app",
+        "people_for", "project_summary", "projects_tree", "render_board", "render_tasks",
+        "task_detail", "vocabulary"}),
+    "projects-plan": frozenset({
+        "analytics_finished", "analytics_load", "analytics_outlook", "analytics_stuck",
+        "analytics_throughput", "find_conflicts", "fit_for_task", "needs_attention",
+        "rebalance", "recurrence", "render_timeline", "report_list", "report_recipients",
+        "report_render", "task_dataset", "team_capacity", "waiting_agent_requests"}),
+    "projects-structure": frozenset({
+        "intake_queue", "my_areas", "my_contexts", "notifications", "project_access",
+        "project_views", "show_view", "watchers"}),
+    "projects-bulk": frozenset({"list_reminders", "my_led_projects"}),
+}
+
+
+def _owners(monkeypatch, **by_owner: Any) -> None:
+    """The owner module that the builder loads for each owner (``_pack_owner_module``)."""
+    monkeypatch.setattr(ti, "_pack_owner_module", lambda owner: by_owner.get(owner))
+
+
+async def _child(*packs: str, held: bool = False) -> tuple[str, Any]:
+    """The spawn's build of a child's packs, on this (parent) frame."""
+    job = sc.Job(1, "Read.", (), "fast", packs=packs)
+    return await at._child_pack_tools(job, artifact_context(), held=held)
+
+
+def _no_egress_probe(name: str, seen: list[Any]) -> Any:
+    async def body() -> None:
+        seen.append(artifact_context().get("no_egress"))
+
+    return _probe(name, body=body)
+
+
+async def test_a_child_with_the_email_pack_gets_the_held_set_less_the_writes(
+    monkeypatch,
+) -> None:
+    """§5, OA-9c, in a held chat: the main assistant's held set, read tools
+    only. Mutation: drop the ``child_may_hold`` filter -> ``snooze_email``
+    reaches the child. Drop the held drop -> ``send_email`` reaches both."""
+    for name in ("read_email", "query_inbox"):
+        monkeypatch.setitem(ta.TOOL_ANNOTATIONS, name, dict(_READ_ONLY))
+    monkeypatch.setitem(ta.TOOL_ANNOTATIONS, "snooze_email", dict(_WRITE))
+    monkeypatch.setitem(ta.TOOL_ANNOTATIONS, "send_email", dict(_SENDS))
+    seen: list[Any] = []
+    stub = _stub(_no_egress_probe("read_email", seen), _probe("query_inbox"),
+                 _probe("send_email", _SENDS), _probe("snooze_email", _WRITE))
+    _owners(monkeypatch, **{EA: stub})
+    from acb_skills.tool_packs import PACK_RUN_KEY
+
+    with _run():
+        await eg.mark_untrusted_answer()  # the chat read mail on an earlier turn
+        main = await _build("email", stub)
+        why, job = await _child("email")
+    assert why == "" and main.held is True and "send_email" in main.dropped
+    main_names = {t.__name__ for t in main.tools}
+    child = {t.__name__ for t in job.pack_tools}
+    assert child == {n for n in main_names if sc.child_may_hold(n)}
+    assert child == {"read_email", "query_inbox"}
+    with _run(run_id="child-run", **{PACK_RUN_KEY: job.pack_run}):
+        await next(t for t in job.pack_tools if t.__name__ == "read_email")(email_id="m-1")
+    assert seen == [True], "the held answer reaches the child's call"
+
+
+async def test_a_child_in_an_open_chat_gets_the_open_read_set_and_no_write(
+    monkeypatch,
+) -> None:
+    """§5, OA-9c, in an open chat, on the real CRM owner: the main assistant
+    holds the nine tools, and the child holds the five reads. No write and no
+    send reaches the child (verdict acceptance, open chat)."""
+    _mode(monkeypatch, "live")
+    crm = _crm_module()
+    _owners(monkeypatch, **{CRM: crm})
+    with _run():
+        main = await _build("crm-records", crm)
+        why, job = await _child("crm-records")
+    assert main.held is False and {t.__name__ for t in main.tools} == CRM_NINE
+    child = {t.__name__ for t in job.pack_tools}
+    assert why == "" and child == CRM_NINE - CRM_WRITES == CHILD_TOOLS["crm-records"]
+
+
+async def test_an_email_child_builds_held_in_an_open_chat(monkeypatch) -> None:
+    """The owner reads stranger text, so ``_with_pack_tools`` builds the pack
+    held in a clean chat too. The spawn marks the chat before the child
+    starts, so no pack call of a child may clear ``no_egress``. Mutation:
+    build with ``held=False`` -> the call runs with ``no_egress`` False."""
+    monkeypatch.setitem(ta.TOOL_ANNOTATIONS, "read_email", dict(_READ_ONLY))
+    seen: list[Any] = []
+    stub = _stub(_no_egress_probe("read_email", seen))
+    _owners(monkeypatch, **{EA: stub})
+    from acb_skills.tool_packs import PACK_RUN_KEY
+
+    with _run():
+        main = await _build("email", stub)
+        (job,), stopped = await at._with_pack_tools(
+            (sc.Job(1, "Read.", (), "fast", packs=("email",)),), artifact_context())
+    assert main.held is False and stopped == ()
+    with _run(run_id="child-run", **{PACK_RUN_KEY: job.pack_run}):
+        await job.pack_tools[0](email_id="m-1")
+    assert seen == [True]
+
+
+async def test_a_child_pack_tool_acts_only_under_its_own_key(monkeypatch) -> None:
+    """The spawn mints one key for each child. The parent frame, a sibling's
+    frame and a frame with no key all refuse the tool. Mutation: the spawn
+    reuses the parent's key -> the parent frame runs it -> red."""
+    ran: list[str] = []
+
+    async def body() -> None:
+        ran.append("body")
+
+    monkeypatch.setitem(ta.TOOL_ANNOTATIONS, "read_email", dict(_READ_ONLY))
+    _owners(monkeypatch, **{EA: _stub(_probe("read_email", body=body))})
+    from acb_skills.tool_packs import PACK_RUN_KEY
+
+    refused = ti.PACK_CALL_REFUSED.format(tool="read_email")
+    with _run():
+        _, one = await _child("email", held=True)
+        _, two = await _child("email", held=True)
+        tool = one.pack_tools[0]
+        assert await tool(email_id="m-1") == refused, "the parent frame"
+    assert await tool(email_id="m-1") == refused, "a frame with no run"
+    with _run(run_id="child-2", **{PACK_RUN_KEY: two.pack_run}):
+        assert await tool(email_id="m-1") == refused, "a sibling"
+    with _run(run_id="child-1", **{PACK_RUN_KEY: one.pack_run}):
+        assert await tool(email_id="m-1") == "read m-1"
+    assert ran == ["body"]
+    assert len({one.pack_run, two.pack_run, "key-r-1"}) == 3
+
+
+@pytest.mark.parametrize("slug", sorted(CHILD_TOOLS))
+async def test_the_tools_that_each_real_pack_gives_a_child(monkeypatch, slug: str) -> None:
+    """The real owners, the real builder and the one marker. A pack with no
+    read tool stops the job. Mutation: read another marker (``open_world``)
+    -> the email writes reach a child -> red."""
+    from acb_skills.tool_guard import tool_name
+
+    _owners(monkeypatch, **{EA: _module(), CRM: _crm_module(),
+                            PROJECTS: load_agent_module(PROJECTS_DIR)})
+    with _run():
+        why, job = await _child(slug, held=True)
+    want = CHILD_TOOLS[slug]
+    if not want:
+        assert job is None and f"the tool pack '{slug}' has no read tool" in why
+        return
+    assert why == "" and {tool_name(t) for t in job.pack_tools} == want
+
+
+def test_the_child_build_calls_the_one_builder_and_copies_no_body() -> None:
+    """OA-9c calls ``_pack_tools`` and copies none of the held rule. Mutation:
+    decide the held set in the spawn -> a body name shows here -> red."""
+    src = inspect.getsource(at._child_pack_tools)
+    for body in ("_is_egress", "_pack_held", "_run_no_egress", "is_egress_tool",
+                 "session_mark_state"):
+        assert body not in src, body
+    assert "_pack_builder()" in src
+    assert at._pack_builder() is ti._pack_tools
