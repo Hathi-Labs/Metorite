@@ -5563,7 +5563,7 @@ target database first** (it is on no real box yet — the deploy path is
 broken, WS-25), and the mapping decision below still stands. Kept struck
 because the reasoning is the reusable part: Metorite is becoming
 multi-tenant and all seventeen `pm_*` tables carry no `organization_id`
-(`specs/multi_tenancy.md` §2). Importing a real workspace now writes hundreds
+(`specs/archive/multi_tenancy.md` §2). Importing a real workspace now writes hundreds
 of tasks, activities, attachments and grants into unscoped tables, which turns
 a one-line default on empty tables into a backfill plus an `ALTER` on live
 rows. The import is not wrong, it is **early**: land WS-29a first. —

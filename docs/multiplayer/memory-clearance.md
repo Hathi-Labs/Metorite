@@ -8,7 +8,7 @@ adversarially reviewed and repaired twice** — line numbers move; re-verify at 
 **Verification commands:** [§9](#9-verification) · **Owner:** vjvarada
 **Companion to:** [`README.md`](README.md) (the multiplayer room model) ·
 [`agent-kinds.md`](agent-kinds.md) (personal vs shared agents) ·
-`../../project-docs/specs/multi_user_organization_research.md` (org/RBAC)
+`../../project-docs/research/multi_user_organization_research.md` (org/RBAC)
 
 > **What the three passes corrected, so the anchors below can be trusted for the reason they
 > should be — that they were wrong before and were caught.**
