@@ -22,6 +22,8 @@ export type ModuleState =
   | "failed"
   | "short"
   | "refused"
+  /** Round 6: a walk read fewer records than Zoho holds. */
+  | "walk_short"
   /** Phase 2 only: the final sync did not read the module (review P1). */
   | "not_read"
   /** Phase 2 only: deals still wait for their contacts from Zoho (round 4). */
@@ -98,6 +100,8 @@ export const STATE_WORDS: Record<Exclude<ModuleState, "complete">, string> = {
   failed: "Some records did not save",
   short: "Metorite could not read every record",
   refused: "Zoho refused some records",
+  walk_short:
+    "Zoho sent fewer records than it holds, so Metorite cannot confirm it read them all",
   not_read:
     "The final sync did not read it, often because Zoho's daily API limit is almost used. Try again tomorrow, or leave it out",
   roles_waiting:

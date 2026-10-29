@@ -503,6 +503,14 @@ describe("CRM-Z10b the switch dialog", () => {
         "or leave them out. A deal you leave out keeps no linked contacts from Zoho",
     );
     expect(reasonWords({ ...rows[3], count: 1 })).toMatch(/^1 deal still waits for its contacts/);
+    // Round 6: a walk that read fewer records than Zoho holds has its own words.
+    const [short] = gapsOf(refusal("module_incomplete", "Tick them.", {
+      modules: [{ key: "organizations", label: "Companies", reason: "walk_short" }],
+    }));
+    expect(short.reason).toBe("walk_short");
+    expect(reasonWords(short)).toBe(
+      "Zoho sent fewer records than it holds, so Metorite cannot confirm it read them all",
+    );
     expect(gapsOf(refusal("run_open", "A sync runs now.", { modules }))).toEqual([]);
     expect(gapsOf(new Error("plain"))).toEqual([]);
   });
