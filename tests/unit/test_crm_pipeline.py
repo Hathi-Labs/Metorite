@@ -1086,7 +1086,8 @@ async def test_the_lane_query_joins_after_its_own_limit(
     joined = db.statements_touching("LEFT JOIN crm_companies")
 
     assert joined, "the board lost its organization-name projection"
-    assert "LIMIT :limit) base LEFT JOIN" in joined[0]
+    # "Show more" pages a lane, so the offset sits inside the limit too.
+    assert "LIMIT :limit OFFSET :offset) base LEFT JOIN" in joined[0]
     assert joined[0].rstrip().endswith("base.id DESC")
 
 
