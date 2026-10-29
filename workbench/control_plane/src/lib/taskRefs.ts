@@ -95,7 +95,7 @@ function isInsideUrl(text: string, index: number): boolean {
 //    Words that can also name a task ("issue", "bug", "ticket", "item") are
 //    left out on purpose: the lookup decides those.
 const OTHER_KINDS = new Set([
-  "pr", "prs", "pull", "order", "orders", "invoice", "invoices", "po", "receipt", "account",
+  "pr", "prs", "mr", "mrs", "pull", "order", "orders", "invoice", "invoices", "po", "receipt", "account",
   "sprint", "build", "release", "version", "v", "step", "phase", "batch", "room", "case",
   "rank", "ranked", "episode", "chapter", "section", "slide", "figure", "channel",
 ]);
@@ -103,7 +103,11 @@ const OTHER_KINDS = new Set([
 /** Rule 7: the word after the number that makes it a rank. */
 const RANKS = /^\s+(?:priority|priorities|place|spot|rank|choice|pick|seed|position|most|best|top)\b/i;
 
+/** Rule 7: a pull request, a merge request or a GitHub URL just before the `#`. */
+const PULL_BEFORE = /(?:\b(?:prs?|mrs?|pull[\s-]*requests?)|github\.com\/\S*)\s*:?\s*$/i;
+
 function isOtherKind(text: string, start: number, end: number): boolean {
+  if (PULL_BEFORE.test(text.slice(Math.max(0, start - 200), start))) return true;
   const before = text.slice(Math.max(0, start - 24), start).match(/([\p{L}]+)\.?\s*$/u);
   if (before && OTHER_KINDS.has(before[1].toLowerCase())) return true;
   return RANKS.test(text.slice(end, end + 24));

@@ -231,7 +231,7 @@ def instructions(scopes: Iterable[str] = ()) -> str:
     runs = agent_oauth.runs_enabled()
     protocol = _PROTOCOL_RUNS_ON.replace("{terminals}", _terminals()) if runs \
         else _PROTOCOL_RUNS_OFF
-    text += protocol + _ASKED_WORK + _ROUTINE_INSTRUCTIONS
+    text += protocol + _ASKED_WORK + _ROUTINE_INSTRUCTIONS + prompts.PR_RULE
     if runs:
         text += _RUN_INSTRUCTIONS
     return text

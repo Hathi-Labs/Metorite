@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from evals.one_assistant_measure import fanout
 from evals.one_assistant_measure.scenarios import (
     OFFICE,
     PRIYA,
@@ -33,10 +34,6 @@ from evals.one_assistant_measure.workgateway import (
     TASK_IDS,
     cid,
 )
-
-#: The fan-out chats wait for ``spawn_subagents``, the tool of OA-9b.
-FANOUT_SKIP = ("spawn_subagents exists (OA-9b), but the fan-out fixtures, the worker plan "
-               "and the arm flag are not wired (run.SPAWN_NOT_WIRED)")
 
 CRM_PAGE = "## Where the member is now\nThe member is in the CRM app (/crm)."
 
@@ -377,25 +374,58 @@ MIXED_SCENARIOS: tuple[Scenario, ...] = (
         ), set="mixed", surface="crm", page=page_for("crm")),
 )
 
-# ── Fan-out: 3 chats, skipped until OA-9b ────────────────────────────────────
+# ── Fan-out: 5 chats (OA-8e phase 3, §6.3) ───────────────────────────────────
+#
+# A research turn spawns on the ``packs+spawn`` arm, and on the ``pack`` arm
+# the model reads each page itself (``Plan.solo``). A turn of one read, one
+# task or three searches must not spawn. The web pages are fixtures
+# (:mod:`.fanout`), so a child reaches no real site.
+
+_ABOUT = [fanout.company_url(c) for c in fanout.COMPANIES]
+_INV = [f"{fanout.INVOICE_BASE}{n}" for n, _, _ in fanout.INVOICES]
+_PAIRS = [_INV[i:i + 2] for i in range(0, 10, 2)]
+
+
+def _fan(sid: str, title: str, turn: Turn) -> Scenario:
+    return Scenario(sid, title, (turn,), set="fanout", surface="", page="")
+
 
 FANOUT_SCENARIOS: tuple[Scenario, ...] = (
-    Scenario(
-        "fan_companies", "Five companies, each researched with a page read", (
-            Turn("Research these five companies and compare them: Orbit, Kestrel, Vantage, "
-                 "Helix and Nimbus",
-                 (Check("spawned"),), Plan()),
-        ), set="fanout", skip=FANOUT_SKIP),
-    Scenario(
-        "fan_tasks", "Five tasks from a list", (
-            Turn("Make a task for each of these: brief, copy, assets, QA pass and launch",
-                 (Check("spawned"),), Plan()),
-        ), set="fanout", skip=FANOUT_SKIP),
-    Scenario(
-        "fan_invoices", "Ten invoices totalled", (
-            Turn("Total the ten invoices in my inbox from October",
-                 (Check("spawned"),), Plan()),
-        ), set="fanout", skip=FANOUT_SKIP),
+    _fan("fan_companies", "Five companies, each researched with a page read", Turn(
+        "Research these five companies and compare them: Orbit, Kestrel, Vantage, Helix and "
+        "Nimbus. Their about pages are " + ", ".join(_ABOUT) + ".",
+        (Check("spawned"), Check("items_contract"), Check("no_unasked_write", 0),
+         Check("answer_all", tuple(c.split()[0] for c in fanout.COMPANIES), "names_each_company")),
+        Plan((("spawn_subagents", {"jobs": fanout.jobs_for(_ABOUT)}),),
+             "Orbit, Kestrel, Vantage, Helix and Nimbus all make industrial sensors. Orbit has "
+             "40 staff, Kestrel 50, Vantage 60, Helix 70 and Nimbus 80.",
+             solo=tuple(("fetch_page", {"url": u}) for u in _ABOUT)))),
+    _fan("fan_invoices", "Ten invoices totalled", Turn(
+        "Total these ten invoices: " + ", ".join(_INV) + ".",
+        (Check("spawned"), Check("items_contract"), Check("no_unasked_write", 0),
+         Check("figure", fanout.INVOICE_TOTAL, "totals_the_invoices")),
+        Plan((("spawn_subagents", {"jobs": json.dumps([
+            {"job": f"Read {a} and {b} and give each amount due.", "tools": ["fetch_page"],
+             "tier": "fast"} for a, b in _PAIRS])}),),
+             f"The ten invoices total Rs {fanout.INVOICE_TOTAL:,}.",
+             solo=tuple(("fetch_page", {"url": u}) for u in _INV)))),
+    _fan("fan_tasks", "Five tasks from a list: a write, so no spawn", Turn(
+        "Make a task for each of these: brief, copy, assets, QA pass and launch",
+        (Check("not_spawned"), Check("work_write", ("POST", r"^/projects/tasks$"), "tasks_made"),
+         Check("no_unasked_write", 1)),
+        Plan((("create_tasks", {"project_id": NODE_WEB, "tasks": json.dumps(
+            [{"title": t} for t in ("Brief", "Copy", "Assets", "QA pass", "Launch")])}),),
+             "Made 5 tasks in Website Relaunch."))),
+    _fan("fan_one_read", "One page read: no spawn", Turn(
+        f"What does {fanout.PRICE_URL} say about the Basic plan?",
+        (Check("not_spawned"), Check("answer_all", (r"4,999",), "gives_the_price")),
+        Plan((("fetch_page", {"url": fanout.PRICE_URL}),), "The Basic plan costs Rs 4,999 a month."))),
+    _fan("fan_three_searches", "Three searches: no spawn", Turn(
+        "Search the web for Orbit, Kestrel and Helix",
+        (Check("not_spawned"), Check("answer_all", (r"Orbit", r"Kestrel", r"Helix"))),
+        Plan((("web_search", {"query": "Orbit Labs"}), ("web_search", {"query": "Kestrel Labs"}),
+              ("web_search", {"query": "Helix Foods"})),
+             "Orbit Labs, Kestrel Labs and Helix Foods each make industrial sensors."))),
 )
 
 WORK_SCENARIOS: tuple[Scenario, ...] = (
