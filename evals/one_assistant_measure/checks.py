@@ -905,7 +905,7 @@ def job_blocks(text: str) -> list[str]:
     end = _FRAME_END.search(text)
     body = text[:end.start()] if end else text
     starts = [m.start() for m in _JOB.finditer(body)]
-    return [body[a:b].rstrip("\n") for a, b in zip(starts, [*starts[1:], len(body)])]
+    return [body[a:b].rstrip("\n") for a, b in zip(starts, [*starts[1:], len(body)], strict=False)]
 
 
 def items_contract_problems(results: list[str]) -> list[str]:

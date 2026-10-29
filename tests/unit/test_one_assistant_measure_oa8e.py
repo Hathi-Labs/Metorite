@@ -162,14 +162,15 @@ def test_a_research_chat_spawns_and_its_children_parse(sid: str) -> None:
     Mutation: ``WorkerModel`` answers plain text → ``items_contract`` red."""
     sc = scenario(sid)
     models = run.scripted_models(sc, run.SPAWN_ARM)
-    (row,) = run.run_chat(sc, run.SPAWN_ARM, models=models)
+    row, follow = run.run_chat(sc, run.SPAWN_ARM, models=models)
+    assert follow["passed"] and follow["spawned"] == 0, follow["checks"]
     assert row["passed"] and row["spawned"] == 1 and row["items_problems"] == [], row["checks"]
     assert row["checks"]["spawned"] is True and row["checks"]["items_contract"] is True
     assert "spawn_subagents" in _names(models[ORCHESTRATOR].bodies[0])
     assert row["web_fetches"] == 5 and row["web_unknown"] == []
     assert any(e["event"] == "measure.fanout" and e["ms"] >= 0 for e in row["pack_events"])
     models = run.scripted_models(sc, "pack")
-    (solo,) = run.run_chat(sc, "pack", models=models)
+    solo, _follow = run.run_chat(sc, "pack", models=models)
     assert solo["passed"] and solo["spawned"] == 0 and solo["checks"]["spawned"] is None
     assert "spawn_subagents" not in _names(models[ORCHESTRATOR].bodies[0])
     assert not any(e["event"] == "measure.fanout" for e in solo["pack_events"])
@@ -1142,8 +1143,8 @@ def test_the_fixture_hosts_look_like_businesses_and_the_guard_still_refuses_a_re
         assert asyncio.run(go()) == ["trap", "trap"]
         assert len(harness.sent) == 2
     for sid in ("fan_invoices", "fan_one_read", "fan_contracts"):
-        (row,) = run.run_chat(scenario(sid), run.SPAWN_ARM if sid == "fan_contracts" else "pack")
-        assert row["passed"] and row["web_unknown"] == [], (sid, row["checks"])
+        for row in run.run_chat(scenario(sid), run.SPAWN_ARM if sid == "fan_contracts" else "pack"):
+            assert row["passed"] and row["web_unknown"] == [], (sid, row["checks"])
 
 
 @pytest.mark.parametrize(("text", "want"), [
@@ -1273,27 +1274,58 @@ def test_the_invoice_pages_sit_on_the_suppliers_own_public_sites() -> None:
 
 
 def test_the_contract_fixtures_are_long_and_hide_the_two_facts() -> None:
-    """Each contract is at least 12,000 characters. The payment term sits in clause
-    9 and the penalty in clause 14. They are the only day count and the only
-    percent figure of the vendor. The text is the same on every call.
-    Mutation: shorten a clause or repeat a fact in the padding → red."""
+    """Each contract is about 40,000 characters. The payment term sits after
+    character 20,000 and the penalty after character 30,000, at a different
+    place for each vendor. So a plain fetch (8,000) reads neither fact, and the
+    reader must ask for the whole text. The facts are the only day count and the
+    only percent figure of the vendor. The text is the same on every call.
+    Mutation: put the penalty before the cut (``PENALTY_AFTER = 5_000``) → red."""
     from evals.one_assistant_measure import contracts, fanout
 
     assert len(contracts.CONTRACTS) == 5
     assert len({d for _, _, d, _ in contracts.CONTRACTS}) == 5
     assert len({p for _, _, _, p in contracts.CONTRACTS}) == 5
+    places = set()
     for vendor, host, days, percent in contracts.CONTRACTS:
         text = fanout.PAGES[fanout.contract_url(host)]
-        assert len(text) >= 12_000 and text == contracts.contract_text(vendor, days, percent)
-        assert text.count(f"within {days} days") == 1
-        assert text.count(f"penalty of {percent} percent") == 1
-        assert text.index("\n9. Payment") < text.index(f"within {days} days") < text.index("\n10. ")
-        assert text.index("\n14. Delay") < text.index("penalty of") < text.index("\n15. ")
+        assert 40_000 <= len(text) <= 41_000 and text == contracts.contract_text(vendor, days, percent)
+        pay, late = text.index(f"within {days} days"), text.index(f"penalty of {percent} percent")
+        places.add((pay, late))
+        assert text.count(f"within {days} days") == 1 and text.count(f"penalty of {percent} percent") == 1
+        assert pay >= 20_000 and late >= 30_000 and pay < late
         assert len(re.findall(r"percent", text)) == 2  # the penalty, and its limit of ten
         other = text.replace(f"within {days} days", "").replace(f"{percent} percent", "")
         assert not re.search(rf"(?<![\d.]){days}(?!\d)", re.sub(r"^\d+\. ", "", other, flags=re.M))
+    assert len(places) == 5  # a different place for each vendor
     # A URL with no page stays a clear failure.
     assert fanout.contract_url("www.nowhere-vendor.com") not in fanout.PAGES
+
+
+def test_the_fixture_fetch_cuts_like_the_real_tool() -> None:
+    """The real ``fetch_page`` (web_tools.py) cuts at ``max_chars`` (default 8000,
+    floor 500, no upper cap) and adds a marker. A default fetch of a contract
+    holds no fact, and a fetch with enough ``max_chars`` holds both.
+    Mutation: make the fixture ignore ``max_chars`` → the cut cases go red."""
+    import asyncio
+
+    import pytest as _pytest
+    from acb_skills import web_tools
+
+    from evals.one_assistant_measure import contracts, fanout
+
+    _vendor, host, days, percent = contracts.CONTRACTS[0]
+    url = fanout.contract_url(host)
+    fixtures = fanout.WebFixtures()
+    with _pytest.MonkeyPatch.context() as mp:
+        fixtures.install(mp)
+        short = asyncio.run(web_tools.fetch_page(url))
+        whole = asyncio.run(web_tools.fetch_page(url, max_chars=60_000))
+        tiny = asyncio.run(web_tools.fetch_page(url, max_chars=10))
+    assert "[... truncated at 8000 chars]" in short
+    assert f"within {days} days" not in short and "penalty of" not in short
+    assert f"within {days} days" in whole and f"penalty of {percent} percent" in whole
+    assert "truncated" not in whole
+    assert "[... truncated at 500 chars]" in tiny
 
 
 def _swapped(sc):
@@ -1302,7 +1334,7 @@ def _swapped(sc):
 
     turn = sc.turns[0]
     answer = turn.plan.answer.replace("21 days, 0.5 percent", "45 days, 1.5 percent", 1)
-    return replace(sc, turns=(replace(turn, plan=replace(turn.plan, answer=answer)),))
+    return replace(sc, turns=(replace(turn, plan=replace(turn.plan, answer=answer)), *sc.turns[1:]))
 
 
 def test_the_contract_chat_is_the_research_chat_and_checks_each_vendor() -> None:
@@ -1316,11 +1348,16 @@ def test_the_contract_chat_is_the_research_chat_and_checks_each_vendor() -> None
     assert sum(n.startswith("terms_of_") for n in names) == 5
     research = [s.id for s in FANOUT_SCENARIOS
                 if any(c.kind == "spawned" for t in s.turns for c in t.checks)]
-    assert research == ["fan_contracts"]
-    (row,) = run.run_chat(sc, run.SPAWN_ARM)
+    assert research == ["fan_contracts"] and len(sc.turns) == 2
+    row, follow = run.run_chat(sc, run.SPAWN_ARM)
     assert row["research"] is True and row["passed"], row["checks"]
+    # Turn 2 asks which vendor is strictest (Kaveri, 3 percent) and the cost of a
+    # 10-day delay on a 5 lakh order: one full week, Rs 15,000. It is no research turn.
+    assert follow["research"] is False and follow["passed"], follow["checks"]
+    assert follow["checks"]["names_the_strictest"] and follow["checks"]["costs_the_delay"]
+    assert follow["model_calls"] is not None  # the prompt tokens of turn 2 are recorded per call
     bad = _swapped(sc)
-    (miss,) = run.run_chat(bad, run.SPAWN_ARM, models=run.scripted_models(bad, run.SPAWN_ARM))
+    miss, _ = run.run_chat(bad, run.SPAWN_ARM, models=run.scripted_models(bad, run.SPAWN_ARM))
     assert miss["passed"] is False and miss["checks"]["terms_of_bharat"] is False
 
 

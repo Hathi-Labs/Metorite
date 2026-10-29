@@ -117,7 +117,10 @@ class WebFixtures:
             if page is None:
                 fixtures.unknown.append(f"fetch {url}")
                 return f"fetch_page: {url} not found."
-            return page[:max_chars]
+            # As the real tool does (web_tools.fetch_page): a floor of 500, no
+            # upper cap, and a marker where the text is cut.
+            limit = max(500, int(max_chars))
+            return page if len(page) <= limit else page[:limit] + f"\n\n[... truncated at {limit} chars]"
 
         mp.setattr(web_tools, "web_search", web_search)
         mp.setattr(web_tools, "fetch_page", fetch_page)
@@ -163,7 +166,10 @@ class WorkerModel(ReplyModel):
         elif self.call_tool and "graph" in job:
             self.turns = [tool_turn(self.call_tool, {"query": "Orbit"}, "w1")]
         elif urls:
-            self.turns = [self._calls([("fetch_page", {"url": u}) for u in urls])]
+            # A job that names ``max_chars=N`` reads the whole page, as a long
+            # document needs (the default cut is 8,000 characters).
+            extra = {"max_chars": int(m.group(1))} if (m := re.search(r"max_chars=(\d+)", job)) else {}
+            self.turns = [self._calls([("fetch_page", {"url": u, **extra}) for u in urls])]
         else:
             self.turns = [tool_turn("web_search", {"query": job[-80:]}, "w1")]
         return super().__call__(request)

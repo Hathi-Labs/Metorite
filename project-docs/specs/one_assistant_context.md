@@ -534,10 +534,18 @@ OA-8e run 3 (§6.3). Nothing sets `SPAWN_SUBAGENTS_ORGS`. The flip is OWNER-GATE
   The refusal of `.example` hosts stays.
 - **The heavy chat.** `fan_contracts` asks for the payment terms and the
   late-delivery penalty of five vendor contracts. Each contract is built in
-  code (`contracts.py`) from 24 fixed clauses, about 13,700 characters. The
-  payment term sits in clause 9, and the penalty in clause 14. The chat expects
-  `spawned`, `items_contract` and one `terms_of_<vendor>` check for each
-  vendor. It is the research chat of stop result 9, because that mark is the
+  code (`contracts.py`) from fixed clauses, about 40,000 characters. The
+  payment term sits after character 20,000, and the penalty after character
+  30,000, at a different place for each vendor. A plain `fetch_page` cuts at
+  8,000 characters, so it reads neither fact. The reader must call it with a
+  larger `max_chars`. The real tool has no upper cap, and the fixture cuts the
+  same way (floor 500, a marker at the cut). Turn 1 expects `spawned`,
+  `items_contract` and one `terms_of_<vendor>` check for each vendor. Turn 2
+  asks which vendor has the strictest penalty, and what a 10-day delay on a 5
+  lakh order costs (Kaveri, one full week, Rs 15,000). On the pack arm the
+  parent carries five full contracts into turn 2. On the spawn arm it carries
+  five short items. The input tokens (`model_calls[].prompt`) and the time of
+  turn 2 show the difference. It is the research chat of stop result 9, because that mark is the
   `spawned` check. A URL with no fixture still fails and shows in `web_unknown`.
 - **"No job block" was a harness bug.** The result of `spawn_subagents` is a
   data note, then the item blocks between two marker lines, then the notes. The
@@ -550,9 +558,7 @@ OA-8e run 3 (§6.3). Nothing sets `SPAWN_SUBAGENTS_ORGS`. The flip is OWNER-GATE
   have a test: a child that fetched a URL with no fixture, a child that
   returned prose and a child that timed out. None of them reads as "no job
   block".
-- **Not changed.** No colour, no flag, no deploy. The fixture page is cut at
-  8,000 characters by `fetch_page`, as the real tool does. Both facts of a
-  contract sit before that cut, so a plain fetch finds them.
+- **Not changed.** No colour, no flag, no deploy.
 - **Fence.** `tests/unit/test_spawn_persona.py` and
   `tests/unit/test_one_assistant_measure_oa8e.py` (OA-9f cases).
 

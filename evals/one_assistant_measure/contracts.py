@@ -3,13 +3,16 @@
 ``fan_contracts`` needs source material that is long enough to flood the main
 chat (``one_assistant_context.md`` section 6.3). The text is built here from
 fixed clauses, so the repo holds no large file and every call returns the same
-bytes. Two facts differ between vendors and sit far apart: the payment term in
-clause 9 and the late-delivery penalty in clause 14. No other clause holds a
+bytes. Each contract is about 40,000 characters. Two facts differ between
+vendors: the payment term, after character 20,000, and the late-delivery
+penalty, after character 30,000. No other clause holds a
 "percent" figure or a day count, so the answer can quote only those two.
 
 Every name and number here is synthetic.
 """
 from __future__ import annotations
+
+from collections.abc import Iterator
 
 #: Each vendor: ``(name, host, payment days, penalty percent a week)``. All
 #: values differ, and no clause of the boilerplate holds one of them.
@@ -20,10 +23,6 @@ CONTRACTS = (
     ("Delta Freight", "www.deltafreight-logistics.com", 75, "2.5"),
     ("Kaveri Packaging", "www.kaveripackaging-supplies.com", 90, "3"),
 )
-
-#: Clause 9 and clause 14 take the text that the caller builds.
-PAYMENT_CLAUSE = 9
-PENALTY_CLAUSE = 14
 
 _CLAUSES = (
     ("Definitions",
@@ -141,8 +140,30 @@ _PADDING = (
 )
 
 
+#: Where the two facts sit, in characters from the start. The payment term comes
+#: after ``PAY_AFTER`` and the penalty after ``PENALTY_AFTER``, and both move by
+#: vendor. A plain ``fetch_page`` (8,000 characters) reads neither one.
+PAY_AFTER = 20_000
+PENALTY_AFTER = 30_000
+SIZE = 40_000
+
+
+def _blocks(vendor: str) -> Iterator[tuple[str, str]]:
+    """The plain clauses, then the same clauses again as schedules, with no end.
+    A clause that holds a fact (payment, delay) is never repeated."""
+    plain = [(t, b.format(v=vendor)) for t, b in _CLAUSES if "{pay}" not in b and "{late}" not in b]
+    cycle = 0
+    while True:
+        for title, body in plain:
+            yield (title if cycle == 0 else f"{title} (Schedule {cycle})"), body + _PADDING
+        cycle += 1
+
+
 def contract_text(vendor: str, pay_days: int, penalty_percent: str) -> str:
-    """The supply agreement of *vendor*: 24 clauses, about 14,000 characters."""
+    """The supply agreement of *vendor*: about 40,000 characters. The payment term
+    follows character 20,000 and the penalty follows character 30,000. Both
+    positions move by vendor (its index in :data:`CONTRACTS`)."""
+    index = next((k for k, c in enumerate(CONTRACTS) if c[0] == vendor), 0)
     pay = (f"The Buyer pays each valid invoice within {pay_days} days of the date on which it "
            "receives that invoice. Payment is by bank transfer to the account in the order "
            "form. A payment that falls on a day that is not a business day is due on the next "
@@ -151,10 +172,18 @@ def contract_text(vendor: str, pay_days: int, penalty_percent: str) -> str:
             f"of {penalty_percent} percent of the order value for each full week of delay, up "
             "to a limit of ten percent of that value. The Buyer may deduct the penalty from "
             "any invoice. The penalty is the only remedy for a delay of less than six weeks.")
+    pending = [(PAY_AFTER + 900 * index, "Payment of invoices", pay),
+               (PENALTY_AFTER + 1300 * index, "Delay in delivery", late)]
     lines = [f"SUPPLY AGREEMENT between the Buyer and {vendor}", ""]
-    for number, (title, body) in enumerate(_CLAUSES, 1):
-        text = body.format(v=vendor, pay=pay, late=late)
-        if number not in (PAYMENT_CLAUSE, PENALTY_CLAUSE):
-            text += _PADDING
-        lines.extend([f"{number}. {title}", text, ""])
+    size, number = len(lines[0]), 0
+    source = _blocks(vendor)
+    while pending or size < SIZE:
+        if pending and size >= pending[0][0]:
+            _, title, body = pending.pop(0)
+        else:
+            title, body = next(source)
+        number += 1
+        chunk = [f"{number}. {title}", body, ""]
+        lines.extend(chunk)
+        size += sum(len(c) + 1 for c in chunk)
     return "\n".join(lines)

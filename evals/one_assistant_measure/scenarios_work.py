@@ -421,17 +421,35 @@ FANOUT_SCENARIOS: tuple[Scenario, ...] = (
          Check("figure", fanout.INVOICE_TOTAL, "totals_the_invoices")),
         Plan(tuple(("fetch_page", {"url": u}) for u in _INV),
              f"The ten invoices total Rs {fanout.INVOICE_TOTAL:,}."))),
-    _fan("fan_contracts", "Five long contracts: spawn, so the text stays out of this chat", Turn(
-        "For each of these five vendor contracts, give me the payment terms and the "
-        "late-delivery penalty: " + ", ".join(_CONTRACTS) + ".",
-        (Check("spawned"), Check("items_contract"), Check("no_unasked_write", 0),
-         *_contract_checks()),
-        Plan((("spawn_subagents", {"jobs": fanout.jobs_for(
-            _CONTRACTS, "Read {url}. Quote the clause on payment terms and the clause on the "
-            "penalty for late delivery.")}),),
-             "Payment terms and late-delivery penalty: " + "; ".join(
-                 f"{v}: {d} days, {p} percent a week" for v, _h, d, p in fanout.CONTRACTS) + ".",
-             solo=tuple(("fetch_page", {"url": u, "max_chars": 20000}) for u in _CONTRACTS)))),
+    # Two turns. Turn 1 reads five contracts of about 40,000 characters each. The
+    # facts sit past character 20,000, so a plain fetch (8,000) misses them and the
+    # reader must ask for the whole text (``max_chars``). Turn 2 asks a question
+    # about those contracts. On the pack arm the parent carries five full contracts
+    # into turn 2, and on the spawn arm it carries five short items. The input
+    # tokens and the time of turn 2 show the difference.
+    Scenario("fan_contracts", "Five long contracts: spawn, so the text stays out of this chat", (
+        Turn(
+            "For each of these five vendor contracts, give me the payment terms and the "
+            "late-delivery penalty: " + ", ".join(_CONTRACTS) + ".",
+            (Check("spawned"), Check("items_contract"), Check("no_unasked_write", 0),
+             *_contract_checks()),
+            Plan((("spawn_subagents", {"jobs": fanout.jobs_for(
+                _CONTRACTS, "Read {url} in full: call fetch_page with max_chars=60000. Quote the "
+                "clause on payment terms and the clause on the penalty for late delivery.")}),),
+                 "Payment terms and late-delivery penalty: " + "; ".join(
+                     f"{v}: {d} days, {p} percent a week" for v, _h, d, p in fanout.CONTRACTS) + ".",
+                 solo=tuple(("fetch_page", {"url": u, "max_chars": 60000}) for u in _CONTRACTS))),
+        Turn(
+            "Which vendor has the strictest late-delivery penalty, and how much would a "
+            "10-day delay on a 5 lakh order cost with them?",
+            (Check("no_unasked_write", 0),
+             Check("answer_all", (r"Kaveri",), "names_the_strictest"),
+             Check("figure", 15_000, "costs_the_delay")),
+            # 10 days is one full week. 3 percent of Rs 5,00,000 is Rs 15,000.
+            Plan((), "Kaveri Packaging has the strictest penalty: 3 percent of the order value "
+                     "for each full week. A 10-day delay is one full week, so a Rs 5,00,000 "
+                     "order costs Rs 15,000.")),
+    ), set="fanout", surface="", page=""),
     _fan("fan_tasks", "Five tasks from a list: a write, so no spawn", Turn(
         "Make a task for each of these: brief, copy, assets, QA pass and launch",
         (Check("not_spawned"), Check("work_write", ("POST", r"^/projects/tasks$"), "tasks_made"),

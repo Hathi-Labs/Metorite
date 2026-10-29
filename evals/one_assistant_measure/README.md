@@ -345,7 +345,7 @@ and `packs+spawn`. Delegation holds no spawn tool, so it does not run them.
 |---|---|---|
 | `fan_companies` | Research five companies, with their about pages | not spawn (five light reads), and name each company |
 | `fan_invoices` | Total ten invoices, each on its supplier's public site | not spawn, and total 233,400 |
-| `fan_contracts` | Payment terms and late-delivery penalty of five long contracts (about 13,700 characters each, built in `contracts.py`) | spawn, every child item parses, and name each vendor's two facts. This is the research chat of stop result 9 |
+| `fan_contracts` | Payment terms and late-delivery penalty of five long contracts (about 40,000 characters each, built in `contracts.py`, facts past character 20,000 and 30,000, so a plain fetch misses them). Turn 2: the strictest penalty, and the cost of a 10-day delay on a 5 lakh order | turn 1: spawn, every child item parses, and name each vendor's two facts. Turn 2: Kaveri and Rs 15,000. It compares the input tokens and the time of turn 2 on each arm. This is the research chat of stop result 9 |
 | `fan_tasks` | Five tasks from a list | not spawn (a write), one card |
 | `fan_one_read` | One page read | not spawn |
 | `fan_three_searches` | Three web searches | not spawn |
