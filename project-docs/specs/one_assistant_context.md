@@ -538,13 +538,14 @@ OA-8e run 3 (§6.3). Nothing sets `SPAWN_SUBAGENTS_ORGS`. The flip is OWNER-GATE
   payment term sits after character 20,000, and the penalty after character
   30,000, at a different place for each vendor. A plain `fetch_page` cuts at
   8,000 characters, so it reads neither fact. The reader must call it with a
-  larger `max_chars`. The real tool has no upper cap, and the fixture cuts the
-  same way (floor 500, a marker at the cut). Turn 1 expects `spawned`,
-  `items_contract` and one `terms_of_<vendor>` check for each vendor. Turn 2
-  asks which vendor has the strictest penalty, and what a 10-day delay on a 5
-  lakh order costs (Kaveri, one full week, Rs 15,000). On the pack arm the
-  parent carries five full contracts into turn 2. On the spawn arm it carries
-  five short items. The input tokens (`model_calls[].prompt`) and the time of
+  larger `max_chars`. The real tool has no upper cap. The fixture cuts the
+  same way, with a floor of 500 and a marker at the cut. Turn 1 expects `spawned` and `items_contract`.
+  It has one `terms_of_<vendor>` check for each vendor.
+  Turn 2 asks for the vendor with the strictest penalty.
+  It also asks what a 10-day delay on a 5 lakh order costs.
+  The answer is Kaveri, one full week, Rs 15,000.
+  On the pack arm the parent carries five full contracts into turn 2.
+  On the spawn arm it carries five short items. The input tokens (`model_calls[].prompt`) and the time of
   turn 2 show the difference. It is the research chat of stop result 9, because that mark is the
   `spawned` check. A URL with no fixture still fails and shows in `web_unknown`.
 - **"No job block" was a harness bug.** The result of `spawn_subagents` is a
@@ -553,9 +554,9 @@ OA-8e run 3 (§6.3). Nothing sets `SPAWN_SUBAGENTS_ORGS`. The flip is OWNER-GATE
   on blank lines, so it lost the first block. A call with one job read as "no
   job block". The product renders the header on every path. `checks.job_blocks`
   now reads the frame. The rows of run 3 do not keep the result text, so the
-  exact call is not proved. Only a call with one job gives the error, so the
-  model sent fewer jobs than five in those two turns. Three other paths each
-  have a test: a child that fetched a URL with no fixture, a child that
+  exact call is not proved. Only a call with one job gives the error.
+  So the model sent fewer jobs than five in those two turns. Three other paths each
+  have a test. They are a child that fetched a URL with no fixture, a child that
   returned prose and a child that timed out. None of them reads as "no job
   block".
 - **Not changed.** No colour, no flag, no deploy.
