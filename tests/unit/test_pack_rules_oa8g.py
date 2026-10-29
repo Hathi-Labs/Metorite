@@ -65,7 +65,6 @@ def test_mirror_mode_does_not_send_the_model_to_another_pack() -> None:
 @pytest.mark.parametrize(("words", "slug"), [
     ("Who is overloaded right now?", "projects-plan"),
     ("Is anyone overbooked?", "projects-plan"),
-    ("Who has capacity this week?", "projects-plan"),
     ("Add tasks to Website Relaunch: QA pass, copy freeze", "projects-bulk"),
     ("Make a task for each of these: brief, copy", "projects-bulk"),
 ])
@@ -78,6 +77,7 @@ def test_the_new_words_load_their_pack(words: str, slug: str) -> None:
     "Add a task: book the venue", "Create a task for Priya",
     "Draft the reply to Anil", "How is the pipeline looking?",
     "Move the Vantage deal to Proposal",
+    "Reply to the supplier about their production capacity",
 ])
 def test_the_new_words_load_no_pack_for_one_task_or_a_deal(words: str) -> None:
     """Mutation: add a bare "task" or "add" to the bulk words -> red."""

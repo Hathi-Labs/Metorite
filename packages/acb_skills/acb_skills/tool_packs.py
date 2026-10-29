@@ -546,7 +546,7 @@ _PROJECTS_PLAN_WORDS = (
     "burndown", "velocity", "team capacity", "workload", "status report",
     "critical path", "gantt", "project plan", "stuck tasks", "blocked tasks",
     "recurring task", "recurring tasks", "repeating task", "repeating tasks",
-    "overloaded", "overbooked", "capacity",
+    "overloaded", "overbooked",
 )
 _PROJECTS_STRUCTURE_WORDS = (
     "task status", "task statuses", "status set", "task type", "task types",
