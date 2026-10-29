@@ -336,10 +336,15 @@ def test_the_pack_flag_turns_on_every_pack_of_each_owner() -> None:
     # CRM page: the loader reaches the email and Projects packs, so both
     # specialists leave. The CRM assistant has one pack, and it is loaded.
     ("crm_pipeline", {EA, PROJECTS}, {EA, CRM, PROJECTS}, set()),
-    # Tasks page: the core Projects pack stands in the request (81 tools at the
-    # base of this harness). The email pack and the plan and structure packs do
-    # not fit beside it, so their specialists stay.
-    ("pm_find_task", {CRM}, {CRM}, {EA, PROJECTS}),
+    # Tasks page: the core Projects pack stands in the request. With the exact
+    # count of OA-8f the harness base is 55 (the 3 CRM facts tools are not
+    # counted for an org off the CRM list, and the count was 58 before). The
+    # plan sees 78 tools: 55, the load tool (1) and the 23 core tools. Each
+    # email pack fits beside that with the one email specialist tool gone
+    # (77 + 31 = 108 and 77 + 28 = 105), so the loader reaches
+    # ``email-assistant`` too. The plan (35) and structure (34) packs still do
+    # not fit (113 and 112), so ``projects-assistant`` stays.
+    ("pm_find_task", {CRM, EA}, {CRM, EA}, {PROJECTS}),
 ])
 def test_the_loader_reaches_the_owners_that_it_can_and_the_rest_keep_the_specialist(
         sid: str, via: set[str], gone: set[str], stays: set[str]) -> None:

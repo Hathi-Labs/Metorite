@@ -1336,6 +1336,29 @@ def _apply_turn_pack_items(agents: list[Any], tier_run: Any) -> None:
                    error_type=type(exc).__name__)
 
 
+def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
+    """*agents*, with the first one on a per-run view that logs the tools of
+    each model request (WS-67 OA-8f, ``executor.request_tools``): the count
+    actually sent and a short hash of the names, with the tools of a context
+    provider and of an MCP server. Only the orchestrator, and never raises.
+    The view comes from ``agent_with_providers``, as the loader's does."""
+    if agent_name != _PACK_AGENT or not agents:
+        return agents
+    try:
+        from agent_framework import Agent
+
+        if not isinstance(agents[0], Agent):
+            return agents
+        from acb_skills.tool_guard import LogRequestToolsProvider
+
+        from orchestrator._native_run_context import agent_with_providers
+
+        agents[0] = agent_with_providers(agents[0], [LogRequestToolsProvider(agent_name)])
+    except Exception as exc:  # a log never costs the turn
+        _log.warning("executor.request_tools_log_off", error_type=type(exc).__name__)
+    return agents
+
+
 def _log_pack_request_tools(agents: list[Any]) -> None:
     """Log the tool count of a run that loaded packs, after the injection.
 
@@ -1347,6 +1370,10 @@ def _log_pack_request_tools(agents: list[Any]) -> None:
     except ImportError:
         return
     count = len(_agent_tool_names(agents[0])) if agents else 0
+    # OA-8f: the load tool rides in a context provider, so no pool holds it.
+    # The estimate counts it (``_apply_tool_packs``), so the true count does too.
+    if agents and _pack_loader_offer(agents[0]):
+        count += 1
     log = _log.warning if count > MAX_REQUEST_TOOLS else _log.info
     log("executor.pack_request_tools", tools=count, cap=MAX_REQUEST_TOOLS)
 
@@ -5937,6 +5964,7 @@ async def run_agent_stream(
             _run_tools = await _add_crm_facts_block(
                 agents, _run_tools, no_egress=_stream_no_egress, mark_run=True)
             _log_agent_tools_resolved(agent_name, agents, _own_tools)
+            agents = _log_request_tools_view(agents, agent_name)
             if _pack_apply is not None:
                 # WS-67 OA-7c: the true tool count beside the estimate of the
                 # cap. Pack names stay out of `_run_tools` (OA-9c reads the
