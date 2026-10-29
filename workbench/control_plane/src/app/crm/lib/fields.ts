@@ -365,6 +365,7 @@ export function summaryFacts(
             ? { kind: "text", text: money(record.amount, (record.currency as string) || "INR") }
             : EMPTY,
       },
+      { key: "company", label: "Company", value: text(companyName ?? record.organization_name) },
       { key: "owner_email", label: "Owner", value: owner },
       {
         key: "expected_close_date",

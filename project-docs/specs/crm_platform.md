@@ -8384,7 +8384,7 @@ customer they are the next build after §19.2.
 | Inline edit in lists | Edit a cell, with Tab and Enter to move | CRM-X9, and CRM-Z9 or Native mode |
 | Bulk bar (CRM-S4) | Select rows, then change the owner, stage, close date or tag, or delete, with undo | CRM-X9. Move `app/projects/components/BulkBar.tsx` to `src/components/` first |
 | Quick add in a lane | "+ Add" at the foot of a lane | Native mode |
-| Quick create with lookups | Company and contact pickers on a new deal, "Create another", and a duplicate warning | CRM-S5, for the warning |
+| Quick create with lookups | Company and contact pickers on a new deal, "Create another", and a duplicate warning | Built as CRM-U16 (§20.20), except the duplicate warning. That waits for CRM-S5. "Create another" is not built |
 | Delete with undo | Delete in the record menu, then an Undo toast | Native mode |
 | CSV import (CRM-S3), merge (CRM-S5), field editor (CRM-S6, superseded by CRM-C4), web forms (CRM-S8), field history (CRM-S10) | The §6 rows | Native mode |
 | Stage transition forms | The move dialog gains a checklist and optional fields for each transition | Native mode |
@@ -11969,3 +11969,22 @@ The owner asked for a CRM that is "straightforward and easy to understand". The 
 5. **Loading and error.** A list and a board show a skeleton on the first read. The error banner has Retry. A failed board read clears the lanes, and the board says "The board did not load." Files: `RecordList.tsx`, `KanbanBoard.tsx`, `page.tsx`, `lib/store.ts`. Fence: `crmU15.test.ts`, "part E".
 
 Left out on purpose: a lane quick add and the settings screens (CRM-U13). The strip has no Zoho link, because no page-level address exists. The record sheet keeps its own link.
+
+### 20.20 CRM-U16: a deal gets its company and contacts (2026-10-29)
+
+**Status.** ✅ Built 2026-10-29 on branch `crm-u16-deal-pickers`. Not merged. Not deployed. Frontend only. The gateway already takes `company_id` on a deal and a contact, so no gateway change was needed.
+
+The audit of 2026-10-28 found that "Add a deal for a company" could not be finished. The New deal form had no Company or Contact. The deal page showed no Company. The Related tab could star and remove a contact, but not add one. This slice closes all four gaps.
+
+1. **One picker.** `RecordPicker.tsx` is a search box and a `SelectButton`, as the field studio lookup is. Both take the keyboard. The search is debounced and calls the list route with `?q=`. `lib/recordPicker.ts` holds the search and the link fields.
+2. **New deal.** The form has a Company picker and a Contact picker. A company narrows the contact list to its own contacts first. Any other contact stays pickable. The form sends `company_id`. The store then attaches the contact as the main contact (`POST /crm/deals/{id}/contacts`). If the attach fails, the deal stays, and the error says so.
+3. **New contact.** The form has a Company picker. It sends `company_id`.
+4. **Deal page.** Company is a fact in the summary header and a row on Overview. In Native, the pencil opens the picker, and a pick saves `company_id`. In Mirror, the row is a locked value ("Edit this in Zoho."). The record page reads the company name with one read of the company, as it does for a contact.
+5. **Related tab.** "Add contact" opens the contact picker, with the deal's company first. The first contact of a deal becomes the main one. Later contacts do not. A contact that is on the deal already is left as it is. Star and remove stay. Mirror shows none of it.
+6. **Words.** The labels come from the CRM's own names for the entities (`GET /crm/mode` labels, CRM-Z10g). The default words are "Company" and "Contact".
+
+Mirror mode offers none of these writes. The server guard (`assert_writable`) still refuses them. The golden file `__fixtures__/c4b-flag-off/create.html` changed on purpose, because the New deal form now has two pickers.
+
+Files: `components/RecordPicker.tsx`, `components/QuickCreateModal.tsx`, `components/FieldsPanel.tsx`, `components/RecordSheet.tsx`, `lib/recordPicker.ts`, `lib/fields.ts`, `lib/store.ts`. Fence: `components/crmU16.test.ts`.
+
+Left out on purpose: the duplicate warning (CRM-S5), "Create another", and a company picker on a lead.
