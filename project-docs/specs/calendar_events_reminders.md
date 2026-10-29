@@ -632,9 +632,9 @@ server builds every word, and no model runs.
   it does not fit. The chip is the pill row that the card already draws. A
   reminder that arrived closed, such as a `notice` that the open closed,
   offers no chip.
-- **Not in RM-4.** The Undo of Not yet and of Later, a time picker for
-  Later, a read of the current state when the card mounts again after a
-  reload, and the tap on a real push (RE-9).
+- **Not in RM-4.** Not yet and Later have no Undo, and Later has no time
+  picker. After a reload, the card draws the state of its row and reads no
+  newer state. RE-9 sends the real push that a member taps.
 - **Fences.** `tests/unit/test_reminder_context.py`,
   `tests/unit/test_reminders_r8.py` (the open cases) and
   `src/app/chat/reminderOpen.test.ts`. The vitest config runs
