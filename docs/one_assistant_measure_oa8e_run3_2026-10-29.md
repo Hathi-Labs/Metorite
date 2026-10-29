@@ -18,7 +18,7 @@
 - Chunks: 12 chunks of 8 to 34 turns, run one after another with `--timeout 200` and `--spent-before-from`. Each chunk ended in under 10 minutes. No chat dropped, and none was re-run.
 - Cost: USD 1.75 in all (cap USD 6). Run 2 cost USD 2.06.
 - Tunnel: opened as process 42956, closed by that PID, and port 18090 is free.
-- Raw results: `evals/one_assistant_measure/results_oa8e_run3_2026-10-29.json` (tracked, committed).
+- Raw results: `results_oa8e_run3_2026-10-29.json` in the scratch folder of the working session. They are not committed, as for run 2.
 
 ## 2. What changed in the code since run 2
 
