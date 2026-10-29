@@ -34,8 +34,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import dataclasses
 import json as _json
 import os as _os
+import secrets
 import textwrap
 import uuid as _uuid
 from collections.abc import Iterator
@@ -618,6 +620,177 @@ def _render_items(number: int, label: str, text: str, tools: Any = ()) -> str:
     return "\n".join(lines)
 
 
+# ── Packs in a child (WS-67 OA-9c, §6.7) ────────────────────────────────────
+# A job names a pack that the parent run holds now. The spawn builds the pack
+# on THIS frame, through the one guarded builder of OA-7b
+# (``_tool_injection._pack_tools``), with a run key that it mints for that
+# child only. The child keeps the tools that ``child_may_hold`` lets through,
+# so it reads and never writes, also in an open chat.
+
+
+def _parent_packs(ctx: Any) -> frozenset[str] | None:
+    """The packs that the parent run holds now: ``PackRun.holds()`` of the
+    record at ``tool_packs.PACKS_KEY``, which the executor binds (OA-7c), and
+    the loads of ``load_skill_tools`` too (OA-7e). ``None`` when the frame
+    holds no record or the read fails. Then a job that names a pack does not
+    run (fail closed)."""
+    try:
+        from acb_skills.tool_packs import PACKS_KEY, PackRun
+
+        record = (ctx or {}).get(PACKS_KEY)
+        if not isinstance(record, PackRun):
+            return None
+        return frozenset(str(slug) for slug in record.holds())
+    except Exception:  # no record means no pack
+        return None
+
+
+def _pack_builder() -> Any:
+    """THE builder of the tools of one pack for one run
+    (``orchestrator._tool_injection._pack_tools``, OA-7b), or None when the
+    orchestrator is not in this process."""
+    try:
+        from orchestrator._tool_injection import _pack_tools
+    except Exception:  # no orchestrator means no build, so no pack
+        return None
+    return _pack_tools
+
+
+def _reads_strangers(slug: str) -> bool:
+    """True when the owner of pack *slug* reads text that a stranger wrote
+    (``tool_packs._reads_strangers``, which fails closed)."""
+    from acb_skills.tool_packs import _reads_strangers as reads
+
+    return reads(slug)
+
+
+async def _child_pack_tools(job: Any, ctx: Any, *, held: bool) -> tuple[str, Any]:
+    """The pack tools of the child of *job*, or why the job cannot run.
+
+    On the parent frame, for each pack of the job in order: the guarded
+    builder with *ctx* (the parent's run context) and a run key that this
+    call mints for this child only. The builder decides the held answer and
+    drops the egress tools of a held build. The child then keeps the tools
+    that ``subagent_contract.child_may_hold`` lets through. *held* forces a
+    held build, for a call that holds a pack of an owner that reads stranger
+    text (:func:`_with_pack_tools`).
+
+    Gives ``("", job)`` with ``pack_tools`` and ``pack_run`` set, or
+    ``(why, None)``. A pack that gives the child no tool stops the job, and
+    so does a child past ``tool_packs.MAX_REQUEST_TOOLS``. The count is the
+    tools of the job plus the pack tools, the whole list that the pin lets
+    through, as layer (b) counts the live list plus a load.
+    """
+    from acb_skills import subagent_contract as sc
+    from acb_skills import tool_packs
+    from acb_skills.egress import NO_EGRESS_KEY
+    from acb_skills.tool_guard import tool_name
+
+    build = _pack_builder()
+    if build is None:
+        return "this chat cannot build a tool pack here. Name its tools instead.", None
+    # A fresh key for each child: never the parent's key, never a sibling's.
+    run_key = secrets.token_urlsafe(24)
+    build_ctx = {**dict(ctx or {}), tool_packs.PACK_RUN_KEY: run_key,
+                 tool_packs.PACKS_KEY: None}
+    if held:
+        build_ctx[NO_EGRESS_KEY] = True
+    holds = set(job.tools)
+    kept: list[Any] = []
+    for slug in job.packs:
+        made = await build(slug, build_ctx, holds=frozenset(holds))
+        built = tuple(getattr(made, "tools", None) or ())
+        tools = [t for t in built if sc.child_may_hold(tool_name(t))]
+        if not tools:
+            return (f"the tool pack '{slug}' has no read tool that a sub-agent may "
+                    "hold here. Do that step yourself, or name other tools."), None
+        kept.extend(tools)
+        holds |= {tool_name(t) for t in built}
+    count = len(job.tools) + len(kept)
+    if count > tool_packs.MAX_REQUEST_TOOLS:
+        return (f"its tools and packs hold {count} tools, and a sub-agent holds at "
+                f"most {tool_packs.MAX_REQUEST_TOOLS}. Name fewer packs or tools."), None
+    return "", dataclasses.replace(job, pack_tools=tuple(kept), pack_run=run_key)
+
+
+def _reads_any(jobs: Any) -> bool:
+    """True when a job of *jobs* names a pack of an owner that reads stranger
+    text. THE held answer of a spawn call (OA-9c)."""
+    return any(_reads_strangers(slug) for job in jobs for slug in job.packs)
+
+
+async def _build_children(
+    jobs: Any, ctx: Any, *, held: bool,
+) -> tuple[list[Any], list[str]]:
+    """Build the pack tools of each job of *jobs* (:func:`_child_pack_tools`).
+    Gives the jobs that run and one line for each job that the build stops."""
+    from acb_skills import subagent_contract as sc
+
+    ready: list[Any] = []
+    stopped: list[str] = []
+    for job in jobs:
+        if not job.packs:
+            ready.append(job)
+            continue
+        why, built = await _child_pack_tools(job, ctx, held=held)
+        if built is None:
+            stopped.append(sc.job_refusal(job, why))
+        else:
+            ready.append(built)
+    return ready, stopped
+
+
+async def _with_pack_tools(
+    jobs: Any, ctx: Any,
+) -> tuple[tuple[Any, ...], tuple[str, ...], bool]:
+    """The jobs that run, each with its pack tools, one line for each job that
+    the build stops, and the held answer of the call (OA-9c). A job with no
+    pack passes unchanged.
+
+    The held answer is :func:`_reads_any` of the jobs that RUN, and the spawn
+    uses it in three places: the build of each pack, the mark of the chat
+    (:func:`_mark_before_children`) and the start of each child
+    (:func:`_spawn_run`). So no pack call of a child can clear ``no_egress``.
+    The build comes first, so a job whose pack of stranger text gives no tool
+    can stop. Then no child of the call reads stranger text, and the jobs that
+    run build again open, so the one answer holds for each of them.
+    """
+    if not any(job.packs for job in jobs):
+        return tuple(jobs), (), False
+    held = _reads_any(jobs)
+    ready, stopped = await _build_children(jobs, ctx, held=held)
+    if held and not _reads_any(ready):
+        by_number = {job.number: job for job in jobs}
+        ready, again = await _build_children(
+            [by_number[job.number] for job in ready], ctx, held=False)
+        stopped.extend(again)
+        held = False
+    return tuple(ready), tuple(stopped), held
+
+
+async def _mark_before_children(jobs: Any, ctx: Any) -> None:
+    """Mark the chat before a child that holds a pack of an owner that reads
+    stranger text starts (WS-17 EM-G11f3, as for a run of that owner).
+
+    A child's own pack call marks the child's own thread, so this mark on the
+    PARENT frame is the one that holds the chat: later egress of the chat
+    asks the untrusted card, and a later delegation binds ``no_egress``. The
+    spawn calls it only when the held answer of the call is True
+    (:func:`_with_pack_tools`), and *jobs* are the jobs that run. The spawn
+    holds each child of the call too, whether the write of the mark worked or
+    not. Never raises."""
+    from acb_skills import tool_packs
+    from acb_skills.egress import mark_untrusted_session
+
+    owners = {
+        (found.owner if (found := tool_packs.pack(slug)) is not None else slug)
+        for job in jobs for slug in job.packs if _reads_strangers(slug)
+    }
+    for owner in sorted(owners):
+        with contextlib.suppress(Exception):  # the mark never costs the call
+            await mark_untrusted_session(owner, ctx)
+
+
 async def spawn_subagents(jobs: str) -> str:
     """Run up to 5 sub-agents at once. Each one reads and gives back items.
 
@@ -633,7 +806,9 @@ async def spawn_subagents(jobs: str) -> str:
     Args:
         jobs: A JSON array of 1 to 5 jobs. Each job is an object with the keys
               "job" (the job, self-contained), "tools" (optional, names of your
-              own read-only tools, for example ["web_search", "fetch_page"])
+              own read-only tools, for example ["web_search", "fetch_page"]),
+              "packs" (optional, tool packs that you hold now, for example
+              ["crm-records"]; the sub-agent gets only their read tools)
               and "tier" (optional, "fast" or "main", default "main"). Example:
               [{"job": "Find the pricing page of Acme and quote the plans",
                 "tools": ["web_search", "fetch_page"], "tier": "fast"}]
@@ -656,26 +831,42 @@ async def spawn_subagents(jobs: str) -> str:
         return _SPAWN_OFF  # a frame with no run holds no tool to share
     plan = sc.parse_jobs(
         jobs, parent_tools=run_tools, delegating=_delegating_names(),
+        held_packs=_parent_packs(ctx),
     )
     if not plan.jobs:
         return plan.notes() or "No job ran."
     # Two spawn calls of one model step run one after the other, so at most
     # five children of a run run at once (§6.2).
     async with sc.spawn_lock(ctx.get("run_id")):
+        # OA-9c: the pack tools of each child, built on THIS frame before any
+        # child starts. A job that the build stops does not run, and a call
+        # with no job left uses no spawn.
+        ready, stopped, held = await _with_pack_tools(plan.jobs, ctx)
+        plan = dataclasses.replace(plan, jobs=ready, refused=(*plan.refused, *stopped))
+        if not plan.jobs:
+            return plan.notes() or "No job ran."
         if not sc.take_spawn(ctx.get("run_id")):
             return _SPAWN_LIMIT
-        return await _spawn_run(plan, sc, artifact_context_scope)
+        if held:
+            await _mark_before_children(plan.jobs, ctx)
+        return await _spawn_run(plan, sc, artifact_context_scope, held=held)
 
 
-async def _spawn_run(plan: Any, sc: Any, artifact_context_scope: Any) -> str:
-    """Run the jobs of *plan* and join the item blocks (the body of the spawn)."""
+async def _spawn_run(
+    plan: Any, sc: Any, artifact_context_scope: Any, *, held: bool = False,
+) -> str:
+    """Run the jobs of *plan* and join the item blocks (the body of the spawn).
+
+    *held* (OA-9c): the call holds a pack of an owner that reads stranger
+    text, so each child starts with ``no_egress`` bound (``_delegate_held``).
+    """
     wire = _stream_wire()
     parent_model = _parent_run_model()
 
     async def _child(job: Any) -> tuple[str, str]:
         # The job is bound on this task's own context copy, so the worker of
         # this child reads it and no sibling sees it.
-        with artifact_context_scope():
+        with artifact_context_scope(), _delegate_held(held):
             sc.bind_job(job)
             model = _FAST_TIER if job.tier == "fast" else parent_model
             return await _run_branch(
@@ -702,7 +893,8 @@ async def _spawn_run(plan: Any, sc: Any, artifact_context_scope: Any) -> str:
             blocks.append(f"Job {job.number} ({label}): Error: no answer in "
                           f"{sc.JOB_TIMEOUT_S:g}s, so the job was stopped.")
             continue
-        blocks.append(_render_items(job.number, label, text, job.tools))
+        # OA-9c: a pack tool that the child held is a source it may name.
+        blocks.append(_render_items(job.number, label, text, sc.child_allowed(job)))
     # The items come from pages the children read, so the parent reads them
     # as data and never as an instruction (OA-9b hardening item 6).
     from acb_skills.untrusted import UntrustedFrame

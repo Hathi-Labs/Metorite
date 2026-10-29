@@ -18,6 +18,11 @@ tool that is not in the job out of each model request and refuses a call to
 one, so its body never runs. That covers the three floor tools that no opt-out
 removes (``ask_questions``, ``emit_generative_ui`` and ``read_attachment``).
 
+OA-9c: a job may also carry pack tools (``Job.pack_tools``). The spawn builds
+them on the parent frame with the one guarded builder, read tools only, and
+mints a run key for this child. They are the worker's own tools, and the pair
+names them too (``subagent_contract.child_allowed``).
+
 A child makes at most 4 model calls: ``max_iterations`` of 3 rounds, then the
 one final call that MAF makes with the tools off. The wall clock of the job is
 ``subagent_contract.JOB_TIMEOUT_S``, and the spawn tool enforces it. The tool loop
@@ -83,7 +88,10 @@ def build_agent() -> Any:
     from agent_framework.openai import OpenAIChatCompletionClient
 
     job = sc.bound_job()
-    allowed = frozenset(job.tools) if job is not None else frozenset()
+    # OA-9c: the pack tools of the job are the worker's own tools. The spawn
+    # built them on the parent frame, read tools only, with this child's key.
+    pack_tools = list(job.pack_tools) if job is not None else []
+    allowed = sc.child_allowed(job)
 
     prov = _llm_provider()
     client = OpenAIChatCompletionClient(
@@ -104,7 +112,7 @@ def build_agent() -> Any:
         instructions=INSTRUCTIONS,
         name=AGENT_NAME,
         description="Internal sub-agent: runs one read-only job and ends with items.",
-        tools=[],
+        tools=pack_tools,
         middleware=sc.child_pin(allowed),
     )
 
