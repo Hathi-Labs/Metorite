@@ -289,3 +289,28 @@ All app turns, pack against delegation: first text median 1.66 s against 1.81 s,
 | fan_tasks | - | 3/3 | 3/3 |
 | fan_one_read | - | 1/3 | 1/3 |
 | fan_three_searches | - | 3/3 | 3/3 |
+
+## Run 2 re-scored (fix round 3 checks, added 2026-10-29)
+
+The raw numbers above are unchanged. This section scores the same 240 stored rows again with the repaired checks of fix round 3. No model call was made. A row stores its answer, the names of the work tools it ran, and its gateway writes. It does not store the text that a tool returned, the body of a write, or the cards of each write. So the re-score can use only what the row keeps:
+
+- Answer checks, scored again from the stored answer: `says_how_many` (the figure 3 from `number_check`, or each of #13, #14 and #15), `leaves_out_kiran_deal` (a mention of Vantage passes when the same sentence says whose it is).
+- `read_my_work` on the calendar chat, scored again from the stored tool names (`my_work`, `calendar` or `list_tasks`).
+- The three guard checks (`no_unasked_write`, `one_card_per_write`, `mirror_respected`): a turn with no write at the gateway had no write that succeeded, so these pass or read None. The re-score only turns a failure into a pass, never the reverse.
+- Not re-scorable from the file: `call_logged` with "5%" (the body is not stored), and a refused `create_task` that did show a write at the gateway. These keep their stored values.
+
+22 check results changed, none for the worse.
+
+| Set | Delegation raw | Delegation re-scored | Pack raw | Pack re-scored | Pack re-scored, without the hand-off checks |
+|---|---|---|---|---|---|
+| CRM | 23/36 | 23/36 | 28/36 | 30/36 | 31/36 |
+| Projects | 41/57 | 42/57 | 41/57 | 46/57 | 51/57 |
+| Mixed | 6/12 | 6/12 | 5/12 | 5/12 | 5/12 |
+| All app turns | 70/105 (66.7%) | 71/105 (67.6%) | 74/105 (70.5%) | 81/105 (77.1%) | 87/105 |
+
+What moved the stop results:
+
+- Stop 1: no guard failure is left on the pack arm. The `crm_mirror` 2 r1 turn and the three refused-create card failures were check defects. The turns still named are all on the delegation arm (`mix_call_then_task` 2, `mix_task_from_mail` 2 and `pm_archive` 2: repeated writes).
+- Stop 2: packs 77.1 percent against delegation 67.6 (ok).
+- Stop 5 (layer (b) on 21.2 percent) and stop 11 (7 hand-offs by model choice) do not change. They come from what the model did, not from a check. So the verdicts of this report stand: CRM, Projects and sub-agents are not met.
+- The fan-out chats are not re-scored. Their failures came from the `.example` hosts and from a model that did not spawn, and fix round 3 replaced the hosts, so run 3 must measure them again.
