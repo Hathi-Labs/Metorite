@@ -246,6 +246,50 @@ async def grant_holders(db: Any, recipients: list[str], task_id: str) -> list[st
     return allowed
 
 
+#: The active members of one tenant, for :func:`project_grant_holders`.
+_TENANT_MEMBERS_SQL = (
+    "SELECT lower(email) AS email FROM app_user"
+    " WHERE status = 'active' AND organization_id = CAST(:org AS uuid)"
+)
+
+
+async def project_grant_holders(
+    db: Any, project_ids: list[str], organization_id: str | None,
+) -> dict[str, frozenset[str]]:
+    """For each project, the active members of the tenant who open it through
+    a GRANT alone.
+
+    WS-55 MCP-G1, fix round 1. The project form of :func:`grant_holders`,
+    with the same predicate: ``Visibility.project_clause`` of each member,
+    resolved by ``resolve_visibility_for``. So it counts a grant to the
+    person, to ``org`` or to a ``group:<slug>`` of the person, on the project
+    or on a parent of it, and every project for a ``data:org:read`` holder.
+    ``move._move_audience`` compares the sets of the source and of the
+    destination of an agent's move, so an agent never widens who sees a task.
+    It reads the members once, then the visibility and one row for each member.
+    """
+    found: dict[str, set[str]] = {str(p): set() for p in project_ids}
+    if not found or not organization_id:
+        return {p: frozenset() for p in found}
+    members = (await db.execute(
+        text(_TENANT_MEMBERS_SQL), {"org": organization_id},
+    )).fetchall()
+    for who in sorted({str(m.email) for m in members if getattr(m, "email", None)}):
+        vis = await resolve_visibility_for(db, who)
+        rows = (await db.execute(
+            text(
+                "SELECT p.id FROM pm_projects p "
+                "WHERE p.id = ANY(CAST(:pids AS uuid[])) "
+                "AND p.organization_id = CAST(:vis_org AS uuid) "
+                f"AND {vis.project_clause('p.id')}"
+            ),
+            {"pids": sorted(found), **vis.params},
+        )).fetchall()
+        for row in rows:
+            found.setdefault(str(row.id), set()).add(who)
+    return {p: frozenset(v) for p, v in found.items()}
+
+
 async def notify(
     db: Any,
     *,

@@ -21,6 +21,12 @@ holds that the plain task DELETE and the PUT of the switch stay OFF the edge.
 MCP-G2 adds the ``PUT`` of the assignees (``set_assignees``) and the task
 move, which ``update_task`` sends IN PLACE of its PATCH for ``parent_task_id``
 (the tool record's ``alt_writes``). Rule 4 reads the move's parameters too.
+MCP-G1 adds four pairs: the node POST and PATCH (``create_project`` and
+``update_project``), the move preview and the move between projects
+(``preview_move_tasks`` and ``move_tasks``). The preview is a POST that
+writes nothing, so its tool keeps the hints of a read (``READ_ONLY_POST_TOOLS``).
+``move_tasks`` sends the preview before its move (a prior write), and it has
+``destructiveHint: true``. The grant routes stay OFF the edge.
 
 1. Each pair in ``MCP_ROUTES`` is a route the gateway serves. Its method is
    ``GET``, or ``PATCH``, ``POST`` or ``PUT`` for a pair of
@@ -111,8 +117,13 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
     the comment POST (EA3-35). EA-6b adds the claim (§9.2, EA3-34). EA-6g
     adds the archive request (§9.5, EA3-40). EA-6h adds the agent delete
     (EA3-51). EA-14a adds the release (§12.3). MCP-G2 adds the PUT of the
-    assignees and the task move (§9.2)."""
+    assignees and the task move (§9.2). MCP-G1 adds the node POST and PATCH,
+    the move preview and the move (§9.2)."""
     expected = {
+        ("POST", "/projects/nodes"),
+        ("PATCH", "/projects/nodes/{project_id}"),
+        ("POST", "/projects/tasks/move/preview"),
+        ("POST", "/projects/tasks/move"),
         ("PATCH", "/projects/tasks/{task_id}"),
         ("PUT", "/projects/tasks/{task_id}/assignees"),
         ("POST", "/projects/tasks/{task_id}/move"),
@@ -144,6 +155,13 @@ def _reached(tools) -> set[tuple[str, str]]:
 NEVER_ON_THE_EDGE = (
     ("DELETE", "/projects/tasks/{task_id}"),
     ("PUT", "/auth/me/agent-access"),
+    # MCP-G1: "No grant writes" (WS-55). An agent makes a node and edits it,
+    # and it never changes who sees it, moves it or archives it.
+    ("POST", "/projects/nodes/{project_id}/grants"),
+    ("DELETE", "/projects/nodes/{project_id}/grants/{grant_id}"),
+    ("POST", "/projects/nodes/{project_id}/move"),
+    ("POST", "/projects/nodes/{project_id}/archive"),
+    ("DELETE", "/projects/nodes/{project_id}"),
 )
 
 
@@ -247,6 +265,10 @@ NON_IDEMPOTENT_WRITES: dict[str, str] = {
         "EA-6d. The hint is one value for every call, and a call with no"
         " idempotency_key makes a new task each time (spec §9.2)."
     ),
+    "create_project": (
+        "MCP-G1. A call with no idempotency_key makes a new node each time, as"
+        " for create_task (spec §9.2)."
+    ),
 }
 
 #: The write tools that destroy data, each with its four hints. A new entry
@@ -259,6 +281,20 @@ DESTRUCTIVE_WRITES: dict[str, dict[str, bool]] = {
     # removes every assignee. The same call twice changes nothing more.
     "set_assignees": {"readOnlyHint": False, "destructiveHint": True,
                       "idempotentHint": True, "openWorldHint": False},
+    # MCP-G1. A move drops each value with no field in the destination, and
+    # it can change who sees a task. A second call moves nothing more.
+    "move_tasks": {"readOnlyHint": False, "destructiveHint": True,
+                   "idempotentHint": True, "openWorldHint": False},
+}
+
+#: The tools of a write pair that write nothing, each with its reason. Each
+#: keeps the hints of a read, and its route is a read-only POST of the
+#: manifest. A new entry needs a spec amendment (§9.2).
+READ_ONLY_POST_TOOLS: dict[str, str] = {
+    "preview_move_tasks": (
+        "MCP-G1. It posts the move preview, which writes nothing. Branch 0 admits"
+        " a POST only for a pair of MCP_WRITE_ROUTES, so it needs projects:write."
+    ),
 }
 
 
@@ -324,6 +360,10 @@ def test_rule_3_each_tool_declares_its_scope_hints_and_schemas():
             hints = {**WRITE_HINTS, "idempotentHint": False}
         if write and tool.name in DESTRUCTIVE_WRITES:
             hints = DESTRUCTIVE_WRITES[tool.name]
+        if write and tool.name in READ_ONLY_POST_TOOLS:
+            hints = READ_HINTS
+            if (tool.method, tool.route) not in m.READ_ONLY_POSTS:
+                wrong.append(f"{tool.name}: {tool.route} is not a read-only POST")
         if tool.annotations.get("destructiveHint") and tool.name not in DESTRUCTIVE_WRITES:
             wrong.append(f"{tool.name}: destructive, and not a named exception")
         if dict(tool.annotations) != hints:
@@ -358,6 +398,13 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     # EA-15b (§12.4). The edge cuts its merged rows to this length. No route
     # of `my_work` takes it.
     ("my_work", "limit"),
+    # MCP-G1. The edge checks the level against the parent, and the node
+    # route takes no level. The key uses the slot of `create_task`.
+    ("create_project", "level"),
+    ("create_project", "idempotency_key"),
+    # MCP-G1. The edge compares it with the id of the preview that it runs
+    # again. The move route takes no such field.
+    ("move_tasks", "preview_id"),
 })
 
 #: The reads of EA-15 (§12.4). Each composes routes that are already in
@@ -467,9 +514,11 @@ def test_rule_4_each_route_a_tool_reads_is_in_the_allowlist():
 def test_rule_4_only_ask_on_task_sends_a_prior_write():
     """EA-12b. A prior write widens rule 4 for its tool, so the spec names
     each one (§12.1): ``ask_on_task`` starts the run, then writes the
-    question."""
+    question. MCP-G1: ``move_tasks`` runs the preview again before its move
+    (§9.2)."""
     declared = {(tool.name, prior) for tool in _tools() for prior in tool.prior_writes}
-    assert declared == {("ask_on_task", "/projects/tasks/{task_id}/agent-runs")}
+    assert declared == {("ask_on_task", "/projects/tasks/{task_id}/agent-runs"),
+                        ("move_tasks", "/projects/tasks/move/preview")}
 
 
 def test_rule_4_only_update_task_sends_a_write_in_place_of_its_own():
