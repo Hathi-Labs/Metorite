@@ -198,3 +198,42 @@ class TestTheStoredRun:
                  for i in range(9)]
         parts, stored = self._stored(cards)
         assert stored is not None and stored[1] == parts and parts.rest == 2
+
+
+# ── BR-2c-1 repair: a stored run dated before the feed day is not used ───────
+
+
+async def _stored_for(monkeypatch, run_date: date, today: date):
+    """``_stored_brief`` with the store read stubbed to one served run."""
+    from types import SimpleNamespace
+
+    from gateway.routes import brief_today
+
+    run = SimpleNamespace(local_date=run_date)
+
+    async def fake_read_today(org, user, email, kind, now):
+        return run, []
+
+    monkeypatch.setattr(brief_today, "read_today", fake_read_today)
+    monkeypatch.setattr(chat_brief, "stored_parts",
+                        lambda r, claims: ("lead", plan.BriefParts("t", [], 0)))
+    return await chat_brief._stored_brief(
+        "org", None, "m@example.com", datetime(2026, 10, 22, 0, 30, tzinfo=UTC), today)
+
+
+async def test_a_stored_run_dated_before_the_feed_day_is_not_used(monkeypatch) -> None:
+    """A member with a 05:00 day start opens a fresh chat at 06:00. The newest
+    served run is of the day before. The chat must not post yesterday's
+    brief: ``_stored_brief`` answers None, and the route composes from the
+    feed. Mutation: remove the ``run.local_date < today`` check, and this
+    test goes red."""
+    got = await _stored_for(monkeypatch, date(2026, 10, 21), date(2026, 10, 22))
+    assert got is None
+
+
+async def test_a_stored_run_of_the_feed_day_or_later_is_used(monkeypatch) -> None:
+    """The control: a run of the feed day, or of the calendar day after it
+    (a day start after the brief time), is used, with the run's own date."""
+    for run_date in (date(2026, 10, 22), date(2026, 10, 23)):
+        got = await _stored_for(monkeypatch, run_date, date(2026, 10, 22))
+        assert got is not None and got[0] == run_date
