@@ -309,8 +309,11 @@ words.
    of item 3. When the run is `ready` or `delivered`, the chat reads no
    feed. Its stamp and its row id are the run's `local_date`, so one run
    makes one post. The composition stays as the fallback, also when the
-   stored read fails. The rules of once a day and phone only stay too
-   (D-CF-2, D-CF-3). The chat writes nothing to the run.
+   stored read fails. The chat does not post a run that is dated before the
+   feed day, and composes from the feed instead. So a member whose day
+   starts early never gets the brief of the day before. The rules of once a
+   day and phone only stay too (D-CF-2, D-CF-3). The chat writes nothing to
+   the run.
 3. **A read route.** BUILT in BR-2c-1. `GET /brief/today?kind=brief|closeout`
    answers the run and its claims, for the member of the session only. The
    route takes the newest run whose `slot_at` has passed. Its date is
@@ -319,7 +322,9 @@ words.
    brief time near midnight that the look-back ran after midnight. It does
    not use the feed day, because the feed day moves with the day-start
    hour. The route is a pure read, and it writes nothing. No route
-   enqueues a run. `kind=closeout` answers 404 until BR-2b.
+   enqueues a run. `kind=closeout` answers 404 until BR-2b. Before the slot
+   of today, the route serves the run of the day before, with its own
+   `local_date`. The My Day card (BR-2c-2) must show that date.
 4. **The bell.** One entry in v1 (§9 Q2, owner 2026-10-29). The entry says
    that the brief is ready, and it opens the brief.
 5. **Outside the app.** Web push (PN-1) is in v1, and it ships last (§9 Q2
