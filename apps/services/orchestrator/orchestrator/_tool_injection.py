@@ -3654,7 +3654,7 @@ async def _apply_tool_packs(
     # (with the load tool only when the plan offers it), the pack tools, less
     # each specialist tool that leaves (a pack's, and an owner the loader
     # reaches). The inject step after this one adds nothing to the count.
-    sent_tools = (base - int(loader_counted) + int(bool(plan.offered))
+    planned_tools = (base - int(loader_counted) + int(bool(plan.offered))
                   + len(added) - sum(_specialist_counts(pool, replaced).values()))
     opts["instructions"] = persona
     pool[:] = [t for t in pool if _delegates_to(t) not in replaced]
@@ -3679,7 +3679,7 @@ async def _apply_tool_packs(
     _log.info(
         "executor.pack_plan", offered=list(plan.offered), via_loader=sorted(via),
         packs=list(record.slugs), base_tools=base, current_tools=current,
-        sent_tools=sent_tools,
+        planned_tools=planned_tools,
     )
     applied = PackApply(builds=tuple(builds), record=record, run_key=run_key)
     if offer_loader and not _offer_pack_loader(agents, applied, plan) and via:

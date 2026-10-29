@@ -91,7 +91,7 @@ async def _flow(agents: list[Any], words: str, monkeypatch, *, allowed=EVERY) ->
     """The real order of a run: the packs, the injection, the facts block.
 
     Returns ``base`` (the estimate of the cap, with no load tool), ``plan``
-    (the ``sent_tools`` that ``executor.pack_plan`` logged) and ``sent`` (the
+    (the ``planned_tools`` that ``executor.pack_plan`` logged) and ``sent`` (the
     pool of the run after the injection, plus the load tool)."""
     seen: list[int] = []
     real = ti._pack_base_count
@@ -123,7 +123,7 @@ async def _flow(agents: list[Any], words: str, monkeypatch, *, allowed=EVERY) ->
         await ti._add_crm_facts_block(agents, frozenset(_names(agents)), no_egress=False)
     plan = [x for x in logged if x["event"] == "executor.pack_plan"]
     loader = 1 if ex._pack_loader_offer(agents[0]) else 0
-    return {"base": seen[0], "plan": plan[0]["sent_tools"] if plan else -1,
+    return {"base": seen[0], "plan": plan[0]["planned_tools"] if plan else -1,
             "sent": len(_names(agents)) + loader, "loader": loader,
             "packs": len(applied.record.slugs) if applied else 0}
 
@@ -138,9 +138,9 @@ async def test_the_estimate_equals_the_sent_count_on_the_staging_shape(
     and the loader). The 3 facts tools are not in the run of an org off the
     list, so the base falls to 61, and 62 with the load tool. The loader then
     reaches three owners and takes their 3 specialist tools out, so the run
-    sends 59. The count of the apply (``sent_tools``) says 59 and equals what
+    sends 59. The count of the apply (``planned_tools``) says 59 and equals what
     the run sends. Mutation: the estimate keeps the facts tools → 65, not 62
-    → red. Mutation: ``sent_tools`` ignores the specialists that leave → 62
+    → red. Mutation: ``planned_tools`` ignores the specialists that leave → 62
     logged against 59 sent → red."""
     with _tenant():
         old = _estimate_with_facts(orchestrator) + 1
@@ -166,7 +166,7 @@ async def test_a_loaded_pack_keeps_the_estimate_exact(
 ) -> None:
     """With the email pack loaded, and no pack left to offer, the run sends the
     base, plus the 31 pack tools, less the specialist tool that the pack
-    replaces, and no load tool. Mutation: ``sent_tools`` counts a load tool
+    replaces, and no load tool. Mutation: ``planned_tools`` counts a load tool
     that is not offered, or keeps the specialist → off by one → red."""
     got = await _flow(orchestrator, "check my inbox", monkeypatch, allowed=EMAIL)
     assert got["packs"] == 1 and got["loader"] == 0

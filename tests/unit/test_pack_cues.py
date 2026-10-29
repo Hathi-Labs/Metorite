@@ -32,8 +32,8 @@ from acb_skills import tool_packs as tp
 #: The line of each pack, in the member's terms. A change here is a reviewed
 #: change of what the model reads in every call of ``load_skill_tools``.
 WHEN = {
-    "email": "Load for mail: read, search, reply, send, drafts and my inbox.",
-    "email-setup": "Load to set up mail: rules, writing style, senders and categories.",
+    "email": "Load for mail: read, search, summarise, reply, forward, send later, drafts, follow-ups, my inbox.",
+    "email-setup": "Load to set up mail: rules, settings, knowledge, writing style, senders and categories.",
     "crm-records": (
         "Load to change deals, leads and contacts, or to read a record's timeline. "
         "Plain reads of the pipeline need no load."),
@@ -98,9 +98,10 @@ def test_the_crm_line_says_that_plain_reads_need_no_load() -> None:
 # ── The bulk rule ───────────────────────────────────────────────────────────
 
 BULK_RULE = (
-    "- For two or more new tasks at once, call load_skill_tools with the pack\n"
-    "  projects-bulk, then call create_tasks once. That shows one card for the set.\n"
-    "  Do not call create_task once for each task.\n"
+    "- For two or more new tasks at once, make the set in one step, so the member\n"
+    "  sees one card. When load_skill_tools offers the pack projects-bulk, load it.\n"
+    "  Else give the set to projects-assistant with call_agent. Do not make the\n"
+    "  tasks one by one.\n"
 )
 
 
@@ -110,10 +111,10 @@ def test_the_core_projects_rules_send_many_tasks_to_the_bulk_pack() -> None:
     ``create_task`` for the set → red."""
     assert BULK_RULE in tp._PROJECTS_RULES
     rules = tp.PACKS["projects"].rules
-    assert "projects-bulk" in rules and "create_tasks" in rules and "one card" in rules
+    assert "projects-bulk" in rules and "projects-assistant" in rules and "one card" in rules
+    # The core rule names no tool of another pack (test_tool_packs_registry).
+    assert "create_tasks" not in rules
     assert "create_tasks" in sf.SKILL_FAMILIES["projects-bulk"]["tools"]
-    assert "create_tasks" not in sf.SKILL_FAMILIES["projects"]["tools"]
-    assert "create_task" in sf.SKILL_FAMILIES["projects"]["tools"]
 
 
 def test_the_bulk_rule_reaches_the_persona_of_a_run_that_holds_the_core_pack() -> None:
@@ -121,3 +122,36 @@ def test_the_bulk_rule_reaches_the_persona_of_a_run_that_holds_the_core_pack() -
     the persona without the core rules → red."""
     persona = tp.persona_for("Base persona.\n", [("projects", False)], {})
     assert BULK_RULE in persona
+
+
+@pytest.mark.parametrize(("label", "base", "bulk_offered"), [
+    ("real base, trim off", 61, False),
+    ("org on the CRM list, trim off", 64, False),
+    ("trim on", 52, True),
+])
+def test_the_bulk_rule_has_a_path_at_each_real_base(
+    label: str, base: int, bulk_offered: bool,
+) -> None:
+    """With the core pack held (23 tools) and the load tool (1), the plan offers
+    ``projects-bulk`` only at the trimmed base. Where it is not offered, the
+    rule sends the set to ``projects-assistant``, and the specialist stays
+    while the core pack is held alone. Mutation: the rule says "load
+    projects-bulk" with no else → the text pin fails. Mutation: lift the cap
+    check from the plan → ``projects-bulk`` is offered at 61 → red."""
+    plan = tp.plan_loader(
+        set(tp.PACKS), ["projects"], current=base + 1 + 23, removable={"projects-assistant": 1})
+    assert ("projects-bulk" in plan.offered) is bulk_offered, (label, plan.offered)
+    assert "projects-assistant" not in plan.via_loader or bulk_offered, label
+    assert "call_agent" in tp.PACKS["projects"].rules
+
+
+def test_the_email_when_lines_keep_the_cues_of_run_4() -> None:
+    """A turn with no pack word ("What follow-ups am I waiting on?") reaches the
+    pack through the catalog, so the line keeps the words that OA-7h run 4
+    measured. Mutation: drop "follow-ups" from the ``email`` line → red."""
+    mail = tp.PACKS["email"].when.lower()
+    for word in ("follow-ups", "forward", "send later", "summarise"):
+        assert word in mail, word
+    setup = tp.PACKS["email-setup"].when.lower()
+    for word in ("settings", "knowledge", "rules", "writing style"):
+        assert word in setup, word

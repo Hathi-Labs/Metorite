@@ -1,8 +1,8 @@
-"""WS-67 OA-8f: ``ORCHESTRATOR_FLOOR_TRIM`` takes nine floor tools out.
+"""WS-67 OA-8f: ``ORCHESTRATOR_FLOOR_TRIM`` takes ten floor tools out.
 
 ``project-docs/specs/one_assistant_context.md``, the note "As built, OA-8f".
 Seven days of production use showed 220 orchestrator tool calls and no call
-of nine floor tools. With the flag on, the orchestrator opts out of them
+of ten floor tools. With the flag on, the orchestrator opts out of them
 through the one seam of ``_tool_injection._floor_opt_out``, so the estimate
 of the pack cap, the scope, the addendum and the final list agree. With the
 flag off (the default) a run is byte-identical to one without this code.
@@ -45,7 +45,7 @@ from tests.unit.test_tool_packs_choice import (
 
 NINE = frozenset({
     "list_integrations", "get_errors", "run_diagnostics", "save_note",
-    "recall_notes", "load_artifact_kit", "manage_todo_list",
+    "recall_notes", "load_artifact_kit", "load_design_system", "manage_todo_list",
     "call_agents_parallel", "decide",
 })
 
@@ -97,7 +97,7 @@ def test_the_flag_defaults_off_and_has_one_reader(monkeypatch) -> None:
 
 
 def test_off_the_orchestrator_opts_out_of_nothing(monkeypatch) -> None:
-    """Mutation: the trim ignores the flag → the orchestrator loses nine tools
+    """Mutation: the trim ignores the flag → the orchestrator loses ten tools
     on every box → red."""
     _flag(monkeypatch, False)
     assert ti._floor_opt_out("orchestrator", CONFIG) == frozenset()
@@ -105,8 +105,8 @@ def test_off_the_orchestrator_opts_out_of_nothing(monkeypatch) -> None:
 
 
 def test_on_the_orchestrator_opts_out_of_the_nine_and_only_it(monkeypatch) -> None:
-    """The nine join the config's own opt-out. Another agent is not touched.
-    Mutation: drop the agent-name check → the Projects agent loses the nine
+    """The ten join the config's own opt-out. Another agent is not touched.
+    Mutation: drop the agent-name check → the Projects agent loses the ten
     (``save_note`` among them) and an agent with no opt-out loses tools → red."""
     _flag(monkeypatch, True)
     assert ti._floor_opt_out("orchestrator", CONFIG) == NINE
@@ -121,7 +121,7 @@ def test_on_the_orchestrator_opts_out_of_the_nine_and_only_it(monkeypatch) -> No
 
 
 def test_off_the_run_holds_the_nine(orchestrator, monkeypatch) -> None:  # noqa: F811
-    """Non-vacuity, and the flag-off fence: with the flag off the nine are in
+    """Non-vacuity, and the flag-off fence: with the flag off the ten are in
     the tool list. Mutation: the trim applies with the flag off → red."""
     _flag(monkeypatch, False)
     names, _text = _inject(orchestrator)
@@ -129,9 +129,9 @@ def test_off_the_run_holds_the_nine(orchestrator, monkeypatch) -> None:  # noqa:
 
 
 def test_on_the_run_holds_none_of_the_nine_and_keeps_the_rest(orchestrator, monkeypatch) -> None:  # noqa: F811
-    """With the flag on, the tool list loses exactly the nine, and nothing else
+    """With the flag on, the tool list loses exactly the ten, and nothing else
     changes. ``call_agent`` stays. Mutation: trim a tenth tool, or keep one of
-    the nine → red."""
+    the ten → red."""
     _flag(monkeypatch, False)
     before, _ = _inject(orchestrator)
     # A second agent for the flag-on run, so the first injection does not leak.
@@ -153,7 +153,7 @@ def test_on_the_prompt_names_none_of_the_nine(orchestrator, monkeypatch) -> None
     injection appends the writing rules and the attachment rule, and those are
     scanned too.)
     A tool in a call is written ``name(`` or in backticks. Mutation: name one
-    of the nine in the persona or in a pack's rules → red."""
+    of the ten in the persona or in a pack's rules → red."""
     _flag(monkeypatch, True)
     persona = str(orchestrator[0].default_options.get("instructions") or "")
     _names_now, text = _inject(orchestrator)
@@ -174,7 +174,7 @@ async def test_the_estimate_equals_the_injected_count_with_the_flag(
     on: bool, orchestrator, monkeypatch,  # noqa: F811
 ) -> None:
     """The estimate and the injection read ONE seam. Mutation: the estimate
-    stops reading ``_floor_opt_out`` → it counts nine tools the run lacks
+    stops reading ``_floor_opt_out`` → it counts ten tools the run lacks
     (flag on) → red."""
     _flag(monkeypatch, on)
     with _tenant():
@@ -188,3 +188,22 @@ async def test_the_estimate_equals_the_injected_count_with_the_flag(
     assert base == len(_names(orchestrator)), (on, base)
     if on:
         assert not NINE & set(_names(orchestrator))
+
+
+def test_the_docstrings_of_the_tools_that_stay_name_no_trimmed_tool(
+    orchestrator, monkeypatch,  # noqa: F811
+) -> None:
+    """The model reads each tool's description. With the trim on, a tool that
+    stays must not tell the model to call a trimmed one (``load_design_system``
+    once pointed at ``load_artifact_kit``). Mutation: add ``load_artifact_kit``
+    to ``load_design_system`` out of the trim → red here."""
+    _flag(monkeypatch, True)
+    names, _text = _inject(orchestrator)
+    pool = orchestrator[0].default_options["tools"]
+    for tool in pool:
+        name = ti._tool_name(tool)
+        doc = str(getattr(tool, "description", "") or getattr(getattr(tool, "func", tool), "__doc__", "") or "")
+        for gone in sorted(NINE):
+            if gone == "decide" or gone in names:
+                continue
+            assert f"{gone}(" not in doc and f"`{gone}`" not in doc, (name, gone)

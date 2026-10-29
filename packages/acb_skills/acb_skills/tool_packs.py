@@ -378,9 +378,10 @@ No Projects agent exists to hand a task to.
   that it gives, and do not ask for an id that it gives.
 - Send independent reads together, as parallel calls. Call one write at a
   time, because each write shows a card.
-- For two or more new tasks at once, call load_skill_tools with the pack
-  projects-bulk, then call create_tasks once. That shows one card for the set.
-  Do not call create_task once for each task.
+- For two or more new tasks at once, make the set in one step, so the member
+  sees one card. When load_skill_tools offers the pack projects-bulk, load it.
+  Else give the set to projects-assistant with call_agent. Do not make the
+  tasks one by one.
 - Find a task by a short word with find_tasks. It searches descriptions too.
   Try a shorter fragment before you say that a task does not exist. Another
   person's work is list_tasks with assignee, never my_work.
@@ -550,7 +551,7 @@ _PROJECTS_SURFACES = ("projects", "tasks", "calendar")
 PACKS: dict[str, Pack] = {
     "email": Pack(
         slug="email",
-        when="Load for mail: read, search, reply, send, drafts and my inbox.",
+        when="Load for mail: read, search, summarise, reply, forward, send later, drafts, follow-ups, my inbox.",
         rules=_EMAIL_RULES,
         references=(_EMAIL_LINK,),
         # Fix round 1 (P1-B): each word needs an email context. A bare
@@ -568,7 +569,7 @@ PACKS: dict[str, Pack] = {
     ),
     "email-setup": Pack(
         slug="email-setup",
-        when="Load to set up mail: rules, writing style, senders and categories.",
+        when="Load to set up mail: rules, settings, knowledge, writing style, senders and categories.",
         rules=_EMAIL_SETUP_RULES,
         words=(
             "email rule", "email rules", "mail rule", "mail rules",
@@ -806,7 +807,7 @@ MAX_REQUEST_TOOLS = 110
 #: (``_tool_injection.FLOOR_OPT_OUT_ALLOWED``).
 FLOOR_TRIM_TOOLS: frozenset[str] = frozenset({
     "list_integrations", "get_errors", "run_diagnostics", "save_note",
-    "recall_notes", "load_artifact_kit", "manage_todo_list",
+    "recall_notes", "load_artifact_kit", "load_design_system", "manage_todo_list",
     "call_agents_parallel", "decide",
 })
 
