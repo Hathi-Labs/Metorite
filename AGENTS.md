@@ -195,16 +195,16 @@ best practice:
   eval harnesses, observability, sandboxing). Consult it when designing or
   reviewing harness features; cite the practice you're applying or
   deliberately rejecting in the spec/PR.
-- Our gap analysis + work queue: project-docs/specs/harness_hardening_2026-07.md
+- Our gap analysis + work queue: project-docs/research/harness_hardening_2026-07.md
   (HH-1..8). Check it before starting harness work — the gap may already be
   queued, in-progress, or explicitly deferred with rationale.
-- Competitor reference implementations: project-docs/specs/competitive_hardening_2026-07.md
-  (CH-1..9, sourced from COMPETITIVE_COMPARISON.md) — proven patterns from Hermes
+- Competitor reference implementations: project-docs/research/competitive_hardening_2026-07.md
+  (CH-1..9, sourced from project-docs/research/COMPETITIVE_COMPARISON.md) — proven patterns from Hermes
   Agent (fail-closed approval, container sandbox flags, self-improving Curator,
   typed sub-agent messaging) and OpenClaw (durable job queue, hub-and-spoke
   channels; and its CVEs as the cautionary case). Consult it for "what good looks
   like" when hardening security, plumbing, or multi-agent coordination.
-- Multiplayer prior art: project-docs/specs/multiplayer_prior_art_qm_2026-08.md
+- Multiplayer prior art: project-docs/research/multiplayer_prior_art_qm_2026-08.md
   (QM-0..7, sourced from github.com/yc-software/qm) — a shipped multiplayer agent
   harness that independently reproduced our least-cleared-viewer rule. Consult it
   before building room concurrency (it folds a second turn into the live run as a

@@ -1085,7 +1085,7 @@ watch (genUI Phase 3); app analytics; org-research permission model adoption.
   `infra/postgres/` (`66_pending_actions`, `71_agent_blob_store`, `03_pending_commits`)
 - Specs: `project-docs/specs/agent_coding_skill.md` ·
   `specs/generative_ui_2.md` · `specs/permissions_sandbox_b6.md` ·
-  `specs/multi_user_organization_research.md` · `specs/chat_agent_framework_review_2026-07.md` ·
+  `research/multi_user_organization_research.md` · `research/chat_agent_framework_review_2026-07.md` ·
   `/FOUNDATION_BUILDOUT_CHECKLIST.md` (BO-1/2/7/14)
 - Prior art (surveyed 2026-07-25):
   [dyad](https://github.com/dyad-sh/dyad) ·
