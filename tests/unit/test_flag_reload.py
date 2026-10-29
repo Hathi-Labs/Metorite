@@ -217,18 +217,29 @@ def _env_key(call: ast.Call) -> str | None:
     return None
 
 
+def _flags_read_node(n: ast.AST) -> set[str]:
+    """The reloadable field that the one node *n* reads, as an attribute or
+    an env key. A bare string is a name, not a read."""
+    if isinstance(n, ast.Attribute) and n.attr in _FIELDS:
+        return {n.attr}
+    if isinstance(n, ast.Call) and (k := _env_key(n)) and k.lower() in _FIELDS:
+        return {k.lower()}
+    if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "getattr" \
+            and len(n.args) >= 2 and isinstance(n.args[1], ast.Constant) \
+            and isinstance(n.args[1].value, str) and n.args[1].value in _FIELDS:
+        return {n.args[1].value}
+    if isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant) \
+            and isinstance(n.slice.value, str) and n.slice.value.lower() in _FIELDS:
+        return {n.slice.value.lower()}
+    return set()
+
+
 def _flags_read(node: ast.AST) -> set[str]:
-    """The reloadable fields that *node* reads, as an attribute or an env key.
-    A bare string is a name, not a read, so a list of names is no hit."""
+    """The reloadable fields that *node* and its children read. A list of
+    names is no hit."""
     out: set[str] = set()
     for n in ast.walk(node):
-        if isinstance(n, ast.Attribute) and n.attr in _FIELDS:
-            out.add(n.attr)
-        elif isinstance(n, ast.Call) and (k := _env_key(n)) and k.lower() in _FIELDS:
-            out.add(k.lower())
-        elif isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant) \
-                and isinstance(n.slice.value, str) and n.slice.value.lower() in _FIELDS:
-            out.add(n.slice.value.lower())
+        out |= _flags_read_node(n)
     return out
 
 
@@ -251,27 +262,129 @@ def test_no_module_reads_a_reloadable_flag_at_import() -> None:
     assert hits == [], f"a module reads a reloadable flag at import: {hits}"
 
 
+#: How deep the start fence follows calls. ``start_reminder_loop`` reads its
+#: switch two calls down (``_enabled`` → ``reminders_enabled``).
+_START_DEPTH = 3
+
+#: A call whose argument is a coroutine to spawn. The spawned loop reads its
+#: flags on each tick, so it follows a reload: the fence does not enter it.
+_SPAWN = {"create_task", "ensure_future", "run_coroutine_threadsafe", "start_soon"}
+
+#: The functions of the start path that read a reloadable flag and gate
+#: nothing, with the reason.
+_START_READS_ALLOWED = {
+    # It logs `email.decide_not_wired` once when a decide feature is on and
+    # the router is not wired. It starts and skips nothing.
+    ("gateway.routes.email.scheduler_hooks", "check_decide_wiring"),
+}
+
+
+def _module_name(rel: str) -> str | None:
+    parts = rel[:-3].split("/")
+    if parts[:2] == ["apps", "services"] and len(parts) > 3:
+        parts = parts[3:]
+    elif parts[0] == "packages" and len(parts) > 2:
+        parts = parts[2:]
+    else:
+        return None
+    return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+
+
+def _own_nodes(fn: ast.AST):
+    """The nodes of *fn*'s own body. Not a nested function, and not the
+    argument of a spawn call."""
+    stack = list(ast.iter_child_nodes(fn))
+    while stack:
+        n = stack.pop()
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        yield n
+        if isinstance(n, ast.Call) and getattr(n.func, "attr", getattr(n.func, "id", "")) in _SPAWN:
+            continue
+        stack.extend(ast.iter_child_nodes(n))
+
+
+def _bindings(nodes, module: str) -> dict[str, tuple[str, str | None]]:
+    """``name -> (module, attr)`` of each import in *nodes*. ``attr`` is None
+    when the name is a module."""
+    out: dict[str, tuple[str, str | None]] = {}
+    pkg = module.rsplit(".", 1)[0]
+    for n in nodes:
+        if isinstance(n, ast.ImportFrom):
+            base = n.module or ""
+            if n.level:
+                base = ".".join(pkg.split(".")[: len(pkg.split(".")) - n.level + 1] + ([base] if base else []))
+            for a in n.names:
+                out[a.asname or a.name] = (base, a.name)
+        elif isinstance(n, ast.Import):
+            for a in n.names:
+                out[a.asname or a.name.split(".")[0]] = (a.name if a.asname else a.name.split(".")[0], None)
+    return out
+
+
+def _resolve(call: ast.Call, module: str, local: dict, top: dict, mods: dict):
+    """The ``(module, function)`` that *call* names, or None."""
+    f = call.func
+    if isinstance(f, ast.Name):
+        if f.id in local:
+            mod, attr = local[f.id]
+            return (mod, attr) if attr else None
+        if f.id in mods.get(module, {}).get("defs", {}):
+            return module, f.id
+        if f.id in top:
+            mod, attr = top[f.id]
+            return (mod, attr) if attr else None
+    elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
+        bound = local.get(f.value.id) or top.get(f.value.id)
+        if bound:
+            mod, attr = bound
+            return (f"{mod}.{attr}" if attr else mod), f.attr
+    return None
+
+
 def test_no_start_function_of_the_lifespan_reads_a_reloadable_flag() -> None:
     """A start function runs once. A loop that it starts or skips on a
-    reloadable flag would not follow a reload. One hop deep: a helper that a
-    start function calls counts too."""
-    trees = _trees()
-    lifespan = next(n for n in ast.walk(trees[_MAIN.relative_to(_ROOT).as_posix()])
-                    if isinstance(n, ast.AsyncFunctionDef) and n.name == "lifespan")
-    started = _calls(lifespan)
-    defs: dict[str, list[ast.AST]] = {}
-    for tree in trees.values():
-        for n in ast.walk(tree):
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                defs.setdefault(n.name, []).append(n)
+    reloadable flag would not follow a reload. The fence resolves the calls
+    of each start function as Python does (its own imports, its module, the
+    module's imports), :data:`_START_DEPTH` deep."""
+    mods: dict[str, dict] = {}
+    for rel, tree in _trees().items():
+        name = _module_name(rel)
+        if name:
+            mods[name] = {
+                "defs": {n.name: n for n in tree.body
+                         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))},
+                "top": _bindings(tree.body, name),
+            }
+    main = "gateway.main"
+    lifespan = mods[main]["defs"]["lifespan"]
+    # Only the start half: the calls after `yield` run at the stop.
+    stop_at = min(n.lineno for n in ast.walk(lifespan) if isinstance(n, ast.Yield))
+    starts = set()
+    local = _bindings(list(ast.walk(lifespan)), main)
+    for n in _own_nodes(lifespan):
+        if isinstance(n, ast.Call) and n.lineno < stop_at \
+                and (r := _resolve(n, main, local, mods[main]["top"], mods)):
+            starts.add(r)
     hits = []
-    for name in sorted(started & set(defs)):
-        for fn in defs[name]:
-            found = _flags_read(fn)
-            for helper in _calls(fn) & set(defs):
-                for h in defs[helper]:
-                    found |= _flags_read(h)
-            hits += [f"{name} {f}" for f in sorted(found)]
+    for start in sorted(s for s in starts if s[1] in mods.get(s[0], {}).get("defs", {})):
+        seen, frontier, found = {start}, {start}, set()
+        for _ in range(_START_DEPTH + 1):
+            nxt = set()
+            for mod, fname in frontier:
+                fn = mods.get(mod, {}).get("defs", {}).get(fname)
+                if fn is None or (mod, fname) in _START_READS_ALLOWED:
+                    continue
+                own = list(_own_nodes(fn))
+                found |= {f for n in own for f in _flags_read_node(n)}
+                local = _bindings(own, mod)
+                for n in own:
+                    if isinstance(n, ast.Call) and (r := _resolve(n, mod, local, mods[mod]["top"], mods)):
+                        nxt.add(r)
+            frontier = nxt - seen
+            seen |= nxt
+        hits += [f"{start[0]}.{start[1]} {f}" for f in sorted(found)]
+    assert starts, "the fence found no start function in the lifespan"
     assert hits == [], f"a start function reads a reloadable flag: {hits}"
 
 

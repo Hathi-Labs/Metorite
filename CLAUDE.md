@@ -146,7 +146,7 @@ committed, so every checkout, worktree and cloud session reads the same window.
 | Read `.env` on the box | `secrets` | Never paste a value into chat |
 | Write `.env` on the box | `env-write` | |
 | Write under `deploy/` | `deploy-write` | |
-| Flip a feature flag | `enforcement-flip` | Say which flag, and where. Reload the gateway, do not restart it: `docs/flag_reload.md` |
+| Flip a feature flag | `enforcement-flip` | Say which flag, and where. A `*_ORGS` or `*_MODES` flag reloads with no restart: `docs/flag_reload.md` |
 | Query and migrate the database | — | No gate ever blocked this |
 | **Merge your own PR** | — | See §4. The loop ends at merge |
 | Edit `plan-guard.mjs` or `settings.json` | `guard-write` | ⚠️ Read the note below |

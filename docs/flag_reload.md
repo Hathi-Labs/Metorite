@@ -1,10 +1,28 @@
-# Flip a gateway flag with no restart
+# Flip a per-org flag with no restart
 
-A flag flip reloads the gateway. It does not restart it. A restart ends the
-chat runs in flight, and members see "Gateway error 502" for 10 to 25 s.
+A flip of a per-org flag reloads the gateway. It does not restart it. A
+restart ends the chat runs in flight, and members see "Gateway error 502"
+for 10 to 25 s. Every other flag still needs a restart.
 
 The code is `apps/services/gateway/gateway/flag_reload.py`. The fence is
 `tests/unit/test_flag_reload.py`.
+
+## The flags that reload
+
+A reload applies only the `*_ORGS` and `*_MODES` fields of `Settings`. These
+are the per-org rollout lists, such as `CRM_ORGS`, `TOOL_PACKS_ORGS` and
+`DECIDE_FEATURE_MODES`. Each reader of them reads the value again on each
+call.
+
+A reload does NOT apply any other key. The log names each one under
+`restart`. That includes:
+
+- an on/off switch such as `CALENDAR_REMINDERS`, `JOB_QUEUE` or
+  `WEB_PUSH_ENABLED`. A background loop decides at start whether it runs.
+- a security gate such as `V1_ALLOW_CALLER_ENDPOINT_OVERRIDE`. A module
+  copies it at import.
+- each secret, URL, port and password, including `PGPASSWORD`.
+- each `DB_` and `REDIS_` setting.
 
 ## The procedure
 
@@ -16,7 +34,8 @@ The code is `apps/services/gateway/gateway/flag_reload.py`. The fence is
    curl -s http://127.0.0.1:8080/version
    ```
 
-2. Make a backup of `/opt/acb/app/.env`. Then change one flag line.
+2. Make a backup of `/opt/acb/app/.env`. Then change one `*_ORGS` or
+   `*_MODES` line.
 3. Send SIGHUP to the main process only:
 
    ```bash
@@ -33,32 +52,29 @@ The code is `apps/services/gateway/gateway/flag_reload.py`. The fence is
    ```
 
    - `flags.reloaded applied=[...]`: those flags are live.
-   - `restart=[...]`: those keys need a restart. Do the restart at a quiet
-     time, and say why in the same message.
-   - `flags.reload_refused`: `Settings` refused a value. Nothing changed. Fix
-     the line and send SIGHUP again.
+   - `restart=[...]`: those keys changed in the file and need a restart. Do
+     the restart at a quiet time, and say why in the same message.
+   - `flags.reload_refused`: the new settings did not validate. Nothing
+     changed. Fix the line and send SIGHUP again.
 
-5. Check that `flags_reloaded_at` in `/version` moved, and that the process
-   did not change (`systemctl show acb-gateway -p MainPID`).
+5. Check that the process did not change
+   (`systemctl show acb-gateway -p MainPID`). `flags_reloaded_at` in
+   `/version` moves only when a flag was applied.
 
-## The keys that need a restart
+## How the reload keeps other keys as they are
 
-A reload keeps the running value of these keys:
+The reload builds the new settings from the RUNNING settings plus the
+applied flags. It does not read the environment or the env file again. So a
+key that the file gained after the start stays dormant until a restart.
 
-- A name with a secret or infrastructure word: `KEY`, `TOKEN`, `SECRET`,
-  `PASSWORD`, `URL`, `HOST`, `PORT`, `PATH`, `ID`, `AUTH` and the others in
-  `DENY_WORDS`.
-- A name that starts with `DB_`, `REDIS_`, `NEXT_PUBLIC_` or `PYTHON`.
-- `EMAIL_SYNC_ENABLED` and `WORKFLOW_SCHEDULER_ENABLED`. They decide at start
-  whether a background loop runs.
-- `LOG_LEVEL`, `ACB_ENV` and `DEPLOY_ENV`.
+## Fences
 
-## Why a reload is enough
-
-Each flag reader calls `get_settings()` or reads `os.environ` when it runs.
-Each flag parser caches on the raw value. The fence fails when a module keeps
-a settings value from its import, or when a new cached function reads the
-settings.
+- No module reads a reloadable flag at import.
+- No start function of the gateway lifespan reads one. The fence resolves
+  calls as Python does, three calls deep. A loop that a start function
+  spawns reads its flags on each tick, so the fence does not enter it.
+- No module keeps `get_settings()` in a module name, and no new cached
+  function reads the settings.
 
 The reload covers the gateway only. The workbench, the agent edge and the
 customer console still read their flags at start.
