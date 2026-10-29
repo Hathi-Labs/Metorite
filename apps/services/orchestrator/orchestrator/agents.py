@@ -353,8 +353,9 @@ _CONSTRAINTS_SWAP: tuple[str, str] = (
 # carries the WHEN, and the docstring of `spawn_subagents` carries the HOW. Off,
 # the persona does not change, byte for byte. Fence: tests/unit/test_spawn_persona.py.
 _SPAWN_BLOCK = """SUB-AGENTS. You can call spawn_subagents. Each job runs on its own and only reads.
-- Spawn for multi-step research over many sources, for many independent reads
-  (ten companies, every open invoice), and for a long job that would flood this chat.
+- Spawn for multi-step research over many sources, for four or more
+  independent reads or searches (five companies, every invoice), and for a
+  long job that would flood this chat.
 - Do not spawn for one read, one task, or up to three searches. Do those
   yourself, with independent calls in one step.
 - Give each job one narrow aim and the tools it needs. Write the items of a job

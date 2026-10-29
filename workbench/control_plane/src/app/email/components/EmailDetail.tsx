@@ -45,6 +45,7 @@ import { MessageActions } from "./MessageActions";
 import { toggleLightVersion, useLightVersions } from "../lib/lightVersion";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { revealWithin } from "@/lib/scrollWithin";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 import {
   FILES_TOO_LARGE, autosaveWait, createAutosave, draftsToDiscard, failedSaveStatus,
   continuedBody, draftToContinue, isForwardSubject, draftToUpdate, holdPick, pickProblem, recordSave,
@@ -357,6 +358,15 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const id = setInterval(tick, 20000);
     return () => clearInterval(id);
   }, [email?.threadId, mailboxId]);
+
+  // Task #124: the assistant wrote to the mailbox, so the open conversation
+  // reads now (a draft it made shows at once), not at the next tick.
+  useLiveRefresh(() => {
+    if (!email?.threadId) return;
+    listThread(mailboxId ?? undefined, email.threadId)
+      .then((t) => setThread(mergeThread(t)))
+      .catch(() => {});
+  }, "email");
 
   // Fetch full content whenever the selected email changes.
   useEffect(() => {

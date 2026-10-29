@@ -50,7 +50,7 @@ import { appendTasks, nextTaskPage } from "../lib/paging";
 import { loadedOfTotal } from "../lib/compactChrome";
 import { type CalendarLayout, calendarGrid, calendarWindow, dayKey, shiftGrid } from "../lib/calendar";
 import { EXPORT_FILENAME, exportPath } from "../lib/export";
-import { useLiveRefresh } from "../lib/liveRefresh";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 import type { PositionWrite } from "../lib/board";
 import {
   MY_TASKS_CHIPS,
@@ -282,7 +282,7 @@ export default function MyTasksSpace({
   const [writeError, setWriteError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const again = useCallback(() => setReload((n) => n + 1), []);
-  useLiveRefresh(again);
+  useLiveRefresh(again, "projects");
   const subtaskComplete = useSubtaskComplete();
 
   // ── The summary, the Overview and the chips ────────────────────────────
