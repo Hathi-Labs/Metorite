@@ -78,6 +78,7 @@ import {
 } from "../lib/grouping";
 import { mergePlans, quickAddPrefill } from "../lib/quickAdd";
 import { columnCountTitle, visibleTasks } from "../lib/subtaskView";
+import { columnMoreCount } from "../lib/paging";
 import {
   type Swimlane,
   buildSwimlanes,
@@ -241,6 +242,16 @@ interface Props {
    * add is the top Capture. Default true.
    */
   canQuickAdd?: boolean;
+  /**
+   * #918. The true size of each column across the whole filtered set, from
+   * the server, or null. A column counts these and not only the rows it
+   * holds. `paging.columnSizes` builds it.
+   */
+  columnTotals?: ReadonlyMap<string, number> | null;
+  /** #918. Read the next rows of one column. `held` is the rows it holds. */
+  onLoadColumn?: (columnKey: string, held: number) => void;
+  /** #918. The column whose own read is in flight. */
+  loadingColumn?: string | null;
 }
 
 export function TaskBoard({
@@ -278,6 +289,9 @@ export function TaskBoard({
   projectPath,
   statusesFor,
   canQuickAdd = true,
+  columnTotals = null,
+  onLoadColumn,
+  loadingColumn = null,
 }: Props) {
   // A copied link names this organization, so it opens in the right account.
   const orgId = useAccess().access.organization?.id ?? null;
@@ -363,6 +377,30 @@ export function TaskBoard({
     [columns, groupBy, statuses]
   );
 
+  /**
+   * #918. The foot of a column that holds fewer rows than the server counts:
+   * one control that reads the next rows of that column alone.
+   */
+  const columnMore = (columnKey: string, held: number) => {
+    const total = columnTotals?.get(columnKey);
+    const next = columnMoreCount(held, total);
+    if (!onLoadColumn || next === 0) return null;
+    return (
+      <li className="list-none" data-column-more={columnKey}>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="w-full"
+          loading={loadingColumn === columnKey}
+          disabled={loadingColumn !== null}
+          onClick={() => onLoadColumn(columnKey, held)}
+        >
+          {`Load ${next} more`}
+        </Button>
+      </li>
+    );
+  };
+
   // WS-64 OP-1 — the status tabs of the phone board, and the one status it shows.
   const [chosenTab, setChosenTab] = useState<string | null>(null);
   const tabs = useMemo<StatusTab[]>(
@@ -370,9 +408,9 @@ export function TaskBoard({
       columns.map((column) => ({
         key: column.key,
         label: column.label,
-        count: column.tasks.length,
+        count: columnTotals?.get(column.key) ?? column.tasks.length,
       })),
-    [columns]
+    [columns, columnTotals]
   );
   const shownTab = activeTabKey(tabs, chosenTab);
   const swipe = useRef<{ x: number; y: number } | null>(null);
@@ -1150,6 +1188,7 @@ export function TaskBoard({
                   onAdd={shelf || !canQuickAdd ? undefined : (title) => quickAdd(title, column.key, null)}
                 >
                   {cellCards(column.key, column.tasks, null)}
+                  {columnMore(column.key, column.tasks.length)}
                 </BoardColumn>
               ))}
           </div>
@@ -1167,7 +1206,8 @@ export function TaskBoard({
               header={{
                 accent: columnAccents[columnIndex],
                 title: column.label,
-                count: column.tasks.length,
+                // #918: the server's count of the lane, not the rows held.
+                count: columnTotals?.get(column.key) ?? column.tasks.length,
                 countTitle: columnCountTitle(column.tasks, column.label),
               }}
               dropTarget={isDropTarget(null, column.key)}
@@ -1190,6 +1230,7 @@ export function TaskBoard({
               onAdd={shelf || !canQuickAdd ? undefined : (title) => quickAdd(title, column.key, null)}
             >
               {cellCards(column.key, column.tasks, null)}
+              {columnMore(column.key, column.tasks.length)}
             </BoardColumn>
           ))}
         </Board>
@@ -1206,7 +1247,7 @@ export function TaskBoard({
                   header={{
                     accent: columnAccents[columnIndex],
                     title: column.label,
-                    count: column.tasks.length,
+                    count: columnTotals?.get(column.key) ?? column.tasks.length,
                     countTitle: columnCountTitle(column.tasks, column.label),
                   }}
                 />

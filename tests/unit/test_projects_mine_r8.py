@@ -442,6 +442,40 @@ class TestTheOneMine:
         assert [r["status_category"] for r in c_rows] and all(
             r["status_category"] for r in c_rows)
 
+    async def test_status_counts_are_the_whole_set_not_the_page(self, armed):
+        """#918. A parent read pages at 2 rows, and ``status_counts`` still
+        sums to ``total``. Each count equals the rows of that status across
+        the subtree, read here with a page wide enough to hold them all."""
+        base = {"project_id": armed.p.team.id, "include_subtree": "true"}
+        paged = await _ok(armed, A, "/projects/tasks",
+                          {**base, "page_size": 2, "with_status_counts": "true"})
+        assert len(paged["rows"]) == 2
+        counts = paged["status_counts"]
+        assert sum(counts.values()) == paged["total"] > 2
+        every = await _ok(armed, A, "/projects/tasks", {**base, "page_size": 100})
+        expected: dict[str, int] = {}
+        for row in every["rows"]:
+            expected[row["status_id"]] = expected.get(row["status_id"], 0) + 1
+        assert counts == expected
+        assert len(counts) >= 3
+        stages = paged["status_categories"]
+        assert stages[armed.p.team.done] == "done"
+        assert stages[armed.p.team.todo] == "todo"
+        # A lane filter narrows the counts with the rows, by the same clause.
+        lane = await _ok(armed, A, "/projects/tasks", {
+            **base, "page_size": 1, "with_status_counts": "true",
+            "status_id": armed.p.team.done})
+        assert lane["status_counts"] == {armed.p.team.done: lane["total"]}
+
+    async def test_status_counts_are_opt_in_and_tenant_bound(self, armed):
+        plain = await _ok(armed, A, "/projects/tasks", {"page_size": 2})
+        assert plain.get("status_counts") is None
+        # C reads their own org only: A's lanes never appear in C's counts.
+        theirs = await _ok(armed, C, "/projects/tasks",
+                           {"page_size": 100, "with_status_counts": "true"})
+        assert armed.p.team.done not in theirs["status_counts"]
+        assert sum(theirs["status_counts"].values()) == theirs["total"]
+
     async def test_an_unknown_scope_is_a_422(self, armed):
         r = await _get(armed, A, "/projects/tasks", {"scope": B})
         assert r.status_code == 422

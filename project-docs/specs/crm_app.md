@@ -2784,7 +2784,7 @@ before any build.)*
 > - **Saved views — NO-GO on point 3, and its persistence call is doc-blocked in the DB
 >   direction.** `serializeView`/`parseView` do round-trip the whole view, so "a saved view
 >   is a named URL" holds. But a table means migration 170 **and** pre-empts an owner call the
->   tenancy plan explicitly parks: `specs/multi_tenancy.md` §58-65 records that on `crm_*`,
+>   tenancy plan explicitly parks: `specs/archive/multi_tenancy.md` §58-65 records that on `crm_*`,
 >   `organization_id` already means the CUSTOMER COMPANY, and *"that must be decided before
 >   WS-29d touches `crm_*`"* — while `test_tenancy_boundary.py::test_a_new_table_must_carry_a_tenant_key`
 >   refuses the table without one. A genuine pincer, and a doc blocker rather than a build one.
