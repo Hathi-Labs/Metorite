@@ -21,7 +21,7 @@ empties the funnel report the whole model exists to make free.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query, Request
@@ -487,7 +487,8 @@ async def get_pipeline(
     card_sort: CardSort = "stage_age",
     q: str | None = None,
     lane_status_id: str | None = None,
-    lane_offset: int = Query(0, ge=0),
+    # Annotated keeps the default a real 0 when a test calls the route directly.
+    lane_offset: Annotated[int, Query(ge=0)] = 0,
     user: UserContext = Depends(get_current_user),
     request: Request = None,  # type: ignore[assignment]
 ) -> PipelineResponse:
