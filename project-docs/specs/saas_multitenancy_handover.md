@@ -22,6 +22,10 @@ app_user read still bricks RED**, see §H6. Building the read cutover (slice 3b)
 RBAC read cutovers DARK is AGENT-SAFE per D48; only the `IDENTITY_CUTOVER` flip, the CONTRACT drop
 of the old `user_id`, H3 phase-4 promotion, and running the prod backfill remain OWNER-GATE, not
 enacted**) ·
+**H6a DONE 2026-10-29 (D120):** the parity and gap fence of the sign-in cutover is in
+`test_h3_rls_promotion_rehearsal.py::TestH6aIdentityParity` and
+`test_h6_identity_shadow.py::TestFlagOnAndFlagOffAgree`. It found no drift on the ladder, so no
+reconcile migration exists. H6a enacted §H3.3 (D120.3). The flips stay OWNER-GATE. ·
 **Created:** 2026-08-08 ·
 **Owner:** vjvarada ·
 ⚠️ **Updated 2026-08-19: a ticket was minted that this runbook has no H-slot for —
@@ -604,6 +608,15 @@ with the generator's contract without masking the real CRM hole (entry into
 lands, claim (a)'s live-catalog test cannot pass; `test_app_role_cannot_bypass_rls`
 already passes.
 
+**ENACTED 2026-10-29 (H6a, D120.3).** The gate now subtracts `HOMONYM_BLOCKED`. The DB-free
+fence is `test_the_live_catalog_gate_subtracts_the_homonym_map`. `HOMONYM_BLOCKED` is empty
+since CRM-T1, so the map changes no result today. On a promoted scratch catalog the gate is
+GREEN alone.
+
+⚠️ The two DB-gated tests of that file fail when one process runs both. The second one
+reports "attached to a different loop". That is a harness defect of the shared engine, and it
+predates H6a. Run them one at a time until a later slice repairs it.
+
 ---
 
 ## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam + executor org threading (chat) + executor chat_session (slice 3) + pending_commit (slice 4) + audit_event (slice 5) writes/reads bound + run-based org sources (copilot/chat + sub-agent + batch, slice 6a) threaded + agent-tool READS (entity/sales retrieval, granted apps, skill toggles, slice 7) bound (dark, `ACB_GRAPH_TENANT_BIND`) SHIPPED (dark) · 🚦 launch-defang kill-switches (`EMAIL_SYNC_ENABLED` / `WORKFLOW_SCHEDULER_ENABLED`, default ON) for the OUT-of-scope loops SHIPPED (dark) 2026-08-23
@@ -1048,7 +1061,22 @@ recorded.
 ## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path · ◐ SLICES 1+3a+ORPHAN-CLOSURE+3b+4-EXPAND+RLS-BIND-HARDENING+PROVISION-RLS-BIND SHIPPED (dark)
 
 Migration 159 created `user_identity` + `org_membership` and seeded them. `app_user` is
-still authoritative and **nothing reads the new tables**.
+still authoritative. **One read uses the new tables, and only behind `IDENTITY_CUTOVER`:**
+slice 3b's identity leg (`access._IDENTITY_LEG_SQL`, through `resolve_identity` and
+`deps._with_resolved_access`). With the flag unset, nothing reads them. The role leg,
+`org_owner_of`, the RBAC read sites and `_record_signin_request` still read `app_user`.
+
+**H6a (2026-10-29, D120) — the parity and gap fence, no flip.** On the promoted ladder, after
+migrations 182 and 183, every `app_user` row has its `user_identity` and `org_membership`
+twin with the same org and status. The fence drives the real two-phase path as `acb_app`,
+unbound. One active plus one suspended membership binds the active org, and two active ones
+deny. A suspended or purged member binds no tenant, and a member bound to org A reads no org B
+row.
+
+Flag ON and flag OFF agree on the non-promoted ladder. Fences:
+`test_h3_rls_promotion_rehearsal.py::TestH6aIdentityParity` and
+`test_h6_identity_shadow.py::TestFlagOnAndFlagOffAgree`. The ladder showed no drift, so H6a
+wrote no reconcile migration.
 
 ⚠️ **SLICE 1 SHIPPED 2026-08-22 (WS-29, DARK — no read moved).** The shadow tables were
 COMPLETE only for members present at 159 and STALE for every invite/bootstrap since. Slice
