@@ -16,9 +16,20 @@ the brief once. This route answers in one of two ways:
 **One composition** (D-CF-6, accepted 2026-10-22). The brief is
 ``reach.plan.brief_parts`` over ``reach.loop.snapshot``: the same feed read
 and the same lines that the WhatsApp brief sends (``proactive_reach.md``
-§9.1). Nothing here writes a line of its own, and no model runs. My Day's own
-``brief`` card (``my_day_feed.md`` MD-7) is not built yet. When it is, it reads
-the same parts.
+§9.1). Nothing here writes a line of its own, and no model runs.
+
+**The stored run first** (WS-BRIEF BR-2c-1, ``core_brief.md`` §5 item 2).
+With ``BRIEF_IN_APP`` on for the org (``brief.flags.in_app``), the route
+reads the member's stored brief of today (``brief.store.read_run`` and
+``read_claims``). A run in ``ready`` or ``delivered`` gives the lead, and its
+claims give the pills, in position order (:func:`stored_parts`). The route
+then reads no feed. The gather wrote each claim's text with ``plan.line``,
+so the pills are the lines of ``plan.brief_parts`` of the same cards. With
+no such run, the route composes from the feed as before. With the switch
+off, the route reads no store, and its answer is byte for byte the answer
+before BR-2c-1. The chat does not move a run to ``delivered``. Only
+``GET /brief/today`` does (``routes/brief_today.py``). The pills stay text:
+a link chip needs a tool event, and a stored row has none.
 
 **Only the server creates an agent row** (D-PM-39, ``projects_ai_chat.md``
 §20). The row goes in through the one minter, ``routes/agent.py``
@@ -55,12 +66,15 @@ Fences: ``tests/unit/test_chat_brief_turn.py`` (pure) and
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from gateway.brief import flags as brief_flags
+from gateway.brief import store as brief_store
 from gateway.reach import loop, plan
 from gateway.rooms import resolve_room_access
 
@@ -112,6 +126,53 @@ def brief_event(parts: plan.BriefParts) -> dict[str, Any]:
     """The custom event of the row, as ``chat_fold`` stores one. A cutoff of
     0 and no segments draw the text first and the card under it."""
     return {"name": "generative_ui", "value": brief_card(parts), "segmentCutoff": 0}
+
+
+# ── The stored run (BR-2c-1) ─────────────────────────────────────────────────
+
+#: The states of a stored run that the first turn shows.
+STORED_STATES: frozenset[str] = frozenset({"ready", "delivered"})
+#: The shape of the template lead, ``plan.brief_lead``: "<title>. <n>
+#: thing(s) need(s) you.". A lead in another shape (a model lead of
+#: BR-2a-2) keeps the date title and no "more" note.
+_TEMPLATE_LEAD = re.compile(r"^(?P<title>.+)\. (?P<n>\d+) things? needs? you\.$")
+
+
+def stored_parts(run: brief_store.Run,
+                 claims: list[brief_store.Claim]) -> tuple[str, plan.BriefParts] | None:
+    """The lead and the parts of a stored run, or None when the run has
+    no lead or no claim. Pure.
+
+    The lines are the claims' text in position order. The title and the
+    count come from the template lead, so ``rest`` counts the brief items
+    that the claims do not show, as ``plan.brief_parts`` counts them.
+    """
+    lead = (run.lead or "").strip()
+    lines = [c.text for c in sorted(claims, key=lambda c: c.position)]
+    if not lead or not lines:
+        return None
+    match = _TEMPLATE_LEAD.match(lead)
+    if match is not None:
+        title = match["title"]
+        rest = max(0, int(match["n"]) - len(lines))
+    else:
+        title = f"Your day, {plan._date_words(run.local_date)}"
+        rest = 0
+    return lead, plan.BriefParts(title, lines, rest)
+
+
+async def _stored_brief(email: str, today: date) -> tuple[str, plan.BriefParts] | None:
+    """The member's stored brief of *today*, in the bound tenant, or None
+    when no run is ``ready`` or ``delivered``. The store scopes each read to
+    the member and the bound org."""
+    from gateway.db import tenant_session as _tenant_session
+
+    async with _tenant_session() as db:
+        run = await brief_store.read_run(db, email, kind="brief", local_date=today)
+        if run is None or run.state not in STORED_STATES:
+            return None
+        claims = await brief_store.read_claims(db, email, run.id)
+    return stored_parts(run, claims)
 
 
 # ── The reads ────────────────────────────────────────────────────────────────
@@ -281,22 +342,31 @@ async def post_brief(
     if brief_done_today(await _marks(email), today, now):
         return _nothing(response)
 
-    snap = await loop.snapshot(org, user, now)
-    if not snap.complete:
-        # Not the day's answer yet. A retry mark keeps the next fresh chats
-        # from reading the whole feed again for a while (review of #1216).
-        _log.info("chat_brief.read_incomplete", session_id=session_id[:12])
-        await _mark(email, BRIEF_RETRY_KEY, (now + BRIEF_RETRY_AFTER).isoformat())
-        return _nothing(response)
-    parts = plan.brief_parts(snap.cards, snap.local_date, now=snap.now)
-    if parts is None:
-        # A complete read with nothing to say is the day's answer: stamp it,
-        # so no later fresh chat reads the feed again today.
-        await _mark(email, BRIEF_STAMP_KEY, snap.local_date.isoformat())
-        return _nothing(response)
+    # BR-2c-1: the stored run first, only with the switch on. Off, the
+    # route reads no store, so its answer is the answer before BR-2c-1.
+    stored = await _stored_brief(email, today) if brief_flags.in_app(org) else None
+    if stored is not None:
+        lead, parts = stored
+        day = today
+    else:
+        snap = await loop.snapshot(org, user, now)
+        if not snap.complete:
+            # Not the day's answer yet. A retry mark keeps the next fresh chats
+            # from reading the whole feed again for a while (review of #1216).
+            _log.info("chat_brief.read_incomplete", session_id=session_id[:12])
+            await _mark(email, BRIEF_RETRY_KEY, (now + BRIEF_RETRY_AFTER).isoformat())
+            return _nothing(response)
+        composed = plan.brief_parts(snap.cards, snap.local_date, now=snap.now)
+        if composed is None:
+            # A complete read with nothing to say is the day's answer: stamp it,
+            # so no later fresh chat reads the feed again today.
+            await _mark(email, BRIEF_STAMP_KEY, snap.local_date.isoformat())
+            return _nothing(response)
+        parts = composed
+        lead = plan.brief_lead(parts)
+        day = snap.local_date
 
-    lead = plan.brief_lead(parts)
-    message_id = brief_message_id(snap.local_date)
+    message_id = brief_message_id(day)
     agent = (room.agent_name or "").strip() or DEFAULT_AGENT
     posted = await asyncio.to_thread(
         _post_row, session_id, message_id, member=email, agent_name=agent,
@@ -305,5 +375,5 @@ async def post_brief(
     )
     if not posted:
         raise HTTPException(status_code=503, detail="The brief could not be posted. Try again.")
-    await _mark(email, BRIEF_STAMP_KEY, snap.local_date.isoformat())
+    await _mark(email, BRIEF_STAMP_KEY, day.isoformat())
     return {"posted": True, "message_id": message_id, "preview": lead}
