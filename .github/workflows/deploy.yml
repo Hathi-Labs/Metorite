@@ -365,7 +365,8 @@ jobs:
     needs: [lint, publish-release]
     # `always()` keeps the old hotfix lesson: a dependent guarded by plain
     # success() is skipped when an ancestor is skipped, and the deploy then
-    # silently does nothing. `test` is no longer an ancestor (see its note).
+    # silently does nothing. `test` and `release-window` are ancestors through
+    # `publish-release`, and either one can skip on a dispatch.
     # `main` only, for the reason `publish-release` gives.
     # WS-38: publish-release carries every condition (main, not a push, not
     # held, the gates). A deploy runs exactly when `release` moved.

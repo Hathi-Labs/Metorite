@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 
@@ -126,6 +127,14 @@ def test_no_job_after_a_skipped_job_reads_a_bare_success(deploy: dict) -> None:
     assert {"publish-release", "deploy", "pull-delivery", "chat-smoke", "smoke"} <= after
     bare = sorted(n for n in after if not _if(jobs[n]).startswith("${{ always()"))
     assert not bare, f"these jobs skip when an earlier job skips: {bare}"
+    # `always()` alone also runs after a FAILED job. So each job reads the
+    # result that it needs. `release-window` only reads the clock, and
+    # `publish-release` reads `needs.test.result` for it.
+    blind = sorted(
+        n for n in after - {"release-window"}
+        if not re.search(r"needs\.[a-z-]+\.result ==", _if(jobs[n]))
+    )
+    assert not blind, f"these jobs run after a failed job: {blind}"
 
 
 # ── 2. The schedule and the dispatch publish release, behind the tests ───────
