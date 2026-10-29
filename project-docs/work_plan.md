@@ -4820,19 +4820,19 @@ harness gets used with the AI Studio as well."
 
 ### D140 — Agents coordinate on one board: one execution slot, the member as the only authority, a live path for each held task, and a delegate beside the assignees (2026-10-30)
 
-The owner asked on 2026-10-30, in chat, to "research how Linear uses its project management app for agents" and to build out the Projects and MCP tasks "to have full capability for agent orchestration". Board: **WS-MCP**. Owning spec: `specs/agent_coordination.md` §4. Metorite: epic 321, task 331 (SW-0). It extends D135 and changes no rule of D97 or D-PM-4.
+The owner asked on 2026-10-30, in chat, to "research how Linear uses its project management app for agents". The owner also asked to build out the Projects and MCP tasks "to have full capability for agent orchestration". Board: **WS-MCP**. Owning spec: `specs/agent_coordination.md` §4. Metorite: epic 321, task 331 (SW-0). It extends D135 and changes no rule of D97 or D-PM-4.
 
-Items 1 to 4 are the decisions of task 331. Items 5 to 10 are the defaults of the spec, from the Linear research of 2026-10-30 and task 1045. They stand unless the owner objects.
+**Owner calls:** items 1 to 4. The owner set them in task 331, under D135. **Agent defaults:** items 5 to 10. They come from the Linear research of 2026-10-30 and task 1045, and they stand unless the owner objects.
 
 1. **The execution slot sits beside the assignees.** D-PM-4 stays, so a task keeps many assignees. The slot is the one open run of a task, which the index of migration 289 enforces. `held_by` is its read.
 2. **The member is the only authority.** A session label, an agent label, a delegate, a plan and guidance are display or context data. None of them reaches an authorization check.
 3. **The liveness contract.** Each open task that an agent holds has a live path. Recovery nudges the member once, then escalates to a person. It never reassigns.
 4. **Pull first, push later.** Wake-ups land as `needs_agent` runs that `list_agent_runs` and `my_work` serve. Outbound push waits for WS-56.
-5. **A delegate beside the assignees.** A task names at most one agent as its delegate. The human assignee stays accountable. A delegation to another member's agent needs that member's consent or an admin's.
+5. **A delegate beside the assignees.** A task names at most one agent as its delegate. The human assignee stays accountable. The default holds until the owner answers Q2 of the spec's §8. A member may delegate to another member's agent only when that agent is shared. Its member or an admin shares it. Q2 stays open for the owner.
 6. **Agent guidance, nearest first.** A task gets the guidance of its project, then of each parent up to its space, then of the org. Each block names its source and version. It never overrides the server's rules.
 7. **A run plan is a whole-list replace.** At most 30 steps of 200 characters, each `pending`, `in_progress`, `completed` or `canceled`.
 8. **The `waiting` state is capped at 120 minutes.** After that time, with no new activity, the run reads `stale`. The cap never passes one lease.
-9. **The stranded sweep goes on in staging first.** The nudge verb of task 1054 lands before the flip. Production follows the staging test.
+9. **The stranded sweep goes on in staging first.** The nudge verb (task 1054), the `waiting` state (1045a) and the linked events (1045b) land before the flip. Production follows the staging test.
 10. **The lease is two hours, from the newest activity of any author.** A question keeps the task for three leases. This replaces the 15-minute TTL of the first text of SW-4.
 
 **What stays open.** Five questions wait for the owner (`agent_coordination.md` §8). They are the `agent:<name>` assignee and the delegate, a shared agent, the first cloud agent, cost and goals, and who may end another member's run.

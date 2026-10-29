@@ -2,7 +2,7 @@
 
 **Status: ACTIVE (SW-0, 2026-10-30).** This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
-**Verified against code on 2026-10-30 at `9d41f51d4`** (origin/main). §6 holds each anchor. Re-verify each anchor at dispatch (`work_plan.md` §1 item 4).
+**Verified against code on 2026-10-30** (origin/main of that day). §6 holds each anchor and the commit it was read at. Re-verify each anchor at dispatch (`work_plan.md` §1 item 4).
 
 **Board row:** **WS-MCP** in `work_plan.md` §2.1. **Metorite:** epic 321 (Agent swarm coordination), task 331 (SW-0). **Owner directives:** D135 (2026-10-28), and the owner's ask of 2026-10-30. The owner asked to "build out the Projects app-related tasks and the MCP-related tasks completely". The goal is "full capability for agent orchestration".
 
@@ -232,15 +232,17 @@ The source is the Linear research of 2026-10-30, the comment on epic 321. Append
 
 `work_plan.md` §3 holds them as **D140**. They are summarized here so a builder reads them beside the slices. §3 is the record.
 
+**Who decided what.** Items 1 to 4 are owner calls: the owner set them in task 331, under D135. Items 5 to 10 are agent defaults of this spec. They stand unless the owner objects. Item 5 waits on the owner's answer to Q2 of §8.
+
 1. **The execution slot sits beside the assignees.** D-PM-4 stays: a task keeps many assignees. The slot is the one open run of a task, which the index of migration 289 enforces. `held_by` is its read. It is not a column on `pm_tasks`, because the index already decides a race.
 2. **The member is the only authority.** A session label, an agent label, a delegate, a plan and guidance are display or context data. None of them reaches an authorization check.
 3. **The liveness contract.** Each open task that an agent holds has a live path (§3.3). Recovery nudges once, then escalates to a person. It never reassigns.
 4. **Pull first, push later.** Wake-ups land as `needs_agent` runs that `list_agent_runs` and `my_work` serve. Outbound push waits for WS-56 (SW-17).
-5. **A delegate field beside the assignees.** A task names at most one agent as its delegate, by the agent reference of §3.7. The human assignee stays accountable. A delegation to another member's agent needs that member's consent or an admin's.
+5. **A delegate field beside the assignees.** A task names at most one agent as its delegate, by the agent reference of §3.7. The human assignee stays accountable. The default holds until the owner answers Q2. A member may delegate to another member's agent only when that agent is shared. Its member or an admin shares it. Q2 stays open for the owner.
 6. **Agent guidance, nearest first.** A task gets the guidance of its project, then of each parent up to its space, then of the org. Each block names its source and its version. It leaves the edge as untrusted text, and it never overrides the server's rules.
 7. **A run plan is a whole-list replace.** Each call sends every step. At most 30 steps of 200 characters, each `pending`, `in_progress`, `completed` or `canceled`.
 8. **The `waiting` state is capped at 120 minutes.** After that time, with no new activity, the run reads `stale`. A waiting line renews the lease as any activity does, and the cap never passes one lease.
-9. **The stranded sweep goes on in staging first.** The nudge verb (task 1054) lands before the flip. Production follows after the staging test of SW-10b passes.
+9. **The stranded sweep goes on in staging first.** The nudge verb (task 1054), the `waiting` state (1045a) and the linked events (1045b) land before the flip. Production follows after the staging test of SW-10b passes.
 10. **The lease is two hours, from the newest activity of any author.** A question keeps the task for three leases. This replaces the 15-minute TTL of the first text of SW-4.
 
 ---
@@ -292,7 +294,10 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
 #### SW-5 · Show the lease on the board and in the MCP tools
 
 - **Built.** `held_by` on `get_task` and `list_tasks`, the `unheld` filter, the fixed text of a 409 `task_held`, and the Release button (EA-14a).
-- **Scope left.** A holder line on the card and in the task panel: "Worked by <client> for <member> since <time>". Filters "Held by an agent" and "Free" on the board, filtered by the server through `unheld`. Read what EA-13g draws before you build, and add only what is missing.
+- **Scope left.**
+  1. List what EA-13g already draws. Read `agentCardLook.ts` and `TaskBoard.tsx`. By `external_agent_access.md` §12.2 item 7, the card draws an edge for each run state. For `working` and `answered` it draws a live line with the client glyph and `agent_note`. It draws "Needs you" with the question, and "<client> idle". The panel has the Release button (EA-14a). That list names no member and no start time for the holder.
+  2. Add only what is missing: a holder line on the card and in the task panel, "Worked by <client> for <member> since <time>".
+  3. Add the filters "Held by an agent" and "Free" on the board. The server filters them through `unheld`.
 - **Done when.** The two filters page on the server. `visual-review` passes in light mode, at compact density and under a changed accent.
 - **Fence.** A vitest for the holder line, `test_projects_ui_actions.py` for the filter.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE.
@@ -338,7 +343,7 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
 #### 1045a · The `waiting` state
 
 - **Scope.**
-  1. `post_agent_activity` takes an optional `waiting: {on, until_minutes, note}`. `on` is `subagents`, `ci`, `review`, `deploy` or `member`. `until_minutes` is 1 to 120, capped by SW-4. `note` holds at most 200 characters.
+  1. `post_agent_activity` takes an optional `waiting: {on, until_minutes, note}`. `on` is `subagents`, `ci`, `review`, `deploy` or `member`. `until_minutes` is 1 to 120. 1045a ships this fixed cap of 120 minutes. SW-4 later lowers the cap to the lease when the lease is shorter. `note` holds at most 200 characters.
   2. Migration, expand only: `pm_agent_runs.waiting_on TEXT NULL`, with a CHECK of the five values, and `waiting_until TIMESTAMPTZ NULL`.
   3. `_write_activity` is the one writer. An activity with `waiting` sets both columns. Any other activity clears them.
   4. `AGENT_RUN_STATE_SQL` gains `waiting` first in its `in_progress` arm (§3.2). `WORKING_STATES` gains `waiting`, so the strip counts do not change.
@@ -359,7 +364,7 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
 
 - **Scope.**
   1. The GitHub webhook handles two events in `webhook.py`: `_on_pull_request` with the action `synchronize`, and `_on_checks`. For each event, it finds each `in_progress` run of a task that references that pull request.
-  2. For each run it sets a new column `pm_agent_runs.last_signal_at` to now. It writes one line through `_system_activity`, for example "CI passed on PR 1473". The line holds fixed words and numbers only, and no text from the payload.
+  2. Migration, expand only: `pm_agent_runs.last_signal_at TIMESTAMPTZ NULL`, with no default and no backfill. For each run, the webhook sets this column to now. It writes one line through `_system_activity`, for example "CI passed on PR 1473". The line holds fixed words and numbers only, and no text from the payload.
   3. One new helper, `filters.run_life_at_sql(alias)`, is the newer of `last_activity_at` and `last_signal_at`. The stale band, `lease_held_sql` and `strand_fits_sql` read it. Find every reader of the run clock at dispatch, and change each one.
   4. ⚠️ **The answered rule does not read it.** `AGENT_RUN_ANSWER_WAITS_SQL` compares `last_activity_at` with `last_agent_activity_at`. A linked event that moved `last_activity_at` would make the run read `answered`, and `needs_agent` would list it. So a linked event moves `last_signal_at` only.
 - **Not in scope.** A push to a branch with no pull request. Check at dispatch whether the GitHub App subscribes to `push`.
@@ -381,7 +386,7 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
 
 - **Scope.** `VERB` in `app/projects/lib/notifications.ts` lacks `nudge`, so the bell reads "updated". Add the verb and the copy, for example "Claude Code has gone quiet on 'Fix the export' since 14:31. Resume or release it." Link the row to the run panel. Check every kind of `NOTIFICATION_KINDS` the same way.
 - **Done when.** Each run notice kind reads its own verb.
-- **Fence.** A vitest that every kind of `NOTIFICATION_KINDS` (`notifications.py`) has a verb. One fixture file holds the kinds, and a pytest checks it against `notifications.py`, so the two lists cannot drift.
+- **Fence.** A vitest in `notifications.test.ts` checks that every kind of `NOTIFICATION_KINDS` (`notifications.py`) has a verb. The fixture `tests/fixtures/notification_kinds.json` (new) holds the kinds. The pytest `tests/unit/test_notification_kinds_fixture.py` (new) checks the fixture against `notifications.py`, so the two lists cannot drift.
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Do this before** SW-10b.
 
 #### SW-9 · A named waiting path
@@ -400,7 +405,7 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
 #### SW-10b · Turn on the stranded sweep, staging first
 
 - **Scope.**
-  1. Check that 1054 and 1045a are merged.
+  1. Check that 1054, 1045a and 1045b are merged. Without 1045b, the sweep can nudge about a run that CI keeps alive.
   2. Set `AGENT_RUN_SWEEP_ENABLED=true` on the gateway unit of staging, and restart it. Set `AGENT_RUN_LEASE_SECONDS=600` there for the test only. On production the unit is `acb-gateway`.
   3. Kill a Claude Code session in the middle of a run.
   4. Then set the flag on production, with the default lease. Read `pm_agent_run_strands` each day for one week.
@@ -437,7 +442,8 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
 #### SW-31 · Agent guidance
 
 - **Scope.**
-  1. A new tenant table holds guidance. Each row names the org or one `pm_projects` node (a space or a project). It holds the body, the version, the writer and the time. Each save adds a row, so the history stays.
+  1. Migration, expand only: a new table `pm_agent_guidance`. Its key columns are `id`, `organization_id`, `project_id`, `version`, `body`, `written_by` and `written_at`. `project_id` is NULL for the org level. Else it names a `pm_projects` node (a space or a project), with cascade. A unique index on the org, the project and the version keeps one row for each version. Each save adds a row, so the history stays.
+     - The table is tenant-scoped, with ENABLE and FORCE ROW LEVEL SECURITY, in the house shape of `pm_agent_runs`. `test_tenant_coverage.py` fences it (R5).
   2. Settings → Agents → Guidance edits it. An admin writes org guidance. A project lead writes the guidance of a space or a project, under the write floor of `project_management_app.md` §4.
   3. `get_task_context` and `claim_task` return `guidance`: the blocks that apply, nearest first (D140.6). Each block carries its source and its version. `my_work` rows carry only a `guidance_ref`, so the queue stays small.
   4. A block holds at most 8,000 characters. One answer holds at most 20,000, and it drops the farthest blocks first.
@@ -469,8 +475,12 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
 
 #### SW-34b · A read-only door
 
-- **Scope.** `https://mcp.metorite.com/mcp/readonly`. The edge narrows every call on that path to the read scopes. `tools/list` lists no write tool, and the edge refuses a write. The consent page shows "Read only".
-- **Done when.** A connection through the read-only path lists only reads, and a write call is refused at the edge.
+- **What exists (read 2026-10-30).** The edge already lists tools by scope. `tools.listed` and `tools.listed_for` keep a tool only when the caller's scopes cover its `required_scope`. The `tools/call` check of `mcp._dispatch` answers 403 `insufficient_scope` for a tool that the scopes do not cover. The gateway refuses a run write without `projects:write` (`agent_runs._require_write_scope`). The consent page builds its scope rows in `consent.ts` (`SCOPE_COPY`, `scopeRows`, `grantedScopes`). §6 holds the anchors.
+- **Scope.**
+  1. Read the anchors above again, and record any change in this slice.
+  2. Serve `https://mcp.metorite.com/mcp/readonly`. For each call on that path, the edge narrows the caller's scopes to the read scopes. It does this before `tools/list` and before the `tools/call` check. So the two existing checks do the work, and no second scope rule exists.
+  3. The consent page offers "Read only", which grants the read scopes only.
+- **Done when.** A connection through the read-only path lists only reads. A call of each write tool gets 403 `insufficient_scope` at the edge.
 - **Fence.** An edge test that walks every tool of `MCP_WRITE_ROUTES` on the read-only path.
 - **Risk.** HIGH (auth). **Gate.** AGENT-SAFE.
 
@@ -483,7 +493,7 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
   2. Views, filters, the group-by and the agent strip read the delegate. `get_task`, `list_tasks` and `my_work` return it.
   3. The card and the panel read "Owner: Ravi · Agent: Claude Code (Ravi)".
   4. `my_work` lists a task delegated to the caller's agent, with the reason `delegated`.
-  5. A delegation to another member's agent needs that member's consent or an admin's (D140.5, open question Q2 of §8).
+  5. A delegation to another member's agent works only when that agent is shared (D140.5). Q2 of §8 is open for the owner, and its answer can change this rule.
 - **Done when.** A task shows its owner and its agent. The filters work by delegate. R8 proves that a delegate cannot widen what the agent sees.
 - **Fence.** A new R8 suite, `test_task_delegate_r8.py`, and the structural test of §3.7.
 - **Risk.** HIGH (identity, a migration). **Gate.** AGENT-SAFE. **Depends on.** SW-6. Q1 of §8 for the `agent:<name>` assignee.
@@ -670,6 +680,10 @@ Read at `9d41f51d4` on 2026-10-30. Line numbers move. Find each symbol by name a
 | the same | Writes: `set_task_status` (3226), `add_task_reference` (3300), `create_task` (3792), `update_task` (3928), `add_comment` (4087), `claim_task` (4191), `set_assignees` (4288), `start_agent_run` (4441), `post_agent_activity` (4522), `ask_on_task` (4589), `request_task_archive` (4653), `delete_task` (4785), `finish_agent_run` (5020), `release_task` (5067) |
 | `mcp.py:127` | `_ROUTINE_INSTRUCTIONS` (1045a, SW-31) |
 | `mcp.py:457` | `_dispatch`. No `resources/*` method today (SW-34a) |
+| `mcp.py:442` to `mcp.py:449` | The `tools/call` scope check, 403 `insufficient_scope` (SW-34b) |
+| `mcp.py:480` | `tools/list` calls `tools.listed_for` (SW-34b) |
+| `tools.py:971` | `Tool.required_scope` |
+| `tools.py:5124`, `tools.py:5151` | `listed` and `listed_for`, the tool list by scope (SW-34b) |
 | `prompts.py:239` | `_steps` of `work_on_task` (1045a) |
 
 **Shared code and settings:**
@@ -691,6 +705,7 @@ Read at `9d41f51d4` on 2026-10-30. Line numbers move. Find each symbol by name a
 | `lib/statusAccent.ts:446` | `AGENT_STATES` (1045a) |
 | `app/projects/components/AgentRunPanel.tsx:478` | reads `lease_expired` (SW-4) |
 | `app/projects/components/AskAgentDialog.tsx` | "Ask an agent" (SW-30a) |
+| `app/connect/authorize/consent.ts:106` | `SCOPE_COPY` of the consent page. `scopeRows` is at :133 and `grantedScopes` at :150 (SW-34b) |
 
 **Migrations** (`infra/postgres/`): `146_projects.sql:283` (the `link_type` CHECK, SW-25), `188_projects_personal_overlay_fields.sql` (`waiting_on` of the member overlay, SW-9), `267_pm_agent_runs.sql`, `289_agent_run_exclusive_claim.sql`, `302_agent_run_session_key.sql` and `305_pm_agent_run_strands.sql`. The highest number on main is 315.
 
@@ -719,7 +734,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | 1045a | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_runs_r8.py tests/unit/test_mcp_edge_agent_runs.py tests/unit/test_mcp_edge_prompts.py` and `npx vitest run src/app/projects/lib/agentCardLook.test.ts` |
 | 1045b | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_runs_r8.py tests/unit/test_agent_run_sweep_r8.py`, and the webhook test (new) |
 | 1045c | `npx vitest run src/app/projects/lib/agentCardLook.test.ts` |
-| 1054 | `npx vitest run src/app/projects/lib/notifications.test.ts`, and the pytest of the kind fixture (new) |
+| 1054 | `npx vitest run src/app/projects/lib/notifications.test.ts` and `uv run pytest -q -p no:cacheprovider tests/unit/test_notification_kinds_fixture.py` (new, reads `tests/fixtures/notification_kinds.json`) |
 | SW-9 | `uv run pytest -q -p no:cacheprovider tests/unit/test_task_wait_r8.py` (new) `tests/unit/test_needs_attention_r8.py` |
 | SW-10, SW-10b | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_run_sweep_r8.py`, then on the box `journalctl -u acb-gateway | grep gateway.agent_run_sweep` |
 | SW-11 | `uv run pytest -q -p no:cacheprovider tests/unit/test_needs_attention_r8.py` and `npx vitest run src/app/projects/lib/needsAttention.test.ts` |
@@ -765,7 +780,7 @@ Each question carries a recommendation. A slice that waits on one says so.
 - **The `push` event.** It is not known whether the GitHub App subscribes to `push` (1045b).
 - **The board half of SW-5.** EA-13g may already draw part of the holder line. Read it at dispatch.
 - **The production flags.** This spec uses the reading of 2026-10-29. Read the env files of the box again before SW-7a and SW-10b.
-- **A scope check on the edge.** It is not known whether the edge hides write tools from a connection with read scopes only. SW-34b reads it first.
+- **The read-only door.** The edge already hides write tools from a connection with read scopes only, and it refuses their call (SW-34b, "What exists"). It is not known yet how a client keeps a separate token for the path `/mcp/readonly`. SW-34b settles it.
 - **Stale status lines in `external_agent_access.md`.** Its header still calls SW-7, SW-10a and SW-11a "not merged". They merged as #1312, #1333 and #1345. The next slice that touches that file fixes the lines.
 
 ---
@@ -843,3 +858,4 @@ Each question carries a recommendation. A slice that waits on one says so.
 ## Changelog
 
 - **2026-10-30.** Written for SW-0 (Metorite task 331), from epic 321, its phase tasks, the slice tasks and the code at `9d41f51d4`. Records D140.
+- **2026-10-30, spec-audit fix round.** The audit gave GO-NARROWED for P1 and P4. This round names the migrations of 1045b and SW-31, and the table of SW-31 with FORCE RLS. It makes D140.5 agree with Q2, marks the owner calls and the agent defaults, and adds 1045b before SW-10b. It also names the SW-34b anchors, the 1054 fixture and what EA-13g draws for SW-5.
