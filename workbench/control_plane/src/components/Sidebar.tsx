@@ -396,15 +396,20 @@ export default function Sidebar() {
       {/* Nav sections */}
       {/* `scrollbar-thin` is not cosmetic here. Without it this container gets the
           platform's default scrollbar, which on Linux/Windows is ~15px wide with
-          stepper arrows — a quarter of the 56px COLLAPSED rail, shoving every
-          icon off-centre and painting a light-grey bar down a dark sidebar. The
+          stepper arrows, and paints a light-grey bar down a dark sidebar. The
           themed utility already existed in globals.css; this scroller just never
           opted in. */}
+      {/* ⚠️ The FOLDED rail hides its bar instead (task 998). A thin bar still
+          takes 8-11px of the 56px rail, and the icons are flex items, so they
+          shrank to fit: 9px where "All apps" drew 18px. The rail still scrolls
+          by wheel, touch and focus. Fence: `e2e/sidebar-rail-icons.spec.ts`. */}
       {/* `key` swaps the whole list on a fold, so the new shape fades in while
           the width moves (`.sidebar-swap`), rather than snapping. */}
       <nav
         key={collapsed ? "rail" : "full"}
-        className="sidebar-swap scrollbar-thin flex flex-col flex-1 overflow-y-auto overflow-x-hidden"
+        className={`sidebar-swap flex flex-col flex-1 overflow-y-auto overflow-x-hidden ${
+          collapsed ? "scrollbar-hide" : "scrollbar-thin"
+        }`}
       >
         {accessLoading || shellPending ? (
           <NavSkeleton collapsed={collapsed} />
@@ -606,7 +611,7 @@ function AddAppsRow({
           aria-haspopup="dialog"
           className="cc-link relative flex items-center justify-center rounded-lg p-2.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
         >
-          <Icon name="Plus" size={18} />
+          <Icon name="Plus" size={18} className="shrink-0" />
           {badge ? <NavBadge count={badge.count} tone={badge.tone} label={badge.label} placement="corner" /> : null}
           {meta?.kind === "needs" ? <NeedsDot /> : null}
         </button>
@@ -965,7 +970,8 @@ export function NavLink({
             : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
         }`}
       >
-        <Icon name={pane.icon} size={18} strokeWidth={active ? 2.5 : 2} />
+        {/* `shrink-0`: a squeezed rail must not shrink the icon (task 998). */}
+        <Icon name={pane.icon} size={18} strokeWidth={active ? 2.5 : 2} className="shrink-0" />
         {/* The icon has no text, so the link's name starts with the pane's. */}
         {badge !== undefined && badge > 0 && <span className="sr-only">{pane.label}</span>}
         <NavBadge

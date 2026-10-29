@@ -224,6 +224,58 @@ describe("rule 2b: each Email card draws the shared header (follow-up of #945)",
 });
 
 /**
+ * A receipt opens folded (owner directive, 2026-10-29, task 1003). The card
+ * that reports a write already done passes `receipt`, so `rollupOpen` shuts
+ * it. A card that waits, or that reads, never does. A scan of source cannot
+ * see a card added to a new file: add it here.
+ */
+/** The opening tag of each `<RollupCard`, with its props. An arrow `=>` in a prop is not the end. */
+function openTags(src: string): string[] {
+  return [...src.matchAll(/<RollupCard\b(?:=>|[^>])*>/g)].map((m) => m[0]);
+}
+
+describe("receipts: a write receipt is marked, and a card that waits is not", () => {
+  const RECEIPTS: Record<string, string[]> = {
+    "components/profile/ProfileToolCards.tsx": ["ProfileResultCard"],
+    "components/tasks/TaskToolCards.tsx": ["ActionResultCard"],
+    "components/projects/ProjectToolCards.tsx": ["ActionResultCard", "BatchReceiptCard"],
+    "components/email/EmailToolCards.tsx": [
+      "RuleResultCard", "SettingsUpdatedCard", "LabelUpdateCard", "ManageInboxCard", "ActionResultCard",
+    ],
+  };
+  const NOT_RECEIPTS = ["DraftResultCard", "NoActionCard", "EmailListCard", "EmailGroupsCard", "EmailPreviewCard"];
+
+  for (const [file, cards] of Object.entries(RECEIPTS)) {
+    for (const card of cards) {
+      it(`${file} ${card} passes receipt`, () => {
+        const body = fnBody(code(read(file)), card);
+        expect(body, `${card} moved: point this scan at it`).not.toBe("");
+        const tags = openTags(body).join("\n");
+        expect(tags, card).toMatch(/\breceipt\b/);
+        expect(tags, card).not.toMatch(/\bpending=/);
+      });
+    }
+  }
+
+  it("no card that waits or reads passes receipt", () => {
+    const src = code(read("components/email/EmailToolCards.tsx"));
+    for (const card of NOT_RECEIPTS) {
+      const body = fnBody(src, card);
+      if (body) expect(body, card).not.toMatch(/\breceipt\b/);
+    }
+  });
+
+  it("every RollupCard that sets pending leaves receipt out", () => {
+    for (const file of Object.keys(RECEIPTS)) {
+      const src = code(read(file));
+      for (const tag of openTags(src)) {
+        if (/\bpending=/.test(tag)) expect(tag, file).not.toMatch(/\breceipt\b/);
+      }
+    }
+  });
+});
+
+/**
  * Raw controls a chat card file may still draw, and why. A number that goes
  * down must be lowered here in the same change.
  */

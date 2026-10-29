@@ -2,7 +2,7 @@
 
 <!-- ste-tier: strict -->
 
-- **Status:** PROPOSED, 2026-10-15, for events (§3, §4, §8). **Reminders
+- **Status:** **Events (§3, §4, §8) are DECIDED, 2026-10-29 (D138).** **Reminders
   (§5) are DECIDED, 2026-10-25 (D114).** **PN-1 (the web push platform) is
   BUILT, 2026-10-25, dark behind `WEB_PUSH_ENABLED`** (migration 306,
   `gateway/push/`, `public/sw.js`). **RM-1 (the reminder store and API) is
@@ -15,8 +15,8 @@
   `lib/shell/reminderOpen.ts`). RM-5 to RM-10 are not built. Verified
   against code on 2026-10-25 (`origin/main` `894ddad27`): no `reminders`
   table and no `remind_at` existed then.
-- **Board row:** **WS-66** for reminders and web push. Events still wait on
-  CE-0 for a row.
+- **Board row:** **WS-CAL**. WS-66 for reminders and web push sits under
+  it.
 - **Asked by:** the owner, 2026-10-15. The Calendar must hold more than
   tasks. Add events, meetings and reminders, and fit them into the app.
 - **Reads:** D12, D49, D52, D53, D54, D89, D96, D99, D101, D102, D103.
@@ -941,7 +941,10 @@ gate.
 6. **Conflicts.** `block_overlap` and MD-11's `meeting_overlap` read the busy
    external entries. The day planner treats them as fixed.
 
-### 8.2 Write second (CE-11)
+### 8.2 Write with read (CE-11)
+
+D138 (2026-10-29): CE-11 ships beside CE-10, and both providers ship
+together. The owner gates of §8.3 still bind the live flips.
 
 - An event made in Metorite, with a connected account, has the switch
   **Also in Google Calendar**. It is on by default when connected.
@@ -982,7 +985,7 @@ needs no decision change.
 
 | Ticket | Gate and order | Scope | Accept | Fence (R7) |
 |---|---|---|---|---|
-| **CE-0** The owner's decisions | 🔴 OWNER | Answer Q1 to Q10 of §11. Mint the board row. Record the amendments the owner accepts | `work_plan.md` §3 holds the decision | — |
+| **CE-0** The owner's decisions — ✅ **DECIDED 2026-10-29 (D138)** | 🔴 OWNER | Answer Q1 to Q10 of §11. Mint the board row. Record the amendments the owner accepts | `work_plan.md` §3 holds the decision | — |
 | **CE-1** Lead time on a task block | AGENT-SAFE. No change | `pm_task_personal.lead_minutes`. `user_settings.block_lead_minutes` and `event_lead_minutes`. `feed.py` reads the lead, not `SOON`. The block menu sets it | A lead of 10 gives `block_soon` 10 minutes before the start. No lead gives 30. The flag off gives 30 for every block | `tests/unit/test_calendar_lead_time.py` (R8, new) and `test_shell_feed.py` |
 | ~~**CE-2**~~ | **REPLACED by WS-66 (§10.1), D114** | — | — | — |
 | **CE-3** The composer and drag to draw | AGENT-SAFE. No change | The composer of §6.1 with Task and Reminder. Event shows only with `NEXT_PUBLIC_CALENDAR_EVENTS`. Drag to draw in `TimeGrid.tsx`. The **New at…** row in the Gap Filler | A drag from 14:00 to 15:00 makes a private task with that block in one save. Esc saves nothing. The keyboard alone can do it | `components/Composer.test.tsx` (new), the conformance suite, `src/lib/shell/seams.test.ts`, and a visual review |
@@ -997,8 +1000,9 @@ needs no decision change.
 | **CE-11** Write events to the provider | 🔴 OWNER-GATE (§8.3). After CE-10 | §8.2 | The flag off sends no request. One event makes one provider event, and the next sync makes no copy | `tests/unit/test_calendar_sync_write.py` (new) |
 | **CE-12** Notes meetings | AGENT-SAFE after CE-4 | `meeting_id`. **Prepare notes** and **Send notetaker**. The "Coming up" band reads entries | Prepare notes twice opens one `meeting` row. A moved event moves the band | `tests/unit/test_calendar_meeting_link.py` (new) |
 
-**The order.** CE-1 and CE-3 now, and CE-0 in parallel. Then CE-4, CE-5,
-CE-6, CE-7b, CE-8, CE-9 and CE-12. Then CE-10 and CE-11.
+**The order.** CE-1 and CE-3 now. CE-0 is decided (D138). Then CE-4, CE-5,
+CE-6, CE-7b, CE-8, CE-9 and CE-12. Then CE-10 and CE-11 together, for Google
+and Outlook at once (D138).
 
 ### 10.1 WS-66 — reminders and web push (D114)
 
@@ -1124,6 +1128,11 @@ content, as `test_email_send_later.py` does. The fence is
    `/version` carries `calendar_reminders`.
 
 ## 11. Owner questions
+
+✅ **The owner answered on 2026-10-29 (D138).** Q1, Q2, Q4, Q5, Q8 and Q10
+take the default. Q6: Google and Outlook ship together. Q7: write-out ships
+with read. Q9 keeps the default, because the owner did not answer it
+directly.
 
 | # | Question | Default when the owner says nothing |
 |---|---|---|
