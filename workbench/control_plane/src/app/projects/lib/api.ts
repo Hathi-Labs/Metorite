@@ -2460,7 +2460,14 @@ export const projectsApi = {
     for (const [key, value] of Object.entries(params)) {
       if (value !== undefined && value !== "") qs.set(key, String(value));
     }
-    return call<{ rows: TaskRow[]; total: number }>(`tasks?${qs.toString()}`);
+    // #918: `status_counts` and `status_categories` come back when the
+    // caller sends `with_status_counts`. Null otherwise.
+    return call<{
+      rows: TaskRow[];
+      total: number;
+      status_counts?: Record<string, number> | null;
+      status_categories?: Record<string, string | null> | null;
+    }>(`tasks?${qs.toString()}`);
   },
 
   /**
