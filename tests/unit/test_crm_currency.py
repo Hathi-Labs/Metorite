@@ -108,10 +108,26 @@ def test_a_currency_with_only_zeros_is_not_reported() -> None:
     assert values["a"].rows == 5
 
 
-def test_the_primary_is_the_first_currency_with_a_value() -> None:
-    per = {"INR": {"a": _acc(0)}, "USD": {"a": _acc(9)}}
-    _values, primary, others = agg.split_currencies(per)
-    assert (primary, others) == ("USD", [])
+def test_the_primary_is_the_first_currency_even_at_zero() -> None:
+    """The reports lead with INR whenever INR is present. So does this."""
+    per = {"INR": {"a": _acc(0)}, "USD": {"a": _acc(500)}}
+    values, primary, others = agg.split_currencies(per)
+    assert (primary, others) == ("INR", ["USD"])
+    assert values["a"].value == 0 and values["a"].others == {"USD": 500}
+
+
+def test_the_digest_leads_with_inr_at_zero_and_keeps_usd_apart() -> None:
+    per = {"INR": {"2026-11": _acc(0)}, "USD": {"2026-11": _acc(500)}}
+    values, primary, others = agg.split_currencies(per)
+    answer = _answer(
+        [("2026-11", "2026-11", values["2026-11"].value,
+          [agg.CurrencyValue(currency="USD", value=500)])],
+        0, currency=primary,
+        others=[agg.CurrencyTotal(currency=c, total=500) for c in others])
+    inr, usd = dg._parts(_query("amount_by_close_month"), answer, {})
+    assert (inr["unit"], usd["unit"]) == ("INR", "USD")
+    assert inr["rows"] == [] and inr["total"] == "INR 0"
+    assert usd["rows"] == [{"label": "November 2026", "value": "USD 500"}]
 
 
 def _stub(monkeypatch: pytest.MonkeyPatch, read: agg._Read) -> None:
@@ -310,7 +326,7 @@ async def test_the_tool_prints_each_amount_with_its_own_code(monkeypatch) -> Non
     })
     out = await T.crm_aggregate("deals", "owner", measure="sum_amount")
     assert "- Asha: INR 1,234,567 and USD 4,500" in out
-    assert "- Bo: INR 0, USD 10 and EUR 5" in out
+    assert "- Bo: USD 10 and EUR 5" in out
     assert "Total: INR 1,234,567, USD 4,510 and EUR 5." in out
 
 
@@ -321,7 +337,7 @@ async def test_the_tool_prints_one_currency_as_before(monkeypatch) -> None:
         "groups": [{"key": "a", "label": "Asha", "value": 4500}],
     })
     out = await T.crm_aggregate("deals", "owner", measure="sum_amount")
-    assert "- Asha: USD 4,500" in out and "Total: USD 4,500." in out
+    assert "- Asha: USD 4,500" in out and "Asha: INR 0" not in out and "Total: USD 4,500." in out
     _tool(monkeypatch, {
         "zone": "UTC", "total": 3, "groups": [{"key": "a", "label": "Asha", "value": 3}],
     })
@@ -347,3 +363,20 @@ async def test_a_module_amount_keeps_inr_when_the_field_is_a_currency(monkeypatc
     })
     out = await T.crm_aggregate("deals", "owner", measure="sum", field="amount")
     assert "- Asha: INR 99" in out
+
+
+@pytest.mark.asyncio
+async def test_the_tool_omits_a_zero_main_amount_when_the_group_has_others(monkeypatch) -> None:
+    _tool(monkeypatch, {
+        "currency": "INR", "zone": "UTC", "total": 0,
+        "groups": [
+            {"key": "a", "label": "Asha", "value": 0,
+             "others": [{"currency": "USD", "value": 4500}]},
+            {"key": "b", "label": "Bo", "value": 0},
+        ],
+        "others": [{"currency": "USD", "total": 4500, "other": 0}],
+    })
+    out = await T.crm_aggregate("deals", "owner", measure="sum_amount")
+    assert "- Asha: USD 4,500" in out and "Asha: INR 0" not in out
+    assert "- Bo: INR 0" in out
+    assert "Total: INR 0 and USD 4,500." in out

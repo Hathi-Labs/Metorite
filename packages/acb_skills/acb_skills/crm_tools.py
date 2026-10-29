@@ -1588,6 +1588,25 @@ async def crm_aggregate(
     return await _aggregate_text(slug, params, page)
 
 
+def _with_others(main: str, value: Any, others: Any, key: str, group: bool) -> str:
+    """*main* (the value in the main currency), then each other currency with
+    its own code ("INR 12 and USD 4"). Never one sum over the currencies.
+
+    A GROUP with a main amount of 0 and another currency holds that other
+    currency only, so it prints "USD 4" and not "INR 0 and USD 4". The route
+    sorts by the main amount, so such a group sits last and, past 50 groups,
+    folds into "Other" (whose line prints each currency's own figure). A group
+    with no others keeps "INR 0", which is a real zero."""
+    more = [f"{o.get('currency')} {float(o.get(key) or 0):,.0f}"
+            for o in others or [] if isinstance(o, dict)]
+    if value is None or not more:
+        return main
+    shown = more if group and float(value) == 0 else [main, *more]
+    if len(shown) == 1:
+        return shown[0]
+    return " and ".join([", ".join(shown[:-1]), shown[-1]])
+
+
 async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
                           chosen: str | None = None,
                           handled: frozenset[str] = frozenset(),
@@ -1626,17 +1645,8 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
             return f"{code} {float(value):,.0f}"
         return f"{float(value):,.0f}" if measure == "count" else _number(float(value))
 
-    def fmt_with(value: Any, others: Any, key: str) -> str:
-        """*value* in the main currency, then each other currency with its own
-        code ("INR 12 and USD 4"). Never one sum over the currencies."""
-        main = fmt(value)
-        if value is None or not money:
-            return main
-        more = [f"{o.get('currency')} {float(o.get(key) or 0):,.0f}"
-                for o in others or [] if isinstance(o, dict)]
-        if not more:
-            return main
-        return " and ".join([", ".join([main, *more[:-1]]), more[-1]])
+    def fmt_with(value: Any, others: Any, key: str, *, group: bool = False) -> str:
+        return _with_others(fmt(value), value, others if money else None, key, group)
 
     what = _measure_words(measure, field, data)
     plural = f"{ENTITY_LABELS[slug]}s" if slug in ENTITY_LABELS else _entity_label(slug)
@@ -1663,7 +1673,7 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
         # CRM-Q20-3a: the route read the module that plays the slot.
         lines.append(_from_module(slug, str(overlay.get("module"))))
     lines.extend(
-        f"- {g['label']}: {fmt_with(g.get('value'), g.get('others'), 'value')}"
+        f"- {g['label']}: {fmt_with(g.get('value'), g.get('others'), 'value', group=True)}"
         for g in shown.items
     )
     lines.append(f"{_OVERALL.get(measure, 'Total')}: "

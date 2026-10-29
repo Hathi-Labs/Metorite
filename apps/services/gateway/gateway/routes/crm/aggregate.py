@@ -579,17 +579,18 @@ def split_currencies(
 ) -> tuple[dict[str | None, _Acc], str, list[str]]:
     """One answer from the per-currency reads (task 888).
 
-    *per* maps each currency, in order, to its groups. The PRIMARY currency is
-    the first one that holds a value other than 0, else the first. The groups
-    of the primary keep their value. Every other live currency lands in
-    ``acc.others``. The record counts of EVERY currency add up, so ``records``
-    stays the count of the matched deals. Pure, so the hermetic tests call it."""
+    *per* maps each currency to its groups, in the order of
+    ``ordered_currencies`` (INR first, then code order), which is the order of
+    ``reports.py``. The PRIMARY currency is the FIRST one, even when all its
+    values are 0. The groups of the primary keep their value. Every other
+    currency with a value other than 0 lands in ``acc.others``. The record
+    counts of EVERY currency add up, so ``records`` stays the count of the
+    matched deals. Pure, so the hermetic tests call it."""
+    primary = next(iter(per))
     live = [
         c for c, groups in per.items()
-        if any((a.value or 0) != 0 for a in groups.values())
+        if c != primary and any((a.value or 0) != 0 for a in groups.values())
     ]
-    live = live or list(per)[:1]
-    primary = live[0]
     merged = dict(per[primary])
     for code, groups in per.items():
         if code == primary:
@@ -600,7 +601,7 @@ def split_currencies(
             mine.name = mine.name or acc.name
             if code in live and acc.value:
                 mine.others[code] = float(acc.value)
-    return merged, primary, live[1:]
+    return merged, primary, live
 
 
 def _combine(measure: str, accs: list[_Acc]) -> float | None:
