@@ -361,7 +361,9 @@ expand-only migration. It takes the next free number at build time (316 on
 The budget reads
 (`outbox._PLAN_SQL` and `_SENT_SINCE_SQL`, `reach/outbox.py:40, 56`) then
 count by channel. A push row never counts in the WhatsApp cap. `reminder_due`
-has its own counter, with a limit of 10 each day for each member.
+has its own counter, with a limit of 10 each day for each member. Each cap
+counts `sent` rows on `web_push` for one member and one local date.
+`reminder_check` counts its own `web_push` rows against `REACH_DAILY_CAP`.
 
 **Retention.** A sweep deletes rows older than 30 days. A monthly summary row
 keeps the counts for the cost report.
@@ -513,8 +515,10 @@ holds no title or time text.
 `REACH_ENABLED`, `REACH_ORGS` or `REACH_MEMBERS`. Those flags gate WhatsApp
 only.
 
-The fire step of the reminder loop plans one `web_push` outbox row. A
-send step in `gateway/reach/` sends it. WS-51 S7 reuses that step later.
+Each step of the reminder loop plans one `web_push` outbox row, on its own
+session. A send step in `gateway/reach/` sends it. The reminder loop calls
+that step after the commit. `reach/loop.py` never runs it. WS-51 S7 reuses
+that step later.
 `calendar_events_reminders.md` §5.6 holds the six decisions.
 
 ### 8.3 The order of channels
