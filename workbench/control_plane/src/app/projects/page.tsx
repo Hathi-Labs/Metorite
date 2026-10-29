@@ -5031,14 +5031,25 @@ function ProjectsWorkspace() {
           }}
         />
       ) : null}
+      {/* WS-27bk §9.12.4 — "Move to…". In `overlays`, which BOTH page returns
+          render, so "Move to…" opens the dialog on a phone too (H-120). */}
+      {movingNode ? (
+        <MoveDialog
+          open
+          moving={movingNode}
+          // OP-3: a personal node picks among the personal tree alone, with
+          // no "Top level" row, so it cannot leave for a team space.
+          roots={movingNode.personal ? personal : roots}
+          topLevel={!movingNode.personal}
+          busy={moving}
+          onClose={() => setMovingNode(null)}
+          onMove={(parentId) => void moveNodeTo(movingNode, parentId)}
+        />
+      ) : null}
+
       {/* H-8 — the delete confirmation.
-          ⚠️ **Here, and NOT beside `MoveDialog`, on purpose.** This page has
-          two returns: the phone branch above and the desktop one below. Only
-          `overlays` is rendered by both. `MoveDialog` is mounted in the
-          desktop return alone, so "Move to…" opens nothing at all on a phone —
-          the menu entry is there, the click lands, and no dialog exists to
-          render. That is a defect on an existing feature and is filed rather
-          than fixed here; this one simply does not repeat it. */}
+          In `overlays`, which BOTH page returns render: the phone branch and
+          the desktop one. */}
       {/* ⚠️ `key` IS THE SAFETY MECHANISM, not a list-rendering habit.
           This dialog is mounted unconditionally and returns null when closed,
           so it never unmounts and its state survives a close. Its reset lives
@@ -5048,9 +5059,8 @@ function ProjectsWorkspace() {
           One paint, on the one act in this app that cannot be undone.
           Keying on the id makes the reset structural: a different row, or the
           same row opened again, is a new instance with fresh state. */}
-      {/* WS-27bl §9.13.4. In `overlays`, which BOTH page returns render —
-          `MoveDialog` is in the desktop return alone and opens nothing on a
-          phone (H-120). Keyed on the selection so reopening never shows the
+      {/* WS-27bl §9.13.4. In `overlays`, which BOTH page returns render.
+          Keyed on the selection so reopening never shows the
           previous set's plan. */}
       {/* ⚠️ `tasks`, not the whole project. The card offers what the board
           has loaded, which is what the member can see and therefore what
@@ -5571,23 +5581,6 @@ function ProjectsWorkspace() {
         onClose={() => setSettingsFor(null)}
         onSave={(space, values) => void saveSpaceSettings(space, values)}
       />
-
-      {/* WS-27bk §9.12.4 — "Move to…". Mounted here for the same reason Space
-          Settings is: the tree is drawn twice (rail and drawer), and a dialog
-          inside it would be too. */}
-      {movingNode ? (
-        <MoveDialog
-          open
-          moving={movingNode}
-          // OP-3: a personal node picks among the personal tree alone, with
-          // no "Top level" row, so it cannot leave for a team space.
-          roots={movingNode.personal ? personal : roots}
-          topLevel={!movingNode.personal}
-          busy={moving}
-          onClose={() => setMovingNode(null)}
-          onMove={(parentId) => void moveNodeTo(movingNode, parentId)}
-        />
-      ) : null}
 
       {overlays}
     </div>
