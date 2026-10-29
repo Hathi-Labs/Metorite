@@ -1165,3 +1165,49 @@ class TestTheRulesOnARealDatabase:
         assert result["isError"] is False, result
         made = result["structuredContent"]["project"]
         assert made["level"] == "project" and made["parent_id"] == live.folder
+
+
+# ── Fail closed: an agent move with no known audience is refused ─────────────
+# Fix round 2 (2026-10-30, CI found it): `move_tasks` read `plan["audience"]`,
+# and a plan with no audience raised KeyError. Now an agent moves only on a
+# KNOWN same or narrower audience, and a member's plan needs none.
+
+
+async def test_an_agent_move_with_no_known_audience_fails_closed(monkeypatch):
+    from gateway.routes.projects import move
+
+    from tests.unit.test_subtasks_s5 import VIS, _Session, _user
+
+    written: list = []
+
+    async def resolve_visibility(db, user):
+        return VIS
+
+    async def plan(db, vis, payload, user):
+        return {
+            "tasks": [], "source_project_id": "a",
+            "destination_project_id": "z", "required_missing": [],
+            "drops": {}, "destination_statuses": [], "statuses": [],
+            "types": [], "crosses_status_set": False, "crosses_root": False,
+            "descendants": [], "subtree_maps": {},
+            "subtasks": {"count": 0, "hidden": 0, "refused": []},
+        }
+
+    async def move_task_in(*args, **kwargs):
+        written.append(args)
+
+    monkeypatch.setattr(move, "_tenant_session", _Session)
+    monkeypatch.setattr(move, "resolve_visibility", resolve_visibility)
+    monkeypatch.setattr(move, "_plan", plan)
+    monkeypatch.setattr(move, "move_task_in", move_task_in)
+    agent = SimpleNamespace(**{f.name: getattr(_user(), f.name)
+                               for f in dataclasses.fields(_user())})
+    agent.agent = SimpleNamespace(client="mcp:test")
+    with pytest.raises(move.HTTPException) as err:
+        await move.move_tasks(
+            move.MoveIn(task_ids=["p"], destination_project_id="z",
+                        accepted_drops=[]),
+            user=agent)
+    assert err.value.status_code == 403
+    assert err.value.detail["error"] == move.AGENT_AUDIENCE_WIDENS
+    assert written == []

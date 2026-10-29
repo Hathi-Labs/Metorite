@@ -763,7 +763,10 @@ async def move_tasks(
         plan = await _plan(db, vis, payload, user)
         # WS-55 MCP-G1, fix round 1. An agent never widens who sees a task.
         # Before any write, and before the drops: the member makes this move.
-        if plan["audience"] == AUDIENCE_WIDER:
+        # Fail closed: an agent moves only on a KNOWN same or narrower
+        # audience. A member's plan has no audience, and nothing changes.
+        is_agent = getattr(user, "agent", None) is not None
+        if is_agent and plan.get("audience") not in (AUDIENCE_SAME, AUDIENCE_NARROWER):
             raise HTTPException(status_code=403, detail={
                 "error": AGENT_AUDIENCE_WIDENS,
                 "message": "This move shows the tasks to people who cannot see "
