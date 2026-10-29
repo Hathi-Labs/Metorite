@@ -110,13 +110,15 @@ async def _embed_batch(
     that rule (``tests/unit/test_email_layering.py``).
     """
     try:
-        from gateway.kb_index import embed as door
+        # The alias names the leaf for the llm_slot fence
+        # (tests/unit/test_email_llm_cap.py, MODEL_CALLEES).
+        from gateway.kb_index.embed import embed as embed_on_door
 
         # EM-T4b: inside the automation scope (the cleanup backfill) the
         # cap and the daily budget bind the embed. Elsewhere this is a no-op.
         # The slot holds the leaf call and nothing else.
         async with llm_slot():
-            vectors = await door.embed(texts)
+            vectors = await embed_on_door(texts)
     except Exception as exc:
         logger.warning("email_embed.batch_failed model=%s err=%s",
                        model, type(exc).__name__)
