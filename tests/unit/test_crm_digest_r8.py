@@ -483,6 +483,35 @@ async def test_the_monday_rule_reads_the_crm_zone(dg8) -> None:
     assert _row(dg8, b) == []
 
 
+async def test_a_mirror_org_sends_no_created_date_call_and_stores_a_digest(
+        dg8, monkeypatch) -> None:
+    """CRM #873: the four created-date queries do not go out in Mirror mode,
+    and a text that names the gaps in words passes the number check."""
+    from gateway.routes.crm import aggregate
+
+    a = dg8.org_a
+    _mirror_in(dg8, a, "UTC")
+    sent: list[str | None] = []
+    real = aggregate.compute
+
+    async def spy(entity, **kw):
+        sent.append(kw.get("group_by"))
+        return await real(entity, **kw)
+
+    monkeypatch.setattr(aggregate, "compute", spy)
+    dg8.model.reply = lambda _m: (
+        "The week of 5-11 October. New leads, deals, contacts and organizations "
+        "are not available. Open deals: no figures this week.")
+    got = await _step(dg8, a)
+    assert got.reason == "stored" and got.requests == 1 and got.rejected == 0, got
+    assert "created_month" not in sent and len(sent) == 4
+    [row] = _row(dg8, a)
+    assert row.tries == 1 and row.body
+    assert len(row.numbers["missing"]) == 4
+    assert all(_part(row.numbers, k) is None for k in (
+        "new_leads", "new_deals", "new_contacts", "new_organizations"))
+
+
 # ── Items 9, 11 and 12: the cap of 3 tries, with a fake model ───────────────
 
 
