@@ -794,6 +794,14 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # stays: it is a `pm_tasks` row, and a purge deletes none (D63).
     _PersonRows("reminders", "reminders",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-BRIEF BR-4: the member's briefs and close-outs of THIS organization.
+    # A brief is the member's own text, and only the member reads it, so a
+    # purged member leaves none behind. The clause names the bound org beside
+    # RLS, as `reminders` does, so the same address in another org keeps its
+    # briefs. The claims, `brief_claims`, go by their `ON DELETE CASCADE`
+    # key to `brief_runs`.
+    _PersonRows("brief_runs", "brief_runs",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # WS-63 PZ-9 (personalization.md §7 point 6): the member's settings row
     # of THIS organization, and with it the assistant profile. The row is the
     # member's own preferences, so the whole row goes. A member has one row

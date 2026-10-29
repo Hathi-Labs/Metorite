@@ -479,6 +479,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "knowledge_favorites": 0,
         # WS-66 RM-1: her two private reminders. The ledger goes by cascade.
         "reminders": 2,
+        # WS-BRIEF BR-4: the fake holds no brief of the member.
+        "brief_runs": 0,
         # WS-63 PZ-9: her settings row of this org, with the profile.
         "member_settings": 1,
         # WS-66 PN-1: the fake holds no push device of the member.
@@ -685,6 +687,33 @@ def test_the_reminders_of_this_org_go_and_their_ledger_by_cascade() -> None:
     assert keys.index("reminders") < keys.index("member_record")
     assert "reminder_events" in cascade_closure("reminders")
     assert "reminder_events" not in {r.table for r in _PURGE_DELETES}
+
+
+def test_the_briefs_of_this_org_go_and_their_claims_by_cascade() -> None:
+    """WS-BRIEF BR-4: the purge deletes the member's briefs and close-outs.
+
+    A brief is the member's own text, and only the member reads it, so a
+    purge leaves none behind. The clause names the member and the bound org,
+    because the same address may hold briefs in another org.
+    ``brief_claims`` is not a row of the list: its foreign key cascades from
+    ``brief_runs``, and the schema must keep it so.
+
+    ⚠️ Mutation-checked: dropping the org predicate fails here, and
+    ``test_brief_store_r8.py`` fails on the real database. Dropping the entry
+    fails the count dict above.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "brief_runs"]
+    assert rows.key == "brief_runs"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("brief_runs") < keys.index("member_record")
+    assert "brief_claims" in cascade_closure("brief_runs")
+    assert "brief_claims" not in {r.table for r in _PURGE_DELETES}
 
 
 def test_the_two_halves_of_chat_session_partition_it() -> None:
