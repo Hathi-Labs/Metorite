@@ -4801,6 +4801,23 @@ The owner answered CE-0 on 2026-10-29, in chat. The questions are Q1 to Q10 of `
 
 **What it unblocks.** CE-4, the event store. After CE-4, CE-5 to CE-9 and CE-12. An agent can build CE-10 and CE-11 as dark code. The owner gates bind only their live use.
 
+### D139 — Keep MAF and build natively. One coding harness serves `code_task` and AI Studio (2026-10-30)
+
+The owner answered decision 1 of CA-0 on 2026-10-30, in chat. Board: **WS-43**. Owning spec: `specs/maf_coding_engine.md` §18. Metorite epic: task 1027.
+
+```text
+"Yes, I like the idea of keeping MAF and building natively. I just want to
+ensure that we have built all the necessary tools and workflows that
+enable MAF to become a capable coding agent harness. The same coding
+harness gets used with the AI Studio as well."
+```
+
+1. **Keep MAF, and build natively.** The tools run in our sandbox, and the loop and keys stay in the gateway. D82, D83, D84 and D92 hold. The Copilot SDK wrapper `GitHubCopilotAgent` stays rejected.
+2. **One coding harness (CA-14).** `code_task`, AI Studio (D127), the sandbox tool builder, the App Workshop, the Agent Workshop and self-mutation all use it. A profile only narrows tools and paths. A second coding harness, tool set, permission model or event stream is a defect.
+3. **A coding workflow (CA-15).** The harness ships the loop: understand, plan, implement, verify, review by a separate sub-agent, deliver.
+
+**What stays open.** Decisions 2 to 5 of `maf_coding_engine.md` §18.7 wait for the owner. They are the amendment of §6.2, the egress profiles, the OpenHands pilot and the first org.
+
 
 ## 4. Single-owner registry (who owns duplicated work)
 
