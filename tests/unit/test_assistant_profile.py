@@ -78,6 +78,13 @@ class _FakeDB:
             return _Result((1,) if ok else None)
         if "FROM app_user u LEFT JOIN people p" in sql:
             return _Result(self.address)
+        if sql.startswith("SELECT user_id, assistant_profile -> 'apps'"):
+            # The row rule of the app settings (BR-2a-1 repair round 2): the
+            # fake holds one row, under the session's address.
+            if self.row is _NO_ROW:
+                return _Result(None)
+            apps = self.row.get("apps") if isinstance(self.row, dict) else None
+            return _Result((p["m"], apps.get(p["app"]) if isinstance(apps, dict) else None))
         if sql.startswith("SELECT assistant_profile"):
             return _Result(None if self.row is _NO_ROW else (self.row,))
         if sql.startswith("INSERT INTO user_settings"):
@@ -660,6 +667,10 @@ class TestTheMember:
             # The alias check of PZ-5 takes the typed address, never a member.
             if sql.startswith("SELECT 1 WHERE EXISTS"):
                 assert set(params) == {"email"}
+            elif sql.startswith("SELECT user_id, assistant_profile -> 'apps'"):
+                # The row rule of the app settings (BR-2a-1 repair round 2)
+                # binds the member as ``:m``, as the brief's reader does.
+                assert params["m"] == "bo@alpha.example"
             else:
                 assert params["uid"] == "bo@alpha.example"
             assert not any("org" in k for k in params), params
@@ -811,8 +822,9 @@ class TestTheAddress:
         assert set(body) == {"v", "learning", "address", "style", "aliases", "facts",
                              "enabled", "apps"}
         assert body["address"] == {"name": "VJ"}
-        assert [s for s, _ in fake.sql] == [s for s, _ in fake.sql
-                                            if s.startswith("SELECT assistant_profile")]
+        # The profile and the app settings (the row rule), and no name read.
+        reads = ("SELECT assistant_profile", "SELECT user_id, assistant_profile -> 'apps'")
+        assert [s for s, _ in fake.sql] == [s for s, _ in fake.sql if s.startswith(reads)]
 
 
 def test_the_count_is_by_lower_case_member_and_bounded(monkeypatch) -> None:

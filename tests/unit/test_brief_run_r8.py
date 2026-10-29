@@ -35,6 +35,12 @@ Without the database every test here SKIPS. A skip is not a pass.
 * M7. ``run._skip``: drop the ``MOVED`` branch, so a moved row turns
   ``failed``. ``test_r8_a_time_moved_between_a_failed_try_and_the_retry_
   gives_the_brief_at_the_new_time`` goes red.
+* M8. ``assistant_profile.MEMBERS_APP_SQL``: drop ``DISTINCT ON``.
+  ``test_r8_the_bulk_reader_returns_one_entry_and_only_the_brief_keys``
+  goes red.
+* M9. ``assistant_profile.MEMBERS_APP_SQL``: order by ``(s.assistant_profile
+  IS NULL)`` again, as round 1 did. ``test_r8_the_planner_the_get_and_the_
+  put_take_one_row_of_two_cases[upper]`` goes red.
 """
 
 from __future__ import annotations
@@ -393,29 +399,102 @@ def test_r8_a_case_variant_settings_row_cannot_opt_a_member_back_in(world) -> No
 
 
 def test_r8_the_bulk_reader_returns_one_entry_and_only_the_brief_keys(world) -> None:
-    """Repair round 1, P2-b. ``members_app_prefs`` answers one entry for each
-    member, and the brief keys only: never the rest of a private profile."""
+    """Repair round 1, P2-b, and mutation M8 (repair round 2, P3).
+    ``members_app_prefs`` answers one entry for each member, and the brief
+    keys only: never the rest of a private profile. ANA has two rows in two
+    cases, so a reader with no ``DISTINCT ON`` answers her twice."""
     import json
 
     from acb_common import assistant_profile
 
     with world.p.admin_engine.begin() as c:
-        c.execute(text(
-            "INSERT INTO user_settings (user_id, organization_id, assistant_profile) "
-            "VALUES (:u, CAST(:org AS uuid), CAST(:p AS jsonb))"),
-            {"u": ANA.upper(), "org": world.p.org_a, "p": json.dumps({
-                "v": 1, "facts": [{"id": "f1", "text": "private"}],
-                "apps": {"brief": {"brief_time": "08:15"}}})})
+        for uid, prof in (
+                (ANA.upper(), {"v": 1, "facts": [{"id": "f1", "text": "private"}],
+                               "apps": {"brief": {"brief_time": "08:15"}}}),
+                (ANA, {"v": 1, "facts": [{"id": "f2", "text": "private"}]})):
+            c.execute(text(
+                "INSERT INTO user_settings (user_id, organization_id, assistant_profile) "
+                "VALUES (:u, CAST(:org AS uuid), CAST(:p AS jsonb))"),
+                {"u": uid, "org": world.p.org_a, "p": json.dumps(prof)})
 
     async def go() -> list:
         async with tenant_session(world.p.org_a) as db:
             return await assistant_profile.members_app_prefs(db, world.p.org_a, "brief")
 
-    got = dict(_go(world, go))
-    assert list(got).count(ANA) == 1
+    rows = _go(world, go)
+    assert [email for email, _prefs in rows].count(ANA) == 1
+    got = dict(rows)
     assert got[ANA] == {"enabled": True, "brief_time": "08:15", "closeout_time": "18:30"}
     assert got[BEN] == assistant_profile.APP_PREFERENCES["brief"]
     assert CARA not in got  # another org
+
+
+def _profile_route_user(email: str) -> Any:
+    from acb_auth import UserContext, UserRole, build_access
+
+    return UserContext(email=email, role=UserRole.EMPLOYEE,
+                       access=build_access(["feature:tasks"], roles=["member"]))
+
+
+def _route(world: Any, call: Any) -> Any:
+    """*call* of the profile route, in org A, as the app role."""
+    from acb_common.db import bind_tenant, release_tenant
+    from gateway.routes.admin import assistant_profile as route
+
+    async def go() -> Any:
+        token = bind_tenant(world.p.org_a)
+        try:
+            return await call(route)
+        finally:
+            release_tenant(token)
+
+    return _go(world, go)
+
+
+def _get_brief(world: Any, session_email: str) -> dict[str, Any]:
+    user = _profile_route_user(session_email)
+    return _route(world, lambda r: r.get_assistant_profile(user=user))["apps"]["brief"]
+
+
+@pytest.mark.parametrize("brief_case", ["upper", "lower"])
+def test_r8_the_planner_the_get_and_the_put_take_one_row_of_two_cases(
+        world, brief_case) -> None:
+    """Mutation M9 (repair round 2, P2-2). BEN has two settings rows, in two
+    cases. One row holds ``enabled: false``, and the other holds facts only.
+    The planner, the GET and the PUT take the same row (the row rule of
+    ``APP_ROW_SQL_TEMPLATE``). So BEN gets no job, and the GET shows the
+    brief off, in each case of the session. Then the member turns the brief
+    on, and the planner reads that too."""
+    import json
+
+    off, words = (BEN.upper(), BEN) if brief_case == "upper" else (BEN, BEN.upper())
+    with world.p.admin_engine.begin() as c:
+        for uid, prof in ((off, {"v": 1, "apps": {"brief": {"enabled": False}}}),
+                          (words, {"v": 1, "facts": [{"id": "f1", "text": "x"}]})):
+            c.execute(text(
+                "INSERT INTO user_settings (user_id, organization_id, assistant_profile) "
+                "VALUES (:u, CAST(:org AS uuid), CAST(:p AS jsonb))"),
+                {"u": uid, "org": world.p.org_a, "p": json.dumps(prof)})
+    _tick(world, world.p.org_a, T0)
+    assert [j.payload["member"] for j in _jobs(world, planner.RUN_KIND)] == [ANA]
+    assert _get_brief(world, BEN.upper())["enabled"] is False
+    assert _get_brief(world, BEN)["enabled"] is False
+    user = _profile_route_user(BEN.upper())
+    answer = _route(world, lambda r: r.put_assistant_profile(
+        body={"key": "apps", "value": {"brief": {"enabled": True}}}, user=user))
+    assert answer["apps"]["brief"]["enabled"] is True
+    # The words of the answer are the session's row, as the GET shows them.
+    want_facts = ["f1"] if words == BEN.upper() else []
+    assert [f["id"] for f in answer["facts"]] == want_facts
+    assert _get_brief(world, BEN)["enabled"] is True
+    with world.p.admin_engine.connect() as c:
+        stored = dict(c.execute(text(
+            "SELECT user_id, assistant_profile FROM user_settings WHERE lower(user_id) = :u"),
+            {"u": BEN}).all())
+    assert stored[off]["apps"] == {"brief": {"enabled": True}}
+    assert "apps" not in stored[words]  # the PUT wrote one row, the planner's
+    _tick(world, world.p.org_a, T0 + timedelta(minutes=15))
+    assert {j.payload["member"] for j in _jobs(world, planner.RUN_KIND)} == {ANA, BEN}
 
 
 def test_r8_a_member_with_no_zone_takes_the_org_zone(world) -> None:

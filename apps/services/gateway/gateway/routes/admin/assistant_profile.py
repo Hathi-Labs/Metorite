@@ -101,6 +101,8 @@ from acb_auth import UserContext, get_current_user
 from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     ALIAS_MAX,
     ALIASES_MAX,
+    APP_PREFERENCES,
+    APP_ROW_SQL_TEMPLATE,
     AREAS,
     EMAIL_MAX,
     FACT_KINDS,
@@ -133,7 +135,6 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     _stored_fact,
     _stored_keys,
     _text,
-    all_app_prefs,
     apply_interview_mark,
     area_has_answer,
     clean_app_prefs,
@@ -141,6 +142,7 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     mark_changed,
     may_ask,
     profile_size,
+    stored_app_prefs,
     stored_profile,
 )
 from fastapi import Body, Depends, Header, HTTPException, Query, Response
@@ -458,6 +460,24 @@ async def _read(db: Any, uid: str) -> Any:
     return (await db.execute(_sql(_READ_SQL), {"uid": uid})).first()
 
 
+async def _app_row(db: Any, uid: str, app: str) -> tuple[str | None, Any]:
+    """The ``user_id`` and the stored ``apps.<app>`` of the row that the
+    planner reads (``APP_ROW_SQL_TEMPLATE``, any case), or ``(None, None)``
+    when the member has no row. The GET and the PUT of ``apps`` take this
+    row, so the member sees and sets the value that the brief reads."""
+    row = (await db.execute(_sql(APP_ROW_SQL_TEMPLATE), {"m": uid, "app": app})).first()
+    return (None, None) if row is None else (str(row[0]), row[1])
+
+
+async def _apps(db: Any, uid: str) -> dict[str, dict[str, Any]]:
+    """The preferences of every declared app, each from its own row by the
+    row rule, over the declared defaults."""
+    out: dict[str, dict[str, Any]] = {}
+    for app in APP_PREFERENCES:
+        out[app] = stored_app_prefs((await _app_row(db, uid, app))[1], app)
+    return out
+
+
 async def _upsert(db: Any, uid: str, new: str, merge: str, params: dict[str, Any],
                   where: str = "") -> Any:
     """One write of the column, in one statement: ``new`` for a new row,
@@ -739,6 +759,9 @@ async def get_assistant_profile(
     try:
         async with _tenant_session() as db:
             row = await _read(db, uid)
+            # The app settings, each over its declared defaults, from the
+            # row that the brief reads (BR-2a-1, the row rule).
+            apps = await _apps(db, uid)
     except Exception as exc:
         logger.warning("auth.assistant_profile.read_failed",
                        extra={"error": type(exc).__name__})
@@ -746,8 +769,7 @@ async def get_assistant_profile(
     raw = row[0] if row is not None else None
     out: dict[str, Any] = stored_profile(raw)
     out["enabled"] = enabled_for(getattr(user, "organization_id", None))
-    # The app settings, each over its declared defaults (BR-2a-1).
-    out["apps"] = all_app_prefs(raw)
+    out["apps"] = apps
     return out
 
 
@@ -852,8 +874,9 @@ async def put_assistant_profile(
 ) -> dict[str, Any]:
     """Save one key. Every other key of the column stays. A chat write
     cannot set ``learning`` or ``apps``, which only the member sets in
-    Settings. A PUT of ``apps`` merges the keys of its one app, and its
-    answer carries ``apps`` as the GET does."""
+    Settings. A PUT of ``apps`` merges the keys of its one app into the
+    row that the brief reads (the row rule, ``APP_ROW_SQL_TEMPLATE``), and
+    its answer carries ``apps`` as the GET does."""
     uid = _member(user)
     via = _via(x_profile_via)
     put = _validate(ProfilePut, body)
@@ -872,16 +895,26 @@ async def put_assistant_profile(
 
     async def _run(db: Any) -> Any:
         await _learning_gate(db, uid, via)
-        stored = await _upsert(db, uid, new, merge, params, where)
+        row_uid = uid
+        if put.key == "apps":
+            # The row that the brief reads, in any case. A member with no
+            # row gets a new row under the session's address.
+            row_uid = (await _app_row(db, uid, params["app"]))[0] or uid
+        stored = await _upsert(db, row_uid, new, merge, params, where)
         if stored is None:
             raise HTTPException(status_code=409, detail=LEARNING_OFF)
         _check_caps(stored)
-        return stored
+        if put.key != "apps":
+            return stored, None
+        if row_uid != uid:
+            row = await _read(db, uid)
+            stored = _as_dict(row[0]) if row is not None else None
+        return stored, await _apps(db, uid)
 
-    stored = await _write(uid, "write", _run)
+    stored, apps = await _write(uid, "write", _run)
     out = stored_profile(stored)
-    if put.key == "apps":
-        out["apps"] = all_app_prefs(stored)
+    if apps is not None:
+        out["apps"] = apps
     return out
 
 

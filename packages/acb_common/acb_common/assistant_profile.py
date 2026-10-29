@@ -155,31 +155,53 @@ def clean_app_prefs(value: Any) -> dict[str, Any]:
     return {app: out}
 
 
-#: The stored object of one app for one member. ``:org`` is the bound org and
-#: ``:m`` the verified member, both from the caller and never from a payload
-#: (R5). The row rule of :data:`READ_SQL`. The read returns ``apps.<app>``
-#: only, and never the rest of the profile.
-APP_READ_SQL = (
-    "SELECT assistant_profile -> 'apps' -> CAST(:app AS text) FROM user_settings "
-    "WHERE organization_id = CAST(:org AS uuid) AND lower(user_id) = lower(:m) "
-    "ORDER BY (assistant_profile IS NULL), (user_id <> lower(user_id)), user_id "
-    "LIMIT 1"
+#: THE row rule of the app preferences (BR-2a-1 repair round 2, P2-2). The
+#: rows of one member match in any case. The row that holds ``apps.<app>``
+#: wins, then the lower-case row, then the first ``user_id``. Every reader
+#: and the one writer (the ``PUT`` of ``apps``) take this rule, so a
+#: case-variant row cannot show the member one value and give the planner
+#: another. This is the shape of ``number_system.READ_SQL`` and its
+#: ``ROW_SQL``: the row with a value wins, and the write goes to that row.
+#: ``{t}`` is the table prefix: empty here, ``s.`` in the join of
+#: :data:`MEMBERS_APP_SQL`. One text, so the two orders cannot drift.
+_APP_ROW_ORDER_TEMPLATE = (
+    "({t}assistant_profile -> 'apps' -> CAST(:app AS text) IS NULL), "
+    "({t}user_id <> lower({t}user_id)), {t}user_id"
 )
+APP_ROW_ORDER = _APP_ROW_ORDER_TEMPLATE.format(t="")
+
+#: The row of :data:`APP_ROW_ORDER` for one member: its ``user_id`` and its
+#: ``apps.<app>``, never the rest of the profile. ``{org}`` is the one
+#: placeholder. :data:`APP_READ_SQL` fills it with a bind, and the profile
+#: route fills it with the bound tenant of its session. ``:m`` is the
+#: verified member, from the caller and never from a payload (R5).
+APP_ROW_SQL_TEMPLATE = (
+    "SELECT user_id, assistant_profile -> 'apps' -> CAST(:app AS text) "
+    "FROM user_settings WHERE organization_id = {org} AND lower(user_id) = lower(:m) "
+    f"ORDER BY {APP_ROW_ORDER} LIMIT 1"
+)
+#: :data:`APP_ROW_SQL_TEMPLATE` with the org as a bind, ``:org``.
+APP_READ_SQL = APP_ROW_SQL_TEMPLATE.replace("{org}", "CAST(:org AS uuid)")
 
 #: The stored object of one app for each ACTIVE member of ``:org``, one row
 #: for each member. ``DISTINCT ON`` holds one row for each address in any
-#: case, so two case-variant rows of ``user_settings`` give one member and
-#: one answer, by the row rule of :data:`READ_SQL`. A case-variant row can
-#: never add a second, opted-in copy of a member who opted out.
+#: case, and the order is :data:`APP_ROW_ORDER`, so the planner reads the
+#: row that the member reads and writes. A case-variant row can never add a
+#: second, opted-in copy of a member who opted out.
 MEMBERS_APP_SQL = (
     "SELECT DISTINCT ON (lower(u.email)) lower(u.email), "
     "s.assistant_profile -> 'apps' -> CAST(:app AS text) "
     "FROM app_user u LEFT JOIN user_settings s "
     "ON s.organization_id = u.organization_id AND lower(s.user_id) = lower(u.email) "
     "WHERE u.organization_id = CAST(:org AS uuid) AND u.status = 'active' "
-    "ORDER BY lower(u.email), (s.assistant_profile IS NULL), "
-    "(s.user_id <> lower(s.user_id)), s.user_id"
+    "ORDER BY lower(u.email), " + _APP_ROW_ORDER_TEMPLATE.format(t="s.")
 )
+
+
+def stored_app_prefs(stored: Any, app: str) -> dict[str, Any]:
+    """The stored ``apps.<app>`` object *stored* over the declared defaults.
+    The column of :data:`APP_ROW_SQL_TEMPLATE` reads through it."""
+    return _one_app(stored, app)
 
 
 async def member_app_prefs(db: Any, org: str, member: str, app: str) -> dict[str, Any]:
@@ -192,7 +214,7 @@ async def member_app_prefs(db: Any, org: str, member: str, app: str) -> dict[str
     if app not in APP_PREFERENCES:  # an app that declared nothing raises before the read
         raise KeyError(app)
     row = (await db.execute(text(APP_READ_SQL), {"app": app, "org": org, "m": member})).first()
-    return _one_app(row[0] if row is not None else None, app)
+    return _one_app(row[1] if row is not None else None, app)
 
 
 async def members_app_prefs(db: Any, org: str, app: str) -> list[tuple[str, dict[str, Any]]]:
