@@ -19,12 +19,12 @@ days. No model call, no send, no UI. The member sets the brief through
 questions of §9 on 2026-10-29 (epic #479, "Owner decisions"), and §9 holds
 the answers.
 
-**BR-2c-1 BUILT 2026-10-29** (Metorite #585), dark behind `BRIEF_IN_APP`
-(OFF). `GET /brief/today` (`routes/brief_today.py`, gate `feature:chat`)
-serves the stored run and its claims to the member of the session. Its
-first read moves a `ready` run to `delivered`. With the switch on, the
-chat's first turn shows the stored lead and lines. No card, no bell, no
-push, and no UI.
+**BR-2c-1 BUILT 2026-10-29** (Metorite #585, repair round 1), dark behind
+`BRIEF_IN_APP` (OFF). `GET /brief/today` (`routes/brief_today.py`, gate
+`feature:chat`) serves the stored run and its claims to the member of the
+session. The GET is a pure read. With the switch on, the run itself moves
+`ready` to `delivered` (§5). The chat's first turn shows the stored lead
+and lines. No card, no bell, no push, and no UI.
 
 **Board.** Workstream **WS-BRIEF** (`work_plan.md` §2.1). Metorite epic
 **#479**, items BR-2a to BR-7b. AUTO-2 is Metorite **#814**.
@@ -243,8 +243,10 @@ BR-1b builds.
 3. **Gather**, with no session held (§4.3). It writes the claims and sets
    `gathered`, or `empty` when no claim exists.
 4. **Phrase** (§4.4). It sets `phrasing` first. That is the intent mark.
-5. It sets `ready` with the lead, then **delivers** (§5) and sets
-   `delivered`.
+5. It sets `ready` with the lead. Then, when the in-app surface is on
+   (`flags.in_app`, BR-2c-1), it **delivers** (§5). It moves `ready` to
+   `delivered` with a guard, and stamps `delivered_at`. Off, the run stays
+   `ready`.
 6. On a retry, a run in `phrasing` with no lead skips the model and takes the
    template lead. A model call is never made twice for one run.
 
@@ -303,25 +305,33 @@ words.
    `GET /brief/today`. It is a component of its own, not a kind of the MD-7
    feed. BR-2c-2 builds it. This spec owns its data.
 2. **The chat's first turn.** BUILT in BR-2c-1. With `BRIEF_IN_APP` on,
-   `POST /chat/sessions/{id}/brief` reads the stored run when one is `ready`
-   or `delivered`, and it then reads no feed. It keeps its composition as
-   the fallback, and its rules of once a day and phone only (D-CF-2,
-   D-CF-3). The chat does not deliver the run. Only the read route does.
+   `POST /chat/sessions/{id}/brief` reads the stored run through the read
+   of item 3. When the run is `ready` or `delivered`, the chat reads no
+   feed. Its stamp and its row id are the run's `local_date`, so one run
+   makes one post. The composition stays as the fallback, also when the
+   stored read fails. The rules of once a day and phone only stay too
+   (D-CF-2, D-CF-3). The chat writes nothing to the run.
 3. **A read route.** BUILT in BR-2c-1. `GET /brief/today?kind=brief|closeout`
    answers the run and its claims, for the member of the session only. The
-   route reads the run on the member's calendar date in the planner's zone
-   (`planner.member_zone`). It does not use the feed day, because the feed
-   day moves with the day-start hour. The first read of a `ready` run moves
-   it to `delivered`, and stamps `delivered_at` once. No route enqueues a
-   run.
+   route takes the newest run whose `slot_at` has passed. Its date is
+   today or the day before, by the member's calendar date in the planner's
+   zone (`planner.member_zone`). The day before covers a zone change, and a
+   brief time near midnight that the look-back ran after midnight. It does
+   not use the feed day, because the feed day moves with the day-start
+   hour. The route is a pure read, and it writes nothing. No route
+   enqueues a run. `kind=closeout` answers 404 until BR-2b.
 4. **The bell.** One entry in v1 (§9 Q2, owner 2026-10-29). The entry says
    that the brief is ready, and it opens the brief.
 5. **Outside the app.** Web push (PN-1) is in v1, and it ships last (§9 Q2
    and Q7). It sends through Reach, behind `BRIEF_PUSH` and its owner gate.
    WhatsApp stays later (D115).
 
-"Delivered" means the run is `ready` and the read route serves it. The
-member does not need to open the app.
+"Delivered" means that the run is available on an in-app surface. The
+system sets it, not a read: the run moves `ready` to `delivered` when
+`BRIEF_IN_APP` is on, and stamps `delivered_at`. So a member who never
+opens the app still has `delivered_at`. A future "seen" signal is a
+separate `seen_at` column. Only an explicit POST from the card writes it,
+and a GET never does.
 
 ---
 
@@ -365,7 +375,9 @@ flags.
 ## 7. Delivery monitoring (BR-2d)
 
 **The target.** 99% of runs are `delivered` within 5 minutes of `slot_at`,
-over 7 days, for each org.
+over 7 days, for each org. The lag is `delivered_at` minus `slot_at`: the
+time until the brief is available in the app, not the time until the
+member reads it (§5).
 
 - **Retry.** The queue retries a failed try with its backoff
   (`docs/job_queue.md` §4). The queue never retries the model call (§4.2 step 6).
