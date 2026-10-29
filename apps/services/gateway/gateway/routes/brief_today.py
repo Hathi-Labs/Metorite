@@ -29,9 +29,16 @@ moves the state.
 **Scope** (R5, contract R11). The member is ``user.email`` of the session.
 The tenant is the bound organization of the session (``gateway.db.
 tenant_session``). The request names no member, no org and no date. The
-local date is the member's own (``chat_brief._local_today``). The store
-scopes each statement to the member and the bound org, so the run of
+store scopes each statement to the member and the bound org, so the run of
 another member or of another org is not found, and the answer is 404.
+
+**The date** (:func:`brief_local_date`). A run's ``local_date`` is the
+member's CALENDAR date in the planner's zone, never the feed day
+(``planner.slot``). The zone is ``planner.member_zone`` of the member's
+``Day`` (``my_day_loop._read_day``) and the org's default zone. The read
+keys on that same date. ``Day.feed_day`` moves with the day-start hour, so
+at 07:30 with a 09:00 start it is still yesterday, and a read by it would
+miss the brief of the morning.
 
 **The gate.** ``feature:chat``, as the chat's first turn (``routes/
 chat_brief.py``) and Reach have it: the brief is the assistant's word to
@@ -43,13 +50,13 @@ Fences: ``tests/unit/test_brief_today.py`` (pure) and
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, HTTPException, Query
-from gateway.brief import flags, store
+from gateway.brief import flags, planner, store
 
 _log = get_logger("gateway.brief_today")
 
@@ -88,7 +95,21 @@ def run_body(run: store.Run, claims: list[store.Claim], *, state: str) -> dict[s
     }
 
 
-async def _read(member: str, kind: str, local_date: Any) -> tuple[store.Run, list[store.Claim]] | None:
+async def brief_local_date(org: str, user: UserContext, now: datetime) -> date:
+    """The member's date of today's brief run: the calendar date in the
+    zone that the planner gives the member (``planner.member_zone`` of the
+    member's ``Day`` and the org's default zone). The planner writes the
+    run on this date, so a read on it finds the run."""
+    from gateway import my_day_loop
+    from gateway.db import tenant_session
+
+    day = await my_day_loop._read_day(org, user)
+    async with tenant_session() as db:
+        org_zone = await planner._org_zone(db)
+    return now.astimezone(planner.member_zone(day.tz, org_zone)).date()
+
+
+async def _read(member: str, kind: str, local_date: date) -> tuple[store.Run, list[store.Claim]] | None:
     """The served run of *member* and its claims, or None."""
     from gateway.db import tenant_session
 
@@ -130,10 +151,8 @@ async def get_today(
     if kind not in store.KINDS:
         raise HTTPException(status_code=422, detail=f"kind must be one of {list(store.KINDS)}")
 
-    from gateway.routes.chat_brief import _local_today
-
     now = _now()
-    today = await _local_today(org, user, now)
+    today = await brief_local_date(org, user, now)
     found = await _read(member, kind, today)
     if found is None:
         raise HTTPException(status_code=404, detail=NO_BRIEF)

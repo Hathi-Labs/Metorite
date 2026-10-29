@@ -21,7 +21,7 @@ and the same lines that the WhatsApp brief sends (``proactive_reach.md``
 **The stored run first** (WS-BRIEF BR-2c-1, ``core_brief.md`` §5 item 2).
 With ``BRIEF_IN_APP`` on for the org (``brief.flags.in_app``), the route
 reads the member's stored brief of today (``brief.store.read_run`` and
-``read_claims``). A run in ``ready`` or ``delivered`` gives the lead, and its
+``read_claims``), on the planner's calendar date of the member. A run in ``ready`` or ``delivered`` gives the lead, and its
 claims give the pills, in position order (:func:`stored_parts`). The route
 then reads no feed. The gather wrote each claim's text with ``plan.line``,
 so the pills are the lines of ``plan.brief_parts`` of the same cards. With
@@ -161,14 +161,18 @@ def stored_parts(run: brief_store.Run,
     return lead, plan.BriefParts(title, lines, rest)
 
 
-async def _stored_brief(email: str, today: date) -> tuple[str, plan.BriefParts] | None:
-    """The member's stored brief of *today*, in the bound tenant, or None
-    when no run is ``ready`` or ``delivered``. The store scopes each read to
-    the member and the bound org."""
+async def _stored_brief(org: str, user: UserContext, email: str,
+                       now: datetime) -> tuple[str, plan.BriefParts] | None:
+    """The member's stored brief of today, in the bound tenant, or None
+    when no run is ``ready`` or ``delivered``. The run's date is the
+    planner's calendar date (``brief_today.brief_local_date``), not the feed
+    day. The store scopes each read to the member and the bound org."""
     from gateway.db import tenant_session as _tenant_session
+    from gateway.routes.brief_today import brief_local_date
 
+    run_date = await brief_local_date(org, user, now)
     async with _tenant_session() as db:
-        run = await brief_store.read_run(db, email, kind="brief", local_date=today)
+        run = await brief_store.read_run(db, email, kind="brief", local_date=run_date)
         if run is None or run.state not in STORED_STATES:
             return None
         claims = await brief_store.read_claims(db, email, run.id)
@@ -344,8 +348,10 @@ async def post_brief(
 
     # BR-2c-1: the stored run first, only with the switch on. Off, the
     # route reads no store, so its answer is the answer before BR-2c-1.
-    stored = await _stored_brief(email, today) if brief_flags.in_app(org) else None
+    stored = await _stored_brief(org, user, email, now) if brief_flags.in_app(org) else None
     if stored is not None:
+        # The stamp and the row id keep the feed day, as the once-a-day
+        # rule above reads it.
         lead, parts = stored
         day = today
     else:
