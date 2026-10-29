@@ -108,5 +108,8 @@ describe("board-shows-the-count", () => {
     const page = read("../page.tsx");
     expect(page).toMatch(/page: nextBoardPage\(tasks\.length, laneOnly\.size\)/);
     expect(page).toMatch(/columnTotals=\{columnTotals\}/);
+    // A column read of an old question never lands.
+    expect(page).toMatch(/if \(gen !== readGen\.current\) return;/);
+    expect(page).toMatch(/readGen\.current \+= 1;/);
   });
 });

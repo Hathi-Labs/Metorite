@@ -871,6 +871,9 @@ function ProjectsWorkspace() {
   const [laneOnly, setLaneOnly] = useState<ReadonlySet<string>>(() => new Set());
   /** #918. The column whose own read is in flight, or null. */
   const [loadingColumn, setLoadingColumn] = useState<string | null>(null);
+  /** #918. Moves on each `loadProject`, so a column read of the old
+   *  question drops its rows. */
+  const readGen = useRef(0);
   /**
    * How many tasks are on the shelf for the board in view, or null.
    *
@@ -2010,6 +2013,8 @@ function ProjectsWorkspace() {
 
   const loadProject = useCallback(
     async (project: ProjectRow) => {
+      // #918: a column read that started before this one is stale now.
+      readGen.current += 1;
       setError(null);
       // Filters travel to the server, never applied to the page after it
       // arrives: paging happens in SQL, so a filter applied here would return
@@ -2031,13 +2036,23 @@ function ProjectsWorkspace() {
        * with another filter's rows.
        */
       const heldStatuses = peek<{ rows: StatusRow[] }>(statusesKey);
-      const heldTasks = peek<{ rows: TaskRow[] }>(tasksKey);
+      const heldTasks = peek<{
+        rows: TaskRow[];
+        status_counts?: Record<string, number> | null;
+        status_categories?: Record<string, string | null> | null;
+      }>(tasksKey);
       if (heldStatuses) setStatuses(heldStatuses.data.rows);
-      if (heldTasks) setTasks(heldTasks.data.rows);
+      if (heldTasks) {
+        setTasks(heldTasks.data.rows);
+        // The counts of the same answer, so a switch never shows the last
+        // project's counts over this project's rows (#918).
+        setStatusCounts(countsOf(heldTasks.data));
+      }
 
       // The shelf's size, under the same filters. `page_size: 1` because only
       // `total` is wanted — the rows are the board's job, not this read's.
-      const shelfParams = { ...taskParams, archived_only: true, page_size: 1 };
+      // The shelf wants `total` only, so it asks for no lane counts (#918).
+      const shelfParams = { ...taskParams, archived_only: true, page_size: 1, with_status_counts: false };
       const shelfKey = projectsKey("tasks", shelfParams);
 
       try {
@@ -2138,7 +2153,11 @@ function ProjectsWorkspace() {
     setError(null);
     try {
       const params = { ...taskParamsFor(selected), ...filter, page: nextTaskPage(held) };
+      const gen = readGen.current;
       const res = await read(projectsKey("tasks", params), () => projectsApi.tasks(params));
+      // A filter, sort or project change while this read ran: its rows
+      // answer the old question, so they never land (#918).
+      if (gen !== readGen.current) return;
       const known = new Set(tasks.map((t) => t.id));
       const added = res.rows.filter((r) => !known.has(r.id)).map((r) => r.id);
       setTasks((current) => appendTasks(current, res.rows));
