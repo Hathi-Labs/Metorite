@@ -5881,6 +5881,9 @@ async def run_agent_stream(
     # Chat speed: the run's tier question, started early (see below). The
     # finally cancels it when the run ends before it is awaited.
     _tier_task: asyncio.Future[Any] | None = None
+    # Chat speed (2026-10-30): the same task while a parallel start waits for
+    # its answer, else None. The Tier 1 loop settles it (§4.3).
+    _par_task: asyncio.Future[Any] | None = None
 
     try:
         # WS-67 OA-7c: the read of layer (a) runs beside the load, and the
@@ -6251,9 +6254,35 @@ async def run_agent_stream(
             # tier from the policy instead, and ignores 1 and 2. None for
             # every other agent, so this block runs as before.
             _tier_wait_started = time.monotonic()
-            _tier_run = await (
-                _tier_task if _tier_task is not None else _ask_run_tier(agent)
-            )
+            # Chat speed (2026-10-30, ai_tier_routing.md §4.3): with
+            # AI_TURN_KIND_PARALLEL on, a native agent of the member's own
+            # stream does not wait. The run starts as a provisional `chat`
+            # turn, and the Tier 1 loop takes the answer (`_par_task`). The
+            # one yield lets an answer that needs no request (a short
+            # message, Max, a pinned tier) settle first. Flag off: the
+            # await below, as before.
+            if (
+                _tier_task is not None and not _is_copilot_sdk
+                and not _delegated_run and hasattr(agent, "run")
+                and _turn_kind_parallel(agent_name)
+            ):
+                await asyncio.sleep(0)
+                if not _tier_task.done():
+                    _tier_run = _provisional_tier_policy(
+                        agent_name, agent, run_id=run_id, thread_id=thread_id,
+                        think_mode=think_mode, event_payload=event_payload,
+                        config=loaded.config,
+                        agent_md_model=(
+                            (_agent_md_spec.model or "").strip()
+                            if _agent_md_spec is not None else ""
+                        ),
+                    )
+                    if _tier_run is not None:
+                        _par_task = _tier_task
+            if _par_task is None:
+                _tier_run = await (
+                    _tier_task if _tier_task is not None else _ask_run_tier(agent)
+                )
             # WS-67 OA-7f: layer (c). The packs that System 1 asked for load
             # before the first model request, through the guarded builder.
             _apply_turn_pack_items(agents, _tier_run)
@@ -6264,6 +6293,7 @@ async def run_agent_stream(
                 "executor.run_setup_ms", agent=agent_name, run_id=run_id,
                 setup_ms=round((time.monotonic() - _activity_started) * 1000),
                 tier_wait_ms=round((time.monotonic() - _tier_wait_started) * 1000),
+                **({"tier_parallel": True} if _par_task is not None else {}),
             )
             # Owner, 2026-10-07: a covered chat sends `think_mode` "auto", and
             # the member's words may raise it to `thinking`. The run then
@@ -6501,16 +6531,30 @@ async def run_agent_stream(
                         # WS-45 S2: a covered run's view also carries the
                         # tier policy. None leaves the view as it was.
                         # WS-43t2: the view carries the session history too.
-                        _agen = _with_tier_policy(
-                            _agent_for_run(
-                                agent, _native_ctx,
-                                history=_native_session_history(_session_turn),
-                            ),
-                            _tier_run,
-                        ).run(
-                            _native_input, stream=True,
-                            **_native_session_run_kwargs(_session_turn),
-                        ).__aiter__()
+                        def _open_native_stream() -> Any:
+                            return _with_tier_policy(
+                                _agent_for_run(
+                                    agent, _native_ctx,
+                                    history=_native_session_history(_session_turn),
+                                ),
+                                _tier_run,
+                            ).run(
+                                _native_input, stream=True,
+                                **_native_session_run_kwargs(_session_turn),
+                            ).__aiter__()
+
+                        # Chat speed (2026-10-30): an answer that came before
+                        # the stream opens moves the turn now. No request
+                        # went out, so nothing is cancelled.
+                        if _par_task is not None and _par_task.done():
+                            if _parallel_moved(_tier_run, _par_task, fresh=True):
+                                think_mode, _final_model_early = _apply_parallel_tier(
+                                    agents, _tier_run, think_mode, settings,
+                                    agent_name=agent_name,
+                                )
+                            _apply_turn_pack_items(agents, _tier_run)
+                            _par_task = None
+                        _agen = _open_native_stream()
                         # Race the agent's next update against the injected-tool
                         # event queue. A BLOCKING tool (ask_questions HITL) puts
                         # its card on _nq then parks awaiting the user; the old
@@ -6576,8 +6620,12 @@ async def run_agent_stream(
                                 hitl_pending=_hitl_pending,
                                 tools_open=_tools_open,
                             )
+                            _waiting: set[Any] = {_next_task, _q_task}
+                            if _par_task is not None:
+                                # Chat speed (2026-10-30): wake for the answer.
+                                _waiting.add(_par_task)
                             _done, _ = await asyncio.wait(
-                                {_next_task, _q_task},
+                                _waiting,
                                 timeout=_wait_to,
                                 return_when=asyncio.FIRST_COMPLETED,
                             )
@@ -6614,6 +6662,9 @@ async def run_agent_stream(
                                             yield _sse(_hr)
                                         _held_routes.clear()
                                         _n_emitted = True
+                                        if _par_task is not None:
+                                            # The first output: no restart.
+                                            _tier_run.seal()
                                         if _is_hitl_event(_qev):
                                             _hitl_pending = True
                                         yield _sse(_qev)
@@ -6621,6 +6672,48 @@ async def run_agent_stream(
                                         _nq.get_nowait()
                                         if not _nq.empty() else None
                                     )
+                            # Chat speed (2026-10-30, ai_tier_routing.md
+                            # §4.3): the answer of a parallel start. It is
+                            # taken only while the pull is in flight, so the
+                            # cancel lands inside the stream and closes the
+                            # request. A moved answer before any output starts
+                            # the turn again, once. Otherwise the turn goes on.
+                            if (
+                                _par_task is not None and _par_task.done()
+                                and _next_task not in _done
+                            ):
+                                _parked: list[Any] = []
+                                while not _nq.empty():
+                                    _parked.append(_nq.get_nowait())
+                                if any(
+                                    _pe and not _is_hold_beat(_pe)
+                                    and not _is_route_event(_pe)
+                                    for _pe in _parked
+                                ):
+                                    # Output waits on the queue: it seals.
+                                    _tier_run.seal()
+                                _moved = _parallel_moved(_tier_run, _par_task)
+                                _par_task = None
+                                if not _moved:
+                                    for _pe in _parked:
+                                        _nq.put_nowait(_pe)
+                                else:
+                                    # The request streamed nothing that left
+                                    # the run. Its route events and beats go.
+                                    _next_task.cancel()
+                                    await asyncio.wait({_next_task})
+                                    if not _next_task.cancelled():
+                                        _next_task.exception()
+                                    _next_task = None
+                                    _held_routes.clear()
+                                    _t_state = _TranslationState(run_id)
+                                    think_mode, _final_model_early = _apply_parallel_tier(
+                                        agents, _tier_run, think_mode, settings,
+                                        agent_name=agent_name,
+                                    )
+                                    _apply_turn_pack_items(agents, _tier_run)
+                                    _agen = _open_native_stream()
+                                    continue
                             if _next_task not in _done:
                                 continue
                             try:
@@ -6686,6 +6779,9 @@ async def run_agent_stream(
                                     _tc_args.pop(_cid, None)
                                 else:
                                     _n_emitted = True
+                                if _par_task is not None:
+                                    # The first output: no restart (2026-10-30).
+                                    _tier_run.seal()
                                 # WS-45 S2: the step gave output, so the held
                                 # ai.route events describe a real step. They
                                 # go out first.
@@ -6731,9 +6827,19 @@ async def run_agent_stream(
                                     yield _sse(_hr)
                                 _held_routes.clear()
                                 _n_emitted = True
+                                if _par_task is not None:
+                                    _tier_run.seal()
                                 if _is_hitl_event(_qev):
                                     _hitl_pending = True
                                 yield _sse(_qev)
+                    # Chat speed (2026-10-30): the stream ended before the
+                    # answer was taken. The turn is over, so an answer that
+                    # came is late. The finally cancels one that did not.
+                    if _par_task is not None:
+                        _tier_run.seal()
+                        if _par_task.done():
+                            _parallel_moved(_tier_run, _par_task)
+                        _par_task = None
                     # Drain any events that landed as the stream closed.
                     # The stream ended without a fault, so a held ai.route
                     # event goes out first.
@@ -6809,6 +6915,18 @@ async def run_agent_stream(
                     # counts again from the first request, so Tier 2 sends
                     # the chat one event for each step.
                     _held_routes.clear()
+                    # Chat speed (2026-10-30): no output left the run, so the
+                    # turn can still take the answer of its parallel start.
+                    # Tier 2 waits for it, as a run with the flag off does.
+                    if _par_task is not None:
+                        await asyncio.wait({_par_task})
+                        if _parallel_moved(_tier_run, _par_task, fresh=True):
+                            think_mode, _final_model_early = _apply_parallel_tier(
+                                agents, _tier_run, think_mode, settings,
+                                agent_name=agent_name,
+                            )
+                        _apply_turn_pack_items(agents, _tier_run)
+                        _par_task = None
                     if _tier_run is not None:
                         _tier_run.restart()
                     # `rejected_fields` names what a 422 refused. `error` is
@@ -9265,15 +9383,7 @@ async def _tier_policy_for_run(
     default = _agent_default_tier(
         agent, config, agent_md_model, is_copilot=is_copilot,
     )
-    message = ""
-    if isinstance(event_payload, dict):
-        message = str(
-            event_payload.get("message") or event_payload.get("user_query") or ""
-        )
-    # WS-67: the question reads the task only. The head of a delegated task
-    # (the member's words and the reply rules) would make every task look long.
-    from acb_skills.handoff import task_of
-    message = task_of(message)
+    message, context_tokens = _turn_size(event_payload)
     turn = await tier_policy.turn_kind(
         message, _agent_tool_names(agent), think_mode,
         read_effort=effort_from_text,
@@ -9294,16 +9404,7 @@ async def _tier_policy_for_run(
         )
     # The size of the turn (owner, 2026-10-22): a long chat or a lot of
     # context starts the turn on the powerful tier. Known before the first
-    # request, so the turn keeps one model.
-    context_tokens = 0
-    if isinstance(event_payload, dict):
-        # The added context is what the BFF and the gateway send with the
-        # turn: the persona, open documents and memories (review of #1219).
-        context_tokens = tier_policy.turn_tokens(
-            message, event_payload.get("messages") or [],
-            str(event_payload.get("system_context") or "")
-            + str(event_payload.get("memory_context") or ""),
-        )
+    # request, so the turn keeps one model (`_turn_size`).
     if context_tokens >= tier_policy.CONTEXT_POWERFUL_TOKENS:
         _log.info("ai_route.long_turn", agent=agent_name, run_id=run_id,
                   tokens=context_tokens)
@@ -9317,6 +9418,148 @@ async def _tier_policy_for_run(
         context_tokens=context_tokens,
         **({"packs": tuple(turn.packs)} if getattr(turn, "packs", ()) else {}),
     )
+
+
+def _turn_size(event_payload: Any) -> tuple[str, int]:
+    """The task of the turn, and the turn's size in tokens (owner, 2026-10-22).
+
+    WS-67: the turn-kind question reads the task only. The head of a
+    delegated task (the member's words and the reply rules) would make every
+    task look long. The added context is what the BFF and the gateway send
+    with the turn: the persona, open documents and memories (review of
+    #1219). ONE copy, for :func:`_tier_policy_for_run` and
+    :func:`_provisional_tier_policy`.
+    """
+    from acb_skills import tier_policy
+    from acb_skills.handoff import task_of
+
+    if not isinstance(event_payload, dict):
+        return task_of(""), 0
+    message = task_of(str(
+        event_payload.get("message") or event_payload.get("user_query") or ""
+    ))
+    return message, tier_policy.turn_tokens(
+        message, event_payload.get("messages") or [],
+        str(event_payload.get("system_context") or "")
+        + str(event_payload.get("memory_context") or ""),
+    )
+
+
+# ── Chat speed: the parallel start of the turn kind (ai_tier_routing.md §4.3) ─
+#
+# Owner approval 2026-10-29, dark behind AI_TURN_KIND_PARALLEL. Only the
+# native Tier 1 stream of `run_agent_stream` uses these. The batch path, a
+# sub-agent, a delegated run and a Copilot SDK agent await the answer as
+# before. Fence: tests/unit/test_turn_kind_parallel.py.
+
+
+def _turn_kind_parallel(agent_name: str) -> bool:
+    """True when `AI_TURN_KIND_PARALLEL` names *agent_name*. Fails closed."""
+    try:
+        from acb_skills.tier_policy import turn_kind_parallel_on
+    except ImportError:
+        return False
+    return turn_kind_parallel_on(agent_name)
+
+
+def _provisional_tier_policy(
+    agent_name: str,
+    agent: Any,
+    *,
+    run_id: str,
+    thread_id: str | None,
+    think_mode: str | None,
+    event_payload: dict[str, Any],
+    config: dict[str, Any],
+    agent_md_model: str,
+) -> Any:
+    """The policy of a parallel start, or None when the flag does not cover
+    the agent.
+
+    It is the policy that a ``chat`` answer would give: the agent's default,
+    the run's own effort and the turn's size. No question goes out here.
+    The question already runs in its own task. The native agent's middleware
+    reads this object at each request, and ``RunTierPolicy.settle`` takes the
+    answer when it comes.
+    """
+    if not _tier_policy_covers(agent_name):
+        return None
+    from acb_skills import tier_policy
+
+    _message, context_tokens = _turn_size(event_payload)
+    policy = tier_policy.RunTierPolicy(
+        agent=agent_name,
+        run_id=run_id,
+        default=_agent_default_tier(agent, config, agent_md_model, is_copilot=False),
+        kind="chat",
+        effort=tier_policy.normalise_effort(think_mode),
+        emit=_emit_to_run(thread_id),
+        context_tokens=context_tokens,
+    )
+    policy.open_start()
+    return policy
+
+
+def _parallel_moved(
+    policy: Any, answer: asyncio.Future[Any], *, fresh: bool = False,
+) -> bool:
+    """Settle *policy* with the done task *answer* of the turn-kind question.
+
+    True when the answer moved the turn (``SETTLE_MOVED``), so the turn must
+    start again on the new tier. A task that failed or was cancelled gives
+    no answer, so the turn keeps the ``chat`` tier, as a timeout does.
+    *fresh*: no request of the turn is running (``RunTierPolicy.settle``).
+    Never raises.
+    """
+    from acb_skills.tier_policy import SETTLE_MOVED
+
+    final: Any = None
+    if not answer.cancelled():
+        failed = answer.exception()
+        if failed is None:
+            final = answer.result()
+        else:
+            _log.warning(
+                "ai_route.parallel_answer_failed", agent=policy.agent,
+                run_id=policy.run_id, error_type=type(failed).__name__,
+            )
+    try:
+        return policy.settle(final, fresh=fresh) == SETTLE_MOVED
+    except Exception as exc:  # the answer never breaks a turn
+        _log.warning("ai_route.parallel_settle_failed", error_type=type(exc).__name__)
+        policy.seal()
+        return False
+
+
+def _apply_parallel_tier(
+    agents: list[Any], policy: Any, think_mode: str | None, settings: Any,
+    *, agent_name: str,
+) -> tuple[str | None, str]:
+    """Apply an answer that moved a parallel start, before the run starts again.
+
+    The same steps as the tier site of `run_agent_stream`, for a native
+    agent: the effort goes into `think_mode` and the bound context, the tier
+    goes on the agent's options, and Thinking sets its reasoning effort.
+    Change both places together. `test_turn_kind_parallel.py` compares the
+    requests of the two paths. The caller hands the packs to the loader
+    (`_apply_turn_pack_items` keeps ONE caller, the stream run). Returns the
+    run's `think_mode` and its model.
+    """
+    from acb_skills.tier_policy import normalise_effort
+    from acb_skills.write_artifact import derive_artifact_context
+
+    if policy.effort != normalise_effort(think_mode):
+        think_mode = policy.effort
+        derive_artifact_context(think_mode=think_mode)
+    model, _ = _byok_default_model(policy.run_tier(), settings)
+    with contextlib.suppress(Exception):
+        _apply_model_for_maf_agent(agents[0], model, settings)
+    if think_mode and think_mode != "auto":
+        for _ag in agents:
+            with contextlib.suppress(Exception):  # never break a run over a hint
+                _apply_thinking_mode_for_agent(_ag, think_mode)
+    _log.info("executor.maf_model_override", agent=agent_name, model=model)
+    return think_mode, model
 
 
 def _member_turns_for_run(parent: Any, event_payload: dict[str, Any]) -> list[str]:

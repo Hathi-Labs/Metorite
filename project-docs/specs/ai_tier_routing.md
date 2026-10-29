@@ -639,9 +639,9 @@ flag removes the wait for a native agent in the member's own web chat.
   run queue other than `ai.route`. A tool that starts counts too.
 - An answer that comes after the first output is late. The turn keeps its
   tier, and the executor logs `ai_route.answer_late`.
-- The packs of an answer load only when the turn starts again. Otherwise the
-  executor drops them and logs `ai_route.pack_late`. No tool changes in the
-  middle of a turn.
+- The packs of an answer load only before the first request goes out, or
+  when the turn starts again. Otherwise the executor drops them and logs
+  `ai_route.pack_late`. No tool changes in the middle of a turn.
 - A timeout reads as `chat`, as before, so it moves nothing.
 - The batch path, a sub-agent, a delegated run and a Copilot SDK agent still
   wait for the answer, as before.

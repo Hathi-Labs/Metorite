@@ -881,6 +881,17 @@ class Settings(BaseSettings):
     # `acb_skills.tier_policy.reasoning_off`, and it fails closed. Fence:
     # tests/unit/test_reasoning_off.py.
     ai_reasoning_off_agents: str = ""
+    # Chat speed (2026-10-30): the covered agents whose web chat turn starts
+    # its first model request before the turn-kind answer. A comma list of
+    # agent names, or `*`. Empty means OFF, and the run waits for the answer
+    # as before. An answer that moves the tier before any output cancels the
+    # first request and starts the turn again, once. The one reader is
+    # `acb_skills.tier_policy.turn_kind_parallel_on`, and it fails closed.
+    # Spec: ai_tier_routing.md §4.3.
+    #
+    # 🔴 OWNER-GATE on production: a restart can bill a prompt twice (spec
+    # §13.1). Fence: tests/unit/test_turn_kind_parallel.py.
+    ai_turn_kind_parallel: str = ""
 
     # ── The data narrowing pipeline (WS-48, D93) ────────────────────────────
     #
