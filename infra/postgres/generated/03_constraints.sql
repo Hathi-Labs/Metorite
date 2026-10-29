@@ -2450,6 +2450,30 @@ ALTER TABLE jobs ADD CONSTRAINT jobs_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS jobs_org_idx ON jobs (organization_id);
 
+-- unattended_incidents
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM unattended_incidents WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: unattended_incidents still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE unattended_incidents ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE unattended_incidents ADD CONSTRAINT unattended_incidents_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS unattended_incidents_org_idx ON unattended_incidents (organization_id);
+
+-- unattended_runs
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM unattended_runs WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: unattended_runs still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE unattended_runs ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE unattended_runs ADD CONSTRAINT unattended_runs_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS unattended_runs_org_idx ON unattended_runs (organization_id);
+
 -- brief_runs
 DO $$
 BEGIN

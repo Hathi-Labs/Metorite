@@ -457,6 +457,17 @@ class Settings(BaseSettings):
     # `enforcement-flip`. Fence: tests/unit/test_job_queue.py.
     job_queue: bool = False
 
+    # ── The ledger of unattended runs (WS-BRIEF AUTO-2, 2026-10-28) ─────────
+    #
+    # `unattended_ledger` is the switch of the ledger, default OFF. With it
+    # off, gateway/jobs/unattended.py writes no row and Reach behaves as
+    # before. With it on, a Reach brief commits a ledger row before the send,
+    # so a restart never sends it twice. The one reader is
+    # `ledger_enabled()` in gateway/jobs/unattended.py. Reference:
+    # docs/job_queue.md §9. A flip on a box is gate `enforcement-flip`.
+    # Fence: tests/unit/test_unattended_ledger.py.
+    unattended_ledger: bool = False
+
     # ── The Knowledge app (WS-61 KB-1, 2026-10-15) ──────────────────────────
     #
     # `/knowledge` serves an organization only when both settings allow it.

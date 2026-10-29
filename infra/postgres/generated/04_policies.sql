@@ -1447,6 +1447,20 @@ CREATE POLICY jobs_tenant_isolation ON jobs
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE unattended_incidents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE unattended_incidents FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS unattended_incidents_tenant_isolation ON unattended_incidents;
+CREATE POLICY unattended_incidents_tenant_isolation ON unattended_incidents
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE unattended_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE unattended_runs FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS unattended_runs_tenant_isolation ON unattended_runs;
+CREATE POLICY unattended_runs_tenant_isolation ON unattended_runs
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE brief_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE brief_runs FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS brief_runs_tenant_isolation ON brief_runs;
