@@ -21,9 +21,10 @@ and the same lines that the WhatsApp brief sends (``proactive_reach.md``
 **The stored run first** (WS-BRIEF BR-2c-1, ``core_brief.md`` §5 item 2).
 With ``BRIEF_IN_APP`` on for the org (``brief.flags.in_app``), the route
 reads the member's stored brief of today (``brief.store.read_run`` and
-``read_claims``), on the planner's calendar date of the member. A run in ``ready`` or ``delivered`` gives the lead, and its
-claims give the pills, in position order (:func:`stored_parts`). The route
-then reads no feed. The gather wrote each claim's text with ``plan.line``,
+``read_claims``), on the planner's calendar date of the member. A run in
+``ready`` or ``delivered`` gives the lead, and its claims give the pills, in
+position order (:func:`stored_parts`). The route then reads no feed. The
+once-a-day stamp and the row id keep the feed day. The gather wrote each claim's text with ``plan.line``,
 so the pills are the lines of ``plan.brief_parts`` of the same cards. With
 no such run, the route composes from the feed as before. With the switch
 off, the route reads no store, and its answer is byte for byte the answer
