@@ -630,18 +630,25 @@ flag removes the wait for a native agent in the member's own web chat.
 
 - The first request starts at once. It runs as a `chat` turn, with the effort
   of the run, and the question runs beside it.
-- An answer that moves neither the tier nor the reasoning effort changes
-  nothing. The request goes on.
+- An answer that moves neither the tier nor the reasoning effort, and names
+  no pack, changes no request. The request goes on. The turn takes the kind
+  of the answer for its `ai.route` label.
 - An answer that moves the tier or the reasoning effort, before any output
   left the run, cancels the first request. The turn then starts again, one
   time, on the tier of the answer. The executor logs `ai_route.restart`.
+- A pack answer is a move too (review, 2026-10-30). An answer that names a
+  pack that the run did not load restarts the turn with the pack tools,
+  before any output. A turn with no pack tools pays for a
+  `load_skill_tools` round, and that costs more than the wait.
 - Output is a text, a reasoning or a tool event, a card, or any event of the
   run queue other than `ai.route`. A tool that starts counts too.
 - An answer that comes after the first output is late. The turn keeps its
-  tier, and the executor logs `ai_route.answer_late`.
-- The packs of an answer load only before the first request goes out, or
-  when the turn starts again. Otherwise the executor drops them and logs
-  `ai_route.pack_late`. No tool changes in the middle of a turn.
+  tier, and the executor logs `ai_route.answer_late`. The packs of a late
+  answer load nothing, and the executor logs `ai_route.pack_late`. No tool
+  changes in the middle of a turn.
+- A restart waits at most 5 s for the cancelled request to close. A slower
+  close logs `ai_route.restart_teardown_slow`, and the turn goes on. No one
+  reads the old request again.
 - A timeout reads as `chat`, as before, so it moves nothing.
 - The batch path, a sub-agent, a delegated run and a Copilot SDK agent still
   wait for the answer, as before.

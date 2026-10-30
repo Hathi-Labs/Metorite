@@ -6700,10 +6700,22 @@ async def run_agent_stream(
                                 else:
                                     # The request streamed nothing that left
                                     # the run. Its route events and beats go.
+                                    # The old pull is ONE __anext__ call. It is
+                                    # cancelled, and nothing reads it or pulls
+                                    # its stream again, so two streams never
+                                    # both yield. A slow teardown is logged,
+                                    # and the turn goes on without it.
                                     _next_task.cancel()
-                                    await asyncio.wait({_next_task})
-                                    if not _next_task.cancelled():
-                                        _next_task.exception()
+                                    _next_task.add_done_callback(_drop_pull_result)
+                                    _gone, _ = await asyncio.wait(
+                                        {_next_task}, timeout=_RESTART_TEARDOWN_S,
+                                    )
+                                    if not _gone:
+                                        _log.warning(
+                                            "ai_route.restart_teardown_slow",
+                                            agent=agent_name, run_id=run_id,
+                                            waited_s=_RESTART_TEARDOWN_S,
+                                        )
                                     _next_task = None
                                     _held_routes.clear()
                                     _t_state = _TranslationState(run_id)
@@ -9451,6 +9463,17 @@ def _turn_size(event_payload: Any) -> tuple[str, int]:
 # native Tier 1 stream of `run_agent_stream` uses these. The batch path, a
 # sub-agent, a delegated run and a Copilot SDK agent await the answer as
 # before. Fence: tests/unit/test_turn_kind_parallel.py.
+
+#: The longest a restart waits for its cancelled pull to end. A cancelled
+#: request normally ends at once. A slower teardown is logged, never awaited.
+_RESTART_TEARDOWN_S = 5.0
+
+
+def _drop_pull_result(task: asyncio.Future[Any]) -> None:
+    """Read the end of a pull that a restart cancelled, so asyncio logs no
+    "exception was never retrieved" for it. Its update never reaches a run."""
+    if not task.cancelled():
+        task.exception()
 
 
 def _turn_kind_parallel(agent_name: str) -> bool:

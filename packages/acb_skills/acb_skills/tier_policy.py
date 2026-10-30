@@ -42,8 +42,9 @@ The parallel start (chat speed, 2026-10-30, §4.3), dark behind
   ``chat`` turn, and the turn-kind question runs beside it.
   :meth:`RunTierPolicy.settle` takes the answer. The request goes on when
   the answer moves nothing. When it moves the tier or the reasoning effort,
-  and no output has left the run, the executor cancels the first request
-  and starts the turn again, ONE time.
+  or names a pack that the run did not load, and no output has left the
+  run, the executor cancels the first request and starts the turn again,
+  ONE time.
 * :meth:`RunTierPolicy.seal` closes that window. The executor calls it when
   the first output leaves the run, and :class:`ToolHintRecorder` calls it
   when a tool starts. A cancelled request sent nothing to the member, so the
@@ -778,20 +779,23 @@ class RunTierPolicy:
         *final* is the policy that the answer gives, or None when no answer
         came (a fault). *fresh* says that no request of the turn is running:
         the stream has not opened yet, or Tier 1 failed before any output
-        and Tier 2 starts the turn again. A fresh turn takes the packs of a
-        kept answer too, because no tool list changes in a running turn. It
+        and Tier 2 starts the turn again. ``ai_route.restart`` carries it. It
         returns one of three values:
 
         * :data:`SETTLE_MOVED`. The window is open, and the answer moves the
-          request (:meth:`request_shape`). This policy takes the kind, the
-          effort and the packs of *final*, and counts its requests from 1
-          again. The executor cancels the first request and starts the turn
-          again. The log line ``ai_route.restart`` holds the two tiers, the
-          requests that went out on the old tier and the time since the
-          start, so the cost of the cancelled request can be read.
+          request (:meth:`request_shape`), or it names a pack that the run
+          did not load (review of 2026-10-30: a turn with no pack tools pays
+          for a ``load_skill_tools`` round, and that costs more than the
+          wait). This policy takes the kind, the effort and the packs of
+          *final*, and counts its requests from 1 again. The executor
+          cancels the first request and starts the turn again. The log line
+          ``ai_route.restart`` holds the two tiers, the requests that went
+          out on the old tier and the time since the start, so the cost of
+          the cancelled request can be read.
         * :data:`SETTLE_KEPT`. The window is open, and the answer moves
-          nothing. The turn goes on. Unless the turn is *fresh*, the packs of
-          the answer do not load, and ``ai_route.pack_late`` says so.
+          nothing. The turn goes on, with the kind of the answer, so the
+          ``ai.route`` label and ``ai_route.chosen`` name the kind that
+          System 1 chose. The tier stays.
         * :data:`SETTLE_LATE`. Output left the run first. The turn keeps its
           tier. ``ai_route.answer_late`` gives the tier that the answer
           would have chosen, and ``ai_route.pack_late`` the packs it drops.
@@ -807,12 +811,13 @@ class RunTierPolicy:
                 )
             self._drop_packs(packs, "late")
             return SETTLE_LATE
-        if final is None or final.request_shape() == self.request_shape():
+        new_packs = tuple(p for p in packs if p not in self.packs)
+        if final is None or (
+            final.request_shape() == self.request_shape() and not new_packs
+        ):
             self.start = START_KEPT
-            if fresh:
-                self.packs = packs
-            else:
-                self._drop_packs(packs, "kept")
+            if final is not None:
+                self.kind = final.kind
             return SETTLE_KEPT
         before, reasoning = self.run_tier(), self.request_shape()[1]
         sent = self._requests
@@ -823,7 +828,8 @@ class RunTierPolicy:
             "ai_route.restart", agent=self.agent, run_id=self.run_id,
             from_tier=before, to_tier=self.run_tier(), from_reasoning=reasoning,
             to_reasoning=self.request_shape()[1], effort=normalise_effort(self.effort),
-            kind=self.kind, sent=sent, elapsed_ms=elapsed, packs=len(packs),
+            kind=self.kind, sent=sent, elapsed_ms=elapsed, packs=len(new_packs),
+            fresh=fresh,
         )
         return SETTLE_MOVED
 

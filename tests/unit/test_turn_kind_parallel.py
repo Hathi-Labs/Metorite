@@ -34,7 +34,14 @@ Mutations this file catches (R7), each run red before the change:
   ``test_an_answer_first_restarts_once_on_the_new_tier``;
 * the restart stores the cancelled request in the native session ->
   ``test_the_session_stores_the_turn_once``;
-* a timeout moves the turn -> ``test_a_timeout_keeps_the_chat_tier``.
+* a timeout moves the turn -> ``test_a_timeout_keeps_the_chat_tier``;
+* a pack answer before output is not a move ->
+  ``test_a_chat_pack_answer_before_output_restarts_on_the_same_tier``;
+* an answer before the stream opens, or at the Tier 2 fallback, loses its
+  effort or its packs -> ``test_an_answer_before_the_stream_opens_moves_the_turn``
+  and ``test_a_refused_first_request_falls_back_with_the_answer``;
+* the restart waits on a slow teardown with no limit ->
+  ``test_a_slow_teardown_is_logged_and_the_turn_goes_on``.
 """
 from __future__ import annotations
 
@@ -74,6 +81,9 @@ FLAG = "AI_TURN_KIND_PARALLEL"
 #: A card event, as ``request_confirmation`` puts it on the run queue.
 CARD = {"type": "CUSTOM", "name": "confirmation_requested",
         "value": {"request_id": "card-1", "title": "Send it?"}}
+#: A long message that explicitly asks for deep work: the effort item goes out.
+DEEP = ("Please think hard and be thorough about how the invoice exporter "
+        "for Acme should change next quarter")
 
 
 @pytest.fixture(autouse=True)
@@ -171,15 +181,21 @@ def hold(streaming: asyncio.Event, release: asyncio.Event) -> Script:
     return script
 
 
+#: A script slot that refuses the request with a 422, before any output. The
+#: native loop then falls back to Tier 2.
+REFUSE = "refuse"
+
+
 class GatedModel:
     """The HTTP transport under the main agent. One script for each request.
 
     :attr:`closed` records how each stream ended: ``done`` when it sent its
     last chunk, ``cancelled`` when the run cancelled it in the middle. A
-    stream that nobody closed has no entry.
+    stream that nobody closed has no entry. A request that does not stream
+    (the Tier 2 batch run) gets one JSON answer, ``done``.
     """
 
-    def __init__(self, scripts: list[Script],
+    def __init__(self, scripts: list[Any],
                  on_request: Callable[[int, dict[str, Any]], None] | None = None) -> None:
         self.scripts = scripts
         self.on_request = on_request
@@ -193,6 +209,17 @@ class GatedModel:
         if self.on_request is not None:
             self.on_request(index, body)
         script = self.scripts[min(index, len(self.scripts) - 1)]
+        if script == REFUSE and body.get("stream"):
+            return httpx.Response(422, json={"error": {
+                "message": "unprocessable", "type": "invalid_request_error"}})
+        if not body.get("stream"):
+            return httpx.Response(200, json={
+                "id": f"chatcmpl-{index}", "object": "chat.completion", "created": 0,
+                "model": "probe",
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": "done"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            })
 
         async def stream() -> AsyncIterator[bytes]:
             try:
@@ -235,6 +262,21 @@ def _waiting_reply(gate: asyncio.Event, kind: str = "code",
         if order is not None:
             order.append("answer")
         return _turn_reply(kind)(body)
+    return reply
+
+
+def _deep_reply(gate: asyncio.Event, kind: str, *,
+                after_s: float = 0.0) -> Callable[[dict[str, Any]], Any]:
+    """System 1 answers *kind* and a sure ``yes`` to the effort item, once
+    *gate* is set and *after_s* more seconds passed."""
+    from tests.unit.test_tier_policy import _answers
+
+    async def reply(_body: dict[str, Any]) -> Any:
+        await gate.wait()
+        if after_s:
+            await asyncio.sleep(after_s)
+        return _answers({"id": "turn", "choice": kind, "confidence": 0.95, "reason": "x"},
+                        {"id": "effort", "choice": "yes", "confidence": 0.95, "reason": "x"})
     return reply
 
 
@@ -303,20 +345,53 @@ class TestTheSettle:
         policy.record(policy.next_choice())
         assert [r["request"] for r in _lines(logs, "ai_route.chosen")] == [1, 1]
 
-    def test_an_answer_that_moves_nothing_keeps_the_turn(self, monkeypatch) -> None:
+    def test_an_answer_that_moves_nothing_keeps_the_turn_and_its_kind(
+        self, monkeypatch,
+    ) -> None:
+        """A pinned default: ``plan`` keeps tier-powerful, so nothing moves.
+        The turn takes the kind that System 1 chose, for its label."""
+        logs = _tap(monkeypatch)
+        policy = _policy(default="tier-powerful")
+        policy.open_start()
+        final = _policy(kind="plan", default="tier-powerful")
+        assert policy.settle(final) == tier_policy.SETTLE_KEPT
+        assert (policy.kind, policy.packs, policy.run_tier()) == ("plan", (), "tier-powerful")
+        assert policy.next_choice().kind == "plan"
+        assert not _lines(logs, "ai_route.restart")
+        assert not _lines(logs, "ai_route.pack_late")
+
+    def test_a_pack_answer_before_output_is_a_move(self, monkeypatch) -> None:
+        """Review of 2026-10-30: a pack that the run did not load restarts
+        the turn on the same tier, with the pack tools."""
         logs = _tap(monkeypatch)
         policy = _policy()
         policy.open_start()
-        assert policy.settle(_policy(packs=("email",))) == tier_policy.SETTLE_KEPT
-        assert (policy.kind, policy.packs) == ("chat", ())
-        assert [r["packs"] for r in _lines(logs, "ai_route.pack_late")] == [["email"]]
-        assert not _lines(logs, "ai_route.restart")
+        policy.record(policy.next_choice())
+        assert policy.settle(_policy(packs=("email",))) == tier_policy.SETTLE_MOVED
+        assert (policy.kind, policy.packs, policy.run_tier()) == ("chat", ("email",), "tier-balanced")
+        line = _lines(logs, "ai_route.restart")[0]
+        assert (line["from_tier"], line["to_tier"], line["packs"], line["sent"]) == (
+            "tier-balanced", "tier-balanced", 1, 1)
+        assert not _lines(logs, "ai_route.pack_late")
 
-    def test_a_fresh_turn_takes_the_packs_of_a_kept_answer(self) -> None:
+    def test_a_pack_answer_after_output_loads_nothing(self, monkeypatch) -> None:
+        logs = _tap(monkeypatch)
         policy = _policy()
         policy.open_start()
-        assert policy.settle(_policy(packs=("email",)), fresh=True) == tier_policy.SETTLE_KEPT
+        policy.seal()
+        assert policy.settle(_policy(packs=("email",))) == tier_policy.SETTLE_LATE
+        assert policy.packs == ()
+        assert [(r["packs"], r["reason"]) for r in _lines(logs, "ai_route.pack_late")] == [
+            (["email"], "late")]
+
+    def test_a_fresh_pack_answer_moves_and_says_so(self, monkeypatch) -> None:
+        logs = _tap(monkeypatch)
+        policy = _policy()
+        policy.open_start()
+        assert policy.settle(_policy(packs=("email",)), fresh=True) == tier_policy.SETTLE_MOVED
         assert policy.packs == ("email",)
+        line = _lines(logs, "ai_route.restart")[0]
+        assert (line["fresh"], line["sent"]) == (True, 0)
 
     def test_no_answer_keeps_the_chat_tier(self) -> None:
         policy = _policy()
@@ -542,6 +617,122 @@ class TestARealRun:
         assert settled[1] == [("moved", False)]
         assert handed == [(), ("email",)]
 
+    def test_a_chat_pack_answer_before_output_restarts_on_the_same_tier(
+        self, monkeypatch, settled,
+    ) -> None:
+        """Review of 2026-10-30: a pack answer is a move. The kind stays
+        ``chat``, so the turn starts again on the same tier, with the packs."""
+        executor = pytest.importorskip("orchestrator.executor")
+        _parallel(monkeypatch, PA)
+        _with_packs(monkeypatch, executor, ("email",))
+        handed = _spy_packs(monkeypatch, executor)
+        streaming = asyncio.Event()
+        _wire(monkeypatch, _waiting_reply(streaming, "chat"))
+        model = GatedModel([hold(streaming, settled[0]), say("done")])
+        logs = _tap(monkeypatch)
+        events, _ = drive_native(PA, PA_DIR, monkeypatch, model, message=SECRET)
+        _ok(events)
+        assert settled[1] == [("moved", False)]
+        assert [b["model"] for b in model.bodies] == ["tier-balanced", "tier-balanced"]
+        assert model.closed[0] == "cancelled"
+        assert handed == [(), ("email",)]
+        line = _lines(logs, "ai_route.restart")[0]
+        assert (line["from_tier"], line["to_tier"], line["packs"]) == (
+            "tier-balanced", "tier-balanced", 1)
+        assert not _lines(logs, "ai_route.pack_late")
+        assert _texts(events) == "done"
+
+    def test_an_answer_before_the_stream_opens_moves_the_turn(
+        self, monkeypatch, settled,
+    ) -> None:
+        """``settle(fresh=True)`` before the stream: the parallel start began,
+        and the answer came before the stream opened. The first request goes
+        out once, on the tier, the effort and the packs of the answer."""
+        executor = pytest.importorskip("orchestrator.executor")
+        _parallel(monkeypatch, PA)
+        opened, answered = asyncio.Event(), asyncio.Event()
+        real_open = tier_policy.RunTierPolicy.open_start
+
+        def open_start(self: Any) -> None:
+            real_open(self)
+            opened.set()
+
+        monkeypatch.setattr(tier_policy.RunTierPolicy, "open_start", open_start)
+        _with_packs(monkeypatch, executor, ("email",), answered)
+        handed = _spy_packs(monkeypatch, executor)
+        _wire(monkeypatch, _deep_reply(opened, "code"))
+
+        async def begin(*_a: Any, **_k: Any) -> Any:
+            await answered.wait()
+            return None
+
+        monkeypatch.setattr(executor, "_begin_native_session", begin)
+        model = GatedModel([say("done")])
+        logs = _tap(monkeypatch)
+        events, _ = drive_native(PA, PA_DIR, monkeypatch, model, message=DEEP)
+        _ok(events)
+        assert settled[1] == [("moved", True)]
+        assert [(b["model"], b.get("reasoning_effort")) for b in model.bodies] == [
+            ("tier-powerful", "medium")]
+        assert handed == [(), ("email",)]
+        line = _lines(logs, "ai_route.restart")[0]
+        assert (line["fresh"], line["sent"]) == (True, 0)
+
+    def test_a_refused_first_request_falls_back_with_the_answer(
+        self, monkeypatch, settled,
+    ) -> None:
+        """``settle(fresh=True)`` at Tier 2: request 1 fails with a 422
+        before any output, and the answer raises the effort to Thinking.
+        Tier 2 waits for the answer and sends its tier, effort and packs."""
+        executor = pytest.importorskip("orchestrator.executor")
+        _parallel(monkeypatch, PA)
+        refused = asyncio.Event()
+        _with_packs(monkeypatch, executor, ("email",))
+        handed = _spy_packs(monkeypatch, executor)
+        _wire(monkeypatch, _deep_reply(refused, "chat", after_s=0.3))
+        model = GatedModel([REFUSE], on_request=lambda i, _b: refused.set() if i == 0 else None)
+        logs = _tap(monkeypatch)
+        events, _ = drive_native(PA, PA_DIR, monkeypatch, model, message=DEEP)
+        _ok(events)
+        assert _lines(logs, "executor.native_maf_stream_fallback")
+        assert settled[1] == [("moved", True)]
+        assert model.bodies[0]["model"] == "tier-balanced"
+        assert [(b["model"], b.get("reasoning_effort"), bool(b.get("stream")))
+                for b in model.bodies[1:]] == [("tier-powerful", "medium", False)]
+        assert handed == [(), ("email",)]
+
+    def test_a_slow_teardown_is_logged_and_the_turn_goes_on(
+        self, monkeypatch, settled,
+    ) -> None:
+        """The cancelled request takes 0.5 s to close. The restart waits
+        0.1 s, logs it, and goes on. Nothing reads the old request again."""
+        executor = pytest.importorskip("orchestrator.executor")
+        _parallel(monkeypatch, PA)
+        monkeypatch.setattr(executor, "_RESTART_TEARDOWN_S", 0.1)
+        streaming = asyncio.Event()
+        ends: list[str] = []
+
+        async def stubborn(index: int) -> AsyncIterator[bytes]:
+            streaming.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                ends.append("cancelled")
+                await asyncio.sleep(0.5)
+                raise
+            yield _chunk(index, {"role": "assistant", "content": "LATE TEXT"})
+
+        _wire(monkeypatch, _waiting_reply(streaming, "code"))
+        model = GatedModel([stubborn, say("done")])
+        logs = _tap(monkeypatch)
+        events, _ = drive_native(PA, PA_DIR, monkeypatch, model, message=SECRET)
+        _ok(events)
+        assert ends == ["cancelled"]
+        assert [r["waited_s"] for r in _lines(logs, "ai_route.restart_teardown_slow")] == [0.1]
+        assert [b["model"] for b in model.bodies] == ["tier-balanced", "tier-powerful"]
+        assert _texts(events) == "done"
+        assert "LATE TEXT" not in json.dumps(events)
+
     def test_a_timeout_keeps_the_chat_tier(self, monkeypatch, settled) -> None:
         _parallel(monkeypatch, PA)
 
@@ -709,15 +900,19 @@ def _is_answer(future: Any) -> bool:
             and isinstance(future.result(), tier_policy.RunTierPolicy))
 
 
-def _with_packs(monkeypatch, executor: Any, packs: tuple[str, ...]) -> None:
+def _with_packs(monkeypatch, executor: Any, packs: tuple[str, ...],
+                answered: asyncio.Event | None = None) -> None:
     """The answer asks for *packs*. projects-assistant offers none, so the
-    test puts them on the answer's policy."""
+    test puts them on the answer's policy. *answered* is set when the
+    answer's task ends, in the same step."""
     real = executor._tier_policy_for_run
 
     async def packed(*a: Any, **k: Any) -> Any:
         run = await real(*a, **k)
         if run is not None:
             run.packs = packs
+        if answered is not None:
+            answered.set()
         return run
 
     monkeypatch.setattr(executor, "_tier_policy_for_run", packed)
