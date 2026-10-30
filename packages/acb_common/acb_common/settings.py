@@ -1754,6 +1754,16 @@ class Settings(BaseSettings):
     # gateway reads it. `gateway.agent_run_sweep.sweep_enabled`
     # is the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
     agent_run_sweep_enabled: bool = False
+    # MCP-P1a (external_agent_access.md §19, AD-15): the apps that the app
+    # door serves to an outside agent, by app id with a comma between ids,
+    # for example `knowledge`. Empty, the default, serves none: the edge then
+    # lists none of the four door tools, and branch 0 refuses each door call
+    # with the coded 403 `app_off`. An id with no door manifest serves
+    # nothing. Both units read it, so both need the same value.
+    # `acb_auth.agent_oauth.door_apps` is the one reader. 🔴 A change on a
+    # box is gate `enforcement-flip`. `knowledge` on production needs a dated
+    # grant. `crm` and `email` there stay OWNER-GATE until MCP-P3 (§19.13).
+    agent_door_apps: str = ""
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
     agent_code_ttl_s: int = 60

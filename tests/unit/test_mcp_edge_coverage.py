@@ -71,7 +71,24 @@ NAMED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "EA-6h (EA3-51). The edge reads the member's delete switch at"
         " tools/list. It is not a Projects route. Its PUT stays off the edge."
     ),
+    # MCP-P1a (spec §19.5, "The new pairs"): the two list routes of the app
+    # door. They hold no data of an app.
+    ("GET", "/agent-access/apps"): (
+        "MCP-P1a. `list_apps` reads the apps that the door serves to the member."
+        " It is not a Projects route (spec §19.4)."
+    ),
+    ("GET", "/agent-access/apps/{app}"): (
+        "MCP-P1a. `describe_app` reads the ops of one app and their args schema."
+        " It is not a Projects route (spec §19.4)."
+    ),
 }
+
+#: The tools of the app door whose route is the route of the op in each call
+#: (MCP-P1a, spec §19.4). Rules 3 and 4 cannot read a fixed route for them,
+#: so they skip them, and ``tests/unit/test_mcp_edge_app_door.py`` holds
+#: them instead. ``list_apps`` and ``describe_app`` have fixed routes, and
+#: rules 3 and 4 read them as any other tool.
+DOOR_ROUTED_TOOLS = frozenset({"app_read", "app_write"})
 
 #: The pairs of ``MCP_WRITE_ROUTES`` that are class X in the manifest, each
 #: with its reason. The chat never reaches them. A new entry needs a spec
@@ -299,10 +316,29 @@ READ_ONLY_POST_TOOLS: dict[str, str] = {
 
 
 def _tools() -> list:
+    """Every tool with a fixed route. The two door-routed tools of MCP-P1a
+    (:data:`DOOR_ROUTED_TOOLS`) are left out, and the next test pins them."""
     from agent_edge.tools import TOOLS
 
     assert TOOLS, "an empty tool list would make rules 3 and 4 vacuous"
-    return list(TOOLS.values())
+    return [t for t in TOOLS.values() if t.name not in DOOR_ROUTED_TOOLS]
+
+
+def test_only_the_two_door_tools_leave_rules_3_and_4():
+    """MCP-P1a. A tool leaves rules 3 and 4 only by its name in
+    :data:`DOOR_ROUTED_TOOLS`, and each such tool has an app scope and no
+    fixed route. Mutation: give ``get_task`` an ``app_scope``, or add a name
+    to the set, and this test fails."""
+    from agent_edge.tools import TOOLS
+
+    routed = {name for name, tool in TOOLS.items() if tool.app_scope}
+    assert routed == DOOR_ROUTED_TOOLS
+    for name in DOOR_ROUTED_TOOLS:
+        tool = TOOLS[name]
+        assert tool.door and not tool.route and not tool.params, name
+        assert tool.required_scope is None, name
+    door = {name for name, tool in TOOLS.items() if tool.door}
+    assert door == {"list_apps", "describe_app", *DOOR_ROUTED_TOOLS}
 
 
 def _body_fields(dependant) -> set[str]:

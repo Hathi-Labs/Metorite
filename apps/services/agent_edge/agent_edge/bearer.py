@@ -15,7 +15,8 @@ Spec ``project-docs/specs/external_agent_access.md`` §7.1 and §9.6, check 6.
 3. The token audience must equal ``agent_oauth.resource()``. The lookup does
    not check it, so the edge must.
 4. The effective scopes are the token scope intersected with the connection
-   scopes. ``projects:write`` covers ``projects:read`` on both sides.
+   scopes. ``projects:write`` covers ``projects:read`` on both sides, and
+   the write scope of an app covers its read scope (MCP-P1a).
 
 The tenant comes from the token row and from nowhere else. This module reads
 one request input, the ``Authorization`` header, and it never sends that
@@ -76,10 +77,10 @@ def token_of(header_value: str | None) -> str | None:
 
 
 def _expand(scopes: Iterable[str]) -> set[str]:
-    held = {s for s in scopes if s in agent_oauth.RESOURCE_SCOPES}
-    if agent_oauth.PROJECTS_WRITE in held:
-        held.add(agent_oauth.PROJECTS_READ)
-    return held
+    """The resource scopes of *scopes*, with the cover rule of
+    ``agent_oauth.covered_scopes``: ``<x>:write`` covers ``<x>:read``, for
+    Projects and for each app of the door (MCP-P1a, spec §19.6)."""
+    return agent_oauth.covered_scopes(scopes)
 
 
 def effective_scopes(token_scope: str | None, connection_scopes: Iterable[str]) -> frozenset[str]:

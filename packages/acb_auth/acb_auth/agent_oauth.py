@@ -32,6 +32,12 @@ write pairs, and :func:`writes_enabled` is the one reader of the writes flag. :f
 is the one shape of that stamp, and the Projects routes import it from here.
 :data:`CLIENT_LABELS` and :func:`client_label` give the name of a stamp.
 
+**The app door (MCP-P1a, spec §19).** The app scopes come from
+``acb_common.app_manifests`` (:data:`APP_SCOPES`), and :func:`covered_scopes`
+is the one cover rule. :func:`door_apps` is the one reader of
+``agent_door_apps``. :func:`door_route` gives the door op of a pair from the
+manifests, and no hand list holds a door pair (AD-3).
+
 Fences: ``tests/unit/test_agent_oauth_server.py``,
 ``tests/unit/test_mcp_edge_signing.py`` and
 ``tests/unit/test_mcp_edge_coverage.py``.
@@ -49,7 +55,7 @@ from types import MappingProxyType
 from typing import NamedTuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from acb_common import get_settings
+from acb_common import app_manifests, get_settings
 
 # ── Scopes (spec §8) ────────────────────────────────────────────────────────
 
@@ -58,13 +64,51 @@ PROJECTS_WRITE = "projects:write"
 CONTEXT_READ = "context:read"
 OFFLINE_ACCESS = "offline_access"
 
+#: The three fixed scopes of the resource.
+FIXED_RESOURCE_SCOPES: tuple[str, ...] = (PROJECTS_READ, PROJECTS_WRITE, CONTEXT_READ)
+
+#: MCP-P1a (spec §19.6). The scopes of the app door, from the manifests:
+#: ``<app>:read`` for each app with a door op, and ``<app>:write`` for each
+#: app with a door op of class B or C. Knowledge gives ``knowledge:read`` and
+#: ``knowledge:write``.
+APP_SCOPES: tuple[str, ...] = app_manifests.app_scopes()
+
 #: Every scope the server knows, in the order a consent screen shows them.
+#: The app scopes come after the three fixed scopes (§19.6).
 SUPPORTED_SCOPES: tuple[str, ...] = (
-    PROJECTS_READ, PROJECTS_WRITE, CONTEXT_READ, OFFLINE_ACCESS)
+    *FIXED_RESOURCE_SCOPES, *APP_SCOPES, OFFLINE_ACCESS)
 
 #: The scopes the resource itself needs. ``offline_access`` is not one: the MCP
 #: specification says a resource does not advertise it (spec §8).
-RESOURCE_SCOPES: tuple[str, ...] = (PROJECTS_READ, PROJECTS_WRITE, CONTEXT_READ)
+RESOURCE_SCOPES: tuple[str, ...] = (*FIXED_RESOURCE_SCOPES, *APP_SCOPES)
+
+
+def covered_by(scope: str) -> str | None:
+    """The cover rule (spec §7.1 step 4, §19.6): ``<x>:write`` covers
+    ``<x>:read``. The read scope that *scope* covers, or ``None``. The ONE
+    copy of the rule: :func:`covered_scopes` and :func:`scope_holds` call it."""
+    head, sep, tail = scope.rpartition(":")
+    return f"{head}:read" if sep and head and tail == "write" else None
+
+
+def covered_scopes(scopes: Iterable[str]) -> set[str]:
+    """The resource scopes that *scopes* hold, with each read scope that a
+    write scope among them covers. ``bearer.effective_scopes`` calls it on
+    each side of the intersection."""
+    held = {s for s in scopes if s in RESOURCE_SCOPES}
+    held |= {c for s in held if (c := covered_by(s)) in RESOURCE_SCOPES}
+    return held
+
+
+def scope_holds(scopes: Iterable[str], required: str) -> bool:
+    """True when *scopes* hold *required*, or a write scope that covers it.
+
+    Branch 0 calls it on the scopes of the connection row (AD-4). It does
+    not filter by :data:`RESOURCE_SCOPES`: the consent page already did, when
+    the member granted the scopes."""
+    held = set(scopes)
+    return required in held or any(covered_by(s) == required for s in held)
+
 
 #: The longest ``scope`` string the server reads.
 MAX_SCOPE_CHARS = 1024
@@ -130,6 +174,52 @@ def runs_enabled() -> bool:
     ``agent_runs`` in ``get_task``. So both units need the same value.
     """
     return bool(get_settings().agent_runs_enabled)
+
+
+@functools.lru_cache(maxsize=16)
+def _parse_door_apps(raw: str) -> frozenset[str]:
+    """The door app ids that *raw* names. An entry that names no door app
+    allows nothing. Cached on the raw value and on nothing else, so it holds
+    for any registry."""
+    return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+
+
+def door_apps() -> frozenset[str]:
+    """The apps that ``agent_door_apps`` names and that have a door manifest
+    (MCP-P1a, AD-15). Empty, the default, serves no app.
+
+    The ONE reader of the flag, for both units. The edge leaves the four
+    door tools out of ``tools/list`` while it serves no app, and refuses a
+    call for an app it does not name. Branch 0 refuses a door call for such
+    an app with the coded 403 of :data:`APP_OFF_CODE`.
+    """
+    named = _parse_door_apps(str(get_settings().agent_door_apps or ""))
+    return frozenset(a.id for a in app_manifests.APPS if a.id in named)
+
+
+def door_serves(app_id: object) -> bool:
+    """True when the door flag names the door app *app_id*."""
+    return isinstance(app_id, str) and app_id in door_apps()
+
+
+def advertised_resource_scopes() -> tuple[str, ...]:
+    """The resource scopes that the metadata documents name, and that an
+    authorize request with no ``scope`` asks for (MCP-P1a).
+
+    The three fixed scopes, then the scopes of each app that the door flag
+    names. So the scope of an app that ships dark never shows on the
+    consent page or in ``scopes_supported``. :data:`SUPPORTED_SCOPES` still
+    holds every app scope, so a token of a client that asked for one by name
+    keeps it.
+    """
+    served = door_apps()
+    return (*FIXED_RESOURCE_SCOPES,
+            *(s for a in app_manifests.APPS if a.id in served for s in a.scopes))
+
+
+def advertised_scopes() -> tuple[str, ...]:
+    """:func:`advertised_resource_scopes` and ``offline_access``."""
+    return (*advertised_resource_scopes(), OFFLINE_ACCESS)
 
 
 def mcp_sessions_enabled() -> bool:
@@ -618,8 +708,79 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/projects/tasks/{task_id}/agent-runs"),
     ("GET", "/projects/agent-runs"),
     ("GET", "/projects/agent-runs/{run_id}"),
+    # MCP-P1a (spec §19.4 and §19.5): the two list routes of the app door,
+    # for `list_apps` and `describe_app`. They hold no data of an app.
+    ("GET", "/agent-access/apps"),
+    ("GET", "/agent-access/apps/{app}"),
     *MCP_WRITE_ROUTES,
 })
+
+#: The path parameters of a pair of :data:`MCP_ROUTES` that are not ids, each
+#: with its pattern (MCP-P1a). The edge client refuses every other value.
+MCP_PATH_SHAPES: Mapping[tuple[str, str], Mapping[str, str]] = MappingProxyType({
+    ("GET", "/agent-access/apps/{app}"): MappingProxyType(
+        {"app": app_manifests.APP_ID_PATTERN}),
+})
+
+# ── The app door (MCP-P1a, spec §19.3 to §19.7) ─────────────────────────────
+
+#: The ``detail`` of the 403 of a door call for an app that the door flag
+#: does not name (§19.6). The edge maps it to a fixed tool error.
+APP_OFF_CODE = "app_off"
+
+#: AD-18. The ``detail`` of the 403 of a door write of class B or C that is
+#: not a proposal and carries no spent approval. Before MCP-P1b no approval
+#: can exist, so branch 0 refuses each such call. Never a 401, so the client
+#: keeps its token.
+APPROVAL_REQUIRED_CODE = "approval_required"
+
+#: AD-13. A connection makes at most :data:`DOOR_READ_CAP` door reads in
+#: :data:`DOOR_READ_WINDOW_S` seconds. Branch 0 counts in the tenant Redis
+#: wrapper, under :data:`DOOR_READ_NAMESPACE`, and the next read gets 429.
+DOOR_READ_CAP = 300
+DOOR_READ_WINDOW_S = 600
+DOOR_READ_NAMESPACE = "agent_door_reads"
+
+
+#: The code of a door change that waits for the writes flag of EA3-29.
+DOOR_WRITES_OFF_CODE = "writes_off"
+
+
+def door_available(door: app_manifests.DoorOp) -> tuple[bool, str | None]:
+    """``(available, code)`` of a door op, by the rules that the edge and the
+    gateway share (MCP-P1a). The ONE copy: ``describe_app`` on both sides
+    reads it.
+
+    * AD-18: a write of class B or C that is not a proposal waits for the
+      approval path of MCP-P1b, :data:`APPROVAL_REQUIRED_CODE`.
+    * A proposal needs the writes flag, :data:`DOOR_WRITES_OFF_CODE`.
+    * A read is available.
+    """
+    if door.asks != "never":
+        return False, APPROVAL_REQUIRED_CODE
+    if door.kind != "read" and not writes_enabled():
+        return False, DOOR_WRITES_OFF_CODE
+    return True, None
+
+
+def door_route(pair: tuple[str, str | None]) -> app_manifests.DoorOp | None:
+    """The door op of one ``(method, template)``, or ``None`` (AD-3).
+
+    The door pairs come from the manifests (``app_manifests.door_routes``),
+    never from a hand list. No pair is a door pair and a pair of
+    :data:`MCP_ROUTES` at once (``tests/unit/test_app_door_coverage.py``).
+    """
+    return app_manifests.door_route(pair)
+
+
+def path_shapes(method: str, template: str) -> Mapping[str, str]:
+    """The pattern of each path parameter of a pair that is not an id: the
+    ``path_shapes`` of a door row, or :data:`MCP_PATH_SHAPES`. Empty when
+    each parameter is an id."""
+    door = door_route((method, template))
+    if door is not None:
+        return dict(door.route.path_shapes)
+    return MCP_PATH_SHAPES.get((method, template), {})
 
 #: The cap of EA3-30: a connection makes at most :data:`WRITE_CAP` writes in
 #: :data:`WRITE_WINDOW_S` seconds, counted from its first write of the window.
@@ -764,11 +925,20 @@ def authorization_redirect(redirect_uri: str, params: Mapping[str, str | None]) 
 __all__ = [
     "ACTOR_VIA_PATTERN",
     "ALL_ORGS",
+    "APPROVAL_REQUIRED_CODE",
+    "APP_OFF_CODE",
+    "APP_SCOPES",
     "CLIENT_LABELS",
     "CLIENT_SLUG_MAX",
     "CONTEXT_READ",
+    "DOOR_READ_CAP",
+    "DOOR_READ_NAMESPACE",
+    "DOOR_READ_WINDOW_S",
+    "DOOR_WRITES_OFF_CODE",
+    "FIXED_RESOURCE_SCOPES",
     "MAX_SCOPE_CHARS",
     "MAX_URL_CHARS",
+    "MCP_PATH_SHAPES",
     "MCP_ROUTES",
     "MCP_WRITE_ROUTES",
     "OFFLINE_ACCESS",
@@ -782,6 +952,8 @@ __all__ = [
     "WRITE_CAP_NAMESPACE",
     "WRITE_WINDOW_S",
     "actor_via_for",
+    "advertised_resource_scopes",
+    "advertised_scopes",
     "allowed_orgs",
     "ascii_host",
     "authorization_redirect",
@@ -790,6 +962,12 @@ __all__ = [
     "client_label",
     "client_origin",
     "client_slug",
+    "covered_by",
+    "covered_scopes",
+    "door_apps",
+    "door_available",
+    "door_route",
+    "door_serves",
     "enabled",
     "is_allowed_redirect_uri",
     "is_cimd_client_id",
@@ -799,6 +977,7 @@ __all__ = [
     "mcp_sessions_enabled",
     "org_allowed",
     "parse_scope",
+    "path_shapes",
     "pkce_matches",
     "redirect_display",
     "redirect_host",
@@ -807,6 +986,7 @@ __all__ = [
     "revocation_endpoint",
     "runs_enabled",
     "s256",
+    "scope_holds",
     "scope_string",
     "token_endpoint",
     "writes_enabled",
