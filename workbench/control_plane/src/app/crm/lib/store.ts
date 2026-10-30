@@ -222,6 +222,8 @@ type CrmState = {
     body: Record<string, unknown>
   ) => Promise<ConvertResult | null>;
   setPrimaryContact: (dealId: string, contactId: string) => Promise<void>;
+  /** CRM-U16: attach a contact to a deal (not primary unless it is the first). */
+  attachContact: (dealId: string, contactId: string) => Promise<void>;
   detachContact: (dealId: string, contactId: string) => Promise<void>;
 
   // ── Pipeline settings (WS-26f f2) ───────────────────────────────────────
@@ -690,8 +692,22 @@ export const useCrmStore = create<CrmState>((set, get) => ({
 
   async createRecord(entity, body) {
     set({ saving: true, error: null, refusal: null });
+    // CRM-U16: a new deal may name a contact. It is no column of the deal, so
+    // it leaves the body and is attached as the primary contact afterwards.
+    const { contact_id: pickedContact, ...rest } = body;
+    const contactId =
+      entity === "deals" && typeof pickedContact === "string" && pickedContact ? pickedContact : null;
+    const sent = entity === "deals" ? rest : body;
     try {
-      const created = await api.createRecord<{ id: string }>(entity, body);
+      const created = await api.createRecord<{ id: string }>(entity, sent);
+      if (contactId) {
+        try {
+          await api.addDealContact(created.id, { contact_id: contactId, is_primary: true });
+        } catch (err) {
+          // The deal exists, so the form still closes on it. The Related tab adds the contact.
+          set({ error: `The deal was saved, but its contact was not added. ${message(err)}` });
+        }
+      }
       // Nothing else re-fetches the collection: opening the new record's
       // sheet changes `view.record`, and the load effect keys on the tab and
       // the filters. Without this the record exists on the server and is
@@ -749,6 +765,25 @@ export const useCrmStore = create<CrmState>((set, get) => ({
         contact_id: contactId,
         is_primary: true,
       });
+    } catch (err) {
+      set({ error: message(err) });
+    } finally {
+      set({ saving: false });
+      const people = await api.listDealContacts(dealId).catch(() => null);
+      if (people) set({ dealContacts: people.rows });
+    }
+  },
+
+  async attachContact(dealId, contactId) {
+    set({ saving: true, error: null });
+    try {
+      // The first contact of a deal is its primary one. Later ones are not.
+      const current = await api.listDealContacts(dealId).catch(() => null);
+      const rows = current?.rows ?? [];
+      // A contact that is on the deal already keeps its role and its star.
+      if (!rows.some((row) => row.contact.id === contactId)) {
+        await api.addDealContact(dealId, { contact_id: contactId, is_primary: rows.length === 0 });
+      }
     } catch (err) {
       set({ error: message(err) });
     } finally {

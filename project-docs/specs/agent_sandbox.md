@@ -455,6 +455,8 @@ radius. Only the card stops a write the member did not mean.
 
 ## 6. The tool lifecycle
 
+> The build, smoke test and run steps run on the coding harness of `maf_coding_engine.md` §18 (CA-14).
+
 ### 6.1 Gap detection and reuse (#234, #240)
 
 **The rule.** The assistant may build a tool only when two things hold. One

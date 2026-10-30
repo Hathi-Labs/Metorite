@@ -89,11 +89,6 @@ line — never reclaim a number by deleting the other entry.
   A difference means the installed tool is behind the repo copy. If it exits 0, or the owner has said no, delete this entry.
 - **Added:** 2026-10-26 · owner, in chat, 2026-10-25
 
-### H-430 · Build PZ-31: a member answer that becomes a steer cannot be saved · [AGENT] · security
-- **Metorite:** #832. The task holds the full entry.
-- **Check:** `grep -n '_typed = ""' apps/services/gateway/gateway/routes/agent.py` → still shows the steer follow-up binding empty typed words (about line 2856), and task #832 is not Done
-- **Added:** 2026-10-27 · found by the review of the interview save fix (first minted as H-418, renumbered: main took it)
-
 ### H-431 · Look at Settings → Assistant settings, and say what still feels stiff · [OWNER]
 - **Metorite:** #261 (PZ-11). The task holds the checks and the state.
 - **Check:** task #261 is not Done → still pending. On app.metorite.com: reload, open the account menu, choose Settings → Assistant settings, then start an empty chat and press "Yes, start". Tell the agent what looks wrong and what feels stiff.

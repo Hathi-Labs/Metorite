@@ -152,12 +152,12 @@ describe("part A: the Mirror line", () => {
 describe("part B: the pencil", () => {
   it("gives a Native editable row a pencil, and keeps tick and X", () => {
     const html = panel("organizations", { id: "1", name: "Acme", ext_source: null });
-    expect(html).toContain("group-hover/edit:opacity-100");
+    expect(html).toContain("reveal-on-hover");
     // One tab stop per row: the pencil is out of the tab order and hidden from
-    // a screen reader. It shows when the value button has focus, and on a touch screen.
+    // a screen reader. It shows when the value button has focus, and on hover (the house utility).
     expect(html).toMatch(/<button[^>]*tabindex="-1"[^>]*aria-hidden="true"|<button[^>]*aria-hidden="true"[^>]*tabindex="-1"/);
     expect(html).toContain("group-focus-within/edit:opacity-100");
-    expect(html).toContain("[@media(hover:none)]:opacity-100");
+    expect(html).not.toContain("hover:none");
     const src = read("./FieldsPanel.tsx");
     expect(src).toContain('aria-label="Save"');
     expect(src).toContain('aria-label="Cancel"');

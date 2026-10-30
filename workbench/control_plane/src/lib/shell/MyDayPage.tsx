@@ -29,6 +29,10 @@
  * store's Undo stay. With it off, the page is the page above, unchanged.
  * With it on, the summary line counts the feed's cards and may say "The
  * rest is handled." (MD-2c, §6.7).
+ *
+ * **The brief card** (`core_brief.md` §5 item 1, BR-2c-2) is a third, separate
+ * flag, `NEXT_PUBLIC_BRIEF_CARD` (`briefCardOn`). It sits above the cards or
+ * the feed, in either layout, and draws nothing when the brief is absent.
  */
 import Link from "next/link";
 import { useSession } from "next-auth/react";
@@ -49,6 +53,9 @@ import { useCachedResource } from "@/lib/useCachedResource";
 import { ADDRESS_KEY, addressedGreetingLine, fetchAddressName } from "./addressName";
 import AppLauncher from "./AppLauncher";
 import { feedFailedLines, feedNeedsCount, handledClaim } from "./feed";
+import BriefCard from "./BriefCard";
+import { BRIEF_KEY, fetchBrief } from "./briefCard";
+import { briefCardOn, briefCardOnServer } from "./briefCardFlag";
 import { FeedColumn, useFeed } from "./FeedCard";
 import NeedsYouCard, { useNeedsYou } from "./NeedsYouCard";
 import { cardOrderFor, cardsFor, dateLine, failedLines, seesApprovals, summaryLine } from "./myDay";
@@ -100,6 +107,12 @@ export default function MyDay() {
   const needs = useNeedsYou(!accessLoading && cards.needs, seesApprovals(access.features, access.is_admin));
   const today = useTodayItems(!accessLoading && cards.today, now);
   const feedOn = useSyncExternalStore(noSubscribe, myDayFeedOn, myDayFeedOnServer);
+  const briefOn = useSyncExternalStore(noSubscribe, briefCardOn, briefCardOnServer);
+  // The brief read is the page's, so the grid waits for it and paints once.
+  // Off, the key is null: no read, and the brief never gates the page. A
+  // cache hit has data at once, so a later visit is instant.
+  const brief = useCachedResource(briefOn ? BRIEF_KEY : null, () => fetchBrief());
+  const briefPending = briefOn && brief.data === undefined && brief.loading;
   // The feed's sources are the needs sources and Calendar, and Calendar
   // needs what Today needs, so a member with no needs card gets no feed.
   const feed = useFeed(feedOn && !accessLoading && cards.needs);
@@ -181,7 +194,13 @@ export default function MyDay() {
         </div>
       </div>
 
-      {accessLoading || (!feedOn && layoutPending) ? (
+      {/* The brief card (BR-2c-2): a component of its own above both
+          layouts, outside the feed flag. It draws nothing on a 404. */}
+      {briefOn && !accessLoading && !briefPending ? (
+        <BriefCard brief={brief.data} error={brief.error} now={now} className="mt-6 -mb-2" />
+      ) : null}
+
+      {accessLoading || briefPending || (!feedOn && layoutPending) ? (
         <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-3" aria-hidden>
           <Skeleton className="h-64 w-full rounded-xl xl:col-span-2" />
           <Skeleton className="h-40 w-full rounded-xl" />
