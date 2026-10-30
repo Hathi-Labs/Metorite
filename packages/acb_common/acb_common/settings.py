@@ -762,6 +762,19 @@ class Settings(BaseSettings):
     assistant_profile_enabled: bool = False
     assistant_profile_orgs: str = ""
 
+    # ── The card writes of the assistant profile (WS-63 PZ-32) ──────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On for an org, the web chat may ask a card for a profile
+    # value that the member did not type (D-PZ-21), and the assistant may
+    # offer once in a chat to keep a fact that the member said in passing
+    # (D-PZ-22). Off, the typed-words rule refuses such a value, an offer
+    # asks nothing, and the persona has no offer line. The one reader is
+    # `acb_common.assistant_profile.card_writes_for`. A SIGHUP reload applies
+    # a change (`gateway/flag_reload.py`). Fence:
+    # tests/unit/test_profile_pz32.py.
+    assistant_profile_card_writes_orgs: str = ""
+
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #
     # ON makes `GET /search/company` rank newer records first inside each app,

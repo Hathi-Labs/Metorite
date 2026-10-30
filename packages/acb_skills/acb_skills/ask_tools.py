@@ -1267,10 +1267,14 @@ def confirmation_channel_open() -> bool:
     It reads the two channels that :func:`request_confirmation` tries: path A
     (``_active_run_queue``) and path C (the relay thread). A tool reads it
     AFTER a denial, to tell a refusal from a run with no live chat (WS-17
-    EM-T13a). A tool may also read it BEFORE a card, but only to choose a
-    narrower act that writes less. It never approves a write. ``request_confirmation`` stays the one gate,
-    and it fails closed, so a drift here can change a message or skip a
-    write, and never adds one.
+    EM-T13a). A tool may also read it BEFORE a card, to choose a narrower
+    act that writes less. One reader reads it before a card to choose a
+    card in place of a refusal: ``profile_tools._card_channel`` (WS-63
+    PZ-32, behind ``ASSISTANT_PROFILE_CARD_WRITES_ORGS``). True there asks
+    the member a card for a value that they did not type. It never approves
+    a write. ``request_confirmation`` stays the one gate, and it fails
+    closed, so a drift here can change a message, ask a card or skip a
+    write, and never writes with no approve.
     A run inside :func:`refuse_cards` has no channel (WS-47 WAC-3).
     """
     if cards_refused():
@@ -1378,6 +1382,7 @@ async def request_confirmation(
     close_on_steer: bool | None = None,
     request_id: str | None = None,
     with_answer: bool = False,
+    responder: str | None = None,
 ) -> bool | frozenset[str] | ReplyAnswer | RowsAnswer | _Revised | None:
     """Emit a HITL confirmation card and BLOCK until the user approves/rejects.
 
@@ -1424,6 +1429,14 @@ async def request_confirmation(
         with_answer: with ``rows``, give a :class:`RowsAnswer` (the exact
             text of the answer, its ticked ids and the card's thread) in
             place of the set of ids. ``None`` on no approval.
+        responder: the run's own member, from the run binding and never
+            from input (WS-63 PZ-32). An answer then counts only when the
+            gateway's session member who answered (``responder`` of the
+            answer, which ``/agent/respond-input`` takes from the session)
+            is this member. Any other answer, and an answer with no
+            responder, is a REJECT. ``None`` binds no member, as before.
+            The WhatsApp profile path is not a card answer, and its own
+            gate binds the member (``whatsapp_acts``).
 
     Returns:
         With no ``rows``: ``True`` if the user approved, ``False`` if they
@@ -1481,6 +1494,8 @@ async def request_confirmation(
         return frozenset() if _rows is not None else False
     _offered = frozenset(r["id"] for r in _rows or [])
     _steer_closes = (_reply is not None) if close_on_steer is None else bool(close_on_steer)
+    #: The member whose answer alone counts (PZ-32), or "" to bind none.
+    _member = str(responder or "").strip().lower()
 
     def _event(request_id: str) -> dict:
         value = {
@@ -1509,6 +1524,10 @@ async def request_confirmation(
         said = str(result.get("answer", "")).strip()
         if result.get("revised") is True:
             return REVISED_ANSWER, None
+        if _member and str(result.get("responder") or "").strip().lower() != _member:
+            # PZ-32: the card asked the run's own member. An answer of anyone
+            # else, or of nobody named, is no approval.
+            return "REJECT", None
         if _reply is not None:
             from acb_skills.reply_card import parse_reply_answer
 

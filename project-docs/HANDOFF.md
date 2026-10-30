@@ -82,6 +82,31 @@ line — never reclaim a number by deleting the other entry.
 ---
 
 # OPEN
+### H-432 · Confirm migration 317 and its backup on production after the 2026-10-30 release · [AGENT]
+- **Metorite:** #1113. The task holds the full entry.
+- **Check:** `curl -s https://api.metorite.com/version`. An `applied_sha` that does not contain merge 190ef405a means the release has not run yet. After it runs, the task's steps still need their evidence.
+- **Added:** 2026-10-30 · WS-63 PZ-32 session
+
+### H-433 · Check the chat prompt for notifications on a real phone, on dev.metorite.com · [OWNER]
+- **Metorite:** #600 (OB-8). The task holds the checks and the state.
+- **Check:** `ssh metorite 'sudo -n grep -c "^PUSH_PROMPT_ORGS=" /opt/acb/app/.env'`. A count of 0 means production still waits for the owner's check. An agent sets the flag only after the owner says yes.
+- **Added:** 2026-10-30 · WS-OB OB-8 session
+
+### H-434 · Check the assistant's offer and approval cards on dev.metorite.com · [OWNER]
+- **Metorite:** #1114. The task holds the full entry.
+- **Check:** `ssh metorite 'sudo -n grep -c "^ASSISTANT_PROFILE_CARD_WRITES_ORGS=" /opt/acb/app/.env'`. A count of 0 means production still waits for the owner's check. An agent sets the flag only after the owner says yes.
+- **Added:** 2026-10-30 · WS-63 PZ-32 session
+
+### H-435 · Stop the "Asked" interview badge from following the accent · [AGENT]
+- **Metorite:** #1115. The task holds the full entry.
+- **Check:** `grep -n 'asked: "primary"' workbench/control_plane/src/app/settings/assistant/AssistantPane.tsx`. A hit means still pending.
+- **Added:** 2026-10-30 · WS-63 PZ-32 session
+
+### H-436 · Decide whether work words stop tripping the sensitive-fact card · [OWNER]
+- **Metorite:** #1116. The task holds the question and a recommendation.
+- **Check:** task #1116 is not Done → still pending.
+- **Added:** 2026-10-30 · WS-63 PZ-32 session
+
 ### H-416 · Decide whether the staging apply installs the staging flag tool itself · [OWNER]
 - **Metorite:** #772. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** on the dev box (srv1747539), run
