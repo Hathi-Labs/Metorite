@@ -10,12 +10,12 @@ below them.
   ``reminders/loop.py`` call it inside the transaction of the step, on the
   loop's own session. It writes ONE planned ``web_push`` row through
   ``outbox.plan_push``. It opens no session, and it sends nothing.
-* :func:`send_planned` — ``run_org`` calls it once for each org, after the
-  commits of its steps. It claims each planned row (``outbox.claim_push``),
-  reads the reminder again, checks the cap, and sends through
-  ``push.sender.send_to_member``, the one sender. It never calls
-  ``outbound_guard`` itself. ``reach/loop.py`` never runs it, and
-  ``whatsapp.deliver`` never sees a ``web_push`` row.
+* :func:`send_planned` — the send phase of ``reminders.loop.run_tick`` calls
+  it once for each org, after the steps of EVERY org (ruling k). It claims
+  each planned row (``outbox.claim_push``), reads the reminder again, checks
+  the cap, and sends through ``push.sender.send_to_member``, the one sender.
+  It never calls ``outbound_guard`` itself. ``reach/loop.py`` never runs it,
+  and ``whatsapp.deliver`` never sees a ``web_push`` row.
 
 **The gate** (decision 1, ruling a). Both steps run only while
 ``WEB_PUSH_ENABLED`` (``push.flags.enabled``) and ``CALENDAR_REMINDERS``
@@ -37,9 +37,17 @@ counts the member's ``sent`` push rows of that kind on the row's local date,
 and each row that another send step holds now. The send step counts again
 just before each send, and sends one member's rows in order.
 
+**A late step plans nothing** (ruling j). A step that runs more than the TTL
+of its kind after it came due plans no push: an outage or a flag flip must
+not send a burst of old reminders at night. ``reminder_due`` counts from
+``fire_at``. ``reminder_check`` and ``reminder_unconfirmed`` count from
+``next_check_at``, the time that their step came due. The fire, the ledger
+row and the My Day card stay as they are.
+
 **What a planned row becomes** (rulings b and c).
 
-* ``skipped`` — ``expired`` (older than the TTL of its kind), ``gone`` (the
+* ``skipped`` — ``expired`` (older than the TTL of its kind, or a
+  ``reminder_due`` more than its TTL after ``fire_at``), ``gone`` (the
   reminder or its step row is gone), ``closed`` (done, dropped or promoted),
   ``moved`` (a newer step, a move or a snooze), ``quiet``, ``capped`` or
   ``no_device``. No ledger row.
@@ -59,7 +67,7 @@ import uuid
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from acb_common import get_logger
@@ -157,24 +165,40 @@ def quiet_blocks(kind: str, day: Any, now: datetime) -> bool:
     return in_quiet_hours(day, now, True)
 
 
+def too_late(kind: str, due_at: Any, now: datetime) -> bool:
+    """True when *now* is more than the TTL of *kind* after *due_at*, the time
+    that the step came due (ruling j). An unknown *due_at* is never late."""
+    if not isinstance(due_at, datetime):
+        return False
+    if due_at.tzinfo is None:
+        due_at = due_at.replace(tzinfo=UTC)
+    return (now - due_at).total_seconds() > push_message.ttl_of(kind)
+
+
 # ── The plan step ───────────────────────────────────────────────────────────
 
 
 async def plan_reminder_push(db: Any, row: Any, event_id: str | None, kind: str,
-                             day: Any, now: datetime) -> str | None:
+                             day: Any, now: datetime, *, due_at: Any) -> str | None:
     """Plan one web push of a reminder step, on *db*, the reminder loop's own
     session, in the transaction of the step. Answers the outbox id, or None
     when nothing was planned.
 
     *row* is the claimed ``reminders`` row, *event_id* the id of the ledger
-    row that the step wrote, *day* the member's ``state.Day``. The member and
-    the org come from the row and the bound session, never from input.
+    row that the step wrote, *day* the member's ``state.Day``. *due_at* is
+    the time that the step came due: ``fire_at`` for a fire, and
+    ``next_check_at`` for a check-back or a give-up. A step more than the TTL
+    of *kind* after it plans nothing (ruling j). The member and the org come
+    from the row and the bound session, never from input.
 
     A failure here never stops the step: the insert runs in a SAVEPOINT, and
     an error logs and plans nothing. The card stays in My Day."""
     if kind not in push_message.KINDS:
         raise ValueError(f"not a reminder kind: {kind}")
     if not event_id or not push_on() or quiet_blocks(kind, day, now):
+        return None
+    if too_late(kind, due_at, now):
+        _log.info("reach.push.too_late", kind=kind)
         return None
     try:
         async with db.begin_nested():
@@ -251,6 +275,8 @@ async def read_facts(db: Any, row: outbox.PushRow, now: datetime) -> Facts:
     why, rem = await _stale(db, row, rid, eid)
     if why is not None:
         return Facts(why)
+    if row.kind == "reminder_due" and too_late(row.kind, rem.fire_at, now):
+        return Facts("expired")  # ruling j: never more than the TTL after fire_at
     why = await _held_back(db, row, now)
     if why is not None:
         return Facts(why)
@@ -317,13 +343,16 @@ async def _finish(org: str, row: outbox.PushRow, facts: Facts,
     return reason or state
 
 
-async def send_planned(org: str, now: datetime,
+async def send_planned(org: str, clock: Callable[[], datetime],
                        stopping: Callable[[], bool] | None = None) -> Counter[str]:
     """Send every planned push of *org* that no other send step holds.
     Answers the count of each outcome, each key with the prefix ``push_``.
 
-    ``run_org`` of the reminder loop calls it after the commits of its steps,
-    with the org it bound. One failed row never stops the others."""
+    The send phase of ``reminders.loop.run_tick`` calls it with the org it
+    bound. *clock* gives the time of each row as the row starts, so the quiet
+    hours of a late row read the time of its send (ruling k). *stopping* is
+    read before each row: a row that does not start stays planned for the
+    next tick. One failed row never stops the others."""
     counts: Counter[str] = Counter()
     if not push_on():
         return counts
@@ -331,7 +360,7 @@ async def send_planned(org: str, now: datetime,
         if stopping is not None and stopping():
             break
         try:
-            outcome = await _send_one(org, outbox_id, now)
+            outcome = await _send_one(org, outbox_id, clock())
         except Exception as exc:  # the row stays planned, or its claim runs out
             _log.warning("reach.push.row_failed", error=type(exc).__name__)
             outcome = "error"

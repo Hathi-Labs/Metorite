@@ -274,7 +274,7 @@ def _steps(world: Any, org: str, rids: list[str], at: datetime) -> list[str | No
 
 def _send(world: Any, org: str, at: datetime) -> Counter:
     async def work() -> Counter:
-        return await push_channel.send_planned(org, at)
+        return await push_channel.send_planned(org, lambda: at)
     return _in_org(world, org, work)
 
 
@@ -439,8 +439,8 @@ def test_r8_two_workers_send_each_push_once(world) -> None:
     world.service.delay = 0.2  # each send holds its claim open
 
     async def race() -> list[Counter]:
-        return list(await asyncio.gather(push_channel.send_planned(org, at),
-                                         push_channel.send_planned(org, at)))
+        return list(await asyncio.gather(push_channel.send_planned(org, lambda: at),
+                                         push_channel.send_planned(org, lambda: at)))
 
     first, second = _in_org(world, org, race)
     assert first["push_sent"] + second["push_sent"] == len(rids)
@@ -453,16 +453,19 @@ def test_r8_two_workers_send_each_push_once(world) -> None:
 
 def test_r8_two_whole_loops_fire_and_send_each_reminder_once(world) -> None:
     """The fire claim (``FOR UPDATE SKIP LOCKED``) and the push claim
-    together: two ``run_org`` at once, each with its steps and its send."""
+    together: two ``run_tick`` at once, each with its steps and its send
+    phase."""
     org, at = world.p.org_b, _utc(10, 15)
     rids = [_seed(world, who, at, title=f"Loop {n}")
             for n, who in enumerate((ALICE, BOB) * 3)]
     world.service.delay = 0.1
 
     async def race() -> list[Counter]:
-        return list(await asyncio.gather(loop.run_org(org, at), loop.run_org(org, at)))
+        async with tenant_engine_scope(_dsn(world.p.app_url)):
+            ticks = await asyncio.gather(loop.run_tick(at), loop.run_tick(at))
+        return [tick.get(org, Counter()) for tick in ticks]
 
-    first, second = _in_org(world, org, race)
+    first, second = asyncio.run(race())
     assert first["fired"] + second["fired"] == len(rids)
     assert first["push_sent"] + second["push_sent"] == len(rids)
     tags = Counter(p["tag"] for m in (ALICE, BOB) for p in _payloads(world, m))
@@ -542,7 +545,7 @@ def test_r8_a_check_back_and_a_give_up_plan_nothing_in_quiet_hours(world) -> Non
         async with tenant_session(org) as db:
             for kind in ("reminder_check", "reminder_unconfirmed", "reminder_due"):
                 out[kind] = await push_channel.plan_reminder_push(
-                    db, row, step_id, kind, PRIYA_DAY, night)
+                    db, row, step_id, kind, PRIYA_DAY, night, due_at=night)
         return out
 
     planned = _in_org(world, org, plan_all)
@@ -560,6 +563,66 @@ def test_r8_a_check_back_planned_before_quiet_hours_does_not_send_in_them(world)
     assert world.service.posts == []
     [row] = _outbox(world, PRIYA)
     assert (row.kind, row.state, row.reason) == ("reminder_check", "skipped", "quiet")
+
+
+# ── A late step (ruling j) ─────────────────────────────────────────────────
+
+
+def _state(world: Any, rid: str) -> str:
+    with world.p.admin_engine.connect() as c:
+        return str(c.execute(text("SELECT state FROM reminders WHERE id = CAST(:i AS uuid)"),
+                             {"i": rid}).scalar_one())
+
+
+def test_r8_a_fire_hours_late_in_quiet_hours_sends_no_push(world, monkeypatch) -> None:
+    """Repair round 1, finding 2. An outage or a flag flip runs the fire
+    three hours late, at night. ``reminder_due`` may break quiet hours, so
+    without ruling j the member gets an old reminder at 22:30. The fire and
+    the card stay. The control fires 30 s late and sends."""
+    from tests.unit._projects_fakes import member_user
+
+    org = world.p.org_b
+    at = _ist(10, 22, 30) + timedelta(seconds=30)
+    late = _seed(world, PRIYA, _ist(10, 19, 30), title="Late one")
+    fresh = _seed(world, PRIYA, _ist(10, 22, 30), title="Fresh one")
+    [tick] = _ticks(world, at)
+    assert tick[org]["fired"] == 2 and tick[org]["push_sent"] == 1
+    [payload] = _payloads(world, PRIYA)
+    assert payload["tag"] == fresh
+    # No row for the late fire, so it takes no slot of the cap of the day.
+    [row] = _outbox(world, PRIYA)
+    assert row.dedupe_key.split(":")[1] == fresh and row.state == "sent"
+    assert _state(world, late) == "due"
+    assert [e.event for e in _ledger(world, late)] == ["fired"]
+    # The card of the late fire is in My Day.
+    monkeypatch.setattr(needs, "_now", lambda: at + timedelta(minutes=1))
+
+    async def cards() -> needs.Found:
+        return await needs._reminders(member_user(PRIYA))
+
+    kinds = {s.entity["id"]: s.kind for s in _in_org(world, org, cards).signals()}
+    assert kinds[late] == "reminder_due"
+
+
+def test_r8_a_late_check_back_or_give_up_plans_no_push(world) -> None:
+    """Ruling j for the other two kinds: the lateness counts from
+    ``next_check_at``. A check-back 4 h 45 min late (TTL 4 h) and a give-up
+    16 h late (TTL 12 h) plan nothing. The controls run 30 s late."""
+    org, at = world.p.org_b, _utc(10, 13)
+    just = at - timedelta(seconds=30)
+    late_check = _seed(world, ALICE, _utc(10, 8), state="due", first_fired_at=_utc(10, 8),
+                       next_check_at=_utc(10, 8, 15))
+    late_give_up = _seed(world, ALICE, _utc(7, 8), state="due", first_fired_at=_utc(7, 8),
+                         next_check_at=_utc(9, 21))
+    check = _seed(world, BOB, _utc(10, 12), state="due", first_fired_at=_utc(10, 12),
+                  next_check_at=just)
+    give_up = _seed(world, BOB, _utc(7, 8), state="due", first_fired_at=_utc(7, 8),
+                    next_check_at=just)
+    got = _steps(world, org, [late_check, late_give_up, check, give_up], at)
+    assert got == ["check_back", "gave_up", "check_back", "gave_up"]
+    assert _outbox(world, ALICE) == []
+    planned = {r.dedupe_key.split(":")[1]: r.kind for r in _outbox(world, BOB)}
+    assert planned == {check: "reminder_check", give_up: "reminder_unconfirmed"}
 
 
 # ── The caps ───────────────────────────────────────────────────────────────
@@ -704,6 +767,102 @@ def test_r8_no_device_skips_and_every_device_failing_fails(world) -> None:
         ("fired", None), ("failed", "push")]
 
 
+# ── The send phase (ruling k) ──────────────────────────────────────────────
+
+
+def test_r8_a_slow_push_service_delays_no_fire_and_the_phase_has_a_deadline(
+    world, monkeypatch,
+) -> None:
+    """Repair round 1, finding 3. Each push of org A costs 12 s on the
+    stopwatch of the send phase. Org B still fires before the first push of
+    org A. No row starts after ``SEND_PHASE_S`` (30 s), so the fourth row of
+    org A and the row of org B stay planned, and the next tick sends them."""
+    a, b, at = world.p.org_a, world.p.org_b, _utc(10, 15)
+    assert loop.SEND_PHASE_S == 30
+    stopwatch = SimpleNamespace(t=0.0)
+    monkeypatch.setattr(loop, "_monotonic", lambda: stopwatch.t)
+    theirs = [_seed(world, CAROL, at, org=a, title=f"A{n}") for n in range(4)]
+    ours = _seed(world, ALICE, at)
+    seen_at_first_post: list[str] = []
+    real = world.service.request_https
+
+    async def slow(method, url, **kw):
+        if url == _endpoint(CAROL):
+            if not seen_at_first_post:
+                seen_at_first_post.append(_state(world, ours))
+            stopwatch.t += 12
+        return await real(method, url, **kw)
+
+    monkeypatch.setattr(outbound_guard, "request_https", slow)
+    [first] = _ticks(world, at)
+    assert first[a] == Counter(fired=4, push_sent=3)
+    assert first[b] == Counter(fired=1)
+    # Org B fired before org A sent anything.
+    assert seen_at_first_post == ["due"]
+    left = [r for r in _outbox(world, CAROL) if r.state == "planned"]
+    assert len(left) == 1 and left[0].reason is None
+    assert [(r.state, r.reason) for r in _outbox(world, ALICE)] == [("planned", None)]
+
+    [second] = _ticks(world, at + timedelta(seconds=loop.TICK_SECONDS))
+    assert second == {a: Counter(push_sent=1), b: Counter(push_sent=1)}
+    tags = Counter(p["tag"] for m in (CAROL, ALICE) for p in _payloads(world, m))
+    assert tags == Counter({rid: 1 for rid in (*theirs, ours)})
+
+
+def test_r8_the_send_phase_reads_the_clock_of_each_row(world, monkeypatch) -> None:
+    """Ruling k: the quiet hours of a row read the time of its send, not the
+    start of the tick. The tick starts at 19:59:50 in Kolkata, and the
+    stopwatch passes 20:00 before the check-back of Priya starts."""
+    org = world.p.org_b
+    stopwatch = SimpleNamespace(t=0.0)
+    monkeypatch.setattr(loop, "_monotonic", lambda: stopwatch.t)
+    at = _ist(10, 19, 59) + timedelta(seconds=50)
+    rid = _seed(world, PRIYA, _ist(10, 18), state="due", first_fired_at=_ist(10, 18),
+                next_check_at=at)
+    real_send_planned = push_channel.send_planned
+
+    async def later(org_id, clock, stopping=None):
+        if org_id == org:
+            stopwatch.t += 15  # the sends of org A ran past 20:00
+            assert clock() == at + timedelta(seconds=15)
+        return await real_send_planned(org_id, clock, stopping)
+
+    monkeypatch.setattr(push_channel, "send_planned", later)
+    [tick] = _ticks(world, at)
+    assert tick[org] == Counter(check_back=1, push_quiet=1)
+    assert world.service.posts == []
+    [row] = _outbox(world, PRIYA)
+    assert (row.kind, row.state, row.reason) == ("reminder_check", "skipped", "quiet")
+    assert [e.event for e in _ledger(world, rid)] == ["check_back"]
+
+
+def test_r8_a_send_that_raises_keeps_the_row_and_the_loop_goes_on(world, monkeypatch) -> None:
+    """Repair round 1, finding 6. A send that raises an error that is not
+    ``RuntimeError`` releases the row at once, reason ``error``. The next
+    row and the next tick still go."""
+    org, at = world.p.org_b, _utc(10, 15)
+    first = _seed(world, ALICE, at)
+    second = _seed(world, BOB, at)
+    real = sender.send_to_member
+    calls: list[str] = []
+
+    async def flaky(org_id, member, message, **kw):
+        calls.append(member)
+        if member == ALICE and calls.count(ALICE) == 1:
+            raise ValueError("a bad answer")
+        return await real(org_id, member, message, **kw)
+
+    monkeypatch.setattr(sender, "send_to_member", flaky)
+    [tick] = _ticks(world, at)
+    assert tick[org] == Counter(fired=2, push_error=1, push_sent=1)
+    [row] = _outbox(world, ALICE)
+    assert (row.state, row.reason, row.sent_at) == ("planned", "error", None)
+    assert [p["tag"] for p in _payloads(world, BOB)] == [second]
+    [again] = _ticks(world, at + timedelta(seconds=loop.TICK_SECONDS))
+    assert again == {org: Counter(push_sent=1)}
+    assert [p["tag"] for p in _payloads(world, ALICE)] == [first]
+
+
 # ── Two orgs ───────────────────────────────────────────────────────────────
 
 
@@ -720,7 +879,7 @@ def test_r8_org_b_reads_nothing_of_org_a(world) -> None:
     async def as_org_b() -> tuple[list[str], Any, Counter, int]:
         listed = await outbox.planned_pushes(b, limit=100)
         claimed = await outbox.claim_push(b, row.id, never)
-        sent = await push_channel.send_planned(b, at)
+        sent = await push_channel.send_planned(b, lambda: at)
         async with tenant_session(b) as db:
             seen = (await db.execute(text(
                 "SELECT count(*) FROM reach_outbox WHERE member_email = :m"),

@@ -56,11 +56,21 @@ session. After each write the loop bumps the member's My Day version
 **The web push** (WS-66 RE-9b, §5.6 "Settled 2026-10-30 (RE-9)"). Steps 1,
 2 and 5 each plan ONE web push in their own transaction, through
 ``reach.push_channel.plan_reminder_push`` on the step's session ``db``, keyed
-by the ledger row of the step. After the steps of an org, :func:`run_org`
-calls ``push_channel.send_planned`` once. The loop never calls the sender
+by the ledger row of the step. A step more than the TTL of its kind after
+its due time plans no push (ruling j). The loop never calls the sender
 itself, and it holds no session while a push goes out. A crash leaves a
 planned row, and the next tick sends it. Both need ``WEB_PUSH_ENABLED`` and
 ``calendar_reminders``, and no ``REACH_*`` flag.
+
+**Fires first, then one bounded send phase** (ruling k). :func:`run_tick`
+takes the steps of EVERY org first, with no network call. Then one send
+phase calls ``push_channel.send_planned`` for each org, under one deadline
+for the whole tick: no row starts after :data:`SEND_PHASE_S`. So a stalled
+push service in one org never delays the fires of a later org. A row that
+did not start stays planned, and the next tick sends it. No
+``asyncio.wait_for`` cancels a send: ``push.sender.send_to_member`` bounds
+itself with ``SEND_BUDGET_S``, and a cancel in its middle would leave its
+device sends running and its row claimed.
 
 **Dark by default.** With ``calendar_reminders`` off, :func:`start_reminder_loop`
 starts no task, and :func:`run_tick` does nothing.
@@ -74,6 +84,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -95,6 +106,11 @@ BATCH = 50
 ROUNDS = 4
 #: The seconds that a stop waits for a tick in progress.
 STOP_GRACE_SECONDS = 30
+#: The seconds in which the send phase of one tick may START a row (ruling
+#: k). A row that started runs to its end, inside the 20 s of
+#: ``push.sender.SEND_BUDGET_S``. A healthy send takes well under a second,
+#: so a fire and its push still fit in the 90 s of §5.6.
+SEND_PHASE_S = 30
 
 #: Step 5 (§5.4): give up at the brief once Metorite moved the reminder this
 #: many times, or at any step once this long passed after the first fire.
@@ -126,6 +142,11 @@ def loop_enabled() -> bool:
 def _now() -> datetime:
     """The loop's one clock. A test freezes THIS."""
     return datetime.now(UTC)
+
+
+def _monotonic() -> float:
+    """The stopwatch of the send phase. A test advances THIS."""
+    return time.monotonic()
 
 
 async def _orgs() -> list[str]:
@@ -266,7 +287,8 @@ async def _fire(db: Any, row: Any, day: Any, now: datetime) -> str:
         "fire_at": _iso(row.fire_at), "at": _iso(now),
         "next_check_at": _iso(check_at), "cycles": int(row.cycles),
     })
-    await push_channel.plan_reminder_push(db, row, event_id, "reminder_due", day, now)
+    await push_channel.plan_reminder_push(db, row, event_id, "reminder_due", day, now,
+                                          due_at=row.fire_at)
     return "fired"
 
 
@@ -279,7 +301,8 @@ async def _give_up(db: Any, row: Any, day: Any, now: datetime, reason: str) -> s
         "reason": reason, "at": _iso(now), "cycles": int(row.cycles),
         "from_state": row.state,
     })
-    await push_channel.plan_reminder_push(db, row, event_id, "reminder_unconfirmed", day, now)
+    await push_channel.plan_reminder_push(db, row, event_id, "reminder_unconfirmed", day, now,
+                                          due_at=row.next_check_at)
     return "gave_up"
 
 
@@ -297,7 +320,8 @@ async def _check_back(db: Any, row: Any, day: Any, now: datetime, done: int) -> 
     event_id = await _ledger(db, row, "check_back", {
         "number": number, "at": _iso(now), "next_check_at": _iso(next_at),
     })
-    await push_channel.plan_reminder_push(db, row, event_id, "reminder_check", day, now)
+    await push_channel.plan_reminder_push(db, row, event_id, "reminder_check", day, now,
+                                          due_at=row.next_check_at)
     return "check_back"
 
 
@@ -354,7 +378,9 @@ async def step(org: str, reminder_id: str, now: datetime) -> str | None:
 
 
 async def run_org(org: str, now: datetime | None = None) -> Counter[str]:
-    """Every due row of *org*, once. Answers the count of each outcome."""
+    """Every due row of *org*, once: the steps only, with no network call.
+    The send phase of :func:`run_tick` sends their pushes. Answers the count
+    of each outcome."""
     at = now or _now()
     counts: Counter[str] = Counter()
     active: dict[str, bool] = {}
@@ -395,7 +421,6 @@ async def run_org(org: str, now: datetime | None = None) -> Counter[str]:
                 counts[outcome] += 1
             if outcome in EVENTS:
                 touched.add(member)
-    counts.update(await _send_pushes(org, at))
     if touched:
         from gateway.routes.shell import cache
 
@@ -404,26 +429,53 @@ async def run_org(org: str, now: datetime | None = None) -> Counter[str]:
     return counts
 
 
-async def _send_pushes(org: str, now: datetime) -> Counter[str]:
-    """The send step of RE-9b, after the commits of every step of *org*: each
-    planned web push goes through ``push_channel.send_planned``. It never
-    raises, so a failed send never stops the loop. A row it did not send stays
-    planned, and the next tick tries it again."""
-    if _stopping.is_set():
-        return Counter()
-    try:
-        return await push_channel.send_planned(org, now, _stopping.is_set)
-    except Exception as exc:
-        _log.warning("reminders.push_failed", error=type(exc).__name__)
-        return Counter()
+async def _send_phase(orgs: list[str], now: datetime | None,
+                      out: dict[str, Counter[str]]) -> None:
+    """The send step of RE-9b, once in a tick, after the steps of EVERY org
+    (ruling k). Each org's planned pushes go through
+    ``push_channel.send_planned``, bound to that org. One deadline bounds
+    the whole phase: no row starts :data:`SEND_PHASE_S` after the phase
+    began. A row that did not start stays planned for the next tick.
+
+    The clock of a row is the time of its start, so the quiet hours of a row
+    read its send time, not the start of the tick. With a frozen *now* the
+    clock starts there and moves with the stopwatch. It adds each org's
+    counts to *out*, and it never raises."""
+    if _stopping.is_set() or not orgs:
+        return
+    start = _monotonic()
+    base = now or _now()
+
+    def clock() -> datetime:
+        return base + timedelta(seconds=_monotonic() - start)
+
+    def over() -> bool:
+        return _stopping.is_set() or _monotonic() - start >= SEND_PHASE_S
+
+    for org in orgs:
+        if over():
+            _log.info("reminders.push_phase_over")
+            break
+        token = bind_tenant(org)
+        try:
+            sent = await push_channel.send_planned(org, clock, over)
+        except Exception as exc:  # a failed send never stops the loop
+            _log.warning("reminders.push_failed", error=type(exc).__name__)
+            sent = Counter()
+        finally:
+            release_tenant(token)
+        if sent:
+            out.setdefault(org, Counter()).update(sent)
 
 
 async def run_tick(now: datetime | None = None) -> dict[str, Counter[str]]:
-    """One pass over every org. Never raises."""
+    """One pass over every org: the steps of each org first, then one send
+    phase for all of them (ruling k). Never raises."""
     if not loop_enabled():
         return {}
     out: dict[str, Counter[str]] = {}
-    for org in await _orgs():
+    orgs = await _orgs()
+    for org in orgs:
         if _stopping.is_set():
             break
         token = bind_tenant(org)
@@ -435,6 +487,7 @@ async def run_tick(now: datetime | None = None) -> dict[str, Counter[str]]:
             _log.warning("reminders.org_failed", error=type(exc).__name__)
         finally:
             release_tenant(token)
+    await _send_phase(orgs, now, out)
     return out
 
 
