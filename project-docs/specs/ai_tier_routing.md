@@ -611,6 +611,11 @@ The question is the kind of the member's message: `chat`, `code`, `plan` or
   and 41 of 80 questions timed out (51%).
 - The answer sets the tier of every main model request in that turn, unless a
   tool hint raises it.
+- The question runs with thinking off (2026-10-30): the request sends `reasoning_effort: none` and a
+  `max_tokens` cap that grows with the item count (`system_one.max_tokens_for`). DeepSeek thinks by
+  default. Production measured a median of 180 output tokens for an answer of 30 to 60 tokens. A reply
+  that the cap cuts is not JSON, so it reads as `error` and so as `chat`. Fence:
+  `test_system_one_tool.py`, the tests under "Thinking off".
 - A turn with one short message under 12 words skips the question and reads as
   `chat`. This saves the call on "thanks" and "yes".
 
