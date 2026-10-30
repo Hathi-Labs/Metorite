@@ -86,6 +86,24 @@ describe("the brief card", () => {
     expect(html).not.toContain("<a ");
   });
 
+  it("draws the claim text and the lead as text, never as HTML", () => {
+    // A claim line comes from mail and CRM text. It must reach the page as
+    // text: a raw-HTML path would turn a subject into markup.
+    const evil = '<img src=x onerror="alert(1)">';
+    resource.data = readBrief(
+      body({
+        lead: `Your day ${evil}`,
+        claims: [
+          { position: 1, section: "s", text: evil, source_app: "email", source_kind: "thread", href: "/email?thread=1" },
+          { position: 2, section: "s", text: evil, source_app: "", source_kind: "", href: "" },
+        ],
+      }),
+    );
+    const html = draw();
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
+  });
+
   it("labels the brief of the day before with its date", () => {
     resource.data = readBrief(body({ local_date: "2026-10-21" }));
     expect(draw()).toContain("Yesterday&#x27;s brief, 21 Oct");
