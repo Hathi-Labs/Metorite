@@ -17,8 +17,13 @@ Route      Does
 ``GET``    ``{"delete_enabled": bool}``. True when the member has not
            chosen (no settings row, or NULL)
 ``PUT``    Body ``{"delete_enabled": bool}``. Writes an explicit
-           ``true`` or ``false``
+           ``true`` or ``false`` to each spelling of the member's row
 =========  ===========================================================
+
+**The case of the address (fix round 1).** A web session keeps the spelling
+of the sign-in (``Ravi.K@acme.com``), and an agent reads with the lower
+case. So the read matches in any case, and one ``false`` in any spelling is
+off. The PUT writes every spelling, so the member's last choice wins.
 
 **Who reads it.** The Integrations app (the AI agents view), and the MCP edge
 at ``tools/list``. So the ``GET`` is in ``agent_oauth.MCP_ROUTES``, and a
@@ -59,9 +64,27 @@ logger = logging.getLogger(__name__)
 #: The 403 of a PUT from an agent. An agent never sets its own switch.
 AGENT_REFUSED = "Only the member sets this switch, in Metorite."
 
+#: The switch over EVERY spelling of the address (EA-6i fix round 1). A row
+#: keys on the spelling of the session that wrote it (``Ravi.K@acme.com``),
+#: and the address of an agent is lower case. ``bool_and`` skips a NULL. So
+#: no row, or NULL rows only, give NULL (on), and one ``false`` gives false
+#: (off). ⚠️ Not the ``any_case`` read of ``tasks/settings._load``: it picks
+#: ONE row, so a lower-case NULL row would outvote a ``false`` and fail open.
 _READ_SQL = (
-    "SELECT agent_delete_enabled FROM user_settings "
-    "WHERE organization_id = {org} AND user_id = :uid"
+    "SELECT bool_and(agent_delete_enabled) FROM user_settings "
+    "WHERE organization_id = {org} AND lower(user_id) = lower(:uid)"
+)
+
+#: The row of the session's own spelling: a new row gets the calendar seed.
+_OWN_ROW_SQL = (
+    "SELECT 1 FROM user_settings WHERE organization_id = {org} AND user_id = :uid"
+)
+
+#: The PUT sets every spelling of the member's row, so a stale value under
+#: another spelling never outvotes the member's new choice.
+_SET_ALL_SQL = (
+    "UPDATE user_settings SET agent_delete_enabled = :on, updated_at = now() "
+    "WHERE organization_id = {org} AND lower(user_id) = lower(:uid)"
 )
 
 
@@ -98,15 +121,17 @@ async def delete_enabled(db: Any, uid: str) -> bool:
 
     EA-6i: the switch is ON until the member turns it off. No row is on,
     NULL ("the member has not chosen") is on, ``true`` is on, and only
-    ``false`` is off. An empty *uid* is off, and no read runs. A failed
+    ``false`` is off. The address matches in any case, and a ``false`` in
+    any spelling is off. An empty *uid* is off, and no read runs. A failed
     read raises, so a fault never reads as on or as off.
     """
     if not uid:
         return False
     row = (await db.execute(_sql(_READ_SQL), {"uid": uid})).first()
-    if row is None or row[0] is None:
+    value = None if row is None else row[0]
+    if value is None:
         return True
-    return row[0] is True
+    return value is True
 
 
 @me_router.get("/me/agent-access", summary="The caller's agent switches (EA-6h)")
@@ -137,23 +162,25 @@ async def put_agent_access(
 
     try:
         async with _tenant_session() as db:
+            # Every spelling first, in one statement. Two PUTs of two
+            # spellings then wait on each other, and they cannot deadlock.
+            await db.execute(_sql(_SET_ALL_SQL), {"uid": uid, "on": body.delete_enabled})
             # The calendar seed, for a member with no settings row yet, as
             # `assistant_profile._upsert` does. An existing row changes the
             # switch only.
             seed: dict[str, Any] = {}
-            if (await db.execute(_sql(_READ_SQL), {"uid": uid})).first() is None:
+            if (await db.execute(_sql(_OWN_ROW_SQL), {"uid": uid})).first() is None:
                 seed = await _seed_from_work_schedule(db, uid)
             cols = ["agent_delete_enabled", *seed]
             sql = upsert_settings_sql(cols, update=["agent_delete_enabled"])
-            row = (await db.execute(
-                text(f"{sql} RETURNING agent_delete_enabled"),
-                {"uid": uid, "agent_delete_enabled": body.delete_enabled, **seed},
-            )).first()
+            await db.execute(
+                text(sql), {"uid": uid, "agent_delete_enabled": body.delete_enabled, **seed})
+            # The answer is what an agent of this member now reads.
+            on = await delete_enabled(db, uid)
     except HTTPException:
         raise
     except Exception as exc:
         logger.warning("auth.agent_access.write_failed", extra={"error": type(exc).__name__})
         raise HTTPException(status_code=503, detail="unavailable") from exc
-    on = bool(row is not None and row[0] is True)
     logger.info("auth.agent_access.set", extra={"delete_enabled": on})
     return {"delete_enabled": on}

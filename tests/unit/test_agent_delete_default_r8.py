@@ -43,6 +43,15 @@ it as it binds the runner in production. Run::
   ``test_316_turns_each_false_into_null_once_and_keeps_true``.
 * E4. ``M``: no per-tenant pass under row security.
   ``test_316_turns_each_false_into_null_once_and_keeps_true``.
+
+Fix round 1 (the review, P1): the case of the address. A web session keeps
+the spelling of the sign-in, and an agent reads with the lower case.
+
+* E5. ``A/agent_access_switch.py`` ``_READ_SQL``: the exact match
+  ``user_id = :uid`` again. ``test_a_capital_letter_session_turns_it_off_for_the_agent``.
+* E6. ``A/agent_access_switch.py`` ``put_agent_access``: no ``_SET_ALL_SQL``,
+  so the PUT writes its own spelling only.
+  ``test_a_new_choice_in_one_spelling_wins_over_a_stale_one``.
 """
 from __future__ import annotations
 
@@ -126,9 +135,13 @@ def world():
         for oid, slug in ((org, "deldefault"), (org_b, "deldefaultb")):
             c.execute(text("INSERT INTO organization (id, slug, display_name) "
                            "VALUES (:id, :s, :s)"), {"id": oid, "s": slug})
-    w._Seeder(eng, org).member(CHOOSER, ["feature:projects"])
+    a = w._Seeder(eng, org)
+    a.member(CHOOSER, ["feature:projects"])
+    # A write connection of the member. Its address is lower case, as each
+    # connection's is (`agent_tokens`), so a signed read is the agent's read.
+    cid, raw = d._connection_of(a, CHOOSER)
     world_ = SimpleNamespace(
-        admin=eng, org=org, org_b=org_b,
+        admin=eng, org=org, org_b=org_b, c={"chooser": cid}, tok={"chooser": raw},
         app_dsn=admin_url.set(database=dedicated, username=_APP_ROLE, password=_APP_PW,
                               ).render_as_string(hide_password=False),
         owner_url=admin_url.set(database=dedicated, username=_OWNER_ROLE,
@@ -147,17 +160,20 @@ live_app = tw.live_app
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-def _set(world, state: Any, *, org: str | None = None, email: str = CHOOSER) -> None:
+def _set(world, state: Any, *, org: str | None = None, email: str = CHOOSER,
+         keep_other_spellings: bool = False) -> None:
     """Put the switch of *email* in *state*, as the admin.
 
     ``NONE`` deletes the row. ``None`` inserts a row that does not name the
-    column, so the row holds the column default.
+    column, so the row holds the column default. The rows of every other
+    spelling of *email* go too, unless *keep_other_spellings*.
     """
     org = org or world.org
+    match = "user_id = :u" if keep_other_spellings else "lower(user_id) = lower(:u)"
     with world.admin.begin() as c:
         c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": org})
         c.execute(text("DELETE FROM user_settings WHERE organization_id = CAST(:o AS uuid)"
-                       " AND user_id = :u"), {"o": org, "u": email})
+                       f" AND {match}"), {"o": org, "u": email})
         if state is NONE:
             return
         if state is None:
@@ -293,6 +309,70 @@ class TestTheFourStates:
         _set(world, NONE, org=world.org_b)
         assert await _read(world) is False
         assert await _read(world, org=world.org_b) is True
+
+
+# ── R8: the case of the address (fix round 1) ───────────────────────────────
+
+#: The member's sign-in spelling, as a web session sends it.
+CAPS = "DelDefault-Member@mcpwrites.test"
+
+
+async def _agent_get(world) -> dict[str, Any]:
+    """The signed GET of the member's agent: the read of ``tools/list``."""
+    r = await tw._send(world, "GET", "/auth/me/agent-access", signed="chooser")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def _put_as(world, email: str, on: bool) -> dict[str, Any]:
+    r = await d._person(world, email, "PUT", "/auth/me/agent-access", {"delete_enabled": on})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+class TestTheCaseOfTheAddress:
+    """A row keys on the session's spelling. The agent reads in lower case."""
+
+    pytestmark = _DB_GATE
+
+    async def test_a_capital_letter_session_turns_it_off_for_the_agent(self, live_app):
+        assert CAPS.lower() == CHOOSER
+        _set(live_app, NONE)
+        assert await _put_as(live_app, CAPS, False) == {"delete_enabled": False}
+        # The row holds the session's spelling, and no lower-case row exists.
+        assert _stored(live_app, email=CAPS) is False
+        assert _stored(live_app, email=CHOOSER) is NONE
+        assert await _agent_get(live_app) == {"delete_enabled": False}
+        assert await _read(live_app, CHOOSER) is False
+        # Back on: the agent reads on.
+        assert await _put_as(live_app, CAPS, True) == {"delete_enabled": True}
+        assert await _agent_get(live_app) == {"delete_enabled": True}
+        assert await _read(live_app, CHOOSER) is True
+
+    async def test_a_new_choice_in_one_spelling_wins_over_a_stale_one(self, live_app):
+        # A stale off under the lower case, from an older session.
+        _set(live_app, False, email=CHOOSER)
+        _set(live_app, None, email=CAPS, keep_other_spellings=True)
+        assert await _agent_get(live_app) == {"delete_enabled": False}
+        # The member turns it on with the capital letter spelling.
+        assert await _put_as(live_app, CAPS, True) == {"delete_enabled": True}
+        assert _stored(live_app, email=CHOOSER) is True
+        assert _stored(live_app, email=CAPS) is True
+        assert await _agent_get(live_app) == {"delete_enabled": True}
+        # And off again: each spelling holds the off.
+        assert await _put_as(live_app, CAPS, False) == {"delete_enabled": False}
+        assert _stored(live_app, email=CHOOSER) is False
+        assert _stored(live_app, email=CAPS) is False
+        assert await _agent_get(live_app) == {"delete_enabled": False}
+
+    async def test_one_false_in_any_spelling_is_off(self, world):
+        """``bool_and`` skips NULL. A stale ``true`` loses to a ``false``."""
+        _set(world, True, email=CHOOSER)
+        _set(world, False, email=CAPS, keep_other_spellings=True)
+        assert await _read(world, CHOOSER) is False
+        assert await _read(world, CAPS) is False
+        _set(world, None, email=CAPS, keep_other_spellings=True)
+        assert await _read(world, CHOOSER) is True
 
 
 # ── R8: migration 316 ───────────────────────────────────────────────────────
