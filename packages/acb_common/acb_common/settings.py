@@ -598,6 +598,11 @@ class Settings(BaseSettings):
     # calendar_events_reminders.md §5.9 and §10.2. Fence:
     # tests/unit/test_push_subscriptions.py.
     web_push_enabled: bool = False
+    # OB-8: PUSH_PROMPT_ORGS lists the org ids whose phone members see the
+    # chat sheet that asks them to turn on push. `*` opens every org. Empty
+    # opens none. Reader: `gateway.push.flags.prompt_allowed`. Spec:
+    # calendar_events_reminders.md section 10.4.
+    push_prompt_orgs: str = ""
     vapid_public_key: str = ""
     vapid_private_key: str = ""
     vapid_subject: str = ""

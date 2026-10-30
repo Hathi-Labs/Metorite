@@ -43,9 +43,11 @@ and ``tests/unit/test_my_day_prefs_r8.py``.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import unicodedata
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
@@ -60,7 +62,8 @@ logger = logging.getLogger(__name__)
 
 #: The keys of ``my_day_prefs``: three of §16 MD-2d, and ``hide_push_details``
 #: (WS-66 RE-9a), a boolean.
-PREF_KEYS: tuple[str, ...] = ("mutes", "open_in_app", "corrections", "hide_push_details")
+PREF_KEYS: tuple[str, ...] = ("mutes", "open_in_app", "corrections", "hide_push_details",
+                              "push_prompt")
 #: The longest list of kinds that ``mutes`` and ``open_in_app`` take.
 MAX_KINDS = 29
 #: The most lines that ``corrections`` takes.
@@ -133,8 +136,47 @@ def _flag(value: Any) -> bool:
     return value
 
 
+#: The time fields of ``push_prompt`` (OB-8, ``calendar_events_reminders.md``
+#: section 10.4 item 5).
+PUSH_PROMPT_TIMES = ("snoozed_until", "last_shown_at", "denied_seen_at")
+#: How far ahead ``snoozed_until`` may reach.
+PUSH_PROMPT_MAX_SNOOZE = timedelta(days=366)
+
+
+def _prompt_time(value: Any) -> datetime | None:
+    """A time with an offset, or None when the value is not one."""
+    if not isinstance(value, str) or len(value) > 64:
+        return None
+    try:
+        when = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return when if when.tzinfo is not None and when.utcoffset() is not None else None
+
+
+def _push_prompt(value: Any) -> dict[str, Any]:
+    """The state of the chat's push sheet: an object. An unknown field
+    drops. A time with no offset is refused, and so is a ``snoozed_until``
+    more than 366 days ahead. ``never`` is a strict boolean."""
+    if not isinstance(value, dict):
+        raise ValueError("the value is an object")
+    out: dict[str, Any] = {}
+    for key in PUSH_PROMPT_TIMES:
+        if key not in value or value[key] is None:
+            continue
+        when = _prompt_time(value[key])
+        if when is None:
+            raise ValueError(f"{key} is a time with an offset")
+        if key == "snoozed_until" and when > datetime.now(UTC) + PUSH_PROMPT_MAX_SNOOZE:
+            raise ValueError("snoozed_until is more than 366 days ahead")
+        out[key] = value[key].strip()
+    if "never" in value:
+        out["never"] = _flag(value["never"])
+    return out
+
+
 _CLEAN = {"mutes": _kinds, "open_in_app": _kinds, "corrections": _corrections,
-          "hide_push_details": _flag}
+          "hide_push_details": _flag, "push_prompt": _push_prompt}
 
 
 class PrefPut(BaseModel):
@@ -142,7 +184,7 @@ class PrefPut(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    key: Literal["mutes", "open_in_app", "corrections", "hide_push_details"]
+    key: Literal["mutes", "open_in_app", "corrections", "hide_push_details", "push_prompt"]
     value: Any
 
     @model_validator(mode="after")
@@ -173,6 +215,11 @@ def stored_prefs(raw: Any) -> dict[str, Any]:
         out["corrections"] = [x for x in v if isinstance(x, str)][:MAX_CORRECTIONS]
     if isinstance(raw.get("hide_push_details"), bool):
         out["hide_push_details"] = raw["hide_push_details"]
+    if isinstance(raw.get("push_prompt"), dict):
+        # A stored object that fails the check drops from the answer, as a
+        # stale kind does. The member sees the sheet again.
+        with contextlib.suppress(ValueError):
+            out["push_prompt"] = _push_prompt(raw["push_prompt"])
     return out
 
 

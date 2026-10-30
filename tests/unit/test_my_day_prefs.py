@@ -110,7 +110,7 @@ def _put(body: Any, user: UserContext | None = None):
 class TestTheAllowlist:
     def test_the_keys_are_the_spec_s(self) -> None:
         assert prefs.PREF_KEYS == ("mutes", "open_in_app", "corrections",
-                                   "hide_push_details")
+                                   "hide_push_details", "push_prompt")
         assert set(prefs._CLEAN) == set(prefs.PREF_KEYS)
 
     @pytest.mark.parametrize("body", [
@@ -352,3 +352,52 @@ class TestHidePushDetails:
     def test_a_stored_value_of_the_wrong_shape_drops_from_the_read(self, fake: _FakeDB) -> None:
         fake.row = {"hide_push_details": "yes"}
         assert _client(_user()).get("/shell/feed/prefs").json() == {}
+
+
+class TestPushPrompt:
+    """WS-OB OB-8: ``push_prompt`` is an object of three times and ``never``."""
+
+    _NOW = "2026-10-30T09:00:00+05:30"
+
+    def test_the_object_is_written_and_read_back(self, fake: _FakeDB) -> None:
+        value = {"snoozed_until": "2027-01-01T00:00:00Z", "last_shown_at": self._NOW,
+                 "denied_seen_at": self._NOW, "never": True}
+        res = _put({"key": "push_prompt", "value": value})
+        assert res.status_code == 200, res.text
+        [(_, params)] = _writes(fake)
+        assert (params["pkey"], json.loads(params["pval"])) == ("push_prompt", value)
+        fake.row = {"push_prompt": value}
+        assert _client(_user()).get("/shell/feed/prefs").json() == {"push_prompt": value}
+
+    def test_an_unknown_field_drops(self, fake: _FakeDB) -> None:
+        res = _put({"key": "push_prompt",
+                    "value": {"never": False, "evil": "x", "last_shown_at": self._NOW}})
+        assert res.status_code == 200, res.text
+        [(_, params)] = _writes(fake)
+        assert json.loads(params["pval"]) == {"never": False, "last_shown_at": self._NOW}
+
+    @pytest.mark.parametrize("value", [
+        None, [], "x", 1, True,
+        {"last_shown_at": "2026-10-30T09:00:00"},     # no offset
+        {"snoozed_until": "2026-10-30"},               # no offset
+        {"denied_seen_at": "not a time"},
+        {"snoozed_until": 5},
+        {"never": 1}, {"never": "true"}, {"never": None},
+    ])
+    def test_a_bad_value_is_refused(self, fake: _FakeDB, value: Any) -> None:
+        res = _put({"key": "push_prompt", "value": value})
+        assert res.status_code == 422, res.text
+        assert fake.sql == []
+
+    def test_a_snooze_over_366_days_ahead_is_refused(self, fake: _FakeDB) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        far = (datetime.now(UTC) + timedelta(days=367)).isoformat()
+        near = (datetime.now(UTC) + timedelta(days=365)).isoformat()
+        assert _put({"key": "push_prompt", "value": {"snoozed_until": far}}).status_code == 422
+        assert _put({"key": "push_prompt", "value": {"snoozed_until": near}}).status_code == 200
+
+    def test_a_stored_value_of_the_wrong_shape_drops_from_the_read(self, fake: _FakeDB) -> None:
+        for bad in ("yes", {"never": "yes"}, {"last_shown_at": "2026-10-30T09:00:00"}):
+            fake.row = {"push_prompt": bad}
+            assert _client(_user()).get("/shell/feed/prefs").json() == {}
