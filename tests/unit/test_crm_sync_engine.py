@@ -17,6 +17,7 @@ from gateway.crm_sources.base import (
     NeedsReconnect,
     RateLimited,
     SourceError,
+    SourceRecord,
     UntrustedHost,
 )
 from gateway.crm_sources.zoho import mapping
@@ -311,6 +312,108 @@ def test_sync_health_reads_short_by_only_from_an_entity_cursor() -> None:
     }
     assert sync._short_by_keys(cursors, engine) == {
         "organizations": 3, "module:Payments_Made": 1944}
+
+
+def test_a_picklist_value_is_named_by_its_zoho_label() -> None:
+    """Task #1096 (``crm_platform.md`` §20.6 item 7): a Stage or Lead_Status
+    value is named by ``display_value``, the label that a record carries.
+    ``actual_value`` is the fallback. The order stays ``sequence_number``."""
+    from types import SimpleNamespace
+
+    ctx = SimpleNamespace(mapping=mapping)
+    values = engine._picklist_values(ctx, {"api_name": "Stage", "pick_list_values": [
+        {"id": "S2", "actual_value": "Confirmation and Advance",
+         "display_value": "New Lead", "sequence_number": 2, "probability": 20},
+        {"id": "S3", "actual_value": "Closed Won", "display_value": "Delivered & Installed",
+         "sequence_number": 3, "forecast_category": {"name": "Closed Won"}},
+        {"id": "S1", "actual_value": "Re-Evaluate", "display_value": "Re-Evaluate",
+         "sequence_number": 1},
+        {"id": "S4", "actual_value": "No Label", "sequence_number": 4},
+        {"id": "S5", "actual_value": "Blank Label", "display_value": " ",
+         "sequence_number": 5},
+        {"display_value": "-None-", "actual_value": "-None-", "sequence_number": 0},
+    ]})
+    assert [(v.name, v.ext_id, v.position) for v in values] == [
+        ("Re-Evaluate", "S1", 1), ("New Lead", "S2", 2),
+        ("Delivered & Installed", "S3", 3), ("No Label", "S4", 4),
+        ("Blank Label", "S5", 5)]
+    assert values[1].probability == 20
+    assert (values[2].type, values[2].forecast_category) == ("won", "Closed Won")
+
+
+def test_a_label_collision_needs_a_listed_row_that_holds_a_label_not_its_own() -> None:
+    """Task #1096 (``crm_platform.md`` §20.6, "the chain"). The check queues a
+    full read, so a false answer costs a full read on each picklist read."""
+    from types import SimpleNamespace
+
+    def value(name: str, ext: str | None) -> engine._PicklistValue:
+        return engine._PicklistValue(name, ext, 0, "open", None, None)
+
+    def row(ext: str, name: str) -> SimpleNamespace:
+        return SimpleNamespace(ext_id=ext, name=name)
+
+    chain = [value("Beta", "S1"), value("Gamma", "S2")]
+    listed = frozenset({"S1", "S2"})
+    # The row of S2 holds the label of S1.
+    assert engine._label_collision(chain, [row("S1", "Alpha"), row("S2", "Beta")], listed)
+    # Each row holds its own label, or a name that no value holds.
+    assert not engine._label_collision(chain, [row("S1", "Beta"), row("S2", "Gamma")], listed)
+    assert not engine._label_collision(chain, [row("S1", "Alpha"), row("S2", "Delta")], listed)
+    # A retired row holds the label, and its holder has its own row. The park
+    # leaves the records of the holder in the parked lane, so a read is due.
+    assert engine._label_collision(chain, [row("S1", "Alpha"), row("S9", "Beta")], listed)
+    # The holder has no row, so it adopts the retired row with its records.
+    assert not engine._label_collision(chain, [row("S9", "Beta")], listed)
+    # The park renamed the retired row, so the next check finds nothing.
+    assert not engine._label_collision(chain, [row("S1", "Beta"), row("S9", "Beta [S9]")], listed)
+    # Two values share the label, and the rows take it in turns. No full read
+    # can tell their records apart, and each read would queue one more.
+    shared = [value("Beta", "S1"), value("Beta", "S2")]
+    assert not engine._label_collision(shared, [row("S1", "Beta [S2]"), row("S2", "Beta")], listed)
+    assert not engine._label_collision(shared, [row("S1", "Beta"), row("S2", "Beta [S1]")], listed)
+    # The shared label on the row of a third value is a true collision.
+    assert engine._label_collision(
+        [*shared, value("Delta", "S3")], [row("S3", "Beta")], frozenset({"S1", "S2", "S3"}))
+    # A value with no Zoho id owns no label.
+    assert not engine._label_collision(
+        [value("Beta", None)], [row("S1", "Beta")], frozenset({"S1"}))
+
+
+def test_a_label_read_keeps_only_the_deals_that_an_incremental_read_would_list() -> None:
+    """Task #1096: a label read moves the cursor past each deal, so a deal that
+    changed still owes its role call. The others owe none."""
+    floor = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+
+    def record(ident: str, stamp: str | None) -> SourceRecord:
+        fields = {"Modified_Time": stamp} if stamp else {}
+        return SourceRecord("deal", ident, None, fields)
+
+    records = (
+        record("old", "2026-01-01T11:59:59+00:00"),
+        record("tie", "2026-01-01T12:00:00+00:00"),
+        record("new", "2026-01-01T12:00:01+00:00"),
+        record("failed", "2026-01-01T12:00:02+00:00"),
+        record("hidden", None),
+    )
+    landed = {"old", "tie", "new", "hidden"}
+    assert engine._changed_ids(records, landed, floor) == {"tie", "new"}
+    # No cursor yet: an incremental read would list every record it can date.
+    assert engine._changed_ids(records, landed, None) == {"old", "tie", "new"}
+
+
+def test_each_write_of_the_rules_cursor_keeps_the_label_list() -> None:
+    """Task #1096: a rule undo rewrites the state of this row. A label read that
+    still waits must stay on its list, and a read with no entry adds no key."""
+    from types import SimpleNamespace
+
+    def state_after(old: dict[str, object]) -> dict[str, object]:
+        row = CursorRow(engine.FIELD_RULES_ROW, None, old, None, None)
+        ctx = SimpleNamespace(cursors={engine.FIELD_RULES_ROW: row})
+        return engine._rules_row(ctx, [], {"lead"}).state
+
+    assert state_after({"applied": [], "reread": [], "label_reread": ["deal"]}) == {
+        "applied": [], "reread": ["lead"], "label_reread": ["deal"]}
+    assert state_after({"applied": [], "reread": []}) == {"applied": [], "reread": ["lead"]}
 
 
 def test_a_field_def_is_made_only_for_a_custom_field() -> None:

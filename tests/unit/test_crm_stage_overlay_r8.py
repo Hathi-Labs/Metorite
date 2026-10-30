@@ -743,7 +743,11 @@ async def test_an_incremental_run_reads_the_picklists_on_the_discovery_cadence(c
 @pytest.mark.parametrize("first", ["S1", "S2"])
 async def test_two_values_that_trade_names_keep_their_rows(c3, first) -> None:
     """Zoho swaps the names of two values. Each row keeps its id, its overlay
-    and its deals, whichever value the picklist lists first."""
+    and its deals, whichever value the picklist lists first.
+
+    Each deal then carries the new name of its value, as a Zoho record does.
+    The trade queues one full read of the deals (task #1096), and that read
+    maps each deal by the name it carries."""
     _deal(c3.a, "d1", 1, Stage="Qualify")
     _deal(c3.a, "d2", 2, Stage="Propose")
     await _sync(c3, c3.org_a, c3.a)
@@ -753,6 +757,8 @@ async def test_two_values_that_trade_names_keep_their_rows(c3, first) -> None:
                        {"ui_probability": 33})).status_code == 200
     c3.a.stages[0]["actual_value"] = "Propose"
     c3.a.stages[1]["actual_value"] = "Qualify"
+    for record in c3.a.data["Deals"]:
+        record["Stage"] = {"d1": "Propose", "d2": "Qualify"}[record["id"]]
     if first == "S2":
         c3.a.stages[0]["sequence_number"], c3.a.stages[1]["sequence_number"] = 2, 1
     await _picklist_run(c3, c3.org_a, c3.a)

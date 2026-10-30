@@ -231,6 +231,12 @@ SHORT_BY_KEY = "short_by"
 #: an activity entity that the read counted so far, by parent module.
 FULL_READ_KEY = "full_read"
 READ_DROPS_KEY = "read_drops"
+#: Task #1096: the full read that the label check of ``_mirror_statuses`` asks
+#: for. In the state of :data:`FIELD_RULES_ROW` the key lists the entities that
+#: wait for the read. In the cursor of an entity it marks the read while it
+#: runs. This read does not share the ``reread`` list. A read of that list can
+#: owe contact roles, and a label read owes them only for a deal that changed.
+LABEL_REREAD_KEY = "label_reread"
 #: CRM-Q24: the ``SourceError.code`` of a tie at one second that is wider
 #: than the provider serves by offset (``ZohoTieTooWide``). A test pins the
 #: two. The engine counts it as ``failed`` and keeps the cursor. It also sets
@@ -830,6 +836,10 @@ class _Ctx:
         #: and the entities that a rejected or stale rule makes read in full.
         self.rules: dict[str, dict[str, str]] = {}
         self.rule_rereads: set[str] = set()
+        #: The entities on the label list, and those whose check fired in
+        #: this run (task #1096, :data:`LABEL_REREAD_KEY`).
+        self.label_rereads: set[str] = set()
+        self.label_fired: set[str] = set()
         #: The approved rules that ``_field_rules`` handled, and the ids that
         #: discovery made stale in this run. ``map_record`` applies the first
         #: list minus the second, and never a rule approved during the run.
@@ -1104,7 +1114,8 @@ _STATUS_ID_SQL = "SELECT id FROM {table} WHERE name = :name"
 
 # The picklist read is the one step that keeps the source values current
 # (CRM-C3, §20.6 items 7 to 9). It matches a row by the Zoho id of the value
-# first, then by name.
+# first, then by name. The name is the Zoho label (``display_value``), which
+# is the name that a record carries (task #1096).
 _STATUS_BY_EXT_SQL = "SELECT id, name FROM {table} WHERE ext_id = :ext"
 _STATUS_BY_NAME_SQL = "SELECT id, ext_id FROM {table} WHERE name = :name"
 _PICKLIST_INSERT_SQL = (
@@ -1138,10 +1149,14 @@ _FORECAST_SQL = (
 #: A pipeline stage that names ``won`` or ``lost`` gives its row that type, also
 #: a row that exists already. The insert above never changes an existing row,
 #: so without this a stage first seen as ``open`` stayed open for good.
+#: A stage with a Zoho id finds its row by that id when a row holds it, else
+#: by name (task #1096). A row can hold an old name until the picklist read.
 _STAGE_TYPE_SQL = (
     "UPDATE crm_deal_statuses SET type = :type "
-    "WHERE organization_id = CAST(:org AS uuid) AND name = :name "
-    "AND type IS DISTINCT FROM :type"
+    "WHERE organization_id = CAST(:org AS uuid) AND type IS DISTINCT FROM :type "
+    "AND CASE WHEN EXISTS (SELECT 1 FROM crm_deal_statuses x WHERE "
+    "x.organization_id = CAST(:org AS uuid) AND x.ext_id = CAST(:ext AS text)) "
+    "THEN ext_id = CAST(:ext AS text) ELSE name = :name END"
 )
 #: The stage types a pipeline can state. A stage with no type keeps its row.
 STAGE_TYPES = ("won", "lost")
@@ -1167,9 +1182,22 @@ def stage_types(pipelines: list[dict[str, Any]]) -> dict[str, str]:
 
 
 async def _apply_stage_types(db: Any, org: str, pipelines: list[dict[str, Any]]) -> None:
-    """Give each mirrored stage the type its pipeline names (won or lost)."""
+    """Give each mirrored stage the type its pipeline names (won or lost).
+
+    A stage that carries the Zoho id of its value finds its row by that id
+    first (task #1096). A profile from before that change has no id, so its
+    stages find their rows by name, as before.
+    """
+    ids: dict[str, str] = {}
+    for pipeline in pipelines:
+        for stage in (pipeline.get("stages") or []) if isinstance(pipeline, dict) else []:
+            if isinstance(stage, dict) and stage.get("ext_id") and isinstance(stage.get("name"), str):
+                ids.setdefault(stage["name"], str(stage["ext_id"]))
     for name, kind in stage_types(pipelines).items():
-        await db.execute(text(_STAGE_TYPE_SQL), {"org": org, "name": name, "type": kind})
+        await db.execute(
+            text(_STAGE_TYPE_SQL),
+            {"org": org, "name": name, "type": kind, "ext": ids.get(name)},
+        )
 
 
 async def _ensure_status(
@@ -1218,11 +1246,18 @@ async def _source_status(
     When the name belongs to ANOTHER row than the id row:
 
     * that row has no Zoho id (a record pull made it before this read): the
-      fenced door ``core.merge_status_from_source`` folds it into the id row;
+      fenced door ``core.merge_status_from_source`` folds it into the id row.
+      This also heals an org that the old name rule split (task #1096). That
+      rule named the id row by ``actual_value``, so each record that carried
+      the label made a second row with no Zoho id. The label is now the name,
+      so the next picklist read folds each such row into its id row;
     * that row holds the id of another value that Zoho still lists: two
-      values traded names, so it moves aside until its own value names it;
+      values traded names, so it moves aside until its own value names it.
+      Its records can belong to this value, and
+      :func:`_mirror_statuses` queues one full read for that case;
     * that row holds an id that Zoho no longer lists: it moves aside too, and
-      the gone rule marks it. Its deals keep it.
+      the gone rule marks it. Its deals keep it, until the full read of
+      :func:`_label_collision` moves each record that carries this label.
 
     No savepoint here catches a failure. A failed merge fails the picklist
     step, and the run logs it.
@@ -1300,12 +1335,23 @@ def _picklist_type(item: dict[str, Any], name: str) -> str:
 def _picklist_values(
     ctx: _Ctx, definition: dict[str, Any],
 ) -> list[_PicklistValue]:
-    """The values of one picklist definition, in Zoho order."""
+    """The values of one picklist definition, in Zoho order.
+
+    The name of a value is its LABEL (``display_value``), and
+    ``actual_value`` is the fallback (WS-53 task #1096, ``crm_platform.md``
+    §20.6 item 7). A Zoho admin who renames a value changes the label only.
+    ``actual_value`` keeps the first name. A record carries the label in
+    ``Stage`` and ``Lead_Status``, so a row named by ``actual_value`` gave a
+    second row for each renamed value. The order stays ``sequence_number``.
+    """
     items = [i for i in definition.get("pick_list_values") or [] if isinstance(i, dict)]
     items.sort(key=lambda i: int(i.get("sequence_number") or 0))
     values: list[_PicklistValue] = []
     for position, item in enumerate(items):
-        name = str(item.get("actual_value") or item.get("display_value") or "").strip()
+        name = (
+            str(item.get("display_value") or "").strip()
+            or str(item.get("actual_value") or "").strip()
+        )
         if not name or name == "-None-":
             continue
         raw_prob = item.get("probability")
@@ -1319,6 +1365,44 @@ def _picklist_values(
     return values
 
 
+#: Each status row with a Zoho id, for the label check of :func:`_mirror_statuses`.
+_STATUS_EXT_ROWS_SQL = "SELECT ext_id, name FROM {table} WHERE ext_id IS NOT NULL"
+
+
+def _label_collision(
+    values: list[_PicklistValue], rows: list[Any], listed: frozenset[str],
+) -> bool:
+    """True when a row holds the label of ANOTHER listed value, and the picklist
+    read will give that label to a different row (task #1096).
+
+    A record pull finds its row by the label that the record carries. So each
+    record of that other value went onto the wrong row. The rename of the
+    picklist read cannot move them, because a row keeps its records.
+
+    * A row of a listed value counts.
+    * A row of a retired value counts when a holder of the label has its own
+      row. :func:`_source_status` then parks the retired row, and the records
+      of the holder stay in a parked lane. With no such row, the new value
+      adopts the retired row with its records, so no read is due.
+    * A row that holds its own label does not count, also when a second value
+      shares that label. No read can tell those records apart.
+
+    The picklist read renames each counted row, so the next check finds none.
+    """
+    owners: dict[str, set[str]] = {}
+    for value in values:
+        if value.ext_id:
+            owners.setdefault(value.name, set()).add(value.ext_id)
+    own_rows = {str(row.ext_id) for row in rows}
+    for row in rows:
+        ext, holders = str(row.ext_id), owners.get(str(row.name))
+        if holders is None or ext in holders:
+            continue
+        if ext in listed or holders & own_rows:
+            return True
+    return False
+
+
 async def _mirror_statuses(
     ctx: _Ctx, db: Any, entity: str, definitions: list[dict[str, Any]],
 ) -> None:
@@ -1328,6 +1412,16 @@ async def _mirror_statuses(
     the definition was read. A run that could not read it marks nothing. A
     row with no Zoho id (a stage that only a pipeline lists, and
     ``UNKNOWN_STATUS``) is never marked. A list with no Zoho id marks nothing.
+
+    Before it writes, the step looks for a row that holds the label of
+    another listed value (:func:`_label_collision`). The old name rule made
+    such a row when one label was the ``actual_value`` of another value. A
+    Zoho edit that trades two labels makes one too, and so does a label that
+    a retired value held. Then the step puts the entity on the label list
+    (:data:`LABEL_REREAD_KEY`), in this transaction, for ONE full read. That
+    read maps each record by its label again, after this step named each
+    row by its label. A repaired org has no such row, so the next read
+    queues nothing.
     """
     api_name, table = _STATUS_FIELDS[entity]
     for definition in definitions:
@@ -1335,6 +1429,8 @@ async def _mirror_statuses(
             continue
         values = _picklist_values(ctx, definition)
         listed = frozenset(v.ext_id for v in values if v.ext_id)
+        rows = (await db.execute(text(_STATUS_EXT_ROWS_SQL.format(table=table)))).fetchall()
+        collided = _label_collision(values, list(rows), listed)
         for value in values:
             async with savepoint(db):
                 await _source_status(db, table, value, listed)
@@ -1342,6 +1438,10 @@ async def _mirror_statuses(
             await db.execute(
                 text(_STATUS_GONE_SQL.format(table=table)), {"listed": sorted(listed)},
             )
+        if collided:
+            await _save_label_rereads(ctx, db, ctx.label_rereads | {entity})
+            ctx.label_fired.add(entity)
+            _log.info("crm.sync.status_label_collision entity=%s", entity)
 
 
 @dataclass
@@ -1906,9 +2006,11 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # writes the fixed map's value again. It stamps nothing and deletes
     # nothing, like the CRM-Q5 lead read below.
     rule_wanted = not generic and not parent_only and entity in ctx.rule_rereads
+    # The full read that the label check asks for (task #1096).
+    label_wanted = not generic and not parent_only and entity in ctx.label_rereads
     if (
         row.initial_done_at is not None and saved.get("offset_paged") and not walking
-        and not rereading and not rule_wanted
+        and not rereading and not rule_wanted and not label_wanted
         and not (generic and saved.get("in_progress"))
     ):
         return
@@ -1934,10 +2036,23 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # A full read for a rule starts fresh, or goes on with its own mark. A
     # read that was already under way when the rule changed does not count.
     rule_reread = (rule_wanted and not resumed) or (resumed and bool(saved.get("rule_reread")))
+    label_reread = (label_wanted and not resumed) or (
+        resumed and bool(saved.get(LABEL_REREAD_KEY))
+    )
     backfill = (
         entity == "lead" and row.initial_done_at is not None
         and not saved.get("converted_both") and not resumed and not parent_only
     )
+    if resumed and entity in ctx.label_fired and (rule_reread or label_reread):
+        # Task #1096: the pages of this read used the old row names, and its
+        # last page would clear the entity. So it starts over from page 1. It
+        # still counts for each rule, and ``recovering`` keeps its mark.
+        resumed, rule_reread, label_reread = False, rule_reread or rule_wanted, True
+    # A label read moves ``status_id`` and changes no contact role, so it queues
+    # a role call only for a deal that changed. A read for a rule, a walk and a
+    # read after a hold still queue each deal (task #1096).
+    label_only = label_reread and not (rule_reread or stamping or recovering)
+    role_floor = row.last_pulled_at
     hidden = bool(saved.get("offset_paged")) if resumed else False
     walk_start = ctx.started
     walk_count = 0
@@ -1968,7 +2083,10 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         newest = _parse(saved.get("max_modified"))
         newest_ids = set(saved.get("watermark_ids") or ())
     else:
-        since = None if walking or backfill or rereading or rule_reread else row.last_pulled_at
+        since = (
+            None if walking or backfill or rereading or rule_reread or label_reread
+            else row.last_pulled_at
+        )
         ids = tuple(saved.get("watermark_ids") or ()) if since is not None else ()
         cursor = SourceCursor(since=since, seen_ids=ids)
         newest = since
@@ -1986,13 +2104,15 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # The mark of a full read for a field rule (CRM-Q7a). It is kept only while
     # the read runs, so a stop resumes it as that read.
     progress_marks: dict[str, Any] = {**marks, "rule_reread": True} if rule_reread else marks
+    if label_reread:
+        progress_marks = {**progress_marks, LABEL_REREAD_KEY: True}
     if recovering:
         progress_marks = {**progress_marks, "recovering": True}
     # CRM-Q24: a full read lists every record, not the changes since a cursor.
     # Its last page writes ``short_by``, and for an activity entity the drops
     # of the whole read. A read over several runs carries its mark.
     full = (
-        stamping or rereading or rule_reread or backfill
+        stamping or rereading or rule_reread or label_reread or backfill
         or (resumed and bool(saved.get(FULL_READ_KEY)))
     )
     if full:
@@ -2047,7 +2167,12 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                     )
                 failed_map = _merge_failed(failed_map, landed, bad)
                 if entity == "deal" and landed:
-                    await _queue_roles(ctx, db, landed)
+                    roles = (
+                        _changed_ids(page.records, landed, role_floor)
+                        if label_only else landed
+                    )
+                    if roles:
+                        await _queue_roles(ctx, db, roles)
                 if not last_page and page.next_cursor is not None:
                     extra: dict[str, Any] = {}
                     if stamping:
@@ -2129,6 +2254,8 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                 await _save_cursor(ctx, db, row, "ok" if last_page else "partial")
                 if last_page and rule_reread:
                     await _rule_reread_done(ctx, db, entity)
+                if last_page and label_reread:
+                    await _save_label_rereads(ctx, db, ctx.label_rereads - {entity})
                 if last_page and recovering:
                     await _queue_dependents(ctx, db, entity)
             ctx.cursors[module] = row
@@ -2783,6 +2910,22 @@ async def _save_roles_pending(ctx: _Ctx, db: Any) -> None:
     ctx.cursors[ROLES_MODULE] = row
 
 
+def _changed_ids(
+    records: tuple[SourceRecord, ...], landed: set[str], floor: datetime | None,
+) -> set[str]:
+    """The landed records that an incremental read from *floor* would list.
+
+    A label read moves the cursor past them, so no later read lists them. A
+    record that hides ``Modified_Time`` is not one: only a walk reads it.
+    """
+    found: set[str] = set()
+    for record in records:
+        stamp = _parse(record.fields.get("Modified_Time"))
+        if record.ext_id in landed and stamp is not None and (floor is None or stamp >= floor):
+            found.add(record.ext_id)
+    return found
+
+
 async def _queue_roles(ctx: _Ctx, db: Any, landed: set[str]) -> None:
     """Remember the deals that changed, in the SAME transaction as their page.
 
@@ -2915,6 +3058,36 @@ async def _write_roles(
     ctx.step("deal_contacts", "deleted", removed)
 
 
+async def _pipeline_stage_status(db: Any, stage: dict[str, Any]) -> str:
+    """The status row of one pipeline stage (task #1096).
+
+    1. The row whose Zoho id is the ``ext_id`` of the stage, when the stage
+       has one and such a row exists. A map entry of a Zoho pipeline carries
+       the id of its Stage picklist value. So the stage finds its row even in
+       a run that did not read the picklist, where the row can still have an
+       old name.
+    2. Else the row with the name (the Zoho label), through
+       :func:`_ensure_status`. A stage that no row has is appended.
+
+    The step adds a row and a membership only. It never renames a row, and it
+    never moves the order or the probability of a row (§20.6 item 7).
+    """
+    ext = stage.get("ext_id")
+    category = stage.get("forecast_category")
+    if ext:
+        row = (await db.execute(
+            text(_STATUS_BY_EXT_SQL.format(table=DEAL_STATUSES)), {"ext": str(ext)},
+        )).first()
+        if row is not None:
+            if category:
+                await db.execute(text(_FORECAST_SQL), {"id": str(row.id), "category": category})
+            return str(row.id)
+    return await _ensure_status(
+        db, DEAL_STATUSES, stage["name"], type_=stage.get("type"),
+        forecast_category=category,
+    )
+
+
 async def _mirror_pipelines(
     ctx: _Ctx, db: Any, rows: list[dict[str, Any]],
 ) -> None:
@@ -2924,6 +3097,16 @@ async def _mirror_pipelines(
     pipelines share is one row with two memberships. A stage the picklist did
     not list is appended. A pipeline that Zoho no longer lists is deleted here,
     and its deals keep their row with a NULL pipeline.
+
+    Each stage finds its row by its Zoho id first, then by its label
+    (:func:`_pipeline_stage_status`). Most runs that mirror the pipelines read
+    the picklist first (:func:`_execute`), so a label row with no Zoho id is
+    already folded into its id row. Some runs do not read it first. The
+    picklist read can fail. An early discovery of CRM-Q10 stores a new
+    profile, so discovery is no longer due. An incremental run then skips the
+    picklist read, and :func:`_mirror_deferred_pipelines` mirrors the stored
+    profile. In each such run the id match still puts the membership on the id
+    row. The next picklist read folds the label row.
     """
     seen: list[str] = []
     for position, row in enumerate(rows):
@@ -2938,10 +3121,7 @@ async def _mirror_pipelines(
             })
             members: list[tuple[str, int]] = []
             for stage in row.get("stages") or []:
-                status_id = await _ensure_status(
-                    db, DEAL_STATUSES, stage["name"], type_=stage.get("type"),
-                    forecast_category=stage.get("forecast_category"),
-                )
+                status_id = await _pipeline_stage_status(db, stage)
                 if all(status_id != existing for existing, _ in members):
                     members.append((status_id, len(members)))
             await set_pipeline_stages_from_source(db, str(pipeline.id), members)
@@ -3262,10 +3442,14 @@ async def _execute(ctx: _Ctx) -> None:
 def _rules_row(
     ctx: _Ctx, applied: list[field_rules.Rule], reread: set[str],
 ) -> CursorRow:
-    """The rules cursor row with a new state."""
+    """The rules cursor row with a new state. The label list rides along."""
     old = _row(ctx, FIELD_RULES_ROW)
+    state = field_rules.state_of(applied, reread)
+    labels = (old.state or {}).get(LABEL_REREAD_KEY)
+    if labels:
+        state[LABEL_REREAD_KEY] = labels
     return CursorRow(
-        FIELD_RULES_ROW, old.last_pulled_at, field_rules.state_of(applied, reread),
+        FIELD_RULES_ROW, old.last_pulled_at, state,
         old.initial_done_at or _now(), old.last_reconciled_at,
     )
 
@@ -3348,6 +3532,7 @@ async def _field_rules(ctx: _Ctx) -> None:
                 break
         _log.info("crm.sync.field_rule_backfilled rule=%s written=%s", rule.id, filled)
     ctx.rule_rereads = reread
+    ctx.label_rereads = {str(e) for e in state.get(LABEL_REREAD_KEY) or ()}
     ctx.handled_rules = list(approved)
 
 
@@ -3388,6 +3573,23 @@ async def _add_rereads(ctx: _Ctx, db: Any, entities: set[str]) -> None:
     await _save_cursor(ctx, db, saved, "ok")
     ctx.cursors[FIELD_RULES_ROW] = saved
     ctx.rule_rereads |= entities
+
+
+async def _save_label_rereads(ctx: _Ctx, db: Any, entities: set[str]) -> None:
+    """Write the label list in the rules cursor row, in the caller's transaction
+    (:data:`LABEL_REREAD_KEY`). The check of ``_mirror_statuses`` adds to it, and
+    the last page of a read with the label mark takes its entity off it."""
+    old = _row(ctx, FIELD_RULES_ROW)
+    state = {k: v for k, v in (old.state or {}).items() if k != LABEL_REREAD_KEY}
+    if entities:
+        state[LABEL_REREAD_KEY] = sorted(entities)
+    saved = CursorRow(
+        FIELD_RULES_ROW, old.last_pulled_at, state,
+        old.initial_done_at or _now(), old.last_reconciled_at,
+    )
+    await _save_cursor(ctx, db, saved, "ok")
+    ctx.cursors[FIELD_RULES_ROW] = saved
+    ctx.label_rereads = set(entities)
 
 
 async def _rule_reread_done(ctx: _Ctx, db: Any, entity: str) -> None:
