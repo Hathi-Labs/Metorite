@@ -25,6 +25,7 @@ import {
   KIND_ORDER,
   NEEDS_APP_HREF,
   NEEDS_CACHE,
+  NEEDS_SOURCE_APP,
   carryNeeds,
   countsByApp,
   fetchNeeds,
@@ -150,6 +151,13 @@ describe("readFeed", () => {
     const feed = readFeed({ count: 1, items: [due], sources: { reminders: "ok" }, totals: { reminders: 1 }, capped: ["reminders"] });
     expect(countsByApp(feed, feed.items, false)).toEqual({});
     expect(floorApps(feed, false).size).toBe(0);
+  });
+
+  it("maps every source id to its app in ONE place, and the sidebar still counts by source", () => {
+    expect(NEEDS_SOURCE_APP.reminders).toBe("calendar");
+    const row = item({});
+    const feed = readFeed({ count: 1, items: [row], sources: { tasks: "ok", reminders: "failed" }, totals: { tasks: 3 } });
+    expect(countsByApp(feed, feed.items, false)).toEqual({ tasks: 3 });
   });
 });
 

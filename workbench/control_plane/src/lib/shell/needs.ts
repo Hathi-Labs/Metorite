@@ -36,6 +36,31 @@ export type NeedsKind =
 export type NeedsAct = "done" | "read";
 export type SourceState = "ok" | "failed" | "absent";
 
+/**
+ * The app that owns each SOURCE of the needs feed. THE one map from a source
+ * id to its app. The server keys `sources`, `totals` and `capped` by the
+ * source id (`needs.py`), and the reminders source is `reminders`, not its
+ * app `calendar`. So every reader of those three goes through this map, and
+ * a new provider adds one line here.
+ */
+export const NEEDS_SOURCE_APP = {
+  tasks: "tasks",
+  approvals: "approvals",
+  projects: "projects",
+  email: "email",
+  reminders: "calendar",
+} as const satisfies Record<string, NeedsApp>;
+
+export type NeedsSource = keyof typeof NEEDS_SOURCE_APP;
+
+/**
+ * Sources that give rows to the bell and My Day but no sidebar count
+ * (`calendar_events_reminders.md` RM-2b decision 5: a link only).
+ */
+const NO_SIDEBAR_COUNT: ReadonlySet<NeedsSource> = new Set<NeedsSource>(["reminders"]);
+
+const NEEDS_SOURCES = Object.keys(NEEDS_SOURCE_APP) as NeedsSource[];
+
 /** One row of the feed, exactly as `GET /shell/needs` sends it. */
 export interface NeedsItem {
   id: string;
@@ -65,7 +90,7 @@ export interface NeedsFeed {
    */
   total: number;
   items: NeedsItem[];
-  sources: Partial<Record<NeedsApp, SourceState>>;
+  sources: Partial<Record<NeedsSource, SourceState>>;
   /**
    * How many need the member in each source that answered `ok`. It is the
    * app's own count where its read has one (the Projects bell's unread
@@ -74,13 +99,13 @@ export interface NeedsFeed {
    * rows from `items` entirely. An older gateway leaves it out, and a count
    * then reads the rows in `items`.
    */
-  totals: Partial<Record<NeedsApp, number>>;
+  totals: Partial<Record<NeedsSource, number>>;
   /**
    * The sources whose `totals` entry is a FLOOR: the read stopped at its
    * cap of 15 and has no count, so the source holds that many OR MORE. The
    * row prints "15+" (`navNeeds.ts`). An older gateway leaves it out.
    */
-  capped: NeedsApp[];
+  capped: NeedsSource[];
 }
 
 /**
@@ -95,10 +120,8 @@ export const NEEDS_APP_HREF: Readonly<Record<NeedsApp, string>> = {
   approvals: "/approvals",
   projects: "/projects",
   email: "/email",
-  // WS-66 RM-2b: the reminder rows. The server keys their source and total by
-  // the source id `reminders`, and this map reads them by app. So no Calendar
-  // count shows in the sidebar yet, and the bell rows still draw (they filter
-  // on `item.app`).
+  // WS-66 RM-2b: the link of the reminder rows. The source has no sidebar
+  // count (`NO_SIDEBAR_COUNT`), so this entry only serves the bell's link.
   calendar: "/calendar",
 };
 
@@ -117,12 +140,13 @@ export function countsByApp(
   approvals: boolean,
 ): Partial<Record<NeedsApp, number>> {
   const out: Partial<Record<NeedsApp, number>> = {};
-  for (const app of Object.keys(NEEDS_APP_HREF) as NeedsApp[]) {
-    if (feed.sources?.[app] !== "ok") continue;
+  for (const source of NEEDS_SOURCES) {
+    const app = NEEDS_SOURCE_APP[source];
+    if (NO_SIDEBAR_COUNT.has(source) || feed.sources?.[source] !== "ok") continue;
     if (app === "approvals" && !approvals) continue;
     const sent = feed.items.filter((i) => i.app === app).length;
     const still = shown.filter((i) => i.app === app).length;
-    const total = feed.totals?.[app];
+    const total = feed.totals?.[source];
     const before = typeof total === "number" && Number.isFinite(total) ? Math.max(total, sent) : sent;
     out[app] = Math.max(0, before - (sent - still));
   }
@@ -135,8 +159,10 @@ export function countsByApp(
  */
 export function floorApps(feed: NeedsFeed, approvals: boolean): Set<NeedsApp> {
   const out = new Set<NeedsApp>();
-  for (const app of Array.isArray(feed.capped) ? feed.capped : []) {
-    if (!(app in NEEDS_APP_HREF) || feed.sources?.[app] !== "ok") continue;
+  for (const source of Array.isArray(feed.capped) ? feed.capped : []) {
+    if (!Object.hasOwn(NEEDS_SOURCE_APP, source) || NO_SIDEBAR_COUNT.has(source)) continue;
+    if (feed.sources?.[source] !== "ok") continue;
+    const app = NEEDS_SOURCE_APP[source];
     if (app === "approvals" && !approvals) continue;
     out.add(app);
   }
