@@ -345,8 +345,9 @@ class TestTheFeatureGate:
     def test_a_member_with_no_app_gets_nothing(self, fakes):
         answer = run(member())
         assert answer == {"count": 0, "total": 0, "items": [], "totals": {}, "capped": [],
-                          "sources": {"tasks": "absent", "approvals": "absent",
-                                      "projects": "absent", "email": "absent"}}
+                          "sources": {"tasks": "absent", "reminders": "absent",
+                                      "approvals": "absent", "projects": "absent",
+                                      "email": "absent"}}
         assert fakes.calls == []
 
     def test_a_member_without_approvals_gets_no_pending_action(self, fakes):
@@ -563,8 +564,10 @@ class TestTheAnswer:
     def test_the_count_is_the_length_of_the_list(self, fakes):
         answer = run(member(*ALL))
         assert answer["count"] == len(answer["items"]) == 7
-        assert answer["sources"] == {"tasks": "ok", "approvals": "absent",
-                                     "projects": "ok", "email": "ok"}
+        # RM-2b: `reminders` is a needs source, absent while the flag is off.
+        assert answer["sources"] == {"tasks": "ok", "reminders": "absent",
+                                     "approvals": "absent", "projects": "ok",
+                                     "email": "ok"}
 
 
 class TestTheClock:
@@ -815,6 +818,8 @@ class TestAFailingAppIsLeftOut:
         monkeypatch.setattr(shell, "PROVIDER_TIMEOUT_S", 0.001)
         answer = run(admin(*ALL, "approvals"))
         assert answer["items"] == []
+        # `reminders` is absent while CALENDAR_REMINDERS is off (RM-2b).
+        assert answer["sources"].pop("reminders") == "absent"
         assert set(answer["sources"].values()) == {"failed"}
 
     def test_one_deadline_for_all_apps(self, fakes, monkeypatch):
@@ -1030,3 +1035,82 @@ class TestAnAgentQuestionReadsAsTheProjectsBellReadsIt:
                / "app" / "projects" / "lib" / "notifications.ts").read_text(encoding="utf-8")
         verb = re.search(r'agent_question:\s*"([^"]+)"', src)
         assert verb is not None and verb.group(1) == shell._VERB["agent_question"]
+
+
+class TestTheReminderSource:
+    """WS-66 RM-2b: the reminders are ONE needs source, for the bell and My
+    Day. The flag is read inside the provider (``SourceAbsent`` when off)."""
+
+    @staticmethod
+    def _row(rid: str, *, state: str = "due", step: str = "fired") -> dict:
+        return {"id": rid, "title": f"Call {rid}", "kind": "action", "state": state,
+                "step": step, "step_at": NOW, "fire_at": NOW - timedelta(minutes=5),
+                "cycles": 0}
+
+    def _on(self, monkeypatch, rows: list[dict]) -> None:
+        import gateway.routes.projects.reminders as rem
+
+        async def my_open_cards(user, *, now, limit):
+            return rows[:limit], None
+
+        monkeypatch.setattr(rem, "reminders_enabled", lambda: True)
+        monkeypatch.setattr(rem, "my_open_cards", my_open_cards)
+
+    def test_a_due_reminder_is_one_calendar_row_with_its_link(self, fakes, monkeypatch):
+        self._on(monkeypatch, [self._row("r-1")])
+        answer = run(member("projects"))
+        [row] = [i for i in answer["items"] if i["app"] == "calendar"]
+        assert row["kind"] == "reminder_due"
+        assert row["href"] == "/chat?do=new-chat&reminder=r-1"
+        assert row["id"] == "reminders:r-1"
+        assert answer["sources"]["reminders"] == "ok"
+        assert answer["totals"]["reminders"] == 1
+
+    def test_the_state_and_the_step_choose_the_kind(self, fakes, monkeypatch):
+        self._on(monkeypatch, [self._row("r-1"),
+                               self._row("r-2", step="check_back"),
+                               self._row("r-3", state="unconfirmed", step="gave_up")])
+        answer = run(member("projects"))
+        kinds = {i["id"]: i["kind"] for i in answer["items"] if i["app"] == "calendar"}
+        assert kinds == {"reminders:r-1": "reminder_due",
+                         "reminders:r-2": "reminder_check",
+                         "reminders:r-3": "reminder_unconfirmed"}
+
+    def test_no_open_card_gives_no_row_but_an_ok_source(self, fakes, monkeypatch):
+        self._on(monkeypatch, [])
+        answer = run(member("projects"))
+        assert not [i for i in answer["items"] if i["app"] == "calendar"]
+        assert answer["sources"]["reminders"] == "ok"
+
+    def test_with_the_flag_off_the_source_is_absent_and_reads_nothing(
+        self, fakes, monkeypatch,
+    ):
+        import gateway.routes.projects.reminders as rem
+
+        async def boom(*a, **k):
+            raise AssertionError("the store was read with the flag off")
+
+        monkeypatch.setattr(rem, "reminders_enabled", lambda: False)
+        monkeypatch.setattr(rem, "my_open_cards", boom)
+        answer = run(member("projects"))
+        assert answer["sources"]["reminders"] == "absent"
+        assert not [i for i in answer["items"] if i["app"] == "calendar"]
+
+    def test_a_member_without_projects_gets_no_reminder(self, fakes, monkeypatch):
+        self._on(monkeypatch, [self._row("r-1")])
+        answer = run(member("email"))
+        assert answer["sources"]["reminders"] == "absent"
+        assert not [i for i in answer["items"] if i["app"] == "calendar"]
+
+    def test_the_source_is_ungated_and_registers_before_approvals(self):
+        provider = shell.REGISTRY["reminders"]
+        assert provider.needs is True and provider.gated is False
+        assert provider.features == ("projects",)
+        order = [p.source for p in shell.needs_providers()]
+        assert order[-1] == "approvals"
+        assert order.index("reminders") == order.index("approvals") - 1
+
+    def test_the_three_kinds_come_last_and_oldest_first(self):
+        assert [k for k, _ in sorted(shell.KIND_ORDER.items(), key=lambda kv: kv[1])][-3:] == [
+            "reminder_due", "reminder_check", "reminder_unconfirmed"]
+        assert all(shell.NEWEST_FIRST[k] is False for k in shell.REMINDER_KINDS)

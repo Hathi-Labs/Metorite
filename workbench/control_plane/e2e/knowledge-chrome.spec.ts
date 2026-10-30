@@ -89,8 +89,13 @@ test.describe("Knowledge page chrome", () => {
 
     await outline.getByRole("button", { name: "How to ask" }).click();
     await expect(outline.getByRole("button", { name: "How to ask" })).toHaveAttribute("aria-current", "location");
+    // The jump is a smooth scroll. Wait until the page has moved: on a slow
+    // runner it has not started yet, a scroll to the top then changes nothing,
+    // no scroll event fires, and the mark stays on "How to ask".
+    const scroller = page.locator("[data-page-scroller]");
+    await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
     // Scroll back to the top by hand: the mark follows.
-    await page.locator("[data-page-scroller]").evaluate((el) => el.scrollTo({ top: 0 }));
+    await scroller.evaluate((el) => el.scrollTo({ top: 0 }));
     await expect(outline.getByRole("button", { name: "Scope" })).toHaveAttribute("aria-current", "location");
 
     await outline.getByRole("button", { name: "Who may ask" }).click();

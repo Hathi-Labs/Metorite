@@ -580,3 +580,71 @@ def test_r8_a_member_purge_leaves_no_brief_behind(world, role: str) -> None:
             {"i": list(ids.values())}).all()
     assert runs == {ids["bens"], ids["theirs"]}
     assert dict(claims) == {ids["bens"]: 2, ids["theirs"]: 2}
+
+
+# ── The guarded move, the lead and the link (BR-2a-1) ──────────────────────
+
+
+def test_r8_a_guarded_move_changes_only_a_row_in_the_from_state(world) -> None:
+    """``set_state`` with ``from_state`` is ``UPDATE ... WHERE state = :from``.
+    A row that moved on does not move again, and a pair outside
+    ``TRANSITIONS`` is refused before any statement."""
+    org = world.p.org_a
+
+    async def go() -> list:
+        out = []
+        async with tenant_session(org) as db:
+            run = (await store.create_run(db, ANA, kind="brief", local_date=D, slot_at=T)).run
+            out.append(await store.set_state(db, ANA, run.id, "gathered", now=T,
+                                             from_state="planned"))
+            out.append(await store.set_state(db, ANA, run.id, "gathered", now=T,
+                                             from_state="planned"))  # moved on
+            out.append(await store.set_state(db, ANA, run.id, "empty", now=T,
+                                             from_state="planned"))  # a legal pair, wrong row
+            out.append(await store.set_state(db, ANA, run.id, "ready", now=T,
+                                             from_state="gathered"))
+            out.append((await store.read_run(db, ANA, kind="brief", local_date=D)).state)
+            with pytest.raises(store.BriefStoreError):
+                await store.set_state(db, ANA, run.id, "ready", now=T, from_state="planned")
+            with pytest.raises(store.BriefStoreError):
+                await store.set_state(db, ANA, run.id, "delivered", now=T, from_state="ready")
+            # Another member moves nothing.
+            out.append(await store.set_state(db, BEN, run.id, "empty", now=T,
+                                             from_state="planned"))
+        return out
+
+    assert _go(world, go) == [True, False, False, True, "ready", False]
+
+
+def test_r8_the_lead_and_the_ledger_link_write_for_the_member(world) -> None:
+    """The lead writes for the member only. The link follows the ledger row
+    of the current try (repair round 1, P2-e): a retry after a release links
+    its new row, the same row again changes nothing, and another member
+    links nothing."""
+    org = world.p.org_a
+    ledger_id = str(uuid.uuid4())
+    retry_id = str(uuid.uuid4())
+
+    async def go() -> tuple:
+        async with tenant_session(org) as db:
+            run = (await store.create_run(db, ANA, kind="brief", local_date=D, slot_at=T)).run
+            other = await store.set_lead(db, BEN, run.id, "Not yours.", source="template")
+            lead = await store.set_lead(db, ANA, run.id, "Your day. 2 things need you.",
+                                        source="template")
+            with pytest.raises(store.BriefStoreError):
+                await store.set_lead(db, ANA, run.id, "x", source="human")
+            with pytest.raises(store.BriefStoreError):
+                await store.set_lead(db, ANA, run.id, " ", source="template")
+            first = await store.link_run(db, ANA, run.id, ledger_id)
+            linked = (await store.read_run(db, ANA, kind="brief", local_date=D)).unattended_run_id
+            again = await store.link_run(db, ANA, run.id, ledger_id)
+            relink = await store.link_run(db, ANA, run.id, retry_id)
+            not_yours = await store.link_run(db, BEN, run.id, str(uuid.uuid4()))
+            got = await store.read_run(db, ANA, kind="brief", local_date=D)
+        return other, lead, (first, again, relink, not_yours), linked, got
+
+    other, lead, links, linked, got = _go(world, go)
+    assert (other, lead) == (False, True)
+    assert links == (True, False, True, False) and linked == ledger_id
+    assert got.lead == "Your day. 2 things need you." and got.lead_source == "template"
+    assert got.lead_claim_ids == () and got.unattended_run_id == retry_id

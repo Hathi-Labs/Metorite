@@ -14,7 +14,15 @@ import { NAV_SECTIONS } from "@/lib/nav";
 import { relativeTime } from "@/lib/taskCard";
 
 import { orderCards } from "./presets";
-import { KIND_ORDER, type NeedsApp, type NeedsItem, type NeedsKind, type SourceState } from "./needs";
+import {
+  KIND_ORDER,
+  NEEDS_SOURCE_APP,
+  type NeedsApp,
+  type NeedsItem,
+  type NeedsKind,
+  type NeedsSource,
+  type SourceState,
+} from "./needs";
 
 // ── The header ──────────────────────────────────────────────────────────────
 
@@ -104,6 +112,9 @@ export const KIND_LABELS: Readonly<Record<NeedsKind, string>> = {
   due_today: "Due today",
   notification: "From your projects",
   needs_reply: "Waiting for your reply",
+  reminder_due: "Reminder due",
+  reminder_check: "Reminder still open",
+  reminder_unconfirmed: "Reminder not confirmed",
 };
 
 /** Rows shown before "Show all". Seven is what the eye takes in one look. */
@@ -200,6 +211,7 @@ export const APP_NAMES: Readonly<Record<NeedsApp, string>> = {
   approvals: "Approvals",
   projects: "Projects",
   email: "Email",
+  calendar: "Calendar",
 };
 
 const APP_HREFS: Readonly<Record<NeedsApp, string>> = {
@@ -207,6 +219,7 @@ const APP_HREFS: Readonly<Record<NeedsApp, string>> = {
   approvals: "/approvals",
   projects: "/projects",
   email: "/email",
+  calendar: "/calendar",
 };
 
 /** A row's icon: its app's own icon from the manifest, never a second list. */
@@ -215,20 +228,42 @@ export function appIcon(app: NeedsApp): string {
   return pane?.icon ?? "Circle";
 }
 
-/** One muted line per source that failed: "Email did not answer. …". */
-export function failedLines(sources: Partial<Record<NeedsApp, SourceState>>): string[] {
-  return (Object.keys(APP_NAMES) as NeedsApp[])
-    .filter((app) => sources[app] === "failed")
-    .map((app) => `${APP_NAMES[app]} did not answer, so its ${MISSING[app]} may be missing.`);
-}
+/**
+ * A source that can fail, named by its SOURCE id: the needs sources, and the
+ * feed's `calendar` source. The server keys `sources` this way, so
+ * `reminders` is not `calendar` (`NEEDS_SOURCE_APP` maps it to its app).
+ */
+export type FailedSource = NeedsSource | "calendar";
 
-/** What a source's silence can hide, in the member's words. */
-const MISSING: Readonly<Record<NeedsApp, string>> = {
+/** What a source's silence can hide, in the member's words. Keyed by source. */
+const MISSING: Readonly<Record<FailedSource, string>> = {
   tasks: "due tasks",
   approvals: "approvals",
   projects: "notifications",
   email: "replies",
+  reminders: "reminders",
+  calendar: "time blocks",
 };
+
+/** True when the key is a source this card knows how to word. */
+export function isFailedSource(source: string): source is FailedSource {
+  return Object.hasOwn(MISSING, source);
+}
+
+/** The app a source speaks for. A needs source goes through THE map. */
+function appOfSource(source: FailedSource): NeedsApp {
+  return source === "calendar" ? "calendar" : NEEDS_SOURCE_APP[source];
+}
+
+/**
+ * One muted line per source that failed: "Email did not answer. …". The keys
+ * are SOURCE ids, as the server sends them. The name is the source's app.
+ */
+export function failedLines(sources: Partial<Record<FailedSource, SourceState>>): string[] {
+  return (Object.keys(MISSING) as FailedSource[])
+    .filter((source) => sources[source] === "failed")
+    .map((source) => `${APP_NAMES[appOfSource(source)]} did not answer, so its ${MISSING[source]} may be missing.`);
+}
 
 // ── Next actions ────────────────────────────────────────────────────────────
 

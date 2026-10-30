@@ -38,13 +38,14 @@ import { cacheKey, guardedPut, onClear } from "@/lib/dataCache";
 import { isInAppPath } from "@/lib/inAppLink";
 import { NAV_SECTIONS } from "@/lib/nav";
 
-import { APP_NAMES, appIcon, failedLines } from "./myDay";
+import { APP_NAMES, type FailedSource, appIcon, failedLines, isFailedSource } from "./myDay";
 import {
   KIND_ORDER,
   type NeedsApp,
   type NeedsFeed,
   type NeedsItem,
   type NeedsKind,
+  type NeedsSource,
   type SourceState,
   NEEDS_APP_HREF,
   needsKey,
@@ -174,7 +175,8 @@ export interface FeedAnswer {
   handled_ok: boolean;
   /** The needs view of the same run, or null from a gateway that sent none. */
   needs: NeedsFeed | null;
-  sources: Partial<Record<FeedApp, SourceState>>;
+  /** Keyed by SOURCE id, as the server sends it: `reminders` is a source, not an app. */
+  sources: Partial<Record<FeedApp | NeedsSource, SourceState>>;
   /**
    * The app of each source, by source id (MD-3b, §14.1a). An MD-3 source has
    * an id of its own, such as `crm_followups`, so the client maps a failed or
@@ -416,6 +418,48 @@ export async function fetchFeed(limit = FEED_LIMIT): Promise<FeedAnswer> {
   const carried = carryCards(before, { ...answer, fetchedAt }, noCarry);
   lastOk.set(limit, noteOk(before, answer, fetchedAt));
   return carried;
+}
+
+// ── The member's feed prefs: the ONE client (WS-66 RE-9a) ───────────────────
+
+/** The stored prefs: `user_settings.my_day_prefs`, as the gateway returns it. */
+export type FeedPrefs = Readonly<Record<string, unknown>>;
+
+const PREFS_URL = "/api/shell/feed/prefs";
+
+/**
+ * Read the member's prefs. `null` means the read failed, so a caller draws no
+ * guess. A key the member never set is absent from the object. The body names
+ * no member and no tenant, because the gateway takes both from the session.
+ */
+export async function loadFeedPrefs(): Promise<FeedPrefs | null> {
+  try {
+    const res = await fetch(PREFS_URL, { cache: "no-store" });
+    if (!res.ok) return null;
+    const data: unknown = await res.json();
+    return data && typeof data === "object" ? (data as FeedPrefs) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Save one pref, and return all the prefs the server stored. `null` means the
+ * save failed, and the caller keeps the old value.
+ */
+export async function saveFeedPref(key: string, value: unknown): Promise<FeedPrefs | null> {
+  try {
+    const res = await fetch(PREFS_URL, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, value }),
+    });
+    if (!res.ok) return null;
+    const data: unknown = await res.json();
+    return data && typeof data === "object" ? (data as FeedPrefs) : null;
+  } catch {
+    return null;
+  }
 }
 
 // ── A failed source keeps its cards for a while (§6.1, MD-2b) ───────────────
@@ -1006,12 +1050,13 @@ export function feedFailedLines(
   sources: FeedAnswer["sources"],
   sourceApps?: Readonly<Record<string, string>>,
 ): string[] {
-  const needsFailed: Partial<Record<NeedsApp, SourceState>> = {};
+  const needsFailed: Partial<Record<FailedSource, SourceState>> = {};
   const others = new Set<string>();
   for (const [source, state] of Object.entries(sources)) {
     if (state !== "failed") continue;
     const app = sourceApp(sourceApps, source);
-    if (Object.hasOwn(APP_NAMES, app)) needsFailed[app as NeedsApp] = "failed";
+    // The noun follows the SOURCE (reminders, time blocks), the name its app.
+    if (Object.hasOwn(APP_NAMES, app)) needsFailed[isFailedSource(source) ? source : (app as FailedSource)] = "failed";
     else others.add(app);
   }
   const lines = failedLines(needsFailed);

@@ -1872,23 +1872,32 @@ def source_label(source: str | None) -> str:
     return SOURCE_LABELS.get(str(source or "").lower(), str(source or "the source"))
 
 
-async def is_mirror_mode(db: Any, organization_id: str | None) -> bool:
+async def is_mirror_mode(
+    db: Any, organization_id: str | None, *, lock: bool = False,
+) -> bool:
     """True when ``crm_settings.mode`` is ``'mirror'`` for the organization.
 
     Read on each guarded write and cached nowhere, so a mode change takes
     effect on the next request. The organization comes from the bound tenant
     (never from the request). Row level security filters the read as well.
+
+    ``lock=True`` reads the row ``FOR SHARE`` (CRM-Z10b), as a sync page does
+    (``engine.MODE_SHARE_SQL``). The switch to Native takes the row ``FOR
+    UPDATE``, so a write that read ``mirror`` commits before the switch folds
+    the overlay, and a write that starts later reads ``native``. The write
+    guard (:func:`assert_writable`) and the auto-lead step use it.
     """
+    share = " FOR SHARE" if lock else ""
     if organization_id:
         row = (await db.execute(
             text(
                 "SELECT mode FROM crm_settings "
-                "WHERE organization_id = CAST(:organization_id AS uuid)"
+                f"WHERE organization_id = CAST(:organization_id AS uuid){share}"
             ),
             {"organization_id": str(organization_id)},
         )).first()
     else:
-        row = (await db.execute(text("SELECT mode FROM crm_settings"))).first()
+        row = (await db.execute(text(f"SELECT mode FROM crm_settings{share}"))).first()
     return row is not None and getattr(row, "mode", None) == "mirror"
 
 
@@ -1924,13 +1933,16 @@ async def assert_writable(
     * an activity with ``ext_source`` NULL passes (§3.3).
 
     The sync's ``upsert_from_source`` is the only bypass. It never calls this.
+
+    It reads the mode ``FOR SHARE`` (CRM-Z10b), so the write that follows
+    holds the mode until it commits, and the switch to Native waits for it.
     """
     table = getattr(entity, "table", entity)
     guarded = (
         table in MIRROR_RECORD_TABLES or table in MIRROR_SETTINGS_TABLES
         or table == "crm_activities"
     )
-    if not guarded or not await is_mirror_mode(db, organization_id):
+    if not guarded or not await is_mirror_mode(db, organization_id, lock=True):
         return
     if table in MIRROR_SETTINGS_TABLES:
         # The overlay is Metorite-only, so a Mirror admin may edit it. A create

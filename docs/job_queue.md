@@ -5,6 +5,10 @@ BR-1b-a is BUILT and dark (Metorite #642): the detached mode, `jobs.prune` and
 the timeout label. Its review round 1 added the settle clock, `give_up`, one
 try for a detached kind, and the cap and belt of the prune.
 
+BR-2a-1 (Metorite #583) adds the seed hooks of section 5c, the one recurring
+seam, and the first two detached kinds: `brief.plan` and `brief.run`
+(`core_brief.md` §4). It is built and dark.
+
 AUTO-2 (Metorite #814) adds the ledger of unattended runs in section 9. It is
 BUILT and dark, and its switch `UNATTENDED_LEDGER` is OFF.
 
@@ -134,6 +138,7 @@ The writes of a handler and `done` commit together, or neither commits.
 | `jobs.claim_failed` | warning | A run raised out of `run_one`. The worker stops the batch of that org |
 | `jobs.prune_seed_failed` | warning | The daily seed of `jobs.prune` failed. The next tick tries again |
 | `jobs.pruned` | info | The prune job deleted rows, with the count |
+| `jobs.seed_hook_failed` | warning | A seed hook of section 5c raised, with its name. The next tick tries it again |
 | `jobs.tick` | info | One line for each tick that ran a job, with the counts |
 
 No log line holds a payload or an error text. A line holds the error type
@@ -237,8 +242,31 @@ worker.register("email.send_later", send, mode="detached", idempotent=True)
 - **A hook for another table.** `worker.prune_hooks` is a list of
   `async hook(db, today)` callables. The prune job runs each one after its
   own delete, on the same session. A hook that raises fails the try, and the
-  whole prune rolls back. BR-4 adds the retention of the brief runs here,
-  with its own 90 day cut-off (`core_brief.md` §3.4).
+  whole prune rolls back. BR-2a-1 added the retention of the brief runs
+  here, with its 90 day cut-off (`core_brief.md` §3.4, `brief/run.py`).
+
+## 5c. Seed hooks: a job every 15 minutes (BR-2a-1, built)
+
+- **What it is.** `worker.seed_hooks` is a list of `async hook(org, now)`
+  callables. `run_org` runs each one once for each org and each 15-minute
+  bucket of the UTC clock (`worker.SEED_BUCKET`, `worker.seed_bucket`). It
+  is the ONE recurring seam of the queue. A consumer that needs a job on a
+  clock adds a hook here, and starts no second loop.
+- **What a hook does.** It reads its own switch, and it returns when the
+  switch or the org is off. Then it opens `tenant_session(org)` and calls
+  `enqueue` with a dedupe key of the bucket, for example
+  `plan:2026-10-29T07:30`. So two workers with two caches still give one
+  live job.
+- **The cache.** A map in memory holds the bucket that each hook last ran
+  for, by org. A later tick of the same bucket costs no call. A hook that
+  raises is logged as `jobs.seed_hook_failed` and stays unseeded for the
+  bucket, so the next tick tries it again. A restart empties the cache, and
+  the dedupe key keeps one live job.
+- **The first consumer.** `brief/planner.py` seeds `brief.plan` for each org
+  that `BRIEF_ENABLED` and `BRIEF_ORGS` admit. `brief/run.py` adds the hook
+  at import, and `main.py` imports it before the worker starts.
+- **Fence.** `test_r8_run_org_runs_each_seed_hook_once_for_each_org_and_bucket`
+  in `test_job_queue.py`.
 
 ## 6. The switch
 
@@ -312,10 +340,10 @@ The review round 1 of BR-1b-a adds these tests:
 
 - The rest of BR-1b: move the reminder loop, send-later and the agent-run
   sweeps onto the queue. No producer of provider work exists yet.
-- The retention of the brief runs. BR-4 adds it as a prune hook.
 - A heartbeat that extends the lease of a long detached handler.
 - AUTO-2: at-most-once unattended runs. Section 9 has it.
-- The 07:30 brief and the 18:30 close-out.
+- The 18:30 close-out, the phrase step and the delivery of the brief. BR-2a-1
+  built the planner and the gather (`core_brief.md` §10).
 - Any change to the apscheduler uses, any producer and any UI.
 - A production deploy and the flip of `JOB_QUEUE`.
 

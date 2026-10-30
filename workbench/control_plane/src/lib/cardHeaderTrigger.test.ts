@@ -65,6 +65,8 @@ const DATA: Record<string, Record<string, unknown>> = {
     period: "Jul to Sep", kpis: [{ label: "Revenue", value: "4.2L" }],
     sections: [{ heading: "Pipeline", visual: { kind: "chart", type: "bar", labels: ["A"], values: [1] } }],
   },
+  // WS-66 RM-4: the chips are pills in the body, never in the toggle.
+  reminderCard: { reminderId: UUID, title: LINKED, when: "15:00 today", state: "due", kind: "action", link: "Task: Fix" },
 };
 
 /** An older long card in a transcript: its toggle shows. */

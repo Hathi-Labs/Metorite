@@ -516,6 +516,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # due jobs of each org. Dark by default: with JOB_QUEUE off it starts no
     # task. Fence: test_job_queue.py.
     try:
+        # The brief's kinds and hooks register at import (WS-BRIEF BR-2a-1,
+        # gateway/brief/run.py), so the worker holds them from its first tick.
+        # Its own try: an import error loses the brief, never the queue.
+        import gateway.brief.run  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.brief_jobs_skipped", error=str(exc))
+    try:
         from gateway.jobs.worker import start_job_worker
         _log.info("gateway.job_worker", started=await start_job_worker())
     except Exception as exc:
@@ -1854,6 +1861,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-66 RM-4 — a tap on a reminder link opens the chat with a first
+    # message that code built (`calendar_events_reminders.md` §5.7). Shares
+    # /chat's prefix, in its own module, as the brief does.
+    from gateway.routes.chat_reminder import router as _chat_reminder_router
+
+    app.include_router(_chat_reminder_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # Rooms share /chat's prefix — a room IS a chat session — but live in their
     # own module because membership, presence, and the live room stream are a
     # different concern from history CRUD.
@@ -2080,6 +2097,17 @@ try:
     from gateway.routes.agent_access import router as _agent_access_router
 
     app.include_router(_agent_access_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-MCP MCP-P1a — the two list routes of the app door
+    # (external_agent_access.md §19.4): `GET /agent-access/apps` and
+    # `GET /agent-access/apps/{app}`. A signed agent of branch 0 reads them,
+    # and nobody else. Ships dark: 404 while `agent_door_apps` names no app.
+    from gateway.routes.agent_apps import router as _agent_apps_router
+
+    app.include_router(_agent_apps_router)
 except Exception:  # pragma: no cover
     pass
 
