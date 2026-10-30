@@ -82,10 +82,6 @@ line — never reclaim a number by deleting the other entry.
 ---
 
 # OPEN
-### H-432 · Confirm migration 317 and its backup on production after the 2026-10-30 release · [AGENT]
-- **Metorite:** #1113. The task holds the full entry.
-- **Check:** `curl -s https://api.metorite.com/version`. An `applied_sha` that does not contain merge 190ef405a means the release has not run yet. After it runs, the task's steps still need their evidence.
-- **Added:** 2026-10-30 · WS-63 PZ-32 session
 
 ### H-433 · Check the chat prompt for notifications on a real phone, on dev.metorite.com · [OWNER]
 - **Metorite:** #600 (OB-8). The task holds the checks and the state.
@@ -1935,5 +1931,5 @@ line — never reclaim a number by deleting the other entry.
 
 ### H-438 · Take the /pull member from the session before Mem0 turns on · [AGENT] · security
 - **Metorite:** #1127. The task holds the full entry.
-- **Check:** in `apps/services/gateway/gateway/main.py`, the `/pull` handler still sets `user_id = req.user_email or ...` → still open.
+- **Check:** `grep -n "req.user_email or" apps/services/gateway/gateway/main.py`. A hit in the `/pull` handler (2026-10-30: `user_id: str = req.user_email or ...`) means still open.
 - **Added:** 2026-10-30 · H-337 session

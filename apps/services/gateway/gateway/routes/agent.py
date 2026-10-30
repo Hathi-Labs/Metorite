@@ -3957,8 +3957,9 @@ def _session_member(user: Any) -> str | None:
 
 
 #: The body keys that name a person. ``executor._payload_user`` reads them.
-#: A source scan in the fence fails when the executor reads a person key
-#: from the payload that this list does not hold.
+#: A source scan in the fence fails when ``executor.py`` reads, by a constant
+#: key through the name ``event_payload``, a known person key that this list
+#: does not hold. It sees no other module and no key outside its own list.
 _IDENTITY_CLAIMS = ("user_email", "user_id")
 
 

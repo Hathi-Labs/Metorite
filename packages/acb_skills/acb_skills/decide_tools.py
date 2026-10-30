@@ -13,7 +13,9 @@ returns a short line the model reads: the answer and how sure it is.
 run's member comes from ``event_payload["user_email"]``. Since H-337 the
 three gateway doors (``/agent/run/stream``, ``/agent/run``,
 ``/agent/run/async``) drop a signed-in member's body claim
-(``routes/agent.py::_drop_identity_claims``). But a service caller keeps its
+(``routes/agent.py::_drop_identity_claims``). The two sync doors keep a
+claim of the member's own address, set to the session's address. But a
+service caller keeps its
 claim, and the webhook door spreads the sender's payload. A tool still
 cannot tell a server-bound member from a claimed one. On the deployment arm
 ``X-CC-Member`` SELECTS the tenant, so a claimed member would be a tenant

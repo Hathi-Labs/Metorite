@@ -318,6 +318,10 @@ _EXECUTOR_PY = (
 # `_IDENTITY_CLAIMS` is a hand-kept list. When the executor starts to read a
 # new person key from the payload, a body could name a member through that
 # key, and no door would remove it. This scan makes that change fail here.
+# Its reach is narrow: `executor.py` only, reads through the name
+# `event_payload` only, constant keys only, and only the keys in
+# `_PERSON_KEYS`. A read in another module, or of a key outside this list,
+# passes. Widen the list when a new person key appears anywhere.
 _PERSON_KEYS = frozenset({
     "user_email", "user_id", "member", "member_email", "actor", "email",
     "on_behalf_of", "session_user",
