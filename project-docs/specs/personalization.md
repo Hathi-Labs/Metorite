@@ -862,8 +862,11 @@ Each slice is one PR. Each lands dark. The risk tier follows
 | **PZ-7** | #257 | Settings → Assistant settings pane on the web | The member sees, edits and deletes each key and fact. The visual review passes in light mode and at compact density. **BUILT 2026-10-23, dark** | AGENT-SAFE · LOW |
 | **PZ-8** | #258 | WhatsApp: the tools on the WhatsApp run, and the channel limits over `style` | A WhatsApp run test shows the block and a `profile_remember` call. **BUILT 2026-10-25, dark** | AGENT-SAFE · MEDIUM |
 | **PZ-9** | #259 | Forget one, forget all and the switch were built in PZ-1 and PZ-6a. PZ-9 adds the three gaps: the profile when access ends, the privacy fence, and the export of §13.3 item 7 | A real-database test for each. A removed member leaves no profile. **BUILT 2026-10-25** | AGENT-SAFE · **HIGH** (a member write) |
-| **PZ-10** | #260 | The eval set and the log lines | 20 fixed prompts score address, length, alias and no-leak. A log line per turn says the block's size, never its text | AGENT-SAFE · LOW |
+| **PZ-10** | #260 | The eval set and the log lines | 20 fixed prompts score address, length, alias and no-leak. A log line per turn says the block's size, never its text. It adds the prompt "what do you know about me" of PZ-20c. That prompt is ADVISORY (R7) until PZ-10 ships | AGENT-SAFE · LOW |
 | **PZ-11** | #261 | Web and WhatsApp give the same answer from the same profile. Staging test | Verified on staging. Turning the flags on in production is an owner act | **OWNER-GATE** for the production flip |
+| **PZ-20a** | #315 | "Read as text". The route `GET /auth/me/assistant-profile/block` and the section "What the assistant sees" in Settings → Assistant settings. The persona line already exists (`BLOCK_FOOTER`, PZ-2), so the gap was the view | For a stored profile, `text` equals `assistant_profile.member_block`, the call that the executor also makes. This holds for unicode, for a profile over the cap and for an empty profile. With the org off, the answer is `{"enabled": false, "text": ""}` and no read runs. The route takes only the session user. A failed read is a 503. Fence: `tests/unit/test_assistant_profile_block_view.py`, `profile.test.ts` and `AssistantPane.test.ts`. **BUILT 2026-10-30, dark** | AGENT-SAFE · MEDIUM · dark |
+| **PZ-20b** | #315 | The mark. A small mark under an answer shows that the profile was in the turn, and it links to Settings → Assistant settings. The persona line exists, so the gap is the mark | A turn with a block from a non-empty stored profile draws the mark. A block that holds only the directory name draws none (owner decision, 2026-10-30). The slice names its fence when it is built. **Not built** | AGENT-SAFE · MEDIUM · dark |
+| **PZ-20c** | #315 | "What do you know about me" as a tested behaviour. The last line of every block is `BLOCK_FOOTER` (PZ-2) | The context of a solo turn with a profile holds the footer as the last line of the block. A shared room, a webhook run with no verified member and an org with the flag off hold no footer. The block holds only the text of `render_block`. These tests prove only that the instruction reaches the model on the right turns. No offline test proves that the model obeys it. Fence: `tests/unit/test_executor_profile_block.py`. **BUILT 2026-10-30, dark** | AGENT-SAFE · MEDIUM · dark |
 
 **PZ-8 as built (2026-10-25).**
 
@@ -911,6 +914,16 @@ Each slice is one PR. Each lands dark. The risk tier follows
    control "Download my profile".
 5. **The staging copy.** `infra/staging/minimise.sql` sets the column to
    NULL in each kept organization.
+
+**PZ-20a and PZ-20c as built (2026-10-30).**
+
+1. **One builder.** `assistant_profile.member_block(raw, preferred, display)` returns `render_block` with the name of `resolve_address_name`. The executor calls it in `_member_profile_entry`, and so does the new route. One path builds the text, so the member reads what the model reads.
+2. **Which text the view shows.** It shows the block and nothing else. Five lines are separate per-turn parts and stay outside it. They are the interview due line, the part of the day, the date, the name and the number system. The block already sheds whole items over `RENDER_MAX`.
+3. **The route.** `GET /auth/me/assistant-profile/block` answers `{"enabled", "text"}` with `Cache-Control: no-store`. It reads with `_read` and `ADDRESS_SQL_TEMPLATE`, so it adds no SQL. An empty profile with no name gives `""`. The pane then says "The assistant sees nothing about you yet." That sentence is UI copy only.
+4. **The pane.** The section "What the assistant sees" sits beside "Download my profile". It has a loading state and an error state with Retry. A shared Copy button does not exist in `components/ui`, so the section has none.
+5. **What 20c proves.** The tests show that the footer reaches the model on a solo turn and on no other turn. They do not show that the model answers from the block. The eval prompt below measures that.
+6. **Known tension.** If `memory_context` (Mem0) is present, the footer still says "this block only". Mem0 is off (§13.5). The footer does not change.
+7. **The eval prompt for PZ-10.** The prompt "what do you know about me" passes when the answer names only facts from the block. It must invent no fact. This is ADVISORY (R7) until PZ-10 ships. The harness is not built.
 
 **Tasks that this spec does not use.** #248 (short-term session memory) is
 built: the chat history window and the Redis memory block. #250 (semantic
@@ -1114,7 +1127,11 @@ reads it before PZ-12 merges.
 
 ## 13. Lessons from other assistants, and what we add (ACCEPTED, 2026-10-24)
 
-**Status: ACCEPTED, 2026-10-24 (D111). Nothing is built.** Owner directive of
+**Status: ACCEPTED, 2026-10-24 (D111). Part of it is built.** PZ-9 built the export of item 7. PZ-20a and PZ-20c are BUILT 2026-10-30, dark. PZ-20b is not built. Each row of §9 and §12.7 holds its state.
+
+The export is the gateway route `export_assistant_profile` and the control "Download my profile" in AssistantPane.
+
+Owner directive of
 2026-10-24: research how other assistants build personalization, find what we
 lack, and extend the plan. A web survey on 2026-10-24 is the source. Where the
 survey could not open a vendor page, this section makes no claim from it.
@@ -1147,7 +1164,7 @@ agree with the user more. Both support D-PZ-2: no learning in silence.
 | A voice from writing samples, editable | Claude styles | Planned (PZ-12) |
 | A tone for each recipient | Superhuman | Planned (PZ-13) |
 | A setup interview, one question at a time | None found | Planned (PZ-17), and nobody else has it |
-| "What do you know about me", read as one text | Claude, ChatGPT | **No** → PZ-20 |
+| "What do you know about me", read as one text | Claude, ChatGPT | **Yes** (PZ-20a, PZ-20c) |
 | "Did you use my profile here?" | Gemini | **No** → PZ-20 |
 | A chat with no profile at all | ChatGPT, Claude | **No** → PZ-21 |
 | A date after which a fact is checked | ChatGPT | **No** → PZ-22 |
@@ -1208,6 +1225,8 @@ owner also chose Yes and No buttons for the second yes on WhatsApp
 | **D-PZ-18** | May a fact apply to one app only? | Yes, all apps by default (PZ-23) |
 | **D-PZ-19** | Does a fact get a review date? | Only when the member or the fact gives one. No automatic expiry (PZ-22) |
 | **D-PZ-20** | How does WhatsApp ask the second yes for a sensitive fact? | Yes and No buttons, as the confirm-before-send acts do (PZ-6b, `whatsapp_acts.ALLOWED_ACTS`) |
+
+The owner decided on 2026-10-30 that the PZ-20b mark shows only when the member's own stored profile holds something. That means a form of address, a style, an alias or a fact. A block that holds only the directory name draws no mark. This decision has no new D-PZ number.
 
 ### 13.5 What we do not copy
 
