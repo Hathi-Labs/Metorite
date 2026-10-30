@@ -1402,6 +1402,14 @@ def _preflight(router: tuple[str, str], tier: str) -> tuple[bool, str]:
 # ── the command line ─────────────────────────────────────────────────────────
 
 
+def _peak_ok(allow_peak: bool) -> bool:
+    """Print the peak message, if any. False when the run must not start."""
+    ok, why = spend.peak_gate(utc_now(), allow_peak)
+    if why:
+        print(why)
+    return ok
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -1479,10 +1487,7 @@ def main(argv: list[str] | None = None) -> int:
         # Fix round 1: the Router is reached through a tunnel on this machine.
         print(f"NO-GO: {router[0]} is not on this machine. Open the tunnel to the Console.")
         return EXIT_NO_GO
-    peak_ok, peak_why = spend.peak_gate(utc_now(), args.allow_peak)
-    if peak_why:
-        print(peak_why)
-    if not peak_ok:
+    if not _peak_ok(args.allow_peak):
         return EXIT_NO_GO
     ok, why = _preflight(router, args.tier)
     print(why)
