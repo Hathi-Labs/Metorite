@@ -93,8 +93,18 @@ store that must work before a tenant is known.
    ``/oauth/revoke`` must still find a token to revoke it, and the edge
    bearer check tests the list itself.
 
+9. ⚠️ **First-party clients (D-EA-11, spec §10.7).** For a client on
+   ``agent_first_party_client_ids``, :func:`create_connection` with
+   ``replace_same_client=True`` revokes the member's other connections of
+   that client, and their tokens, in the transaction of the insert.
+   :func:`live_connections_of_client` gives the live ones, so the consent
+   route can mint a code on a connection that already covers the request.
+   Both run in the bound tenant and take the member from the caller, who
+   passes the session's member. No other caller passes ``True``.
+
 Fence: ``tests/unit/test_agent_connection_tokens.py`` (R8, a phase-4-promoted
-catalog, as a NON-privileged role).
+catalog, as a NON-privileged role). D-EA-11:
+``tests/unit/test_agent_first_party.py`` (R8).
 """
 from __future__ import annotations
 
@@ -437,6 +447,49 @@ UPDATE agent_connection
    AND revoked_at IS NULL
 """
 
+#: D-EA-11 (spec §10.7): revoke every connection of one member and one
+#: client in the bound organization, before a first-party approval inserts
+#: the new one. A row past ``expires_at`` goes too, so the list keeps one
+#: row. The organization is in the WHERE as well as in the bound GUC, for
+#: the reason of :data:`_CONNECTION_LIVE_SQL`. ⚠️ The lock order of rule 3
+#: holds: this takes the connection rows first, and
+#: :data:`_REVOKE_TOKENS_OF_SQL` takes their tokens after it.
+_REPLACE_SAME_CLIENT_SQL = """
+UPDATE agent_connection
+   SET revoked_at = now()
+ WHERE organization_id = CAST(:org AS UUID)
+   AND member_email = CAST(:member AS TEXT)
+   AND client_id = CAST(:client_id AS TEXT)
+   AND revoked_at IS NULL
+RETURNING CAST(id AS TEXT) AS id
+"""
+
+#: The tokens of the connections that :data:`_REPLACE_SAME_CLIENT_SQL`
+#: revoked, in one statement.
+_REVOKE_TOKENS_OF_SQL = """
+UPDATE agent_token
+   SET revoked_at = now()
+ WHERE connection_id = ANY(CAST(:ids AS UUID[]))
+   AND organization_id = CAST(:org AS UUID)
+   AND revoked_at IS NULL
+"""
+
+#: D-EA-11: the live connections of one member and one client in the bound
+#: organization, newest first. The first-party path of ``check`` reads it to
+#: find a connection whose scopes cover the request. The partial index
+#: ``idx_agent_connection_member_live`` of migration 248 serves it.
+_LIVE_OF_CLIENT_SQL = """
+SELECT CAST(id AS TEXT) AS id, scopes
+  FROM agent_connection
+ WHERE organization_id = CAST(:org AS UUID)
+   AND member_email = CAST(:member AS TEXT)
+   AND client_id = CAST(:client_id AS TEXT)
+   AND revoked_at IS NULL
+   AND expires_at > now()
+ ORDER BY created_at DESC, id
+ LIMIT 20
+"""
+
 _REVOKE_TOKENS_SQL = """
 UPDATE agent_token
    SET revoked_at = now()
@@ -545,12 +598,21 @@ async def create_connection(
     scopes: Sequence[str] = (),
     pinned_projects: Sequence[str] = (),
     include_personal: bool = False,
+    replace_same_client: bool = False,
 ) -> str:
     """Create a connection in the BOUND tenant and return its id.
 
     The organization is the tenant the request already bound. It is never a
     parameter, so no caller can pass one from a request (R11). With nothing
     bound, ``tenant_session`` raises ``TenantUnbound``.
+
+    ⚠️ ``replace_same_client`` (D-EA-11, spec §10.7). True only for a
+    first-party client. In the SAME transaction as the insert, the store
+    first revokes every connection of this member and this client in the
+    bound organization, and every token of each. So the member keeps one
+    connection of the client, and the old tokens die with the old rows. The
+    lock order of rule 3 holds: the connection rows, then the tokens. False,
+    the default, adds a connection beside the others, as before.
     """
     from acb_common.db import current_tenant
     from sqlalchemy import text
@@ -561,7 +623,21 @@ async def create_connection(
     if not (client_id or "").strip():
         raise ValueError("a connection needs a client id")
 
+    replaced: list[str] = []
     async with _tenant_session() as db:
+        if replace_same_client:
+            org = current_tenant()
+            replaced = [
+                str(r.id) for r in (
+                    await db.execute(
+                        text(_REPLACE_SAME_CLIENT_SQL),
+                        {"org": org, "member": member, "client_id": client_id},
+                    )
+                ).all()
+            ]
+            if replaced:
+                await db.execute(
+                    text(_REVOKE_TOKENS_OF_SQL), {"ids": replaced, "org": org})
         row = (
             await db.execute(
                 text(_INSERT_CONNECTION_SQL),
@@ -579,7 +655,56 @@ async def create_connection(
             )
         ).one()
     _log.info("agent_tokens.connection_created", client_id=client_id)
+    for old in replaced:
+        # Ids only. The new id names the row that took its place.
+        _log.warning(
+            "agent_tokens.connection_revoked",
+            connection_id=old,
+            reason="replaced",
+            replaced_by=str(row.id),
+        )
     return str(row.id)
+
+
+@dataclass(frozen=True)
+class ClientConnection:
+    """One live connection of one member and one client (D-EA-11).
+
+    It holds the id and the scopes, and nothing that the consent page shows.
+    """
+
+    id: str
+    scopes: tuple[str, ...]
+
+
+async def live_connections_of_client(
+    member_email: str, client_id: str
+) -> list[ClientConnection]:
+    """The live connections of *member_email* and *client_id*, newest first.
+
+    D-EA-11 (spec §10.7). The first-party path of ``check`` reads it. It runs
+    in the BOUND tenant, as :func:`create_connection` does, so the
+    organization is never a parameter (R11), and with nothing bound
+    ``tenant_session`` raises ``TenantUnbound``. The caller passes the member
+    of the session. An empty member or client id raises, because it would
+    match no row, and a caller bug must not read as "no connection".
+    """
+    from acb_common.db import current_tenant
+    from sqlalchemy import text
+
+    member = (member_email or "").strip().lower()
+    if not member:
+        raise ValueError("a connection read needs the member's email")
+    if not (client_id or "").strip():
+        raise ValueError("a connection read needs a client id")
+    async with _tenant_session() as db:
+        rows = (
+            await db.execute(
+                text(_LIVE_OF_CLIENT_SQL),
+                {"org": current_tenant(), "member": member, "client_id": client_id},
+            )
+        ).all()
+    return [ClientConnection(id=row.id, scopes=tuple(row.scopes or ())) for row in rows]
 
 
 async def _revoke_in(session: Any, organization_id: str, connection_id: str) -> None:
@@ -903,7 +1028,10 @@ async def revoke_replayed_code(
     OAuth 2.1 §4.1.2: a server that sees an authorization code twice SHOULD
     revoke the tokens issued from it. Each approval makes one connection and
     mints one code for it, so "the tokens of this code" are the tokens of its
-    connection. The token endpoint calls this function after
+    connection. ⚠️ A first-party client (D-EA-11) can hold more codes on one
+    connection, one for each sign-in with no click, so a replay ends the
+    whole connection, the tokens of every device included. That fails
+    closed. The token endpoint calls this function after
     :func:`consume_code` returned ``None``.
 
     The replay must prove the same four values that the spend proved: the
