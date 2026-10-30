@@ -1383,16 +1383,31 @@ def _pack_delegation_refusal(agent_name: str) -> str | None:
 
     The rule is ``tool_packs.delegation_refusal``: the chat run holds a pack
     that replaces the agent. It reads the run binding of the CALLING run,
-    never a tool argument. Never raises."""
+    never a tool argument. Never raises. Its one caller starts the hand-off
+    when the answer is None, so it asks with ``starts=True`` (WS-67 OA-8i):
+    a pack write of the owner later in this run then refuses."""
     try:
         from acb_skills.tool_packs import delegation_refusal
 
-        refused = delegation_refusal(agent_name)
+        refused = delegation_refusal(agent_name, starts=True)
     except Exception:
         return None
     if refused:
         _log.info("executor.pack_delegation_refused", agent=agent_name)
     return refused
+
+
+def _pack_handoff_ended(agent_name: str, parent_ctx: Any, *, finished: bool) -> None:
+    """Tell the calling run's pack record whether a hand-off finished (WS-67
+    OA-8i review, P2). *parent_ctx* is the calling run's context, read before
+    the sub-run derived its own. The rule is ``tool_packs.handoff_ended``.
+    Never raises."""
+    try:
+        from acb_skills.tool_packs import handoff_ended
+
+        handoff_ended(agent_name, parent_ctx, finished=finished)
+    except Exception:
+        return
 
 
 def _without_pack_keys(agent_name: str = "") -> dict[str, Any]:
@@ -2392,15 +2407,6 @@ async def _run_sub_agent_streaming(
         no_egress=_sub_no_egress, **_without_pack_keys(agent_name),
         **_without_job_key(agent_name),
     )
-    # WS-17 EM-G11f3: a run of an agent that reads mail marks the CALLING
-    # session now, before it does any work, so a cancel or an error cannot
-    # skip the mark. After the no_egress decision, so the sub-run's tools do
-    # not change. The specialist tools and delegate_to_agent come here.
-    await _mark_untrusted_session(agent_name, _parent_ctx_sub)
-    # §7.1.1 (D99): the email working set of the calling chat. An email
-    # sub-run gets its ids as context, and the calls it makes update it. The
-    # held state above is decided first, and nothing here changes it.
-    _ws_before, _ws_preamble = await _email_working_set_for(agent_name, _parent_ctx_sub)
     _sub_calls: list[dict[str, Any]] = []
 
     # ── Redis relay fallback for paths without _active_run_queue ──────
@@ -2424,6 +2430,10 @@ async def _run_sub_agent_streaming(
 
     # B6 Phase-5 Tier 0: init before the try so the finally can always restore.
     _integration_env_token: IntegrationEnvToken = None
+    # WS-67 OA-8i review, P2: True once the sub-agent's own run ended. The
+    # finally tells the calling run's pack record whether the hand-off
+    # finished, also after a raise, a timeout or a Stop.
+    _sub_done = False
 
     # Delegation is a run too, and until now it was invisible to everyone
     # outside the tab that started it: SUB_AGENT_* events reach the parent's
@@ -2450,6 +2460,17 @@ async def _run_sub_agent_streaming(
         pass
 
     try:
+        # WS-17 EM-G11f3: a run of an agent that reads mail marks the CALLING
+        # session now, before it does any work, so a cancel or an error cannot
+        # skip the mark. After the no_egress decision, so the sub-run's tools do
+        # not change. The specialist tools and delegate_to_agent come here.
+        # WS-67 OA-8i review: this await and the next sit inside the try, so a
+        # cancel here still reaches the finally and ``_pack_handoff_ended``.
+        await _mark_untrusted_session(agent_name, _parent_ctx_sub)
+        # §7.1.1 (D99): the email working set of the calling chat. An email
+        # sub-run gets its ids as context, and the calls it makes update it. The
+        # held state above is decided first, and nothing here changes it.
+        _ws_before, _ws_preamble = await _email_working_set_for(agent_name, _parent_ctx_sub)
         # §15.4: a first-party-admin-only agent, delegated to by anyone else,
         # is refused as absent. The member is the PARENT run's (run binding).
         await _assert_may_run_agent(agent_name)
@@ -2775,6 +2796,7 @@ async def _run_sub_agent_streaming(
                         "delta": final_text,
                     })
 
+            _sub_done = True  # OA-8i: the sub-agent's run ended
             # §7.1.1: the ids this email sub-run worked on, for the next turn.
             await _record_email_working_set(
                 agent_name, _parent_ctx_sub, _ws_before, _sub_calls, _emit_sub_event,
@@ -2816,6 +2838,9 @@ async def _run_sub_agent_streaming(
             f"\n{_sub_drop}" if _sub_drop else ""
         )
     finally:
+        # WS-67 OA-8i review, P2: first, before any await, the calling run's
+        # pack record learns whether this hand-off finished.
+        _pack_handoff_ended(agent_name, _parent_ctx_sub, finished=_sub_done)
         _drop_agent_push(run_id, "the sub-task did not finish")
         try:
             from acb_common import publish_activity

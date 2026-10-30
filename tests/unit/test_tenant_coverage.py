@@ -565,12 +565,35 @@ async def test_live_catalog_has_column_force_and_policy() -> None:
     finally:
         await session.close()
 
+    # H3.3 (handover §H3.3, D120.3): subtract HOMONYM_BLOCKED too, the same
+    # set the generator scopes (`main()`: discover - EXEMPT - HOMONYM_BLOCKED).
+    # A homonym table is tracked apart: `test_tenancy_boundary.py` holds the
+    # partition, and the generator refuses a new homonym. It is not a
+    # promotion failure. Fence:
+    # `test_the_live_catalog_gate_subtracts_the_homonym_map` (DB-free).
     bad = [
         r["table_name"] for r in rows
         if r["table_name"] not in gen.EXEMPT
+        and r["table_name"] not in gen.HOMONYM_BLOCKED
         and not (r["has_col"] and r["rls_enabled"] and r["rls_forced"] and r["has_policy"])
     ]
     assert not bad, f"tables missing tenant scoping in the live catalog: {sorted(bad)}"
+
+
+def test_the_live_catalog_gate_subtracts_the_homonym_map() -> None:
+    """H3.3 (D120.3), DB-free: the live gate subtracts BOTH generator maps.
+
+    The generator scopes ``discover - EXEMPT - HOMONYM_BLOCKED``. A gate that
+    subtracts only ``EXEMPT`` can never go green on a faithful promotion while
+    the homonym map holds a table. R7 name: ``live-gate-subtracts-homonyms``.
+    """
+    import inspect
+
+    src = inspect.getsource(test_live_catalog_has_column_force_and_policy)
+    assert 'not in gen.EXEMPT' in src
+    assert 'not in gen.HOMONYM_BLOCKED' in src, (
+        "the live-catalog gate no longer subtracts HOMONYM_BLOCKED (H3.3)"
+    )
 
 
 @_needs_db
