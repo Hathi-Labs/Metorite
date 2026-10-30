@@ -1372,3 +1372,80 @@ def test_a_fault_while_building_the_requests_falls_back(monkeypatch, on_decide) 
 ])
 def test_a_fallback_reason_is_a_code(raw, code) -> None:
     assert decide_tools._reason_code(raw) == code
+
+
+# ── Thinking off (chat speed, 2026-10-30) ────────────────────────────────────
+
+
+def _items(n: int) -> list[system_one.Item]:
+    return [system_one.Item(f"q{i}", "Is it?", "yes_no", system_one.YES_NO) for i in range(n)]
+
+
+def test_the_request_turns_thinking_off_and_caps_the_output(monkeypatch) -> None:
+    """The System-1 request sends ``reasoning_effort: none`` and a computed cap.
+
+    Fence: drop either option from ``system_one._ask`` and this goes red.
+    """
+    wire = _wire(monkeypatch, lambda _b: _answers(
+        {"id": "q1", "choice": "yes", "confidence": 0.9, "reason": "r"},
+        {"id": "q2", "choice": "no", "confidence": 0.9, "reason": "r"},
+    ))
+    asyncio.run(system_one.ask("ctx", _items(2)))
+    body = wire.bodies[0]
+    assert body["reasoning_effort"] == tier_policy.REASONING_OFF == "none"
+    assert body["max_completion_tokens"] == system_one.max_tokens_for(2)
+
+
+def test_the_cap_grows_with_the_item_count_and_fits_the_largest_answer() -> None:
+    caps = [system_one.max_tokens_for(n) for n in range(1, system_one.MAX_ITEMS + 1)]
+    assert caps == sorted(set(caps)), "the cap must grow with each item"
+    # The worst answer object: a long id, a long choice, a 120-character reason
+    # of one-character tokens (120 tokens), all keys. Counted in characters
+    # it is far over any real answer, and the cap must still hold it.
+    worst = {"id": "q" * 12, "choice": "o" * 40, "confidence": 0.123456,
+             "reason": "x" * system_one.REASON_MAX}
+    per_item_chars = len(json.dumps(worst))
+    assert system_one.max_tokens_for(1) >= system_one.ENVELOPE_TOKENS + 120 + 40
+    assert per_item_chars < system_one.ANSWER_TOKENS * 3  # chars, at 3 per token at worst
+    assert system_one.max_tokens_for(system_one.MAX_ITEMS) == 3232
+
+
+def test_a_truncated_answer_is_unavailable_and_reads_as_chat(monkeypatch) -> None:
+    """A reply that the cap cuts is not JSON, so it fails closed."""
+    full = json.dumps({"answers": [
+        {"id": "q1", "choice": "yes", "confidence": 0.9, "reason": "r"}]})
+    wire = _wire(monkeypatch, lambda _b: _completion(full[:-12]))
+    with pytest.raises(system_one.SystemOneUnavailable) as err:
+        asyncio.run(system_one.ask("ctx", _items(1)))
+    assert err.value.reason == "not_json"
+    assert len(wire.requests) == 1
+    # Cut at the very start of an object, and cut inside the list.
+    for cut in (len(full) - 3, 12, 1):
+        with pytest.raises(system_one.SystemOneUnavailable):
+            system_one.parse_answers(full[:cut], _items(1))
+
+
+def test_the_option_reaches_the_router_and_litellm_as_thinking_disabled(monkeypatch) -> None:
+    """The hops after the client: gateway builder, Router model, litellm.
+
+    The Router allowlist keeps ``reasoning_effort``, and the DeepSeek adapter of
+    litellm maps ``none`` to ``thinking: {type: disabled}``.
+    """
+    pytest.importorskip("fastapi")
+    v1_compat = pytest.importorskip("gateway.routes.v1_compat")
+    from customer_console.main import _FORWARDABLE, CompletionRequest
+    from litellm.llms.deepseek.chat.transformation import DeepSeekChatConfig
+
+    wire = _wire(monkeypatch, lambda _b: _answers(
+        {"id": "q1", "choice": "yes", "confidence": 0.9, "reason": "r"},
+    ))
+    asyncio.run(system_one.ask("ctx", _items(1)))
+    req = CompletionRequest.model_validate(v1_compat._router_outbound(wire.bodies[0]))
+    assert req.reasoning_effort == "none"
+    assert req.max_tokens == system_one.max_tokens_for(1)
+    passthrough = {k: v for k, v in req.model_dump(exclude_none=True).items()
+                   if k in _FORWARDABLE}
+    assert passthrough["reasoning_effort"] == "none"
+    mapped = DeepSeekChatConfig().map_openai_params(
+        {"reasoning_effort": passthrough["reasoning_effort"]}, {}, "deepseek-chat", False)
+    assert mapped["thinking"] == {"type": "disabled"}
