@@ -191,14 +191,14 @@ def world(monkeypatch):
     steer._CLOSED.clear()
 
 
-def _client():
+def _client(email: str = _ALICE):
     from acb_auth import UserContext, get_current_user
     from acb_auth.roles import UserRole
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from gateway.routes.agent import run_agent_stream_endpoint
 
-    user = UserContext(email=_ALICE, role=UserRole.EMPLOYEE, organization_id=_ORG)
+    user = UserContext(email=email, role=UserRole.EMPLOYEE, organization_id=_ORG)
     app = FastAPI()
     app.post("/agent/run/stream")(run_agent_stream_endpoint)
     app.dependency_overrides[get_current_user] = lambda: user
@@ -217,8 +217,8 @@ def _body(thread: str, message: str, *, history=None, followup=False) -> dict[st
     }
 
 
-def _post(body: dict[str, Any]):
-    with _client().stream("POST", "/agent/run/stream", json=body) as r:
+def _post(body: dict[str, Any], *, email: str = _ALICE):
+    with _client(email).stream("POST", "/agent/run/stream", json=body) as r:
         r.read()
         return r.status_code, (r.json() if r.status_code == 202 else None)
 
@@ -434,3 +434,208 @@ def test_a_buffered_steer_survives_the_owner_dying(world):
     code, _ = _post(_body("t-crash", "", followup=True))
     assert code == 200
     assert world.payloads[-1]["message"] == f"[steer from {_ALICE}] and the owner"
+
+
+# ---------------------------------------------------------------------------
+# WS-63 PZ-31: the member's own typed steer grounds a profile save
+# ---------------------------------------------------------------------------
+#
+# Live bug (personalization.md §14.5, PZ-31): the member typed an interview
+# answer while the assistant still ran a tool. The answer became a steer,
+# and each profile save in the follow-up run refused as ``NO_TYPED_TEXT``.
+# Now the route stores a ``typed`` flag on each steer, and the run counts
+# the run member's own typed steers as typed words.
+#
+# Mutations these tests catch (R7):
+#
+# * the route stops calling ``count_member_steers``: the follow-up refuses;
+# * the rule drops the author check: another member's words ground a save;
+# * the route stores ``typed`` True for a card answer or a Continue turn;
+# * the rule reads a stored steer with no flag as typed;
+# * the applier or the run end drops the flag.
+
+_BOB = "bob@steer.test"
+#: The member's answer, typed while a tool still ran.
+_ANSWER = "This quarter I want to ship the CRM import and hire two engineers"
+#: What the model saves: a phrase copied from the answer.
+_PHRASE = "ship the CRM import and hire two engineers"
+
+
+@pytest.fixture
+def saves(world, monkeypatch) -> list[dict[str, Any]]:
+    """What each run sees: its typed words, and whether a save of
+    ``_PHRASE`` passes the real grounding gate (``profile_tools._ground``)."""
+    from acb_common.assistant_profile import typed_words
+    from acb_skills import profile_tools as pt
+
+    runs: list[dict[str, Any]] = []
+
+    async def _run_detached(thread_id, gen, **_k):
+        world.calls.append("run")
+        try:
+            pt._ground(_PHRASE)
+            grounds, refusal = True, ""
+        except pt._Refused as exc:
+            grounds, refusal = False, str(exc)
+        runs.append({"typed": typed_words(), "grounds": grounds, "refusal": refusal})
+        yield {"type": "RUN_STARTED", "threadId": thread_id}
+
+    monkeypatch.setattr(stream_relay, "run_detached", _run_detached)
+    return runs
+
+
+def _stored(world, thread: str) -> list[dict[str, Any]]:
+    return [json.loads(x) for x in world.redis.lists.get(f"cc:steer:{thread}", [])]
+
+
+def _no_typed_text() -> str:
+    from acb_skills import profile_tools as pt
+
+    return pt.NO_TYPED_TEXT
+
+
+def test_pz31_an_own_typed_steer_grounds_a_save_in_the_follow_up(world, saves):
+    """(a) The incident: the answer goes as a steer, the run ends without a
+    tool call, and the follow-up run saves a phrase of it."""
+    world.active = True
+    code, body = _post(_body("t-pz-own", _ANSWER))
+    assert code == 202 and body["steered"]
+    assert [(s["author"], s["typed"]) for s in _stored(world, "t-pz-own")] == [(_ALICE, True)]
+    assert steer.buffer_guidance(
+        "t-pz-own", _ALICE, _ANSWER, signal_id=body["signalId"], typed=True,
+    )
+    asyncio.run(stream_relay.push_event("t-pz-own", {"type": "RUN_FINISHED"}))
+    world.active = False
+
+    code, _ = _post(_body("t-pz-own", "", followup=True))
+    assert code == 200
+    assert saves == [{"typed": _ANSWER, "grounds": True, "refusal": ""}]
+
+
+def test_pz31_a_new_message_keeps_its_words_and_adds_the_own_steer(world, saves):
+    """A real message that ENGAGEs keeps its own typed words, and the
+    member's own typed steer that it replays is added."""
+    world.active = True
+    assert _post(_body("t-pz-add", _ANSWER))[0] == 202
+    world.active = False
+    message = "and remember I like oolong tea"
+    assert _post(_body("t-pz-add", message))[0] == 200
+    typed = saves[-1]["typed"]
+    assert typed.startswith(message) and _ANSWER in typed
+    assert saves[-1]["grounds"] is True
+
+
+def test_pz31_a_steer_by_another_member_grounds_nothing(world, saves):
+    """(b) The same words from another member of the thread ground no save
+    in the run of the member who asks the follow-up."""
+    world.active = True
+    code, _ = _post(_body("t-pz-bob", _ANSWER), email=_BOB)
+    assert code == 202
+    assert [(s["author"], s["typed"]) for s in _stored(world, "t-pz-bob")] == [(_BOB, True)]
+    world.active = False
+
+    code, _ = _post(_body("t-pz-bob", "", followup=True))
+    assert code == 200
+    assert saves == [{"typed": "", "grounds": False, "refusal": _no_typed_text()}]
+
+
+def test_pz31_a_card_answer_sent_as_a_steer_grounds_nothing(world, saves):
+    """(c) A card answer holds the card's text, which the model wrote."""
+    world.active = True
+    body = _body("t-pz-card", _ANSWER)
+    body["payload"]["card_answer"] = {"question": "What do you want to move?"}
+    code, out = _post(body)
+    assert code == 202 and out["steered"]
+    assert [s["typed"] for s in _stored(world, "t-pz-card")] == [False]
+    world.active = False
+
+    code, _ = _post(_body("t-pz-card", "", followup=True))
+    assert code == 200
+    assert saves == [{"typed": "", "grounds": False, "refusal": _no_typed_text()}]
+
+
+def test_pz31_a_continue_sent_as_a_steer_grounds_nothing(world, saves, monkeypatch):
+    """(d) A Continue turn carries the server's note, built from the reply
+    that the model wrote. As a steer it grounds nothing."""
+    from gateway.routes import agent
+
+    note = f"[Continue your reply] ...I will remember that {_ANSWER}"
+
+    async def _note(*_a: Any, **_k: Any) -> str:
+        return note
+
+    monkeypatch.setattr(agent, "_resume_note_for", _note)
+    world.active = True
+    body = _body("t-pz-resume", "Continue")
+    body["payload"]["resume"] = True
+    code, out = _post(body)
+    assert code == 202 and out["steered"]
+    assert [(s["text"], s["typed"]) for s in _stored(world, "t-pz-resume")] == [(note, False)]
+    world.active = False
+
+    code, _ = _post(_body("t-pz-resume", "", followup=True))
+    assert code == 200
+    assert saves == [{"typed": "", "grounds": False, "refusal": _no_typed_text()}]
+
+
+def test_pz31_a_stored_steer_with_no_typed_key_grounds_nothing(world, saves):
+    """(g) A steer stored before PZ-31 has no flag. It fails closed."""
+    old = steer.make_signal(thread_id="t-pz-old", author=_ALICE, text=_ANSWER)
+    del old["typed"]
+    world.redis.lists["cc:steer:t-pz-old"] = [json.dumps(old)]
+
+    code, _ = _post(_body("t-pz-old", "", followup=True))
+    assert code == 200
+    assert world.payloads[-1]["message"] == f"[steer from {_ALICE}] {_ANSWER}"
+    assert saves == [{"typed": "", "grounds": False, "refusal": _no_typed_text()}]
+
+
+def test_pz31_the_applier_and_the_run_end_keep_the_typed_flag(monkeypatch):
+    """The REAL ``run_detached``: the steer applier buffers each command with
+    its flag, and the run end gives each unread note back with it. A command
+    with no flag (a process that predates PZ-31) is not typed."""
+    fake = _FakeRedis()
+
+    async def _get_client():
+        return fake
+
+    async def _noop(*_a, **_k):
+        return None
+
+    from orchestrator import run_liveness
+    monkeypatch.setattr(stream_relay, "_get_client", _get_client)
+    for name in ("mark_active", "register_live_run", "mark_inactive",
+                 "unregister_live_run", "_stop_control_listener_wait"):
+        monkeypatch.setattr(stream_relay, name, _noop)
+    monkeypatch.setattr(stream_relay, "_start_control_listener", lambda *_a, **_k: None)
+    monkeypatch.setattr(run_liveness, "record_instance_run", _noop)
+    monkeypatch.setattr(run_liveness, "forget_instance_run", _noop)
+
+    async def _no_events(*_a, **_k):
+        if False:
+            yield {}
+
+    monkeypatch.setattr(stream_relay, "subscribe_events", _no_events)
+    buffered: list[tuple[str, bool]] = []
+
+    async def _gen():
+        for sid, extra in (("s-typed", {"typed": True}), ("s-old", {})):
+            assert stream_relay._apply_control_local("t-apply", {
+                "cmd": "steer", "signal_id": sid, "author": _ALICE,
+                "text": f"words of {sid}", **extra,
+            })
+        buffered.extend((e["id"], e["typed"]) for e in steer._PENDING_GUIDANCE["t-apply"])
+        if False:
+            yield ""
+
+    async def _go():
+        async for _ in stream_relay.run_detached("t-apply", _gen()):
+            pass
+        task = stream_relay._DETACHED_TASKS.get("t-apply")
+        if task is not None:
+            await task
+        return await steer.take_pending_steers("t-apply")
+
+    returned = asyncio.run(_go())
+    assert buffered == [("s-typed", True), ("s-old", False)]
+    assert [(s["id"], s["typed"]) for s in returned] == [("s-typed", True), ("s-old", False)]

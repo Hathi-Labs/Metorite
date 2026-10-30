@@ -1,7 +1,7 @@
 # Core brief — the 07:30 brief, the 18:30 close-out, and silence between
 
-**Status: ACTIVE, BR-2a-1 BUILT 2026-10-29 (dark).** Verified against code
-on 2026-10-28, at `origin/main` `bd0efea9c`.
+**Status: ACTIVE, BR-2a-1 and BR-2c-1 BUILT 2026-10-29 (dark).** Verified
+against code on 2026-10-28, at `origin/main` `bd0efea9c`.
 
 Five slices are built and dark. BR-1a is the job queue
 (`docs/job_queue.md`). BR-1b-a is its detached mode and `jobs.prune`
@@ -18,6 +18,13 @@ days. No model call, no send, no UI. The member sets the brief through
 `PUT /auth/me/assistant-profile` (key `apps`). The owner answered all seven
 questions of §9 on 2026-10-29 (epic #479, "Owner decisions"), and §9 holds
 the answers.
+
+**BR-2c-1 BUILT 2026-10-29** (Metorite #585, repair round 1), dark behind
+`BRIEF_IN_APP` (OFF). `GET /brief/today` (`routes/brief_today.py`, gate
+`feature:chat`) serves the stored run and its claims to the member of the
+session. The GET is a pure read. With the switch on, the run itself moves
+`ready` to `delivered` (§5). The chat's first turn shows the stored lead
+and lines. No card, no bell, no push, and no UI.
 
 **Board.** Workstream **WS-BRIEF** (`work_plan.md` §2.1). Metorite epic
 **#479**, items BR-2a to BR-7b. AUTO-2 is Metorite **#814**.
@@ -236,8 +243,10 @@ BR-1b builds.
 3. **Gather**, with no session held (§4.3). It writes the claims and sets
    `gathered`, or `empty` when no claim exists.
 4. **Phrase** (§4.4). It sets `phrasing` first. That is the intent mark.
-5. It sets `ready` with the lead, then **delivers** (§5) and sets
-   `delivered`.
+5. It sets `ready` with the lead. Then, when the in-app surface is on
+   (`flags.in_app`, BR-2c-1), it **delivers** (§5). It moves `ready` to
+   `delivered` with a guard, and stamps `delivered_at`. Off, the run stays
+   `ready`.
 6. On a retry, a run in `phrasing` with no lead skips the model and takes the
    template lead. A model call is never made twice for one run.
 
@@ -292,22 +301,42 @@ delivers. A brief with no AI is free, as My Day is (`my_day_feed.md` §9.3).
 In the app first. Every surface reads the stored run, so all show the same
 words.
 
-1. **My Day.** The MD-7 `brief` card reads today's run. In the evening, the
-   `day_end` card reads the close-out. MD-7 owns the card. This spec owns its
-   data.
-2. **The chat's first turn.** `POST /chat/sessions/{id}/brief` reads the
-   stored run when one exists. It keeps its composition as the fallback, and
-   its rules of once a day and phone only (D-CF-2, D-CF-3).
-3. **A read route.** `GET /brief/today?kind=brief|closeout` answers the run
-   and its claims, for the member of the session only.
+1. **My Day.** A standalone card of the brief reads today's run through
+   `GET /brief/today`. It is a component of its own, not a kind of the MD-7
+   feed. BR-2c-2 builds it. This spec owns its data.
+2. **The chat's first turn.** BUILT in BR-2c-1. With `BRIEF_IN_APP` on,
+   `POST /chat/sessions/{id}/brief` reads the stored run through the read
+   of item 3. When the run is `ready` or `delivered`, the chat reads no
+   feed. Its stamp and its row id are the run's `local_date`, so one run
+   makes one post. The composition stays as the fallback, also when the
+   stored read fails. The chat does not post a run that is dated before the
+   feed day, and composes from the feed instead. So a member whose day
+   starts early never gets the brief of the day before. The rules of once a
+   day and phone only stay too (D-CF-2, D-CF-3). The chat writes nothing to
+   the run.
+3. **A read route.** BUILT in BR-2c-1. `GET /brief/today?kind=brief|closeout`
+   answers the run and its claims, for the member of the session only. The
+   route takes the newest run whose `slot_at` has passed. Its date is
+   today or the day before, by the member's calendar date in the planner's
+   zone (`planner.member_zone`). The day before covers a zone change, and a
+   brief time near midnight that the look-back ran after midnight. It does
+   not use the feed day, because the feed day moves with the day-start
+   hour. The route is a pure read, and it writes nothing. No route
+   enqueues a run. `kind=closeout` answers 404 until BR-2b. Before the slot
+   of today, the route serves the run of the day before, with its own
+   `local_date`. The My Day card (BR-2c-2) must show that date.
 4. **The bell.** One entry in v1 (§9 Q2, owner 2026-10-29). The entry says
    that the brief is ready, and it opens the brief.
 5. **Outside the app.** Web push (PN-1) is in v1, and it ships last (§9 Q2
    and Q7). It sends through Reach, behind `BRIEF_PUSH` and its owner gate.
    WhatsApp stays later (D115).
 
-"Delivered" means the run is `ready` and the read route serves it. The
-member does not need to open the app.
+"Delivered" means that the run is available on an in-app surface. The
+system sets it, not a read: the run moves `ready` to `delivered` when
+`BRIEF_IN_APP` is on, and stamps `delivered_at`. So a member who never
+opens the app still has `delivered_at`. A future "seen" signal is a
+separate `seen_at` column. Only an explicit POST from the card writes it,
+and a GET never does.
 
 ---
 
@@ -351,7 +380,9 @@ flags.
 ## 7. Delivery monitoring (BR-2d)
 
 **The target.** 99% of runs are `delivered` within 5 minutes of `slot_at`,
-over 7 days, for each org.
+over 7 days, for each org. The lag is `delivered_at` minus `slot_at`: the
+time until the brief is available in the app, not the time until the
+member reads it (§5).
 
 - **Retry.** The queue retries a failed try with its backoff
   (`docs/job_queue.md` §4). The queue never retries the model call (§4.2 step 6).
@@ -440,7 +471,7 @@ and the at-most-once rule needs AUTO-2's `UNATTENDED_LEDGER`.
 | 2 | BR-2a-1: the planner and the gather, with the template lead. **BUILT 2026-10-29, dark** | 1, AUTO-2 (#814), the BR-1b detached mode (#642) | `BRIEF_ENABLED`, `BRIEF_ORGS` | AGENT-SAFE to build. The production flip: `enforcement-flip` |
 | 3 | BR-4b: the claim fence | 2 | none | AGENT-SAFE |
 | 4 | BR-2a-2: the phrase step | 3 | `BRIEF_COMPOSE` | AGENT-SAFE to build. **OWNER-GATE** to flip in production (credits, §3a rule 3) |
-| 5 | BR-2c: in-app delivery and the read route | 2 | `BRIEF_IN_APP`, `NEXT_PUBLIC_BRIEF_CARD` | AGENT-SAFE. The production flip: `enforcement-flip` |
+| 5 | BR-2c: in-app delivery and the read route. **BR-2c-1 (the route and the chat turn) BUILT 2026-10-29, dark.** BR-2c-2 is the My Day card | 2 | `BRIEF_IN_APP`, `NEXT_PUBLIC_BRIEF_CARD` | AGENT-SAFE. The production flip: `enforcement-flip` |
 | 6 | BR-2d: the monitor | 2, AUTO-2 | none | AGENT-SAFE |
 | 7 | BR-2b with BR-7b: the close-out | 2 | `BRIEF_CLOSEOUT` | AGENT-SAFE. The production flip: `enforcement-flip` |
 | 8 | BR-7a: the effect registry and its fence | BR-1a | none | AGENT-SAFE |
@@ -465,7 +496,7 @@ Each item is a "done when". Each fence runs red first, then green.
 | 2 | On a fake clock, a member in `Asia/Kolkata` gets one run at 07:30 local, and none on a day off. Two planner ticks and a restart in a run give one row and one ledger entry. A timeout of the handler gives the slot back, and the retry gathers once. A planner outage under 2 hours loses no brief, and an older slot leaves a `slot_missed` row. Each line equals `plan.line` of its card, with its `signal_id` and `href`. The run calls no model | `test_brief_run.py`, `test_brief_run_r8.py` |
 | 3 | The check refuses a sentence that cites no claim, and a sentence with a number that no cited claim holds. A `delivered` run with a line that has no claim row fails the R8 test | `test_brief_claims_fence.py` |
 | 4 | With 4 claims, one call goes out with `source="brief"`. A refused answer, a model error or a balance refusal keeps the template lead, and the run still delivers. A retry after `phrasing` makes no second call. On staging, `model_request_id` joins a `usage_event` row | `test_brief_run.py` |
-| 5 | The chat's first turn and the My Day card show the stored lines, and a diff against `plan.brief_parts` of the same cards is empty. A chip opens the record of each claim. `GET /brief/today` answers 404 for a run of another member. With `BRIEF_IN_APP` off, both surfaces answer as before, byte for byte | `test_chat_brief_turn_r8.py`, `linkChips.test.ts` |
+| 5 | The chat's first turn and the My Day card show the stored lines, and a diff against `plan.brief_parts` of the same cards is empty. On the My Day card, each claim href opens as an ordinary in-app link (`inAppLink`). The chat pills stay text, because a link chip needs a tool event, and a stored row has none. `GET /brief/today` answers 404 for a run of another member. With `BRIEF_IN_APP` off, both surfaces answer as before, byte for byte. BR-2c-1 holds the chat and the route | `test_chat_brief_turn_r8.py`, `test_brief_today_r8.py`, `test_brief_today.py` |
 | 6 | A run that is not ready at `slot_at + 3 min` delivers the template brief. `brief.slo_missed` logs once when a fake week falls under 99%. The health route answers the lag percentiles | `test_brief_monitor.py` |
 | 7 | The 18:30 run lists the Handled items, the moved items and the acts of the day, each with a claim. A day with no item gives `empty`. Each act from `audit_event` names its policy | `test_brief_run_r8.py` |
 | 8 | A new job kind with no `effect` fails the fence. So does a `send` kind with no policy, and an import of a send seam into `gateway/brief/` | `test_policy_fence.py` |

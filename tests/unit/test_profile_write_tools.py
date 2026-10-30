@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextvars
 import json
 import re
 from datetime import UTC, datetime
@@ -2050,3 +2051,142 @@ def test_the_persona_marks_detail_and_people_at_once() -> None:
     line = _orchestrator_module()._PROFILE_SWAP[1]
     assert "For detail and people, mark it at once" in " ".join(line.split())
     assert "before any other\n    save" in (pt.profile_interview.__doc__ or "")
+
+
+# ── 24. PZ-31: the member's own typed steers ground a save ─────────────────
+#
+# Live bug of 2026-10-29: the member typed an interview answer while the
+# assistant still ran a tool. The answer became a steer, and each save in the
+# run refused as ``NO_TYPED_TEXT``. Now the run member's own TYPED steers are
+# typed words of the run. They count when the run takes them at its start
+# (``tests/unit/test_steer_follow_up.py``) and when a tool result carries one
+# to the model (below).
+#
+# Mutations this section catches (R7):
+#
+# * ``decorate_tool_result`` stops handing the steers to the holder, or a
+#   tool call keeps its own copy, so a later call cannot see the words;
+# * the rule drops the author check, the ``typed`` check or the paste check;
+# * a run that names no member counts a steer;
+# * a second call names another member;
+# * a binder inside the run (the WhatsApp Confirm scope) reads its steers;
+# * two steers join into one number that the member never typed.
+
+STEER_THREAD = "t-pz31"
+#: A phrase copied from ``ANSWER``: what the model saves.
+ANSWER_PHRASE = "grow our revenue by twenty percent, hire two engineers and fix onboarding"
+#: A pasted mail that holds the same answer.
+PASTED_MAIL = f"From: Raj <raj@alpha.example>\nSubject: goals\n{ANSWER}"
+
+
+@pytest.fixture()
+def steer_mod():
+    steer = pytest.importorskip("orchestrator.steer")
+    steer._PENDING_GUIDANCE.clear()
+    steer._CLOSED.clear()
+    yield steer
+    steer._PENDING_GUIDANCE.clear()
+    steer._CLOSED.clear()
+
+
+def _read_at_a_tool_result(steer: Any, author: str, text: str, *, typed: Any) -> None:
+    """The applier buffers the steer. A tool result carries it to the model,
+    in the tool call's OWN copy of the context, as a run calls a tool."""
+    assert steer.buffer_guidance(STEER_THREAD, author, text, signal_id="s-1", typed=typed)
+    out = contextvars.copy_context().run(steer.decorate_tool_result, "tool output", STEER_THREAD)
+    assert text.strip() in out, "the model reads the steer"
+
+
+class TestPz31SteeredWords:
+    def test_an_own_typed_steer_read_at_a_tool_result_grounds_a_later_save(
+        self, own_chat, steer_mod,
+    ) -> None:
+        """(e) The words reach a LATER tool call, not only the one whose
+        result carried them."""
+        with ap.member_typed("Get to know me"):
+            ap.count_member_steers(MEMBER)
+            first = _run(pt.profile_remember(ANSWER_PHRASE, "work"))
+            assert _refused(first, "not_your_words") == pt.NOT_YOUR_WORDS_TEXT
+            _read_at_a_tool_result(steer_mod, MEMBER, ANSWER, typed=True)
+            out = _run(pt.profile_remember(ANSWER_PHRASE, "work"))
+        assert _undo_of(out)["op"] == "delete"
+        assert own_chat.profile["facts"][-1]["text"] == ANSWER_PHRASE
+
+    def test_a_steer_of_another_member_grounds_nothing(self, own_chat, steer_mod) -> None:
+        """(b) The same words, typed by another member of the thread."""
+        with ap.member_typed(""):
+            ap.count_member_steers(MEMBER)
+            _read_at_a_tool_result(steer_mod, "eve@beta.example", ANSWER, typed=True)
+            assert ap.typed_words() == ""
+            out = _run(pt.profile_remember(ANSWER_PHRASE, "work"))
+        assert _refused(out, "not_your_words") == pt.NO_TYPED_TEXT
+        assert own_chat.writes() == []
+
+    @pytest.mark.parametrize("typed", [False, None, "true", 1])
+    def test_a_steer_that_is_not_typed_grounds_nothing(self, own_chat, steer_mod, typed) -> None:
+        """(c) A card answer stores False. Only a real True counts, at the
+        run start and at a tool result."""
+        with ap.member_typed(""):
+            replayed = [{"author": MEMBER, "text": ANSWER, "typed": typed}]
+            assert ap.count_member_steers(MEMBER, replayed) == 0
+            assert ap.add_steered_words(MEMBER, ANSWER, typed=typed) is False
+            _read_at_a_tool_result(steer_mod, MEMBER, ANSWER, typed=typed)
+            assert ap.typed_words() == ""
+            out = _run(pt.profile_remember(ANSWER_PHRASE, "work"))
+        assert _refused(out, "not_your_words") == pt.NO_TYPED_TEXT
+
+    def test_a_pasted_mail_steer_grounds_nothing(self, own_chat, steer_mod) -> None:
+        """(f) The paste rule of ``typed_text`` checks the steers too."""
+        with ap.member_typed(""):
+            ap.count_member_steers(MEMBER)
+            _read_at_a_tool_result(steer_mod, MEMBER, PASTED_MAIL, typed=True)
+            assert ap.typed_words() == ""
+            out = _run(pt.profile_remember(ANSWER_PHRASE, "work"))
+        assert _refused(out, "not_your_words") == pt.NO_TYPED_TEXT
+        assert own_chat.writes() == []
+
+    def test_a_replayed_steer_with_no_typed_key_grounds_nothing(self, own_chat) -> None:
+        """(g) A steer stored before PZ-31 has no flag, and counts for nothing.
+        A typed steer of the member beside it still counts."""
+        legacy = {"id": "s-old", "author": MEMBER, "text": ANSWER}
+        typed = {"id": "s-new", "author": MEMBER, "text": "I like oolong tea", "typed": True}
+        with ap.member_typed(""):
+            assert ap.count_member_steers(MEMBER, [legacy, typed]) == 1
+            assert ap.typed_words() == "I like oolong tea"
+            out = _run(pt.profile_remember(ANSWER_PHRASE, "work"))
+        assert _refused(out, "not_your_words") == pt.NOT_YOUR_WORDS_TEXT
+        assert own_chat.writes() == []
+
+    def test_a_run_that_names_no_member_counts_no_steer(self, own_chat, steer_mod) -> None:
+        """A WhatsApp, background or workflow run never names a member."""
+        with ap.member_typed(""):
+            _read_at_a_tool_result(steer_mod, MEMBER, ANSWER, typed=True)
+            assert ap.add_steered_words(MEMBER, ANSWER, typed=True) is False
+            assert ap.typed_words() == ""
+
+    def test_the_first_member_name_holds(self) -> None:
+        with ap.member_typed(""):
+            ap.count_member_steers(MEMBER)
+            eve = {"author": "eve@beta.example", "text": ANSWER, "typed": True}
+            assert ap.count_member_steers("eve@beta.example", [eve]) == 0
+            assert ap.add_steered_words("eve@beta.example", ANSWER, typed=True) is False
+            assert ap.add_steered_words(f"  {MEMBER.upper()} ", ANSWER, typed=True) is True
+            assert ap.typed_words() == ANSWER
+
+    def test_a_binder_inside_the_run_reads_no_steer_of_the_run(self) -> None:
+        """The WhatsApp Confirm scope binds ``member_typed("")`` inside a run."""
+        with ap.member_typed("Get to know me"):
+            ap.count_member_steers(MEMBER)
+            assert ap.add_steered_words(MEMBER, ANSWER, typed=True)
+            with ap.member_typed(""):
+                assert ap.typed_words() == ""
+            assert ANSWER in ap.typed_words()
+        assert ap.typed_words() == ""
+
+    def test_two_steers_never_join_into_one_number(self) -> None:
+        with ap.member_typed("my desk is 4512"):
+            ap.count_member_steers(MEMBER)
+            assert ap.add_steered_words(MEMBER, "889 is the floor code", typed=True)
+            words = ap.typed_words()
+        assert ap.grounded("4512", words) and ap.grounded("889", words)
+        assert not ap.grounded("4512889", words)

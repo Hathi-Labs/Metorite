@@ -5,8 +5,9 @@ of questions and scores where the right record lands. No model runs. No
 embedding call goes out, because `KNOWLEDGE_EMBED` stays off.
 
 The owning text is the KG-1 row of `project-docs/specs/company_context.md` §12.
-That row replaces CX-2. The design of the set comes from §9 of that spec. The
-spec of the knowledge graph (KG-0) does not exist yet.
+That row replaces CX-2. The design of the set comes from §9 of that spec.
+`project-docs/specs/knowledge_graph.md` §7 (KG-0) sets the targets that the
+later KG slices measure with this eval.
 
 **Status.** Built on 2026-10-28. The fixture run and the R8 suite pass. The run on
 the real set is a separate call on staging. Its baseline is a comment on the
