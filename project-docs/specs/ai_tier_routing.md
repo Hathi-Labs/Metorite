@@ -37,6 +37,13 @@ all three model rows, and no email surface reads `chat_model`. An uncovered
 email chat runs on `tier-powerful`, which the code chooses. A covered one
 still sends no model. `email_app_master_plan.md` §10.4.16 (EM-T15) owns it.
 
+**The parallel start is built and dark (2026-10-30, branch
+`chat-turnkind-parallel`).** The owner approved the build on 2026-10-29. With
+`AI_TURN_KIND_PARALLEL` naming an agent, the first model request of a web chat
+turn starts on the `chat` tier while the turn-kind question runs. §4.3, §4.5
+and the box in §4.4 carry it. `AI_TURN_KIND_PARALLEL` ships empty, and a value
+on a box is the owner's (§13.1).
+
 **S4b build notes (2026-10-06).** Read these before S5, or before an agent
 joins the flag on a box.
 
@@ -607,6 +614,45 @@ The question is the kind of the member's message: `chat`, `code`, `plan` or
 - A turn with one short message under 12 words skips the question and reads as
   `chat`. This saves the call on "thanks" and "yes".
 
+**The wait, measured (2026-10-29).** Since 2026-10-25 the question starts
+early, beside the setup of the run. `executor.run_setup_ms` logs the wait
+that is left as `tier_wait_ms`. Over the 7 days to 2026-10-29, production
+measured these numbers:
+
+- 31 of 59 turns waited. The median wait was 1,749 ms, the p90 was 2,702 ms
+  and the maximum was 2,826 ms.
+- The other 28 turns waited 0 ms, because their message was short.
+- The answer changed the kind in 13 of 89 turns that asked: 7 `plan`, 4
+  `analysis` and 2 `code`. Every other turn read as `chat`.
+
+**The parallel start (2026-10-30), dark behind `AI_TURN_KIND_PARALLEL`.** The
+flag removes the wait for a native agent in the member's own web chat.
+
+- The first request starts at once. It runs as a `chat` turn, with the effort
+  of the run, and the question runs beside it.
+- An answer that moves neither the tier nor the reasoning effort, and names
+  no pack, changes no request. The request goes on. The turn takes the kind
+  of the answer for its `ai.route` label.
+- An answer that moves the tier or the reasoning effort, before any output
+  left the run, cancels the first request. The turn then starts again, one
+  time, on the tier of the answer. The executor logs `ai_route.restart`.
+- A pack answer is a move too (review, 2026-10-30). An answer that names a
+  pack that the run did not load restarts the turn with the pack tools,
+  before any output. A turn with no pack tools pays for a
+  `load_skill_tools` round, and that costs more than the wait.
+- Output is a text, a reasoning or a tool event, a card, or any event of the
+  run queue other than `ai.route`. A tool that starts counts too.
+- An answer that comes after the first output is late. The turn keeps its
+  tier, and the executor logs `ai_route.answer_late`. The packs of a late
+  answer load nothing, and the executor logs `ai_route.pack_late`. No tool
+  changes in the middle of a turn.
+- A restart waits at most 5 s for the cancelled request to close. A slower
+  close logs `ai_route.restart_teardown_slow`, and the turn goes on. No one
+  reads the old request again.
+- A timeout reads as `chat`, as before, so it moves nothing.
+- The batch path, a sub-agent, a delegated run and a Copilot SDK agent still
+  wait for the answer, as before.
+
 ### 4.3a The size of the work (owner, 2026-10-22)
 
 The owner asked for fast or balanced on ordinary work, and for powerful on a
@@ -674,6 +720,12 @@ output and writes the answer, so it is the step that needs the stronger model.
 > - Why: a switch in the middle of a turn sends the next request to another
 >   model. That model holds no cache of the prompt, so it reads about 45k
 >   tokens again at the full price.
+> - A cancelled request is not a model of the turn (2026-10-30). The
+>   parallel start of §4.3 cancels the first request when the answer moves
+>   the tier or the reasoning effort, before any output left the run. The
+>   member saw none of that request. The vendor can bill its prompt, so the
+>   executor logs `ai_route.restart` with the two tiers and the time that the
+>   request ran.
 >
 > Fences: `TestChoose` and `test_a_hinted_tool_keeps_the_turn_tier_and_is_logged`
 > in `tests/unit/test_tier_policy.py`, and item 4 of
@@ -697,6 +749,11 @@ output and writes the answer, so it is the step that needs the stronger model.
   `_apply_model_for_maf_agent`. D84 ports them later.
 - **A sub-agent runs its own policy.** It no longer inherits the parent's tier
   through `_active_run_model` while the flag covers it.
+- **A parallel start (§4.3) builds the policy as a `chat` turn first.** The
+  middleware reads the policy at each request. So after a restart, every
+  request of the turn carries the tier of the answer. A restart counts the
+  requests from 1 again, and the chat gets one `ai.route` event for each
+  request that it sees.
 
 ---
 
@@ -1129,6 +1186,9 @@ needs restoring.
   This follows the `_native_sessions_enabled` idiom (`executor.py:5728-5737`).
 - **The UI flag is `NEXT_PUBLIC_AI_TIER_ROUTING`**, a build-time value that
   hides the picker. It ships OFF.
+- **`AI_TURN_KIND_PARALLEL`**, setting `ai_turn_kind_parallel: str = ""`. It
+  is a comma list of agent names, or `*`. Empty means OFF. The one reader is
+  `tier_policy.turn_kind_parallel_on`, and it fails closed (§4.3).
 - The UI flag must not turn on before the backend flag covers the agents the
   chat shows. A member with no picker and no policy gets Balanced for every
   step, which is today's real behaviour (§2.2). So the wrong order is safe,
@@ -1176,6 +1236,7 @@ needs restoring.
 | A covered agent draws no effort selector, a covered orchestrator draws no agent selector, and the run sends `think_mode` "auto" (owner, 2026-10-07) | `src/lib/tierRoutingControls.test.ts` and `AgentChat.picker.test.ts`. The flag-off markup is the same for each coverage value | vitest |
 | An existing `/chat` conversation keeps its own agent, and `?agent=` stays | `src/lib/tierRoutingControls.test.ts` | vitest |
 | The member's words give `thinking`, never `max`, in the SAME turn-kind request. A short message sends no request | `tests/unit/test_tier_policy_effort_from_text.py` | pytest |
+| The parallel start restarts only before the first output, cancels the first request cleanly, and changes nothing with the flag off | `tests/unit/test_turn_kind_parallel.py` | pytest |
 
 ---
 
@@ -1320,7 +1381,8 @@ uv run pytest tests/unit/test_system_one_tool.py tests/unit/test_tier_policy.py 
   tests/unit/test_think_mode.py tests/unit/test_byok_default.py \
   tests/unit/test_no_direct_ai_vendor_calls.py \
   tests/unit/test_agent_list_tier_routed.py \
-  tests/unit/test_tier_policy_effort_from_text.py -q
+  tests/unit/test_tier_policy_effort_from_text.py \
+  tests/unit/test_turn_kind_parallel.py -q
 
 # The UI fences (S3)
 cd workbench/control_plane && npx tsc --noEmit && \
@@ -1345,6 +1407,7 @@ source `system_one`.
 | Act | Why |
 |---|---|
 | Put an agent in `AI_TIER_ROUTING` on production | It changes what a live organization is charged |
+| Put an agent in `AI_TURN_KIND_PARALLEL` on production | A restart can bill a prompt twice, so it changes what a live organization pays |
 | Turn on `NEXT_PUBLIC_AI_TIER_ROUTING` in production | It is build-time and reaches every organization at once |
 | Bind `tier-fast` to a vendor that is not yet a sub-processor | §6.6. A covered run would send content to it |
 

@@ -335,7 +335,9 @@ The rules for NEW motion:
   the transform origin at the anchor. A section never scales.
 - **A reveal travels 16 px or less.** A longer travel reads as a slide show.
 - **Only a status loops.** A spinner, the typing dots and a live dot loop,
-  because each one says "working". Nothing else loops.
+  because each one says "working". An agent's card loops too: the edge
+  travels while the agent works, and it breathes while the agent is idle
+  (EA-13h). Nothing else loops.
 - **Every animation answers reduced motion.** An entrance shows at once. A
   decoration stops. A status loop may stay, or slow down, because a still
   spinner reads as a hang.
@@ -433,7 +435,7 @@ undone.
 | **Confirm** | An act succeeded where the eye is: a save, a send, a status change, an approve | The control's label turns into the result ("Saved", "Sent", "Approved"). A check mark draws once. After 1.5 s the label returns | `--motion-duration` | The label changes, and nothing draws |
 | **Undo window** | A reversible act ran (M5) | The toast rises 8 px from its corner. A thin bar under it shrinks (`scaleX`) for the length of the window | `--sheet-duration` | The bar becomes a count in seconds |
 | **Count** | A number changes with no click: an unread count, a lane total | The number takes the accent tint once, for 600 ms. It sits in a `role="status"` region (M9) | `--motion-duration` | The tint shows, and nothing fades |
-| **Working** | A live status: a run, typing, a sync, an agent's card | Only the loops of §4: the spinner, the dots, the live dot, and the agent's edge | §4 | Slower, never gone |
+| **Working** | A live status: a run, typing, a sync, an agent's card | Only the loops of §4: the spinner, the dots, the live dot, and the agent's edge (it travels while the agent works, and its glow breathes by opacity while the agent is idle) | §4 | Slower, never gone. The idle glow stands still, because an idle agent is not busy |
 | **Attention** | Something waits on the member: a question, a failed act | One ring of the accent or the warning colour, once, when it arrives. It never loops | `--motion-duration` | The ring shows, still |
 
 A motion that is not in this table is not used. Adding one changes this

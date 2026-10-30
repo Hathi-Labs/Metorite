@@ -35,6 +35,21 @@ The owner's amendment of 2026-10-09 (one model per turn, amends §4.4):
   to the run's own view of the agent (§4.5). The executor attaches it, the
   same way it attaches ``EgressGuardProvider``.
 
+The parallel start (chat speed, 2026-10-30, §4.3), dark behind
+``AI_TURN_KIND_PARALLEL`` (:func:`turn_kind_parallel_on`):
+
+* The first request of a member's web chat turn starts as a provisional
+  ``chat`` turn, and the turn-kind question runs beside it.
+  :meth:`RunTierPolicy.settle` takes the answer. The request goes on when
+  the answer moves nothing. When it moves the tier or the reasoning effort,
+  or names a pack that the run did not load, and no output has left the
+  run, the executor cancels the first request and starts the turn again,
+  ONE time.
+* :meth:`RunTierPolicy.seal` closes that window. The executor calls it when
+  the first output leaves the run, and :class:`ToolHintRecorder` calls it
+  when a tool starts. A cancelled request sent nothing to the member, so the
+  turn still has one model (the box in §4.4).
+
 🔴 **One home for the policy.** §4.1 puts the table here, and nothing else
 holds a second copy. Add a rung here, never at a call site.
 
@@ -299,6 +314,29 @@ def reasoning_off(agent: str | None, *, kind: str, effort: str | None) -> bool:
 
         raw = str(get_settings().ai_reasoning_off_agents or "")
     except Exception:  # never change a request on a fault
+        return False
+    names = {part.strip() for part in raw.split(",") if part.strip()}
+    return ALL_AGENTS in names or name in names
+
+
+def turn_kind_parallel_on(agent: str | None) -> bool:
+    """True when the first request of *agent*'s web chat turn starts before
+    the turn-kind answer (§4.3, 2026-10-30). ONE reader of
+    ``AI_TURN_KIND_PARALLEL``, and it fails closed.
+
+    The value is a comma list of agent names, or ``*``. Empty, an empty
+    agent name and any fault read as OFF. Only a run that
+    :func:`tier_routing_on` covers asks a turn kind, so the executor reads
+    this flag for such a run alone.
+    """
+    name = str(agent or "").strip()
+    if not name:
+        return False
+    try:
+        from acb_common import get_settings
+
+        raw = str(get_settings().ai_turn_kind_parallel or "")
+    except Exception:  # a broken settings read must not start a turn early
         return False
     names = {part.strip() for part in raw.split(",") if part.strip()}
     return ALL_AGENTS in names or name in names
@@ -634,6 +672,21 @@ async def turn_kind(
 #: The callback that carries one ``ai.route`` event to the run's stream.
 Emit = Callable[[dict[str, Any]], None]
 
+# The states of a parallel start (§4.3, 2026-10-30), in RunTierPolicy.start.
+#: The turn runs as a provisional ``chat`` turn, and nothing has left the run.
+START_OPEN = "open"
+#: Output left the run, or a tool started. The tier of the turn stays.
+START_SEALED = "sealed"
+#: The answer came in time and moved the turn. The executor starts it again.
+START_MOVED = "moved"
+#: The answer came in time and moved nothing.
+START_KEPT = "kept"
+
+#: What :meth:`RunTierPolicy.settle` gives back.
+SETTLE_MOVED = "moved"
+SETTLE_KEPT = "kept"
+SETTLE_LATE = "late"
+
 
 def route_event(choice: Choice, request: int) -> dict[str, Any]:
     """The ``ai.route`` AG-UI custom event of one model request (§7.2).
@@ -673,6 +726,120 @@ class RunTierPolicy:
     #: The policy only carries them. It reads them nowhere, so they cannot
     #: move the tier.
     packs: tuple[str, ...] = ()
+    #: The parallel start (§4.3, 2026-10-30). ``""`` for every other run: the
+    #: tier was final before the first request. Else one of the ``START_*``
+    #: values. :meth:`open_start`, :meth:`seal` and :meth:`settle` move it.
+    start: str = ""
+    _opened_at: float = 0.0
+
+    def open_start(self) -> None:
+        """Start the turn as a provisional ``chat`` turn (§4.3, 2026-10-30).
+
+        The executor builds this policy with kind ``chat`` and the run's own
+        effort, before the turn-kind answer. It logs
+        ``ai_route.parallel_start`` with the provisional tier. No tenant text.
+        """
+        self.start = START_OPEN
+        self._opened_at = time.monotonic()
+        _log.info(
+            "ai_route.parallel_start", agent=self.agent, run_id=self.run_id,
+            tier=self.run_tier(),
+        )
+
+    def seal(self) -> bool:
+        """Close the window of a restart. True when this call closed it.
+
+        The executor calls it when the first output leaves the run, and
+        :class:`ToolHintRecorder` calls it when a tool starts. It has no
+        ``await``, so the event loop runs it whole, and it cannot interleave
+        with :meth:`settle`. A run with no parallel start never changes.
+        """
+        if self.start != START_OPEN:
+            return False
+        self.start = START_SEALED
+        return True
+
+    def request_shape(self) -> tuple[str, str | None, str]:
+        """What the turn kind can change in a main request of this turn.
+
+        The tier, the ``reasoning_effort`` that :class:`TierPolicyMiddleware`
+        sets, and the effort. The executor turns ``thinking`` into
+        ``reasoning_effort: medium``, so an effort that moves changes the
+        request too. A change of the reasoning alone is a move (2026-10-30),
+        because the request options differ. Such a restart keeps the model,
+        so the vendor's cache of the prompt stays warm for it.
+        """
+        effort = normalise_effort(self.effort)
+        off = reasoning_off(self.agent, kind=self.kind, effort=effort)
+        return self.run_tier(), (REASONING_OFF if off else None), effort
+
+    def settle(self, final: RunTierPolicy | None, *, fresh: bool = False) -> str:
+        """Take the turn-kind answer of a parallel start. ONE call for each run.
+
+        *final* is the policy that the answer gives, or None when no answer
+        came (a fault). *fresh* says that no request of the turn is running:
+        the stream has not opened yet, or Tier 1 failed before any output
+        and Tier 2 starts the turn again. ``ai_route.restart`` carries it. It
+        returns one of three values:
+
+        * :data:`SETTLE_MOVED`. The window is open, and the answer moves the
+          request (:meth:`request_shape`), or it names a pack that the run
+          did not load (review of 2026-10-30: a turn with no pack tools pays
+          for a ``load_skill_tools`` round, and that costs more than the
+          wait). This policy takes the kind, the effort and the packs of
+          *final*, and counts its requests from 1 again. The executor
+          cancels the first request and starts the turn again. The log line
+          ``ai_route.restart`` holds the two tiers, the requests that went
+          out on the old tier and the time since the start, so the cost of
+          the cancelled request can be read.
+        * :data:`SETTLE_KEPT`. The window is open, and the answer moves
+          nothing. The turn goes on, with the kind of the answer, so the
+          ``ai.route`` label and ``ai_route.chosen`` name the kind that
+          System 1 chose. The tier stays.
+        * :data:`SETTLE_LATE`. Output left the run first. The turn keeps its
+          tier. ``ai_route.answer_late`` gives the tier that the answer
+          would have chosen, and ``ai_route.pack_late`` the packs it drops.
+        """
+        elapsed = round((time.monotonic() - self._opened_at) * 1000) if self._opened_at else 0
+        packs = tuple(getattr(final, "packs", ()) or ()) if final is not None else ()
+        if self.start != START_OPEN:
+            if final is not None:
+                _log.info(
+                    "ai_route.answer_late", agent=self.agent, run_id=self.run_id,
+                    tier=self.run_tier(), would_tier=final.run_tier(), kind=final.kind,
+                    moved=final.request_shape() != self.request_shape(), elapsed_ms=elapsed,
+                )
+            self._drop_packs(packs, "late")
+            return SETTLE_LATE
+        new_packs = tuple(p for p in packs if p not in self.packs)
+        if final is None or (
+            final.request_shape() == self.request_shape() and not new_packs
+        ):
+            self.start = START_KEPT
+            if final is not None:
+                self.kind = final.kind
+            return SETTLE_KEPT
+        before, reasoning = self.run_tier(), self.request_shape()[1]
+        sent = self._requests
+        self.kind, self.effort, self.packs = final.kind, final.effort, packs
+        self.start = START_MOVED
+        self._requests = 0
+        _log.info(
+            "ai_route.restart", agent=self.agent, run_id=self.run_id,
+            from_tier=before, to_tier=self.run_tier(), from_reasoning=reasoning,
+            to_reasoning=self.request_shape()[1], effort=normalise_effort(self.effort),
+            kind=self.kind, sent=sent, elapsed_ms=elapsed, packs=len(new_packs),
+            fresh=fresh,
+        )
+        return SETTLE_MOVED
+
+    def _drop_packs(self, packs: tuple[str, ...], reason: str) -> None:
+        """Log the packs of an answer that load nothing. Never swap tools in a turn."""
+        if packs:
+            _log.info(
+                "ai_route.pack_late", agent=self.agent, run_id=self.run_id,
+                packs=list(packs), reason=reason,
+            )
 
     def run_choice(self) -> Choice:
         """The choice for the whole turn. No tool call changes it."""
@@ -780,12 +947,17 @@ class TierPolicyMiddleware(ChatMiddleware):
 
 
 class ToolHintRecorder(FunctionMiddleware):
-    """Logs each hinted tool the model calls. It moves no tier (2026-10-09)."""
+    """Logs each hinted tool the model calls. It moves no tier (2026-10-09).
+
+    It also seals a parallel start (§4.3, 2026-10-30) before the tool runs.
+    A tool can write or show a card, so a turn never starts again after one.
+    """
 
     def __init__(self, policy: RunTierPolicy) -> None:
         self._policy = policy
 
     async def process(self, context: Any, call_next: Callable[[], Any]) -> None:
+        self._policy.seal()
         function = getattr(context, "function", None)
         if function is not None:
             self._policy.note_tool(tool_name(function))
