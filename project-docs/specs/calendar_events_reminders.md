@@ -1315,15 +1315,20 @@ content, as `test_email_send_later.py` does. The fence is
 Metorite task 600, workstream WS-OB. Owner requests, 2026-10-27 (the task
 rules) and 2026-10-30 ("a chat should also prompt the user"). No D-number.
 Tier STANDARD: product UI and one key of the member's own prefs. No
-migration. It ships dark behind `PUSH_PROMPT_ORGS` (§9).
+migration. It ships dark behind `PUSH_PROMPT_ORGS` (§9). **The build is
+AGENT-SAFE. The flag flip is OWNER-GATE**, or an agent act under a dated
+`enforcement-flip` grant. Staging comes first, and the act names the flag
+and the box.
 
 **Why.** The morning brief, reminders and proactive messages reach a phone
 only through web push. Today a member turns push on only in My Profile, and
 few members find it.
 
 1. **Where.** The web chat of the member's own assistant
-   (`components/AgentChat.tsx`, beside the `InterviewOffer` anchor). It is
-   one inline sheet, docked above the composer. It is not a modal. It never
+   (`components/AgentChat.tsx`, beside the `composerNotice` block, which
+   already docks a notice above the composer). The guard is
+   `isOrchestrator && !isRoom`. It is one inline sheet, docked above the
+   composer. It is not a modal. It never
    covers the messages and never blocks the composer. It never shows in a
    room, in an app agent's chat, on the sign-in page, or on WhatsApp.
 2. **A phone.** One pure helper, `isPhone(facts)` in `src/lib/push.ts`. It
@@ -1360,7 +1365,11 @@ few members find it.
    refuses a time with no offset, and refuses a `snoozed_until` more than
    366 days ahead. The state is per member and org, so every phone of the
    member obeys it. The client writes `last_shown_at` once each time the
-   sheet shows.
+   sheet shows. `_CLEAN` holds list and boolean arms only, so this key
+   needs a new object validator and an object arm in `stored_prefs`. The
+   client reuses `loadFeedPrefs` and `saveFeedPref` of `lib/shell/feed.ts`.
+   A PUT replaces the whole value of one key, so the client reads, merges,
+   then writes.
 6. **iPhone and a refused permission.**
    - In a Safari tab (`ios-tab`), push works only from the Home Screen app.
      The sheet shows the two steps (Share, then Add to Home Screen) with
@@ -1370,8 +1379,14 @@ few members find it.
      once. It then writes `denied_seen_at` and does not show again while
      the permission stays `denied`.
 7. **The flag.** `PUSH_PROMPT_ORGS`, a per-org list on the existing `*_ORGS`
-   seam, with the reload rule of that seam. `GET /push/public-key` adds
-   `prompt`, true only when the flag holds for the session's org. With the
+   seam, with the reload rule of that seam. `*` opens every org. The field
+   `push_prompt_orgs` goes in `settings.py` beside `web_push_enabled`, and
+   the reader goes in `gateway/push/flags.py`. It reads the settings at call
+   time, never at import (`test_flag_reload.py`). Add the prefix
+   `PUSH_PROMPT_` to `env_guard.py`, as `BRIEF_` is, so that a tenant env
+   cannot open the flag. Add the name to the env templates and the staging
+   README. `GET /push/public-key` adds `prompt`, true only when the flag
+   holds for the session's org. With the
    flag off, the chat draws no sheet and writes nothing. The Notifications
    section of My Profile does not change.
 8. **The copy.** Title "Get notified on this phone". Body: "Turn on
