@@ -300,7 +300,7 @@ The owner accepted every default below in chat on 2026-10-10, with the words "go
 | D-EA-1 | The edge host | `mcp.metorite.com` | No session cookie reaches it. §5.2 |
 | D-EA-2 | Edge in its own unit, or a gateway router | Own unit | Smaller blast radius for the internal bearer. §5.1. Since EA3-1 the edge holds a signing key, and no bearer |
 | D-EA-3 | Authorization server: a vetted library inside our code, or a hosted OAuth server | Library inside our code | We already own the member session and the tenant tables. A second identity system is a second seam |
-| D-EA-4 | May a connection reach the member's personal projects | **No by default.** The consent page offers an opt-in box, off | Personal projects are private to one member. A wrong default leaks private work |
+| D-EA-4 | May a connection reach the member's personal projects | **Yes by default (amended 2026-10-30).** The consent page offers the box "Include my personal projects", ticked. The member can untick it. The owner said: "by default, including personal projects would be on." The first answer was "No by default, an opt-in box, off" | The member connects their own agent to do their own work, and their personal projects and notes are part of that work. The box stays, so a member can keep them private. The server still reads a body that leaves out the field as false, so only a broken client falls back to private |
 | D-EA-5 | A personal access token for headless agents (CI, a server) | Not in version 1 | An interactive OAuth flow covers Claude Code and desktop clients. A token is a long-lived secret and needs its own review |
 | D-EA-6 | What "company context" means | The organization name, domain, branding, and the `org:global` memory the member may read | No company profile route exists today. A richer profile is a separate spec. See H-15 in the org profile backlog |
 | D-EA-7 | Price | No charge. The agent uses the member's seat | CLAUDE.md says pricing and commercial calls need owner input first. The tool calls cost no AI credits |
@@ -455,7 +455,7 @@ A **connection** is one agent client that one member has authorized in one organ
 | `client_id`, `client_name`, `client_origin` | Who the agent is. The origin comes from the verified metadata document, not from a self-reported name |
 | `scopes` | The ceiling. See §8 |
 | `pinned_projects` | Optional list of project ids. Empty means every project the member sees |
-| `include_personal` | Opt-in flag from D-EA-4. Default false |
+| `include_personal` | The personal switch of D-EA-4. The column default is false. The consent page sends true unless the member unticks the box (since 2026-10-30) |
 | `created_at`, `last_used_at`, `expires_at`, `revoked_at` | Lifecycle. A connection expires after 90 days of no use. `last_used_at` records the last token issue. EA-3 does not stamp it on a tool call (EA3-7) |
 
 ### 7.1 The authority rule
@@ -1254,7 +1254,7 @@ The consent page is `/connect/authorize` on the control plane. A member sees it 
 - It also shows the verified origin, `redirect_display`, the organization name and each requested scope.
 - It takes a checkbox for each scope. A member can clear a box and never add a scope. The member cannot clear `offline_access`, so it shows with no box.
 - It takes a project pin picker. The picker lists up to 50 visible projects that are not personal. No pin means every project the member sees (§7).
-- It takes `include_personal`, a checkbox that is off by default (D-EA-4).
+- It takes `include_personal`, a checkbox that is on by default (D-EA-4, amended 2026-10-30). A body that leaves it out reads as false.
 - It has an Approve button and a Deny button. Deny navigates to `deny_redirect_to`.
 - ⚠️ **The approve gate (double-clickjacking).** An attacker's page can move its opener to this page between the two clicks of a double-click. So Approve stays off until the page is visible and has focus, and then for 500 ms more. A `blur` or a change to hidden starts the wait again. The click checks the gate again. Fences: `consent.test.ts` and `e2e/connect-authorize.spec.ts`.
 
@@ -2624,6 +2624,7 @@ The connect card of EA-4b and `docs/external_agents_connect.md` show this table.
   3. A pinned connection makes no space. The gateway refuses it with 403, and the edge refuses first.
   4. `update_project` takes no date, because a node has no date column.
   5. The chat door is there already. The chat tools `create_project`, `update_project` and `move_task` reach the same routes, each with one card. MCP-G1 adds no chat tool.
+- 2026-10-30 — EA-4b (Metorite task 1057). The owner amended D-EA-4: personal access is on by default. The consent page ticks "Include my personal projects", and the member can untick it. An existing connection keeps the value its member chose. The server reads a body without the field as false. This answers MCP-Q6, and task 1056 builds it. Fence: `workbench/control_plane/e2e/connect-authorize.spec.ts`.
 - 2026-10-30 — MCP-G1 fix round 1, after the adversarial review (HIGH tier).
   1. P1. An agent never widens who sees a task. The gateway compares the audience of each moved task through `notifications.project_grant_holders`, and a wider move gets 403 `audience_widens`. The preview gives `audience`. A personal task into a team project is wider.
   2. P2. `create_project` does not refuse on a node above a folder that it cannot read. The grammar of the gateway decides the level.
@@ -3102,7 +3103,7 @@ Each slice is HIGH tier unless it names another tier, so it runs the full loop. 
 | MCP-Q3 | Where does the member answer the card of an app request? | **One list in Integrations, AI agents, "Waiting for you".** Each member reaches it (§5.4). The bell and the asking rows of My Day link to it. An app can draw the card on its own screen later |
 | MCP-Q4 | Is the Email door on or off by default for an organization? | **On for reads and drafts,** once the member grants the scope and MCP-P3 is live. Each `sends` op stays off until the owner turns on `AGENT_DOOR_SENDS`. After that, every such op still asks |
 | MCP-Q5 | Do the existing Projects write tools join the card rule of D124.2? | **No.** They keep the rules of EA-6. A Projects write is undoable and the timeline names its client. A card for each status move stops the coding routine. A class C act keeps its approval |
-| MCP-Q6 | Does the personal opt-in (D-EA-4) also cover the member's own Drive sources in Knowledge (`list_sources`, `get_source_tree`)? They follow their own owner rule, and they ignore `include_personal` | **Yes, before the Knowledge door goes on in production.** A member who leaves personal access off expects no private file names to reach the agent. A source that a member shares with a team space stays readable |
+| MCP-Q6 | Does the personal opt-in (D-EA-4) also cover the member's own Drive sources in Knowledge (`list_sources`, `get_source_tree`)? They follow their own owner rule, and they ignore `include_personal` | **ANSWERED 2026-10-30: yes.** The owner made personal access on by default (D-EA-4, amended), and it stays the member's switch. A member who unticks it expects no private file names to reach the agent, so the Drive sources respect the switch before the Knowledge door goes on in production (task 1056). A source that a member shares with a team space stays readable |
 
 ### 19.15 What this section changes in the rest of this spec
 
