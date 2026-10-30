@@ -231,8 +231,8 @@ export async function revoke(id: string, admin: boolean): Promise<"revoked" | "g
 //
 // One switch, on by default (EA-6i, the owner, 2026-10-30). The gateway
 // answers `delete_enabled: true` for a member who has not chosen, so the card
-// draws it on. With it on, a connected agent may delete a task after the
-// member says yes in the agent. The gateway checks it on each delete.
+// draws it on. With it on, a connected agent may delete a task that the
+// member can delete. The gateway checks it on each delete.
 
 /** The cache key of the switch. It shares the prefix, so a revoke wakes it too. */
 export const AGENT_ACCESS_KEY = "agents:access";
@@ -244,10 +244,13 @@ export interface AgentAccess {
 /** The words of the card. They must be true of what the gateway does. */
 export const DELETE_SWITCH_COPY = {
   title: "Let my AI agents delete tasks",
+  // Metorite cannot make an agent app ask first. The app's own prompt asks,
+  // and an app that allows the tool with no prompt asks nothing. So the card
+  // says "most", and promises only what the gateway enforces.
   body:
-    "A connected agent asks you first, in the agent, and names the task. " +
-    "A delete cannot be undone. You choose which subtasks are deleted and which stay.",
-  on: "Your agents can delete a task after you say yes.",
+    "A delete cannot be undone. Most agent apps ask you before each one. " +
+    "The agent must name the exact task and say which subtasks go. The other subtasks stay.",
+  on: "Your agents can delete tasks that you can delete.",
   off: "Your agents cannot delete tasks.",
   /** The error state of the card (DESIGN_SYSTEM §9): what, and what next. */
   loadError: "This setting did not load.",

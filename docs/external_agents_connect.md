@@ -101,7 +101,7 @@ The agent can also do these three things:
 
 - **Start work with a command.** In Claude Code, run `/mcp__metorite__work_on_task` with a task number, or with no number. "Work on a task from Claude Code" above tells how.
 - **Ask to archive a task, and you approve it in Metorite.** The tool `request_task_archive` puts the request on the task, and the bell tells you. Only you can approve or decline it. An approve does not archive the subtasks.
-- **Delete a task, after you say yes in the agent.** The tool `delete_task` names the task, and the agent must get your yes first. You choose which subtasks to delete and which to keep. You cannot undo a delete.
+- **Delete a task that you can delete.** You cannot undo a delete. Most agent apps ask you before each delete. Metorite cannot make an app ask, so an app that you set to allow the tool asks nothing. The agent must name the exact task and say which subtasks to delete. The other subtasks stay.
 
 **The delete switch is on by default.** The switch **Let my AI agents delete tasks** is in **Integrations**, in the **AI agents** view. To stop all deletes by your agents, turn it off there. Your agents cannot change this switch.
 

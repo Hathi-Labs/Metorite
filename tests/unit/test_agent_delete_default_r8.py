@@ -34,9 +34,11 @@ it as it binds the runner in production. Run::
 ``apps/services/gateway/gateway/routes/admin``, and ``M`` is
 ``infra/postgres/316_user_settings_agent_delete_default_on.sql``.
 
-* E1. ``A/agent_access_switch.py`` ``delete_enabled`` reads NULL as off.
-  ``test_delete_enabled_reads_each_state[null]`` and
-  ``test_the_get_answers_each_state[null]``.
+* E1. ``A/agent_access_switch.py`` ``delete_enabled`` reads a NULL answer as
+  off. Since fix round 1, ``bool_and`` gives NULL for no row too. The
+  ``[no_row]`` and ``[null]`` cases of ``test_delete_enabled_reads_each_state``
+  and ``test_the_get_answers_each_state``, and
+  ``test_the_bound_organization_decides``.
 * E2. ``M``: the UPDATE leaves each ``false`` row alone.
   ``test_316_turns_each_false_into_null_once_and_keeps_true``.
 * E3. ``M``: no run-once guard, so a second run backfills again.
