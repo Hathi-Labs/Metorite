@@ -41,7 +41,7 @@ const body = (extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
-const draw = (now: Date | null = NOW) => renderToStaticMarkup(createElement(BriefCard, { now }));
+const draw = (now: Date | null = NOW) => renderToStaticMarkup(createElement(BriefCard, { brief: resource.data as never, error: resource.error, now }));
 
 afterEach(() => {
   resource.data = undefined;
@@ -72,6 +72,20 @@ describe("the brief card", () => {
     resource.data = undefined;
     resource.error = "The brief could not load (500).";
     expect(draw()).toBe("");
+  });
+
+  it("breaks a long unbroken token, in the lead and in both kinds of claim", () => {
+    resource.data = readBrief(
+      body({
+        lead: "Your day. https://example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        claims: [
+          { position: 1, section: "s", text: "Open https://example.com/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", source_app: "email", source_kind: "", href: "/email" },
+          { position: 2, section: "s", text: "Plain https://example.com/cccccccccccccccccccccccccccccc", source_app: "", source_kind: "", href: "" },
+        ],
+      }),
+    );
+    const html = draw();
+    expect(html.match(/break-words/g)?.length).toBeGreaterThanOrEqual(3);
   });
 
   it("makes no link of an off-site href", () => {

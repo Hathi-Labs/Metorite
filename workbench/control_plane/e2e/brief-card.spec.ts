@@ -44,6 +44,11 @@ const LOOK = {
 const ymd = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
+/** `BRIEF_LONG=1` puts a long unbroken URL in a claim, for the 390 px look. */
+const REPLY = process.env.BRIEF_LONG
+  ? "Reply: https://example.com/files/supplier-contract-final-v7-signed-by-both-parties-2026-10-30.pdf"
+  : "Reply to Dana about the supplier contract";
+
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -59,7 +64,7 @@ const brief = (day: Date) => ({
   lead_source: "template",
   ready_at: new Date().toISOString(),
   claims: [
-    { position: 2, section: "needs_you", text: "Reply to Dana about the supplier contract", source_app: "email", source_kind: "thread", href: "/email?email=a&account=acc1" },
+    { position: 2, section: "needs_you", text: REPLY, source_app: "email", source_kind: "thread", href: "/email?email=a&account=acc1" },
     { position: 1, section: "needs_you", text: "Approve the Q3 launch plan", source_app: "projects", source_kind: "task", href: "/projects?task=t1" },
     { position: 3, section: "today", text: "Design review at 15:00", source_app: "calendar", source_kind: "event", href: "/calendar" },
   ],
@@ -109,7 +114,7 @@ test.describe("The My Day brief card (BR-2c-2)", () => {
     const links = card(page).getByRole("link");
     await expect(links).toHaveText([
       "Approve the Q3 launch plan",
-      "Reply to Dana about the supplier contract",
+      REPLY,
       "Design review at 15:00",
     ]);
     await expect(links.first()).toHaveAttribute("href", "/projects?task=t1");

@@ -54,6 +54,7 @@ import { ADDRESS_KEY, addressedGreetingLine, fetchAddressName } from "./addressN
 import AppLauncher from "./AppLauncher";
 import { feedFailedLines, feedNeedsCount, handledClaim } from "./feed";
 import BriefCard from "./BriefCard";
+import { BRIEF_KEY, fetchBrief } from "./briefCard";
 import { briefCardOn, briefCardOnServer } from "./briefCardFlag";
 import { FeedColumn, useFeed } from "./FeedCard";
 import NeedsYouCard, { useNeedsYou } from "./NeedsYouCard";
@@ -107,6 +108,11 @@ export default function MyDay() {
   const today = useTodayItems(!accessLoading && cards.today, now);
   const feedOn = useSyncExternalStore(noSubscribe, myDayFeedOn, myDayFeedOnServer);
   const briefOn = useSyncExternalStore(noSubscribe, briefCardOn, briefCardOnServer);
+  // The brief read is the page's, so the grid waits for it and paints once.
+  // Off, the key is null: no read, and the brief never gates the page. A
+  // cache hit has data at once, so a later visit is instant.
+  const brief = useCachedResource(briefOn ? BRIEF_KEY : null, () => fetchBrief());
+  const briefPending = briefOn && brief.data === undefined && brief.loading;
   // The feed's sources are the needs sources and Calendar, and Calendar
   // needs what Today needs, so a member with no needs card gets no feed.
   const feed = useFeed(feedOn && !accessLoading && cards.needs);
@@ -190,9 +196,11 @@ export default function MyDay() {
 
       {/* The brief card (BR-2c-2): a component of its own above both
           layouts, outside the feed flag. It draws nothing on a 404. */}
-      {briefOn && !accessLoading ? <BriefCard now={now} className="mt-6 -mb-2" /> : null}
+      {briefOn && !accessLoading && !briefPending ? (
+        <BriefCard brief={brief.data} error={brief.error} now={now} className="mt-6 -mb-2" />
+      ) : null}
 
-      {accessLoading || (!feedOn && layoutPending) ? (
+      {accessLoading || briefPending || (!feedOn && layoutPending) ? (
         <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-3" aria-hidden>
           <Skeleton className="h-64 w-full rounded-xl xl:col-span-2" />
           <Skeleton className="h-40 w-full rounded-xl" />
