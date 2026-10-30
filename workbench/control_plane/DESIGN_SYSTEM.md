@@ -722,6 +722,7 @@ tint, in both modes. It also measures each `-foreground` ink on its solid
 fill. So light mode needs a darker value than dark mode. `--warning` is a
 dark amber on white and a bright yellow on near-black (H-174). `--success`,
 `--destructive` and `--info` are also darker in light mode (H-193).
+`Badge tone="info"` is the blue chip. Use it for a state that is neither good nor bad, and never use `primary` for a state (H-435).
 
 **No status tone may have a ratchet entry.** The test "every status tone
 clears AA" fails if `KNOWN_SHORTFALLS` names one of the five. A new tone
