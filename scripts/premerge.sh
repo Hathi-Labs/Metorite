@@ -75,8 +75,19 @@ done < <(git diff --name-only --diff-filter=A "$base" HEAD -- infra/postgres/ | 
 # ── 2. The trial merge ──────────────────────────────────────────────────────
 overlap="$(comm -12 <(git diff --name-only "$base" HEAD | sort) <(git diff --name-only "$base" "$BASE" | sort))"
 logs="$(mktemp -d)"
-trap 'git rev-parse -q --verify MERGE_HEAD >/dev/null && git merge --abort; rm -rf "$logs"; true' EXIT
-if ! git merge --no-commit --no-ff -q "$BASE" > "$logs/merge.log" 2>&1; then
+# The trial merge is a real commit on a DETACHED head, so the tests see a
+# clean, committed checkout. With an uncommitted merge, a test that compares
+# a build SHA with `git rev-parse HEAD` failed for no reason (LD-3b). The EXIT
+# trap aborts any merge and goes back to the branch. The trial commit is left
+# unreferenced. No ref moves, and nothing is rewritten.
+branch="$(git symbolic-ref -q --short HEAD)" || fail "HEAD is detached. Check out the PR branch first."
+back() {
+  git rev-parse -q --verify MERGE_HEAD >/dev/null && git merge --abort
+  [ "$(git symbolic-ref -q --short HEAD || true)" = "$branch" ] || git checkout -q "$branch"
+}
+trap 'back; rm -rf "$logs"; true' EXIT
+git checkout -q --detach
+if ! git merge --no-ff --no-edit -q "$BASE" > "$logs/merge.log" 2>&1; then
   conflicts="$(git diff --name-only --diff-filter=U | tr '\n' ' ')"
   if [ -z "$conflicts" ]; then
     # No conflicted path: git refused before it merged, most often because an
@@ -97,16 +108,42 @@ if [ "${#present[@]}" -gt 0 ] && ! env -u VIRTUAL_ENV uv run pytest -q -p no:cac
 fi
 
 # ── 4. Both sides changed the same files ───────────────────────────────────
+# A test that fails on the merge result is a merge failure only when it PASSES
+# on the branch alone (green alone, red together). A test that fails both ways
+# is this machine or an older red: six tests fail on the Windows PC and pass
+# in CI (LD-3b, 2026-10-30). So a failure is re-run on the branch before it
+# can block. Both commands can be replaced, for tests and for other stacks.
+AFFECTED_CMD="${PREMERGE_AFFECTED_CMD:-env -u VIRTUAL_ENV uv run python scripts/affected_tests.py --base $BASE --run -pno:cacheprovider --continue-on-collection-errors -rfE}"
+RERUN_CMD="${PREMERGE_RERUN_CMD:-env -u VIRTUAL_ENV uv run pytest -q -p no:cacheprovider --continue-on-collection-errors -rfE}"
+# Ids at the function level: a parameter such as [Earlier reply] holds a space,
+# and a cut id selects nothing on the re-run. The re-run takes whole functions.
+failed_ids() { { grep -E '^(FAILED|ERROR) ' "$1" || true; } | awk '{print $2}' | sed 's/\[.*//' | sort -u; }
+
 if [ -n "$overlap" ]; then
   say "both sides changed: $(printf '%s' "$overlap" | tr '\n' ' ')"
   say "running the affected tests on the merge result"
-  if ! env -u VIRTUAL_ENV uv run python scripts/affected_tests.py --base "$BASE" --run > "$logs/affected.log" 2>&1; then
-    tail -20 "$logs/affected.log" >&2
-    fail "the affected tests fail on the merge result. Merge $BASE into the branch, fix, push, and wait for pr-check."
+  if ! bash -c "$AFFECTED_CMD" > "$logs/affected.log" 2>&1; then
+    merged_fail="$(failed_ids "$logs/affected.log")"
+    if [ -z "$merged_fail" ]; then
+      tail -20 "$logs/affected.log" >&2
+      fail "the affected tests did not run cleanly on the merge result, and no test is named (log above)."
+    fi
+    # Back to the branch alone, then the same tests again.
+    back
+    # shellcheck disable=SC2086
+    bash -c "$RERUN_CMD \"\$@\"" _ $merged_fail > "$logs/rerun.log" 2>&1 || true
+    alone_fail="$(failed_ids "$logs/rerun.log")"
+    caused="$(comm -23 <(printf '%s\n' "$merged_fail") <(printf '%s\n' "$alone_fail"))"
+    if [ -n "$caused" ]; then
+      printf '  %s\n' $caused >&2
+      fail "these tests pass on the branch alone and fail once $BASE is merged in. Merge $BASE into the branch, fix, push, and wait for pr-check."
+    fi
+    say "these tests fail on the branch alone too, so the merge did not cause them (this machine, or already red):"
+    printf '  %s\n' $merged_fail
   fi
   if printf '%s\n' "$overlap" | grep -q '^workbench/'; then
     say "a frontend file changed on both sides. Run the vitest command that affected_tests printed:"
-    grep -E "vitest" "$logs/affected.log" | head -3 || true
+    { grep -E "vitest" "$logs/affected.log" || true; } | head -3
   fi
 fi
 
