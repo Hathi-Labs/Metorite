@@ -42,6 +42,7 @@ entry says ONE or THE, a second copy is a defect.
 - `lib/nav.ts`: `visibleSections(allowedFeatures)` drops panes the member cannot reach.
 - `lib/shell/`: `needs.ts`, `feed.ts` and `feedState.ts` are the one browser clients of their routes. ⚠️ An account switch never clears the read cache. Fences: `feed.test.ts`, `accountSwitchLeave.test.ts`.
 - `lib/shell/reminderOpen.ts`: a reminder link (`/chat?reminder=<id>`, RM-4). It is the one client of `/reminder-open` and of the reminder chips. The server builds every word, and the body holds the id only. No chip calls `/promote`. Fence: `app/chat/reminderOpen.test.ts`.
+  - The Calendar (RM-5) closes and opens a reminder through its `runReminderAct`, and reads `refusalWords` from it. Do not add a second client of `/resolve` or `/reopen`. Fence: `app/calendar/lib/reminders.test.ts`.
 - `lib/shell/navNeeds.ts`: the sidebar row counts. Do not add a second fetch of `/api/shell/needs` or a second poll (`joinNeedsPoll`). Fence: `navNeeds.test.ts`.
 - `lib/shell/presets.ts` + `shellPrefs.ts`: a star never grants, because `starredHrefs` picks only from `visibleSections`. `shellPrefs.ts` is the one client of `/api/auth/me/shell`. Fence: `presets.test.ts`.
 - `lib/centers.ts`: THE Center registry. A slug here needs its feature in `acb_auth.permissions.FEATURES` (checklist: `department_centers.md` §2). Fences: `tests/unit/test_org_access_control.py`, `lib/centers.test.ts`.
@@ -98,6 +99,7 @@ The Knowledge app (spec `knowledge_base.md` §11.1 and §21). Only the first `GE
 - `lib/gateway.ts`: THE gateway proxy helper (`gatewayHeaders`, `proxyToGateway`, `headersActingAs`). New routes use it.
 - `app/api/email/oauth/[provider]/authorize/route.ts`: the mailbox-connect navigation target. It calls the gateway with `redirect: "manual"`, re-issues the `Location` and drops `user_email`. Keep it a sibling of the catch-all. `bounce.ts` builds each failure query. Fences: `tests/unit/test_email_oauth_authorize_wiring.py`, `route.test.ts`.
 - `app/integrations/` and `app/connect/authorize/`: each BFF write refuses a `Sec-Fetch-Site` that is not `same-origin`, never follows a gateway redirect, and builds no URL. `/connect/*` carries `frame-ancestors 'none'`. Fences: their `*.test.ts` files and `relay.test.ts`.
+  - ⚠️ The consent page skips its form only for the gateway's exact `first_party` answer with an `https` redirect (`isContinueView`, D-EA-11). It never trusts a client by its name or host. Every screen it draws keeps the approve gate. Fences: `consent.test.ts`, `e2e/connect-authorize.spec.ts`.
 - `lib/push.ts` + `public/sw.js`: web push. The ONE switch is the gateway's `WEB_PUSH_ENABLED`, with no build-time flag. `enablePush` is the one caller of `Notification.requestPermission`.
   - Every sign-out path calls `forgetThisDevice()` before `signOut`. Never pass the lenient `fetchAccounts` to `otherAccountsStay`. Fence: `lib/push.test.ts`.
 - `proxy.ts`: route protection, and ⚠️ THE ONLY READER OF THE REQUEST HOST in this tier. Fence: `lib/subdomain.test.ts`.

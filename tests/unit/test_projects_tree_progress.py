@@ -118,6 +118,51 @@ def test_a_node_with_nothing_under_it_reports_zero_not_none():
     assert tree[0]["cancelled"] == 0
 
 
+def test_an_archived_child_leaves_the_parent_count_like_the_summary_walk():
+    """OP-12b. The sidebar count and the Overview "Open" read one number.
+
+    The summary walk (`NODE_DESCENDANTS_SQL`) skips archived children, so the
+    tree roll-up must too. Archiving changes no task row, so "Home" keeps its
+    own 3 open tasks, and the root must not add them.
+    """
+    tree = [{"id": "root", "children": [
+        {"id": "work", "children": []},
+        {"id": "home", "archived_at": "2026-10-30T00:00:00Z", "children": []},
+    ]}]
+    counts = {"root": (11, 7, 0), "work": (2, 0, 0), "home": (3, 0, 0)}
+
+    pm_tree._attach_progress(tree, counts)
+
+    root = tree[0]
+    assert (root["tasks"], root["done"]) == (13, 7)  # 11 + 2, never + 3
+    # The archived row still reports its own work, for the Archived fold.
+    assert root["children"][1]["tasks"] == 3
+    # The other read: the summary walk skips archived children in SQL.
+    assert "archived_at IS NULL" in pm_tree.NODE_DESCENDANTS_SQL
+
+
+def test_an_archived_parent_still_counts_its_archived_children():
+    """OP-12b. An archive stamps the whole subtree, so "Home" archived with
+    "Garden" and "Repairs" under it reads 5 open, as its Overview does
+    (`NODE_DESCENDANTS_ARCHIVED_SQL` keeps archived children)."""
+    stamp = "2026-10-30T00:00:00Z"
+    tree = [{"id": "root", "children": [
+        {"id": "home", "archived_at": stamp, "children": [
+            {"id": "garden", "archived_at": stamp, "children": []},
+            {"id": "repairs", "archived_at": stamp, "children": []},
+        ]},
+    ]}]
+    counts = {"root": (1, 0, 0), "garden": (3, 0, 0), "repairs": (2, 0, 0)}
+
+    pm_tree._attach_progress(tree, counts)
+
+    home = tree[0]["children"][0]
+    assert home["tasks"] == 5
+    # The live root still leaves the archived Home out of its own count.
+    assert tree[0]["tasks"] == 1
+    assert "p.archived_at IS NULL" not in pm_tree.NODE_DESCENDANTS_ARCHIVED_SQL
+
+
 def test_a_count_for_a_node_outside_the_tree_is_ignored():
     """A task in a project the forest read did not return - a personal
     project, say - belongs to no row here. The alternative is a total that

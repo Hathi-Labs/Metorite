@@ -122,7 +122,8 @@ reference tied to code. Do not put product specs in `docs/`.
 6. **R8 — verify SQL against a real database.** Hermetic fakes agree with
    whatever SQL they get. Five live bugs shipped green that way.
 7. **R1 — migration numbers are taken at build time and re-checked at merge.**
-   Three collisions in two weeks.
+   Three collisions in two weeks. `bash scripts/premerge.sh` does the re-check,
+   right before `gh pr merge`.
 8. **Verify delivery by evidence, never by a green job.** Migration ledger
    lines, the deployed SHA, the log line. Four deploys once reported success
    while shipping nothing.
@@ -213,15 +214,16 @@ delivery makes a silent failed deploy more likely, not less.
 **Feature by feature, app by app — one narrowed slice at a time.** The loop
 (`/next-ticket`, defined in `.claude/commands/next-ticket.md`):
 
-> **audit** the spec is dispatchable → **implement** one narrowed slice →
-> **verify** independently against the acceptance criteria → **review** the diff
-> adversarially, by risk tier. Then **open a PR**, **merge it**, **watch the
-> run**, and **test it on staging**.
+> **audit** the spec is dispatchable → **implement** one narrowed slice and
+> **run it locally** (`scripts/dev_up.sh`) → **verify** independently, on the
+> local stack → **review** the diff adversarially, by risk tier. Then **open a
+> PR**, **merge it**, **watch the run**, and **smoke-test it on staging**.
 
-**Merging is not skipping the loop.** Audit and verify always run, and the
-verifier is never the implementer. Review depth follows the risk tier in
-`next-ticket.md` step 1b. A LOW slice skips the reviewer. What you drop is the
-wait.
+**Merging is not skipping the loop.** Verify always runs, and the verifier is
+never the implementer. A small slice (LOW, or STANDARD in build) skips the
+audit when its Metorite task states the acceptance criteria (owner request,
+2026-10-30). Review depth follows the risk tier in `next-ticket.md` step 1b. A
+LOW slice skips the reviewer. What you drop is the wait.
 
 **⚠️ A merge is NOT a production deploy (WS-38).** A merge runs lint and tests,
 then moves the `staging` ref. Staging (`https://dev.metorite.com`) serves that
@@ -257,6 +259,8 @@ session that changes the repo or a box follows these steps:
 A session that only reads or answers needs no task.
 
 **⚠️ TEST ON STAGING BEFORE PRODUCTION** *(owner directive, 2026-10-17)*.
+Since 2026-10-30 agents test the behaviour on the local stack first. Staging is
+a smoke check, plus what the PC cannot test (`next-ticket.md` step 7).
 Staging holds a reduced copy of four organizations. Every outbound switch is
 OFF there, so staging sends no mail and calls no CRM. Write nothing there that
 must last. The dev box `srv1747539` is also the staging box. A session on it
@@ -372,6 +376,9 @@ Rules that make it work:
   green.** Run `bash scripts/dev_db.sh` first, then
   `eval "$(bash scripts/dev_db.sh --export)"`. `engineering_practice.md` §1.1
   owns the loop.
+- **Run the whole app before you push:** `bash scripts/dev_up.sh` in your
+  worktree. It prints the URL, with two seeded tenants and outbound off. Look
+  at your change there first. `engineering_practice.md` §1.2 owns it.
 - `.claude/` (agents, commands, hooks, settings) is **tracked**, so every
   checkout inherits the same review loop and the same refusals (D29).
   Local-only and derived paths stay ignored. The CodeGraph index is rebuilt,

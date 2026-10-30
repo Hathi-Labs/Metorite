@@ -88,6 +88,7 @@ import { PHONE_MAX_WIDTH, composerCap, composerHeight, offerExpand } from "@/lib
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
 import MessageBubble from "@/components/MessageBubble";
+import PushPromptSheet from "@/components/PushPromptSheet";
 import ChatMoreMenu from "@/components/ChatMoreMenu";
 import ChatSendButton from "@/components/ChatSendButton";
 import {
@@ -2121,6 +2122,8 @@ export default function AgentChat({
   const viewerEmail = memoryUserId ?? "";
   const { room, shared: isRoom, presence, timeline, refresh: refreshRoom } =
     useRoom(sessionId, viewerEmail, { enabled: !compact });
+  // The member's own assistant, not a room: the push prompt asks only here (OB-8).
+  const ownAssistantChat = isOrchestrator && !isRoom;
   // A blocking generative-UI card whose answer went as a new message after a
   // restart: its run died before its tool result recorded the answer, so the
   // answer comes from the member's turn (`lib/cardAnswer.ts`). The card then
@@ -2579,6 +2582,17 @@ export default function AgentChat({
               contributor if you need to send turns to its agents.
             </div>
           )}
+          {/* OB-8: asks a phone member to turn on push. It docks above the
+              message box, as the notes above do. The member's own assistant
+              only, after the first turn, and never during a run. The server's
+              `prompt` flag decides whether it draws at all. */}
+          <PushPromptSheet
+            ownChat={ownAssistantChat}
+            messageCount={messages.length}
+            streaming={isLoading}
+            visible={visible}
+            onClosed={() => inputRef.current?.focus()}
+          />
           {/* The message box (owner, 2026-10-12: "it looks quite untidy").
               The message takes the whole width, with no gutter. One bar inside
               the box holds the quiet tools at the left and ONE round control

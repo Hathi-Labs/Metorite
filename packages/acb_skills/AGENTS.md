@@ -36,6 +36,9 @@ not write a second copy of that seam. A bare test file name is under
    - `note_used` makes a pack sticky after one of its tools ran. It writes one hash field, so two calls at once lose no update.
    - `persona_for` swaps the owner's delegation text for the rules, in load order. It raises when the persona does not hold that text once. A held pack adds `egress.EGRESS_HOLD_NOTE_PACK`.
    - `delegation_refusal` is the ONE refusal rule. A hand-off to an owner gets the pack text only while the run holds every pack of that owner (`owner_packs`). `call_agent_background` does not ask it.
+   - OA-8i: `PackRun.wrote` and `PackRun.handed` record a pack write and a hand-off of one turn. After a write, `PackRun.refusal` refuses a hand-off to its owner, and only where no older rule refuses. A seam that starts a hand-off asks with `starts=True`.
+   - `pack_write_refusal` is the ONE check of a pack write after a hand-off. It reads `subagent_contract.annotated_read_only`, and it skips `CHAT_FILE_TOOLS`, the tools that write only a chat file. `handoff_ended` records a hand-off that did not finish (`handed_failed`), and its own text answers.
+   - Both directions refuse only while the owner's specialist tool stays (the owner is not in `PackRun.replaced`). No email tool says `read_only=True`. Fence: `test_pack_no_double_write.py`.
    - Fences: `test_tool_packs_choice.py`, `test_tool_packs_off.py`.
    - OA-7e, layer (b): `load_tool` builds `load_skill_tools` for one run. Its description is the `catalog` of the packs that `loadable` gives. `LoadSkillTools` is its `FunctionMiddleware`: it takes its own tool by identity, builds through the orchestrator's builder, and calls `FunctionInvocationContext.add_tools`. `LoadSkillToolsProvider` adds both to one run.
    - A load obeys the caps of layer (a), and a refusal past a cap names `spawn_subagents`. A load alone makes no pack sticky. A pack becomes sticky when one of its tools runs (`note_used`).
@@ -51,6 +54,7 @@ not write a second copy of that seam. A bare test file name is under
    - It sends nothing when `acb_llm.routed.routing_is_on()` is false. It logs no context, question or option.
 5b-2. tier_policy.py -- the ONE home of the tier policy (D90) and the ONE reader of `AI_TIER_ROUTING` (`tier_routing_on`, which fails closed).
    - `TierPolicyMiddleware` sets only `options["model"]`. Each `TOOL_HINTS` name must be a real tool. Fence: `test_tier_policy.py`.
+   - `turn_kind_parallel_on` is the ONE reader of `AI_TURN_KIND_PARALLEL`, and it fails closed. `RunTierPolicy.seal` and `settle` own the window of a restart. `ToolHintRecorder` seals before a tool runs. Fence: `test_turn_kind_parallel.py`.
 5c. permission_policy.py -- the B6 risk-aware handler and the D85 guard `guard_shared_agent_shell`.
    - The guard refuses a shell request unless the artifact context says `host_shell_refused=False`. Fence: `test_shared_agent_shell_tools.py`.
    - `decide()` refuses a read of a BINARY workspace file (`read_binary_file`). ⚠️ It never refuses a name in `_CLI_IMAGE_SUFFIXES`, and a CLI upgrade must check that list again. Fence: `test_chat_nul_persist.py`.

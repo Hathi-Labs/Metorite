@@ -146,6 +146,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # with thinking off. It changes how a model answers, so only the
     # operator writes it.
     "AI_REASONING_OFF_AGENTS",
+    # Chat speed (2026-10-30): the covered agents whose first chat request
+    # starts before the turn-kind answer. A restart can bill a prompt twice,
+    # so only the operator writes it (ai_tier_routing.md §13.1).
+    "AI_TURN_KIND_PARALLEL",
     # WS-48 N1 (D93): the agents that hold `narrow_and_read`. It moves what
     # an organization pays, so only the operator writes it
     # (data_narrowing_pipeline.md §11).
@@ -293,6 +297,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # brief for an org, so a tenant that set them could open it for every org
     # on the box. The prefix covers the later BRIEF_* switches too.
     "BRIEF_",
+    # WS-OB OB-8: the push prompt. PUSH_PROMPT_ORGS opens the chat sheet for an
+    # org, so a tenant that set it could open the sheet for every org.
+    "PUSH_PROMPT_",
     # Agent runtime, sandbox and models.
     "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",

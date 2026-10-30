@@ -104,11 +104,11 @@ A run has a stored **status** and a derived **state**. The gateway sets every st
 
 | State | Rule | The card (EA-13g, `agentCardLook.ts`) |
 |---|---|---|
-| `queued` | Status `created` | A still, dashed accent edge |
+| `queued` | Status `created` | A still, thin, solid accent edge (EA-13h: no dashed edge) |
 | `working` | Status `in_progress`, an activity in the last 5 minutes, and no answer waits | A moving accent edge and a live line |
 | `waiting` | **New (task 1045).** Status `in_progress`, and the newest activity set a `waiting` time that has not passed | A still accent edge: "Claude Code · waiting on CI · about 25 min" |
 | `answered` | Status `in_progress`, and the newest activity is a member's prompt that no agent read yet | The accent edge, "Answered · agent picks up next" |
-| `stale` | Status `in_progress`, and no activity for 5 minutes (or past the `waiting` time) | A muted, dashed gray edge, "<client> idle" |
+| `stale` | Status `in_progress`, and no activity for 5 minutes (or past the `waiting` time) | An accent glow that breathes slowly (EA-13h). The pill says "idle", and the line shows only the agent's last note |
 | `awaiting` | Status `awaiting`: a question waits on a named member | A still amber edge, "Needs you" |
 | `stopping`, `failed` | The status itself | Muted, or a still red edge |
 

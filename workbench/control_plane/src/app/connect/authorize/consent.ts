@@ -100,6 +100,32 @@ export function isCheckView(value: unknown): value is CheckView {
   );
 }
 
+/**
+ * What `check` answers for a first-party client that the member already
+ * approved for these scopes (D-EA-11, spec §10.7). The gateway minted a code
+ * on the member's live connection, so the page shows no screen and goes on.
+ *
+ * ⚠️ Only the gateway decides this. The page never trusts a client by its
+ * name or host. An answer that is not this exact shape is not a pass: the
+ * page then reads it as a `CheckView`, or as a refusal. The redirect must be
+ * `https`, because the gateway sends a code without a click only there.
+ */
+export interface ContinueView {
+  first_party: true;
+  redirect_to: string;
+}
+
+export function isContinueView(value: unknown): value is ContinueView {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Partial<ContinueView>;
+  return (
+    v.first_party === true &&
+    typeof v.redirect_to === "string" &&
+    v.redirect_to.startsWith("https://") &&
+    !("consent_ticket" in (v as object))
+  );
+}
+
 export const OFFLINE_ACCESS = "offline_access";
 
 /** The words of each scope. A scope the page does not know shows its name. */

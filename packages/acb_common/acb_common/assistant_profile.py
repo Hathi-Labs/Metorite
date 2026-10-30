@@ -881,9 +881,33 @@ def _tokens(pattern: re.Pattern[str], text: str) -> set[str]:
     return {hit.rstrip(_TRAIL) for hit in pattern.findall(text)} - {""}
 
 
-def _numbers(text: str) -> set[str]:
-    """Each number of *text* as its digits only, so a split number is one."""
+#: A comma that groups digits: "1,200" and the lakh form "1,20,000". A
+#: comma before one digit, or before four, is no group mark ("1,2").
+_GROUP_COMMA = re.compile(r"(?<=\d),(?=\d{3}(?!\d)|\d{2},)")
+#: One number in the exact form: an optional sign, digits, and an optional
+#: decimal part. A minus after a letter or a digit is a dash ("2026-10").
+_EXACT_NUMBER = re.compile(r"(?:(?<!\w)-)?\d+(?:\.\d+)?")
+
+
+def numbers_in(text: str, *, exact: bool = False) -> set[str]:
+    """Each number of *text*. The one public number extractor: the core
+    brief fence imports it (``gateway/brief/fence.py``).
+
+    By default a number is its digits only, so a split number is one:
+    "+1 41 55" is "14155", and "1,200" is the two numbers "1" and "200". The
+    profile write guard uses this form.
+
+    With *exact*, a grouping comma is dropped, and the sign and the decimal
+    point stay. So "1,200" is "1200", "12.5" is not "125", and "-5" is not
+    "5". Spaces split numbers. The brief fence uses this form."""
+    if exact:
+        text = text.replace("\u2212", "-")  # the Unicode minus is a minus
+        return set(_EXACT_NUMBER.findall(_GROUP_COMMA.sub("", text)))
     return {"".join(ch for ch in hit if ch.isdigit()) for hit in _NUMBER.findall(text)}
+
+
+#: The old private name, kept so no caller breaks.
+_numbers = numbers_in
 
 
 #: PZ-6b (re-verify P2-1): an address written out in words. "(at)",

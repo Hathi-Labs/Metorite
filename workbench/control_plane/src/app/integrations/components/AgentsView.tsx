@@ -10,7 +10,8 @@
  *    client of §17.1, and what an agent can and cannot do.
  * 2. **My connected agents.** The member's own live connections, with Revoke.
  *    Above the list, the member's own switch "Let my AI agents delete tasks"
- *    (EA-6h, EA3-51), default off. The gateway checks it on each delete.
+ *    (EA-6h, EA3-51). It is on by default since EA-6i: the gateway answers
+ *    on for a member who has not chosen. The gateway checks it on each delete.
  * 3. **All agent connections.** Every live connection of the org, with the
  *    member's email and Revoke. Only with `integrations:manage`
  *    (`canManageOrg`), and the gateway checks it again.

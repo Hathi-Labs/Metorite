@@ -93,6 +93,7 @@ dependencies = [
     { name = "redis" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "structlog" },
+    { name = "tzdata" },
 ]
 
 [package.metadata]
@@ -108,6 +109,7 @@ requires-dist = [
     { name = "redis", specifier = ">=5.2" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1" },
     { name = "structlog", specifier = ">=26.1" },
+    { name = "tzdata", specifier = ">=2026.1" },
 ]
 
 [[package]]

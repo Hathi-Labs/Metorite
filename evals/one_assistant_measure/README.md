@@ -179,6 +179,16 @@ The row counts hand-offs by owner (`specialist_handoffs`) and, for email, by
 kind (`handoffs`). The timing and cache columns are the email
 ones, and the report adds them for each set.
 
+OA-8i: the row counts each try of a hand-off that the product refused on its
+own (`handoffs_refused`). The result of the call must be a refusal text of
+`acb_skills.tool_packs` in full. Such a try ran no work. So it fails no
+`no_*_delegation` check, and stop result 11 does not count it. The report
+shows it on its own row.
+
+A hand-off that ran still fails the check. The email check
+`no_email_delegation` reads the tasks. So a hand-off of mail work that the
+product refused still fails it.
+
 ### What the report adds
 
 `run --report` prints one table per set and arm: pass, first text and total
@@ -266,6 +276,68 @@ and the key. Close the tunnel with Ctrl+C in that shell.
    uv run python -m evals.one_assistant_measure.run --merge a.json,b.json \
      --out evals/one_assistant_measure/results_<date>.json
    ```
+
+### Test one tier on another model (`--tier-map`)
+
+`--tier-map` is for the eval only. It changes no product code and no flag.
+Use it to ask whether a cheaper tier can serve the chat.
+
+```bash
+uv run python -m evals.one_assistant_measure.run --live --arms pack   --tier-map tier-balanced=tier-fast --out chunk_flash_a.json
+```
+
+1. A map is a list of `<tier>=<tier>` pairs. The target must be a tier.
+   The Router refuses a model id ("name a tier, not a model").
+2. The wire tap rewrites the `model` field of each request for the named
+   tiers. It changes no other field. A tier that the map does not name goes
+   out as before, and that includes System 1 (`tier-fast`).
+3. The arm shows the map in its name, for example `pack[balanced=flash]`.
+   The word `flash` stands for `tier-fast`. A row keeps `arm` and adds
+   `arm_label` and `tier_map`. The summary and the tables use `arm_label`.
+4. Each call lists `requested` (the tier the agent asked for), `model` (the
+   tier that went out) and `served` (the model the Router names). The
+   results header lists `tier_map` and `served_models`. Read `served_models`
+   first. If the operator rebinds `tier-fast`, only that field shows what ran.
+5. A call is priced by its `served` model, else by the target tier. The
+   cost is the vendor `usage.cost` when the call has one. Otherwise the
+   `flash` card in `rate_card.json` prices it, and the peak factor applies.
+6. `--merge` refuses a chunk whose rows are not named by its own map. It also
+   refuses one arm name that two maps share. A mapped and an unmapped chunk
+   merge as two separate arms. The merged file lists `tier_maps`.
+
+### Spend rules (after the drain of 2026-10-30)
+
+A live run goes through the production Router, on the one DeepSeek account.
+On 2026-10-30 the account ran out of funds, and production chat failed for
+about 50 minutes. The harness total had read USD 4.62, and the Router had
+billed USD 12.70 for the eval member. Three rules now bind each run.
+
+1. **Count every call, and count the unknown at the worst case.**
+   - The wire tap now covers the System-1 client. Before, each turn that asked
+     the turn kind sent one request that no tap saw.
+   - A call with no usage frame counts from the size of its request
+     (`cost_source` `estimate`), and not as USD 0.
+   - A send that reached the Router and that no tap saw counts at a worst case
+     of 20k input tokens and 4k output tokens (`unseen_usd` on the row).
+   - A call that starts in a peak band counts double (`peak` on the call).
+   - A refused call (status 4xx or 5xx) counts nothing.
+
+   The counted total is a safe upper bound, not an exact bill. Compare it with
+   the `usage_event` rows of the eval member after each run.
+2. **The budget stops the run at once.** `--budget-usd` counts the earlier
+   chunks too (`--spent-before` and `--spent-before-from`). The runner checks it
+   before each chat and before each turn after the first. A chat that crosses
+   the cap ends there, and the file says `stopped`.
+3. **Do not run in a peak band.** DeepSeek charges double in two bands.
+   They run from 01:00 to 04:00 and from 06:00 to 10:00 UTC, Monday to Friday
+   (<https://api-docs.deepseek.com/quick_start/pricing/>). The bands are
+   `spend.PEAK_BANDS_UTC`. `--live` refuses to start in a band and prints the
+   next off-peak start. Pass `--allow-peak` to override. A run that reaches a
+   band between two chats stops, unless you passed `--allow-peak`.
+
+The report prints the counted spend of each agent: the orchestrator, each
+specialist, the worker, `system-one` and `unseen`. Read it to see where the
+money went.
 
 **The System-1 seam (eval only).** Production runs the turn-kind request, because
 `routing_is_on()` is true there. The eval has no Console, so `system_one._ask`

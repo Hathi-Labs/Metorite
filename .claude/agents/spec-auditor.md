@@ -1,6 +1,6 @@
 ---
 name: spec-auditor
-description: Checks whether a WS-n workstream is actually dispatchable — does its owning spec satisfy the seven-point contract in work_plan.md §1, and is the work OWNER-GATE? Run this BEFORE any implementation agent touches a ticket. Returns a verdict, not code.
+description: Checks whether a WS-n workstream is actually dispatchable — does its owning spec satisfy the seven-point contract in work_plan.md §1, and is the work OWNER-GATE? Run this BEFORE any implementation agent touches a ticket, except a small slice (LOW, or STANDARD in build) whose Metorite task states its acceptance criteria (next-ticket step 2). HIGH tier and the first slice of a spec always get it. Returns a verdict, not code.
 tools: Read, Grep, Glob, Bash, mcp__codegraph__codegraph_explore
 model: sonnet
 ---

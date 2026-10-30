@@ -34,6 +34,12 @@ amendment under CP-2g's non-goals holds the contract. When the removal takes
 the last registry owner, the acting admin inherits (P1-b, the owner's
 decision of 2026-10-15).
 
+🆕 **The Aroh app for an organization: BUILT on branch
+`mt-7d3489fd-aroh-seats` (2026-10-30, Metorite task 1105), not merged.** The
+operator gives an org Aroh with N seats, and "Connect Aroh" pushes the Aroh box
+key to the hub. Migration 038. The block "CP-APP · The Aroh app for an
+organization", under the CP-8 block in §6, holds the contract.
+
 🆕 **Org rename on both planes: BUILT on branch `org-rename` (2026-10-27,
 owner request), not merged.** One rename sets the tenant display name and the
 Console name. The block "CP-8 · Rename an organization", under the CP-8 ticket
@@ -1984,6 +1990,148 @@ cd workbench/operator_console && npx tsc --noEmit && npx vitest run src/lib/tena
 - The model to copy is `src/app/api/operator/members/remove/route.ts`.
 
 **Board.** WS-31, CP-8. `organization_identity.md` OI-4 links here.
+
+**CP-APP · The Aroh app for an organization (Metorite task 1105, 2026-10-30).**
+
+**Status: BUILT 2026-10-30 on branch `mt-7d3489fd-aroh-seats`, not merged.**
+Nobody applied migration 038 to a real database or minted a real key.
+
+**Owner call, 2026-10-30.** The operator gives an organization the Aroh app
+with N seats, for example 2 Aroh users beside its Metorite users. A member of
+that organization signs in to Aroh with Metorite and gets a seat at once. There
+is no second approval. Aroh's AI use comes from the organization's own AI
+credits, so the operator gives no separate credits.
+
+**The model.** Each part reuses a seam that exists.
+- **The seat plan `aroh`** (kind `app`, inactive, price 0). An Aroh seat is a
+  `seat_assignment` row with `plan_slug = 'aroh'` and `source = 'app'`. The count
+  is the `seat_grant` sum for the plan. So `seats.py`, `lock_seat_capacity` and
+  the partial unique index serve it. The plan is inactive, so the checkout does
+  not sell it and the seat grid and the MRR do not count it.
+- **`deployment.app`** names the app a box serves. NULL is a Metorite box. A
+  unique partial index allows one box for each app.
+- **`org_app`** is the app twin of `org_placement`: the organization has the app
+  on a box, on or off. An organization keeps its ONE `org_placement` row on its
+  Metorite box. The Aroh box never takes that row.
+- **The Aroh box key** has `{resolve, seat_admin, serve}`. One key serves every
+  organization and every member.
+
+**The doors on the Aroh box.** The box the key belongs to decides the path,
+never a header. `customer_console/apps.py` holds the rules.
+- `POST /registry/resolve` reads `org_app`, not `org_placement`. It writes
+  nothing: no Core seat, no app seat, no promotion of an invited member. A
+  `removed` or `suspended` membership is invisible, because the Aroh box has no
+  tenant plane to refuse that person.
+- `POST /registry/seats` with `plan_slug: "aroh"` takes the member's seat. A
+  member acts on their OWN seat with any role. An active owner or admin acts on
+  any member's seat. `POST /registry/seats/release` frees a seat.
+- The Router (`serve`) charges the member's organization. It refuses a member
+  who holds no Aroh seat. When the box sends no `X-CC-Agent` or `X-CC-Module`,
+  the Router meters the call as `aroh` for both.
+- Every other door refuses an Aroh seat: the staff `POST /billing/seats` and the
+  seat door of a Metorite box answer 400. A Metorite box may still free one.
+
+**The hub contract.** The Aroh hub (`apps/hub` in the Aroh repo) calls these.
+The credential is the Aroh box key: `Authorization: Bearer cc_depl_…`.
+
+1. **Resolve.** `POST /registry/resolve`, body `{"email": "<member>"}`, with an
+   optional `display_name`. Do not send `org_slug` (400).
+   - 200, entitled: `{"identity_id", "app": "aroh", "organizations": [{
+     "organization_id", "slug", "placement": null, "status", "seat":
+     "already_held" | "not_allocated", "capabilities": {"sign_in",
+     "write_seats", "use_ai"}, "trial_ends_at", "app_seats": {"purchased",
+     "assigned", "available"}}]}`. The hub learns the org id here, from
+     `organizations[0].organization_id`. It never sends an org id.
+   - 200, **not entitled**: `{"organizations": [], "app": "aroh"}`. One answer
+     for "not a member", "the org has no Aroh" and "Aroh is off".
+   - 403 `organization is deleted`.
+   - More than one organization in the list: the Console takes no seat for the
+     hub. The hub shows a chooser or a refusal.
+2. **Take a seat.** `POST /registry/seats`, body `{"actor_email": "<member>",
+   "member_email": "<member>", "plan_slug": "aroh"}`. Send no `org_slug`. Leave
+   out `source`, or send `"app"` or the default `"alacarte"`. The door writes
+   `app`.
+   - 200 `{"assigned": true, "plan_slug": "aroh", "seat": "allocated" |
+     "already_held", "app_seats": {…}}`. It is idempotent.
+   - **403 org not entitled:** `{"detail": {"reason": "app_not_entitled", "app":
+     "aroh"}}`.
+   - **409 seats full:** `{"detail": {"reason": "seat_cap_exceeded",
+     "buy_more": {"plan_slug": "aroh", "purchased": 2, "assigned": 2,
+     "additional_seats_required": 1, "price_inr": null}}}`. The hub shows "All
+     2 Aroh seats are in use".
+   - 403 `organization is suspended; seats are locked`, 404 for a target who is
+     not a member, 409 for a member of two organizations with Aroh, 400 for a
+     body the door refuses.
+3. **Free a seat.** `POST /registry/seats/release`, the same body. 200
+   `{"released": true | false, "app_seats": {…}}`. The hub frees the seat of a
+   member by naming that member as `actor_email`.
+4. **AI.** `POST /v1/chat/completions` and the other serving doors, with
+   `X-CC-Member: <member>`, `X-CC-Member-Proven: 1` and `X-CC-Agent: aroh`.
+   The Router charges the call to the member's organization. 403 when the
+   member holds no Aroh seat.
+
+**The operator doors.**
+- `GET /orgs/apps?org_slug=` (`viewer`): the switch, the box, the seats, who
+  holds them, and the Aroh AI use (calls, credits, our cost, per member). A call
+  is Aroh use when `usage_event.agent = 'aroh'`.
+- `POST /orgs/apps` (`admin`, elevated), body `{org_slug, app, enabled, seats,
+  reason}`. The first ON takes the box that `deployment.app` names. A count
+  below the seats in use is a 409. OFF keeps the seats. A locked lifecycle is a
+  403. No box is a 409. It shares `_write_seat_count` with
+  `POST /billing/seats/count`.
+- The operator frees a seat with `POST /billing/seats/release` and
+  `plan_slug: "aroh"`.
+
+**Connect Aroh (owner request, 2026-10-30).** The owner assigns Aroh's router
+key from the Operator Console, on the `/aroh` page. `customer_console/app_hub.py`
+is the client. It is the one outbound call from the Console to a box, and only
+these operator doors call it.
+- **Settings.** `app_connection.base_url` (default
+  `https://aroh.dev.metorite.com`) and `app_connection.operator_token_enc`, the
+  hub's operator token encrypted with `CUSTOMER_CONSOLE_ENCRYPTION_KEY`. Door:
+  `POST /apps/connection/settings`, body `{app, base_url, operator_token}`.
+  No read returns the token. The page shows its last four characters.
+- **Connect, and Rotate.** `POST /apps/connection/connect`, body `{app,
+  confirm: "aroh"}`. The Console mints a new Aroh box key with exactly
+  `{resolve, seat_admin, serve}` and commits it. Then it sends
+  `PUT <base_url>/hub/api/router-key`, body `{"key": "cc_depl_…"}`, header
+  `Authorization: Bearer <hub operator token>`. If the hub accepts, the Console
+  revokes the key the hub held before. If the hub refuses, the Console revokes
+  the new key and answers 502.
+- **Disconnect.** `POST /apps/connection/disconnect`. The Console revokes the key
+  first, then sends `DELETE <base_url>/hub/api/router-key`.
+- **Status.** `GET /apps/connection?app=aroh&probe=true` reads
+  `GET /hub/api/router-key`. `app_hub.py` also has clients for
+  `GET /hub/api/orgs`, `GET /hub/api/seats?org=` and
+  `POST /hub/api/seats/{id}/suspend|resume|release`. No page uses them yet.
+- 🔴 **OWNER-GATE in the UI flow.** Settings, Connect and Disconnect each need
+  `admin` with an elevation window, and Connect and Disconnect need the typed
+  name `aroh`. These are the only HTTP routes that mint a deployment key, and
+  they mint only the Aroh box key with its fixed set.
+
+**The mint CLI.** `python -m customer_console.deployment_keys` mints a key for
+any box (`mint`) and adds capabilities to a live key (`grant`). The runbook
+`deploy/hostinger/CUSTOMER_CONSOLE.md` step 4 uses it.
+
+**Gate.** Building and testing all of it is AGENT-SAFE. Applying migration 038,
+minting a real key, growing a real key and turning Aroh on for a real
+organization are OWNER-GATE (§8 gates 4, 7 and 8).
+
+**Fences.**
+- `tests/unit/test_customer_console_aroh_app.py` (R8, in the `pr-check.yml`
+  must-run list): the migration, the operator doors, resolve, the seat, the
+  Router meter and the credit draw, the mint CLI, and Connect Aroh against a
+  mock hub.
+- `tests/unit/test_customer_console_apps.py`: the pure rules, the role matrix
+  rows and the static shape of 038.
+- `workbench/operator_console/src/lib/aroh.test.ts`: the Aroh tab and `/aroh`.
+
+**Verify with.**
+```
+export CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg://cc:cc@127.0.0.1:5442/cc_platform
+uv run pytest tests/unit/test_customer_console_aroh_app.py tests/unit/test_customer_console_apps.py -q
+cd workbench/operator_console && npx tsc --noEmit && npx vitest run src/lib/aroh.test.ts
+```
 
 **CP-9 · The payment-provider seam (Razorpay), and the money→entitlement path.**
 ◐ **SUBSTRATE HALF BUILT 2026-08-18** (minted the same day) — the ticket three
@@ -11150,7 +11298,9 @@ uv run pytest tests/unit/test_customer_console_seats.py tests/unit/test_customer
               tests/unit/test_customer_console_catalog.py \
               tests/unit/test_customer_console_decide.py \
               tests/unit/test_customer_console_billing_reads.py \
-              tests/unit/test_customer_console_billing_checkout.py
+              tests/unit/test_customer_console_billing_checkout.py \n              tests/unit/test_customer_console_aroh_app.py
+# The `_aroh_app.py` line is CP-APP (task 1105, 2026-10-30): the Aroh app and
+# "Connect Aroh", with its `pr-check.yml` entry.
 # The `_billing_reads.py` line is H-152's billing suite, added 2026-09-28 in
 # the PR that created it. It proves each `billing_read` door answers what its
 # organization-key twin answers, and that org A never reads org B.
@@ -11315,6 +11465,11 @@ surface, against fixtures.
 7. **Issuing a `cc_depl_` deployment key and setting it in a live deployment's
    env** (CP-2b, added 2026-08-18) — a credential issuance *and* a deployment env
    write. Minting keys against fixtures is AGENT-SAFE; a real one is not.
+   **Added 2026-10-30 (CP-APP): the "Connect Aroh" doors under
+   `/apps/connection` mint and revoke the Aroh box key from the Operator
+   Console.** The owner presses the button: it needs `admin`, an elevation
+   window and the typed name `aroh`. An agent tests it against a mock hub and
+   never presses it on a live Console.
    **And, extended 2026-08-18 by the F1 repair: setting
    `CUSTOMER_CONSOLE_RESOLVE_ENABLED=true` on a live deployment.** It is the
    Next-side switch that arms the sign-in hop, and turning it on converts every

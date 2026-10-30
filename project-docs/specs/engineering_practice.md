@@ -128,6 +128,44 @@ the row the LEFT JOIN exists to include, and it removes that row first. Below
    database and failed on a full one. That test reported on the database
    instead of on the function.
 
+### 1.2 Run the whole app locally — one command
+
+**Owner request, 2026-10-30 (Metorite task LD-1).** Find the UI and function
+bugs on this machine, before a push. Staging is the last check, not the first.
+
+```sh
+bash scripts/dev_up.sh           # start. The first run builds and seeds (about 2 min).
+bash scripts/dev_up.sh --check   # health, then the tenant-isolation check
+bash scripts/dev_up.sh --stop    # stop the app. --down also removes the data.
+```
+
+It gives each worktree its own stack on `127.0.0.1`, with its own ports:
+
+- **Postgres** with the whole ladder and the RLS promotion. The gateway
+  connects as `acb_app` (`NOSUPERUSER NOBYPASSRLS`), as in production.
+- **Redis**, of its own.
+- **The gateway** with `--reload`, and **the web app** (`next dev`), signed in
+  as `dev@fracktal.in`.
+- **Two made-up organizations:** Kite & Co. (yours) and Northwind. The seed
+  checks that neither one sees the other, through the API and through an
+  unbound read as `acb_app`.
+
+**Nothing leaves the machine.** Each process starts with a clean environment
+(`env -i`). The script refuses a checkout with a `.env`, because the gateway
+reads `.env` itself. Production's switches (`scripts/dev_up/prod_flags.env`)
+come across with the outbound ones held off, by the pattern of
+`scripts/staging_refresh.sh`. Fence: `tests/unit/test_dev_up.py`.
+
+**What it cannot test.** The stack holds no keys. Mail sync, sending, WhatsApp,
+CRM sync, OAuth sign-in and model calls do not work. Test those on staging.
+
+**Why the ladder runs inside the container.** Measured 2026-10-30 on the
+Windows PC: `apply_migrations.sh` from Git Bash took 515 s for 310 files and
+89 s with nothing to apply. Inside the container it took 38 s and 6 s.
+
+⚠️ **Never point `pytest` at this database.** The suites reset what they touch
+(§1.1). `--env` prints `DEV_UP_*` names, never `DATABASE_URL`, for that reason.
+
 ## 2. Release: deploy is not release
 
 **Deploy** = the code is on the box. **Release** = a customer can see the
@@ -364,6 +402,15 @@ them. A real bug in the PR caused 9. Each red run cost about 30 minutes.
   adversarial review, the
   visual review, the board row, the spec header (R4) and new fence tests (R7)
   wait for the hardening pass.
+- **Both run the change on the local stack** (§1.2, owner request 2026-10-30).
+  The implementer checks each criterion in the running app before it reports.
+  The verifier checks them again on its own run and quotes the evidence.
+  Staging is then a smoke check, plus a full test of what the PC cannot run:
+  the deploy path, real OAuth, real webhooks and syncs, and a migration on
+  production-shaped data.
+- **A small slice skips the spec audit** when its Metorite task states the
+  acceptance criteria (`/next-ticket` step 2). A HIGH-tier slice, and the
+  first slice of a spec, keep it.
 - A HIGH-tier slice keeps the full loop: tenancy, RLS, auth, identity, a
   migration, money, credits, secrets, a member or role write, or the deploy
   path.

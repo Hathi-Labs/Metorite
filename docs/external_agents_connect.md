@@ -97,10 +97,13 @@ Each change shows in the task history, with the agent as `mcp:<host>`. A status 
 
 **A comment can start a workflow.** Each comment, also one that the agent writes, sends the event `pm.task.comment_added`. If your organization has a published workflow that starts on that event, the workflow runs. That workflow can call an integration or a web address, as it does for your own comment.
 
-The agent can also do these two things:
+The agent can also do these three things:
 
 - **Start work with a command.** In Claude Code, run `/mcp__metorite__work_on_task` with a task number, or with no number. "Work on a task from Claude Code" above tells how.
 - **Ask to archive a task, and you approve it in Metorite.** The tool `request_task_archive` puts the request on the task, and the bell tells you. Only you can approve or decline it. An approve does not archive the subtasks.
+- **Delete a task that you can delete.** You cannot undo a delete. Most agent apps ask you before each delete. Metorite cannot make an app ask, so an app that you set to allow the tool asks nothing. The agent must name the exact task and say which subtasks to delete. The other subtasks stay.
+
+**The delete switch is on by default.** The switch **Let my AI agents delete tasks** is in **Integrations**, in the **AI agents** view. To stop all deletes by your agents, turn it off there. Your agents cannot change this switch.
 
 ## Ask an agent in Metorite
 
@@ -128,7 +131,8 @@ Six tools work with these runs:
 ## What the agent cannot do
 
 - It cannot cancel a task, and it cannot make a task in a done or cancelled status. A move to done does not close the subtasks.
-- It cannot move a task to another project, delete a task, or assign a person who cannot already open the task. Do those steps in Metorite.
+- It cannot move a task to another project, or assign a person who cannot already open the task. Do those steps in Metorite.
+- It cannot delete a task while your delete switch is off.
 - It cannot see what you cannot see. If an admin removes your access to a project, the agent loses it on the next call.
 - It cannot act after you revoke it.
 

@@ -148,6 +148,8 @@ interface Props {
    * because its rows come from many projects. Absent, no row draws a chip.
    */
   projectPath?: (task: TaskRow) => readonly string[] | null;
+  /** OP-12b — true when the task sits in the private space. The chip then wears a lock. */
+  projectPrivate?: (task: TaskRow) => boolean;
   /**
    * WS-64 OP-11 fix round. False hides the per-group quick add: My tasks spans
    * many projects, so a group names no home for a new task. Its one add is
@@ -178,6 +180,7 @@ export function TaskList({
   onSelect,
   personLabels,
   projectPath,
+  projectPrivate,
   canQuickAdd = true,
 }: Props) {
   const [cursor, setCursor] = useState(-1);
@@ -500,7 +503,7 @@ export function TaskList({
                     {/* An orphan, or a Separate subtask, names its parent. */}
                     {row.crumb ? <ParentCrumb parent={task.parent} /> : null}
                     {/* WS-64 OP-11 — My tasks names the project of each row. */}
-                    {projectPath ? <ProjectPathChip path={projectPath(task)} /> : null}
+                    {projectPath ? <ProjectPathChip path={projectPath(task)} isPrivate={projectPrivate?.(task) ?? false} /> : null}
                     </span>
                   </td>
                   {showStatus ? (
