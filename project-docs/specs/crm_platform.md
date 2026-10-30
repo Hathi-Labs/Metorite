@@ -9781,7 +9781,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib src/app
 **Status.** 🔨 Built 2026-10-13 on branch `crm-c3`, migration 257. The two
 items that waited for CRM-C2 are built after its merge. See "Built as" at
 the end of this section. The label fix of items 7 and 8 (task #1096) is built
-2026-10-30 on `crm-stage-labels-mt-c6ae3dc2`, with its review round 1, not
+2026-10-30 on `crm-stage-labels-mt-c6ae3dc2`, with review rounds 1 and 2, not
 merged. See "Fixed 2026-10-30" below.
 
 **Gate.** AGENT-SAFE. No flag. With no overlay value set, each board, list
