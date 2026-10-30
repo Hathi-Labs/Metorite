@@ -405,10 +405,13 @@ export default function NodeDashboard({
   outlook,
   onReport,
   personal = false,
+  personalPlaces,
 }: {
   summary: NodeSummary;
   /** OP-12b — the summary is the private space. Its empty state names a folder. */
   personal?: boolean;
+  /** The live folders and projects under the personal root, from the tree the page holds. */
+  personalPlaces?: number;
   /** Drill into a child. The tree selection and this view stay in step. */
   onOpen: (id: string) => void;
   /**
@@ -505,10 +508,13 @@ export default function NodeDashboard({
                   : "Projects"
           }
           value={
-            level === "portfolio" || personal
+            level === "portfolio"
               ? // `children` is typed as present and is not guaranteed to be.
                 // Absent means the server did not say, which is a dash, not 0.
                 (hasChildren ? children.length : undefined)
+              : personal
+                ? // OP-12b: every live folder and project under the root, at any depth.
+                  personalPlaces
               : summary.projects
           }
         />

@@ -118,6 +118,29 @@ def test_a_node_with_nothing_under_it_reports_zero_not_none():
     assert tree[0]["cancelled"] == 0
 
 
+def test_an_archived_child_leaves_the_parent_count_like_the_summary_walk():
+    """OP-12b. The sidebar count and the Overview "Open" read one number.
+
+    The summary walk (`NODE_DESCENDANTS_SQL`) skips archived children, so the
+    tree roll-up must too. Archiving changes no task row, so "Home" keeps its
+    own 3 open tasks, and the root must not add them.
+    """
+    tree = [{"id": "root", "children": [
+        {"id": "work", "children": []},
+        {"id": "home", "archived_at": "2026-10-30T00:00:00Z", "children": []},
+    ]}]
+    counts = {"root": (11, 7, 0), "work": (2, 0, 0), "home": (3, 0, 0)}
+
+    pm_tree._attach_progress(tree, counts)
+
+    root = tree[0]
+    assert (root["tasks"], root["done"]) == (13, 7)  # 11 + 2, never + 3
+    # The archived row still reports its own work, for the Archived fold.
+    assert root["children"][1]["tasks"] == 3
+    # The other read: the summary walk skips archived children in SQL.
+    assert "archived_at IS NULL" in pm_tree.NODE_DESCENDANTS_SQL
+
+
 def test_a_count_for_a_node_outside_the_tree_is_ignored():
     """A task in a project the forest read did not return - a personal
     project, say - belongs to no row here. The alternative is a total that

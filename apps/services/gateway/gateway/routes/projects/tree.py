@@ -641,6 +641,12 @@ def _attach_progress(
         node["tasks"] = own_total + kid_total
         node["done"] = own_done + kid_done
         node["cancelled"] = own_cancelled + kid_cancelled
+        # OP-12b. An archived child stamps its OWN subtree (the Archived fold
+        # draws it), but its tasks leave the parent's count. The summary walk
+        # (`NODE_DESCENDANTS_SQL`) skips archived children, so the sidebar
+        # number and the Overview "Open" must agree (owner, 2026-10-30).
+        if node.get("archived_at") is not None:
+            continue
         subtotal += node["tasks"]
         subdone += node["done"]
         subcancelled += node["cancelled"]

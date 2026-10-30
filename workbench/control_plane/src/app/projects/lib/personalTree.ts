@@ -35,35 +35,30 @@ export const PERSONAL_SPACE_NOTE =
 export const PRIVATE_TASK_LABEL = "Private";
 
 /**
- * The member's personal root as the page last loaded it: its id and its
- * STORED name. A surface that prints a server `project_name` (Needs
- * attention, Triage, Analytics, Reports) has no tree, so it asks the seam
- * through `displayRowProject`. The page sets this with `rememberPersonalRoot`.
+ * The id of the member's personal root as the page last loaded it. A surface
+ * that prints a server `project_name` (Needs attention, Triage, Analytics,
+ * Reports) has no tree, so it asks the seam through `displayRowProject`. The
+ * page sets this with `rememberPersonalRoot`. The match is by ID only: a team
+ * project that is named "My tasks" keeps its name.
  */
-let remembered: { id: string; storedName: string } | null = null;
+let rememberedRootId: string | null = null;
 
 export function rememberPersonalRoot(roots: readonly ProjectRow[] | null | undefined): void {
-  const root = (roots ?? []).find((n) => isPersonalRoot(n));
-  // `personalRoots` has set the display name already, so keep the first stored name.
-  remembered = root
-    ? { id: root.id, storedName: remembered?.id === root.id ? remembered.storedName : root.name }
-    : null;
+  rememberedRootId = (roots ?? []).find((n) => isPersonalRoot(n))?.id ?? null;
 }
 
 /**
  * The name to print for a row that carries a project id and a stored name (a
  * search hit, a needs-attention row). `personalRootId` is the id of the
- * member's personal root, or defaults to the one the page remembered. A row
- * with no id (a pulse card) matches on the stored name of that root.
+ * member's personal root, or defaults to the one the page remembered.
  */
 export function displayProjectName(
   projectId: string | null | undefined,
   storedName: string | null | undefined,
   personalRootId?: string | null,
 ): string | null {
-  const rootId = personalRootId ?? remembered?.id ?? null;
+  const rootId = personalRootId ?? rememberedRootId;
   if (projectId && rootId && projectId === rootId) return PERSONAL_NODE_NAME;
-  if (!projectId && remembered && storedName === remembered.storedName) return PERSONAL_NODE_NAME;
   return storedName ?? null;
 }
 
@@ -87,6 +82,16 @@ export function personalRoots(
       ? { ...root, name: displayNodeName(root) }
       : root,
   );
+}
+
+/** Every live folder and project under a personal root, at any depth. A filed one and its subtree do not count. */
+export function personalPlaceCount(root: Pick<ProjectRow, "children">): number {
+  let n = 0;
+  for (const child of root.children ?? []) {
+    if (child.archived_at) continue;
+    n += 1 + personalPlaceCount(child);
+  }
+  return n;
 }
 
 /**

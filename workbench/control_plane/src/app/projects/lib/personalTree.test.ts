@@ -18,6 +18,7 @@ import {
   firstTeamSpaceId,
   personalEmptyLine,
   personalHeading,
+  personalPlaceCount,
   lookupRoots,
   moveDestinationRoots,
   personalRoots,
@@ -246,7 +247,8 @@ describe("a server row from the personal root reads Personal (OP-12b fix round 1
   it("maps by project id, and by stored name when the row has no id", () => {
     rememberPersonalRoot([node("root", { name: "My tasks", personal: true })]);
     expect(displayRowProject({ project_id: "root", project_name: "My tasks" })).toBe("Personal");
-    expect(displayRowProject({ project_name: "My tasks" })).toBe("Personal");
+    // No id, no match: a team project named "My tasks" keeps its name.
+    expect(displayRowProject({ project_name: "My tasks" })).toBe("My tasks");
     expect(displayRowProject({ project_id: "pb", project_name: "My tasks" })).toBe("My tasks");
     expect(displayRowProject({ project_id: "pb", project_name: "Sales" })).toBe("Sales");
   });
@@ -257,5 +259,14 @@ describe("a server row from the personal root reads Personal (OP-12b fix round 1
       expect(source, file).toContain("displayRowProject(");
       expect(source, file).not.toMatch(/\{(row|hit|f|r)\.project_name\}/);
     }
+  });
+});
+
+describe("the Folders and projects tile", () => {
+  it("counts every live folder and project under the root, at any depth", () => {
+    const deep = node("deep", { kind: "folder", children: [node("p1"), node("p2", { archived_at: "2026-10-30" })] });
+    const filed = node("filed", { archived_at: "2026-10-30", children: [node("inside")] });
+    expect(personalPlaceCount(node("root", { children: [deep, filed, node("p3")] }))).toBe(3);
+    expect(personalPlaceCount(node("root"))).toBe(0);
   });
 });

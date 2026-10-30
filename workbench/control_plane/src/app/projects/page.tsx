@@ -14,6 +14,7 @@
 
 import Icon, { themedIcon } from "@/components/Icon";
 import { ContextMenu } from "@/components/ContextMenu";
+import RailRow from "@/components/ui/RailRow";
 import Button from "@/components/ui/Button";
 import AssistantToggle from "@/components/AssistantToggle";
 import { AppSearchButton, AppTopBar } from "@/components/AppTopBar";
@@ -103,6 +104,7 @@ import {
   isPersonalRoot,
   personalEmptyLine,
   personalHeading,
+  personalPlaceCount,
   PERSONAL_SPACE_NOTE,
   lookupRoots,
   moveDestinationRoots,
@@ -590,36 +592,26 @@ function ProjectNav({
           {personalHead.root ? (
             // OP-12b — the heading IS the private space: a press opens its
             // board, list and overview. The open count is the root's own.
-            <div
-              className={`flex items-center gap-0.5 rounded-lg pr-1 ${
-                !app && selectedId === personalHead.root.id
-                  ? "bg-primary/15 text-primary"
-                  : "text-muted-foreground hover:bg-muted"
-              }`}
-            >
-              <button
-                type="button"
-                data-testid="personal-heading"
-                aria-current={!app && selectedId === personalHead.root.id ? "page" : undefined}
-                title={PERSONAL_SECTION_HINT}
-                onClick={() => {
+            <div data-testid="personal-heading-row">
+              <RailRow
+                label={PERSONAL_SECTION_LABEL}
+                tier="group"
+                selected={!app && selectedId === personalHead.root.id}
+                onSelect={() => {
                   onSelect(personalHead.root as ProjectRow);
                   onPicked?.();
                 }}
-                className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider"
-              >
-                <span className="min-w-0 truncate">{PERSONAL_SECTION_LABEL}</span>
-                <Icon name="Lock" className="h-3 w-3 shrink-0" aria-hidden />
-                <span className="sr-only"> — {PERSONAL_SECTION_HINT}</span>
-                <span className="flex-1" />
-                {openCount(personalHead.root) ? (
-                  <span className="shrink-0 text-xs font-normal tabular-nums normal-case">
-                    {openCount(personalHead.root)}
-                    <span className="sr-only"> open tasks</span>
-                  </span>
-                ) : null}
-              </button>
-              <Button
+                icon={<Icon name="Lock" className="h-4 w-4 shrink-0" aria-hidden />}
+                meta={
+                  openCount(personalHead.root) ? (
+                    <>
+                      {openCount(personalHead.root)}
+                      <span className="sr-only"> open tasks</span>
+                    </>
+                  ) : null
+                }
+                pinned={personalAdd != null}
+                actions={<Button
                   variant="ghost"
                   size="icon-xs"
                   radius="keep"
@@ -631,7 +623,25 @@ function ProjectNav({
                     const rect = e.currentTarget.getBoundingClientRect();
                     setPersonalAdd({ x: rect.left, y: rect.bottom + 2 });
                   }}
-                />
+                />}
+                phoneActions={<Button
+                  variant="ghost"
+                  size="icon-xs"
+                  radius="keep"
+                  className="rounded"
+                  icon="Plus"
+                  aria-label="New folder or project in Personal"
+                  title="New project / New folder"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setPersonalAdd({ x: rect.left, y: rect.bottom + 2 });
+                  }}
+                />}
+                buttonProps={{
+                  "aria-current": !app && selectedId === personalHead.root.id ? "page" : undefined,
+                  title: PERSONAL_SECTION_HINT,
+                }}
+              />
               {personalAdd ? (
                 <ContextMenu
                   x={personalAdd.x}
@@ -4532,6 +4542,11 @@ function ProjectsWorkspace() {
   };
   // OP-12b — a task is private when its project is the personal root or one of
   // its folders. The tree already says so: every node of `personal` is private.
+  const personalPlacesOf = (node: ProjectRow | null | undefined) =>
+    node && isPersonalRoot(node)
+      ? // The tree the page holds, not the selected row: that row may be a stale copy.
+        personalPlaceCount(personal.find((r) => r.id === node.id) ?? node)
+      : undefined;
   const personalHeadRootId = personalHeading(personal).root?.id ?? null;
   const personalIds = new Set(flatten(personal).map((e) => e.node.id));
   const myTasksPath = (projectId: string) => taskWhere(allRoots, projectId).map((n) => n.name);
@@ -4654,6 +4669,7 @@ function ProjectsWorkspace() {
           outlook={outlook}
           onReport={(href) => router.push(href)}
           personal={selected ? isPersonalRoot(selected) : false}
+          personalPlaces={personalPlacesOf(selected)}
         />
       ) : (
         renderState("loading", "Counting the work below…")
@@ -4908,6 +4924,7 @@ function ProjectsWorkspace() {
                 outlook={outlook}
                 onReport={(href) => router.push(href)}
                 personal={isPersonalRoot(selected)}
+                personalPlaces={personalPlacesOf(selected)}
               />
             ) : (
               renderState("loading", "Counting the work below…")
