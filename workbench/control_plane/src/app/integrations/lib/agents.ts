@@ -92,12 +92,13 @@ export const AGENT_CLIENTS: AgentClient[] = [
 export const AGENT_CAN = [
   "Read your projects and tasks",
   "Search your tasks",
-  "Move a task to another status, but never to done or cancelled",
+  "Move a task to another status, done included, but never to cancelled",
   "Link pull requests, commits and branches to a task",
+  "Delete a task that you can delete, while the delete switch below is on",
 ];
 
 export const AGENT_CANNOT = [
-  "Close or cancel a task",
+  "Cancel a task",
   "See anything that you cannot see",
   "Act after you revoke it",
 ];
