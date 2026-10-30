@@ -199,7 +199,11 @@ class EntryModel(BaseModel):
 
 
 def _wire(value: Any) -> Any:
-    if isinstance(value, (datetime, date)):
+    """A value for JSON. An instant goes out in UTC, so the answer does not
+    depend on the zone of the database session. A date goes out as it is."""
+    if isinstance(value, datetime):
+        return (value.astimezone(UTC) if value.tzinfo else value).isoformat()
+    if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, UUID):
         return str(value)
