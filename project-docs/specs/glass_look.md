@@ -182,10 +182,14 @@ All in `src/app/globals.css`. The classic blocks do not change.
 3. **The variant.** `@custom-variant glass (&:where([data-look="glass"],
    [data-look="glass"] *));` A component writes its glass difference as
    `glass:<class>`. Under classic the class matches nothing.
-4. **Utilities.** `glass`, `glass-thick`, `surface`, `press`, `scroll-edge`,
-   the working glow, the stream caret, the typing dots and the shimmer. A
-   component uses each one only behind `glass:`, or inside a component that
-   renders only in glass. §6 fences this.
+4. **Utilities.** GL-1 adds `glass-chrome` (floating chrome), `glass-menu`
+   (menus and popovers), `glass-surface` (content cards), `glass-press` and
+   `glass-scroll-edge`. GL-4 adds the working glow, the stream caret, the
+   typing dots and the shimmer, each with the `glass-` prefix. A component
+   uses each one only behind `glass:`, or inside a component that renders
+   only in glass. §6 fences this. GL-1 also restyles the existing
+   `tech-glass` and `tech-glass-subtle` under the attribute, so a surface
+   that wears them needs no `glass-menu` on top.
 5. **Named type styles.** `text-caption` (12), `text-footnote` (13),
    `text-label` (14), `text-subhead` (15), `text-callout` (16), `text-body`
    (17), `text-headline` (19), `text-title` (22), `text-title-lg` (28) and
@@ -254,10 +258,12 @@ Three controls have no primitive today (survey of 2026-10-31):
 - **The segmented control** is `components/Tabs.tsx` with
   `variant="segmented"`. Glass gives it a raised segment on a `bg-secondary`
   track (Aroh's `TabBar`).
-- **The switch** has three local copies (`app/email/components/automation/ui.tsx`,
-  `app/tasks/components/TaskSettingsModal.tsx`, `app/notes/components/MeetingPrep.tsx`).
-  GL-2 adds `components/ui/Switch.tsx`, green when on, and moves the three
-  copies onto it. The classic shape of each copy stays the classic shape.
+- **The switch** has local copies: `Toggle` in
+  `app/email/components/automation/ui.tsx`, `Toggle` and an inline switch in
+  `app/tasks/components/TaskSettingsModal.tsx`, and an inline `role="switch"`
+  in `app/notes/components/MeetingPrep.tsx`. GL-2 adds
+  `components/ui/Switch.tsx`, green when on, and moves the copies onto it.
+  The classic shape of each copy stays the classic shape.
 - **The card** has no component. `glass-surface` on a card's class string is
   the glass card.
 
@@ -266,6 +272,8 @@ in classic, and `rawControls.test.ts` and the other fences pass.
 
 ### GL-3 · The shell — AGENT-SAFE
 
+The files are `components/Sidebar.tsx`, `components/AppShell.tsx` (the frame
+and the phone layout), `components/AppTopBar.tsx` and `lib/shell/ShellBar.tsx`.
 The sidebar floats as glass, with an 8 px inset and a 22 px corner, and its
 rows have 14 px corners. The top bar and each `AppTopBar` lose their border
 and use glass buttons. A page sits on the grouped surface. The scroll edge
@@ -292,7 +300,11 @@ around `components/AgentChat.tsx`. The parts are `MessageBubble.tsx`,
 - a card has a solid icon tile. A card that wants something from the member
   is tinted, and a settled card is a plain surface;
 - the stream caret sits in the last line, typing dots show before the first
-  word, and "Jump to latest" is glass.
+  word, and the "Scroll to bottom" button (`AgentChat.tsx`) is glass. Its
+  words do not change.
+
+GL-4 is the only slice that edits `globals.css` and `glassLook.test.ts`
+while GL-2, GL-3 and GL-4 run in parallel.
 
 ⚠️ WS-CHAT has a parallel session. Read its open pull requests first, and
 keep each change behind `glass:`, so the two do not collide.
