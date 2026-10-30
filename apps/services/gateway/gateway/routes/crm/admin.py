@@ -228,8 +228,12 @@ async def _check_mode(db: Any, table: str, values: dict[str, Any]) -> bool:
     through the one guard, BEFORE any other check. So a PATCH of ``name`` or
     ``probability`` is 409 and never a 422 about the clamp. Native mode: a
     ``ui_*`` field is 422. Returns True in Mirror mode.
+
+    The mode is read ``FOR SHARE`` (CRM-Z10b): an overlay edit that read
+    ``mirror`` commits before the switch folds the overlay, and one that
+    starts during the switch reads ``native`` and refuses a ``ui_*`` field.
     """
-    if await is_mirror_mode(db, current_tenant()):
+    if await is_mirror_mode(db, current_tenant(), lock=True):
         if not set(values) <= MIRROR_OVERLAY_COLUMNS.get(table, frozenset()):
             await assert_writable(db, current_tenant(), table, values)
         return True
@@ -485,7 +489,9 @@ async def order_statuses(
     table, _ = _kind(kind)
     wanted = [str(i).strip().lower() for i in payload.ids]
     async with _tenant_session() as db:
-        mirror = await is_mirror_mode(db, current_tenant())
+        # FOR SHARE (CRM-Z10b): the column follows the mode that this write
+        # holds until it commits, so the switch folds this order or waits.
+        mirror = await is_mirror_mode(db, current_tenant(), lock=True)
         column = "ui_position" if mirror else "position"
         await assert_writable(db, current_tenant(), table, {column: 0})
         existing = {
@@ -524,7 +530,7 @@ async def reset_status_order(
     """
     table, _ = _kind(kind)
     async with _tenant_session() as db:
-        if not await is_mirror_mode(db, current_tenant()):
+        if not await is_mirror_mode(db, current_tenant(), lock=True):
             raise HTTPException(
                 status_code=422,
                 detail="Only a Zoho mirror has an order to reset to.",

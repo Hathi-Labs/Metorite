@@ -237,6 +237,15 @@ READ_DROPS_KEY = "read_drops"
 #: this key to 1 in the counts of the entity, so Sync health can say that
 #: the sync of that entity is paused until those records change.
 TIE_TOO_WIDE_CODE = "tie_too_wide"
+#: CRM-Z10b round 6: the delete check of a walk (``_drop_stale``) refused, and
+#: the walk read fewer records than Zoho holds (``empty_walk``, or
+#: ``short_walk``). The READ is not complete, so the switch from Zoho waits.
+#: Set to 1 in the counts of the entity, as :data:`TIE_TOO_WIDE_CODE` is.
+WALK_SHORT_FLAG = "walk_short"
+#: CRM-Z10b round 6: the delete check refused after a complete read
+#: (``count_unknown`` or ``large_delete``). It kept rows that Zoho may have
+#: deleted, which D133 accepts, so the switch does not wait for it.
+DELETE_KEPT_FLAG = "delete_kept"
 
 #: The cursor row of the field rules (CRM-Q7a). Its state holds the rules the
 #: sync applied, and the entities that wait for a full read because a rule on
@@ -578,6 +587,16 @@ class RunHandle:
     #: CRM-Q16: the count keys that this run reads, and no other. ``None`` is
     #: a normal run. A key here is read also when it is held.
     only: frozenset[str] | None = None
+    #: CRM-Z10b: the final sync of the switch from Zoho. It reads each generic
+    #: module whatever :data:`MODULE_READ_EVERY` says, and an offset-paged one
+    #: in full. The row says so in ``counts[RUN_FINAL_KEY]``.
+    final: bool = False
+    #: CRM-Z10b round 5: the keys that the admin left out of the switch. The
+    #: final sync treats them as held, so it neither reads nor walks them.
+    final_skip: frozenset[str] = frozenset()
+    #: CRM-Z10b round 5: the final sync's own budget (:func:`final_budget`).
+    #: ``execute`` takes it when the caller passes no ``credit_budget``.
+    credit_budget: int | None = None
 
 
 @dataclass(frozen=True)
@@ -630,16 +649,28 @@ def _enabled(org: str) -> bool:
     return flags.mirror_sync_enabled() and flags.crm_mirror_allowed(org)
 
 
-async def acquire(org: str, *, only: frozenset[str] | None = None) -> RunHandle:
+async def acquire(
+    org: str, *, only: frozenset[str] | None = None, final: bool = False,
+    leave_out: frozenset[str] = frozenset(),
+) -> RunHandle:
     """Take the run lock for ``org`` and plan the run.
 
     ``only`` limits the run to those count keys (CRM-Q16, "sync it on its
     own"). The caller checks the keys first.
 
+    ``final`` is the final sync of the switch from Zoho (CRM-Z10b). It reads
+    each generic module with no wait of :data:`MODULE_READ_EVERY`, and it
+    writes :data:`RUN_FINAL_KEY`, which phase 2 of the switch needs. It has
+    its own budget (:func:`final_budget`, round 5). ``leave_out`` names the
+    keys that the admin left out of the switch: the final sync treats them as
+    held, so it neither reads nor walks them (round 5).
+
     Raises :class:`NotConnected` with no live connection and
     :class:`SyncRunning` when a run holds the lock. It makes no provider call.
     """
     now = _now()
+    skip = frozenset(leave_out) if final else frozenset()
+    budget: int | None = None
     async with tenant_session(org) as db:
         connection = await store.get(db, org, PROVIDER, OWNING_APP)
         if connection is None or connection.status != store.STATUS_CONNECTED:
@@ -652,20 +683,88 @@ async def acquire(org: str, *, only: frozenset[str] | None = None) -> RunHandle:
         cursors = await runs.read_cursors(db, org, f"{PROVIDER}:")
         last_ok = await runs.last_success_at(db, org)
         entries = await holds.read(db, org)
-        kind, reconcile = plan(cursors, now, last_ok, holds.held_keys(entries))
+        held = holds.held_keys(entries) | skip
+        kind, reconcile = plan(cursors, now, last_ok, held)
+        if final:
+            budget = await final_budget(db, org)
+        if final:
+            # CRM-Z10b round 4: an offset-paged core entity has no cursor to
+            # move, so only its walk reads it. The final sync runs the 24 h
+            # walk of each such entity now.
+            walks = _final_walks(cursors, held)
+            if walks and kind == runs.KIND_INCREMENTAL:
+                kind = runs.KIND_RECONCILE
+            reconcile = reconcile | walks
         saved_counts: dict[str, Any] = {}
         saved_estimate: dict[str, Any] | None = None
         if kind == runs.KIND_IMPORT:
             saved_counts, saved_estimate = await runs.resumable_import(db, org)
         counts = _merge_counts(saved_counts)
+        if only is not None:
+            # The row says which keys this run reads (CRM-Z10b). Each page
+            # writes ``counts`` again, and the key stays with it.
+            counts[RUN_ONLY_KEY] = {key: 1 for key in sorted(only)}
+        if final:
+            # ``planned_ms``: the time of this plan by the gateway's clock. A
+            # read that ENDS in this run stamps a later ``checked_at`` by the
+            # same clock, so phase 2 compares two stamps of one clock.
+            counts[RUN_FINAL_KEY] = {
+                "final": 1, "planned_ms": _ms(now), "budget": int(budget or 0),
+            }
         run_id = await runs.start(
             db, org, connection.id, kind, counts=counts, estimate=saved_estimate,
         )
     return RunHandle(
         org=org, run_id=run_id, kind=kind, connection_id=connection.id,
         reconcile=reconcile, cursors=cursors, counts=counts, estimate=saved_estimate,
-        scopes=tuple(connection.scopes or ()), holds=entries, only=only,
+        scopes=tuple(connection.scopes or ()), holds=entries, only=only, final=final,
+        final_skip=skip, credit_budget=budget,
     )
+
+
+#: The credits that the final syncs of the switch spent in the last 24 hours.
+_FINAL_SPENT_SQL = (
+    "SELECT COALESCE(sum(credits_used), 0) FROM crm_sync_runs "
+    "WHERE organization_id = CAST(:org AS uuid) "
+    "AND started_at > now() - interval '24 hours' "
+    "AND counts -> 'run_final' IS NOT NULL"
+)
+
+
+async def final_budget(db: Any, org: str) -> int:
+    """The final sync's own budget (CRM-Z10b round 5): one day's share of
+    the edition (:func:`daily_budget`), less what the final syncs of the last
+    24 hours spent. So the switch spends up to one day's share once in 24
+    hours, whatever the scheduled runs spent. Without it, an org whose paced
+    runs spend the whole daily budget would start each final sync with no
+    credit, and it could never switch.
+
+    ⚠️ :data:`CREDITS_FLOOR` still stops the run on what Zoho reports, so a
+    final sync never drains the org's Zoho account (``_Ctx.call``).
+    """
+    profile = await profiles.latest(db, org)
+    spent = int((await db.execute(text(_FINAL_SPENT_SQL), {"org": org})).scalar() or 0)
+    return max(daily_budget(profile.profile if profile else None) - spent, 0)
+
+
+def _final_walks(cursors: dict[str, CursorRow], held: frozenset[str]) -> frozenset[str]:
+    """The core entities that the final sync of the switch walks now: each one
+    that pages by offset, has finished its first import, and is not held or
+    unavailable (CRM-Z10b round 4)."""
+    walks: set[str] = set()
+    for entity in ENTITY_ORDER:
+        row = cursors.get(changed_module(entity))
+        if row is None or row.initial_done_at is None or count_key(entity) in held:
+            continue
+        state = row.state or {}
+        if state.get("offset_paged") and not state.get("unavailable"):
+            walks.add(entity)
+    return frozenset(walks)
+
+
+def _ms(moment: datetime) -> int:
+    """Milliseconds since the epoch, for a number in ``counts``."""
+    return int(moment.timestamp() * 1000)
 
 
 class _Ctx:
@@ -688,8 +787,11 @@ class _Ctx:
         #: CRM-Q16: the hold entries, the keys held now, and the keys of an
         #: "on its own" run.
         self.holds: dict[str, dict[str, Any]] = dict(handle.holds)
-        self.held: frozenset[str] = holds.held_keys(self.holds)
+        # CRM-Z10b round 5: the keys left out of the switch count as held.
+        self.held: frozenset[str] = holds.held_keys(self.holds) | handle.final_skip
         self.only = handle.only
+        #: CRM-Z10b: the final sync of the switch reads every generic module.
+        self.final = handle.final
         #: CRM-Q16: the provider count by COUNT KEY, from ``_estimate``. The
         #: estimate itself is by slug, and ``activities`` there includes tasks.
         self.key_counts: dict[str, int] | None = None
@@ -896,6 +998,18 @@ NO_PARENT_MODULE = "(none)"
 #: not an entity either (``routes/crm/sync.py`` ``NOT_ENTITY_KEYS``), and a
 #: test pins the two. Sync health sums it over the runs of the last 7 days.
 ACTIVITY_RECOVERED_KEY = "activity_recovered"
+#: The counts key of an "on its own" run (CRM-Q16): ``{count key: 1}`` for each
+#: key that the run reads, and no key for a normal run. The run row says
+#: nothing else about it, and the core keys of a one-module run count zero
+#: as a normal run with no change does. The switch from Zoho (CRM-Z10b) reads
+#: it, so phase 2 never takes such a run as the final sync. It is no entity
+#: either (``routes/crm/sync.py`` ``NOT_ENTITY_KEYS``), and a test pins it.
+RUN_ONLY_KEY = "run_only"
+#: The counts key of the final sync of the switch from Zoho (CRM-Z10b):
+#: ``{"final": 1}``, and no key for any other run. Phase 2 of the switch takes
+#: only such a run. It is no entity either (``routes/crm/sync.py``
+#: ``NOT_ENTITY_KEYS``), and a test pins it with :data:`RUN_ONLY_KEY`.
+RUN_FINAL_KEY = "run_final"
 
 _LOCAL_ID_SQL = (
     "SELECT id FROM {table} WHERE organization_id = CAST(:org AS uuid) "
@@ -1783,8 +1897,10 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # A generic module is never walked: it has no ``ext_seen_at`` stamp, and
     # its deletes come from the deleted list only (CRM-Q6a).
     walking = entity in ctx.reconcile and not generic and not parent_only
-    rereading = generic and _module_reread(ctx, row)
-    if generic and not rereading and _module_read_recently(ctx, row):
+    rereading = generic and (_module_reread(ctx, row) or _final_reread(ctx, row))
+    # CRM-Z10b: the final sync of the switch reads each module, also one that
+    # it read less than MODULE_READ_EVERY ago. An edit of that hour is in it.
+    if generic and not rereading and not ctx.final and _module_read_recently(ctx, row):
         return
     # A rejected or stale field rule on a fixed column (CRM-Q7a): one full read
     # writes the fixed map's value again. It stamps nothing and deletes
@@ -1798,6 +1914,15 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         return
     stamping = walking or row.initial_done_at is None
     resumed = bool(saved.get("in_progress")) and (bool(saved.get("walk_start")) or not stamping)
+    if (
+        resumed and ctx.final and row.initial_done_at is not None
+        and (rereading or (walking and saved.get("offset_paged")))
+    ):
+        # CRM-Z10b round 4: a read by offset that stopped (a module's re-read,
+        # or a core entity's walk) goes on from its saved page in a normal
+        # run. An edit on an earlier page would then miss the final sync, so
+        # the final sync reads from page 1 again.
+        resumed = False
     # The module was off and is asked again (CRM-Q15). When this read ENDS, its
     # children are read in full once, so their links fill in. A read that runs
     # over several runs carries the mark in its cursor, and queues only at its
@@ -1983,8 +2108,11 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                             "retry_from": _iso(_pin(failed_map)),
                             "prev_walk_start": _iso(next_prev),
                             **marks,
-                            # The hourly cadence of a generic module (CRM-Q6a).
-                            **({"checked_at": _iso(ctx.started)} if generic else {}),
+                            # The end of a read, for each entity: the hourly
+                            # cadence of a generic module (CRM-Q6a), and the
+                            # proof that phase 2 of the switch needs (CRM-Z10b
+                            # round 4: a read ended in the final sync).
+                            "checked_at": _iso(ctx.started),
                             # The kept activities of CRM-Q23b. Activities only.
                             **_recover_state(ctx, entity),
                             **short,
@@ -2027,6 +2155,17 @@ def _module_reread(ctx: _Ctx, row: CursorRow) -> bool:
         return False
     done = row.last_reconciled_at
     return done is None or ctx.started - done >= RECONCILE_EVERY
+
+
+def _final_reread(ctx: _Ctx, row: CursorRow) -> bool:
+    """True when the final sync of the switch (CRM-Z10b) must read an
+    offset-paged module in full: it has no cursor to move, so only a full
+    read sees its changes. This costs about one full read of the module.
+    A read of it that stopped starts again from page 1 (round 4)."""
+    state = row.state or {}
+    return (
+        ctx.final and row.initial_done_at is not None and bool(state.get("offset_paged"))
+    )
 
 
 def _module_read_recently(ctx: _Ctx, row: CursorRow) -> bool:
@@ -2231,7 +2370,9 @@ async def _drop_stale(
     Offset paging can skip a row when the provider changes under the walk, so a
     row goes only when its stamp is older than the start of the previous complete
     walk. A refusal keeps the rows and their stamps, logs ``reconcile_refused``
-    with the figures and counts in ``refused``. It returns False for a refusal,
+    with the figures and counts in ``refused``. It also flags the entity:
+    :data:`WALK_SHORT_FLAG` when the walk read fewer records than Zoho holds,
+    else :data:`DELETE_KEPT_FLAG` (CRM-Z10b round 6). It returns False for a refusal,
     and the caller then keeps its old previous-walk time. A record that failed
     to write is never deleted.
     """
@@ -2264,6 +2405,10 @@ async def _drop_stale(
         reason = "large_delete"
     if reason:
         ctx.bump(entity, "refused")
+        # CRM-Z10b round 6: the causes count apart. A walk that read fewer
+        # records than Zoho holds is not a complete read, and the switch
+        # waits for it. A refusal after a complete read only kept rows.
+        ctx.flag(entity, WALK_SHORT_FLAG if _walk_short(local, walked, known) else DELETE_KEPT_FLAG)
         _log.warning(
             "crm.sync.reconcile_refused entity=%s reason=%s walked=%s known=%s "
             "local=%s stale=%s", entity, reason, walked, known, local, len(stale),
@@ -2273,6 +2418,17 @@ async def _drop_stale(
         removed = await delete_from_source(db, table, EXT_SOURCE, sorted(stale))
         ctx.bump(entity, "deleted", removed)
     return True
+
+
+def _walk_short(local: int, walked: int, known: int | None) -> bool:
+    """True when a walk read fewer records than Zoho holds (CRM-Z10b round 6):
+    it read none while rows exist here (``empty_walk``), or fewer than the
+    count of Zoho (``short_walk``). With no count, an empty walk is short
+    too. A ``count_unknown`` walk that read records, and a ``large_delete``,
+    follow a complete read."""
+    empty = bool(local) and walked == 0
+    short = known is not None and walked < known
+    return empty or short
 
 
 async def _deleted_pass(ctx: _Ctx, entity: str) -> None:
@@ -3651,8 +3807,13 @@ async def execute(
 
     It never raises for a failure of the run. It writes the failure to the row
     as a status and a safe code. ``credit_budget`` overrides the default
-    budget, for a test.
+    budget, for a test. With none, a final sync takes its own budget
+    (``handle.credit_budget``, CRM-Z10b round 5). A budget that is not the
+    default skips only the discovery allowance. :data:`CREDITS_FLOOR` holds
+    for every run.
     """
+    if credit_budget is None:
+        credit_budget = handle.credit_budget  # the final sync's own (round 5)
     ctx = _Ctx(handle, should_stop=should_stop, credit_budget=credit_budget)
     status, error = runs.STATUS_OK, None
     try:
