@@ -13,9 +13,13 @@
  * draw nothing, say nothing (`"absent"`). A network fault or a 5xx keeps the
  * last good rows. There is no client flag (§9).
  *
- * **The zone.** The member's zone is `user_settings.timezone`, else the
- * browser's. The pin sits at its wall minute in that zone, and a new time goes
- * out as an ISO string WITH the offset, beside `tz`.
+ * **The zone.** The grid, the blocks and the day columns all read the
+ * browser's wall clock. So every reminder computation uses the browser's zone
+ * too (`gridZone`): the pin top, the day match, the month chip, a drop, a key
+ * move and the form default. `user_settings.timezone` is not used, because it
+ * holds the store default "UTC" until settings load, and the pin would draw at
+ * the wrong minute. A new time goes out as an ISO string WITH the offset,
+ * beside `tz`.
  *
  * Fence (R7): `reminders.test.ts` beside this file.
  */
@@ -93,6 +97,24 @@ export function splitByState(rows: readonly CalReminder[]): ReminderGroups {
   };
 }
 
+/**
+ * The first `limit` rows of the panel, in the order the panel draws them:
+ * Waiting on you, Unconfirmed, then Upcoming. `hidden` counts the rows that
+ * the cap leaves out. A null `limit` keeps every row.
+ */
+export function capGroups(g: ReminderGroups, limit: number | null): { groups: ReminderGroups; hidden: number } {
+  if (limit === null) return { groups: g, hidden: 0 };
+  let left = Math.max(0, limit);
+  const take = (rows: CalReminder[]) => {
+    const out = rows.slice(0, left);
+    left -= out.length;
+    return out;
+  };
+  const groups = { waiting: take(g.waiting), unconfirmed: take(g.unconfirmed), upcoming: take(g.upcoming) };
+  const shown = groups.waiting.length + groups.unconfirmed.length + groups.upcoming.length;
+  return { groups, hidden: g.waiting.length + g.unconfirmed.length + g.upcoming.length - shown };
+}
+
 // ── The zone ─────────────────────────────────────────────────────────────────
 
 const formatters = new Map<string, Intl.DateTimeFormat>();
@@ -111,6 +133,15 @@ export function knownZone(zone: string | null | undefined): string | undefined {
 /** The zone to use: the member's, else the browser's, else UTC. */
 export function pickZone(memberZone: string | null | undefined, browserZone?: string): string {
   return knownZone(memberZone) ?? knownZone(browserZone) ?? "UTC";
+}
+
+/**
+ * The zone of the grid: the browser's zone, else UTC. The grid draws its blocks
+ * and day columns on the browser's wall clock, so a reminder must use the same
+ * frame. The store's `settings.timezone` plays no part here.
+ */
+export function gridZone(browserZone?: string): string {
+  return pickZone(null, browserZone);
 }
 
 export interface WallParts {
@@ -299,7 +330,7 @@ export function checkForm(a: {
 
 export interface PinAt {
   row: CalReminder;
-  /** The wall minute of the day in the member's zone. */
+  /** The wall minute of the day in the zone of the grid. */
   minutes: number;
 }
 
@@ -322,7 +353,7 @@ export function pinTop(minutes: number, dayStartHour: number, hourPx: number): n
 
 /**
  * The time of a drop: the local calendar date of the column `day` and a
- * minute of that day, read on the wall of the member's zone.
+ * minute of that day, read on the wall of the grid's zone.
  */
 export function dropTime(day: Date, minutes: number, zone: string): ZonedTime | null {
   const m = Math.max(0, Math.min(minutes, 1439));
@@ -356,11 +387,39 @@ export function nudgeTime(row: CalReminder, dir: 1 | -1, zone: string): ZonedTim
 /** The drag type of a reminder pin. A task block uses `DRAG_TYPE`. */
 export const REMINDER_DRAG_TYPE = "application/x-cc-cal-reminder";
 
-/** The pin line colour for a state. Tokens only (§6.2). */
+/**
+ * The pin line style for a state. Tokens only (§6.2). The three read apart:
+ * due is the solid accent line, scheduled is a solid neutral line, and
+ * unconfirmed is a dashed muted line. `border-border` is too faint on a dark
+ * grid, so scheduled uses the foreground token at 50 percent.
+ */
 export function pinTone(state: ReminderState): string {
   if (state === "due") return "border-primary";
-  if (state === "unconfirmed") return "border-muted-foreground";
-  return "border-border";
+  if (state === "unconfirmed") return "border-dashed border-muted-foreground";
+  return "border-foreground/50";
+}
+
+/** A span of a task block in a day column, in minutes of the day. */
+export interface BlockSpan {
+  start: number;
+  end: number;
+}
+
+/** The full pin label spans 10 px above the line and 6 px below it. */
+const LABEL_ABOVE_PX = 10;
+const LABEL_BELOW_PX = 6;
+
+/**
+ * True when the full pin label would sit on a task block, so the pin must draw
+ * its compact form (the line and a small bell, with no text). The label covers
+ * the line minus 10 px to the line plus 6 px. The pin is compact when that band
+ * overlaps any block. That covers a pin inside a block, and a pin so near a
+ * block edge that the label reaches the block.
+ */
+export function pinNeedsCompact(minutes: number, spans: readonly BlockSpan[], hourPx: number): boolean {
+  const reachMins = (LABEL_ABOVE_PX / hourPx) * 60;
+  const belowMins = (LABEL_BELOW_PX / hourPx) * 60;
+  return spans.some((s) => minutes + belowMins > s.start && minutes - reachMins < s.end);
 }
 
 /** The glyph colour for a state. */

@@ -12,10 +12,12 @@
  * mode keeps it. On a phone `RemindersList` fills a bottom sheet that a title
  * bar button opens. The parent draws neither when the list is "absent".
  */
+import { useState } from "react";
+
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 
-import { splitByState, whenText, type CalReminder } from "../lib/reminders";
+import { capGroups, splitByState, whenText, type CalReminder } from "../lib/reminders";
 
 type Act = {
   onOpen: (id: string) => void;
@@ -81,23 +83,58 @@ function Group({ label, rows, zone, act }: { label: string; rows: CalReminder[];
   );
 }
 
-/** The three lists. The panel and the phone sheet both draw it. */
+/** The rows that the desktop panel shows before "Show all". It leaves room for the Unscheduled rail. */
+const PANEL_ROWS = 4;
+
+/**
+ * The three lists. The panel and the phone sheet both draw it. With a `limit`
+ * the list shows that many rows, then a "Show all (N)" row. The phone sheet
+ * has a `onNew` button at the top and no limit.
+ */
 export function RemindersList({
   rows,
   total,
   zone,
+  limit = null,
+  onNew,
   ...act
-}: { rows: CalReminder[]; total: number; zone: string } & Act) {
-  const g = splitByState(rows);
+}: { rows: CalReminder[]; total: number; zone: string; limit?: number | null; onNew?: () => void } & Act) {
+  const [all, setAll] = useState(false);
+  const { groups: g, hidden } = capGroups(splitByState(rows), all ? null : limit);
   const more = Math.max(0, total - rows.length);
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
+      {onNew && (
+        <div className="px-3 pt-2">
+          <Button variant="secondary" size="sm" icon="Plus" onClick={onNew}>
+            New reminder
+          </Button>
+        </div>
+      )}
       {rows.length === 0 && (
         <p className="px-3 py-3 text-xs text-muted-foreground">No open reminders.</p>
       )}
       <Group label="Waiting on you" rows={g.waiting} zone={zone} act={act} />
       <Group label="Unconfirmed" rows={g.unconfirmed} zone={zone} act={act} />
       <Group label="Upcoming" rows={g.upcoming} zone={zone} act={act} />
+      {hidden > 0 && (
+        <button
+          type="button"
+          onClick={() => setAll(true)}
+          className="tech-transition w-full border-t border-border px-3 py-1.5 text-left text-xs font-medium text-primary hover:bg-secondary/60 focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          Show all ({hidden + g.waiting.length + g.unconfirmed.length + g.upcoming.length})
+        </button>
+      )}
+      {all && limit !== null && (
+        <button
+          type="button"
+          onClick={() => setAll(false)}
+          className="tech-transition w-full border-t border-border px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-secondary/60 focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          Show fewer
+        </button>
+      )}
       {more > 0 && <p className="px-3 py-1.5 text-[10px] text-muted-foreground">+{more} more</p>}
     </div>
   );
@@ -120,7 +157,7 @@ export function RemindersPanel({
           New reminder
         </Button>
       </div>
-      <RemindersList {...list} />
+      <RemindersList {...list} limit={PANEL_ROWS} />
     </aside>
   );
 }

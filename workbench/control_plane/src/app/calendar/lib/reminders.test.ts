@@ -5,12 +5,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   applyList,
+  capGroups,
   checkForm,
   createReminder,
   defaultWhen,
   dropTime,
   EMPTY_LIST,
   fetchReminders,
+  gridZone,
+  pinNeedsCompact,
   monthChips,
   moveReminder,
   nudgeTime,
@@ -177,8 +180,49 @@ describe("the pin", () => {
 
   it("uses tokens only", () => {
     for (const s of ["scheduled", "due", "unconfirmed"] as const) {
-      expect(pinTone(s)).toMatch(/^border-(primary|muted-foreground|border)$/);
+      expect(pinTone(s)).toMatch(/^(border-dashed )?border-(primary|muted-foreground|foreground\/50)$/);
     }
+  });
+
+  it("reads the three states apart, and scheduled is not the faint border colour", () => {
+    const tones = (["scheduled", "due", "unconfirmed"] as const).map(pinTone);
+    expect(new Set(tones).size).toBe(3);
+    expect(pinTone("scheduled")).not.toBe("border-border");
+  });
+
+  it("uses the browser zone for the grid, never the store default", () => {
+    expect(gridZone("Asia/Kolkata")).toBe("Asia/Kolkata");
+    expect(gridZone(undefined)).toBe("UTC");
+    expect(gridZone("Not/AZone")).toBe("UTC");
+  });
+
+  it("draws compact when the label would sit on a block", () => {
+    // A block 10:00-11:00 (600-660), 46 px per hour.
+    const spans = [{ start: 600, end: 660 }];
+    expect(pinNeedsCompact(620, spans, 46)).toBe(true); // 10:20 inside
+    expect(pinNeedsCompact(600, spans, 46)).toBe(true); // at the start
+    expect(pinNeedsCompact(595, spans, 46)).toBe(true); // 5 min above: label reaches it
+    expect(pinNeedsCompact(659, spans, 46)).toBe(true);
+    expect(pinNeedsCompact(560, spans, 46)).toBe(false); // well above
+    expect(pinNeedsCompact(700, spans, 46)).toBe(false); // well below
+    expect(pinNeedsCompact(620, [], 46)).toBe(false); // no block at all
+  });
+
+  it("caps the panel rows in the order it draws them, and counts the rest", () => {
+    const many = [
+      cal("a", "scheduled", "2026-10-31T09:00:00+05:30"),
+      cal("b", "due", "2026-10-31T10:00:00+05:30"),
+      cal("c", "unconfirmed", "2026-10-31T11:00:00+05:30"),
+      cal("d", "scheduled", "2026-10-31T12:00:00+05:30"),
+      cal("e", "scheduled", "2026-10-31T13:00:00+05:30"),
+      cal("f", "scheduled", "2026-10-31T14:00:00+05:30"),
+    ];
+    const cap = capGroups(splitByState(many), 4);
+    expect(cap.groups.waiting.map((r) => r.id)).toEqual(["b"]);
+    expect(cap.groups.unconfirmed.map((r) => r.id)).toEqual(["c"]);
+    expect(cap.groups.upcoming.map((r) => r.id)).toEqual(["a", "d"]);
+    expect(cap.hidden).toBe(2);
+    expect(capGroups(splitByState(many), null).hidden).toBe(0);
   });
 
   it("turns a drop into a time of the day", () => {
@@ -208,22 +252,38 @@ describe("the pin", () => {
 describe("a reminder takes no capacity and no lane", () => {
   const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 
+  /** The first argument of every call to `fn( ... )` in the source. */
+  const firstArgs = (src: string, fn: string): string[] =>
+    [...src.matchAll(new RegExp(String.raw`\b${fn}\(\s*([^,)]*)`, "g"))].map((m) => m[1].trim());
+
   it("the lib has no task-store import and no capacity type", () => {
     const src = read("./reminders.ts");
     expect(src).not.toMatch(/from "@\/app\/tasks\/lib\/(taskStore|scheduling)"/);
     expect(src).not.toMatch(/blocksForDay|layoutBlocks|leverageStats/);
   });
 
-  it("the grid feeds a reminder to no block, lane or stat", () => {
-    const grid = read("../components/TimeGrid.tsx");
-    // A reminder pin reads its own list. It never joins the block layout.
-    expect(grid).not.toMatch(/blocksForDay\([^)]*reminder/i);
-    expect(grid).not.toMatch(/layoutBlocks\([^)]*reminder/i);
+  it("only task items reach the block, lane and stat functions", () => {
+    // Every call takes `items` (or the `blocks` of `items`) and nothing else.
+    // A spread, a cast or a reminder list in the first argument fails here.
+    for (const rel of ["../CalendarView.tsx", "../components/TimeGrid.tsx", "../components/MonthGrid.tsx"]) {
+      const src = read(rel);
+      for (const arg of firstArgs(src, "blocksForDay")) expect(arg, `${rel} blocksForDay`).toBe("items");
+      for (const arg of firstArgs(src, "deadlinesForDay")) expect(arg, `${rel} deadlinesForDay`).toBe("items");
+      for (const arg of firstArgs(src, "layoutBlocks")) expect(arg, `${rel} layoutBlocks`).toBe("blocks");
+    }
+    // The calls exist, so the check is not empty.
+    expect(firstArgs(read("../components/TimeGrid.tsx"), "blocksForDay")).toEqual(["items"]);
+    expect(firstArgs(read("../CalendarView.tsx"), "blocksForDay").length).toBeGreaterThan(2);
+  });
+
+  it("the stats read no reminder name", () => {
     const view = read("../CalendarView.tsx");
-    expect(view).not.toMatch(/blocksForDay\([^)]*reminder/i);
-    // leverageStats depends on the task items only.
-    const stats = view.slice(view.indexOf("const leverageStats"), view.indexOf("const canReplan"));
-    expect(stats).not.toMatch(/reminder/i);
+    const stats = view.slice(view.indexOf("const doneStats"), view.indexOf("const schedule ="));
+    const lev = view.slice(view.indexOf("const leverageStats"), view.indexOf("const canReplan"));
+    for (const part of [stats, lev]) {
+      expect(part.length).toBeGreaterThan(50);
+      expect(part).not.toMatch(/remList|remZone|reminders?/i);
+    }
   });
 
   it("the drop of a pin never reaches the task reschedule", () => {
@@ -231,6 +291,12 @@ describe("a reminder takes no capacity and no lane", () => {
     const drop = grid.slice(grid.indexOf("const handleDrop"), grid.indexOf("const onBlockDragStart"));
     expect(drop).toMatch(/REMINDER_DRAG_TYPE/);
     expect(drop.indexOf("REMINDER_DRAG_TYPE")).toBeLessThan(drop.indexOf("reschedule("));
+  });
+
+  it("the grid uses the browser zone for every reminder, never the store setting", () => {
+    const view = read("../CalendarView.tsx");
+    expect(view).toMatch(/const remZone = gridZone\(browserTimeZone\(\)\)/);
+    expect(view).not.toMatch(/pickZone\(settings\.timezone/);
   });
 });
 

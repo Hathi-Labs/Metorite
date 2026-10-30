@@ -40,6 +40,7 @@ import {
   dropTime,
   nudgeTime,
   pinGlyphTone,
+  pinNeedsCompact,
   pinTone,
   pinTop,
   remindersOnDay,
@@ -347,6 +348,14 @@ export function TimeGrid({
           const deadlines = deadlinesForDay(items, day);
           const today = sameDay(day, now);
           const pins = remindersOnDay(reminders, day, reminderZone);
+          // The task blocks of this column as spans of minutes. A pin whose
+          // label would sit on one draws compact (`pinNeedsCompact`). The
+          // block height is at least 20 px, as drawn below.
+          const spans = blocks.map((b) => {
+            const start = minutesInto(b.start);
+            const mins = (b.end.getTime() - b.start.getTime()) / 60000;
+            return { start, end: start + Math.max(mins, (20 / HOUR_PX) * 60) };
+          });
           const dayKey = day.toISOString();
           const nowTop =
             ((minutesInto(now) - dayStart * 60) / 60) * HOUR_PX;
@@ -533,6 +542,7 @@ export function TimeGrid({
                 const top = pinTop(minutes, dayStart, HOUR_PX);
                 if (top < 0 || top > gridHeight) return null;
                 const clock = clockText(row.fireMs, reminderZone);
+                const compact = pinNeedsCompact(minutes, spans, HOUR_PX);
                 return (
                   <div
                     key={`rm-${row.id}`}
@@ -556,11 +566,18 @@ export function TimeGrid({
                       aria-label={`Reminder, ${clock}: ${row.title}`}
                       aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
                       title={`${clock} · ${row.title}. Drag to move it, or press Alt+Arrow. ${MOVE_NOTE}`}
-                      className={`pointer-events-auto absolute left-0 -top-2.5 inline-flex max-w-full cursor-grab items-center gap-0.5 truncate rounded-sm bg-background px-1 text-[10px] leading-4 focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing ${pinGlyphTone(row.state)}`}
+                      className={
+                        compact
+                          ? // Over a block: the line and a small bell on the left
+                            // edge of the column, half out in the gutter. It has
+                            // no text, so it covers no block title.
+                            `pointer-events-auto absolute -left-2 -top-2 inline-flex h-4 w-4 cursor-grab items-center justify-center rounded-full bg-background focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing ${pinGlyphTone(row.state)}`
+                          : `pointer-events-auto absolute left-0 -top-2.5 inline-flex max-w-full cursor-grab items-center gap-0.5 truncate rounded-sm bg-background px-1 text-[10px] leading-4 focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing ${pinGlyphTone(row.state)}`
+                      }
                     >
                       <Icon name="Bell" className="h-3 w-3 shrink-0" />
-                      <span className="tabular-nums">{clock}</span>
-                      {days.length === 1 && <span className="truncate text-foreground">{row.title}</span>}
+                      {!compact && <span className="tabular-nums">{clock}</span>}
+                      {!compact && days.length === 1 && <span className="truncate text-foreground">{row.title}</span>}
                     </button>
                   </div>
                 );

@@ -69,7 +69,7 @@ import { RemindersPanel, RemindersList } from "./components/RemindersPanel";
 import {
   createReminder,
   moveReminder,
-  pickZone,
+  gridZone,
   reminderChatPath,
   reopenReminder,
   resolveReminder,
@@ -121,9 +121,16 @@ export function CalendarView() {
   const toast = useToast();
   const { list: remList, run: runReminder } = useReminders();
   const remShown = remList.status === "ready";
-  const remZone = pickZone(settings.timezone, browserTimeZone());
+  // The grid draws on the browser's wall clock, so every reminder computation
+  // uses the browser's zone. `settings.timezone` is "UTC" until settings load.
+  const remZone = gridZone(browserTimeZone());
   const [remForm, setRemForm] = useState<{ mode: "new" } | { mode: "move"; id: string } | null>(null);
   const [remSheet, setRemSheet] = useState(false);
+  // The flag turned off (list "absent"): close the forms and the sheet.
+  if (!remShown && remList.status === "absent" && (remForm || remSheet)) {
+    setRemForm(null);
+    setRemSheet(false);
+  }
   const openReminder = (id: string) => router.push(reminderChatPath(id));
   const showWords = (variant: "success" | "error", title: string, action?: { label: string; onClick: () => void }) =>
     toast.show({ key: "calendar-reminder", variant, title, action });
@@ -565,7 +572,7 @@ export function CalendarView() {
         <Icon name="Wand2" className="h-3.5 w-3.5" />
         <span className="hidden sm:inline">Rebuild my day</span>
       </button>
-      {remShown && (
+      {remShown && !isMobile && (
         <button
           type="button"
           onClick={() => setRemForm({ mode: "new" })}
@@ -645,7 +652,7 @@ export function CalendarView() {
       {isMobile ? (
         <>
           <AppTopBar compact title={title} actions={dayNav} />
-          <div className="relative flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
+          <div className="relative flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2">
             {dayTools}
           </div>
         </>
@@ -843,7 +850,7 @@ export function CalendarView() {
         </button>
       )}
 
-      {remForm?.mode === "new" && (
+      {remShown && remForm?.mode === "new" && (
         <ReminderFormModal
           mode="new"
           zone={remZone}
@@ -851,7 +858,7 @@ export function CalendarView() {
           onClose={() => setRemForm(null)}
         />
       )}
-      {remForm?.mode === "move" && moving && (
+      {remShown && remForm?.mode === "move" && moving && (
         <ReminderFormModal
           mode="move"
           zone={remZone}
@@ -867,6 +874,10 @@ export function CalendarView() {
             rows={remList.rows}
             total={remList.total}
             zone={remZone}
+            onNew={() => {
+              setRemSheet(false);
+              setRemForm({ mode: "new" });
+            }}
             onOpen={(id) => {
               setRemSheet(false);
               openReminder(id);
