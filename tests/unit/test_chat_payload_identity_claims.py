@@ -21,7 +21,10 @@ Mutations this file catches:
 * a sync or async route does not call it: test 5 and the AST guard fail;
 * the stream route keeps an own claim (``keep_own=True``): test 2 (own)
   and the AST guard fail;
-* the helper removes a service caller's claim: test 4 fails.
+* the helper removes a service caller's claim: test 4 fails;
+* a kept claim keeps the body's padded or other-case text: test 5 fails;
+* the executor reads a person key that ``_IDENTITY_CLAIMS`` lacks: the
+  source scan fails.
 
 Hermetic: no SQL, so no database (R8 does not apply).
 """
@@ -239,16 +242,23 @@ def _call(route: str, payload: dict[str, Any]) -> None:
 @pytest.mark.parametrize(("claim", "kept"), [
     ({"user_email": _BOB, "user_id": _BOB}, {}),
     ({"user_email": _ALICE, "user_id": _BOB}, {"user_email": _ALICE}),
-    ({"user_email": _ALICE.upper()}, {"user_email": _ALICE.upper()}),
+    ({"user_email": _ALICE.upper()}, {"user_email": _ALICE}),
+    ({"user_email": f"  {_ALICE.upper()} "}, {"user_email": _ALICE}),
+    ({"user_id": f" {_ALICE.upper()}"}, {"user_id": _ALICE}),
     ({"user_id": _ALICE}, {"user_id": _ALICE}),
     ({}, {}),
-], ids=["other", "own-and-other", "own-in-another-case", "own-as-user-id", "none"])
+], ids=[
+    "other", "own-and-other", "own-in-another-case", "own-padded-upper-case",
+    "own-padded-as-user-id", "own-as-user-id", "none",
+])
 def test_sync_and_async_routes_drop_a_claim_naming_another_member(
     run_doors, route, claim, kept,
 ):
     _call(route, {"message": "hi", **claim})
-    # An own claim stays, and no claim gets no claim: these routes set no
-    # memory id, so the claim is an API caller's only acting user.
+    # An own claim stays under its key, and no claim gets no claim: these
+    # routes set no memory id, so the claim is an API caller's only acting
+    # user. A kept claim holds EXACTLY the session's address, so a padded or
+    # other-case copy never becomes the memory id or the instance key.
     assert run_doors == [{"message": "hi", **kept}]
 
 
@@ -296,3 +306,63 @@ def test_each_run_door_drops_the_claims_before_the_executor_call(door, later, ke
         assert all(drop.lineno < s.lineno for s in sites), (
             f"{door}: the claim must go before {name}"
         )
+
+
+# ── 4. The source scan of the executor ──────────────────────────────────────
+
+_EXECUTOR_PY = (
+    Path(__file__).resolve().parents[2]
+    / "apps/services/orchestrator/orchestrator/executor.py"
+)
+
+# `_IDENTITY_CLAIMS` is a hand-kept list. When the executor starts to read a
+# new person key from the payload, a body could name a member through that
+# key, and no door would remove it. This scan makes that change fail here.
+_PERSON_KEYS = frozenset({
+    "user_email", "user_id", "member", "member_email", "actor", "email",
+    "on_behalf_of", "session_user",
+})
+
+
+def _is_payload(node: ast.AST) -> bool:
+    return isinstance(node, ast.Name) and node.id == "event_payload"
+
+
+def _is_str(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
+
+def _payload_keys_read(source: str) -> set[str]:
+    """Each key in ``event_payload.get("k")`` or ``event_payload["k"]``."""
+    keys: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get" and _is_payload(node.func.value)
+            and node.args and _is_str(node.args[0])
+        ):
+            keys.add(node.args[0].value)
+        elif isinstance(node, ast.Subscript) and _is_payload(node.value) and _is_str(node.slice):
+            keys.add(node.slice.value)
+    return keys
+
+
+def _person_keys_not_dropped(source: str) -> set[str]:
+    from gateway.routes.agent import _IDENTITY_CLAIMS
+
+    return (_payload_keys_read(source) & _PERSON_KEYS) - set(_IDENTITY_CLAIMS)
+
+
+def test_each_person_key_the_executor_reads_is_a_claim_the_doors_drop():
+    source = _EXECUTOR_PY.read_text(encoding="utf-8")
+    # The scan finds the two claims of today, so it is not empty by accident.
+    assert {"user_email", "user_id"} <= _payload_keys_read(source)
+    assert _person_keys_not_dropped(source) == set()
+
+
+def test_the_source_scan_names_a_new_person_key():
+    source = _EXECUTOR_PY.read_text(encoding="utf-8") + (
+        "\n\ndef _probe(event_payload):\n"
+        "    return event_payload.get(\"member_email\"), event_payload[\"actor\"]\n"
+    )
+    assert _person_keys_not_dropped(source) == {"member_email", "actor"}

@@ -3957,6 +3957,8 @@ def _session_member(user: Any) -> str | None:
 
 
 #: The body keys that name a person. ``executor._payload_user`` reads them.
+#: A source scan in the fence fails when the executor reads a person key
+#: from the payload that this list does not hold.
 _IDENTITY_CLAIMS = ("user_email", "user_id")
 
 
@@ -3975,8 +3977,10 @@ def _drop_identity_claims(
     is the only identity it has, so the claim stays.
 
     ``keep_own=True`` keeps a claim that names the session's member, in any
-    letter case. The stream route removes each claim, because a room run keeps
-    the ``room:`` id that the route sets. Fence:
+    letter case, under the same key. The session's own address replaces the
+    body's text, so a padded or other-case copy never becomes the memory id
+    or the instance key. The stream route removes each claim, because a room
+    run keeps the ``room:`` id that the route sets. Fence:
     ``tests/unit/test_chat_payload_identity_claims.py``.
     """
     member = _session_member(user)
@@ -3987,6 +3991,7 @@ def _drop_identity_claims(
             continue
         claim = str(payload.get(key) or "").strip()
         if keep_own and claim.lower() == member.lower():
+            payload[key] = member
             continue
         payload.pop(key, None)
 

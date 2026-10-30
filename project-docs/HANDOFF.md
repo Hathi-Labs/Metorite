@@ -1935,5 +1935,10 @@ line — never reclaim a number by deleting the other entry.
 
 ### H-437 · Give a web chat run the credential filter of its member · [AGENT] · security
 - **Metorite:** #1120. The task holds the full entry.
-- **Check:** in `apps/services/orchestrator/orchestrator/executor.py`, `async def _integration_authorizer` takes only `event_payload` and `thread_id`, and reads the member from the payload → still open.
+- **Check:** in `apps/services/orchestrator/orchestrator/executor.py`, `async def _integration_authorizer` takes only `event_payload` and `thread_id`, and reads the member from the payload → still open. That one read sets two things: the credential filter, and the memory permission gate through `_set_memory_permission`.
+- **Added:** 2026-10-30 · H-337 session
+
+### H-438 · Take the /pull member from the session before Mem0 turns on · [AGENT] · security
+- **Metorite:** #1127. The task holds the full entry.
+- **Check:** in `apps/services/gateway/gateway/main.py`, the `/pull` handler still sets `user_id = req.user_email or ...` → still open.
 - **Added:** 2026-10-30 · H-337 session
