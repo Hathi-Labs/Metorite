@@ -1800,6 +1800,17 @@ class Settings(BaseSettings):
     # box is gate `enforcement-flip`. `knowledge` on production needs a dated
     # grant. `crm` and `email` there stay OWNER-GATE until MCP-P3 (§19.13).
     agent_door_apps: str = ""
+    # D-EA-11 (external_agent_access.md §10.7): the first-party agent
+    # clients. Exact CIMD client id URLs, with a comma between them. For a
+    # listed client, `check` skips the consent page when the member already
+    # holds a live connection of that client whose scopes cover the request,
+    # and an approval replaces the member's older connection of that client.
+    # Empty, the default, trusts no client, so every client gets the consent
+    # page as before. `*` and an entry that is not a CIMD client id URL are
+    # dropped. The match is exact: no case fold and no other normalization.
+    # `acb_auth.agent_oauth.is_first_party` is the one reader. Only the
+    # gateway reads it. 🔴 A change on a box is gate `enforcement-flip`.
+    agent_first_party_client_ids: str = ""
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
     agent_code_ttl_s: int = 60
