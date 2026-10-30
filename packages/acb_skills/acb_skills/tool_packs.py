@@ -1678,6 +1678,17 @@ def delegation_refusal(
     return refused
 
 
+#: OA-8i review. The pack tools that write only a file of the chat (a report
+#: card, its PDF, a CSV) and never a record of the app. The risk registry
+#: marks them ``read_only=False``, so an edited turn does not run one again
+#: unseen. They do no work that a hand-off could repeat, so
+#: :func:`pack_write_refusal` skips them as it skips a read-only tool. The set
+#: equals ``CHAT_FILE_WRITERS`` of ``tests/unit/test_projects_chat_coverage.py``
+#: and the class A Projects tools that are not read-only. Fence:
+#: ``tests/unit/test_pack_no_double_write.py``.
+CHAT_FILE_TOOLS: frozenset[str] = frozenset({"status_report", "render_report", "export_tasks"})
+
+
 def pack_write_refusal(
     owner: Any, tool: Any, ctx: Mapping[str, Any] | None = None,
 ) -> str | None:
@@ -1692,14 +1703,15 @@ def pack_write_refusal(
     the specialist tool of *owner* stays in the run
     (:meth:`PackRun.write_refusal`). Else the write is recorded, and a later
     hand-off to *owner* in this run refuses (:meth:`PackRun.wrote_refusal`).
-    A run with no record (the flag is off, a child of a spawn) gets None and
-    records nothing. Never raises.
+    A tool of :data:`CHAT_FILE_TOOLS` writes only a file of the chat, so it is
+    skipped as a read-only tool is. A run with no record (the flag is off, a
+    child of a spawn) gets None and records nothing. Never raises.
     """
     try:
         from acb_skills.subagent_contract import annotated_read_only
 
         name = str(tool or "")
-        if annotated_read_only(name):
+        if name in CHAT_FILE_TOOLS or annotated_read_only(name):
             return None
         if ctx is None:
             from acb_skills.write_artifact import artifact_context

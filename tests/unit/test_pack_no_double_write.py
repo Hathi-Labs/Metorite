@@ -304,6 +304,82 @@ def test_a_hand_off_that_finished_keeps_the_plain_answer() -> None:
     tp.handoff_ended(PA, None, finished=False)  # no record: nothing, and no raise
 
 
+async def test_a_stop_before_the_sub_run_starts_still_counts_as_not_finished(
+    store, agents, monkeypatch,
+) -> None:
+    """The seam records the hand-off, then awaits the mail mark and the
+    working set before its work. A time-out there must still reach the
+    ``finally``, so the record learns that the hand-off did not finish.
+    Mutation: move the two awaits back before the ``try`` -> the cancel skips
+    the ``finally`` -> ``handed_failed`` stays empty -> red."""
+    loads: list[str] = []
+
+    async def slow_set(*_a: Any, **_k: Any) -> Any:
+        await asyncio.sleep(5)
+        return None, ""
+
+    async def load(name: str, **_k: Any) -> Any:
+        loads.append(name)
+        raise AssertionError("the sub-run must not reach the load")
+
+    monkeypatch.setattr(ex, "_email_working_set_for", slow_set)
+    monkeypatch.setattr(ex, "_load_agent_off_loop", load)
+    monkeypatch.setattr(L.agent_tools, "_SUB_AGENT_TIMEOUT", 0.05)
+    fake_gateway(monkeypatch, _gateway)
+    approve(monkeypatch)
+    applied = await _held_projects(agents)
+    with L._in_run(applied), _queue():
+        out = await L.agent_tools.call_agent(PA, "Make a task from the mail of Priya")
+        made = await _tool(agents, "create_personal_task").func(title="Confirm 250 boards")
+    assert "timed out" in str(out) and loads == []
+    assert applied.record.handed_failed == {PA} and made == _failed()
+
+
+# ── 3a. A pack tool that writes only a file of the chat ─────────────────────
+
+
+def test_the_chat_file_tools_equal_the_projects_chat_file_writers() -> None:
+    """``CHAT_FILE_TOOLS`` cannot drift. It equals ``CHAT_FILE_WRITERS`` of the
+    Projects coverage fence, and the class A Projects tools that the risk
+    registry does not mark read-only, and each one is a pack tool. A new tool
+    that writes only a chat file must join both. Mutation: drop
+    ``export_tasks`` from ``CHAT_FILE_TOOLS`` -> red."""
+    import skill_projects
+    from skill_projects import manifest as m
+
+    from tests.unit.test_projects_chat_coverage import CHAT_FILE_WRITERS
+
+    assert CHAT_FILE_WRITERS == tp.CHAT_FILE_TOOLS
+    class_a_writes = {
+        name for name in skill_projects.__all__
+        if m.tool_class(name) == "A" and not ta.TOOL_ANNOTATIONS[name]["read_only"]}
+    assert class_a_writes == tp.CHAT_FILE_TOOLS
+    in_packs = {n for slug in sf.pack_slugs() for n in sf.SKILL_FAMILIES[slug]["tools"]}
+    assert tp.CHAT_FILE_TOOLS <= in_packs
+
+
+async def test_a_report_then_a_hand_off_stays_open(store, agents, monkeypatch) -> None:
+    """On a Projects page, "show the stuck tasks" loads ``projects-plan`` in
+    place of the core pack, and the specialist stays. The model draws
+    ``status_report``, then routes a structure step to ``call_agent``. The
+    report wrote only a chat file, so the hand-off runs, and nothing says
+    that the report "already did this work". Mutation: drop the
+    ``CHAT_FILE_TOOLS`` skip in ``pack_write_refusal`` -> red."""
+    ran = L._fake_run_agent(monkeypatch)
+    fake_gateway(monkeypatch, _gateway)
+    applied = await _apply_on(agents, "Show the stuck tasks", "projects")
+    assert applied is not None and applied.record.slugs == ("projects-plan",), "non-vacuity"
+    assert PA not in applied.record.replaced
+    assert ta.get_annotations("status_report")["read_only"] is False, "non-vacuity"
+    with L._in_run(applied):
+        report = await _tool(agents, "status_report").func(project_id="")
+        out = await L.agent_tools.call_agent(PA, "Rename the status Doing to In progress")
+    assert report != ti.PACK_CALL_REFUSED.format(tool="status_report"), "non-vacuity: it ran"
+    assert not str(report).startswith("Not run"), report
+    assert "ran" in out and ran == [PA]
+    assert applied.record.wrote == {} and applied.record.handed == {PA}
+
+
 # ── 4. One model step with both calls ───────────────────────────────────────
 
 

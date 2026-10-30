@@ -2407,15 +2407,6 @@ async def _run_sub_agent_streaming(
         no_egress=_sub_no_egress, **_without_pack_keys(agent_name),
         **_without_job_key(agent_name),
     )
-    # WS-17 EM-G11f3: a run of an agent that reads mail marks the CALLING
-    # session now, before it does any work, so a cancel or an error cannot
-    # skip the mark. After the no_egress decision, so the sub-run's tools do
-    # not change. The specialist tools and delegate_to_agent come here.
-    await _mark_untrusted_session(agent_name, _parent_ctx_sub)
-    # §7.1.1 (D99): the email working set of the calling chat. An email
-    # sub-run gets its ids as context, and the calls it makes update it. The
-    # held state above is decided first, and nothing here changes it.
-    _ws_before, _ws_preamble = await _email_working_set_for(agent_name, _parent_ctx_sub)
     _sub_calls: list[dict[str, Any]] = []
 
     # ── Redis relay fallback for paths without _active_run_queue ──────
@@ -2469,6 +2460,17 @@ async def _run_sub_agent_streaming(
         pass
 
     try:
+        # WS-17 EM-G11f3: a run of an agent that reads mail marks the CALLING
+        # session now, before it does any work, so a cancel or an error cannot
+        # skip the mark. After the no_egress decision, so the sub-run's tools do
+        # not change. The specialist tools and delegate_to_agent come here.
+        # WS-67 OA-8i review: this await and the next sit inside the try, so a
+        # cancel here still reaches the finally and ``_pack_handoff_ended``.
+        await _mark_untrusted_session(agent_name, _parent_ctx_sub)
+        # §7.1.1 (D99): the email working set of the calling chat. An email
+        # sub-run gets its ids as context, and the calls it makes update it. The
+        # held state above is decided first, and nothing here changes it.
+        _ws_before, _ws_preamble = await _email_working_set_for(agent_name, _parent_ctx_sub)
         # §15.4: a first-party-admin-only agent, delegated to by anyone else,
         # is refused as absent. The member is the PARENT run's (run binding).
         await _assert_may_run_agent(agent_name)
