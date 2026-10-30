@@ -277,6 +277,34 @@ and the key. Close the tunnel with Ctrl+C in that shell.
      --out evals/one_assistant_measure/results_<date>.json
    ```
 
+### Test one tier on another model (`--tier-map`)
+
+`--tier-map` is for the eval only. It changes no product code and no flag.
+Use it to ask whether a cheaper tier can serve the chat.
+
+```bash
+uv run python -m evals.one_assistant_measure.run --live --arms pack   --tier-map tier-balanced=tier-fast --out chunk_flash_a.json
+```
+
+1. A map is a list of `<tier>=<tier>` pairs. The target must be a tier.
+   The Router refuses a model id ("name a tier, not a model").
+2. The wire tap rewrites the `model` field of each request for the named
+   tiers. It changes no other field. A tier that the map does not name goes
+   out as before, and that includes System 1 (`tier-fast`).
+3. The arm shows the map in its name, for example `pack[balanced=flash]`.
+   The word `flash` stands for `tier-fast`. A row keeps `arm` and adds
+   `arm_label` and `tier_map`. The summary and the tables use `arm_label`.
+4. Each call lists `requested` (the tier the agent asked for), `model` (the
+   tier that went out) and `served` (the model the Router names). The
+   results header lists `tier_map` and `served_models`. Read `served_models`
+   first. If the operator rebinds `tier-fast`, only that field shows what ran.
+5. A call is priced by its `served` model, else by the target tier. The
+   cost is the vendor `usage.cost` when the call has one. Otherwise the
+   `flash` card in `rate_card.json` prices it, and the peak factor applies.
+6. `--merge` refuses a chunk whose rows are not named by its own map. It also
+   refuses one arm name that two maps share. A mapped and an unmapped chunk
+   merge as two separate arms. The merged file lists `tier_maps`.
+
 ### Spend rules (after the drain of 2026-10-30)
 
 A live run goes through the production Router, on the one DeepSeek account.

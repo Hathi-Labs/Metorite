@@ -15,6 +15,7 @@ against a real Postgres and skips loudly when none is configured.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -39,6 +40,12 @@ __all__ = [
     "active_owner_count",
     "active_plans",
     "add_credit",
+    "add_deployment_key_capabilities",
+    "app_connection_row",
+    "app_deployment",
+    "app_seat_holders",
+    "app_usage",
+    "app_visible_orgs",
     "apply_discount_to_order",
     "capture_provider_refs",
     "count_redemptions",
@@ -48,7 +55,10 @@ __all__ = [
     "credit_ref_row",
     "cross_org_summary",
     "current_placement",
+    "deployment_app",
     "deployment_by_label",
+    "deployment_key_capabilities",
+    "deployment_row",
     "deployment_visible_orgs",
     "detach_provider",
     "ensure_identity",
@@ -56,6 +66,7 @@ __all__ = [
     "grant_seats",
     "has_live_seat",
     "identity_id_for_email",
+    "insert_deployment",
     "issue_deployment_key",
     "issue_discount_code",
     "lock_discount_capacity",
@@ -85,10 +96,13 @@ __all__ = [
     "order_lines",
     "order_row",
     "orders_page",
+    "org_app_row",
     "org_members",
     "place_organization",
     "plan_price",
     "priced_plan",
+    "record_app_connection",
+    "record_app_connection_result",
     "record_payment_event",
     "record_usage",
     "redemption_for_order",
@@ -98,11 +112,15 @@ __all__ = [
     "resolve_deployment_key",
     "resolve_discount_code",
     "resolve_key",
+    "revoke_deployment_key",
     "run_spend",
+    "save_app_connection_settings",
     "seat_rows",
+    "set_deployment_app",
     "set_order_status",
     "set_provider_order_id",
     "try_assign_seat",
+    "upsert_org_app",
     "write_redemption",
 ]
 
@@ -2434,6 +2452,474 @@ def deployment_placed_orgs(conn: Connection, *, deployment_id: str) -> list[dict
             {"dep": deployment_id},
         )
     ]
+
+
+# ── Apps (CP-APP, migration 038) ────────────────────────────────────────────
+#
+# An app (Aroh) runs on its own box. `deployment.app` names the app a box
+# serves, and `org_app` says that an organization has the app on that box. An
+# organization keeps its ONE `org_placement` row on its Metorite box, so the
+# app box can never see it through `deployment_visible_orgs`. These reads are
+# the app box's own, and only the doors that serve an app call them.
+
+
+def deployment_app(conn: Connection, *, deployment_id: str) -> str | None:
+    """The app this box serves, or ``None`` for a Metorite tenant box."""
+    row = conn.execute(
+        text("SELECT app FROM deployment WHERE id = :dep"),
+        {"dep": deployment_id},
+    ).first()
+    return row[0] if row else None
+
+
+def app_deployment(conn: Connection, *, app: str) -> dict[str, Any] | None:
+    """The box that serves *app*, or ``None`` when no box is registered for it.
+
+    This is a NAMED designation, never an inference: ``deployment.app`` is set
+    by hand when the box is registered, and a unique partial index allows one
+    box for each app. No ``count(*) = 1`` guess is made here (D46.6 item 3).
+    """
+    row = conn.execute(
+        text("SELECT id, label, base_url FROM deployment WHERE app = :app"),
+        {"app": app},
+    ).first()
+    if row is None:
+        return None
+    return {"id": str(row[0]), "label": row[1], "base_url": row[2]}
+
+
+def deployment_row(conn: Connection, *, deployment_id: str) -> dict[str, Any] | None:
+    """One deployment's label, base URL and app, or ``None``."""
+    row = conn.execute(
+        text("SELECT id, label, base_url, app FROM deployment WHERE id = :dep"),
+        {"dep": deployment_id},
+    ).first()
+    if row is None:
+        return None
+    return {"id": str(row[0]), "label": row[1], "base_url": row[2], "app": row[3]}
+
+
+def insert_deployment(conn: Connection, *, label: str, base_url: str) -> str:
+    """Register a new box. Raises on a label that exists (``UNIQUE``)."""
+    row = conn.execute(
+        text(
+            "INSERT INTO deployment (label, base_url) VALUES (:label, :url) "
+            "RETURNING id"
+        ),
+        {"label": label, "url": base_url},
+    ).first()
+    assert row is not None
+    return str(row[0])
+
+
+def set_deployment_app(conn: Connection, *, deployment_id: str, app: str) -> None:
+    """Name the app a box serves.
+
+    The caller checks first that the box serves no OTHER app. A second box for
+    the same app fails on ``deployment_app_uniq``, which is the refusal.
+    """
+    conn.execute(
+        text("UPDATE deployment SET app = :app WHERE id = :dep"),
+        {"app": app, "dep": deployment_id},
+    )
+
+
+def add_deployment_key_capabilities(
+    conn: Connection, *, prefix: str, capabilities: list[str]
+) -> list[str] | None:
+    """Add capabilities to one LIVE deployment key. Returns the new set.
+
+    ``None`` when no live key has this prefix. The set only grows here: a
+    capability that is there stays, and the order of the stored array is kept,
+    with each new one at the end.
+
+    ⚠️ Growing a REAL key's set is OWNER-GATE (``customer_console.md`` §8
+    gate 7). No HTTP route calls this. The operator CLI
+    (:mod:`customer_console.deployment_keys`) is its one caller.
+    """
+    row = conn.execute(
+        text(
+            """
+            UPDATE deployment_key
+               SET capabilities = capabilities || ARRAY(
+                       SELECT c FROM unnest(CAST(:caps AS TEXT[])) AS c
+                       WHERE NOT (c = ANY (deployment_key.capabilities)))
+             WHERE prefix = :prefix AND revoked_at IS NULL
+            RETURNING capabilities
+            """
+        ),
+        {"prefix": prefix, "caps": capabilities},
+    ).first()
+    return list(row[0]) if row else None
+
+
+def revoke_deployment_key(conn: Connection, *, prefix: str) -> bool:
+    """Revoke one live deployment key. False when no live key has the prefix."""
+    row = conn.execute(
+        text(
+            "UPDATE deployment_key SET revoked_at = now() "
+            "WHERE prefix = :p AND revoked_at IS NULL RETURNING id"
+        ),
+        {"p": prefix},
+    ).first()
+    return row is not None
+
+
+def deployment_key_capabilities(conn: Connection, *, prefix: str) -> list[str] | None:
+    """The capability set of one LIVE deployment key, or ``None``."""
+    row = conn.execute(
+        text(
+            "SELECT capabilities FROM deployment_key "
+            "WHERE prefix = :p AND revoked_at IS NULL"
+        ),
+        {"p": prefix},
+    ).first()
+    return list(row[0]) if row else None
+
+
+def app_connection_row(conn: Connection, *, app: str) -> dict[str, Any] | None:
+    """How the Console reaches the hub of *app*, or ``None``.
+
+    ⚠️ Carries ``operator_token_enc``, the ENCRYPTED hub token. The caller
+    decrypts it only to make the call, and never puts either form on a wire.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT base_url, operator_token_enc, operator_token_last4, key_prefix,
+                   connected_at, last_result, updated_by, updated_at
+            FROM app_connection WHERE app = :app
+            """
+        ),
+        {"app": app},
+    ).first()
+    if row is None:
+        return None
+    return {
+        "base_url": row[0],
+        "operator_token_enc": row[1],
+        "operator_token_last4": row[2],
+        "key_prefix": row[3],
+        "connected_at": row[4],
+        "last_result": row[5],
+        "updated_by": row[6],
+        "updated_at": row[7],
+    }
+
+
+def save_app_connection_settings(
+    conn: Connection,
+    *,
+    app: str,
+    base_url: str,
+    operator_token_enc: str | None,
+    operator_token_last4: str | None,
+    actor: str,
+) -> None:
+    """Write the hub's base URL and, when given, its ENCRYPTED operator token.
+
+    A ``None`` token keeps the stored one, so the operator can change the URL
+    without pasting the token again.
+    """
+    conn.execute(
+        text(
+            """
+            INSERT INTO app_connection
+                (app, base_url, operator_token_enc, operator_token_last4, updated_by)
+            VALUES (:app, :url, :enc, :last4, :actor)
+            ON CONFLICT (app) DO UPDATE
+                SET base_url = EXCLUDED.base_url,
+                    operator_token_enc = COALESCE(EXCLUDED.operator_token_enc,
+                                                  app_connection.operator_token_enc),
+                    operator_token_last4 = COALESCE(EXCLUDED.operator_token_last4,
+                                                    app_connection.operator_token_last4),
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = now()
+            """
+        ),
+        {
+            "app": app,
+            "url": base_url,
+            "enc": operator_token_enc,
+            "last4": operator_token_last4,
+            "actor": actor,
+        },
+    )
+
+
+def record_app_connection(
+    conn: Connection,
+    *,
+    app: str,
+    key_prefix: str | None,
+    connected: bool,
+    result: dict[str, Any],
+    actor: str,
+) -> None:
+    """Record what the last connect, rotate or disconnect did.
+
+    ``connected`` False clears ``connected_at``. ``result`` holds public
+    fields only (``app_hub.public_fields``), never a token or a key.
+    """
+    conn.execute(
+        text(
+            """
+            UPDATE app_connection
+               SET key_prefix = :prefix,
+                   connected_at = CASE WHEN :connected THEN now() ELSE NULL END,
+                   last_result = CAST(:result AS jsonb),
+                   updated_by = :actor,
+                   updated_at = now()
+             WHERE app = :app
+            """
+        ),
+        {
+            "app": app,
+            "prefix": key_prefix,
+            "connected": connected,
+            "result": json.dumps(result, default=str),
+            "actor": actor,
+        },
+    )
+
+
+def record_app_connection_result(
+    conn: Connection, *, app: str, result: dict[str, Any], actor: str
+) -> None:
+    """Record a FAILED act: the result only. The key the hub holds is unchanged."""
+    conn.execute(
+        text(
+            """
+            UPDATE app_connection
+               SET last_result = CAST(:result AS jsonb),
+                   updated_by = :actor,
+                   updated_at = now()
+             WHERE app = :app
+            """
+        ),
+        {"app": app, "result": json.dumps(result, default=str), "actor": actor},
+    )
+
+
+def org_app_row(conn: Connection, *, org_id: str, app: str) -> dict[str, Any] | None:
+    """This organization's row for *app*, with its box, or ``None``."""
+    row = conn.execute(
+        text(
+            """
+            SELECT a.enabled, a.deployment_id, d.label, d.base_url,
+                   a.updated_at, a.updated_by
+            FROM org_app a
+            JOIN deployment d ON d.id = a.deployment_id
+            WHERE a.organization_id = :org AND a.app = :app
+            """
+        ),
+        {"org": org_id, "app": app},
+    ).first()
+    if row is None:
+        return None
+    return {
+        "enabled": bool(row[0]),
+        "deployment_id": str(row[1]),
+        "deployment_label": row[2],
+        "deployment_base_url": row[3],
+        "updated_at": row[4],
+        "updated_by": row[5],
+    }
+
+
+def upsert_org_app(
+    conn: Connection,
+    *,
+    org_id: str,
+    app: str,
+    deployment_id: str,
+    enabled: bool,
+    actor: str,
+) -> None:
+    """Turn *app* on or off for an organization.
+
+    ⚠️ **The box is written on the FIRST insert only.** A conflict updates
+    ``enabled`` and the stamps, never ``deployment_id``: a placement does not
+    move as a side effect of a toggle (D46.6 item 4).
+    """
+    conn.execute(
+        text(
+            """
+            INSERT INTO org_app
+                (organization_id, app, deployment_id, enabled, updated_by)
+            VALUES (:org, :app, :dep, :enabled, :actor)
+            ON CONFLICT (organization_id, app) DO UPDATE
+                SET enabled = EXCLUDED.enabled,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = now()
+            """
+        ),
+        {
+            "org": org_id,
+            "app": app,
+            "dep": deployment_id,
+            "enabled": enabled,
+            "actor": actor,
+        },
+    )
+
+
+def app_visible_orgs(
+    conn: Connection, *, deployment_id: str, app: str, email: str
+) -> list[dict[str, Any]]:
+    """Every organization an APP box may see for this email.
+
+    The app twin of :func:`deployment_visible_orgs`. The predicate is: the
+    email holds a membership in an organization whose ``org_app`` row for this
+    app names this box AND is enabled. The same row shape comes back, so a
+    caller reads ``organization_id``, ``slug``, ``status`` and ``identity_id``
+    the same way.
+
+    ⚠️ **The membership status IS read here, unlike the Metorite read.** A
+    Metorite box has its own gate for a removed member: the tenant plane
+    refuses them. The app box has no tenant plane, so the Console is its only
+    gate. A ``removed`` or ``suspended`` membership is invisible to the app.
+    """
+    return [
+        {
+            "organization_id": str(r[0]),
+            "slug": r[1],
+            "status": r[2],
+            #: An app box has no tenant database. The key stays on the row so
+            #: the answer has the shape of the Metorite one.
+            "placement": None,
+            "identity_id": str(r[3]),
+            "trial_ends_at": r[4],
+            "membership_role": r[5],
+            "membership_status": r[6],
+        }
+        for r in conn.execute(
+            text(
+                """
+                SELECT o.id, o.slug, o.status, ui.id, s.trial_ends_at,
+                       m.role, m.status
+                FROM user_identity ui
+                JOIN org_membership m ON m.user_identity_id = ui.id
+                JOIN organization o ON o.id = m.organization_id
+                JOIN org_app a ON a.organization_id = o.id
+                LEFT JOIN org_subscription s ON s.organization_id = o.id
+                WHERE ui.email = :email
+                  AND a.deployment_id = :dep
+                  AND a.app = :app
+                  AND a.enabled
+                  AND m.status NOT IN ('removed', 'suspended')
+                ORDER BY o.slug
+                """
+            ),
+            {"email": email, "dep": deployment_id, "app": app},
+        )
+    ]
+
+
+def app_seat_holders(conn: Connection, *, org_id: str, app: str) -> list[dict[str, Any]]:
+    """Who holds a LIVE seat of *app* in this organization, oldest first."""
+    return [
+        {
+            "email": r[0],
+            "display_name": r[1],
+            "assigned_at": r[2],
+            "membership_status": r[3],
+        }
+        for r in conn.execute(
+            text(
+                """
+                SELECT ui.email, ui.display_name, sa.assigned_at, m.status
+                FROM seat_assignment sa
+                JOIN user_identity ui ON ui.id = sa.user_identity_id
+                LEFT JOIN org_membership m
+                       ON m.organization_id = sa.organization_id
+                      AND m.user_identity_id = sa.user_identity_id
+                WHERE sa.organization_id = :org AND sa.plan_slug = :app
+                  AND sa.released_at IS NULL
+                ORDER BY sa.assigned_at, ui.email
+                """
+            ),
+            {"org": org_id, "app": app},
+        )
+    ]
+
+
+def app_usage(
+    conn: Connection,
+    *,
+    org_id: str,
+    app: str,
+    days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> dict[str, Any]:
+    """What one organization spent through *app*, in total and per member.
+
+    **Operator only: it holds OUR cost.** A call belongs to the app when
+    ``usage_event.agent`` is the app's name. The app box sends
+    ``X-CC-Agent: aroh``, and the Router fills it in when the box leaves it
+    out (:func:`customer_console.apps.app_attribution`).
+
+    A refusal is not a call (migration 020), the rule every spend read keeps.
+    Members are grouped by the CITEXT column, as :func:`usage_by_member` does,
+    and cut at :data:`SPEND_PAGE_SIZE`. The totals come from their own query,
+    so a cut list never makes a wrong total.
+    """
+    params: dict[str, Any] = {
+        "org": org_id,
+        "app": app,
+        "days": days,
+        "start": start,
+        "end": end,
+        "unattributed": UNATTRIBUTED_ACTIVITY,
+        "lim": SPEND_PAGE_SIZE,
+    }
+    window = """
+        organization_id = :org
+        AND agent = :app
+        AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+        AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
+        AND refusal_reason IS NULL
+    """
+    total = conn.execute(
+        text(
+            f"""
+            SELECT COUNT(*), COALESCE(SUM(billed_credits), 0),
+                   COALESCE(SUM(provider_cost_usd), 0)
+            FROM usage_event WHERE {window}
+            """  # `window` is a literal above, never input
+        ),
+        params,
+    ).one()
+    members = conn.execute(
+        text(
+            f"""
+            SELECT COALESCE(MIN(user_email::text), :unattributed) AS member,
+                   COUNT(*)                                       AS calls,
+                   COALESCE(SUM(billed_credits), 0)               AS credits,
+                   COALESCE(SUM(provider_cost_usd), 0)            AS cost
+            FROM usage_event WHERE {window}
+            GROUP BY user_email
+            ORDER BY credits DESC, calls DESC, member ASC
+            LIMIT :lim
+            """  # `window` is a literal above, never input
+        ),
+        params,
+    )
+    return {
+        "calls": int(total[0]),
+        "credits": Decimal(total[1]),
+        "cost_usd": Decimal(total[2]),
+        "members": [
+            {
+                "member": r.member,
+                "calls": int(r.calls),
+                "credits": Decimal(r.credits),
+                "cost_usd": Decimal(r.cost),
+            }
+            for r in members
+        ],
+    }
 
 
 def add_invited_member(conn: Connection, *, org_id: str, identity_id: str) -> tuple[bool, str]:

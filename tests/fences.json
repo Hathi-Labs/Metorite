@@ -100,6 +100,7 @@
       "tests/unit/test_gtd_retirement_plan.py",
       "tests/unit/test_handoff_queue.py",
       "tests/unit/test_index_completeness.py",
+      "tests/unit/test_loop_local_first.py",
       "tests/unit/test_no_gtd_table_names.py",
       "tests/unit/test_no_new_clock_flakes.py",
       "tests/unit/test_no_sales_assistant.py",

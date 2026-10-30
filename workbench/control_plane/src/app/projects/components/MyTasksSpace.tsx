@@ -238,6 +238,8 @@ interface Props {
   personLabels?: ReadonlyMap<string, string>;
   /** The path of a project, for the chip on each row. */
   projectPath: (projectId: string) => readonly string[];
+  /** OP-12b — true when a project is in the private space (the personal root or its folders). */
+  isPrivateProject?: (projectId: string) => boolean;
   /** Where a quick add files: the member's personal root, or null. */
   personalRootId: string | null;
   /** Opens the ONE Projects task panel over My tasks. */
@@ -261,6 +263,7 @@ export default function MyTasksSpace({
   people,
   personLabels,
   projectPath,
+  isPrivateProject,
   personalRootId,
   onOpenTask,
   onOpenTaskId,
@@ -454,6 +457,10 @@ export default function MyTasksSpace({
     [axis, shown, knownById, statuses],
   );
   const pathOf = useCallback((task: TaskRow) => projectPath(task.project_id), [projectPath]);
+  const privateOf = useCallback(
+    (task: TaskRow) => isPrivateProject?.(task.project_id) ?? false,
+    [isPrivateProject],
+  );
   const statusesFor = useCallback(
     (task: TaskRow) => statusSets[task.project_id] ?? statuses.filter((s) => s.id === task.status_id),
     [statusSets, statuses],
@@ -735,6 +742,7 @@ export default function MyTasksSpace({
               onReload={reloadAll}
               onSelect={onOpenTask}
               projectPath={pathOf}
+              projectPrivate={privateOf}
               statusesFor={statusesFor}
             />
           ) : mode === "board" ? (
@@ -766,6 +774,7 @@ export default function MyTasksSpace({
               onSelect={onOpenTask}
               onDrop={(task, writes, patch) => void drop(task, writes, patch)}
               projectPath={pathOf}
+              projectPrivate={privateOf}
               statusesFor={statusesFor}
             />
           ) : (
@@ -784,6 +793,7 @@ export default function MyTasksSpace({
               onCreated={reloadAll}
               onSelect={onOpenTask}
               projectPath={pathOf}
+              projectPrivate={privateOf}
             />
           )}
           {compactChrome && !wantsAll && listMode ? (

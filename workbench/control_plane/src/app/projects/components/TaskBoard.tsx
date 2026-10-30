@@ -231,6 +231,8 @@ interface Props {
    * because its cards come from many projects. Absent, no card draws a chip.
    */
   projectPath?: (task: TaskRow) => readonly string[] | null;
+  /** OP-12b — true when the task sits in the private space. The chip then wears a lock. */
+  projectPrivate?: (task: TaskRow) => boolean;
   /**
    * WS-64 OP-11 fix round. The statuses a card's menu and its Mark-done tick
    * pick from: the card's OWN project. My tasks passes it, because its cards
@@ -288,6 +290,7 @@ export function TaskBoard({
   onDrop,
   personLabels,
   projectPath,
+  projectPrivate,
   statusesFor,
   canQuickAdd = true,
   columnTotals = null,
@@ -1040,7 +1043,7 @@ export function TaskBoard({
         {/* WS-64 OP-11 — My tasks names the project of each card. */}
         {projectPath ? (
           <div className="mt-1 flex min-w-0">
-            <ProjectPathChip path={projectPath(task)} />
+            <ProjectPathChip path={projectPath(task)} isPrivate={projectPrivate?.(task) ?? false} />
           </div>
         ) : null}
         {composingHere ? (

@@ -10,7 +10,10 @@
  * - narrowing works, and the approval sends the SAME request;
  * - approve navigates to `redirect_to`;
  * - deny navigates to `deny_redirect_to`;
- * - the frame headers are present.
+ * - the frame headers are present;
+ * - D-EA-11: only the gateway's exact `first_party` answer, to an `https`
+ *   address, goes on with no form. A client off the list that calls itself
+ *   "Aroh" gets the screen and the approve gate.
  */
 import { expect, test, type Page, type Request } from "@playwright/test";
 
@@ -29,6 +32,9 @@ const PAGE = `/connect/authorize?${QUERY.toString()}`;
 const CALLBACK = "http://localhost:53122/callback";
 const APPROVED = `${CALLBACK}?code=the-code&state=st-123&iss=https%3A%2F%2Fmcp.metorite.com`;
 const DENIED = `${CALLBACK}?error=access_denied&state=st-123&iss=https%3A%2F%2Fmcp.metorite.com`;
+/** D-EA-11: the https callback of a first-party client, as Aroh's. */
+const FIRST_PARTY_CALLBACK = "https://aroh.example/hub/auth/callback";
+const FIRST_PARTY_DONE = `${FIRST_PARTY_CALLBACK}?code=fp-code&state=st-123&iss=https%3A%2F%2Fmcp.metorite.com`;
 
 const VIEW = {
   client: {
@@ -329,5 +335,40 @@ test.describe("the consent page of an outside agent", () => {
     const headers = res!.headers();
     expect(headers["content-security-policy"]).toContain("frame-ancestors 'none'");
     expect(headers["x-frame-options"]).toBe("DENY");
+  });
+
+  // D-EA-11 (spec §10.7): a first-party client that the member already
+  // approved. The gateway answers `first_party` with a code, and the page goes
+  // on with no form. Only that exact answer skips the screen.
+  test("a first-party answer goes on with no form and no approve", async ({ page }) => {
+    const approvals = await stub(page, { first_party: true, redirect_to: FIRST_PARTY_DONE });
+    await page.route(`${FIRST_PARTY_CALLBACK}**`, (r) =>
+      r.fulfill({ status: 200, contentType: "text/html", body: "<title>aroh</title><p>Aroh got it.</p>" }),
+    );
+    await page.goto(PAGE);
+    await page.waitForURL(FIRST_PARTY_DONE);
+    await expect(page.getByText("Aroh got it.")).toBeVisible();
+    expect(approvals).toHaveLength(0);
+  });
+
+  test("a client off the list that calls itself Aroh gets the screen and the gate", async ({ page }) => {
+    const approvals = await stub(page, { ...VIEW, client: { ...VIEW.client, name: "Aroh" } });
+    await page.clock.install();
+    await page.goto(PAGE);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("claude.ai wants to connect to Metorite");
+    const approve = page.getByRole("button", { name: "Approve" });
+    await expect(approve).toBeDisabled();
+    await approve.click({ force: true });
+    expect(approvals).toHaveLength(0);
+    await page.clock.runFor(600);
+    await expect(approve).toBeEnabled();
+  });
+
+  test("a first-party answer to an address that is not https draws no pass", async ({ page }) => {
+    const approvals = await stub(page, { first_party: true, redirect_to: `${CALLBACK}?code=c&state=st-123` });
+    await page.goto(PAGE);
+    await expect(page.getByText("This agent cannot connect")).toBeVisible();
+    expect(page.url()).toContain("/connect/authorize");
+    expect(approvals).toHaveLength(0);
   });
 });

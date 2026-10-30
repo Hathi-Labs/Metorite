@@ -195,6 +195,9 @@ class ModelCall:
     usage: dict[str, Any] = field(default_factory=dict)
     #: ``time.time()`` at the start. 0 is the epoch, which is off peak.
     wall: float = 0.0
+    #: The model that the agent asked for, when the eval rewrote it (``model``
+    #: is then the model that went on the wire). Empty when nothing changed.
+    requested: str = ""
 
 
 class _TapStream(httpx.AsyncByteStream):
@@ -265,6 +268,25 @@ class _TapStream(httpx.AsyncByteStream):
                 self._call.usage = dict(body["usage"])
 
 
+#: EVAL ONLY. A map from the model a request names to the model the eval sends
+#: instead, for example ``{"tier-balanced": "tier-fast"}``. It is empty, so the
+#: tap changes nothing, until the live measure sets it for one run
+#: (``--tier-map``). No product code reads it.
+MODEL_REWRITE: dict[str, str] = {}
+
+
+def _rewritten(request: httpx.Request, body: dict[str, Any], raw: bytes) -> bytes:
+    """Put the mapped model in *request*, and change nothing else in the body."""
+    target = MODEL_REWRITE.get(str(body.get("model") or ""))
+    if not target:
+        return raw
+    raw = json.dumps({**body, "model": target}, ensure_ascii=False).encode("utf-8")
+    request._content = raw
+    request.stream = httpx.ByteStream(raw)
+    request.headers["content-length"] = str(len(raw))
+    return raw
+
+
 class _WireTap(httpx.AsyncBaseTransport):
     """A transport that records each model request of one agent, and passes it on."""
 
@@ -283,8 +305,13 @@ class _WireTap(httpx.AsyncBaseTransport):
         except ValueError:
             body = {}
         body = body if isinstance(body, dict) else {}
+        asked = str(body.get("model") or "")
+        if asked in MODEL_REWRITE:
+            raw = _rewritten(request, body, raw)
+            body = {**body, "model": MODEL_REWRITE[asked]}
         call = ModelCall(
             agent=self._agent, model=str(body.get("model") or ""),
+            requested=asked if asked != str(body.get("model") or "") else "",
             stream=bool(body.get("stream")), messages=len(body.get("messages") or []),
             tools=len(body.get("tools") or []), request_chars=len(raw),
             started=time.monotonic(), wall=time.time(),

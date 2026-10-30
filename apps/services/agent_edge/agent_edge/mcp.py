@@ -490,8 +490,9 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
         return _result(request_id, {})
     if method == "tools/list":
         # EA-6h: one signed read of the member's switch, so `delete_task`
-        # shows only while the member turned it on. The instructions and the
-        # prompt never name a delete, so they need no read.
+        # shows only while the switch is on. It is on until the member turns
+        # it off (EA-6i), and a failed read hides the tool. The instructions
+        # and the prompt never name a delete, so they need no read.
         listed = await tools.listed_for(tools.Context(caller=caller, key=key,
                                                       session=session))
         return _result(request_id, {"tools": listed})

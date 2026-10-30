@@ -157,6 +157,8 @@ interface Props {
    * the table reads `statuses` for every row and draws no chip.
    */
   projectPath?: (task: TaskRow) => readonly string[] | null;
+  /** OP-12b — true when the task sits in the private space. The chip then wears a lock. */
+  projectPrivate?: (task: TaskRow) => boolean;
   statusesFor?: (task: TaskRow) => readonly StatusRow[];
   /**
    * WS-64 OP-11 fix round. False hides the quick adds: My tasks spans many
@@ -183,6 +185,7 @@ export function TableView({
   onSelect,
   personLabels,
   projectPath,
+  projectPrivate,
   statusesFor,
   canQuickAdd = true,
 }: Props) {
@@ -769,7 +772,7 @@ export function TableView({
                           the mark above already say where it sits. */}
                       {row.crumb ? <ParentCrumb parent={task.parent} /> : null}
                       {/* WS-64 OP-11 — My tasks names the project of each row. */}
-                      {projectPath ? <ProjectPathChip path={projectPath(task)} /> : null}
+                      {projectPath ? <ProjectPathChip path={projectPath(task)} isPrivate={projectPrivate?.(task) ?? false} /> : null}
                       </span>
                     </td>
                     {columns.map((column, columnIndex) => {

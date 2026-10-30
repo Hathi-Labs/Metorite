@@ -73,6 +73,8 @@ interface Props {
   actions?: CommandActions;
   /** Where the app is, so a command that would no-op is not offered. */
   context?: CommandContext;
+  /** OP-12b — the member's personal root, so a hit in it reads "Personal". */
+  personalRootId?: string | null;
 }
 
 export function SearchPalette({
@@ -81,6 +83,7 @@ export function SearchPalette({
   onOpenTask,
   actions,
   context,
+  personalRootId,
 }: Props) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<Hit[] | null>(null);
@@ -323,7 +326,7 @@ export function SearchPalette({
                     <ParentCrumb parent={row.hit.parent} />
                   </span>
                   <span className="shrink-0 text-[11px] text-muted-foreground">
-                    {hitContext(row.hit)}
+                    {hitContext(row.hit, personalRootId)}
                   </span>
                 </button>
               </li>
