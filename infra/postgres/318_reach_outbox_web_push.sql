@@ -7,17 +7,25 @@
 --       and `reminder_unconfirmed`. The reminder loop plans one web push row
 --       for each step of a reminder, and a send step after the commit sends it
 --       (gateway/reach/push_channel.py). Only gateway/reach/outbox.py writes
---       the table. No new table, no new column and no new index.
+--       the table. One new partial index, `reach_outbox_push_planned_idx`,
+--       serves the list of planned push rows that each tick reads for each
+--       org (`outbox._PLANNED_PUSHES_SQL`). No new table and no new column.
 -- Why:  WS-66 RE-9b, spec project-docs/specs/calendar_events_reminders.md §5.6
 --       "Settled 2026-10-30 (RE-9)", decisions 2, 3 and 5.
 -- Depends on: 266_reach_outbox.sql, 271_reach_requests.sql.
 --
--- Expand only (R6): two CHECKs that allow MORE values. Old code writes only
--- `whatsapp` and the kinds `brief`, `interrupt` and `request`, so every row of
--- old code passes both CHECKs. No rename and no drop of a column.
+-- Expand only (R6): two CHECKs that allow MORE values, and one index. Old
+-- code writes only `whatsapp` and the kinds `brief`, `interrupt` and
+-- `request`, so every row of old code passes both CHECKs. No rename and no
+-- drop of a column.
 -- Idempotent per infra/postgres/README.md: each CHECK is replaced only while
--- its definition does not yet name the new value. A second run changes
--- nothing. `reach_outbox_state_known` already allows planned, sent, skipped and
+-- its definition does not yet name the new value, and the index is
+-- `CREATE INDEX IF NOT EXISTS`. A second run changes nothing.
+-- The index (repair round 1 of RE-9b): nothing deletes old outbox rows, and
+-- with the indexes of 266 the list read is a scan of the whole table. EXPLAIN
+-- on a copy of the ladder with 200,000 old push rows and 5 planned rows
+-- showed a parallel seq scan before, and an index scan on this index after.
+-- The index holds only the planned web push rows, so it stays small. `reach_outbox_state_known` already allows planned, sent, skipped and
 -- failed, and the table already has FORCE row level security.
 -- The number is taken at build time (R1). On 2026-10-31 main held 317, and no
 -- open branch held 318. Check it again at merge.
@@ -56,6 +64,10 @@ BEGIN
     END IF;
 END
 $checks$;
+
+CREATE INDEX IF NOT EXISTS reach_outbox_push_planned_idx
+    ON reach_outbox (organization_id, member_email, created_at)
+    WHERE channel = 'web_push' AND state = 'planned';
 
 COMMENT ON COLUMN reach_outbox.channel IS
     'WS-66 RE-9b: whatsapp or web_push. A web_push row is one push of one '

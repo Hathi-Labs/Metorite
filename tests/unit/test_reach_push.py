@@ -326,13 +326,26 @@ class TestTheMigration:
     def test_a_second_run_changes_nothing(self, promoted):  # noqa: F811
         p = promoted
         defs = ("SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
-                "WHERE conrelid = 'reach_outbox'::regclass AND contype = 'c' ORDER BY 1")
+                "WHERE conrelid = 'reach_outbox'::regclass AND contype = 'c' "
+                "UNION ALL SELECT indexname, indexdef FROM pg_indexes "
+                "WHERE tablename = 'reach_outbox' ORDER BY 1")
         with p.admin_engine.connect() as c:
             before = c.execute(text(defs)).all()
         with p.admin_engine.begin() as c:
             _exec_file(c, str(_the_migration()))
         with p.admin_engine.connect() as c:
             assert c.execute(text(defs)).all() == before
+
+    def test_the_list_of_planned_pushes_has_a_partial_index(self, promoted):  # noqa: F811
+        """Repair round 1, finding 6. Each tick lists the planned push rows
+        of each org (``outbox._PLANNED_PUSHES_SQL``), and nothing deletes old
+        rows. The index holds only the planned web push rows."""
+        with promoted.admin_engine.connect() as c:
+            found = c.execute(text(
+                "SELECT indexdef FROM pg_indexes WHERE tablename = 'reach_outbox' "
+                "AND indexname = 'reach_outbox_push_planned_idx'")).scalar_one()
+        assert "(organization_id, member_email, created_at)" in found
+        assert "channel = 'web_push'::text" in found and "state = 'planned'::text" in found
 
 
 # ── The send (§10.1 RE-9b acceptance) ──────────────────────────────────────

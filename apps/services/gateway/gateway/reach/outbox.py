@@ -122,7 +122,8 @@ _PUSHES_COUNTED_SQL = (
 )
 
 #: The planned push rows that no send step holds, one member after another,
-#: the oldest first.
+#: the oldest first. Each tick reads it for each org, so the partial index
+#: ``reach_outbox_push_planned_idx`` of migration 318 serves it.
 _PLANNED_PUSHES_SQL = (
     "SELECT id::text FROM reach_outbox "
     f"WHERE organization_id = {_BOUND_ORG} AND channel = 'web_push' "
