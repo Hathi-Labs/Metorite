@@ -233,11 +233,13 @@ def test_the_reminders_source_is_registered() -> None:
     behaviour, and ``test_reach_loop.py::TestRemindersStayOffWhatsApp`` holds
     it: a class in ``REACH_CLASS`` keeps a card out of an interrupt only."""
     provider = needs.REGISTRY["reminders"]
-    assert provider.kinds == feed.REMINDER_KINDS == classes.NOT_ON_WHATSAPP == frozenset(
+    assert provider.kinds == needs.REMINDER_KINDS == classes.NOT_ON_WHATSAPP == frozenset(
         {"reminder_due", "reminder_check", "reminder_unconfirmed"})
-    assert provider.features == ("projects",) and provider.needs is False
-    assert provider.gated is True and provider.app == "calendar"
-    for kind in feed.REMINDER_KINDS:
+    # WS-66 RM-2b: one needs source for the bell and My Day. It has no gate, and
+    # the flag is read inside the provider.
+    assert provider.features == ("projects",) and provider.needs is True
+    assert provider.gated is False and provider.app == "calendar"
+    for kind in needs.REMINDER_KINDS:
         assert kind in feed_rank.BASE and kind in classes.REACH_CLASS
 
 
@@ -524,7 +526,7 @@ def test_r8_the_flag_off_starts_no_loop_and_fires_nothing(world, monkeypatch) ->
     assert loop._task is None
     assert _row(world, rid).state == "scheduled" and _events(world, rid) == []
     with pytest.raises(needs.SourceAbsent):
-        asyncio.run(feed._reminders(SimpleNamespace(email=ALICE)))
+        asyncio.run(needs._reminders(SimpleNamespace(email=ALICE)))
 
 
 # ── The member's routes (RM-1 edits) ───────────────────────────────────────
@@ -704,7 +706,7 @@ def test_r8_the_feed_shows_the_card_of_each_state(world, monkeypatch) -> None:
         async with tenant_engine_scope(_dsn(world.p.app_url)):
             token = bind_tenant(world.p.org_b)
             try:
-                return await feed._reminders(member_user(ALICE))
+                return await needs._reminders(member_user(ALICE))
             finally:
                 release_tenant(token)
 
@@ -746,7 +748,7 @@ def test_r8_a_new_fire_is_never_cut_by_old_unconfirmed_cards(world, monkeypatch)
         async with tenant_engine_scope(_dsn(world.p.app_url)):
             token = bind_tenant(world.p.org_b)
             try:
-                return await feed._reminders(member_user(ALICE))
+                return await needs._reminders(member_user(ALICE))
             finally:
                 release_tenant(token)
 

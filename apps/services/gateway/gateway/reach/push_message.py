@@ -47,7 +47,7 @@ _KINDS: dict[str, tuple[Urgency, int]] = {
 }
 
 #: The kinds this builder knows. ``tests/unit/test_reach_push_message.py``
-#: pins it to ``REMINDER_KINDS`` of the feed.
+#: pins it to ``REMINDER_KINDS`` of the needs path (``routes/shell/needs.py``).
 KINDS = frozenset(_KINDS)
 
 

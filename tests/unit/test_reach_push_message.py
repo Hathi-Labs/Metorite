@@ -21,7 +21,8 @@ ORG = "Fracktal Works"
 
 
 def test_the_kinds_are_the_feed_s_three() -> None:
-    from gateway.routes.shell.feed import REMINDER_KINDS
+    # RM-2b moved the kinds into the needs path, with no re-export from feed.py.
+    from gateway.routes.shell.needs import REMINDER_KINDS
 
     assert push_message.KINDS == REMINDER_KINDS
 
