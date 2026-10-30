@@ -87,7 +87,13 @@ describe("the one map from a source to its app's row", () => {
   });
 
   it("maps each source to the app the owner named", () => {
-    expect(NEEDS_APP_HREF).toEqual({ tasks: "/projects", approvals: "/approvals", projects: "/projects", email: "/email" });
+    expect(NEEDS_APP_HREF).toEqual({
+      tasks: "/projects",
+      approvals: "/approvals",
+      projects: "/projects",
+      email: "/email",
+      calendar: "/calendar",
+    });
   });
 
   it("names live panes only", () => {

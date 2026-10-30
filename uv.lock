@@ -61,6 +61,7 @@ name = "acb-auth"
 version = "0.0.1"
 source = { editable = "packages/acb_auth" }
 dependencies = [
+    { name = "acb-audit" },
     { name = "acb-common" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -69,6 +70,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "acb-audit", editable = "packages/acb_audit" },
     { name = "acb-common", editable = "packages/acb_common" },
     { name = "fastapi", specifier = ">=0.141" },
     { name = "httpx", specifier = ">=0.27" },

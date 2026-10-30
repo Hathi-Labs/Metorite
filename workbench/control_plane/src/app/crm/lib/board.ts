@@ -151,6 +151,33 @@ export function orderLanes<T extends Pick<PipelineLane, "status" | "pipeline_pos
 }
 
 /**
+ * THE order of a stage list outside the board: the stage menu of a record and
+ * the stage filter chips (task #838). They call this, so the menu, the chips
+ * and the board show one order (D137).
+ *
+ * Deals go through `orderLanes`, the board's own sort, with the places of the
+ * pipeline on screen. Leads keep the order of the Leads board, which
+ * `toLeadLanes` also calls: a hidden stage last, then `position`.
+ */
+export function orderStageList(
+  entity: "deals" | "leads" | string,
+  statuses: readonly Status[],
+  mode: CrmMode,
+  places?: ReadonlyMap<string, number>
+): Status[] {
+  if (entity !== "deals") {
+    return [...statuses].sort(
+      (a, b) => Number(isRetired(a)) - Number(isRetired(b)) || a.position - b.position
+    );
+  }
+  return orderLanes(
+    statuses.map((status) => ({ status, pipeline_position: undefined })),
+    mode,
+    places
+  ).map((lane) => lane.status);
+}
+
+/**
  * Lanes in the Native order of `orderLanes`, empty ones included. The page
  * orders them again for its mode and its pipeline, and decides which empty
  * lanes to hide (`lib/emptyStages.ts`). The store does not know the mode.
@@ -190,11 +217,7 @@ export function toLeadLanes(
   statuses: readonly Status[],
   pages: Readonly<Record<string, { rows: Lead[]; total: number } | undefined>>,
 ): LeadLane[] {
-  const lanes = [...statuses]
-    .sort(
-      (a, b) =>
-        Number(isRetired(a)) - Number(isRetired(b)) || a.position - b.position
-    )
+  const lanes = orderStageList("leads", statuses, null)
     .map((status) => {
       const page = pages[status.id];
       return {

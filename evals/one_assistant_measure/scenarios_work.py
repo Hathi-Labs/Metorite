@@ -450,7 +450,7 @@ FANOUT_SCENARIOS: tuple[Scenario, ...] = (
                      "order costs Rs 15,000.")),
     ), set="fanout", surface="", page=""),
     _fan("fan_tasks", "Five tasks from a list: a write, so no spawn", Turn(
-        "Make a task for each of these: brief, copy, assets, QA pass and launch",
+        "Make a task for each of these in Website Relaunch: brief, copy, assets, QA pass and launch",
         (Check("not_spawned"), Check("work_write", ("POST", r"^/projects/tasks$"), "tasks_made"),
          Check("no_unasked_write", 1)),
         Plan((("create_tasks", {"project_id": NODE_WEB, "tasks": json.dumps(

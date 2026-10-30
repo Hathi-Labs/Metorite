@@ -380,6 +380,20 @@ class CrmModeModel(BaseModel):
     entities: dict[str, EntityState] | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
+    #: CRM-Z10b: ``true`` when a Native CRM came from Zoho through the switch
+    #: (``cutover_at`` is set). Only then does the card of an admin read
+    #: ``GET /crm/cutover/status`` for "Finish closing Zoho". Each other CRM
+    #: leaves it OUT, so its body is as before.
+    cutover_done: bool | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+
+
+#: CRM-Z10b: a Native CRM that the switch made. Read in Native mode only.
+_CUTOVER_DONE_SQL = (
+    "SELECT 1 FROM crm_settings WHERE organization_id = CAST(:o AS uuid) "
+    "AND mode = 'native' AND cutover_at IS NOT NULL"
+)
 
 
 @router.get("/mode", response_model=CrmModeModel)
@@ -394,7 +408,8 @@ async def get_crm_mode(
     route of the source labels (CRM-Q17a-1 item 6), and of the overlays of
     the approved roles (CRM-Q20-2), which only a Mirror CRM can hold, and
     of the state of each core entity (CRM-Q17b). In Native mode it serves
-    the names that an admin stored (CRM-Z10g).
+    the names that an admin stored (CRM-Z10g), and ``cutover_done`` after
+    the switch from Zoho (CRM-Z10b).
     """
     from gateway.routes.crm.mapping_plans import approved_overlays
 
@@ -408,8 +423,12 @@ async def get_crm_mode(
         )
         overlays = await approved_overlays(db, org) if mode == "mirror" else {}
         entities = await entity_states(db, org)
+        switched = mode == "native" and (
+            await db.execute(text(_CUTOVER_DONE_SQL), {"o": org})
+        ).first() is not None
     return CrmModeModel(
         mode=mode, labels=labels, overlays=overlays or None, entities=entities,
+        cutover_done=True if switched else None,
     )
 
 

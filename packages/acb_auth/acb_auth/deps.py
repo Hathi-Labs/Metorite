@@ -79,7 +79,7 @@ import secrets
 from collections.abc import Collection
 from typing import Annotated
 
-from acb_common import bind_run_context, db_busy, get_logger, tenant_redis
+from acb_common import app_manifests, bind_run_context, db_busy, get_logger, tenant_redis
 from acb_common.db import bind_tenant, clear_tenant
 from fastapi import Depends, Header, HTTPException, Request
 
@@ -600,12 +600,14 @@ def _writes_disabled() -> HTTPException:
 
 
 async def _claim_write(
-    connection: agent_tokens.LiveConnection, nonce: str,
+    connection: agent_tokens.LiveConnection, nonce: str, scope: str,
 ) -> str | None:
     """Steps 5b to 5d of branch 0, for a write (EA-6a, EA3-28 to EA3-30).
 
-    5b: the connection's scopes hold ``projects:write``, else
-    ``"write_scope"``. Then, in the tenant Redis wrapper bound to the ROW's
+    5b: the connection's scopes hold *scope*, else ``"write_scope"``. The
+    scope is ``projects:write`` for a pair of ``MCP_WRITE_ROUTES``, and the
+    write scope of the pair's app for a door pair (MCP-P1a, AD-4). Then, in
+    the tenant Redis wrapper bound to the ROW's
     organization: 5c ``SET NX EX`` of the nonce, and 5d ``INCR`` of the
     connection's counter. Returns ``"replay"`` when the key already holds
     the nonce. Each string is a refusal (401). Returns ``None`` when the
@@ -617,7 +619,7 @@ async def _claim_write(
     life starts at the first write of the window. A counter whose expire
     was lost gets one again, so it never pins a connection for good.
     """
-    if agent_oauth.PROJECTS_WRITE not in connection.scopes:
+    if scope not in connection.scopes:
         return "write_scope"
     organization_id = connection.organization_id
     connection_id = connection.connection_id
@@ -661,6 +663,162 @@ async def _claim_write(
     return None
 
 
+#: The detail of the 503 of a Redis outage on a door read (MCP-P1a, AD-13).
+DOOR_UNAVAILABLE_DETAIL = "Metorite could not check this read. Try again."
+
+#: The detail of the 429 of the door read cap (AD-13).
+DOOR_READ_CAP_DETAIL = "Too many reads from this connection. Wait a few minutes."
+
+
+def _audit_door(
+    connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp | None,
+    via: str, decision: str,
+) -> None:
+    """AD-14: the ONE audit row of a door call, allowed or refused. A call
+    that is not a door call (*door* is ``None``) writes none.
+
+    It holds the organization, the connection, the member and the stamp,
+    then the app, the op, the class, the request id and the decision of
+    branch 0. It holds no body and no argument value. The write is best
+    effort, as ``acb_audit.record`` is. MCP-P1a has no request, so the
+    request id is ``None``.
+    """
+    if door is None:
+        return
+    try:
+        from acb_audit import AuditEvent, record
+
+        record(AuditEvent(
+            actor=f"user:{connection.member_email}",
+            action="agent_door_call",
+            target=f"app:{door.app.id}.{door.name}",
+            payload={
+                "organization_id": connection.organization_id,
+                "connection_id": connection.connection_id,
+                "member": connection.member_email,
+                "via": via,
+                "app": door.app.id,
+                "op": door.name,
+                "class": door.route.cls,
+                "request_id": None,
+                "decision": decision,
+            },
+            organization_id=connection.organization_id,
+        ))
+    except Exception as exc:  # a lost audit row never refuses the call
+        _log.warning("auth.agent_door_audit_failed", error=type(exc).__name__,
+                     connection_id=connection.connection_id)
+
+
+async def _claim_door_read(connection: agent_tokens.LiveConnection) -> int | None:
+    """AD-13: count one door read of the connection, in the tenant Redis
+    wrapper bound to the ROW's organization. The seconds left in the window
+    when the read is over the cap, else ``None``. Every failure of the store
+    raises the 503, never a 401 or a 500."""
+    organization_id = connection.organization_id
+    connection_id = connection.connection_id
+    over: int | None = None
+    try:
+        client = tenant_redis.get_tenant_redis()
+        with tenant_redis.organization_scope(organization_id):
+            counter = tenant_redis.key(agent_oauth.DOOR_READ_NAMESPACE, connection_id)
+            count = int(await client.incr(counter))
+            if count == 1:
+                await client.expire(counter, agent_oauth.DOOR_READ_WINDOW_S)
+            if count > agent_oauth.DOOR_READ_CAP:
+                left = int(await client.ttl(counter))
+                if left < 0:
+                    await client.expire(counter, agent_oauth.DOOR_READ_WINDOW_S)
+                    left = agent_oauth.DOOR_READ_WINDOW_S
+                over = max(left, 1)
+    except Exception as exc:
+        _log.warning("auth.agent_door_redis_unavailable", error=type(exc).__name__,
+                     connection_id=connection_id)
+        raise HTTPException(
+            status_code=503, detail=DOOR_UNAVAILABLE_DETAIL,
+            headers={"Retry-After": "2"},
+        ) from exc
+    return over
+
+
+async def _claim_call(
+    connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp | None,
+    nonce: str | None, via: str,
+) -> str | None:
+    """Steps 5a to 5d of branch 0: :func:`_door_gate` for a door pair, else
+    :func:`_claim_write` with ``projects:write`` for a write of
+    ``MCP_WRITE_ROUTES``. A read of ``MCP_ROUTES`` needs neither. A refusal
+    reason (401), or ``None``."""
+    if door is not None:
+        return await _door_gate(connection, door, nonce, via)
+    if nonce is not None:
+        return await _claim_write(connection, nonce, agent_oauth.PROJECTS_WRITE)
+    return None
+
+
+async def _door_gate(
+    connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp,
+    nonce: str | None, via: str,
+) -> str | None:
+    """Step 5a of branch 0, for a door pair (MCP-P1a, spec §19.5 to §19.7).
+
+    In order, after the connection and the stamp passed:
+
+    0. A write while the writes flag is off gets the coded 403 of
+       :func:`_writes_disabled`, as step 3b gives a write of
+       ``MCP_WRITE_ROUTES``. It runs here, so the refusal has a connection
+       for its audit row.
+    1. The door flag names the app, else the coded 403 ``app_off``.
+    2. AD-18: a write of class B or C that is not a proposal gets the coded
+       403 ``approval_required``. Before MCP-P1b no approval can exist, so
+       each such call fails, whatever the scope.
+    3. AD-4: the connection holds the app scope of the op, ``<app>:read`` for
+       a read and ``<app>:write`` for a change, else ``"door_scope"`` (401).
+    4. AD-13: a read counts under the door read cap (429). A write takes the
+       nonce and the write cap of :func:`_claim_write`, with the app's write
+       scope.
+
+    Returns a refusal reason, or ``None`` when the call may go on. Each
+    refusal writes its audit row (:func:`_audit_door`) before it returns or
+    raises. The caller writes the row of an allowed call at the end.
+    """
+    if nonce is not None and not agent_oauth.writes_enabled():
+        _audit_door(connection, door, via, agent_oauth.WRITES_DISABLED_CODE)
+        raise _writes_disabled()
+    if not agent_oauth.door_serves(door.app.id):
+        _audit_door(connection, door, via, agent_oauth.APP_OFF_CODE)
+        _log.info("auth.agent_refused", reason=agent_oauth.APP_OFF_CODE)
+        raise HTTPException(status_code=403, detail=agent_oauth.APP_OFF_CODE)
+    if door.asks != "never":
+        _audit_door(connection, door, via, agent_oauth.APPROVAL_REQUIRED_CODE)
+        _log.info("auth.agent_refused", reason=agent_oauth.APPROVAL_REQUIRED_CODE)
+        raise HTTPException(status_code=403, detail=agent_oauth.APPROVAL_REQUIRED_CODE)
+    if not agent_oauth.scope_holds(connection.scopes, door.scope):
+        _audit_door(connection, door, via, "door_scope")
+        return "door_scope"
+    over: int | None = None
+    refused: str | None = None
+    try:
+        if nonce is None:
+            over = await _claim_door_read(connection)
+        else:
+            refused = await _claim_write(connection, nonce, door.scope)
+    except HTTPException as exc:
+        _audit_door(connection, door, via,
+                    "write_cap" if exc.status_code == 429 else "unavailable")
+        raise
+    if over is not None:
+        _audit_door(connection, door, via, "read_cap")
+        _log.warning("auth.agent_door_read_cap", connection_id=connection.connection_id)
+        raise HTTPException(
+            status_code=429, detail=DOOR_READ_CAP_DETAIL,
+            headers={"Retry-After": str(over)},
+        )
+    if refused is not None:
+        _audit_door(connection, door, via, refused)
+    return refused
+
+
 
 async def _agent_user(request: Request) -> UserContext:
     """Branch 0 of :func:`get_current_user`: the seven steps of spec §10.1.
@@ -680,6 +838,15 @@ async def _agent_user(request: Request) -> UserContext:
     coded 403 of :func:`_writes_disabled`. Then ``projects:write`` on the
     connection, a fresh nonce and room under the cap before the resolve. A
     Redis outage answers 503 and the cap answers 429 (:func:`_claim_write`).
+
+    The app door (MCP-P1a, spec §19). A pair that a door op of the manifests
+    reaches is a door pair (``agent_oauth.door_route``, AD-3). It passes the
+    method and route steps in place of ``MCP_ROUTES``. After the stamp,
+    :func:`_door_gate` checks the writes flag of a door write, the door flag,
+    the refusal of AD-18, the app scope (AD-4) and the read or write cap
+    (AD-13). Each door call that reaches a live connection writes ONE audit
+    row (AD-14): the stamp check and the gate write a refusal, the seat check
+    its own, and the end writes ``allowed``.
 
     ⚠️ A database outage is not a refusal. It answers the ONE 503 of
     :func:`_identity_unavailable`, with ``Retry-After: 2``, and it never
@@ -709,14 +876,16 @@ async def _agent_user(request: Request) -> UserContext:
     # matched route it is None, and no pair holds None.
     method = request.method.upper()
     pair = (method, _matched_template(request))
+    # MCP-P1a: the door op of the pair, from the manifests, or None (AD-3).
+    door = agent_oauth.door_route(pair)
 
     # 2a. A write (EA-6a, EA3-28). BEFORE the body is read: a pair of
-    # MCP_WRITE_ROUTES and a well-formed nonce. Then the body, which the
-    # signature covers. A GET reads no body.
+    # MCP_WRITE_ROUTES or a door pair, and a well-formed nonce. Then the
+    # body, which the signature covers. A GET reads no body.
     body = b""
     nonce = None
     if method != "GET":
-        if pair not in agent_oauth.MCP_WRITE_ROUTES:
+        if pair not in agent_oauth.MCP_WRITE_ROUTES and door is None:
             return _refuse_agent("method")
         nonce = _one_header(request, agent_signing.HEADER_NONCE)
         if not agent_signing.nonce_is_well_formed(nonce):
@@ -729,14 +898,16 @@ async def _agent_user(request: Request) -> UserContext:
         return _refuse_agent(signed)
     organization_id, connection_id, actor_via, session = signed
 
-    # 3. The matched route template is in MCP_ROUTES.
-    if pair not in agent_oauth.MCP_ROUTES:
+    # 3. The matched route template is in MCP_ROUTES, or it is a door pair.
+    if pair not in agent_oauth.MCP_ROUTES and door is None:
         return _refuse_agent("route")
 
     # 3b. A signed write while the writes flag is off (EA3-29, fix round 1):
     # the coded 403, never the 401, so the edge keeps the client's token.
-    # After the signature, so only a key holder learns the flag's state.
-    if nonce is not None and not agent_oauth.writes_enabled():
+    # After the signature, so only a key holder learns the flag's state. A
+    # door write meets the same check first in `_door_gate`, after the
+    # connection and the stamp, so that it writes its audit row (AD-14).
+    if nonce is not None and door is None and not agent_oauth.writes_enabled():
         raise _writes_disabled()
 
     # 4. The live connection, read in the SIGNED organization.
@@ -764,12 +935,17 @@ async def _agent_user(request: Request) -> UserContext:
         or actor_via != expected_via
         or not agent_oauth.ACTOR_VIA_PATTERN.fullmatch(expected_via)
     ):
+        # AD-14: a refused door call writes its row too. The row holds the
+        # row's own stamp, never the header value.
+        _audit_door(connection, door, expected_via, "actor_via")
         return _refuse_agent("actor_via", **ids)
 
-    # 5b to 5d, a write only: `projects:write` on the connection (EA3-29), a
-    # fresh nonce (EA3-28) and room under the cap (EA3-30). They run before
-    # the resolve, so a refused write binds no tenant.
-    refused = None if nonce is None else await _claim_write(connection, nonce)
+    # 5a, a door pair (MCP-P1a): the door flag, AD-18, the app scope and the
+    # caps, in `_door_gate`. 5b to 5d, a write of MCP_WRITE_ROUTES:
+    # `projects:write` on the connection (EA3-29), a fresh nonce (EA3-28) and
+    # room under the cap (EA3-30). They run before the resolve, so a refused
+    # call binds no tenant.
+    refused = await _claim_call(connection, door, nonce, expected_via)
     if refused is not None:
         return _refuse_agent(refused, **ids)
 
@@ -786,14 +962,18 @@ async def _agent_user(request: Request) -> UserContext:
         # `_with_resolved_access` may have bound the member's tenant. A refused
         # request keeps none.
         clear_tenant()
-        if identity_read_failed() or role_read_failed():
+        outage = identity_read_failed() or role_read_failed()
+        _audit_door(connection, door, expected_via, "unavailable" if outage else "seat")
+        if outage:
             # The database refused a read: an outage, not "no seat".
             db_busy.mark()
             raise _identity_unavailable()
         return _refuse_agent("seat", **ids)
 
+    # The audit row of an allowed door call (AD-14).
+    _audit_door(connection, door, expected_via, "allowed")
     # Attach the scope LAST. No `_bind_session_member`: no route in
-    # MCP_ROUTES calls a model.
+    # MCP_ROUTES and no door op calls a model (AD-11).
     return dataclasses.replace(
         resolved,
         agent=AgentScope(

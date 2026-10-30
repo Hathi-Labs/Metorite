@@ -91,12 +91,14 @@ import {
   feedHiddenRows,
   feedKey,
   fetchFeed,
+  loadFeedPrefs,
   noteOk,
   needsRowFor,
   overlayAdd,
   overlayExpired,
   overlayNextEnd,
   readFeedAnswer,
+  saveFeedPref,
   sourceLine,
   startVisit,
   visitCards,
@@ -1104,6 +1106,36 @@ describe("6. one client", () => {
     expect(hits).toEqual(["lib/shell/feed.ts"]);
     expect(posts).toEqual(["lib/shell/feedState.ts"]);
   }, 60_000);
+
+  it("the prefs client reads and writes through /api/shell/feed/prefs (WS-66 RE-9a)", async () => {
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push({ url, method: init?.method ?? "GET", body: init?.body as string | undefined });
+        return Response.json({ hide_push_details: true });
+      }),
+    );
+    expect(await loadFeedPrefs()).toEqual({ hide_push_details: true });
+    expect(await saveFeedPref("hide_push_details", true)).toEqual({ hide_push_details: true });
+    expect(calls).toEqual([
+      { url: "/api/shell/feed/prefs", method: "GET", body: undefined },
+      {
+        url: "/api/shell/feed/prefs",
+        method: "PUT",
+        body: JSON.stringify({ key: "hide_push_details", value: true }),
+      },
+    ]);
+    // A failed read or save gives null, never a guess.
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({}, { status: 503 })));
+    expect(await loadFeedPrefs()).toBeNull();
+    expect(await saveFeedPref("hide_push_details", true)).toBeNull();
+    vi.stubGlobal("fetch", vi.fn(async (): Promise<Response> => {
+      throw new TypeError("Failed to fetch");
+    }));
+    expect(await loadFeedPrefs()).toBeNull();
+    expect(await saveFeedPref("hide_push_details", true)).toBeNull();
+  });
 });
 
 /**

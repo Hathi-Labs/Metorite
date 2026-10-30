@@ -63,6 +63,11 @@ other route answers 422 to it.
 of My Day (``routes/shell/feed.py``): the member's ``due`` and
 ``unconfirmed`` rows, each with its last step of the ladder.
 
+**The open of a link (RM-4, §5.7).** :func:`open_reminder` is the ONE open.
+It writes the ``opened`` row and closes a ``notice``. It is a function and
+not a route here: ``POST /chat/sessions/{id}/reminder-open``
+(``routes/chat_reminder.py``) calls it, and then posts the first message.
+
 **The gate.** The ``/projects`` router gives ``feature:projects``. No second
 gate applies. ``CALENDAR_REMINDERS`` off makes every route here answer 404
 before the shape of the body is checked (:func:`_require_on`, a route
@@ -88,6 +93,9 @@ from gateway.routes.projects.core import (
     actor,
     clean_payload,
     load_default_status,
+    load_visible_project,
+    load_visible_task,
+    resolve_visibility,
     router,
     wire,
 )
@@ -98,6 +106,7 @@ from gateway.routes.projects.personal import (
 from gateway.routes.projects.text_links import link_from_text
 from pydantic import BaseModel, Field
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 #: Migration 307's state CHECK, in the order of §5.3.
 STATES: tuple[str, ...] = (
@@ -870,6 +879,128 @@ async def promote_reminder(
     # promote.
     await link_from_text(user, [(task_id, [(row.title, False, None), (row.notes, True, None)])])
     await _bump(user, me)
+    return result
+
+
+# ── The open of a link (RM-4) ──────────────────────────────────────────────
+
+#: The ledger tail of the context block, newest first. The ledger has no
+#: member column, so :func:`open_reminder` runs this only after
+#: :func:`_load_mine` found the row, and it names only that row's id.
+_LEDGER_TAIL_SQL = (
+    "SELECT event, at FROM reminder_events "
+    "WHERE reminder_id = CAST(:id AS uuid) "
+    "ORDER BY at DESC, id DESC LIMIT :n"
+)
+
+#: The status name of a task the member may see. RLS binds the organization.
+_STATUS_NAME_SQL = "SELECT name FROM pm_task_statuses WHERE id = CAST(:id AS uuid)"
+
+
+async def _subject_of(db: Any, user: Any, row: Any) -> Any:
+    """The linked object of *row*, as the member may see it (§5.7 item 2).
+
+    A task and a project go through the one visible read of the Projects API
+    (``resolve_visibility``, then ``load_visible_task`` or
+    ``load_visible_project``). A miss is ``hidden``, so no word of the object
+    shows. The read runs in a SAVEPOINT, so a refusal or a failure there
+    never ends the open. RM-4 reads no other kind: an email thread, a CRM
+    contact or a WhatsApp chat shows its kind only.
+    """
+    from gateway.reminders.context import READ_SUBJECTS, Subject
+
+    kind, subject_id = row.subject_kind, row.subject_id
+    if not kind or not subject_id:
+        return None
+    if kind not in READ_SUBJECTS:
+        return Subject(kind, subject_id=subject_id)
+    try:
+        async with db.begin_nested():
+            vis = await resolve_visibility(db, user)
+            if kind == "task":
+                task = await load_visible_task(db, vis, subject_id)
+                status = (await db.execute(
+                    text(_STATUS_NAME_SQL), {"id": str(task.status_id)},
+                )).scalar()
+                return Subject(kind, subject_id=subject_id, title=task.title, status=status)
+            project = await load_visible_project(db, vis, subject_id)
+            return Subject(kind, subject_id=subject_id, title=project.name)
+    except (HTTPException, SQLAlchemyError):
+        return Subject(kind, hidden=True)
+
+
+async def _zone_of(db: Any, row: Any, me: str) -> ZoneInfo:
+    """The zone of the words: the row's ``tz``, else the member's saved zone
+    (``user_settings.timezone``, through the loop's read), else UTC."""
+    from gateway.routes.shell.state import zone_of
+
+    if row.tz:
+        return zone_of(row.tz)
+    from gateway.reminders.loop import member_day
+
+    return (await member_day(db, me)).tz
+
+
+async def open_reminder(
+    user: Any, reminder_id: UUID, *, record: bool = True,
+) -> dict[str, Any]:
+    """A tap on a reminder link (§5.7, RM-4). The ONE open.
+
+    It loads the member's own row, locked (:func:`_load_mine`). Any other
+    row is 404, and nothing is written.
+
+    With *record*, an open reminder gains one ``opened`` ledger row (§5.7
+    item 5). A ``notice`` in state ``due`` then closes as ``done``. Its
+    ``done`` row records ``from_state`` and ``from_next_check_at``, as
+    ``/resolve`` writes them, so ``/reopen`` still undoes it. An ``action``
+    reminder stays as it is, because an open is not an answer (item 6). A
+    closed reminder writes nothing and answers with its state, never 409,
+    so a second tap is safe. Without *record* (the same chat asks again),
+    nothing is written.
+
+    In the same transaction it reads the linked object as the member may see
+    it, the zone, and the ledger tail of THIS row. The ledger has no member
+    column, so the tail comes after the load and names only this row's id.
+
+    It returns the row, the first message, the card data and the context
+    block. ``gateway/reminders/context.py`` builds the words, with no model.
+    """
+    from gateway.reminders import context
+
+    me = _member(user)
+    now = datetime.now(UTC)
+    closed = False
+    async with _tenant_session() as db:
+        row = await _load_mine(db, reminder_id, me)
+        if record and row.state in OPEN_STATES:
+            await _ledger(db, row.id, "opened", {"by": "member"})
+            if row.kind == "notice" and row.state == "due":
+                before = row
+                row = await _close(db, reminder_id, me, "done", "done")
+                await _ledger(db, row.id, "done", {
+                    "from_state": before.state,
+                    "from_next_check_at": _iso(before.next_check_at),
+                    "by": "member", "via": "open",
+                })
+                closed = True
+        subject = await _subject_of(db, user, row)
+        zone = await _zone_of(db, row, me)
+        ledger = (await db.execute(
+            text(_LEDGER_TAIL_SQL), {"id": str(row.id), "n": context.LEDGER_TAIL},
+        )).fetchall()
+        result = {
+            "reminder": _out(row),
+            "message": context.first_message(row, zone=zone, now=now, subject=subject),
+            "card": context.card_data(row, zone=zone, now=now, subject=subject),
+            "context": {
+                "label": context.label(row),
+                "facts": context.context_facts(
+                    row, zone=zone, now=now, subject=subject, ledger=ledger,
+                ),
+            },
+        }
+    if closed:
+        await _bump(user, me)
     return result
 
 

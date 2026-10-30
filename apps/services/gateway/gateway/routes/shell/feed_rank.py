@@ -57,11 +57,17 @@ GROUPS: tuple[str, ...] = ("now", "needs_you", "ready", "fyi", "later", "handled
 #: change here changes the order, and the seed must change with it.
 BASE: dict[str, int] = {
     # The needs kinds, in the needs feed's own order (KIND_ORDER).
-    "overdue": 60,
-    "approval": 56,
-    "due_today": 52,
-    "notification": 48,
-    "needs_reply": 44,
+    "overdue": 63,
+    "approval": 59,
+    "due_today": 55,
+    "notification": 51,
+    "needs_reply": 47,
+    # WS-66 RM-2b (calendar_events_reminders.md §5.6 RM-2b item 4): the
+    # reminder kinds are needs kinds. They sit below the five others and
+    # above `agent_asks` (43), so the five bases rose by 3 to make room.
+    "reminder_due": 46,
+    "reminder_check": 45,
+    "reminder_unconfirmed": 44,
     # The Calendar kinds of MD-1 (§5.1) and the MD-3 kinds (§5.9 item 2),
     # each below every needs kind. MD-3c adds the rows of all eleven MD-3
     # kinds at once, so MD-3d to MD-3f add only their providers. This table
@@ -100,12 +106,6 @@ BASE: dict[str, int] = {
     # Above every kind of Knowledge and the stale task (30), below the
     # overbooked day (32).
     "source_sync_failed": 31,
-    # WS-66 RM-2 (calendar_events_reminders.md §5.6): the member's own
-    # reminder. Each one is alone on its entity, so the base orders it
-    # against other cards only. A fired reminder also carries `urgent_at`.
-    "reminder_due": 31,
-    "reminder_check": 29,
-    "reminder_unconfirmed": 25,
 }
 
 #: The urgency terms (§7).

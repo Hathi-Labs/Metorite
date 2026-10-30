@@ -14,8 +14,10 @@ proxy setting and no ``.netrc`` entry can add a credential either.
 
 **What a request may reach.** A ``GET`` whose route template is in
 ``agent_oauth.MCP_ROUTES``, or a write whose pair is in
-``agent_oauth.MCP_WRITE_ROUTES``. The client checks the pair before it sends,
-and branch 0 checks it again.
+``agent_oauth.MCP_WRITE_ROUTES``. MCP-P1a adds the door pairs of the app
+manifests (``agent_oauth.door_route``, AD-4): :func:`send_call` sends the
+call that ``app_manifests.build_call`` made, and nothing else. The client
+checks the pair before it sends, and branch 0 checks it again.
 
 **Where it goes.** ``agent_edge_gateway_url``, the loopback address of the
 gateway (default ``http://127.0.0.1:8080``). A test points that URL at the
@@ -44,7 +46,7 @@ from urllib.parse import urlencode
 import httpx
 from acb_auth import agent_oauth, agent_signing
 from acb_auth.agent_tokens import TokenLookup
-from acb_common import get_logger, get_settings
+from acb_common import app_manifests, get_logger, get_settings
 
 _log = get_logger("agent_edge.gateway_client")
 
@@ -100,13 +102,26 @@ def use_transport(transport: httpx.AsyncBaseTransport | None) -> Iterator[None]:
 
 
 def _path(template: str, path_params: Mapping[str, str], method: str = _GET) -> str:
-    if (method, template) not in agent_oauth.MCP_ROUTES:
+    """The concrete path of an allowed pair, or raise :class:`RouteRefused`.
+
+    The pair is in ``MCP_ROUTES``, with a write in ``MCP_WRITE_ROUTES``, or it
+    is a door pair of the manifests (MCP-P1a, AD-4). Each path parameter is
+    an id, or it matches the pattern that ``agent_oauth.path_shapes`` gives
+    for that pair.
+    """
+    pair = (method, template)
+    door = agent_oauth.door_route(pair)
+    if pair not in agent_oauth.MCP_ROUTES and door is None:
         raise RouteRefused(f"{method} {template} is not in MCP_ROUTES")
-    if method != _GET and (method, template) not in agent_oauth.MCP_WRITE_ROUTES:
+    if (method != _GET and door is None
+            and pair not in agent_oauth.MCP_WRITE_ROUTES):
         raise RouteRefused(f"{method} {template} is not in MCP_WRITE_ROUTES")
+    shapes = agent_oauth.path_shapes(method, template)
     path = template
     for name, value in path_params.items():
-        if not _ID.fullmatch(value):
+        shape = shapes.get(name)
+        if not isinstance(value, str) or not (
+                re.fullmatch(shape, value) if shape is not None else _ID.fullmatch(value)):
             raise RouteRefused(f"{name} is not an id")
         path = path.replace("{" + name + "}", value)
     if "{" in path:
@@ -221,6 +236,65 @@ async def write(
     return await _send(method, url, headers, body, template)
 
 
+async def send_call(
+    key: str,
+    caller: TokenLookup,
+    call: app_manifests.Call,
+    *,
+    session: str | None = None,
+) -> Answer:
+    """One signed door call (MCP-P1a, spec §19.3), or raise
+    :class:`GatewayUnreachable` or :class:`RouteRefused`.
+
+    *call* is the answer of ``app_manifests.build_call``, the one builder,
+    and this function sends its bytes as they are. The pair must be a door
+    pair (``agent_oauth.door_route``). The path is built again from the
+    template, so a call whose path does not match its template never goes
+    out. A write carries a fresh nonce, a JSON ``Content-Type`` and
+    ``If-Match`` when the call has a version.
+    """
+    pair = (call.method, call.template)
+    if agent_oauth.door_route(pair) is None:
+        raise RouteRefused(f"{call.method} {call.template} is not a door pair")
+    names = app_manifests.path_params(call.template)
+    values = _values_of(call.template, call.path, names)
+    if values is None or _path(call.template, values, call.method) != call.path:
+        raise RouteRefused("the path does not match the template")
+    if call.if_match is not None and not _VERSION.fullmatch(call.if_match):
+        raise RouteRefused("the version is not a timestamp")
+    write = call.method != _GET
+    if not write and call.body:
+        raise RouteRefused("a read sends no body")
+    try:
+        headers = signed_request_headers(
+            key, caller, call.path, list(call.query), method=call.method,
+            body=call.body, session=session)
+        if write:
+            headers["Content-Type"] = "application/json"
+        if call.if_match is not None:
+            headers["If-Match"] = call.if_match
+        url = _url(call.path, list(call.query))
+    except Exception as exc:  # nothing here may become a 500
+        _log.warning("agent_edge.gateway_request_unbuildable", route=call.template,
+                     error=type(exc).__name__)
+        raise GatewayUnreachable(call.template) from None
+    return await _send(call.method, url, headers, call.body, call.template)
+
+
+def _values_of(template: str, path: str, names: Sequence[str]) -> dict[str, str] | None:
+    """The value of each path parameter of *path* under *template*, or
+    ``None`` when the path has another shape. A value holds no ``/``."""
+    pattern = re.escape(template)
+    for name in names:
+        if not name.isidentifier():
+            return None
+        pattern = pattern.replace(re.escape("{" + name + "}"), f"(?P<{name}>[^/]+)")
+    found = re.fullmatch(pattern, path)
+    if found is None:
+        return None
+    return {name: found.group(name) for name in names}
+
+
 def _url(path: str, pairs: Sequence[tuple[str, str]]) -> str:
     base = str(get_settings().agent_edge_gateway_url).rstrip("/")
     return base + path + (f"?{urlencode(pairs)}" if pairs else "")
@@ -269,6 +343,7 @@ __all__ = [
     "RouteRefused",
     "actor_via",
     "get",
+    "send_call",
     "signed_request_headers",
     "use_transport",
     "write",

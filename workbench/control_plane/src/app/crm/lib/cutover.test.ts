@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { CutoverCardView } from "../components/CutoverCard";
 import {
-  SWITCH_LATER,
+  SWITCH_OFF,
   ageWords,
   attention,
   isPreview,
@@ -91,11 +91,12 @@ describe("CRM-Z10a cutover card", () => {
     expect(html).toContain("Show the counts");
     expect(html).toContain("Asha Rao");
     expect(html).toContain("Projects");
-    expect(html).toContain(SWITCH_LATER);
+    // CRM-Z10b: a preview with no `can_switch` says that the switch is off.
+    expect(html).toContain(SWITCH_OFF);
   });
 
-  it("has no switch button and no raw control", () => {
-    expect(html).not.toMatch(/Switch now|Make Metorite your CRM/i);
+  it("has no switch button off the cutover list, and no raw control", () => {
+    expect(html).not.toMatch(/Switch to Metorite|Switch now|Make Metorite your CRM/i);
     const source = readFileSync(new URL("../components/CutoverCard.tsx", import.meta.url), "utf8");
     expect(source).not.toMatch(/<(button|input|select|textarea)\b/);
   });

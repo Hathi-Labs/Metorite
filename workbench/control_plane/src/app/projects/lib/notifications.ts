@@ -75,6 +75,8 @@ const VERB: Record<string, string> = {
   comment: "commented on",
   // WS-55 EA-12c — an outside agent asks the member on a task (§12.1).
   agent_question: "asked you about",
+  // Task 1054 — the stranded-run nudge: the run went quiet, the member decides.
+  nudge: "has gone quiet on",
 };
 
 /**
@@ -88,6 +90,9 @@ export function describe(row: NotificationRow): string {
   const who = actorLabel(row.actor);
   const verb = VERB[row.kind] ?? "updated";
   const task = taskLabel(row);
+  // No "since <time>": the notice time is when the sweep nudged, after the
+  // lease ran out, not when the run went quiet. The row shows its own time.
+  if (row.kind === "nudge") return `${who} ${verb} ${task}. Resume or release it.`;
   return `${who} ${verb} ${task}`;
 }
 

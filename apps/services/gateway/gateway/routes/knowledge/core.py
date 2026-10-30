@@ -25,6 +25,11 @@ that does not. A member sees a page when one of these holds:
 * the page is a ``draft`` and names the member in ``reviewers``;
 * the page is in the member's own ``me`` space, in any state.
 
+An outside agent whose connection has ``include_personal`` false (D-EA-4)
+sees no ``me`` space and no page of one, a draft included. Both clauses add
+this narrowing only when ``user.agent`` is set, so every other caller keeps
+its clause byte for byte (MCP-P1a, ``external_agent_access.md`` §19.8).
+
 ``knowledge:manage`` never shows a draft that is not the holder's own, and
 never a ``me`` space. ``data:org:read`` gives nothing here, so this module
 does not call ``resolve_visibility`` (which drops the groups for a holder of
@@ -217,6 +222,21 @@ def _viewer_params(user: UserContext) -> dict[str, Any]:
     }
 
 
+def _hides_personal(user: UserContext) -> bool:
+    """True for an outside agent whose connection has ``include_personal``
+    false (D-EA-4, ``external_agent_access.md`` §19.8). Such a caller sees no
+    ``me`` space and no page in one, in any state.
+
+    The same read of the flag as ``routes/projects/core._narrow_for_agent``.
+    Strict ``user.agent`` on purpose: a stand-in without the field raises,
+    and never reads as "no narrowing". ``agent`` is ``None`` for each request
+    that is not a signed agent request, so the member's own requests and the
+    in-product assistant keep each clause byte for byte.
+    """
+    agent = user.agent
+    return agent is not None and not agent.include_personal
+
+
 def visible_pages_clause(
     user: UserContext, alias: str = "p",
 ) -> tuple[str, dict[str, Any]]:
@@ -261,6 +281,15 @@ def visible_pages_clause(
         f" AND kb_s.kind = 'me' AND kb_s.owner_email = :kb_viewer)"
         f"))"
     )
+    if _hides_personal(user):
+        # D-EA-4: no page of a `me` space, a draft included. A positive
+        # EXISTS, so a page whose space row is gone matches nothing.
+        sql = (
+            f"({sql} AND EXISTS (SELECT 1 FROM kb_spaces kb_np"
+            f" WHERE kb_np.id = {a}.space_id"
+            f" AND kb_np.organization_id = CAST(:kb_org AS uuid)"
+            f" AND kb_np.kind <> 'me'))"
+        )
     return sql, _viewer_params(user)
 
 
@@ -271,7 +300,8 @@ def readable_spaces_clause(
 
     The caller's own ``me`` space, and each other space where the caller is
     the owner, holds ``knowledge:manage``, or holds a grant. Another member's
-    ``me`` space never matches.
+    ``me`` space never matches. An outside agent whose connection has
+    ``include_personal`` false (D-EA-4) gets no ``me`` space.
     """
     a = alias
     sql = (
@@ -283,6 +313,8 @@ def readable_spaces_clause(
         f" WHERE kb_g.space_id = {a}.id AND {_subject_match('kb_g')})))"
         f"))"
     )
+    if _hides_personal(user):
+        sql = f"({sql} AND {a}.kind <> 'me')"
     return sql, _viewer_params(user)
 
 

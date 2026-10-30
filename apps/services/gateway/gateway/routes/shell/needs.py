@@ -202,13 +202,18 @@ HIDDEN_DISPOSITIONS = frozenset(NOT_NOW_DISPOSITIONS)
 #: The order of the feed, by kind (§7.2 contract). An approval comes right
 #: after an overdue task, because an agent's work waits on it.
 KIND_ORDER = {"overdue": 0, "approval": 1, "due_today": 2, "notification": 3,
-              "needs_reply": 4}
+              "needs_reply": 4,
+              # WS-66 RM-2b (calendar_events_reminders.md §5.6): the member's
+              # own reminders, last of the needs kinds.
+              "reminder_due": 5, "reminder_check": 6, "reminder_unconfirmed": 7}
 #: The kinds that take only the room the member's own rows leave inside the
 #: limit. An admin's approvals must never push out their own work.
 YIELDING_KINDS = frozenset({"approval"})
 #: Within a kind: True is newest first, False is oldest first.
 NEWEST_FIRST = {"overdue": False, "approval": False, "due_today": False,
-                "notification": True, "needs_reply": False}
+                "notification": True, "needs_reply": False,
+                "reminder_due": False, "reminder_check": False,
+                "reminder_unconfirmed": False}
 
 Item = dict[str, Any]
 Act = dict[str, Any]
@@ -903,6 +908,84 @@ async def _approvals_handled(user: UserContext, since: datetime) -> list[Closed]
     ) for row in rows]
 
 
+# ── Reminders: the member's own, once fired (WS-66 RM-2b) ───────────────────
+#
+# Spec: ``calendar_events_reminders.md`` §5.6 "Settled 2026-10-30 (RM-2b)".
+# ONE source serves the bell and My Day (D87 to D89). It is a needs provider,
+# so it has no gate. With CALENDAR_REMINDERS off it raises ``SourceAbsent``,
+# and ``sources.reminders`` reads ``absent``. One card for each reminder that
+# fired and is still open, computed on read from the row. The card keys on
+# ``reminders:<id>``, so it changes its kind in place: ``reminder_due`` after
+# the fire, ``reminder_check`` after the check-back, ``reminder_unconfirmed``
+# after the loop gave up. A ``scheduled`` row has no card. The row is a link
+# only (``reminder_href``). The acts in place wait for the client (D101).
+# ``reminders.my_open_cards`` opens ONE tenant session, and this file opens
+# none. Fence: ``tests/unit/test_reminder_loop.py``, ``test_shell_needs.py``.
+
+#: The kinds of the source (§5.6).
+REMINDER_KINDS = frozenset({"reminder_due", "reminder_check", "reminder_unconfirmed"})
+
+
+def reminder_href(reminder_id: str) -> str:
+    """The link of a reminder card (§5.7 item 1).
+
+    ``do=new-chat`` is the chat's own door to a fresh chat
+    (``app/chat/page.tsx`` ``ChatFullView``). Since RM-4 the page also reads
+    ``reminder``: it opens a fresh chat with or without ``do``, and the
+    server writes the first message (``routes/chat_reminder.py``)."""
+    return f"/chat?do=new-chat&reminder={quote(reminder_id, safe='')}"
+
+
+def _reminder_kind(row: dict[str, Any]) -> str:
+    """The card kind of one row: its state, then its last ladder step."""
+    if row.get("state") == "unconfirmed":
+        return "reminder_unconfirmed"
+    if row.get("step") == "check_back":
+        return "reminder_check"
+    return "reminder_due"
+
+
+def _reminder_signal(row: dict[str, Any]) -> Signal:
+    """One reminder card. The facts are times and counts only. The title is
+    the member's own line of text."""
+    rid = str(row["id"])
+    kind = _reminder_kind(row)
+    title = str(row.get("title") or "").strip() or "(untitled)"
+    fire_at = _iso(row.get("fire_at"))
+    href = reminder_href(rid)
+    return Signal(
+        signal_id=f"reminders:{rid}", app="calendar", kind=kind,
+        entity={"type": "reminder", "id": rid, "label": title}, title=title,
+        # `waiting_since` is the instant of the last step, so a dismissed
+        # card comes back at the check-back and after a new fire (§6.8 item 1).
+        facts={"fire_at": fire_at,
+               "waiting_since": _iso(row.get("step_at")) or fire_at,
+               "cycles": int(row.get("cycles") or 0),
+               "notice": row.get("kind") == "notice"},
+        href=href, acts=(link("open-reminder", "Open", href),),
+        at=fire_at, urgent_at=fire_at if kind == "reminder_due" else None,
+    )
+
+
+async def _reminders(user: UserContext) -> Found:
+    from gateway.routes.projects.reminders import my_open_cards, reminders_enabled
+
+    if not reminders_enabled():
+        raise SourceAbsent("CALENDAR_REMINDERS is off")
+    rows, edge = await my_open_cards(user, now=_now(), limit=PER_APP + 1)
+    items = _sort([
+        _item(id=f"reminders:{r['id']}", app="calendar", kind=_reminder_kind(r),
+              title=r.get("title"), detail=None, href=reminder_href(str(r["id"])),
+              at=r.get("fire_at"))
+        for r in rows
+    ])
+    signals = [_reminder_signal(r) for r in rows]
+    # The next fire or step of the loop is when the card set changes next,
+    # so the read cache keeps the answer until then (§8.4 item 2).
+    return Found(items[:PER_APP], min(len(items), PER_APP), capped=len(items) > PER_APP,
+                 signals=lambda: signals[:PER_APP], next_edge=_iso(edge))
+
+
 # ── The one registry (``my_day_feed.md`` §4.4) ─────────────────────────────
 
 
@@ -995,6 +1078,10 @@ register(Provider("tasks", ("projects",), _tasks, frozenset({"overdue", "due_tod
 register(Provider("projects", ("projects",), _projects, frozenset({"notification"})))
 register(Provider("email", ("email",), _email, frozenset({"needs_reply"}),
                   handled=_email_handled))
+# WS-66 RM-2b: the reminders register before approvals, which stays last. The
+# gate is `feature:projects`, the gate of the reminder routes. It has no
+# Handled read, and the flag lives inside the provider (SourceAbsent).
+register(Provider("reminders", ("projects",), _reminders, REMINDER_KINDS, app="calendar"))
 register(Provider("approvals", ("approvals",), _approvals, frozenset({"approval"}),
                   admin=True, handled=_approvals_handled))
 
