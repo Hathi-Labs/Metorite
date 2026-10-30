@@ -10136,13 +10136,40 @@ under the wrong name, and their deals sat in extra lanes at the end.
   on the park of `_source_status` alone misses the chain when S2 comes
   first. The same check covers two values that trade labels. It runs inside
   `ctx.page`, so a Native org never reaches it.
+- **A label that a retired value held** (review round 2). Example: Zoho
+  retires S2 ("Beta"), and an admin then renames S1 to "Beta". A changed
+  deal of S1 carries "Beta" and lands on the retired row. The picklist read
+  parks that row as "Beta [S2]", and the deal stays in the parked lane. So
+  the check also counts a retired row when a holder of the label has its
+  own row. The park renames the row, so the next check finds nothing. With
+  no such row, the new value adopts the retired row, and no read is due.
 - **The full read of a chain.** When the check finds a row, the step queues
-  ONE full read of the entity (Deals for Stage, Leads for Lead_Status). The
-  queue is the re-read list of the field rules (`_add_rereads`), in the
-  same transaction. That read maps each record by its label again, and its
-  last page takes the entity off the list. A healed org has no such row, so
-  the next picklist read queues nothing. A plain rename queues no full
+  ONE full read of the entity (Deals for Stage, Leads for Lead_Status). That
+  read maps each record by its label again. A healed org has no such row,
+  so the next picklist read queues nothing. A plain rename queues no full
   read, because the fold of item 8 moves the deals.
+- **The mark of the label read** (review round 2). The queue is its own
+  list, `label_reread`, in the state of the `zoho:field_rules` cursor, in
+  the same transaction. The read carries the mark `label_reread` in the
+  cursor of its entity while it runs, so a stop resumes it. The last page
+  of a read with the mark takes the entity off the list. The `reread` list
+  of the field rules stays apart, so a read of that list cannot clear this
+  entry. One read that both lists want counts for both.
+- **A label read and the contact roles** (review round 2). A label read
+  changes no contact role, and no admin chooses its cost. On the credit
+  floor, one role call for each deal costs days of budget. So a label read
+  queues a role call only for a deal that an incremental read would list.
+  That is a deal with `Modified_Time` at or after the cursor of the entity.
+  The read moves the cursor past that deal, so no later read lists it. A
+  read for a rule, a read after a hold and a walk still queue each deal.
+- **A read that stopped** (review round 2). A read for a rule or a label
+  read can stop on its budget at page N. Those pages used the old row
+  names. When the check fires in a later run, that read starts over from
+  page 1. It still counts for each rule on the list, it still queues each
+  deal for a rule, and the mark `recovering` stays. A resumed read with no
+  mark goes on and clears nothing, so the next run starts the label read.
+  A label read that stopped, in a run where the check does not fire, goes
+  on from its page.
 - **The step order.** Each run reads the picklists before discovery writes
   the pipelines (`_execute`). `_pipeline_stage_status` matches a stage by the
   Zoho id first. So a run whose picklist read fails still puts each place on

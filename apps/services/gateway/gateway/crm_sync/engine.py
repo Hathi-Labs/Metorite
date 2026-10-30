@@ -231,6 +231,12 @@ SHORT_BY_KEY = "short_by"
 #: an activity entity that the read counted so far, by parent module.
 FULL_READ_KEY = "full_read"
 READ_DROPS_KEY = "read_drops"
+#: Task #1096: the full read that the label check of ``_mirror_statuses`` asks
+#: for. In the state of :data:`FIELD_RULES_ROW` the key lists the entities that
+#: wait for the read. In the cursor of an entity it marks the read while it
+#: runs. This read does not share the ``reread`` list. A read of that list can
+#: owe contact roles, and a label read owes them only for a deal that changed.
+LABEL_REREAD_KEY = "label_reread"
 #: CRM-Q24: the ``SourceError.code`` of a tie at one second that is wider
 #: than the provider serves by offset (``ZohoTieTooWide``). A test pins the
 #: two. The engine counts it as ``failed`` and keeps the cursor. It also sets
@@ -830,6 +836,10 @@ class _Ctx:
         #: and the entities that a rejected or stale rule makes read in full.
         self.rules: dict[str, dict[str, str]] = {}
         self.rule_rereads: set[str] = set()
+        #: The entities on the label list, and those whose check fired in
+        #: this run (task #1096, :data:`LABEL_REREAD_KEY`).
+        self.label_rereads: set[str] = set()
+        self.label_fired: set[str] = set()
         #: The approved rules that ``_field_rules`` handled, and the ids that
         #: discovery made stale in this run. ``map_record`` applies the first
         #: list minus the second, and never a rule approved during the run.
@@ -1246,7 +1256,8 @@ async def _source_status(
       Its records can belong to this value, and
       :func:`_mirror_statuses` queues one full read for that case;
     * that row holds an id that Zoho no longer lists: it moves aside too, and
-      the gone rule marks it. Its deals keep it.
+      the gone rule marks it. Its deals keep it, until the full read of
+      :func:`_label_collision` moves each record that carries this label.
 
     No savepoint here catches a failure. A failed merge fails the picklist
     step, and the run logs it.
@@ -1361,23 +1372,33 @@ _STATUS_EXT_ROWS_SQL = "SELECT ext_id, name FROM {table} WHERE ext_id IS NOT NUL
 def _label_collision(
     values: list[_PicklistValue], rows: list[Any], listed: frozenset[str],
 ) -> bool:
-    """True when the row of one listed value holds the label of ANOTHER listed
-    value (task #1096).
+    """True when a row holds the label of ANOTHER listed value, and the picklist
+    read will give that label to a different row (task #1096).
 
     A record pull finds its row by the label that the record carries. So each
     record of that other value went onto the wrong row. The rename of the
-    picklist read cannot move them, because a row keeps its records. A row
-    that holds its own label does not count, also when a second value shares
-    that label. No read can tell those records apart, and a repeat of the
-    check must not queue a read on each picklist read.
+    picklist read cannot move them, because a row keeps its records.
+
+    * A row of a listed value counts.
+    * A row of a retired value counts when a holder of the label has its own
+      row. :func:`_source_status` then parks the retired row, and the records
+      of the holder stay in a parked lane. With no such row, the new value
+      adopts the retired row with its records, so no read is due.
+    * A row that holds its own label does not count, also when a second value
+      shares that label. No read can tell those records apart.
+
+    The picklist read renames each counted row, so the next check finds none.
     """
     owners: dict[str, set[str]] = {}
     for value in values:
         if value.ext_id:
             owners.setdefault(value.name, set()).add(value.ext_id)
+    own_rows = {str(row.ext_id) for row in rows}
     for row in rows:
         ext, holders = str(row.ext_id), owners.get(str(row.name))
-        if ext in listed and holders is not None and ext not in holders:
+        if holders is None or ext in holders:
+            continue
+        if ext in listed or holders & own_rows:
             return True
     return False
 
@@ -1395,11 +1416,12 @@ async def _mirror_statuses(
     Before it writes, the step looks for a row that holds the label of
     another listed value (:func:`_label_collision`). The old name rule made
     such a row when one label was the ``actual_value`` of another value. A
-    Zoho edit that trades two labels makes one too. Then the step queues ONE
-    full read of the entity through the re-read list (:func:`_add_rereads`),
-    in this transaction. That read maps each record by its label again,
-    after this step named each row by its label. A repaired org has no such
-    row, so the next read queues nothing.
+    Zoho edit that trades two labels makes one too, and so does a label that
+    a retired value held. Then the step puts the entity on the label list
+    (:data:`LABEL_REREAD_KEY`), in this transaction, for ONE full read. That
+    read maps each record by its label again, after this step named each
+    row by its label. A repaired org has no such row, so the next read
+    queues nothing.
     """
     api_name, table = _STATUS_FIELDS[entity]
     for definition in definitions:
@@ -1417,8 +1439,9 @@ async def _mirror_statuses(
                 text(_STATUS_GONE_SQL.format(table=table)), {"listed": sorted(listed)},
             )
         if collided:
-            await _add_rereads(ctx, db, {entity})
-            _log.info("crm.sync.status_label_collision entity=%s reread=%s", entity, entity)
+            await _save_label_rereads(ctx, db, ctx.label_rereads | {entity})
+            ctx.label_fired.add(entity)
+            _log.info("crm.sync.status_label_collision entity=%s", entity)
 
 
 @dataclass
@@ -1983,9 +2006,11 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # writes the fixed map's value again. It stamps nothing and deletes
     # nothing, like the CRM-Q5 lead read below.
     rule_wanted = not generic and not parent_only and entity in ctx.rule_rereads
+    # The full read that the label check asks for (task #1096).
+    label_wanted = not generic and not parent_only and entity in ctx.label_rereads
     if (
         row.initial_done_at is not None and saved.get("offset_paged") and not walking
-        and not rereading and not rule_wanted
+        and not rereading and not rule_wanted and not label_wanted
         and not (generic and saved.get("in_progress"))
     ):
         return
@@ -2011,10 +2036,23 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # A full read for a rule starts fresh, or goes on with its own mark. A
     # read that was already under way when the rule changed does not count.
     rule_reread = (rule_wanted and not resumed) or (resumed and bool(saved.get("rule_reread")))
+    label_reread = (label_wanted and not resumed) or (
+        resumed and bool(saved.get(LABEL_REREAD_KEY))
+    )
     backfill = (
         entity == "lead" and row.initial_done_at is not None
         and not saved.get("converted_both") and not resumed and not parent_only
     )
+    if resumed and entity in ctx.label_fired and (rule_reread or label_reread):
+        # Task #1096: the pages of this read used the old row names, and its
+        # last page would clear the entity. So it starts over from page 1. It
+        # still counts for each rule, and ``recovering`` keeps its mark.
+        resumed, rule_reread, label_reread = False, rule_reread or rule_wanted, True
+    # A label read moves ``status_id`` and changes no contact role, so it queues
+    # a role call only for a deal that changed. A read for a rule, a walk and a
+    # read after a hold still queue each deal (task #1096).
+    label_only = label_reread and not (rule_reread or stamping or recovering)
+    role_floor = row.last_pulled_at
     hidden = bool(saved.get("offset_paged")) if resumed else False
     walk_start = ctx.started
     walk_count = 0
@@ -2045,7 +2083,10 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         newest = _parse(saved.get("max_modified"))
         newest_ids = set(saved.get("watermark_ids") or ())
     else:
-        since = None if walking or backfill or rereading or rule_reread else row.last_pulled_at
+        since = (
+            None if walking or backfill or rereading or rule_reread or label_reread
+            else row.last_pulled_at
+        )
         ids = tuple(saved.get("watermark_ids") or ()) if since is not None else ()
         cursor = SourceCursor(since=since, seen_ids=ids)
         newest = since
@@ -2063,13 +2104,15 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # The mark of a full read for a field rule (CRM-Q7a). It is kept only while
     # the read runs, so a stop resumes it as that read.
     progress_marks: dict[str, Any] = {**marks, "rule_reread": True} if rule_reread else marks
+    if label_reread:
+        progress_marks = {**progress_marks, LABEL_REREAD_KEY: True}
     if recovering:
         progress_marks = {**progress_marks, "recovering": True}
     # CRM-Q24: a full read lists every record, not the changes since a cursor.
     # Its last page writes ``short_by``, and for an activity entity the drops
     # of the whole read. A read over several runs carries its mark.
     full = (
-        stamping or rereading or rule_reread or backfill
+        stamping or rereading or rule_reread or label_reread or backfill
         or (resumed and bool(saved.get(FULL_READ_KEY)))
     )
     if full:
@@ -2124,7 +2167,12 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                     )
                 failed_map = _merge_failed(failed_map, landed, bad)
                 if entity == "deal" and landed:
-                    await _queue_roles(ctx, db, landed)
+                    roles = (
+                        _changed_ids(page.records, landed, role_floor)
+                        if label_only else landed
+                    )
+                    if roles:
+                        await _queue_roles(ctx, db, roles)
                 if not last_page and page.next_cursor is not None:
                     extra: dict[str, Any] = {}
                     if stamping:
@@ -2206,6 +2254,8 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                 await _save_cursor(ctx, db, row, "ok" if last_page else "partial")
                 if last_page and rule_reread:
                     await _rule_reread_done(ctx, db, entity)
+                if last_page and label_reread:
+                    await _save_label_rereads(ctx, db, ctx.label_rereads - {entity})
                 if last_page and recovering:
                     await _queue_dependents(ctx, db, entity)
             ctx.cursors[module] = row
@@ -2860,6 +2910,22 @@ async def _save_roles_pending(ctx: _Ctx, db: Any) -> None:
     ctx.cursors[ROLES_MODULE] = row
 
 
+def _changed_ids(
+    records: tuple[SourceRecord, ...], landed: set[str], floor: datetime | None,
+) -> set[str]:
+    """The landed records that an incremental read from *floor* would list.
+
+    A label read moves the cursor past them, so no later read lists them. A
+    record that hides ``Modified_Time`` is not one: only a walk reads it.
+    """
+    found: set[str] = set()
+    for record in records:
+        stamp = _parse(record.fields.get("Modified_Time"))
+        if record.ext_id in landed and stamp is not None and (floor is None or stamp >= floor):
+            found.add(record.ext_id)
+    return found
+
+
 async def _queue_roles(ctx: _Ctx, db: Any, landed: set[str]) -> None:
     """Remember the deals that changed, in the SAME transaction as their page.
 
@@ -3376,10 +3442,14 @@ async def _execute(ctx: _Ctx) -> None:
 def _rules_row(
     ctx: _Ctx, applied: list[field_rules.Rule], reread: set[str],
 ) -> CursorRow:
-    """The rules cursor row with a new state."""
+    """The rules cursor row with a new state. The label list rides along."""
     old = _row(ctx, FIELD_RULES_ROW)
+    state = field_rules.state_of(applied, reread)
+    labels = (old.state or {}).get(LABEL_REREAD_KEY)
+    if labels:
+        state[LABEL_REREAD_KEY] = labels
     return CursorRow(
-        FIELD_RULES_ROW, old.last_pulled_at, field_rules.state_of(applied, reread),
+        FIELD_RULES_ROW, old.last_pulled_at, state,
         old.initial_done_at or _now(), old.last_reconciled_at,
     )
 
@@ -3462,6 +3532,7 @@ async def _field_rules(ctx: _Ctx) -> None:
                 break
         _log.info("crm.sync.field_rule_backfilled rule=%s written=%s", rule.id, filled)
     ctx.rule_rereads = reread
+    ctx.label_rereads = {str(e) for e in state.get(LABEL_REREAD_KEY) or ()}
     ctx.handled_rules = list(approved)
 
 
@@ -3502,6 +3573,23 @@ async def _add_rereads(ctx: _Ctx, db: Any, entities: set[str]) -> None:
     await _save_cursor(ctx, db, saved, "ok")
     ctx.cursors[FIELD_RULES_ROW] = saved
     ctx.rule_rereads |= entities
+
+
+async def _save_label_rereads(ctx: _Ctx, db: Any, entities: set[str]) -> None:
+    """Write the label list in the rules cursor row, in the caller's transaction
+    (:data:`LABEL_REREAD_KEY`). The check of ``_mirror_statuses`` adds to it, and
+    the last page of a read with the label mark takes its entity off it."""
+    old = _row(ctx, FIELD_RULES_ROW)
+    state = {k: v for k, v in (old.state or {}).items() if k != LABEL_REREAD_KEY}
+    if entities:
+        state[LABEL_REREAD_KEY] = sorted(entities)
+    saved = CursorRow(
+        FIELD_RULES_ROW, old.last_pulled_at, state,
+        old.initial_done_at or _now(), old.last_reconciled_at,
+    )
+    await _save_cursor(ctx, db, saved, "ok")
+    ctx.cursors[FIELD_RULES_ROW] = saved
+    ctx.label_rereads = set(entities)
 
 
 async def _rule_reread_done(ctx: _Ctx, db: Any, entity: str) -> None:

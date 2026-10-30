@@ -17,6 +17,7 @@ from gateway.crm_sources.base import (
     NeedsReconnect,
     RateLimited,
     SourceError,
+    SourceRecord,
     UntrustedHost,
 )
 from gateway.crm_sources.zoho import mapping
@@ -358,8 +359,13 @@ def test_a_label_collision_needs_a_listed_row_that_holds_a_label_not_its_own() -
     # Each row holds its own label, or a name that no value holds.
     assert not engine._label_collision(chain, [row("S1", "Beta"), row("S2", "Gamma")], listed)
     assert not engine._label_collision(chain, [row("S1", "Alpha"), row("S2", "Delta")], listed)
-    # Zoho no longer lists the value of the row, so the gone rule owns it.
+    # A retired row holds the label, and its holder has its own row. The park
+    # leaves the records of the holder in the parked lane, so a read is due.
+    assert engine._label_collision(chain, [row("S1", "Alpha"), row("S9", "Beta")], listed)
+    # The holder has no row, so it adopts the retired row with its records.
     assert not engine._label_collision(chain, [row("S9", "Beta")], listed)
+    # The park renamed the retired row, so the next check finds nothing.
+    assert not engine._label_collision(chain, [row("S1", "Beta"), row("S9", "Beta [S9]")], listed)
     # Two values share the label, and the rows take it in turns. No full read
     # can tell their records apart, and each read would queue one more.
     shared = [value("Beta", "S1"), value("Beta", "S2")]
@@ -371,6 +377,43 @@ def test_a_label_collision_needs_a_listed_row_that_holds_a_label_not_its_own() -
     # A value with no Zoho id owns no label.
     assert not engine._label_collision(
         [value("Beta", None)], [row("S1", "Beta")], frozenset({"S1"}))
+
+
+def test_a_label_read_keeps_only_the_deals_that_an_incremental_read_would_list() -> None:
+    """Task #1096: a label read moves the cursor past each deal, so a deal that
+    changed still owes its role call. The others owe none."""
+    floor = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+
+    def record(ident: str, stamp: str | None) -> SourceRecord:
+        fields = {"Modified_Time": stamp} if stamp else {}
+        return SourceRecord("deal", ident, None, fields)
+
+    records = (
+        record("old", "2026-01-01T11:59:59+00:00"),
+        record("tie", "2026-01-01T12:00:00+00:00"),
+        record("new", "2026-01-01T12:00:01+00:00"),
+        record("failed", "2026-01-01T12:00:02+00:00"),
+        record("hidden", None),
+    )
+    landed = {"old", "tie", "new", "hidden"}
+    assert engine._changed_ids(records, landed, floor) == {"tie", "new"}
+    # No cursor yet: an incremental read would list every record it can date.
+    assert engine._changed_ids(records, landed, None) == {"old", "tie", "new"}
+
+
+def test_each_write_of_the_rules_cursor_keeps_the_label_list() -> None:
+    """Task #1096: a rule undo rewrites the state of this row. A label read that
+    still waits must stay on its list, and a read with no entry adds no key."""
+    from types import SimpleNamespace
+
+    def state_after(old: dict[str, object]) -> dict[str, object]:
+        row = CursorRow(engine.FIELD_RULES_ROW, None, old, None, None)
+        ctx = SimpleNamespace(cursors={engine.FIELD_RULES_ROW: row})
+        return engine._rules_row(ctx, [], {"lead"}).state
+
+    assert state_after({"applied": [], "reread": [], "label_reread": ["deal"]}) == {
+        "applied": [], "reread": ["lead"], "label_reread": ["deal"]}
+    assert state_after({"applied": [], "reread": []}) == {"applied": [], "reread": ["lead"]}
 
 
 def test_a_field_def_is_made_only_for_a_custom_field() -> None:

@@ -27,7 +27,11 @@ d. a value whose label equals its internal value behaves as before;
 e. two values that trade labels in one read keep their rows;
 f. the chain: the label of one value is the ``actual_value`` of another.
    The heal queues ONE full read, and each deal lands on the row of its own
-   value. A plain rename queues no full read;
+   value. A plain rename queues no full read. The same holds for
+   ``Lead_Status``, and for a label that a retired value held. The label
+   read queues a role call only for a deal that changed. A read for a rule
+   that stopped starts over when the check fires, and a label read that
+   stopped goes on from its page;
 g. the merge shows a lane when either row showed (the hidden rule);
 h. the merge fills an empty ``required_fields`` from the folded row;
 i. a pipeline stage type finds its row by the Zoho id first.
@@ -39,6 +43,7 @@ Zoho. The fake then sends the shape that Zoho sends, with both values.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -494,11 +499,44 @@ def _full_reads(z: Any, start: int, module: str) -> int:
     )
 
 
-def _rereads(p: Any, org: str) -> set[str]:
-    """The entities on the re-read list of the field rules cursor."""
+def _cursor(p: Any, org: str, module: str) -> dict[str, Any]:
+    """The state of one sync cursor row, or an empty state."""
     rows = _q(p, "SELECT cursor_state FROM crm_sync_cursors WHERE organization_id = "
-                 "CAST(:o AS uuid) AND module = 'zoho:field_rules'", o=org)
-    return set(((rows[0][0] if rows else None) or {}).get("reread") or ())
+                 "CAST(:o AS uuid) AND module = :m", o=org, m=module)
+    return (rows[0][0] if rows else None) or {}
+
+
+def _rereads(p: Any, org: str) -> set[str]:
+    """The entities on the two re-read lists of the field rules cursor."""
+    state = _cursor(p, org, "zoho:field_rules")
+    return {*(state.get("reread") or ()), *(state.get("label_reread") or ())}
+
+
+def _role_reads(z: Any, start: int) -> list[str]:
+    """The deal of each contact-role call after request *start*."""
+    return [r.url.path.split("/")[-2] for r in z.requests[start:]
+            if r.url.path.endswith("/Contact_Roles")]
+
+
+def _reset_role_queue(p: Any, org: str) -> None:
+    """Empty the role queue, so a test counts only what a later read queues."""
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_sync_cursors SET cursor_state = CAST(:s AS jsonb) "
+            "WHERE organization_id = CAST(:o AS uuid) AND module = 'zoho:deal_roles'"),
+            {"o": org, "s": json.dumps({"pending": [], "attempts": {}, "seeded": True})})
+
+
+def _queue_rule_read(p: Any, org: str, entity: str) -> None:
+    """Put *entity* on the ``reread`` list, as a rejected field rule does."""
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_sync_cursors (organization_id, module, last_status, "
+            "initial_done_at, cursor_state) VALUES (CAST(:o AS uuid), "
+            "'zoho:field_rules', 'ok', now(), CAST(:s AS jsonb)) "
+            "ON CONFLICT (organization_id, module) DO UPDATE SET "
+            "cursor_state = EXCLUDED.cursor_state"),
+            {"o": org, "s": json.dumps({"applied": [], "reread": [entity]})})
 
 
 @pytest.mark.parametrize("s2_first", [False, True], ids=["S1-first", "S2-first"])
@@ -549,6 +587,208 @@ async def test_the_chain_heals_with_one_full_read_of_the_deals(c3, s2_first) -> 
     assert _rereads(c3.p, c3.org_a) == set()
     assert sorted(tuple(r) for r in _q(c3.p, _DEAL_ROWS_SQL, o=c3.org_a)) == snapshot
     assert _deal_status(c3.p, c3.org_a, "d1") == s1_row
+
+
+async def test_a_chain_of_lead_statuses_heals_with_one_full_read(c3) -> None:  # noqa: F811
+    """The same chain on ``Lead_Status``: L1 has ``actual_value`` "Alpha" and the
+    label "Beta", and L2 has ``actual_value`` "Beta" and the label "Gamma"."""
+    from gateway.crm_sync import engine
+
+    c3.a.lead_statuses = [
+        {"id": "L1", "actual_value": "Alpha", "sequence_number": 1},
+        {"id": "L2", "actual_value": "Beta", "sequence_number": 2},
+    ]
+    c3.a.add("Leads", "l1", 1, Last_Name="One", Lead_Status="Beta")   # a lead of L1
+    c3.a.add("Leads", "l2", 2, Last_Name="Two", Lead_Status="Gamma")  # a lead of L2
+    await _sync(c3, c3.org_a, c3.a)
+    before = _rows(c3.p, _LEAD_ROWS_SQL, c3.org_a)
+    assert {n: r.ext_id for n, r in before.items()} == {
+        "Alpha": "L1", "Beta": "L2", "Gamma": None}
+    l1_row, l2_row = before["Alpha"].id, before["Beta"].id
+    assert _lead_status(c3.p, c3.org_a, "l1") == l2_row  # the wrong row
+
+    c3.a.lead_statuses[0]["display_value"] = "Beta"
+    c3.a.lead_statuses[1]["display_value"] = "Gamma"
+    _discovery_due(c3.p, c3.org_a)
+    start = len(c3.a.requests)
+    result = await engine.run_org(c3.org_a)
+    assert (result.status, result.kind) == ("ok", "incremental"), result
+
+    by_ext = _by_ext(c3.p, _LEAD_ROWS_SQL, c3.org_a)
+    assert {x: [(r.id, r.name) for r in rs] for x, rs in by_ext.items()} == {
+        "L1": [(l1_row, "Beta")], "L2": [(l2_row, "Gamma")]}
+    assert _lead_status(c3.p, c3.org_a, "l1") == l1_row
+    assert _lead_status(c3.p, c3.org_a, "l2") == l2_row
+    assert _full_reads(c3.a, start, "Leads") == 1
+    assert _rereads(c3.p, c3.org_a) == set()
+
+
+async def test_a_label_that_a_retired_value_held_gets_one_full_read(c3) -> None:  # noqa: F811
+    """Zoho retires S2 ("Beta"), and an admin then renames S1 to "Beta". A changed
+    deal of S1 carries "Beta" and lands on the retired row. The picklist read
+    parks that row, and a relabel leaves ``Modified_Time`` as it was, so no
+    incremental read lists the deal again. One full read moves it."""
+    from gateway.crm_sync import engine
+
+    c3.a.stages = [
+        {"id": "S1", "actual_value": "Alpha", "sequence_number": 1},
+        {"id": "S2", "actual_value": "Beta", "sequence_number": 2},
+    ]
+    _deal(c3.a, "d1", 1, Stage="Alpha")
+    await _sync(c3, c3.org_a, c3.a)
+    before = _rows(c3.p, _DEAL_ROWS_SQL, c3.org_a)
+    s1_row, s2_row = before["Alpha"].id, before["Beta"].id
+
+    # Zoho retires S2. The next picklist read marks its row.
+    c3.a.stages = c3.a.stages[:1]
+    _discovery_due(c3.p, c3.org_a)
+    assert (await engine.run_org(c3.org_a)).status == "ok"
+    # S1 takes the label. No picklist read runs, so a pull finds the old row.
+    c3.a.stages[0]["display_value"] = "Beta"
+    _restage(c3.a, "d1", "Beta")
+    _deal(c3.a, "d2", 5, Stage="Beta")
+    assert (await engine.run_org(c3.org_a)).status == "ok"
+    assert _deal_status(c3.p, c3.org_a, "d2") == s2_row  # the retired row
+
+    _discovery_due(c3.p, c3.org_a)
+    start = len(c3.a.requests)
+    assert (await engine.run_org(c3.org_a)).status == "ok"
+    by_ext = _by_ext(c3.p, _DEAL_ROWS_SQL, c3.org_a)
+    assert {x: [(r.id, r.name) for r in rs] for x, rs in by_ext.items()} == {
+        "S1": [(s1_row, "Beta")], "S2": [(s2_row, "Beta [S2]")]}
+    assert _deal_status(c3.p, c3.org_a, "d1") == s1_row
+    assert _deal_status(c3.p, c3.org_a, "d2") == s1_row
+    assert _full_reads(c3.a, start, "Deals") == 1
+    assert _rereads(c3.p, c3.org_a) == set()
+
+    # The park renamed the row, so the next picklist read queues nothing.
+    _discovery_due(c3.p, c3.org_a)
+    start = len(c3.a.requests)
+    assert (await engine.run_org(c3.org_a)).status == "ok"
+    assert _full_reads(c3.a, start, "Deals") == 0
+
+
+async def test_a_label_read_queues_a_role_call_only_for_a_deal_that_changed(c3) -> None:  # noqa: F811
+    """A label read changes no contact role, and no admin chooses its cost. So
+    a chain costs no role call for each deal. A deal that did change still owes
+    its call, because the read moves the cursor past it. A read for a rule on
+    the same deals still queues each one."""
+    from gateway.crm_sync import engine
+
+    _chain_shape(c3.a, labels=False, s2_first=False)
+    _deal(c3.a, "d1", 1, Stage="Beta")
+    _deal(c3.a, "d2", 2, Stage="Gamma")
+    await _sync(c3, c3.org_a, c3.a)
+    _reset_role_queue(c3.p, c3.org_a)
+
+    _chain_shape(c3.a, labels=True, s2_first=False)
+    _deal(c3.a, "d3", 9, Stage="Beta")  # it changed in Zoho
+    _discovery_due(c3.p, c3.org_a)
+    start = len(c3.a.requests)
+    assert (await engine.run_org(c3.org_a)).status == "ok"
+    assert _full_reads(c3.a, start, "Deals") == 1
+    # d1 owes no call. d2 sits at the cursor second, where an incremental read
+    # still asks, so it costs one call. d3 changed.
+    assert _role_reads(c3.a, start) == ["d2", "d3"]
+
+    _reset_role_queue(c3.p, c3.org_a)
+    _queue_rule_read(c3.p, c3.org_a, "deal")
+    start = len(c3.a.requests)
+    assert (await engine.run_org(c3.org_a)).status == "ok"
+    assert _full_reads(c3.a, start, "Deals") == 1
+    assert sorted(_role_reads(c3.a, start)) == ["d1", "d2", "d3"]
+
+
+def _at_page_two(z: Any, start: int) -> Any:
+    """Stop a run at page 2 of its full read of the deals. Page 1 arrives, the
+    owners load, and page 1 is written. The next call, page 2, stops."""
+    return lambda: (
+        _full_reads(z, start, "Deals") >= 1 and z.requests[-1].url.path != "/crm/v2/Deals"
+    )
+
+
+def _five_deals_in_the_chain(z: Any) -> None:
+    """Five deals on three pages, in the chain with the old names."""
+    _chain_shape(z, labels=False, s2_first=False)
+    _deal(z, "d1", 1, Stage="Beta")  # a deal of S1, on page 1
+    for minute, ident in enumerate(("d2", "d3", "d4", "d5"), start=2):
+        _deal(z, ident, minute, Stage="Gamma")
+
+
+async def test_a_stopped_rule_read_starts_over_when_the_check_fires(c3, monkeypatch) -> None:  # noqa: F811
+    """A read for a rule stops on page 1. The next run finds a chain. Page 1 used
+    the old names, and the last page would clear the entity. So the read starts
+    from page 1 again. That one read counts for the rule and for the label. It
+    queues each deal, and ``recovering`` keeps its mark."""
+    from gateway.crm_sync import engine
+
+    _five_deals_in_the_chain(c3.a)
+    await _sync(c3, c3.org_a, c3.a)
+    before = _rows(c3.p, _DEAL_ROWS_SQL, c3.org_a)
+    s1_row, s2_row = before["Alpha"].id, before["Beta"].id
+    _reset_role_queue(c3.p, c3.org_a)
+    _queue_rule_read(c3.p, c3.org_a, "deal")
+
+    start = len(c3.a.requests)
+    stopped = await engine.run_org(c3.org_a, should_stop=_at_page_two(c3.a, start))
+    assert stopped.status == "stopped", stopped
+    state = _cursor(c3.p, c3.org_a, "zoho:deal")
+    assert state["in_progress"] is True and state["rule_reread"] is True, state
+    assert engine.LABEL_REREAD_KEY not in state
+    with c3.p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_sync_cursors SET cursor_state = cursor_state || "
+            "'{\"recovering\": true}'::jsonb WHERE organization_id = CAST(:o AS uuid) "
+            "AND module = 'zoho:deal'"), {"o": c3.org_a})
+    back: list[str] = []
+    original = engine._queue_dependents
+
+    async def spy(ctx: Any, db: Any, entity: str) -> None:
+        back.append(entity)
+        await original(ctx, db, entity)
+
+    monkeypatch.setattr(engine, "_queue_dependents", spy)
+
+    _chain_shape(c3.a, labels=True, s2_first=False)
+    _discovery_due(c3.p, c3.org_a)
+    start = len(c3.a.requests)
+    assert (await engine.run_org(c3.org_a)).status == "ok"
+
+    assert _full_reads(c3.a, start, "Deals") == 1  # from page 1 again
+    assert _deal_status(c3.p, c3.org_a, "d1") == s1_row
+    for ident in ("d2", "d3", "d4", "d5"):
+        assert _deal_status(c3.p, c3.org_a, ident) == s2_row, ident
+    assert _rereads(c3.p, c3.org_a) == set()
+    state = _cursor(c3.p, c3.org_a, "zoho:deal")
+    assert "rule_reread" not in state and engine.LABEL_REREAD_KEY not in state, state
+    assert sorted(_role_reads(c3.a, start)) == ["d1", "d2", "d3", "d4", "d5"]
+    assert back == ["deal"]
+
+
+async def test_a_label_read_that_stopped_goes_on_from_its_page(c3) -> None:  # noqa: F811
+    """The label list and the mark outlive a stop. The next run finds no chain,
+    so the read goes on from its page and does not start over."""
+    from gateway.crm_sync import engine
+
+    _five_deals_in_the_chain(c3.a)
+    await _sync(c3, c3.org_a, c3.a)
+    s1_row = _rows(c3.p, _DEAL_ROWS_SQL, c3.org_a)["Alpha"].id
+    _chain_shape(c3.a, labels=True, s2_first=False)
+    _discovery_due(c3.p, c3.org_a)
+
+    start = len(c3.a.requests)
+    stopped = await engine.run_org(c3.org_a, should_stop=_at_page_two(c3.a, start))
+    assert stopped.status == "stopped", stopped
+    state = _cursor(c3.p, c3.org_a, "zoho:deal")
+    assert state["in_progress"] is True and state[engine.LABEL_REREAD_KEY] is True, state
+    assert _rereads(c3.p, c3.org_a) == {"deal"}
+
+    start = len(c3.a.requests)
+    assert (await engine.run_org(c3.org_a)).status == "ok"
+    assert _full_reads(c3.a, start, "Deals") == 0  # it goes on from page 2
+    assert _deal_status(c3.p, c3.org_a, "d1") == s1_row
+    assert _rereads(c3.p, c3.org_a) == set()
+    assert engine.LABEL_REREAD_KEY not in _cursor(c3.p, c3.org_a, "zoho:deal")
 
 
 async def test_a_plain_rename_heals_with_no_full_read(c3) -> None:  # noqa: F811
