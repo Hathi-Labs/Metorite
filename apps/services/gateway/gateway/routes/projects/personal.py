@@ -98,6 +98,7 @@ from gateway.routes.projects.tasks import (
     move_task_in,
 )
 from gateway.routes.projects.text_links import Saved, link_from_text
+from gateway.routes.tasks.entries import events_enabled, read_my_entries
 from gateway.routes.tasks.priority import important_from_importance
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -2426,13 +2427,37 @@ def calendar_key(task: dict[str, Any]) -> tuple[str, str]:
     return (str(task.get("scheduled_start") or ""), str(task.get("id") or ""))
 
 
-@router.get("/my/calendar")
+class CalendarRead(ListResponse):
+    """The body of ``/my/calendar``: the task rows, and the calendar entries.
+
+    WS-CAL CE-4 (``calendar_events_reminders.md`` §3.4). ``entries`` is set
+    only when the entry query ran: ``CALENDAR_EVENTS`` on and the caller
+    holds ``feature:tasks``. The route answers with
+    ``response_model_exclude_unset``, so in every other case the body is the
+    body of today, ``rows`` and ``total`` alone. A subclass and not a plain
+    dict, because ``routes/shell/feed.py`` reads ``.rows`` off the answer,
+    and a dict would give it no rows with no error.
+    """
+
+    entries: list[dict] | None = None
+
+
+def _may_read_entries(user: Any) -> bool:
+    """The Calendar pane's gate (D138 Q10, ``feature:tasks``). It fails closed
+    for anything that is not a resolved ``UserContext``."""
+    check = getattr(user, "has_permission", None)
+    return bool(check and check("feature:tasks"))
+
+
+@router.get(
+    "/my/calendar", response_model=CalendarRead, response_model_exclude_unset=True,
+)
 async def my_calendar(
     start: str,
     end: str,
     include_done: bool = False,
     user: UserContext = Depends(get_current_user),
-) -> ListResponse:
+) -> CalendarRead:
     """My scheduled blocks in a window — the Calendar app's one read.
 
     Spec: ``calendar_focus_os.md`` §10 · **D54** · ticket WS-39 S3a.
@@ -2465,6 +2490,13 @@ async def my_calendar(
     disposition is EFFECTIVE (stated where triaged, derived otherwise), so a
     task closed on the team's board leaves the calendar without anyone having
     triaged it personally.
+
+    **Calendar entries (WS-CAL CE-4, §3.4).** With ``CALENDAR_EVENTS`` on and
+    ``feature:tasks``, one more query runs in the same session: the events in
+    the window that I own or attend (``tasks/entries.read_my_entries``). They
+    go under ``entries``, never into ``rows``, because the client maps each
+    row to a task and the chat pages ``rows`` by :func:`calendar_key`. The
+    flag off runs no entry query, and the body has no ``entries`` key.
     """
     # ⚠️ Parsed explicitly, NOT through `coerce_write_values`. That helper keys
     # off an allow-list of COLUMN names, and these two are bind parameters — so
@@ -2496,6 +2528,7 @@ async def my_calendar(
         " AND p.scheduled_start >= :start AND p.scheduled_start < :end"
     )
     items: list[dict[str, Any]] = []
+    entries: list[dict[str, Any]] | None = None
     async with _tenant_session() as db:
         # A week never shows archived work. There is no `include_archived`
         # here on purpose: "show me the archive" is a list question, and a
@@ -2510,11 +2543,17 @@ async def my_calendar(
             items.append(task)
         await attach_assignees(db, items)
         await attach_my_parents(db, params, items)
+        # CE-4: the entries, in the same session. The flag is read first, so
+        # with it off nothing else here runs.
+        if events_enabled() and _may_read_entries(user):
+            entries = await read_my_entries(db, email, window["start"], window["end"])
 
     items.sort(key=calendar_key)
     # Deliberately unpaged: a window is already the bound, and a paged calendar
     # week would be a page of Tuesday.
-    return ListResponse(rows=items, total=len(items))
+    if entries is None:
+        return CalendarRead(rows=items, total=len(items))
+    return CalendarRead(rows=items, total=len(items), entries=entries)
 
 
 @router.get("/my/contexts")

@@ -2162,6 +2162,11 @@ class Version(BaseModel):
     #: shows whether a box serves them. With it off, every reminder route
     #: answers 404. Off by default.
     calendar_reminders: bool = False
+    #: WS-CAL CE-4 (`calendar_events_reminders.md` §9). The gateway's
+    #: `CALENDAR_EVENTS` flag, the ONE switch of the event store, so `curl`
+    #: shows whether a box serves it. With it off, every entry route
+    #: answers 404 and the calendar read has no `entries` key. Off by default.
+    calendar_events: bool = False
     #: True when a SIGHUP reloads the flags of this process with no restart
     #: (`gateway/flag_reload.py`). Check it BEFORE a SIGHUP: a gateway
     #: without the handler ends on that signal. `flags_reloaded_at` is the
@@ -2266,6 +2271,7 @@ async def version() -> Version:
     from gateway import flag_reload
     from gateway.push import flags as push_flags
     from gateway.routes.projects.reminders import reminders_enabled
+    from gateway.routes.tasks.entries import events_enabled
 
     applied_sha, applied_at = applied_marker()
     return Version(
@@ -2276,6 +2282,7 @@ async def version() -> Version:
         applied_at=applied_at,
         web_push=push_flags.enabled(),
         calendar_reminders=reminders_enabled(),
+        calendar_events=events_enabled(),
         flag_reload=flag_reload.installed(),
         flags_reloaded_at=flag_reload.last_reload(),
     )
