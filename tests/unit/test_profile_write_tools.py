@@ -131,6 +131,11 @@ class _Gateway:
             self.areas[area] = state
             self.profile["interview"] = ap.apply_interview_mark(
                 self.profile.get("interview"), area, state, datetime.now(UTC))
+        if not area and body == {"stop": True}:
+            # PZ-32 repair: the gateway's one stop write, through the REAL
+            # pure function.
+            self.profile["interview"] = ap.stop_interview(
+                self.profile.get("interview"), datetime.now(UTC))
         return httpx.Response(200, json={"started_at": "2026-10-25T10:00:00Z"})
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -1349,8 +1354,9 @@ class TestReplace:
     def test_the_prompt_asks_for_replaces(self) -> None:
         line = _orchestrator_module()._PROFILE_SWAP[1]
         assert "pass that fact's id\n  as replaces" in line
-        # PZ-32: the card of profile_alias is the offer, so no yes in words.
-        assert "call profile_alias for that name: its card asks them" in line
+        # PZ-32: with the card writes off, the line is as before. The card
+        # line is `_PROFILE_CARD_SWAP` (test_profile_pz32.py).
+        assert "offer to save that name with profile_alias" in line
         assert "sensitive=true" in line
 
 
@@ -1845,8 +1851,16 @@ class TestInterviewTool:
             "good_day": {"state": "skipped", "at": now}, "decisions": {"state": "never", "at": now}}}
         out = _run(pt.profile_interview("stop"))
         assert _status_of(out) == {"v": 1, "status": "saved"}
-        marked = [a for _m, a, b in own_chat.interview_calls if b == {"state": "never"}]
-        assert marked == [a for a in ap.AREAS if a not in ("role", "decisions")]
+        # PZ-32 repair (P1-1): ONE write. The gateway sets `stopped_at` and
+        # marks never each area that is not answered or never.
+        assert own_chat.interview_calls == [("POST", "", {"stop": True})]
+        stored = own_chat.profile["interview"]
+        assert stored["stopped_at"]
+        never = [a for a in ap.AREAS if stored["areas"][a]["state"] == "never"]
+        assert never == [a for a in ap.AREAS if a != "role"]
+        assert stored["areas"]["role"]["state"] == "answered"
+        assert f"Stopped. {len(ap.AREAS) - 2} areas" in out
+        assert _run(pt.profile_interview("next_sitting")) == pt.NO_OPEN_AREA
 
     @pytest.mark.parametrize("act", ["stop", "start"])
     def test_learning_off_refuses_stop_and_start(self, own_chat, act) -> None:
@@ -1854,7 +1868,8 @@ class TestInterviewTool:
         if act == "start":
             own_chat.interview_fail = 409
         assert _refused(_run(pt.profile_interview(act)), "learning_off") == pt.LEARNING_OFF
-        assert [c for c in own_chat.interview_calls if c[2] == {"state": "never"}] == []
+        assert [c for c in own_chat.interview_calls
+                if c[2] in ({"state": "never"}, {"stop": True})] == []
 
     def test_next_skips_an_area_that_is_closed(self, own_chat) -> None:
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

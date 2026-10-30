@@ -1267,10 +1267,14 @@ def confirmation_channel_open() -> bool:
     It reads the two channels that :func:`request_confirmation` tries: path A
     (``_active_run_queue``) and path C (the relay thread). A tool reads it
     AFTER a denial, to tell a refusal from a run with no live chat (WS-17
-    EM-T13a). A tool may also read it BEFORE a card, but only to choose a
-    narrower act that writes less. It never approves a write. ``request_confirmation`` stays the one gate,
-    and it fails closed, so a drift here can change a message or skip a
-    write, and never adds one.
+    EM-T13a). A tool may also read it BEFORE a card, to choose a narrower
+    act that writes less. One reader reads it before a card to choose a
+    card in place of a refusal: ``profile_tools._card_channel`` (WS-63
+    PZ-32, behind ``ASSISTANT_PROFILE_CARD_WRITES_ORGS``). True there asks
+    the member a card for a value that they did not type. It never approves
+    a write. ``request_confirmation`` stays the one gate, and it fails
+    closed, so a drift here can change a message, ask a card or skip a
+    write, and never writes with no approve.
     A run inside :func:`refuse_cards` has no channel (WS-47 WAC-3).
     """
     if cards_refused():

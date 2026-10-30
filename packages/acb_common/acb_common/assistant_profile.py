@@ -270,6 +270,11 @@ AREA_INTENTS: dict[str, str] = {
 #: the key of the profile that each one writes. ``detail`` writes ``style``
 #: too, and a fact can answer it, so it is not here.
 SET_AREAS: dict[str, str] = {"name": "address", "language": "style"}
+#: The ten areas before PZ-32. A stop before PZ-32 marked only these
+#: ``never`` and wrote no ``stopped_at``, so :func:`interview_stopped` reads
+#: such a row by them (PZ-32 repair, P1-1).
+OLD_AREAS: tuple[str, ...] = ("role", "goals", "good_day", "decisions", "detail", "rhythm",
+                              "channels", "energy", "peeves", "people")
 #: The state of an area (§14.3). An area with no entry is open.
 INTERVIEW_STATES: tuple[str, ...] = ("asked", "answered", "skipped", "never")
 #: The most hours between two questions (§14.4, limit 1).
@@ -499,7 +504,7 @@ def _stored_interview(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     out: dict[str, Any] = {}
-    for key in ("started_at", "last_asked_at", "sitting_at", "reset_at"):
+    for key in ("started_at", "last_asked_at", "sitting_at", "reset_at", "stopped_at"):
         if _parse_time(raw.get(key)) is not None:
             out[key] = raw[key]
     areas: dict[str, Any] = {}
@@ -533,7 +538,7 @@ def _parse_orgs(raw: str) -> frozenset[str]:
     a secret, so the warning names the entry.
     """
     orgs = frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
-    for org in sorted(orgs):
+    for org in sorted(orgs - {"*"}):
         try:
             uuid.UUID(org)
         except ValueError:
@@ -568,6 +573,33 @@ def enabled_for(org_id: str | None) -> bool:
             return False
         orgs = _parse_orgs(str(getattr(settings, "assistant_profile_orgs", "") or ""))
         return not orgs or org in orgs
+    except Exception:
+        return False
+
+
+def card_writes_for(org_id: str | None) -> bool:
+    """True when the card writes of PZ-32 are on for *org_id*. Fails closed.
+
+    ``ASSISTANT_PROFILE_CARD_WRITES_ORGS`` (``assistant_profile_card_writes_orgs``)
+    is a comma list of organization ids, or ``*`` for each one. Empty means
+    off, which is the default. It is the one reader of the flag. The flag
+    opens the two write paths of D-PZ-21 and D-PZ-22: a card that grounds a
+    value that the member did not type, and the offer to remember. Off, the
+    typed-words rule refuses such a value, and an offer asks nothing.
+
+    The caller passes the bound tenant of the run, never an id from request
+    input (R5). It reads ``get_settings()`` on each call, so a flag reload
+    (``gateway/flag_reload.py``) applies a change with no restart.
+    """
+    try:
+        org = str(org_id or "").strip().lower()
+        if not org:
+            return False
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "assistant_profile_card_writes_orgs", "") or "")
+        orgs = _parse_orgs(raw)
+        return "*" in orgs or org in orgs
     except Exception:
         return False
 
@@ -1344,13 +1376,76 @@ def sitting_active(interview: Any, now: datetime) -> bool:
     return at is not None and timedelta(0) <= now - at <= timedelta(hours=SITTING_HOURS)
 
 
+def interview_stopped(interview: Any) -> bool:
+    """True when the member said stop asking (PZ-32 repair, P1-1). Pure.
+
+    A stop writes ``stopped_at``. A stop before PZ-32 wrote none: it marked
+    each area of :data:`OLD_AREAS` that was not answered ``never``. So a row
+    with no ``stopped_at`` reads as stopped when each old area is
+    ``answered`` or ``never``, and one or more is ``never``. A new area of a
+    later release then stays closed for a member who said stop. A reset in
+    Settings ends the stop (:func:`reset_interview_area`, and the reset of
+    the whole interview drops the key)."""
+    stored = _stored_interview(interview) or {}
+    if stored.get("stopped_at"):
+        return True
+    states = [((stored.get("areas") or {}).get(a) or {}).get("state") for a in OLD_AREAS]
+    return all(s in ("answered", "never") for s in states) and "never" in states
+
+
+def stop_interview(interview: Any, now: datetime) -> dict[str, Any]:
+    """The interview after the member said stop asking (PZ-32 repair, P1-1).
+    Pure. It sets ``stopped_at`` and ``started_at`` once, and marks
+    ``never`` each area that is not ``answered`` or ``never``: an open, an
+    asked and a skipped area."""
+    out = _stored_interview(interview) or {}
+    stamp = _format_time(now)
+    out.setdefault("started_at", stamp)
+    out["stopped_at"] = stamp
+    areas = dict(out.get("areas") or {})
+    for area in AREAS:
+        if (areas.get(area) or {}).get("state") not in ("answered", "never"):
+            areas[area] = {"state": "never", "at": stamp}
+    out["areas"] = areas
+    return out
+
+
+def reset_interview_area(interview: Any, area: str, now: datetime) -> dict[str, Any]:
+    """The interview after a reset of one area in Settings. Pure.
+
+    The area loses its entry, so it is open again, and ``reset_at`` is
+    *now*, so a fact from before the reset never answers it again. A reset
+    ends a stop (PZ-32 repair, P1-1): ``stopped_at`` goes, so the member is
+    asked about this area again. Each other area with no entry is marked
+    ``never`` at that time, so only the area that the member reset opens. A
+    stop before PZ-32 left ``name`` and ``language`` with no entry. An
+    unknown area is a ValueError."""
+    if area not in AREAS:
+        raise ValueError(f"the area is one of {', '.join(AREAS)}")
+    out = _stored_interview(interview) or {}
+    stamp = _format_time(now)
+    stopped = interview_stopped(out)
+    areas = {k: v for k, v in (out.get("areas") or {}).items() if k != area}
+    if stopped:
+        for other in AREAS:
+            if other != area and other not in areas:
+                areas[other] = {"state": "never", "at": stamp}
+    out.pop("stopped_at", None)
+    out["areas"] = areas
+    out["reset_at"] = stamp
+    return out
+
+
 def open_areas(interview: Any, now: datetime, limit: int | None = None) -> list[str]:
     """The ids of the open areas, in the order of :data:`AREAS`.
 
     An area is open when it has no entry, or when it is ``skipped`` or
     ``asked`` and the entry is :data:`WAIT_DAYS` days old or older. ``answered``
-    and ``never`` are never open. *limit* cuts the list.
+    and ``never`` are never open. A stopped interview has no open area
+    (:func:`interview_stopped`). *limit* cuts the list.
     """
+    if interview_stopped(interview):
+        return []
     areas = (_stored_interview(interview) or {}).get("areas", {})
     wait = timedelta(days=WAIT_DAYS)
     out: list[str] = []
@@ -1368,7 +1463,8 @@ def open_areas(interview: Any, now: datetime, limit: int | None = None) -> list[
 
 def due_area(interview: Any, now: datetime) -> str:
     """The open area that is due now, or ``""``. The rule of
-    :func:`interview_due_line`, without the words."""
+    :func:`interview_due_line`, without the words. A stopped interview has
+    none (:func:`open_areas`)."""
     stored = _stored_interview(interview) or {}
     started = _parse_time(stored.get("started_at"))
     last = _parse_time(stored.get("last_asked_at"))
@@ -1488,7 +1584,9 @@ def area_has_answer(profile: Any, area: str, last_change: Any = None) -> bool:
 def may_ask(interview: Any, now: datetime) -> bool:
     """True when the model may mark an area ``asked`` from the chat: a
     sitting is under way, or a question is due. A member who said no has
-    neither (§14.4)."""
+    neither (§14.4), and a member who said stop may never (PZ-32 repair)."""
+    if interview_stopped(interview):
+        return False
     return sitting_active(interview, now) or bool(due_area(interview, now))
 
 

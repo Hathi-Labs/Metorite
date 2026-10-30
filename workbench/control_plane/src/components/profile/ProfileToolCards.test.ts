@@ -325,6 +325,43 @@ describe("profile_interview (PZ-27)", () => {
   });
 });
 
+// PZ-32 repair (P1-4). Mutations: draw the `no_offer` refusal, or draw
+// "Already saved" for an offer. Each one shows the member a red or neutral
+// card for a question that they never saw.
+describe("the offer to remember (PZ-32)", () => {
+  const remember = (result: string, args: Record<string, unknown> = {}, status: ToolEvent["status"] = "done") =>
+    ({ ...ev("profile_remember", result), args, status }) as ToolEvent;
+  const html = (e: ToolEvent) => renderToStaticMarkup(createElement(ProfileToolCards, { toolEvents: [e] }));
+  const NO_OFFER =
+    'profile: {"reason":"no_offer","status":"refused","v":1}\n' +
+    "For the assistant: you already offered once in this chat, so nothing is saved.";
+
+  it("a no_offer refusal draws nothing, with or without the offer argument", () => {
+    expect(readProfileResult(NO_OFFER)).toMatchObject({ status: "refused", reason: "no_offer", text: "" });
+    expect(drawsReceipt(remember(NO_OFFER, { offer: true }))).toBe(false);
+    expect(drawsReceipt(remember(NO_OFFER))).toBe(false);
+    expect(html(remember(NO_OFFER, { offer: true }))).toBe("");
+  });
+  it("an offer of a fact that is saved draws nothing", () => {
+    for (const offer of [true, "true", "yes"]) {
+      expect(drawsReceipt(remember(DUPLICATE, { offer }))).toBe(false);
+    }
+    expect(html(remember(DUPLICATE, { offer: true }))).toBe("");
+  });
+  it("a save the member asked for still reads Already saved", () => {
+    for (const args of [{}, { offer: false }, { offer: "false" }, { offer: "0" }]) {
+      expect(drawsReceipt(remember(DUPLICATE, args))).toBe(true);
+    }
+    expect(html(remember(DUPLICATE))).toContain("Already saved");
+  });
+  it("a saved offer, a declined offer and a failed call still draw", () => {
+    expect(html(remember(REMEMBER, { offer: true }))).toContain("Noted");
+    const declined = 'profile: {"reason":"declined","status":"refused","v":1}\nNot saved.';
+    expect(drawsReceipt(remember(declined, { offer: true }))).toBe(true);
+    expect(drawsReceipt(remember(NO_OFFER, { offer: true }, "error"))).toBe(true);
+  });
+});
+
 describe("receipt bodies in plain words, from the call arguments (PZ-11)", () => {
   const set = (key: string, value: Record<string, unknown>) => profileReceiptBody("profile_set", { key, value });
 

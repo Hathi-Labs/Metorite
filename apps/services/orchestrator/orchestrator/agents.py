@@ -313,11 +313,7 @@ _PROFILE_SWAP: tuple[str, str] = (
     "  as replaces. Pass sensitive=true for a fact about health, religion, caste,\n"
     "  politics, sexuality or money. Such a change asks the member once first.\n"
     "  When a colleague lookup lists several people and the member picks one,\n"
-    "  call profile_alias for that name: its card asks them, so do not ask first.\n"
-    "  When the member says a lasting fact about themselves in passing, and the\n"
-    "  profile block does not hold it, you may offer once in this chat to keep it: call\n"
-    "  profile_remember with offer=true. The card is the question, so do not ask\n"
-    "  in words first. Do not offer on WhatsApp.\n"
+    "  offer to save that name with profile_alias.\n"
     "- profile_interview: get-to-know-me questions. When the block has an interview line, ask\n"
     "  that one question as it says, at the end of your reply, and mark it asked. When the member\n"
     "  asks you to get to know them or to ask a few questions, call next_sitting. Ask in your own\n"
@@ -332,6 +328,23 @@ _PROFILE_SWAP: tuple[str, str] = (
     "  profile_alias. If a save is refused, say once you could not keep it. After the third answer ask\n"
     "  once, lightly, if they want to go on, then next_sitting. When they say stop asking, call\n"
     "  profile_interview with stop.\n",
+)
+
+
+# WS-63 PZ-32 (personalization.md §5.5, D-PZ-21 and D-PZ-22). With the
+# profile on AND `ASSISTANT_PROFILE_CARD_WRITES_ORGS` naming the org, the line
+# of the alias offer becomes the card, and the persona gains the offer to
+# remember, by one exact swap after `_PROFILE_SWAP`. Off, the persona is the
+# profile persona, byte for byte. Fence: tests/unit/test_profile_pz32.py.
+_PROFILE_CARD_SWAP: tuple[str, str] = (
+    "  When a colleague lookup lists several people and the member picks one,\n"
+    "  offer to save that name with profile_alias.\n",
+    "  When a colleague lookup lists several people and the member picks one,\n"
+    "  call profile_alias for that name: its card asks them, so do not ask first.\n"
+    "  When the member says a lasting fact about themselves in passing, and the\n"
+    "  profile block does not hold it, you may offer once in this chat to keep it: call\n"
+    "  profile_remember with offer=true. The card is the question, so do not ask\n"
+    "  in words first. Do not offer on WhatsApp.\n",
 )
 
 
@@ -373,14 +386,16 @@ _SPAWN_ANCHOR = "THE SHAPE OF A ROUTINE REPLY."
 def _orchestrator_instructions(
     company_search: bool, recency: bool = False, proposals: bool = False,
     *, profile: bool = False, constraints: bool = False, spawn: bool = False,
+    card_writes: bool = False,
 ) -> str:
     """The persona. Off, ``_PULL_INSTRUCTIONS`` itself. On, the three swaps.
 
     *recency* (CX-1) adds the swap of :data:`_RECENCY_SWAP`, and *proposals*
     (KB-5a) the swap of :data:`_PROPOSALS_SWAP`. Each acts only when
     *company_search* is on too. *profile* (PZ-6a) adds :data:`_PROFILE_SWAP`
-    on its own, and *constraints* (WS-67 OA-4) adds :data:`_CONSTRAINTS_SWAP`
-    on its own. *spawn* (WS-67 OA-9e) adds :data:`_SPAWN_BLOCK`.
+    on its own, and *card_writes* (PZ-32) then adds :data:`_PROFILE_CARD_SWAP`.
+    *constraints* (WS-67 OA-4) adds :data:`_CONSTRAINTS_SWAP` on its own.
+    *spawn* (WS-67 OA-9e) adds :data:`_SPAWN_BLOCK`.
     """
     if not company_search and not profile and not constraints and not spawn:
         return _PULL_INSTRUCTIONS
@@ -390,6 +405,7 @@ def _orchestrator_instructions(
         + ((_RECENCY_SWAP,) if company_search and recency else ())
         + ((_PROPOSALS_SWAP,) if company_search and proposals else ())
         + ((_PROFILE_SWAP,) if profile else ())
+        + ((_PROFILE_CARD_SWAP,) if profile and card_writes else ())
         + ((_CONSTRAINTS_SWAP,) if constraints else ())
     )
     for old, new in swaps:
@@ -466,6 +482,29 @@ def _assistant_profile_enabled(org: str | None = None) -> bool:
 
             org = _current_run_org()
         return enabled_for(org)
+    except Exception:
+        return False
+
+
+def _profile_card_writes_enabled(org: str | None = None) -> bool:
+    """True when the card writes of the profile are on for this agent's org
+    (PZ-32). The rule is ``acb_common.assistant_profile.card_writes_for``
+    (``ASSISTANT_PROFILE_CARD_WRITES_ORGS``, empty means off). The org is
+    found as :func:`_assistant_profile_enabled` finds it, and a caller with
+    none fails closed. The tools ask the same rule again at each call
+    (``profile_tools._card_channel``). Never raises."""
+    try:
+        from acb_common.assistant_profile import card_writes_for
+
+        if not org:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        if not org:
+            from orchestrator.executor import _current_run_org
+
+            org = _current_run_org()
+        return card_writes_for(org)
     except Exception:
         return False
 
@@ -1039,10 +1078,13 @@ def build_orchestrator_agent(
     constraints_on = _chat_constraints_enabled()
 
     # Build the instructions; append memory context when present.
+    # WS-63 PZ-32: the offer line only where the card writes are on.
+    card_writes_on = profile_on and _profile_card_writes_enabled(organization_id)
     instructions = _orchestrator_instructions(company_search, recency, proposals,
                                               profile=profile_on,
                                               constraints=constraints_on,
-                                              spawn=_spawn_subagents_enabled(organization_id))
+                                              spawn=_spawn_subagents_enabled(organization_id),
+                                              card_writes=card_writes_on)
 
     # Memory tools — active read/write to Mem0 + Graphiti knowledge graph.
     # Gives the orchestrator the same memory capabilities that injected

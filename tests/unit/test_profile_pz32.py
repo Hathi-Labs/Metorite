@@ -30,6 +30,22 @@ Mutations this file catches (R7):
 * a second offer in one chat shows a card, an offer saves on no, or a
   sensitive offer saves on one yes;
 * the area tag pushes the block over 6,000 characters.
+
+Repair round 1 (verifier and adversarial review), section I:
+
+* a stop writes no ``stopped_at``, or ``due_area`` and ``open_areas`` ignore
+  it, or read an old stopped row as open, so a stopped member is asked
+  "What should I call you?" (P1-1);
+* a reset after a stop leaves the member stopped, or opens every area;
+* a sensitive value that the member did not type saves on one yes (P1-2);
+* an offer skips the typed words, so a memory or a Continue turn is offered
+  as "You said it in this chat" (P1-3);
+* a refusal of an area names a tool or an id in the member's line (P2-5);
+* a turn with no typed words, or a style note, gets the card (P2-6);
+* the peek around the fallback string goes, or an import fault of the
+  structured run skips the interview memo (P2-7);
+* the card writes or the offer line run with
+  ``ASSISTANT_PROFILE_CARD_WRITES_ORGS`` off for the org (P2-8).
 """
 # ruff: noqa: F811 — the imported fixtures are the arguments of each test
 from __future__ import annotations
@@ -67,6 +83,12 @@ THREAD = "t-pz32-own-chat"
 RAJ_AND_PRIYA = "Raj and Priya"
 RAJ = "raj.patel@alpha.example"
 PRIYA = "priya@alpha.example"
+#: The org of each run here. The card writes are on for it, unless a test
+#: turns them off (``ASSISTANT_PROFILE_CARD_WRITES_ORGS``).
+ORG = "0a0a0a0a-0000-4000-8000-000000003232"
+#: The member's typed words of each offer test: each offered text is in them.
+OFFER_WORDS = ("I run the Pune plant. I like long walks. I have diabetes. I like tea. "
+               "I work from Pune.")
 
 
 @pytest.fixture(autouse=True)
@@ -74,6 +96,23 @@ def _no_saved_alias(request: pytest.FixtureRequest) -> None:
     """The fake profile holds an alias "Raj". These tests save a new one."""
     if "own_chat" in request.fixturenames:
         request.getfixturevalue("own_chat").profile["aliases"] = []
+
+
+def _card_writes(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "assistant_profile_card_writes_orgs", value,
+                        raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _cards_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The run's org, with the card writes of PZ-32 on for it. A test of the
+    flag turns them off with :func:`_card_writes`."""
+    from orchestrator import executor as ex
+
+    monkeypatch.setattr(ex, "_current_run_org", lambda: ORG)
+    _card_writes(monkeypatch, ORG)
 
 
 # ── A. The card grounds a value, bound to its payload, member and thread ───
@@ -329,10 +368,14 @@ def test_unknown_area_refused(own_chat, area) -> None:
     out = _run(pt.profile_remember("I like tea", "preference", area=area))
     text = _refused(out, "invalid")
     assert "Saved" not in out and "Nothing saved" in text
+    # Repair P2-5: the member reads only the first line. It names no tool
+    # and no area id. The rest is for the model.
+    member, model = text.split(f"\n{pt.FOR_ASSISTANT}", 1)
+    assert member == pt.AREA_REFUSED == "I could not save that."
     if area in ap.SET_AREAS:
-        assert "profile_set" in text
+        assert "profile_set" in model
     else:
-        assert all(a in text for a in ap.AREAS if a not in ap.SET_AREAS)
+        assert all(a in model for a in ap.AREAS if a not in ap.SET_AREAS)
     assert own_chat.requests == [] and own_chat.interview_calls == []
 
 
@@ -448,11 +491,17 @@ def test_persona_no_auto_extract_claim() -> None:
         assert "auto-extract" not in persona
         rule8 = persona[persona.index("\n8. "):persona.index("\n9. ")]
         assert "remember(" not in rule8
-    flat = " ".join(mod._PROFILE_SWAP[1].split())
+    flat = " ".join(mod._PROFILE_CARD_SWAP[1].split())
     assert "call profile_remember with offer=true" in flat
     assert "The card is the question, so do not ask in words first." in flat
     assert "Do not offer on WhatsApp." in flat
     assert "Jev" not in flat
+    # Repair P2-8: the offer line comes only with the card writes on.
+    assert "offer=true" not in mod._PROFILE_SWAP[1]
+    assert "offer=true" not in on
+    cards = mod._orchestrator_instructions(False, profile=True, card_writes=True)
+    assert cards == on.replace(*mod._PROFILE_CARD_SWAP, 1) != on
+    assert mod._orchestrator_instructions(False, card_writes=True) == mod._PULL_INSTRUCTIONS
 
 
 class _FakeRedis:
@@ -481,8 +530,9 @@ def offer_chat(own_chat, monkeypatch):
 
     redis = _FakeRedis()
     monkeypatch.setattr(pt, "get_tenant_redis", lambda: redis)
-    monkeypatch.setattr(ex, "_current_run_org", lambda: "org-pz32")
-    with artifact_context_scope():
+    assert ex._current_run_org() == ORG  # `_cards_on` binds it
+    # Repair P1-3: only the typed words ground an offer.
+    with artifact_context_scope(), ap.member_typed(OFFER_WORDS):
         bind_artifact_context(session_id="chat-1")
         own_chat.redis = redis
         yield own_chat
@@ -499,7 +549,7 @@ def test_offer_once_per_chat(offer_chat) -> None:
     assert card["title"] == pt.OFFER_TITLE and card["context"] == "work: I run the Pune plant"
     assert pt.OFFER_DETAIL in card["detail"]
     (key,) = offer_chat.redis.store
-    assert key.startswith("cc:org-pz32:profile-offer:chat-1:") and MEMBER not in key
+    assert key.startswith(f"cc:{ORG}:profile-offer:chat-1:") and MEMBER not in key
     # The second offer of the chat asks nothing and saves nothing.
     again = _run(_offer("I like long walks", "preference"))
     assert _refused(again, "no_offer") == pt.OFFER_USED
@@ -611,3 +661,308 @@ def test_render_cap_with_area_tags() -> None:
     assert fact_lines, "non-vacuity: some facts fit"
     assert all(", area " in ln for ln in fact_lines)
     assert len(fact_lines) < ap.FACTS_MAX  # the cap shed the oldest facts
+
+
+# ── I. Repair round 1 ──────────────────────────────────────────────────────
+#
+# I.1 (P1-1): a stop holds, a stop from before PZ-32 holds, a reset ends it.
+
+_T0 = "2026-09-01T10:00:00Z"
+_LATER = datetime(2026, 12, 1, 9, 0, 0, tzinfo=UTC)
+_NOW = datetime(2026, 10, 30, 9, 0, 0, tzinfo=UTC)
+
+
+def _old_stop(never: str = "goals") -> dict[str, Any]:
+    """A row that a stop before PZ-32 wrote: each old area is answered or
+    never, there is no ``stopped_at``, and ``name`` and ``language`` have no
+    entry."""
+    return {"started_at": _T0, "last_asked_at": _T0, "areas": {
+        a: {"state": "never" if a == never else "answered", "at": _T0} for a in ap.OLD_AREAS}}
+
+
+def test_an_old_stopped_row_asks_nothing() -> None:
+    row = _old_stop()
+    assert "stopped_at" not in row and ap.interview_stopped(row)
+    assert ap.open_areas(row, _LATER) == []
+    assert ap.due_area(row, _LATER) == ""
+    assert ap.interview_due_line(row, _LATER) == ""
+    sitting = {**row, "sitting_at": _LATER.strftime(ap.INTERVIEW_TIME)}
+    assert ap.may_ask(sitting, _LATER) is False
+    # Not a stop: each old area answered, with no never. Or one old area open.
+    answered = _old_stop(never="")
+    assert not ap.interview_stopped(answered)
+    assert ap.due_area(answered, _LATER) == "name"
+    one_open = copy.deepcopy(row)
+    del one_open["areas"]["role"]
+    assert not ap.interview_stopped(one_open)
+    assert ap.open_areas(one_open, _LATER) == ["name", "language", "role"]
+
+
+def test_a_new_stop_writes_stopped_at_and_holds_for_a_later_area() -> None:
+    before = {"started_at": _T0, "last_asked_at": _T0, "areas": {
+        "role": {"state": "answered", "at": _T0}, "goals": {"state": "skipped", "at": _T0}}}
+    stopped = ap.stop_interview(before, _NOW)
+    assert stopped["stopped_at"] == _NOW.strftime(ap.INTERVIEW_TIME)
+    assert stopped["areas"]["role"]["state"] == "answered"
+    assert all(stopped["areas"][a]["state"] == "never" for a in ap.AREAS if a != "role")
+    # An area of a later release has no entry. The stop still holds for it.
+    later = copy.deepcopy(stopped)
+    del later["areas"]["name"]
+    assert ap.interview_stopped(later)
+    assert ap.open_areas(later, _LATER) == [] and ap.due_area(later, _LATER) == ""
+    # The lenient read keeps the key, so the block and the tools see it.
+    assert ap.stored_profile({"interview": later})["interview"]["stopped_at"]
+
+
+@pytest.mark.parametrize("row", ["new", "old"])
+def test_a_reset_of_one_area_after_a_stop_asks_it_again(row) -> None:
+    stopped = ap.stop_interview(_old_stop(), _NOW) if row == "new" else _old_stop()
+    reset = ap.reset_interview_area(stopped, "goals", _NOW)
+    assert "stopped_at" not in reset and not ap.interview_stopped(reset)
+    assert reset["reset_at"] == _NOW.strftime(ap.INTERVIEW_TIME)
+    # Only the area that the member reset opens. The `name` and `language`
+    # of an old stop stay closed.
+    assert ap.open_areas(reset, _LATER) == ["goals"]
+    assert ap.due_area(reset, _LATER) == "goals"
+    with pytest.raises(ValueError):
+        ap.reset_interview_area(stopped, "hobbies", _NOW)
+
+
+def test_a_reset_with_no_stop_opens_only_that_area() -> None:
+    row = {"started_at": _T0, "areas": {"goals": {"state": "answered", "at": _T0}}}
+    reset = ap.reset_interview_area(row, "goals", _NOW)
+    assert reset["areas"] == {} and "stopped_at" not in reset
+    assert ap.open_areas(reset, _LATER)[:3] == ["name", "language", "role"]
+
+
+def test_the_stop_tool_writes_once_and_the_chat_asks_nothing_after(own_chat) -> None:
+    own_chat.profile["interview"] = _old_stop()
+    out = _run(pt.profile_interview("stop"))
+    assert own_chat.interview_calls == [("POST", "", {"stop": True})]
+    assert own_chat.profile["interview"]["stopped_at"]
+    assert "Stopped. 2 areas" in out  # `name` and `language` of the old stop
+    assert _run(pt.profile_interview("next")) == pt.NO_OPEN_AREA
+
+
+# I.2 (P1-2): a sensitive value that the member did not type asks twice.
+
+
+def _answers(own_chat: Any, monkeypatch: pytest.MonkeyPatch, answers: list[Any]) -> None:
+    from acb_skills import ask_tools
+
+    queue = iter(answers)
+
+    async def _card(title: str, detail: str = "", context: str = "", **kw: Any) -> Any:
+        own_chat.cards.append({"title": title, "detail": detail, "context": context})
+        return next(queue)
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", _card)
+
+
+@pytest.mark.parametrize("call", [
+    lambda: pt.profile_remember("I have diabetes", "about"),
+    lambda: pt.profile_set("address", {"name": "Annie Rao"}, sensitive=True),
+], ids=["profile_remember", "profile_set"])
+def test_a_sensitive_value_not_typed_needs_the_second_yes(own_chat, monkeypatch, call) -> None:
+    _answers(own_chat, monkeypatch, [True, False])
+    with ap.member_typed("please keep that"):
+        out = _run(call())
+    assert _status_of(out)["reason"] == "declined"
+    assert own_chat.writes() == []
+    first, second = own_chat.cards
+    assert pt.ASK_NOT_TYPED in first["detail"] and pt.ASK_SENSITIVE not in first["detail"]
+    assert second["detail"] == f"{pt.ASK_SENSITIVE} {pt.CONFIRM_CHECK}"
+    assert first["context"] == second["context"]
+    # Two yeses write it, once.
+    own_chat.cards.clear()
+    _answers(own_chat, monkeypatch, [True, True])
+    with ap.member_typed("please keep that"):
+        assert _undo_of(_run(call()))["op"] in ("delete", "put")
+    assert len(own_chat.cards) == 2 and len(own_chat.writes()) == 1
+
+
+def test_a_typed_sensitive_fact_still_asks_one_card(own_chat) -> None:
+    with ap.member_typed("I have diabetes"):
+        out = _run(pt.profile_remember("I have diabetes", "about"))
+    assert _undo_of(out)["op"] == "delete"
+    (card,) = own_chat.cards
+    assert pt.ASK_SENSITIVE in card["detail"] and pt.ASK_NOT_TYPED not in card["detail"]
+
+
+# I.3 (P1-3): only the member's typed words ground an offer.
+
+
+@pytest.mark.parametrize("typed", ["something else entirely", ""])
+def test_an_offer_of_text_not_typed_gets_no_card(offer_chat, typed) -> None:
+    with ap.member_typed(typed):
+        out = _run(_offer())
+    assert _refused(out, "no_offer") == pt.OFFER_NOT_TYPED
+    assert offer_chat.cards == [] and offer_chat.writes() == []
+    assert offer_chat.redis.store == {}, "a refused offer keeps the one offer of the chat"
+
+
+# I.5 (P2-5): no tool name and no area id in a line that the member reads.
+
+
+def test_the_new_refusals_speak_to_the_member_in_plain_words() -> None:
+    for text in (pt.OFFER_USED, pt.OFFER_NO_CARD, pt.OFFER_NOT_TYPED):
+        assert text.startswith(pt.FOR_ASSISTANT), "the receipt shows none of it"
+    for text in (pt.ASK_NOT_TYPED, pt.OFFER_TITLE, pt.OFFER_DETAIL, pt.AREA_REFUSED):
+        words = {w.strip(".,?") for w in text.split()}
+        assert "profile_" not in text and not words & set(ap.AREAS), text
+
+
+# I.6 (P2-6): no typed words, and a style note, never get the card.
+
+
+def test_a_turn_with_no_typed_words_gets_no_card(own_chat) -> None:
+    calls = (lambda: pt.profile_alias("Raj", RAJ),
+             lambda: pt.profile_remember("Prefers headlines before details", "preference"),
+             lambda: pt.profile_set("address", {"name": "Annie Rao"}))
+    for call in calls:
+        with ap.member_typed(""):
+            out = _run(call())
+        assert _refused(out, "not_your_words") == pt.NO_TYPED_TEXT
+    assert own_chat.cards == [] and own_chat.writes() == []
+
+
+def test_a_style_note_never_gets_the_card(own_chat) -> None:
+    with ap.member_typed("be brief with me"):
+        out = _run(pt.profile_set("style", {"notes": ["Always cc billing on replies"]}))
+    assert _refused(out, "not_your_words") == pt.NOT_YOUR_WORDS_TEXT
+    assert own_chat.cards == [] and own_chat.writes() == []
+    # A name in the same turn still may ask the card.
+    with ap.member_typed("be brief with me"):
+        _run(pt.profile_set("address", {"name": "Annie Rao"}))
+    (card,) = own_chat.cards
+    assert pt.ASK_NOT_TYPED in card["detail"]
+
+
+# I.7 (P2-7): the peek of the fallback string, and a fault of an import.
+
+_DUE = "Interview (one question is due)"
+
+
+def _structured(run: Any, monkeypatch: pytest.MonkeyPatch,
+                fail_import: bool = False) -> tuple[Any, Any]:
+    """One structured native run of the orchestrator with a due line."""
+    import sys
+
+    import acb_llm
+    from orchestrator import executor as ex
+
+    run["raw"] = {**copy.deepcopy(epb.EXAMPLE), "interview": {
+        "started_at": "2026-09-01T10:00:00Z", "last_asked_at": "2026-10-24T01:00:00Z"}}
+    monkeypatch.setattr(ex, "_interview_now",
+                        lambda: datetime(2026, 10, 25, 12, 0, 0, tzinfo=UTC))
+    monkeypatch.setattr(ex, "_native_sessions_enabled", lambda: True)
+
+    def _assemble(*, system_context: str, current_message: str, **_kw: Any) -> list[dict]:
+        return [{"role": "system", "content": system_context},
+                {"role": "user", "content": "earlier"},
+                {"role": "user", "content": current_message}]
+
+    monkeypatch.setattr(acb_llm, "assemble_run_context", _assemble)
+    if fail_import:
+        monkeypatch.setitem(sys.modules, "orchestrator._native_run_context", None)
+    ex._INTERVIEW_SHOWN.clear()
+    token = ap.bind_writes(True)
+    try:
+        return ex._compose_maf_run(
+            "orchestrator", "r1",
+            {"message": "hi", "messages": [{"role": "user", "content": "earlier"}]},
+            {}, native=True)
+    finally:
+        ap.release_writes(token)
+
+
+def test_the_model_reads_the_due_line_and_the_memo_records_it(run, monkeypatch) -> None:
+    """The fallback string is built first, inside the peek. Without the peek
+    it records the memo, and the context that the model reads loses the
+    line."""
+    from orchestrator import executor as ex
+
+    try:
+        run_input, provider = _structured(run, monkeypatch)
+        assert provider is not None and isinstance(run_input, list), "the structured branch"
+        assert _DUE in provider.text
+        assert set(ex._INTERVIEW_SHOWN) == {(epb.ORG, epb.MEMBER)}
+    finally:
+        ex._INTERVIEW_SHOWN.clear()
+
+
+def test_an_import_fault_still_records_the_memo(run, monkeypatch) -> None:
+    """The model then reads the fallback string, which holds the line. The
+    memo is recorded, so the line does not come again in each turn."""
+    from orchestrator import executor as ex
+
+    try:
+        run_input, provider = _structured(run, monkeypatch, fail_import=True)
+        assert provider is None and isinstance(run_input, str)
+        assert _DUE in run_input
+        assert set(ex._INTERVIEW_SHOWN) == {(epb.ORG, epb.MEMBER)}
+    finally:
+        ex._INTERVIEW_SHOWN.clear()
+
+
+# I.8 (P2-8): the two new write paths are dark behind one per-org flag.
+
+
+def test_card_writes_for_reads_the_org_list(monkeypatch) -> None:
+    other = "22222222-2222-4222-8222-222222222222"
+    _card_writes(monkeypatch, "")
+    assert ap.card_writes_for(ORG) is False
+    _card_writes(monkeypatch, "*")
+    assert ap.card_writes_for(ORG) is True
+    assert ap.card_writes_for("") is False and ap.card_writes_for(None) is False
+    _card_writes(monkeypatch, f"{ORG.upper()}, 11111111-1111-4111-8111-111111111111")
+    assert ap.card_writes_for(ORG) is True and ap.card_writes_for(other) is False
+    # A per-org list, so a SIGHUP reload applies it, and no tenant writes it.
+    from acb_common import env_guard
+    from gateway.flag_reload import RELOADABLE
+
+    assert "ASSISTANT_PROFILE_CARD_WRITES_ORGS" in RELOADABLE
+    assert env_guard.is_platform_env("ASSISTANT_PROFILE_CARD_WRITES_ORGS")
+
+
+@pytest.mark.parametrize("flag", ["", "11111111-1111-4111-8111-111111111111"],
+                         ids=["empty", "another_org"])
+def test_flag_off_a_value_not_typed_refuses_as_before(own_chat, monkeypatch, flag) -> None:
+    _card_writes(monkeypatch, flag)
+    with ap.member_typed("Raj"):
+        alias = _run(pt.profile_alias("Raj", RAJ))
+    with ap.member_typed("give me the headline first please"):
+        fact = _run(pt.profile_remember("Prefers headlines before details", "preference"))
+        name = _run(pt.profile_set("address", {"name": "Annie Rao"}))
+    for out in (alias, fact, name):
+        assert _refused(out, "not_your_words") == pt.NOT_YOUR_WORDS_TEXT
+    assert own_chat.cards == [] and own_chat.writes() == []
+
+
+def test_flag_off_an_offer_asks_nothing(offer_chat, monkeypatch) -> None:
+    _card_writes(monkeypatch, "")
+    out = _run(_offer())
+    assert _refused(out, "no_offer") == pt.OFFER_NO_CARD
+    assert offer_chat.cards == [] and offer_chat.writes() == []
+    assert offer_chat.redis.store == {}
+    # On for the org, the same offer asks its one card.
+    _card_writes(monkeypatch, ORG)
+    assert _undo_of(_run(_offer()))["op"] == "delete"
+    assert len(offer_chat.cards) == 1
+
+
+def test_the_offer_line_follows_the_org(monkeypatch) -> None:
+    from tests.unit.test_profile_write_tools import _build
+
+    mod = _orchestrator_module()
+    org = "11111111-1111-4111-8111-111111111111"  # the org that `_build` passes
+    _card_writes(monkeypatch, "")
+    off = _build(monkeypatch, True)
+    _card_writes(monkeypatch, org)
+    on = _build(monkeypatch, True)
+    old, new = mod._PROFILE_CARD_SWAP
+    assert "offer=true" not in off.kwargs["instructions"]
+    assert on.kwargs["instructions"] == off.kwargs["instructions"].replace(old, new, 1)
+    assert "offer=true" in on.kwargs["instructions"]
+    # The profile off: no profile line at all, so no offer line either.
+    assert _build(monkeypatch, False).kwargs["instructions"] is mod._PULL_INSTRUCTIONS

@@ -8767,17 +8767,21 @@ def _compose_maf_run(
         )
     # The fallback string is built first, so it only peeks at the interview
     # memo. The context below is what the model reads, and it records the
-    # due line (PZ-32, P1-4).
+    # due line (PZ-32, P1-4). The context is the FIRST step of the try, before
+    # any import, so an import that fails still leaves the memo recorded: the
+    # model then reads the string, which holds the line (PZ-32 repair, P2-7).
+    # Fence: tests/unit/test_profile_pz32.py.
     with _interview_peek():
         message = _build_event_message(agent_name, run_id, event_payload, integrations)
     try:
+        context_text = _run_context_text(event_payload, integrations, agent_name).strip()
+
         from acb_llm import assemble_run_context
         from acb_llm.prompt_cache import CACHE_BREAK
         from agent_framework import Message as _MAFMsg
 
         from orchestrator._native_run_context import RunContextProvider
 
-        context_text = _run_context_text(event_payload, integrations, agent_name).strip()
         _model = _active_run_model.get() or ""
         # The context block goes in as the system context so the window fit
         # counts it. It then leaves the list and travels by the provider.

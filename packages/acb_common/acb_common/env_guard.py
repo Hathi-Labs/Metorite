@@ -275,6 +275,7 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     "KNOWLEDGE_",
     # WS-63 PZ-25: the assistant profile. ASSISTANT_PROFILE_ORGS opens it for
     # an org, so a tenant that set it could open it for every org on the box.
+    # The prefix covers ASSISTANT_PROFILE_CARD_WRITES_ORGS (PZ-32) too.
     "ASSISTANT_PROFILE_",
     # WS-66 PN-1: web push. VAPID_PRIVATE_KEY signs every push of the box, so
     # a tenant that set it would hold the key of every org's devices.

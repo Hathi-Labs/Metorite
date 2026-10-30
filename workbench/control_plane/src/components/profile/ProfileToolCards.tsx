@@ -62,12 +62,33 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
 export const PROFILE_CARD_TOOLS: readonly string[] = Object.keys(ACTION_META);
 
 /**
+ * True when the call is the assistant's offer to remember (PZ-32): an
+ * `offer` argument that is true. The rule of `profile_tools._asks_sensitive`:
+ * any value but false, "false", "0", "no" or empty.
+ */
+function isOffer(args: Record<string, unknown> | undefined): boolean {
+  const o = args?.offer;
+  if (typeof o === "string") return !["", "false", "0", "no"].includes(o.trim().toLowerCase());
+  return Boolean(o);
+}
+
+/**
  * True when this event draws a receipt. A `profile_interview` read, a saved
  * mark and a refused mark draw nothing (PZ-30). A failed interview call and
  * every other profile write, refused or not, still draw.
+ *
+ * PZ-32: a `no_offer` refusal draws nothing. The offer did not show, so the
+ * member saw no question and needs no answer. An offer of a fact that the
+ * profile holds ("Already saved") draws nothing too: the member did not ask
+ * to save it.
  */
 export function drawsReceipt(e: ToolEvent): boolean {
   if (!isProfileCardTool(e.name)) return false;
+  if (e.name === "profile_remember" && e.status !== "error") {
+    const { status, reason } = readProfileResult(e.result || "");
+    if (status === "refused" && reason === "no_offer") return false;
+    if (status === "duplicate" && isOffer(e.args)) return false;
+  }
   if (e.name !== "profile_interview") return true;
   // A mark is bookkeeping, not a write the member asked for. A refusal of it
   // (after a search in the turn, or with no due line) draws nothing. Only a

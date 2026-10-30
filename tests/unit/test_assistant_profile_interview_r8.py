@@ -682,3 +682,70 @@ async def test_a_chat_asked_keeps_an_answered_area(db) -> None:
         settings = await _mark(db.org_a, user, "goals", "asked")  # Settings is not limited
     assert again["areas"]["goals"] == done["areas"]["goals"]
     assert settings["areas"]["goals"]["state"] == "asked"
+
+
+# ── PZ-32 repair round 1 (P1-1): a stop holds, and a reset ends it ─────────
+
+_LATER = "2030-01-01T00:00:00Z"
+
+
+async def _stop(org: str, user: UserContext, body: dict | None = None) -> dict:
+    with _tenant(org):
+        return await _ap().start_assistant_interview(
+            body=body or {"stop": True}, user=user, x_profile_via="chat")
+
+
+async def test_a_chat_stop_writes_stopped_at_and_a_reset_ends_it(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    later = acp._parse_time(_LATER)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
+        await _add_area_fact(db.org_a, user, "Ships Q4", "goals")
+        await _mark(db.org_a, user, "goals", "answered", "chat")
+        with pytest.raises(HTTPException) as both:
+            await _stop(db.org_a, user, {"sitting": True, "stop": True})
+        assert both.value.status_code == 422
+        stopped = await _stop(db.org_a, user)
+        assert stopped["stopped_at"]
+        assert {a: e["state"] for a, e in stopped["areas"].items()} == {
+            a: "answered" if a == "goals" else "never" for a in acp.AREAS}
+        assert acp.open_areas(stopped, later) == [] and acp.due_area(stopped, later) == ""
+        # A chat `asked` is a 422 now, inside the sitting too.
+        with pytest.raises(HTTPException) as asked:
+            await _mark(db.org_a, user, "role", "asked", "chat")
+        assert asked.value.status_code == 422
+        # A reset of one area in Settings ends the stop, and opens only it.
+        with _tenant(db.org_a):
+            await _ap().reset_assistant_interview_area("role", user=user)
+        reset = _column(db, email)["interview"]
+        assert "stopped_at" not in reset
+        assert acp.open_areas(reset, later) == ["role"]
+        # A stop again, then a reset of the whole interview drops the key.
+        await _stop(db.org_a, user)
+        assert _column(db, email)["interview"]["stopped_at"]
+        with _tenant(db.org_a):
+            await _ap().reset_assistant_interview(user=user)
+    assert "interview" not in _column(db, email)
+
+
+async def test_a_stop_from_before_pz32_holds_until_a_reset(db) -> None:
+    """A stop before PZ-32 marked the ten old areas and wrote no
+    ``stopped_at``. ``name`` and ``language`` stay closed for it."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    later = acp._parse_time(_LATER)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
+        for area in acp.OLD_AREAS:
+            await _mark(db.org_a, user, area, "never")  # as the old stop wrote it
+        old = (await _get(db.org_a, user))["interview"]
+        assert "stopped_at" not in old and acp.interview_stopped(old)
+        assert acp.open_areas(old, later) == [] and acp.due_area(old, later) == ""
+        with _tenant(db.org_a):
+            await _ap().reset_assistant_interview_area("goals", user=user)
+        reset = (await _get(db.org_a, user))["interview"]
+    assert acp.open_areas(reset, later) == ["goals"]
+    assert reset["areas"]["name"]["state"] == reset["areas"]["language"]["state"] == "never"
