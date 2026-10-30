@@ -354,6 +354,8 @@ async def test_search_crm_relays_a_404_as_a_refusal(
 @pytest.mark.parametrize("name", [
     "CRM_ENABLED", "CRM_ORGS", "crm_orgs", "CRM_MIRROR", "CRM_MIRROR_ORGS",
     "CRM_FIELD_STUDIO_ORGS", "CRM_FILL_RANK_ORGS",
+    # WS-53 CRM-Z10b: the list of the switch to Native.
+    "CRM_CUTOVER_ORGS",
 ])
 def test_both_names_are_platform_env(name: str) -> None:
     assert is_platform_env(name) is True
@@ -372,6 +374,8 @@ _SWITCHES = frozenset({
     "crm_field_studio_orgs",
     # WS-53 CRM-Q17a-1: the fill rank list.
     "crm_fill_rank_orgs",
+    # WS-53 CRM-Z10b: the list of the switch to Native.
+    "crm_cutover_orgs",
 })
 
 
