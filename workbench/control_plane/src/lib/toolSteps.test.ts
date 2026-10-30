@@ -47,6 +47,8 @@ import {
   capOutput,
   describeToolStep,
   splitAgentLabel,
+  isProfileGroup,
+  PROFILE_GROUP_LABEL,
 } from "@/lib/toolSteps";
 import { applyStreamEvent, applySubAgentEvent, type StreamFold } from "@/lib/chatStream";
 import type { ChatMessage } from "@/hooks/useAgentChat";
@@ -129,6 +131,13 @@ describe("describeToolStep — a step in words", () => {
     for (const n of ["profile_remember", "profile_forget", "profile_set", "profile_alias", "profile_undo", "profile_interview"]) {
       expect(step(n).label).not.toMatch(/profile_|Used profile/);
     }
+  });
+
+  it("a group of only profile tools has one header, and any other group keeps the generic rule", () => {
+    expect(isProfileGroup([{ name: "profile_remember" }, { name: "profile_interview" }])).toBe(true);
+    expect(isProfileGroup([{ name: "profile_remember" }])).toBe(false);
+    expect(isProfileGroup([{ name: "profile_set" }, { name: "create_task" }])).toBe(false);
+    expect(PROFILE_GROUP_LABEL).toBe("Updated your profile");
   });
 
   it("still draws a tool it does not know, by its name", () => {

@@ -253,6 +253,14 @@ function fromVerbFirstName(bare: string): { kind: StepKind; verb: Verb; object: 
   return { ...known, object };
 }
 
+/** The header of a group in which every step is a profile write (WS-63 PZ-11). */
+export const PROFILE_GROUP_LABEL = "Updated your profile";
+
+/** True when a group holds two steps or more and each one is a `profile_*` tool. */
+export function isProfileGroup(events: ReadonlyArray<{ name: string }>): boolean {
+  return events.length > 1 && events.every((e) => bareToolName(e.name).startsWith("profile_"));
+}
+
 /** The bare tool name. A runtime may prefix it (`skill_projects.create_task`,
  *  `projects__create_task`); the trail keys on what the tool IS. */
 export function bareToolName(name: string): string {

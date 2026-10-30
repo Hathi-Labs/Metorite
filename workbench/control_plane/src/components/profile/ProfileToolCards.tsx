@@ -43,6 +43,7 @@ import { DismissableCard } from "@/components/ToolCardShell";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { curlyQuotes } from "@/lib/receiptText";
+import { LANGUAGES } from "@/app/settings/assistant/lib/profile";
 
 /** Each profile write, by the label of its receipt. */
 const ACTION_META: Record<string, { icon: string; label: string }> = {
@@ -191,6 +192,57 @@ export function readProfileResult(result: string): {
   };
 }
 
+const LENGTH_WORDS: Record<string, string> = {
+  short: "Shorter answers",
+  default: "Usual length",
+  detailed: "Longer answers",
+};
+const FORMALITY_WORDS: Record<string, string> = {
+  casual: "Less formal",
+  neutral: "Neutral tone",
+  formal: "More formal",
+};
+const GREETING_WORDS: Record<string, string> = {
+  none: "No greeting",
+  brief: "Short greeting",
+  warm: "Warm greeting",
+};
+
+const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+
+/**
+ * The body of a `profile_set` or `profile_alias` receipt, in plain words, built
+ * from the call's ARGUMENTS. The result text is for the model (it holds braces,
+ * keys and "alias"), so the card never shows it for these two tools. An unknown
+ * argument draws nothing: never a brace, a key or a language code.
+ */
+export function profileReceiptBody(name: string, args: Record<string, unknown> | undefined): string {
+  const a = args ?? {};
+  if (name === "profile_alias") {
+    const alias = str(a.alias);
+    const email = str(a.email);
+    if (!alias) return "";
+    return email ? `“${alias}” now means ${email}` : `Removed “${alias}”`;
+  }
+  if (name !== "profile_set") return "";
+  const value = isRecord(a.value) ? a.value : {};
+  const lines: string[] = [];
+  if (a.key === "style") {
+    if (typeof value.length === "string" && LENGTH_WORDS[value.length]) lines.push(LENGTH_WORDS[value.length]);
+    if (typeof value.language === "string" && LANGUAGES[value.language.toLowerCase()]) {
+      lines.push(`Answers in ${LANGUAGES[value.language.toLowerCase()]}`);
+    }
+    if (Array.isArray(value.notes)) {
+      for (const n of value.notes) if (str(n)) lines.push(`Note: ${str(n)}`);
+    }
+  } else if (a.key === "address") {
+    if (str(value.name)) lines.push(`Call you ${str(value.name)}`);
+    if (typeof value.formality === "string" && FORMALITY_WORDS[value.formality]) lines.push(FORMALITY_WORDS[value.formality]);
+    if (typeof value.greeting === "string" && GREETING_WORDS[value.greeting]) lines.push(GREETING_WORDS[value.greeting]);
+  }
+  return lines.join("\n");
+}
+
 /** The relay call of an Undo: its URL, verb and body. */
 export function undoRequest(undo: ProfileUndo): { url: string; method: string; body?: string } {
   const base = "/api/auth/me/assistant-profile";
@@ -223,7 +275,11 @@ type UndoState = "idle" | "busy" | "done" | "failed";
 /** The receipt of one profile write, with its Undo. */
 export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
   const meta = ACTION_META[e.name] ?? { icon: "Wrench", label: e.name.replace(/_/g, " ") };
-  const { text, undo, status, reason } = readProfileResult(e.result || "");
+  const parsed = readProfileResult(e.result || "");
+  const { undo, status, reason } = parsed;
+  // A saved set or alias reads from the call's arguments, never the model text.
+  const fromArgs = e.name === "profile_set" || e.name === "profile_alias";
+  const text = fromArgs && status === "saved" ? profileReceiptBody(e.name, e.args) : parsed.text;
   // The member said no on the confirm card (PZ-6b): not saved, and no error.
   const declined = e.status !== "error" && status === "refused" && reason === "declined";
   // A refusal is never "Saved to your profile" (fix round 1, P1).
