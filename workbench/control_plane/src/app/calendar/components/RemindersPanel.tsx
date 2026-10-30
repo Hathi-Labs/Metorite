@@ -81,12 +81,15 @@ function Row({ row, zone, act, touch }: { row: CalReminder; zone: string; act: A
 function Group({
   label,
   rows,
+  count,
   zone,
   act,
   touch,
 }: {
   label: string;
   rows: CalReminder[];
+  /** Every reminder in the group, also the ones that the cap leaves out. */
+  count: number;
   zone: string;
   act: Act;
   touch: boolean;
@@ -95,7 +98,7 @@ function Group({
   return (
     <section className="px-1.5 py-1.5">
       <h3 className="px-1.5 pb-0.5 text-[10px] font-medium uppercase text-muted-foreground">
-        {label} · {rows.length}
+        {label} · {count}
       </h3>
       <ul className="flex flex-col">
         {rows.map((r) => (
@@ -120,13 +123,21 @@ function Lists({
   act: Act;
   touch: boolean;
 }) {
-  const { groups: g } = capGroups(splitByState(rows), limit);
+  const full = splitByState(rows);
+  const { groups: g } = capGroups(full, limit);
   return (
     <>
       {rows.length === 0 && <p className="px-3 py-3 text-xs text-muted-foreground">No open reminders.</p>}
-      <Group label="Waiting on you" rows={g.waiting} zone={zone} act={act} touch={touch} />
-      <Group label="Unconfirmed" rows={g.unconfirmed} zone={zone} act={act} touch={touch} />
-      <Group label="Upcoming" rows={g.upcoming} zone={zone} act={act} touch={touch} />
+      <Group label="Waiting on you" rows={g.waiting} count={full.waiting.length} zone={zone} act={act} touch={touch} />
+      <Group
+        label="Unconfirmed"
+        rows={g.unconfirmed}
+        count={full.unconfirmed.length}
+        zone={zone}
+        act={act}
+        touch={touch}
+      />
+      <Group label="Upcoming" rows={g.upcoming} count={full.upcoming.length} zone={zone} act={act} touch={touch} />
     </>
   );
 }

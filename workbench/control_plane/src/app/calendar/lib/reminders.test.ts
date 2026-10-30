@@ -497,6 +497,13 @@ describe("the panel", () => {
     expect(doneButtons(html)).toHaveLength(PANEL_ROWS);
   });
 
+  it("counts every reminder of a group in its header, also the ones the cap hides", () => {
+    // Four upcoming rows, and the cap shows two of them.
+    const html = renderToStaticMarkup(createElement(RemindersPanel, props));
+    expect(html).toMatch(/Upcoming(?:<!-- -->)? · (?:<!-- -->)?4</);
+    expect(doneButtons(html)).toHaveLength(PANEL_ROWS);
+  });
+
   it("fills the column in month mode, with every row and no toggle", () => {
     const html = renderToStaticMarkup(createElement(RemindersPanel, { ...props, fill: true }));
     expect(doneButtons(html)).toHaveLength(6);
