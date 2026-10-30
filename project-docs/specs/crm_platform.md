@@ -9779,10 +9779,11 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib src/app
 ### 20.6 CRM-C3: Stages and statuses you can shape, in both modes
 
 **Status.** 🔨 Built 2026-10-13 on branch `crm-c3`, migration 257. The two
-items that waited for CRM-C2 are built after its merge. See "Built as" at
-the end of this section. The label fix of items 7 and 8 (task #1096) is built
-2026-10-30 on `crm-stage-labels-mt-c6ae3dc2`, with review rounds 1 and 2, not
-merged. See "Fixed 2026-10-30" below.
+items that waited for CRM-C2 are built after its merge. The label fix of
+items 7 and 8 (task #1096) merged 2026-10-30 in PR #1533, with review rounds
+1 and 2. The saved restart of a stopped read (task #1117) is built
+2026-10-31 on `crm-label-restart-mt-4062833c`, not merged. See "Built as" at
+the end of this section, and "Fixed 2026-10-30".
 
 **Gate.** AGENT-SAFE. No flag. With no overlay value set, each board, list
 and report shows what it shows today. Item 7 is a fix of the sync.
@@ -10168,8 +10169,14 @@ under the wrong name, and their deals sat in extra lanes at the end.
   page 1. It still counts for each rule on the list, it still queues each
   deal for a rule, and the mark `recovering` stays. A resumed read with no
   mark goes on and clears nothing, so the next run starts the label read.
-  A label read that stopped, in a run where the check does not fire, goes
-  on from its page.
+  A label read that stopped goes on from its page when the check does not
+  fire, unless its cursor holds the restart below.
+- **The saved restart** (task #1117). A run can stop after the check and
+  before the next page of the read. The check writes `label_restart` into
+  the cursor of its own entity, in the transaction of the rename. It writes
+  the key only when the read of that entity is in progress. The next run
+  then starts a read for a rule or a label read from page 1. The first page
+  of that read writes a new cursor state, so the key goes.
 - **The step order.** Each run reads the picklists before discovery writes
   the pipelines (`_execute`). `_pipeline_stage_status` matches a stage by the
   Zoho id first. So a run whose picklist read fails still puts each place on

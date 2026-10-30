@@ -237,6 +237,14 @@ READ_DROPS_KEY = "read_drops"
 #: runs. This read does not share the ``reread`` list. A read of that list can
 #: owe contact roles, and a label read owes them only for a deal that changed.
 LABEL_REREAD_KEY = "label_reread"
+#: Task #1117: the restart of a stopped read, in the cursor of its entity. The
+#: label check of ``_mirror_statuses`` writes it in the transaction of the
+#: rename, when the read of that entity is ``in_progress``. The pages of that
+#: read used the old row names. So a read for a rule or a label read starts
+#: again from page 1, also in a later run whose check does not fire. The next
+#: page of the entity writes a new state through :func:`cursor_state`, so the
+#: key goes. A read with no such mark goes on, and the label read follows.
+LABEL_RESTART_KEY = "label_restart"
 #: CRM-Q24: the ``SourceError.code`` of a tie at one second that is wider
 #: than the provider serves by offset (``ZohoTieTooWide``). A test pins the
 #: two. The engine counts it as ``failed`` and keeps the cursor. It also sets
@@ -837,7 +845,8 @@ class _Ctx:
         self.rules: dict[str, dict[str, str]] = {}
         self.rule_rereads: set[str] = set()
         #: The entities on the label list, and those whose check fired in
-        #: this run (task #1096, :data:`LABEL_REREAD_KEY`).
+        #: this run (task #1096, :data:`LABEL_REREAD_KEY`). The cursor keeps
+        #: the restart for a later run (:data:`LABEL_RESTART_KEY`).
         self.label_rereads: set[str] = set()
         self.label_fired: set[str] = set()
         #: The approved rules that ``_field_rules`` handled, and the ids that
@@ -1422,6 +1431,11 @@ async def _mirror_statuses(
     read maps each record by its label again, after this step named each
     row by its label. A repaired org has no such row, so the next read
     queues nothing.
+
+    A read of the entity that stopped used the old row names. So the step
+    also writes the restart into its cursor (:data:`LABEL_RESTART_KEY`), in
+    this transaction. A run that stops before the next page of that read
+    keeps it, and the next run starts the read from page 1 (task #1117).
     """
     api_name, table = _STATUS_FIELDS[entity]
     for definition in definitions:
@@ -1440,6 +1454,7 @@ async def _mirror_statuses(
             )
         if collided:
             await _save_label_rereads(ctx, db, ctx.label_rereads | {entity})
+            await _mark_label_restart(ctx, db, entity)
             ctx.label_fired.add(entity)
             _log.info("crm.sync.status_label_collision entity=%s", entity)
 
@@ -2043,7 +2058,10 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         entity == "lead" and row.initial_done_at is not None
         and not saved.get("converted_both") and not resumed and not parent_only
     )
-    if resumed and entity in ctx.label_fired and (rule_reread or label_reread):
+    # The check fired in this run, or in a run that stopped before the next
+    # page of this read (task #1117, ``LABEL_RESTART_KEY``).
+    label_restart = entity in ctx.label_fired or bool(saved.get(LABEL_RESTART_KEY))
+    if resumed and label_restart and (rule_reread or label_reread):
         # Task #1096: the pages of this read used the old row names, and its
         # last page would clear the entity. So it starts over from page 1. It
         # still counts for each rule, and ``recovering`` keeps its mark.
@@ -3590,6 +3608,24 @@ async def _save_label_rereads(ctx: _Ctx, db: Any, entities: set[str]) -> None:
     await _save_cursor(ctx, db, saved, "ok")
     ctx.cursors[FIELD_RULES_ROW] = saved
     ctx.label_rereads = set(entities)
+
+
+async def _mark_label_restart(ctx: _Ctx, db: Any, entity: str) -> None:
+    """Write :data:`LABEL_RESTART_KEY` into the cursor of *entity*, in the
+    caller's transaction, when a read of it stopped (``in_progress``). Every
+    other key of the state stays, so the read keeps its marks (task #1117).
+    A cursor that is not in progress gets no key, because its next read
+    starts from page 1."""
+    old = _row(ctx, changed_module(entity))
+    state = old.state or {}
+    if not state.get("in_progress") or state.get(LABEL_RESTART_KEY):
+        return
+    row = CursorRow(
+        old.module, old.last_pulled_at, {**state, LABEL_RESTART_KEY: True},
+        old.initial_done_at, old.last_reconciled_at,
+    )
+    await _save_cursor(ctx, db, row, "partial")
+    ctx.cursors[old.module] = row
 
 
 async def _rule_reread_done(ctx: _Ctx, db: Any, entity: str) -> None:
