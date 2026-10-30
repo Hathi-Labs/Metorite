@@ -122,7 +122,8 @@ reference tied to code. Do not put product specs in `docs/`.
 6. **R8 — verify SQL against a real database.** Hermetic fakes agree with
    whatever SQL they get. Five live bugs shipped green that way.
 7. **R1 — migration numbers are taken at build time and re-checked at merge.**
-   Three collisions in two weeks.
+   Three collisions in two weeks. `bash scripts/premerge.sh` does the re-check,
+   right before `gh pr merge`.
 8. **Verify delivery by evidence, never by a green job.** Migration ledger
    lines, the deployed SHA, the log line. Four deploys once reported success
    while shipping nothing.
@@ -372,6 +373,9 @@ Rules that make it work:
   green.** Run `bash scripts/dev_db.sh` first, then
   `eval "$(bash scripts/dev_db.sh --export)"`. `engineering_practice.md` §1.1
   owns the loop.
+- **Run the whole app before you push:** `bash scripts/dev_up.sh` in your
+  worktree. It prints the URL, with two seeded tenants and outbound off. Look
+  at your change there first. `engineering_practice.md` §1.2 owns it.
 - `.claude/` (agents, commands, hooks, settings) is **tracked**, so every
   checkout inherits the same review loop and the same refusals (D29).
   Local-only and derived paths stay ignored. The CodeGraph index is rebuilt,
