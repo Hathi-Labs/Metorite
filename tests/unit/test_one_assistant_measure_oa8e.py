@@ -1256,6 +1256,143 @@ def test_a_re_score_never_turns_a_pass_into_a_fail() -> None:
     assert wrote["checks"]["no_unasked_write"] is False
 
 
+# ── OA-8i: a hand-off that the product refused is counted on its own ────────
+
+
+def _hand(cid: str, name: str, args: dict[str, Any], result: str) -> list[dict[str, Any]]:
+    """The events of one tool call of the orchestrator and its result."""
+    return [{"type": "TOOL_CALL_START", "toolCallId": cid, "toolCallName": name,
+             "args": json.dumps(args)},
+            {"type": "TOOL_CALL_RESULT", "toolCallId": cid, "content": result}]
+
+
+def test_a_refused_hand_off_is_read_from_its_result() -> None:
+    """The result must be a refusal text of ``tool_packs`` in full: the pack
+    refusal, the loader refusal or the OA-8i refusal. An answer of the owner,
+    or a refusal with more text after it, is a hand-off that ran.
+    Mutation: match a prefix ("Not run") in place of the full text -> the
+    owner's answer that starts so reads as refused -> red."""
+    loader = tool_packs.LOADER_HANDOFF_REFUSED.format(owner=PROJECTS, packs="projects")
+    wrote = tool_packs.WROTE_HANDOFF_REFUSED.format(tool="create_personal_task")
+    fan = (f"[{PROJECTS}]\n{tool_packs.PACKS['projects'].delegation_refusal}\n\n"
+           f"[{CRM}]\nFound the deal.")
+    tasks = json.dumps([{"agent": PROJECTS, "message": "Plan it"},
+                        {"agent": CRM, "message": "Find it"}])
+    events = [
+        *_hand("a", "call_agent", {"agent_name": PROJECTS, "message": "Mobile App?"}, loader),
+        *_hand("b", "projects_assistant", {"task": "Make a task"}, wrote),
+        *_hand("c", "crm_assistant", {"task": "Move the deal"}, "Moved the deal to Proposal."),
+        *_hand("d", "call_agent", {"agent_name": CRM, "message": "Log a call"},
+               "Not run. I logged nothing, because the deal is closed."),
+        *_hand("e", "call_agents_parallel", {"tasks": tasks}, fan),
+    ]
+    refused = ck.refused_handoffs_of(events)
+    assert refused == {PROJECTS: ["Mobile App?", "Make a task", "Plan it"]}
+    assert ck.handoff_refused(loader) and ck.handoff_refused(f"  {wrote}\n")
+    assert not ck.handoff_refused(f"{wrote} And then I made it.")
+    assert not ck.handoff_refused("") and not ck.handoff_refused("Moved the deal.")
+    every = {PROJECTS: ["Mobile App?", "Make a task", "Plan it", "Rename"], CRM: ["Move"]}
+    assert ck.without(every, refused) == {PROJECTS: ["Rename"], CRM: ["Move"]}
+    assert ck.without({PROJECTS: ["Plan it"]}, refused) == {}
+
+
+def test_a_refused_hand_off_fails_no_check_and_one_that_ran_still_does() -> None:
+    """``pm_miss`` r1 and r2 of OA-8e run 4: the loader reached the owner, the
+    hand-off was refused, and only the orchestrator ran. Mutation: read
+    ``handoffs_refused`` in ``_no_delegation`` -> the refused case fails -> red.
+    Mutation: drop the hand-offs that ran from the check -> red."""
+    need = {"owners": pack.OWNERS, "needs": "projects", "reachable": frozenset({"projects"})}
+    words = "What is the Mobile App up to?"
+    tried = _obs(handoffs_refused={PROJECTS: [words]}, **need)
+    assert _auto("no_projects_delegation", tried) is True
+    assert _auto("no_projects_delegation", _obs(handoffs={PROJECTS: [words]}, **need)) is False
+    both = _obs(handoffs={PROJECTS: ["x"]}, handoffs_refused={PROJECTS: ["y"]}, **need)
+    assert _auto("no_projects_delegation", both) is False
+    # A refused try is no route: right_pack needs a pack tool that ran.
+    assert _one("right_pack", "projects", tried) is False
+    work = [("project_summary", {}, "Mobile App has 3 tasks")]
+    assert _one("right_pack", "projects", _obs(
+        work_calls=work, handoffs_refused={PROJECTS: [words]}, **need)) is True
+
+
+def _pm_miss_with_a_refused_hand_off() -> dict[str, Any]:
+    """``pm_miss`` as run 4 played it: the model hands off first, the loader
+    refusal answers, and then it loads the pack and reads the project."""
+    sc = scenario("pm_miss")
+    orch = ReplyModel([
+        tool_turn("call_agent", {"agent_name": PROJECTS,
+                                 "message": "What is the Mobile App up to?"}, call_id="call_1"),
+        tool_turn("load_skill_tools", {"pack": "projects"}, call_id="call_2"),
+        tool_turn("projects_tree", {}, call_id="call_3"),
+        tool_turn("project_summary", {"project_id": wg.NODE_MOBILE}, call_id="call_4"),
+        text_turn("Mobile App has 3 tasks and 2 of them are overdue."),
+    ])
+    (row,) = run.run_chat(sc, "pack", models={ORCHESTRATOR: orch})
+    return row
+
+
+def test_a_refused_hand_off_in_the_real_run_passes_and_is_counted() -> None:
+    """Through the real run: the refused hand-off shows in ``handoffs_refused``,
+    and neither in ``specialist_handoffs`` nor in the reasons of stop result
+    11. Mutation: give ``Observation`` every hand-off in ``run_chat`` (drop
+    ``ck.without``) -> the check fails and the reason is ``model_choice`` -> red."""
+    row = _pm_miss_with_a_refused_hand_off()
+    assert row["handoffs_refused"] == {PROJECTS: 1}, row["pack_events"]
+    assert row["specialist_handoffs"] == {} and row["handoff_reasons"] == {}
+    assert row["checks"]["no_projects_delegation"] is True, row["checks"]
+    assert row["passed"], row["checks"]
+    assert {c["agent"] for c in row["model_calls"]} == {ORCHESTRATOR}
+
+
+def test_the_run_4_double_write_is_refused_in_the_real_run() -> None:
+    """``mix_task_from_mail`` turn 2 of run 4, through the real run: the email
+    and core packs are held, the specialist stays, and the model makes the
+    task and then hands it to ``projects_assistant``. The hand-off answers the
+    OA-8i refusal, so one card and one write. Mutation: drop the OA-8i step
+    of ``PackRun.refusal`` -> the specialist starts with no scripted model ->
+    the row ends in an error -> red."""
+    from evals.one_assistant_measure.scenarios import Scenario
+
+    sc = Scenario("oa8i_double_write", "A task, then the same task handed off", (
+        Turn("Make a task from it", (Check("no_unasked_write", 1),), Plan()),
+    ), set="mixed", surface="email")
+    orch = ReplyModel([
+        tool_turn("create_personal_task", {"title": "Confirm 250 boards for Priya"},
+                  call_id="call_1"),
+        tool_turn("projects_assistant", {"task": "Make a task from the mail of Priya"},
+                  call_id="call_2"),
+        text_turn("Captured the private task: Confirm 250 boards for Priya."),
+    ])
+    (row,) = run.run_chat(sc, "pack", models={ORCHESTRATOR: orch})
+    loaded = next(e for e in row["pack_events"] if e["event"] == "executor.packs_loaded")
+    assert loaded["packs"] == "['email', 'projects']", loaded
+    assert PROJECTS not in loaded["via_loader"], "non-vacuity: the specialist stays"
+    assert row["error"] is None, row["error"]
+    assert row["work_writes"] == ["POST /projects/my/tasks"] and row["cards"] == 1
+    assert row["handoffs_refused"] == {PROJECTS: 1} and row["specialist_handoffs"] == {}
+    assert {c["agent"] for c in row["model_calls"]} == {ORCHESTRATOR}
+    assert any(e["event"] == "tool_packs.handoff_after_write_refused"
+               for e in row["pack_events"]), row["pack_events"]
+
+
+def test_stop_11_does_not_count_a_refused_hand_off_and_the_report_shows_it(scripted) -> None:
+    """A refused try is no hand-off turn, so stop result 11 stays ``ok``. The
+    summary and the report still show it. A hand-off that ran keeps STOP.
+    Mutation: drop the ``Hand-offs that the product refused`` row -> red."""
+    rows, _ = scripted
+    tried = [json.loads(json.dumps(r)) for r in rows]
+    victim = next(r for r in tried if r["arm"] == "pack")
+    victim["handoffs_refused"] = {PROJECTS: 2}
+    summary = run.summarise(tried)
+    assert summary["pack"]["handoffs_refused"] == {PROJECTS: 2}
+    state, why = {n: (s, w) for n, s, w in run.stop_results(summary)}[11]
+    assert state == "ok" and "Refused hand-offs, not counted: 2" in why, why
+    text = run.report({"summary": summary})
+    assert "| Hand-offs that the product refused |" in text and "'projects-assistant': 2" in text
+    victim["handoff_reasons"] = {PROJECTS: "model_choice"}
+    assert {n: s for n, s, _ in run.stop_results(run.summarise(tried))}[11] == "STOP"
+
+
 # ── OA-9f: when to spawn ─────────────────────────────────────────────────────
 
 
