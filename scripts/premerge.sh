@@ -76,9 +76,15 @@ done < <(git diff --name-only --diff-filter=A "$base" HEAD -- infra/postgres/ | 
 overlap="$(comm -12 <(git diff --name-only "$base" HEAD | sort) <(git diff --name-only "$base" "$BASE" | sort))"
 logs="$(mktemp -d)"
 trap 'git rev-parse -q --verify MERGE_HEAD >/dev/null && git merge --abort; rm -rf "$logs"; true' EXIT
-if ! git merge --no-commit --no-ff -q "$BASE" >/dev/null 2>&1; then
+if ! git merge --no-commit --no-ff -q "$BASE" > "$logs/merge.log" 2>&1; then
   conflicts="$(git diff --name-only --diff-filter=U | tr '\n' ' ')"
-  fail "merging $BASE conflicts in: ${conflicts:-unknown files}. Merge it, resolve, push, and wait for pr-check."
+  if [ -z "$conflicts" ]; then
+    # No conflicted path: git refused before it merged, most often because an
+    # untracked file here has the name of a file that main adds. Show git's words.
+    sed 's/^/  /' "$logs/merge.log" >&2
+    fail "git refused the trial merge (above). Move the untracked files it names, then run this again."
+  fi
+  fail "merging $BASE conflicts in: $conflicts. Merge it, resolve, push, and wait for pr-check."
 fi
 
 # ── 3. The collision fences, on the merge result ───────────────────────────

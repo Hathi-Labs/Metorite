@@ -118,6 +118,18 @@ def test_a_conflict_fails_and_leaves_the_worktree_as_it_was(repo):
     assert not (repo / ".git" / "MERGE_HEAD").exists()
 
 
+def test_an_untracked_file_in_the_way_is_named_and_kept(repo):
+    """Main adds a file that is untracked here. git refuses the merge. The
+    message must say why, and the untracked file must survive."""
+    _commit(repo, "feat.md")
+    _advance_main(repo, "zone.md")
+    (repo / "zone.md").write_text("mine\n", encoding="utf-8")
+    res = _run(repo)
+    assert res.returncode == 1
+    assert "zone.md" in res.stderr and "untracked" in res.stderr
+    assert (repo / "zone.md").read_text(encoding="utf-8") == "mine\n"
+
+
 def test_a_clean_behind_branch_passes_and_the_trial_merge_is_undone(repo):
     _commit(repo, "infra/postgres/317_feat.sql")
     _advance_main(repo, "infra/postgres/316_other.sql")
