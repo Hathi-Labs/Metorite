@@ -27,8 +27,11 @@ The order, for the run of *member* on *local_date*:
 6. ``loop.snapshot``. An incomplete read raises, so the queue retries, and
    no claim comes from a read that lost a source.
 7. One claim for each shown card (``gather.claims``), then ``gathered``, the
-   template lead (``plan.brief_lead``), and ``ready``. No card: ``empty``,
-   no lead and no claims. The writes and ``complete`` commit together.
+   template lead (``plan.brief_lead``), and ``ready``. With the in-app
+   surface on (``flags.in_app``), the run then moves ``ready`` to
+   ``delivered`` (guarded) and stamps ``delivered_at``. Off, it stays
+   ``ready``. No card: ``empty``, no lead and no claims. The writes and
+   ``complete`` commit together.
 8. ``unattended.finish(ok)``, only for a gather that committed or a run that
    was past ``planned``.
 
@@ -39,9 +42,16 @@ runs under ``asyncio.shield``. A crash after ``begin`` leaves an orphan, and
 AUTO-2 marks it ``unknown``: that brief is lost for the day on purpose, and
 BR-2d reports it.
 
-This slice calls no model and sends nothing. ``delivered`` is BR-2c, and the
-phrase step is BR-2a-2. The two kinds register at import, and
-:func:`register_jobs` adds the seed hook and the prune hook.
+**Delivered** (BR-2c-1, ``core_brief.md`` §5). ``delivered`` means that
+the run is on an in-app surface: ``GET /brief/today`` and the chat's first
+turn serve it. The system sets it here, never a read, so a member who
+never opens the app still has ``delivered_at``. BR-2d compares
+``delivered_at`` with ``slot_at``. A "seen" signal is a separate
+``seen_at``, which only an explicit POST from the card writes.
+
+This slice calls no model and sends nothing. The phrase step is BR-2a-2.
+The two kinds register at import, and :func:`register_jobs` adds the seed
+hook and the prune hook.
 """
 
 from __future__ import annotations
@@ -108,7 +118,7 @@ async def _settle_done(org: str, claim: queue.Claim, now: datetime) -> None:
 
 #: The outcomes after which the ledger slot is done. Any other outcome
 #: gathered nothing, so the slot goes back.
-_FINISHED = frozenset({"ready", "empty", "exists"})
+_FINISHED = frozenset({"ready", "delivered", "empty", "exists"})
 
 
 async def _skip(org: str, member: str, local_date: date, claim: queue.Claim,
@@ -144,7 +154,8 @@ def _why_not(prefs: dict[str, Any], slot_at: datetime) -> str | None:
 
 async def _gather(org: str, member: str, user: Any, run: store.Run, claim: queue.Claim,
                   now: datetime) -> str:
-    """Steps 6 and 7. Answers ``ready``, ``empty``, or ``lost``."""
+    """Steps 6 and 7. Answers ``ready``, ``delivered``, ``empty``, or
+    ``lost``."""
     from gateway.reach import loop
 
     snap = await loop.snapshot(org, user, now)
@@ -165,6 +176,12 @@ async def _gather(org: str, member: str, user: Any, run: store.Run, claim: queue
             await store.set_lead(db, member, run.id, plan.brief_lead(parts), source="template")
             await store.set_state(db, member, run.id, "ready", now=now, from_state="gathered")
             state = "ready"
+            # BR-2c-1: on an in-app surface now, so the system delivers it.
+            # The stamp is the clock of this moment, not of the run's start,
+            # so BR-2d reads the true lag behind ``slot_at``.
+            if flags.in_app(org) and await store.set_state(
+                    db, member, run.id, "delivered", now=_now(), from_state="ready"):
+                state = "delivered"
         await queue.complete(db, claim, now=now)
     _log.info("brief.run_done", state=state, claims=len(claims))
     return state
@@ -172,8 +189,8 @@ async def _gather(org: str, member: str, user: Any, run: store.Run, claim: queue
 
 async def _run_slot(org: str, member: str, local_date: date, slot_at: datetime,
                     claim: queue.Claim, ledger: unattended.Run, now: datetime) -> str:
-    """Steps 3 to 7. Answers the outcome: ``ready``, ``empty``, ``exists``,
-    ``skipped`` or ``lost``."""
+    """Steps 3 to 7. Answers the outcome: ``ready``, ``delivered``,
+    ``empty``, ``exists``, ``skipped`` or ``lost``."""
     from gateway.reach import loop
 
     user = await loop.resolve(org, member)

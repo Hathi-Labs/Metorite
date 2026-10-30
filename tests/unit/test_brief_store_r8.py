@@ -607,13 +607,82 @@ def test_r8_a_guarded_move_changes_only_a_row_in_the_from_state(world) -> None:
             with pytest.raises(store.BriefStoreError):
                 await store.set_state(db, ANA, run.id, "ready", now=T, from_state="planned")
             with pytest.raises(store.BriefStoreError):
-                await store.set_state(db, ANA, run.id, "delivered", now=T, from_state="ready")
+                await store.set_state(db, ANA, run.id, "delivered", now=T,
+                                      from_state="gathered")
             # Another member moves nothing.
             out.append(await store.set_state(db, BEN, run.id, "empty", now=T,
                                              from_state="planned"))
         return out
 
     assert _go(world, go) == [True, False, False, True, "ready", False]
+
+
+def test_r8_the_delivery_moves_a_ready_run_once_and_stamps_the_time(world) -> None:
+    """BR-2c-1: ``ready`` to ``delivered`` is a guarded move. The first
+    stamps ``delivered_at``. A second finds no ``ready`` row and leaves the
+    stamp. Another member, and a run that is not ``ready``, move nothing."""
+    org = world.p.org_a
+    later = datetime(2099, 3, 10, 3, 0, tzinfo=UTC)
+
+    async def go() -> tuple:
+        async with tenant_session(org) as db:
+            run = (await store.create_run(db, ANA, kind="brief", local_date=D, slot_at=T)).run
+            early = await store.set_state(db, ANA, run.id, "delivered", now=T,
+                                          from_state="ready")  # still planned
+            await store.set_state(db, ANA, run.id, "gathered", now=T, from_state="planned")
+            await store.set_state(db, ANA, run.id, "ready", now=T, from_state="gathered")
+            ben = await store.set_state(db, BEN, run.id, "delivered", now=T,
+                                        from_state="ready")
+            first = await store.set_state(db, ANA, run.id, "delivered", now=T,
+                                          from_state="ready")
+            second = await store.set_state(db, ANA, run.id, "delivered", now=later,
+                                           from_state="ready")
+            got = await store.read_run(db, ANA, kind="brief", local_date=D)
+        return early, ben, first, second, got
+
+    early, ben, first, second, got = _go(world, go)
+    assert (early, ben, first, second) == (False, False, True, False)
+    assert got.state == "delivered" and got.delivered_at == T and got.ready_at == T
+
+
+def test_r8_the_latest_run_is_the_newest_slot_in_the_window(world) -> None:
+    """BR-2c-1: ``read_latest_run`` answers the newest run of the member in
+    the dates given, by ``slot_at``, in any state, and never a run whose
+    slot is after *now*. Another member and org B read none of it."""
+    from datetime import timedelta
+
+    org = world.p.org_a
+    day_before = date(2099, 3, 9)
+
+    async def go() -> tuple:
+        async with tenant_session(org) as db:
+            old = (await store.create_run(db, ANA, kind="brief", local_date=day_before,
+                                          slot_at=T - timedelta(days=1))).run
+            new = (await store.create_run(db, ANA, kind="brief", local_date=D,
+                                          slot_at=T)).run
+            await store.set_state(db, ANA, new.id, "empty", now=T, from_state="planned")
+            window = {"kind": "brief", "first_date": day_before, "last_date": D}
+            newest = await store.read_latest_run(db, ANA, now=T, **window)
+            before_new = await store.read_latest_run(db, ANA, now=T - timedelta(minutes=1),
+                                                     **window)
+            only_old = await store.read_latest_run(db, ANA, kind="brief",
+                                                   first_date=day_before,
+                                                   last_date=day_before, now=T)
+            ben = await store.read_latest_run(db, BEN, now=T, **window)
+            closeout = await store.read_latest_run(db, ANA, now=T, **{
+                **window, "kind": "closeout"})
+        async with tenant_session(world.p.org_b) as db:
+            org_b = await store.read_latest_run(db, ANA, now=T, **window)
+        return old.id, new.id, newest, before_new, only_old, ben, closeout, org_b
+
+    old_id, new_id, newest, before_new, only_old, ben, closeout, org_b = _go(world, go)
+    assert newest is not None and (newest.id, newest.state) == (new_id, "empty")
+    assert before_new is not None and before_new.id == old_id
+    assert only_old is not None and only_old.id == old_id
+    assert (ben, closeout, org_b) == (None, None, None)
+    with pytest.raises(store.BriefStoreError):
+        asyncio.run(store.read_latest_run(None, ANA, kind="brief", first_date=D,
+                                          last_date=D, now=datetime(2099, 3, 10)))
 
 
 def test_r8_the_lead_and_the_ledger_link_write_for_the_member(world) -> None:
