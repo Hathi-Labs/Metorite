@@ -4,9 +4,14 @@ The company, "Kite & Co. Interiors", is fictional. Every person, address and
 phone number below is invented. Emails use the reserved `.example` domain,
 and phone numbers use the clearly fake `+91 98000 000NN` range.
 
-Run it against a fresh, local-only stack (see README.md beside this file):
+`scripts/dev_up.sh` runs it for you. To run it by hand against a fresh,
+local-only stack (see README.md beside this file):
 
     uv run python scripts/demo_seed/seed_demo.py
+    uv run python scripts/demo_seed/seed_demo.py --check   # tenant isolation only
+
+The `second_org` part adds Northwind Traders, a second made-up organization, so
+that a cross-tenant leak shows on a local stack.
 
 It talks to two things, both on loopback:
 
@@ -127,7 +132,7 @@ class Api:
         headers = {
             "Authorization": f"Bearer {TOKEN}",
             "X-User-Email": as_,
-            "X-User-Role": "executive" if as_ == ME else "employee",
+            "X-User-Role": "executive" if as_ in (ME, ORG2_OWNER) else "employee",
         }
         r = self.http.request(method, path, headers=headers, **kw)
         if r.status_code >= 400:
@@ -1003,23 +1008,154 @@ def seed_approvals(conn: psycopg.Connection) -> None:
     print(f"  {len(APPROVALS)} pending approvals")
 
 
+# ── 8. A second organization, so a cross-tenant leak shows ────────────────
+#
+# One organization cannot show a tenancy bug: every row is "mine". This one is
+# made the way a real customer is made, by provision_organization() (migration
+# 179 and its successors), so it gets the same roles and owner path.
+
+ORG2_SLUG = "northwind-demo"
+ORG2_NAME = "Northwind Traders (demo)"
+ORG2_DOMAIN = "northwind.example"
+ORG2_OWNER = f"owner@{ORG2_DOMAIN}"
+ORG2_SPACE = "Northwind Operations"
+ORG2_PROJECT = "Northwind Warehouse Move"
+#: email, name, role slug. The owner has no slug: provision_organization made it.
+ORG2_TEAM = [
+    (ORG2_OWNER, "Nora Lind", None),
+    (f"sam@{ORG2_DOMAIN}", "Sam Okafor", "member"),
+    (f"lena@{ORG2_DOMAIN}", "Lena Fischer", "member"),
+]
+ORG2_TASKS = [
+    "Book the moving trucks for 14 November",
+    "Label every rack in the old warehouse",
+    "Move the forklift lease to the new address",
+    "Tell the courier partners the new pickup point",
+]
+
+
+def seed_second_org(conn: psycopg.Connection, api: Api, home_org: str) -> None:
+    org2 = conn.execute(
+        "SELECT provision_organization(%s, %s, %s, %s)::text",
+        (ORG2_SLUG, ORG2_NAME, ORG2_OWNER, ORG2_DOMAIN),
+    ).fetchone()[0]
+    bind(conn, org2)
+    member_role = conn.execute(
+        "SELECT id FROM org_role WHERE organization_id = %s AND slug = 'member'",
+        (org2,),
+    ).fetchone()[0]
+    for email, name, role in ORG2_TEAM:
+        conn.execute(
+            "INSERT INTO user_identity (email, display_name) VALUES (%s, %s) "
+            "ON CONFLICT (lower(email)) DO UPDATE SET display_name = EXCLUDED.display_name",
+            (email, name),
+        )
+        ident = conn.execute(
+            "SELECT id FROM user_identity WHERE lower(email) = lower(%s)", (email,)
+        ).fetchone()[0]
+        if role and not conn.execute(
+            "SELECT 1 FROM app_user WHERE lower(email) = lower(%s)", (email,)
+        ).fetchone():
+            user_id = conn.execute(
+                "INSERT INTO app_user (email, display_name, role, organization_id, "
+                "status, joined_at) VALUES (%s, %s, 'employee', %s, 'active', now()) "
+                "RETURNING id",
+                (email, name, org2),
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO user_role (user_id, role_id, assigned_by, user_identity_id) "
+                "VALUES (%s, %s, 'demo-seed', %s) ON CONFLICT DO NOTHING",
+                (user_id, member_role, ident),
+            )
+        # With IDENTITY_CUTOVER on, the gateway finds the org through this row.
+        conn.execute(
+            "INSERT INTO org_membership (organization_id, user_id, status, joined_at) "
+            "VALUES (%s, %s, 'active', now()) ON CONFLICT DO NOTHING",
+            (org2, ident),
+        )
+        conn.execute(
+            "UPDATE app_user SET display_name = %s WHERE lower(email) = lower(%s)",
+            (name, email),
+        )
+    bind(conn, home_org)
+
+    have = {r["name"] for r in api.call("GET", "/projects/nodes", as_=ORG2_OWNER)["rows"]}
+    if ORG2_PROJECT not in have:
+        space = api.call("POST", "/projects/nodes", as_=ORG2_OWNER, json={
+            "name": ORG2_SPACE, "description": "The second demo tenant.",
+            "task_prefix": "NW",
+        })
+        proj = api.call("POST", "/projects/nodes", as_=ORG2_OWNER, json={
+            "name": ORG2_PROJECT, "parent_project_id": space["id"],
+        })
+        for title in ORG2_TASKS:
+            api.call("POST", "/projects/tasks", as_=ORG2_OWNER,
+                     json={"project_id": proj["id"], "title": title})
+    print(f"  {ORG2_NAME!r}, {len(ORG2_TEAM)} members, 1 project, "
+          f"{len(ORG2_TASKS)} tasks")
+
+
+def check_isolation(api: Api) -> None:
+    """Exit non-zero when one organization's rows show to the other.
+
+    Two legs. The API leg asks the gateway as each owner. The database leg
+    (only when DEMO_APP_DATABASE_URL names the app role) reads with NO tenant
+    bound: FORCE ROW LEVEL SECURITY must return zero rows. A stack that
+    connects as a superuser passes the first leg and fails the second.
+    """
+    mine = {r["name"] for r in api.call("GET", "/projects/nodes")["rows"]}
+    theirs = {r["name"] for r in api.call("GET", "/projects/nodes", as_=ORG2_OWNER)["rows"]}
+    org2_names = {ORG2_SPACE, ORG2_PROJECT}
+    problems = []
+    if mine & org2_names:
+        problems.append(f"{ME} sees {sorted(mine & org2_names)}")
+    if theirs - org2_names:
+        problems.append(f"{ORG2_OWNER} sees {sorted(theirs - org2_names)}")
+    if ORG2_PROJECT not in theirs:
+        problems.append(f"{ORG2_OWNER} cannot see its own project")
+
+    app_dsn = os.environ.get("DEMO_APP_DATABASE_URL", "")
+    if app_dsn:
+        with psycopg.connect(app_dsn.replace("postgresql+psycopg://", "postgresql://"),
+                             autocommit=True) as app:
+            if app.execute("SELECT rolsuper OR rolbypassrls FROM pg_roles "
+                           "WHERE rolname = current_user").fetchone()[0]:
+                problems.append("the app role can bypass RLS")
+            try:
+                n = app.execute("SELECT count(*) FROM pm_projects").fetchone()[0]
+            except psycopg.Error:
+                n = 0  # the policy refused the unbound read: also isolated
+            if n:
+                problems.append(f"an unbound read returned {n} pm_projects rows")
+
+    if problems:
+        sys.exit("tenant isolation FAILED: " + "; ".join(problems))
+    legs = "API and database" if app_dsn else "API"
+    print(f"  tenant isolation holds ({legs})")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────
 
 SECTIONS = ["people", "projects", "mytasks", "whatsapp", "email", "chat",
-            "approvals"]
+            "approvals", "second_org"]
 
 
 def main() -> None:
     refuse_non_local()
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--only", choices=SECTIONS, action="append")
+    p.add_argument("--check", action="store_true",
+                   help="only run the tenant-isolation check")
     args = p.parse_args()
     todo = args.only or SECTIONS
+    api = Api()
+    if args.check:
+        check_isolation(api)
+        return
 
     conn = connect()
     org = org_id(conn)
     bind(conn, org)
-    api = Api()
     state: dict = {}
 
     if "people" in todo:
@@ -1043,6 +1179,10 @@ def main() -> None:
     if "approvals" in todo:
         print("approvals:")
         seed_approvals(conn)
+    if "second_org" in todo:
+        print("second organization:")
+        seed_second_org(conn, api, org)
+        check_isolation(api)
     print("done.")
 
 

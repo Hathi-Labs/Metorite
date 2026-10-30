@@ -36,6 +36,7 @@
       "tests/unit/test_deploy_pipeline.py",
       "tests/unit/test_deploy_venv_ownership.py",
       "tests/unit/test_dev_db_script.py",
+      "tests/unit/test_dev_up.py",
       "tests/unit/test_email_attachment_dedupe.py",
       "tests/unit/test_email_attachment_download.py",
       "tests/unit/test_email_cleanup_apply_cap.py",

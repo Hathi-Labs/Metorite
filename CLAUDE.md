@@ -375,6 +375,9 @@ Rules that make it work:
   green.** Run `bash scripts/dev_db.sh` first, then
   `eval "$(bash scripts/dev_db.sh --export)"`. `engineering_practice.md` §1.1
   owns the loop.
+- **Run the whole app before you push:** `bash scripts/dev_up.sh` in your
+  worktree. It prints the URL, with two seeded tenants and outbound off. Look
+  at your change there first. `engineering_practice.md` §1.2 owns it.
 - `.claude/` (agents, commands, hooks, settings) is **tracked**, so every
   checkout inherits the same review loop and the same refusals (D29).
   Local-only and derived paths stay ignored. The CodeGraph index is rebuilt,

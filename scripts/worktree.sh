@@ -97,6 +97,13 @@ remove)
   #
   # A warning and not a refusal: the owner may well want the worktree gone and
   # the server stopped. What must not happen is finding out afterwards.
+  #
+  # A dev stack (scripts/dev_up.sh) is the common case, so stop it first, with
+  # its containers. Its state folder says that one exists.
+  if [ -f "$path/.dev_up/state" ] && [ -f "$path/scripts/dev_up.sh" ]; then
+    echo "   stopping the dev stack of this worktree"
+    bash "$path/scripts/dev_up.sh" --down || echo "   !! dev_up --down failed. Check: docker ps"
+  fi
   if command -v powershell >/dev/null 2>&1; then
     win_prefix="$(printf '%s' "$path" | sed 's|^/\([a-zA-Z]\)/|\1:\\\\|; s|/|\\\\|g')"
     procs="$(powershell -NoProfile -Command \
