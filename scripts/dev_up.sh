@@ -42,7 +42,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${DEV_UP_REPO:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 STATE_DIR="$REPO/.dev_up"
 STATE="$STATE_DIR/state"
-FLAGS_FILE="$SCRIPT_DIR/dev_up/prod_flags.env"
+FLAGS_FILE="${DEV_UP_FLAGS_FILE:-$SCRIPT_DIR/dev_up/prod_flags.env}"
 ME="dev@fracktal.in"
 PG_IMAGE="pgvector/pgvector:pg16"
 REDIS_IMAGE="redis:7-alpine"
@@ -87,6 +87,9 @@ flag_env() {
   declare -A out=()
   if [ -f "$FLAGS_FILE" ]; then
     while IFS= read -r line; do
+      # A Windows checkout can give the file CRLF endings. With the CR left on,
+      # the strict test below dropped every line, and no switch reached the stack.
+      line="${line%$'\r'}"
       case "$line" in "$scope":*) ;; *) continue ;; esac
       line="${line#"$scope":}"
       [[ "$line" =~ ^[A-Z0-9_]+=[A-Za-z0-9_.:-]{0,64}$ ]] || continue

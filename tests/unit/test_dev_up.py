@@ -46,12 +46,14 @@ def _held(text: str) -> str:
     return match.group(1)
 
 
-def _print_env(tmp_path: Path) -> dict[str, dict[str, str]]:
+def _print_env(tmp_path: Path, flags: Path | None = None) -> dict[str, dict[str, str]]:
     """Run --print-env against an empty repo dir: no state, so slot 0."""
+    env = {**os.environ, "DEV_UP_REPO": tmp_path.as_posix()}
+    if flags is not None:
+        env["DEV_UP_FLAGS_FILE"] = flags.as_posix()
     res = subprocess.run(
         [_BASH, SCRIPT.as_posix(), "--print-env"],
-        capture_output=True, text=True, encoding="utf-8", timeout=60,
-        env={**os.environ, "DEV_UP_REPO": tmp_path.as_posix()},
+        capture_output=True, text=True, encoding="utf-8", timeout=60, env=env,
     )
     assert res.returncode == 0, res.stderr
     out: dict[str, dict[str, str]] = {}
@@ -151,7 +153,29 @@ class TestTheGuards:
         assert ".env exists" in res.stderr
 
     def test_processes_start_with_a_clean_environment(self):
-        assert 'env -i "${envs[@]}"' in BODY
+        """Both launch lines, the Windows one and the Linux one. A substring
+        check on the whole file passed while launch() dropped the -i."""
+        launch = BODY[BODY.index("launch() {"):BODY.index("stop_one() {")]
+        assert 'exec env -i "${envs[@]}" "$@"' in launch
+        assert 'exec setsid env -i "${envs[@]}" "$@"' in launch
+        assert not re.search(r'exec (setsid )?env "\$\{envs', launch)
+
+    @needs_bash
+    def test_a_crlf_flags_file_still_reaches_the_stack(self, tmp_path):
+        """A Windows clone checked the flags file out with CRLF. Every line
+        failed the strict test, IDENTITY_CUTOVER never arrived, and the seed
+        then failed with 403 (found by the LD-1 verifier)."""
+        crlf = tmp_path / "flags.env"
+        crlf.write_bytes(FLAGS.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        gw = _print_env(repo, flags=crlf)["gateway"]
+        assert gw["IDENTITY_CUTOVER"] == "true"
+        assert gw["REACH_ENABLED"] == "false"
+
+    def test_the_flags_file_keeps_lf_endings_on_checkout(self):
+        attrs = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+        assert re.search(r"^scripts/dev_up/\*\.env\s+text eol=lf", attrs, re.MULTILINE)
 
     def test_the_flags_file_holds_switches_only(self):
         lines = [ln for ln in FLAGS.read_text(encoding="utf-8").splitlines()
