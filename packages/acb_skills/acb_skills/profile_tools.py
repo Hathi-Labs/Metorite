@@ -787,7 +787,8 @@ async def _claim_offer() -> bool:
     member = _current_user_email().strip().lower()
     if not (org and session and "@" in member):
         return False
-    part = hashlib.sha256(member.encode("utf-8")).hexdigest()[:24]
+    # 24 hex characters, from a digest of that size: no cut of a value.
+    part = hashlib.blake2b(member.encode("utf-8"), digest_size=12).hexdigest()
     try:
         from acb_common.tenant_redis import key, organization_scope
 
