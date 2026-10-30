@@ -4030,6 +4030,10 @@ before the flag goes on.**
 `brief`, `while_away` and `day_end`. `day_end` links to `EndOfDayReview` and
 copies nothing of it.
 
+The stored brief of `core_brief.md` is NOT a kind of this feed. Its My Day
+card is a standalone component, `BriefCard.tsx`, and `core_brief.md` §5 item 1
+owns it. It adds no kind to `feed_rank` or to the registry.
+
 ### MD-8 · Acts in the card — AGENT-SAFE (D101)
 
 The A\* acts as taps, and the class B acts in the expand panel of §11.3.
