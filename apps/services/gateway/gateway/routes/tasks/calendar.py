@@ -38,6 +38,7 @@ from gateway.routes.tasks.core import (
     # bottom of this file (H4 — the RLS-EXEMPT `organization` read; see the
     # comment there); every request handler AND per-user rollover uses
     # `_tenant_session`.
+    NO_THINKING,
     _get_db,
     _log,
     _tenant_session,
@@ -384,6 +385,31 @@ DEFAULT_PLANNING_PROMPT = (
 )
 
 
+class _NoAnswer(ValueError):
+    """The reply held no JSON at all. The message is the plain reason."""
+
+
+def _plan_json(resp: Any) -> dict:
+    """The JSON object of a plan reply.
+
+    Raises :class:`_NoAnswer` when the reply holds no JSON at all, so the user
+    reads the cause and not "JSONDecodeError" (#1122).
+    """
+    raw = resp.choices[0].message.content or ""
+    if "{" not in raw:
+        finish = getattr(resp.choices[0], "finish_reason", None)
+        raise _NoAnswer(
+            "the AI model ran out of room before it answered"
+            if finish == "length" else "the AI model sent no answer")
+    return json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
+
+
+def _failure_reason(exc: Exception) -> str:
+    if isinstance(exc, _NoAnswer):
+        return str(exc)
+    return f"the AI call failed ({type(exc).__name__}: {str(exc)[:120]})"
+
+
 async def _llm_rank_day(
     cands: list[dict], energy_note: str | None, capacity_mins: int, model: str,
     one_thing_id: str | None = None, planning_prompt: str | None = None,
@@ -481,14 +507,13 @@ async def _llm_rank_day(
             model=model, fallback_model="tier-balanced",
             messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("summary", json=True)},
                       {"role": "user", "content": user}],
-            temperature=0.2, max_tokens=1200,
+            temperature=0.2, max_tokens=1200, thinking=dict(NO_THINKING),
             response_format={"type": "json_object"},
         )
-        raw = resp.choices[0].message.content or ""
-        data = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
+        data = _plan_json(resp)
     except Exception as exc:
         _log.warning("tasks.calendar.plan_llm_failed", error=str(exc)[:160])
-        return None, None, f"the AI call failed ({type(exc).__name__}: {str(exc)[:120]})"
+        return None, None, _failure_reason(exc)
     valid = {c["id"] for c in cands}
     seen: set[str] = set()
     ordered: list[dict] = []
