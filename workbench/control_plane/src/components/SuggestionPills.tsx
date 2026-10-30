@@ -15,6 +15,8 @@ interface SuggestionPillsProps {
   label?: string;
   /** Pill alignment — "center" for empty state, "start" for follow-ups */
   align?: "center" | "start";
+  /** While a pill's act runs, so a second tap does nothing (the reminder chips, RM-4). */
+  disabled?: boolean;
 }
 
 export default function SuggestionPills({
@@ -22,6 +24,7 @@ export default function SuggestionPills({
   onPick,
   label = "Try asking",
   align = "center",
+  disabled = false,
 }: SuggestionPillsProps) {
   if (!suggestions.length) return null;
 
@@ -33,7 +36,8 @@ export default function SuggestionPills({
           <button
             key={i}
             onClick={() => onPick(s)}
-            className="text-[11px] sm:text-xs px-3 py-1.5 rounded-full border border-border bg-secondary/60 text-muted-foreground hover:border-primary/40 hover:bg-primary/10 hover:text-foreground tech-transition"
+            disabled={disabled}
+            className="text-[11px] sm:text-xs px-3 py-1.5 rounded-full border border-border bg-secondary/60 text-muted-foreground hover:border-primary/40 hover:bg-primary/10 hover:text-foreground tech-transition disabled:pointer-events-none disabled:opacity-60"
           >
             {s}
           </button>

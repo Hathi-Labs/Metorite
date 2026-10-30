@@ -158,14 +158,14 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-TO | **Trust and Operations**: enforced controls, restore, compliance | 🟢 active · M1 | `specs/box_hardening.md` | Metorite: epic 521 (Platform & CI/CD) · SBX-0 decided (D130, `specs/agent_sandbox.md`) · next WS-1e, WS-3, BH-3 with SBX-1, the WS-37 spec (D119.4) |
 | WS-PL | **Platform and CI**: delivery, staging, branch protection | 🟢 active · M1 | `specs/development_and_delivery_framework.md` | Metorite: project Platform & CI/CD · next WS-38a, WS-38e, WS-5a |
 | WS-PT | **Projects and Tasks** | 🟢 active · M1 | `specs/project_management_app.md` · `specs/one_projects_app.md` | Metorite: project Projects/Tasks App · no P0 or P1 · next H-257, H-387 |
-| WS-CAL | **Calendar**: events, reminders, external sync | 🟢 active · M1 | `specs/calendar_focus_os.md` · `specs/calendar_events_reminders.md` | Metorite: project Calendar App · next CE-0, WS-21-P4 (read-only first, D119.6) |
+| WS-CAL | **Calendar**: events, reminders, external sync | 🟢 active · M1 | `specs/calendar_focus_os.md` · `specs/calendar_events_reminders.md` | Metorite: project Calendar App · CE-0 decided (D138, 2026-10-29) · next RM-4, CE-1, CE-3, CE-4, then CE-10 with CE-11 |
 | WS-PP | **People and Profile** | 🟢 active · M1 | `specs/people_center_app.md` | Metorite: project My Profile · next E-58 |
 | WS-EM | **Email** | 🟢 active · M0 | `specs/email_app_master_plan.md` · `specs/shared_mailbox.md` | Metorite: project My Email · Gmail in test mode (D122.4) · next E-05, E-09, E-11 |
 | WS-CRM | **CRM**: native mode, the Zoho mirror, and the cutover from one to the other | 🟢 active · M1 | `specs/crm_platform.md` | Metorite: epic 477, cutover sub-epic CRM-Z10 · CRM-Z10f decided (D133) · next H-333, CRM-Z10a to Z10e (the switch, owner ask 2026-10-28), CRM-U13, the whole-app UX batch, H-366 |
 | WS-WA | **WhatsApp** | 🟡 gated · M2 | `specs/whatsapp_message_manager.md` · `specs/whatsapp_assistant_channel.md` | Metorite: epic 476 · D115 freeze, lifted for brief task 8 only (D122.3) · next BR-8a, E-20 |
 | WS-KB | **Knowledge** | 🟢 active · M2 | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | Metorite: project Knowledge · no P0 or P1 · next H-401, KC-1 |
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_base.md` §20 · `specs/company_context.md` (KG-0 writes `specs/knowledge_graph.md`) | Metorite: epic 783 (Knowledge) · D128 · gate MEM-3 (the memory shape) · next KG-0, KG-1, KG-9 |
-| WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` (SW-0 writes the coordination spec) | Metorite: epics 321 (coordination, D135), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · next SW-0, MCP-P0, then SW-23 and SW-24 |
+| WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` · `specs/agent_coordination.md` (D140) | Metorite: epics 321 (coordination, D135 and D140), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · MCP-P1a built dark 2026-10-30 (`external_agent_access.md` §19) · next tasks 1045 and 1054, SW-4, SW-10b (the sweep on staging first), then SW-29a and SW-30a, and MCP-P1b and MCP-P2a |
 | WS-STU | **Studio**: tool packs, workflows, AI apps | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 491 (Agent Tooling) · D127 · next STU-0, then SKL-1 and SKL-2 after SBX-1 |
 | WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) | Metorite: epic 492, sub-epic UX-D · UI-G1 is built · next UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
 | WS-WH | **Writing Help** | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 493 · next WA-1 |
@@ -189,10 +189,10 @@ These are the rows of the board before D118. Each row keeps its ID, so a spec th
 | WS-4 | Event-bus consumer and durable queue (BO-20) | 🟢 open | none, the BO checklist is in git | now in WS-BRIEF (BR-1a) |
 | WS-5 | CI gates real (BO-17, BO-18) | 🟢 open | none, the BO checklist is in git | now in WS-PL (WS-5a) |
 | WS-6 | Observability wiring and attribution (BO-5) | 🟢 open | `specs/observability_e2.md` §7 | now in WS-TO |
-| WS-7 | Memory activation and search (BO-21, BO-22) | 🟢 open | `specs/llm_caching_memory.md` | now in WS-CHAT |
+| WS-7 | Memory activation and search (BO-21, BO-22) | 🟢 open | `specs/llm_caching_memory.md` (2026-10-29: Mem0 and Graphiti retire after KG-6 per D132, so read its Mem0 parts as RETIRED) | now in WS-CHAT |
 | WS-8 | Agent architecture A0 to C | 🟢 open | `specs/agent_architecture.md` §12.2 | now in WS-CHAT |
-| WS-9 | Memory tiers 3b, 3c and 4 | 🟢 open | `specs/memory_architecture.md` §9 | now in WS-CHAT |
-| WS-10 | Multiplayer remainder: S1 compartments | 🟢 open | `docs/multiplayer/memory-clearance.md` §7 | now in WS-CHAT |
+| WS-9 | Memory tiers 3b, 3c and 4 | 🟢 open | `specs/memory_architecture.md` §9 (re-scoped 2026-10-29 by D132: Mem0 and Graphiti are not tiers, see its banner. Left: file-tier 3b and 4, and the 3c correction UX on the profile and org knowledge. If no slice survives, the row closes into WS-KG at KG-11) | now in WS-CHAT |
+| WS-10 | Multiplayer remainder: S1 compartments | 🟢 open | `docs/multiplayer/memory-clearance.md` §7 (2026-10-29: compartments still hold under D132, but the Mem0 scopes in it are RETIRED) | now in WS-CHAT |
 | WS-11 | Workflows slice 3: gallery, fan-in, loops | ⏸ parked | `specs/workflows_app.md` §8.3 | after Phase 2 (D119.3) · now in WS-STU (STU-2) |
 | WS-12 | Framework uplift, Phase 4 only (D6) | 🟢 open | `specs/multi_agent_orchestration.md` | now in WS-CHAT |
 | WS-13 | Centers B: groups become real | ⏸ parked | `specs/department_centers.md` | parked by D49 · now in WS-TS |
@@ -4737,6 +4737,15 @@ Owner decision, 2026-10-27 (see D129). Metorite #805 and #806. It amends D95.2 f
 
 *Amended 2026-10-28 (owner, in chat, three answers after the audit of CRM-Z10):* (a) Attachments are not a gate. The preview says that they stay in Zoho, and the customer keeps Zoho open for a while to fetch a file. Copying them is a later slice (CRM-Z10e). (b) A Zoho owner with no Metorite member: the preview lists each name and the number of its records. The switch keeps the name on the record and leaves the owner empty. A step that matches names to members comes later. (c) A module that is held, unavailable or incomplete blocks the switch, unless the admin ticks it in "Leave out". The agent's defaults, which the owner may overrule: the sync history stays, read only. The switch revokes the Zoho tokens. A record that Zoho deletes later stays in Metorite. The admin types `SWITCH` to confirm.*
 
+*Amended 2026-10-29 (owner, in chat, after the review of CRM-Z10b).* "We should have the option to switch to Metorite with empty ZOHO records, as well as switch to Metorite with the records from ZOHO. Both of the options need to be there." So both switches stay, and each name says what happens to the records.
+
+- (a) **"Switch to Metorite, keep the Zoho records"** is the CRM-Z10b switch. It runs the final sync and the fold, keeps every record, and closes Zoho. The admin types `SWITCH`.
+- (b) **"Switch to Metorite, start empty"** is the old CRM-X0 action. It removes every record and opens an empty Native CRM. Before that, it offers a download, and the admin types `DELETE`.
+
+Each label is also the title of its dialog. When the org is on `CRM_CUTOVER_ORGS`, the cutover card shows both, each once. One line about the records sits under each. The setup hub then leaves its copy of (b) out. Off the list, only (b) shows, in the hub. Fences: `components/crmZ10b.test.ts` and `components/crmX0.test.ts`.
+
+*Also 2026-10-29 (owner, in chat):* the switch is for ALL orgs. Production sets `CRM_CUTOVER_ORGS=*` once CRM-Z10b passes its staging test. Then each org's admin presses the switch. Metorite switches no org itself. The default in the code stays empty, so the switch ships dark until then.
+
 ### D134 — CRM settings fold into five sections, the AI's questions sit in one list, and a Field map pick applies at once (2026-10-27)
 
 Owner answers, 2026-10-27, in chat, to three questions after the audit of the CRM setup screens. Workstream: **WS-CRM**. Owning spec: `specs/crm_platform.md` §20.17 (CRM-U13).
@@ -4764,6 +4773,8 @@ Owner directive, 2026-10-28, in chat: "Via the MCP, external coding agents shoul
 4. **D124 holds.** One scope per app, an approval card per write or delete, untrusted text, an audit row and an admin switch.
 5. **When.** MCP-P0 to MCP-P4 come in M3, after Phase 2 (D124.4). Studio over the MCP (MCP-P5) comes in M4, after the sandbox. Metorite epic 495 holds the slices.
 
+*Amended 2026-10-29 (owner, in chat):* `"ensure that the MCP also has the ability to at least connect to CRM and email as well in a full-fledged manner, so an external agent can query all aspects of emails and CRM aspects with the MCP as well."` *So MCP-P0 to MCP-P2 move from M3, after Phase 2 (item 5), to now. Item 5 still holds for MCP-P3 to MCP-P5. `external_agent_access.md` §19 holds the design and the slices, and MCP-Q2 there asks whether the admin switch of MCP-P3 moves too.*
+
 ### D137 — The Deals board shows the columns in the order of the settings list. Mirror mode defaults to the order of the Zoho pipeline. It amends the 2026-10-12 order rule and CRM-U6 item 1 (2026-10-27)
 
 Owner report, 2026-10-27, in chat: the deal stages were "very complicated" to configure, and the Kanban columns do not show "like it is currently showing up in ZOHO". The owner asked for the Zoho order, or an easy setting. Workstream: **WS-CRM**. Owning spec: `specs/crm_platform.md` §20.15 (CRM-U11).
@@ -4782,6 +4793,60 @@ The rule:
 3. **A saved order wins until the admin picks "Same as Zoho".** That choice clears it.
 4. **Native mode: the admin's order.** A new stage lands before the first won or lost stage.
 5. **The win chance never moves a column.** CRM-U6 item 1 stands on this point.
+
+### D138 — The Calendar holds events in one new table, an attendee sees a meeting, and Google and Outlook sync both ways from the start (2026-10-29)
+
+The owner answered CE-0 on 2026-10-29, in chat. The questions are Q1 to Q10 of `specs/calendar_events_reminders.md` §11. Workstream: **WS-CAL**. Owning spec: `specs/calendar_events_reminders.md` §3, §4 and §8.
+
+1. **Q1. One new table, `calendar_entries`.** It holds events, meetings and read-only copies of Google and Outlook events. A task block stays on `pm_task_personal`. This amends D54.5. The Calendar now has a store of its own for time that is not a to-do.
+2. **Q2. A colleague sees an event only as an attendee.** Nobody else sees it. There is no team calendar and no free and busy view. This amends D54.4 narrowly.
+3. **Q4. The lead times.** 30 minutes before a task block, as today. 10 minutes before an event.
+4. **Q5. The composer opens on Task** for a new member.
+5. **Q6. Google and Outlook ship together in CE-10.** This changes the default of the spec, which put Google first.
+6. **Q7. Write-out ships with read.** CE-11 lands beside CE-10, not 2 weeks after it. It writes only the events that a member made in Metorite. This changes the default of the spec.
+7. **Q8. A guest with no connected account.** Metorite stores the name and the address, sends nothing, and offers Connect.
+8. **Q9. A task block does not go to the provider as busy time.** A later opt-in for each member can add it. The owner did not answer Q9 directly, so the default of the spec stands.
+9. **Q10. The new acts use the gate `feature:tasks`** (D54.1).
+
+**What stays gated.** The owner gates of the spec's §8.3 stand. They are the Google and Azure scopes, Google's review of a sensitive scope, the client secrets, and each flip of `CALENDAR_SYNC_READ` and `CALENDAR_SYNC_WRITE` for a real member. A write-out makes the provider send invites to real people, so CLAUDE.md §3a rule 3 binds that flip.
+
+**What it unblocks.** CE-4, the event store. After CE-4, CE-5 to CE-9 and CE-12. An agent can build CE-10 and CE-11 as dark code. The owner gates bind only their live use.
+
+### D139 — Keep MAF and build natively. One coding harness serves `code_task` and AI Studio (2026-10-30)
+
+The owner answered decision 1 of CA-0 on 2026-10-30, in chat. Board: **WS-43**. Owning spec: `specs/maf_coding_engine.md` §18. Metorite epic: task 1027.
+
+```text
+"Yes, I like the idea of keeping MAF and building natively. I just want to
+ensure that we have built all the necessary tools and workflows that
+enable MAF to become a capable coding agent harness. The same coding
+harness gets used with the AI Studio as well."
+```
+
+1. **Keep MAF, and build natively.** The tools run in our sandbox, and the loop and keys stay in the gateway. D82, D83, D84 and D92 hold. The Copilot SDK wrapper `GitHubCopilotAgent` stays rejected.
+2. **One coding harness (CA-14).** `code_task`, AI Studio (D127), the sandbox tool builder, the App Workshop, the Agent Workshop and self-mutation all use it. A profile only narrows tools and paths. A second coding harness, tool set, permission model or event stream is a defect.
+3. **A coding workflow (CA-15).** The harness ships the loop: understand, plan, implement, verify, review by a separate sub-agent, deliver.
+
+**What stays open.** Decisions 2 to 5 of `maf_coding_engine.md` §18.7 wait for the owner. They are the amendment of §6.2, the egress profiles, the OpenHands pilot and the first org.
+
+### D140 — Agents coordinate on one board: one execution slot, the member as the only authority, a live path for each held task, and a delegate beside the assignees (2026-10-30)
+
+The owner asked on 2026-10-30, in chat, to "research how Linear uses its project management app for agents". The owner also asked to build out the Projects and MCP tasks "to have full capability for agent orchestration". Board: **WS-MCP**. Owning spec: `specs/agent_coordination.md` §4. Metorite: epic 321, task 331 (SW-0). It extends D135 and changes no rule of D97 or D-PM-4.
+
+**Owner calls:** items 1 to 4. The owner set them in task 331, under D135. **Agent defaults:** items 5 to 10. They come from the Linear research of 2026-10-30 and task 1045, and they stand unless the owner objects.
+
+1. **The execution slot sits beside the assignees.** D-PM-4 stays, so a task keeps many assignees. The slot is the one open run of a task, which the index of migration 289 enforces. `held_by` is its read.
+2. **The member is the only authority.** A session label, an agent label, a delegate, a plan and guidance are display or context data. None of them reaches an authorization check.
+3. **The liveness contract.** Each open task that an agent holds has a live path. Recovery nudges the member once, then escalates to a person. It never reassigns.
+4. **Pull first, push later.** Wake-ups land as `needs_agent` runs that `list_agent_runs` and `my_work` serve. Outbound push waits for WS-56.
+5. **A delegate beside the assignees.** A task names at most one agent as its delegate. The human assignee stays accountable. The default holds until the owner answers Q2 of the spec's §8. A member may delegate to another member's agent only when that agent is shared. Its member or an admin shares it. Q2 stays open for the owner.
+6. **Agent guidance, nearest first.** A task gets the guidance of its project, then of each parent up to its space, then of the org. Each block names its source and version. It never overrides the server's rules.
+7. **A run plan is a whole-list replace.** At most 30 steps of 200 characters, each `pending`, `in_progress`, `completed` or `canceled`.
+8. **The `waiting` state is capped at 120 minutes.** After that time, with no new activity, the run reads `stale`. The cap never passes one lease.
+9. **The stranded sweep goes on in staging first.** The nudge verb (task 1054), the `waiting` state (1045a) and the linked events (1045b) land before the flip. Production follows the staging test.
+10. **The lease is two hours, from the newest activity of any author.** A question keeps the task for three leases. This replaces the 15-minute TTL of the first text of SW-4.
+
+**What stays open.** Five questions wait for the owner (`agent_coordination.md` §8). They are the `agent:<name>` assignee and the delegate, a shared agent, the first cloud agent, cost and goals, and who may end another member's run.
 
 
 ## 4. Single-owner registry (who owns duplicated work)

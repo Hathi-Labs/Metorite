@@ -337,6 +337,12 @@ export interface AssistantState {
   draft: AssistantAsk | null;
   /** Grows when a new chat is asked for. */
   freshSeq: number;
+  /**
+   * A reminder to open in the next fresh chat (WS-66 RM-4, §5.7): its id,
+   * from `/chat?reminder=<id>`. The dock asks the server for the first
+   * message once, then takes it (`consumeReminder`).
+   */
+  reminder: string | null;
   /** Grows when the cursor should go to the assistant's composer. */
   focusSeq: number;
   /** The side panel's width. */
@@ -381,6 +387,7 @@ const CLOSED: AssistantState = {
   ask: null,
   draft: null,
   freshSeq: 0,
+  reminder: null,
   focusSeq: 0,
   width: DOCK_DEFAULT,
 };
@@ -410,6 +417,8 @@ export interface OpenOptions {
   sessionId?: string | null;
   mode?: AssistantMode;
   fresh?: boolean;
+  /** A reminder id to open in the fresh chat that this open asks for (RM-4). */
+  reminder?: string;
 }
 
 /**
@@ -435,7 +444,8 @@ export function modeOnOpen(a: { phone: boolean; open: boolean; current: Assistan
 /**
  * Open the assistant. With `text`, the words go to the chat as the member's
  * turn. With `draft`, they wait in the composer for the member to send. With
- * `sessionId`, that chat opens. With `fresh`, a new chat opens.
+ * `sessionId`, that chat opens. With `fresh`, a new chat opens. With
+ * `reminder`, the new chat opens that reminder (RM-4): pass `fresh` too.
  *
  * The form: an open from closed is the side panel, unless `mode` asks for the
  * full view. An open while it is open keeps the form it has.
@@ -444,6 +454,7 @@ export function openAssistant(opts: OpenOptions = {}): void {
   const base = withPrefs(_state);
   const text = opts.text?.trim();
   const draft = opts.draft?.trim();
+  const reminder = opts.reminder?.trim();
   // Only a phone stores `peek` (the handle, the chevron, and `onChatLink` on
   // a phone), so a stored `peek` is the phone. The store reads no viewport.
   const phone = base.mode === "peek";
@@ -455,6 +466,7 @@ export function openAssistant(opts: OpenOptions = {}): void {
     ask: text ? { seq: ++_askSeq, text, join: base.open } : base.ask,
     draft: draft ? { seq: ++_askSeq, text: draft } : base.draft,
     freshSeq: opts.fresh ? base.freshSeq + 1 : base.freshSeq,
+    reminder: reminder || base.reminder,
     focusSeq: base.focusSeq + 1,
   });
 }
@@ -462,13 +474,19 @@ export function openAssistant(opts: OpenOptions = {}): void {
 /** Close the assistant. The chat it showed stays its chat for next time. */
 export function closeAssistant(): void {
   if (!_state.open) return;
-  _set({ ..._state, open: false, ask: null, draft: null });
+  _set({ ..._state, open: false, ask: null, draft: null, reminder: null });
 }
 
 /** The composer took the draft. */
 export function consumeDraft(): void {
   if (!_state.draft) return;
   _set({ ..._state, draft: null });
+}
+
+/** The dock asked the server to open the reminder: drop it, so it opens once. */
+export function consumeReminder(): void {
+  if (!_state.reminder) return;
+  _set({ ..._state, reminder: null });
 }
 
 /** Change the form of this open. Nothing is kept for the next one. */

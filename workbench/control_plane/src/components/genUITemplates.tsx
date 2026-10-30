@@ -92,6 +92,17 @@ import {
   isEmptyCell,
   splitMany,
 } from "@/lib/dataGridLayout";
+import {
+  REMINDER_CHIPS,
+  actOfWords,
+  actResultWords,
+  actTurn,
+  chipsLabel,
+  closedWords,
+  reminderActs,
+  runReminderAct,
+  useKnownReminder,
+} from "@/lib/shell/reminderOpen";
 import { statusAccent } from "@/lib/statusAccent";
 import { priorityChip } from "@/lib/taskCard";
 import { TYPE } from "@/lib/typeScale";
@@ -241,6 +252,13 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
     name: "report",
     summary: "A report make_report wrote: KPI tiles, a summary, sections with their charts and tables, the sources and a PDF. Opens in full in the side panel.",
     data: "{ kind?('metorite.report'), path?, pdf?, title, subtitle?, for?, date?, period?, summary?(bold, italic, lists), kpis?:[{label,value,unit?,delta?,good?('up'|'down')}](8), sections:[{ heading?, text?, bullets?:[string], visual?:{ kind('chart'|'stats'|'table'|'board'|'timeline'|'gantt'|'agenda'), title?, ... } }](1-30), sources?:[string] }",
+    family: "result",
+  },
+  // ── A reminder that a tap opened (WS-66 RM-4) ───────────────────────────
+  {
+    name: "reminderCard",
+    summary: "A reminder that a tap opened in the chat, with its chips: Done, Not yet, Later, Drop, Make it a task. The server writes it as the chat's first row. An agent does not emit it.",
+    data: "{ reminderId, title, when?, zone?, state('scheduled'|'due'|'unconfirmed'|'done'|'dropped'|'cancelled'), resolution?, kind?('action'|'notice'), link? }",
     family: "result",
   },
 ];
@@ -1268,6 +1286,8 @@ export const OWN_HEAD_TEMPLATES: ReadonlySet<string> = new Set([
   "recipeCard", "flightStatus", "trainStatus", "formCard", "barChart", "chart",
   // A report the agent makes (2026-10-16).
   "report",
+  // A reminder that a tap opened (WS-66 RM-4).
+  "reminderCard",
 ]);
 
 /**
@@ -1808,6 +1828,64 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   );
 }
 
+/**
+ * A reminder that a tap opened in the chat (WS-66 RM-4,
+ * `calendar_events_reminders.md` §5.7). The server writes it as the chat's
+ * first row, under the first message. The chips are the one pill row of the
+ * brief (`SuggestionPills`). Done, Not yet and Drop call the member's own
+ * reminder routes at once, and Undo calls `/reopen` (D-CF-5). Later and Make
+ * it a task send the member's words to the model through `onAction`. The
+ * newest row comes from `lib/shell/reminderOpen.ts`, so a chip's answer
+ * shows after a remount. With no `onAction` (the side panel) the card draws
+ * read-only, with no chips.
+ */
+function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
+  const id = str(data.reminderId);
+  const known = useKnownReminder(id);
+  const state = known?.row.state ?? str(data.state);
+  const resolution = known ? known.row.resolution : data.resolution == null ? null : str(data.resolution);
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
+  const acts = ctx?.onAction ? reminderActs({ state, resolution, via: known?.via }) : [];
+  const link = str(data.link).trim();
+  const closed = said ? "" : closedWords(state, resolution);
+  const pick = async (words: string) => {
+    const act = actOfWords(words);
+    if (!act || busy) return;
+    const turn = actTurn(act);
+    if (turn) {
+      ctx?.onAction?.(turn);
+      return;
+    }
+    setBusy(true);
+    const got = await runReminderAct(id, act);
+    setBusy(false);
+    setSaid(got.ok ? actResultWords(act, got.row, str(data.zone) || null) : got.words);
+  };
+  const fold = useCardFold();
+  return (
+    <div style={fold ? CARD_BOX : undefined} data-reminder-card="" aria-busy={busy || undefined}>
+      <TemplateHead icon="bell" title={str(data.title, "Reminder") || "Reminder"} aside={str(data.when) || undefined} />
+      <TemplateBody>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {link ? <div className="text-xs text-muted-foreground" data-reminder-link="">{link}</div> : null}
+          {closed ? <div className="text-xs text-muted-foreground" data-reminder-closed="">{closed}</div> : null}
+          <div role="status" className="text-xs text-foreground" data-reminder-said="">{said ?? ""}</div>
+          {acts.length > 0 && (
+            <SuggestionPills
+              suggestions={acts.map((a) => REMINDER_CHIPS[a])}
+              onPick={(words) => void pick(words)}
+              label={chipsLabel(acts)}
+              align="start"
+              disabled={busy}
+            />
+          )}
+        </div>
+      </TemplateBody>
+    </div>
+  );
+}
+
 // ── A report the agent makes (owner directive, 2026-10-16) ──────────────────
 //
 // `make_report` writes a report as data and its PDF beside it. ONE component
@@ -2229,6 +2307,7 @@ export const TEMPLATE_REGISTRY: Record<string, TemplateRenderer> = {
   planCard: (data, ctx) => <PlanCard data={data} ctx={ctx} />,
   chart: (data) => <ChartCard spec={data} />,
   report: (data) => <ReportTemplate data={data} />,
+  reminderCard: (data, ctx) => <ReminderCard data={data} ctx={ctx} />,
 };
 
 /** Render a template node, or an inert fallback if the name is unknown. */

@@ -344,6 +344,15 @@ class Settings(BaseSettings):
     # the org's credits (`work_plan.md` §6). The grant `enforcement-flip`
     # does not cover it. Fence: tests/unit/test_crm_digest.py.
     crm_digest_orgs: str = ""
+    # `crm_cutover_orgs` (WS-53 CRM-Z10b, 2026-10-28) lists the organization
+    # ids that may switch from the Zoho mirror to Native mode
+    # (`crm_platform.md` §3.4), in the grammar of `crm_orgs`. Default empty
+    # means NO organization (fail closed): the three switch routes answer
+    # 404. An org also needs a place on `crm_mirror_orgs`. The one reader is
+    # `gateway.routes.crm.flags`. 🔴 A name on a production box is the
+    # owner's production run (CRM-Z10-run). Fence:
+    # tests/unit/test_crm_cutover_switch_r8.py.
+    crm_cutover_orgs: str = ""
     # `crm_answer_check` (WS-53 CRM-Q29, 2026-10-17) is the number check of
     # a chat answer that read a CRM tool (`crm_platform.md` §18.11.2):
     # `off` (the default), `shadow` (check at the end of the answer and log
@@ -1756,6 +1765,16 @@ class Settings(BaseSettings):
     # gateway reads it. `gateway.agent_run_sweep.sweep_enabled`
     # is the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
     agent_run_sweep_enabled: bool = False
+    # MCP-P1a (external_agent_access.md §19, AD-15): the apps that the app
+    # door serves to an outside agent, by app id with a comma between ids,
+    # for example `knowledge`. Empty, the default, serves none: the edge then
+    # lists none of the four door tools, and branch 0 refuses each door call
+    # with the coded 403 `app_off`. An id with no door manifest serves
+    # nothing. Both units read it, so both need the same value.
+    # `acb_auth.agent_oauth.door_apps` is the one reader. 🔴 A change on a
+    # box is gate `enforcement-flip`. `knowledge` on production needs a dated
+    # grant. `crm` and `email` there stay OWNER-GATE until MCP-P3 (§19.13).
+    agent_door_apps: str = ""
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
     agent_code_ttl_s: int = 60

@@ -808,3 +808,260 @@ async def test_r8_the_flag_off_answers_404_on_every_route(world, monkeypatch) ->
         assert c.execute(
             text("SELECT count(*) FROM reminders WHERE member_email = :e"), {"e": ALICE},
         ).scalar_one() == 1
+
+
+# ── RM-4: a tap opens the chat (§5.7) ──────────────────────────────────────
+#
+# `POST /chat/sessions/{id}/reminder-open` (`routes/chat_reminder.py`) with
+# the real room check, the real minter and the real message seam. Those open
+# `acb_graph` sessions, which the `chat` fixture points at the app role, as
+# `test_chat_brief_turn_r8.py` does. The handler runs under the bound tenant,
+# as the app's auth binds it.
+#
+# **Acceptance (§10.1 RM-4).** An open writes ONE assistant row with the
+# reminder's text and no model call, and one `opened` ledger row. A `notice`
+# is `done`, and an `action` stays `due`. Done, then the Undo of the chip,
+# brings it back to `due`. A second member and a second org get 404 and no
+# row. A second open is safe.
+#
+# **The mutations (R7).** Each turned the named test red. They ran in memory
+# (the function's source, changed and executed in its module), so no file of
+# the tree changed.
+#
+# * M6. `reminders.open_reminder`: write `opened` for a closed reminder too
+#   (drop `and row.state in OPEN_STATES`).
+#   `test_r8_a_second_open_is_safe_and_writes_no_second_row`.
+# * M7. `chat_reminder.open_reminder_in_chat`: pass `record=True` always.
+#   `test_r8_a_second_open_is_safe_and_writes_no_second_row`.
+# * M8. `reminders.open_reminder`: close an `action` reminder on open too.
+#   `test_r8_an_open_writes_one_row_and_an_action_stays_due`.
+# * M9. `reminders._subject_of`: read the linked task by its id alone, with
+#   no `load_visible_task`.
+#   `test_r8_a_linked_task_shows_only_to_a_member_who_can_open_it`.
+
+
+@pytest.fixture
+def chat(world, monkeypatch):
+    """``acb_graph`` sessions as the app role, and the chat function granted
+    to it. It yields the list of the sessions a test makes, and removes them
+    after."""
+    import acb_graph.db as graph_db
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import NullPool
+
+    from tests.unit.test_h3_rls_promotion_rehearsal import _APP_ROLE
+
+    with world.p.admin_engine.begin() as c:
+        c.execute(text(
+            f"GRANT EXECUTE ON FUNCTION public.chat_session_exists(text) TO {_APP_ROLE}"))
+    eng = create_engine(world.p.app_url, poolclass=NullPool, future=True)
+    factory = sessionmaker(bind=eng, expire_on_commit=False, future=True)
+    monkeypatch.setattr(graph_db, "_session_factory", lambda: factory)
+    made: list[str] = []
+    try:
+        yield made
+    finally:
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM chat_session WHERE id = ANY(:s)"), {"s": made})
+        eng.dispose()
+
+
+def _chatter(email: str, org: str) -> Any:
+    """A member who holds the chat and the Projects features, in *org*."""
+    from acb_auth import UserContext, UserRole, build_access
+
+    return UserContext(
+        email=email, role=UserRole.EMPLOYEE, organization_id=org,
+        access=build_access(["feature:chat", "feature:projects"]),
+    )
+
+
+def _new_chat(made: list[str], email: str, org: str) -> str:
+    """The session row the browser makes first (``sessions.ts``)."""
+    from gateway.routes.chat import SessionUpsertRequest, _upsert_session
+
+    sid = f"rm4-{uuid.uuid4().hex[:12]}"
+    made.append(sid)
+    _upsert_session(email, SessionUpsertRequest(id=sid, title="RM-4"), organization_id=org)
+    return sid
+
+
+async def _tap(world: Any, user: Any, sid: str, rid: str) -> Any:
+    """The real handler, under the bound tenant and the app role."""
+    from fastapi import Response
+    from gateway.routes.chat_reminder import ReminderOpenIn, open_reminder_in_chat
+
+    token = bind_tenant(user.organization_id)
+    try:
+        async with tenant_engine_scope(world.p.app_url.render_as_string(hide_password=False)):
+            return await open_reminder_in_chat(
+                sid, ReminderOpenIn(reminder_id=uuid.UUID(rid)), Response(), user=user)
+    finally:
+        release_tenant(token)
+
+
+def _chat_rows(world: Any, sid: str) -> list[Any]:
+    with world.p.admin_engine.connect() as c:
+        return c.execute(text(
+            "SELECT id, role, content, custom_events, author_kind, run_member_email, "
+            "run_final_at IS NOT NULL AS sealed, organization_id::text AS org "
+            "FROM chat_message WHERE session_id = :s ORDER BY timestamp_ms"), {"s": sid}).fetchall()
+
+
+async def test_r8_an_open_writes_one_row_and_an_action_stays_due(world, chat) -> None:
+    async with _client(world, world.org) as c:
+        rid = (await _create(c, ALICE, notes="At Ravi's"))["id"]
+    _make_due(world, rid)
+    sid = _new_chat(chat, ALICE, world.org)
+
+    got = await _tap(world, _chatter(ALICE, world.org), sid, rid)
+
+    assert got["posted"] is True and got["message_id"] == f"reminder-{rid}"
+    [row] = _chat_rows(world, sid)
+    assert row.id == f"reminder-{rid}" and row.role == "assistant" and row.author_kind == "agent"
+    assert row.content == got["preview"]
+    assert row.content.startswith("Reminder · Get a haircut · ")
+    assert row.content.endswith("Did you do it?")
+    assert row.run_member_email == ALICE and row.sealed and row.org == world.org
+    [event] = row.custom_events
+    assert event["name"] == "generative_ui"
+    card = event["value"]["props"]
+    assert card["name"] == "reminderCard"
+    assert card["data"]["reminderId"] == rid and card["data"]["state"] == "due"
+    assert card["data"]["zone"] == "Asia/Kolkata"
+    # The context block: the id, the fenced title and notes, and the ledger.
+    facts = got["context"]["facts"]
+    assert f"reminder_id: {rid}" in facts[0]
+    assert "Title: «Get a haircut»" in facts
+    assert "Notes: «At Ravi's»" in facts
+    assert facts[-1].startswith("History, oldest first: created ")
+    assert "opened" in facts[-1]
+    assert got["context"]["label"] == "Reminder · Get a haircut"
+    # An open is not an answer: the action stays due.
+    assert got["reminder"]["state"] == "due" and _row(world, rid).state == "due"
+    rows = _ledger_rows(world, rid)
+    assert [r.event for r in rows] == ["created", "opened"]
+    assert rows[1].detail == {"by": "member"}
+
+    # The Done chip, then its Undo: the exact calls of the card.
+    async with _client(world, world.org) as c:
+        done = await c.post(f"{BASE}/{rid}/resolve", json={"action": "done"}, headers=_as(ALICE))
+        assert done.status_code == 200 and done.json()["state"] == "done"
+        back = await c.post(f"{BASE}/{rid}/reopen", json={}, headers=_as(ALICE))
+        assert back.status_code == 200 and back.json()["state"] == "due"
+    assert _ledger(world, rid) == ["created", "opened", "done", "reopened"]
+
+
+async def test_r8_a_notice_closes_on_open_and_the_undo_reopens_it(world, chat) -> None:
+    async with _client(world, world.org) as c:
+        rid = (await _create(c, ALICE, title="The office closes early", kind="notice"))["id"]
+    _make_due(world, rid)
+    due = _row(world, rid)
+    sid = _new_chat(chat, ALICE, world.org)
+
+    got = await _tap(world, _chatter(ALICE, world.org), sid, rid)
+
+    assert got["reminder"]["state"] == "done" and got["reminder"]["resolution"] == "done"
+    [row] = _chat_rows(world, sid)
+    assert row.content.endswith("today.") or row.content.endswith(".")
+    assert "Did you do it?" not in row.content
+    rows = _ledger_rows(world, rid)
+    assert [r.event for r in rows] == ["created", "opened", "done"]
+    assert rows[2].detail["from_state"] == "due" and rows[2].detail["via"] == "open"
+    async with _client(world, world.org) as c:
+        back = await c.post(f"{BASE}/{rid}/reopen", headers=_as(ALICE))
+    assert back.json()["state"] == "due"
+    assert _row(world, rid).next_check_at == due.next_check_at
+
+
+async def test_r8_a_second_open_is_safe_and_writes_no_second_row(world, chat) -> None:
+    async with _client(world, world.org) as c:
+        action = (await _create(c, ALICE))["id"]
+        notice = (await _create(c, ALICE, title="Priya's birthday", kind="notice"))["id"]
+    _make_due(world, action)
+    _make_due(world, notice)
+    alice = _chatter(ALICE, world.org)
+    sid, other = _new_chat(chat, ALICE, world.org), _new_chat(chat, ALICE, world.org)
+
+    first = await _tap(world, alice, sid, action)
+    again = await _tap(world, alice, sid, action)
+    # The same chat asked again: no second row, and no second `opened`.
+    assert first["posted"] is True and again["posted"] is False
+    assert [r.id for r in _chat_rows(world, sid)] == [f"reminder-{action}"]
+    assert _ledger(world, action) == ["created", "opened"]
+    assert again["preview"] == first["preview"]
+
+    # A second tap opens a second chat: one row there, and one more `opened`.
+    second = await _tap(world, alice, other, action)
+    assert second["posted"] is True
+    assert [r.id for r in _chat_rows(world, other)] == [f"reminder-{action}"]
+    assert _ledger(world, action) == ["created", "opened", "opened"]
+
+    # A closed notice: a repeat tap writes nothing and is no 409.
+    await _tap(world, alice, _new_chat(chat, ALICE, world.org), notice)
+    repeat = await _tap(world, alice, _new_chat(chat, ALICE, world.org), notice)
+    assert repeat["reminder"]["state"] == "done"
+    assert _ledger(world, notice) == ["created", "opened", "done"]
+
+
+async def test_r8_another_member_gets_404_and_no_row(world, chat) -> None:
+    from fastapi import HTTPException
+
+    async with _client(world, world.org) as c:
+        rid = (await _create(c, ALICE))["id"]
+    _make_due(world, rid)
+    bob = _chatter(BOB, world.org)
+    # Bob's own chat, Alice's reminder: the member filter misses.
+    sid = _new_chat(chat, BOB, world.org)
+    with pytest.raises(HTTPException) as err:
+        await _tap(world, bob, sid, rid)
+    assert err.value.status_code == 404 and err.value.detail == "Reminder not found"
+    # Alice's chat: Bob cannot read it, so the session misses first.
+    hers = _new_chat(chat, ALICE, world.org)
+    with pytest.raises(HTTPException) as err:
+        await _tap(world, bob, hers, rid)
+    assert err.value.status_code == 404
+    assert _chat_rows(world, sid) == [] and _chat_rows(world, hers) == []
+    assert _ledger(world, rid) == ["created"] and _row(world, rid).state == "due"
+
+
+async def test_r8_another_org_gets_404_and_no_row(world, chat) -> None:
+    from fastapi import HTTPException
+
+    # The SAME address holds the reminder in org B and a chat in org A. Only
+    # RLS keeps org B's row out of org A's tap.
+    async with _client(world, world.org) as c:
+        rid = (await _create(c, ALICE))["id"]
+    _make_due(world, rid)
+    sid = _new_chat(chat, ALICE, world.other)
+    with pytest.raises(HTTPException) as err:
+        await _tap(world, _chatter(ALICE, world.other), sid, rid)
+    assert err.value.status_code == 404
+    assert _chat_rows(world, sid) == []
+    assert _ledger(world, rid) == ["created"]
+
+
+async def test_r8_a_linked_task_shows_only_to_a_member_who_can_open_it(world, chat) -> None:
+    # A promote makes a private task in Alice's personal project.
+    async with _client(world, world.org) as c:
+        made = (await _create(c, ALICE, title="Renew the lease"))["id"]
+        task_id = (await c.post(f"{BASE}/{made}/promote", headers=_as(ALICE))).json()[
+            "promoted_task_id"]
+        mine = (await _create(c, ALICE, title="Chase the landlord",
+                              subject_kind="task", subject_id=task_id))["id"]
+        bobs = (await _create(c, BOB, title="Ask about the lease",
+                              subject_kind="task", subject_id=task_id))["id"]
+    for rid in (mine, bobs):
+        _make_due(world, rid)
+
+    got = await _tap(world, _chatter(ALICE, world.org), _new_chat(chat, ALICE, world.org), mine)
+    assert got["preview"].split("\n\n")[1].startswith("Task: Renew the lease · ")
+    assert any(f.startswith("Linked task: «Renew the lease»") for f in got["context"]["facts"])
+
+    # Bob links Alice's private task. He sees its kind, and no word of it.
+    seen = await _tap(world, _chatter(BOB, world.org), _new_chat(chat, BOB, world.org), bobs)
+    said = seen["preview"] + " ".join(seen["context"]["facts"])
+    assert seen["preview"].endswith("Linked: a task that you cannot open.")
+    assert "Renew the lease" not in said and task_id not in said
+    assert _ledger(world, bobs) == ["created", "opened"]

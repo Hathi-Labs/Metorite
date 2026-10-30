@@ -1861,6 +1861,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-66 RM-4 — a tap on a reminder link opens the chat with a first
+    # message that code built (`calendar_events_reminders.md` §5.7). Shares
+    # /chat's prefix, in its own module, as the brief does.
+    from gateway.routes.chat_reminder import router as _chat_reminder_router
+
+    app.include_router(_chat_reminder_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # Rooms share /chat's prefix — a room IS a chat session — but live in their
     # own module because membership, presence, and the live room stream are a
     # different concern from history CRUD.
@@ -2087,6 +2097,17 @@ try:
     from gateway.routes.agent_access import router as _agent_access_router
 
     app.include_router(_agent_access_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-MCP MCP-P1a — the two list routes of the app door
+    # (external_agent_access.md §19.4): `GET /agent-access/apps` and
+    # `GET /agent-access/apps/{app}`. A signed agent of branch 0 reads them,
+    # and nobody else. Ships dark: 404 while `agent_door_apps` names no app.
+    from gateway.routes.agent_apps import router as _agent_apps_router
+
+    app.include_router(_agent_apps_router)
 except Exception:  # pragma: no cover
     pass
 

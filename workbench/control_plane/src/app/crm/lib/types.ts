@@ -427,6 +427,15 @@ export type PipelineLane = {
    */
   weighted: number;
   /**
+   * `amount` and `weighted` are in this currency ONLY: the primary one of the
+   * lane (INR first, then code order). The lane's other currencies sit in
+   * `others`, which is empty for a lane of one currency (HANDOFF H-333, task
+   * 887). `count` is of every currency. Optional for the R6 window, when a new
+   * bundle meets an older gateway: absent reads as INR and no others.
+   */
+  currency?: string;
+  others?: MoneyTotals[];
+  /**
    * The stage's place in the chosen pipeline. Null with no pipeline chosen,
    * and for a stage the pipeline does not list that still holds its deals.
    * Optional for the R6 window, when a new bundle meets an older gateway.

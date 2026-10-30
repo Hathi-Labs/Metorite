@@ -147,7 +147,7 @@ import {
 } from "@/lib/sidePanelFit";
 import { drawerStep } from "./lib/drawerOwner";
 import { moveFollowUp } from "./lib/moveRefresh";
-import { useLiveRefresh } from "./lib/liveRefresh";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 import { invalidate } from "@/lib/dataCache";
 import { useFrontendTool } from "@/hooks/useFrontendTool";
 import {
@@ -2007,8 +2007,13 @@ function ProjectsWorkspace() {
         sort: tableSort,
         viewId: boardViewId,
         subtasks: storedMode,
+        // Task #986: the three agent filters are WHERE clauses on the server.
+        // They are part of the params, so they are part of every read key.
+        waitingOnMe,
+        agentFocus,
+        agentWork,
       }),
-    [filters, tableSort, boardViewId, storedMode]
+    [filters, tableSort, boardViewId, storedMode, waitingOnMe, agentFocus, agentWork]
   );
 
   const loadProject = useCallback(
@@ -2199,6 +2204,10 @@ function ProjectsWorkspace() {
           sort: tableSort,
           // D-PM-38 — a Hidden board exports its top-level rows only.
           subtasks: storedMode,
+          // Task #986: the file holds the rows the board shows.
+          waitingOnMe,
+          agentFocus,
+          agentWork,
         })
       );
       if (!res.ok) {
@@ -2225,7 +2234,7 @@ function ProjectsWorkspace() {
     } catch (err) {
       setError(String((err as Error).message));
     }
-  }, [selected, filters, shownFields, tableSort, storedMode]);
+  }, [selected, filters, shownFields, tableSort, storedMode, waitingOnMe, agentFocus, agentWork]);
 
   // WS-27q — the calendar's own fetch, because it reads a WINDOW rather than a
   // page. `grid` is derived so the effect re-runs when the period steps, and
@@ -2564,6 +2573,8 @@ function ProjectsWorkspace() {
     () =>
       groupTasks(
         visibleTasks(
+          // Task #986: the server filters by these now (`boardReadParams`), so
+          // this is only a paint-time guard for rows held from before a switch.
           tasks.filter(
             (t) =>
               (!waitingOnMe || isWaitingOnMe(t, me)) &&
@@ -3178,7 +3189,7 @@ function ProjectsWorkspace() {
     // My work reloads itself (`MyWorkHost`). The board reloads here, in the
     // mode the member is looking at.
     if (!myWorkOpen) void refreshRef.current();
-  });
+  }, "projects");
 
   // `?project=<id>` selects a node (WS-27bm S6): the link `open_in_app`
   // returns for a member who is not on this page. Consumed after the select,
@@ -4364,6 +4375,12 @@ function ProjectsWorkspace() {
   // WS-64 OP-1 — the compact chrome. Off by default: the page then draws the old
   // filter row, the old strip and the old banner, exactly as before.
   const compactChrome = compactChromeEnabled();
+  // The server takes ONE focus (`agent_focus`), so the toggle and the strip
+  // clear each other, as `onAgentFocus` already does.
+  const onWaitingOnMe = (next: boolean) => {
+    setWaitingOnMe(next);
+    if (next) setAgentFocus(null);
+  };
   const onAgentFocus = (next: AgentFocus | null) => {
     setWaitingOnMe(next === "waiting");
     setAgentFocus(next === "waiting" ? null : next);
@@ -4604,7 +4621,7 @@ function ProjectsWorkspace() {
           onSubtasks={(next) => void changeSubtasks(next)}
           me={me}
           waitingOnMe={waitingOnMe}
-          onWaitingOnMe={agentRunsOn ? setWaitingOnMe : undefined}
+          onWaitingOnMe={agentRunsOn ? onWaitingOnMe : undefined}
           agentWork={agentWork}
           onAgentWork={agentRunsOn ? setAgentWork : undefined}
           people={people}

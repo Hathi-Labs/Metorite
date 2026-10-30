@@ -712,7 +712,8 @@ export interface AgentRowFacts {
 /**
  * §12.1: a task whose `agent_state` is `awaiting`, and whose run member is
  * the caller, or whose assignees include the caller. This slice filters the
- * rows already loaded, so a task on a page not yet read does not show.
+ * rows already loaded. The server filters by the same rule (`agent_focus=waiting`),
+ * so this is a paint-time guard (task #986).
  */
 export function isWaitingOnMe(task: AgentRowFacts, me: string): boolean {
   if (task.agent_state !== "awaiting") return false;
@@ -829,8 +830,8 @@ export interface AgentOversightFacts extends AgentRowFacts {
 
 /**
  * "Agent work" (EA3-49): the gateway's `agent_worked` flag, which reads the one
- * predicate of `agent_worked.py`. The toggle filters the loaded rows, as
- * "Waiting on me" does.
+ * predicate of `agent_worked.py`. The toggle sends `agent_worked` to the
+ * server, and this guards the paint of rows held from before a switch.
  */
 export function isAgentWork(task: AgentOversightFacts): boolean {
   return task.agent_worked === true;
@@ -838,8 +839,10 @@ export function isAgentWork(task: AgentOversightFacts): boolean {
 
 /**
  * The rows that a count button of the strip stands for. The strip counts over
- * the whole project on the server, and the board shows the loaded rows, so the
- * number and the rows agree except on a page not yet read.
+ * the whole project on the server. The list filters by the SAME rule on the
+ * server too (`agent_focus`, `filters.agent_focus_clause`), so the number and
+ * the rows agree. This function only guards the paint: it drops a row held from
+ * the read before a switch of focus (task #986).
  */
 export function matchesAgentFocus(
   task: AgentOversightFacts,

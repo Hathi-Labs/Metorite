@@ -210,6 +210,8 @@ loses the description again.
 | "Save this as a view called Mine" | `save_view` | `POST /projects/nodes/{id}/views`, `PATCH /projects/views/{id}` | Rename back. Delete is guarded |
 | "Clear my notifications" | `mark_notifications_read` | `POST /projects/notifications/read` | The bell refills |
 
+**Note (2026-10-29, owner-approved).** The Projects specialist now follows the same rule. A new task with no project named is the member's private task, made with `create_personal_task`. An open project keeps its tasks.
+
 **A vocabulary row is named, never numbered.** The member says "the Blocked
 lane". The tool reads the project's own list and resolves the name the way a
 status is resolved: every case-insensitive match, never the first. Two
@@ -6564,6 +6566,7 @@ links, "only if there are a lot of tasks to be linked".
 
 **Status.** Built 2026-10-19, branch `chat-cards-placement`. It adds no flag.
 It binds every chat surface, because they all draw through `AgentChat`.
+Receipts open folded since 2026-10-29 (rule 3, task 1003).
 
 ### 29.1 The report
 
@@ -6642,7 +6645,16 @@ Each template in `TEMPLATE_CATALOG` names its family.
    all", or when the content shrinks to 432 px or less. The cut never
    remounts the body of the card.
 3. **A receipt** (a write that happened) is a compact line after the text of
-   the reply. It opens for detail.
+   the reply. It opens folded, and its summary says what happened. The member
+   opens it for detail. Owner directive, 2026-10-29: "show the notes closed by
+   default, unless you actually want the user to read a particular AGUI card or
+   note. Similar cards like this, which are just FYI, should show closed unless
+   the user actually has to interact with the card compulsorily." So a card
+   passes `receipt` to `RollupCard` when it reports a write that is done and
+   needs nothing from the member. `rollupOpen` applies the rule after the
+   waiting, manual, answered and held rules, and before the newest rule. A
+   failed write is not a receipt and still opens. A read result, a question and
+   a draft are not receipts.
 4. **A notice** is a slim line that the member dismisses (#1121).
 5. **Progress** (the to-do list and the tool steps) stays in the step area
    of the reply. It folds when the reply ends.
@@ -6653,6 +6665,7 @@ Each template in `TEMPLATE_CATALOG` names its family.
 |---|---|
 | An answered card folded to a bare title. With the focus in it, it stayed full size | `rollupOpen` folds an answered card at once (rule 1a). `RollupCard` shows `askOutcome` as the summary |
 | A form with an answer took a second submit after a reload | `FormCard` starts locked when it has an answer, and shows the values it sent |
+| A receipt of a write opened in full, and the "Noted" note was open every time (owner, 2026-10-29) | `RollupCard` `receipt`: `rollupOpen` folds a receipt unless it waits, the member opened it, or the focus holds it |
 | A long result card had no cap | `RollupCard` `clamp` cuts it at 480 px, with "Show all" |
 | The email board and the Tasks day plan had a close | Both fold and never close |
 | The plan strip, and a plan that made a second project inside its parent | §29.2 |
@@ -6684,6 +6697,7 @@ Each template in `TEMPLATE_CATALOG` names its family.
 | Rule 1: an answered card folds to its outcome | `chatCardPolicy.test.ts` rule 1, `src/lib/askOutcome.test.ts` |
 | Rule 2: a result is in the text, cut past the cap, and has no close | `chatCardPolicy.test.ts` rule 2 |
 | Rules 3 to 5 | `chatCardPolicy.test.ts` rules 3, 4 and 5 |
+| A receipt opens folded, and a card that waits or fails does not | `src/lib/cardRollup.test.ts` "a receipt opens folded", `src/lib/chatCardConformance.test.ts` "receipts" |
 | The strip | `planCardReadFirst.test.ts` "the timeline strip", `planCardBody.test.ts` |
 | A plan named like its parent is refused, and the refusal names `create_tasks` | `test_projects_agent_writes.py` `test_a_plan_named_like_its_parent_is_refused_and_names_create_tasks`, `test_w1_sends_an_existing_project_to_create_tasks` |
 | A cut holds, and neither the cut nor "Show all" remounts the body | `e2e/chat-card-clamp.spec.ts` |

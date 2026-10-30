@@ -42,6 +42,7 @@ import { StatusChip } from "@/components/StatusChip";
 import { useOverflowTip } from "@/components/ui/OverflowTip";
 import { LEGEND, parseTaskRows, taskRowFacts, type ProjectTaskRow } from "@/lib/projectToolRows";
 import { statusAccent } from "@/lib/statusAccent";
+import { noteReminderReceipt } from "@/lib/shell/reminderOpen";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -780,6 +781,14 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
     if ((outcome === "done" || outcome === "partial") && isFreshReceipt(e)) announceChange(e.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
   }, [outcome, e.id]);
+  // A reminder the model changed in this chat: the reminder card above reads
+  // the page's store, so the receipt writes the new state there (RM-4). A
+  // replayed receipt is old, and a chip may have moved the row since.
+  useEffect(() => {
+    if (outcome !== "done" || !isFreshReceipt(e)) return;
+    noteReminderReceipt(e.name, result);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
+  }, [outcome, e.id]);
   const rowId = rowIdOf(result);
   const openTask = useOpenTask();
   const detail = forPeopleFenced(result);
@@ -819,8 +828,19 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   // A receipt is a card of the transcript: its arrival rolls up the long
   // cards above it (`components/RollupCard.tsx`). It is short, so it draws
   // no toggle of its own. Its title row is the header (`header="own"`).
+  // The folded row names the task(s), not the bare lead line ("Created:").
+  const foldedSummary = tasks.length ? tasks.map((r) => `${r.number} ${unfenced(r.title)}`).join(" · ") : unfenced(detail).split(NL)[0];
+  // A write that is done, or that the member cancelled, opens folded. A
+  // failed, partial or refused one still opens (task 1003).
   return (
-    <RollupCard id={`tool:${e.id}`} title={heading} icon={icon} summary={unfenced(detail).split(NL)[0]} header="own">
+    <RollupCard
+      id={`tool:${e.id}`}
+      title={heading}
+      icon={icon}
+      summary={foldedSummary}
+      receipt={outcome === "done" || outcome === "cancelled"}
+      header="own"
+    >
     <div className={`rounded-lg border px-2.5 py-2 ${tone}`}>
       <RollupHeader aside={aside ? <FencedText text={aside} pills={false} links={false} /> : undefined} />
       <RollupBody>
@@ -1054,6 +1074,7 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
       icon={icon}
       rows={rows.length || undefined}
       summary={names.join(" · ") || unfenced(head)}
+      receipt={outcome === "done" || outcome === "cancelled"}
       header="own"
     >
     <div className={`rounded-lg border px-2.5 py-2 ${toneFor(outcome, e.name)}`}>

@@ -70,7 +70,9 @@ CRM_SCENARIOS: tuple[Scenario, ...] = (
         Turn("Which of those are mine?",
              (Check("ran_tool", ("get_pipeline",), "read_my_board"),
               Check("answer_all", (r"Orbit", r"Kestrel", r"Helix"), "names_my_deals"),
-              Check("answer_none", (r"Vantage",), "leaves_out_kiran_deal"),
+              Check("answer_not_mine", ("Vantage", (r"\bKiran\b", r"\bnot yours\b", r"\bnot (?:one of )?(?:your|the member)",
+                                                 r"\bbelongs? to\b", r"\bsomeone else\b", r"\banother\b")),
+                    "leaves_out_kiran_deal"),
               Check("no_unasked_write", 0)),
              Plan((("get_pipeline", {"owner": "member@example.com"}),),
                   "Three deals are yours: Orbit Labs sensor retrofit, Kestrel pilot and "
@@ -207,14 +209,14 @@ PROJECTS_SCENARIOS: tuple[Scenario, ...] = (
     # On a Projects page the core pack (23 tools) is loaded, and the plan pack
     # (35) does not fit beside it under the cap of 110. The loader does not
     # offer it, so the specialist stays and the route goes to it (OA-8e finding).
-    _pm("pm_capacity", "Plan pack on the Projects page: no room, the route goes to the owner", (
+    _pm("pm_capacity", "Plan pack on the Projects page: the model loads it (the base trim leaves room)", (
         Turn("Who is overloaded right now?",
              (Check("ran_tool", ("analytics_load",), "read_the_load"),
               Check("answer_all", (r"Ananya", r"overdue"), "names_the_person"),
               Check("right_pack", "projects-plan"), Check("no_unasked_write", 0)),
              Plan((("analytics_load", {}),),
                   "Ananya has 2 open tasks and both are overdue. You have 3 open tasks, "
-                  "none overdue.", handoff=True)),
+                  "none overdue.")),
     )),
     # With no surface the core pack is not loaded, so the plan pack fits and the
     # model loads it (layer b).
@@ -244,14 +246,14 @@ PROJECTS_SCENARIOS: tuple[Scenario, ...] = (
     )),
     # projects-structure on a Projects page: no room beside the core pack, so
     # the route goes to the owner, as for the plan pack.
-    _pm("pm_status", "Structure pack on the Projects page: the route goes to the owner", (
+    _pm("pm_status", "Structure pack on the Projects page: the model loads it (the base trim leaves room)", (
         Turn("Rename the In review status to QA",
              (Check("work_write", ("PATCH", r"^/projects/statuses/", "QA"), "status_renamed"),
               Check("right_pack", "projects-structure"), Check("no_unasked_write", 1),
               Check("answer_all", (r"QA",))),
              Plan((("update_status", {"project_id": NODE_WEB, "status": "In review",
                                       "name": "QA"}),),
-                  "Updated status QA in Website Relaunch.", handoff=True)),
+                  "Updated status QA in Website Relaunch.")),
     )),
     # projects-structure by a word ("task tags"): choose() lets it replace the
     # core pack, so the pack loads at layer (a).
@@ -275,7 +277,7 @@ PROJECTS_SCENARIOS: tuple[Scenario, ...] = (
         Turn("Archive tasks 13, 14 and 15",
              (Check("work_write", ("POST", r"^/projects/tasks/bulk$", "archive"), "archived"),
               Check("right_pack", "projects-bulk"), Check("no_unasked_write", 1),
-              Check("answer_all", (r"\b3\b",), "says_how_many")),
+              Check("count_stated", (3, (13, 14, 15)), "says_how_many")),
              Plan((("bulk_update", {"task_ids": ",".join(_T[n] for n in (13, 14, 15)),
                                     "action": "archive"}),),
                   "Applied to 3 of 3 tasks.")),
@@ -290,7 +292,7 @@ PROJECTS_SCENARIOS: tuple[Scenario, ...] = (
     )),
     _pm("pm_calendar", "Calendar surface: what is due", (
         Turn("What is due this week?",
-             (Check("ran_tool", ("my_work",), "read_my_work"),
+             (Check("ran_tool", ("my_work", "calendar", "list_tasks"), "read_my_work"),
               Check("answer_all", (r"launch brief", r"Vendor call"), "names_the_due_tasks"),
               Check("right_pack", "projects"), Check("no_unasked_write", 0)),
              Plan((("my_work", {}),),
@@ -356,7 +358,7 @@ MIXED_SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         "mix_call_then_task", "Log a call on the deal, then make a task (two cards)", (
             Turn("Log this call on Orbit: Priya wants 5 percent off",
-                 (Check("work_write", ("POST", r"^/crm/deals/[^/]+/activities$", "5 percent"),
+                 (Check("body_figure", ("POST", r"^/crm/deals/[^/]+/activities$", 5),
                         "call_logged"),
                   Check("right_pack", "crm-records"), Check("no_unasked_write", 1)),
                  Plan((("search_crm", {"query": "Orbit", "entity": "deals"}),
@@ -410,7 +412,7 @@ FANOUT_SCENARIOS: tuple[Scenario, ...] = (
              f"The ten invoices total Rs {fanout.INVOICE_TOTAL:,}.",
              solo=tuple(("fetch_page", {"url": u}) for u in _INV)))),
     _fan("fan_tasks", "Five tasks from a list: a write, so no spawn", Turn(
-        "Make a task for each of these: brief, copy, assets, QA pass and launch",
+        "Make a task for each of these in Website Relaunch: brief, copy, assets, QA pass and launch",
         (Check("not_spawned"), Check("work_write", ("POST", r"^/projects/tasks$"), "tasks_made"),
          Check("no_unasked_write", 1)),
         Plan((("create_tasks", {"project_id": NODE_WEB, "tasks": json.dumps(

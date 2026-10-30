@@ -54,6 +54,7 @@ import { useToast } from "@/components/ui/Toast";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { hasCapability } from "@/lib/access";
 import { invalidate } from "@/lib/dataCache";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { ShellJob } from "@/lib/shell/doJob";
 import { useCachedResource } from "@/lib/useCachedResource";
@@ -167,6 +168,10 @@ export default function KnowledgeLayout({ children }: { children: ReactNode }) {
 function KnowledgeShell({ children }: { children: ReactNode }) {
   const read = useCachedResource<SpacesRead>(SPACES_KEY, readSpaces);
   const phase = spacesPhase(read);
+  // Task #124: the assistant proposed a page or an edit. Drop the app's whole
+  // cache family. Every reader on screen (spaces, trees, the open page, the
+  // review queue) is a `useCachedResource`, so each one re-reads by itself.
+  useLiveRefresh(() => invalidate(KNOWLEDGE_CACHE), "knowledge");
 
   if (phase === "loading") return <Loading />;
   if (phase === "off") {

@@ -73,7 +73,10 @@ transport hands it the parsed arguments and the authenticated caller.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import hashlib
+import hmac
 import json
 import re
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
@@ -83,7 +86,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from acb_auth import agent_oauth
-from acb_common import get_logger, get_settings
+from acb_common import app_manifests, get_logger, get_settings
 from acb_common.priority import importance_for
 
 from agent_edge import cursor as cursor_mod
@@ -95,6 +98,7 @@ from agent_edge.gateway_client import (
     GatewayUnreachable,
     RouteRefused,
     actor_via,
+    send_call,
 )
 from agent_edge.gateway_client import get as gateway_get
 from agent_edge.gateway_client import write as gateway_write
@@ -167,8 +171,8 @@ TEXT_MOVE_ALONE = (
     "Send parent_task_id in a call of its own. Then change the other fields"
     " with the new version.")
 TEXT_MOVE_OTHER_PROJECT = (
-    "The new parent task is in another project. Move a task to another project"
-    " in the Metorite app.")
+    "The new parent task is in another project. To move a task to another"
+    " project, call preview_move_tasks and then move_tasks.")
 TEXT_MOVE_OWN_PARENT = "A task cannot be its own parent."
 TEXT_MOVE_CYCLE = (
     "The new parent is a subtask of this task. A task cannot move under its own subtask.")
@@ -338,6 +342,13 @@ DELETE_ANNOTATIONS: Mapping[str, bool] = {
 #: so it stays idempotent.
 ASSIGN_ANNOTATIONS: Mapping[str, bool] = {**WRITE_ANNOTATIONS, "destructiveHint": True}
 
+#: The annotations of ``move_tasks`` (MCP-G1). A move drops each value that
+#: has no field in the destination, and it can hide a task from somebody who
+#: saw it (fix round 1: it never shows a task to anybody new). So
+#: ``destructiveHint`` is true and the client may ask the person first. A
+#: second call finds the tasks there already and moves nothing more.
+MOVE_ANNOTATIONS: Mapping[str, bool] = {**WRITE_ANNOTATIONS, "destructiveHint": True}
+
 #: The closing status categories, and the one of them that means finished
 #: (§9.2). Copies of ``CLOSING_CATEGORIES`` and ``COMPLETED_CATEGORY`` in
 #: ``gateway/routes/projects/core.py``, because the edge may not import the
@@ -459,6 +470,8 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
                  texts: Mapping[int, str] | None = None,
                  details: Mapping[tuple[int, str], str] | None = None,
                  coded: Mapping[str, str | Callable[[Mapping[str, Any]], str]] | None = None,
+                 prefixes: Mapping[tuple[int, str], str] | None = None,
+                 coded_statuses: tuple[int, ...] = (422,),
                  ) -> tuple[int, Any]:
     """One write through ``gateway_client.write``: ``(status, body)`` of a
     2xx answer, or raise the write mapping of :func:`_body_of`. *texts* gives
@@ -474,7 +487,16 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
     which builds the text from the tool's OWN inputs (``set_assignees``
     names the entries of its list that the gateway refused). The coded map
     goes before *texts*, so a tool may give one text to a coded 422 and
-    another to every other 422."""
+    another to every other 422.
+
+    *prefixes* (MCP-G1) maps a status and the START of the gateway's own
+    ``detail`` to a fixed text, for a refusal whose detail names rows, such
+    as the one-source rule of a move (D-PM-30). It goes after *details*. The
+    edge reads the detail to choose a text, and never sends it.
+
+    *coded_statuses* (MCP-G1 fix round 1) names the statuses that *coded*
+    reads. The default is 422 only. ``move_tasks`` adds 403, for the coded
+    refusal ``audience_widens`` of the gateway."""
     try:
         answer = await gateway_write(
             ctx.key, ctx.caller.lookup, method, template, json_body=json_body,
@@ -489,6 +511,10 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
     detail = answer.body.get("detail") if isinstance(answer.body, dict) else None
     if details and isinstance(detail, str) and (answer.status, detail) in details:
         raise ToolError(details[(answer.status, detail)])
+    if prefixes and isinstance(detail, str):
+        for (status, start), text in prefixes.items():
+            if answer.status == status and detail.startswith(start):
+                raise ToolError(text)
     if (answer.status == 409 and isinstance(detail, dict)
             and detail.get("error") == TASK_HELD_CODE):
         # EA-14a: one text for every write that opens a run. It goes before
@@ -497,7 +523,7 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
         # `held_by`, as (U) text. SW-13c: the hint of an own run of another
         # connection, with its id only in the shape of an id.
         raise ToolError(task_held_text(detail))
-    if coded and answer.status == 422:
+    if coded and answer.status in coded_statuses:
         code = detail.get("error") if isinstance(detail, dict) else None
         if isinstance(code, str) and code in coded:
             text = coded[code]
@@ -1008,6 +1034,15 @@ class Tool:
     #: True for ``delete_task`` (EA-6h). It shows only while the member's
     #: switch is on, which :func:`listed_for` reads at ``tools/list``.
     switch: bool = False
+    #: MCP-P1a (spec §19.4). True for the four tools of the app door. They
+    #: show only while ``agent_oauth.door_apps`` names an app.
+    door: bool = False
+    #: MCP-P1a. ``read`` or ``write`` for ``app_read`` and ``app_write``,
+    #: whose scope is ``<app>:read`` or ``<app>:write`` of the input ``app``
+    #: (:func:`scope_of`). Their route is the route of the op, so the rules
+    #: 3 and 4 of ``test_mcp_edge_coverage.py`` do not read them, and
+    #: ``tests/unit/test_mcp_edge_app_door.py`` holds them.
+    app_scope: str = ""
 
     def describe(self) -> dict[str, Any]:
         """The ``tools/list`` entry of this tool."""
@@ -3939,7 +3974,8 @@ UPDATE_TASK = Tool(
         " minutes, 0 or more. start_date is a date such as 2026-10-31."
         " parent_task_id moves the task under another task of the same project,"
         " and null moves it to the top level. Send parent_task_id in a call of"
-        " its own. A move to another project stays a step in the Metorite app."
+        " its own. To move a task to another project, call preview_move_tasks"
+        " and then move_tasks."
         " This tool cannot change the status (use set_task_status), the project"
         " or the assignees (use set_assignees). Returns the task with its new"
         " version." + _UNTRUSTED_NOTE
@@ -4315,6 +4351,845 @@ SET_ASSIGNEES = Tool(
     routes=(TASK_ROUTE,),
     method="PUT",
     annotations=dict(ASSIGN_ANNOTATIONS),
+)
+
+
+# ── create_project and update_project (MCP-G1, §9.2) ────────────────────────
+
+NODES_ROUTE = "/projects/nodes"
+
+#: The levels that ``create_project`` makes (MCP-G1). A folder is not one of
+#: them: a person groups the tree with folders in the app. The gateway takes
+#: the level from the place of the parent (``core.node_level``), and the edge
+#: checks that it is the level that the call asked for.
+CREATE_LEVELS: tuple[str, ...] = ("space", "project", "subproject")
+
+#: The level of a new project under each level of its parent. A folder takes
+#: the level of the node above it. A subproject holds no project.
+_LEVEL_BELOW: Mapping[str, str] = {
+    "space": "project", "project": "subproject"}
+
+#: A copy of ``core.RUN_STATES``, the statuses of a project, because the edge
+#: may not import the gateway. ``test_mcp_edge_projects.py`` pins the two equal.
+RUN_STATES: tuple[str, ...] = ("queued", "active", "on_hold", "stopped", "done")
+
+#: The body keys of each node write (edge rule 18). The edge builds a body
+#: from these names only. The gateway refuses any other key of a signed node
+#: write too (``tree.AGENT_NODE_CREATE_FIELDS`` and
+#: ``tree.AGENT_NODE_PATCH_FIELDS``). So no tool names a lead, which is a grant
+#: write (D-OP-11), a kind or a setting of a space.
+PROJECT_CREATE_BODY_KEYS: tuple[str, ...] = ("name", "description", "parent_project_id")
+PROJECT_UPDATE_BODY_KEYS: tuple[str, ...] = ("name", "description", "status")
+#: The free-text inputs of the two node tools. The NUL check reads them.
+_PROJECT_TEXT_INPUTS: tuple[str, ...] = ("name", "description")
+#: The longest name of a node that an agent sends.
+MAX_PROJECT_NAME = 200
+
+#: A copy of ``tree.AGENT_SPACE_PINNED``, the 403 detail of a new space from
+#: a connection with pins. ``test_mcp_edge_projects.py`` pins the two equal.
+AGENT_SPACE_PINNED = "A connection with pinned projects cannot make a new space."
+#: The 409 detail of a tree write that met another write (``tree.TREE_RACE_DETAIL``).
+TREE_RACE_DETAIL = (
+    "Someone else changed this part of the tree at the same moment. Try again.")
+
+TEXT_NAME_BLANK = "The input 'name' holds no text."
+TEXT_SPACE_NO_PARENT = "A space has no parent. Leave parent_id out, or send another level."
+TEXT_LEVEL_NEEDS_PARENT = (
+    "A project or a subproject needs parent_id, the id of the node above it."
+    " Find it with list_projects.")
+TEXT_SPACE_PINNED = (
+    "This connection is pinned to projects, so it cannot make a new space."
+    " Make the project under a pinned project, or ask a person to make the"
+    " space in the Metorite app.")
+TEXT_LEVEL_MISMATCH = (
+    "Under that parent, the new node is a {made}. Send level {made}, or send"
+    " another parent_id.")
+TEXT_LEVEL_FLOOR = (
+    "A subproject is the lowest level, so it cannot hold a project. Use tasks"
+    " and subtasks for the work.")
+TEXT_PARENT_ARCHIVED = (
+    "That parent is archived. Make the project under a node that is not archived.")
+TEXT_TREE_RACE = (
+    "Somebody changed this part of the tree at the same time. Send the call again.")
+TEXT_PROJECT_STALE = "The project changed. Read it again with get_project."
+TEXT_PROJECT_UPDATE_EMPTY = "Send one or more fields to change: name, description or status."
+TEXT_NO_RUN_STATE = (
+    "A space or a folder has no status. Only a project or a subproject takes a status.")
+TEXT_PROJECT_KEY_REUSED = (
+    "This idempotency_key was used for a different project. Send a new key.")
+TEXT_PROJECT_KEY_UNKNOWN = (
+    "A call with this idempotency_key got no answer, so Metorite cannot tell if"
+    " it made the project. Look for it with list_projects before you use a new key.")
+_PROJECT_KEY_TEXTS = _KeyTexts(reused=TEXT_PROJECT_KEY_REUSED,
+                               unknown=TEXT_PROJECT_KEY_UNKNOWN)
+
+#: The start of the gateway's 422 for a status on a space or a folder
+#: (``core.assert_run_state_allowed``). The detail names the level.
+_RUN_STATE_PREFIXES: Mapping[tuple[int, str], str] = {
+    (422, "A space has no run state."): TEXT_NO_RUN_STATE,
+    (422, "A folder has no run state."): TEXT_NO_RUN_STATE,
+}
+
+_NAME_INPUT: dict[str, Any] = {
+    "type": "string", "minLength": 1, "maxLength": MAX_PROJECT_NAME,
+    "description": "The name of the node."}
+
+_PROJECT_WRITE_OUTPUT: dict[str, Any] = _object({
+    "project": _PROJECT_SCHEMA, "version": _NULLABLE_STRING, "created": {"type": "boolean"},
+})
+_PROJECT_UPDATE_OUTPUT: dict[str, Any] = _object({
+    "project": _PROJECT_SCHEMA, "version": _NULLABLE_STRING,
+})
+
+_CREATE_PROJECT_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "name": _NAME_INPUT,
+        "description": _DESCRIPTION_INPUT,
+        "level": {
+            "type": "string", "enum": list(CREATE_LEVELS),
+            "description": "space for a new top-level space. project for a project"
+                           " in a space. subproject for a project in a project."},
+        "parent_id": {
+            "type": "string", "pattern": _UUID_PATTERN,
+            "description": "The node above the new one, an id from list_projects."
+                           " Leave it out for a space. A folder works too: the new"
+                           " node then takes the level under the node above the"
+                           " folder."},
+        "idempotency_key": {
+            "type": "string", "pattern": idempotency.KEY_PATTERN,
+            "description": "8 to 128 letters, digits and . _ : -. The same key"
+                           " again gives back the first project and makes no second"
+                           " one. Use one key for one project. Metorite keeps a key"
+                           " for 24 hours."},
+    },
+    "required": ["name", "level"],
+    "additionalProperties": False,
+}
+
+_UPDATE_PROJECT_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_id": {"type": "string", "pattern": _UUID_PATTERN,
+                       "description": "The project. An id from list_projects."},
+        "expected_version": {
+            "type": "string", "pattern": _VERSION_PATTERN,
+            "description": "The updated_at that get_project returned, or the"
+                           " version that create_project or update_project"
+                           " returned."},
+        "name": _NAME_INPUT,
+        "description": _DESCRIPTION_INPUT,
+        "status": {
+            "type": "string", "enum": list(RUN_STATES),
+            "description": "The run state of a project or a subproject. A space"
+                           " and a folder have none."},
+    },
+    "required": ["project_id", "expected_version"],
+    "additionalProperties": False,
+}
+
+
+def _refuse_bad_project_call(ctx: Context, args: Mapping[str, Any]) -> None:
+    """The refusals of ``create_project`` that need no request. Each one
+    comes before the claim of a key, so a refused call touches no store."""
+    if not str(args["name"]).strip():
+        raise ToolError(TEXT_NAME_BLANK)
+    if args["level"] == "space":
+        if "parent_id" in args:
+            raise ToolError(TEXT_SPACE_NO_PARENT)
+        # The edge copy of `tree._refuse_pinned_space`. The pins come from the
+        # token row of the call, never from an input.
+        if ctx.caller.lookup.pinned_projects:
+            raise ToolError(TEXT_SPACE_PINNED)
+    elif "parent_id" not in args:
+        raise ToolError(TEXT_LEVEL_NEEDS_PARENT)
+
+
+async def _node(ctx: Context, node_id: str, not_found: str) -> dict[str, Any]:
+    node = await _get(ctx, NODE_ROUTE, not_found, path_params={"project_id": node_id})
+    if not isinstance(node, dict):
+        raise ToolError(TEXT_BUSY)
+    return node
+
+
+async def _check_parent_level(ctx: Context, parent_id: str, asked: str) -> None:
+    """The level that the new node takes under *parent_id* must be *asked*.
+
+    One read of the parent, and one more for a folder: a folder takes the
+    level of the node above it. A parent that the member cannot see, also
+    one that a pin hides, is "Project not found." (§7.1).
+
+    Fix round 1 (P2). When the member cannot see the node above a folder,
+    such as under a pin on the folder, the edge does not refuse. The grammar
+    of the gateway (``core.assert_node_grammar``) decides the level, and the
+    result of the call gives it.
+    """
+    parent = await _node(ctx, parent_id, TEXT_PROJECT_NOT_FOUND)
+    if parent.get("archived_at") is not None:
+        raise ToolError(TEXT_PARENT_ARCHIVED)
+    level = parent.get("level")
+    if level == "folder":
+        above = _id(parent.get("parent_project_id"))
+        if above is None:
+            raise ToolError(TEXT_BUSY)
+        try:
+            level = (await _node(ctx, above, TEXT_PROJECT_NOT_FOUND)).get("level")
+        except ToolError as exc:
+            if exc.text != TEXT_PROJECT_NOT_FOUND:
+                raise
+            return
+    if level == "subproject":
+        raise ToolError(TEXT_LEVEL_FLOOR)
+    made = _LEVEL_BELOW.get(str(level))
+    if made is None:
+        raise ToolError(TEXT_BUSY)
+    if made != asked:
+        raise ToolError(TEXT_LEVEL_MISMATCH.format(made=made))
+
+
+async def _create_node(ctx: Context, args: Mapping[str, Any], sent: _Sent) -> dict[str, Any]:
+    """Check the parent, then POST the node. Returns the POST answer."""
+    payload: dict[str, Any] = {"name": str(args["name"]).strip()}
+    if "description" in args:
+        payload["description"] = str(args["description"])
+    if args["level"] != "space":
+        parent = str(args["parent_id"])
+        await _check_parent_level(ctx, parent, str(args["level"]))
+        payload["parent_project_id"] = parent
+    sent.post = True
+    _, row = await _write(
+        ctx, "POST", NODES_ROUTE, TEXT_PROJECT_NOT_FOUND, json_body=payload,
+        details={(403, AGENT_SPACE_PINNED): TEXT_SPACE_PINNED,
+                 (409, TREE_RACE_DETAIL): TEXT_TREE_RACE})
+    if not isinstance(row, dict) or _id(row.get("id")) is None:
+        raise ToolError(TEXT_BUSY)
+    return row
+
+
+async def _reread_node(ctx: Context, written: dict[str, Any]) -> dict[str, Any]:
+    """The node as it is now, with its ``level``, after a write that landed.
+    When the read fails, the write's own answer is the result."""
+    try:
+        node = await _node(ctx, str(written.get("id")), TEXT_PROJECT_NOT_FOUND)
+    except (ToolError, GatewayUnauthorized):
+        return written
+    return node if str(node.get("id")).lower() == str(written.get("id")).lower() else written
+
+
+def _project_result(node: Mapping[str, Any]) -> dict[str, Any]:
+    return {"project": _project(node), "version": _str_or_none(node.get("updated_at"))}
+
+
+async def _create_project(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``create_project``: one POST of ``/projects/nodes``, and with a key at
+    most one node per key (:func:`_claim_slot` and :func:`_keyed_write`).
+
+    The app's create decides who sees the node. A new space gets the one
+    ``org`` grant of ``tree.create_node``. A node under a parent gets no
+    grant and inherits the access of its parent. The edge writes no grant.
+    """
+    _refuse_nul(args, _PROJECT_TEXT_INPUTS)
+    _refuse_bad_project_call(ctx, args)
+    key = args.get("idempotency_key")
+    sent = _Sent()
+    if key is None:
+        row = await _create_node(ctx, args, sent)
+    else:
+        claim = await _claim_slot(ctx, "create_project", str(key), args, _PROJECT_KEY_TEXTS)
+        if claim.earlier is not None:
+            earlier = await _node(ctx, claim.earlier, TEXT_PROJECT_NOT_FOUND)
+            return {**_project_result(earlier), "created": False}
+        row = await _keyed_write(claim, sent, lambda: _create_node(ctx, args, sent),
+                                 lambda done: str(done["id"]))
+    current = await _after_write(lambda: _reread_node(ctx, row), row)
+    return {**_project_result(current), "created": True}
+
+
+CREATE_PROJECT = Tool(
+    name="create_project",
+    title="Create a project",
+    description=(
+        "Create one space, project or subproject. A space is the top level and"
+        " has no parent. A project sits in a space, and a subproject sits in a"
+        " project. Send the id of the node above as parent_id: find it with"
+        " list_projects. A folder works as a parent too. Who sees the new node is"
+        " what the Metorite app gives a node that a member makes: a new space is"
+        " open to the whole organization, and a project or a subproject has the"
+        " access of its parent. This tool cannot change who sees a project: a"
+        " person does that in the app. A connection that is pinned to projects"
+        " makes nodes under the pinned projects only, and no space. Send an"
+        " idempotency_key when you may retry: the same key gives back the first"
+        " project with created false. Returns the project and its version."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_CREATE_PROJECT_INPUT,
+    output_schema=_PROJECT_WRITE_OUTPUT,
+    route=NODES_ROUTE,
+    params={"name": "name", "description": "description", "parent_id": "parent_project_id"},
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_create_project,
+    routes=(NODE_ROUTE,),
+    method="POST",
+    edge_inputs=frozenset({"level", "idempotency_key"}),
+    annotations=dict(CREATE_ANNOTATIONS),
+)
+
+
+async def _update_project(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """PATCH the named fields only, with ``If-Match`` (MCP-G1, §9.2).
+
+    The body holds only the keys of :data:`PROJECT_UPDATE_BODY_KEYS` that
+    the call sent. No archive, no lead, no grant and no move: the archive of
+    a project stays a member's act, as for a task (EA3-40).
+    """
+    _refuse_nul(args, _PROJECT_TEXT_INPUTS)
+    payload = {name: args[name] for name in PROJECT_UPDATE_BODY_KEYS if name in args}
+    if not payload:
+        raise ToolError(TEXT_PROJECT_UPDATE_EMPTY)
+    if "name" in payload:
+        payload["name"] = str(payload["name"]).strip()
+        if not payload["name"]:
+            raise ToolError(TEXT_NAME_BLANK)
+    _, after = await _write(
+        ctx, "PATCH", NODE_ROUTE, TEXT_PROJECT_NOT_FOUND,
+        path_params={"project_id": str(args["project_id"])}, json_body=payload,
+        if_match=str(args["expected_version"]), texts={412: TEXT_PROJECT_STALE},
+        prefixes=_RUN_STATE_PREFIXES)
+    if not isinstance(after, dict) or _id(after.get("id")) is None:
+        raise ToolError(TEXT_BUSY)
+    written: dict[str, Any] = after
+    return _project_result(await _after_write(lambda: _reread_node(ctx, written), written))
+
+
+UPDATE_PROJECT = Tool(
+    name="update_project",
+    title="Update a project",
+    description=(
+        "Change the name, the description or the status of one space, project"
+        " or subproject that this member can see. Send only the fields to"
+        " change. The status is the run state of a project or a subproject:"
+        " queued, active, on_hold, stopped or done. A space and a folder have no"
+        " status. Send the updated_at that get_project returned, or the version"
+        " that create_project or update_project returned, as expected_version."
+        " When the project changed after that read, the tool refuses, and you"
+        " read it again. This tool cannot archive a project, move it, or change"
+        " its lead or who sees it: a person does that in the Metorite app."
+        " Returns the project and its new version." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_UPDATE_PROJECT_INPUT,
+    output_schema=_PROJECT_UPDATE_OUTPUT,
+    route=NODE_ROUTE,
+    params={"project_id": "project_id", "expected_version": "If-Match",
+            **{name: name for name in PROJECT_UPDATE_BODY_KEYS}},
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_update_project,
+    routes=(NODE_ROUTE,),
+    method="PATCH",
+    annotations=dict(WRITE_ANNOTATIONS),
+)
+
+
+# ── preview_move_tasks and move_tasks (MCP-G1, §9.2, D-PM-29 to D-PM-31) ────
+
+MOVE_PREVIEW_ROUTE = "/projects/tasks/move/preview"
+MOVE_TASKS_ROUTE = "/projects/tasks/move"
+
+#: The most tasks in one move of an agent. The route takes 500
+#: (``bulk.MAX_BULK``). The edge takes fewer, so the preview and the move fit
+#: in the time of one call (EA3-17).
+MAX_MOVE_TASKS = 50
+#: The most entries of ``status_map`` or of ``field_map``.
+MAX_MOVE_MAP = 50
+
+#: The label that the key of a preview id is derived over. A preview id is
+#: the base64url HMAC-SHA256 of the selection and of the preview as the agent
+#: saw it, under a key derived from ``agent_edge_signing_key``. So only this
+#: edge makes one, and a key rotation ends each open preview.
+PREVIEW_LABEL = b"move-preview-v1"
+_PREVIEW_ID_PATTERN = "^[A-Za-z0-9_-]{43}$"
+
+#: A copy of ``authority.TASK_MOVE_REFUSED`` (D-OP-14), because the edge may
+#: not import the gateway. ``test_mcp_edge_projects.py`` pins the two equal.
+TEXT_MOVE_NOT_ALLOWED = (
+    "Only the person who created this task, the project lead or a Projects "
+    "admin can move it to another project.")
+TEXT_MOVE_CHANGED = (
+    "The move changed after the preview. Call preview_move_tasks again, show"
+    " the person the new preview, and send its preview_id. Nothing moved.")
+TEXT_MOVE_ONE_SOURCE = (
+    "A move takes the tasks of one project only. Move the tasks of each project"
+    " in a call of its own.")
+TEXT_MOVE_INTO_FOLDER = (
+    "A folder holds projects, not tasks. Move the tasks into a project inside it.")
+TEXT_MOVE_INTO_SPACE = (
+    "A space holds projects, not tasks. Move the tasks into a project inside it.")
+TEXT_MOVE_INTO_ARCHIVED = (
+    "That project is archived. Move the tasks into a project that is not archived.")
+TEXT_MOVE_INTO_PERSONAL = (
+    "That project is personal, so Metorite cannot move team work into it. The"
+    " move would hide the task from each person who can see it now.")
+TEXT_MOVE_FIELD_MAP = (
+    "field_map maps a field to a field of another type, or names a field that"
+    " is not there. Check it against the preview.")
+TEXT_MOVE_STATUS_MAP = (
+    "status_map names a status that is not in destination_statuses of the preview.")
+TEXT_MOVE_MAP_FORM = "The input {name!r} has a key of the wrong form."
+
+#: The audience of a move (fix round 1), copies of ``move.AUDIENCE_SAME``,
+#: ``move.AUDIENCE_NARROWER`` and ``move.AUDIENCE_WIDER``. The gateway gives
+#: it to an agent only. ``wider`` blocks the move: an agent never widens who
+#: sees a task. ``test_mcp_edge_projects.py`` pins the copies equal.
+AUDIENCE_WIDER = "wider"
+AUDIENCES: tuple[str, ...] = ("same", "narrower", AUDIENCE_WIDER)
+#: A copy of ``move.AGENT_AUDIENCE_WIDENS``, the code of the 403 of the move.
+AUDIENCE_WIDENS_CODE = "audience_widens"
+
+#: The reasons that hold a move back, in the order that the preview checks
+#: them, each with the text of ``move_tasks``. ``preview_move_tasks`` returns
+#: the codes in ``blocked``.
+MOVE_BLOCKED_TEXTS: Mapping[str, str] = {
+    "audience_widens": (
+        "This move would show the tasks to people who cannot see them now. An"
+        " agent never widens who sees a task, so a person must make this move in"
+        " the Metorite app. Nothing moved."),
+    "already_there": "Those tasks are already in that project. Nothing moved.",
+    "required_missing": (
+        "The destination needs fields that these tasks do not hold."
+        " required_missing of the preview names them. Fill them in with"
+        " update_task, then preview the move again. Nothing moved."),
+    "subtasks_hidden": (
+        "This member cannot see some subtasks, so a move with the subtasks would"
+        " split the tree. Send include_subtasks false, or ask a person. Nothing"
+        " moved."),
+    "subtask_private": (
+        "A subtask is team work, so it cannot move into a personal project. Send"
+        " include_subtasks false. Nothing moved."),
+    "status_map_unknown": TEXT_MOVE_STATUS_MAP + " Nothing moved.",
+    "status_unmapped": (
+        "The destination has no status for one or more of these tasks. Send"
+        " status_map with a status of destination_statuses. Nothing moved."),
+}
+
+#: The fixed text of a refusal of the preview or the move, by the status and
+#: the gateway's own ``detail`` (the ``details`` and ``prefixes`` maps of
+#: :func:`_write`). The edge reads the detail to choose a text, and never
+#: sends it. The R8 tests of ``test_mcp_edge_projects.py`` meet the rows
+#: through the real gateway, so a changed detail fails them.
+_BULK_MOVE_DETAILS: Mapping[tuple[int, str], str] = {
+    (404, "Task not found"): TEXT_TASK_NOT_FOUND,
+    (404, "Project not found"): TEXT_PROJECT_NOT_FOUND,
+    (403, TEXT_MOVE_NOT_ALLOWED): TEXT_MOVE_NOT_ALLOWED,
+    (422, "That status does not belong to this project."): TEXT_MOVE_STATUS_MAP,
+}
+_BULK_MOVE_PREFIXES: Mapping[tuple[int, str], str] = {
+    (422, "A bulk move needs one source project"): TEXT_MOVE_ONE_SOURCE,
+    (422, "That project is personal, so a task cannot be moved into it"):
+        TEXT_MOVE_INTO_PERSONAL,
+    (422, "Cannot map "): TEXT_MOVE_FIELD_MAP,
+    (422, "A folder holds projects, not tasks."): TEXT_MOVE_INTO_FOLDER,
+}
+
+_MOVE_SELECTION_INPUT: dict[str, Any] = {
+    "task_ids": {
+        "type": "array", "minItems": 1, "maxItems": MAX_MOVE_TASKS,
+        "items": {"type": "string", "pattern": _UUID_PATTERN},
+        "description": "The tasks to move, ids from list_tasks. All of them must be"
+                       " in one project."},
+    "destination_project_id": {
+        "type": "string", "pattern": _UUID_PATTERN,
+        "description": "The project that the tasks move into. A project or a"
+                       " subproject, not a space or a folder."},
+    "include_subtasks": {
+        "type": "boolean", "default": True,
+        "description": "True takes every subtask along, as the Move dialog of the"
+                       " app does. The default is true."},
+    "status_map": {
+        "type": "object", "maxProperties": MAX_MOVE_MAP,
+        "additionalProperties": {"type": "string", "pattern": _UUID_PATTERN},
+        "description": "Optional. A map from a status id of the tasks now to a"
+                       " status id of destination_statuses. A status that the map"
+                       " leaves out lands where the preview shows."},
+    "field_map": {
+        "type": "object", "maxProperties": MAX_MOVE_MAP,
+        "additionalProperties": {"type": "string", "pattern": _KEY_RE.pattern},
+        "description": "Optional. A map from a field_key of the tasks now to a"
+                       " field_key of the destination. A field that the map leaves"
+                       " out lands where the preview shows, or drops."},
+}
+
+_PREVIEW_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": dict(_MOVE_SELECTION_INPUT),
+    "required": ["task_ids", "destination_project_id"],
+    "additionalProperties": False,
+}
+_MOVE_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        **_MOVE_SELECTION_INPUT,
+        "preview_id": {
+            "type": "string", "pattern": _PREVIEW_ID_PATTERN,
+            "description": "The preview_id that preview_move_tasks returned for"
+                           " this same selection."},
+    },
+    "required": ["task_ids", "destination_project_id", "preview_id"],
+    "additionalProperties": False,
+}
+
+#: The keys of the result of ``preview_move_tasks`` (§9.2), and no other.
+PREVIEW_KEYS: tuple[str, ...] = (
+    "task_ids", "task_count", "source_project_id", "destination_project_id",
+    "include_subtasks", "crosses_root", "crosses_status_set", "statuses",
+    "destination_statuses", "types", "field_map", "orphan_fields", "drops", "tags",
+    "subtasks", "required_missing", "audience", "blocked", "can_move", "preview_id",
+)
+#: The keys of the result of ``move_tasks`` (§9.2), and no other.
+MOVED_KEYS: tuple[str, ...] = (
+    "moved", "task_ids", "destination_project_id", "dropped_fields",
+    "subtasks_moved", "subtask_ids",
+)
+
+_LANE_SCHEMA = _object({
+    "id": {"type": "string"}, "name": _UNTRUSTED_SCHEMA, "category": _NULLABLE_STRING,
+})
+_LANE_OR_NULL: dict[str, Any] = {"anyOf": [_LANE_SCHEMA, {"type": "null"}]}
+_IDS_SCHEMA: dict[str, Any] = {"type": "array", "items": {"type": "string"}}
+_UNTRUSTED_ARRAY: dict[str, Any] = {"type": "array", "items": _UNTRUSTED_SCHEMA}
+_KEY_OUT: dict[str, Any] = {"anyOf": [{"type": "string"}, _UNTRUSTED_SCHEMA]}
+
+_PREVIEW_OUTPUT: dict[str, Any] = _object({
+    "task_ids": _IDS_SCHEMA,
+    "task_count": {"type": "integer"},
+    "source_project_id": _NULLABLE_STRING,
+    "destination_project_id": _NULLABLE_STRING,
+    "include_subtasks": {"type": "boolean"},
+    "crosses_root": {"type": "boolean"},
+    "crosses_status_set": {"type": "boolean"},
+    "statuses": {"type": "array", "items": _object({
+        "from": _LANE_OR_NULL, "to": _LANE_OR_NULL})},
+    "destination_statuses": {"type": "array", "items": _LANE_SCHEMA},
+    "types": {"type": "array", "items": _object({
+        "from": _object({"id": {"type": "string"}, "name": _UNTRUSTED_OR_NULL}),
+        "to": {"anyOf": [_object({"id": {"type": "string"}}), {"type": "null"}]}})},
+    "field_map": {"type": "array", "items": _object({"from": _KEY_OUT, "to": _KEY_OUT})},
+    "orphan_fields": {"type": "array", "items": _object({
+        "field_key": _KEY_OUT, "name": _UNTRUSTED_SCHEMA,
+        "field_type": _NULLABLE_STRING})},
+    "drops": {"type": "array", "items": _object({
+        "field_key": _KEY_OUT, "task_id": {"type": "string"},
+        "task_number": _NULLABLE_INTEGER, "value": _FIELD_VALUE_SCHEMA})},
+    "tags": _object({"carried": _UNTRUSTED_ARRAY, "unregistered": _UNTRUSTED_ARRAY}),
+    "subtasks": _object({"count": {"type": "integer"}, "hidden": {"type": "integer"},
+                         "refused": _IDS_SCHEMA}),
+    "required_missing": _UNTRUSTED_ARRAY,
+    "audience": {"type": ["string", "null"], "enum": [*AUDIENCES, None]},
+    "blocked": {"type": "array", "items": {"type": "string",
+                                           "enum": list(MOVE_BLOCKED_TEXTS)}},
+    "can_move": {"type": "boolean"},
+    "preview_id": {"type": "string"},
+})
+_MOVED_OUTPUT: dict[str, Any] = _object({
+    "moved": {"type": "integer"},
+    "task_ids": _IDS_SCHEMA,
+    "destination_project_id": _NULLABLE_STRING,
+    "dropped_fields": {"type": "array", "items": _KEY_OUT},
+    "subtasks_moved": {"type": "integer"},
+    "subtask_ids": _IDS_SCHEMA,
+})
+
+
+def _dicts(value: Any) -> list[Mapping[str, Any]]:
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _ids(value: Any) -> list[str]:
+    return [item for item in value if _id(item) is not None] if isinstance(value, list) else []
+
+
+def _move_selection(args: Mapping[str, Any]) -> dict[str, Any]:
+    """The selection of a move, in one canonical form: the task ids in lower
+    case without repeats, the destination, ``include_subtasks`` (true when
+    not sent) and each map that the call sent. The preview id binds it."""
+    status_map = args.get("status_map") or {}
+    field_map = args.get("field_map") or {}
+    if any(_id(k) is None for k in status_map):
+        raise ToolError(TEXT_MOVE_MAP_FORM.format(name="status_map"))
+    if any(_key(k) is None for k in field_map):
+        raise ToolError(TEXT_MOVE_MAP_FORM.format(name="field_map"))
+    selection: dict[str, Any] = {
+        "task_ids": list(dict.fromkeys(str(t).lower() for t in args["task_ids"])),
+        "destination_project_id": str(args["destination_project_id"]).lower(),
+        "include_subtasks": bool(args.get("include_subtasks", True)),
+    }
+    if status_map:
+        selection["status_map"] = {str(k).lower(): str(v).lower()
+                                   for k, v in sorted(status_map.items())}
+    if field_map:
+        selection["field_map"] = dict(sorted(field_map.items()))
+    return selection
+
+
+def _lane(row: Any) -> dict[str, Any] | None:
+    if not isinstance(row, dict):
+        return None
+    return {"id": str(row.get("id")), "name": untrusted(row.get("name") or ""),
+            "category": _str_or_none(row.get("category"))}
+
+
+def _type_landing(row: Mapping[str, Any]) -> dict[str, Any]:
+    source = row.get("from") if isinstance(row.get("from"), dict) else {}
+    target = row.get("to")
+    return {"from": {"id": str(source.get("id")), "name": untrusted(source.get("name"))},
+            "to": {"id": str(target.get("id"))} if isinstance(target, dict) else None}
+
+
+def _move_blocks(shown: Mapping[str, Any], selection: Mapping[str, Any]) -> list[str]:
+    """The codes of :data:`MOVE_BLOCKED_TEXTS` that hold this move back.
+
+    Each one is a refusal that the route makes too. The edge says it first,
+    with a fixed text, so no text of the gateway reaches the agent.
+    """
+    out: list[str] = []
+    if shown["audience"] == AUDIENCE_WIDER:
+        out.append("audience_widens")
+    source = shown["source_project_id"]
+    if source is not None and source == shown["destination_project_id"]:
+        out.append("already_there")
+    if shown["required_missing"]:
+        out.append("required_missing")
+    if selection["include_subtasks"] and shown["subtasks"]["hidden"]:
+        out.append("subtasks_hidden")
+    if selection["include_subtasks"] and shown["subtasks"]["refused"]:
+        out.append("subtask_private")
+    mapped: Mapping[str, str] = selection.get("status_map", {})
+    lanes = {str(lane["id"]).lower() for lane in shown["destination_statuses"]}
+    if any(target not in lanes for target in mapped.values()):
+        out.append("status_map_unknown")
+    if shown["crosses_status_set"] and any(
+            row["to"] is None and str((row["from"] or {}).get("id")).lower() not in mapped
+            for row in shown["statuses"]):
+        out.append("status_unmapped")
+    return out
+
+
+def _shown_preview(body: Mapping[str, Any], selection: Mapping[str, Any]) -> dict[str, Any]:
+    """The preview as the agent sees it: the keys of :data:`PREVIEW_KEYS`
+    except ``preview_id``. Each name and each value is ``untrusted_text``."""
+    drops = body.get("drops") if isinstance(body.get("drops"), dict) else {}
+    tags = body.get("tags") if isinstance(body.get("tags"), dict) else {}
+    subtasks = body.get("subtasks") if isinstance(body.get("subtasks"), dict) else {}
+    field_map = body.get("field_map") if isinstance(body.get("field_map"), dict) else {}
+    shown: dict[str, Any] = {
+        "task_ids": list(selection["task_ids"]),
+        "task_count": _int_or_none(body.get("task_count")) or 0,
+        "source_project_id": _id(body.get("source_project_id")),
+        "destination_project_id": _id(body.get("destination_project_id")),
+        "include_subtasks": bool(selection["include_subtasks"]),
+        "crosses_root": _bool(body.get("crosses_root")),
+        "crosses_status_set": _bool(body.get("crosses_status_set")),
+        "statuses": [{"from": _lane(r.get("from")), "to": _lane(r.get("to"))}
+                     for r in _dicts(body.get("statuses"))],
+        "destination_statuses": [_lane(r) for r in _dicts(body.get("destination_statuses"))],
+        "types": [_type_landing(r) for r in _dicts(body.get("types"))],
+        "field_map": [{"from": shaped(k, _KEY_RE), "to": shaped(v, _KEY_RE)}
+                      for k, v in field_map.items()],
+        "orphan_fields": [{"field_key": shaped(d.get("field_key"), _KEY_RE),
+                           "name": untrusted(d.get("name") or ""),
+                           "field_type": _str_or_none(d.get("field_type"))}
+                          for d in _dicts(body.get("orphan_fields"))],
+        "drops": [{"field_key": shaped(key, _KEY_RE), "task_id": str(d.get("task_id")),
+                   "task_number": _int_or_none(d.get("task_number")),
+                   "value": field_value(d.get("value"))}
+                  for key, rows in drops.items() for d in _dicts(rows)],
+        "tags": {"carried": _untrusted_list(tags.get("carried")),
+                 "unregistered": _untrusted_list(tags.get("unregistered"))},
+        "subtasks": {"count": _int_or_none(subtasks.get("count")) or 0,
+                     "hidden": _int_or_none(subtasks.get("hidden")) or 0,
+                     "refused": _ids([r.get("task_id") for r in _dicts(subtasks.get("refused"))])},
+        "required_missing": _untrusted_list(body.get("required_missing")),
+        "audience": body.get("audience") if body.get("audience") in AUDIENCES else None,
+    }
+    blocked = _move_blocks(shown, selection)
+    shown["blocked"] = blocked
+    shown["can_move"] = not blocked
+    return shown
+
+
+def _canonical(value: Any) -> Any:
+    """*value* with each list in a fixed order, so a preview id does not
+    depend on the order of rows that the gateway gives."""
+    if isinstance(value, dict):
+        return {str(k): _canonical(v) for k, v in value.items()}
+    if isinstance(value, list):
+        items = [_canonical(v) for v in value]
+        return sorted(items, key=lambda v: json.dumps(v, sort_keys=True, ensure_ascii=True))
+    return value
+
+
+def preview_id(signing_key: str, connection_id: str, selection: Mapping[str, Any],
+               shown: Mapping[str, Any]) -> str:
+    """The preview id of *shown* for *selection* (MCP-G1).
+
+    The base64url HMAC-SHA256, under a key derived from the signing key over
+    :data:`PREVIEW_LABEL`, of the connection, the selection and the preview
+    as the agent saw it. ``move_tasks`` runs the preview again and compares
+    the two ids, so no move commits unless the agent saw that same preview.
+    """
+    key = hmac.new(signing_key.encode("utf-8"), PREVIEW_LABEL, hashlib.sha256).digest()
+    text = json.dumps({"connection": connection_id, "selection": _canonical(dict(selection)),
+                       "preview": _canonical(dict(shown))},
+                      sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    tag = hmac.new(key, text.encode("ascii"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(tag).rstrip(b"=").decode("ascii")
+
+
+def _move_body(selection: Mapping[str, Any]) -> dict[str, Any]:
+    """The keys of ``MoveIn`` that the selection fills, and no other."""
+    body: dict[str, Any] = {
+        "task_ids": list(selection["task_ids"]),
+        "destination_project_id": selection["destination_project_id"],
+        "include_subtasks": selection["include_subtasks"],
+    }
+    for name in ("status_map", "field_map"):
+        if name in selection:
+            body[name] = dict(selection[name])
+    return body
+
+
+async def _check_destination(ctx: Context, project_id: str) -> None:
+    """The destination must hold tasks (``core.assert_holds_tasks``) and must
+    not be archived (``core.assert_not_archived``). The edge reads the node
+    first, so each refusal has a fixed text. A destination that the member
+    cannot see, also one that a pin hides, is "Project not found." (§7.1)."""
+    node = await _node(ctx, project_id, TEXT_PROJECT_NOT_FOUND)
+    if node.get("archived_at") is not None:
+        raise ToolError(TEXT_MOVE_INTO_ARCHIVED)
+    if node.get("kind") == "folder":
+        raise ToolError(TEXT_MOVE_INTO_FOLDER)
+    if node.get("parent_project_id") is None and not node.get("personal"):
+        raise ToolError(TEXT_MOVE_INTO_SPACE)
+
+
+async def _preview(ctx: Context, selection: Mapping[str, Any]) -> tuple[dict[str, Any], Any]:
+    """Read the destination, then POST the preview. Returns the preview as
+    the agent sees it, with its ``preview_id``, and the gateway's answer."""
+    await _check_destination(ctx, str(selection["destination_project_id"]))
+    _, body = await _write(
+        ctx, "POST", MOVE_PREVIEW_ROUTE, TEXT_TASK_NOT_FOUND,
+        json_body=_move_body(selection), details=_BULK_MOVE_DETAILS, prefixes=_BULK_MOVE_PREFIXES)
+    if not isinstance(body, dict):
+        raise ToolError(TEXT_BUSY)
+    shown = _shown_preview(body, selection)
+    shown["preview_id"] = preview_id(ctx.key, ctx.caller.lookup.connection_id, selection,
+                                     shown)
+    return shown, body
+
+
+async def _preview_move_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    shown, _ = await _preview(ctx, _move_selection(args))
+    return shown
+
+
+PREVIEW_MOVE_TASKS = Tool(
+    name="preview_move_tasks",
+    title="Preview a move of tasks",
+    description=(
+        "Show what a move of tasks to another project would do, and change"
+        " nothing. Call it before move_tasks, and show the result to the person"
+        " before you move. The tasks must all be in one project. It returns"
+        " where each status lands (statuses), the statuses of the destination,"
+        " where each task type and custom field lands, each value that the move"
+        " drops (drops), the tags, the subtasks that move along, and the"
+        " required fields that the tasks do not hold. audience says whether the"
+        " move shows the tasks to more people (wider), to fewer (narrower) or to"
+        " the same people. An agent never widens who sees a task, so a wider move"
+        " is blocked, and a person makes it in the Metorite app. blocked lists each reason"
+        " that holds the move back, and can_move is true when there is none."
+        " Send the preview_id to move_tasks with the same selection."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_PREVIEW_INPUT,
+    output_schema=_PREVIEW_OUTPUT,
+    route=MOVE_PREVIEW_ROUTE,
+    params={name: name for name in _MOVE_SELECTION_INPUT},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_preview_move_tasks,
+    routes=(NODE_ROUTE,),
+    method="POST",
+    annotations=dict(READ_ANNOTATIONS),
+)
+
+
+def _moved(answer: Any) -> dict[str, Any]:
+    if not isinstance(answer, dict):
+        raise ToolError(TEXT_BUSY)
+    return {
+        "moved": _int_or_none(answer.get("moved")) or 0,
+        "task_ids": _ids(answer.get("task_ids")),
+        "destination_project_id": _id(answer.get("destination_project_id")),
+        "dropped_fields": [shaped(k, _KEY_RE) for k in answer.get("dropped_fields") or ()
+                           if isinstance(k, str)],
+        "subtasks_moved": _int_or_none(answer.get("subtasks_moved")) or 0,
+        "subtask_ids": _ids(answer.get("subtask_ids")),
+    }
+
+
+async def _move_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """Run the preview again, compare its id, then POST the move (D-PM-29).
+
+    The move sends ``accept_drops`` and ``accepted_drops``, the drops of the
+    preview that this call just made. So when a field goes between that
+    preview and the move, the route answers 409 and nothing moves. A move
+    that already landed answers "already_there", and moves nothing more.
+    """
+    selection = _move_selection(args)
+    shown, body = await _preview(ctx, selection)
+    if shown["blocked"]:
+        raise ToolError(MOVE_BLOCKED_TEXTS[shown["blocked"][0]])
+    if not hmac.compare_digest(str(shown["preview_id"]), str(args["preview_id"])):
+        raise ToolError(TEXT_MOVE_CHANGED)
+    drops = sorted(str(k) for k in (body.get("drops") or {}))
+    _, answer = await _write(
+        ctx, "POST", MOVE_TASKS_ROUTE, TEXT_TASK_NOT_FOUND,
+        json_body={**_move_body(selection), "accept_drops": bool(drops),
+                   "accepted_drops": drops},
+        texts={409: TEXT_MOVE_CHANGED}, details=_BULK_MOVE_DETAILS, prefixes=_BULK_MOVE_PREFIXES,
+        coded={AUDIENCE_WIDENS_CODE: MOVE_BLOCKED_TEXTS["audience_widens"]},
+        coded_statuses=(403, 422))
+    return _moved(answer)
+
+
+MOVE_TASKS = Tool(
+    name="move_tasks",
+    title="Move tasks to another project",
+    description=(
+        "Move tasks of one project to another project. First call"
+        " preview_move_tasks with the same selection, show the person what the"
+        " move drops and where each status lands, and get a yes. Then send its"
+        " preview_id here. The tool runs the preview again, and when anything"
+        " changed it refuses and moves nothing. With include_subtasks true, the"
+        " default, every subtask moves along. A value with no field in the"
+        " destination drops, and the timeline of the task keeps it. Only the"
+        " person who created a task, the project lead or a Projects admin can"
+        " move it. A move that would show the tasks to more people is refused: a"
+        " person makes it in the Metorite app. Returns the moved task"
+        " ids and the dropped fields." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_MOVE_INPUT,
+    output_schema=_MOVED_OUTPUT,
+    route=MOVE_TASKS_ROUTE,
+    params={name: name for name in _MOVE_SELECTION_INPUT},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_move_tasks,
+    routes=(NODE_ROUTE,),
+    method="POST",
+    edge_inputs=frozenset({"preview_id"}),
+    annotations=dict(MOVE_ANNOTATIONS),
+    prior_writes=(MOVE_PREVIEW_ROUTE,),
 )
 
 
@@ -5087,6 +5962,758 @@ RELEASE_TASK = Tool(
 )
 
 
+# ── The app door (MCP-P1a, spec §19.4) ──────────────────────────────────────
+#
+# Four fixed tools serve each app of ``acb_common.app_manifests``. The
+# manifest of an app is the ONE allowlist of both doors (D136), and no second
+# list names a door op. ``app_manifests.build_call`` builds each call, and
+# ``gateway_client.send_call`` sends its bytes. This module maps each answer,
+# as it does for every other tool (EA3-9): each string of a result is
+# untrusted text unless the row names its key in ``plain`` (AD-10), and a
+# result has at most :data:`DOOR_RESULT_MAX_BYTES` (AD-12).
+#
+# AD-18. A write of class B or C that is not a proposal needs the member's
+# approval. MCP-P1b builds that path. Until then the edge refuses each such
+# op before any request (:data:`TEXT_NEEDS_APPROVAL`), and branch 0 refuses
+# it with the coded 403 ``approval_required``.
+
+DOOR_APPS_ROUTE = "/agent-access/apps"
+DOOR_APP_ROUTE = "/agent-access/apps/{app}"
+
+#: The texts of the door (§19.4). Each one is a fixed edge text, and none
+#: copies a text of the gateway (EA3-16).
+TEXT_NO_APP = "Metorite has no app with that name. Call list_apps."
+TEXT_TOOLS_APP = "This app has tools of its own. Use those tools, not app_read or app_write."
+TEXT_APP_OFF = "Agents cannot use this app in this organization."
+TEXT_APPS_OFF = "Agents cannot use the apps of this organization now."
+TEXT_NO_OP = "This app has no operation with that name. Call describe_app."
+TEXT_USE_WRITE = "Use app_write for a change."
+TEXT_USE_READ = "Use app_read for a read."
+TEXT_NEEDS_APPROVAL = (
+    "This change needs the member's approval, and Metorite cannot ask the member"
+    " for it yet. Nothing changed.")
+TEXT_NOT_APPROVED = "Metorite refused this change, because the member has not approved it."
+TEXT_DOOR_INPUT = "Metorite could not use that input. Check: {names}."
+TEXT_DOOR_INPUT_ANY = "Metorite could not use that input. Check the input."
+TEXT_DOOR_NOT_FOUND = "{app} has nothing at that id."
+TEXT_DOOR_CONFLICT = "The record changed, or its state refuses this change. Read it again."
+TEXT_DOOR_READ_CAP = "Too many reads from this connection. Wait a few minutes."
+TEXT_NO_PAGES = "This operation has no pages. Send no cursor and no limit."
+TEXT_PAGE_ARGS = "Send the page size as limit and the cursor as cursor, not inside args."
+TEXT_NO_REQUEST = (
+    "Metorite has no request with that id. To ask for a change, send op, args and"
+    " idempotency_key.")
+TEXT_TWO_FORMS = (
+    "Send op, args and idempotency_key to ask, or request_id to wait. Do not send both.")
+TEXT_WAIT_NEEDS_REQUEST = "The input 'wait_seconds' goes with request_id."
+TEXT_UNAVAILABLE = "Agents cannot use this operation now."
+TEXT_DOOR_KEY_REUSED = (
+    "This idempotency_key was used for a different change. Send a new key.")
+TEXT_DOOR_KEY_UNKNOWN = (
+    "A call with this idempotency_key got no answer, so Metorite cannot tell if"
+    " it made the change. Read the app before you use a new key.")
+
+#: The code of an op that ``describe_app`` marks unavailable, and its text.
+#: The gateway sends the code, and the edge sends the text.
+WHY_NOT_TEXTS: Mapping[str, str] = {
+    agent_oauth.APPROVAL_REQUIRED_CODE: TEXT_NEEDS_APPROVAL,
+    agent_oauth.DOOR_WRITES_OFF_CODE: TEXT_WRITES_OFF,
+}
+
+#: AD-12. A door page holds at most :data:`DOOR_PAGE_MAX` rows, and one result
+#: at most :data:`DOOR_RESULT_MAX_BYTES` of JSON. The threat table of §10.2
+#: names a 100-row cap for the whole access. AD-12 is the smaller, so the door
+#: uses 50.
+DOOR_PAGE_MAX = 50
+DOOR_PAGE_DEFAULT = 20
+DOOR_RESULT_MAX_BYTES = 256 * 1024
+
+#: The ``args`` key of the row limit of a read route. The edge clamps it to
+#: :data:`DOOR_PAGE_MAX` for each op, paged or not (AD-12). A route keeps its
+#: own larger bound for the app.
+DOOR_LIMIT_ARG = "limit"
+_DOOR_LIMIT_TEXT_RE = re.compile(r"[0-9]{1,9}")
+TEXT_DOOR_LIMIT = f"The input 'args.{DOOR_LIMIT_ARG}' must be a whole number."
+
+#: The largest args schema of one op that ``describe_app`` passes on, in
+#: bytes of JSON. The gateway cuts a larger one to its field names (AD-9).
+DOOR_SCHEMA_MAX_BYTES = 16 * 1024
+
+#: AD-10, the second guard. A key whose name holds one of these words leaves
+#: no answer, at any depth. The first guard is that no X route is a door op.
+SECRET_WORDS: tuple[str, ...] = ("token", "secret", "password", "credential", "api_key")
+
+#: An ISO-8601 date or time, one of the plain shapes of AD-10.
+_ISO_TIME_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]{1,9})?)?"
+    r"(?:Z|[+-][0-9]{2}:?[0-9]{2})?)?")
+
+#: The names of a 422 ``loc`` that only say where a field is.
+_LOC_PLACES = frozenset({"body", "query", "path", "header", "cookie"})
+
+_DOOR_KEY_TEXTS = _KeyTexts(reused=TEXT_DOOR_KEY_REUSED, unknown=TEXT_DOOR_KEY_UNKNOWN)
+
+
+def plain_shape(value: str) -> bool:
+    """True for a plain shape of AD-10: an id, an ISO-8601 time, or a token
+    of ``[A-Za-z0-9_.:-]`` with at most 64 characters."""
+    return bool(_KEY_RE.fullmatch(value) or _ISO_TIME_RE.fullmatch(value))
+
+
+def door_value(value: Any, plain: frozenset[str], key: str | None = None) -> Any:
+    """One value of a door answer, mapped by AD-10.
+
+    Each string becomes ``{"untrusted_text": ...}``, at any depth. A string
+    under a key that *plain* names stays plain only in a plain shape. A
+    number, a boolean and null stay. A dict keeps each key of a key shape
+    (:data:`_KEY_RE`) whose name holds no word of :data:`SECRET_WORDS`, and
+    drops the others with their values. A list maps each item under the key
+    of the list.
+    """
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for name, item in value.items():
+            if not isinstance(name, str) or not _KEY_RE.fullmatch(name):
+                continue
+            if any(word in name.lower() for word in SECRET_WORDS):
+                continue
+            out[name] = door_value(item, plain, name)
+        return out
+    if isinstance(value, list):
+        return [door_value(item, plain, key) for item in value]
+    if isinstance(value, str):
+        if key in plain and plain_shape(value):
+            return value
+        return untrusted(value)
+    if value is None or isinstance(value, bool) or _number(value):
+        return value
+    return untrusted(_compact(value))
+
+
+def _json_size(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def door_cut(result: Any, limit: int = DOOR_RESULT_MAX_BYTES) -> tuple[Any, bool]:
+    """``(result, truncated)``: *result* cut to at most *limit* bytes of JSON
+    (AD-12).
+
+    A result that fits stays whole. Else each list of the top level loses
+    rows from its end, the longest list first, until the result fits. A
+    result that still does not fit is ``None``.
+    """
+    if _json_size(result) <= limit:
+        return result, False
+    if isinstance(result, dict):
+        cut = dict(result)
+        lists = sorted((k for k, v in cut.items() if isinstance(v, list)),
+                       key=lambda k: -_json_size(cut[k]))
+        for name in lists:
+            rows = list(cut[name])
+            while rows and _json_size(cut) > limit:
+                rows = rows[: len(rows) // 2] if len(rows) > 1 else []
+                cut[name] = rows
+            if _json_size(cut) <= limit:
+                return cut, True
+    if isinstance(result, list):
+        rows = list(result)
+        while rows and _json_size(rows) > limit:
+            rows = rows[: len(rows) // 2] if len(rows) > 1 else []
+        if _json_size(rows) <= limit:
+            return rows, True
+    return None, True
+
+
+def door_limit(value: Any) -> int:
+    """A ``limit`` of ``args``, clamped to at most :data:`DOOR_PAGE_MAX` (AD-12).
+
+    An integer, or a string of digits, which the route would read as one. A
+    boolean, a float and any other string are a tool error, so no value can
+    reach the route as a bigger number than the cap.
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        return min(value, DOOR_PAGE_MAX)
+    if isinstance(value, str) and _DOOR_LIMIT_TEXT_RE.fullmatch(value):
+        return min(int(value), DOOR_PAGE_MAX)
+    raise ToolError(TEXT_DOOR_LIMIT)
+
+
+def door_rows(result: Any, limit: int = DOOR_PAGE_MAX) -> tuple[Any, bool]:
+    """``(result, truncated)``: each list of the top level of *result* cut to
+    at most *limit* rows (AD-12).
+
+    The clamp of :func:`door_limit` holds only for a route that reads
+    ``limit``. A route with no row limit of its own, or with a default over
+    the cap, still gives at most *limit* rows through the door.
+    """
+    if isinstance(result, list):
+        return (result[:limit], True) if len(result) > limit else (result, False)
+    if not isinstance(result, dict):
+        return result, False
+    cut = False
+    out: dict[str, Any] = {}
+    for name, value in result.items():
+        if isinstance(value, list) and len(value) > limit:
+            value, cut = value[:limit], True
+        out[name] = value
+    return out, cut
+
+
+def door_full(result: Any, limit: int = DOOR_PAGE_MAX) -> bool:
+    """True when *result* is a list of *limit* rows or more, or holds one at
+    its top level (AD-12). After :func:`door_limit` lowered the agent's
+    ``limit``, a full list means that more rows can exist."""
+    if isinstance(result, list):
+        return len(result) >= limit
+    if isinstance(result, dict):
+        return any(isinstance(v, list) and len(v) >= limit for v in result.values())
+    return False
+
+
+def _door_app(app_id: Any) -> app_manifests.App:
+    """The door app *app_id*, or the fixed tool error of §19.4."""
+    found = app_manifests.app(app_id)
+    if found is None:
+        raise ToolError(TEXT_NO_APP)
+    if found.door != "ops":
+        raise ToolError(TEXT_TOOLS_APP)
+    if not agent_oauth.door_serves(found.id):
+        raise ToolError(TEXT_APP_OFF)
+    return found
+
+
+def _door_op(app_id: Any, op: Any, *, write: bool) -> app_manifests.DoorOp:
+    """The door op of the call, or the fixed tool error of §19.4.
+
+    AD-18: a write of class B or C that is not a proposal is refused here,
+    before any request, because no approval can exist before MCP-P1b.
+    """
+    found = _door_app(app_id)
+    door = app_manifests.door_ops(found).get(op) if isinstance(op, str) else None
+    if door is None:
+        raise ToolError(TEXT_NO_OP)
+    if write and door.kind == "read":
+        raise ToolError(TEXT_USE_READ)
+    if not write and door.kind != "read":
+        raise ToolError(TEXT_USE_WRITE)
+    if write and door.asks != "never":
+        raise ToolError(TEXT_NEEDS_APPROVAL)
+    return door
+
+
+def _door_call(door: app_manifests.DoorOp, args: Mapping[str, Any]) -> app_manifests.Call:
+    """``app_manifests.build_call``, with each refusal as a fixed tool error
+    that names only a key of the caller's own ``args``."""
+    try:
+        return app_manifests.build_call(door.app, door.name, args)
+    except app_manifests.BadCall as bad:
+        name = f"args.{bad.name}"
+        if bad.why == "missing":
+            raise ToolError(f"The input {name!r} is required.") from None
+        if bad.why == "key":
+            raise ToolError(f"The input {name!r} is not a valid key.") from None
+        if bad.why == "type":
+            raise ToolError(
+                f"The input {name!r} must be a string, a number or a boolean.") from None
+        raise ToolError(f"The input {name!r} has the wrong form.") from None
+
+
+def _input_names(detail: Any) -> list[str]:
+    """The field names of a 422, from the ``loc`` of each error, never its
+    message. Only a name of the key shape counts, and at most five."""
+    names: list[str] = []
+    for item in detail if isinstance(detail, list) else ():
+        loc = item.get("loc") if isinstance(item, dict) else None
+        if not isinstance(loc, list):
+            continue
+        for part in reversed(loc):
+            if isinstance(part, str) and part not in _LOC_PLACES:
+                if _KEY_RE.fullmatch(part) and part not in names:
+                    names.append(part)
+                break
+    return names[:5]
+
+
+def _door_body(answer: Answer, door: app_manifests.DoorOp, *, write: bool) -> Any:
+    """The body of a 2xx answer of a door call, or the mapping of §19.4."""
+    status = answer.status
+    detail = answer.body.get("detail") if isinstance(answer.body, dict) else None
+    if 200 <= status < 300:
+        if answer.body is None:
+            raise ToolError(TEXT_BUSY)
+        return answer.body
+    if status == 401:
+        raise GatewayUnauthorized()
+    if status == 403:
+        if detail == agent_oauth.APP_OFF_CODE:
+            raise ToolError(TEXT_APP_OFF)
+        if detail == agent_oauth.APPROVAL_REQUIRED_CODE:
+            raise ToolError(TEXT_NOT_APPROVED)
+        if detail == agent_oauth.WRITES_DISABLED_CODE:
+            raise ToolError(TEXT_WRITES_OFF)
+        raise ToolError(TEXT_WRITE_FORBIDDEN if write else TEXT_FORBIDDEN)
+    if status == 404:
+        raise ToolError(TEXT_DOOR_NOT_FOUND.format(app=door.app.name))
+    if status in (409, 412):
+        raise ToolError(TEXT_DOOR_CONFLICT)
+    if status == 422:
+        names = _input_names(detail)
+        raise ToolError(TEXT_DOOR_INPUT.format(names=", ".join(names)) if names
+                        else TEXT_DOOR_INPUT_ANY)
+    if status == 429:
+        raise ToolError(TEXT_CAP if write else TEXT_DOOR_READ_CAP)
+    if 400 <= status < 500:
+        raise ToolError(TEXT_BAD_REQUEST)
+    raise ToolError(TEXT_BUSY)
+
+
+async def _door_send(ctx: Context, call: app_manifests.Call, door: app_manifests.DoorOp,
+                     *, write: bool) -> Any:
+    """Send one door call, and map its answer (:func:`_door_body`)."""
+    try:
+        answer = await send_call(ctx.key, ctx.caller.lookup, call, session=ctx.session)
+    except GatewayNotSent:
+        raise _NotSent(TEXT_BUSY) from None
+    except GatewayUnreachable:
+        raise ToolError(TEXT_BUSY) from None
+    except RouteRefused:
+        raise ToolError(TEXT_BAD_REQUEST) from None
+    body = _door_body(answer, door, write=write)
+    if write:
+        _landed()
+    return body
+
+
+def _plain_of(door: app_manifests.DoorOp) -> frozenset[str]:
+    return frozenset(door.route.plain)
+
+
+_APP_ID_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": f"^{app_manifests.APP_ID_PATTERN}$",
+    "description": "The id of an app, from list_apps, for example knowledge."}
+_OP_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": f"^{app_manifests.OP_PATTERN}$",
+    "description": "The name of an operation, from describe_app."}
+_ARGS_INPUT: dict[str, Any] = {
+    "type": "object",
+    "description": "The inputs of the operation, as the args schema of describe_app says."}
+
+_LIST_APPS_INPUT: dict[str, Any] = {
+    "type": "object", "properties": {}, "additionalProperties": False}
+_APP_ROW_SCHEMA = _object({
+    "id": {"type": "string"}, "name": {"type": "string"}, "reach": {"type": "string"},
+    "door": {"type": "string", "enum": ["ops", "tools"]},
+    "read": {"type": "boolean"}, "write": {"type": "boolean"},
+    "available": {"type": "boolean"}, "why_not": _NULLABLE_STRING,
+    "waiting": {"type": "array", "items": {"type": "object"}},
+})
+_LIST_APPS_OUTPUT = _object({"apps": {"type": "array", "items": _APP_ROW_SCHEMA}})
+
+
+async def _list_apps(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``list_apps``: one GET of :data:`DOOR_APPS_ROUTE`.
+
+    The name, the reach and the door of each row come from the edge's own
+    copy of the manifests, never from the answer. The gateway decides which
+    apps the member may see, and ``read`` and ``write`` hold only when the
+    gateway and this token's own scopes both say so.
+    """
+    body = await _get(ctx, DOOR_APPS_ROUTE, TEXT_APPS_OFF)
+    rows = body.get("apps") if isinstance(body, dict) else None
+    if not isinstance(rows, list):
+        raise ToolError(TEXT_BUSY)
+    scopes = frozenset(ctx.caller.scopes)
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        found = app_manifests.app(row.get("id")) if isinstance(row, dict) else None
+        if found is None or (found.door == "ops" and not agent_oauth.door_serves(found.id)):
+            continue
+        tools_door = found.door == "tools"
+        read_scope = agent_oauth.PROJECTS_READ if tools_door else found.read_scope
+        write_scope = agent_oauth.PROJECTS_WRITE if tools_door else found.write_scope
+        writable = tools_door or write_scope in found.scopes
+        available = _bool(row.get("available"))
+        out.append({
+            "id": found.id,
+            "name": found.name,
+            "reach": found.reach,
+            "door": found.door,
+            "read": _bool(row.get("read")) and read_scope in scopes,
+            "write": writable and _bool(row.get("write")) and write_scope in scopes,
+            "available": available,
+            "why_not": None if available else WHY_NOT_TEXTS.get(
+                str(row.get("why_not")), TEXT_UNAVAILABLE),
+            # MCP-P1b fills it with the open requests of this connection.
+            "waiting": [],
+        })
+    return {"apps": out}
+
+
+LIST_APPS = Tool(
+    name="list_apps",
+    title="List the apps",
+    description=(
+        "List the apps of Metorite that this connection can reach, beside"
+        " Projects. Each row says the door of the app: ops for app_read and"
+        " app_write, or tools for an app with tools of its own, such as"
+        " Projects. read and write say whether this connection holds the scope"
+        " of the app. Call describe_app to see the operations of an app."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=None,
+    input_schema=_LIST_APPS_INPUT,
+    output_schema=_LIST_APPS_OUTPUT,
+    route=DOOR_APPS_ROUTE,
+    params={},
+    not_found=TEXT_APPS_OFF,
+    run=_list_apps,
+    door=True,
+)
+
+_DESCRIBE_APP_INPUT: dict[str, Any] = {
+    "type": "object", "properties": {"app": _APP_ID_INPUT},
+    "required": ["app"], "additionalProperties": False}
+_OP_ROW_SCHEMA = _object({
+    "op": {"type": "string"}, "title": {"type": "string"},
+    "class": {"type": "string", "enum": ["A", "B", "C"]},
+    "kind": {"type": "string", "enum": ["read", "proposal", "write"]},
+    "asks": {"type": "string", "enum": ["never", "each_call"]},
+    "sends": {"type": "boolean"}, "args": {"type": "object"},
+    "paged": {"type": "boolean"}, "available": {"type": "boolean"},
+    "why_not": _NULLABLE_STRING,
+})
+_DESCRIBE_APP_OUTPUT = _object({
+    "id": {"type": "string"}, "name": {"type": "string"}, "reach": {"type": "string"},
+    "finish_in": _NULLABLE_STRING,
+    "ops": {"type": "array", "items": _OP_ROW_SCHEMA},
+})
+
+
+def _args_schema(value: Any) -> dict[str, Any]:
+    """The args schema that the gateway built from the live route (AD-9).
+
+    It is code of the gateway, never data of an app. A value that is not an
+    object, or one over :data:`DOOR_SCHEMA_MAX_BYTES`, gives an object schema
+    with no fields. The ``limit`` field shows the bound of the edge
+    (:func:`door_limit`, AD-12), not the larger bound of the route.
+    """
+    if not isinstance(value, dict) or _json_size(value) > DOOR_SCHEMA_MAX_BYTES:
+        return {"type": "object"}
+    properties = value.get("properties")
+    field = properties.get(DOOR_LIMIT_ARG) if isinstance(properties, dict) else None
+    if not isinstance(field, dict):
+        return value
+    clamped = dict(field)
+    if not _number(clamped.get("maximum")) or clamped["maximum"] > DOOR_PAGE_MAX:
+        clamped["maximum"] = DOOR_PAGE_MAX
+    # The rows of an answer stop at the cap too (`door_rows`), so a larger
+    # default of the route reads as the cap.
+    if "default" in clamped and (
+            not _number(clamped["default"]) or clamped["default"] > DOOR_PAGE_MAX):
+        clamped["default"] = DOOR_PAGE_MAX
+    return {**value, "properties": {**properties, DOOR_LIMIT_ARG: clamped}}
+
+
+async def _describe_app(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``describe_app``: one GET of :data:`DOOR_APP_ROUTE`.
+
+    The op rows come from the edge's own manifest. The gateway adds the args
+    schema of each op and the state of the organization. An op is available
+    only when the gateway AND the shared rule (``agent_oauth.door_available``)
+    say so, and an op that the gateway does not name is not available.
+    """
+    found = _door_app(args["app"])
+    body = await _get(ctx, DOOR_APP_ROUTE, TEXT_APP_OFF, path_params={"app": found.id})
+    listed = body.get("ops") if isinstance(body, dict) else None
+    if not isinstance(listed, list):
+        raise ToolError(TEXT_BUSY)
+    remote = {row.get("op"): row for row in listed if isinstance(row, dict)}
+    ops: list[dict[str, Any]] = []
+    for door in app_manifests.door_ops(found).values():
+        row = remote.get(door.name)
+        available, code = agent_oauth.door_available(door)
+        if available and (row is None or not _bool(row.get("available"))):
+            available = False
+            code = str(row.get("why_not")) if row is not None else None
+        ops.append({
+            "op": door.name,
+            "title": door.route.title,
+            "class": door.route.cls,
+            "kind": door.kind,
+            "asks": door.asks,
+            "sends": door.route.sends,
+            "args": _args_schema(row.get("args") if row is not None else None),
+            "paged": door.route.page is not None,
+            "available": available,
+            "why_not": None if available else WHY_NOT_TEXTS.get(code or "", TEXT_UNAVAILABLE),
+        })
+    return {"id": found.id, "name": found.name, "reach": found.reach,
+            "finish_in": found.finish_in or None, "ops": ops}
+
+
+DESCRIBE_APP = Tool(
+    name="describe_app",
+    title="Describe an app",
+    description=(
+        "Describe one app of list_apps: its operations, the class and the kind"
+        " of each, and the JSON Schema of its args. Send an op of kind read to"
+        " app_read, and an op of kind proposal or write to app_write. A"
+        " proposal files a draft that a person finishes in the app. asks"
+        " each_call means that the member must approve each call. When"
+        " available is false, why_not gives the reason." + _UNTRUSTED_NOTE
+    ),
+    required_scope=None,
+    input_schema=_DESCRIBE_APP_INPUT,
+    output_schema=_DESCRIBE_APP_OUTPUT,
+    route=DOOR_APP_ROUTE,
+    params={"app": "app"},
+    not_found=TEXT_APP_OFF,
+    run=_describe_app,
+    door=True,
+)
+
+_APP_READ_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "app": _APP_ID_INPUT,
+        "op": _OP_INPUT,
+        "args": _ARGS_INPUT,
+        "cursor": {"type": "string", "maxLength": cursor_mod.MAX_CHARS,
+                   "description": "The next_cursor of the page before. Send the same app,"
+                                  " op and args."},
+        "limit": {"type": "integer", "minimum": 1, "maximum": DOOR_PAGE_MAX,
+                  "description": f"Rows in a page, at most {DOOR_PAGE_MAX}. Only for a"
+                                 " paged op."},
+    },
+    "required": ["app", "op"],
+    "additionalProperties": False,
+}
+_APP_READ_OUTPUT = _object({
+    "result": {}, "next_cursor": _NULLABLE_STRING, "truncated": {"type": "boolean"}})
+
+
+async def _app_read(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``app_read``: one GET of the route of a class A op, as the member.
+
+    A paged op takes ``limit`` and ``cursor``. The edge puts them into the
+    route's own query keys, and it wraps the route's next cursor in a signed
+    cursor of :mod:`agent_edge.cursor`, bound to the tool, the app, the op,
+    the args and the connection.
+
+    AD-12 holds for each op. The page size of a paged op, and a ``limit`` in
+    the ``args`` of any op, are at most :data:`DOOR_PAGE_MAX`. Each list of
+    the answer then holds at most that many rows (:func:`door_rows`).
+    """
+    door = _door_op(args["app"], args["op"], write=False)
+    sent = dict(args.get("args") or {})
+    page = door.route.page
+    tool = f"app_read:{door.app.id}.{door.name}"
+    connection = ctx.caller.lookup.connection_id
+    size = 0
+    number = 1
+    if page is not None and (page.limit in sent or page.cursor in sent):
+        raise ToolError(TEXT_PAGE_ARGS)
+    lowered = False
+    if sent.get(DOOR_LIMIT_ARG) is not None:
+        clamped = door_limit(sent[DOOR_LIMIT_ARG])
+        lowered = int(sent[DOOR_LIMIT_ARG]) > clamped
+        sent[DOOR_LIMIT_ARG] = clamped
+    if page is None:
+        if "cursor" in args or "limit" in args:
+            raise ToolError(TEXT_NO_PAGES)
+    else:
+        if "cursor" in args:
+            try:
+                position = cursor_mod.decode(ctx.key, args["cursor"], tool=tool,
+                                             arguments=args, connection_id=connection)
+            except cursor_mod.BadCursor as exc:
+                _log.info("agent_edge.bad_cursor", tool=tool, reason=str(exc),
+                          connection_id=connection)
+                raise ToolError(TEXT_BAD_CURSOR) from None
+            if position.after is None:
+                raise ToolError(TEXT_BAD_CURSOR)
+            size, number = min(position.size, DOOR_PAGE_MAX), position.page
+            sent[page.cursor] = position.after
+        else:
+            # The input schema refuses more than the cap. This clamp is the
+            # second guard, so a schema change cannot open a larger page.
+            size = min(int(args.get("limit", DOOR_PAGE_DEFAULT)), DOOR_PAGE_MAX)
+        sent[page.limit] = size
+    body = await _door_send(ctx, _door_call(door, sent), door, write=False)
+    next_cursor: str | None = None
+    more = False
+    if page is not None and isinstance(body, dict):
+        after = body.pop(page.next, None)
+        if isinstance(after, str) and after:
+            more = True
+            try:
+                next_cursor = cursor_mod.encode(
+                    ctx.key, tool=tool, page=number + 1, size=size, arguments=args,
+                    connection_id=connection, after=after)
+            except ValueError:
+                next_cursor = None
+    rows, cut = door_rows(door_value(body, _plain_of(door)))
+    # The clamp lowered the agent's limit and a list came back full, so
+    # more rows can exist that the answer does not name.
+    cut = cut or (lowered and door_full(rows))
+    result, truncated = door_cut(rows)
+    return {"result": result, "next_cursor": next_cursor,
+            "truncated": truncated or cut or (more and next_cursor is None)}
+
+
+APP_READ = Tool(
+    name="app_read",
+    title="Read from an app",
+    description=(
+        "Run one read operation of an app, as the signed-in member. Take app"
+        " and op from list_apps and describe_app, and send args as the args"
+        " schema of the op says. The member's own access decides each row."
+        " For a paged op, send limit, then send next_cursor as cursor for the"
+        " next page. truncated true means that Metorite cut the result."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=None,
+    input_schema=_APP_READ_INPUT,
+    output_schema=_APP_READ_OUTPUT,
+    route="",
+    params={},
+    not_found=TEXT_NO_OP,
+    run=_app_read,
+    door=True,
+    app_scope="read",
+)
+
+_APP_WRITE_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "app": _APP_ID_INPUT,
+        "op": _OP_INPUT,
+        "args": _ARGS_INPUT,
+        "idempotency_key": {
+            "type": "string", "pattern": idempotency.KEY_PATTERN,
+            "description": "A new key for each change. The same key with the same"
+                           " input gives the first answer and makes one change."},
+        "request_id": {
+            "type": "string", "pattern": _UUID_PATTERN,
+            "description": "The request_id of a change that waits for the member."},
+        "wait_seconds": {
+            "type": "integer", "minimum": 0, "maximum": MAX_WAIT_SECONDS,
+            "description": "With request_id: how long to wait for the member."},
+    },
+    "required": ["app"],
+    "additionalProperties": False,
+}
+_APP_WRITE_OUTPUT = _object({
+    "state": {"type": "string", "enum": ["done", "awaiting", "declined", "expired"]},
+    "result": {}, "finish_in": _NULLABLE_STRING, "replayed": {"type": "boolean"},
+    "truncated": {"type": "boolean"},
+})
+
+#: The annotations of ``app_write`` (§19.4). One tool covers class C too, so
+#: ``destructiveHint`` is true and a client may ask the person first. A call
+#: with no key would make a second change, so it is not idempotent.
+APP_WRITE_ANNOTATIONS: Mapping[str, bool] = {
+    "readOnlyHint": False,
+    "destructiveHint": True,
+    "idempotentHint": False,
+    "openWorldHint": False,
+}
+
+
+def _replayed_id(body: Any) -> str:
+    """The id of the object that a proposal made, for its idempotency slot."""
+    found = body.get("id") if isinstance(body, dict) else None
+    return found if isinstance(found, str) else ""
+
+
+async def _app_write(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``app_write``: a proposal goes to the route of its op at once (AD-8).
+
+    Each other write needs the approval path of MCP-P1b, so the edge refuses
+    it here with no request (AD-18). A ``request_id`` names no request
+    before MCP-P1b. The ``idempotency_key`` holds the slot of
+    :func:`_claim_slot`, so a retry with the same key and input gives the
+    first answer and makes one proposal.
+    """
+    found = _door_app(args["app"])
+    asking = any(name in args for name in ("op", "args", "idempotency_key"))
+    if "request_id" in args:
+        if asking:
+            raise ToolError(TEXT_TWO_FORMS)
+        raise ToolError(TEXT_NO_REQUEST)
+    if "wait_seconds" in args:
+        raise ToolError(TEXT_WAIT_NEEDS_REQUEST)
+    for name in ("op", "idempotency_key"):
+        if name not in args:
+            raise ToolError(f"The input {name!r} is required.")
+    door = _door_op(found.id, args["op"], write=True)
+    sent = dict(args.get("args") or {})
+    if _holds_nul(sent):
+        raise ToolError(text_nul("args"))
+    call = _door_call(door, sent)
+    claim = await _claim_slot(ctx, f"app_write.{found.id}.{door.name}",
+                              str(args["idempotency_key"]), args, _DOOR_KEY_TEXTS)
+    if claim.earlier is not None:
+        return {"state": "done", "result": {"id": claim.earlier},
+                "finish_in": found.finish_in or None, "replayed": True,
+                "truncated": False}
+    posted = _Sent()
+
+    async def write() -> Any:
+        posted.post = True
+        return await _door_send(ctx, call, door, write=True)
+
+    body = await _keyed_write(claim, posted, write, _replayed_id)
+    result, truncated = door_cut(door_value(body, _plain_of(door)))
+    return {"state": "done", "result": result, "finish_in": found.finish_in or None,
+            "replayed": False, "truncated": truncated}
+
+
+APP_WRITE = Tool(
+    name="app_write",
+    title="Change something in an app",
+    description=(
+        "Run one change of an app, as the signed-in member. Take app and op"
+        " from describe_app, send args as its args schema says, and send a new"
+        " idempotency_key. An op of kind proposal files a draft at once, and a"
+        " person accepts or rejects it in the app (finish_in says where). An op"
+        " of kind write waits for the member's approval. Metorite cannot ask"
+        " for that approval yet, so such an op is not available."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=None,
+    input_schema=_APP_WRITE_INPUT,
+    output_schema=_APP_WRITE_OUTPUT,
+    route="",
+    params={},
+    not_found=TEXT_NO_OP,
+    run=_app_write,
+    method="POST",
+    annotations=dict(APP_WRITE_ANNOTATIONS),
+    door=True,
+    app_scope="write",
+)
+
+
+def scope_of(tool: Tool, arguments: Any) -> str | None:
+    """The scope of one call of *tool*, for check 8 of §9.6.
+
+    Its ``required_scope``, or for ``app_read`` and ``app_write`` the scope
+    ``<app>:read`` or ``<app>:write`` of ``arguments.app`` (§19.4). An app
+    that no manifest holds, that the door flag does not name, or that has
+    no such scope gives ``None``: the call then answers its tool error, and
+    no 403 starts a step-up that cannot help.
+    """
+    if not tool.app_scope:
+        return tool.required_scope
+    app_id = arguments.get("app") if isinstance(arguments, dict) else None
+    found = app_manifests.door_app(app_id)
+    if found is None or not agent_oauth.door_serves(found.id):
+        return None
+    wanted = found.read_scope if tool.app_scope == "read" else found.write_scope
+    return wanted if wanted in found.scopes else None
+
+
 # ── The registry ────────────────────────────────────────────────────────────
 
 #: Every tool of the edge, by name, in the order of ``tools/list``. The two
@@ -5094,18 +6721,24 @@ RELEASE_TASK = Tool(
 #: reads of EA-3. The write
 #: tools come after the reads: the two of EA-6a, then the two of EA-6d, then
 #: ``add_comment`` of EA-6c and ``claim_task`` of EA-6b, then
-#: ``set_assignees`` of MCP-G2. The six agent-run
+#: ``set_assignees`` of MCP-G2, then the four tools of MCP-G1:
+#: ``create_project``, ``update_project``, ``preview_move_tasks`` and
+#: ``move_tasks``. The six agent-run
 #: tools of EA-12b come last, then ``request_task_archive`` of EA-6g, which
 #: shows only while the runs flag is on too. ``delete_task`` of EA-6h is last.
 #: It shows only while the member's switch is on (:func:`listed_for`).
+#: MCP-P1a: the four tools of the app door come last. They show only while
+#: ``agent_door_apps`` names an app, and ``app_write`` needs the writes flag.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK,
     SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
     ADD_COMMENT, CLAIM_TASK, SET_ASSIGNEES,
+    CREATE_PROJECT, UPDATE_PROJECT, PREVIEW_MOVE_TASKS, MOVE_TASKS,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RELEASE_TASK,
     DELETE_TASK,
+    LIST_APPS, DESCRIBE_APP, APP_READ, APP_WRITE,
 )}
 
 
@@ -5113,13 +6746,20 @@ def offered(tool: Tool) -> bool:
     """A read always. A write only while the writes flag is on (fix round 1),
     read through the ONE reader, ``agent_oauth.writes_enabled``. An
     agent-run tool only while the runs flag is on too (EA-12b), read through
-    the ONE reader, ``agent_oauth.runs_enabled``."""
+    the ONE reader, ``agent_oauth.runs_enabled``. A tool of the app door only
+    while ``agent_oauth.door_apps`` names an app (MCP-P1a, AD-15)."""
+    if tool.door and not agent_oauth.door_apps():
+        return False
     if tool.runs and not agent_oauth.runs_enabled():
         return False
     return tool.method == "GET" or agent_oauth.writes_enabled()
 
 
 def _covered(tool: Tool, scopes: frozenset[str]) -> bool:
+    """True when *scopes* hold the tool's scope and the tool is offered.
+    ``app_read`` and ``app_write`` show with no app scope, because their scope
+    is the one of the app in each call (:func:`scope_of`), and check 8 asks
+    for it then (MCP-P1a, §19.4)."""
     return (tool.required_scope is None or tool.required_scope in scopes) and offered(tool)
 
 
@@ -5175,6 +6815,8 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
     off answers :data:`TEXT_RUNS_OFF`. Neither makes a gateway request.
     """
     if not offered(tool):
+        if tool.door and not agent_oauth.door_apps():
+            return error_result(TEXT_APPS_OFF)
         if tool.runs and not agent_oauth.runs_enabled():
             return error_result(TEXT_RUNS_OFF)
         return error_result(TEXT_WRITES_OFF)
@@ -5206,14 +6848,21 @@ __all__ = [
     "AGENT_DELETE_TITLE",
     "AGENT_DELETE_TITLE_MAX",
     "AGENT_MOVE_REFUSED",
+    "AGENT_SPACE_PINNED",
     "ANCESTOR_DESCRIPTION_CHARS",
     "ANCESTOR_KEYS",
+    "APP_READ",
+    "APP_WRITE",
+    "APP_WRITE_ANNOTATIONS",
     "ARCHIVE_REQUEST_ROUTE",
     "ASK_ON_TASK",
     "ASSIGNEES_ROUTE",
     "ASSIGNEE_PERSONAL_CODE",
     "ASSIGNEE_REFUSED_CODE",
     "ASSIGN_ANNOTATIONS",
+    "AUDIENCES",
+    "AUDIENCE_WIDENS_CODE",
+    "AUDIENCE_WIDER",
     "AUTHOR_AGENT",
     "AUTHOR_PERSON",
     "CLAIM_TASK",
@@ -5228,10 +6877,20 @@ __all__ = [
     "CONTEXT_KEYS",
     "CREATE_ANNOTATIONS",
     "CREATE_BODY_KEYS",
+    "CREATE_LEVELS",
+    "CREATE_PROJECT",
     "CREATE_TASK",
     "DELETE_ANNOTATIONS",
     "DELETE_BODY_KEYS",
     "DELETE_TASK",
+    "DESCRIBE_APP",
+    "DOOR_APPS_ROUTE",
+    "DOOR_APP_ROUTE",
+    "DOOR_LIMIT_ARG",
+    "DOOR_PAGE_DEFAULT",
+    "DOOR_PAGE_MAX",
+    "DOOR_RESULT_MAX_BYTES",
+    "DOOR_SCHEMA_MAX_BYTES",
     "FIELD_KEYS",
     "FINISH_AGENT_RUN",
     "GET_AGENT_RUN",
@@ -5244,6 +6903,7 @@ __all__ = [
     "IMPORTANCE_VALUES",
     "LINK_KEYS",
     "LIST_AGENT_RUNS",
+    "LIST_APPS",
     "LIST_PROJECTS",
     "LIST_TASKS",
     "LIST_TASK_KEYS",
@@ -5254,9 +6914,18 @@ __all__ = [
     "MAX_COMMENT_CHARS",
     "MAX_DELETE_IDS",
     "MAX_ESTIMATE_MINS",
+    "MAX_MOVE_MAP",
+    "MAX_MOVE_TASKS",
+    "MAX_PROJECT_NAME",
     "MAX_STATUS_READS",
     "MAX_WAIT_SECONDS",
+    "MOVED_KEYS",
+    "MOVE_ANNOTATIONS",
+    "MOVE_BLOCKED_TEXTS",
+    "MOVE_PREVIEW_ROUTE",
     "MOVE_ROUTE",
+    "MOVE_TASKS",
+    "MOVE_TASKS_ROUTE",
     "MY_WORK",
     "MY_WORK_CATEGORIES",
     "MY_WORK_LIMIT_DEFAULT",
@@ -5264,19 +6933,27 @@ __all__ = [
     "MY_WORK_REASONS",
     "MY_WORK_ROW_KEYS",
     "MY_WORK_RUNS_PAGES",
+    "NODES_ROUTE",
     "OPEN_RUN_STATUSES",
     "POST_AGENT_ACTIVITY",
+    "PREVIEW_KEYS",
+    "PREVIEW_LABEL",
+    "PREVIEW_MOVE_TASKS",
+    "PROJECT_CREATE_BODY_KEYS",
     "PROJECT_KEYS",
     "PROJECT_ROW_KEYS",
+    "PROJECT_UPDATE_BODY_KEYS",
     "READ_ANNOTATIONS",
     "REF_KEYS",
     "RELEASE_TASK",
     "REQUEST_TASK_ARCHIVE",
     "RUN_ACTIVITY_KEYS",
     "RUN_KEYS",
+    "RUN_STATES",
     "RUN_STATUSES",
     "SEARCH_HIT_KEYS",
     "SEARCH_TASKS",
+    "SECRET_WORDS",
     "SESSION_TEXTS",
     "SET_ASSIGNEES",
     "SET_ASSIGNEES_KEYS",
@@ -5288,6 +6965,8 @@ __all__ = [
     "SUBTASK_NOT_BELOW",
     "SUBTASK_WORDS",
     "TAG_KEYS",
+    "TEXT_APPS_OFF",
+    "TEXT_APP_OFF",
     "TEXT_ARCHIVE_CONFLICT",
     "TEXT_ASSIGNEES_PERSONAL",
     "TEXT_ASSIGNEES_REFUSED",
@@ -5303,24 +6982,59 @@ __all__ = [
     "TEXT_CREATE_CLOSED",
     "TEXT_DELETE_OFF",
     "TEXT_DELETE_TITLE",
+    "TEXT_DOOR_CONFLICT",
+    "TEXT_DOOR_INPUT",
+    "TEXT_DOOR_INPUT_ANY",
+    "TEXT_DOOR_KEY_REUSED",
+    "TEXT_DOOR_KEY_UNKNOWN",
+    "TEXT_DOOR_LIMIT",
+    "TEXT_DOOR_NOT_FOUND",
+    "TEXT_DOOR_READ_CAP",
     "TEXT_FORBIDDEN",
     "TEXT_KEY_REUSED",
     "TEXT_KEY_RUNNING",
     "TEXT_KEY_UNKNOWN",
     "TEXT_KEY_USED",
+    "TEXT_LEVEL_FLOOR",
+    "TEXT_LEVEL_MISMATCH",
+    "TEXT_LEVEL_NEEDS_PARENT",
     "TEXT_MOVE_ALONE",
+    "TEXT_MOVE_CHANGED",
     "TEXT_MOVE_CYCLE",
     "TEXT_MOVE_EPIC",
+    "TEXT_MOVE_FIELD_MAP",
+    "TEXT_MOVE_INTO_ARCHIVED",
+    "TEXT_MOVE_INTO_FOLDER",
+    "TEXT_MOVE_INTO_PERSONAL",
+    "TEXT_MOVE_INTO_SPACE",
+    "TEXT_MOVE_MAP_FORM",
+    "TEXT_MOVE_NOT_ALLOWED",
+    "TEXT_MOVE_ONE_SOURCE",
     "TEXT_MOVE_OTHER_PROJECT",
     "TEXT_MOVE_OWN_PARENT",
+    "TEXT_MOVE_STATUS_MAP",
     "TEXT_MOVE_TOO_DEEP",
+    "TEXT_NAME_BLANK",
+    "TEXT_NEEDS_APPROVAL",
+    "TEXT_NOT_APPROVED",
+    "TEXT_NO_APP",
+    "TEXT_NO_OP",
+    "TEXT_NO_PAGES",
+    "TEXT_NO_REQUEST",
+    "TEXT_NO_RUN_STATE",
+    "TEXT_PAGE_ARGS",
+    "TEXT_PARENT_ARCHIVED",
     "TEXT_PARENT_COMMENT_NOT_FOUND",
     "TEXT_PARENT_COMMENT_OTHER_TASK",
     "TEXT_PARENT_NOT_A_COMMENT",
     "TEXT_PARENT_NOT_FOUND",
     "TEXT_PARENT_OTHER_PROJECT",
     "TEXT_PARENT_TOO_DEEP",
+    "TEXT_PROJECT_KEY_REUSED",
+    "TEXT_PROJECT_KEY_UNKNOWN",
     "TEXT_PROJECT_NOT_FOUND",
+    "TEXT_PROJECT_STALE",
+    "TEXT_PROJECT_UPDATE_EMPTY",
     "TEXT_QUESTION_WAITS",
     "TEXT_REF_BAD_URL",
     "TEXT_REF_RETRY",
@@ -5328,25 +7042,37 @@ __all__ = [
     "TEXT_RUNS_OFF",
     "TEXT_RUN_CONFLICT",
     "TEXT_RUN_NOT_FOUND",
+    "TEXT_SPACE_NO_PARENT",
+    "TEXT_SPACE_PINNED",
     "TEXT_STALE",
     "TEXT_START_DATE",
     "TEXT_SUBTASK_NOT_BELOW",
     "TEXT_TASK_HELD",
     "TEXT_TASK_HELD_SAME_CLIENT",
     "TEXT_TASK_NOT_FOUND",
+    "TEXT_TOOLS_APP",
+    "TEXT_TREE_RACE",
+    "TEXT_TWO_FORMS",
+    "TEXT_UNAVAILABLE",
     "TEXT_UPDATE_EMPTY",
+    "TEXT_USE_READ",
+    "TEXT_USE_WRITE",
+    "TEXT_WAIT_NEEDS_REQUEST",
     "TEXT_WRITES_OFF",
     "TEXT_WRITE_FORBIDDEN",
     "TIMELINE_ROW_KEYS",
     "TOOLS",
     "TOOL_TIMEOUT_S",
+    "TREE_RACE_DETAIL",
     "TYPE_KEYS",
     "UPDATED_TASK_KEYS",
     "UPDATE_BODY_KEYS",
+    "UPDATE_PROJECT",
     "UPDATE_TASK",
     "WAITING_REASONS",
     "WHOAMI",
     "WHOAMI_KEYS",
+    "WHY_NOT_TEXTS",
     "WRITE_ANNOTATIONS",
     "Context",
     "GatewayUnauthorized",
@@ -5358,12 +7084,19 @@ __all__ = [
     "check_input",
     "comment",
     "delete_switch_on",
+    "door_cut",
+    "door_limit",
+    "door_rows",
+    "door_value",
     "field_value",
     "listed",
     "listed_for",
     "offered",
+    "plain_shape",
+    "preview_id",
     "reference",
     "run_activity",
+    "scope_of",
     "session_text",
     "task_held_text",
     "text_nul",

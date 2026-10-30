@@ -82,12 +82,25 @@ export class CrmError extends Error {
    * value, so a form can show the message beside that input.
    */
   field?: string;
-  constructor(message: string, status: number, code?: string, field?: string) {
+  /**
+   * The whole object `detail` of a refusal, or undefined (CRM-Z10b). The
+   * switch reads the `modules` of a 409 `module_incomplete` from it. Each
+   * other caller keeps reading `message`, `code` and `field`.
+   */
+  detail?: Record<string, unknown>;
+  constructor(
+    message: string,
+    status: number,
+    code?: string,
+    field?: string,
+    detail?: Record<string, unknown>
+  ) {
     super(message);
     this.name = "CrmError";
     this.status = status;
     this.code = code;
     this.field = field;
+    this.detail = detail;
   }
 }
 
@@ -111,7 +124,8 @@ export async function call<T>(path: string, init?: RequestInit): Promise<T> {
       detailOf(body) || `Gateway error ${res.status}`,
       res.status,
       codeOf(body),
-      fieldOf(body)
+      fieldOf(body),
+      objectDetailOf(body)
     );
   }
   if (res.status === 204) return undefined as T;
@@ -152,6 +166,14 @@ function codeOf(body: { detail?: unknown }): string | undefined {
     if (typeof code === "string") return code;
   }
   return undefined;
+}
+
+/** An object `detail` as it came, or undefined (CRM-Z10b). */
+function objectDetailOf(body: { detail?: unknown }): Record<string, unknown> | undefined {
+  const { detail } = body;
+  return detail && typeof detail === "object" && !Array.isArray(detail)
+    ? (detail as Record<string, unknown>)
+    : undefined;
 }
 
 /** The `field` of an object `detail`, or undefined (CRM-C4p item 4). */
@@ -554,6 +576,11 @@ export type CrmModeBody = {
    * entity, and whether Zoho turned it off. Read it through `coreStatesOf`.
    */
   entities?: unknown;
+  /**
+   * CRM-Z10b: true when a Native CRM came from Zoho through the switch. Only
+   * then does the cutover card read the status of the switch.
+   */
+  cutover_done?: boolean;
 };
 
 /**

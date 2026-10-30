@@ -36,6 +36,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
+from urllib.parse import quote
 
 # ── The run's artifact context (H-201, projects_ai_chat.md §21.16) ──────────
 #
@@ -202,6 +203,15 @@ def _destination(ctx: Mapping[str, Any]) -> tuple[Mapping[str, Any], bool]:
 
 # Visible workspace dirs — files written outside these are hidden in the UI.
 _VISIBLE_DIRS = frozenset({"inputs", "outputs", "agent-data"})
+
+
+def workspace_file_url(session_id: str, rel: str) -> str:
+    """The chat address of one workspace file. The path is percent-encoded.
+
+    A raw `#`, `&`, `+` or `%` in a name ends or changes the query value, so
+    the viewer opened a different file or none. `/` stays plain.
+    """
+    return f"/api/agent/workspace/{session_id}/file?path={quote(rel, safe='/')}"
 
 
 def _sha256(data: bytes) -> str:
@@ -424,7 +434,7 @@ def announce_file(
         gateway_url=ctx.get("gateway_url", "http://127.0.0.1:8000"),
         gateway_token=ctx.get("gateway_token", "sk-local-dev-change-me"),
     ))
-    return f"/api/agent/workspace/{session_id}/file?path={rel}"
+    return workspace_file_url(session_id, rel)
 
 
 def _normalise_path(path: str) -> str:
@@ -704,7 +714,7 @@ async def _deliver(
     ))
     return {
         "path": rel, "size": len(data), "sha256": _sha256(data), "mime_type": mime,
-        "download_url": f"/api/agent/workspace/{session_id}/file?path={rel}",
+        "download_url": workspace_file_url(session_id, rel),
     }
 
 
@@ -912,8 +922,7 @@ async def write_artifact(
 
     # Build download URL (relative path — works from the frontend chat UI).
     download_url = (
-        f"/api/agent/workspace/{session_id}/file"
-        f"?path={clean_path}"
+        workspace_file_url(session_id, clean_path)
     ) if session_id and show else None
 
     # Build artifact entry
@@ -1125,10 +1134,7 @@ async def share_artifact(path: str) -> dict:
         size = f.stat().st_size
         mime, _ = mimetypes.guess_type(f.name)
         mime = mime or "application/octet-stream"
-        download_url = (
-            f"/api/agent/workspace/{session_id}/file?path={rel}"
-            if session_id else None
-        )
+        download_url = workspace_file_url(session_id, rel) if session_id else None
         art = {
             "path": rel,
             "name": f.name,
@@ -1344,7 +1350,7 @@ GENUI_TEMPLATES: frozenset[str] = frozenset({
     "weatherCard", "statDashboard", "barChart", "sparkTrend", "comparison",
     "progressTracker", "recipeCard", "flightStatus", "trainStatus", "formCard",
     "optionPicker", "timeline", "taskBoard", "dataGrid", "reportCard",
-    "planCard", "chart", "report",
+    "planCard", "chart", "report", "reminderCard",
 })
 
 #: The renderer drops a node deeper than this (``Node``'s depth guard).
@@ -1573,6 +1579,7 @@ GENUI_TEMPLATE_SHAPES: Mapping[str, str] = MappingProxyType({
     "planCard": "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ key, title, owner?, effort_mins, start?, due, after?:[key], phase?, important?:bool, leveraged?:bool, impact?, urgency?, effort?, priority?, fit?, hours?, marks?:[string], warnings?:[string] }], capacity?, warnings?:[string], risks?:[string] }",
     "chart": "{ type('bar'|'line'|'area'|'donut'|'progress'|'scatter'|'heatmap'|'radar'|'box'|'waterfall'|'funnel'|'calendar'|'gantt'), title?, subtitle?, unit?, labels?:[string], values?:[number], series?:[{name,values}], stacked?:bool, tones?:[status], totals?:[number], center?, groups?:[{name,points|values}], x_name?, y_name?, x?, y?, axes?, max?, steps?:[{label,value}|{label,total:true}], days?:[[date,n]], rows?:[{label,start,end,progress,status}], today? }",
     "report": "{ kind?('metorite.report'), path?, pdf?, title, subtitle?, for?, date?, period?, summary?(bold, italic, lists), kpis?:[{label,value,unit?,delta?,good?('up'|'down')}](8), sections:[{ heading?, text?, bullets?:[string], visual?:{ kind('chart'|'stats'|'table'|'board'|'timeline'|'gantt'|'agenda'), title?, ... } }](1-30), sources?:[string] }",
+    "reminderCard": "{ reminderId, title, when?, zone?, state('scheduled'|'due'|'unconfirmed'|'done'|'dropped'|'cancelled'), resolution?, kind?('action'|'notice'), link? }",
 })
 
 #: The templates that collect the member's input. Each one pairs with
@@ -1777,7 +1784,8 @@ async def emit_generative_ui(ui: str) -> dict:
        You give the data, and the design is fixed. Names: weatherCard,
        statDashboard, barChart, sparkTrend, comparison, progressTracker,
        recipeCard, flightStatus, trainStatus, formCard, optionPicker,
-       timeline, taskBoard, dataGrid, reportCard, planCard, chart, report. To get
+       timeline, taskBoard, dataGrid, reportCard, planCard, chart, report,
+       reminderCard. To get
        the data shape of a template, call with its name and no ``data``. Nothing is
        drawn. An empty or unknown name returns the shape of each template.
 

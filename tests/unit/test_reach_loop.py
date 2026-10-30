@@ -1154,12 +1154,12 @@ SECRET = "Pick up the biopsy result"
 
 def reminder(rid: str, kind: str = "reminder_due") -> dict:
     """A reminder card as the feed builds it, from its real builder."""
-    from gateway.routes.shell import feed
+    from gateway.routes.shell import feed, needs
 
     state_, step = {"reminder_due": ("due", "fired"),
                     "reminder_check": ("due", "check_back"),
                     "reminder_unconfirmed": ("unconfirmed", "gave_up")}[kind]
-    signal = feed._reminder_signal({
+    signal = needs._reminder_signal({
         "id": rid, "title": SECRET, "kind": "action", "state": state_, "step": step,
         "step_at": NOW - timedelta(hours=1), "fire_at": NOW - timedelta(hours=1),
         "cycles": 0})
@@ -1258,6 +1258,6 @@ class TestRemindersStayOffWhatsApp:
 
     def test_the_kinds_kept_off_whatsapp_are_the_reminder_kinds(self):
         from gateway.reach import classes
-        from gateway.routes.shell import feed
+        from gateway.routes.shell import needs
 
-        assert classes.NOT_ON_WHATSAPP == feed.REMINDER_KINDS
+        assert classes.NOT_ON_WHATSAPP == needs.REMINDER_KINDS

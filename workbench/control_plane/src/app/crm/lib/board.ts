@@ -11,7 +11,7 @@ import { statusAccent, type StatusAccent } from "@/lib/statusAccent";
 import type { CrmMode } from "./connect";
 import { isRetired, visibleLanes } from "./emptyStages";
 import { stageAgeDays } from "./format";
-import type { Deal, Lead, Pipeline, PipelineLane, Status, StatusType } from "./types";
+import type { Deal, Lead, MoneyTotals, Pipeline, PipelineLane, Status, StatusType } from "./types";
 
 /** A lane as the board renders it: the wire lane. Its colour is `stageAccent`. */
 export type BoardLane = PipelineLane;
@@ -151,6 +151,33 @@ export function orderLanes<T extends Pick<PipelineLane, "status" | "pipeline_pos
 }
 
 /**
+ * THE order of a stage list outside the board: the stage menu of a record and
+ * the stage filter chips (task #838). They call this, so the menu, the chips
+ * and the board show one order (D137).
+ *
+ * Deals go through `orderLanes`, the board's own sort, with the places of the
+ * pipeline on screen. Leads keep the order of the Leads board, which
+ * `toLeadLanes` also calls: a hidden stage last, then `position`.
+ */
+export function orderStageList(
+  entity: "deals" | "leads" | string,
+  statuses: readonly Status[],
+  mode: CrmMode,
+  places?: ReadonlyMap<string, number>
+): Status[] {
+  if (entity !== "deals") {
+    return [...statuses].sort(
+      (a, b) => Number(isRetired(a)) - Number(isRetired(b)) || a.position - b.position
+    );
+  }
+  return orderLanes(
+    statuses.map((status) => ({ status, pipeline_position: undefined })),
+    mode,
+    places
+  ).map((lane) => lane.status);
+}
+
+/**
  * Lanes in the Native order of `orderLanes`, empty ones included. The page
  * orders them again for its mode and its pipeline, and decides which empty
  * lanes to hide (`lib/emptyStages.ts`). The store does not know the mode.
@@ -190,11 +217,7 @@ export function toLeadLanes(
   statuses: readonly Status[],
   pages: Readonly<Record<string, { rows: Lead[]; total: number } | undefined>>,
 ): LeadLane[] {
-  const lanes = [...statuses]
-    .sort(
-      (a, b) =>
-        Number(isRetired(a)) - Number(isRetired(b)) || a.position - b.position
-    )
+  const lanes = orderStageList("leads", statuses, null)
     .map((status) => {
       const page = pages[status.id];
       return {
@@ -335,28 +358,73 @@ export function weightedRows(
   return rows.reduce((total, deal) => total + weightedDeal(deal, stage), 0);
 }
 
+/** The column default of `crm_deals.currency`, and so the currency that leads
+ *  every figure (`routes/crm/currency.py` `DEFAULT_CURRENCY`). */
+const DEFAULT_CURRENCY = "INR";
+
+/** A currency code as the gateway reads it: trimmed, upper case, and INR for a
+ *  blank one (`currency.py` `normalise_currency`). */
+function normaliseCurrency(code: string | null | undefined): string {
+  return (code ?? "").trim().toUpperCase() || DEFAULT_CURRENCY;
+}
+
+/** INR first, then the other codes in code order (`ordered_currencies`). */
+function byCurrency(a: MoneyTotals, b: MoneyTotals): number {
+  const rank = (m: MoneyTotals) => (m.currency === DEFAULT_CURRENCY ? 0 : 1);
+  return rank(a) - rank(b) || (a.currency < b.currency ? -1 : a.currency > b.currency ? 1 : 0);
+}
+
+/** The money of one lane, one entry for each currency, the primary first. */
+export function laneMoney(
+  lane: Pick<BoardLane, "amount" | "weighted" | "currency" | "others">
+): MoneyTotals[] {
+  return [
+    {
+      currency: normaliseCurrency(lane.currency),
+      amount: lane.amount || 0,
+      weighted: lane.weighted || 0,
+    },
+    ...(lane.others ?? []),
+  ];
+}
+
 /** The board's own totals, for the header. Sums the LANE figures, which cover
  *  the whole lane — not the rows returned, which are one page of it.
  *
  *  The header says "open deals" and "in the pipeline", so only the lanes in
  *  `WEIGHTED_TYPES` count. A won or a lost deal is closed, which is the rule
- *  of the owner leaderboard's `open_deals` in `routes/crm/reports.py`. */
+ *  of the owner leaderboard's `open_deals` in `routes/crm/reports.py`.
+ *
+ *  No figure adds two currencies (HANDOFF H-333, task 887). `amount` and
+ *  `weighted` are in `currency`, the primary one of the board (INR first,
+ *  then code order). The rest sit in `others`. An empty lane names no
+ *  currency, so it cannot make INR the primary of a board of USD deals. */
 export function boardTotals(lanes: BoardLane[]): {
   count: number;
+  currency: string;
   amount: number;
   weighted: number;
+  others: MoneyTotals[];
 } {
-  return lanes.reduce(
-    (acc, lane) =>
-      WEIGHTED_TYPES.includes(lane.status.type)
-        ? {
-            count: acc.count + lane.count,
-            amount: acc.amount + (lane.amount || 0),
-            weighted: acc.weighted + (lane.weighted || 0),
-          }
-        : acc,
-    { count: 0, amount: 0, weighted: 0 }
-  );
+  let count = 0;
+  const sums = new Map<string, MoneyTotals>();
+  for (const lane of lanes) {
+    if (!WEIGHTED_TYPES.includes(lane.status.type)) continue;
+    count += lane.count;
+    if (lane.count <= 0) continue;
+    for (const part of laneMoney(lane)) {
+      const code = normaliseCurrency(part.currency);
+      const seen = sums.get(code) ?? { currency: code, amount: 0, weighted: 0 };
+      sums.set(code, {
+        currency: code,
+        amount: seen.amount + (part.amount || 0),
+        weighted: seen.weighted + (part.weighted || 0),
+      });
+    }
+  }
+  const [primary, ...others] = [...sums.values()].sort(byCurrency);
+  const lead = primary ?? { currency: DEFAULT_CURRENCY, amount: 0, weighted: 0 };
+  return { count, ...lead, others };
 }
 
 /**
@@ -411,6 +479,37 @@ export function moveRequest(move: DealMove, extras: MoveExtras = {}): MoveReques
 }
 
 /**
+ * The money fields of a lane after one card leaves it (`sign` -1) or joins it
+ * (`sign` 1). The card changes ITS OWN currency only: a USD card never moves
+ * an INR total. The gateway re-read corrects any rounding.
+ */
+function shiftMoney(
+  lane: BoardLane,
+  deal: Pick<Deal, "amount" | "currency">,
+  sign: 1 | -1,
+  weighted: number
+): Pick<BoardLane, "currency" | "amount" | "weighted" | "others"> {
+  const code = normaliseCurrency(deal.currency);
+  // An empty lane names no currency, so the first card sets it.
+  const held = lane.count > 0 ? laneMoney(lane) : [];
+  const parts = held.filter((part) => normaliseCurrency(part.currency) !== code);
+  const mine = held.find((part) => normaliseCurrency(part.currency) === code);
+  const next: MoneyTotals = {
+    currency: code,
+    amount: (mine?.amount ?? 0) + sign * (deal.amount || 0),
+    weighted: Math.max(0, (mine?.weighted ?? 0) + weighted),
+  };
+  const all = [...parts, next].sort(byCurrency);
+  // A lane left with no card reads as the empty lane the gateway sends.
+  const [lead, ...rest] =
+    lane.count + sign <= 0 ? [{ currency: DEFAULT_CURRENCY, amount: 0, weighted: 0 }] : all;
+  // An `others` entry that reaches 0 is gone ("plus $0" is noise). The primary
+  // stays, even at 0.
+  const others = rest.filter((part) => part.amount !== 0 || part.weighted !== 0);
+  return { currency: lead.currency, amount: lead.amount, weighted: lead.weighted, others };
+}
+
+/**
  * The board as it should look the instant a card is dropped, before the
  * server answers.
  *
@@ -435,18 +534,16 @@ export function applyMove(lanes: BoardLane[], move: DealMove): BoardLane[] {
       return {
         ...lane,
         rows,
+        ...shiftMoney(lane, moving, -1, -contribution),
         count: Math.max(0, lane.count - 1),
-        amount: lane.amount - (moving.amount || 0),
-        weighted: Math.max(0, lane.weighted - contribution),
       };
     }
     if (lane.status.id === move.toStatusId) {
       return {
         ...lane,
         rows: [{ ...moving, status_id: move.toStatusId }, ...lane.rows],
+        ...shiftMoney(lane, moving, 1, contribution),
         count: lane.count + 1,
-        amount: lane.amount + (moving.amount || 0),
-        weighted: lane.weighted + contribution,
       };
     }
     return lane;
