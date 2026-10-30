@@ -1655,6 +1655,26 @@ _PARITY_GAP_SQL = """
      ORDER BY lower(au.email)
 """
 
+#: The reverse gap (H6a review P2): an ACTIVE membership whose email has no
+#: active ``app_user`` row in the same org. The Console upsert
+#: (``console_resolve._UPSERT_MEMBERSHIP_SQL``) writes one when it places an
+#: email in a second org: the row takes the DEFAULT 'active'. Then flag ON
+#: sees two active orgs and denies, and flag OFF binds the ``app_user`` org.
+#: The forward read above cannot see this shape. Run it before the flip.
+_REVERSE_GAP_SQL = """
+    SELECT lower(ui.email)          AS email,
+           m.organization_id::text  AS org
+      FROM org_membership m
+      JOIN user_identity ui ON ui.id = m.user_id
+     WHERE m.status = 'active'
+       AND NOT EXISTS (
+             SELECT 1 FROM app_user au
+              WHERE lower(au.email) = lower(ui.email)
+                AND au.organization_id = m.organization_id
+                AND COALESCE(au.status, 'active') = 'active')
+     ORDER BY 1, 2
+"""
+
 
 def _migration(prefix: str) -> Path:
     """The one numbered migration file with this ``NNN_`` prefix (R1)."""
@@ -1837,10 +1857,8 @@ class TestH6aIdentityParity:
                     f"bound {enriched.organization_id!r}, not the ACTIVE org")
                 assert enriched.access.is_active is True
                 assert role_slug in enriched.access.roles
-                foreign = await _count_bound(
-                    "SELECT count(*) FROM app_user WHERE organization_id = :b",
-                    {"b": promoted.org_b})
-                assert foreign == 0, "an org B app_user row is visible bound to A"
+                # The cross-tenant read after the bind is test (e). Here no
+                # org B app_user row exists, so a count would prove nothing.
             finally:
                 clear_tenant()
                 access_mod.invalidate()
@@ -1874,6 +1892,10 @@ class TestH6aIdentityParity:
                 clear_tenant()
 
                 assert await resolve_identity(email) == (None, None)
+                # resolve_identity swallows a failed read as (None, None).
+                # This proves the read ran, so the deny is the leg's verdict.
+                assert not access_mod.identity_read_failed(), (
+                    "the identity read failed: the deny proves nothing")
                 enriched = await _with_resolved_access(
                     UserContext(email=email, role=UserRole.EMPLOYEE))
 
@@ -1887,6 +1909,47 @@ class TestH6aIdentityParity:
                 _unseed_member(admin, email=email, role_slug=role_slug,
                                org_id=promoted.org_a)
                 _unseed_plain_app_user(admin, email)
+
+    def test_the_reverse_gap_finds_a_stale_active_membership(self, promoted):
+        """(a, reverse) R7 name: ``reverse-parity``. The Console upsert places
+        an email in org B with the DEFAULT status 'active', while its
+        ``app_user`` row stays in org A. The forward read finds no gap, and
+        :data:`_REVERSE_GAP_SQL` finds the org B row. Mutation: a reverse read
+        that drops ``au.organization_id = m.organization_id`` sees the org A
+        row and finds nothing, and this goes RED."""
+        admin = promoted.admin_engine
+        email = "h6a.reverse@h3rls.test"
+        try:
+            _seed_plain_app_user(admin, org_id=promoted.org_a, email=email)
+            with admin.begin() as conn:
+                uid = conn.execute(text(
+                    "INSERT INTO user_identity (email, display_name) "
+                    "VALUES (:e, '') RETURNING id"), {"e": email}).scalar_one()
+                conn.execute(text(
+                    "INSERT INTO org_membership (organization_id, user_id, "
+                    "status) VALUES (:org, :uid, 'active')"),
+                    {"org": promoted.org_a, "uid": uid})
+                # The Console shape: no status given, so the DEFAULT applies.
+                conn.execute(text(
+                    "INSERT INTO org_membership (organization_id, user_id) "
+                    "VALUES (:org, :uid)"),
+                    {"org": promoted.org_b, "uid": uid})
+            with admin.connect() as conn:
+                gaps = [dict(r) for r in conn.execute(
+                    text(_REVERSE_GAP_SQL)).mappings() if r["email"] == email]
+            assert gaps == [{"email": email, "org": promoted.org_b}], gaps
+            with admin.begin() as conn:
+                conn.execute(text(
+                    "DELETE FROM org_membership WHERE user_id = :uid "
+                    "AND organization_id = :org"),
+                    {"uid": uid, "org": promoted.org_b})
+            with admin.connect() as conn:
+                left = [r for r in conn.execute(text(_REVERSE_GAP_SQL)).mappings()
+                        if r["email"] == email]
+            assert left == [], "a clean member shows a reverse gap"
+        finally:
+            _purge_shadow_as_admin(admin, email)
+            _unseed_plain_app_user(admin, email)
 
     # ── (d) suspended and purged ──────────────────────────────────────────
     async def test_a_suspended_member_is_refused_through_the_full_path(
@@ -1919,6 +1982,9 @@ class TestH6aIdentityParity:
                 access_mod.invalidate()
                 clear_tenant()
 
+                assert await resolve_identity(email) == (None, None)
+                assert not access_mod.identity_read_failed(), (
+                    "the identity read failed: the refusal proves nothing")
                 enriched = await _with_resolved_access(
                     UserContext(email=email, role=UserRole.EMPLOYEE))
 
