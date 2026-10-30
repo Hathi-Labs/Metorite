@@ -14,10 +14,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next-auth/react", () => ({ signOut: vi.fn(async () => undefined) }));
 
-import { loadHideDetails, saveHideDetails } from "@/lib/hidePushDetails";
 import { type PushView, loadPushView } from "@/lib/push";
+import { loadFeedPrefs, saveFeedPref } from "@/lib/shell/feed";
 
-import { NotificationsPanel, NotificationsSection } from "./NotificationsSection";
+import { readFileSync } from "node:fs";
+
+import {
+  HIDE_LOAD_FAILED,
+  HIDE_SAVE_FAILED,
+  NotificationsPanel,
+  NotificationsSection,
+} from "./NotificationsSection";
 
 const KEY = "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U";
 const DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0 Safari/537.36";
@@ -161,39 +168,86 @@ describe("Hide details on the lock screen (WS-66 RE-9a)", () => {
 
   it("saves the key and reads it back through the prefs route", async () => {
     const stored: Record<string, unknown> = {};
-    const calls: Array<{ method: string; body?: string }> = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string, init?: RequestInit) => {
         expect(url).toBe("/api/shell/feed/prefs");
-        const method = init?.method ?? "GET";
-        calls.push({ method, body: init?.body as string | undefined });
-        if (method === "PUT") {
+        if (init?.method === "PUT") {
           const { key, value } = JSON.parse(init?.body as string);
           stored[key] = value;
         }
         return Response.json({ ...stored });
       }),
     );
-    expect(await loadHideDetails()).toBe(false);
-    expect(await saveHideDetails(true)).toBe(true);
-    expect(calls[1]).toEqual({
-      method: "PUT",
-      body: JSON.stringify({ key: "hide_push_details", value: true }),
-    });
-    expect(await loadHideDetails()).toBe(true);
-    expect(await saveHideDetails(false)).toBe(false);
-    expect(await loadHideDetails()).toBe(false);
+    expect((await loadFeedPrefs())?.hide_push_details).toBeUndefined();
+    expect((await saveFeedPref("hide_push_details", true))?.hide_push_details).toBe(true);
+    expect((await loadFeedPrefs())?.hide_push_details).toBe(true);
+  });
+
+  const hideExtra = (extra: Record<string, unknown>, busy = false) =>
+    renderToStaticMarkup(
+      createElement(NotificationsPanel, {
+        view: { kind: "ready", on: true } as PushView,
+        busy,
+        note: null,
+        onToggle: () => undefined,
+        onTest: () => undefined,
+        hideDetails: false,
+        onHideDetails: () => undefined,
+        ...extra,
+      }),
+    );
+
+  it("a hide save shows its own Saving line, and does not set Send a test busy", () => {
+    const html = hideExtra({ hideSaving: true });
+    expect(html).toContain("Saving…");
+    // The hide box waits. The other box and the test button do not.
+    const boxes = html.match(/<input[^>]*type="checkbox"[^>]*>/g) ?? [];
+    expect(boxes[0]).not.toMatch(/\sdisabled=""/);
+    expect(boxes[1]).toMatch(/\sdisabled=""/);
+    const test = html.match(/<button[^>]*>(?:(?!<\/button>)[\s\S])*Send a test/)?.[0] ?? "";
+    expect(test).not.toMatch(/\sdisabled=""/);
+    // Idle: no Saving line.
+    expect(hideExtra({})).not.toContain("Saving…");
+    // The handler never touches the shared busy flag.
+    const src = readFileSync(new URL("./NotificationsSection.tsx", import.meta.url), "utf8");
+    const body = src.slice(src.indexOf("async function onHideDetails"), src.indexOf("async function onToggle"));
+    expect(body).not.toContain("setBusy");
+  });
+
+  it("a failed save names the setting, draws under the box, and keeps the old value", () => {
+    const html = hideExtra({ hideError: true, hideDetails: true });
+    expect(html).toContain(HIDE_SAVE_FAILED);
+    expect(HIDE_SAVE_FAILED).toBe("Could not save the lock screen setting. Try again.");
+    expect(html).toMatch(/role="alert"[^>]*>Could not save the lock screen setting/);
+    expect(html.indexOf(HIDE_SAVE_FAILED)).toBeGreaterThan(html.indexOf("Hide details on the lock screen"));
+    expect(html.indexOf(HIDE_SAVE_FAILED)).toBeLessThan(html.indexOf("Send a test"));
+    expect(html).toMatch(/aria-label="Hide details on the lock screen"[^>]*\schecked=""|\schecked=""[^>]*aria-label="Hide details on the lock screen"/);
+    // The save handler sets the stored value only on a good answer.
+    const src = readFileSync(new URL("./NotificationsSection.tsx", import.meta.url), "utf8");
+    expect(src).toMatch(/if \(stored === null\) setHideError\(true\);\s+else setHideDetails/);
+  });
+
+  it("a failed read draws the load line and no box; not read yet draws nothing", () => {
+    const html = hideExtra({ hideLoadFailed: true, hideDetails: null });
+    expect(html).toContain(HIDE_LOAD_FAILED);
+    expect(html).not.toContain("Hide details on the lock screen");
+    const pending = hideExtra({ hideDetails: null });
+    expect(pending).not.toContain(HIDE_LOAD_FAILED);
+    expect(pending).not.toContain("Hide details on the lock screen");
+  });
+
+  it("the help line is true to the sent title and is tied to the box", () => {
+    const html = hideExtra({});
+    expect(html).toContain("Metorite: a reminder");
+    expect(html).not.toContain("shows only your organization name");
+    expect(html).toMatch(/aria-describedby="hide-details-help"/);
+    expect(html).toContain('id="hide-details-help"');
   });
 
   it("a failed read or save gives null, never a guess", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({}, { status: 503 })));
-    expect(await loadHideDetails()).toBeNull();
-    expect(await saveHideDetails(true)).toBeNull();
-    vi.stubGlobal("fetch", vi.fn(async (): Promise<Response> => {
-      throw new TypeError("Failed to fetch");
-    }));
-    expect(await loadHideDetails()).toBeNull();
-    expect(await saveHideDetails(true)).toBeNull();
+    expect(await loadFeedPrefs()).toBeNull();
+    expect(await saveFeedPref("hide_push_details", true)).toBeNull();
   });
 });
