@@ -598,9 +598,11 @@ def test_a_sensitive_offer_saves_on_two_yeses(offer_chat) -> None:
 
 
 def test_an_offer_never_asks_for_a_fact_that_is_saved(offer_chat) -> None:
-    # The fake profile holds "I work from Pune" as a work fact.
+    # The fake profile holds "I work from Pune" as a work fact. Repair round
+    # 2: a refusal before the card of an offer is a silent `no_offer`.
     out = _run(_offer("I work from Pune", "about"))
-    assert _refused(out, "duplicate") == "Already saved."
+    text = _refused(out, "no_offer")
+    assert text.startswith(pt.FOR_ASSISTANT) and text.endswith("Already saved.")
     assert offer_chat.cards == [] and offer_chat.redis.store == {}
 
 
@@ -623,20 +625,37 @@ def test_an_offer_with_no_card_or_no_record_asks_nothing(offer_chat, why) -> Non
     assert offer_chat.cards == [] and offer_chat.writes() == []
 
 
-@pytest.mark.parametrize("gate", ["shared_room", "learning_off", "marked"])
-def test_an_offer_keeps_every_gate(offer_chat, monkeypatch, gate) -> None:
+@pytest.mark.parametrize("gate,why", [
+    ("shared_room", pt.SHARED_ROOM_WRITE), ("learning_off", pt.LEARNING_OFF),
+    ("marked", pt.MARKED), ("closed_by_read", pt.CLOSED_BY_READ),
+    ("closed_run", pt.NOT_OWN_CHAT), ("bad_area", pt.AREA_REFUSED)])
+def test_an_offer_keeps_every_gate_and_draws_nothing(offer_chat, monkeypatch, gate, why) -> None:
+    """Repair round 2 (reviewer P1): each refusal before the card of an offer
+    is a silent `no_offer`. The member did not ask to save it, so the chat
+    draws no red receipt (`ProfileToolCards.drawsReceipt`). The old reason
+    follows `FOR_ASSISTANT`, so the model still knows why."""
+    area = ""
     if gate == "shared_room":
         monkeypatch.setattr(pt, "_current_user_email", lambda: "room:thread-1")
     if gate == "learning_off":
         offer_chat.profile["learning"] = False
+    if gate == "closed_by_read":
+        ap.close_writes()  # a search or a page read earlier in the turn
+    if gate == "closed_run":
+        monkeypatch.setattr(pt, "writes_open", lambda: False)
+        monkeypatch.setattr(pt, "writes_closed_by_read", lambda: False)
+    if gate == "bad_area":
+        area = "hobbies"
 
     async def _marked(ctx: Any = None) -> bool:
         return True
 
     if gate == "marked":
         monkeypatch.setattr(egress, "session_is_marked", _marked)
-    out = _run(_offer())
-    assert _status_of(out)["reason"] in ("not_your_turn", "learning_off", "marked")
+    out = _run(pt.profile_remember("I run the Pune plant", "work", area=area, offer=True))
+    text = _refused(out, "no_offer")
+    assert text.startswith(pt.FOR_ASSISTANT), "the receipt shows none of it"
+    assert " ".join(why.split()) in text
     assert offer_chat.cards == [] and offer_chat.writes() == []
     assert offer_chat.redis.store == {}
 
@@ -666,6 +685,8 @@ def test_render_cap_with_area_tags() -> None:
 # ── I. Repair round 1 ──────────────────────────────────────────────────────
 #
 # I.1 (P1-1): a stop holds, a stop from before PZ-32 holds, a reset ends it.
+# Repair round 2: only `stopped_at` decides a stop. Migration 317 backfills a
+# stop from before PZ-32 (`test_interview_stop_backfill_r8.py`).
 
 _T0 = "2026-09-01T10:00:00Z"
 _LATER = datetime(2026, 12, 1, 9, 0, 0, tzinfo=UTC)
@@ -680,22 +701,44 @@ def _old_stop(never: str = "goals") -> dict[str, Any]:
         a: {"state": "never" if a == never else "answered", "at": _T0} for a in ap.OLD_AREAS}}
 
 
-def test_an_old_stopped_row_asks_nothing() -> None:
-    row = _old_stop()
-    assert "stopped_at" not in row and ap.interview_stopped(row)
+def _backfilled(never: str = "goals") -> dict[str, Any]:
+    """An old stop after migration 317: ``stopped_at``, and ``name`` and
+    ``language`` never."""
+    row = _old_stop(never)
+    row["stopped_at"] = _T0
+    row["areas"].update({a: {"state": "never", "at": _T0} for a in ("name", "language")})
+    return row
+
+
+def test_only_stopped_at_decides_a_stop() -> None:
+    # The shape of the areas decides nothing. The migration backfills it.
+    assert not ap.interview_stopped(_old_stop())
+    row = _backfilled()
+    assert ap.interview_stopped(row)
     assert ap.open_areas(row, _LATER) == []
     assert ap.due_area(row, _LATER) == ""
     assert ap.interview_due_line(row, _LATER) == ""
     sitting = {**row, "sitting_at": _LATER.strftime(ap.INTERVIEW_TIME)}
     assert ap.may_ask(sitting, _LATER) is False
-    # Not a stop: each old area answered, with no never. Or one old area open.
-    answered = _old_stop(never="")
-    assert not ap.interview_stopped(answered)
-    assert ap.due_area(answered, _LATER) == "name"
-    one_open = copy.deepcopy(row)
-    del one_open["areas"]["role"]
-    assert not ap.interview_stopped(one_open)
-    assert ap.open_areas(one_open, _LATER) == ["name", "language", "role"]
+
+
+def test_an_undo_or_a_mark_keeps_a_stop() -> None:
+    """Reviewer P1: a chat undo removes an answered entry, and a chat mark
+    `answered` changes one. Neither may end a stop."""
+    from gateway.routes.admin.assistant_profile import undo_last_change
+
+    fact = {"id": "f1", "text": "Ship it", "kind": "work", "area": "goals", "at": _T0}
+    raw = {"v": 1, "facts": [fact], "interview": _backfilled(never="role"),
+           "last_change": {"op": "post", "list": "facts", "id": "f1", "after": fact,
+                           "at": _NOW.timestamp()}}
+    undone, why = undo_last_change(raw, _NOW.timestamp() + 5)
+    assert why == "" and undone is not None
+    assert "goals" not in undone["interview"]["areas"], "the undo opened the area"
+    assert ap.interview_stopped(undone["interview"])
+    assert ap.open_areas(undone["interview"], _LATER) == []
+    marked = ap.apply_interview_mark(_backfilled(), "role", "answered", _NOW)
+    assert ap.interview_stopped(marked)
+    assert ap.due_area(marked, _LATER) == ""
 
 
 def test_a_new_stop_writes_stopped_at_and_holds_for_a_later_area() -> None:
@@ -714,16 +757,19 @@ def test_a_new_stop_writes_stopped_at_and_holds_for_a_later_area() -> None:
     assert ap.stored_profile({"interview": later})["interview"]["stopped_at"]
 
 
-@pytest.mark.parametrize("row", ["new", "old"])
-def test_a_reset_of_one_area_after_a_stop_asks_it_again(row) -> None:
-    stopped = ap.stop_interview(_old_stop(), _NOW) if row == "new" else _old_stop()
-    reset = ap.reset_interview_area(stopped, "goals", _NOW)
+@pytest.mark.parametrize("area", ["name", "language", "goals"])
+@pytest.mark.parametrize("row", ["new", "backfilled"])
+def test_a_reset_of_one_area_after_a_stop_asks_only_it(row, area) -> None:
+    """Repair round 2 (verifier item 1, reviewer): a reset of one area in
+    Settings ends the stop, and only that area opens. No other area gets a
+    mark that the member did not make."""
+    stopped = ap.stop_interview(_old_stop(), _NOW) if row == "new" else _backfilled()
+    reset = ap.reset_interview_area(stopped, area, _NOW)
     assert "stopped_at" not in reset and not ap.interview_stopped(reset)
     assert reset["reset_at"] == _NOW.strftime(ap.INTERVIEW_TIME)
-    # Only the area that the member reset opens. The `name` and `language`
-    # of an old stop stay closed.
-    assert ap.open_areas(reset, _LATER) == ["goals"]
-    assert ap.due_area(reset, _LATER) == "goals"
+    assert ap.open_areas(reset, _LATER) == [area]
+    assert ap.due_area(reset, _LATER) == area
+    assert reset["areas"] == {k: v for k, v in stopped["areas"].items() if k != area}
     with pytest.raises(ValueError):
         ap.reset_interview_area(stopped, "hobbies", _NOW)
 
@@ -742,6 +788,32 @@ def test_the_stop_tool_writes_once_and_the_chat_asks_nothing_after(own_chat) -> 
     assert own_chat.profile["interview"]["stopped_at"]
     assert "Stopped. 2 areas" in out  # `name` and `language` of the old stop
     assert _run(pt.profile_interview("next")) == pt.NO_OPEN_AREA
+    # E: "Get to know me" after a stop starts no sitting, and gives one hint.
+    calls = len(own_chat.interview_calls)
+    assert _run(pt.profile_interview("next_sitting")) == pt.STOPPED_SITTING_TEXT
+    assert len(own_chat.interview_calls) == calls
+    assert pt.STOPPED_SITTING_TEXT.startswith(pt.FOR_ASSISTANT)
+    assert "Settings \u2192 Assistant" in pt.STOPPED_SITTING_TEXT
+
+
+def test_star_warns_where_the_reader_does_not_take_it(monkeypatch, caplog) -> None:
+    """Repair round 2 (D): `*` means each org only for the card writes. For
+    `ASSISTANT_PROFILE_ORGS` it matches no org, as before, and it warns."""
+    import logging
+
+    from acb_common import get_settings
+
+    ap._parse_orgs.cache_clear()
+    monkeypatch.setattr(get_settings(), "assistant_profile_enabled", True, raising=False)
+    monkeypatch.setattr(get_settings(), "assistant_profile_orgs", "*", raising=False)
+    _card_writes(monkeypatch, "*")
+    with caplog.at_level(logging.WARNING, logger=ap.__name__):
+        assert ap.enabled_for(ORG) is False  # the meaning of the switch stays
+        assert ap.card_writes_for(ORG) is True
+    warned = [getattr(r, "entry", None) for r in caplog.records
+              if r.getMessage() == "assistant_profile.orgs.not_a_uuid"]
+    assert warned == ["*"], "one warning, from the profile switch only"
+    ap._parse_orgs.cache_clear()
 
 
 # I.2 (P1-2): a sensitive value that the member did not type asks twice.

@@ -121,6 +121,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import functools
 import hashlib
 import json
@@ -149,6 +150,7 @@ from acb_common.assistant_profile import (
     channel_writes,
     due_area,
     grounded,
+    interview_stopped,
     is_sensitive,
     member_typed,
     needs_confirm,
@@ -928,6 +930,68 @@ def _held(facts: list[dict[str, Any]], kind: str, said: str, offering: bool) -> 
                for f in facts if offering or f.get("kind") == kind)
 
 
+@dataclasses.dataclass(frozen=True)
+class _FactPlan:
+    """What :func:`profile_remember` found before the card of a fact."""
+
+    headers: dict[str, str]
+    said: str
+    kind: str
+    rid: str
+    old: dict[str, Any] | None
+    area_id: str
+    facts: list[dict[str, Any]]
+    reasons: list[str]
+
+
+async def _plan_fact(text: Any, kind: Any, replaces: Any, sensitive: Any, area: Any,
+                     offering: bool) -> _FactPlan:
+    """Every check of a fact before its card, or a refusal. An offer asks
+    :func:`_offer_ground` first, before the area and the write gate."""
+    kind = str(kind or "").strip().lower()
+    if kind not in FACT_KINDS:
+        raise _Refused(f"The kind is one of {', '.join(FACT_KINDS)}. Nothing saved.")
+    said = _own_text(text)
+    if not 1 <= len(said) <= FACT_MAX:
+        raise _Refused(f"Give a fact of 1 to {FACT_MAX} characters. Nothing saved.")
+    rid = str(replaces or "").strip()
+    if rid and not _ID.match(rid):
+        raise _Refused(NO_FACT_TO_REPLACE)
+    if offering:
+        _offer_ground(said)
+    area_id = _area_of(area)
+    headers = await _write_gate()
+    # The typed words ground it, or the one card of the write (PZ-32).
+    typed = [] if offering else _ground(said)
+    facts = _facts_of(await _profile(headers))
+    old: dict[str, Any] | None = None
+    if rid:
+        # A fresh read: the id must be a fact of the member now (PZ-6b).
+        # No fuzzy match: the model saw the same-kind facts and chose one.
+        old = next((f for f in facts if f.get("id") == rid), None)
+        if old is None:
+            raise _Refused(NO_FACT_TO_REPLACE)
+    if _held(facts, kind, said, offering):
+        raise _Refused("Already saved.", "duplicate")
+    reasons = [*typed, *_reasons([said], sensitive),
+               *([ASK_REPLACES] if old is not None else [])]
+    return _FactPlan(headers, said, kind, rid, old, area_id, facts, reasons)
+
+
+def _silent_offer(refused: _Refused) -> _Refused:
+    """A refusal of an offer before its card, as ``no_offer`` with a text for
+    the model only (PZ-32 repair round 2). The member did not ask to save
+    the fact and saw no question, so the chat draws no receipt
+    (``ProfileToolCards.drawsReceipt``). The old reason follows
+    :data:`FOR_ASSISTANT`, so the model still knows why."""
+    text = str(refused)
+    if text.startswith(FOR_ASSISTANT):
+        return _Refused(text, NO_OFFER)
+    return _Refused(f"{FOR_ASSISTANT} the offer did not show, so nothing is saved. Do not "
+                    "offer it again, and say nothing about it. The reason: "
+                    f"{' '.join(text.split())}", NO_OFFER)
+
+
 @_write_tool
 async def profile_remember(text: str, kind: str, replaces: str = "",
                            sensitive: bool = False, area: str = "",
@@ -968,36 +1032,17 @@ async def profile_remember(text: str, kind: str, replaces: str = "",
             first: the card is the question. Where an offer cannot show, it
             saves nothing: say nothing about it.
     """
-    kind = str(kind or "").strip().lower()
-    if kind not in FACT_KINDS:
-        raise _Refused(f"The kind is one of {', '.join(FACT_KINDS)}. Nothing saved.")
-    said = _own_text(text)
-    if not 1 <= len(said) <= FACT_MAX:
-        raise _Refused(f"Give a fact of 1 to {FACT_MAX} characters. Nothing saved.")
-    rid = str(replaces or "").strip()
-    if rid and not _ID.match(rid):
-        raise _Refused(NO_FACT_TO_REPLACE)
-    area_id = _area_of(area)
     offering = _asks_sensitive(offer)
-    headers = await _write_gate()
-    if offering:
-        _offer_ground(said)
-    # The typed words ground it, or the one card of the write (PZ-32).
-    typed = [] if offering else _ground(said)
-    facts = _facts_of(await _profile(headers))
-    old: dict[str, Any] | None = None
-    if rid:
-        # A fresh read: the id must be a fact of the member now (PZ-6b).
-        # No fuzzy match: the model saw the same-kind facts and chose one.
-        old = next((f for f in facts if f.get("id") == rid), None)
-        if old is None:
-            raise _Refused(NO_FACT_TO_REPLACE)
-    same = [f for f in facts if f.get("kind") == kind]
-    if _held(facts, kind, said, offering):
-        raise _Refused("Already saved.", "duplicate")
-    reasons = [*typed, *_reasons([said], sensitive),
-               *([ASK_REPLACES] if old is not None else [])]
-    await _ask_fact(_fact_card(kind, said, old, offering), reasons, offering)
+    try:
+        plan = await _plan_fact(text, kind, replaces, sensitive, area, offering)
+    except _Refused as refused:
+        # The member did not ask to save an offered fact, so a refusal
+        # before its card shows nothing (PZ-32 repair round 2).
+        raise (_silent_offer(refused) if offering else refused) from None
+    headers, said, kind, rid, old, area_id = (plan.headers, plan.said, plan.kind,
+                                              plan.rid, plan.old, plan.area_id)
+    same = [f for f in plan.facts if f.get("kind") == kind]
+    await _ask_fact(_fact_card(kind, said, old, offering), plan.reasons, offering)
     if old is not None:
         done = await _replace(headers, rid, old, said, kind, area_id)
         if area_id:
@@ -1308,6 +1353,35 @@ NOT_MARKED_BY_AREA = {
 #: What the model reads when it asks with no sitting and no question due.
 NO_SITTING_TEXT = ("No sitting is under way and no question is due. "
                    "Do not ask an interview question now.")
+#: What the model reads when a member who said stop asks for a sitting
+#: (PZ-32 repair round 2).
+STOPPED_SITTING_TEXT = (f"{FOR_ASSISTANT} the member asked you to stop the get-to-know-me "
+                        "questions, so no area is open. Ask none. Tell them so in one line, "
+                        "and that they can reset an area in Settings → Assistant to be asked "
+                        "about it again.")
+
+
+async def _stop_asking(headers: dict[str, str], interview: Any) -> str:
+    """The stop: one write (PZ-32 repair). The gateway sets ``stopped_at``
+    and marks never each area that is not answered or never, so an area of
+    a later release stays closed too. The count is of the areas that the
+    read saw open, asked or skipped."""
+    states = (interview or {}).get("areas") or {}
+    todo = [a for a in AREAS
+            if (states.get(a) or {}).get("state") not in ("answered", "never")]
+    status, data = await _send(headers, "POST", "/interview", {"stop": True})
+    if status >= 400:
+        raise _Refused(f"The profile refused that: {_detail(data)}. Nothing changed.")
+    return "\n".join([_status("saved"), f"Stopped. {len(todo)} areas will not come back."])
+
+
+async def _start_sitting(headers: dict[str, str], interview: Any, now: datetime) -> list[str]:
+    """The member starts a sitting, so the chat may mark areas asked. The
+    open areas of the sitting, at most :data:`SITTING_AREAS`."""
+    status, data = await _send(headers, "POST", "/interview", {"sitting": True})
+    if status >= 400:
+        raise _Refused(f"The profile refused that: {_detail(data)}. Nothing changed.")
+    return open_areas(interview, now, SITTING_AREAS)
 
 
 @_write_tool
@@ -1357,28 +1431,17 @@ async def profile_interview(action: str, area: str = "") -> str:
         profile = await _profile(headers)
         interview = profile.get("interview")
     if act == "stop":
-        # One write (PZ-32 repair, P1-1): the gateway sets `stopped_at` and
-        # marks never each area that is not answered or never, so an area
-        # of a later release stays closed too. The count is of the areas
-        # that the read saw open, asked or skipped.
-        states = (interview or {}).get("areas") or {}
-        todo = [a for a in AREAS
-                if (states.get(a) or {}).get("state") not in ("answered", "never")]
-        status, data = await _send(headers, "POST", "/interview", {"stop": True})
-        if status >= 400:
-            raise _Refused(f"The profile refused that: {_detail(data)}. Nothing changed.")
-        return "\n".join([_status("saved"), f"Stopped. {len(todo)} areas will not come back."])
+        return await _stop_asking(headers, interview)
     if act == "next":
         # One area, and only the one that is due now: the daily limit and a
         # decline both bind here (§14.4).
         due = due_area(interview, now)
         open_ = [due] if due else []
     elif act == "next_sitting":
-        # The member starts a sitting, so the chat may mark areas asked.
-        status, data = await _send(headers, "POST", "/interview", {"sitting": True})
-        if status >= 400:
-            raise _Refused(f"The profile refused that: {_detail(data)}. Nothing changed.")
-        open_ = open_areas(interview, now, SITTING_AREAS)
+        if interview_stopped(interview):
+            # "Get to know me" after a stop: no question, and one hint.
+            return STOPPED_SITTING_TEXT
+        open_ = await _start_sitting(headers, interview, now)
     if act in INTERVIEW_READS:
         if not open_:
             return NO_OPEN_AREA

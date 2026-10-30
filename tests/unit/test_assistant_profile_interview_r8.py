@@ -730,22 +730,46 @@ async def test_a_chat_stop_writes_stopped_at_and_a_reset_ends_it(db) -> None:
     assert "interview" not in _column(db, email)
 
 
-async def test_a_stop_from_before_pz32_holds_until_a_reset(db) -> None:
+def _run_317(db) -> None:
+    """Migration 317, as the admin of the promoted catalog (found by content,
+    never by number, R1)."""
+    import os
+
+    from tests.unit._tenant_ladder import _LADDER_DIR
+
+    name = next(p for p in sorted(os.listdir(_LADDER_DIR))
+                if p.endswith("_assistant_profile_interview_stopped.sql"))
+    with open(os.path.join(_LADDER_DIR, name), encoding="utf-8") as fh:
+        sql = fh.read()
+    with db.admin_engine.begin() as conn, conn.connection.dbapi_connection.cursor() as cur:
+        cur.execute(sql)
+
+
+@pytest.mark.parametrize("area", ["name", "language", "goals"])
+async def test_a_stop_from_before_pz32_holds_after_317_until_a_reset(db, area) -> None:
     """A stop before PZ-32 marked the ten old areas and wrote no
-    ``stopped_at``. ``name`` and ``language`` stay closed for it."""
+    ``stopped_at``. Migration 317 backfills it. Then a reset of one area in
+    Settings opens that area only, and no other area changes (repair round
+    2, item B)."""
     email = _address()
     db.made.append(email)
     user = _member(email)
     later = acp._parse_time(_LATER)
     async with tenant_engine_scope(_app_dsn(db)):
         await _sit(db.org_a, user)
-        for area in acp.OLD_AREAS:
-            await _mark(db.org_a, user, area, "never")  # as the old stop wrote it
+        for old_area in acp.OLD_AREAS:
+            await _mark(db.org_a, user, old_area, "never")  # as the old stop wrote it
         old = (await _get(db.org_a, user))["interview"]
-        assert "stopped_at" not in old and acp.interview_stopped(old)
-        assert acp.open_areas(old, later) == [] and acp.due_area(old, later) == ""
+        assert "stopped_at" not in old and not acp.interview_stopped(old)
+        _run_317(db)
+        stopped = (await _get(db.org_a, user))["interview"]
+        assert stopped["stopped_at"] == old["last_asked_at"]
+        assert acp.interview_stopped(stopped)
+        assert acp.open_areas(stopped, later) == [] and acp.due_area(stopped, later) == ""
         with _tenant(db.org_a):
-            await _ap().reset_assistant_interview_area("goals", user=user)
+            await _ap().reset_assistant_interview_area(area, user=user)
         reset = (await _get(db.org_a, user))["interview"]
-    assert acp.open_areas(reset, later) == ["goals"]
-    assert reset["areas"]["name"]["state"] == reset["areas"]["language"]["state"] == "never"
+    assert not acp.interview_stopped(reset)
+    assert acp.open_areas(reset, later) == [area]
+    assert acp.due_area(reset, later) == area
+    assert reset["areas"] == {k: v for k, v in stopped["areas"].items() if k != area}

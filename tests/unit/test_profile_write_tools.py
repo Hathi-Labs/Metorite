@@ -1860,7 +1860,9 @@ class TestInterviewTool:
         assert never == [a for a in ap.AREAS if a != "role"]
         assert stored["areas"]["role"]["state"] == "answered"
         assert f"Stopped. {len(ap.AREAS) - 2} areas" in out
-        assert _run(pt.profile_interview("next_sitting")) == pt.NO_OPEN_AREA
+        assert _run(pt.profile_interview("next")) == pt.NO_OPEN_AREA
+        # A sitting after a stop asks nothing, and gives the model one hint.
+        assert _run(pt.profile_interview("next_sitting")) == pt.STOPPED_SITTING_TEXT
 
     @pytest.mark.parametrize("act", ["stop", "start"])
     def test_learning_off_refuses_stop_and_start(self, own_chat, act) -> None:

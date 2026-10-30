@@ -271,8 +271,11 @@ AREA_INTENTS: dict[str, str] = {
 #: too, and a fact can answer it, so it is not here.
 SET_AREAS: dict[str, str] = {"name": "address", "language": "style"}
 #: The ten areas before PZ-32. A stop before PZ-32 marked only these
-#: ``never`` and wrote no ``stopped_at``, so :func:`interview_stopped` reads
-#: such a row by them (PZ-32 repair, P1-1).
+#: ``never`` and wrote no ``stopped_at``. Migration
+#: ``317_assistant_profile_interview_stopped.sql`` finds such a row by them,
+#: once, and writes ``stopped_at``. No reader infers a stop from them
+#: (PZ-32 repair). ``test_interview_stop_backfill_r8.py`` pins the list of
+#: the migration to this one.
 OLD_AREAS: tuple[str, ...] = ("role", "goals", "good_day", "decisions", "detail", "rhythm",
                               "channels", "energy", "peeves", "people")
 #: The state of an area (§14.3). An area with no entry is open.
@@ -528,7 +531,7 @@ def profile_size(profile: Any) -> int:
 
 
 @functools.lru_cache(maxsize=16)
-def _parse_orgs(raw: str) -> frozenset[str]:
+def _parse_orgs(raw: str, star: bool = False) -> frozenset[str]:
     """The ids in *raw*, trimmed and in lower case. Cached on the raw value.
 
     The precedent is ``gateway.routes.crm.flags._parse_orgs``. An empty
@@ -536,9 +539,14 @@ def _parse_orgs(raw: str) -> frozenset[str]:
     and no org id, which is a uuid, matches it. It logs one warning, and the
     cache makes it one for each raw value. The list holds org ids only, never
     a secret, so the warning names the entry.
+
+    *star* is True only for a reader that reads ``*`` as each org
+    (:func:`card_writes_for`). For any other reader ``*`` matches no org, so
+    it warns as any entry that is not a uuid does. :func:`enabled_for` reads
+    an empty list as each org, and ``*`` there turns the profile off.
     """
     orgs = frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
-    for org in sorted(orgs - {"*"}):
+    for org in sorted(orgs - {"*"} if star else orgs):
         try:
             uuid.UUID(org)
         except ValueError:
@@ -598,7 +606,7 @@ def card_writes_for(org_id: str | None) -> bool:
         from acb_common import get_settings
 
         raw = str(getattr(get_settings(), "assistant_profile_card_writes_orgs", "") or "")
-        orgs = _parse_orgs(raw)
+        orgs = _parse_orgs(raw, star=True)
         return "*" in orgs or org in orgs
     except Exception:
         return False
@@ -1377,20 +1385,15 @@ def sitting_active(interview: Any, now: datetime) -> bool:
 
 
 def interview_stopped(interview: Any) -> bool:
-    """True when the member said stop asking (PZ-32 repair, P1-1). Pure.
+    """True when the member said stop asking (PZ-32 repair). Pure.
 
-    A stop writes ``stopped_at``. A stop before PZ-32 wrote none: it marked
-    each area of :data:`OLD_AREAS` that was not answered ``never``. So a row
-    with no ``stopped_at`` reads as stopped when each old area is
-    ``answered`` or ``never``, and one or more is ``never``. A new area of a
-    later release then stays closed for a member who said stop. A reset in
-    Settings ends the stop (:func:`reset_interview_area`, and the reset of
-    the whole interview drops the key)."""
-    stored = _stored_interview(interview) or {}
-    if stored.get("stopped_at"):
-        return True
-    states = [((stored.get("areas") or {}).get(a) or {}).get("state") for a in OLD_AREAS]
-    return all(s in ("answered", "never") for s in states) and "never" in states
+    It reads ``stopped_at`` only. A stop writes it (:func:`stop_interview`).
+    A stop before PZ-32 wrote none, and migration
+    ``317_assistant_profile_interview_stopped.sql`` backfilled it once, so
+    the shape of the areas never decides a stop. A reset in Settings ends
+    the stop (:func:`reset_interview_area`, and the reset of the whole
+    interview drops the key). An undo or a mark keeps it."""
+    return bool((_stored_interview(interview) or {}).get("stopped_at"))
 
 
 def stop_interview(interview: Any, now: datetime) -> dict[str, Any]:
@@ -1415,24 +1418,17 @@ def reset_interview_area(interview: Any, area: str, now: datetime) -> dict[str, 
 
     The area loses its entry, so it is open again, and ``reset_at`` is
     *now*, so a fact from before the reset never answers it again. A reset
-    ends a stop (PZ-32 repair, P1-1): ``stopped_at`` goes, so the member is
-    asked about this area again. Each other area with no entry is marked
-    ``never`` at that time, so only the area that the member reset opens. A
-    stop before PZ-32 left ``name`` and ``language`` with no entry. An
-    unknown area is a ValueError."""
+    ends a stop (PZ-32 repair): ``stopped_at`` goes, so the member is asked
+    about this area again. No other area changes. A stop marks each other
+    area ``answered`` or ``never`` (:func:`stop_interview`, and migration 317
+    for a stop before PZ-32), so only the area that the member reset opens.
+    An unknown area is a ValueError."""
     if area not in AREAS:
         raise ValueError(f"the area is one of {', '.join(AREAS)}")
     out = _stored_interview(interview) or {}
-    stamp = _format_time(now)
-    stopped = interview_stopped(out)
-    areas = {k: v for k, v in (out.get("areas") or {}).items() if k != area}
-    if stopped:
-        for other in AREAS:
-            if other != area and other not in areas:
-                areas[other] = {"state": "never", "at": stamp}
     out.pop("stopped_at", None)
-    out["areas"] = areas
-    out["reset_at"] = stamp
+    out["areas"] = {k: v for k, v in (out.get("areas") or {}).items() if k != area}
+    out["reset_at"] = _format_time(now)
     return out
 
 
