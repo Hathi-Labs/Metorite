@@ -2002,7 +2002,9 @@ class TestH6aIdentityParity:
         """(e) R7 name: ``no-cross-tenant-read-after-bind``. A member of org A,
         bound by the cutover, sees its own ``app_user`` and ``user_role`` rows
         and NONE of org B's, by ``organization_id`` and by the identity re-key.
-        Mutation: a policy without ``FORCE`` lets the owner role read org B."""
+        Mutation: ``DISABLE ROW LEVEL SECURITY`` on ``app_user`` and
+        ``user_role``, or a dropped tenant policy, lets the member read org B.
+        (``NO FORCE`` alone stays green: the test role is not the owner.)"""
         from acb_common.db import get_session_factory
 
         monkeypatch.setenv("IDENTITY_CUTOVER", "1")

@@ -1061,10 +1061,16 @@ recorded.
 ## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path · ◐ SLICES 1+3a+ORPHAN-CLOSURE+3b+4-EXPAND+RLS-BIND-HARDENING+PROVISION-RLS-BIND SHIPPED (dark)
 
 Migration 159 created `user_identity` + `org_membership` and seeded them. `app_user` is
-still authoritative. **One read uses the new tables, and only behind `IDENTITY_CUTOVER`:**
-slice 3b's identity leg (`access._IDENTITY_LEG_SQL`, through `resolve_identity` and
-`deps._with_resolved_access`). With the flag unset, nothing reads them. The role leg,
-`org_owner_of`, the RBAC read sites and `_record_signin_request` still read `app_user`.
+still authoritative for sign-in. **The tenant bind of sign-in reads the new tables only
+behind `IDENTITY_CUTOVER`:** slice 3b's identity leg (`access._IDENTITY_LEG_SQL`, through
+`resolve_identity` and `deps._with_resolved_access`). The role leg, `org_owner_of`, the RBAC
+read sites and `_record_signin_request` still read `app_user`.
+
+⚠️ Other code reads the new tables with the flag unset. Each admitted sign-in calls
+`promote_invited_member` (`routes/signin.py`), which reads `_INVITED_MEMBERSHIPS_SQL`
+(`access.py`). `console_resolve.py` reads them in `_READ_SQL` and `_RESOLVED_ORGS_SQL`. The
+RBAC writers select `FROM user_identity` in `admin/_common.py`, `groups.py` and `members.py`.
+None of these binds the tenant of a session.
 
 **H6a (2026-10-29, D120) — the parity and gap fence, no flip.** On the promoted ladder, after
 migrations 182 and 183, every `app_user` row has its `user_identity` and `org_membership`
