@@ -82,6 +82,9 @@ def _run(repo: dict, *args: str) -> subprocess.CompletedProcess:
             f'exec "{real}" "$@"\n',
             encoding="utf-8", newline="\n",
         )
+        # Linux finds a PATH program only when it is executable. Git Bash on
+        # Windows does not ask, so the test passed there without this line.
+        (shim_dir / "git").chmod(0o755)
     runner = 'd="$(cygpath -u "$0" 2>/dev/null || printf %s "$0")"; PATH="$d:$PATH" exec bash "$@"'
     return subprocess.run(
         [_BASH, "-c", runner, shim_dir.as_posix(), SCRIPT.as_posix(), *args],
