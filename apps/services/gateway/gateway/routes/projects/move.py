@@ -98,6 +98,7 @@ from gateway.routes.projects.landing import (
 from gateway.routes.projects.landing import (
     resolve_field_map as _resolve_field_map,
 )
+from gateway.routes.projects.notifications import project_grant_holders
 from gateway.routes.projects.tasks import MoveTask, move_task_in
 from pydantic import BaseModel, field_validator
 from sqlalchemy import text
@@ -221,6 +222,69 @@ async def _selection(db: Any, vis: Any, raw_ids: list[str]) -> list[Any]:
             detail=f"At most {MAX_BULK} tasks per move; got {len(ids)}.",
         )
     return [await load_visible_task(db, vis, task_id) for task_id in ids]
+
+
+#: WS-55 MCP-G1, fix round 1. The three answers of the audience of a move.
+#: ``wider``: a member who could not see a moved task before can see it after.
+#: ``narrower``: somebody who saw it can no longer, and nobody new can.
+#: ``same``: neither. The plan carries the answer for an agent only (``None``
+#: for a member), so the Move dialog of the app does no extra read.
+AUDIENCE_SAME = "same"
+AUDIENCE_NARROWER = "narrower"
+AUDIENCE_WIDER = "wider"
+#: The code of the 403 of an agent's move whose audience is wider. An agent
+#: never widens who sees a task, so a member makes such a move in the app.
+#: The edge holds a copy, and ``test_mcp_edge_projects.py`` pins the two equal.
+AGENT_AUDIENCE_WIDENS = "audience_widens"
+
+
+async def _move_audience(
+    db: Any, vis: Any, moved: list[Any], dest: Any,
+) -> str:
+    """Who sees the *moved* tasks after the move, against who sees them now.
+
+    The grant arm of each side is ``notifications.project_grant_holders``,
+    the one predicate ``Visibility.project_clause``. The assignee arm of
+    ``task_visibility_clause`` moves with the task, so the assignees of each
+    task count on both sides. A task of a personal project that moves into a
+    project that is not personal is always ``wider`` (D-OP-15: a personal
+    node is its owner's only), even when the grants give the same people.
+    """
+    if not moved:
+        return AUDIENCE_SAME
+    dest_id = str(dest.id)
+    sources = sorted({str(t.project_id) for t in moved})
+    personal = {
+        str(r.id) for r in (await db.execute(
+            text(
+                "SELECT id FROM pm_projects WHERE id = ANY(CAST(:ids AS uuid[]))"
+                " AND personal_owner IS NOT NULL"
+            ),
+            {"ids": sources},
+        )).fetchall()
+    }
+    if personal and getattr(dest, "personal_owner", None) is None:
+        return AUDIENCE_WIDER
+    holders = await project_grant_holders(db, [*sources, dest_id], vis.organization_id)
+    assigned: dict[str, set[str]] = {}
+    for row in (await db.execute(
+        text(
+            "SELECT task_id, lower(assignee) AS who FROM pm_task_assignees"
+            " WHERE task_id = ANY(CAST(:ids AS uuid[]))"
+        ),
+        {"ids": sorted({str(t.id) for t in moved})},
+    )).fetchall():
+        assigned.setdefault(str(row.task_id), set()).add(str(row.who))
+    after_grants = holders.get(dest_id, frozenset())
+    narrower = False
+    for task in moved:
+        keep = assigned.get(str(task.id), set())
+        before = holders.get(str(task.project_id), frozenset()) | keep
+        after = after_grants | keep
+        if after - before:
+            return AUDIENCE_WIDER
+        narrower = narrower or bool(before - after)
+    return AUDIENCE_NARROWER if narrower else AUDIENCE_SAME
 
 
 async def _destination(db: Any, vis: Any, project_id: str) -> Any:
@@ -370,6 +434,15 @@ async def _plan(
     #: through `move_task_in`, so the preview names them first: the card
     #: then holds Move and says which subtask, and why.
     privacy_refused = await subtree_privacy_refusals(db, carried, dest_id)
+    #: WS-55 MCP-G1, fix round 1. For an agent only: the audience of every
+    #: task that the move takes, the named ones and the carried ones.
+    audience = (
+        await _move_audience(
+            db, vis,
+            [*(t for t in tasks if str(t.project_id) != dest_id), *carried], dest,
+        )
+        if getattr(user, "agent", None) is not None else None
+    )
 
     source_root = str(tasks[0].root_project_id)
     dest_root = await root_project_id(db, dest_id)
@@ -577,6 +650,7 @@ async def _plan(
         "types": types,
         "tags": {"carried": tag_names, "unregistered": unregistered},
         "subtree_maps": subtree_maps,
+        "audience": audience,
         "dest_keys": dest_keys,
         "dest_defs": dest_defs,
         "dest_home": dest_home,
@@ -658,6 +732,15 @@ def _refuse_unless_agreed(plan: dict[str, Any], payload: MoveIn) -> None:
             )
 
 
+#: WS-55 MCP-G1 (spec ``external_agent_access.md`` §9.2). The 422 of a signed
+#: agent move that sends no ``accepted_drops``. The edge sends the drops that
+#: its preview showed, so a move that would drop more gets the 409 below. A
+#: bare ``accept_drops`` is a yes to a question that the agent never saw.
+AGENT_MOVE_NEEDS_DROPS = (
+    "An agent move sends accepted_drops, the drops that its preview showed."
+)
+
+
 @router.post("/tasks/move")
 async def move_tasks(
     payload: MoveIn, user: UserContext = Depends(get_current_user),
@@ -667,10 +750,29 @@ async def move_tasks(
     **One transaction.** A half-moved selection is worse than a half-applied
     bulk edit, because the tasks are then in two projects and nobody can tell
     which half landed. ``bulk.py`` makes the same argument for the same reason.
+
+    WS-55 MCP-G1. A signed agent move must send ``accepted_drops``
+    (:data:`AGENT_MOVE_NEEDS_DROPS`). Fix round 1: a signed agent move whose
+    audience is wider (:func:`_move_audience`) gets 403
+    :data:`AGENT_AUDIENCE_WIDENS`. A member's move is unchanged.
     """
+    if getattr(user, "agent", None) is not None and payload.accepted_drops is None:
+        raise HTTPException(status_code=422, detail=AGENT_MOVE_NEEDS_DROPS)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         plan = await _plan(db, vis, payload, user)
+        # WS-55 MCP-G1, fix round 1. An agent never widens who sees a task.
+        # Before any write, and before the drops: the member makes this move.
+        # Fail closed: an agent moves only on a KNOWN same or narrower
+        # audience. A member's plan has no audience, and nothing changes.
+        is_agent = getattr(user, "agent", None) is not None
+        if is_agent and plan.get("audience") not in (AUDIENCE_SAME, AUDIENCE_NARROWER):
+            raise HTTPException(status_code=403, detail={
+                "error": AGENT_AUDIENCE_WIDENS,
+                "message": "This move shows the tasks to people who cannot see "
+                           "them now. An agent never widens who sees a task, so "
+                           "a member makes this move in the app.",
+            })
 
         _refuse_unless_agreed(plan, payload)
         # Before any write: a hidden descendant refuses the whole move (409),

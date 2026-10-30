@@ -141,13 +141,13 @@ def _reminder(kind: str) -> shell.Signal:
     state, step = {"reminder_due": ("due", "fired"),
                    "reminder_check": ("due", "check_back"),
                    "reminder_unconfirmed": ("unconfirmed", "gave_up")}[kind]
-    return feed._reminder_signal({
+    return shell._reminder_signal({
         "id": "r-1", "title": "Get a haircut", "kind": "action", "state": state,
         "step": step, "step_at": NOW, "fire_at": NOW - timedelta(hours=1), "cycles": 0})
 
 
 def _signal_of(kind: str) -> shell.Signal:
-    if kind in feed.REMINDER_KINDS:
+    if kind in shell.REMINDER_KINDS:
         return _reminder(kind)
     real = _real(kind)
     if real is not None:
@@ -208,7 +208,14 @@ class TestAFoldNeverMovesTheStateFingerprint:
         read against §6.8 item 1 here."""
         assert {(m, f) for m, f in _pairs() if f in shell.KIND_ORDER} == {
             ("overdue", "due_today"), ("overdue", "notification"),
-            ("due_today", "notification")}
+            ("due_today", "notification"),
+            # WS-66 RM-2b: the three reminder kinds are needs kinds. A real
+            # reminder row yields ONE kind, so it never folds in the feed.
+            # The pairs exist only because each kind has a test signal that
+            # shares the id `reminders:r-1`.
+            ("reminder_due", "reminder_check"),
+            ("reminder_due", "reminder_unconfirmed"),
+            ("reminder_check", "reminder_unconfirmed")}
 
     def test_a_folded_notification_still_names_its_notes(self):
         """§6.8 item 1: a new note brings a dismissed task back."""

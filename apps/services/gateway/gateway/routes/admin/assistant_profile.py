@@ -15,13 +15,15 @@ Route                      Does
 =========================  ===============================================
 ``GET``                    The profile, or the empty profile
 ``PUT``                    Body ``{key, value}``, ``key`` is ``learning``,
-                           ``address`` or ``style``. Merges that one key
+                           ``address``, ``style`` or ``apps``. Merges that
+                           one key
 ``POST .../facts``         Add one fact. The server sets ``id``,
                            ``source`` (``settings``) and ``at``
 ``PATCH .../facts/{id}``   Change the text or the kind
 ``DELETE .../facts/{id}``  Forget one fact
 ``.../aliases[/{id}]``     The same three for aliases
-``DELETE``                 Forget everything. The column becomes NULL
+``DELETE``                 Forget everything. The member's words go, and
+                           the app settings (``apps``) stay
 ``GET .../address``        ``{"name"}``, the form of address of §5.2 (PZ-4)
 ``GET .../export``         The whole profile as a download, JSON or text
                            (PZ-9). Read-only, and only the member's own
@@ -49,6 +51,17 @@ who has not left (PZ-5). ``assistant_profile_people.email_in_org`` is the one
 check, in the same session as the write. An address outside the org is a
 422, :data:`OUTSIDE_ORG`. The check needs no feature, because the member
 typed the address and the answer is only yes or no.
+
+**The app settings** (``apps``, ``personalization.md`` §12.6). A PUT of
+``apps`` takes ``{<app>: {<key>: <value>}}`` for ONE app that
+``acb_common.assistant_profile.APP_PREFERENCES`` declares, and merges those
+keys into ``apps.<app>``. ``clean_app_prefs`` is the strict check: a bool
+key takes a bool, and a time takes ``HH:MM`` from 00:00 to 23:59. The GET
+answers ``apps``, the preferences of each declared app over its defaults.
+They are settings, not the member's words, so forget-all keeps them, the
+6,000-character budget leaves them out, and a chat write cannot set them.
+The brief's ``enabled``, ``brief_time`` and ``closeout_time`` are the first
+(WS-BRIEF BR-2a-1).
 
 **A member with no settings row.** The first write makes the row with the
 calendar seed (``_seed_from_work_schedule``), exactly as ``prefs.py`` does.
@@ -88,6 +101,8 @@ from acb_auth import UserContext, get_current_user
 from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     ALIAS_MAX,
     ALIASES_MAX,
+    APP_PREFERENCES,
+    APP_ROW_SQL_TEMPLATE,
     AREAS,
     EMAIL_MAX,
     FACT_KINDS,
@@ -122,10 +137,12 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     _text,
     apply_interview_mark,
     area_has_answer,
+    clean_app_prefs,
     empty_profile,
     mark_changed,
     may_ask,
     profile_size,
+    stored_app_prefs,
     stored_profile,
 )
 from fastapi import Body, Depends, Header, HTTPException, Query, Response
@@ -151,7 +168,11 @@ def _clean_learning(value: Any) -> bool:
     return value
 
 
-_CLEAN = {"learning": _clean_learning, "address": _clean_address, "style": _clean_style}
+_CLEAN = {"learning": _clean_learning, "address": _clean_address, "style": _clean_style,
+          "apps": clean_app_prefs}
+
+#: The keys that only Settings writes: a chat write of one is a 422.
+SETTINGS_ONLY_KEYS = frozenset({"learning", "apps"})
 
 
 class ProfilePut(BaseModel):
@@ -159,7 +180,7 @@ class ProfilePut(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    key: Literal["learning", "address", "style"]
+    key: Literal["learning", "address", "style", "apps"]
     value: Any
 
     @model_validator(mode="after")
@@ -287,6 +308,27 @@ _NEW_KEY = "jsonb_build_object('v', 1, CAST(:pkey AS text), CAST(:pval AS jsonb)
 #: PUT, an existing row: merge the one key, keep every other key.
 _MERGE_KEY = f"jsonb_set({_VERSIONED}, ARRAY[CAST(:pkey AS text)], CAST(:pval AS jsonb), true)"
 
+#: PUT of ``apps``, a new row: the version and the one app (``:pval`` is
+#: ``{<app>: {...}}``, as ``clean_app_prefs`` gives it).
+_NEW_APP = "jsonb_build_object('v', 1, 'apps', CAST(:pval AS jsonb))"
+#: The stored object at ``apps`` and at ``apps.<:app>``. Not an object counts
+#: as empty.
+_APPS = (
+    "CASE WHEN jsonb_typeof(user_settings.assistant_profile -> 'apps') = 'object' "
+    "THEN user_settings.assistant_profile -> 'apps' ELSE CAST('{}' AS jsonb) END"
+)
+_APP = (
+    "CASE WHEN jsonb_typeof(user_settings.assistant_profile -> 'apps' -> "
+    "CAST(:app AS text)) = 'object' THEN user_settings.assistant_profile -> 'apps' -> "
+    "CAST(:app AS text) ELSE CAST('{}' AS jsonb) END"
+)
+#: PUT of ``apps``, an existing row: merge the keys of the one app, keep
+#: every other key of it, every other app, and every other key of the column.
+_MERGE_APP = (
+    f"jsonb_set({_VERSIONED}, ARRAY['apps'], ({_APPS}) || jsonb_build_object("
+    f"CAST(:app AS text), ({_APP}) || (CAST(:pval AS jsonb) -> CAST(:app AS text))), true)"
+)
+
 #: The stored list ``:lkey`` (``facts`` or ``aliases``). Not an array counts
 #: as empty, so ``jsonb_array_elements`` never sees an object.
 _LIST = (
@@ -395,10 +437,15 @@ _UNDO_WRITE_SQL = (
     "updated_at = now() WHERE organization_id = {org} AND user_id = :uid"
 )
 
-#: DELETE all: the column becomes NULL. The row and its other columns stay.
+#: DELETE all: the member's words go. The app settings (``apps``) stay,
+#: because they are settings and not words: a forget must never turn an
+#: opt-out of the brief back on. With no ``apps`` the column becomes NULL.
+#: The row and its other columns stay.
 _FORGET_SQL = (
-    "UPDATE user_settings SET assistant_profile = NULL, updated_at = now() "
-    "WHERE organization_id = {org} AND user_id = :uid"
+    "UPDATE user_settings SET assistant_profile = CASE WHEN "
+    "jsonb_typeof(assistant_profile -> 'apps') = 'object' "
+    "THEN jsonb_build_object('v', 1, 'apps', assistant_profile -> 'apps') ELSE NULL END, "
+    "updated_at = now() WHERE organization_id = {org} AND user_id = :uid"
 )
 
 
@@ -411,6 +458,24 @@ def _sql(template: str) -> Any:
 
 async def _read(db: Any, uid: str) -> Any:
     return (await db.execute(_sql(_READ_SQL), {"uid": uid})).first()
+
+
+async def _app_row(db: Any, uid: str, app: str) -> tuple[str | None, Any]:
+    """The ``user_id`` and the stored ``apps.<app>`` of the row that the
+    planner reads (``APP_ROW_SQL_TEMPLATE``, any case), or ``(None, None)``
+    when the member has no row. The GET and the PUT of ``apps`` take this
+    row, so the member sees and sets the value that the brief reads."""
+    row = (await db.execute(_sql(APP_ROW_SQL_TEMPLATE), {"m": uid, "app": app})).first()
+    return (None, None) if row is None else (str(row[0]), row[1])
+
+
+async def _apps(db: Any, uid: str) -> dict[str, dict[str, Any]]:
+    """The preferences of every declared app, each from its own row by the
+    row rule, over the declared defaults."""
+    out: dict[str, dict[str, Any]] = {}
+    for app in APP_PREFERENCES:
+        out[app] = stored_app_prefs((await _app_row(db, uid, app))[1], app)
+    return out
 
 
 async def _upsert(db: Any, uid: str, new: str, merge: str, params: dict[str, Any],
@@ -494,11 +559,11 @@ def _check_caps(stored: Any) -> None:
         items = stored.get(key)
         if isinstance(items, list) and len(items) > cap:
             raise _refuse(f"at most {cap} {key}")
-    # The record of the last change and the interview state are not the
-    # member's words, so they stay out of the budget (PZ-26): a mark must
-    # never fail on a full profile.
+    # The record of the last change, the interview state and the app
+    # settings are not the member's words, so they stay out of the budget
+    # (PZ-26, BR-2a-1): a mark or a setting must never fail on a full profile.
     if profile_size({k: v for k, v in stored.items()
-                     if k not in (LAST_CHANGE, "interview")}) > PROFILE_MAX:
+                     if k not in (LAST_CHANGE, "interview", "apps")}) > PROFILE_MAX:
         raise _refuse(f"profile exceeds {PROFILE_MAX} characters")
 
 
@@ -694,12 +759,17 @@ async def get_assistant_profile(
     try:
         async with _tenant_session() as db:
             row = await _read(db, uid)
+            # The app settings, each over its declared defaults, from the
+            # row that the brief reads (BR-2a-1, the row rule).
+            apps = await _apps(db, uid)
     except Exception as exc:
         logger.warning("auth.assistant_profile.read_failed",
                        extra={"error": type(exc).__name__})
         raise HTTPException(status_code=503, detail="unavailable") from exc
-    out: dict[str, Any] = stored_profile(row[0] if row is not None else None)
+    raw = row[0] if row is not None else None
+    out: dict[str, Any] = stored_profile(raw)
     out["enabled"] = enabled_for(getattr(user, "organization_id", None))
+    out["apps"] = apps
     return out
 
 
@@ -803,14 +873,20 @@ async def put_assistant_profile(
     x_profile_via: str | None = Header(default=None),
 ) -> dict[str, Any]:
     """Save one key. Every other key of the column stays. A chat write
-    cannot set ``learning``, which only the member sets in Settings."""
+    cannot set ``learning`` or ``apps``, which only the member sets in
+    Settings. A PUT of ``apps`` merges the keys of its one app into the
+    row that the brief reads (the row rule, ``APP_ROW_SQL_TEMPLATE``), and
+    its answer carries ``apps`` as the GET does."""
     uid = _member(user)
     via = _via(x_profile_via)
     put = _validate(ProfilePut, body)
-    if via is not None and put.key == "learning":
-        raise _refuse("learning is set in Settings, not from the chat")
+    if via is not None and put.key in SETTINGS_ONLY_KEYS:
+        raise _refuse(f"{put.key} is set in Settings, not from the chat")
     params = {"pkey": put.key, "pval": json.dumps(put.value)}
     new, merge, where = _NEW_KEY, _MERGE_KEY, ""
+    if put.key == "apps":
+        (params["app"],) = put.value
+        new, merge = _NEW_APP, _MERGE_APP
     if via is not None:
         params["last"] = _last({"op": "put", "key": put.key, "after": put.value})
         new = _with_last(_NEW_KEY, _PUT_LAST_NEW)
@@ -819,13 +895,27 @@ async def put_assistant_profile(
 
     async def _run(db: Any) -> Any:
         await _learning_gate(db, uid, via)
-        stored = await _upsert(db, uid, new, merge, params, where)
+        row_uid = uid
+        if put.key == "apps":
+            # The row that the brief reads, in any case. A member with no
+            # row gets a new row under the session's address.
+            row_uid = (await _app_row(db, uid, params["app"]))[0] or uid
+        stored = await _upsert(db, row_uid, new, merge, params, where)
         if stored is None:
             raise HTTPException(status_code=409, detail=LEARNING_OFF)
         _check_caps(stored)
-        return stored
+        if put.key != "apps":
+            return stored, None
+        if row_uid != uid:
+            row = await _read(db, uid)
+            stored = _as_dict(row[0]) if row is not None else None
+        return stored, await _apps(db, uid)
 
-    return stored_profile(await _write(uid, "write", _run))
+    stored, apps = await _write(uid, "write", _run)
+    out = stored_profile(stored)
+    if apps is not None:
+        out["apps"] = apps
+    return out
 
 
 @me_router.delete("/me/assistant-profile", status_code=204, response_class=Response,
@@ -834,7 +924,8 @@ async def delete_assistant_profile(
     user: UserContext = Depends(get_current_user),
     x_profile_via: str | None = Header(default=None),
 ) -> Response:
-    """The column becomes NULL. The settings row and its other columns stay.
+    """The member's words go: the column becomes NULL, or keeps only
+    ``apps``, the app settings. The settings row and its other columns stay.
     Forget-all is a Settings act: a chat write (``X-Profile-Via``) is a 422."""
     uid = _member(user)
     if _via(x_profile_via) is not None:

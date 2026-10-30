@@ -177,6 +177,10 @@ GATED_ROUTERS: dict[str, set[str]] = {
     # `/push/test`). Gated on `feature:chat`, as `/reach` is. No exemptions:
     # each route serves the signed-in member's own devices only.
     "gateway.push.routes": set(),
+    # WS-BRIEF BR-2c-1 — `GET /brief/today`, the member's stored brief.
+    # Gated on `feature:chat`, as the chat's first turn is. No exemptions:
+    # the route serves the signed-in member's own run only.
+    "gateway.routes.brief_today": set(),
     "gateway.routes.actions": set(),
     "gateway.routes.integrations": set(),
     # WS-54 — the three routers of the Integrations console. Each one is

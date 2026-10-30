@@ -1380,6 +1380,7 @@ feature, then calls the app's own read:
 | `approvals` | `feature:approvals` | `list_pending` in `action_broker/broker.py` |
 | `projects` | `feature:projects` | `list_notifications`, unread only |
 | `email` | `feature:email` | `list_accounts`, then `needs_reply_threads` in `routes/email/digest.py` for each mailbox |
+| `reminders` | `feature:projects` | `my_open_cards` in `routes/projects/reminders.py` (WS-66 RM-2b) |
 
 **Each read is one bounded query.** `my_due_tasks` reads the lens rows that
 are due before the member's tomorrow, in the member's zone. It gives the
@@ -1455,9 +1456,11 @@ display order stays as below.
 - Each item has `id`, `app`, `kind`, `title`, `detail`, `href`, `at`, `act`
   and `act_ref`.
 - `id` is `tasks:<task id>`, `approvals:<pending action id>`,
-  `projects:<notification id>` or `email:<account id>:<thread id>`.
-- `kind` is `overdue`, `approval`, `due_today`, `notification` or
-  `needs_reply`.
+  `projects:<notification id>`, `email:<account id>:<thread id>` or
+  `reminders:<reminder id>`.
+- `kind` is `overdue`, `approval`, `due_today`, `notification`,
+  `needs_reply`, `reminder_due`, `reminder_check` or `reminder_unconfirmed`.
+  The three reminder kinds come last in `KIND_ORDER`, in that order.
 - `act` is `done`, `read` or null. `done` runs
   `POST /projects/tasks/{act_ref}/complete`. `read` runs
   `POST /projects/notifications/read` with the id in `ids`. An approval and
@@ -1478,9 +1481,21 @@ display order stays as below.
   number is still a floor of 60 at most.
 
 **The My Day feed reads the same providers (WS-58, ACTIVE 2026-10-13).**
-`my_day_feed.md` §4.4 owns the feed. This contract keeps its five kinds. A
+`my_day_feed.md` §4.4 owns the feed. This contract keeps its kinds. A
 new kind joins it only by an amendment of this section, in the PR that adds
 the kind.
+
+**The reminders source (WS-66 RM-2b, amended 2026-10-30).** This amendment
+adds the `reminders` row, the `reminders:<id>` item id and the three
+reminder kinds. The app of the source is `calendar`. The server keys
+`sources`, `totals` and `capped` by the source id `reminders`. The client
+maps a source id to its app through `NEEDS_SOURCE_APP` in `needs.ts`.
+
+The row
+is a link only, to `/chat?do=new-chat&reminder=<id>`. The source has no
+sidebar count (`calendar_events_reminders.md` RM-2b decision 5). A failed
+`reminders` source prints "Calendar did not answer, so its reminders may be
+missing."
 
 **The order.** Overdue rows come first, the oldest first. Then approvals,
 with the action that waited longest first, because the work of an agent

@@ -1113,16 +1113,37 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: ``session_key``. ``agent_signing.py`` gains the edge's session id helpers.
 #: The tripwire and the scan allow the one new header. The pins before it
 #: were 3.12 ``781888b3…5dbbb29`` and 3.13 ``17748943…ad2a1c44``.
+#:
+#: MCP-P1a (2026-10-30, external_agent_access.md §19, D136) adds the app door.
+#: A pair that a door op of the manifests reaches passes the method and route
+#: steps (AD-3). After the stamp, `_door_gate` checks the door flag, refuses a
+#: class B or C write that is not a proposal with 403 `approval_required`
+#: (AD-18), checks the app scope (AD-4) and counts the read or write cap
+#: (AD-13). `_claim_write` takes the scope as an argument. Each door call
+#: writes one audit row (AD-14). It reads nothing new from the request: the
+#: scan and the tripwire are as before. The pins before it were 3.12
+#: ``9b8e2e6d…9b85d7b88`` and 3.13 ``92e125e9…7b2b2a70``.
+#:
+#: MCP-P1a fix round 1 (2026-10-30, §19.7, AD-14): a refused door call writes
+#: its audit row at step 5 (the stamp) too. A door write meets the writes
+#: flag in `_door_gate`, after the connection and the stamp, so that refusal
+#: has a connection for its row. Step 3b keeps the writes of
+#: ``MCP_WRITE_ROUTES``. Nothing new is read from the request. The pins
+#: before it were 3.12 ``8b11f0fe…0a5d6d71`` and 3.13 ``78ffade4…d0d8cdf7``.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    (3, 12): "9b8e2e6de448013b71fab5c06df9aaf1d016009d33c3722d7bcff609b85d7b88",
-    (3, 13): "92e125e9532a2863b1371757fcad284df8aeccd579de19485eb4532e7b2b2a70",
+    (3, 12): "8eff3015f10c979d7196a647ead3cb1d6d2dc82465e663b7179c9b51f25d2bc9",
+    (3, 13): "340a6d01171301493d9906d103a883db37ea42b509abda376c9d0fe0d2bd756a",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
 #: the request, so the scan does not read them. The connection read and the
 #: write guard (nonce and cap) are part of the boundary all the same, so the
 #: digest covers them, and an edit to either one fails the digest test.
-_BRANCH_ZERO_HELPERS = ("_read_connection", "_claim_write")
+#: MCP-P1a adds the four helpers of the app door: the claim dispatch, the door
+#: gate (the door flag, AD-18, the app scope and the caps), the door read cap
+#: and the audit row. None of them sees the request.
+_BRANCH_ZERO_HELPERS = ("_read_connection", "_claim_write", "_claim_call", "_door_gate",
+                        "_claim_door_read", "_audit_door")
 
 
 def _branch_zero_digest() -> str:

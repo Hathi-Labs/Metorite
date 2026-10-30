@@ -240,6 +240,7 @@ async def test_p2_a_member_invited_again_starts_empty(db) -> None:
             after = await ap.get_assistant_profile(user=_user(a))
     # PZ-25: ``enabled`` is an answer, not part of the stored profile.
     first.pop("enabled")
+    first.pop("apps")  # the app settings at their defaults (BR-2a-1)
     assert first == empty_profile()
     assert [f["text"] for f in after["facts"]] == ["New start"]
     assert fact["text"] == "New start"
@@ -342,6 +343,7 @@ async def test_p4_a_member_who_returns_finds_the_profile_empty(db) -> None:
         with _tenant(db.org_a):
             back = await ap.get_assistant_profile(user=_user(a))
     back.pop("enabled")
+    assert back.pop("apps")["brief"]["enabled"] is True  # a removal forgets them too
     assert back == empty_profile()
 
 

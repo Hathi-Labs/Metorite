@@ -345,19 +345,21 @@ class TestOneRegistry:
     def test_each_source_registers_once(self):
         # MD-3c adds the gated `tasks_followups`, after the Calendar. MD-3d
         # adds `email_followups`, MD-3e `crm`, and MD-3f `people` and `chat`.
-        # WS-61 KB-9a adds the gated `knowledge`, and WS-66 RM-2 the gated
-        # `reminders`.
-        assert list(shell.REGISTRY) == ["tasks", "projects", "email", "approvals", "calendar",
-                                        "tasks_followups", "email_followups", "crm",
-                                        "people", "chat", "knowledge", "reminders"]
+        # WS-61 KB-9a adds the gated `knowledge`. WS-66 RM-2b makes `reminders`
+        # a needs provider: it registers before `approvals`, which stays last.
+        assert list(shell.REGISTRY) == ["tasks", "projects", "email", "reminders",
+                                        "approvals", "calendar", "tasks_followups",
+                                        "email_followups", "crm", "people", "chat",
+                                        "knowledge"]
         again = shell.Provider("tasks", ("projects",), shell.REGISTRY["tasks"].run,
                                frozenset({"overdue"}))
         with pytest.raises(ValueError, match="registers twice"):
             shell.register(again)
         assert shell.REGISTRY["tasks"] is not again
 
-    def test_the_needs_subset_is_todays_four_in_todays_order(self):
-        assert list(shell.PROVIDERS) == ["tasks", "projects", "email", "approvals"]
+    def test_the_needs_subset_is_todays_five_in_todays_order(self):
+        assert list(shell.PROVIDERS) == ["tasks", "projects", "email", "reminders",
+                                         "approvals"]
         assert [p.source for p in shell.needs_providers()] == list(shell.PROVIDERS)
         assert [p.source for p in shell.feed_only_providers()] == ["calendar"]
         for source, (feature, run) in shell.PROVIDERS.items():
@@ -391,7 +393,8 @@ class TestOneRegistry:
             "tasks:t-soon", "projects:n-2", "projects:n-1",
             "email:a-mine:th-old", "email:a-mine:th-new",
         ]
-        assert set(today["sources"]) == {"tasks", "projects", "email", "approvals"}
+        assert set(today["sources"]) == {"tasks", "projects", "email", "reminders",
+                                         "approvals"}
 
     @pytest.mark.parametrize("limit", [1, 5, 40, 80, 500])
     def test_the_needs_view_is_at_the_needs_default_whatever_the_feed_limit(self, fakes, limit):
@@ -426,7 +429,8 @@ class TestOneRegistry:
         fakes.calls.clear()
         alone = run_needs(user)
         assert {i["kind"] for i in alone["items"]} <= NEEDS_KINDS
-        assert set(alone["sources"]) == {"tasks", "projects", "email", "approvals"}
+        assert set(alone["sources"]) == {"tasks", "projects", "email", "reminders",
+                                         "approvals"}
         assert not {name for name, _, _ in fakes.calls} & CALENDAR_CALLS
 
     def test_each_signal_is_a_kind_its_provider_names(self, fakes):
@@ -583,7 +587,8 @@ class TestTheCardShape:
         assert {c["app"] for c in answer["cards"]} == {
             "tasks", "projects", "email", "approvals", "calendar"}
         assert answer["sources"] == {"tasks": "ok", "projects": "ok", "email": "ok",
-                                     "approvals": "ok", "calendar": "ok"}
+                                     "reminders": "absent", "approvals": "ok",
+                                     "calendar": "ok"}
 
     def test_done_and_read_tap_and_every_other_act_opens(self, fakes):
         answer = run_feed(admin(*FULL, "approvals"))
@@ -1107,8 +1112,10 @@ class TestTheBudgets:
         user = admin(*FULL, "approvals")
         answer = run_feed(user)
         assert answer["sources"]["calendar"] == "failed"
-        assert {answer["sources"][k] for k in shell.PROVIDERS} == {"ok"}
-        assert answer["needs"]["sources"] == {k: "ok" for k in shell.PROVIDERS}
+        assert {answer["sources"][k] for k in shell.PROVIDERS} == {"ok", "absent"}
+        assert answer["sources"]["reminders"] == "absent"
+        assert answer["needs"]["sources"] == {
+            k: "absent" if k == "reminders" else "ok" for k in shell.PROVIDERS}
         assert answer["needs"] == run_needs(user)
 
     def test_the_feed_only_budget_is_its_own(self, fakes, monkeypatch):
@@ -1142,6 +1149,8 @@ class TestTheBudgets:
         for name in ("_task_signals", "_note_signals", "_thread_signal"):
             monkeypatch.setattr(shell, name, broken)
         answer = run_needs(admin(*FULL, "approvals"))
+        # `reminders` is absent while CALENDAR_REMINDERS is off (RM-2b).
+        assert answer["sources"].pop("reminders") == "absent"
         assert set(answer["sources"].values()) == {"ok"}
 
 
@@ -1176,8 +1185,8 @@ class TestTheCallsStayInStep:
                 assert clock not in source, (module.__name__, clock)
         # The Calendar provider, the read, the task kinds of MD-3c, the mail
         # kinds of MD-3d, the CRM kinds of MD-3e, the people provider of
-        # MD-3f and the reminders provider of WS-66 RM-2.
-        assert inspect.getsource(feed).count("needs._now()") == 7
+        # MD-3f. The reminders provider left for needs.py in WS-66 RM-2b.
+        assert inspect.getsource(feed).count("needs._now()") == 6
 
     def test_the_calendar_provider_opens_no_session_of_its_own(self):
         source = inspect.getsource(feed)
@@ -1207,6 +1216,9 @@ class TestTheRouteIsMounted:
 #: one byte, because the feed is live (``my_day_feed.md`` §5.8 item 1). The
 #: one exception is the field that MD-3b adds, ``source_apps``. The file stays
 #: as the old code wrote it, and the test adds that one field to it.
+#: WS-66 RM-2b re-captured the file: the `sources` of each answer gained the
+#: `reminders` key (read ``absent``), and each needs-kind score rose by 3
+#: (the `feed_rank.BASE` shift). The cards, their order and the rest are the same.
 GOLDEN = Path(__file__).resolve().parent / "fixtures" / "my_day_feed_golden.json"
 
 
@@ -1219,7 +1231,9 @@ def with_source_apps(old_text: str) -> str:
     for key, value in old.items():
         out[key] = value
         if key == "sources":
-            out["source_apps"] = {source: source for source in value}
+            # RM-2b: `reminders` is a needs source now, and its app is the Calendar.
+            out["source_apps"] = {source: "calendar" if source == "reminders" else source
+                                  for source in value}
     return json.dumps(out, default=str)
 
 
@@ -1551,7 +1565,8 @@ class TestTheFeedOnlyGather:
               _feed_only("early", _recorder(ran, "early")))
         answer = run_feed(member(*FULL))
         assert list(answer["sources"]) == [
-            "tasks", "projects", "email", "approvals", "calendar", "late", "early"]
+            "tasks", "projects", "email", "reminders", "approvals", "calendar",
+            "late", "early"]
 
     def test_the_needs_providers_still_run_one_after_another(self, fakes, monkeypatch):
         live = {"now": 0, "most": 0}
@@ -1572,7 +1587,8 @@ class TestTheFeedOnlyGather:
                 monkeypatch.setitem(shell.REGISTRY, source,
                                     dataclasses.replace(provider, run=_wrap(provider.run)))
         answer = run_feed(admin(*FULL, "approvals"))
-        assert {answer["sources"][k] for k in shell.PROVIDERS} == {"ok"}
+        assert {answer["sources"][k] for k in shell.PROVIDERS} == {"ok", "absent"}
+        assert answer["sources"]["reminders"] == "absent"
         assert live["most"] == 1
 
 
@@ -1622,3 +1638,57 @@ class TestThePermissionGate:
         assert not p.held_by(member(*FULL))
         assert p.held_by(admin(*FULL))
         assert _feed_only("y", feed._calendar).held_by(member(*FULL))
+
+
+class TestTheReminderCards:
+    """WS-66 RM-2b: ONE needs source gives the bell rows and the My Day
+    cards. A flag off gives neither, and a reminder gives one card."""
+
+    @staticmethod
+    def _row(rid: str, **cols) -> dict:
+        return {"id": rid, "title": f"Call {rid}", "kind": "action", "state": "due",
+                "step": "fired", "step_at": NOW, "fire_at": NOW - timedelta(minutes=5),
+                "cycles": 0, **cols}
+
+    def _on(self, monkeypatch, rows: list[dict]) -> None:
+        import gateway.routes.projects.reminders as rem
+
+        async def my_open_cards(user, *, now, limit):
+            return rows[:limit], None
+
+        monkeypatch.setattr(rem, "reminders_enabled", lambda: True)
+        monkeypatch.setattr(rem, "my_open_cards", my_open_cards)
+
+    def test_a_reminder_is_one_card_and_one_bell_row(self, fakes, monkeypatch):
+        self._on(monkeypatch, [self._row("r-1"), self._row("r-2", step="check_back")])
+        answer = run_feed(member(*FULL))
+        ids = [c["signal_id"] for c in answer["cards"] if c["app"] == "calendar"
+               and c["signal_id"].startswith("reminders:")]
+        assert sorted(ids) == ["reminders:r-1", "reminders:r-2"]
+        assert card(answer, "reminders:r-1")["kind"] == "reminder_due"
+        assert card(answer, "reminders:r-2")["kind"] == "reminder_check"
+        assert answer["sources"]["reminders"] == "ok"
+        assert answer["source_apps"]["reminders"] == "calendar"
+        bell = [i["id"] for i in answer["needs"]["items"] if i["app"] == "calendar"]
+        assert sorted(bell) == ["reminders:r-1", "reminders:r-2"]
+
+    def test_with_the_flag_off_there_is_no_card_and_no_row(self, fakes):
+        answer = run_feed(member(*FULL))
+        assert answer["sources"]["reminders"] == "absent"
+        assert not [c for c in answer["cards"] if c["signal_id"].startswith("reminders:")]
+        assert not [i for i in answer["needs"]["items"] if i["app"] == "calendar"]
+
+    def test_my_day_providers_does_not_gate_the_reminders(self, fakes, monkeypatch):
+        from acb_common.settings import get_settings
+
+        monkeypatch.setattr(get_settings(), "my_day_providers", "")
+        self._on(monkeypatch, [self._row("r-1")])
+        answer = run_feed(member(*FULL))
+        assert card(answer, "reminders:r-1")["group"] == "now"
+
+    def test_a_reminder_card_ranks_above_an_md3_card(self, fakes, monkeypatch):
+        self._on(monkeypatch, [self._row("r-1")])
+        answer = run_feed(member(*FULL))
+        r = card(answer, "reminders:r-1")
+        assert r["score"] >= feed_rank.BASE["reminder_due"]
+        assert feed_rank.BASE["reminder_due"] > feed_rank.BASE["agent_asks"]

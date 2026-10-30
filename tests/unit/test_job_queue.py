@@ -166,6 +166,8 @@ def world(promoted, monkeypatch):  # noqa: F811
     monkeypatch.setattr(worker, "_HANDLERS", {})
     monkeypatch.setattr(worker, "_PRUNE_SEEDED", {})
     monkeypatch.setattr(worker, "prune_hooks", [])
+    monkeypatch.setattr(worker, "_SEEDED", {})
+    monkeypatch.setattr(worker, "seed_hooks", [])
     worker._stopping.clear()
     yield ns
     worker._stopping.clear()
@@ -1323,3 +1325,41 @@ def test_r8_a_prune_on_a_session_that_bypasses_rls_takes_the_bound_org_only(worl
         assert asyncio.run(queue.prune(_SyncDb(c), now=T)) >= 1
     assert _row(world, row_a) is None
     assert _row(world, row_b) is not None
+
+
+# ── Seed hooks (BR-2a-1) ───────────────────────────────────────────────────
+
+
+def test_r8_run_org_runs_each_seed_hook_once_for_each_org_and_bucket(world) -> None:
+    """A hook runs on the first tick of a 15-minute bucket, for each org. A
+    later tick of the bucket runs it again only when it raised. The hook
+    opens its own session, and the tenant is bound while it runs."""
+    _register_ok(world)
+    calls: list[tuple[str, str]] = []
+    fails = Counter()
+
+    async def hook(org: str, now: datetime) -> None:
+        calls.append((org, worker.seed_bucket(now)))
+        async with tenant_session(org) as db:
+            assert (await db.execute(text(
+                "SELECT current_setting('app.tenant_id', true)"))).scalar_one() == org
+
+    async def flaky(org: str, now: datetime) -> None:
+        fails[org] += 1
+        if fails[org] == 1:
+            raise RuntimeError("the first try")
+
+    worker.seed_hooks.extend([hook, flaky])
+    a, b = world.p.org_a, world.p.org_b
+
+    async def go() -> None:
+        await worker.run_org(a, T)
+        await worker.run_org(a, T + timedelta(minutes=5))   # the same bucket
+        await worker.run_org(b, T + timedelta(minutes=5))
+        await worker.run_org(a, T + timedelta(minutes=15))  # the next bucket
+
+    _go(world, go)
+    b0, b1 = worker.seed_bucket(T), worker.seed_bucket(T + timedelta(minutes=15))
+    assert calls == [(a, b0), (b, b0), (a, b1)]
+    assert fails == Counter({a: 3, b: 1})  # raised once, ran again, then the next bucket
+    assert worker._SEEDED[(a, worker._hook_name(flaky))] == b1

@@ -180,9 +180,7 @@ test.describe("desktop", () => {
           for (const chip of Array.from(copy.querySelectorAll("button span"))) {
             if (/^in /.test(chip.textContent ?? "")) chip.textContent = "in ·";
           }
-          // Each comet's gradient id comes from React's `useId`, so it differs
-          // per render (`MetoriteMark.tsx`). The id is not the bar's shape.
-          return copy.innerHTML.replace(/metorite-comet-[A-Za-z0-9_-]+/g, "metorite-comet-·");
+          return copy.innerHTML;
         }),
       );
       // Each app's name is its own title bar's h1.

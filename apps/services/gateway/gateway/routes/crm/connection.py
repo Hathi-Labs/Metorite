@@ -71,6 +71,7 @@ Zoho error code only.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -319,12 +320,27 @@ async def _old_credential_locked(db: Any, org: str) -> SourceCredential | None:
         return None
 
 
-async def _best_effort_revoke(credential: SourceCredential | None, why: str) -> None:
-    """Revoke at Zoho and go on, whatever happens. Log the outcome only."""
+#: The most seconds that one revoke may take, all steps of the call together
+#: (CRM-Z10b, verifier P3-2). The client's ``_TOKEN_TIMEOUT`` (30 s) bounds each
+#: step of httpx, not the call, so one revoke could take about 90 s. The
+#: disconnect holds the connect lock while Zoho answers.
+REVOKE_TIMEOUT_SECONDS = 35.0
+
+
+async def _best_effort_revoke(credential: SourceCredential | None, why: str) -> str | None:
+    """Revoke at Zoho and go on, whatever happens. Log the outcome only.
+
+    Returns the outcome: ``confirmed``, ``not_confirmed``, ``not_configured``
+    or ``failed:<code>``. ``None`` when there was no token to revoke. A caller
+    that ignores it keeps the old behaviour. A revoke that takes longer than
+    :data:`REVOKE_TIMEOUT_SECONDS` stops, and it is ``failed:transport``.
+    """
     if credential is None or not credential.refresh_token:
-        return
+        return None
     try:
-        confirmed = await _source(credential).revoke()
+        confirmed = await asyncio.wait_for(
+            _source(credential).revoke(), REVOKE_TIMEOUT_SECONDS,
+        )
         outcome = "confirmed" if confirmed else "not_confirmed"
     except HTTPException:
         outcome = "not_configured"
@@ -333,6 +349,7 @@ async def _best_effort_revoke(credential: SourceCredential | None, why: str) -> 
     except (TimeoutError, httpx.HTTPError):
         outcome = "failed:transport"
     _log.info("zoho revoke (%s): %s", why, outcome)
+    return outcome
 
 
 @dataclass(frozen=True)
@@ -595,14 +612,45 @@ async def disconnect_zoho(org: str) -> store.Connection | None:
     change, or ``None`` when the org has no Zoho connection. A second call
     changes nothing.
     """
+    connection, _outcome = await disconnect_zoho_reporting(org)
+    return connection
+
+
+#: The revoke outcomes that a caller shows (CRM-Z10b). Each other outcome of
+#: :func:`_best_effort_revoke` (a refused or a failed call, or no token) is
+#: ``not_confirmed``: the customer removes the app in Zoho by hand.
+REVOKE_OUTCOMES: tuple[str, ...] = ("confirmed", "not_confirmed", "not_configured")
+
+
+async def disconnect_zoho_reporting(
+    org: str,
+) -> tuple[store.Connection | None, str | None]:
+    """:func:`disconnect_zoho`, and what Zoho said to the revoke (CRM-Z10b).
+
+    Returns ``(connection, outcome)``. ``outcome`` is ``confirmed``,
+    ``not_confirmed`` or ``not_configured`` when this call changed the row,
+    and ``None`` when it changed nothing (no connection, or one that is
+    already ``disconnected``). The revoke never stops the disconnect.
+
+    ⚠️ ONE transaction under the connect lock, from the status read to
+    ``store.disconnect`` (CRM-Z10b, verifier finding F2). Two calls at one
+    time do not both read ``connected``: the second waits, then reads
+    ``disconnected`` and changes nothing. So Zoho gets one revoke, and the
+    caller writes one audit line. The revoke runs inside the lock on
+    purpose. :data:`REVOKE_TIMEOUT_SECONDS` (35 s) bounds the whole revoke,
+    and a slower one is ``failed:transport``, so ``not_confirmed``. A crash
+    before the commit leaves the row and its blob, so the next call revokes
+    again. The lock is the one of the consent, the start over and the switch.
+    """
     async with _tenant_session() as db:
+        await db.execute(text(_CONNECT_LOCK_SQL), {"key": f"crm.connect:{org}:{PROVIDER}"})
         row = await store.get(db, org, PROVIDER, OWNING_APP)
         if row is None or row.status == store.STATUS_DISCONNECTED:
-            return row
+            return row, None
         credential = await store.load_credential(db, org, PROVIDER, OWNING_APP)
-    await _best_effort_revoke(credential, "disconnect")
-    async with _tenant_session() as db:
-        return await store.disconnect(db, org, row.id)
+        raw = await _best_effort_revoke(credential, "disconnect")
+        outcome = raw if raw in REVOKE_OUTCOMES else "not_confirmed"
+        return await store.disconnect(db, org, row.id), outcome
 
 
 # ── The shared token (§5.2 item 11) ─────────────────────────────────────────
