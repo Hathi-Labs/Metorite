@@ -77,18 +77,48 @@ def test_number_forms_follow_the_shared_helper():
 
 
 def test_a_fragment_of_a_grouped_number_is_not_backed():
-    """Catches the fence without ``grouped=True``: then "1,200" splits into
+    """Catches the fence without ``exact=True``: then "1,200" splits into
     "1" and "200", and a claim of 1,200 backs a sentence that says 200."""
     assert check_phrase([s("Total 200.", "c4")], CLAIMS).reason == "unbacked_number"
     assert check_phrase([s("Total 1.", "c4")], CLAIMS).reason == "unbacked_number"
 
 
 def test_the_default_helper_keeps_its_old_shape():
-    """Catches a change to the default, which the profile write guard uses."""
+    """Catches a change to the default, which the profile write guard uses,
+    and a loose exact form."""
     from acb_common.assistant_profile import numbers_in
     assert numbers_in("1,200") == {"1", "200"}
-    assert numbers_in("1,200", grouped=True) == {"1200"}
-    assert numbers_in("1,20,000 and 3", grouped=True) == {"120000", "3"}
+    assert numbers_in("+1 41 55") == {"14155"}
+    assert numbers_in("1,200", exact=True) == {"1200"}
+    assert numbers_in("1,20,000 and 3", exact=True) == {"120000", "3"}
+    assert numbers_in("1,2", exact=True) == {"1", "2"}
+    assert numbers_in("due 2026-10-30", exact=True) == {"2026", "10", "30"}
+    assert numbers_in("-5 and 12.5.", exact=True) == {"-5", "12.5"}
+
+
+def test_one_item_with_many_sentences_counts_each():
+    """Catches a count of list items in place of sentences."""
+    assert check_phrase([s("A. B. C. D.", "c1")], CLAIMS).reason == "too_many_sentences"
+    assert check_phrase([s("A! B? C.", "c1")], CLAIMS).ok
+    assert check_phrase([s("A. B.", "c1"), s("C. D.", "c1")], CLAIMS).reason == "too_many_sentences"
+    assert check_phrase([s("Total 1,200.", "c4")], CLAIMS).ok
+
+
+def test_the_decimal_point_and_the_sign_stay():
+    """Catches digits-only numbers in the fence: then 12.5 passes for 125,
+    and -5 passes for 5."""
+    claims = {"a": "125 tasks", "b": "5 tasks", "c": "12 tasks"}
+    assert check_phrase([s("12.5 tasks.", "a")], claims).reason == "unbacked_number"
+    assert check_phrase([s("-5 tasks.", "b")], claims).reason == "unbacked_number"
+    assert check_phrase([s("1 2 tasks.", "c")], claims).reason == "unbacked_number"
+    assert check_phrase([s("1,2 tasks.", "c")], claims).reason == "unbacked_number"
+    assert check_phrase([s("50% done.", "b")], {"b": "5 0"}).reason == "unbacked_number"
+
+
+def test_a_numeral_that_is_not_an_ascii_digit_fails():
+    """Catches a fence that reads only ASCII digits: then "③" passes."""
+    assert check_phrase([s("Three tasks and ③.", "c1")], CLAIMS).reason == "unbacked_number"
+    assert check_phrase([s("Tasks: ٣.", "c1")], {"c1": "٣"}).reason == "unbacked_number"
 
 
 def test_the_brief_imports_the_one_public_helper():
