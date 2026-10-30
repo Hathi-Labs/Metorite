@@ -901,6 +901,7 @@ def numbers_in(text: str, *, exact: bool = False) -> set[str]:
     point stay. So "1,200" is "1200", "12.5" is not "125", and "-5" is not
     "5". Spaces split numbers. The brief fence uses this form."""
     if exact:
+        text = text.replace("\u2212", "-")  # the Unicode minus is a minus
         return set(_EXACT_NUMBER.findall(_GROUP_COMMA.sub("", text)))
     return {"".join(ch for ch in hit if ch.isdigit()) for hit in _NUMBER.findall(text)}
 

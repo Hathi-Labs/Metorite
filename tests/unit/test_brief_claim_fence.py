@@ -110,6 +110,7 @@ def test_the_decimal_point_and_the_sign_stay():
     claims = {"a": "125 tasks", "b": "5 tasks", "c": "12 tasks"}
     assert check_phrase([s("12.5 tasks.", "a")], claims).reason == "unbacked_number"
     assert check_phrase([s("-5 tasks.", "b")], claims).reason == "unbacked_number"
+    assert check_phrase([s("\u22125 tasks.", "b")], claims).reason == "unbacked_number"
     assert check_phrase([s("1 2 tasks.", "c")], claims).reason == "unbacked_number"
     assert check_phrase([s("1,2 tasks.", "c")], claims).reason == "unbacked_number"
     assert check_phrase([s("50% done.", "b")], {"b": "5 0"}).reason == "unbacked_number"

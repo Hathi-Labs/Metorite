@@ -22,6 +22,9 @@ extractor, in its ``exact`` form. This module has no number pattern of its
 own. So "₹500" and "500" are the same number, "1,200" is "1200", "12.5" is
 not "125", and "-5" is not "5". A number spelled in words ("three") is not
 checked. The model writes digits, and the prompt of BR-2a-2 must say so.
+An abbreviation such as "Dr." or "e.g." counts as the end of a sentence.
+That refusal is safe, because the run keeps the template lead. The prompt
+of BR-2a-2 must ask for no abbreviations.
 
 The module judges the lead only. It never changes the words of a claim line.
 """
