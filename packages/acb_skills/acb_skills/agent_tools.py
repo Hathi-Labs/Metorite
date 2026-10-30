@@ -798,10 +798,11 @@ async def _mark_before_children(jobs: Any, ctx: Any) -> None:
 async def spawn_subagents(jobs: str) -> str:
     """Run up to 5 sub-agents at once. Each one reads and gives back items.
 
-    Use this only when each job needs several steps, or when its reading would
-    fill this chat. Do not use it for one tool call or a short sequence: call
-    those tools yourself, several in one step if they do not depend on each
-    other. A sub-agent only reads. It cannot write, send, ask the member or
+    Use this only when each job reads long material (documents, contracts,
+    reports) that would fill this chat, or when each job needs its own chain of
+    several dependent steps. Do not use it for independent short reads or
+    searches, at any count, or for one tool call: call those tools yourself,
+    several in one step. A sub-agent only reads. It cannot write, send, ask the member or
     start another agent, so do any write yourself after the sub-agents answer.
     A sub-agent has no memory of this chat, so each job must hold all it needs.
     A job with no "tools" key holds no tool at all, so it can only answer from

@@ -353,8 +353,9 @@ and `packs+spawn`. Delegation holds no spawn tool, so it does not run them.
 
 | Chat | Turn | Must |
 |---|---|---|
-| `fan_companies` | Research five companies, with their about pages | spawn, and every child item parses |
-| `fan_invoices` | Total ten invoices (two to a job, five jobs) | spawn, parse, and total 233,400 |
+| `fan_companies` | Research five companies, with their about pages | not spawn (five light reads), and name each company |
+| `fan_invoices` | Total ten invoices, each on its supplier's public site | not spawn, and total 233,400 |
+| `fan_contracts` | Payment terms and late-delivery penalty of five long contracts (about 40,000 characters each, built in `contracts.py`, facts past character 20,000 and 30,000, so a plain fetch misses them). Turn 2: the strictest penalty, and the cost of a 10-day delay on a 5 lakh order | turn 1: spawn, every child item parses, and name each vendor's two facts. Turn 2: Kaveri and Rs 15,000. It compares the input tokens and the time of turn 2 on each arm. This is the research chat of stop result 9 |
 | `fan_tasks` | Five tasks from a list | not spawn (a write), one card |
 | `fan_one_read` | One page read | not spawn |
 | `fan_three_searches` | Three web searches | not spawn |
@@ -365,6 +366,11 @@ Router. `no_local_database` still closes the entity graph. The worker's
 scripted model (`fanout.WorkerModel`) decides from its request, because five
 children share it. A research turn plays one `spawn_subagents` call on the
 spawn arm, and `Plan.solo` (page by page) on the `pack` arm.
+
+OA-9f: a spawn pays off for long material or a chain of steps. It does not pay
+off for light reads (`one_assistant_context.md` section 6.3). Run 3 spent 31 to
+34 s on a spawn of five page reads. The same reads in one parallel step took 11
+to 21 s.
 
 New checks: `spawned` and `not_spawned` (None off the spawn arm),
 `items_contract` (no child answer that the parser could not read, no job error

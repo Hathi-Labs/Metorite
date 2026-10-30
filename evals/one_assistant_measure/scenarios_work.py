@@ -17,9 +17,10 @@ The write turns ask ONE write in the chat, and the card is its question.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
-from evals.one_assistant_measure import fanout
+from evals.one_assistant_measure import contracts, fanout
 from evals.one_assistant_measure.scenarios import (
     OFFICE,
     PRIYA,
@@ -378,39 +379,76 @@ MIXED_SCENARIOS: tuple[Scenario, ...] = (
 
 # ── Fan-out: 5 chats (OA-8e phase 3, §6.3) ───────────────────────────────────
 #
-# A research turn spawns on the ``packs+spawn`` arm, and on the ``pack`` arm
-# the model reads each page itself (``Plan.solo``). A turn of one read, one
-# task or three searches must not spawn. The web pages are fixtures
+# Light reads, one chat each: five company pages and ten invoice pages. The
+# model reads them itself, in parallel, in one step, and must NOT spawn (OA-9f,
+# §6.3; run 3: 11 to 21 s without a spawn, 31 to 34 s with it). The heavy chat
+# is ``fan_contracts``: five long contracts that would flood the main chat. It
+# is the research chat, and it must spawn. The web pages are fixtures
 # (:mod:`.fanout`), so a child reaches no real site.
 
 _ABOUT = [fanout.company_url(c) for c in fanout.COMPANIES]
-_INV = [f"{fanout.INVOICE_BASE}{n}" for n, _, _ in fanout.INVOICES]
-_PAIRS = [_INV[i:i + 2] for i in range(0, 10, 2)]
+_INV = [fanout.invoice_url(n) for n, _, _ in fanout.INVOICES]
+_CONTRACTS = [fanout.contract_url(host) for _, host, _, _ in fanout.CONTRACTS]
 
 
 def _fan(sid: str, title: str, turn: Turn) -> Scenario:
     return Scenario(sid, title, (turn,), set="fanout", surface="", page="")
 
 
+def _contract_checks() -> tuple[Check, ...]:
+    """The answer names each vendor, its payment days and its penalty."""
+    return tuple(
+        Check("answer_all", (
+            vendor.split()[0],
+            rf"(?<![\d.]){days}(?!\d)",
+            rf"(?<![\d.]){re.escape(percent)}\s*(?:%|percent|per cent)",
+        ), f"terms_of_{vendor.split()[0].lower()}")
+        for vendor, _host, days, percent in fanout.CONTRACTS)
+
+
 FANOUT_SCENARIOS: tuple[Scenario, ...] = (
-    _fan("fan_companies", "Five companies, each researched with a page read", Turn(
+    _fan("fan_companies", "Five companies, one page read each: no spawn", Turn(
         "Research these five companies and compare them: Orbit, Kestrel, Vantage, Helix and "
         "Nimbus. Their about pages are " + ", ".join(_ABOUT) + ".",
-        (Check("spawned"), Check("items_contract"), Check("no_unasked_write", 0),
+        (Check("not_spawned"), Check("no_unasked_write", 0),
          Check("answer_all", tuple(c.split()[0] for c in fanout.COMPANIES), "names_each_company")),
-        Plan((("spawn_subagents", {"jobs": fanout.jobs_for(_ABOUT)}),),
+        Plan(tuple(("fetch_page", {"url": u}) for u in _ABOUT),
              "Orbit, Kestrel, Vantage, Helix and Nimbus all make industrial sensors. Orbit has "
-             "40 staff, Kestrel 50, Vantage 60, Helix 70 and Nimbus 80.",
-             solo=tuple(("fetch_page", {"url": u}) for u in _ABOUT)))),
-    _fan("fan_invoices", "Ten invoices totalled", Turn(
+             "40 staff, Kestrel 50, Vantage 60, Helix 70 and Nimbus 80."))),
+    _fan("fan_invoices", "Ten invoices, one page read each: no spawn", Turn(
         "Total these ten invoices: " + ", ".join(_INV) + ".",
-        (Check("spawned"), Check("items_contract"), Check("no_unasked_write", 0),
+        (Check("not_spawned"), Check("no_unasked_write", 0),
          Check("figure", fanout.INVOICE_TOTAL, "totals_the_invoices")),
-        Plan((("spawn_subagents", {"jobs": json.dumps([
-            {"job": f"Read {a} and {b} and give each amount due.", "tools": ["fetch_page"],
-             "tier": "fast"} for a, b in _PAIRS])}),),
-             f"The ten invoices total Rs {fanout.INVOICE_TOTAL:,}.",
-             solo=tuple(("fetch_page", {"url": u}) for u in _INV)))),
+        Plan(tuple(("fetch_page", {"url": u}) for u in _INV),
+             f"The ten invoices total Rs {fanout.INVOICE_TOTAL:,}."))),
+    # Two turns. Turn 1 reads five contracts of about 40,000 characters each. The
+    # facts sit past character 20,000, so a plain fetch (8,000) misses them and the
+    # reader must ask for the whole text (``max_chars``). Turn 2 asks a question
+    # about those contracts. On the pack arm the parent carries five full contracts
+    # into turn 2, and on the spawn arm it carries five short items. The input
+    # tokens and the time of turn 2 show the difference.
+    Scenario("fan_contracts", "Five long contracts: spawn, so the text stays out of this chat", (
+        Turn(
+            "For each of these five vendor contracts, give me the payment terms and the "
+            "late-delivery penalty: " + ", ".join(_CONTRACTS) + ".",
+            (Check("spawned"), Check("items_contract"), Check("no_unasked_write", 0),
+             *_contract_checks()),
+            Plan((("spawn_subagents", {"jobs": fanout.jobs_for(
+                _CONTRACTS, "Read {url} in full: call fetch_page with max_chars=60000. Quote the "
+                "clause on payment terms and the clause on the penalty for late delivery.")}),),
+                 "Payment terms and late-delivery penalty: " + "; ".join(
+                     f"{v}: {d} days, {p} percent a week" for v, _h, d, p in fanout.CONTRACTS) + ".",
+                 solo=tuple(("fetch_page", {"url": u, "max_chars": 60000}) for u in _CONTRACTS))),
+        Turn(
+            contracts.STRICTEST_QUESTION,
+            (Check("no_unasked_write", 0),
+             Check("answer_all", (r"Kaveri",), "names_the_strictest"),
+             Check("figure", 15_000, "costs_the_delay")),
+            # 10 days is one full week. 3 percent of Rs 5,00,000 is Rs 15,000.
+            Plan((), "Kaveri Packaging has the strictest penalty: 3 percent of the order value "
+                     "for each full week. A 10-day delay is one full week, so a Rs 5,00,000 "
+                     "order costs Rs 15,000.")),
+    ), set="fanout", surface="", page=""),
     _fan("fan_tasks", "Five tasks from a list: a write, so no spawn", Turn(
         "Make a task for each of these in Website Relaunch: brief, copy, assets, QA pass and launch",
         (Check("not_spawned"), Check("work_write", ("POST", r"^/projects/tasks$"), "tasks_made"),
