@@ -1377,7 +1377,7 @@ def test_a_fallback_reason_is_a_code(raw, code) -> None:
 # ── Thinking off (chat speed, 2026-10-30) ────────────────────────────────────
 
 
-def _items(n: int) -> list[system_one.Item]:
+def _s1_items(n: int) -> list[system_one.Item]:
     return [system_one.Item(f"q{i}", "Is it?", "yes_no", system_one.YES_NO) for i in range(n)]
 
 
@@ -1390,7 +1390,7 @@ def test_the_request_turns_thinking_off_and_caps_the_output(monkeypatch) -> None
         {"id": "q1", "choice": "yes", "confidence": 0.9, "reason": "r"},
         {"id": "q2", "choice": "no", "confidence": 0.9, "reason": "r"},
     ))
-    asyncio.run(system_one.ask("ctx", _items(2)))
+    asyncio.run(system_one.ask("ctx", _s1_items(2)))
     body = wire.bodies[0]
     assert body["reasoning_effort"] == tier_policy.REASONING_OFF == "none"
     assert body["max_completion_tokens"] == system_one.max_tokens_for(2)
@@ -1416,13 +1416,13 @@ def test_a_truncated_answer_is_unavailable_and_reads_as_chat(monkeypatch) -> Non
         {"id": "q1", "choice": "yes", "confidence": 0.9, "reason": "r"}]})
     wire = _wire(monkeypatch, lambda _b: _completion(full[:-12]))
     with pytest.raises(system_one.SystemOneUnavailable) as err:
-        asyncio.run(system_one.ask("ctx", _items(1)))
+        asyncio.run(system_one.ask("ctx", _s1_items(1)))
     assert err.value.reason == "not_json"
     assert len(wire.requests) == 1
     # Cut at the very start of an object, and cut inside the list.
     for cut in (len(full) - 3, 12, 1):
         with pytest.raises(system_one.SystemOneUnavailable):
-            system_one.parse_answers(full[:cut], _items(1))
+            system_one.parse_answers(full[:cut], _s1_items(1))
 
 
 def test_the_option_reaches_the_router_and_litellm_as_thinking_disabled(monkeypatch) -> None:
@@ -1439,7 +1439,7 @@ def test_the_option_reaches_the_router_and_litellm_as_thinking_disabled(monkeypa
     wire = _wire(monkeypatch, lambda _b: _answers(
         {"id": "q1", "choice": "yes", "confidence": 0.9, "reason": "r"},
     ))
-    asyncio.run(system_one.ask("ctx", _items(1)))
+    asyncio.run(system_one.ask("ctx", _s1_items(1)))
     req = CompletionRequest.model_validate(v1_compat._router_outbound(wire.bodies[0]))
     assert req.reasoning_effort == "none"
     assert req.max_tokens == system_one.max_tokens_for(1)
