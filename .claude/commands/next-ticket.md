@@ -194,7 +194,7 @@ Ten lines or fewer:
 
 ```
 CYCLE: WS-n — <slice>
-AUDIT:    GO | GO-NARROWED | NO-GO — <one line>
+AUDIT:    GO | GO-NARROWED | NO-GO | skipped (small slice) — <one line>
 BUILT:    <one line>
 VERIFY:   PASS | FAIL — <the decisive evidence>
 TIER:     HIGH | STANDARD | LOW — <one line why>
