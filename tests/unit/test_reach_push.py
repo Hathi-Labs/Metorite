@@ -88,6 +88,12 @@ PRIYA = f"priya-{TAG}@re9b.test"
 #: Org A, UTC, 07:00 to 22:00.
 CAROL = f"carol-{TAG}@re9b.test"
 MEMBERS = (ALICE, BOB, PRIYA, CAROL)
+#: Org B, UTC. Two settings rows of one member: the session wrote the
+#: mixed case, and ``reminders.member_email`` holds the lower case.
+RAVI = f"ravi.k-{TAG}@re9b.test"
+RAVI_MIXED = f"Ravi.K-{TAG}@re9b.test"
+#: Every address that a test writes, for the wipe.
+WIPED = (*MEMBERS, RAVI, RAVI_MIXED)
 IST = ZoneInfo("Asia/Kolkata")
 PRIYA_DAY = Day(IST, 8, 20)
 SUBJECT = "mailto:push@re9b.test"
@@ -149,7 +155,7 @@ def _wipe(p: Any) -> None:
                     "DELETE FROM push_subscriptions WHERE member_email = ANY(:m)",
                     "DELETE FROM user_settings WHERE user_id = ANY(:m)",
                     "DELETE FROM app_user WHERE email = ANY(:m)"):
-            c.execute(text(sql), {"m": list(MEMBERS)})
+            c.execute(text(sql), {"m": list(WIPED)})
 
 
 @pytest.fixture
@@ -386,6 +392,35 @@ def test_r8_a_hidden_details_member_gets_no_title(world) -> None:
     words = json.dumps(payload)
     assert "biopsy" not in words and "3:00" not in words
     assert payload["body"] == _org_name(world, world.p.org_b)
+
+
+def test_r8_hide_under_any_spelling_of_the_address_hides(world) -> None:
+    """Repair round 1, finding 1. The session wrote hide ON under
+    ``Ravi.K``, and a lower-case row with no key also exists. The reminder
+    holds the lower case. One ``true`` under any spelling hides (ruling i)."""
+    org = world.p.org_b
+    with world.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO app_user (email, display_name, role, status, organization_id) "
+            "VALUES (:e, :e, 'employee', 'active', CAST(:o AS uuid))"), {"e": RAVI, "o": org})
+        for uid, prefs in ((RAVI_MIXED, {"hide_push_details": True}),
+                           (RAVI, {"open_in_app": True})):
+            c.execute(text(
+                "INSERT INTO user_settings (organization_id, user_id, timezone, "
+                "day_start_hour, day_end_hour, my_day_prefs) VALUES (CAST(:o AS uuid), :u, "
+                "'UTC', 7, 22, CAST(:v AS jsonb))"), {"o": org, "u": uid, "v": json.dumps(prefs)})
+        rows = c.execute(text(
+            "SELECT count(*) FROM user_settings WHERE lower(user_id) = :u"), {"u": RAVI})
+        assert rows.scalar_one() == 2  # non-vacuity: two spellings, two rows
+    world.browsers[RAVI] = _Browser()
+    _subscribe(world.p, RAVI, org, world.browsers[RAVI])
+    world.active.add(RAVI)
+    rid = _seed(world, RAVI, _utc(10, 15), title="Pick up the biopsy result")
+    _ticks(world, _utc(10, 15))
+    [payload] = _payloads(world, RAVI)
+    assert payload["title"] == push_message.HIDDEN_TITLE and payload["tag"] == rid
+    words = json.dumps(payload)
+    assert "biopsy" not in words and "3:00" not in words
 
 
 def test_r8_a_replay_of_the_same_tick_sends_once(world) -> None:

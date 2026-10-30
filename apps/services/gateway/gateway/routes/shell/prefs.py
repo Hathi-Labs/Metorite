@@ -248,28 +248,33 @@ _MERGE_PREFS = (
 )
 
 
-#: The member's row in the BOUND tenant, with the address in any case (WS-66
-#: RE-9b). The reminder loop knows only the lower case that
-#: ``reminders.member_email`` holds. The session's own spelling wins, then the
-#: newest row, as ``tasks.settings.member_settings`` reads it.
-_READ_ANY_CASE_SQL = (
-    "SELECT my_day_prefs FROM user_settings "
-    "WHERE organization_id = {org} AND lower(user_id) = lower(:uid) "
-    "ORDER BY (user_id = :uid) DESC, updated_at DESC LIMIT 1"
+#: The hide switch over EVERY spelling of the member's address, in the BOUND
+#: tenant (WS-66 RE-9b, repair round 1). A row keys on the spelling of the
+#: session that wrote it (``Ravi.K@acme.com``), and the reminder loop knows
+#: only the lower case that ``reminders.member_email`` holds. One JSON
+#: ``true`` under any spelling hides, so the read fails closed. ⚠️ Do not read
+#: ONE row: a lower-case row with no key would outvote the ``true`` and put
+#: the title on the lock screen. ``->`` gives NULL on a value that is not an
+#: object, and ``bool_or`` skips a NULL. The shape is EA-6i's
+#: ``routes/admin/agent_access_switch._READ_SQL``.
+_HIDE_ANY_CASE_SQL = (
+    "SELECT COALESCE(bool_or("
+    "my_day_prefs -> 'hide_push_details' = CAST('true' AS jsonb)), false) "
+    "FROM user_settings "
+    "WHERE organization_id = {org} AND lower(user_id) = lower(:uid)"
 )
 
 
 async def hide_push_details(db: Any, member: str) -> bool:
     """True when *member* turned on "Hide details on the lock screen"
-    (``hide_push_details``, RE-9a). Read on *db*, a session that the caller
-    bound to the tenant, for the send step of a reminder push (RE-9b). No row,
-    or no key, is False."""
+    (``hide_push_details``, RE-9a) under ANY spelling of the address. Read on
+    *db*, a session that the caller bound to the tenant, for the send step of
+    a reminder push (RE-9b). No row, or no ``true``, is False."""
     from gateway.routes.tasks.settings import _BOUND_ORG
     from sqlalchemy import text
 
-    row = (await db.execute(text(_READ_ANY_CASE_SQL.format(org=_BOUND_ORG)),
-                            {"uid": member})).first()
-    return row is not None and stored_prefs(row[0]).get("hide_push_details") is True
+    return bool((await db.execute(text(_HIDE_ANY_CASE_SQL.format(org=_BOUND_ORG)),
+                                  {"uid": member})).scalar())
 
 
 async def _read(db: Any, uid: str) -> Any:
