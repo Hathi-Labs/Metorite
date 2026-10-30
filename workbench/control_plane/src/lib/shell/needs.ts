@@ -23,8 +23,16 @@ import { PROJECTS_CACHE, notificationsApi } from "@/app/projects/lib/api";
 import { type CompletionStore, type DoneRow, markDoneFromHome } from "@/app/tasks/lib/completeFromHome";
 import { cacheKey } from "@/lib/dataCache";
 
-export type NeedsApp = "tasks" | "approvals" | "projects" | "email";
-export type NeedsKind = "overdue" | "approval" | "due_today" | "notification" | "needs_reply";
+export type NeedsApp = "tasks" | "approvals" | "projects" | "email" | "calendar";
+export type NeedsKind =
+  | "overdue"
+  | "approval"
+  | "due_today"
+  | "notification"
+  | "needs_reply"
+  | "reminder_due"
+  | "reminder_check"
+  | "reminder_unconfirmed";
 export type NeedsAct = "done" | "read";
 export type SourceState = "ok" | "failed" | "absent";
 
@@ -87,6 +95,11 @@ export const NEEDS_APP_HREF: Readonly<Record<NeedsApp, string>> = {
   approvals: "/approvals",
   projects: "/projects",
   email: "/email",
+  // WS-66 RM-2b: the reminder rows. The server keys their source and total by
+  // the source id `reminders`, and this map reads them by app. So no Calendar
+  // count shows in the sidebar yet, and the bell rows still draw (they filter
+  // on `item.app`).
+  calendar: "/calendar",
 };
 
 /**
@@ -171,7 +184,17 @@ function byHref(
  * approval row has no act: approving runs an outward write, so the member
  * opens Approvals and reads the proposal first.
  */
-export const KIND_ORDER: readonly NeedsKind[] = ["overdue", "approval", "due_today", "notification", "needs_reply"];
+export const KIND_ORDER: readonly NeedsKind[] = [
+  "overdue",
+  "approval",
+  "due_today",
+  "notification",
+  "needs_reply",
+  // WS-66 RM-2b: the member's own reminders, last of the needs kinds.
+  "reminder_due",
+  "reminder_check",
+  "reminder_unconfirmed",
+];
 
 /** How many rows the feed asks for. The BFF and the gateway both cap it. */
 export const NEEDS_LIMIT = 30;

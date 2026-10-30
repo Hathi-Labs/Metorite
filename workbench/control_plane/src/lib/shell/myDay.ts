@@ -104,6 +104,9 @@ export const KIND_LABELS: Readonly<Record<NeedsKind, string>> = {
   due_today: "Due today",
   notification: "From your projects",
   needs_reply: "Waiting for your reply",
+  reminder_due: "Reminder due",
+  reminder_check: "Reminder still open",
+  reminder_unconfirmed: "Reminder not confirmed",
 };
 
 /** Rows shown before "Show all". Seven is what the eye takes in one look. */
@@ -200,6 +203,7 @@ export const APP_NAMES: Readonly<Record<NeedsApp, string>> = {
   approvals: "Approvals",
   projects: "Projects",
   email: "Email",
+  calendar: "Calendar",
 };
 
 const APP_HREFS: Readonly<Record<NeedsApp, string>> = {
@@ -207,6 +211,7 @@ const APP_HREFS: Readonly<Record<NeedsApp, string>> = {
   approvals: "/approvals",
   projects: "/projects",
   email: "/email",
+  calendar: "/calendar",
 };
 
 /** A row's icon: its app's own icon from the manifest, never a second list. */
@@ -228,6 +233,7 @@ const MISSING: Readonly<Record<NeedsApp, string>> = {
   approvals: "approvals",
   projects: "notifications",
   email: "replies",
+  calendar: "time blocks",
 };
 
 // ── Next actions ────────────────────────────────────────────────────────────

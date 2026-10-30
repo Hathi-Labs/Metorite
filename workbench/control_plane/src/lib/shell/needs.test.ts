@@ -23,9 +23,12 @@ import { PROJECTS_CACHE } from "@/app/projects/lib/api";
 import {
   CARRIER_WAIT_MS,
   KIND_ORDER,
+  NEEDS_APP_HREF,
   NEEDS_CACHE,
   carryNeeds,
+  countsByApp,
   fetchNeeds,
+  floorApps,
   needsKey,
   readFeed,
   runAct,
@@ -122,7 +125,31 @@ describe("readFeed", () => {
   });
 
   it("puts approvals right after the overdue rows", () => {
-    expect(KIND_ORDER).toEqual(["overdue", "approval", "due_today", "notification", "needs_reply"]);
+    expect(KIND_ORDER.slice(0, 5)).toEqual(["overdue", "approval", "due_today", "notification", "needs_reply"]);
+  });
+
+  // WS-66 RM-2b. Mutation: take a reminder kind out of KIND_ORDER and the bell
+  // row below is dropped by `isItem`, so this fails.
+  it("puts the three reminder kinds last, and keeps a reminder row", () => {
+    expect(KIND_ORDER.slice(5)).toEqual(["reminder_due", "reminder_check", "reminder_unconfirmed"]);
+    const due = item({
+      id: "reminders:r1",
+      app: "calendar",
+      kind: "reminder_due",
+      href: "/chat?do=new-chat&reminder=r1",
+      act: null,
+      act_ref: null,
+    });
+    const feed = readFeed({ count: 1, items: [due], sources: { reminders: "ok" }, totals: { reminders: 1 } });
+    expect(feed.items).toEqual([due]);
+    expect(NEEDS_APP_HREF.calendar).toBe("/calendar");
+  });
+
+  it("shows no Calendar count, because the server keys the source by `reminders`", () => {
+    const due = item({ id: "reminders:r1", app: "calendar", kind: "reminder_due", act: null, act_ref: null });
+    const feed = readFeed({ count: 1, items: [due], sources: { reminders: "ok" }, totals: { reminders: 1 }, capped: ["reminders"] });
+    expect(countsByApp(feed, feed.items, false)).toEqual({});
+    expect(floorApps(feed, false).size).toBe(0);
   });
 });
 
