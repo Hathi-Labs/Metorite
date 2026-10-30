@@ -22,7 +22,12 @@
  * the model asks for a time, or shows the one confirm of `promote_reminder`.
  * No chip calls `/promote` itself.
  *
- * Fence (R7): `app/chat/reminderOpen.test.tsx`.
+ * **The Calendar** (RM-5) closes and opens a reminder through the same
+ * `runReminderAct`, and its other writes read `refusalWords` and
+ * `UNREACHABLE_WORDS` from here. So `/resolve` and `/reopen` have one client,
+ * and a refusal has one set of words.
+ *
+ * Fence (R7): `app/chat/reminderOpen.test.ts`.
  */
 import { useSyncExternalStore } from "react";
 
@@ -379,12 +384,24 @@ export function actRequest(id: string, act: ReminderAct): { url: string; body: R
 
 export type ActResult = { ok: true; row: ReminderRow } | { ok: false; words: string };
 
-/** The words of a refused chip. Never a raw status, and never an error object. */
-function refusalWords(status: number, body: unknown): string {
+/** The words of a write that did not reach the server. */
+export const UNREACHABLE_WORDS = "Metorite could not reach the server. Check the connection, then try again.";
+
+/**
+ * The words of a refused reminder write. Never a raw status, and never an
+ * error object. A 409 says the server's own words, and a 404 says the
+ * reminder is gone. Any other status says `fallback`. The chips and the
+ * Calendar (`app/calendar/lib/reminders.ts`) both read this one rule.
+ */
+export function refusalWords(
+  status: number,
+  body: unknown,
+  fallback = "Metorite could not save your answer. Try again.",
+): string {
   const detail = body && typeof body === "object" ? str((body as Record<string, unknown>).detail) : null;
   if (status === 409 && detail) return detail;
   if (status === 404) return "Metorite could not find this reminder. It may be gone.";
-  return "Metorite could not save your answer. Try again.";
+  return fallback;
 }
 
 /**
@@ -418,14 +435,14 @@ export async function runReminderAct(
     if (closedState) noteReminderState(id, closedState, null);
     return { ok: false, words: refusalWords(res.status, body) };
   } catch {
-    return { ok: false, words: "Metorite could not reach the server. Check the connection, then try again." };
+    return { ok: false, words: UNREACHABLE_WORDS };
   }
 }
 
 // ── The words after a chip ───────────────────────────────────────────────────
 
-/** A zone the browser knows, or undefined for the browser's own. */
-function knownZone(zone: string | null | undefined): string | undefined {
+/** A zone the browser knows, or undefined for the browser's own. The Calendar reads it too. */
+export function knownZone(zone: string | null | undefined): string | undefined {
   if (!zone) return undefined;
   try {
     new Intl.DateTimeFormat("en-GB", { timeZone: zone });
