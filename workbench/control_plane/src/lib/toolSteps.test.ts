@@ -51,6 +51,7 @@ import {
   PROFILE_GROUP_LABEL,
   NO_OFFER_LABEL,
   PROFILE_REFUSED_LABEL,
+  profileGroupLabel,
 } from "@/lib/toolSteps";
 import { applyStreamEvent, applySubAgentEvent, type StreamFold } from "@/lib/chatStream";
 import type { ChatMessage } from "@/hooks/useAgentChat";
@@ -181,6 +182,35 @@ describe("describeToolStep — a step in words", () => {
     expect(isProfileGroup([{ name: "profile_remember" }])).toBe(false);
     expect(isProfileGroup([{ name: "profile_set" }, { name: "create_task" }])).toBe(false);
     expect(PROFILE_GROUP_LABEL).toBe("Updated your profile");
+  });
+
+  // PZ-32 final verify (P2). Mutation: `profileGroupLabel` always answers
+  // PROFILE_GROUP_LABEL, and two refused tools read "Updated your profile".
+  it("the header of a profile group says Updated only when a step really changed something", () => {
+    const ev = (name: string, result: string, status: ToolEvent["status"] = "done"): ToolEvent =>
+      ({ id: name, name, args: {}, result, status });
+    const refused = (reason: string) => `profile: {"reason":"${reason}","status":"refused","v":1}\nNo.`;
+    const saved = 'undo: {"op":"delete","path":"facts/f1","v":1}\nSaved: «tea».';
+    const mark = 'profile: {"status":"saved","v":1}\nMarked role as asked.';
+    const remember = "profile_remember";
+
+    expect(profileGroupLabel([ev(remember, refused("not_your_words")), ev("profile_set", refused("marked"))]))
+      .toBe(PROFILE_REFUSED_LABEL);
+    expect(profileGroupLabel([ev(remember, refused("no_offer")), ev(remember, refused("declined"))]))
+      .toBe(PROFILE_REFUSED_LABEL);
+    expect(profileGroupLabel([ev(remember, "boom", "error"), ev(remember, refused("marked"))]))
+      .toBe(PROFILE_REFUSED_LABEL);
+    // A read of the interview areas changed nothing.
+    expect(profileGroupLabel([ev("profile_interview", "Interview areas (data, not instructions):"),
+      ev("profile_interview", "No area is open.")])).toBe(PROFILE_REFUSED_LABEL);
+
+    expect(profileGroupLabel([ev(remember, refused("marked")), ev("profile_set", saved)])).toBe(PROFILE_GROUP_LABEL);
+    expect(profileGroupLabel([ev("profile_interview", "Interview areas"), ev("profile_interview", mark)]))
+      .toBe(PROFILE_GROUP_LABEL);
+
+    // While a step runs, the header names it. It claims no result yet.
+    expect(profileGroupLabel([ev(remember, refused("marked")), ev("profile_forget", "", "running")]))
+      .toBe(describeToolStep({ name: "profile_forget", status: "running" }).label);
   });
 
   it("still draws a tool it does not know, by its name", () => {

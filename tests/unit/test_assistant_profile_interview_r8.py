@@ -743,7 +743,7 @@ def _run_317(db) -> None:
         sql = fh.read()
     # The ladder ran it on an empty table, so its run-once mark goes first.
     with db.admin_engine.begin() as conn:
-        conn.execute(text("COMMENT ON COLUMN user_settings.assistant_profile IS NULL"))
+        conn.execute(text("COMMENT ON TABLE user_settings IS NULL"))
     with db.admin_engine.begin() as conn, conn.connection.dbapi_connection.cursor() as cur:
         cur.execute(sql)
 

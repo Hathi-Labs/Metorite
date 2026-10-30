@@ -388,24 +388,59 @@ export const NO_OFFER_LABEL = "Nothing to save";
 /** The label of any other refused profile tool. It holds for each of them. */
 export const PROFILE_REFUSED_LABEL = "Profile not changed";
 
+/** The first line of a result: the ONE machine line of a profile tool. */
+function firstLine(result: string | undefined): string {
+  return (result ?? "").split(/\r?\n/, 1)[0].trim();
+}
+
 /**
- * The reason of a refused profile tool, or null. A result of
+ * The `profile: {json}` line of a result, or null. A result of
  * `acb_skills/profile_tools.py` starts with ONE machine line, so this reads
  * only the first line, as `ProfileToolCards.parseStatus` does. It parses
  * here, because this pure module imports no component.
  */
-function profileRefusal(bare: string, event: Pick<ToolEvent, "status" | "result">): string | null {
-  if (event.status !== "done" || !bare.startsWith("profile_")) return null;
-  const first = (event.result ?? "").split(/\r?\n/, 1)[0].trim();
+function profileLine(result: string | undefined): { status?: unknown; reason?: unknown } | null {
+  const first = firstLine(result);
   if (!first.startsWith("profile: ")) return null;
   try {
     const raw: unknown = JSON.parse(first.slice("profile: ".length));
-    if (typeof raw !== "object" || raw === null) return null;
-    const { status, reason } = raw as { status?: unknown; reason?: unknown };
-    return status === "refused" ? String(reason ?? "") : null;
+    return typeof raw === "object" && raw !== null ? raw : null;
   } catch {
     return null;
   }
+}
+
+/** The reason of a refused profile tool, or null. */
+function profileRefusal(bare: string, event: Pick<ToolEvent, "status" | "result">): string | null {
+  if (event.status !== "done" || !bare.startsWith("profile_")) return null;
+  const line = profileLine(event.result);
+  return line?.status === "refused" ? String(line.reason ?? "") : null;
+}
+
+/**
+ * True when a profile tool really changed something: a change starts with
+ * `undo: `, and a mark or an undo says `saved` or `undone`. A refusal, a read
+ * of the interview areas and a failed call changed nothing.
+ */
+function profileChanged(event: Pick<ToolEvent, "status" | "result">): boolean {
+  if (event.status !== "done") return false;
+  if (firstLine(event.result).startsWith("undo: ")) return true;
+  const status = profileLine(event.result)?.status;
+  return status === "saved" || status === "undone";
+}
+
+/**
+ * The header of a group of profile tools ({@link isProfileGroup}). It says
+ * {@link PROFILE_GROUP_LABEL} only when a step really changed the profile.
+ * While a step runs and none has changed anything, it names that step. When
+ * all are over and nothing changed, it says {@link PROFILE_REFUSED_LABEL}.
+ */
+export function profileGroupLabel(
+  events: ReadonlyArray<Pick<ToolEvent, "name" | "args" | "status" | "subAgentName" | "result">>,
+): string {
+  if (events.some(profileChanged)) return PROFILE_GROUP_LABEL;
+  const running = events.find((e) => e.status === "running");
+  return running ? describeToolStep(running).label : PROFILE_REFUSED_LABEL;
 }
 
 function phrase(verb: Verb, status: StepStatus, object: string): string {

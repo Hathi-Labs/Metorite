@@ -1527,10 +1527,13 @@ chat fill in the member's profile.
      `stop_interview` does. It changes no other row. A member who marked
      some areas `never` one by one and answered the rest has the same
      shape, so the migration reads that member as stopped too.
-   - The backfill runs once. It ends by adding `PZ-32 stop backfill done` to
-     the comment of the column, in its own transaction, and a later run
-     finds that text and changes nothing. The guard is needed, because the
-     runner re-applies a file whose checksum changes. After the first run,
+   - The backfill runs once. Its last step puts `PZ-32 stop backfill done`
+     in the comment of the table `user_settings`, in its own transaction. A
+     later run finds that text and changes nothing, and so does a replay
+     that runs 294 first. The mark is not on the column, because 294 writes
+     the comment of the column with no condition. The guard is needed,
+     because the runner re-applies a file whose checksum changes, and
+     `MIGRATION_REPLAY_ALL` re-applies each file. After the first run,
      the old shape proves no stop: a member who reset an area and answered
      it matches, and so does a member who never said stop. A second
      backfill would stop each of them.

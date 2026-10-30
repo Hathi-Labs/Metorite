@@ -25,7 +25,8 @@ Mutations this file catches (R7). ``M`` is the migration file:
 * ``M`` has no per-tenant pass under row security, so the owner changes
   nothing;
 * a second run changes a row again, so a member who reset and answered gets
-  ``stopped_at`` back;
+  ``stopped_at`` back. That includes a replay that runs 294 first, which
+  clears a mark on the comment of the column;
 * ``M`` takes no row lock, so a reset at that moment gets ``stopped_at`` back
   (with the second wall gone too, the whole column goes NULL);
 * an odd shape of the column makes ``M`` fail or change a row;
@@ -67,6 +68,10 @@ _OWNER_PW = "pz32stop_owner_pw"
 _MIGRATION = next(p for p in sorted(os.listdir(_LADDER_DIR))
                   if p.endswith("_assistant_profile_interview_stopped.sql"))
 _SQL = os.path.join(_LADDER_DIR, _MIGRATION)
+#: 294, which writes the comment of the column with no condition.
+_COLUMN_SQL = os.path.join(_LADDER_DIR, next(
+    p for p in sorted(os.listdir(_LADDER_DIR))
+    if p.endswith("_user_settings_assistant_profile.sql")))
 
 T0 = "2026-09-01T10:00:00Z"
 ASKED = "2026-09-20T08:30:00Z"
@@ -148,8 +153,8 @@ def _get(world, org: str, email: str) -> Any:
                          {"o": org, "u": email}).scalar_one()
 
 
-def _run(url) -> list[str]:
-    """Apply the file once on *url*. Returns the notices."""
+def _run(url, path: str = _SQL) -> list[str]:
+    """Apply the file *path* once on *url*. Returns the notices."""
     notices: list[str] = []
     eng = create_engine(url, future=True)
     try:
@@ -157,7 +162,7 @@ def _run(url) -> list[str]:
             conn.connection.dbapi_connection.add_notice_handler(
                 lambda diag: notices.append(diag.message_primary or ""))
             with conn.connection.dbapi_connection.cursor() as cur, \
-                    open(_SQL, encoding="utf-8") as fh:
+                    open(path, encoding="utf-8") as fh:
                 cur.execute(fh.read())
     finally:
         eng.dispose()
@@ -165,10 +170,10 @@ def _run(url) -> list[str]:
 
 
 def _before_317(world) -> None:
-    """Take away the run-once mark, as the column stood before the file. The
+    """Take away the run-once mark, as the table stood before the file. The
     ladder of the fixture already ran it, on an empty table."""
     with world.admin_engine.begin() as c:
-        c.execute(text("COMMENT ON COLUMN user_settings.assistant_profile IS NULL"))
+        c.execute(text("COMMENT ON TABLE user_settings IS NULL"))
 
 
 def _all(world) -> dict[str, Any]:
@@ -218,10 +223,13 @@ def test_317_backfills_each_old_stop_once_and_nothing_else(world) -> None:
 
     # Run once. After the first run the old shape proves no stop: a member
     # who reset an area and answered it matches, and a second backfill would
-    # stop them. A later run, as each role, changes nothing.
+    # stop them. A later run, as each role, changes nothing. A replay runs
+    # 294 first, and 294 writes the comment of the COLUMN with no condition,
+    # so a mark there would go, and the backfill would run again.
     answered_again = _put(world, a, _old_stop())
     settled = _all(world)
     for url in (world.owner_url, world.admin_engine.url):
+        _run(url, _COLUMN_SQL)
         again = _run(url)
         assert "317: the stop backfill ran already, so nothing changes" in again, again
         assert _all(world) == settled

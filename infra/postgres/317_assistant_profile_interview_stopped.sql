@@ -37,13 +37,16 @@
 --   Such a write is rare for a member who said stop, and the window is a few
 --   minutes. No old-code read breaks on the new keys.
 --
--- It runs once: the file ends by adding `PZ-32 stop backfill done` to the
---   comment of the column, in the same transaction. A later run finds that
---   text, and it changes nothing. ⚠️ This guard is load-bearing. The runner
---   re-applies a file whose checksum changes, and REPLAY_ALL re-applies each
---   file. After the first run the old shape proves nothing: a member who
---   reset an area and answered it matches, and so does a member who never
---   said stop. A second backfill would stop each of them.
+-- It runs once: the file ends by writing `PZ-32 stop backfill done` as the
+--   comment of the TABLE `user_settings`, in the same transaction. A later
+--   run finds that text, and it changes nothing. A replay that runs 294 first
+--   changes nothing too. ⚠️ This guard is load-bearing. The runner re-applies
+--   a file whose checksum changes, and REPLAY_ALL re-applies each file. After
+--   the first run the old shape proves nothing: a member who reset an area
+--   and answered it matches, and so does a member who never said stop. A
+--   second backfill would stop each of them. The mark is not on the column,
+--   because 294 writes the comment of the column with no condition, and a
+--   replay would clear it. No other file writes the comment of this table.
 --
 -- The race: `Reset the interview` or Forget-all can hold a row while the
 --   tenant pass reads it. Postgres then re-reads the newest row for the
@@ -131,12 +134,8 @@ DECLARE
 BEGIN
     -- Run once. After the first run the old shape proves no stop, and a
     -- replay must keep each member's own state.
-    IF COALESCE(col_description(
-            'user_settings'::regclass,
-            (SELECT attnum FROM pg_attribute
-              WHERE attrelid = 'user_settings'::regclass
-                AND attname = 'assistant_profile'
-                AND NOT attisdropped)), '') LIKE '%PZ-32 stop backfill done%' THEN
+    IF COALESCE(obj_description('user_settings'::regclass, 'pg_class'), '')
+            LIKE '%PZ-32 stop backfill done%' THEN
         RAISE NOTICE '317: the stop backfill ran already, so nothing changes';
         RETURN;
     END IF;
@@ -163,8 +162,7 @@ BEGIN
 END $$;
 
 -- The mark of the run-once guard, in the transaction of the backfill.
-COMMENT ON COLUMN user_settings.assistant_profile IS
-    'PZ-1: the member''s assistant profile (address, style, aliases, facts). '
-    'NULL = nothing set. PZ-32 stop backfill done.';
+COMMENT ON TABLE user_settings IS
+    'The settings of one member in one organization. PZ-32 stop backfill done.';
 
 COMMIT;
