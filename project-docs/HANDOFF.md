@@ -97,6 +97,11 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `ssh metorite 'sudo -n grep -c "^ASSISTANT_PROFILE_CARD_WRITES_ORGS=" /opt/acb/app/.env'`. A count of 0 means production still waits for the owner's check. An agent sets the flag only after the owner says yes.
 - **Added:** 2026-10-30 · WS-63 PZ-32 session
 
+### H-437 · Decide when production gets the glass look (GL-9) · [OWNER]
+- **Metorite:** #1193. The task holds the full entry. Owner, 2026-10-31: "don't deploy to production until I say so."
+- **Check:** `ssh metorite 'sudo -n grep -c "^NEXT_PUBLIC_UI_LOOK=" /opt/acb/app/workbench/control_plane/.env.local'`. A count of 0 means production still waits for the owner. An agent writes the line only after the owner says yes in chat.
+- **Added:** 2026-10-31 · GL-0/GL-1 session (task #1125)
+
 ### H-436 · Decide whether work words stop tripping the sensitive-fact card · [OWNER]
 - **Metorite:** #1116. The task holds the question and a recommendation.
 - **Check:** task #1116 is not Done → still pending.
