@@ -29,6 +29,8 @@ says which name it uses. The production flip stays an owner act.
 **PZ-30 BUILT 2026-10-27, dark.** The interview reads as a talk, not a form.
 See §14.4 "PZ-30 as built".
 
+**PZ-20a and PZ-20c BUILT 2026-10-30, dark.** The pane has "What the assistant sees", the block as text. A test pins the footer on solo turns. PZ-20b, the mark, is not built. See the PZ-20 rows of §9.
+
 **PZ-32 BUILT 2026-10-30. The card writes are dark.** The interview gains
 the areas `name` and `language`, and asks them first. A stop holds for the
 new areas too. Migration 317 gives a stop from before PZ-32 its
