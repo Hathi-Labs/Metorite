@@ -1334,8 +1334,8 @@ only through web push. Today a member turns push on only in My Profile, and
 few members find it.
 
 1. **Where.** The web chat of the member's own assistant
-   (`components/AgentChat.tsx`, beside the `composerNotice` block, which
-   already docks a notice above the composer). The guard is
+   (`components/AgentChat.tsx`, above the message box, by the `notice` block).
+   That block already docks a note there. The guard is
    `isOrchestrator && !isRoom`. It is one inline sheet, docked above the
    composer. It is not a modal. It never
    covers the messages and never blocks the composer. It never shows in a

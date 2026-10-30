@@ -168,15 +168,46 @@ export function PushPromptPanel({ kind, phase, note, onTurnOn, onLater, onNever,
   );
 }
 
+/** Should the sheet start its check now. A hidden chat makes no request and no write. */
+export function mayCheck(f: { ownChat: boolean; visible: boolean; hasMessages: boolean; streaming: boolean; decided: boolean }): boolean {
+  return f.ownChat && f.visible && f.hasMessages && !f.streaming && !f.decided;
+}
+
+/**
+ * Save a choice, then act. `onSaved` runs only after a stored result. On a
+ * failure `onFailed` runs and the sheet stays open.
+ */
+export async function saveChoice(
+  write: (patch: PromptState) => Promise<boolean>,
+  patch: PromptState,
+  then: { onSaved: () => void; onFailed: () => void },
+): Promise<void> {
+  if (await write(patch).catch(() => false)) then.onSaved();
+  else then.onFailed();
+}
+
+/** Close the sheet, then tell the caller so it can move the focus. */
+export function closeAndNotify(hide: () => void, onClosed?: () => void): void {
+  hide();
+  onClosed?.();
+}
+
 export interface PushPromptSheetProps {
   /** The member's own assistant: `isOrchestrator && !isRoom`. */
   ownChat: boolean;
   messageCount: number;
   /** A run streams now. */
   streaming: boolean;
+  /** The chat is on screen. The dock keeps a closed chat mounted. */
+  visible?: boolean;
+  /** Runs after the sheet closes, so the caller can move the focus. */
+  onClosed?: () => void;
 }
 
-export default function PushPromptSheet({ ownChat, messageCount, streaming }: PushPromptSheetProps) {
+/** The note when a choice did not save. */
+export const SAVE_FAILED = "Could not save your choice. Try again.";
+
+export default function PushPromptSheet({ ownChat, messageCount, streaming, visible = true, onClosed }: PushPromptSheetProps) {
   const toast = useToast();
   const [kind, setKind] = useState<PromptKind>("none");
   const [phase, setPhase] = useState<SheetPhase>("ask");
@@ -191,17 +222,19 @@ export default function PushPromptSheet({ ownChat, messageCount, streaming }: Pu
   }, []);
 
   /** Read, merge, then write: a PUT replaces the whole value of the key. */
-  const write = useCallback(async (patch: PromptState) => {
+  const write = useCallback(async (patch: PromptState): Promise<boolean> => {
     const prefs = await loadFeedPrefs();
     const base = prefs ? promptStateOf(prefs) : stored.current;
     const next = mergePromptState(base, patch);
     const saved = await saveFeedPref("push_prompt", next);
-    stored.current = saved ? promptStateOf(saved) : next;
+    if (!saved) return false;
+    stored.current = promptStateOf(saved);
+    return true;
   }, []);
 
   const hasMessages = messageCount > 0;
   useEffect(() => {
-    if (!ownChat || !hasMessages || streaming || decided.current) return;
+    if (!mayCheck({ ownChat, visible, hasMessages, streaming, decided: decided.current })) return;
     let cancelled = false;
     void (async () => {
       // The cheap local reads come first, so a desktop makes no request.
@@ -247,9 +280,13 @@ export default function PushPromptSheet({ ownChat, messageCount, streaming }: Pu
     };
     // `messageCount` is read when the effect runs. Only the edges re-run it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ownChat, hasMessages, streaming, write]);
+  }, [ownChat, visible, hasMessages, streaming, write]);
 
-  const close = useCallback(() => setKind("none"), []);
+  const onClosedRef = useRef(onClosed);
+  onClosedRef.current = onClosed;
+  const close = useCallback(() => {
+    closeAndNotify(() => setKind("none"), onClosedRef.current);
+  }, []);
 
   function onTurnOn() {
     // FIRST: the tap must still count when the browser asks.
@@ -278,20 +315,36 @@ export default function PushPromptSheet({ ownChat, messageCount, streaming }: Pu
     );
   }
 
-  function onLater() {
-    void write({ snoozed_until: snoozeUntil(new Date()) });
-    close();
+  async function onLater() {
+    setNote(null);
+    await saveChoice(write, { snoozed_until: snoozeUntil(new Date()) }, {
+      onSaved: close,
+      onFailed: () => setNote(SAVE_FAILED),
+    });
   }
 
-  function onNever() {
-    void write({ never: true });
-    close();
-    toast.show({
-      key: "push-prompt-never",
-      variant: "success",
-      title: "We will not ask again",
-      description: `To turn on notifications later, open ${SETTINGS_PATH}.`,
-      action: { label: "Undo", onClick: () => void write({ never: false }) },
+  async function onNever() {
+    setNote(null);
+    await saveChoice(write, { never: true }, {
+      onFailed: () => setNote(SAVE_FAILED),
+      onSaved: () => {
+        close();
+        toast.show({
+          key: "push-prompt-never",
+          variant: "success",
+          title: "We will not ask again",
+          description: `To turn on notifications later, open ${SETTINGS_PATH}.`,
+          action: {
+            label: "Undo",
+            onClick: () => {
+              void saveChoice(write, { never: false }, {
+                onSaved: () => undefined,
+                onFailed: () => toast.show({ key: "push-prompt-undo", variant: "error", title: SAVE_FAILED }),
+              });
+            },
+          },
+        });
+      },
     });
   }
 

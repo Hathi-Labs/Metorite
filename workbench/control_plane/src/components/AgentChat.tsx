@@ -2580,6 +2580,17 @@ export default function AgentChat({
               contributor if you need to send turns to its agents.
             </div>
           )}
+          {/* OB-8: asks a phone member to turn on push. It docks above the
+              message box, as the notes above do. The member's own assistant
+              only, after the first turn, and never during a run. The server's
+              `prompt` flag decides whether it draws at all. */}
+          <PushPromptSheet
+            ownChat={isOrchestrator && !isRoom}
+            messageCount={messages.length}
+            streaming={isLoading}
+            visible={visible}
+            onClosed={() => inputRef.current?.focus()}
+          />
           {/* The message box (owner, 2026-10-12: "it looks quite untidy").
               The message takes the whole width, with no gutter. One bar inside
               the box holds the quiet tools at the left and ONE round control
@@ -2871,11 +2882,6 @@ export default function AgentChat({
               </Button>
             </p>
           )}
-
-          {/* OB-8: asks a phone member to turn on push. The member's own
-              assistant only, after the first turn, and never during a run. The
-              server's `prompt` flag decides whether it draws at all. */}
-          <PushPromptSheet ownChat={isOrchestrator && !isRoom} messageCount={messages.length} streaming={isLoading} />
 
           {/* A steer the server refused, or a model that cannot take one.
               The words are back in the box. */}

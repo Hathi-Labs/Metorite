@@ -7,7 +7,7 @@ import { createElement, isValidElement, type ReactElement, type ReactNode } from
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-import { PushPromptPanel, type PushPromptPanelProps } from "./PushPromptSheet";
+import { PushPromptPanel, closeAndNotify, mayCheck, saveChoice, type PushPromptPanelProps } from "./PushPromptSheet";
 
 type El = ReactElement<Record<string, unknown>>;
 
@@ -98,5 +98,44 @@ describe("PushPromptPanel", () => {
   it("never names the model or a tool", () => {
     const all = (["turn-on", "ios-tab", "denied"] as const).map((kind) => setup({ kind }).html).join(" ");
     expect(all).not.toMatch(/claude|gpt|openai|anthropic|\btool\b/i);
+  });
+});
+
+describe("a choice saves before it closes", () => {
+  it("a failed save keeps the sheet open (Remind me later, Don't ask again)", async () => {
+    for (const patch of [{ snoozed_until: "2026-11-06T00:00:00Z" }, { never: true }]) {
+      const then = { onSaved: vi.fn(), onFailed: vi.fn() };
+      await saveChoice(async () => false, patch, then);
+      expect(then.onSaved).not.toHaveBeenCalled();
+      expect(then.onFailed).toHaveBeenCalledTimes(1);
+    }
+  });
+  it("a thrown save counts as a failure", async () => {
+    const then = { onSaved: vi.fn(), onFailed: vi.fn() };
+    await saveChoice(async () => { throw new Error("x"); }, { never: true }, then);
+    expect(then.onFailed).toHaveBeenCalledTimes(1);
+  });
+  it("a stored save closes", async () => {
+    const then = { onSaved: vi.fn(), onFailed: vi.fn() };
+    await saveChoice(async () => true, { never: true }, then);
+    expect(then.onSaved).toHaveBeenCalledTimes(1);
+    expect(then.onFailed).not.toHaveBeenCalled();
+  });
+});
+
+describe("a hidden chat", () => {
+  const on = { ownChat: true, visible: true, hasMessages: true, streaming: false, decided: false };
+  it("starts no check, so it makes no fetch and no write", () => {
+    expect(mayCheck(on)).toBe(true);
+    expect(mayCheck({ ...on, visible: false })).toBe(false);
+  });
+});
+
+describe("the close callback", () => {
+  it("hides the sheet, then runs onClosed", () => {
+    const order: string[] = [];
+    closeAndNotify(() => order.push("hide"), () => order.push("closed"));
+    expect(order).toEqual(["hide", "closed"]);
+    expect(() => closeAndNotify(() => undefined)).not.toThrow();
   });
 });
