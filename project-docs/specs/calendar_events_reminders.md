@@ -27,6 +27,9 @@
   **RE-9a (the push message builder and the "Hide details on the lock
   screen" setting) is BUILT, 2026-10-30, dark.** It sends nothing. RE-9b is
   not built.
+  **OB-8 (the chat asks a phone member to turn on notifications) is
+  BUILT, 2026-10-30, dark** behind `PUSH_PROMPT_ORGS` (§10.4). No box
+  has the flag on.
 - **Board row:** **WS-CAL**. WS-66 for reminders and web push sits under
   it.
 - **Asked by:** the owner, 2026-10-15. The Calendar must hold more than
@@ -946,6 +949,8 @@ and its item 5 (for reminder pushes, D114.4).
 - **Where the member turns it on.** A Notifications section on My Profile
   (`/people/me`), beside the Reach section. It adds no pane and no nav
   entry. RE-7 later adds the choice of the main channel to that section.
+  On a phone, the web chat also asks once, with snooze and "Don't ask
+  again" (OB-8, §10.4).
 - **One browser, several accounts.** The account switcher lets one browser
   hold several accounts, and all of them share one push subscription. PN-1
   settles the device rows: each account has its own row for the endpoint. A
@@ -1147,6 +1152,7 @@ Every flag is OFF by default. Off gives today's behaviour.
 | `CALENDAR_LEAD_TIME` | Gateway | CE-1, CE-6 | The fixed 30 minutes |
 | `CALENDAR_REMINDERS` | Gateway. As for web push, the client has no flag of its own: RM-5 draws reminders only when the reminder routes answer | RM-1 to RM-5 | The reminder routes answer 404. No loop, no cards, no tools, no pins. `/version` carries `calendar_reminders` |
 | `WEB_PUSH_ENABLED` | Gateway. The client has no flag of its own: the Notifications section shows only when `/push/public-key` answers | PN-1, RE-9 | Every `/push` route answers 404, so the section draws nothing, and nothing registers or sends. ✅ ON for every org is approved (D114.8) |
+| `PUSH_PROMPT_ORGS` | Gateway, a per-org list. The client reads `prompt` in the `/push/public-key` answer | OB-8 (§10.4) | The chat shows no sheet that asks a phone member to turn on notifications |
 | `NEXT_PUBLIC_CALENDAR_COMPOSER` | Control plane | CE-3 | No drag to draw. The Gap Filler as today |
 | `CALENDAR_EVENTS` and `NEXT_PUBLIC_CALENDAR_EVENTS` | Both | CE-4 to CE-9, CE-12 | No events. `/version` carries `calendar_events` |
 | `CALENDAR_SYNC_READ` | Gateway | CE-10 | No sync. 🔴 Owner flip |
@@ -1304,6 +1310,125 @@ content, as `test_email_send_later.py` does. The fence is
    `skill_projects/manifest.py`, as a planned tool, in this PR.
 8. **The flag.** With `CALENDAR_REMINDERS` off, each route answers 404.
    `/version` carries `calendar_reminders`.
+
+### 10.4 OB-8 — the chat asks a phone member to turn on notifications
+
+Metorite task 600, workstream WS-OB. Owner requests, 2026-10-27 (the task
+rules) and 2026-10-30 ("a chat should also prompt the user"). No D-number.
+Tier STANDARD: product UI and one key of the member's own prefs. No
+migration. It ships dark behind `PUSH_PROMPT_ORGS` (§9).
+
+**BUILT, 2026-10-30, dark.** The sheet is `components/PushPromptSheet.tsx`.
+The show rule is `lib/pushPrompt.ts`.
+
+`lib/push.ts` holds `isPhone` and `prompt`.
+`components/AgentChat.tsx` holds one mount. `routes/shell/prefs.py` holds the
+`push_prompt` key. `push/flags.py` and `push/routes.py` hold `PUSH_PROMPT_ORGS`.
+
+**The build is AGENT-SAFE. The flag flip is OWNER-GATE**, or an agent act under a dated
+`enforcement-flip` grant. Staging comes first, and the act names the flag
+and the box.
+
+**Why.** The morning brief, reminders and proactive messages reach a phone
+only through web push. Today a member turns push on only in My Profile, and
+few members find it.
+
+1. **Where.** The web chat of the member's own assistant
+   (`components/AgentChat.tsx`, above the message box, by the `notice` block).
+   That block already docks a note there. The guard is
+   `isOrchestrator && !isRoom`. It is one inline sheet, docked above the
+   composer. It is not a modal. It never
+   covers the messages and never blocks the composer. It never shows in a
+   room, in an app agent's chat, on the sign-in page, or on WhatsApp.
+2. **A phone.** One pure helper, `isPhone(facts)` in `src/lib/push.ts`. It
+   is true for an iOS or Android device, and for a coarse pointer under
+   768 px. A desktop never shows the sheet.
+3. **When it shows.** Every rule must hold:
+   - The flag holds for the org. `GET /push/public-key` answers
+     `prompt: true` (item 7).
+   - `pushSupport()` gives `supported`. In a Safari tab on iOS it gives
+     `ios-tab`, and the sheet does not show (item 6).
+   - The permission is not `granted`, or this device has no row for this
+     member (`registeredHere`).
+   - The chat holds one message or more, and no run streams. So the sheet
+     never shows in the first-run chat, and never shows beside the
+     interview offer, which shows only in an empty chat.
+   - The stored state allows it (item 5): no `never`, no `snoozed_until`
+     in the future, and no `last_shown_at` in the last 24 hours.
+4. **The three choices.**
+   - **Turn on.** The tap handler calls `enablePush()` first, before any
+     other await, because a browser refuses a permission request that no
+     tap started. On success, the sheet says "Notifications are on" and
+     closes. On `denied`, the sheet shows the phone-settings steps (item 6).
+   - **Remind me later.** It writes `snoozed_until` = now + 7 days, and
+     closes the sheet.
+   - **Don't ask again.** It writes `never: true`, and closes the sheet.
+     A toast offers Undo and names the way back: My Profile → Notifications.
+   - The close button and Escape close the sheet. The 24-hour rule then
+     holds it back until tomorrow.
+5. **The state.** One key, `push_prompt`, in `PREF_KEYS` of
+   `routes/shell/prefs.py`, stored in `user_settings.my_day_prefs`. Add it at
+   the four code points that RE-9a names: `PREF_KEYS`, `PrefPut.key`, an arm
+   in `_CLEAN` and `stored_prefs`. Its value is an object:
+   `snoozed_until`, `last_shown_at` and `denied_seen_at` (ISO times with an
+   offset), and `never` (a boolean). `_CLEAN` drops an unknown field,
+   refuses a time with no offset, and refuses a `snoozed_until` more than
+   366 days ahead. The state is per member and org, so every phone of the
+   member obeys it. The client writes `last_shown_at` once each time the
+   sheet shows. `_CLEAN` holds list and boolean arms only, so this key
+   needs a new object validator and an object arm in `stored_prefs`. The
+   client reuses `loadFeedPrefs` and `saveFeedPref` of `lib/shell/feed.ts`.
+   A PUT replaces the whole value of one key, so the client reads, merges,
+   then writes.
+6. **iPhone and a refused permission.**
+   - In a Safari tab (`ios-tab`), push works only from the Home Screen app.
+     OB-8 shows nothing there. `InstallNudge` owns the Home Screen ask.
+     OB-8 asks once the member opens Metorite from the Home Screen.
+   - When the permission is `denied`, a browser allows no second request.
+     The sheet shows how to turn notifications on in the phone's settings,
+     once. It then writes `denied_seen_at` and does not show again while
+     the permission stays `denied`.
+7. **The flag.** `PUSH_PROMPT_ORGS`, a per-org list on the existing `*_ORGS`
+   seam, with the reload rule of that seam. `*` opens every org. The field
+   `push_prompt_orgs` goes in `settings.py` beside `web_push_enabled`, and
+   the reader goes in `gateway/push/flags.py`. It reads the settings at call
+   time, never at import (`test_flag_reload.py`). Add the prefix
+   `PUSH_PROMPT_` to `env_guard.py`, as `BRIEF_` is, so that a tenant env
+   cannot open the flag. The staging flag tool (`acb-staging-flag`) does not
+   take this name, because its `HELD_RE` holds every `PUSH` key off on
+   staging. An agent with a dated `env-write` grant sets it in the staging
+   `.env` instead, and reports the act. `GET /push/public-key` adds `prompt`, true only when the flag
+   holds for the session's org. With the
+   flag off, the chat draws no sheet and writes nothing. The Notifications
+   section of My Profile does not change.
+8. **The copy.** Title "Get notified on this phone". Body: "Turn on
+   notifications so reminders, your morning brief and replies that need you
+   reach this phone, even when Metorite is closed." It never names the model
+   or a tool.
+9. **The UI gate.** `DESIGN_SYSTEM.md` §11 applies: the one look, the four
+   captures, a 390 px check, Tab reaches each button, Escape closes, and the
+   sheet is a labelled region.
+
+**Non-goals.** A desktop chat that says no phone gets notifications. A
+prompt on WhatsApp. Any change to `enablePush`, the service worker or the
+sender. A new table or migration.
+
+**Done when.** On a phone with the flag on and push off, the chat shows the
+sheet once. Each choice does what it says. With the flag off, nothing
+shows. Member B and org B read no `push_prompt` of member A (R8).
+
+**Fence (R7).** `src/lib/pushPrompt.test.ts` (new) pins the show rule: the
+flag, each support state, the permission, an empty chat, a stream, the
+snooze, `never`, the 24 hours and `denied_seen_at`. A component test pins
+the three buttons and Escape. New cases in `tests/unit/test_my_day_prefs.py`
+and `tests/unit/test_my_day_prefs_r8.py` (`pytestmark = _DB_GATE`) pin
+`_CLEAN` and the tenant read. A case in `tests/unit/test_push_subscriptions.py`
+pins `prompt` and the flag.
+
+**Verify.** `bash scripts/dev_db.sh`, then
+`uv run pytest tests/unit/test_my_day_prefs.py tests/unit/test_my_day_prefs_r8.py tests/unit/test_push_subscriptions.py`,
+then in `workbench/control_plane`:
+`npx tsc --noEmit && npx vitest run src/lib/push.test.ts src/lib/pushPrompt.test.ts src/components src/app/people`.
 
 ## 11. Owner questions
 

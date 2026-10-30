@@ -31,6 +31,28 @@ def enabled() -> bool:
     return get_settings().web_push_enabled is True
 
 
+@functools.lru_cache(maxsize=16)
+def _parse_orgs(raw: str) -> frozenset[str]:
+    """The entries of a comma list, trimmed and in lower case."""
+    return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+
+
+def prompt_orgs() -> frozenset[str]:
+    """The organization ids in ``PUSH_PROMPT_ORGS`` (OB-8). ``*`` stays in
+    the set, and :func:`prompt_allowed` reads it as every org."""
+    return _parse_orgs(str(getattr(get_settings(), "push_prompt_orgs", "") or ""))
+
+
+def prompt_allowed(organization_id: str | None) -> bool:
+    """True when ``PUSH_PROMPT_ORGS`` holds the org, or holds ``*``. Default
+    OFF. The caller checks :func:`enabled` too. The org comes from the
+    session, never from request input (R5)."""
+    if not organization_id:
+        return False
+    listed = prompt_orgs()
+    return "*" in listed or str(organization_id).strip().lower() in listed
+
+
 def _clean(value: object) -> str:
     """A key as the settings hold it, with no space and no ``=`` padding."""
     return "".join(str(value or "").split()).rstrip("=")
