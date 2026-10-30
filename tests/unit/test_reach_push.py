@@ -416,6 +416,26 @@ def test_r8_two_workers_send_each_push_once(world) -> None:
     assert tags == Counter({rid: 1 for rid in rids})
 
 
+def test_r8_two_whole_loops_fire_and_send_each_reminder_once(world) -> None:
+    """The fire claim (``FOR UPDATE SKIP LOCKED``) and the push claim
+    together: two ``run_org`` at once, each with its steps and its send."""
+    org, at = world.p.org_b, _utc(10, 15)
+    rids = [_seed(world, who, at, title=f"Loop {n}")
+            for n, who in enumerate((ALICE, BOB) * 3)]
+    world.service.delay = 0.1
+
+    async def race() -> list[Counter]:
+        return list(await asyncio.gather(loop.run_org(org, at), loop.run_org(org, at)))
+
+    first, second = _in_org(world, org, race)
+    assert first["fired"] + second["fired"] == len(rids)
+    assert first["push_sent"] + second["push_sent"] == len(rids)
+    tags = Counter(p["tag"] for m in (ALICE, BOB) for p in _payloads(world, m))
+    assert tags == Counter({rid: 1 for rid in rids})
+    for rid in rids:
+        assert [e.event for e in _ledger(world, rid)] == ["fired", "delivered"]
+
+
 def test_r8_the_push_of_the_second_cycle_is_sent(world) -> None:
     rid = _seed(world, ALICE, _utc(10, 15))
     # Fire, check back, brief and move, then the fire of the second cycle.
