@@ -5,6 +5,7 @@
  * personal node. The e2e case `e2e/projects-my-work.spec.ts` draws the section.
  */
 
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ProjectRow } from "./api";
@@ -12,6 +13,8 @@ import {
   PERSONAL_SECTION_LABEL,
   displayNodeName,
   displayProjectName,
+  displayRowProject,
+  rememberPersonalRoot,
   firstTeamSpaceId,
   personalEmptyLine,
   personalHeading,
@@ -236,5 +239,23 @@ describe("counts say what they count", () => {
     const row = node("root", { personal: true, tasks: 11, done: 6, cancelled: 1 });
     expect(sidebarOpen(row)).toBe(4);
     expect(overviewOpen(summary)).toBe(4);
+  });
+});
+
+describe("a server row from the personal root reads Personal (OP-12b fix round 1)", () => {
+  it("maps by project id, and by stored name when the row has no id", () => {
+    rememberPersonalRoot([node("root", { name: "My tasks", personal: true })]);
+    expect(displayRowProject({ project_id: "root", project_name: "My tasks" })).toBe("Personal");
+    expect(displayRowProject({ project_name: "My tasks" })).toBe("Personal");
+    expect(displayRowProject({ project_id: "pb", project_name: "My tasks" })).toBe("My tasks");
+    expect(displayRowProject({ project_id: "pb", project_name: "Sales" })).toBe("Sales");
+  });
+
+  it("every surface that prints a server project_name goes through the seam", () => {
+    for (const file of ["NeedsAttentionList", "TriageRail", "ReportsView", "AnalyticsPanels"]) {
+      const source = readFileSync(`src/app/projects/components/${file}.tsx`, "utf-8");
+      expect(source, file).toContain("displayRowProject(");
+      expect(source, file).not.toMatch(/\{(row|hit|f|r)\.project_name\}/);
+    }
   });
 });

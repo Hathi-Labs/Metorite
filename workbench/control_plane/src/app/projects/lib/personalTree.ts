@@ -35,17 +35,43 @@ export const PERSONAL_SPACE_NOTE =
 export const PRIVATE_TASK_LABEL = "Private";
 
 /**
- * The name to print for a row that carries only a project id and a stored
- * name (a search hit, a needs-attention row). `personalRootId` is the id of
- * the member's personal root, or null.
+ * The member's personal root as the page last loaded it: its id and its
+ * STORED name. A surface that prints a server `project_name` (Needs
+ * attention, Triage, Analytics, Reports) has no tree, so it asks the seam
+ * through `displayRowProject`. The page sets this with `rememberPersonalRoot`.
+ */
+let remembered: { id: string; storedName: string } | null = null;
+
+export function rememberPersonalRoot(roots: readonly ProjectRow[] | null | undefined): void {
+  const root = (roots ?? []).find((n) => isPersonalRoot(n));
+  // `personalRoots` has set the display name already, so keep the first stored name.
+  remembered = root
+    ? { id: root.id, storedName: remembered?.id === root.id ? remembered.storedName : root.name }
+    : null;
+}
+
+/**
+ * The name to print for a row that carries a project id and a stored name (a
+ * search hit, a needs-attention row). `personalRootId` is the id of the
+ * member's personal root, or defaults to the one the page remembered. A row
+ * with no id (a pulse card) matches on the stored name of that root.
  */
 export function displayProjectName(
   projectId: string | null | undefined,
   storedName: string | null | undefined,
-  personalRootId: string | null | undefined,
+  personalRootId?: string | null,
 ): string | null {
-  if (projectId && personalRootId && projectId === personalRootId) return PERSONAL_NODE_NAME;
+  const rootId = personalRootId ?? remembered?.id ?? null;
+  if (projectId && rootId && projectId === rootId) return PERSONAL_NODE_NAME;
+  if (!projectId && remembered && storedName === remembered.storedName) return PERSONAL_NODE_NAME;
   return storedName ?? null;
+}
+
+/** `displayProjectName` for a server row. */
+export function displayRowProject(
+  row: { project_id?: string | null; project_name?: string | null },
+): string | null {
+  return displayProjectName(row.project_id, row.project_name);
 }
 
 /** The roots of the Personal section: the caller's own tree, or none when the flag is off. */

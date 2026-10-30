@@ -499,10 +499,13 @@ export default function NodeDashboard({
               ? "Spaces"
               : level === "project" || level === "subproject"
                 ? "Subprojects"
-                : "Projects"
+                : // OP-12b — the private space holds folders AND projects.
+                  personal
+                  ? "Folders and projects"
+                  : "Projects"
           }
           value={
-            level === "portfolio"
+            level === "portfolio" || personal
               ? // `children` is typed as present and is not guaranteed to be.
                 // Absent means the server did not say, which is a dash, not 0.
                 (hasChildren ? children.length : undefined)

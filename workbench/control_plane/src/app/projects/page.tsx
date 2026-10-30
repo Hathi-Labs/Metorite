@@ -11,6 +11,7 @@
  * hand-edited slug shows nothing the caller could not already reach (R9, and
  * `lib/tree.filterByCenter`'s own test says so).
  */
+
 import Icon, { themedIcon } from "@/components/Icon";
 import { ContextMenu } from "@/components/ContextMenu";
 import Button from "@/components/ui/Button";
@@ -106,6 +107,7 @@ import {
   lookupRoots,
   moveDestinationRoots,
   personalRoots,
+  rememberPersonalRoot,
   splitPersonal,
 } from "./lib/personalTree";
 import { openCount } from "./lib/progressWheel";
@@ -938,7 +940,11 @@ function ProjectsWorkspace() {
   // WS-64 OP-3 — the caller's own tree, empty with the flag off. `roots` stays
   // the TEAM tree (Spaces, the grants fan-out, the drag). `allRoots` is where a
   // node is looked up, so a selected personal node resolves like any project.
-  const personal = useMemo(() => personalRoots(tree.data, MY_WORK_LIVE), [tree.data]);
+  const personal = useMemo(() => {
+    // The seam learns the stored name first, so server rows read "Personal" too.
+    if (MY_WORK_LIVE) rememberPersonalRoot(tree.data?.personal);
+    return personalRoots(tree.data, MY_WORK_LIVE);
+  }, [tree.data]);
   const allRoots = useMemo(() => lookupRoots(roots, personal), [roots, personal]);
   const [grants, setGrants] = useState<GrantRow[]>([]);
   const [selected, setSelected] = useState<ProjectRow | null>(null);
