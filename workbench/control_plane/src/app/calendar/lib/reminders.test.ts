@@ -1,10 +1,16 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
+import { refusalWords, UNREACHABLE_WORDS } from "@/lib/shell/reminderOpen";
+
+import { PANEL_ROWS, RemindersPanel, RemindersSheetBody } from "../components/RemindersPanel";
 import {
   applyList,
+  BUSY_WORDS,
   capGroups,
   checkForm,
   createReminder,
@@ -12,11 +18,18 @@ import {
   dropTime,
   EMPTY_LIST,
   fetchReminders,
+  FIRST_READ_RETRY_MS,
+  firstReadRetry,
   gridZone,
+  moveBack,
+  moveRefusal,
   pinNeedsCompact,
+  pinSegments,
   monthChips,
   moveReminder,
   nudgeTime,
+  PAST_FIELD_WORDS,
+  PAST_MOVE_WORDS,
   pinTop,
   pinTone,
   readRow,
@@ -26,6 +39,9 @@ import {
   zonedToIso,
   type CalReminder,
 } from "./reminders";
+
+/** A source file beside this one, read as text. */
+const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 
 const row = (id: string, state: string, fireAt: string, extra: Record<string, unknown> = {}) => ({
   id,
@@ -241,6 +257,59 @@ describe("the pin", () => {
     expect(nudgeTime(late, 1, KOLKATA)!.iso).toBe("2026-11-01T00:00:00+05:30");
   });
 
+  it("moves 15 minutes of real time in the repeated autumn hour (Europe/Berlin, 2026-10-25)", () => {
+    const BERLIN = "Europe/Berlin";
+    // 02:15 CET is the second run of 02:15: 01:15 UTC.
+    const second = cal("s", "scheduled", "2026-10-25T02:15:00+01:00");
+    expect(second.fireMs).toBe(Date.UTC(2026, 9, 25, 1, 15));
+    const down = nudgeTime(second, 1, BERLIN)!;
+    expect(down.ms).toBe(Date.UTC(2026, 9, 25, 1, 30));
+    expect(down.iso).toBe("2026-10-25T02:30:00+01:00");
+    const up = nudgeTime(second, -1, BERLIN)!;
+    expect(up.ms).toBe(Date.UTC(2026, 9, 25, 1, 0));
+    expect(up.iso).toBe("2026-10-25T02:00:00+01:00");
+    // The first run: 02:45 CEST goes on to 02:00 CET, 15 minutes later.
+    const first = cal("f", "scheduled", "2026-10-25T02:45:00+02:00");
+    expect(nudgeTime(first, 1, BERLIN)!.iso).toBe("2026-10-25T02:00:00+01:00");
+    // Each step through the night moves 15 minutes of real time, both ways.
+    let r = cal("w", "scheduled", "2026-10-25T00:00:00+02:00");
+    for (let i = 0; i < 20; i++) {
+      const next = nudgeTime(r, 1, BERLIN)!;
+      expect(next.ms - r.fireMs).toBe(15 * 60_000);
+      expect(Date.parse(next.iso)).toBe(next.ms);
+      expect(nudgeTime({ ...r, fireMs: next.ms, fireAt: next.iso }, -1, BERLIN)!.ms).toBe(r.fireMs);
+      r = { ...r, fireMs: next.ms, fireAt: next.iso };
+    }
+  });
+
+  it("steps over the spring gap in real time", () => {
+    // Berlin skips 02:00 to 03:00 on 2026-03-29. 01:45 CET is 00:45 UTC.
+    const before = cal("g", "scheduled", "2026-03-29T01:45:00+01:00");
+    const next = nudgeTime(before, 1, "Europe/Berlin")!;
+    expect(next.ms - before.fireMs).toBe(15 * 60_000);
+    expect(next.iso).toBe("2026-03-29T03:00:00+02:00");
+  });
+
+  it("stops the line at the edge of a block, so it never strikes through a title", () => {
+    // No block at the line: one part, the full width.
+    expect(pinSegments(100, [])).toEqual([{ from: 0, to: 1 }]);
+    // A block in the only lane at the line: no line at all.
+    const one = { top: 90, height: 40, lane: 0, lanes: 1 };
+    expect(pinSegments(100, [one])).toEqual([]);
+    // The 2 px line that touches the top edge of the block stops too.
+    expect(pinSegments(89, [one])).toEqual([]);
+    expect(pinSegments(88, [one])).toEqual([{ from: 0, to: 1 }]);
+    // A block above or below the line leaves it whole.
+    expect(pinSegments(131, [one])).toEqual([{ from: 0, to: 1 }]);
+    // Two lanes, a block in lane 1 only: the line runs in lane 0.
+    expect(pinSegments(100, [{ top: 90, height: 40, lane: 1, lanes: 2 }])).toEqual([{ from: 0, to: 0.5 }]);
+    // Three lanes, the middle one held: the line runs on both sides of it.
+    expect(pinSegments(100, [{ top: 90, height: 40, lane: 1, lanes: 3 }])).toEqual([
+      { from: 0, to: 1 / 3 },
+      { from: 2 / 3, to: 1 },
+    ]);
+  });
+
   it("draws a month chip with a time and a title", () => {
     const chips = monthChips(rows, new Date(2026, 9, 31), KOLKATA);
     expect(chips).toHaveLength(2);
@@ -250,8 +319,6 @@ describe("the pin", () => {
 });
 
 describe("a reminder takes no capacity and no lane", () => {
-  const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
-
   /** The first argument of every call to `fn( ... )` in the source. */
   const firstArgs = (src: string, fn: string): string[] =>
     [...src.matchAll(new RegExp(String.raw`\b${fn}\(\s*([^,)]*)`, "g"))].map((m) => m[1].trim());
@@ -296,7 +363,164 @@ describe("a reminder takes no capacity and no lane", () => {
   it("the grid uses the browser zone for every reminder, never the store setting", () => {
     const view = read("../CalendarView.tsx");
     expect(view).toMatch(/const remZone = gridZone\(browserTimeZone\(\)\)/);
-    expect(view).not.toMatch(/pickZone\(settings\.timezone/);
+    expect(view).not.toMatch(/(?:pickZone|gridZone|knownZone)\(settings\.timezone/);
+  });
+
+  it("the grid body is one stacking context under the sticky week header", () => {
+    // A pin (z-20) once drew over "FRI 30" when the week grid scrolled. The
+    // body's own stacking context keeps every pin, line and block under it.
+    const grid = read("../components/TimeGrid.tsx");
+    const header = grid.indexOf('className="sticky top-0 z-10 ');
+    const body = grid.indexOf('className="relative z-0 flex"');
+    expect(header).toBeGreaterThan(-1);
+    expect(body).toBeGreaterThan(header);
+  });
+});
+
+describe("a move", () => {
+  const NOW = Date.UTC(2026, 9, 30, 6, 0);
+
+  it("refuses a time at or before now, with the rule of the form", () => {
+    expect(moveRefusal(NOW, NOW)).toBe(PAST_MOVE_WORDS);
+    expect(moveRefusal(NOW - 60_000, NOW)).toBe(PAST_MOVE_WORDS);
+    expect(moveRefusal(NOW + 60_000, NOW)).toBeNull();
+    // The form refuses the same times under its field.
+    const at = zonedToIso("2026-10-30", "11:30", KOLKATA)!.ms; // 06:00 UTC
+    expect(at).toBe(NOW);
+    expect(checkForm({ title: "x", date: "2026-10-30", time: "11:30", zone: KOLKATA, nowMs: NOW }).whenError).toBe(
+      PAST_FIELD_WORDS,
+    );
+  });
+
+  it("checks the time before it writes, for a drag, a key and the form alike", () => {
+    const view = read("../CalendarView.tsx");
+    const move = view.slice(view.indexOf("const moveReminderTo"), view.indexOf("const moveReminderBack"));
+    expect(move.length).toBeGreaterThan(50);
+    expect(move.indexOf("moveRefusal(")).toBeGreaterThan(-1);
+    expect(move.indexOf("moveRefusal(")).toBeLessThan(move.indexOf("runReminder("));
+    // The grid sends each drop and each key move through this one function.
+    expect(view).toMatch(/onMoveReminder=\{\(id, to\) => void moveReminderTo\(id, to\)\}/);
+  });
+
+  it("offers an Undo only for a scheduled reminder whose old time is still ahead", () => {
+    const ahead = cal("a", "scheduled", "2026-10-30T12:00:00+05:30"); // 06:30 UTC
+    expect(moveBack(ahead, NOW, KOLKATA)).toEqual({ fireAt: ahead.fireAt, tz: "Asia/Kolkata", ms: ahead.fireMs });
+    expect(moveBack(ahead, ahead.fireMs, KOLKATA)).toBeNull();
+    expect(moveBack(cal("d", "due", "2026-10-30T12:00:00+05:30"), NOW, KOLKATA)).toBeNull();
+    expect(moveBack(cal("u", "unconfirmed", "2026-10-30T12:00:00+05:30"), NOW, KOLKATA)).toBeNull();
+    // The Undo checks the time again, because it may have passed.
+    const view = read("../CalendarView.tsx");
+    const back = view.slice(view.indexOf("const moveReminderBack"), view.indexOf("const resolveReminderAs"));
+    expect(back.indexOf("moveRefusal(back.ms")).toBeGreaterThan(-1);
+    expect(back.indexOf("moveRefusal(back.ms")).toBeLessThan(back.indexOf("runReminder("));
+  });
+});
+
+describe("the first read", () => {
+  it("tries again a few times, with a growing wait, and then stops", () => {
+    expect(FIRST_READ_RETRY_MS.length).toBeGreaterThanOrEqual(3);
+    for (let i = 1; i < FIRST_READ_RETRY_MS.length; i++) {
+      expect(FIRST_READ_RETRY_MS[i]).toBeGreaterThan(FIRST_READ_RETRY_MS[i - 1]);
+    }
+    expect(firstReadRetry(false, 0)).toBe(FIRST_READ_RETRY_MS[0]);
+    expect(firstReadRetry(false, FIRST_READ_RETRY_MS.length)).toBeNull();
+  });
+
+  it("stops once any read answered, and shows nothing while it tries", () => {
+    expect(firstReadRetry(true, 0)).toBeNull();
+    // A failed read keeps `loading`, which draws no pin, panel or error.
+    expect(applyList(EMPTY_LIST, { kind: "error" })).toBe(EMPTY_LIST);
+  });
+});
+
+describe("one client of /resolve and /reopen", () => {
+  it("the Calendar closes and opens a reminder through runReminderAct, and the lib has no copy", () => {
+    const lib = read("./reminders.ts");
+    // A URL of either route, as `${BASE}/${id}/resolve` builds it. The doc
+    // comment may name a route. Code may not build one.
+    expect(lib).not.toMatch(/\}\/(?:resolve|reopen)\b/);
+    expect(lib).not.toMatch(/\{\s*action\s*\}/);
+    expect(lib).not.toMatch(/function knownZone/);
+    const view = read("../CalendarView.tsx");
+    expect(view).toMatch(/from "@\/lib\/shell\/reminderOpen"/);
+    expect(view).toMatch(/runReminderAct\(id, action\)/);
+    expect(view).toMatch(/runReminderAct\(id, "undo"\)/);
+  });
+
+  it("the Undo of Done and Drop waits for its answer and shows it, good or bad", () => {
+    const view = read("../CalendarView.tsx");
+    const undo = view.slice(view.indexOf("const reopenReminderAgain"), view.indexOf("const submitReminderForm"));
+    expect(undo).toMatch(/await runReminder\(\(\) => runReminderAct\(id, "undo"\)\)/);
+    expect(undo).toMatch(/"The reminder is open again"/);
+    // The error words include the busy guard of `run`.
+    expect(undo).toMatch(/showWords\("error", out\.words\)/);
+    expect(BUSY_WORDS).toMatch(/Wait/);
+    // No action of a toast drops the result of its write.
+    expect(view).not.toMatch(/onClick: \(\) => void runReminder\(/);
+  });
+
+  it("a refused create or move says the shared words", async () => {
+    const res = (status: number, body: unknown = {}) =>
+      (async () => ({ ok: false, status, json: async () => body }) as Response) as unknown as typeof fetch;
+    const at = { fireAt: "2026-10-31T09:00:00+05:30", tz: KOLKATA };
+    expect(await moveReminder("r1", at, res(404))).toEqual({ ok: false, words: refusalWords(404, null) });
+    const five = await moveReminder("r1", at, res(500));
+    expect(five).toEqual({ ok: false, words: "Metorite could not save the reminder. Try again." });
+    const down = await moveReminder("r1", at, (async () => {
+      throw new Error("offline");
+    }) as unknown as typeof fetch);
+    expect(down).toEqual({ ok: false, words: UNREACHABLE_WORDS });
+  });
+});
+
+describe("the panel", () => {
+  const noop = () => {};
+  const six = [
+    cal("a", "scheduled", "2026-10-31T09:00:00+05:30"),
+    cal("b", "due", "2026-10-31T10:00:00+05:30"),
+    cal("c", "unconfirmed", "2026-10-31T11:00:00+05:30"),
+    cal("d", "scheduled", "2026-10-31T12:00:00+05:30"),
+    cal("e", "scheduled", "2026-10-31T13:00:00+05:30"),
+    cal("f", "scheduled", "2026-10-31T14:00:00+05:30"),
+  ];
+  const props = { rows: six, total: 6, zone: KOLKATA, onNew: noop, onOpen: noop, onMove: noop, onResolve: noop };
+  const doneButtons = (html: string) => html.match(/<button[^>]*aria-label="Done: [^"]*"[^>]*>/g) ?? [];
+
+  it("puts the Show all toggle in a footer outside the scroll box", () => {
+    const html = renderToStaticMarkup(createElement(RemindersPanel, props));
+    const box = html.indexOf("overflow-y-auto");
+    const footer = html.indexOf("shrink-0 border-t border-border");
+    expect(box).toBeGreaterThan(-1);
+    expect(footer).toBeGreaterThan(box);
+    expect(html.indexOf("Show all (6)")).toBeGreaterThan(footer);
+    expect(html).toContain('aria-expanded="false"');
+    expect(doneButtons(html)).toHaveLength(PANEL_ROWS);
+  });
+
+  it("fills the column in month mode, with every row and no toggle", () => {
+    const html = renderToStaticMarkup(createElement(RemindersPanel, { ...props, fill: true }));
+    expect(doneButtons(html)).toHaveLength(6);
+    expect(html).not.toContain("Show all");
+    expect(html).not.toContain("max-h-[");
+  });
+
+  it("gives the phone sheet touch-size actions with room between them", () => {
+    const html = renderToStaticMarkup(createElement(RemindersSheetBody, props));
+    const buttons = doneButtons(html);
+    expect(buttons).toHaveLength(6);
+    // icon-sm is p-1.5 around a 14 px icon: 26 px, over the 24 px of §9.
+    for (const b of buttons) expect(b).toMatch(/\bp-1\.5\b/);
+    expect(html).toContain("flex shrink-0 items-center gap-2");
+    // The desktop panel keeps its small actions.
+    const desk = doneButtons(renderToStaticMarkup(createElement(RemindersPanel, props)));
+    for (const b of desk) expect(b).not.toMatch(/\bp-1\.5\b/);
+  });
+
+  it("puts the whole title of a row in its tip", () => {
+    const long = cal("l", "scheduled", "2026-10-31T09:00:00+05:30");
+    long.title = "Ask the supplier in Shenzhen about the second batch of the controller boards";
+    const html = renderToStaticMarkup(createElement(RemindersPanel, { ...props, rows: [long], total: 1 }));
+    expect(html).toContain(`title="${long.title}, `);
   });
 });
 

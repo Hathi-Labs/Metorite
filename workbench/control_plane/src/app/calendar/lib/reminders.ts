@@ -5,13 +5,19 @@
  * A reminder is a point in time. It draws as a line with no height, so it
  * takes no capacity and no lane, and it never enters the task store. This file
  * holds the pure rules (zone to ISO, the split by state, the pin, the month
- * chip, the form check) and the small client of the RM-1 routes.
+ * chip, the form check) and the client of the list, of create and of
+ * `/reschedule`.
  *
  * **The routes.** `/api/projects/my/reminders` is the BFF proxy of the
  * gateway. A 404 means the flag is off for this member. A 403 means the member
  * has `feature:tasks` and not `feature:projects`. Both mean the same here:
  * draw nothing, say nothing (`"absent"`). A network fault or a 5xx keeps the
- * last good rows. There is no client flag (§9).
+ * last good rows, and a first read that fails tries again a few times. There
+ * is no client flag (§9).
+ *
+ * **One client of `/resolve` and `/reopen`.** Done, Drop and Undo go through
+ * `runReminderAct` in `lib/shell/reminderOpen.ts`, the client of the chat
+ * chips. Every refusal here reads `refusalWords` from the same file.
  *
  * **The zone.** The grid, the blocks and the day columns all read the
  * browser's wall clock. So every reminder computation uses the browser's zone
@@ -26,6 +32,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useLiveRefresh } from "@/lib/liveRefresh";
+import { knownZone, refusalWords, UNREACHABLE_WORDS } from "@/lib/shell/reminderOpen";
 
 // ── The rows ─────────────────────────────────────────────────────────────────
 
@@ -119,29 +126,14 @@ export function capGroups(g: ReminderGroups, limit: number | null): { groups: Re
 
 const formatters = new Map<string, Intl.DateTimeFormat>();
 
-/** The zone if this browser knows it, else undefined. */
-export function knownZone(zone: string | null | undefined): string | undefined {
-  if (!zone) return undefined;
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: zone });
-    return zone;
-  } catch {
-    return undefined;
-  }
-}
-
-/** The zone to use: the member's, else the browser's, else UTC. */
-export function pickZone(memberZone: string | null | undefined, browserZone?: string): string {
-  return knownZone(memberZone) ?? knownZone(browserZone) ?? "UTC";
-}
-
 /**
  * The zone of the grid: the browser's zone, else UTC. The grid draws its blocks
  * and day columns on the browser's wall clock, so a reminder must use the same
- * frame. The store's `settings.timezone` plays no part here.
+ * frame. The store's `settings.timezone` plays no part here. `knownZone` is the
+ * one check of a zone name (`lib/shell/reminderOpen.ts`).
  */
 export function gridZone(browserZone?: string): string {
-  return pickZone(null, browserZone);
+  return knownZone(browserZone) ?? "UTC";
 }
 
 export interface WallParts {
@@ -235,12 +227,17 @@ export function zonedToIso(date: string, time: string, zone: string): ZonedTime 
     .map((o) => ({ o, ms: wall - o * 60_000 }))
     .filter((c) => offsetMinutes(c.ms, zone) === c.o);
   const ms = fits.length > 0 ? Math.min(...fits.map((c) => c.ms)) : wall - before * 60_000;
+  return { ms, iso: instantIso(ms, zone) };
+}
+
+/**
+ * An instant on a whole minute as ISO WITH the offset of `zone` at that
+ * instant ("2026-10-25T02:15:00+01:00"). The text and the instant agree, also
+ * in the hour that a clock change repeats.
+ */
+export function instantIso(ms: number, zone: string): string {
   const p = wallParts(ms, zone);
-  const off = offsetMinutes(ms, zone);
-  return {
-    ms,
-    iso: `${dateText(p.year, p.month, p.day)}T${pad(p.hour)}:${pad(p.minute)}:00${offsetText(off)}`,
-  };
+  return `${dateText(p.year, p.month, p.day)}T${pad(p.hour)}:${pad(p.minute)}:00${offsetText(offsetMinutes(ms, zone))}`;
 }
 
 /** The wall minute of the day (0-1439) of an instant in a zone. */
@@ -291,6 +288,40 @@ export function wallInputs(ms: number, zone: string): { date: string; time: stri
 
 export const TITLE_MAX = 200;
 
+/** The words under the time field of the form when the time is not after now. */
+export const PAST_FIELD_WORDS = "Pick a time after now.";
+
+/** The words of a drag or a key move to a time that is not after now. */
+export const PAST_MOVE_WORDS = "That time has passed. Move the reminder to a time after now.";
+
+/**
+ * Why a move to `toMs` is refused, or null when it may go. The rule of the
+ * form: a reminder moves only to a time after now. The loop fires a past
+ * `scheduled` reminder within a minute, so a move to the past would fire it
+ * at once.
+ */
+export function moveRefusal(toMs: number, nowMs: number): string | null {
+  return toMs <= nowMs ? PAST_MOVE_WORDS : null;
+}
+
+/** The time of a reminder before a move, for the Undo of that move. */
+export interface MoveBack {
+  fireAt: string;
+  tz: string;
+  ms: number;
+}
+
+/**
+ * The Undo of a move: the time and the zone that `row` had, or null when a
+ * move of it has no Undo. Only a `scheduled` reminder whose time is still
+ * after now goes back as it was. A `due` or `unconfirmed` reminder would come
+ * back as a `scheduled` one at a past time, and the loop would fire it again.
+ */
+export function moveBack(row: CalReminder, nowMs: number, zone: string): MoveBack | null {
+  if (row.state !== "scheduled" || row.fireMs <= nowMs) return null;
+  return { fireAt: row.fireAt, tz: row.tz ?? zone, ms: row.fireMs };
+}
+
 export interface FormCheck {
   titleError?: string;
   whenError?: string;
@@ -321,7 +352,7 @@ export function checkForm(a: {
   const when = zonedToIso(a.date, a.time, a.zone);
   if (!a.date || !a.time) out.whenError = "Pick a date and a time.";
   else if (!when) out.whenError = "This date or time is not valid.";
-  else if (when.ms <= a.nowMs) out.whenError = "Pick a time after now.";
+  else if (moveRefusal(when.ms, a.nowMs)) out.whenError = PAST_FIELD_WORDS;
   else out.when = when;
   return out;
 }
@@ -368,20 +399,23 @@ export function dropTime(day: Date, minutes: number, zone: string): ZonedTime | 
 export const NUDGE_MINS = 15;
 
 /**
- * The next time on the grid line above (-1) or below (+1) a reminder, on the
- * wall of the zone. A reminder at 09:07 goes to 09:15, then 09:30.
+ * The next grid line above (-1) or below (+1) a reminder. A reminder at 09:07
+ * goes to 09:15, then 09:30.
+ *
+ * **The step works on the instant**, not on the wall clock. It reads the wall
+ * time of the instant in `zone`, finds the next 15-minute line, and adds that
+ * difference to the instant. So a key press always moves the reminder 1 to 15
+ * minutes of real time. In the hour that a clock change repeats, 02:15 of the
+ * second run goes to 02:30 of the second run, and never back to the first run.
  */
 export function nudgeTime(row: CalReminder, dir: 1 | -1, zone: string): ZonedTime | null {
-  const p = wallParts(row.fireMs, zone);
-  const at = p.hour * 60 + p.minute;
-  const next = dir > 0 ? (Math.floor(at / NUDGE_MINS) + 1) * NUDGE_MINS : (Math.ceil(at / NUDGE_MINS) - 1) * NUDGE_MINS;
-  const day = new Date(Date.UTC(p.year, p.month - 1, p.day + Math.floor(next / 1440)));
-  const mins = ((next % 1440) + 1440) % 1440;
-  return zonedToIso(
-    dateText(day.getUTCFullYear(), day.getUTCMonth() + 1, day.getUTCDate()),
-    `${pad(Math.floor(mins / 60))}:${pad(mins % 60)}`,
-    zone,
-  );
+  if (!knownZone(zone)) return null;
+  const step = NUDGE_MINS * 60_000;
+  // The wall time of the instant in `zone`, counted as ms. The lines sit on it.
+  const wall = row.fireMs + offsetMinutes(row.fireMs, zone) * 60_000;
+  const line = dir > 0 ? (Math.floor(wall / step) + 1) * step : (Math.ceil(wall / step) - 1) * step;
+  const ms = row.fireMs + (line - wall);
+  return { ms, iso: instantIso(ms, zone) };
 }
 
 /** The drag type of a reminder pin. A task block uses `DRAG_TYPE`. */
@@ -420,6 +454,39 @@ export function pinNeedsCompact(minutes: number, spans: readonly BlockSpan[], ho
   const reachMins = (LABEL_ABOVE_PX / hourPx) * 60;
   const belowMins = (LABEL_BELOW_PX / hourPx) * 60;
   return spans.some((s) => minutes + belowMins > s.start && minutes - reachMins < s.end);
+}
+
+/** A task block as the grid draws it: its top and height in px, and its lane. */
+export interface BlockBox {
+  top: number;
+  height: number;
+  lane: number;
+  lanes: number;
+}
+
+/** The pin line is 2 px thick (`border-t-2`). */
+const LINE_PX = 2;
+
+/**
+ * The parts of a pin line at `y` px that stay off the task blocks, as
+ * fractions of the column width (0 to 1). The line stops at the edge of each
+ * lane that a block holds at that height. So a line never runs through the
+ * text of a block, where it would read as a strike-through. A pin with no
+ * block at its height gets one part, the full width.
+ */
+export function pinSegments(y: number, boxes: readonly BlockBox[]): Array<{ from: number; to: number }> {
+  const held = boxes
+    .filter((b) => y + LINE_PX > b.top && y < b.top + b.height)
+    .map((b) => ({ from: b.lane / b.lanes, to: (b.lane + 1) / b.lanes }))
+    .sort((a, b) => a.from - b.from);
+  const out: Array<{ from: number; to: number }> = [];
+  let at = 0;
+  for (const h of held) {
+    if (h.from - at > 1e-9) out.push({ from: at, to: h.from });
+    at = Math.max(at, h.to);
+  }
+  if (1 - at > 1e-9) out.push({ from: at, to: 1 });
+  return out;
 }
 
 /** The glyph colour for a state. */
@@ -493,7 +560,28 @@ export function applyList(prev: ReminderList, got: ListResult): ReminderList {
   return { status: "ready", rows: got.rows, total: got.total };
 }
 
+/**
+ * The waits before each new try of a first read that failed, in ms. A
+ * gateway restart answers 502 for some seconds, and the Calendar must not
+ * wait for a focus or a chat write to show the reminders.
+ */
+export const FIRST_READ_RETRY_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000, 16_000];
+
+/**
+ * The wait before the next try of the first read, or null for no more tries.
+ * `settled` is true once any read answered (rows, or `absent`). Then the
+ * live refresh and the writes keep the list, and no retry runs. The list
+ * stays `loading`, which draws nothing, while it tries. No error shows.
+ */
+export function firstReadRetry(settled: boolean, attempt: number): number | null {
+  if (settled) return null;
+  return FIRST_READ_RETRY_MS[attempt] ?? null;
+}
+
 export type WriteResult = { ok: true } | { ok: false; words: string };
+
+/** The words of a create or a move that the server refused for no named reason. */
+const SAVE_FAILED_WORDS = "Metorite could not save the reminder. Try again.";
 
 async function write(
   url: string,
@@ -509,12 +597,9 @@ async function write(
     });
     if (res.ok) return { ok: true };
     const data: unknown = await res.json().catch(() => null);
-    const detail = data && typeof data === "object" ? str((data as Record<string, unknown>).detail) : null;
-    if (res.status === 409 && detail) return { ok: false, words: detail };
-    if (res.status === 404) return { ok: false, words: "Metorite could not find this reminder. It may be gone." };
-    return { ok: false, words: "Metorite could not save the reminder. Try again." };
+    return { ok: false, words: refusalWords(res.status, data, SAVE_FAILED_WORDS) };
   } catch {
-    return { ok: false, words: "Metorite could not reach the server. Check the connection, then try again." };
+    return { ok: false, words: UNREACHABLE_WORDS };
   }
 }
 
@@ -535,44 +620,53 @@ export function moveReminder(
   return write(`${BASE}/${encodeURIComponent(id)}/reschedule`, { fire_at: a.fireAt, tz: a.tz }, fetchImpl);
 }
 
-/** Close a reminder as done or dropped. */
-export function resolveReminder(
-  id: string,
-  action: "done" | "drop",
-  fetchImpl: typeof fetch = fetch,
-): Promise<WriteResult> {
-  return write(`${BASE}/${encodeURIComponent(id)}/resolve`, { action }, fetchImpl);
-}
-
-/** Open a closed reminder again (the Undo of Done and Drop). */
-export function reopenReminder(id: string, fetchImpl: typeof fetch = fetch): Promise<WriteResult> {
-  return write(`${BASE}/${encodeURIComponent(id)}/reopen`, {}, fetchImpl);
-}
+/** The words of the busy guard: a second write while one runs does nothing. */
+export const BUSY_WORDS = "Wait for the last change to finish.";
 
 /**
  * The reminders of the member. It reads on mount, after an own write, and on
- * a live refresh of the calendar app. Every write runs once at a time (M3).
+ * a live refresh of the calendar app. A first read that fails tries again
+ * (`firstReadRetry`). Every write runs once at a time (M3).
  */
 export function useReminders() {
   const [list, setList] = useState<ReminderList>(EMPTY_LIST);
   const busy = useRef(false);
+  // True once any read answered with rows or `absent`.
+  const settled = useRef(false);
 
-  const reload = useCallback(async () => {
-    const got = await fetchReminders();
+  const take = useCallback((got: ListResult) => {
+    if (got.kind !== "error") settled.current = true;
     setList((prev) => applyList(prev, got));
   }, []);
 
+  const reload = useCallback(async () => {
+    take(await fetchReminders());
+  }, [take]);
+
   useEffect(() => {
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const attempt = async (n: number) => {
+      const got = await fetchReminders();
+      if (!alive) return;
+      take(got);
+      const wait = firstReadRetry(settled.current, n);
+      if (wait !== null) timer = setTimeout(() => void attempt(n + 1), wait);
+    };
     // eslint-disable-next-line react-hooks/set-state-in-effect -- the read sets state after the await
-    void reload();
-  }, [reload]);
+    void attempt(0);
+    return () => {
+      alive = false;
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [take]);
 
   useLiveRefresh(() => void reload(), "calendar");
 
   /** Run one write, then read again. A second call while one runs does nothing. */
   const run = useCallback(
     async (act: () => Promise<WriteResult>): Promise<WriteResult> => {
-      if (busy.current) return { ok: false, words: "Wait for the last change to finish." };
+      if (busy.current) return { ok: false, words: BUSY_WORDS };
       busy.current = true;
       try {
         const res = await act();

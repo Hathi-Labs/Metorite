@@ -65,19 +65,21 @@ import { UnscheduledRail } from "./components/UnscheduledRail";
 import { CalendarDeepLink } from "./components/CalendarDeepLink";
 import { scrollTopFor, type CalendarLink, type ClockTime } from "./lib/calendarLink";
 import { ReminderFormModal, type ReminderFormValue } from "./components/ReminderFormModal";
-import { RemindersPanel, RemindersList } from "./components/RemindersPanel";
+import { RemindersPanel, RemindersSheetBody } from "./components/RemindersPanel";
 import {
   createReminder,
+  moveBack,
+  moveRefusal,
   moveReminder,
   gridZone,
   reminderChatPath,
-  reopenReminder,
-  resolveReminder,
   useReminders,
   wallInputs,
   whenText,
+  type MoveBack,
   type ZonedTime,
 } from "./lib/reminders";
+import { runReminderAct } from "@/lib/shell/reminderOpen";
 import { browserTimeZone } from "@/app/tasks/lib/utils";
 
 export function CalendarView() {
@@ -134,19 +136,52 @@ export function CalendarView() {
   const openReminder = (id: string) => router.push(reminderChatPath(id));
   const showWords = (variant: "success" | "error", title: string, action?: { label: string; onClick: () => void }) =>
     toast.show({ key: "calendar-reminder", variant, title, action });
+  // A drag, an Alt+Arrow and "Move to…" all land here. A time at or before
+  // now is refused, the rule of the form. A move of a scheduled reminder
+  // offers Undo, which moves it back through `/reschedule` (`moveBack`).
   const moveReminderTo = async (id: string, to: ZonedTime): Promise<string | null> => {
+    const refused = moveRefusal(to.ms, Date.now());
+    if (refused) {
+      showWords("error", refused);
+      return refused;
+    }
+    const was = remList.rows.find((r) => r.id === id);
+    const back = was ? moveBack(was, Date.now(), remZone) : null;
     const out = await runReminder(() => moveReminder(id, { fireAt: to.iso, tz: remZone }));
-    if (out.ok) showWords("success", `Moved to ${whenText(to.ms, remZone)}`);
-    else showWords("error", out.words);
-    return out.ok ? null : out.words;
+    if (!out.ok) {
+      showWords("error", out.words);
+      return out.words;
+    }
+    showWords(
+      "success",
+      `Moved to ${whenText(to.ms, remZone)}`,
+      back ? { label: "Undo", onClick: () => void moveReminderBack(id, back) } : undefined,
+    );
+    return null;
   };
+  // The Undo of a move. The old time may have passed while the toast showed.
+  const moveReminderBack = async (id: string, back: MoveBack) => {
+    const refused = moveRefusal(back.ms, Date.now());
+    if (refused) return showWords("error", refused);
+    const out = await runReminder(() => moveReminder(id, { fireAt: back.fireAt, tz: back.tz }));
+    if (out.ok) showWords("success", `Moved back to ${whenText(back.ms, remZone)}`);
+    else showWords("error", out.words);
+  };
+  // Done and Drop, and their Undo, go through the one client of `/resolve`
+  // and `/reopen` (`runReminderAct`, shared with the chat chips). The toast
+  // closes before its Undo runs, so the Undo shows its own result.
   const resolveReminderAs = async (id: string, action: "done" | "drop") => {
-    const out = await runReminder(() => resolveReminder(id, action));
+    const out = await runReminder(() => runReminderAct(id, action));
     if (!out.ok) return showWords("error", out.words);
     showWords("success", action === "done" ? "Reminder done" : "Reminder dropped", {
       label: "Undo",
-      onClick: () => void runReminder(() => reopenReminder(id)),
+      onClick: () => void reopenReminderAgain(id),
     });
+  };
+  const reopenReminderAgain = async (id: string) => {
+    const out = await runReminder(() => runReminderAct(id, "undo"));
+    if (out.ok) showWords("success", "The reminder is open again");
+    else showWords("error", out.words);
   };
   const submitReminderForm = async (v: ReminderFormValue): Promise<string | null> => {
     if (!remForm) return null;
@@ -589,11 +624,11 @@ export function CalendarView() {
           type="button"
           onClick={() => setRemSheet(true)}
           title="Your open reminders"
-          aria-label="Reminders"
+          aria-label={`Reminders, ${remList.total} open`}
           className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
         >
           <Icon name="Bell" className="h-3.5 w-3.5" />
-          {remList.rows.length > 0 && <span className="tabular-nums">{remList.rows.length}</span>}
+          {remList.total > 0 && <span className="tabular-nums">{remList.total}</span>}
         </button>
       )}
       <button
@@ -798,6 +833,7 @@ export function CalendarView() {
                 rows={remList.rows}
                 total={remList.total}
                 zone={remZone}
+                fill={mode === "month"}
                 onNew={() => setRemForm({ mode: "new" })}
                 onOpen={openReminder}
                 onMove={(id) => setRemForm({ mode: "move", id })}
@@ -870,7 +906,7 @@ export function CalendarView() {
       )}
       {remSheet && remShown && (
         <Modal open onClose={() => setRemSheet(false)} title="Reminders" icon="Bell" placement="sheet" size="md" className="max-h-[80dvh]">
-          <RemindersList
+          <RemindersSheetBody
             rows={remList.rows}
             total={remList.total}
             zone={remZone}

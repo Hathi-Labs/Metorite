@@ -41,9 +41,11 @@ import {
   nudgeTime,
   pinGlyphTone,
   pinNeedsCompact,
+  pinSegments,
   pinTone,
   pinTop,
   remindersOnDay,
+  type BlockBox,
   type CalReminder,
   type ZonedTime,
 } from "../lib/reminders";
@@ -293,7 +295,9 @@ export function TimeGrid({
 
   return (
     <div className="min-w-fit">
-      {/* Column headers (week) */}
+      {/* Column headers (week). The grid body below is its own stacking
+          context (`relative z-0`), so no pin, now line or block in it can
+          draw over this header when the grid scrolls under it. */}
       {days.length > 1 && (
         <div className="sticky top-0 z-10 flex border-b border-border bg-background">
           <div className="w-14 shrink-0" />
@@ -322,7 +326,10 @@ export function TimeGrid({
         </div>
       )}
 
-      <div className="flex">
+      {/* `relative z-0`: one stacking context for the whole body. The z-20 of
+          a pin and of the now line, and the z-10 of the current block, stay
+          inside it and under the sticky week header (z-10) above. */}
+      <div className="relative z-0 flex">
         {/* Hour gutter — each row is EXACTLY HOUR_PX so the labels stay in
             lockstep with the day-column hour lines and the now-line (a per-row
             negative margin here used to compound, drifting the labels ~3h up by
@@ -355,6 +362,19 @@ export function TimeGrid({
             const start = minutesInto(b.start);
             const mins = (b.end.getTime() - b.start.getTime()) / 60000;
             return { start, end: start + Math.max(mins, (20 / HOUR_PX) * 60) };
+          });
+          // The blocks in their lanes, drawn below. A pin line stops at the
+          // edge of each lane a block holds at its height (`pinSegments`).
+          const laid = layoutBlocks(blocks);
+          const boxes: BlockBox[] = laid.map(({ block: b, lane, lanes }) => {
+            const end = resizing?.id === b.item.id ? new Date(resizing.endMs) : b.end;
+            const mins = (end.getTime() - b.start.getTime()) / 60000;
+            return {
+              top: Math.max(0, ((minutesInto(b.start) - dayStart * 60) / 60) * HOUR_PX),
+              height: Math.max(20, (mins / 60) * HOUR_PX - 2),
+              lane,
+              lanes,
+            };
           });
           const dayKey = day.toISOString();
           const nowTop =
@@ -537,7 +557,9 @@ export function TimeGrid({
 
               {/* reminder pins (WS-66 RM-5) — a line with no height at the
                   minute of the reminder. Not a block: no lane, no capacity.
-                  The line is pointer-events-none. The button is the handle. */}
+                  The line is pointer-events-none. The button is the handle.
+                  The line stops at the edge of a block, so it never strikes
+                  through the block's title (`pinSegments`). */}
               {pins.map(({ row, minutes }) => {
                 const top = pinTop(minutes, dayStart, HOUR_PX);
                 if (top < 0 || top > gridHeight) return null;
@@ -546,9 +568,17 @@ export function TimeGrid({
                 return (
                   <div
                     key={`rm-${row.id}`}
-                    className={`pointer-events-none absolute inset-x-0 z-20 border-t-2 ${pinTone(row.state)}`}
+                    className="pointer-events-none absolute inset-x-0 z-20"
                     style={{ top }}
                   >
+                    {pinSegments(top, boxes).map((s) => (
+                      <div
+                        key={s.from}
+                        aria-hidden
+                        className={`absolute top-0 border-t-2 ${pinTone(row.state)}`}
+                        style={{ left: `${s.from * 100}%`, width: `${(s.to - s.from) * 100}%` }}
+                      />
+                    ))}
                     <button
                       type="button"
                       draggable
@@ -566,25 +596,31 @@ export function TimeGrid({
                       aria-label={`Reminder, ${clock}: ${row.title}`}
                       aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
                       title={`${clock} · ${row.title}. Drag to move it, or press Alt+Arrow. ${MOVE_NOTE}`}
-                      className={
+                      className={[
                         compact
-                          ? // Over a block: the line and a small bell on the left
-                            // edge of the column, half out in the gutter. It has
-                            // no text, so it covers no block title.
-                            `pointer-events-auto absolute -left-2 -top-2 inline-flex h-4 w-4 cursor-grab items-center justify-center rounded-full bg-background focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing ${pinGlyphTone(row.state)}`
-                          : `pointer-events-auto absolute left-0 -top-2.5 inline-flex max-w-full cursor-grab items-center gap-0.5 truncate rounded-sm bg-background px-1 text-[10px] leading-4 focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing ${pinGlyphTone(row.state)}`
-                      }
+                          ? // Over a block: a small bell on the left edge of
+                            // the column, half out in the gutter. It has no
+                            // text, so it covers no block title.
+                            "-left-2 -top-2 h-4 w-4 justify-center rounded-full"
+                          : "left-0 -top-2.5 max-w-full gap-0.5 rounded-sm px-1 text-[10px] leading-4",
+                        // A finger needs 24 px. On a touch screen an empty
+                        // layer grows the target to 24 px, and the look stays.
+                        "pointer-coarse:before:absolute pointer-coarse:before:-inset-1",
+                        `pointer-events-auto absolute inline-flex cursor-grab items-center bg-background focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing ${pinGlyphTone(row.state)}`,
+                      ].join(" ")}
                     >
                       <Icon name="Bell" className="h-3 w-3 shrink-0" />
-                      {!compact && <span className="tabular-nums">{clock}</span>}
-                      {!compact && days.length === 1 && <span className="truncate text-foreground">{row.title}</span>}
+                      {!compact && <span className="shrink-0 tabular-nums">{clock}</span>}
+                      {!compact && days.length === 1 && (
+                        <span className="min-w-0 truncate text-foreground">{row.title}</span>
+                      )}
                     </button>
                   </div>
                 );
               })}
 
               {/* scheduled blocks — overlaps split into side-by-side lanes */}
-              {layoutBlocks(blocks).map(({ block: b, lane, lanes }) => {
+              {laid.map(({ block: b, lane, lanes }) => {
                 const end =
                   resizing?.id === b.item.id ? new Date(resizing.endMs) : b.end;
                 const top =
