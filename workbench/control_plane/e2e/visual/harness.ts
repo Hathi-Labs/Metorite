@@ -244,6 +244,23 @@ export interface CaptureOptions {
   fullPage?: boolean;
   /** Contexts to capture. Defaults to all of {@link CONTEXTS}. */
   only?: string[];
+  /**
+   * Capture in the glass look (D141, `glass_look.md`). Sets
+   * `data-look="glass"` on <html> for every context, and names each file
+   * `<name>--glass-<context>`. The glass CSS ships in every build, so this
+   * works without the gate. Only the Inter face needs the gate
+   * (`NEXT_PUBLIC_UI_LOOK=glass` on the dev server); without it, glass text
+   * falls back to the system face.
+   */
+  look?: "glass";
+}
+
+/** Put the glass look on, or take it off. Classic is the attribute's absence. */
+export async function setLook(page: Page, look: "glass" | "classic"): Promise<void> {
+  await page.evaluate((glass) => {
+    if (glass) document.documentElement.setAttribute("data-look", "glass");
+    else document.documentElement.removeAttribute("data-look");
+  }, look === "glass");
 }
 
 export async function capture(page: Page, name: string, out = "ux-shots"): Promise<void> {
@@ -269,10 +286,12 @@ export async function captureContexts(
     : CONTEXTS;
 
   const start = page.viewportSize() ?? { width: 1440, height: 900 };
+  const prefix = options.look === "glass" ? "glass-" : "";
+  if (options.look === "glass") await setLook(page, "glass");
   for (const ctx of wanted) {
     await page.setViewportSize({ width: ctx.width, height: ctx.height });
     if (ctx.apply) await ctx.apply(page);
-    await capture(page, `${baseName}--${ctx.name}`, out);
+    await capture(page, `${baseName}--${prefix}${ctx.name}`, out);
     if (ctx.undo) await ctx.undo(page);
   }
   await page.setViewportSize(start);

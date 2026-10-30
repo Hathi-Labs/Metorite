@@ -29,6 +29,7 @@ import Tabs from "@/components/Tabs";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useAppearanceStore, effectiveDensity } from "@/lib/theme/store";
+import { glassGateOn } from "@/lib/theme/look";
 import { isSafeColor } from "@/lib/theme/css";
 import type { AppearanceSettings, Density, ThemeMode } from "@/lib/theme/types";
 import { DENSITY_SCALE } from "@/lib/theme/types";
@@ -92,6 +93,7 @@ export default function AppearancePage() {
       <div className="flex-1 overflow-y-auto p-4 sm:p-6">
         {tab === "personal" ? (
           <div className="space-y-8">
+            {glassGateOn() ? <DesignSettings /> : null}
             <PersonalSettings />
             <SidebarSettings />
             <MyNumberFormat />
@@ -228,6 +230,39 @@ function PersonalSettings() {
         <CustomAccentInput value={accent} onChange={setAccent} />
       </section>
     </div>
+  );
+}
+
+/**
+ * The Design switch (D141, `glass_look.md` §4.2). It exists only while two
+ * looks exist: the build carries the glass gate (staging) and GL-Z has not
+ * yet removed the classic look. It sits OUTSIDE the organisation lock, so
+ * anyone reviewing the new look can compare it with the old one.
+ */
+function DesignSettings() {
+  const look = useAppearanceStore((s) => s.look);
+  const setLook = useAppearanceStore((s) => s.setLook);
+  return (
+    <section>
+      <SectionHeading
+        title="Design"
+        description="The new design is on trial here. Switch back to compare, or if something looks wrong."
+      />
+      <div className="flex flex-wrap gap-2">
+        <OptionPill
+          selected={look === "glass"}
+          onClick={() => setLook("glass")}
+          icon="Sparkles"
+          label="New"
+        />
+        <OptionPill
+          selected={look === "classic"}
+          onClick={() => setLook("classic")}
+          icon="History"
+          label="Classic"
+        />
+      </div>
+    </section>
   );
 }
 

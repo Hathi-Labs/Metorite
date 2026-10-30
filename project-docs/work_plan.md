@@ -167,7 +167,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_graph.md` · `specs/knowledge_base.md` §20 · `specs/company_context.md` | Metorite: epic 783 (Knowledge) · D128, D132 · 2026-10-29: KG-0 written, KG-1, KG-2 and KG-3a built · next KG-4 and KG-9, then KG-3b after the KG-2 backfill |
 | WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` · `specs/agent_coordination.md` (D140) | Metorite: epics 321 (coordination, D135 and D140), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · MCP-P1a built dark 2026-10-30 (`external_agent_access.md` §19) · next tasks 1045 and 1054, SW-4, SW-10b (the sweep on staging first), then SW-29a and SW-30a, and MCP-P1b and MCP-P2a |
 | WS-STU | **Studio**: tool packs, workflows, AI apps | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 491 (Agent Tooling) · D127 · next STU-0, then SKL-1 and SKL-2 after SBX-1 |
-| WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) | Metorite: epic 492, sub-epic UX-D · UI-G1 is built · next UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
+| WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) · `specs/glass_look.md` (phase GL, D141) | Metorite: epic 492, sub-epic UX-D, task 1125 (GL) · UI-G1 is built · **GL (owner, 2026-10-31): Aroh's glass look, on staging only, behind `NEXT_PUBLIC_UI_LOOK`. GL-0 and GL-1 built 2026-10-31. Next GL-2 (primitives), GL-3 (shell) and GL-4 (chat)** · then UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
 | WS-WH | **Writing Help** | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 493 · next WA-1 |
 | WS-CHAT | **AI chat**: Mira, the one assistant | 🟢 active · M1 | `specs/one_assistant_context.md` · `specs/chat_first_surface.md` | Metorite: project AI Chat Interface, epic 470 · a parallel session owns it · next #469 with BR-5, #471, WS-58, SUB-1 (the sub-agent policy for OA-9) |
 | WS-PRE | **Preview apps**: Notes, Meetings, Dashboard | ⏸ after Phase 2 · M4 | `specs/note_taker_app.md` · `specs/meeting_bot_platform_plan.md` | Metorite: epic 494 · next E-28, E-25 |
@@ -4849,6 +4849,17 @@ The owner asked on 2026-10-30, in chat, to "research how Linear uses its project
 10. **The lease is two hours, from the newest activity of any author.** A question keeps the task for three leases. This replaces the 15-minute TTL of the first text of SW-4.
 
 **What stays open.** Five questions wait for the owner (`agent_coordination.md` §8). They are the `agent:<name>` assignee and the delegate, a shared agent, the first cloud agent, cost and goals, and who may end another member's run.
+
+### D141 — Aroh comes into Metorite. Its glass design language becomes the one look, staging first, and it stays revertable until the owner approves it (2026-10-31)
+
+The owner said on 2026-10-31, in chat: "Earlier, I was planning to have Aroh as a separate application, independent of Metorite but connected to the same operator console, but I am undoing that decision." The owner asked to lift Aroh's UI/UX system into Metorite: the Apple-like feel, the colours, the chat interface, a more tasteful use of the company's highlight colour, the file manager, and later Aroh's tools. The owner set three conditions the same day: do it systematically across every app, make it revertable, and change nothing in production until the owner says so. Board: **WS-UX**, phase GL. Owning spec: `specs/glass_look.md`. Metorite: task 1125, under epic 492.
+
+1. **Aroh does not ship as a separate app.** Its interface, its chat patterns and later its tools come into Metorite. The Console seats for Aroh (tasks 1105 and 1109) stop. The Aroh repo stays as the reference.
+2. **Glass becomes the one look, after the owner approves it on staging.** Until then two looks exist. Classic is the default. The build gate `NEXT_PUBLIC_UI_LOOK=glass` puts glass on staging. This is a bounded exception to `DESIGN_SYSTEM.md` §0. GL-Z ends it and leaves one look.
+3. **Production changes only on the owner's word.** An agent never writes the gate on production (GL-9, OWNER-GATE). A merge still reaches production each night, so every GL change keeps the classic look whole: glass applies only under `<html data-look="glass">`.
+4. **Colour means something.** The tint is the organization's highlight colour. It marks only what a member can act on, what is selected, and the member's own chat bubble. State takes the status colours, and an icon tile takes a system colour.
+5. **The artifact library takes Aroh's Files design** (WS-60 AM-2). WS-60 keeps every data rule.
+6. **Aroh's tools come in through the tool-pack seam** (WS-67), in their own spec (GL-8).
 
 
 ## 4. Single-owner registry (who owns duplicated work)
