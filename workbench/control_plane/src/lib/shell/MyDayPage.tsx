@@ -190,7 +190,7 @@ export default function MyDay() {
 
       {/* The brief card (BR-2c-2): a component of its own above both
           layouts, outside the feed flag. It draws nothing on a 404. */}
-      {briefOn && !accessLoading ? <BriefCard now={now} className="mt-6" /> : null}
+      {briefOn && !accessLoading ? <BriefCard now={now} className="mt-6 -mb-2" /> : null}
 
       {accessLoading || (!feedOn && layoutPending) ? (
         <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-3" aria-hidden>
