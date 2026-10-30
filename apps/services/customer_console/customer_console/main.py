@@ -81,7 +81,10 @@ from sqlalchemy.exc import IntegrityError
 
 from customer_console import (
     analytics,
+    app_hub,
+    apps,
     catalog,
+    deployment_keys,
     feed,
     operator_activity,
     operator_elevation,
@@ -536,8 +539,9 @@ class ResolveRequest(BaseModel):
     display_name: str | None = None
 
 
-#: The full set seat_assignment.source's CHECK admits (001:193). The
-#: self-serve door allows its own subset; the staff door allows all four.
+#: The sources the staff door may write (001:193). Migration 038 adds a fifth
+#: value, `app`, to the CHECK, and it is deliberately NOT here: only an app
+#: door writes `app`, and the staff door refuses an app plan (CP-APP).
 _SEAT_SOURCES = frozenset({"core", "center", "plan", "alacarte"})
 
 
@@ -558,6 +562,26 @@ class SeatCountRequest(BaseModel):
     seats: int = Field(ge=0, le=100_000)
     #: Why. Required: a seat count that moves with no payment behind it is the
     #: one change an invoice dispute asks about first.
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class OrgAppRequest(BaseModel):
+    """Turn an app (Aroh) on or off for an organization, and set its seats.
+
+    CP-APP. ``seats`` is the TARGET total, as :class:`SeatCountRequest` takes
+    it, and ``reason`` is required for the same audit reason.
+
+    ⚠️ **Extra fields are refused (422).** A ``deployment_label`` here would be
+    a caller who believes they chose the box. The box is the one that
+    ``deployment.app`` names, and it is set when the box is registered.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    org_slug: str
+    app: str
+    enabled: bool
+    seats: int = Field(ge=0, le=100_000)
     reason: str = Field(min_length=3, max_length=500)
 
 
@@ -4725,6 +4749,10 @@ _ORG_PURGE_DELETES: tuple[str, ...] = (
     "org_membership",
     "llm_api_key",
     "provider_credential",
+    # Migration 038 (CP-APP). Per-org operational state, like the placement:
+    # which app the org had on which box. The app seats themselves are
+    # `seat_assignment` rows, deleted above.
+    "org_app",
     "org_placement",
     "provisioning_run",
 )
@@ -5089,6 +5117,12 @@ def _resolve_for_deployment(req: ResolveRequest, caller: DeploymentCaller) -> di
         )
 
     with get_engine().begin() as conn:
+        # CP-APP: an app box (Aroh) has its own answer. It reads `org_app`,
+        # writes nothing, and never takes a Core seat.
+        served = store.deployment_app(conn, deployment_id=caller.deployment_id)
+        if served is not None:
+            return _resolve_for_app(conn, req, caller, served)
+
         visible = store.deployment_visible_orgs(
             conn, deployment_id=caller.deployment_id, email=req.email
         )
@@ -5268,6 +5302,83 @@ def _capability_block(status: str) -> dict[str, bool]:
         "sign_in": caps.can_sign_in,
         "write_seats": caps.can_write_seats,
         "use_ai": caps.can_use_ai,
+    }
+
+
+def _app_seat_counts(conn, *, org_id: str, app: str) -> dict[str, int]:
+    """The app's three seat numbers for one organization, from the ONE fold.
+
+    ``store.seat_rows`` through ``seat_counts``, the same arithmetic every
+    seat surface uses (D32.5). Seat counts are not money, so they may cross
+    to the app box: the box needs them to say "All 2 Aroh seats are in use".
+    """
+    grants, assigned = store.seat_rows(conn, org_id=org_id, plan_slug=app)
+    c = seat_counts(app, grants, assigned)
+    return {"purchased": c.purchased, "assigned": c.assigned, "available": c.available}
+
+
+def _resolve_for_app(conn, req: ResolveRequest, caller: DeploymentCaller, app: str) -> dict[str, Any]:
+    """An APP box (Aroh) asks about a person it has just authenticated (CP-APP).
+
+    The same question as :func:`_resolve_for_deployment` and the same answer
+    shape, with three differences, each on purpose:
+
+    * **Visibility comes from ``org_app``**, never from ``org_placement``
+      (:func:`store.app_visible_orgs`). An organization the operator has not
+      given the app, or has turned it off for, is invisible. A ``removed`` or
+      ``suspended`` membership is invisible too, because the app box has no
+      tenant plane to refuse that person.
+    * **It writes nothing.** No Core seat, no app seat, no promotion of an
+      invited member. Signing in to Aroh is not signing in to Metorite, and
+      the app seat is taken at ``POST /registry/seats``, where the cap and the
+      refusals live.
+    * **``seat`` is the APP seat**, and ``app_seats`` carries its three counts,
+      so the box can tell a person that every seat is in use before it asks.
+
+    Not visible anywhere → ``{"organizations": [], "app": app}``. One answer
+    for "no such person", "not a member" and "the organization has no app",
+    for the oracle reason clause 5 gives. The box shows one page for it.
+    """
+    visible = store.app_visible_orgs(
+        conn, deployment_id=caller.deployment_id, app=app, email=req.email
+    )
+    admissible = [o for o in visible if capabilities_of(o["status"]).can_sign_in]
+    refused = [o for o in visible if not capabilities_of(o["status"]).can_sign_in]
+    if not admissible:
+        if refused:
+            raise HTTPException(
+                status_code=403,
+                detail=f"organization is {refused[0]['status']}",
+            )
+        return {"organizations": [], "app": app}
+
+    return {
+        # One identity for one email (`user_identity.email` is UNIQUE), so
+        # every visible row carries the same id.
+        "identity_id": admissible[0]["identity_id"],
+        "app": app,
+        "organizations": [
+            {
+                "organization_id": o["organization_id"],
+                "slug": o["slug"],
+                "placement": None,
+                "status": o["status"],
+                "seat": (
+                    _SEAT_ALREADY_HELD
+                    if store.has_live_seat(
+                        conn,
+                        org_id=o["organization_id"],
+                        plan_slug=app,
+                        identity_id=o["identity_id"],
+                    )
+                    else _SEAT_NOT_ALLOCATED
+                ),
+                "capabilities": _capability_block(o["status"]),
+                "trial_ends_at": _iso(o["trial_ends_at"]),
+                "app_seats": _app_seat_counts(conn, org_id=o["organization_id"], app=app),
+            }
+            for o in admissible
+        ],
     }
 
 
@@ -5635,7 +5746,20 @@ def activate_subscription_manual(req: ManualActivationRequest, staff: Operator) 
 
 @app.post("/billing/seats")
 def assign_seat(req: SeatWriteRequest, staff: Operator) -> dict[str, Any]:
-    """Assign a seat on a plan. 409 at the cap, with a buy-more payload."""
+    """Assign a seat on a plan. 409 at the cap, with a buy-more payload.
+
+    ⚠️ An APP plan (CP-APP, Aroh) is refused with a 400. The member takes an
+    app seat on the app's box, where the entitlement is checked. The operator
+    sets the count and frees a seat, and does not seat a person on an app.
+    """
+    if apps.is_app_plan(req.plan_slug):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"the {req.plan_slug} seat is taken on the {req.plan_slug} box; "
+                "the operator sets the count on the organization page"
+            ),
+        )
     if req.source not in _SEAT_SOURCES:
         # Mirrors seat_assignment.source's CHECK (001:193) so a typo answers
         # 400 here, not an IntegrityError 500 at the insert — the rule the
@@ -5689,6 +5813,52 @@ def assign_seat(req: SeatWriteRequest, staff: Operator) -> dict[str, Any]:
     return {"assigned": True, "plan_slug": req.plan_slug}
 
 
+def _write_seat_count(
+    conn, *, org_id: str, plan_slug: str, seats: int, reason: str, staff: StaffIdentity
+) -> tuple[int, int, int]:
+    """Set the seat count of one plan. Returns ``(previous, assigned, delta)``.
+
+    The ONE writer of a seat count, for ``POST /billing/seats/count`` and for
+    the app door ``POST /orgs/apps`` (CP-APP). It takes the capacity lock
+    first, refuses a count below the seats in use with a 409, and writes the
+    difference as a signed grant with an audit row. A count that does not
+    change writes nothing.
+    """
+    store.lock_seat_capacity(conn, org_id=org_id, plan_slug=plan_slug)
+    grants, assigned = store.seat_rows(conn, org_id=org_id, plan_slug=plan_slug)
+    previous = sum(grants)
+    if seats < assigned:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{assigned} seats are in use, so the count cannot go below "
+                f"{assigned}. Release a seat first."
+            ),
+        )
+    delta = seats - previous
+    if delta != 0:
+        store.grant_seats(
+            conn,
+            org_id=org_id,
+            plan_slug=plan_slug,
+            quantity=delta,
+            reason=f"operator: {reason.strip()}",
+        )
+        _audit(
+            conn,
+            org_id,
+            "seat.count",
+            {
+                "plan": plan_slug,
+                "from": previous,
+                "to": seats,
+                "reason": reason.strip(),
+            },
+            actor=staff.actor,
+        )
+    return previous, assigned, delta
+
+
 @app.post("/billing/seats/count")
 def set_seat_count(req: SeatCountRequest, staff: Operator) -> dict[str, Any]:
     """Set the number of seats an organization holds on a plan. Owner request,
@@ -5724,38 +5894,14 @@ def set_seat_count(req: SeatCountRequest, staff: Operator) -> dict[str, Any]:
         ).first() is None:
             raise HTTPException(status_code=400, detail=f"unknown plan {req.plan_slug!r}")
 
-        store.lock_seat_capacity(conn, org_id=org_id, plan_slug=req.plan_slug)
-        grants, assigned = store.seat_rows(conn, org_id=org_id, plan_slug=req.plan_slug)
-        previous = sum(grants)
-        if req.seats < assigned:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"{assigned} seats are in use, so the count cannot go below "
-                    f"{assigned}. Release a seat first."
-                ),
-            )
-        delta = req.seats - previous
-        if delta != 0:
-            store.grant_seats(
-                conn,
-                org_id=org_id,
-                plan_slug=req.plan_slug,
-                quantity=delta,
-                reason=f"operator: {req.reason.strip()}",
-            )
-            _audit(
-                conn,
-                org_id,
-                "seat.count",
-                {
-                    "plan": req.plan_slug,
-                    "from": previous,
-                    "to": req.seats,
-                    "reason": req.reason.strip(),
-                },
-                actor=staff.actor,
-            )
+        previous, assigned, delta = _write_seat_count(
+            conn,
+            org_id=org_id,
+            plan_slug=req.plan_slug,
+            seats=req.seats,
+            reason=req.reason,
+            staff=staff,
+        )
 
     return {
         "org_slug": req.org_slug,
@@ -5785,6 +5931,493 @@ def release_seat(req: SeatWriteRequest, staff: Operator) -> dict[str, Any]:
         )
 
     return {"released": released}
+
+
+# ── CP-APP · the operator's app doors (Aroh) ────────────────────────────────
+#
+# The operator gives an organization the Aroh app with N seats on the
+# organization page. One read and one write. A seat is FREED through the staff
+# release door above (`POST /billing/seats/release` with `plan_slug="aroh"`),
+# never through a second release.
+
+
+def _known_app(app: str) -> str:
+    """*app* if the Console knows it, else a 400 before any SQL runs."""
+    if app not in apps.KNOWN_APPS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown app {app!r}; expected one of {sorted(apps.KNOWN_APPS)}",
+        )
+    return app
+
+
+def _app_view(conn, *, org_id: str, app: str, days: int) -> dict[str, Any]:
+    """One app's state for one organization: the switch, the box, the seats,
+    who holds them, and what the app spent in the window."""
+    row = store.org_app_row(conn, org_id=org_id, app=app)
+    box = store.app_deployment(conn, app=app)
+    grants, assigned = store.seat_rows(conn, org_id=org_id, plan_slug=app)
+    counts = seat_counts(app, grants, assigned)
+    usage = store.app_usage(conn, org_id=org_id, app=app, days=days)
+    if row is not None:
+        deployment = {"label": row["deployment_label"], "base_url": row["deployment_base_url"]}
+    elif box is not None:
+        deployment = {"label": box["label"], "base_url": box["base_url"]}
+    else:
+        deployment = None
+    return {
+        "app": app,
+        "name": apps.APP_NAMES.get(app, app),
+        "enabled": bool(row and row["enabled"]),
+        # False when the operator never turned the app on for this org.
+        "configured": row is not None,
+        # The box that serves the app here: this org's own row first, else the
+        # box `deployment.app` names, else null (no box is registered yet).
+        "deployment": deployment,
+        "seats": {
+            "purchased": counts.purchased,
+            "assigned": counts.assigned,
+            "available": counts.available,
+            "oversubscribed": counts.oversubscribed,
+        },
+        "holders": [
+            {
+                "email": h["email"],
+                "display_name": h["display_name"],
+                "assigned_at": _iso(h["assigned_at"]),
+                "membership_status": h["membership_status"],
+            }
+            for h in store.app_seat_holders(conn, org_id=org_id, app=app)
+        ],
+        "usage": {
+            "window_days": days,
+            "calls": usage["calls"],
+            "credits": str(usage["credits"]),
+            "cost_usd": str(usage["cost_usd"]),
+            "members": [
+                {
+                    "member": m["member"],
+                    "calls": m["calls"],
+                    "credits": str(m["credits"]),
+                    "cost_usd": str(m["cost_usd"]),
+                }
+                for m in usage["members"]
+            ],
+        },
+        "updated_at": _iso(row["updated_at"]) if row else None,
+        "updated_by": row["updated_by"] if row else None,
+    }
+
+
+@app.get("/orgs/apps")
+def read_org_apps(
+    org_slug: str, _: Operator, days: int = store.SPEND_WINDOW_DAYS
+) -> dict[str, Any]:
+    """Every app an organization can have, with its seats and its AI use (CP-APP).
+
+    The Operator Console's "Aroh" panel reads this. The usage is the app's
+    calls in the meter (``usage_event.agent`` is the app's name), with our
+    cost, because this is an operator door.
+    """
+    window, _lo, _hi = _usage_window(days, None, None)
+    with get_engine().begin() as conn:
+        org_id = _org_id(conn, org_slug)
+        return {
+            "org_slug": org_slug,
+            "apps": [
+                _app_view(conn, org_id=org_id, app=a, days=window)
+                for a in sorted(apps.KNOWN_APPS)
+            ],
+        }
+
+
+@app.post("/orgs/apps")
+def set_org_app(req: OrgAppRequest, staff: Operator) -> dict[str, Any]:
+    """Turn an app on or off for an organization, and set its seats (CP-APP).
+
+    One act, because the operator types both on one form, and one
+    transaction, so a refused count never leaves the switch half moved.
+
+    * **The box.** The FIRST time the app goes on, the row takes the box that
+      ``deployment.app`` names. After that the row keeps its box: a placement
+      never moves as a side effect (D46.6 item 4). No box registered → 409.
+    * **The organization's own box is refused** as the app box (409). That
+      org would then be visible to one key through two placements.
+    * **The count** goes through :func:`_write_seat_count`, the ONE count
+      writer: the capacity lock, a 409 below the seats in use, a signed grant.
+    * **OFF keeps the seats.** The app box stops seeing the organization at
+      once, and ON again gives each holder the same seat back.
+    * **Locked lifecycle → 403**, as at ``POST /billing/seats/count``.
+
+    ``admin`` with an elevation window, the gate of the seat count.
+    """
+    app_name = _known_app(req.app)
+    with get_engine().begin() as conn:
+        org_id = _org_id(conn, req.org_slug)
+        state = conn.execute(
+            text("SELECT status FROM organization WHERE id = :i"), {"i": org_id}
+        ).scalar_one()
+        if not capabilities_of(state).can_write_seats:
+            raise HTTPException(
+                status_code=403, detail=f"organization is {state}; seats are locked"
+            )
+
+        row = store.org_app_row(conn, org_id=org_id, app=app_name)
+        if row is not None:
+            deployment_id = row["deployment_id"]
+        else:
+            box = store.app_deployment(conn, app=app_name)
+            if box is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"no deployment serves the {app_name} app yet. Register the "
+                        f"{app_name} box first (python -m customer_console.deployment_keys)."
+                    ),
+                )
+            deployment_id = box["id"]
+        if store.current_placement(conn, org_id=org_id) == deployment_id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"this organization is placed on the {app_name} box itself",
+            )
+
+        was_enabled = bool(row and row["enabled"])
+        previous, assigned, delta = _write_seat_count(
+            conn,
+            org_id=org_id,
+            plan_slug=app_name,
+            seats=req.seats,
+            reason=req.reason,
+            staff=staff,
+        )
+        if row is None or was_enabled != req.enabled:
+            store.upsert_org_app(
+                conn,
+                org_id=org_id,
+                app=app_name,
+                deployment_id=deployment_id,
+                enabled=req.enabled,
+                actor=staff.actor,
+            )
+            _audit(
+                conn,
+                org_id,
+                "app.set",
+                {
+                    "app": app_name,
+                    "from": was_enabled,
+                    "to": req.enabled,
+                    "seats": req.seats,
+                    "reason": req.reason.strip(),
+                },
+                actor=staff.actor,
+            )
+
+    return {
+        "org_slug": req.org_slug,
+        "app": app_name,
+        "enabled": req.enabled,
+        "previous_seats": previous,
+        "seats": req.seats,
+        "assigned": assigned,
+        "changed": delta != 0 or row is None or was_enabled != req.enabled,
+    }
+
+
+# ── CP-APP · "Connect Aroh": the box's key, pushed to the hub ───────────────
+#
+# Owner request, 2026-10-30. The operator pastes the hub's operator token once,
+# then presses Connect. The Console mints the app box's deployment key with
+# exactly the app's capability set, and pushes it to the hub
+# (`app_hub.put_router_key`). The token of that key never reaches the browser,
+# a log line or an answer: it goes from `mint_key` to the hub and nowhere else.
+#
+# 🔴 OWNER-GATE in the UI flow. Connect, Rotate and Disconnect mint or revoke a
+# REAL credential, so each one is `admin` with an elevation window AND a typed
+# confirmation (`confirm` must be the app's name). This is the ONE HTTP route
+# set that mints a deployment key, and it mints only the app box's key with
+# its fixed set: it cannot name a box, a label or a capability.
+
+
+class AppConnectionSettingsRequest(BaseModel):
+    """The hub's base URL and its operator token. Either may be left out."""
+
+    model_config = {"extra": "forbid"}
+
+    app: str
+    base_url: str | None = None
+    #: Pasted once. Stored ENCRYPTED, never returned, never logged.
+    operator_token: str | None = Field(default=None, min_length=8, max_length=4096)
+
+
+class AppConnectRequest(BaseModel):
+    """Connect (or rotate) and disconnect. ``confirm`` is the app's name, typed."""
+
+    model_config = {"extra": "forbid"}
+
+    app: str
+    confirm: str
+
+
+def _confirmed(req: AppConnectRequest) -> str:
+    app_name = _known_app(req.app)
+    if req.confirm.strip().lower() != app_name:
+        raise HTTPException(
+            status_code=400,
+            detail=f"type {app_name!r} to confirm: this act mints or revokes a real key",
+        )
+    return app_name
+
+
+def _hub_token(row: dict[str, Any] | None, app_name: str) -> tuple[str, str]:
+    """``(base_url, token)`` for the hub, or a 409 that says what is missing."""
+    if row is None or not row["operator_token_enc"]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"paste the {app_name} operator token in the settings first",
+        )
+    try:
+        token = router_mod.decrypt_secret(row["operator_token_enc"])
+    except Exception:
+        # The class only: a decrypt error must not echo the ciphertext.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "the stored hub token cannot be decrypted with "
+                "CUSTOMER_CONSOLE_ENCRYPTION_KEY; paste the token again"
+            ),
+        ) from None
+    return row["base_url"], token
+
+
+def _connection_view(conn, app_name: str) -> dict[str, Any]:
+    row = store.app_connection_row(conn, app=app_name)
+    box = store.app_deployment(conn, app=app_name)
+    prefix = row["key_prefix"] if row else None
+    return {
+        "app": app_name,
+        "name": apps.APP_NAMES.get(app_name, app_name),
+        "base_url": row["base_url"] if row else apps.APP_DEFAULT_BASE_URLS.get(app_name),
+        "default_base_url": apps.APP_DEFAULT_BASE_URLS.get(app_name),
+        "token_set": bool(row and row["operator_token_enc"]),
+        "token_last4": row["operator_token_last4"] if row else None,
+        "connected": bool(row and row["connected_at"] and prefix),
+        "connected_at": _iso(row["connected_at"]) if row else None,
+        "key_prefix": prefix,
+        "key_capabilities": (
+            store.deployment_key_capabilities(conn, prefix=prefix) if prefix else None
+        ),
+        "capabilities": list(apps.APP_KEY_CAPABILITIES.get(app_name, ())),
+        "deployment": (
+            {"label": box["label"], "base_url": box["base_url"]} if box else None
+        ),
+        "last_result": row["last_result"] if row else None,
+        "updated_at": _iso(row["updated_at"]) if row else None,
+        "updated_by": row["updated_by"] if row else None,
+    }
+
+
+@app.get("/apps/connection")
+def read_app_connection(
+    app_slug: Annotated[str, Query(alias="app")],
+    _: Operator,
+    probe: bool = False,
+) -> dict[str, Any]:
+    """How the Console reaches the app's hub. NEVER the token, NEVER the key.
+
+    ``probe=true`` also asks the hub ``GET /hub/api/router-key`` and returns
+    its status, so the page can show whether the hub holds a key.
+    """
+    app_name = _known_app(app_slug)
+    with get_engine().begin() as conn:
+        view = _connection_view(conn, app_name)
+        row = store.app_connection_row(conn, app=app_name)
+    if probe and view["token_set"]:
+        base_url, token = _hub_token(row, app_name)
+        try:
+            view["hub"] = app_hub.public_fields(app_hub.router_key_status(base_url, token))
+        except app_hub.HubUnreachable as exc:
+            view["hub"] = {"hub_status": None, "error": f"unreachable: {exc}"}
+    return view
+
+
+@app.post("/apps/connection/settings")
+def save_app_connection(req: AppConnectionSettingsRequest, staff: Operator) -> dict[str, Any]:
+    """Save the hub's base URL and, when given, its operator token (encrypted)."""
+    app_name = _known_app(req.app)
+    with get_engine().begin() as conn:
+        row = store.app_connection_row(conn, app=app_name)
+        raw_url = req.base_url or (row["base_url"] if row else None) or (
+            apps.APP_DEFAULT_BASE_URLS.get(app_name, "")
+        )
+        try:
+            base_url = app_hub.clean_base_url(raw_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        enc = last4 = None
+        if req.operator_token is not None:
+            token = req.operator_token.strip()
+            if len(token) < 8:
+                raise HTTPException(status_code=400, detail="the operator token is too short")
+            try:
+                enc = router_mod.encrypt_secret(token)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from None
+            last4 = token[-4:]
+        store.save_app_connection_settings(
+            conn,
+            app=app_name,
+            base_url=base_url,
+            operator_token_enc=enc,
+            operator_token_last4=last4,
+            actor=staff.actor,
+        )
+        _audit(
+            conn,
+            None,
+            "app.connection.settings",
+            {"app": app_name, "base_url": base_url, "token_changed": enc is not None},
+            actor=staff.actor,
+        )
+        return _connection_view(conn, app_name)
+
+
+@app.post("/apps/connection/connect")
+def connect_app(req: AppConnectRequest, staff: Operator) -> dict[str, Any]:
+    """Mint (or rotate) the app box's key and push it to the hub. OWNER-GATE.
+
+    1. Mint a NEW key on the app box with exactly the app's capability set,
+       and COMMIT it, so the hub can use it the moment it has it. The box is
+       registered (label = the app's name) when no box serves the app yet.
+    2. ``PUT <base_url>/hub/api/router-key`` with ``{"key": ...}``.
+    3. The hub took it: record the prefix, and revoke the key the hub held
+       before (a rotation). The old key works until the new one is in place.
+       The hub refused or gave no answer: REVOKE the new key, record the
+       result, and answer 502. The old key stays as it was.
+    """
+    app_name = _confirmed(req)
+    with get_engine().begin() as conn:
+        row = store.app_connection_row(conn, app=app_name)
+        base_url, token = _hub_token(row, app_name)
+        box = store.app_deployment(conn, app=app_name)
+        try:
+            made = deployment_keys.mint(
+                conn,
+                deployment_label=box["label"] if box else app_name,
+                base_url=None if box else base_url,
+                app=app_name,
+                capabilities=apps.APP_KEY_CAPABILITIES[app_name],
+                label=f"connect {app_name}",
+                created_by=staff.actor,
+            )
+        except deployment_keys.KeyRefused as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        old_prefix = row["key_prefix"]
+
+    try:
+        answer = app_hub.put_router_key(base_url, token, made.token)
+        result = app_hub.public_fields(answer)
+        accepted = answer.ok
+    except app_hub.HubUnreachable as exc:
+        result = {"hub_status": None, "error": f"unreachable: {exc}"}
+        accepted = False
+    result["key_prefix"] = made.prefix
+
+    with get_engine().begin() as conn:
+        if not accepted:
+            store.revoke_deployment_key(conn, prefix=made.prefix)
+            result["outcome"] = "refused"
+            store.record_app_connection_result(
+                conn, app=app_name, result=result, actor=staff.actor
+            )
+        else:
+            rotated = bool(old_prefix and old_prefix != made.prefix)
+            if rotated:
+                store.revoke_deployment_key(conn, prefix=old_prefix)
+            result["outcome"] = "rotated" if rotated else "connected"
+            store.record_app_connection(
+                conn,
+                app=app_name,
+                key_prefix=made.prefix,
+                connected=True,
+                result=result,
+                actor=staff.actor,
+            )
+            _audit(
+                conn,
+                None,
+                "app.connect",
+                {
+                    "app": app_name,
+                    "key_prefix": made.prefix,
+                    "revoked_prefix": old_prefix if rotated else None,
+                    "hub_status": result.get("hub_status"),
+                },
+                actor=staff.actor,
+            )
+    if not accepted:
+        raise HTTPException(
+            status_code=502,
+            detail={"reason": "hub_refused", "app": app_name, **result},
+        )
+    return {"ok": True, "app": app_name, **result}
+
+
+@app.post("/apps/connection/disconnect")
+def disconnect_app(req: AppConnectRequest, staff: Operator) -> dict[str, Any]:
+    """Revoke the key the hub holds, then tell the hub to drop it. OWNER-GATE.
+
+    The Console revokes FIRST: from that moment the key opens no door, whatever
+    the hub answers. ``DELETE <base_url>/hub/api/router-key`` follows, and its
+    answer is reported, never a reason to keep the key alive.
+    """
+    app_name = _confirmed(req)
+    with get_engine().begin() as conn:
+        row = store.app_connection_row(conn, app=app_name)
+        if row is None:
+            raise HTTPException(status_code=409, detail=f"{app_name} is not connected")
+        prefix = row["key_prefix"]
+        revoked = bool(prefix) and store.revoke_deployment_key(conn, prefix=prefix)
+        store.record_app_connection(
+            conn,
+            app=app_name,
+            key_prefix=None,
+            connected=False,
+            result={"outcome": "disconnected", "revoked_prefix": prefix},
+            actor=staff.actor,
+        )
+        _audit(
+            conn,
+            None,
+            "app.disconnect",
+            {"app": app_name, "revoked_prefix": prefix, "revoked": revoked},
+            actor=staff.actor,
+        )
+
+    hub: dict[str, Any]
+    if row["operator_token_enc"]:
+        base_url, token = _hub_token(row, app_name)
+        try:
+            hub = app_hub.public_fields(app_hub.delete_router_key(base_url, token))
+        except app_hub.HubUnreachable as exc:
+            hub = {"hub_status": None, "error": f"unreachable: {exc}"}
+    else:
+        hub = {"hub_status": None, "error": "no hub token is stored"}
+    with get_engine().begin() as conn:
+        store.record_app_connection_result(
+            conn,
+            app=app_name,
+            result={"outcome": "disconnected", "revoked_prefix": prefix, **hub},
+            actor=staff.actor,
+        )
+    return {
+        "ok": True,
+        "app": app_name,
+        "revoked": revoked,
+        "revoked_prefix": prefix,
+        "hub": hub,
+    }
 
 
 # ── §6 item (h) — the customer-authenticated seat WRITE ─────────────────────
@@ -6025,7 +6658,24 @@ def assign_seat_admin(
     already-assigned member is a 200 that consumes nothing (``decide_assignment``
     ``already_assigned`` + ``try_assign_seat``'s ``ON CONFLICT DO NOTHING``).
     Gated on ``can_write_seats`` (403 for ``suspended``/``cancelled``).
+
+    **An APP box (CP-APP, Aroh) takes its own path**, :func:`_assign_app_seat`.
+    Every other caller is refused an app plan with a 400: an app seat is
+    taken on the app's box, where the entitlement is checked.
     """
+    if caller is not None:
+        with get_engine().begin() as conn:
+            served = store.deployment_app(conn, deployment_id=caller.deployment_id)
+            if served is not None:
+                return _assign_app_seat(conn, req, caller, served)
+    if apps.is_app_plan(req.plan_slug):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"the {req.plan_slug} seat is taken on the {req.plan_slug} box; "
+                "the operator sets the count on the organization page"
+            ),
+        )
     if req.plan_slug == CORE_PLAN_SLUG:
         raise HTTPException(
             status_code=400,
@@ -6101,7 +6751,16 @@ def release_seat_admin(
     when the org is suspended, matching the operator twin. A release of a member
     who holds no live seat is a 200 no-op ``{released: false}``. Refuses
     ``plan_slug='core'`` (membership IS the Core seat, not released here).
+
+    **An APP box (CP-APP, Aroh) takes its own path**, :func:`_release_app_seat`.
+    On a Metorite box an admin may still free an app seat here: freeing is
+    always safe.
     """
+    if caller is not None:
+        with get_engine().begin() as conn:
+            served = store.deployment_app(conn, deployment_id=caller.deployment_id)
+            if served is not None:
+                return _release_app_seat(conn, req, caller, served)
     if req.plan_slug == CORE_PLAN_SLUG:
         raise HTTPException(
             status_code=400,
@@ -6124,6 +6783,187 @@ def release_seat_admin(
         )
 
     return {"released": released}
+
+
+# ── CP-APP · the app seat (Aroh) ────────────────────────────────────────────
+#
+# The app box holds ONE deployment key for every organization. A member signs
+# in to the app with Metorite, and the box takes the member's seat at once:
+# there is no second approval. So the role rule differs from the Metorite seat
+# door in ONE place: a member acts on their OWN seat with any role
+# (`apps.may_act_on_app_seat`). The cap, the lock and the seat vocabulary are
+# the same ones every seat uses.
+
+
+def _app_seat_context(
+    conn, req: SeatAdminRequest, caller: DeploymentCaller, app: str
+) -> tuple[str, str, str]:
+    """Resolve ``(org_id, actor_email, target_identity_id)`` for an app seat.
+
+    Refusals, in this order, and each one is a different answer:
+
+    * **400** — the body names an org (R11), names no actor, names a plan that
+      is not this box's app, or names a source other than ``app``.
+    * **403** ``{"reason": "app_not_entitled", "app": ...}`` — the actor is in
+      no organization that has the app turned on for this box. The box already
+      knows the person has a Metorite sign-in, so this says nothing new.
+    * **403** ``organization is deleted`` — the one lifecycle state that ends
+      sign-in.
+    * **409** — the actor is in more than one organization with the app. The
+      Console does not choose (the chooser is a named non-goal).
+    * **404** — the target is not a member of the actor's organization.
+    * **403** ``app_not_entitled`` — the target's membership is removed or
+      suspended.
+    * **403** — the actor acts on another member's seat and is not an active
+      owner or admin.
+    """
+    if req.org_slug is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "a deployment key may not name an organization; the org is "
+                "derived from membership and placement"
+            ),
+        )
+    if not req.actor_email:
+        raise HTTPException(
+            status_code=400,
+            detail="actor_email is required under the deployment-key scheme",
+        )
+    if req.plan_slug != app:
+        raise HTTPException(
+            status_code=400,
+            detail=f"this deployment serves the {app} app and takes only the {app!r} seat",
+        )
+    # 400, never ignored: a source the caller named but the door would not
+    # write is a caller who believes it chose the seat's category. The model
+    # default (`alacarte`) is accepted as "not chosen": the live Aroh hub sends
+    # it. The door writes `app` either way.
+    if req.source not in (apps.APP_SEAT_SOURCE, SeatAdminRequest.model_fields["source"].default):
+        raise HTTPException(
+            status_code=400,
+            detail=f"an app seat's source is {apps.APP_SEAT_SOURCE!r}",
+        )
+
+    visible = store.app_visible_orgs(
+        conn, deployment_id=caller.deployment_id, app=app, email=req.actor_email
+    )
+    admissible = [o for o in visible if capabilities_of(o["status"]).can_sign_in]
+    if not admissible:
+        if visible:
+            raise HTTPException(
+                status_code=403, detail=f"organization is {visible[0]['status']}"
+            )
+        raise HTTPException(status_code=403, detail=apps.not_entitled_detail(app))
+    if len(admissible) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "the acting member belongs to more than one organization with "
+                f"the {app} app; the organization cannot be inferred"
+            ),
+        )
+
+    org = admissible[0]
+    org_id = org["organization_id"]
+    target_id = _seat_admin_target(conn, org_id=org_id, member_email=req.member_email)
+    if store.membership_status(conn, org_id=org_id, identity_id=target_id) in (
+        _SEATLESS_MEMBERSHIP_STATUSES
+    ):
+        raise HTTPException(status_code=403, detail=apps.not_entitled_detail(app))
+    if not apps.may_act_on_app_seat(
+        actor_identity_id=org["identity_id"],
+        target_identity_id=target_id,
+        actor_role=org["membership_role"],
+        actor_status=org["membership_status"],
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="the acting member is not an active admin of this organization",
+        )
+    return org_id, req.actor_email, target_id
+
+
+def _assign_app_seat(
+    conn, req: SeatAdminRequest, caller: DeploymentCaller, app: str
+) -> dict[str, Any]:
+    """Take one app seat for a member (CP-APP). 409 when every seat is in use.
+
+    The same composition as the seat door below — lock, count, decide, insert
+    — so the cap holds under concurrency and the 409 body is byte-compatible
+    with every other seat refusal: ``{"reason": "seat_cap_exceeded",
+    "buy_more": {"plan_slug", "purchased", "assigned", ...}}``.
+
+    Idempotent: a member who holds the seat gets 200 ``seat: already_held``
+    and nothing is consumed, so the box may call this on every sign-in.
+    """
+    org_id, actor, target_id = _app_seat_context(conn, req, caller, app)
+
+    state = conn.execute(
+        text("SELECT status FROM organization WHERE id = :i"), {"i": org_id}
+    ).scalar_one()
+    if not capabilities_of(state).can_write_seats:
+        raise HTTPException(
+            status_code=403, detail=f"organization is {state}; seats are locked"
+        )
+
+    # BEFORE the count, as every seat writer that holds the cap does.
+    store.lock_seat_capacity(conn, org_id=org_id, plan_slug=app)
+    held = store.has_live_seat(conn, org_id=org_id, plan_slug=app, identity_id=target_id)
+    grants, assigned = store.seat_rows(conn, org_id=org_id, plan_slug=app)
+    decision = decide_assignment(
+        seat_counts(app, grants, assigned),
+        already_assigned=held,
+        # Nobody buys an app seat, so the upsell names no price.
+        price_inr=None,
+    )
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=decision.status,
+            detail={"reason": decision.reason, "buy_more": decision.buy_more},
+        )
+    if not held:
+        store.try_assign_seat(
+            conn,
+            org_id=org_id,
+            plan_slug=app,
+            identity_id=target_id,
+            source=apps.APP_SEAT_SOURCE,
+        )
+        _audit(
+            conn,
+            org_id,
+            "seat.assign",
+            {"email": req.member_email, "plan": app},
+            actor=actor,
+        )
+
+    return {
+        "assigned": True,
+        "plan_slug": app,
+        "seat": _SEAT_ALREADY_HELD if held else _SEAT_ALLOCATED,
+        "app_seats": _app_seat_counts(conn, org_id=org_id, app=app),
+    }
+
+
+def _release_app_seat(
+    conn, req: SeatAdminRequest, caller: DeploymentCaller, app: str
+) -> dict[str, Any]:
+    """Free one app seat (CP-APP). Ungated by the lifecycle: freeing is safe.
+
+    A member frees their own seat, or an active owner or admin frees anyone's.
+    A member who holds no seat gets 200 ``{"released": false}``.
+    """
+    org_id, actor, target_id = _app_seat_context(conn, req, caller, app)
+    released = store.release_seat(conn, org_id=org_id, plan_slug=app, identity_id=target_id)
+    _audit(
+        conn,
+        org_id,
+        "seat.release",
+        {"email": req.member_email, "plan": app, "released": released},
+        actor=actor,
+    )
+    return {"released": released, "app_seats": _app_seat_counts(conn, org_id=org_id, app=app)}
 
 
 # ── CP-2h · the customer-authenticated seat READ (D-SEAT-4) ─────────────────
