@@ -358,6 +358,13 @@ _TAKEN_STEERS: "ContextVar[list[dict[str, Any]] | None]" = ContextVar(
     "agent_taken_steers", default=None,
 )
 
+#: WS-63 PZ-31: True when the member typed this request's message, so a
+#: steer of it may ground a profile write. The route sets False for a card
+#: answer and a Continue turn. The default is False, so a caller that does
+#: not set it stores a steer that grounds nothing. A context variable, for
+#: the same reason as :data:`_TAKEN_STEERS`.
+_STEER_TYPED: ContextVar[bool] = ContextVar("agent_steer_typed", default=False)
+
 
 async def _apply_turn_decision(
     decision: "TurnDecision",
@@ -486,7 +493,11 @@ async def _apply_turn_decision(
         )
 
     text = str(req.payload.get("message") or req.payload.get("user_query") or "")
-    signal = await send_steer(thread_id, actor, text, run_id=req.run_id)
+    # The author is the session's member (`actor`), never a body field. The
+    # flag says the member typed `text` (PZ-31, `_STEER_TYPED`).
+    signal = await send_steer(
+        thread_id, actor, text, run_id=req.run_id, typed=_STEER_TYPED.get() is True,
+    )
 
     # ── A steer that NO process heard (incident 2026-10-09) ──────────────────
     # The owner may still have a heartbeat (it is in its graceful stop) while
@@ -2849,6 +2860,8 @@ async def run_agent_stream_endpoint(
     # Read HERE, before the Continue note, a replayed steer or the supersede
     # note changes `message`. A card answer sent as a message holds the
     # card's text, which the model wrote, so it grounds nothing.
+    # PZ-31: the member's own typed steers that the run reads are typed words
+    # too. `count_member_steers` in `_serve` below adds them, apart from this.
     _typed = "" if _card_answer is not None else str(
         req.payload.get("message") or req.payload.get("user_query") or "")
     _edit_shared = bool(room is not None and room.is_shared)
@@ -2916,7 +2929,9 @@ async def run_agent_stream_endpoint(
         if _gate is not None:
             return _gate
         req.payload["message"] = ""
-        _typed = ""  # the replayed steers are not this turn's typed words
+        # This request carries no words. The member's own typed steers that
+        # the ENGAGE seam replays count through `count_member_steers` (PZ-31).
+        _typed = ""
         _decision = _FuDecision(_FuRoute.ENGAGE, "steer_followup")
     else:
         _incoming_text = str(
@@ -2978,6 +2993,9 @@ async def run_agent_stream_endpoint(
 
     _taken_steers: list[dict[str, Any]] = []
     _TAKEN_STEERS.set(_taken_steers)
+    # PZ-31: a steer of this request is typed only when the member typed it.
+    # A card answer holds the card's text, and a Continue turn the server's.
+    _STEER_TYPED.set(_card_answer is None and not _resume)
     _steered = await _apply_turn_decision(
         _decision, req, agent_name, actor_email, room,
     )
@@ -3307,7 +3325,10 @@ async def run_agent_stream_endpoint(
     # nothing, so nothing about single-player behaviour changes.
     _floor = list(room.members) if (room is not None and room.is_shared) else None
 
-    from acb_common.assistant_profile import member_typed  # noqa: PLC0415
+    from acb_common.assistant_profile import (  # noqa: PLC0415
+        count_member_steers,
+        member_typed,
+    )
     from acb_skills.tool_packs import surface_scope  # noqa: PLC0415
 
     async def _serve():
@@ -3318,6 +3339,10 @@ async def run_agent_stream_endpoint(
             # copies the context here, so the run reads them, and nothing
             # else does.
             with member_typed(_typed), surface_scope(_surface):
+                # PZ-31: the session's member is the run member. Their own
+                # typed steers that ENGAGE took count now, and a tool result
+                # that carries one later adds it (`steer.decorate_tool_result`).
+                count_member_steers(_actor, _taken_steers)
                 async for chunk in _serve_run(timing):
                     yield chunk
         finally:

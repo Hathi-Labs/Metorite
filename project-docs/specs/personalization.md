@@ -34,6 +34,11 @@ still closed the `goals` area. The gateway now refuses a chat mark
 `answered` with no saved answer. See §14.4 "PZ-26 as built" item 9 and
 §5.5 "The refusal speaks to two readers".
 
+**PZ-31 BUILT 2026-10-29.** The member's own typed steer now grounds a
+profile save. Before the fix, a member typed an interview answer while a
+tool ran. The answer became a steer, and each save refused as
+`NO_TYPED_TEXT`. See §5.5 "the member's own typed steers".
+
 **PZ-28 BUILT 2026-10-26.** The row and the page are named "Assistant
 settings", and the row moved from the You group to the Settings group of the
 account menu. The offer card links to the page. The visual review is
@@ -555,10 +560,12 @@ routes as the member, with the internal bearer and `X-User-Email`.
 - **CODE: only the member's TYPED words ground a write** (fix round 2,
   D-PZ-2). `assistant_profile.MEMBER_TYPED` is one ContextVar, and
   `member_typed()` is its one binder. The chat route binds the request's
-  message BEFORE any server rewrite, so the Continue note, the supersede
-  note and a replayed steer never reach it. `bot_run` binds the WhatsApp
-  text. A Continue turn and a steer follow-up bind "". So do a card answer
-  sent as a message, an approved WhatsApp Confirm, and a forwarded text.
+  message BEFORE any server rewrite, so the Continue note and the supersede
+  note never reach it. A replayed steer never reaches it either, and the
+  next rule says when a steer counts. `bot_run` binds the WhatsApp text. A
+  Continue turn and a steer follow-up bind "" as the text of the request.
+  So do a card answer sent as a message, an approved WhatsApp Confirm, and
+  a forwarded text.
   The inbound turn keeps the forwarded flag of Meta as a custom event. A
   message of more than 1,500 characters grounds nothing. A pasted mail
   grounds nothing too. Its signs are a header line, an "Original Message"
@@ -566,6 +573,26 @@ routes as the member, with the internal bearer and `X-User-Email`.
   `member_message` stays as it was, for the CRM answer check. Fences: the
   same file, `tests/unit/test_profile_typed_words_route.py`,
   `tests/unit/test_wac_bot_run.py` and `tests/unit/test_wac_bot_run_r8.py`.
+- **CODE: the member's own typed steers count as typed words** (PZ-31,
+  2026-10-29). A steer counts only when each rule below holds.
+  `typed_words()` gives the text of the request, then each steer that
+  counts. Fences: `tests/unit/test_profile_write_tools.py`,
+  `tests/unit/test_steer_follow_up.py` and `tests/unit/test_steer_routing.py`.
+  - The steer route stores a `typed` flag on each steer. The flag is true
+    only when the member typed the message. A card answer and a Continue
+    turn store false. A steer from before PZ-31 has no flag, so it counts
+    for nothing.
+  - The author of the steer is the run member. `member_typed()` binds a new
+    holder of steers, and that holder counts no steer. The chat route then
+    names the member of the session (`count_member_steers`). The first name
+    holds. A WhatsApp, background or workflow run names no member, so it
+    counts no steer.
+  - `typed_text()` checks all the steers as one text. So one pasted mail
+    among them stops each steer from grounding.
+  - A steer counts when the ENGAGE seam takes it from the store at the run
+    start. It also counts when a tool result carries it to the model
+    (`steer.decorate_tool_result`). Each later save of the run can then use
+    it.
 - **CODE: the match is strict** (fix round 2). Each address and link in a
   value must be a whole token of the typed words, never a substring. Each
   number, with its separators gone, must be one number of them. At least
@@ -1339,6 +1366,7 @@ and said it felt too robotic.
 | **PZ-26** | The `area` key, the `interview` key, the interview tools and the due line in the block (§14.3, §14.4) | A test for each limit of §14.4. A test shows no question in a shared room | AGENT-SAFE · MEDIUM. **BUILT 2026-10-25, dark** |
 | **PZ-27** | "Get to know me", the first-chat offer, and the interview list on Settings → Assistant settings | A test shows the button opens the chat with the fixed message. The visual review passes | AGENT-SAFE · LOW. **BUILT 2026-10-25, dark.** The visual review is UNVERIFIED |
 | **PZ-30** | A natural interview: a plain start message, intents instead of questions, tone rules, no card for a mark, three areas a sitting (§14.4) | A test shows each area has an intent, the persona holds each tone rule, a mark draws no card, and a sitting gives three | AGENT-SAFE · MEDIUM. **BUILT 2026-10-27, dark** |
+| **PZ-31** | The member's own typed steer grounds a profile save (§5.5). Each steer stores a `typed` flag, and the run counts the typed steers of the run member | A test shows an own typed steer grounds a save after the follow-up and after a tool result. A test shows that a steer of another member, a card answer, a Continue turn, a pasted mail and a steer with no flag ground nothing | AGENT-SAFE · **HIGH** (who may write a profile). **BUILT 2026-10-29** |
 | **PZ-11** | After PZ-27: the staging test, then the production switch with `ASSISTANT_PROFILE_ORGS` set to Hathi Labs | Verified on staging | **OWNER-GATE** for production |
 
 ### 14.6 How this fits phase 2
