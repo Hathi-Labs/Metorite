@@ -1524,10 +1524,19 @@ chat fill in the member's profile.
      of the ten old areas (`OLD_AREAS`) is `answered` or `never`, with one
      or more `never`. The migration sets `stopped_at` (the row's
      `last_asked_at`, or now) and marks `name` and `language` `never`, as
-     `stop_interview` does. It changes no other row, and a second run
-     changes nothing. A member who marked some areas `never` one by one and
-     answered the rest has the same shape, so the migration reads that
-     member as stopped too.
+     `stop_interview` does. It changes no other row. A member who marked
+     some areas `never` one by one and answered the rest has the same
+     shape, so the migration reads that member as stopped too.
+   - The backfill runs once. It ends by adding `PZ-32 stop backfill done` to
+     the comment of the column, in its own transaction, and a later run
+     finds that text and changes nothing. The guard is needed, because the
+     runner re-applies a file whose checksum changes. After the first run,
+     the old shape proves no stop: a member who reset an area and answered
+     it matches, and so does a member who never said stop. A second
+     backfill would stop each of them.
+   - The backfill locks each row that it matches (`FOR UPDATE OF us`), so a
+     reset in Settings at that moment wins. It never writes a row with no
+     `interview` object, because that would clear the whole column.
    - The deploy window (R6). The deploy applies 317 and then restarts the
      services, so the old code runs for a few minutes. An old-code write of
      the interview drops `stopped_at` and the new areas. So a stop in that

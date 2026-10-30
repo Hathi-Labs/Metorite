@@ -741,6 +741,9 @@ def _run_317(db) -> None:
                 if p.endswith("_assistant_profile_interview_stopped.sql"))
     with open(os.path.join(_LADDER_DIR, name), encoding="utf-8") as fh:
         sql = fh.read()
+    # The ladder ran it on an empty table, so its run-once mark goes first.
+    with db.admin_engine.begin() as conn:
+        conn.execute(text("COMMENT ON COLUMN user_settings.assistant_profile IS NULL"))
     with db.admin_engine.begin() as conn, conn.connection.dbapi_connection.cursor() as cur:
         cur.execute(sql)
 

@@ -383,6 +383,31 @@ function statusOf(event: Pick<ToolEvent, "status" | "result">): StepStatus {
   return event.status === "running" ? "running" : "done";
 }
 
+/** The label of an offer to remember that did not show (PZ-32). */
+export const NO_OFFER_LABEL = "Nothing to save";
+/** The label of any other refused profile tool. It holds for each of them. */
+export const PROFILE_REFUSED_LABEL = "Profile not changed";
+
+/**
+ * The reason of a refused profile tool, or null. A result of
+ * `acb_skills/profile_tools.py` starts with ONE machine line, so this reads
+ * only the first line, as `ProfileToolCards.parseStatus` does. It parses
+ * here, because this pure module imports no component.
+ */
+function profileRefusal(bare: string, event: Pick<ToolEvent, "status" | "result">): string | null {
+  if (event.status !== "done" || !bare.startsWith("profile_")) return null;
+  const first = (event.result ?? "").split(/\r?\n/, 1)[0].trim();
+  if (!first.startsWith("profile: ")) return null;
+  try {
+    const raw: unknown = JSON.parse(first.slice("profile: ".length));
+    if (typeof raw !== "object" || raw === null) return null;
+    const { status, reason } = raw as { status?: unknown; reason?: unknown };
+    return status === "refused" ? String(reason ?? "") : null;
+  } catch {
+    return null;
+  }
+}
+
 function phrase(verb: Verb, status: StepStatus, object: string): string {
   const v = status === "running" ? verb[0] : verb[1];
   return object ? `${v} ${object}` : v;
@@ -401,6 +426,17 @@ export function describeToolStep(
   const status = statusOf(event);
   const bare = bareToolName(event.name);
   const args = event.args ?? {};
+
+  // ── A profile tool that changed nothing (WS-63 PZ-32) ─────────────────────
+  // The result is "done" on the wire, so the name alone would read "Saved to
+  // your profile". An offer that did not show is no failure: the member saw
+  // no question. Any other refusal reads failed.
+  const refusal = profileRefusal(bare, event);
+  if (refusal !== null) {
+    return refusal === "no_offer"
+      ? { kind: "other", status: "done", label: NO_OFFER_LABEL }
+      : { kind: "other", status: "failed", label: PROFILE_REFUSED_LABEL };
+  }
 
   // ── A script or a command in the sandbox ──────────────────────────────────
   if (isRunStep(event.name)) {

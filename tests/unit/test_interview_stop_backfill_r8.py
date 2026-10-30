@@ -24,7 +24,11 @@ Mutations this file catches (R7). ``M`` is the migration file:
   ``never``, or a ``stopped_at`` already;
 * ``M`` has no per-tenant pass under row security, so the owner changes
   nothing;
-* a second run changes a row again;
+* a second run changes a row again, so a member who reset and answered gets
+  ``stopped_at`` back;
+* ``M`` takes no row lock, so a reset at that moment gets ``stopped_at`` back
+  (with the second wall gone too, the whole column goes NULL);
+* an odd shape of the column makes ``M`` fail or change a row;
 * the list of old areas of ``M`` drifts from ``assistant_profile.OLD_AREAS``.
 """
 # ruff: noqa: F811 — the imported fixture `promoted` is the argument of each test
@@ -34,6 +38,8 @@ import copy
 import json
 import os
 import re
+import threading
+import time
 import uuid
 from typing import Any
 
@@ -133,12 +139,13 @@ def _put(world, org: str, profile: dict[str, Any]) -> str:
     return email
 
 
-def _get(world, org: str, email: str) -> dict[str, Any]:
+def _get(world, org: str, email: str) -> Any:
+    """The stored column. The driver decodes the JSON, so an odd shape comes
+    back as it went in."""
     with world.admin_engine.begin() as c:
-        raw = c.execute(text("SELECT assistant_profile FROM user_settings"
-                             " WHERE organization_id = CAST(:o AS uuid) AND user_id = :u"),
-                        {"o": org, "u": email}).scalar_one()
-    return raw if isinstance(raw, dict) else json.loads(raw)
+        return c.execute(text("SELECT assistant_profile FROM user_settings"
+                              " WHERE organization_id = CAST(:o AS uuid) AND user_id = :u"),
+                         {"o": org, "u": email}).scalar_one()
 
 
 def _run(url) -> list[str]:
@@ -157,10 +164,24 @@ def _run(url) -> list[str]:
     return notices
 
 
+def _before_317(world) -> None:
+    """Take away the run-once mark, as the column stood before the file. The
+    ladder of the fixture already ran it, on an empty table."""
+    with world.admin_engine.begin() as c:
+        c.execute(text("COMMENT ON COLUMN user_settings.assistant_profile IS NULL"))
+
+
+def _all(world) -> dict[str, Any]:
+    with world.admin_engine.begin() as c:
+        rows = c.execute(text("SELECT user_id, assistant_profile FROM user_settings"
+                              " WHERE user_id LIKE '%@pz32stop.test'")).all()
+    return dict(rows)
+
+
 def test_the_list_of_old_areas_is_the_one_of_the_code() -> None:
     with open(_SQL, encoding="utf-8") as fh:
         sql = fh.read()
-    lists =re.findall(r"unnest\(ARRAY\[([^\]]*)\]\)", sql)
+    lists = re.findall(r"unnest\(ARRAY\[([^\]]*)\]\)", sql)
     old = [tuple(re.findall(r"'([a-z_]+)'", body)) for body in lists]
     assert old.count(ap.OLD_AREAS) == 2, old
     assert ("name", "language") in old
@@ -177,6 +198,7 @@ def test_317_backfills_each_old_stop_once_and_nothing_else(world) -> None:
     before = {email: _get(world, a, email) for email in others.values()}
 
     # As the owner, under FORCE RLS: only the per-tenant pass sees a row.
+    _before_317(world)
     notices = _run(world.owner_url)
     assert any(re.fullmatch(r"317: \d+ interview\(s\) from before PZ-32 got stopped_at", n)
                for n in notices), notices
@@ -194,18 +216,97 @@ def test_317_backfills_each_old_stop_once_and_nothing_else(world) -> None:
     for email, row in before.items():
         assert _get(world, a, email) == row, email
 
-    # Idempotent: a second run, as each role, changes nothing.
-    settled = {email: _get(world, org, email) for org, email in world.pz32_made}
+    # Run once. After the first run the old shape proves no stop: a member
+    # who reset an area and answered it matches, and a second backfill would
+    # stop them. A later run, as each role, changes nothing.
+    answered_again = _put(world, a, _old_stop())
+    settled = _all(world)
     for url in (world.owner_url, world.admin_engine.url):
-        _run(url)
-        assert {email: _get(world, org, email) for org, email in world.pz32_made} == settled
+        again = _run(url)
+        assert "317: the stop backfill ran already, so nothing changes" in again, again
+        assert _all(world) == settled
+    assert "stopped_at" not in settled[answered_again]["interview"]
 
 
 def test_317_with_no_stored_time_stamps_now(world) -> None:
     profile = _old_stop()
     del profile["interview"]["last_asked_at"]
     email = _put(world, world.org_a, profile)
+    _before_317(world)
     _run(world.owner_url)
     stored = _get(world, world.org_a, email)["interview"]
     assert ap._parse_time(stored["stopped_at"]) is not None
     assert stored["areas"]["name"] == {"state": "never", "at": stored["stopped_at"]}
+
+
+def test_317_leaves_each_odd_shape_alone(world) -> None:
+    """The column is JSON that old code and people wrote. A shape that is
+    not the old stop neither fails the file nor changes."""
+    null_stop = _old_stop()
+    null_stop["interview"]["stopped_at"] = None
+    entry_is_text = _old_stop()
+    entry_is_text["interview"]["areas"]["role"] = "never"
+    shapes = {
+        "interview_is_text": {"v": 1, "facts": [], "interview": "stopped"},
+        "interview_is_null": {"v": 1, "interview": None},
+        "areas_is_a_list": {"v": 1, "interview": {"started_at": T0, "areas": ["role"]}},
+        "stopped_at_is_null": null_stop,
+        "entry_is_text": entry_is_text,
+        "profile_is_a_list": ["interview"],
+        "profile_is_text": "interview",
+    }
+    made = {name: _put(world, world.org_a, shape) for name, shape in shapes.items()}
+    _before_317(world)
+    _run(world.owner_url)
+    for name, email in made.items():
+        assert _get(world, world.org_a, email) == shapes[name], name
+
+
+def _waits(world) -> bool:
+    """True when the file waits for a lock. The first line of the file holds
+    its name, and `pg_stat_activity` shows the head of the text."""
+    with world.admin_engine.begin() as c:
+        return c.execute(text(
+            "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'"
+            " AND state = 'active' AND query LIKE :q AND pid <> pg_backend_pid()"),
+            {"q": "%_assistant_profile_interview_stopped%"}).scalar_one() > 0
+
+
+@pytest.mark.parametrize("reset", ["whole", "one_area"])
+def test_a_reset_that_holds_the_row_wins_over_317(world, reset) -> None:
+    """A reset holds an old-stop row while the file reads it. The file waits,
+    and then it must leave the reset as it stands. Before ``FOR UPDATE OF
+    us``, a one-area reset got ``stopped_at`` back. With no ``interview``, a
+    strict ``jsonb_set`` set the WHOLE column to NULL, facts and all."""
+    email = _put(world, world.org_a, _old_stop())
+    _before_317(world)
+    done: list[Any] = []
+    with world.admin_engine.connect() as hold:
+        with hold.begin():
+            bind = {"o": world.org_a, "u": email}
+            if reset == "whole":
+                hold.execute(text("UPDATE user_settings SET assistant_profile ="
+                                  " assistant_profile - 'interview'"
+                                  " WHERE organization_id = CAST(:o AS uuid) AND user_id = :u"),
+                             bind)
+            else:
+                hold.execute(text("UPDATE user_settings SET assistant_profile = assistant_profile"
+                                  " #- '{interview,areas,role}'"
+                                  " WHERE organization_id = CAST(:o AS uuid) AND user_id = :u"),
+                             bind)
+            runner = threading.Thread(target=lambda: done.append(_run(world.owner_url)))
+            runner.start()
+            deadline = time.monotonic() + 20
+            while not _waits(world):
+                assert time.monotonic() < deadline, "the file never waited for the row"
+                time.sleep(0.1)
+        # The reset commits here, and the file goes on.
+        runner.join(timeout=30)
+    assert done, "the file did not finish"
+    got = _get(world, world.org_a, email)
+    assert got["facts"], "the column kept its facts"
+    if reset == "whole":
+        assert "interview" not in got
+    else:
+        assert "stopped_at" not in got["interview"]
+        assert "role" not in got["interview"]["areas"]

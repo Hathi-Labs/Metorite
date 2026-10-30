@@ -37,8 +37,20 @@
 --   Such a write is rare for a member who said stop, and the window is a few
 --   minutes. No old-code read breaks on the new keys.
 --
--- Idempotent: a row with `stopped_at` never matches. A second run, and a
---   REPLAY_ALL, change nothing.
+-- It runs once: the file ends by adding `PZ-32 stop backfill done` to the
+--   comment of the column, in the same transaction. A later run finds that
+--   text, and it changes nothing. ⚠️ This guard is load-bearing. The runner
+--   re-applies a file whose checksum changes, and REPLAY_ALL re-applies each
+--   file. After the first run the old shape proves nothing: a member who
+--   reset an area and answered it matches, and so does a member who never
+--   said stop. A second backfill would stop each of them.
+--
+-- The race: `Reset the interview` or Forget-all can hold a row while the
+--   tenant pass reads it. Postgres then re-reads the newest row for the
+--   UPDATE, and it does not check `legacy` again. So the CTE ends with
+--   `FOR UPDATE OF us`, which checks the row again after the wait. With no
+--   `interview`, a strict `jsonb_set` gives NULL for the WHOLE column, so the
+--   UPDATE also refuses a row with no `interview` object, as a second wall.
 --
 -- ── FORCE RLS ───────────────────────────────────────────────────────────────
 --
@@ -91,6 +103,7 @@ DECLARE
                                                'detail', 'rhythm', 'channels', 'energy',
                                                'peeves', 'people']) AS a(area)
                      WHERE us.assistant_profile->'interview'->'areas'->a.area->>'state' = 'never')
+               FOR UPDATE OF us
         )
         UPDATE user_settings t
            SET assistant_profile = jsonb_set(
@@ -112,8 +125,22 @@ DECLARE
           FROM legacy l
          WHERE t.organization_id = l.organization_id
            AND t.user_id = l.user_id
+           AND jsonb_typeof(t.assistant_profile->'interview') = 'object'
+           AND jsonb_typeof(t.assistant_profile->'interview'->'areas') = 'object'
     $q$;
 BEGIN
+    -- Run once. After the first run the old shape proves no stop, and a
+    -- replay must keep each member's own state.
+    IF COALESCE(col_description(
+            'user_settings'::regclass,
+            (SELECT attnum FROM pg_attribute
+              WHERE attrelid = 'user_settings'::regclass
+                AND attname = 'assistant_profile'
+                AND NOT attisdropped)), '') LIKE '%PZ-32 stop backfill done%' THEN
+        RAISE NOTICE '317: the stop backfill ran already, so nothing changes';
+        RETURN;
+    END IF;
+
     IF EXISTS (SELECT 1 FROM pg_class
                 WHERE oid = 'user_settings'::regclass AND relrowsecurity) THEN
         -- Under the policy an unbound UPDATE sees no row. So bind each
@@ -134,5 +161,10 @@ BEGIN
 
     RAISE NOTICE '317: % interview(s) from before PZ-32 got stopped_at', total;
 END $$;
+
+-- The mark of the run-once guard, in the transaction of the backfill.
+COMMENT ON COLUMN user_settings.assistant_profile IS
+    'PZ-1: the member''s assistant profile (address, style, aliases, facts). '
+    'NULL = nothing set. PZ-32 stop backfill done.';
 
 COMMIT;
