@@ -2122,6 +2122,8 @@ export default function AgentChat({
   const viewerEmail = memoryUserId ?? "";
   const { room, shared: isRoom, presence, timeline, refresh: refreshRoom } =
     useRoom(sessionId, viewerEmail, { enabled: !compact });
+  // The member's own assistant, not a room: the push prompt asks only here (OB-8).
+  const ownAssistantChat = isOrchestrator && !isRoom;
   // A blocking generative-UI card whose answer went as a new message after a
   // restart: its run died before its tool result recorded the answer, so the
   // answer comes from the member's turn (`lib/cardAnswer.ts`). The card then
@@ -2585,7 +2587,7 @@ export default function AgentChat({
               only, after the first turn, and never during a run. The server's
               `prompt` flag decides whether it draws at all. */}
           <PushPromptSheet
-            ownChat={isOrchestrator && !isRoom}
+            ownChat={ownAssistantChat}
             messageCount={messages.length}
             streaming={isLoading}
             visible={visible}
