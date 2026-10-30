@@ -1140,6 +1140,8 @@ export interface PulseFocusTask {
   id: string;
   title: string;
   task_number: number | null;
+  /** OP-12b — the task's project, so a name can map through `displayRowProject`. Absent on an older gateway. */
+  project_id?: string | null;
   project_name: string | null;
   due_at: string | null;
   in_progress: boolean;

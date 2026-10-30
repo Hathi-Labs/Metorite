@@ -145,9 +145,10 @@ def pulse_focus_sql(open_where: str) -> str:
     mine = f"(lower(a.assignee) = :me AND {_MINE_TODAY})"
     return (
         "SELECT who, id, title, task_number, project_name, due_at,"
-        "       in_progress, scheduled, n"
+        "       in_progress, scheduled, n, project_id"
         "  FROM ("
         "  SELECT lower(a.assignee) AS who, t.id, t.title, t.task_number,"
+        "         t.project_id,"
         "         p.name AS project_name, t.due_at,"
         "         (s.category = :started_cat) AS in_progress,"
         f"        {mine} AS scheduled,"
@@ -386,6 +387,7 @@ async def pulse_body(
                 "task_number": (
                     int(r.task_number) if r.task_number is not None else None
                 ),
+                "project_id": str(r.project_id),
                 "project_name": r.project_name,
                 "due_at": _iso(r.due_at),
                 "in_progress": bool(r.in_progress),

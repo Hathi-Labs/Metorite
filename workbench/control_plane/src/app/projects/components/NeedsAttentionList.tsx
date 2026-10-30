@@ -21,6 +21,7 @@
  * EA-14a, and it asks first. Neither changes the task. Each one reads the list
  * again through `onChanged`.
  */
+import { displayProjectName, displayRowProject } from "../lib/personalTree";
 import { useEffect, useReducer, useState } from "react";
 
 import { ControlLink } from "@/components/ControlLink";
@@ -196,7 +197,7 @@ export function NeedsAttentionList({
                       <p className="text-[11px] text-muted-foreground">{rowDetail(row)}</p>
                       <p className="text-[10px] text-muted-foreground">
                         Owner: {ownerText(row, personLabels)}
-                        {row.project_name ? ` · ${row.project_name}` : ""}
+                        {row.project_name ? ` · ${displayRowProject(row)}` : ""}
                       </p>
                       {row.kind === "stalled" && row.connection_gone ? (
                         <p className="text-[10px] text-muted-foreground">{CONNECTION_GONE}</p>

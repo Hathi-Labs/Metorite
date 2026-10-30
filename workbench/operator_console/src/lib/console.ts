@@ -209,6 +209,40 @@ export const setSeatCount = (body: unknown, d?: Deps) =>
 export const releaseSeat = (body: unknown, d?: Deps) =>
   callConsole("/billing/seats/release", { method: "POST", body }, d ?? {});
 
+// ── CP-APP · the Aroh app (task 1105) ──────────────────────────────────────
+// One org's apps: the switch, the seats, who holds them, and the app's AI use
+// (`viewer`). A seat is freed through `releaseSeat` with `plan_slug: "aroh"`.
+export const orgApps = (orgSlug: string, d?: Deps) =>
+  callConsole(
+    `/orgs/apps?org_slug=${encodeURIComponent(orgSlug)}`,
+    { method: "GET" },
+    d ?? {},
+  );
+
+// Body {org_slug, app, enabled, seats, reason}. `admin` with an elevation
+// window, the gate of the seat count.
+export const setOrgApp = (body: unknown, d?: Deps) =>
+  callConsole("/orgs/apps", { method: "POST", body }, d ?? {});
+
+// "Connect Aroh" (owner request, 2026-10-30). The Console stores the hub's
+// operator token ENCRYPTED and answers with `token_set` and the last four
+// characters only. The box key it mints goes to the hub, never back here.
+export const appConnection = (app: string, probe: boolean, d?: Deps) =>
+  callConsole(
+    `/apps/connection?app=${encodeURIComponent(app)}${probe ? "&probe=true" : ""}`,
+    { method: "GET" },
+    d ?? {},
+  );
+
+export const saveAppConnection = (body: unknown, d?: Deps) =>
+  callConsole("/apps/connection/settings", { method: "POST", body }, d ?? {});
+
+export const connectApp = (body: unknown, d?: Deps) =>
+  callConsole("/apps/connection/connect", { method: "POST", body }, d ?? {});
+
+export const disconnectApp = (body: unknown, d?: Deps) =>
+  callConsole("/apps/connection/disconnect", { method: "POST", body }, d ?? {});
+
 export const grantCredits = (body: unknown, d?: Deps) =>
   callConsole("/credits/grant", { method: "POST", body }, d ?? {});
 

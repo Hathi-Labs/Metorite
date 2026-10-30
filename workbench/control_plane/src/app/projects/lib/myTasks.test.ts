@@ -261,7 +261,7 @@ describe("each row names its project", () => {
     for (const file of ["components/TaskList.tsx", "components/TaskBoard.tsx", "components/TableView.tsx"]) {
       const source = code(file);
       expect(source, file).toContain("projectPath?: (task: TaskRow) => readonly string[] | null;");
-      expect(source, file).toMatch(/projectPath \? \([\s\S]{0,80}<ProjectPathChip path=\{projectPath\(task\)\} \/>|projectPath \? <ProjectPathChip path=\{projectPath\(task\)\} \/>/);
+      expect(source, file).toMatch(/projectPath \? \([\s\S]{0,80}<ProjectPathChip path=\{projectPath\(task\)\}|projectPath \? <ProjectPathChip path=\{projectPath\(task\)\}/);
     }
     expect(code("components/MyTasksSpace.tsx").match(/projectPath=\{pathOf\}/g)).toHaveLength(3);
   });
