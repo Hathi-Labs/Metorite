@@ -39,8 +39,10 @@ class TestTheTable:
     def test_the_base_of_each_kind(self):
         # MD-1, and the eleven MD-3 kinds of §5.9 item 2 (MD-3c).
         assert feed_rank.BASE == {
-            "overdue": 60, "approval": 56, "due_today": 52, "notification": 48,
-            "needs_reply": 44, "agent_asks": 43, "promise_due": 42,
+            # WS-66 RM-2b: the five needs bases rose by 3, to make room for the
+            # three reminder kinds above `agent_asks`.
+            "overdue": 63, "approval": 59, "due_today": 55, "notification": 51,
+            "needs_reply": 47, "agent_asks": 43, "promise_due": 42,
             "crm_followup_due": 41, "block_overlap": 40, "absent_on_due": 39,
             "unblocked": 38, "waiting_quiet": 37, "block_soon": 36, "no_answer": 35,
             "deal_close_passed": 34, "deal_quiet": 33, "day_overbooked": 32,
@@ -55,9 +57,21 @@ class TestTheTable:
             "doc_needs_review": 21, "doc_shared_with_me": 19,
             # WS-61 KB-9b slice 2: a source stopped syncing.
             "source_sync_failed": 31,
-            # WS-66 RM-2: the member's own reminders.
-            "reminder_due": 31, "reminder_check": 29, "reminder_unconfirmed": 25,
+            # WS-66 RM-2b: the member's own reminders, needs kinds below the five.
+            "reminder_due": 46, "reminder_check": 45, "reminder_unconfirmed": 44,
         }
+
+    def test_the_reminders_sit_between_agent_asks_and_the_lowest_needs_base(self):
+        """WS-66 RM-2b. Mutation: set `reminder_due` to 42, or `needs_reply`
+        to 45, and this line fails."""
+        reminders = [feed_rank.BASE[k] for k in ("reminder_due", "reminder_check",
+                                                 "reminder_unconfirmed")]
+        lowest_other_needs = min(feed_rank.BASE[k] for k in KIND_ORDER
+                                 if not k.startswith("reminder_"))
+        assert reminders == sorted(reminders, reverse=True)
+        assert feed_rank.BASE["agent_asks"] < min(reminders)
+        assert max(reminders) < lowest_other_needs
+        assert feed_rank.BASE["needs_reply"] == lowest_other_needs
 
     def test_the_needs_kinds_start_above_every_other_kind(self):
         needs = [feed_rank.BASE[k] for k in KIND_ORDER]
@@ -145,7 +159,7 @@ class TestTheOtherTerms:
     def test_the_score_is_the_sum(self):
         facts = {"priority": "important", "days_late": 2}
         at = (NOW - timedelta(days=2)).isoformat()
-        assert feed_rank.score("overdue", facts, at, NOW) == 60 + (60 + 4) + 12
+        assert feed_rank.score("overdue", facts, at, NOW) == 63 + (60 + 4) + 12
 
 
 class TestTheGroupTable:
@@ -309,14 +323,14 @@ class TestTheFixedSeed:
         cards = feed.build_cards(_seed(), NOW, ZoneInfo("UTC"), TODAY)
         got = [(c["signal_id"], c["group"], c["score"]) for c in feed_rank.order(cards, 40)]
         assert got == [
-            ("tasks:soon", "now", 52 + 40 + 12),
+            ("tasks:soon", "now", 55 + 40 + 12),
             ("tasks:blk", "now", 36 + 40),
-            ("tasks:crit", "needs_you", 60 + 60 + 24),
-            ("tasks:old", "needs_you", 60 + 66 + 0),
-            ("tasks:eve", "needs_you", 52 + 0 + 18),
-            ("tasks:ask", "needs_you", 48),
+            ("tasks:crit", "needs_you", 63 + 60 + 24),
+            ("tasks:old", "needs_you", 63 + 66 + 0),
+            ("tasks:eve", "needs_you", 55 + 0 + 18),
+            ("tasks:ask", "needs_you", 51),
             ("tasks:wk", "needs_you", 40),
-            ("tasks:note", "fyi", 48),
+            ("tasks:note", "fyi", 51),
         ]
 
     def test_a_seen_card_moves_only_behind_the_new_cards_of_its_group(self):

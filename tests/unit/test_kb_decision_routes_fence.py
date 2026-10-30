@@ -4,13 +4,19 @@
 the Knowledge app. ``_require_web`` reads the internal token, a member email
 and no ``X-Actor-Via`` as a browser. A generic gateway or HTTP tool that named
 either route would pass that check. So the source of every tool and agent path
-must not name them. Only the chat manifest may, and only as class ``X`` rows
-(`test_kb_proposals.py` holds those). The Knowledge app (web client) is the one
-caller and is outside this scan.
+must not name them. Only the Knowledge manifest may, and only as class ``X``
+rows (`test_kb_proposals.py` holds those). The Knowledge app (web client) is
+the one caller and is outside this scan.
 
 The scan reads the source of ``acb_skills`` (the chat tools), ``agent_edge``
-(the MCP edge), ``acb_auth`` (the ``MCP_ROUTES`` lists) and the gateway outside
-``routes/knowledge``. It also checks the route sets of the MCP edge as data.
+(the MCP edge), ``acb_auth`` (the ``MCP_ROUTES`` lists), the app manifests of
+``acb_common`` (MCP-P1a) and the gateway outside ``routes/knowledge``. It also
+checks the route sets of the MCP edge as data: ``MCP_ROUTES`` and the door
+pairs of the manifests.
+
+MCP-P1a moved the Knowledge rows to ``acb_common/app_manifests/knowledge.py``
+(spec ``external_agent_access.md`` §19.3). ``acb_skills/knowledge_manifest.py``
+is a re-export now, so it is scanned as any other chat file.
 
 Mutation (R7): add ``"/knowledge/proposals/{proposal_id}/accept"`` to a tool
 file or to ``MCP_ROUTES`` and a test below fails.
@@ -23,11 +29,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 _DECISION = re.compile(r"proposals[^\n]{0,60}/(accept|reject)\b")
-_ALLOWED = {ROOT / "packages/acb_skills/acb_skills/knowledge_manifest.py"}
+_MANIFEST = ROOT / "packages/acb_common/acb_common/app_manifests/knowledge.py"
+_ALLOWED = {_MANIFEST}
 _SCANNED = (
     ROOT / "packages/acb_skills/acb_skills",
     ROOT / "apps/services/agent_edge",
     ROOT / "packages/acb_auth/acb_auth",
+    ROOT / "packages/acb_common/acb_common/app_manifests",
     ROOT / "apps/services/gateway/gateway",
 )
 _OWNER = ROOT / "apps/services/gateway/gateway/routes/knowledge"
@@ -53,8 +61,10 @@ def test_the_scan_is_not_vacuous() -> None:
     assert _hits("f'/knowledge/proposals/{pid}/reject'")
     assert not _hits('"/knowledge/proposals"')
     # The one allowed file does name both, so the pattern matches real source.
-    manifest = (ROOT / "packages/acb_skills/acb_skills/knowledge_manifest.py").read_text(encoding="utf-8")
+    manifest = _MANIFEST.read_text(encoding="utf-8")
     assert len(_hits(manifest)) >= 2
+    # MCP-P1a: the manifests of acb_common are in the scan.
+    assert any("app_manifests" in p.parts for p in _sources())
 
 
 def test_no_tool_or_agent_source_names_accept_or_reject() -> None:
@@ -69,10 +79,14 @@ def test_no_tool_or_agent_source_names_accept_or_reject() -> None:
 
 
 def test_the_mcp_route_sets_hold_no_proposal_decision() -> None:
+    """``MCP_ROUTES`` and, since MCP-P1a, the door pairs of the manifests."""
     from acb_auth import agent_oauth
+    from acb_common import app_manifests
 
+    door = set(app_manifests.door_routes())
+    assert door, "non-vacuity: the Knowledge manifest has door ops"
     bad = sorted(
-        (m, p) for m, p in (agent_oauth.MCP_ROUTES | agent_oauth.MCP_WRITE_ROUTES)
+        (m, p) for m, p in (agent_oauth.MCP_ROUTES | agent_oauth.MCP_WRITE_ROUTES | door)
         if _DECISION.search(p)
     )
     assert not bad, bad

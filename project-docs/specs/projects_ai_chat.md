@@ -210,6 +210,8 @@ loses the description again.
 | "Save this as a view called Mine" | `save_view` | `POST /projects/nodes/{id}/views`, `PATCH /projects/views/{id}` | Rename back. Delete is guarded |
 | "Clear my notifications" | `mark_notifications_read` | `POST /projects/notifications/read` | The bell refills |
 
+**Note (2026-10-29, owner-approved).** The Projects specialist now follows the same rule. A new task with no project named is the member's private task, made with `create_personal_task`. An open project keeps its tasks.
+
 **A vocabulary row is named, never numbered.** The member says "the Blocked
 lane". The tool reads the project's own list and resolves the name the way a
 status is resolved: every case-insensitive match, never the first. Two

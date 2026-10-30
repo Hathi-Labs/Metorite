@@ -1306,6 +1306,10 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "position": "A new node takes no position, as the app's create sends none. move_project sets its place.",
     },
     ("PATCH", "/projects/nodes/{project_id}"): {
+        "If-Match": (
+            "The edit guard of an outside agent (D-PM-20, WS-55 MCP-G1). A chat "
+            "write reads the row first."
+        ),
         "parent_project_id": "The route refuses it: a re-parent goes through move_project.",
         "kind": "The route refuses it: a node's kind is set at its create.",
         "source": "Where a node came from is a fact of its create. An edit keeps it.",

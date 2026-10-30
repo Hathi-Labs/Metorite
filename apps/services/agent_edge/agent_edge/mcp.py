@@ -37,7 +37,10 @@ gives the answer, and no later check runs:
 8. Scope: a ``tools/call`` of a known tool that the effective scopes do not
    cover is 403 ``insufficient_scope``. ONLY this check sends that error. A
    write tool while the writes flag is off skips it, and the call answers a
-   tool error (EA-6a fix round 1).
+   tool error (EA-6a fix round 1). For ``app_read`` and ``app_write`` the
+   scope is ``<app>:read`` or ``<app>:write`` of ``arguments.app``
+   (MCP-P1a, spec §19.4, ``tools.scope_of``). An app that no manifest holds
+   gets a tool error, and no 403.
 
 **The error body (EA3-13).** Each 4xx and each 503 carries a JSON-RPC error
 with ``id: null``. The code is ``-32700`` for a body that is not JSON,
@@ -134,6 +137,11 @@ _ROUTINE_INSTRUCTIONS = (
     " set_task_status with a status of the category in_progress whose name"
     " says review. Move the task to done only after the merge, and not when"
     " GitHub already did. The prompt work_on_task gives the full steps."
+    # MCP-G1. The tools of the project tree and of a move between projects.
+    " To make a space, a project or a subproject, call create_project. Change"
+    " one with update_project. To move tasks to another project, call"
+    " preview_move_tasks, show the person what the move drops, and then call"
+    " move_tasks with its preview_id."
 )
 
 #: The protocol of EA-15c (§12.4): one order of steps for each session. The
@@ -442,11 +450,14 @@ async def endpoint(request: Request) -> Response:
         tool = tools.TOOLS.get(name) if isinstance(name, str) else None
         # A write tool that the writes flag turns off needs no scope: the call
         # answers the tool error, so a client never steps up for it (EA-6a).
+        # MCP-P1a: a door tool's scope is the one of the app it names.
+        required = (tools.scope_of(tool, params.get("arguments"))
+                    if tool is not None else None)
         if (tool is not None and tools.offered(tool)
-                and not bearer.covers(caller.scopes, tool.required_scope)):
+                and not bearer.covers(caller.scopes, required)):
             _log.info("agent_edge.insufficient_scope", tool=tool.name,
                       connection_id=caller.lookup.connection_id)
-            return challenge_403(tool.required_scope or "")
+            return challenge_403(required or "")
 
     if kind != "request":
         return Response(status_code=202)

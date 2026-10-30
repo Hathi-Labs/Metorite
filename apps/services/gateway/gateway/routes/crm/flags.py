@@ -62,6 +62,13 @@ gateway reads them.
   :func:`digest_allowed` is the one check. 🔴 A name in the list is
   OWNER-GATE, because each digest spends the org's credits. The grant
   ``enforcement-flip`` does not cover it.
+* ``CRM_CUTOVER_ORGS`` — the organization ids that may switch from the Zoho
+  mirror to Native mode (WS-53 CRM-Z10b, ``crm_platform.md`` §3.4). The
+  grammar is the one of ``CRM_ORGS``. An empty list allows no organization:
+  the three switch routes answer 404, and the preview says the switch is off.
+  :func:`cutover_allowed` is the one check, and it needs
+  :func:`crm_mirror_allowed` too. 🔴 A name in the list on a production box
+  is the owner's production run (CRM-Z10-run).
 
 :func:`require_crm_enabled` is the router dependency in ``core.py``. It runs
 BEFORE ``require_feature_router("crm")``, so an organization outside the list
@@ -284,6 +291,24 @@ def digest_allowed(organization_id: str | None) -> bool:
     return ALL_ORGS in orgs or org in orgs
 
 
+def crm_cutover_orgs() -> frozenset[str]:
+    """The organization ids that may switch to Native (CRM-Z10b). Empty means none."""
+    return _parse_orgs(str(get_settings().crm_cutover_orgs or ""))
+
+
+def cutover_allowed(organization_id: str | None) -> bool:
+    """True when this org may switch from the Zoho mirror to Native mode.
+
+    It is :func:`crm_mirror_allowed` AND a place on ``CRM_CUTOVER_ORGS``, or
+    ``*`` there (CRM-Z10b). It reads the settings and nothing else.
+    """
+    if not crm_mirror_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_cutover_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
 async def require_crm_enabled(
     user: Annotated[UserContext, Depends(get_current_user)],
 ) -> None:
@@ -314,4 +339,15 @@ async def require_crm_mirror(
     It reads ``user.organization_id`` and nothing else from the request.
     """
     if not crm_mirror_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+async def require_crm_cutover(
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> None:
+    """404 unless the caller's organization may switch to Native (CRM-Z10b).
+
+    It reads ``user.organization_id`` and nothing else from the request.
+    """
+    if not cutover_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail="Not Found")

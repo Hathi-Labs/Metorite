@@ -531,6 +531,18 @@ class TestRuleTwo:
     def test_no_needs_kind_is_ever_hidden(self, kind):
         assert feed_decide.apply_triage(_card("x:1", kind=kind), "drop") == "later"
 
+    @pytest.mark.parametrize("kind", ["reminder_due", "reminder_check", "reminder_unconfirmed"])
+    def test_drop_on_a_reminder_card_leaves_it_in_later(self, kind):
+        """WS-66 RM-2b, §5.6 decision 7. A reminder kind is a needs kind, so a
+        judged `drop` moves its card to Later. It never hides the card and
+        never resolves the reminder: this function only names a group.
+        Mutation: take the kind out of `needs.KIND_ORDER` and this fails."""
+        card = _card("reminders:r-1", kind=kind, app="calendar", group="now")
+        assert feed_decide.is_needs_card(card)
+        assert feed_decide.apply_triage(card, "drop") == "later"
+        answers = {"reminders:r-1": {feed_decide.TRIAGE: {"v": "drop"}}}
+        assert feed_decide.judged_rank([card], answers) == {"reminders:r-1": 1}
+
     def test_drop_on_another_card_hides_it(self):
         card = _card("calendar:2026-10-14", kind="no_plan_yet", app="calendar")
         assert feed_decide.apply_triage(card, "drop") is None

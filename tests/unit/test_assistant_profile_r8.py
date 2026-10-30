@@ -97,9 +97,16 @@ def _ap():
 async def _get(org: str, user: UserContext) -> dict:
     with _tenant(org):
         out = await _ap().get_assistant_profile(user=user)
-    # PZ-25: ``enabled`` is an answer, not part of the stored profile.
+    # PZ-25: ``enabled`` is an answer, not part of the stored profile. So is
+    # ``apps``, the app settings over their defaults (BR-2a-1).
     assert isinstance(out.pop("enabled"), bool)
+    out.pop("apps")
     return out
+
+
+async def _get_apps(org: str, user: UserContext) -> dict:
+    with _tenant(org):
+        return (await _ap().get_assistant_profile(user=user))["apps"]
 
 
 async def _put(org: str, user: UserContext, key: str, value: object) -> dict:
@@ -381,6 +388,53 @@ async def test_forget_sets_the_column_null_and_keeps_the_row(db) -> None:
             "SELECT assistant_profile, my_day_prefs FROM user_settings "
             "WHERE user_id = :u"), {"u": email}).one()
     assert tuple(row) == (None, {"mutes": ["overdue"]})
+
+
+async def test_an_app_setting_merges_and_the_brief_reads_it(db) -> None:
+    """BR-2a-1 repair round 1, P1-3. ``PUT`` of ``apps`` merges the keys of
+    the one app, keeps the other keys and the words, and the brief's one
+    reader (``member_app_prefs``) reads the value that the member set."""
+    from acb_common import assistant_profile
+
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _put(db.org_a, user, "address", _ADDRESS)
+        await _put(db.org_a, user, "apps", {"brief": {"enabled": False}})
+        answer = await _put(db.org_a, user, "apps", {"brief": {"brief_time": "06:45"}})
+        apps = await _get_apps(db.org_a, user)
+        read = await _get(db.org_a, user)
+        with _tenant(db.org_a):
+            from gateway.db import tenant_session
+
+            async with tenant_session() as session:
+                prefs = await assistant_profile.member_app_prefs(
+                    session, db.org_a, email.upper(), "brief")
+    want = {"enabled": False, "brief_time": "06:45", "closeout_time": "18:30"}
+    assert answer["apps"]["brief"] == apps["brief"] == prefs == want
+    assert read["address"] == _ADDRESS
+    [(_org, stored)] = _stored(db, email)
+    assert stored["apps"] == {"brief": {"enabled": False, "brief_time": "06:45"}}
+
+
+async def test_forget_keeps_the_app_settings(db) -> None:
+    """BR-2a-1 repair round 1, P1-3. Forget-all takes the member's words,
+    and keeps the app settings: an opt-out of the brief stays an opt-out."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _put(db.org_a, user, "address", _ADDRESS)
+        await _add_fact(db.org_a, user, "Travels every Friday", "routine")
+        await _put(db.org_a, user, "apps", {"brief": {"enabled": False}})
+        with _tenant(db.org_a):
+            await _ap().delete_assistant_profile(user=user)
+        read = await _get(db.org_a, user)
+        apps = await _get_apps(db.org_a, user)
+    assert read == _ap().empty_profile()
+    assert apps["brief"]["enabled"] is False
+    assert _stored(db, email) == [(db.org_a, {"v": 1, "apps": {"brief": {"enabled": False}}})]
 
 
 def test_an_unbound_write_is_refused(db, app_engine) -> None:  # noqa: F811
