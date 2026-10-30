@@ -61,21 +61,19 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
 export const PROFILE_CARD_TOOLS: readonly string[] = Object.keys(ACTION_META);
 
 /**
- * True when this event draws a receipt. A `profile_interview` read has no
- * machine line, so its result is "unknown" and the card draws nothing. A
- * saved mark draws nothing either (PZ-30). A refusal other than `no_answer`
- * and an error still draw, so a failed write is not silent.
+ * True when this event draws a receipt. A `profile_interview` read, a saved
+ * mark and a refused mark draw nothing (PZ-30). A failed interview call and
+ * every other profile write, refused or not, still draw.
  */
 export function drawsReceipt(e: ToolEvent): boolean {
   if (!isProfileCardTool(e.name)) return false;
-  if (e.name !== "profile_interview" || e.status === "error") return true;
-  const { status, reason } = readProfileResult(e.result || "");
-  if (status === "refused" && reason === NO_ANSWER) return false;
-  return status === "refused";
+  if (e.name !== "profile_interview") return true;
+  // A mark is bookkeeping, not a write the member asked for. A refusal of it
+  // (after a search in the turn, or with no due line) draws nothing. Only a
+  // failed call draws, so a broken write is not silent.
+  return e.status === "error";
 }
 
-/** The reason of a mark `answered` with nothing saved. `assistant_profile.NO_ANSWER`. */
-const NO_ANSWER = "no_answer";
 /**
  * The start of a line that only the model reads. `profile_tools.FOR_ASSISTANT`.
  * That line and every line after it are for the model, so the card drops them.

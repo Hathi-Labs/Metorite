@@ -85,7 +85,7 @@ export interface PaneHandlers {
   onLearning: (value: boolean) => Promise<boolean>;
   onAddress: (edit: Parameters<typeof mergeAddress>[1]) => Promise<boolean>;
   onStyle: (edit: Parameters<typeof mergeStyle>[1]) => Promise<boolean>;
-  onAddFact: (text: string, kind: FactKind) => Promise<boolean>;
+  onAddFact: (text: string, kind: FactKind, area?: InterviewAreaId) => Promise<boolean>;
   onEditFact: (id: string, patch: { text: string } | { kind: FactKind }) => Promise<boolean>;
   onDeleteFact: (id: string) => Promise<boolean>;
   onAddAlias: (alias: string, email: string) => Promise<boolean>;
@@ -298,19 +298,6 @@ function AddressSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
             </Button>
           </div>
           <Counter used={name.length} cap={CAPS.name} unit="characters" />
-          {name.trim() === "" ? (
-            <p className="text-[11px] text-muted-foreground">
-              {fb
-                ? `Empty: I call you ${fb.name}, ${
-                    fb.from === "preferred" ? "your preferred name" : "the first word of your name"
-                  } in `
-                : "Empty: I use your preferred name, or the first word of your name, from "}
-              <Link href="/people/me" className="text-foreground underline underline-offset-2">
-                My Profile
-              </Link>
-              .
-            </p>
-          ) : null}
         </Field>
         <Field label="Tone">
           <Choice
@@ -333,6 +320,19 @@ function AddressSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
           />
         </Field>
       </div>
+      {name.trim() === "" ? (
+          <p className="text-[11px] text-muted-foreground">
+            {fb
+              ? `Empty: I call you ${fb.name}, ${
+                  fb.from === "preferred" ? "your preferred name" : "the first word of your name"
+                } in `
+              : "Empty: I use your preferred name, or the first word of your name, from "}
+            <Link href="/people/me" className="text-foreground underline underline-offset-2">
+              My Profile
+            </Link>
+            .
+          </p>
+        ) : null}
       <RowError text={v.errors.address} />
     </Section>
   );
@@ -953,9 +953,9 @@ export default function AssistantPane() {
       run("address", async () => setProfile(await saveAddress(mergeAddress(base.address, edit)))),
     onStyle: (edit) =>
       run("style", async () => setProfile(await saveStyle(mergeStyle(base.style, edit)))),
-    onAddFact: (text, kind) =>
+    onAddFact: (text, kind, area) =>
       run("new-fact", async () => {
-        const f = await addFact(text, kind);
+        const f = await addFact(text, kind, area);
         if (f) setProfile((p) => (p ? { ...p, facts: [...p.facts, f] } : p));
       }),
     onEditFact: (id, patch) =>
@@ -976,7 +976,7 @@ export default function AssistantPane() {
           description: gone.text.length > 80 ? `${gone.text.slice(0, 80)}…` : gone.text,
           action: {
             label: "Undo",
-            onClick: () => void handlers.onAddFact(gone.text, gone.kind),
+            onClick: () => void handlers.onAddFact(gone.text, gone.kind, gone.area),
           },
           timeout: 8000,
         });
@@ -993,11 +993,26 @@ export default function AssistantPane() {
         const a = await patchAlias(id, patch);
         if (a) setProfile((p) => (p ? { ...p, aliases: p.aliases.map((x) => (x.id === id ? a : x)) } : p));
       }),
-    onDeleteAlias: (id) =>
-      run(id, async () => {
+    onDeleteAlias: async (id) => {
+      const gone = base.aliases.find((x) => x.id === id);
+      const ok = await run(id, async () => {
         await deleteAlias(id);
         setProfile((p) => (p ? { ...p, aliases: p.aliases.filter((x) => x.id !== id) } : p));
-      }),
+      });
+      if (ok && gone) {
+        toast.show({
+          variant: "success",
+          title: "Name deleted",
+          description: `${gone.alias} is ${gone.email}`,
+          action: {
+            label: "Undo",
+            onClick: () => void handlers.onAddAlias(gone.alias, gone.email),
+          },
+          timeout: 8000,
+        });
+      }
+      return ok;
+    },
     onForget: () => setConfirmForget(true),
     onGetToKnow: startGetToKnowMe,
     onResetArea: (id) =>

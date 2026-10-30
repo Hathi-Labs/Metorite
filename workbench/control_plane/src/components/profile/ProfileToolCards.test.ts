@@ -313,7 +313,13 @@ describe("profile_interview (PZ-27)", () => {
       "Not marked. Nothing is saved for this area yet. Save the answer first.";
     expect(readProfileResult(NO_ANSWER)).toMatchObject({ status: "refused", reason: "no_answer" });
     expect(html(NO_ANSWER)).toBe("");
-    // Any other refused mark still draws.
-    expect(html('profile: {"reason":"invalid","status":"refused","v":1}\nNo.')).toContain("Not saved");
+  });
+  it("any refused mark draws nothing, and another refused write still draws (PZ-11)", () => {
+    const REFUSED_LINE = 'profile: {"reason":"invalid","status":"refused","v":1}\nNo.';
+    expect(html(REFUSED_LINE)).toBe("");
+    const refusedSave = renderToStaticMarkup(
+      createElement(ProfileToolCards, { toolEvents: [ev("profile_remember", REFUSED_LINE)] }),
+    );
+    expect(refusedSave).toContain("Not saved");
   });
 });

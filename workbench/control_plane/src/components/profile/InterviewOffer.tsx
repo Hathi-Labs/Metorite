@@ -121,8 +121,8 @@ export default function InterviewOffer({
         />
       </div>
       <p className="mt-0.5 text-xs text-muted-foreground">
-        I ask one short question a day. Your answers help me write and plan the way you like. You
-        see and edit them in{" "}
+        I ask a few short questions now, then at most one a day. You can stop any time. Your
+        answers help me write and plan the way you like. You see and edit them in{" "}
         <Link href="/settings/assistant" className="text-foreground underline underline-offset-2">
           Settings → Assistant settings
         </Link>

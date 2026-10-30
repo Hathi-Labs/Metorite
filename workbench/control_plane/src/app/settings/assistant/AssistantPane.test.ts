@@ -284,6 +284,8 @@ describe("language, facts and interview, in plain words", () => {
 
   it("deletes a fact with an Undo toast that adds it back", () => {
     const src = readFileSync(new URL("./AssistantPane.tsx", import.meta.url), "utf-8");
-    expect(src).toMatch(/label: "Undo"[\s\S]{0,120}onAddFact\(gone\.text, gone\.kind\)/);
+    expect(src).toMatch(/label: "Undo"[\s\S]{0,120}onAddFact\(gone\.text, gone\.kind, gone\.area\)/);
+    expect(src).toMatch(/title: "Name deleted"[\s\S]{0,260}onAddAlias\(gone\.alias, gone\.email\)/);
+    expect(src).toContain("addFact(text, kind, area)");
   });
 });

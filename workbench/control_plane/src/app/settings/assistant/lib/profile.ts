@@ -243,8 +243,8 @@ export const startInterview = () => call<Interview>("/interview", "POST");
 export const resetArea = (id: InterviewAreaId) => call(`/interview/${encodeURIComponent(id)}`, "DELETE");
 /** Reset the whole interview, so the offer can come again. The facts stay. */
 export const resetInterview = () => call("/interview", "DELETE");
-export const addFact = (text: string, kind: FactKind) =>
-  call<Fact>("/facts", "POST", { text, kind });
+export const addFact = (text: string, kind: FactKind, area?: InterviewAreaId) =>
+  call<Fact>("/facts", "POST", { text, kind, ...(area ? { area } : {}) });
 export const patchFact = (id: string, patch: { text: string } | { kind: FactKind }) =>
   call<Fact>(`/facts/${encodeURIComponent(id)}`, "PATCH", patch);
 export const deleteFact = (id: string) => call(`/facts/${encodeURIComponent(id)}`, "DELETE");
