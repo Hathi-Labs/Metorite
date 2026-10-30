@@ -2,6 +2,8 @@
 
 **Projects verdict: met by the stop rules.** Stop 1, 2, 5 and 11 are all ok on the pack arm. The `mix_task_from_mail` double write is gone. Two cautions follow. Pack ties delegation on pass rate (59 of 69 each). Also `mix_call_then_task` fell from 6 of 6 to 3 of 6 on the pack arm.
 
+**Production note (2026-10-30 20:50 UTC).** The Projects packs went live in production at 09:16 UTC. They reach no member of Fracktal Works, Hathi Labs or Shaurrya Teleservices. Production `MAF_CODING_SCOPE` holds the `projects` target for those three orgs. So `_run_covered` is true there, and the OA-8b rule loads no Projects pack in a covered org. The specialist keeps that work. Each of the 9 production `executor.pack_plan` lines after 09:16 offered only `email`, `email-setup` and `crm-records`. This run and staging had no `MAF_CODING_SCOPE`, so they could not show it. The owner decides the scope (gate `ws43-sandbox-flip`).
+
 **Sub-agents verdict: NOT met, and not fully measured.** Stop 9 and stop 10 both occur on the data that is valid. A provider outage stopped the run part way. It spoiled 9 of 12 `fan_contracts` rows. The last chunk (`fan_tasks`, `fan_one_read`, `fan_three_searches`) did not run.
 
 **Answer, separately:**
