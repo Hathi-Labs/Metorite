@@ -881,9 +881,16 @@ def _tokens(pattern: re.Pattern[str], text: str) -> set[str]:
     return {hit.rstrip(_TRAIL) for hit in pattern.findall(text)} - {""}
 
 
-def _numbers(text: str) -> set[str]:
-    """Each number of *text* as its digits only, so a split number is one."""
+def numbers_in(text: str) -> set[str]:
+    """Each number of *text* as its digits only, so a split number is one.
+    The one public number extractor: the core brief fence imports it
+    (``gateway/brief/fence.py``). A comma is no separator, so "1,200" is the
+    two numbers "1" and "200"."""
     return {"".join(ch for ch in hit if ch.isdigit()) for hit in _NUMBER.findall(text)}
+
+
+#: The old private name, kept so no caller breaks.
+_numbers = numbers_in
 
 
 #: PZ-6b (re-verify P2-1): an address written out in words. "(at)",
