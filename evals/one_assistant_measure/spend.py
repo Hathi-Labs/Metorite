@@ -37,6 +37,19 @@ ASSUMED_COMPLETION_TOKENS = 4096
 UNSEEN_PROMPT_TOKENS = 20_000
 
 
+def card_for(served: str, sent: str, card: dict[str, Any], mapped: bool) -> dict[str, Any]:
+    """The rate card that prices a call. An unmapped call keeps *card*. A call
+    that ``--tier-map`` rewrote uses the card of the model that SERVED it when
+    the response names one, else of the tier it was sent to. Flash today: a
+    served name with ``flash``, or the tier ``tier-fast``."""
+    if not mapped:
+        return card
+    name = (served or sent).lower()
+    if card.get("flash") and ("flash" in name or (not served and name == "tier-fast")):
+        return {**card, **card["flash"]}
+    return card
+
+
 def is_peak(moment: datetime) -> bool:
     """True when *moment* is inside a DeepSeek peak band."""
     when = moment.astimezone(UTC)
