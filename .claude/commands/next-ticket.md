@@ -123,8 +123,12 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   built, acceptance evidence, verification output, reviewer findings, and what
   was deferred.
 - **Merge it and watch it** (root `CLAUDE.md` §3a and §4). Wait for `pr-check`
-  to go green. Merge with `gh pr merge --squash`. Then watch the `deploy` run
-  to green.
+  to go green. Then run `bash scripts/premerge.sh` in the worktree, in the
+  same command as the merge:
+  `bash scripts/premerge.sh && gh pr merge <n> --squash`. It tests the merge
+  with today's main (migration numbers, H-ids, D-numbers, files both sides
+  changed). Exit 1 means merge `origin/main` into the branch, fix, push, and
+  wait for `pr-check` again. Then watch the `deploy` run to green.
 - **⚠️ A merge does NOT deploy to production (WS-38, since 2026-10-16).** The
   push run moves the `staging` ref only. Production moves at 21:30 UTC (03:00
   IST) each day. Report the merge as "reaches production at the next daily
