@@ -28,11 +28,13 @@ describe("agentCardLook", () => {
   });
 
   it("queued, stale and failed are still edges", () => {
-    expect(agentCardLook("queued", { clientVia: via })).toEqual({
-      edge: "dashed-accent",
-      line: "Queued for Claude Code",
+    // The pill says "Queued for Claude Code", so the line does not repeat it.
+    expect(agentCardLook("queued", { clientVia: via })).toEqual({ edge: "steady", line: null });
+    expect(agentCardLook("stale", { clientVia: via })).toEqual({ edge: "breathing", line: null });
+    expect(agentCardLook("stale", { clientVia: via, note: " ran the tests " })).toEqual({
+      edge: "breathing",
+      line: "ran the tests",
     });
-    expect(agentCardLook("stale", { clientVia: via })).toEqual({ edge: "muted", line: "Claude Code idle" });
     expect(agentCardLook("failed")).toEqual({ edge: "destructive", line: null });
   });
 
@@ -44,8 +46,54 @@ describe("agentCardLook", () => {
     expect(agentCardLook("awaiting").line).toBe("Waiting for an answer");
   });
 
+  it("no state maps to a dashed or muted edge", () => {
+    for (const st of ["working", "answered", "queued", "awaiting", "stale", "failed"]) {
+      const edge = agentCardLook(st, { clientVia: via }).edge ?? "";
+      expect(edge).not.toMatch(/dashed|muted/);
+    }
+  });
+
   it("stopping changes nothing", () => {
     expect(agentCardLook("stopping").edge).toBeNull();
+  });
+});
+
+describe("the stylesheet", () => {
+  const css = readFileSync(
+    fileURLToPath(new URL("../../globals.css", import.meta.url)),
+    "utf8",
+  );
+  it("has no dashed rule on an agent edge, and draws each edge it names", () => {
+    const rules = css.match(/\[data-agent-edge[^{]*\{[^}]*\}/g) ?? [];
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/dashed/);
+    for (const edge of ["live", "steady", "breathing", "warning", "destructive"]) {
+      expect(css).toContain(`[data-agent-edge="${edge}"]`);
+    }
+    expect(css).not.toContain('data-agent-edge="muted"');
+    expect(css).not.toContain('data-agent-edge="dashed-accent"');
+  });
+
+  // A change of state must not move the card: each edge takes 2px on each side.
+  it("gives every edge the same 2px box", () => {
+    const rule = (edge: string) =>
+      css.match(new RegExp(`\\[data-agent-edge="${edge}"\\]\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+    for (const edge of ["steady", "breathing", "warning", "destructive"]) {
+      expect(rule(edge), edge).toMatch(/border:\s*2px solid/);
+    }
+    expect(rule("live")).toMatch(/padding:\s*2px/);
+  });
+
+  // The band is even round each corner: the edge's corner is the card's plus 2px.
+  it("rounds the edge to the card's corner plus 2px", () => {
+    expect(css).toMatch(/\[data-agent-edge\]\s*\{[^}]*border-radius:\s*calc\(var\(--radius-lg\) \+ 2px\)/);
+  });
+
+  // DESIGN_SYSTEM §4: a loop moves transform or opacity only.
+  it("breathes with opacity only", () => {
+    const frames = css.match(/@keyframes agent-edge-breathe\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
+    expect(frames).toContain("opacity");
+    expect(frames).not.toMatch(/box-shadow|border|width|height/);
   });
 });
 
