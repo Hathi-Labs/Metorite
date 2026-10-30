@@ -577,7 +577,7 @@ function FactsSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
 
 const STATE_TONES: Record<InterviewState | "open", BadgeTone> = {
   open: "neutral",
-  asked: "primary",
+  asked: "info",
   answered: "success",
   skipped: "warning",
   never: "neutral",
