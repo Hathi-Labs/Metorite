@@ -430,12 +430,13 @@ export function describeToolStep(
   // ── A profile tool that changed nothing (WS-63 PZ-32) ─────────────────────
   // The result is "done" on the wire, so the name alone would read "Saved to
   // your profile". An offer that did not show is no failure: the member saw
-  // no question. Any other refusal reads failed.
+  // no question. A member's No and a fact that is already saved are no failure
+  // either, as on the receipt card. Any other refusal reads failed.
   const refusal = profileRefusal(bare, event);
   if (refusal !== null) {
-    return refusal === "no_offer"
-      ? { kind: "other", status: "done", label: NO_OFFER_LABEL }
-      : { kind: "other", status: "failed", label: PROFILE_REFUSED_LABEL };
+    if (refusal === "no_offer") return { kind: "other", status: "done", label: NO_OFFER_LABEL };
+    const neutral = refusal === "declined" || refusal === "duplicate";
+    return { kind: "other", status: neutral ? "done" : "failed", label: PROFILE_REFUSED_LABEL };
   }
 
   // ── A script or a command in the sandbox ──────────────────────────────────

@@ -147,10 +147,14 @@ describe("describeToolStep — a step in words", () => {
     expect(silent).toMatchObject({ status: "done", label: NO_OFFER_LABEL });
     expect(silent.label).not.toMatch(/Saved/);
 
-    for (const reason of ["not_your_words", "learning_off", "marked", "declined"]) {
+    for (const reason of ["not_your_words", "learning_off", "marked"]) {
       const row = remember(refused(reason, "Not saved."));
       expect(row).toMatchObject({ status: "failed", label: PROFILE_REFUSED_LABEL });
       expect(row.label).not.toMatch(/Saved/);
+    }
+    // A member's No and a saved fact are no failure, as on the receipt card.
+    for (const reason of ["declined", "duplicate"]) {
+      expect(remember(refused(reason, "Not saved."))).toMatchObject({ status: "done", label: PROFILE_REFUSED_LABEL });
     }
     const forget = describeToolStep({ name: "profile_forget", args: {}, status: "done", result: refused("invalid") });
     expect(forget).toMatchObject({ status: "failed", label: PROFILE_REFUSED_LABEL });
