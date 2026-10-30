@@ -122,7 +122,8 @@ reference tied to code. Do not put product specs in `docs/`.
 6. **R8 — verify SQL against a real database.** Hermetic fakes agree with
    whatever SQL they get. Five live bugs shipped green that way.
 7. **R1 — migration numbers are taken at build time and re-checked at merge.**
-   Three collisions in two weeks.
+   Three collisions in two weeks. `bash scripts/premerge.sh` does the re-check,
+   right before `gh pr merge`.
 8. **Verify delivery by evidence, never by a green job.** Migration ledger
    lines, the deployed SHA, the log line. Four deploys once reported success
    while shipping nothing.
