@@ -85,7 +85,7 @@ def _delegation_refusal(agent_name: str) -> str | None:
     return None
 
 
-def _pack_refusal(agent_name: str) -> str | None:
+def _pack_refusal(agent_name: str, *, starts: bool = False) -> str | None:
     """The pack refusal of a hand-off to *agent_name*, or None (WS-67 OA-7c).
 
     ``tool_packs.delegation_refusal``: the chat run holds a pack that replaces
@@ -95,10 +95,14 @@ def _pack_refusal(agent_name: str) -> str | None:
     (``executor._run_sub_agent_streaming``) asks it too, for the specialist
     tools and ``delegate_to_agent``. ``call_agent_background`` does not ask
     it: a background run is not conversational, so it keeps delegation
-    (``one_assistant_context.md`` §4.3.1)."""
+    (``one_assistant_context.md`` §4.3.1).
+
+    OA-8i: a caller that starts the hand-off on a None answer passes
+    *starts*, so the run records the hand-off at once. A later write tool of
+    a pack of that owner in this run then refuses."""
     from acb_skills.tool_packs import delegation_refusal
 
-    return delegation_refusal(agent_name)
+    return delegation_refusal(agent_name, starts=starts)
 
 
 def _parent_run_model() -> str | None:
@@ -141,7 +145,7 @@ async def call_agent(agent_name: str, message: str) -> str:
     """
     run_id = str(_uuid.uuid4())
 
-    refusal = (_delegation_refusal(agent_name) or _pack_refusal(agent_name)
+    refusal = (_delegation_refusal(agent_name) or _pack_refusal(agent_name, starts=True)
                or _worker_refusal(agent_name))
     if refusal:
         return refusal
@@ -367,7 +371,7 @@ async def _run_branch(
     copies the context, so branches do not see each other.
     """
     run_id = str(_uuid.uuid4())
-    refusal = (_delegation_refusal(agent_name) or _pack_refusal(agent_name)
+    refusal = (_delegation_refusal(agent_name) or _pack_refusal(agent_name, starts=True)
                or _worker_refusal(agent_name))
     if refusal:
         return agent_name, refusal
