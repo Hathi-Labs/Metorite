@@ -85,7 +85,7 @@ def _delegation_refusal(agent_name: str) -> str | None:
     return None
 
 
-def _pack_refusal(agent_name: str) -> str | None:
+def _pack_refusal(agent_name: str, *, starts: bool = False) -> str | None:
     """The pack refusal of a hand-off to *agent_name*, or None (WS-67 OA-7c).
 
     ``tool_packs.delegation_refusal``: the chat run holds a pack that replaces
@@ -95,10 +95,14 @@ def _pack_refusal(agent_name: str) -> str | None:
     (``executor._run_sub_agent_streaming``) asks it too, for the specialist
     tools and ``delegate_to_agent``. ``call_agent_background`` does not ask
     it: a background run is not conversational, so it keeps delegation
-    (``one_assistant_context.md`` §4.3.1)."""
+    (``one_assistant_context.md`` §4.3.1).
+
+    OA-8i: a caller that starts the hand-off on a None answer passes
+    *starts*, so the run records the hand-off at once. A later write tool of
+    a pack of that owner in this run then refuses."""
     from acb_skills.tool_packs import delegation_refusal
 
-    return delegation_refusal(agent_name)
+    return delegation_refusal(agent_name, starts=starts)
 
 
 def _parent_run_model() -> str | None:
@@ -141,7 +145,7 @@ async def call_agent(agent_name: str, message: str) -> str:
     """
     run_id = str(_uuid.uuid4())
 
-    refusal = (_delegation_refusal(agent_name) or _pack_refusal(agent_name)
+    refusal = (_delegation_refusal(agent_name) or _pack_refusal(agent_name, starts=True)
                or _worker_refusal(agent_name))
     if refusal:
         return refusal
@@ -367,7 +371,7 @@ async def _run_branch(
     copies the context, so branches do not see each other.
     """
     run_id = str(_uuid.uuid4())
-    refusal = (_delegation_refusal(agent_name) or _pack_refusal(agent_name)
+    refusal = (_delegation_refusal(agent_name) or _pack_refusal(agent_name, starts=True)
                or _worker_refusal(agent_name))
     if refusal:
         return agent_name, refusal
@@ -794,10 +798,11 @@ async def _mark_before_children(jobs: Any, ctx: Any) -> None:
 async def spawn_subagents(jobs: str) -> str:
     """Run up to 5 sub-agents at once. Each one reads and gives back items.
 
-    Use this only when each job needs several steps, or when its reading would
-    fill this chat. Do not use it for one tool call or a short sequence: call
-    those tools yourself, several in one step if they do not depend on each
-    other. A sub-agent only reads. It cannot write, send, ask the member or
+    Use this only when each job reads long material (documents, contracts,
+    reports) that would fill this chat, or when each job needs its own chain of
+    several dependent steps. Do not use it for independent short reads or
+    searches, at any count, or for one tool call: call those tools yourself,
+    several in one step. A sub-agent only reads. It cannot write, send, ask the member or
     start another agent, so do any write yourself after the sub-agents answer.
     A sub-agent has no memory of this chat, so each job must hold all it needs.
     A job with no "tools" key holds no tool at all, so it can only answer from

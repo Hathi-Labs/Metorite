@@ -15,6 +15,8 @@ OA-8g is BUILT (2026-10-29, "As built, OA-8g" in §4.3.2). It repairs the pack r
 
 OA-8h is BUILT (2026-10-29, "As built, OA-8h" in §4.3.2). It repairs the Projects pack rules and two harness words that OA-8e run 3 found. The Projects packs stay dark.
 
+OA-8i is BUILT (2026-10-30, "As built, OA-8i" in §4.3.2). In one turn it refuses a hand-off to an owner after a write tool of the owner's pack, and the reverse. Both directions hold only while the owner's specialist tool stays in the run, so today they bind the Projects owner only. It has no flag of its own and acts only in a run that `TOOL_PACKS` serves. The OA-8e report counts a refused hand-off on its own row.
+
 OA-8e RAN LIVE and is NOT MET (2026-10-28, `docs/one_assistant_measure_oa8e_2026-10-28.md`, harness at `9912eee5a`). On the app turns that are not email, the pack arm passed 38 of 70 and delegation 52 of 70 (CRM 14 of 24 against 19 of 24, Projects 21 of 38 against 29 of 38). Stop results 1, 2 and 11 occur. The pack arm is 2.6 times faster per turn and 32 percent cheaper. Causes: the model loads a pack it lacks only 3 times in 70 turns and never in the miss chats, it skips the bulk pack for several new tasks, it hands off after it loaded the plan or structure pack, and on a Projects page the plan and structure packs do not fit beside the core pack. The run also shows harness defects to repair first: fixture gaps, checks that count a refused call, the `crm_report` annotation, and dev-database reach through the memory tools. The fan-out chats and the `packs+spawn` arm were skipped. OA-10 must not start. Phase 3 (2026-10-29) wires the fan-out chats and the `packs+spawn` arm in the harness (fixtures for the web tools, a worker plan, ten invoices, the `spawned`, `not_spawned` and `items_contract` checks, stop results 9 and 10). No second live run yet. Run 2 (2026-10-29, `docs/one_assistant_measure_oa8e_2026-10-29.md`, base trim on for both arms) is still NOT MET. Pass counts: packs 74 of 105 against delegation 70 of 105 on app turns (CRM 28 of 36 against 23, Projects 41 of 57 each). Stop results 1, 5 (the model loads a pack itself on 21 percent of app turns) and 11 (7 model-choice hand-offs) occur. The main assistant never spawned on the research chats (0 of 6), so sub-agents are not measured. OA-10 must not start.
 
 OA-9b and the OA-9a worker half are BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-28, "As built, OA-9b" in §4.5). The flag flip is OWNER-GATE.
@@ -22,6 +24,8 @@ OA-9b and the OA-9a worker half are BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2
 OA-9b hardening is BUILT (2026-10-28, "As built, OA-9b hardening" in §4.5). It closes the seven faults of the Opus review. The flag flip stays OWNER-GATE.
 
 OA-9c is BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-29, "As built, OA-9c" in §4.5). A child can hold the read tools of a pack that the main assistant holds. No email tool says `read_only=True`, so an email pack gives a child no tool yet. The flag flip stays OWNER-GATE.
+
+OA-9f is BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-30, "As built, OA-9f" in §4.5). It changes the rule of §6.3 from a count to a kind of job. A child reads long material or runs a chain of steps. The main assistant makes light reads itself, in parallel. The flag flip stays OWNER-GATE.
 
 OA-3 is built, dark behind `ATTACHMENT_OCR`, and §4.1 holds three conditions
 for the flip. OA-6 is DECIDED (D117,
@@ -519,6 +523,49 @@ Projects reads only.
   seam, with the permission gate off and on.
   `test_subagent_contract.py`, `test_subagent_worker.py` and
   `test_subagent_blocked_tools.py` hold the parser, the pin and SUB-1.
+
+**As built, OA-9f (2026-10-30, dark).** The spawn cue follows the evidence of
+OA-8e run 3 (§6.3). Nothing sets `SPAWN_SUBAGENTS_ORGS`. The flip is OWNER-GATE.
+- **The cue.** `_SPAWN_BLOCK` no longer counts reads. It says to spawn when each
+  job reads long material that would flood the chat, or needs its own chain of
+  dependent steps. It says not to spawn for independent short reads or searches,
+  at any count. The block is 84 words. The "when" lines of the docstring of
+  `spawn_subagents` say the same.
+- **The light chats.** `fan_companies` and `fan_invoices` are `not_spawned`
+  chats now. They keep `names_each_company` and `totals_the_invoices`. An
+  invoice page sits on the public site of its supplier
+  (`fanout.invoice_url`), so no model reads the host as a login portal.
+  The refusal of `.example` hosts stays.
+- **The heavy chat.** `fan_contracts` asks for the payment terms and the
+  late-delivery penalty of five vendor contracts. Each contract is built in
+  code (`contracts.py`) from fixed clauses, about 40,000 characters. The
+  payment term sits after character 20,000, and the penalty after character
+  30,000, at a different place for each vendor. A plain `fetch_page` cuts at
+  8,000 characters, so it reads neither fact. The reader must call it with a
+  larger `max_chars`. The real tool has no upper cap. The fixture cuts the
+  same way, with a floor of 500 and a marker at the cut. Turn 1 expects `spawned` and `items_contract`.
+  It has one `terms_of_<vendor>` check for each vendor.
+  Turn 2 asks for the vendor with the strictest penalty.
+  It also asks what a 10-day delay on a 5 lakh order costs.
+  The answer is Kaveri, one full week, Rs 15,000.
+  On the pack arm the parent carries five full contracts into turn 2.
+  On the spawn arm it carries five short items. The input tokens (`model_calls[].prompt`) and the time of
+  turn 2 show the difference. It is the research chat of stop result 9, because that mark is the
+  `spawned` check. A URL with no fixture still fails and shows in `web_unknown`.
+- **"No job block" was a harness bug.** The result of `spawn_subagents` is a
+  data note, then the item blocks between two marker lines, then the notes. The
+  first header follows the open marker line with no blank line. The check split
+  on blank lines, so it lost the first block. A call with one job read as "no
+  job block". The product renders the header on every path. `checks.job_blocks`
+  now reads the frame. The rows of run 3 do not keep the result text, so the
+  exact call is not proved. Only a call with one job gives the error.
+  So the model sent fewer jobs than five in those two turns. Three other paths each
+  have a test. They are a child that fetched a URL with no fixture, a child that
+  returned prose and a child that timed out. None of them reads as "no job
+  block".
+- **Not changed.** No colour, no flag, no deploy.
+- **Fence.** `tests/unit/test_spawn_persona.py` and
+  `tests/unit/test_one_assistant_measure_oa8e.py` (OA-9f cases).
 
 **As built, OA-7c.** Layer (a) and the sticky state put packs in a live run.
 Three inputs choose the packs: the sticky packs of the chat, a reference in
@@ -1500,7 +1547,7 @@ The orchestrator offers each registry agent as a tool (`orchestrator/agents.py:7
 - **Projects rules.** Each of the four packs gains one bullet: "While a Projects pack is held, do its work with its tools. Do not call call_agent for work that a held or offered pack covers." The core route bullet now says to load the plan or structure pack when the loader offers it, and else to call `call_agent`. The private-task bullet says: for "remind me", "my own task" or "a private task", call `create_personal_task` at once and do not ask which project. A new task with no project named and no open project in the context is private too.
 - **Load words.** The plan pack gains "overloaded" and "overbooked". A bare "capacity" stays out, because mail and CRM text use it too. The bulk pack gains "add tasks", "create tasks", "make tasks", "task for each" and "tasks for each". They are phrases and whole words. No bare "task" or "add" joins them.
 - **CRM rules.** `convert_lead`: call it at once with a proposed `deal_name`, the lead's company. The card confirms the name, and the model does not ask in text. Mirror mode: do not load another pack to move the deal.
-- **Spawn cue.** `_SPAWN_BLOCK` says to spawn for "four or more independent reads or searches (five companies, every invoice)". It keeps "Do not spawn for one read, one task, or up to three searches". The block is 90 words, the same cap.
+- **Spawn cue.** `_SPAWN_BLOCK` said to spawn for "four or more independent reads or searches". OA-9f replaced it with a rule by kind of job (§6.3, "As built, OA-9f").
 - **Size.** The characters of each rules block, before and after, are as follows. CRM 2835 to 3062. Core 3001 to 3369. Plan 2089 to 2220. Structure 1889 to 2020. Bulk 2292 to 2423. The size pin on the core block moves from 3300 to 3400.
 - **Mixed turns.** Three causes show in the rows. Two were a refused `create_task` in a space and a question about the project. The private-task bullet covers the second. The refused-create card count is a harness defect. One was a hand-off and a timeout, which the hand-off bullet covers.
 - **Fence.** `tests/unit/test_pack_rules_oa8g.py` and `tests/unit/test_spawn_persona.py`. Run 3 of OA-8e measures the effect.
@@ -1518,6 +1565,27 @@ The orchestrator offers each registry agent as a tool (`orchestrator/agents.py:7
 - **`projects_ai_chat.md`.** §3.2 lines 180 and 206 to 208 do not conflict. "Add a task: call the vendor" is a team task in the Projects app. A personal task and a capture with no project are already the member's own project.
 - **Fence.** `tests/unit/test_pack_rules_oa8h.py` and `tests/unit/test_pack_cues.py`. Run 4 of OA-8e measures the effect.
 - **Specialist repaired (2026-10-29, owner-approved).** The Projects assistant instructions now say: a new task with no project named is private, so call `create_personal_task` at once. The specialist may not see the page, so the rule uses the request and the open project. An open project keeps its tasks. For two or more tasks, call `bulk_update` once. The fence is `tests/unit/test_projects_assistant_private_default.py`.
+
+**As built, OA-8i (2026-10-30).**
+- **Status.** Built. It has no flag of its own. It acts only in a run that holds a pack record, so it rides `TOOL_PACKS`. The guard only refuses. With the flag off, the run holds no record, and nothing changes.
+- **Why.** OA-8e run 4, `mix_task_from_mail` turn 2, repeats 2 and 3. The run held `email` and `projects`, and the Projects specialist stayed (the open gap above). The model made the task with `create_personal_task` or `create_task`. Then it handed the same task to `projects_assistant`, and the specialist made it again. Each row shows two cards and two writes.
+- **The record.** `PackRun` gains two fields. `wrote` holds, for each owner, the first write tool of its packs that the run called. `handed` holds each owner of a pack that a hand-off of the run reached.
+- **A write.** A pack tool is a write when the risk registry does not mark it read-only. The test is `subagent_contract.annotated_read_only`, the one that OA-9c uses. A tool with no entry counts as a write. A call counts when it passes the run check and the held check of `_pack_call`.
+- **A cancelled card.** A call that the member cancels on its card counts as a write. The Projects tool answers `Cancelled — nothing was changed.` as a plain result, so the seam cannot tell it from a write. The seam records the write before the gate, so the model cannot try the same work again through the specialist.
+- **Forward.** `PackRun.refusal` adds one step at its end. When no older rule refuses, a hand-off to an owner in `wrote` answers `WROTE_HANDOFF_REFUSED`. The text names the tool and tells the model to give its result to the member. Like the other refusals, it names no other assistant. The streaming seam, `call_agent` and each branch of `call_agents_parallel` ask it through `delegation_refusal`. `call_agent_background` does not ask it, as before.
+- **Reverse.** A seam that starts a hand-off asks `delegation_refusal` with `starts=True`. A None answer then records the owner in `handed`, with no await between the two. `tool_packs.pack_write_refusal` runs in `_pack_call` before its first await. A write tool of an owner in `handed` answers `HANDED_WRITE_REFUSED`, and it shows no card. A read still runs, and the hand-off stays open for the step.
+- **A hand-off that did not finish (review, P2).** The streaming seam tells the record in its `finally` whether the sub-run ended (`handoff_ended`). A hand-off that failed, timed out or stopped joins `handed_failed`. It may have written part of the work, so a later write tool still refuses. The answer is then `HANDED_FAILED_WRITE_REFUSED`. It tells the model to say that the work did not finish and what was done, and not to try again in this turn. So the answer does not send the model back to the failed hand-off. The seam reads the mail mark and the working set inside its `try`. So a time-out before the sub-run starts still reaches the `finally`.
+- **Why both directions are narrow (review, P1).** Each direction holds only while the specialist tool of the owner stays in the run (the owner is not in `PackRun.replaced`). Where a pack took that tool away, a hand-off reaches the owner only for the work of a pack that the run cannot hold. Examples are the setup route of the email rules and `call_agent` after `LOAD_NO_PATH`. That work cannot repeat a pack write. A pack call after such a hand-off must run (OA-7i, acceptance 8), and the hand-off after a pack call must stay open.
+- **One model step.** MAF runs the calls of one response at once. Each side checks and records with no await between the two. So of a write and a hand-off in one step, the call that starts first runs, and the other refuses.
+- **Where it fires: Projects.** It fires when a Projects pack is held and the specialist stays, which is the open gap above.
+- **Where it fires: email.** At layer (a) it never fires. A held email pack takes the email specialist tool away, and so does an owner that the loader reaches. So after `query_inbox`, the hand-off of a rule to the email assistant stays open. One rare case is left. When the loader cannot reach the owner, for example because an admin turned one email family off, the specialist tool stays. A mid-turn load of the other email pack then binds both directions. In that case a mail read refuses a later email hand-off in the same turn.
+- **Where it fires: CRM.** In practice it never fires. `crm-records` is the only CRM pack, so a run that calls a CRM pack tool holds every CRM pack. The older pack refusal then answers first.
+- **A read that counts as a write.** No email tool says `read_only=True`, and a read such as `query_inbox` carries the same hints as the write `snooze_email` (`open_world=False` and nothing else). So no rule over the annotations can tell an email read from an email write, and the guard keeps the one read-only mark.
+- **A tool that writes only a chat file (review, round 3).** `status_report`, `render_report` and `export_tasks` write a report card, its PDF or a CSV into the chat, and never a Projects record. `tool_packs.CHAT_FILE_TOOLS` names them, and `pack_write_refusal` skips them as it skips a read-only tool. So a structure step after `status_report` still reaches the specialist. A fence keeps the set equal to `CHAT_FILE_WRITERS` of `test_projects_chat_coverage.py` and to the class A Projects tools that are not read-only.
+- **The harness count.** `checks.refused_handoffs_of` reads the result of each hand-off call. A result that is a refusal text of `tool_packs` in full counts in `handoffs_refused`, not in `handoffs`. Such a try fails no `no_*_delegation` check, and stop result 11 does not count it. The report shows it on its own row, and stop result 11 names the count. A hand-off that ran still fails. `no_email_delegation` reads the tasks, so a hand-off of mail work that the product refused still fails it.
+- **Not done.** The email read tools stay without a read-only mark, because that mark also lets an OA-9c child hold them. The specialist tool with no run queue goes to the batch path, and that path asks no pack rule, as before.
+- **Known gaps.** The batch fallback of `call_agent` and `call_agents_parallel` runs `run_agent` when the run has no queue and no relay. It records no end of a hand-off, so a failed batch hand-off reads as finished. A pack chat run always has a relay, so it does not take that path. `handed_failed` is never cleared, so a later hand-off to the same owner that finishes keeps the text of the failed one. Both only refuse.
+- **Fence.** `tests/unit/test_pack_no_double_write.py`, and the OA-8i cases of `tests/unit/test_one_assistant_measure_oa8e.py`.
 
 **OA-8c. WhatsApp.**
 - **Acceptance.**
@@ -1546,7 +1614,7 @@ Extend `evals/one_assistant_measure`. Do not build a second harness (§7 item 2)
 | `mixed` | 3 | "Make a task from this email" and "log this email on the deal" |
 | `general` | 4 | Company questions, memory and the web, with the email pack sticky. Do 83 to 110 tools hurt a turn that needs none of them? |
 | `miss` | 3 | A request for an app, with no surface and no listed word. It must load through `load_skill_tools` |
-| `fanout` | 3 | Five companies, each researched with a page read. Five tasks from a list. Ten invoices totalled (§6) |
+| `fanout` | 6 | Five companies and ten invoices, read without a spawn. Five long contracts, with a spawn. Five tasks from a list. One read. Three searches (§6.3) |
 
 **New checks.**
 - `right_pack`: a tool of the right pack ran.
@@ -1897,7 +1965,7 @@ context has no live tool list. The decorator emits `ExperimentalWarning`.
 - **SUB-1.** A child cannot call a memory write, a send, an automation tool, a tool that asks the member or a delegation tool. Each of them gets its own case. Fence: `tests/unit/test_subagent_blocked_tools.py` (§6.8). It is part of the OA-9b gate.
 - **OA-9c.** A child with the `email` pack gets the same held or open set as the main assistant, read tools only. A pack of an owner that reads stranger text builds held for a child (§4.5, "As built, OA-9c"). Fence: `tests/unit/test_pack_guards.py`.
 - **OA-9d.** Three children that write show one card with three rows. A rejected row writes nothing, and Stop writes nothing. Fence: a test in the style of `tests/unit/test_delegated_confirmation_card.py`.
-- **OA-9e.** The persona lines of §6.3 show with the flag on, and not with it off. In OA-8e, the main assistant spawns for multi-step research, and not for one read, one task or three searches.
+- **OA-9e.** The persona lines of §6.3 show with the flag on, and not with it off. In OA-8e, the main assistant spawns for jobs that read long material (OA-9f), and not for light reads, one task or three searches.
 
 ## 6. Dynamic sub-agents and the sub-agent contract (OA-9)
 
@@ -1949,16 +2017,25 @@ jobs: a JSON array of 1 to 5 jobs:
 
 ### 6.3 When to spawn
 
-With the flag on, the persona gains these lines:
+**The rule (OA-9f, 2026-10-30).** A spawn pays off for one of two kinds of job.
+- Each job reads long material, such as documents, contracts, reports or long pages. The text would flood this chat and slow every later turn.
+- Each item needs its own chain of several dependent steps.
 
-"Call tools that do not depend on each other in one step. Spawn sub-agents only when each job needs several steps, or its reading would fill this chat. Never spawn for one tool call or a short sequence."
+Light reads are different. The main assistant makes independent short reads or searches itself, in parallel, in one step. This holds at any count. Five pages and ten pages are the same case.
 
-The orchestrator can already call several tools in one step (`orchestrator/agents.py:159`, rule 3). The table of §6.6 shows that one step beats a spawn for jobs of one call each.
+With the flag on, the persona gains `_SPAWN_BLOCK` (`orchestrator/agents.py`). It says to spawn for the two kinds of job. It says not to spawn for independent short reads or searches, at any count. It keeps "one narrow aim" and the items as data. It stays within 90 words.
+
+**The evidence (OA-8e run 3, `docs/one_assistant_measure_oa8e_run3_2026-10-29.md` §4).**
+- `fan_companies`: five companies, one page read each. With the old cue (four or more reads) the model spawned in 3 of 3 turns. The turn took 30.7, 33.9 and 32.9 s. The parent spent 7 to 10 s to write five job specs (550 to 950 output tokens). Each child took 2 or 3 model rounds. The parent then spent about 10 s to join the items. Without a spawn the parent fetched the five pages in one parallel step and answered in 11 to 21 s.
+- `fan_invoices`: ten invoices, one read each. The model never spawned. When it read the pages itself, the whole turn took 9 to 10 s.
+- The fixture pages are small (a child prompt is about 2.3k tokens). So those chats cannot show the gain of a spawn, which is to keep large source material out of the main chat. The chat `fan_contracts` has long text for that purpose.
+
+The orchestrator can already call several tools in one step. The docstring of `spawn_subagents` says it, and the table of §6.6 shows that one step beats a spawn for jobs of one call each.
 
 **Fence.**
-- A unit test pins the lines with the flag on, and their absence with the flag off.
-- The `fanout` scenarios of OA-8e check `spawned` for multi-step research.
-- They check `not_spawned` for one read, for one task and for three searches.
+- `tests/unit/test_spawn_persona.py` pins the lines with the flag on, their absence with the flag off, and the match with the docstring.
+- The `fanout` scenarios of OA-8e check `spawned` for `fan_contracts`, the research chat.
+- They check `not_spawned` for five company pages, ten invoice pages, one read, one task and three searches.
 
 ### 6.4 The contract
 

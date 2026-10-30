@@ -27,6 +27,7 @@ export function HomeCard({
   link,
   eyebrow,
   titleHref,
+  titleClassName = "",
   footer,
   className = "",
   testId,
@@ -43,6 +44,8 @@ export function HomeCard({
   eyebrow?: React.ReactNode;
   /** The title links here: the door to the entity (§4.2 item 7). */
   titleHref?: string;
+  /** Extra classes of the heading, such as `break-words` for a long lead. */
+  titleClassName?: string;
   footer?: React.ReactNode;
   className?: string;
   testId?: string;
@@ -60,7 +63,7 @@ export function HomeCard({
       <header className={`flex items-center gap-2 px-4 pb-2 ${eyebrow ? "pt-1" : "pt-3.5"}`}>
         {icon ? <Icon name={icon} size={15} className="shrink-0 text-muted-foreground" /> : null}
         {/* `tabIndex={-1}`: focus lands here when the card's last row leaves. */}
-        <h2 id={headingId} tabIndex={-1} className="text-sm font-semibold text-foreground outline-none">
+        <h2 id={headingId} tabIndex={-1} className={`text-sm font-semibold text-foreground outline-none ${titleClassName}`}>
           {titleHref ? (
             // `cc-link`: the house keyboard focus ring of a text link
             // (globals.css, one declaration with `.cc-control`).

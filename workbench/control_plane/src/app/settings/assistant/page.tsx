@@ -24,7 +24,11 @@ export default function AssistantSettingsPage() {
     <div className="flex h-full flex-col">
       <AppTopBar
         title="Assistant settings"
-        subtitle="What the assistant remembers about you and how it talks to you"
+        subtitle={
+          <span className="hidden sm:inline">
+            What the assistant remembers about you and how it talks to you
+          </span>
+        }
       />
       <div className="flex-1 overflow-y-auto p-4 sm:p-6">
         <AssistantPageBody state={state} onRetry={refresh}>

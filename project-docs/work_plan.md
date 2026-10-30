@@ -3900,8 +3900,10 @@ accepted every recommendation of the spec. Board: **WS-55**. Owning spec:
    second identity system.
 3. **Authority.** An agent acts as one member. Its power is the member's live
    access, cut down by the scopes and project pins the member chose.
-4. **Personal projects** stay out of reach unless the member ticks a box on the
-   consent page. The box is off.
+4. **Personal projects** are in reach unless the member clears a box on the
+   consent page. The box is on. *(Amended 2026-10-30 by the owner: "by
+   default, including personal projects would be on." The first rule kept
+   the box off. D-EA-4 of `external_agent_access.md` records it, task 1057.)*
 5. **Version 1 has no personal access token.** Interactive OAuth only.
 6. **Company context** is the name, domain and branding. It also holds the
    shared memory that the member may read. This lasts until a company profile
