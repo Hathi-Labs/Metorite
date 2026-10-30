@@ -109,6 +109,119 @@ export function blockLines(
     : { crumb: "inline", outcome: false };
 }
 
+// ── a block's card (the task block cards redesign, task 1124) ────────────────
+
+/** How tall a card is, by its length. The grid draws `mins / 60 * HOUR_PX - 2`
+ *  pixels, so 30 minutes is 21 px, 60 is 44 px and 90 is 67 px. */
+export type BlockRows = "one" | "two" | "three";
+
+export type BlockLayout = {
+  /** one: title and range on a single row. two: a title row and a meta row.
+   *  three: the same, plus the optional lines of `blockLines`. */
+  rows: BlockRows;
+  /** The time range sits on the title row (a one-row card only). */
+  rangeOnTitle: boolean;
+  /** The title may wrap to two lines (a card of 2 hours or more). */
+  wrapTitle: boolean;
+  /** The "Now" and "Overlaps" chips draw. A narrow one-row card drops them. */
+  chips: boolean;
+  crumb: "own" | "inline" | null;
+  outcome: boolean;
+};
+
+/**
+ * What a card on the grid draws, from its length and its width.
+ *
+ * - Under 50 minutes: ONE row. 45 minutes is 32 px, and two rows need 34 px.
+ * - 50 to 89 minutes: a title row and a meta row.
+ * - 90 minutes or more: the lines of `blockLines` join them. From 120 minutes
+ *   the title may wrap to two lines.
+ * - A narrow card (the week view, or three lanes) drops the range from the
+ *   title row first and keeps the title.
+ *
+ * `blockLines` still owns the crumb and the ribbon, so the two stay in step.
+ */
+export function blockLayout(
+  mins: number,
+  narrow: boolean,
+  isStep: boolean,
+): BlockLayout {
+  if (mins < 50) {
+    return {
+      rows: "one",
+      rangeOnTitle: !narrow,
+      wrapTitle: false,
+      chips: !narrow,
+      crumb: null,
+      outcome: false,
+    };
+  }
+  if (mins < 90) {
+    return {
+      rows: "two",
+      rangeOnTitle: false,
+      wrapTitle: false,
+      chips: true,
+      crumb: isStep ? "inline" : null,
+      outcome: false,
+    };
+  }
+  const lines = blockLines(mins, isStep);
+  return {
+    rows: "three",
+    rangeOnTitle: false,
+    wrapTitle: mins >= 120,
+    chips: true,
+    crumb: lines.crumb,
+    outcome: lines.outcome,
+  };
+}
+
+/**
+ * "4:26 – 4:56" or "4:26 – 5:26 AM". The start drops its AM or PM when the
+ * end shares it. `compact` also drops the period and the spaces, for a narrow
+ * card: "4:26–4:56". `locale` is for tests.
+ */
+export function fmtRange(
+  start: Date,
+  end: Date,
+  opts: { compact?: boolean; locale?: string } = {},
+): string {
+  const f = new Intl.DateTimeFormat(opts.locale, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const parts = (d: Date) => f.formatToParts(d);
+  const text = (ps: Intl.DateTimeFormatPart[], period: boolean) =>
+    ps
+      .filter((p) => period || p.type !== "dayPeriod")
+      .map((p) => p.value)
+      .join("")
+      .replace(/\s/g, " ") // ICU puts a narrow no-break space before AM
+      .trim();
+  const a = parts(start);
+  const b = parts(end);
+  const periodOf = (ps: Intl.DateTimeFormatPart[]) =>
+    ps.find((p) => p.type === "dayPeriod")?.value ?? "";
+  const samePeriod = periodOf(a) === periodOf(b);
+  if (opts.compact) return `${text(a, false)}–${text(b, false)}`;
+  return `${text(a, !samePeriod)} – ${text(b, true)}`;
+}
+
+/** How far through a block "now" is, as a whole percent from 0 to 100. */
+export function elapsedPct(start: Date, end: Date, now: Date): number {
+  const span = end.getTime() - start.getTime();
+  if (span <= 0) return 0;
+  const pct = ((now.getTime() - start.getTime()) / span) * 100;
+  return Math.round(Math.min(100, Math.max(0, pct)));
+}
+
+/** "12m left", "1h 5m left", "<1m left" for a block that holds "now". */
+export function leftText(end: Date, now: Date): string {
+  const mins = Math.ceil((end.getTime() - now.getTime()) / 60000);
+  return `${fmtLeft(Math.max(0, mins))} left`;
+}
+
 // ── the unscheduled rail ─────────────────────────────────────────────────────
 
 /** A step of mine that I can schedule: it is itself NEXT, and not filed. The

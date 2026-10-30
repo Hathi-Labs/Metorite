@@ -5,8 +5,12 @@ import type { DayTemplate } from "@/app/tasks/lib/api";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
+  blockLayout,
   blockLines,
+  elapsedPct,
+  fmtRange,
   layoutBlocks,
+  leftText,
   plannerCandidates,
   reservedWindowsForDay,
 } from "./shared";
@@ -194,5 +198,101 @@ describe("blockLines — a one-hour step block fits (review of #492)", () => {
   it("a plain block keeps the ribbon from 45 minutes, as before", () => {
     expect(blockLines(44, false)).toEqual({ crumb: null, outcome: false });
     expect(blockLines(60, false)).toEqual({ crumb: null, outcome: true });
+  });
+});
+
+describe("blockLayout — what a card draws, by length and width", () => {
+  it("draws one row up to 45 minutes", () => {
+    expect(blockLayout(30, false, false)).toMatchObject({
+      rows: "one",
+      rangeOnTitle: true,
+      chips: true,
+      crumb: null,
+      outcome: false,
+    });
+    expect(blockLayout(45, false, true).rows).toBe("one");
+  });
+
+  it("drops the range and the chips first on a narrow one-row card", () => {
+    const l = blockLayout(30, true, false);
+    expect(l.rows).toBe("one");
+    expect(l.rangeOnTitle).toBe(false);
+    expect(l.chips).toBe(false);
+  });
+
+  it("draws a title row and a meta row from 50 to 89 minutes", () => {
+    expect(blockLayout(60, false, false)).toMatchObject({
+      rows: "two",
+      crumb: null,
+      outcome: false,
+      wrapTitle: false,
+    });
+    // A step puts its crumb on the meta row, as blockLines does under 90.
+    expect(blockLayout(60, true, true).crumb).toBe("inline");
+    expect(blockLayout(60, true, true).chips).toBe(true);
+  });
+
+  it("takes the crumb and the ribbon from blockLines at 90 minutes or more", () => {
+    expect(blockLayout(90, false, true)).toMatchObject({
+      rows: "three",
+      crumb: "own",
+      outcome: true,
+      wrapTitle: false,
+    });
+    expect(blockLayout(90, false, false)).toMatchObject({
+      crumb: null,
+      outcome: true,
+    });
+  });
+
+  it("lets the title wrap from 120 minutes", () => {
+    expect(blockLayout(119, false, false).wrapTitle).toBe(false);
+    expect(blockLayout(120, false, false).wrapTitle).toBe(true);
+  });
+});
+
+describe("fmtRange — the time range of a card", () => {
+  const at = (h: number, m: number) => new Date(2099, 5, 15, h, m);
+  it("drops the start period when the end shares it", () => {
+    expect(fmtRange(at(4, 26), at(5, 26), { locale: "en-US" })).toBe(
+      "4:26 – 5:26 AM",
+    );
+  });
+  it("keeps both periods across noon", () => {
+    expect(fmtRange(at(11, 30), at(12, 30), { locale: "en-US" })).toBe(
+      "11:30 AM – 12:30 PM",
+    );
+  });
+  it("has a compact form for a narrow card", () => {
+    expect(fmtRange(at(16, 26), at(16, 56), { compact: true, locale: "en-US" })).toBe(
+      "4:26–4:56",
+    );
+  });
+  it("keeps a 24-hour clock without a period", () => {
+    expect(fmtRange(at(16, 26), at(17, 26), { locale: "en-GB" })).toBe(
+      "16:26 – 17:26",
+    );
+  });
+});
+
+describe("elapsedPct and leftText — the Now card", () => {
+  const start = new Date(2099, 5, 15, 4, 26);
+  const end = new Date(2099, 5, 15, 4, 56);
+  it("is the percent of the block that has passed", () => {
+    expect(elapsedPct(start, end, new Date(2099, 5, 15, 4, 41))).toBe(50);
+    expect(elapsedPct(start, end, new Date(2099, 5, 15, 4, 26))).toBe(0);
+  });
+  it("clamps before the start and after the end", () => {
+    expect(elapsedPct(start, end, new Date(2099, 5, 15, 3, 0))).toBe(0);
+    expect(elapsedPct(start, end, new Date(2099, 5, 15, 9, 0))).toBe(100);
+  });
+  it("is 0 for a block with no length", () => {
+    expect(elapsedPct(start, start, start)).toBe(0);
+  });
+  it("names the minutes left, rounded up", () => {
+    expect(leftText(end, new Date(2099, 5, 15, 4, 44))).toBe("12m left");
+    expect(leftText(end, new Date(2099, 5, 15, 4, 43, 30))).toBe("13m left");
+    expect(leftText(end, new Date(2099, 5, 15, 3, 51))).toBe("1h 5m left");
+    expect(leftText(end, end)).toBe("<1m left");
   });
 });
