@@ -2,6 +2,11 @@
   "_note": "An eval card in USD, fitted on 2026-10-25 from four streamed calls through the production Router. Both tier-balanced and tier-powerful served deepseek-v4-pro. A streamed response carries usage.cost, the vendor's own figure, and the measure uses it. A buffered response carries none, so the measure prices it with this card. The card reproduces each probe's cost within 1 percent. completion_tokens counts the reasoning tokens.",
   "model": "deepseek-v4-pro",
   "usd_per_1m": {"input_miss": 0.66, "input_hit": 0.022, "output": 1.98},
+  "flash": {
+    "_note": "deepseek-flash, for a call that --tier-map sent to tier-fast. USD per 1M tokens. Input and output are the Flash list prices (0.30 and 1.20 at peak, so half off peak, and the peak factor applies on top). The cache-hit rate is an estimate: the Pro ratio of 1 to 30. It prices only a call with no usage.cost.",
+    "model": "deepseek-flash",
+    "usd_per_1m": {"input_miss": 0.15, "input_hit": 0.005, "output": 0.60}
+  },
   "probes": [
     {"prompt_tokens": 89, "cached_tokens": 0, "completion_tokens": 8, "cost": 0.00007458},
     {"prompt_tokens": 3587, "cached_tokens": 0, "completion_tokens": 1, "cost": 0.0023694},
