@@ -11,7 +11,8 @@
  * hand-edited slug shows nothing the caller could not already reach (R9, and
  * `lib/tree.filterByCenter`'s own test says so).
  */
-import Icon from "@/components/Icon";
+import Icon, { themedIcon } from "@/components/Icon";
+import { ContextMenu } from "@/components/ContextMenu";
 import Button from "@/components/ui/Button";
 import AssistantToggle from "@/components/AssistantToggle";
 import { AppSearchButton, AppTopBar } from "@/components/AppTopBar";
@@ -96,12 +97,18 @@ import {
   PERSONAL_ARCHIVED_FOLD_ID,
   PERSONAL_SECTION_HINT,
   PERSONAL_SECTION_LABEL,
+  displayNodeName,
   isPersonalNode,
+  isPersonalRoot,
+  personalEmptyLine,
+  personalHeading,
+  PERSONAL_SPACE_NOTE,
   lookupRoots,
   moveDestinationRoots,
   personalRoots,
   splitPersonal,
 } from "./lib/personalTree";
+import { openCount } from "./lib/progressWheel";
 import MyWorkHost from "./components/MyWorkHost";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
 import { NotificationBell } from "./components/NotificationBell";
@@ -241,6 +248,7 @@ import {
 import { fetchAccess } from "@/lib/access";
 import {
   type ChildOption,
+  childCreationOptions,
   filterByCenter,
   flatten,
   levelOf,
@@ -467,7 +475,10 @@ function ProjectNav({
   const archivedOpen = useFoldOpen(ARCHIVED_FOLD_ID);
   // A personal Area that is archived leaves the live Personal tree and waits in
   // its own fold inside the Personal section (never in the team fold above).
-  const personalSplit = useMemo(() => splitPersonal(personal), [personal]);
+  // OP-12b — the PERSONAL heading IS the first root, so it never draws as a row.
+  const [personalAdd, setPersonalAdd] = useState<{ x: number; y: number } | null>(null);
+  const personalHead = useMemo(() => personalHeading(personal), [personal]);
+  const personalSplit = useMemo(() => splitPersonal(personalHead.rows), [personalHead]);
   const personalArchivedOpen = useFoldOpen(PERSONAL_ARCHIVED_FOLD_ID);
   const personalArchivedGen = useMemo(
     () => new Map(personalSplit.archived.map((entry) => [entry.node.id, entry.parentGen])),
@@ -574,16 +585,98 @@ function ProjectNav({
           (`projectMenu.ts`). */}
       {personal.length > 0 ? (
         <div className="mb-2" data-testid="personal-section">
-          <p
-            className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
-            title={PERSONAL_SECTION_HINT}
-          >
-            <span className="min-w-0 truncate">{PERSONAL_SECTION_LABEL}</span>
-            <Icon name="Lock" className="h-3 w-3 shrink-0" />
-            <span className="sr-only"> — {PERSONAL_SECTION_HINT}</span>
-          </p>
+          {personalHead.root ? (
+            // OP-12b — the heading IS the private space: a press opens its
+            // board, list and overview. The open count is the root's own.
+            <div
+              className={`flex items-center gap-0.5 rounded-lg pr-1 ${
+                !app && selectedId === personalHead.root.id
+                  ? "bg-primary/15 text-primary"
+                  : "text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              <button
+                type="button"
+                data-testid="personal-heading"
+                aria-current={!app && selectedId === personalHead.root.id ? "page" : undefined}
+                title={PERSONAL_SECTION_HINT}
+                onClick={() => {
+                  onSelect(personalHead.root as ProjectRow);
+                  onPicked?.();
+                }}
+                className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider"
+              >
+                <span className="min-w-0 truncate">{PERSONAL_SECTION_LABEL}</span>
+                <Icon name="Lock" className="h-3 w-3 shrink-0" aria-hidden />
+                <span className="sr-only"> — {PERSONAL_SECTION_HINT}</span>
+                <span className="flex-1" />
+                {openCount(personalHead.root) ? (
+                  <span className="shrink-0 text-xs font-normal tabular-nums normal-case">
+                    {openCount(personalHead.root)}
+                    <span className="sr-only"> open tasks</span>
+                  </span>
+                ) : null}
+              </button>
+              <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  radius="keep"
+                  className="rounded"
+                  icon="Plus"
+                  aria-label="New folder or project in Personal"
+                  title="New project / New folder"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setPersonalAdd({ x: rect.left, y: rect.bottom + 2 });
+                  }}
+                />
+              {personalAdd ? (
+                <ContextMenu
+                  x={personalAdd.x}
+                  y={personalAdd.y}
+                  items={childCreationOptions("project", 1).map((option) => ({
+                    kind: "item" as const,
+                    label: option.label,
+                    icon: themedIcon(option.kind === "folder" ? "Folder" : "Plus"),
+                    onSelect: () => onAddChild(personalHead.root as ProjectRow, option),
+                  }))}
+                  onClose={() => setPersonalAdd(null)}
+                />
+              ) : null}
+            </div>
+          ) : (
+            <p
+              className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
+              title={PERSONAL_SECTION_HINT}
+            >
+              <span className="min-w-0 truncate">{PERSONAL_SECTION_LABEL}</span>
+              <Icon name="Lock" className="h-3 w-3 shrink-0" />
+              <span className="sr-only"> — {PERSONAL_SECTION_HINT}</span>
+            </p>
+          )}
+          {personalEmptyLine(personal) && !(creating && creating.parentId === personalHead.root?.id) ? (
+            <p
+              data-testid="personal-empty"
+              className="flex flex-wrap items-center gap-x-1.5 px-3 py-1.5 text-xs text-muted-foreground"
+            >
+              <span>{personalEmptyLine(personal)}</span>
+              <button
+                type="button"
+                className="text-primary hover:underline"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setPersonalAdd({ x: rect.left, y: rect.bottom + 2 });
+                }}
+              >
+                Add one
+              </button>
+            </p>
+          ) : null}
+          {personalSplit.active.length > 0 || (creating && creating.parentId === personalHead.root?.id) ? (
           <ProjectTree
             roots={personalSplit.active}
+            // The root is the heading, so its children start one generation down.
+            rootParentGen={() => (personalHead.root ? 1 : 0)}
             selectedId={app ? null : selectedId}
             onSelect={(project) => {
               onSelect(project);
@@ -599,9 +692,12 @@ function ProjectNav({
               onPicked?.();
             }}
             creating={
-              creating && creating.parentId && pathTo(personal, creating.parentId).length > 0
-                ? creating
-                : null
+              creating && creating.parentId && creating.parentId === personalHead.root?.id
+                ? // The root is the heading, so its draft draws at the top of the list.
+                  { ...creating, parentId: null }
+                : creating && creating.parentId && pathTo(personal, creating.parentId).length > 0
+                  ? creating
+                  : null
             }
             onCommitCreate={onCommitCreate}
             onCancelCreate={onCancelCreate}
@@ -623,6 +719,7 @@ function ProjectNav({
               onPicked?.();
             }}
           />
+          ) : null}
           {personalSplit.count > 0 ? (
             <div className="mt-1" data-testid="personal-archived-section">
               <button
@@ -655,7 +752,9 @@ function ProjectNav({
                       onPicked?.();
                     }}
                     actions={navActions}
-                    rootParentGen={(node) => personalArchivedGen.get(node.id) ?? 0}
+                    rootParentGen={(node) =>
+                      (personalArchivedGen.get(node.id) ?? 0) + (personalHead.root ? 1 : 0)
+                    }
                   />
                 </div>
               ) : null}
@@ -4130,7 +4229,7 @@ function ProjectsWorkspace() {
             node: selected
               ? {
                   id: selected.id,
-                  name: selected.name,
+                  name: displayNodeName(selected),
                   level: assistantLevel(selectedLevel, selected),
                   archived: Boolean(selected.archived_at),
                   personal: isPersonalNode(selected),
@@ -4335,7 +4434,11 @@ function ProjectsWorkspace() {
   const title = app
     ? PROJECT_APP_SECTIONS.flatMap((s) => s.items).find((i) => i.id === app)
         ?.label ?? "Projects"
-    : selected?.name ?? "No project selected";
+    : selected
+      ? displayNodeName(selected)
+      : "No project selected";
+  // OP-12b — the private space says what it is under its title.
+  const selectedIsPersonalRoot = !app && selected != null && isPersonalRoot(selected);
   // A parent project says what it is AGGREGATING (owner directive
   // 2026-08-31: *"when a project contains sub-projects, selecting the
   // project will aggregate the sub-project data into the project view"*).
@@ -4352,7 +4455,9 @@ function ProjectsWorkspace() {
   const subtitle = app
     ? PROJECT_APP_SECTIONS.flatMap((s) => s.items).find((i) => i.id === app)
         ?.note ?? null
-    : [selected?.description, aggregateNote].filter(Boolean).join(" · ") || null;
+    : selectedIsPersonalRoot
+      ? PERSONAL_SPACE_NOTE
+      : [selected?.description, aggregateNote].filter(Boolean).join(" · ") || null;
 
   /**
    * WS-27am — which canvas is on screen, in the user's words. It labels the
@@ -4397,7 +4502,7 @@ function ProjectsWorkspace() {
     node: selected
       ? {
           id: selected.id,
-          name: selected.name,
+          name: displayNodeName(selected),
           level: assistantLevel(selectedLevel, selected),
           archived: Boolean(selected.archived_at),
           personal: isPersonalNode(selected),
@@ -4419,6 +4524,10 @@ function ProjectsWorkspace() {
     setApp("my-inbox");
     useTaskStore.getState().openQuickCapture("single");
   };
+  // OP-12b — a task is private when its project is the personal root or one of
+  // its folders. The tree already says so: every node of `personal` is private.
+  const personalHeadRootId = personalHeading(personal).root?.id ?? null;
+  const personalIds = new Set(flatten(personal).map((e) => e.node.id));
   const myTasksPath = (projectId: string) => taskWhere(allRoots, projectId).map((n) => n.name);
   const openMineIn = (id: string) => {
     const row = flatten(visibleRoots).find((e) => e.node.id === id);
@@ -4439,6 +4548,7 @@ function ProjectsWorkspace() {
       people={people}
       personLabels={personLabels}
       projectPath={myTasksPath}
+      isPrivateProject={(id) => personalIds.has(id)}
       personalRootId={personal[0]?.id ?? null}
       onOpenTask={(task) => void openWithStatuses(task, true)}
       onOpenTaskId={(id) => void openTaskById(id, true)}
@@ -4537,6 +4647,7 @@ function ProjectsWorkspace() {
           finished={finished}
           outlook={outlook}
           onReport={(href) => router.push(href)}
+          personal={selected ? isPersonalRoot(selected) : false}
         />
       ) : (
         renderState("loading", "Counting the work below…")
@@ -4727,8 +4838,8 @@ function ProjectsWorkspace() {
             onChange={(e) => setNewTask(e.target.value)}
             placeholder={
               prefillAssignee
-                ? `New task for ${prefillAssignee} in ${selected.name}…`
-                : `New task in ${selected.name}…`
+                ? `New task for ${prefillAssignee} in ${displayNodeName(selected)}…`
+                : `New task in ${displayNodeName(selected)}…`
             }
             aria-label="New task title"
             className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
@@ -4790,6 +4901,7 @@ function ProjectsWorkspace() {
                 finished={finished}
                 outlook={outlook}
                 onReport={(href) => router.push(href)}
+                personal={isPersonalRoot(selected)}
               />
             ) : (
               renderState("loading", "Counting the work below…")
@@ -5322,6 +5434,7 @@ function ProjectsWorkspace() {
         onOpenTask={(id) => void openTaskById(id)}
         actions={actions}
         context={commandCtx}
+        personalRootId={personalHeadRootId}
       />
 
       {/* WS-27ab — `?`, and the palette's own Keyboard-shortcuts command. The
@@ -5547,8 +5660,14 @@ function ProjectsWorkspace() {
           <header className="shrink-0 border-b border-border">
             {/* Title row — what you are looking at, and nothing else. */}
             <div className="flex min-w-0 items-baseline gap-2 px-3 pt-2">
-              <h2 className="min-w-0 truncate text-sm font-medium text-foreground" title={title}>
-                {title}
+              <h2
+                className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium text-foreground"
+                title={title}
+              >
+                <span className="min-w-0 truncate">{title}</span>
+                {selectedIsPersonalRoot ? (
+                  <Icon name="Lock" className="h-3 w-3 shrink-0 text-muted-foreground" role="img" aria-label={PERSONAL_SECTION_HINT} />
+                ) : null}
               </h2>
               {subtitle ? (
                 <p className="min-w-0 truncate text-xs text-muted-foreground">

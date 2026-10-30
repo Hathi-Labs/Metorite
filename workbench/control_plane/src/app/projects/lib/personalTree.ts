@@ -14,6 +14,7 @@
 
 import type { ProjectRow } from "./api";
 import { splitArchived, type ArchiveSplit } from "./archivedRoots";
+import { PERSONAL_NODE_NAME, displayNodeName, isPersonalRoot } from "./tree";
 
 /** The heading of the section. The lock icon is drawn beside it. */
 export const PERSONAL_SECTION_LABEL = "Personal";
@@ -23,13 +24,72 @@ export const PERSONAL_SECTION_HINT = "Private to you";
 
 const NONE: ProjectRow[] = [];
 
+/** The one name of the private space (D-OP-2, OP-12b). Defined in `tree.ts`, the leaf module. */
+export { PERSONAL_NODE_NAME, displayNodeName, isPersonalRoot };
+
+/** The line under the title of the private space. */
+export const PERSONAL_SPACE_NOTE =
+  "Only you can see this. These tasks also show in My tasks.";
+
+/** The accessible label of the lock on a private task in My tasks. */
+export const PRIVATE_TASK_LABEL = "Private";
+
+/**
+ * The name to print for a row that carries only a project id and a stored
+ * name (a search hit, a needs-attention row). `personalRootId` is the id of
+ * the member's personal root, or null.
+ */
+export function displayProjectName(
+  projectId: string | null | undefined,
+  storedName: string | null | undefined,
+  personalRootId: string | null | undefined,
+): string | null {
+  if (projectId && personalRootId && projectId === personalRootId) return PERSONAL_NODE_NAME;
+  return storedName ?? null;
+}
+
 /** The roots of the Personal section: the caller's own tree, or none when the flag is off. */
 export function personalRoots(
   data: { personal?: ProjectRow[] | null } | null | undefined,
   enabled: boolean,
 ): ProjectRow[] {
   if (!enabled) return NONE;
-  return data?.personal ?? NONE;
+  const roots = data?.personal ?? NONE;
+  // The root carries its display name, so every reader of the tree prints it.
+  return roots.map((root) =>
+    isPersonalRoot(root) && root.name !== PERSONAL_NODE_NAME
+      ? { ...root, name: displayNodeName(root) }
+      : root,
+  );
+}
+
+/**
+ * The line under the PERSONAL heading when the member made nothing there
+ * (owner, 2026-10-30). The "+" of the section creates a "New folder" or a
+ * "New project" (`childCreationOptions`), so the line names both. Null once
+ * the root has any child, archived ones included.
+ */
+export const PERSONAL_EMPTY_LINE = "No personal folders or projects yet.";
+export function personalEmptyLine(personal: readonly ProjectRow[]): string | null {
+  const { root, rows } = personalHeading(personal);
+  return root && rows.length === 0 ? PERSONAL_EMPTY_LINE : null;
+}
+
+/**
+ * What the sidebar draws under the PERSONAL heading (OP-12b). The heading IS
+ * the first root, so that root never draws as a row. Its children draw
+ * directly under the heading. A member holds one root (a partial unique index
+ * on `personal_owner`), but a second root would be a node the heading cannot
+ * stand for. It stays a row, so nothing is hidden.
+ */
+export function personalHeading(personal: readonly ProjectRow[]): {
+  root: ProjectRow | null;
+  rows: ProjectRow[];
+} {
+  const root = personal.find((n) => isPersonalRoot(n)) ?? null;
+  if (!root) return { root: null, rows: personal as ProjectRow[] };
+  const others = personal.filter((n) => n !== root);
+  return { root, rows: [...(root.children ?? []), ...others] };
 }
 
 /**
