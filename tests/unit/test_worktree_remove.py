@@ -68,10 +68,32 @@ def repo(tmp_path: Path) -> dict:
 
 
 def _run(repo: dict, *args: str) -> subprocess.CompletedProcess:
+    # A `git` shim first on PATH logs every git call, then runs the real git,
+    # so a test can see whether --force reached `git worktree remove`.
+    # cygpath turns C:/... into /c/..., because a colon splits PATH.
+    shim_dir = repo["tmp"] / "shim"
+    if not shim_dir.exists():
+        shim_dir.mkdir()
+        real = subprocess.run(
+            [_BASH, "-c", "command -v git"], capture_output=True, text=True, encoding="utf-8",
+        ).stdout.strip()
+        (shim_dir / "git").write_text(
+            '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$WT_TEST_GITLOG"\n'
+            f'exec "{real}" "$@"\n',
+            encoding="utf-8", newline="\n",
+        )
+    runner = 'd="$(cygpath -u "$0" 2>/dev/null || printf %s "$0")"; PATH="$d:$PATH" exec bash "$@"'
     return subprocess.run(
-        [_BASH, SCRIPT.as_posix(), *args], cwd=repo["main"], env=repo["env"],
+        [_BASH, "-c", runner, shim_dir.as_posix(), SCRIPT.as_posix(), *args],
+        cwd=repo["main"], env={**repo["env"], "WT_TEST_GITLOG": (repo["tmp"] / "git.log").as_posix()},
         capture_output=True, text=True, encoding="utf-8", timeout=120,
     )
+
+
+def _removes(repo: dict) -> list[str]:
+    log = repo["tmp"] / "git.log"
+    lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return [line for line in lines if "worktree remove" in line]
 
 
 def _new(repo: dict, slug: str) -> Path:
@@ -109,6 +131,7 @@ def test_remove_force_deletes_a_dirty_worktree(repo: dict) -> None:
 
     assert res.returncode == 0, res.stdout + res.stderr
     assert not path.exists()
+    assert any("--force" in line for line in _removes(repo)), _removes(repo)
 
 
 def test_remove_takes_a_clean_worktree_without_force(repo: dict) -> None:
@@ -118,5 +141,8 @@ def test_remove_takes_a_clean_worktree_without_force(repo: dict) -> None:
 
     assert res.returncode == 0, res.stdout + res.stderr
     assert not path.exists()
+    # Without the override, --force never reaches git.
+    removes = _removes(repo)
+    assert removes and not any("--force" in line for line in removes), removes
     # A clean worktree with a dev stack: the stack is stopped first.
     assert (repo["tmp"] / "dev_up_was_called").exists()
