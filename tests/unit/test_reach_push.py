@@ -687,6 +687,100 @@ def test_r8_a_check_back_over_the_cap_sends_nothing_and_its_card_stays(
     assert kinds[rids[3]] == "reminder_check"
 
 
+def test_r8_the_cap_counts_the_local_date_of_the_member(world) -> None:
+    """Repair round 1, finding 5. Priya is in Kolkata (UTC+5:30), and her day
+    starts at 01:00 (``Day.feed_day``). Ten due pushes go on her 10 March.
+    At 01:30 on her 11 March it is still 10 March in UTC, and her eleventh
+    push of that UTC date sends, because the cap counts her own date.
+    Notices have no check-back, so no other push goes. (A start hour of 0
+    reads as 7 in ``tasks.settings._load``, so the test uses 1.)"""
+    org = world.p.org_b
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE user_settings SET day_start_hour = 1 WHERE user_id = :u"),
+                  {"u": PRIYA})
+    for n in range(push_channel.DUE_CAP):
+        _seed(world, PRIYA, _ist(10, 10) + timedelta(seconds=n), title=f"D{n:02d}",
+              kind="notice")
+    [first] = _ticks(world, _ist(10, 10, 1))
+    assert first[org]["push_sent"] == push_channel.DUE_CAP
+    next_day = _ist(11, 1, 30)
+    assert next_day.astimezone(UTC).date() == _ist(10, 10).astimezone(UTC).date()
+    late = _seed(world, PRIYA, next_day, title="Next day", kind="notice")
+    [second] = _ticks(world, next_day)
+    assert second[org]["fired"] == 1
+    assert second[org]["push_sent"] == 1 and second[org]["push_capped"] == 0
+    rows = _outbox(world, PRIYA)
+    assert [str(r.local_date) for r in rows] == ["2099-03-10"] * 10 + ["2099-03-11"]
+    assert rows[-1].dedupe_key.split(":")[1] == late and rows[-1].state == "sent"
+
+
+class _ClaimRace:
+    """Two send steps each count the cap, then wait here for the other. Each
+    waits until the other arrives too, or until the other waits on the
+    member lock. So without the lock both counts come before either commit."""
+
+    def __init__(self, world: Any) -> None:
+        self.world = world
+        self.arrived = 0
+        self.saw_the_lock_wait = False
+
+    def _lock_waiters(self) -> int:
+        with self.world.p.admin_engine.connect() as c:
+            return int(c.execute(text(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
+                "AND NOT granted")).scalar_one())
+
+    async def after_count(self) -> None:
+        self.arrived += 1
+        for _ in range(200):  # 10 s at most
+            if self.arrived >= 2:
+                return
+            if self._lock_waiters() > 0:
+                self.saw_the_lock_wait = True
+                return
+            await asyncio.sleep(0.05)
+        raise AssertionError("the second send step never came")
+
+
+def test_r8_the_member_lock_stops_two_claims_from_passing_the_cap(world, monkeypatch) -> None:
+    """Repair round 1, finding 4 (ruling d). Alice has 9 due pushes sent
+    today and two planned rows. Two send steps claim the two rows at once.
+    Without the member lock, both counts read 9 and both send, so 11 go.
+    With it, the second claim waits for the first commit, counts 10, and
+    ends ``capped``."""
+    org, at = world.p.org_b, _utc(10, 15)
+    with world.p.admin_engine.begin() as c:
+        for n in range(push_channel.DUE_CAP - 1):
+            c.execute(text(
+                "INSERT INTO reach_outbox (organization_id, member_email, channel, kind, "
+                "dedupe_key, body, state, local_date, sent_at) VALUES (CAST(:o AS uuid), :m, "
+                "'web_push', 'reminder_due', :k, 'reminder', 'sent', :d, now())"),
+                {"o": org, "m": ALICE, "k": f"sent-{TAG}-{n}", "d": at.date()})
+    x = _seed(world, ALICE, at, title="X")
+    y = _seed(world, ALICE, at + timedelta(seconds=1), title="Y")
+    assert _steps(world, org, [x, y], at + timedelta(seconds=1)) == ["fired", "fired"]
+    ids = [r.id for r in _outbox(world, ALICE) if r.state == "planned"]
+    assert len(ids) == 2
+    race = _ClaimRace(world)
+    real = push_channel.read_facts
+
+    async def read_then_wait(db: Any, row: Any, now: datetime) -> Any:
+        facts = await real(db, row, now)  # the cap count is in here
+        await race.after_count()
+        return facts
+
+    monkeypatch.setattr(push_channel, "read_facts", read_then_wait)
+
+    async def both() -> list[str]:
+        return list(await asyncio.gather(*(push_channel._send_one(org, i, at) for i in ids)))
+
+    got = _in_org(world, org, both)
+    assert sorted(got) == ["capped", "sent"]
+    assert len(world.service.posts) == 1
+    # Non-vacuity: the second claim waited on the lock while the first held it.
+    assert race.saw_the_lock_wait
+
+
 def test_r8_a_push_row_never_counts_in_the_whatsapp_cap(world) -> None:
     org = world.p.org_b
     since = datetime.now(UTC) - timedelta(hours=1)
