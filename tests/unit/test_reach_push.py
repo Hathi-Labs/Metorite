@@ -33,6 +33,28 @@ Run (one R8 suite at a time, because the ``promoted`` fixture drops
 * M7. ``push_channel.read_facts``: a TTL 1,000 times longer.
   ``test_r8_a_planned_row_older_than_its_ttl_expires``.
 
+Repair round 1 (rulings d, i, j and k):
+
+* M8. ``prefs.hide_push_details``: read ONE row, the lower case first.
+  ``test_r8_hide_under_any_spelling_of_the_address_hides``.
+* M9. ``push_channel.plan_reminder_push``: drop the ``too_late`` check.
+  ``test_r8_a_fire_hours_late_in_quiet_hours_sends_no_push`` and
+  ``test_r8_a_late_check_back_or_give_up_plans_no_push``.
+* M9c. ``push_channel.read_facts``: drop the ``fire_at`` check of a due row.
+  ``test_r8_a_due_push_never_goes_more_than_its_ttl_after_fire_at``.
+* M10. ``loop.run_tick``: send each org after its own steps, or drop the
+  deadline. ``test_r8_a_slow_push_service_delays_no_fire_and_the_phase_has_a_deadline``.
+* M11. ``loop._send_phase``: the clock of the tick start.
+  ``test_r8_the_send_phase_reads_the_clock_of_each_row``.
+* M12. ``push_channel._send_one``: catch only ``TimeoutError`` and ``OSError``.
+  ``test_r8_a_send_that_raises_keeps_the_row_and_the_loop_goes_on``.
+* M13. ``outbox.claim_push``: drop the member lock.
+  ``test_r8_the_member_lock_stops_two_claims_from_passing_the_cap``.
+* M14. ``push_channel.plan_reminder_push``: the UTC date for ``local_date``.
+  ``test_r8_the_cap_counts_the_local_date_of_the_member``.
+* M15. Migration 318: drop the partial index.
+  ``test_the_list_of_planned_pushes_has_a_partial_index``.
+
 ⚠️ It SKIPS without ``TENANT_LADDER_DATABASE_URL``, and a skip is not a pass.
 """
 
