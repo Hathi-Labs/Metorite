@@ -20,6 +20,8 @@ implementer's report as a set of *claims to be checked*, not as findings.
 2. **Re-run the verification commands from the spec** — the ones the spec-auditor
    quoted, not the ones the implementer chose. Quote real output. If the spec's
    commands and the implementer's differ, that discrepancy is itself a finding.
+   For a small slice (`AUDIT: skipped`), the Metorite task quoted in the
+   contract names the criteria. Choose the commands yourself, and say which.
 3. **Run the tests this diff can affect, not the whole suite.**
    `uv run python scripts/affected_tests.py --run` picks them from the diff
    against `origin/main`. It also prints one `vitest related` command for
@@ -35,6 +37,11 @@ implementer's report as a set of *claims to be checked*, not as findings.
    how you confirmed it. "The implementer says so" is not confirmation. If a
    criterion cannot be checked by any command you can run, that is a finding:
    the ticket was not actually verifiable.
+   **Check behaviour in the running app.** Run `bash scripts/dev_up.sh` in the
+   worktree (it reuses a stack that runs), then `bash scripts/dev_up.sh --check`.
+   Then exercise each behaviour criterion: `curl` the URLs that `--env` prints,
+   or capture the page. Quote the output or the capture path. Do not run
+   `--down` or `--reset` on a stack that you did not start.
 5. **Check the discipline items** that a reviewer would otherwise catch late:
    - No absolute future migration numbers introduced (R1). If a migration was
      added, confirm the number was genuinely free.
@@ -73,6 +80,7 @@ VERIFICATION RUN:
 ACCEPTANCE:
   <criterion> → met / not met — <how you personally confirmed it>
 
+LOCAL: <dev_up --check result, then each behaviour criterion with its evidence> | not run — <why>
 DISCIPLINE: R1 / R4 / placement / scope — pass or the specific violation
 VISUAL: <contexts captured and the P0–P3 findings> | not looked at — <why>, a FAIL for a UI diff | no surface change
 UNVERIFIABLE: <criteria no command can settle, if any>

@@ -213,15 +213,16 @@ delivery makes a silent failed deploy more likely, not less.
 **Feature by feature, app by app — one narrowed slice at a time.** The loop
 (`/next-ticket`, defined in `.claude/commands/next-ticket.md`):
 
-> **audit** the spec is dispatchable → **implement** one narrowed slice →
-> **verify** independently against the acceptance criteria → **review** the diff
-> adversarially, by risk tier. Then **open a PR**, **merge it**, **watch the
-> run**, and **test it on staging**.
+> **audit** the spec is dispatchable → **implement** one narrowed slice and
+> **run it locally** (`scripts/dev_up.sh`) → **verify** independently, on the
+> local stack → **review** the diff adversarially, by risk tier. Then **open a
+> PR**, **merge it**, **watch the run**, and **smoke-test it on staging**.
 
-**Merging is not skipping the loop.** Audit and verify always run, and the
-verifier is never the implementer. Review depth follows the risk tier in
-`next-ticket.md` step 1b. A LOW slice skips the reviewer. What you drop is the
-wait.
+**Merging is not skipping the loop.** Verify always runs, and the verifier is
+never the implementer. A small slice (LOW, or STANDARD in build) skips the
+audit when its Metorite task states the acceptance criteria (owner request,
+2026-10-30). Review depth follows the risk tier in `next-ticket.md` step 1b. A
+LOW slice skips the reviewer. What you drop is the wait.
 
 **⚠️ A merge is NOT a production deploy (WS-38).** A merge runs lint and tests,
 then moves the `staging` ref. Staging (`https://dev.metorite.com`) serves that

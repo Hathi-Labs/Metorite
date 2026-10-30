@@ -364,6 +364,15 @@ them. A real bug in the PR caused 9. Each red run cost about 30 minutes.
   adversarial review, the
   visual review, the board row, the spec header (R4) and new fence tests (R7)
   wait for the hardening pass.
+- **Both run the change on the local stack** (§1.2, owner request 2026-10-30).
+  The implementer checks each criterion in the running app before it reports.
+  The verifier checks them again on its own run and quotes the evidence.
+  Staging is then a smoke check, plus a full test of what the PC cannot run:
+  the deploy path, real OAuth, real webhooks and syncs, and a migration on
+  production-shaped data.
+- **A small slice skips the spec audit** when its Metorite task states the
+  acceptance criteria (`/next-ticket` step 2). A HIGH-tier slice, and the
+  first slice of a spec, keep it.
 - A HIGH-tier slice keeps the full loop: tenancy, RLS, auth, identity, a
   migration, money, credits, secrets, a member or role write, or the deploy
   path.
