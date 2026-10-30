@@ -147,6 +147,7 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     stored_profile,
 )
 from fastapi import Body, Depends, Header, HTTPException, Query, Response
+from fastapi.responses import JSONResponse
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.admin.me import me_router
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
@@ -814,6 +815,44 @@ async def get_assistant_profile_address(
     stored = stored_profile(row[0] if row is not None else None)
     preferred, _zone, display = names[:3] if names else (None, None, None)
     return {"name": resolve_address_name(stored["address"].get("name"), preferred, display)}
+
+
+@me_router.get("/me/assistant-profile/block",
+               summary="The text the assistant reads about the caller (PZ-20a)")
+async def get_assistant_profile_block(
+    user: UserContext = Depends(get_current_user),
+) -> JSONResponse:
+    """``{"enabled": bool, "text": str}``: "Read as text" of Settings.
+
+    ``text`` is ``member_block``, the call that the executor makes to build
+    the block of a turn. The member reads the same bytes that the model
+    reads. The per-turn lines stay out of it: the due line of the interview,
+    the part of the day, the date, the name and the number system. An empty
+    profile with no name gives ``""``.
+
+    With the profile off for the org (PZ-25), the answer is
+    ``{"enabled": false, "text": ""}`` and the route reads nothing. The
+    member comes from the session and the org from the bound session (R5).
+    The route takes no address, query or body. A failed read answers 503,
+    never an empty text. The answer carries ``Cache-Control: no-store``.
+    """
+    from acb_common.assistant_profile import ADDRESS_SQL_TEMPLATE, enabled_for, member_block
+
+    headers = {"Cache-Control": "no-store"}
+    if not enabled_for(getattr(user, "organization_id", None)):
+        return JSONResponse({"enabled": False, "text": ""}, headers=headers)
+    uid = _member(user)
+    try:
+        async with _tenant_session() as db:
+            row = await _read(db, uid)
+            names = (await db.execute(_sql(ADDRESS_SQL_TEMPLATE), {"m": uid})).first()
+    except Exception as exc:
+        logger.warning("auth.assistant_profile.block_failed",
+                       extra={"error": type(exc).__name__})
+        raise HTTPException(status_code=503, detail="unavailable") from exc
+    preferred, _zone, display = names[:3] if names else (None, None, None)
+    text = member_block(row[0] if row is not None else None, preferred, display)
+    return JSONResponse({"enabled": True, "text": text}, headers=headers)
 
 
 #: The file names of the two exports (PZ-9).

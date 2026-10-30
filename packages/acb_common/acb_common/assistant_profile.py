@@ -1786,6 +1786,21 @@ def render_block(raw: Any, fallback_name: str = "") -> str:
     return block
 
 
+def member_block(raw: Any, preferred: Any, display: Any) -> str:
+    """The block of one member: :func:`render_block` of the stored value
+    *raw*, with the name of :func:`resolve_address_name`.
+
+    *preferred* is ``people.preferred_name`` and *display* is
+    ``app_user.display_name``. The executor builds the block of a turn with
+    this function. The "Read as text" route of Settings (PZ-20a) calls it
+    too. One path builds the text, so the member reads what the model reads.
+    Pure.
+    """
+    name = resolve_address_name(stored_profile(raw)["address"].get("name"),
+                                preferred, display)
+    return render_block(raw, name)
+
+
 # ── The export (PZ-9, §13.3 item 7) ────────────────────────────────────────
 
 #: The first line of the text export.
