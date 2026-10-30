@@ -44,11 +44,18 @@ const LOOK = {
 const ymd = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
-const brief = (localDate: string) => ({
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** The template lead of the stored brief, built from the date and the claim count. */
+const leadFor = (d: Date, n: number) =>
+  `Your day, ${DAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}. ${n} things need you.`;
+
+const brief = (day: Date) => ({
   kind: "brief",
-  local_date: localDate,
+  local_date: ymd(day),
   state: "ready",
-  lead: "Your day, Thu 22 Oct. 2 things need you.",
+  lead: leadFor(day, 3),
   lead_source: "template",
   ready_at: new Date().toISOString(),
   claims: [
@@ -96,9 +103,9 @@ test.describe("The My Day brief card (BR-2c-2)", () => {
   test.use({ viewport: { width: Number(process.env.BRIEF_WIDTH ?? 1440), height: 900 } });
 
   test("shows the lead and the claims in position order, as in-app links", async ({ page }) => {
-    await setup(page, { status: 200, body: brief(ymd(new Date())) });
+    await setup(page, { status: 200, body: brief(new Date()) });
     await page.goto("/");
-    await expect(card(page).getByRole("heading", { name: "Your day, Thu 22 Oct. 2 things need you." })).toBeVisible();
+    await expect(card(page).getByRole("heading", { name: leadFor(new Date(), 3) })).toBeVisible();
     const links = card(page).getByRole("link");
     await expect(links).toHaveText([
       "Approve the Q3 launch plan",
@@ -124,8 +131,11 @@ test.describe("The My Day brief card (BR-2c-2)", () => {
   test("labels the brief of the day before", async ({ page }) => {
     const y = new Date();
     y.setDate(y.getDate() - 1);
-    await setup(page, { status: 200, body: brief(ymd(y)) });
+    await setup(page, { status: 200, body: brief(y) });
     await page.goto("/");
     await expect(card(page)).toContainText(/Yesterday's brief, \d{1,2} \w{3}/);
+    await expect(card(page).getByRole("heading", { name: leadFor(y, 3) })).toBeVisible();
+    const dir = process.env.BRIEF_SHOTS;
+    if (dir && process.env.BRIEF_YESTERDAY_SHOT) await page.screenshot({ path: `${dir}/${process.env.BRIEF_YESTERDAY_SHOT}.png`, fullPage: true });
   });
 });

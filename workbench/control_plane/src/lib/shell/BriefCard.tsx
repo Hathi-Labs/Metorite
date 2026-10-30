@@ -21,10 +21,12 @@
 import Link from "next/link";
 import { useEffect } from "react";
 
+import Icon from "@/components/Icon";
 import { isInAppPath } from "@/lib/inAppLink";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { BRIEF_KEY, fetchBrief, staleLabel } from "./briefCard";
+import { feedAppIcon } from "./feed";
 import { HomeCard } from "./HomeCard";
 
 let logged = false;
@@ -65,9 +67,16 @@ export default function BriefCard({
               {claim.href && isInAppPath(claim.href) ? (
                 <Link
                   href={claim.href}
-                  className="cc-link flex min-h-11 items-center rounded-lg px-2 py-1.5 text-sm text-foreground hover:bg-secondary/60 tech-transition"
+                  data-claim-link=""
+                  className="cc-link flex min-h-11 items-center gap-3 rounded-lg px-2 py-1.5 text-sm text-foreground hover:bg-secondary/60 tech-transition"
                 >
-                  {claim.text}
+                  {/* The row's door, as the Needs you rows draw it: the
+                      source app's own icon first, a chevron last. */}
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground">
+                    <Icon name={feedAppIcon(claim.source_app)} size={14} />
+                  </span>
+                  <span className="min-w-0 flex-1">{claim.text}</span>
+                  <Icon name="ChevronRight" size={14} className="shrink-0 text-muted-foreground" />
                 </Link>
               ) : (
                 <span className="flex min-h-11 items-center px-2 py-1.5 text-sm text-foreground">{claim.text}</span>

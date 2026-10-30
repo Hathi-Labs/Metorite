@@ -60,6 +60,9 @@ describe("the brief card", () => {
     expect(html).toContain('href="/projects?task=4"');
     expect(html).toContain('href="/email?thread=9"');
     expect(html).toContain("<ul");
+    // Each in-app claim shows it opens: the app's icon first, a chevron last.
+    expect(html.match(/data-claim-link/g)).toHaveLength(2);
+    expect(html.match(/lucide-chevron-right/g)).toHaveLength(2);
     expect(html).not.toContain("Yesterday");
   });
 
@@ -78,6 +81,9 @@ describe("the brief card", () => {
     const html = draw();
     expect(html).toContain("Go away");
     expect(html).not.toContain("evil.example");
+    // A plain-text claim has no door: no link, no chevron.
+    expect(html).not.toContain("data-claim-link");
+    expect(html).not.toContain("<a ");
   });
 
   it("labels the brief of the day before with its date", () => {
