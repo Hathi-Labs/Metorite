@@ -25,6 +25,11 @@ only when the flag is on AND the list allows it. The default allows none.
 Four doors check it (spec §10.6): the consent routes, the store's token
 issue, the edge bearer check and the connection read of branch 0.
 
+**First-party clients (D-EA-11, spec §10.7).** :func:`is_first_party` is
+the one reader of ``agent_first_party_client_ids``, and
+:func:`first_party_redirect_allowed` is the one redirect rule of the path
+with no consent click. The default list is empty, so it trusts no client.
+
 **The MCP surface (EA-3a, EA-6a).** :data:`MCP_ROUTES` is the one allowlist of
 gateway routes an outside agent may reach. :data:`MCP_WRITE_ROUTES` names its
 write pairs, and :func:`writes_enabled` is the one reader of the writes flag. :func:`actor_via_for` gives the
@@ -620,6 +625,61 @@ def redirect_host(uri: str) -> str:
     """The host a member sees on the consent screen, or the scheme for an app."""
     parts = urlsplit(uri)
     return ascii_host(parts.hostname) if parts.hostname else f"{parts.scheme}:"
+
+
+# ── First-party clients (D-EA-11, spec §10.7) ───────────────────────────────
+
+
+@functools.lru_cache(maxsize=16)
+def _parse_first_party(raw: str) -> frozenset[str]:
+    """The client ids of *raw*, each one a CIMD client id URL.
+
+    The entries have a comma between them, and each entry loses the spaces
+    around it. Nothing else changes: the case stays, so the match is exact.
+    An entry that :func:`is_cimd_client_id` refuses is dropped, and so is
+    ``*``. So no entry can trust more than one client. Cached on the raw value.
+    """
+    return frozenset(
+        entry for entry in (part.strip() for part in raw.split(","))
+        if entry and is_cimd_client_id(entry)
+    )
+
+
+def first_party_client_ids() -> frozenset[str]:
+    """The parsed ``agent_first_party_client_ids``. Empty, the default, trusts no client."""
+    return _parse_first_party(str(get_settings().agent_first_party_client_ids or ""))
+
+
+def is_first_party(client_id: object) -> bool:
+    """True when *client_id* is, string for string, an entry of the list.
+
+    The ONE reader of ``agent_first_party_client_ids``. A self-declared
+    ``client_name`` never counts, and neither does the host alone: only the
+    exact client id URL, which the server fetched the document from.
+    """
+    return isinstance(client_id, str) and client_id in first_party_client_ids()
+
+
+def first_party_redirect_allowed(client_id: str, redirect_uri: str) -> bool:
+    """True when the consent page may skip for a code to *redirect_uri*.
+
+    A narrower rule than :func:`is_allowed_redirect_uri`, for the path with no
+    click (D-EA-11). The redirect must be ``https``, with a host and no user
+    name or password, and at the same origin as *client_id*: the same scheme,
+    the same host and the same port. So no loopback URI, no private-use
+    scheme and no other host ever gets a code without the screen. The caller
+    still matches *redirect_uri* against the document's list, exactly.
+    """
+    if not is_allowed_redirect_uri(redirect_uri) or not is_cimd_client_id(client_id):
+        return False
+    try:
+        parts = urlsplit(redirect_uri)
+        _ = parts.port  # a bad port raises here
+    except ValueError:
+        return False
+    if redirect_uri.partition(":")[0] != "https" or not parts.hostname:
+        return False
+    return client_origin(redirect_uri) == client_origin(client_id)
 
 
 # ── The MCP read surface (EA-3a, spec §9.5 and §10.1) ──────────────────────
