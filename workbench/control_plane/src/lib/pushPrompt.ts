@@ -26,8 +26,6 @@ export interface PromptState {
 export type PromptKind =
   /** The Turn on button. */
   | "turn-on"
-  /** A Safari tab: the Home Screen steps and no Turn on button. */
-  | "ios-tab"
   /** The permission is refused: the phone-settings steps. */
   | "denied"
   | "none";
@@ -68,14 +66,14 @@ function within(iso: string | undefined, ms: number, now: Date): boolean {
 /** Which sheet to show now, or `none`. Every rule of §10.4 item 3 and 6. */
 export function shouldShowPushPrompt(input: PromptInput, now: Date): PromptKind {
   if (!input.flag || !input.phone || !input.ownChat) return "none";
-  if (input.support === "unsupported") return "none";
+  // A Safari tab (`ios-tab`) shows nothing. `InstallNudge` owns the Home Screen ask.
+  if (input.support !== "supported") return "none";
   // An empty chat is the first run, and the interview offer shows there.
   if (input.messageCount < 1 || input.streaming) return "none";
   const s = input.state;
   if (s.never === true) return "none";
   if (after(s.snoozed_until, now)) return "none";
   if (within(s.last_shown_at, SHOWN_GAP_MS, now)) return "none";
-  if (input.support === "ios-tab") return "ios-tab";
   if (input.permission === "granted") return input.registered ? "none" : "turn-on";
   if (input.permission === "denied") return s.denied_seen_at ? "none" : "denied";
   if (input.permission === "unsupported") return "none";

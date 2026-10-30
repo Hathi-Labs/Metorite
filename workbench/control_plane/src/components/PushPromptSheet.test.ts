@@ -1,6 +1,6 @@
 /**
  * The push prompt sheet (WS-OB OB-8): the three buttons, Escape, and the
- * ios-tab variant. `PushPromptPanel` holds no hook, so the test calls it and
+ * denied variant. `PushPromptPanel` holds no hook, so the test calls it and
  * walks the element tree it returns. No DOM is needed.
  */
 import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
@@ -73,15 +73,6 @@ describe("PushPromptPanel", () => {
     expect(fns.onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("ios-tab shows the two Home Screen steps with the Share glyph and no Turn on", () => {
-    const { byLabel, html, tree } = setup({ kind: "ios-tab" });
-    expect(byLabel("Turn on")).toBeUndefined();
-    expect(html).toContain("Add to Home Screen");
-    expect(walk(tree).some((e) => e.props.name === "Share")).toBe(true);
-    expect(html.indexOf("Share")).toBeLessThan(html.indexOf("Add to Home Screen"));
-    expect(byLabel("Remind me later")).toBeDefined();
-  });
-
   it("denied shows the phone-settings steps and no Turn on", () => {
     const { byLabel, html } = setup({ kind: "denied" });
     expect(byLabel("Turn on")).toBeUndefined();
@@ -96,7 +87,7 @@ describe("PushPromptPanel", () => {
   });
 
   it("never names the model or a tool", () => {
-    const all = (["turn-on", "ios-tab", "denied"] as const).map((kind) => setup({ kind }).html).join(" ");
+    const all = (["turn-on", "denied"] as const).map((kind) => setup({ kind }).html).join(" ");
     expect(all).not.toMatch(/claude|gpt|openai|anthropic|\btool\b/i);
   });
 });

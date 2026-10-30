@@ -46,7 +46,7 @@ describe("shouldShowPushPrompt", () => {
 
   it.each([
     ["supported", "turn-on"],
-    ["ios-tab", "ios-tab"],
+    ["ios-tab", "none"],
     ["unsupported", "none"],
   ] as const)("support %s gives %s", (support, want) => {
     expect(show({ support })).toBe(want);
@@ -105,9 +105,9 @@ describe("shouldShowPushPrompt", () => {
     it("a time that does not parse holds nothing back", () => {
       expect(show({ state: { snoozed_until: "soon", last_shown_at: "x" } })).toBe("turn-on");
     });
-    it("the 24-hour rule and a snooze hold the ios-tab sheet too", () => {
-      expect(show({ support: "ios-tab", state: { last_shown_at: ago(1000) } })).toBe("none");
-      expect(show({ support: "ios-tab", state: { never: true } })).toBe("none");
+    it("a Safari tab on iOS shows nothing, whatever the state", () => {
+      expect(show({ support: "ios-tab" })).toBe("none");
+      expect(show({ support: "ios-tab", permission: "denied" })).toBe("none");
     });
   });
 });

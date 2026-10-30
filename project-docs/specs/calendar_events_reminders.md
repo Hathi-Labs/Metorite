@@ -1346,7 +1346,8 @@ few members find it.
 3. **When it shows.** Every rule must hold:
    - The flag holds for the org. `GET /push/public-key` answers
      `prompt: true` (item 7).
-   - `pushSupport()` gives `supported` or `ios-tab`.
+   - `pushSupport()` gives `supported`. In a Safari tab on iOS it gives
+     `ios-tab`, and the sheet does not show (item 6).
    - The permission is not `granted`, or this device has no row for this
      member (`registeredHere`).
    - The chat holds one message or more, and no run streams. So the sheet
@@ -1381,8 +1382,8 @@ few members find it.
    then writes.
 6. **iPhone and a refused permission.**
    - In a Safari tab (`ios-tab`), push works only from the Home Screen app.
-     The sheet shows the two steps (Share, then Add to Home Screen) with
-     the Share glyph, and has no Turn on button.
+     OB-8 shows nothing there. `InstallNudge` owns the Home Screen ask.
+     OB-8 asks once the member opens Metorite from the Home Screen.
    - When the permission is `denied`, a browser allows no second request.
      The sheet shows how to turn notifications on in the phone's settings,
      once. It then writes `denied_seen_at` and does not show again while

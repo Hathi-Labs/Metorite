@@ -111,17 +111,6 @@ export function PushPromptPanel({ kind, phase, note, onTurnOn, onLater, onNever,
             />
           </div>
 
-          {kind === "ios-tab" && (
-            <ol className="mt-2 list-decimal space-y-1 pl-9 text-muted-foreground">
-              <li>
-                Tap Share <Icon name="Share" size={12} className="inline align-text-bottom" aria-label="Share" role="img" /> in
-                the Safari toolbar.
-              </li>
-              <li>Choose Add to Home Screen.</li>
-              <li>Open Metorite from your Home Screen, and turn on notifications there.</li>
-            </ol>
-          )}
-
           {kind === "denied" && (
             <>
               <p className="mt-2 pl-6 text-muted-foreground">
