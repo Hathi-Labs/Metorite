@@ -229,8 +229,10 @@ export async function revoke(id: string, admin: boolean): Promise<"revoked" | "g
 //     GET /api/auth/me/agent-access   the member's switch
 //     PUT /api/auth/me/agent-access   set it, body {delete_enabled}
 //
-// One switch, default off. With it on, a connected agent may delete a task
-// after the member says yes in the agent. The gateway checks it on each delete.
+// One switch, on by default (EA-6i, the owner, 2026-10-30). The gateway
+// answers `delete_enabled: true` for a member who has not chosen, so the card
+// draws it on. With it on, a connected agent may delete a task after the
+// member says yes in the agent. The gateway checks it on each delete.
 
 /** The cache key of the switch. It shares the prefix, so a revoke wakes it too. */
 export const AGENT_ACCESS_KEY = "agents:access";
