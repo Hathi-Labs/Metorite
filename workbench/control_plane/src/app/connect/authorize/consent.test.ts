@@ -19,6 +19,7 @@ import {
   grantedScopes,
   initialChoice,
   isCheckView,
+  isContinueView,
   organizationName,
   parseAuthorizeRequest,
   pinChoices,
@@ -284,5 +285,57 @@ describe("the claim (fix round 1, P2)", () => {
 
   it("a view with no verified host is not", () => {
     expect(isCheckView({ ...VIEW, client: { ...VIEW.client, host: "" } })).toBe(false);
+  });
+});
+
+// D-EA-11 (spec §10.7): the gateway alone decides that a first-party client
+// skips the screen. The page reads only that exact answer as a pass, so a
+// client off the list always gets the screen and its approve gate.
+describe("isContinueView (D-EA-11, first-party clients)", () => {
+  const CONTINUE = {
+    first_party: true,
+    redirect_to: "https://aroh.example/hub/auth/callback?code=c&state=st-1&iss=https%3A%2F%2Fmcp.metorite.com",
+  };
+
+  it("accepts the gateway's first-party answer", () => {
+    expect(isContinueView(CONTINUE)).toBe(true);
+  });
+
+  it("never reads a consent screen as a pass", () => {
+    expect(isContinueView(VIEW)).toBe(false);
+    // A screen that also names a redirect is still a screen: it holds a ticket.
+    expect(isContinueView({ ...VIEW, first_party: true, redirect_to: CONTINUE.redirect_to })).toBe(false);
+    expect(isCheckView(CONTINUE)).toBe(false);
+  });
+
+  it("needs first_party to be exactly true", () => {
+    for (const first_party of ["true", 1, false, undefined, null]) {
+      expect(isContinueView({ ...CONTINUE, first_party })).toBe(false);
+    }
+    expect(isContinueView({ redirect_to: CONTINUE.redirect_to })).toBe(false);
+  });
+
+  it("refuses a redirect that is not https", () => {
+    for (const redirect_to of [
+      "http://localhost:53122/callback?code=c",
+      "javascript:alert(1)",
+      "com.example.app:/cb?code=c",
+      "//aroh.example/cb",
+      "",
+    ]) {
+      expect(isContinueView({ ...CONTINUE, redirect_to })).toBe(false);
+    }
+    expect(isContinueView({ ...CONTINUE, redirect_to: 42 })).toBe(false);
+  });
+
+  it("a client that calls itself Aroh is a screen like any other", () => {
+    const named = { ...VIEW, client: { ...VIEW.client, name: "Aroh" } };
+    expect(isContinueView(named)).toBe(false);
+    expect(isCheckView(named)).toBe(true);
+  });
+
+  it("refuses null and a value that is not an object", () => {
+    expect(isContinueView(null)).toBe(false);
+    expect(isContinueView("https://aroh.example")).toBe(false);
   });
 });

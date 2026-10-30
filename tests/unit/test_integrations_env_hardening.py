@@ -831,6 +831,8 @@ class TestLayerBRefusesPlatformKeys:
         "TOOL_PACKS", "TOOL_PACKS_ORGS", "ORCHESTRATOR_FLOOR_TRIM",
         # WS-67 OA-9b: the sub-agent orgs. Owner-only (work_plan.md §6 D4).
         "SPAWN_SUBAGENTS_ORGS",
+        # WS-63 PZ-32: the card writes of the profile, by its prefix.
+        "ASSISTANT_PROFILE_CARD_WRITES_ORGS",
         "FORWARDED_ALLOW_IPS", "MEET_GOOGLE_PASSWORD", "SHERPA_SEG_MODEL",
         "GODEBUG", "CC", "GO",
         # The operator-only family.

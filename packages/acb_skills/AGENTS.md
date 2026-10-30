@@ -54,6 +54,7 @@ not write a second copy of that seam. A bare test file name is under
    - It sends nothing when `acb_llm.routed.routing_is_on()` is false. It logs no context, question or option.
 5b-2. tier_policy.py -- the ONE home of the tier policy (D90) and the ONE reader of `AI_TIER_ROUTING` (`tier_routing_on`, which fails closed).
    - `TierPolicyMiddleware` sets only `options["model"]`. Each `TOOL_HINTS` name must be a real tool. Fence: `test_tier_policy.py`.
+   - `turn_kind_parallel_on` is the ONE reader of `AI_TURN_KIND_PARALLEL`, and it fails closed. `RunTierPolicy.seal` and `settle` own the window of a restart. `ToolHintRecorder` seals before a tool runs. Fence: `test_turn_kind_parallel.py`.
 5c. permission_policy.py -- the B6 risk-aware handler and the D85 guard `guard_shared_agent_shell`.
    - The guard refuses a shell request unless the artifact context says `host_shell_refused=False`. Fence: `test_shared_agent_shell_tools.py`.
    - `decide()` refuses a read of a BINARY workspace file (`read_binary_file`). ⚠️ It never refuses a name in `_CLI_IMAGE_SUFFIXES`, and a CLI upgrade must check that list again. Fence: `test_chat_nul_persist.py`.
@@ -82,8 +83,10 @@ not write a second copy of that seam. A bare test file name is under
 5h. tool_annotations.py -- `annotate()` has NO default for `open_world`. Every tool of every in-repo agent states it. `risk_summary_block(own=)` reads the agent's own tool list, never the process-wide registry.
 5i. tool_guard.py -- the ONE per-run middleware pair (`WithholdTools`, `RefuseTools`). Do not write a third copy of the pair.
 5j. ask_tools.py -- `request_confirmation` is the one HITL card gate, and it fails closed.
-   - A tool reads `confirmation_channel_open()` after a denial, or before a card only to choose a narrower act. It never approves a write.
+   - A tool reads `confirmation_channel_open()` after a denial, or before a card to choose a narrower act. It never approves a write.
+   - One reader reads it before a card to ask a card in place of a refusal: `profile_tools._card_channel` (PZ-32). Only the approve of that card writes.
    - `refuse_cards()` is the scope of a run with no card channel. Fences: `test_wac_bot_run.py`, `test_wac_writes.py`.
+   - `responder=` binds a card to the run's own member. Any other answer, and an answer with no responder, is a REJECT. The gateway takes the responder from the session. Fence: `test_profile_pz32.py`.
 5k. agent_site.py -- the ONE builder of an agent install (spec `box_hardening.md` §5 BH-7).
    - Installs go into `/var/lib/acb-gateway/agent-site` with `uv pip install --target`, never into the shared venv.
    - The gateway APPENDS agent-site to `sys.path`. Never use `site.addsitedir` on it, and never write a `.pth` file or a `sitecustomize` there. Fence: `test_agent_deps_target.py`.
@@ -115,6 +118,9 @@ not write a second copy of that seam. A bare test file name is under
 5n-b. subagent_contract.py -- the contract parser of a dynamic sub-agent (WS-67 OA-9a, spec `one_assistant_context.md` §6). `spawn_subagents` (`agent_tools`, dark behind `SPAWN_SUBAGENTS_ORGS`) is its caller, and it also holds the job binding, `worker_refusal` and the `child_pin` pair. The parsers do no I/O. `parse_items` turns other output into one `inferred` item. `parse_jobs` checks the jobs against the parent's `run_tools`. `MAX_JOBS` equals `agent_tools._PARALLEL_MAX`. Fence: `test_subagent_contract.py`.
    - OA-9c: a job names only a pack that `PackRun.holds()` of the parent names, and no record means no pack. `agent_tools._child_pack_tools` builds it through `_tool_injection._pack_tools` on the parent frame, with a fresh run key for each child. `child_may_hold` is the ONE test of a pack tool for a child: the read-only mark, less the SUB-1 names and `DISPLAY_TOOLS`. Do not add a second read-only list. A new tool that draws a card or moves the page joins `DISPLAY_TOOLS`, or the display scan in `test_pack_guards.py` fails. Fences: `test_pack_guards.py`, `test_spawn_subagents.py`.
 5n-0. profile_tools.py -- `resolve_person` (spec `personalization.md` §5.4), as the run's member, behind `ASSISTANT_PROFILE_ENABLED`. Fence: `test_resolve_person.py`.
+   - PZ-32 (D-PZ-21): `_write_gate` runs first. Then a value that the typed words do not hold asks the ONE card of the write, in the web chat only. `_still_open` checks the run again after the approve.
+   - The offer (D-PZ-22): `profile_remember(offer=true)` shows one card, once a chat. Only the typed words ground an offer. `_claim_offer` takes one `SET NX` key in tenant Redis, and a fault offers nothing.
+   - Both paths are dark behind `ASSISTANT_PROFILE_CARD_WRITES_ORGS`. `_card_channel` asks `assistant_profile.card_writes_for(org)`, the one reader. Off, a value that the member did not type refuses, and an offer answers `no_offer`. A turn with no typed words and a style note never get the card. A sensitive value that the member did not type asks a second card. Fence: `test_profile_pz32.py`.
 5n-1. knowledge_tools.py + knowledge_manifest.py -- `read_page` and `list_spaces` (spec `knowledge_base.md` §8.1). They read `/knowledge` as the run's member and take no SQL.
    - A new Knowledge route needs a row in `acb_common/app_manifests/knowledge.py` (MCP-P1a, D136). `knowledge_manifest.py` re-exports those rows, so the chat and the MCP door read one table. The row names a chat tool or the slice that plans one. It also names a door op, or why the door does not serve the row. `propose_page` and `propose_edit` show one card before they send.
    - Fences: `test_knowledge_tools.py`, `test_knowledge_chat_coverage.py`, `test_kb_proposals.py`.

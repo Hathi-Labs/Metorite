@@ -42,12 +42,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from acb_skills import tier_policy
+
 from evals.one_assistant_measure import checks as ck
-from evals.one_assistant_measure import fanout, pack
+from evals.one_assistant_measure import fanout, pack, spend
 from evals.one_assistant_measure import mailbox as mb
 from evals.one_assistant_measure import workgateway as wg
 from evals.one_assistant_measure.scenarios import SCENARIOS, Scenario, all_scenarios
 from evals.routing import dataset as ds
+from evals.routing import harness as harness_mod
 from evals.routing.harness import (
     ORCHESTRATOR,
     ModelCall,
@@ -119,6 +122,43 @@ EVAL_ENV = Path.home() / ".metorite" / "secrets" / "eval.env"
 RATE_CARD = json.loads((HERE / "rate_card.json").read_text(encoding="utf-8"))
 
 
+# ── the eval-only tier map (--tier-map) ─────────────────────────────────────
+
+#: The tiers that a map may name, as key or as target.
+TIERS = (*tier_policy.LADDER, "tier-code")
+#: The short word in an arm name. Only ``tier-fast`` has a model alias: it is
+#: Flash today. The results header holds the models that really served.
+_SHORT = {"tier-fast": "flash"}
+
+
+def parse_tier_map(text: str) -> dict[str, str]:
+    """``tier-balanced=tier-fast,tier-powerful=tier-fast`` as a dict.
+
+    A key or a target that is not a tier name is refused, because the Router
+    serves a tier and refuses a model id ("name a tier, not a model")."""
+    out: dict[str, str] = {}
+    for part in (p.strip() for p in text.split(",") if p.strip()):
+        key, sep, target = (x.strip() for x in part.partition("="))
+        if not sep or key not in TIERS or target not in TIERS:
+            raise ValueError(f"--tier-map {part!r}: use <tier>=<tier>, "
+                             f"and a tier is one of {', '.join(TIERS)}")
+        if key == target:
+            raise ValueError(f"--tier-map {part!r}: the tier maps to itself")
+        out[key] = target
+    return out
+
+
+def arm_label(arm: str, tier_map: dict[str, str] | None) -> str:
+    """The name of an arm in the summary: ``pack`` or ``pack[balanced=flash]``."""
+    if not tier_map:
+        return arm
+
+    def short(t: str) -> str:
+        return _SHORT.get(t, t.removeprefix("tier-"))
+
+    return arm + "[" + ",".join(f"{short(k)}={short(v)}" for k, v in sorted(tier_map.items())) + "]"
+
+
 # ── cost ─────────────────────────────────────────────────────────────────────
 
 
@@ -141,20 +181,35 @@ def cost_of(usage: dict[str, Any], card: dict[str, Any] = RATE_CARD) -> tuple[fl
 
 
 def call_row(c: ModelCall) -> dict[str, Any]:
-    usd, source = cost_of(c.usage)
+    """One row per model call, with its counted USD.
+
+    Three corrections to the vendor figure (2026-10-30 drain). A call with no
+    usage frame that was not refused is priced from its request size, as the
+    worst case (``cost_source`` ``estimate``). A call that starts in a DeepSeek
+    peak band counts double (``peak``), because ``usage.cost`` does not know
+    the band. A refused call (status 4xx or 5xx) costs nothing."""
+    mapped = bool(c.requested)
+    card = spend.card_for(c.served, c.model, RATE_CARD, mapped)
+    usd, source = cost_of(c.usage, card)
+    if not c.usage and (c.status is None or c.status < 400):
+        usd, source = spend.unseen_usage_usd(c.request_chars, card), "estimate"
+    peak = bool(c.wall) and spend.is_peak(datetime.fromtimestamp(c.wall, UTC))
+    if peak:
+        usd *= spend.PEAK_FACTOR
 
     def since(t: float | None) -> float | None:
         return round(t - c.started, 3) if t is not None else None
 
     return {
         "agent": c.agent, "model": c.model, "served": c.served, "stream": c.stream,
+        "requested": c.requested or c.model, "mapped": mapped,
         "messages": c.messages, "tools": c.tools, "request_chars": c.request_chars,
         "status": c.status, "ttfb_s": since(c.first_byte), "ttft_s": since(c.first_token),
         "dur_s": since(c.ended), "prompt": int(c.usage.get("prompt_tokens") or 0),
         "cached": cached_of(c.usage), "completion": int(c.usage.get("completion_tokens") or 0),
         "reasoning": int((c.usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
                          or 0),
-        "cost_usd": round(usd, 6), "cost_source": source,
+        "cost_usd": round(usd, 6), "cost_source": source, "peak": peak,
     }
 
 
@@ -425,6 +480,29 @@ def _use_router(harness: RoutingHarness, router: tuple[str, str]) -> None:
     mp.setattr(settings, "graphiti_enabled", False, raising=False)
     harness.allow = (base + "/",)
     _system_one_seam(mp)
+    tap_system_one(mp, harness.model_calls)
+
+
+def tap_system_one(mp: Any, sink: list[ModelCall]) -> None:
+    """Put the wire tap on the System-1 client, so its turn-kind call counts.
+
+    ``system_one._build_agent`` builds its own client for each call. The tap
+    wrapped the chat agents only, so this call reached the Router unseen: the
+    rows of run 5 (2026-10-30) show one send more than model calls in each turn
+    that asked the turn kind. The call is a buffered ``tier-fast`` request, so
+    the card prices it."""
+    from acb_skills import system_one
+
+    from evals.routing.harness import _tap
+
+    real = system_one._build_agent
+
+    def build(*args: Any, **kwargs: Any) -> Any:
+        agent, async_client = real(*args, **kwargs)
+        _tap([agent], "system-one", sink)
+        return agent, async_client
+
+    mp.setattr(system_one, "_build_agent", build)
 
 
 #: The tools of the orchestrator that read the LOCAL database of the machine
@@ -478,10 +556,17 @@ def _system_one_seam(mp: Any) -> None:
 def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
              tier: str | None = None, timeout: float = 60.0, repeat: int = 1,
              models: dict[str, ReplyModel] | None = None,
-             on_turn: Any = None) -> list[dict[str, Any]]:
+             on_turn: Any = None, should_stop: Any = None,
+             tier_map: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """One chat of *sc* on *arm*: each turn through the real orchestrator run.
 
+    *tier_map* is the eval-only rewrite of the tier a request names (see
+    :func:`parse_tier_map`). The wire tap makes it. The row keeps ``arm`` and
+    adds ``arm_label``, which names the map.
+
     *router* None is a scripted run: the plans of *sc* play, or *models*.
+    *should_stop* is called before each turn after the first: when it answers
+    True the chat ends there, so a budget stops the run inside a long chat.
     Returns one row for each turn.
     """
     from acb_common import get_settings
@@ -493,6 +578,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
     with RoutingHarness(live=live, real_specialists=live) as harness:
         if live:
             _use_router(harness, router)
+            harness._mp.setattr(harness_mod, "MODEL_REWRITE", dict(tier_map or {}))
         harness.mailboxes = mb.BOXES
         no_local_database(harness._mp)
         # The worker of ``spawn_subagents`` is an internal agent: the harness
@@ -548,6 +634,8 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
         history = [dict(h) for h in sc.history]
         thread: str | None = None
         for index, turn in enumerate(sc.turns):
+            if index and should_stop is not None and should_stop():
+                break
             marks = (len(gateway.calls), len(member.cards), len(harness.model_calls),
                      len(tap.events), len(harness.sent), len(harness.passed),
                      len(store.calls), len(work.calls))
@@ -587,10 +675,14 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
             )
             result = ck.check_turn(turn, obs)
             calls = [call_row(c) for c in harness.model_calls[marks[2]:]]
+            # A send that reached the Router and that no tap saw is counted at
+            # the worst case, never at zero (2026-10-30 drain).
+            unseen = max(0, len(harness.passed) - marks[5] - len(calls))
             events = [{**e, "calls_before": e["calls_before"] - marks[2]}
                       for e in tap.events[marks[3]:]]
             row = {
                 "scenario": sc.id, "turn": index + 1, "arm": arm, "repeat": repeat,
+                "arm_label": arm_label(arm, tier_map), "tier_map": dict(tier_map or {}),
                 "words": turn.words, "checks": result, "passed": ck.passed(result),
                 "answer": record.answer, "error": record.error,
                 "email_tools": [name for name, _, _ in obs.email_calls],
@@ -599,6 +691,8 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 "model_calls": calls,
                 "sent": harness.sent[marks[4]:],
                 "router_sends": len(harness.passed) - marks[5],
+                "unseen_sends": unseen,
+                "unseen_usd": round(spend.unseen_sends_usd(unseen, RATE_CARD), 6),
                 "handoffs": [ck.handoff_kind(t) for t in obs.tasks],
                 "set": sc.set, "surface": sc.surface,
                 "work_tools": [n for n, _, _ in [*obs.work_calls, *obs.sub_work_calls]],
@@ -685,11 +779,12 @@ def runnable(scenarios: tuple[Scenario, ...]) -> tuple[Scenario, ...]:
 
 
 def run_scripted(scenarios: tuple[Scenario, ...] = SCENARIOS,
-                 arms: tuple[str, ...] = ALL_ARMS) -> tuple[list[dict[str, Any]], list[str]]:
+                 arms: tuple[str, ...] = ALL_ARMS,
+                 tier_map: dict[str, str] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
     for sc in runnable(scenarios):
         for arm in arms_for(sc, arms):
-            rows += run_chat(sc, arm)
+            rows += run_chat(sc, arm, tier_map=tier_map)
     return rows, scripted_problems(rows)
 
 
@@ -720,7 +815,7 @@ def turn_totals(row: dict[str, Any]) -> dict[str, Any]:
         "prompt": sum(c["prompt"] for c in calls),
         "cached": sum(c["cached"] for c in calls),
         "completion": sum(c["completion"] for c in calls),
-        "cost_usd": sum(c["cost_usd"] for c in calls),
+        "cost_usd": sum(c["cost_usd"] for c in calls) + float(row.get("unseen_usd") or 0.0),
         # The calls of one turn run one after the other, so this is the part
         # of the turn that the model took. The rest is the platform's.
         "model_s": sum(c["dur_s"] or 0.0 for c in calls),
@@ -752,7 +847,7 @@ def _packs_before_first_call(row: dict[str, Any]) -> bool:
 def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
     by_arm: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in rows:
-        by_arm[r["arm"]].append(r)
+        by_arm[r.get("arm_label") or r["arm"]].append(r)
     out: dict[str, Any] = {}
     for arm, rs in by_arm.items():
         totals = [turn_totals(r) for r in rs]
@@ -1015,7 +1110,7 @@ def stop_results(summary: dict[str, Any]) -> list[tuple[int, str, str]]:
 def report(data: dict[str, Any]) -> str:
     """The tables of a results file, in Markdown."""
     s = data["summary"]
-    arms = [a for a in ALL_ARMS if a in s]
+    arms = [a for a in ALL_ARMS if a in s] + sorted(a for a in s if a not in ALL_ARMS)
     head = "| Measure | " + " | ".join(arms) + " |\n|---" + "|---" * len(arms) + "|"
     lines = [head]
 
@@ -1051,6 +1146,8 @@ def report(data: dict[str, Any]) -> str:
     row("Output tokens per turn", lambda v: v["completion_per_turn"])
     row("Cost per turn, USD", lambda v: v["cost_per_turn_usd"])
     row("Cost of the arm, USD", lambda v: v["cost_usd"])
+    if data.get("rows"):
+        lines += ["", "Counted spend by agent (USD):", "", spend.spend_table(data["rows"])]
     scen = sorted({k for a in arms for k in s[a]["by_scenario"]})
     lines += ["", "| Scenario | " + " | ".join(arms) + " |", "|---" + "|---" * len(arms) + "|"]
     for k in scen:
@@ -1123,11 +1220,22 @@ def spent_so_far(paths: list[Path]) -> float:
     return round(sum(chunk_spend(json.loads(p.read_text(encoding="utf-8"))) for p in paths), 4)
 
 
+def served_models(rows: list[dict[str, Any]]) -> list[str]:
+    """The distinct models that the Router says served the calls."""
+    return sorted({c["served"] for r in rows for c in r["model_calls"] if c.get("served")})
+
+
 def _write(out: Path, data: dict[str, Any]) -> None:
     data["spent_this_chunk_usd"] = round(
         float(data.get("spent_usd") or 0.0) - float(data.get("spent_before_usd") or 0.0), 4)
     data["summary"] = summarise(data["rows"])
+    data["served_models"] = served_models(data["rows"])
+    data["spend_by_agent"] = {k: round(v, 4) for k, v in spend.spend_by_agent(data["rows"]).items()}
     out.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 def router_up(base: str, timeout: float = 3.0) -> bool:
@@ -1158,12 +1266,19 @@ def _lost_the_router(rows: list[dict[str, Any]]) -> bool:
 
 def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tuple[str, ...],
              *, repeat: int, tier: str, budget: float, out: Path, timeout: float,
-             first_repeat: int = 1, spent_before: float = 0.0) -> dict[str, Any]:
+             first_repeat: int = 1, spent_before: float = 0.0,
+             allow_peak: bool = True, clock: Any = None,
+             tier_map: dict[str, str] | None = None) -> dict[str, Any]:
     """The live chats. *budget* caps the spend, counted from *spent_before*,
-    so a run in chunks keeps one cap. A chat that lost the Router is dropped,
-    and the run stops."""
+    so a run in chunks keeps one cap. The check runs before each chat AND
+    before each turn after the first, so one long chat cannot pass the cap by
+    more than one turn. A chat that lost the Router is dropped, and the run
+    stops. Unless *allow_peak*, the run also stops before a chat that would
+    start in a DeepSeek peak band (*clock* gives the time, for a test)."""
+    clock = clock or utc_now
     data: dict[str, Any] = {
         "date": datetime.now(UTC).date().isoformat(), "sha": _sha(), "tier": tier,
+        "tier_map": dict(tier_map or {}),
         "email_tier": "tier-powerful (its own default, the floor of a delegated run)",
         "repeat": repeat, "budget_usd": budget, "rate_card": RATE_CARD["usd_per_1m"],
         "rows": [], "stopped": None, "dropped": [], "spent_before_usd": spent_before,
@@ -1174,7 +1289,7 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
         nonlocal spent
         t = turn_totals(row)
         spent += t["cost_usd"]
-        print(f"[{row['arm']:<10}] {row['scenario']}#{row['turn']} r{row['repeat']}: "
+        print(f"[{row.get('arm_label') or row['arm']:<10}] {row['scenario']}#{row['turn']} r{row['repeat']}: "
               f"{'pass' if row['passed'] else 'FAIL'} first {row['first_text_s']} s, "
               f"total {row['total_s']} s, {t['calls']} calls, in {t['prompt']} "
               f"(cached {t['cached']}), out {t['completion']}, USD {t['cost_usd']:.4f}"
@@ -1197,10 +1312,14 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
             for arm in order:
                 if spent >= budget:
                     return stop(f"the budget: USD {spent:.3f} spent before {sc.id} {arm} r{rep}")
+                ok, why = spend.peak_gate(clock(), allow_peak)
+                if not ok:
+                    return stop(f"peak band before {sc.id} {arm} r{rep}. {why}")
                 if not router_up(router[0]):
                     return stop(f"the Router does not answer before {sc.id} {arm} r{rep}")
                 rows = run_chat(sc, arm, router=router, tier=tier, timeout=timeout,
-                                repeat=rep, on_turn=on_turn)
+                                repeat=rep, on_turn=on_turn,
+                                should_stop=lambda: spent >= budget, tier_map=tier_map)
                 if _lost_the_router(rows) or not router_up(router[0]):
                     data["dropped"].append({"scenario": sc.id, "arm": arm, "repeat": rep,
                                             "usd": round(sum(turn_totals(r)["cost_usd"]
@@ -1209,6 +1328,9 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
                                 "the chat is dropped")
                 data["rows"] += rows
                 data["spent_usd"] = round(spent, 4)
+                if len(rows) < len(sc.turns):
+                    return stop(f"the budget: USD {spent:.3f} spent inside {sc.id} {arm} r{rep}, "
+                                f"after turn {len(rows)} of {len(sc.turns)}")
                 _write(out, data)
     data["spent_usd"] = round(spent, 4)
     _write(out, data)
@@ -1223,10 +1345,23 @@ def merge(paths: list[Path], out: Path) -> dict[str, Any]:
     ``sha`` is the one SHA when all chunks agree, else ``"mixed"``."""
     parts = [json.loads(p.read_text(encoding="utf-8")) for p in paths]
     data = {k: v for k, v in parts[0].items()
-            if k not in ("rows", "summary", "stopped", "sha")}
-    for p in parts:
+            if k not in ("rows", "summary", "stopped", "sha", "tier_map")}
+    maps: dict[str, dict[str, str]] = {}
+    for path, p in zip(paths, parts, strict=True):
+        header = p.get("tier_map") or {}
         for r in p["rows"]:
             r.setdefault("sha", p.get("sha") or "")
+            # The name of an arm says its map. A row whose name does not say
+            # the map of its own chunk, or two maps under one name, is refused.
+            label = r.get("arm_label") or r["arm"]
+            if label != arm_label(r["arm"], header):
+                raise ValueError(f"{path.name}: row {r['scenario']}#{r['turn']} is named "
+                                 f"{label!r}, but the chunk header map gives "
+                                 f"{arm_label(r['arm'], header)!r}")
+            if maps.setdefault(label, header) != header:
+                raise ValueError(f"{path.name}: arm {label!r} has a different tier map "
+                                 "in another chunk. Do not merge a mapped and an unmapped run.")
+    data["tier_maps"] = {k: v for k, v in maps.items() if v}
     data["chunks_run"] = [{"chunk": path.stem, "sha": p.get("sha") or "",
                            "rows": len(p["rows"]),
                            "repeats": sorted({r["repeat"] for r in p["rows"]}),
@@ -1339,7 +1474,15 @@ def _preflight(router: tuple[str, str], tier: str) -> tuple[bool, str]:
 # ── the command line ─────────────────────────────────────────────────────────
 
 
-def main(argv: list[str] | None = None) -> int:
+def _peak_ok(allow_peak: bool) -> bool:
+    """Print the peak message, if any. False when the run must not start."""
+    ok, why = spend.peak_gate(utc_now(), allow_peak)
+    if why:
+        print(why)
+    return ok
+
+
+def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--scripted", action="store_true", help="no model, no network (CI)")
@@ -1359,7 +1502,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="live: a comma list of earlier chunk files. The runner sums what each "
                              "chunk spent by itself and uses it as --spent-before")
     parser.add_argument("--tier", default="tier-balanced", help="the orchestrator's tier")
+    parser.add_argument("--tier-map", default="",
+                        help="EVAL ONLY. Send a tier's requests to another tier, for example "
+                             "tier-balanced=tier-fast. Targets are tiers, never model ids")
     parser.add_argument("--budget-usd", type=float, default=5.0)
+    parser.add_argument("--allow-peak", action="store_true",
+                        help="live: run inside a DeepSeek peak band (twice the price)")
     parser.add_argument("--timeout", type=float, default=300.0, help="live: seconds a turn")
     parser.add_argument("--out", default=str(HERE / "results.json"))
     args = parser.parse_args(argv)
@@ -1368,6 +1516,11 @@ def main(argv: list[str] | None = None) -> int:
     if reconfigure is not None:
         reconfigure(encoding="utf-8", errors="replace")
 
+    try:
+        tier_map = parse_tier_map(args.tier_map)
+    except ValueError as exc:
+        print(f"NO-GO: {exc}")
+        return EXIT_NO_GO
     asked = [a.strip() for a in args.arms.split(",") if a.strip()]
     arms = tuple(a for a in asked if a in ALL_ARMS)
     wanted = {s.strip() for s in args.scenarios.split(",") if s.strip()}
@@ -1395,9 +1548,9 @@ def main(argv: list[str] | None = None) -> int:
         print(report(data))
         return EXIT_PASS
     if args.scripted:
-        rows, problems = run_scripted(scenarios, arms)
+        rows, problems = run_scripted(scenarios, arms, tier_map)
         for r in rows:
-            print(f"  {'pass' if r['passed'] else 'FAIL'}  {r['arm']:<10} {r['scenario']}#{r['turn']}"
+            print(f"  {'pass' if r['passed'] else 'FAIL'}  {r['arm_label']:<10} {r['scenario']}#{r['turn']}"
                   f"  {len(r['model_calls'])} calls  {r['email_tools']}")
         for p in problems:
             print(f"  FAIL {p}")
@@ -1414,6 +1567,8 @@ def main(argv: list[str] | None = None) -> int:
         # Fix round 1: the Router is reached through a tunnel on this machine.
         print(f"NO-GO: {router[0]} is not on this machine. Open the tunnel to the Console.")
         return EXIT_NO_GO
+    if not _peak_ok(args.allow_peak):
+        return EXIT_NO_GO
     ok, why = _preflight(router, args.tier)
     print(why)
     if not ok:
@@ -1422,7 +1577,8 @@ def main(argv: list[str] | None = None) -> int:
         [Path(p) for p in args.spent_before_from.split(",") if p.strip()])
     data = run_live(router, scenarios, arms, repeat=max(1, args.repeat), tier=args.tier,
                     budget=args.budget_usd, out=out, timeout=args.timeout,
-                    first_repeat=args.first_repeat, spent_before=before)
+                    first_repeat=args.first_repeat, spent_before=before,
+                    allow_peak=args.allow_peak, tier_map=tier_map)
     print(report(data))
     print(f"results: {out}")
     return EXIT_PASS

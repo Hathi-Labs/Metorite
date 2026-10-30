@@ -22,6 +22,11 @@ dependencies = [
     # Imported inside the calls, so a process that never stores a file does
     # not load it. It was already in the lock through litellm.
     "boto3>=1.35",
+    # The IANA zone data, aliases included. Ubuntu 24.04 moved the old names
+    # ("Asia/Calcutta") to tzdata-legacy, so ZoneInfo failed on them and the
+    # shell read 24 production members as UTC. zoneinfo falls back to this
+    # package when the OS lacks a name. Fence: tests/unit/test_zone_aliases.py.
+    "tzdata>=2026.1",
 ]
 
 [build-system]

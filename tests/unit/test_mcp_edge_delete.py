@@ -4,9 +4,10 @@ Spec: ``project-docs/specs/external_agent_access.md`` EA3-51 (§6.1) and §15,
 the row EA-6h with the acceptance H1 to H9.
 
 A connected agent may delete a task after the member says yes in the agent.
-The gate has four layers. (1) The member's own switch, default OFF, in
-Integrations, AI agents (``user_settings.agent_delete_enabled``, migration
-295). (2) The tool ``delete_task`` carries ``destructiveHint: true``, and its
+The gate has four layers. (1) The member's own switch, in Integrations, AI
+agents (``user_settings.agent_delete_enabled``, migrations 295 and 316). It
+is ON until the member turns it off (EA-6i, the owner, 2026-10-30), and
+``test_agent_delete_default_r8.py`` holds its four states. (2) The tool ``delete_task`` carries ``destructiveHint: true``, and its
 text tells the agent to get an explicit yes first. (3) The call sends
 ``expected_version`` and ``confirm_title``. (4) The server deletes through
 ``tasks.delete_task_in``, the one core.
@@ -582,16 +583,23 @@ class TestTheSwitch:
 
     pytestmark = _DB_GATE
 
-    async def test_the_switch_is_off_until_the_member_turns_it_on(self, live):
+    async def test_the_switch_is_on_until_the_member_turns_it_off(self, live):
+        """EA-6i: a member with no settings row has not chosen, so the GET
+        says on and the edge lists the tool. Only an explicit off hides it."""
+        with live.admin.begin() as c:
+            c.execute(text("DELETE FROM user_settings WHERE user_id = :u"), {"u": OTHER})
         r = await _person(live, OTHER, "GET", "/auth/me/agent-access")
         assert r.status_code == 200, r.text
+        assert r.json() == {"delete_enabled": True}
+        assert "delete_task" in await _listed(live, "other_member")
+        await _switch(live, False, OTHER)
+        r = await _person(live, OTHER, "GET", "/auth/me/agent-access")
         assert r.json() == {"delete_enabled": False}
+        assert "delete_task" not in await _listed(live, "other_member")
         await _switch(live, True, OTHER)
         r = await _person(live, OTHER, "GET", "/auth/me/agent-access")
         assert r.json() == {"delete_enabled": True}
         await _switch(live, False, OTHER)
-        r = await _person(live, OTHER, "GET", "/auth/me/agent-access")
-        assert r.json() == {"delete_enabled": False}
 
     async def test_the_body_takes_one_boolean(self, live):
         for body in ({"delete_enabled": True, "extra": 1}, {"delete_enabled": "maybe"}, {}):

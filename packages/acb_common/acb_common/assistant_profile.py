@@ -231,11 +231,15 @@ async def members_app_prefs(db: Any, org: str, app: str) -> list[tuple[str, dict
 
 #: The interview (PZ-26, ``personalization.md`` §14.3). One table: the id of
 #: each area and its starting question, in the order the interview asks. The
-#: model asks in its own words, so the question is an example.
+#: model asks in its own words, so the question is an example. PZ-32 puts
+#: ``name`` first and ``language`` second, so a first sitting learns what to
+#: call the member, and in which language, before anything else.
 AREAS: dict[str, str] = {
+    "name": "What should I call you, and how formal should I be?",
+    "language": "Which language should I answer you in?",
     "role": "What is your role, and what takes most of your week?",
     "goals": "What are the one to three things you most want to move this quarter?",
-    "good_day": "What would make today a win for you?",
+    "good_day": "What makes a day a win for you?",
     "decisions": "Do you want options with a recommendation, or only the answer?",
     "detail": "Do you want the headline first, or the full reasoning?",
     "rhythm": "When do you do deep work, and when must I not interrupt?",
@@ -248,6 +252,9 @@ AREAS: dict[str, str] = {
 #: The model reads the intent and asks in its own words. The starting
 #: question is only an example.
 AREA_INTENTS: dict[str, str] = {
+    "name": "what to call them and how formal to be, so each reply addresses them as they like",
+    "language": ("which language they want answers in, so each reply comes in it. "
+                 "When they already write in one, ask only whether to keep it"),
     "role": "their role and what fills most of their week, so help fits their real work",
     "goals": "what they most want to move this quarter, so plans and reminders point at it",
     "good_day": "what makes a day a win for them, so daily plans aim at it",
@@ -259,6 +266,18 @@ AREA_INTENTS: dict[str, str] = {
     "peeves": "what assistants do that annoys them, so you stop doing it",
     "people": "who they work with most, so names and mail resolve to the right people",
 }
+#: The areas that a ``profile_set`` change answers, and never a fact (PZ-32):
+#: the key of the profile that each one writes. ``detail`` writes ``style``
+#: too, and a fact can answer it, so it is not here.
+SET_AREAS: dict[str, str] = {"name": "address", "language": "style"}
+#: The ten areas before PZ-32. A stop before PZ-32 marked only these
+#: ``never`` and wrote no ``stopped_at``. Migration
+#: ``317_assistant_profile_interview_stopped.sql`` finds such a row by them,
+#: once, and writes ``stopped_at``. No reader infers a stop from them
+#: (PZ-32 repair). ``test_interview_stop_backfill_r8.py`` pins the list of
+#: the migration to this one.
+OLD_AREAS: tuple[str, ...] = ("role", "goals", "good_day", "decisions", "detail", "rhythm",
+                              "channels", "energy", "peeves", "people")
 #: The state of an area (§14.3). An area with no entry is open.
 INTERVIEW_STATES: tuple[str, ...] = ("asked", "answered", "skipped", "never")
 #: The most hours between two questions (§14.4, limit 1).
@@ -488,7 +507,7 @@ def _stored_interview(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     out: dict[str, Any] = {}
-    for key in ("started_at", "last_asked_at", "sitting_at", "reset_at"):
+    for key in ("started_at", "last_asked_at", "sitting_at", "reset_at", "stopped_at"):
         if _parse_time(raw.get(key)) is not None:
             out[key] = raw[key]
     areas: dict[str, Any] = {}
@@ -512,7 +531,7 @@ def profile_size(profile: Any) -> int:
 
 
 @functools.lru_cache(maxsize=16)
-def _parse_orgs(raw: str) -> frozenset[str]:
+def _parse_orgs(raw: str, star: bool = False) -> frozenset[str]:
     """The ids in *raw*, trimmed and in lower case. Cached on the raw value.
 
     The precedent is ``gateway.routes.crm.flags._parse_orgs``. An empty
@@ -520,9 +539,14 @@ def _parse_orgs(raw: str) -> frozenset[str]:
     and no org id, which is a uuid, matches it. It logs one warning, and the
     cache makes it one for each raw value. The list holds org ids only, never
     a secret, so the warning names the entry.
+
+    *star* is True only for a reader that reads ``*`` as each org
+    (:func:`card_writes_for`). For any other reader ``*`` matches no org, so
+    it warns as any entry that is not a uuid does. :func:`enabled_for` reads
+    an empty list as each org, and ``*`` there turns the profile off.
     """
     orgs = frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
-    for org in sorted(orgs):
+    for org in sorted(orgs - {"*"} if star else orgs):
         try:
             uuid.UUID(org)
         except ValueError:
@@ -557,6 +581,33 @@ def enabled_for(org_id: str | None) -> bool:
             return False
         orgs = _parse_orgs(str(getattr(settings, "assistant_profile_orgs", "") or ""))
         return not orgs or org in orgs
+    except Exception:
+        return False
+
+
+def card_writes_for(org_id: str | None) -> bool:
+    """True when the card writes of PZ-32 are on for *org_id*. Fails closed.
+
+    ``ASSISTANT_PROFILE_CARD_WRITES_ORGS`` (``assistant_profile_card_writes_orgs``)
+    is a comma list of organization ids, or ``*`` for each one. Empty means
+    off, which is the default. It is the one reader of the flag. The flag
+    opens the two write paths of D-PZ-21 and D-PZ-22: a card that grounds a
+    value that the member did not type, and the offer to remember. Off, the
+    typed-words rule refuses such a value, and an offer asks nothing.
+
+    The caller passes the bound tenant of the run, never an id from request
+    input (R5). It reads ``get_settings()`` on each call, so a flag reload
+    (``gateway/flag_reload.py``) applies a change with no restart.
+    """
+    try:
+        org = str(org_id or "").strip().lower()
+        if not org:
+            return False
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "assistant_profile_card_writes_orgs", "") or "")
+        orgs = _parse_orgs(raw, star=True)
+        return "*" in orgs or org in orgs
     except Exception:
         return False
 
@@ -881,9 +932,33 @@ def _tokens(pattern: re.Pattern[str], text: str) -> set[str]:
     return {hit.rstrip(_TRAIL) for hit in pattern.findall(text)} - {""}
 
 
-def _numbers(text: str) -> set[str]:
-    """Each number of *text* as its digits only, so a split number is one."""
+#: A comma that groups digits: "1,200" and the lakh form "1,20,000". A
+#: comma before one digit, or before four, is no group mark ("1,2").
+_GROUP_COMMA = re.compile(r"(?<=\d),(?=\d{3}(?!\d)|\d{2},)")
+#: One number in the exact form: an optional sign, digits, and an optional
+#: decimal part. A minus after a letter or a digit is a dash ("2026-10").
+_EXACT_NUMBER = re.compile(r"(?:(?<!\w)-)?\d+(?:\.\d+)?")
+
+
+def numbers_in(text: str, *, exact: bool = False) -> set[str]:
+    """Each number of *text*. The one public number extractor: the core
+    brief fence imports it (``gateway/brief/fence.py``).
+
+    By default a number is its digits only, so a split number is one:
+    "+1 41 55" is "14155", and "1,200" is the two numbers "1" and "200". The
+    profile write guard uses this form.
+
+    With *exact*, a grouping comma is dropped, and the sign and the decimal
+    point stay. So "1,200" is "1200", "12.5" is not "125", and "-5" is not
+    "5". Spaces split numbers. The brief fence uses this form."""
+    if exact:
+        text = text.replace("\u2212", "-")  # the Unicode minus is a minus
+        return set(_EXACT_NUMBER.findall(_GROUP_COMMA.sub("", text)))
     return {"".join(ch for ch in hit if ch.isdigit()) for hit in _NUMBER.findall(text)}
+
+
+#: The old private name, kept so no caller breaks.
+_numbers = numbers_in
 
 
 #: PZ-6b (re-verify P2-1): an address written out in words. "(at)",
@@ -1291,11 +1366,15 @@ def apply_interview_mark(interview: Any, area: str, state: str,
 
 def start_interview(interview: Any, now: datetime, sitting: bool = False) -> dict[str, Any]:
     """The interview with ``started_at`` set once. No area changes. With
-    *sitting*, ``sitting_at`` is *now*: the member starts a sitting."""
+    *sitting*, ``sitting_at`` and ``last_asked_at`` are *now*: the member
+    starts a sitting, and the sitting asks its questions now. So the daily
+    due line waits :data:`DUE_HOURS` after it, even when the model asks and
+    never marks an area ``asked`` (PZ-32, P1-3)."""
     out = _stored_interview(interview) or {}
     out.setdefault("started_at", _format_time(now))
     if sitting:
         out["sitting_at"] = _format_time(now)
+        out["last_asked_at"] = _format_time(now)
     return out
 
 
@@ -1305,13 +1384,64 @@ def sitting_active(interview: Any, now: datetime) -> bool:
     return at is not None and timedelta(0) <= now - at <= timedelta(hours=SITTING_HOURS)
 
 
+def interview_stopped(interview: Any) -> bool:
+    """True when the member said stop asking (PZ-32 repair). Pure.
+
+    It reads ``stopped_at`` only. A stop writes it (:func:`stop_interview`).
+    A stop before PZ-32 wrote none, and migration
+    ``317_assistant_profile_interview_stopped.sql`` backfilled it once, so
+    the shape of the areas never decides a stop. A reset in Settings ends
+    the stop (:func:`reset_interview_area`, and the reset of the whole
+    interview drops the key). An undo or a mark keeps it."""
+    return bool((_stored_interview(interview) or {}).get("stopped_at"))
+
+
+def stop_interview(interview: Any, now: datetime) -> dict[str, Any]:
+    """The interview after the member said stop asking (PZ-32 repair, P1-1).
+    Pure. It sets ``stopped_at`` and ``started_at`` once, and marks
+    ``never`` each area that is not ``answered`` or ``never``: an open, an
+    asked and a skipped area."""
+    out = _stored_interview(interview) or {}
+    stamp = _format_time(now)
+    out.setdefault("started_at", stamp)
+    out["stopped_at"] = stamp
+    areas = dict(out.get("areas") or {})
+    for area in AREAS:
+        if (areas.get(area) or {}).get("state") not in ("answered", "never"):
+            areas[area] = {"state": "never", "at": stamp}
+    out["areas"] = areas
+    return out
+
+
+def reset_interview_area(interview: Any, area: str, now: datetime) -> dict[str, Any]:
+    """The interview after a reset of one area in Settings. Pure.
+
+    The area loses its entry, so it is open again, and ``reset_at`` is
+    *now*, so a fact from before the reset never answers it again. A reset
+    ends a stop (PZ-32 repair): ``stopped_at`` goes, so the member is asked
+    about this area again. No other area changes. A stop marks each other
+    area ``answered`` or ``never`` (:func:`stop_interview`, and migration 317
+    for a stop before PZ-32), so only the area that the member reset opens.
+    An unknown area is a ValueError."""
+    if area not in AREAS:
+        raise ValueError(f"the area is one of {', '.join(AREAS)}")
+    out = _stored_interview(interview) or {}
+    out.pop("stopped_at", None)
+    out["areas"] = {k: v for k, v in (out.get("areas") or {}).items() if k != area}
+    out["reset_at"] = _format_time(now)
+    return out
+
+
 def open_areas(interview: Any, now: datetime, limit: int | None = None) -> list[str]:
     """The ids of the open areas, in the order of :data:`AREAS`.
 
     An area is open when it has no entry, or when it is ``skipped`` or
     ``asked`` and the entry is :data:`WAIT_DAYS` days old or older. ``answered``
-    and ``never`` are never open. *limit* cuts the list.
+    and ``never`` are never open. A stopped interview has no open area
+    (:func:`interview_stopped`). *limit* cuts the list.
     """
+    if interview_stopped(interview):
+        return []
     areas = (_stored_interview(interview) or {}).get("areas", {})
     wait = timedelta(days=WAIT_DAYS)
     out: list[str] = []
@@ -1329,7 +1459,8 @@ def open_areas(interview: Any, now: datetime, limit: int | None = None) -> list[
 
 def due_area(interview: Any, now: datetime) -> str:
     """The open area that is due now, or ``""``. The rule of
-    :func:`interview_due_line`, without the words."""
+    :func:`interview_due_line`, without the words. A stopped interview has
+    none (:func:`open_areas`)."""
     stored = _stored_interview(interview) or {}
     started = _parse_time(stored.get("started_at"))
     last = _parse_time(stored.get("last_asked_at"))
@@ -1361,14 +1492,55 @@ def answer_since(interview: Any, area: str) -> datetime | None:
     return max(known) if known else None
 
 
+#: The fields of ``address`` that answer the area ``name`` (PZ-32).
+_NAME_FIELDS = frozenset({"name", "formality"})
+
+
+def put_areas(last_change: Any) -> frozenset[str]:
+    """The interview areas that one chat ``put`` answers (PZ-32).
+
+    *last_change* is the raw :data:`LAST_CHANGE` record. A ``put`` record
+    holds the new object (``after``) and the object before it (``prior``),
+    so the changed fields are their difference:
+
+    * ``address`` with a changed ``name`` or ``formality`` answers ``name``;
+    * ``style`` with a changed ``language`` answers ``language``;
+    * ``style`` with any other changed field answers ``detail``.
+
+    So a change of the language alone never closes ``detail``, and a change
+    of the length alone never closes ``language``. A record with no
+    ``after`` (not written by a ``put`` of this shape) answers ``detail``
+    for ``style``, as before PZ-32, and nothing else. The gateway's undo of
+    a chat change opens these areas again. Pure.
+    """
+    last = last_change if isinstance(last_change, dict) else {}
+    if last.get("op") != "put":
+        return frozenset()
+    key, after, prior = last.get("key"), last.get("after"), last.get("prior")
+    if not isinstance(after, dict):
+        return frozenset({"detail"}) if key == "style" else frozenset()
+    prior = prior if isinstance(prior, dict) else {}
+    changed = {k for k in {*after, *prior} if after.get(k) != prior.get(k)}
+    if key == "address":
+        return frozenset({"name"}) if changed & _NAME_FIELDS else frozenset()
+    if key != "style":
+        return frozenset()
+    out = {"language"} if "language" in changed else set()
+    if changed - {"language"}:
+        out.add("detail")
+    return frozenset(out)
+
+
 def area_has_answer(profile: Any, area: str, last_change: Any = None) -> bool:
     """True when the stored *profile* holds a FRESH answer for *area*.
 
     An area that is ``answered`` already stays answered. Else the evidence
     must be no older than :func:`answer_since`, by server times only:
 
-    * a fact with ``area == area`` whose ``at`` is not earlier;
-    * for ``detail``, a chat ``put`` of ``style`` in *last_change*;
+    * a fact with ``area == area`` whose ``at`` is not earlier, for each
+      area but those of :data:`SET_AREAS`;
+    * for ``name``, ``language`` and ``detail``, a chat ``put`` in
+      *last_change* that :func:`put_areas` says answers the area (PZ-32);
     * for ``people``, a chat ``post`` or ``patch`` of an alias in
       *last_change*.
 
@@ -1387,7 +1559,7 @@ def area_has_answer(profile: Any, area: str, last_change: Any = None) -> bool:
     if since is None:
         return False
     facts = stored.get("facts") if isinstance(stored.get("facts"), list) else []
-    for fact in facts:
+    for fact in facts if area not in SET_AREAS else ():
         at = _parse_time(fact.get("at")) if isinstance(fact, dict) else None
         if fact.get("area") == area and at is not None and at >= since:
             return True
@@ -1398,8 +1570,8 @@ def area_has_answer(profile: Any, area: str, last_change: Any = None) -> bool:
     # The interview times have whole seconds, and so does the record.
     if datetime.fromtimestamp(int(at), UTC) < since:
         return False
-    if area == "detail":
-        return last.get("op") == "put" and last.get("key") == "style"
+    if area in ("name", "language", "detail"):
+        return area in put_areas(last)
     if area == "people":
         return last.get("op") in ("post", "patch") and last.get("list") == "aliases"
     return False
@@ -1408,7 +1580,9 @@ def area_has_answer(profile: Any, area: str, last_change: Any = None) -> bool:
 def may_ask(interview: Any, now: datetime) -> bool:
     """True when the model may mark an area ``asked`` from the chat: a
     sitting is under way, or a question is due. A member who said no has
-    neither (§14.4)."""
+    neither (§14.4), and a member who said stop may never (PZ-32 repair)."""
+    if interview_stopped(interview):
+        return False
     return sitting_active(interview, now) or bool(due_area(interview, now))
 
 
@@ -1523,8 +1697,11 @@ def _aliases_line(aliases: list[dict[str, Any]]) -> str:
 
 
 def _fact_line(fact: dict[str, Any]) -> str:
+    """One fact of the block: its id, its text, then its kind, the interview
+    area that it answers (PZ-32, P1-1) and its day, each when it has one."""
     day = fact["at"][:10] if fact["at"] else ""
-    tail = f"{fact['kind']}, {day}" if day else fact["kind"]
+    area = f"area {fact['area']}" if fact.get("area") else ""
+    tail = ", ".join(x for x in (fact["kind"], area, day) if x)
     return f"- [{fact['id']}] {fact['text']} ({tail})"
 
 
@@ -1572,7 +1749,8 @@ def render_block(raw: Any, fallback_name: str = "") -> str:
     aliases = [{"alias": _one_line(a["alias"]), "email": _one_line(a["email"])}
                for a in profile["aliases"]]
     facts = [{"id": _one_line(f["id"]), "text": _one_line(f["text"]),
-              "kind": f["kind"], "at": _one_line(f.get("at") or ""), "n": n}
+              "kind": f["kind"], "at": _one_line(f.get("at") or ""),
+              "area": f.get("area") or "", "n": n}
              for n, f in enumerate(profile["facts"])]
     own_name = _own_name(address.get("name"))
     # The fallback comes from the directory: check its shape again here, so

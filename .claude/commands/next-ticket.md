@@ -82,6 +82,11 @@ callers, count rows). Never use haiku to build, verify or review.
 - A HIGH-tier slice keeps the full loop in both modes.
 
 **2 — Audit.** Dispatch `spec-auditor` on that WS.
+- **A small slice skips the audit** (owner request, 2026-10-30, LD-2). A small
+  slice is LOW, or STANDARD in build (1d). Its Metorite task must state the
+  acceptance criteria and must not start a new spec. Then quote the task text
+  verbatim as the contract, under the line `AUDIT: skipped (small slice)`.
+  A HIGH-tier slice, and the first slice of a spec, always get the audit.
 - `NO-GO` → stop the cycle. If the blocker is documentation, that *is* the next
   ticket: report it as such and offer to run a §5-style remediation instead.
   Never proceed to implementation on a NO-GO.
@@ -89,14 +94,21 @@ callers, count rows). Never use haiku to build, verify or review.
   contract for every agent below.
 
 **3 — Branch.**
-`git switch -c ws-<n>-<slug> main` — off `main`, always. Confirm the tree is
-clean first; if it is not, stop and report rather than stashing someone's work.
+`bash scripts/worktree.sh new <slug>`, off `origin/main`. Put the task's
+`short_id` in the slug. Confirm the tree is clean first. If it is not, stop
+and report. Never stash the work of another session.
 
-**4 — Build.** Dispatch `ws-implementer` with the auditor's verdict block pasted
+**4 — Build.** Dispatch `ws-implementer` with the contract from step 2 pasted
 in full. If it reports BLOCKED, stop the cycle and report — do not dispatch a
 second implementer to route around a block.
+- **A slice that changes what the app does or draws runs locally first.** The
+  implementer starts `bash scripts/dev_up.sh` in its worktree. It checks each
+  criterion in the running app before it reports, and it leaves the stack up
+  for the verifier. `engineering_practice.md` §1.2 owns the stack.
 
-**5 — Verify.** Dispatch `ws-verifier`.
+**5 — Verify.** Dispatch `ws-verifier`. It checks each behaviour criterion on
+the local stack itself (`bash scripts/dev_up.sh --check`, then the criterion
+through the API or a capture), and quotes the evidence.
 - `FAIL` → send the findings back to a fresh `ws-implementer` with the original
   verdict block plus the findings. **The tier (1b) sets the repair rounds.**
   For a STANDARD or LOW slice, land it if no remaining finding can reach a
@@ -123,8 +135,12 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   built, acceptance evidence, verification output, reviewer findings, and what
   was deferred.
 - **Merge it and watch it** (root `CLAUDE.md` §3a and §4). Wait for `pr-check`
-  to go green. Merge with `gh pr merge --squash`. Then watch the `deploy` run
-  to green.
+  to go green. Then run `bash scripts/premerge.sh` in the worktree, in the
+  same command as the merge:
+  `bash scripts/premerge.sh && gh pr merge <n> --squash`. It tests the merge
+  with today's main (migration numbers, H-ids, D-numbers, files both sides
+  changed). Exit 1 means merge `origin/main` into the branch, fix, push, and
+  wait for `pr-check` again. Then watch the `deploy` run to green.
 - **⚠️ A merge does NOT deploy to production (WS-38, since 2026-10-16).** The
   push run moves the `staging` ref only. Production moves at 21:30 UTC (03:00
   IST) each day. Report the merge as "reaches production at the next daily
@@ -135,13 +151,19 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   never needs it. If you think a change cannot wait, ask the owner. After a
   run that the owner asked for, watch it and report the SHA that
   `GET /version` serves. Do not call a hotfix done before you see that SHA.
-- **⚠️ Test it on staging (owner directive, 2026-10-17).** Wait until
+- **⚠️ Smoke-test it on staging (owner directive, 2026-10-17, narrowed by
+  LD-2 on 2026-10-30).** Steps 4 and 5 tested the behaviour locally. Staging
+  checks what the PC cannot. Wait until
   `curl -s https://api.dev.metorite.com/version` shows your merge SHA, or a later
-  one, as `sha` and `applied_sha`. Then test the change on
-  `https://dev.metorite.com` against the acceptance criteria. Sign in with the
-  same Google or Microsoft account as on production. Report "verified on
-  staging at `<sha>`, reaches production at the next daily release". If staging
-  does not answer, write "staging not up", and do not claim the test.
+  one, as `sha` and `applied_sha`. Then sign in on `https://dev.metorite.com`
+  with the same Google or Microsoft account as on production. Load the page of
+  the change, and check one acceptance criterion there.
+- **Test in full on staging only what the PC cannot:** the deploy path
+  (`deploy/`, units, Caddy, env files), a real OAuth sign-in or connect, a real
+  provider webhook or sync, and a migration on production-shaped data. Report
+  "verified locally, staging smoke at `<sha>`, reaches production at the next
+  daily release". If staging does not answer, write "staging not up", and do
+  not claim the test.
 - If staging shows a defect, fix forward or revert before 21:30 UTC. To stop
   that night's release, set the repository variable `RELEASE_HOLD` to `1`. A
   hotfix goes to staging first too, unless production is down.
@@ -176,7 +198,7 @@ Ten lines or fewer:
 
 ```
 CYCLE: WS-n — <slice>
-AUDIT:    GO | GO-NARROWED | NO-GO — <one line>
+AUDIT:    GO | GO-NARROWED | NO-GO | skipped (small slice) — <one line>
 BUILT:    <one line>
 VERIFY:   PASS | FAIL — <the decisive evidence>
 TIER:     HIGH | STANDARD | LOW — <one line why>

@@ -109,6 +109,13 @@
 > CRM-C6a, the Native lead-conversion mapping in the `field-mapping` section,
 > dark behind `CRM_FIELD_STUDIO_ORGS` (2026-10-14, migration 261, §20.9).
 
+> **Fixed in §20.6 (task #1096):** the Zoho Mirror sync names each stage and
+> lead status by its Zoho label. An org with the split rows heals on its next
+> picklist read. A chain of labels queues one full read of the records.
+> Built 2026-10-30 on `crm-stage-labels-mt-c6ae3dc2`, not merged. No
+> migration and no flag. Fence:
+> `tests/unit/test_crm_stage_labels_r8.py`.
+
 > **Built from §3.4 (CRM-Z10):** CRM-Z10g, the names of the core records in
 > a Native CRM (D133.1). Built 2026-10-28 on `crm-z10g-labels`, not merged.
 > Migration 311 adds `crm_settings.labels`, `cutover_at` and `cutover_by`.
@@ -9773,7 +9780,9 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib src/app
 
 **Status.** 🔨 Built 2026-10-13 on branch `crm-c3`, migration 257. The two
 items that waited for CRM-C2 are built after its merge. See "Built as" at
-the end of this section.
+the end of this section. The label fix of items 7 and 8 (task #1096) is built
+2026-10-30 on `crm-stage-labels-mt-c6ae3dc2`, with review rounds 1 and 2, not
+merged. See "Fixed 2026-10-30" below.
 
 **Gate.** AGENT-SAFE. No flag. With no overlay value set, each board, list
 and report shows what it shows today. Item 7 is a fix of the sync.
@@ -9787,6 +9796,9 @@ The **source values** come from Zoho in Mirror mode, and from the admin in
 Native mode. The **overlay values** are Metorite-only. The sync never writes
 them, and no Zoho write reads them. The **effective value** is the overlay
 value when it is set, else the source value.
+
+One exception: the merge door of item 8 writes the overlay of the row that
+it keeps (task #1096).
 
 **Migration 257 (expand only, R6).** Each new column is nullable or has a
 default. The three tables already have the tenant key and FORCE RLS (241).
@@ -9855,9 +9867,18 @@ stage, which CRM-C2 leaves to this slice.
    - The picklist call matches a row by `ext_id` first, then by name. A
      Zoho rename then changes `name` in place. The row keeps its overlay
      and its deals.
-   - No SQL of the sync names an overlay column or `color`.
-     `_STAGE_TYPE_SQL` (`:756`) and `_FORECAST_SQL` (`:748`) keep their
-     work.
+   - **The name is the Zoho label** (task #1096). The sync names each Stage
+     and Lead_Status value by `display_value`, and `actual_value` is the
+     fallback. A pipeline stage takes the same rule. A Zoho rename changes
+     `display_value` only, and a record carries the label.
+   - A pipeline stage finds its row by the Zoho id of its map entry first,
+     then by the label. The pipeline step adds a row and a membership only.
+     The stage type pass (`_STAGE_TYPE_SQL`) takes the same order. A
+     profile from before task #1096 has no Zoho id, so its stages go by
+     name.
+   - No SQL of the sync names an overlay column or `color`. The one
+     exception is the merge door of item 8. `_STAGE_TYPE_SQL` (`:756`) and
+     `_FORECAST_SQL` (`:748`) keep their work.
 8. **A rename that collides.** A record pull can run before the picklist
    read. It then inserts a row under the new name with a NULL `ext_id`.
    The picklist call finds the `ext_id` row with the old name, and a rename
@@ -9873,6 +9894,17 @@ stage, which CRM-C2 leaves to this slice.
      merge needs no repoint there, because the new name stays the name.
    - A saved view (`crm_views`) whose `status` filter holds the id of the
      name row gets the id of the `ext_id` row.
+   - **The overlay rule** (task #1096). The overlay of the `ext_id` row
+     wins. A NULL overlay column of the `ext_id` row takes the value of the
+     name row. An empty `required_fields` of the `ext_id` row takes the
+     list of the name row.
+   - **The hidden rule** (task #1096, review round 1). `hidden` is NOT
+     NULL, so the merge cannot tell "never set" from "shown on purpose".
+     The merged row shows when either row showed (`k.hidden AND d.hidden`).
+     An admin can hide the empty `ext_id` lane while the name row holds the
+     deals. A lane that shows in error costs less than a hidden lane that
+     holds deals. A hidden lane moves to the end and leaves the stage
+     pickers.
    - It then deletes the name row and renames the `ext_id` row.
    - The savepoint never swallows a failed merge. A failure fails the
      picklist step, and the sync logs it.
@@ -10075,11 +10107,85 @@ partial unique indexes of the table above.
   Zoho reorder, a Zoho probability and the Zoho id of each value reach the
   mirror within a day, with no wait for a reconcile.
 
+**Fixed 2026-10-30 (task #1096).** The Fracktal board showed six Zoho stages
+under the wrong name, and their deals sat in extra lanes at the end.
+
+- **The cause.** The sync named each picklist value and each pipeline stage
+  by `actual_value`. A Zoho rename keeps `actual_value` and changes
+  `display_value`, the label. A deal carries the label in `Stage`. So the row
+  with the Zoho id kept the old name. Each record pull added a row under the
+  label, with no Zoho id and no pipeline place.
+- **The rule.** `engine._picklist_values` and `mapping.pipeline_stages` take
+  `display_value` first and `actual_value` as the fallback. The order stays
+  `sequence_number`. Each pipeline stage carries the `id` of its map entry.
+- **The heal.** The next picklist read of a split org names the value by
+  its label. That name finds the label row, and item 8 folds it into the
+  `ext_id` row. The merge moves the deals or leads, the pipeline places and
+  the saved views. The overlay follows the rule of item 8.
+- **The chain** (review round 1). The label of one value can be the
+  `actual_value` of another. Example: S1 has `actual_value` "Alpha" and the
+  label "Beta". S2 has `actual_value` "Beta" and the label "Gamma". The old
+  rule named the S2 row "Beta", so each deal of S1 went onto the S2 row.
+  The heal renames the rows, but a rename moves no deal. An incremental
+  read lists a deal only after it changes in Zoho. So the deals of S1 stay
+  under "Gamma".
+- **The check of a chain.** Before it writes, `_mirror_statuses` checks
+  for a row of a listed value that holds the label of another listed value.
+  A row that holds its own label does not count, also when a second value
+  shares that label. The check does not depend on the Zoho order. A check
+  on the park of `_source_status` alone misses the chain when S2 comes
+  first. The same check covers two values that trade labels. It runs inside
+  `ctx.page`, so a Native org never reaches it.
+- **A label that a retired value held** (review round 2). Example: Zoho
+  retires S2 ("Beta"), and an admin then renames S1 to "Beta". A changed
+  deal of S1 carries "Beta" and lands on the retired row. The picklist read
+  parks that row as "Beta [S2]", and the deal stays in the parked lane. So
+  the check also counts a retired row when a holder of the label has its
+  own row. The park renames the row, so the next check finds nothing. With
+  no such row, the new value adopts the retired row, and no read is due.
+- **The full read of a chain.** When the check finds a row, the step queues
+  ONE full read of the entity (Deals for Stage, Leads for Lead_Status). That
+  read maps each record by its label again. A healed org has no such row,
+  so the next picklist read queues nothing. A plain rename queues no full
+  read, because the fold of item 8 moves the deals.
+- **The mark of the label read** (review round 2). The queue is its own
+  list, `label_reread`, in the state of the `zoho:field_rules` cursor, in
+  the same transaction. The read carries the mark `label_reread` in the
+  cursor of its entity while it runs, so a stop resumes it. The last page
+  of a read with the mark takes the entity off the list. The `reread` list
+  of the field rules stays apart, so a read of that list cannot clear this
+  entry. One read that both lists want counts for both.
+- **A label read and the contact roles** (review round 2). A label read
+  changes no contact role, and no admin chooses its cost. On the credit
+  floor, one role call for each deal costs days of budget. So a label read
+  queues a role call only for a deal that an incremental read would list.
+  That is a deal with `Modified_Time` at or after the cursor of the entity.
+  The read moves the cursor past that deal, so no later read lists it. A
+  read for a rule, a read after a hold and a walk still queue each deal.
+- **A read that stopped** (review round 2). A read for a rule or a label
+  read can stop on its budget at page N. Those pages used the old row
+  names. When the check fires in a later run, that read starts over from
+  page 1. It still counts for each rule on the list, it still queues each
+  deal for a rule, and the mark `recovering` stays. A resumed read with no
+  mark goes on and clears nothing, so the next run starts the label read.
+  A label read that stopped, in a run where the check does not fire, goes
+  on from its page.
+- **The step order.** Each run reads the picklists before discovery writes
+  the pipelines (`_execute`). `_pipeline_stage_status` matches a stage by the
+  Zoho id first. So a run whose picklist read fails still puts each place on
+  the `ext_id` row.
+- **The Zoho writer.** `sync_zoho.build_payload` sends the stage name to Zoho
+  as `Stage` and `Lead_Status`. No loop and no route reach it (CRM-Z9). It is
+  not changed. CRM-Z9 must check that Zoho takes the label before it opens.
+- **The switch.** `cutover.fold_cutover_overlay` uses the name only to order
+  ties and to choose a colour by keyword, as the Mirror board does. It needs
+  no change.
+
 **Verification.**
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_crm_stage_overlay_r8.py tests/unit/test_crm_mirror_readonly.py tests/unit/test_crm_upsert_from_source_fence.py tests/unit/test_crm_pipelines_r8.py tests/unit/test_crm_discovery.py tests/unit/test_crm_migration.py tests/unit/test_crm_reports.py -q
+uv run pytest tests/unit/test_crm_stage_labels_r8.py tests/unit/test_crm_stage_overlay_r8.py tests/unit/test_crm_mirror_readonly.py tests/unit/test_crm_upsert_from_source_fence.py tests/unit/test_crm_pipelines_r8.py tests/unit/test_crm_discovery.py tests/unit/test_crm_migration.py tests/unit/test_crm_reports.py -q
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
 ```
 

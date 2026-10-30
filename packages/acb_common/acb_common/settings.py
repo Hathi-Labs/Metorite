@@ -598,6 +598,11 @@ class Settings(BaseSettings):
     # calendar_events_reminders.md §5.9 and §10.2. Fence:
     # tests/unit/test_push_subscriptions.py.
     web_push_enabled: bool = False
+    # OB-8: PUSH_PROMPT_ORGS lists the org ids whose phone members see the
+    # chat sheet that asks them to turn on push. `*` opens every org. Empty
+    # opens none. Reader: `gateway.push.flags.prompt_allowed`. Spec:
+    # calendar_events_reminders.md section 10.4.
+    push_prompt_orgs: str = ""
     vapid_public_key: str = ""
     vapid_private_key: str = ""
     vapid_subject: str = ""
@@ -757,6 +762,19 @@ class Settings(BaseSettings):
     assistant_profile_enabled: bool = False
     assistant_profile_orgs: str = ""
 
+    # ── The card writes of the assistant profile (WS-63 PZ-32) ──────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On for an org, the web chat may ask a card for a profile
+    # value that the member did not type (D-PZ-21), and the assistant may
+    # offer once in a chat to keep a fact that the member said in passing
+    # (D-PZ-22). Off, the typed-words rule refuses such a value, an offer
+    # asks nothing, and the persona has no offer line. The one reader is
+    # `acb_common.assistant_profile.card_writes_for`. A SIGHUP reload applies
+    # a change (`gateway/flag_reload.py`). Fence:
+    # tests/unit/test_profile_pz32.py.
+    assistant_profile_card_writes_orgs: str = ""
+
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #
     # ON makes `GET /search/company` rank newer records first inside each app,
@@ -910,6 +928,17 @@ class Settings(BaseSettings):
     # `acb_skills.tier_policy.reasoning_off`, and it fails closed. Fence:
     # tests/unit/test_reasoning_off.py.
     ai_reasoning_off_agents: str = ""
+    # Chat speed (2026-10-30): the covered agents whose web chat turn starts
+    # its first model request before the turn-kind answer. A comma list of
+    # agent names, or `*`. Empty means OFF, and the run waits for the answer
+    # as before. An answer that moves the tier before any output cancels the
+    # first request and starts the turn again, once. The one reader is
+    # `acb_skills.tier_policy.turn_kind_parallel_on`, and it fails closed.
+    # Spec: ai_tier_routing.md §4.3.
+    #
+    # 🔴 OWNER-GATE on production: a restart can bill a prompt twice (spec
+    # §13.1). Fence: tests/unit/test_turn_kind_parallel.py.
+    ai_turn_kind_parallel: str = ""
 
     # ── The data narrowing pipeline (WS-48, D93) ────────────────────────────
     #
@@ -1784,6 +1813,17 @@ class Settings(BaseSettings):
     # box is gate `enforcement-flip`. `knowledge` on production needs a dated
     # grant. `crm` and `email` there stay OWNER-GATE until MCP-P3 (§19.13).
     agent_door_apps: str = ""
+    # D-EA-11 (external_agent_access.md §10.7): the first-party agent
+    # clients. Exact CIMD client id URLs, with a comma between them. For a
+    # listed client, `check` skips the consent page when the member already
+    # holds a live connection of that client whose scopes cover the request,
+    # and an approval replaces the member's older connection of that client.
+    # Empty, the default, trusts no client, so every client gets the consent
+    # page as before. `*` and an entry that is not a CIMD client id URL are
+    # dropped. The match is exact: no case fold and no other normalization.
+    # `acb_auth.agent_oauth.is_first_party` is the one reader. Only the
+    # gateway reads it. 🔴 A change on a box is gate `enforcement-flip`.
+    agent_first_party_client_ids: str = ""
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
     agent_code_ttl_s: int = 60

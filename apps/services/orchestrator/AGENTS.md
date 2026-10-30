@@ -75,6 +75,8 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - Fences: `test_delegation_no_egress.py`, `evals/email_injection/`.
 18. **A covered agent's run takes its tier from the policy** (D90, spec `ai_tier_routing.md` §4.5). The policy lives in `acb_skills.tier_policy`, and the executor holds only the glue.
    - `_tier_policy_for_run` is the one entry. Fence: `test_tier_policy.py`.
+   - The parallel start (2026-10-30, §4.3) is dark behind `AI_TURN_KIND_PARALLEL`. Only the native Tier 1 stream of `run_agent_stream` uses it. The batch path, a sub-agent, a delegated run and a Copilot SDK agent still await the answer.
+   - The stream loop takes the answer only while a pull is in flight, so a cancel closes the request inside its stream. Each output of the loop calls `seal()` first. `_apply_parallel_tier` mirrors the tier site, so change both together. Fence: `test_turn_kind_parallel.py`.
 19. **A Mirror run gets no CRM record write** (spec `crm_platform.md` §20.10 item 4).
    - `_drop_mirror_record_writes` runs right after `_apply_own_tool_scope`, at all three sites. In Mirror mode it drops `MIRROR_RECORD_WRITES`, and `log_activity` stays. Fence: `test_crm_mirror_run_tools.py`.
 20. **A self-anneal retry holds no tool that the first try did not hold.** Access is an intersection, never a union.
@@ -91,6 +93,9 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 24. **The orchestrator's per-turn context carries the member's own profile block** (spec `personalization.md` §5.1).
    - It needs an org, `assistant_profile.enabled_for(org)`, a verified member and `_RUN_SOLO_ROOM` True. `enabled_for(org)` is the one reader.
    - A delegated run cannot widen `_RUN_SOLO_ROOM`. Never read it from the payload. Fences: `test_executor_profile_block.py`, `test_executor_profile_block_r8.py` (R8), `test_assistant_profile_org_rollout.py`.
+   - A build that only measures the context runs inside `_interview_peek` (PZ-32). The token count of a native session and the fallback text are two such builds. So they leave `_INTERVIEW_SHOWN` as they found it.
+   - In `_compose_maf_run`, the context that the model reads is the first step after the peek, before any import. A failed import then still records the memo. Fences: `test_profile_pz32.py::test_native_session_keeps_interview_memo`, `test_the_model_reads_the_due_line_and_the_memo_records_it` and `test_an_import_fault_still_records_the_memo`.
+   - The persona gains the offer line of PZ-32 (`_PROFILE_CARD_SWAP`) only with `ASSISTANT_PROFILE_CARD_WRITES_ORGS` naming the org (`agents._profile_card_writes_enabled`). Fence: `test_profile_pz32.py::test_the_offer_line_follows_the_org`.
 25. **The orchestrator's per-turn context carries the member's corrections and limits of the chat** (spec `one_assistant_context.md` §4).
    - `_prime_chat_constraints` runs only for the agent `orchestrator`, with `CHAT_CONSTRAINTS` on, a solo room and a verified member. A delegated run inherits the list and never opens the tools.
    - Fences: `test_chat_constraints.py`, `evals/trajectories/test_chat_constraints_trajectory.py`.

@@ -53,9 +53,11 @@ export interface Style {
  * Fence: `interviewAreas.test.ts` reads that file and compares.
  */
 export const INTERVIEW_AREAS = [
+  { id: "name", label: "What to call you", question: "What should I call you, and how formal should I be?" },
+  { id: "language", label: "Your language", question: "Which language should I answer you in?" },
   { id: "role", label: "Your role", question: "What is your role, and what takes most of your week?" },
   { id: "goals", label: "Your goals", question: "What are the one to three things you most want to move this quarter?" },
-  { id: "good_day", label: "A good day", question: "What would make today a win for you?" },
+  { id: "good_day", label: "A good day", question: "What makes a day a win for you?" },
   { id: "decisions", label: "How you decide", question: "Do you want options with a recommendation, or only the answer?" },
   { id: "detail", label: "How much detail", question: "Do you want the headline first, or the full reasoning?" },
   { id: "rhythm", label: "Your rhythm", question: "When do you do deep work, and when must I not interrupt?" },
@@ -243,8 +245,8 @@ export const startInterview = () => call<Interview>("/interview", "POST");
 export const resetArea = (id: InterviewAreaId) => call(`/interview/${encodeURIComponent(id)}`, "DELETE");
 /** Reset the whole interview, so the offer can come again. The facts stay. */
 export const resetInterview = () => call("/interview", "DELETE");
-export const addFact = (text: string, kind: FactKind) =>
-  call<Fact>("/facts", "POST", { text, kind });
+export const addFact = (text: string, kind: FactKind, area?: InterviewAreaId) =>
+  call<Fact>("/facts", "POST", { text, kind, ...(area ? { area } : {}) });
 export const patchFact = (id: string, patch: { text: string } | { kind: FactKind }) =>
   call<Fact>(`/facts/${encodeURIComponent(id)}`, "PATCH", patch);
 export const deleteFact = (id: string) => call(`/facts/${encodeURIComponent(id)}`, "DELETE");
@@ -274,6 +276,53 @@ export function mergeAddress(current: Address, edit: { [K in keyof Address]?: Ad
 /** The new `style` value, built the same way. */
 export function mergeStyle(current: Style, edit: { [K in keyof Style]?: Style[K] | null | "" }): Style {
   return compact({ ...current, ...edit } as Style);
+}
+
+/**
+ * The next value of a draft field when the server value or the reset epoch may
+ * have changed. Null keeps the draft.
+ *
+ * A new epoch (Forget everything) always takes the server value. Otherwise a
+ * draft that still equals the server value it started from follows the new
+ * one, and a draft the member changed is theirs and stays.
+ */
+export function reconcileDraft(
+  draft: string,
+  seen: { server: string; epoch: number },
+  server: string,
+  epoch: number,
+): string | null {
+  if (epoch !== seen.epoch) return server;
+  if (server === seen.server) return null;
+  return draft === seen.server ? server : null;
+}
+
+/** The languages the picker offers, as BCP 47 tags the gateway accepts. */
+export const LANGUAGES: Record<string, string> = {
+  en: "English",
+  hi: "Hindi",
+  kn: "Kannada",
+  ta: "Tamil",
+  te: "Telugu",
+  mr: "Marathi",
+  bn: "Bengali",
+  gu: "Gujarati",
+  ml: "Malayalam",
+};
+
+/**
+ * The name the assistant uses when the profile holds none (D-PZ-5): the
+ * member's preferred name, then the first word of the display name. Null when
+ * neither is known.
+ */
+export function fallbackAddress(
+  preferred: string | null | undefined,
+  display: string | null | undefined,
+): { name: string; from: "preferred" | "display" } | null {
+  const p = (preferred ?? "").trim();
+  if (p) return { name: p, from: "preferred" };
+  const first = (display ?? "").trim().split(/\s+/)[0];
+  return first ? { name: first, from: "display" } : null;
 }
 
 /** True when a counter should warn: at or past 80% of its cap. */
@@ -353,9 +402,9 @@ export function withoutInterview(p: Profile): Profile {
 
 /** What the list shows for one area: its label and the state words. */
 export const STATE_LABELS: Record<InterviewState | "open", string> = {
-  open: "Open",
+  open: "Not asked yet",
   asked: "Asked",
   answered: "Answered",
   skipped: "Skipped",
-  never: "Never ask",
+  never: "Stopped asking",
 };

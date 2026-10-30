@@ -142,6 +142,9 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # passed. `test_operator_matrix_coverage.py` now fails on any Operator
     # route without a row here.
     ("GET", "/admin/usage/breakdown"): _R(VIEWER),
+    # CP-APP: one organization's apps (Aroh), their seats and their AI use.
+    ("GET", "/orgs/apps"): _R(VIEWER),
+    ("GET", "/apps/connection"): _R(VIEWER),
 
     # ── Day-to-day writes. An editor runs the business ──────────────────────
     ("POST", "/orgs/provision"): _R(EDITOR),
@@ -151,6 +154,14 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # Set the seat COUNT (2026-09-26). No payment stands behind it and it
     # moves MRR, so it takes the gate access changes and keys take.
     ("POST", "/billing/seats/count"): _R(ADMIN, elevated=True),
+    # CP-APP: turn an app on and set its seats. The seat count's gate, because
+    # it is a seat count with a switch beside it.
+    ("POST", "/orgs/apps"): _R(ADMIN, elevated=True),
+    # CP-APP "Connect Aroh" (owner request, 2026-10-30). Each one mints, stores
+    # or revokes a REAL credential: the hub token or the box key.
+    ("POST", "/apps/connection/settings"): _R(ADMIN, elevated=True),
+    ("POST", "/apps/connection/connect"): _R(ADMIN, elevated=True),
+    ("POST", "/apps/connection/disconnect"): _R(ADMIN, elevated=True),
     ("POST", "/registry/seats"): _R(EDITOR),
     # The dual-arm resolve door. It mints identities and consumes Core
     # seats like the seat doors above, so the same rank. It had NO row

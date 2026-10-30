@@ -111,6 +111,9 @@ const V = {
   recall: ["Recalling", "Recalled"],
   remember: ["Remembering", "Remembered"],
   use: ["Using", "Used"],
+  remove: ["Removing", "Removed"],
+  change: ["Changing", "Changed"],
+  undo: ["Undoing", "Undid"],
 } as const satisfies Record<string, Verb>;
 
 /**
@@ -138,6 +141,13 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   // reads them as "Asked Code task" (review round 1).
   code_task: { kind: "other", verb: V.ran, object: "a coding task" },
   spawn_copilot_agent: { kind: "delegate", verb: V.ask, object: "a Copilot agent" },
+  // ── Assistant profile (WS-63): plain words, never the tool name ──────────
+  profile_remember: { kind: "edit", verb: V.save, object: "to your profile" },
+  profile_forget: { kind: "edit", verb: V.remove, object: "from your profile" },
+  profile_set: { kind: "edit", verb: V.change, object: "how I answer" },
+  profile_alias: { kind: "edit", verb: V.change, object: "a name for a person" },
+  profile_undo: { kind: "edit", verb: V.undo, object: "your last profile change" },
+  profile_interview: { kind: "other", verb: V.update, object: "your get-to-know-me list" },
   // ── Projects (skill-projects): the reads ─────────────────────────────────
   projects_tree: { kind: "read", verb: V.read, object: "the project tree" },
   project_summary: { kind: "read", verb: V.read, object: "a project summary" },
@@ -241,6 +251,14 @@ function fromVerbFirstName(bare: string): { kind: StepKind; verb: Verb; object: 
     ? noun
     : withArticle(noun);
   return { ...known, object };
+}
+
+/** The header of a group in which every step is a profile write (WS-63 PZ-11). */
+export const PROFILE_GROUP_LABEL = "Updated your profile";
+
+/** True when a group holds two steps or more and each one is a `profile_*` tool. */
+export function isProfileGroup(events: ReadonlyArray<{ name: string }>): boolean {
+  return events.length > 1 && events.every((e) => bareToolName(e.name).startsWith("profile_"));
 }
 
 /** The bare tool name. A runtime may prefix it (`skill_projects.create_task`,
@@ -365,6 +383,66 @@ function statusOf(event: Pick<ToolEvent, "status" | "result">): StepStatus {
   return event.status === "running" ? "running" : "done";
 }
 
+/** The label of an offer to remember that did not show (PZ-32). */
+export const NO_OFFER_LABEL = "Nothing to save";
+/** The label of any other refused profile tool. It holds for each of them. */
+export const PROFILE_REFUSED_LABEL = "Profile not changed";
+
+/** The first line of a result: the ONE machine line of a profile tool. */
+function firstLine(result: string | undefined): string {
+  return (result ?? "").split(/\r?\n/, 1)[0].trim();
+}
+
+/**
+ * The `profile: {json}` line of a result, or null. A result of
+ * `acb_skills/profile_tools.py` starts with ONE machine line, so this reads
+ * only the first line, as `ProfileToolCards.parseStatus` does. It parses
+ * here, because this pure module imports no component.
+ */
+function profileLine(result: string | undefined): { status?: unknown; reason?: unknown } | null {
+  const first = firstLine(result);
+  if (!first.startsWith("profile: ")) return null;
+  try {
+    const raw: unknown = JSON.parse(first.slice("profile: ".length));
+    return typeof raw === "object" && raw !== null ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The reason of a refused profile tool, or null. */
+function profileRefusal(bare: string, event: Pick<ToolEvent, "status" | "result">): string | null {
+  if (event.status !== "done" || !bare.startsWith("profile_")) return null;
+  const line = profileLine(event.result);
+  return line?.status === "refused" ? String(line.reason ?? "") : null;
+}
+
+/**
+ * True when a profile tool really changed something: a change starts with
+ * `undo: `, and a mark or an undo says `saved` or `undone`. A refusal, a read
+ * of the interview areas and a failed call changed nothing.
+ */
+function profileChanged(event: Pick<ToolEvent, "status" | "result">): boolean {
+  if (event.status !== "done") return false;
+  if (firstLine(event.result).startsWith("undo: ")) return true;
+  const status = profileLine(event.result)?.status;
+  return status === "saved" || status === "undone";
+}
+
+/**
+ * The header of a group of profile tools ({@link isProfileGroup}). It says
+ * {@link PROFILE_GROUP_LABEL} only when a step really changed the profile.
+ * While a step runs and none has changed anything, it names that step. When
+ * all are over and nothing changed, it says {@link PROFILE_REFUSED_LABEL}.
+ */
+export function profileGroupLabel(
+  events: ReadonlyArray<Pick<ToolEvent, "name" | "args" | "status" | "subAgentName" | "result">>,
+): string {
+  if (events.some(profileChanged)) return PROFILE_GROUP_LABEL;
+  const running = events.find((e) => e.status === "running");
+  return running ? describeToolStep(running).label : PROFILE_REFUSED_LABEL;
+}
+
 function phrase(verb: Verb, status: StepStatus, object: string): string {
   const v = status === "running" ? verb[0] : verb[1];
   return object ? `${v} ${object}` : v;
@@ -383,6 +461,18 @@ export function describeToolStep(
   const status = statusOf(event);
   const bare = bareToolName(event.name);
   const args = event.args ?? {};
+
+  // ── A profile tool that changed nothing (WS-63 PZ-32) ─────────────────────
+  // The result is "done" on the wire, so the name alone would read "Saved to
+  // your profile". An offer that did not show is no failure: the member saw
+  // no question. A member's No and a fact that is already saved are no failure
+  // either, as on the receipt card. Any other refusal reads failed.
+  const refusal = profileRefusal(bare, event);
+  if (refusal !== null) {
+    if (refusal === "no_offer") return { kind: "other", status: "done", label: NO_OFFER_LABEL };
+    const neutral = refusal === "declined" || refusal === "duplicate";
+    return { kind: "other", status: neutral ? "done" : "failed", label: PROFILE_REFUSED_LABEL };
+  }
 
   // ── A script or a command in the sandbox ──────────────────────────────────
   if (isRunStep(event.name)) {

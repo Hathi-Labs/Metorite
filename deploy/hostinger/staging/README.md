@@ -54,7 +54,13 @@ The names it may write:
 | `CRM_ORGS` | The organizations that the CRM serves |
 | `ASSISTANT_PROFILE_ENABLED` | The master switch of the assistant profile (WS-63 PZ-25). It reaches no one |
 | `ASSISTANT_PROFILE_ORGS` | The organizations that get the assistant profile. Empty means each one |
+| `ASSISTANT_PROFILE_CARD_WRITES_ORGS` | The organizations whose chat may ask a card for a profile value that the member did not type, and offer to keep a fact (WS-63 PZ-32). Empty means none. It reaches no one |
 | `ATTACHMENT_OCR` | OCR of a scanned attachment (WS-67 OA-3). It spends CPU on the box, and no money. It reaches no one |
+| `JOB_QUEUE` | The job worker in the gateway (WS-BRIEF BR-1a). It runs the queued jobs and reaches no one |
+| `UNATTENDED_LEDGER` | The ledger of unattended runs (AUTO-2). It writes rows only. Reach stays held on staging |
+| `BRIEF_ENABLED` | The planner and the runs of the daily brief (BR-2a-1). It calls no model and sends nothing |
+| `BRIEF_ORGS` | The organizations that get a brief. Empty means none |
+| `BRIEF_IN_APP` | The in-app brief: `GET /brief/today` and the chat's first turn (BR-2c-1). It reaches no one |
 
 Three names stay off the list on purpose. `DECIDE_ENABLED` is owner-only and
 sends content to a third party. `DECIDE_FEATURE_MODES` is owner gate H-166 on

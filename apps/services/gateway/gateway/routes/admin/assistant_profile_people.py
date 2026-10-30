@@ -128,7 +128,11 @@ async def email_in_org(db: Any, email: str) -> bool:
 
     The one check of an alias address. The alias POST and PATCH call it, and
     tier 1 calls it for each hit. It answers yes or no, and no directory
-    data. It needs no feature, because the member typed the address.
+    data. It needs no feature, because the address comes from the member.
+    They typed it, or they approved it on a card that showed it. That card
+    can show an address that a colleague lookup gave (WS-63 PZ-32, behind
+    ``ASSISTANT_PROFILE_CARD_WRITES_ORGS``), and the lookup reads the
+    directory only with ``feature:people``.
     """
     from sqlalchemy import text
 
