@@ -288,3 +288,24 @@ def test_the_column_is_nullable_jsonb_with_no_default(db) -> None:
             "WHERE table_name = 'user_settings' AND column_name = 'my_day_prefs'"
         )).one()
     assert tuple(row) == ("jsonb", "YES", None)
+
+
+async def test_push_prompt_is_one_members_own(db) -> None:
+    """WS-OB OB-8: member B in the same org, and the same address in org B,
+    read nothing of member A's ``push_prompt``. A write keeps the other keys."""
+    a_email, b_email = _address(), _address()
+    db.made.extend([a_email, b_email])
+    a, b = _member(a_email), _member(b_email)
+    state = {"never": True, "last_shown_at": "2026-10-30T09:00:00+00:00"}
+    async with tenant_engine_scope(_app_dsn(db)):
+        saved = await _put(db.org_a, a, "push_prompt", state)
+        assert saved == {"push_prompt": state}
+        assert await _get(db.org_a, a) == {"push_prompt": state}
+        assert await _get(db.org_a, b) == {}
+        assert await _get(db.org_b, a) == {}
+        both = await _put(db.org_a, a, "mutes", ["overdue"])
+        # A second write of the key replaces the whole object.
+        again = await _put(db.org_a, a, "push_prompt", {"never": False})
+    assert both == {"push_prompt": state, "mutes": ["overdue"]}
+    assert again == {"push_prompt": {"never": False}, "mutes": ["overdue"]}
+    assert _stored(db, b_email) == []

@@ -28,7 +28,8 @@
   screen" setting) is BUILT, 2026-10-30, dark.** It sends nothing. RE-9b is
   not built.
   **OB-8 (the chat asks a phone member to turn on notifications) is
-  SPECIFIED, 2026-10-30** (§10.4). It ships dark behind `PUSH_PROMPT_ORGS`.
+  BUILT, 2026-10-30, dark** behind `PUSH_PROMPT_ORGS` (§10.4). No box
+  has the flag on.
 - **Board row:** **WS-CAL**. WS-66 for reminders and web push sits under
   it.
 - **Asked by:** the owner, 2026-10-15. The Calendar must hold more than
@@ -1315,8 +1316,16 @@ content, as `test_email_send_later.py` does. The fence is
 Metorite task 600, workstream WS-OB. Owner requests, 2026-10-27 (the task
 rules) and 2026-10-30 ("a chat should also prompt the user"). No D-number.
 Tier STANDARD: product UI and one key of the member's own prefs. No
-migration. It ships dark behind `PUSH_PROMPT_ORGS` (§9). **The build is
-AGENT-SAFE. The flag flip is OWNER-GATE**, or an agent act under a dated
+migration. It ships dark behind `PUSH_PROMPT_ORGS` (§9).
+
+**BUILT, 2026-10-30, dark.** The sheet is `components/PushPromptSheet.tsx`.
+The show rule is `lib/pushPrompt.ts`.
+
+`lib/push.ts` holds `isPhone` and `prompt`.
+`components/AgentChat.tsx` holds one mount. `routes/shell/prefs.py` holds the
+`push_prompt` key. `push/flags.py` and `push/routes.py` hold `PUSH_PROMPT_ORGS`.
+
+**The build is AGENT-SAFE. The flag flip is OWNER-GATE**, or an agent act under a dated
 `enforcement-flip` grant. Staging comes first, and the act names the flag
 and the box.
 

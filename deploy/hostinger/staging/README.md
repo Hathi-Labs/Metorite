@@ -60,6 +60,7 @@ The names it may write:
 | `BRIEF_ENABLED` | The planner and the runs of the daily brief (BR-2a-1). It calls no model and sends nothing |
 | `BRIEF_ORGS` | The organizations that get a brief. Empty means none |
 | `BRIEF_IN_APP` | The in-app brief: `GET /brief/today` and the chat's first turn (BR-2c-1). It reaches no one |
+| `PUSH_PROMPT_ORGS` | The organizations whose phone members see the chat sheet that asks them to turn on push (OB-8). `*` opens every org. Empty means none. It needs `WEB_PUSH_ENABLED` too |
 
 Three names stay off the list on purpose. `DECIDE_ENABLED` is owner-only and
 sends content to a third party. `DECIDE_FEATURE_MODES` is owner gate H-166 on

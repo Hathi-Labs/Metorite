@@ -88,6 +88,7 @@ import { PHONE_MAX_WIDTH, composerCap, composerHeight, offerExpand } from "@/lib
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
 import MessageBubble from "@/components/MessageBubble";
+import PushPromptSheet from "@/components/PushPromptSheet";
 import ChatMoreMenu from "@/components/ChatMoreMenu";
 import ChatSendButton from "@/components/ChatSendButton";
 import {
@@ -2870,6 +2871,11 @@ export default function AgentChat({
               </Button>
             </p>
           )}
+
+          {/* OB-8: asks a phone member to turn on push. The member's own
+              assistant only, after the first turn, and never during a run. The
+              server's `prompt` flag decides whether it draws at all. */}
+          <PushPromptSheet ownChat={isOrchestrator && !isRoom} messageCount={messages.length} streaming={isLoading} />
 
           {/* A steer the server refused, or a model that cannot take one.
               The words are back in the box. */}
