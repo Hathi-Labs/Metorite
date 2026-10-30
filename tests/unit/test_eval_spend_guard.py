@@ -110,7 +110,7 @@ def test_system_one_has_the_wire_tap() -> None:
 
     with RoutingHarness(live=True, real_specialists=True) as harness:
         run._use_router(harness, ("http://127.0.0.1:1", "k-test"))
-        agent, async_client = system_one._build_agent()
+        agent, _client = system_one._build_agent()
         http = agent.client.client._client
         assert isinstance(http._transport, _WireTap)
         assert harness.model_calls == []
