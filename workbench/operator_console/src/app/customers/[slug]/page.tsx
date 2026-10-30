@@ -9,8 +9,10 @@ import {
   orgUsage,
   usageBreakdown,
   usageDaily,
+  orgApps,
   ConsoleUnconfigured,
 } from "@/lib/console";
+import { readArohApp, type ArohApp } from "@/lib/aroh";
 import { staffSession } from "@/lib/session";
 import {
   formatPaise,
@@ -50,6 +52,7 @@ import {
 import { AccessActions, BillingActions, PeopleActions } from "./Actions";
 import CustomerBreakdown from "./CustomerBreakdown";
 import CustomerUsage from "./CustomerUsage";
+import ArohPanel from "./Aroh";
 import Header from "../../Header";
 
 export const dynamic = "force-dynamic";
@@ -369,6 +372,27 @@ export default async function CustomerDetailPage({
     );
   }
 
+  // CP-APP (task 1105): the Aroh tab reads its own door, and only when it is
+  // open. A failed read says so in the panel and never blanks the page.
+  let aroh: ArohApp | null = null;
+  let arohError: string | null = null;
+  if (tab === "aroh") {
+    try {
+      const res = await orgApps(slug, { authToken: gate.authToken });
+      if (res.status === 200) {
+        aroh = readArohApp(JSON.parse(res.body));
+        if (!aroh) arohError = "The Aroh read was not understood.";
+      } else {
+        arohError =
+          res.status === 404
+            ? "This Console build cannot show Aroh yet (it predates the Aroh app)."
+            : `The Aroh read returned ${res.status}.`;
+      }
+    } catch (e) {
+      arohError = `The Aroh read failed: ${String(e)}`;
+    }
+  }
+
   const now = new Date();
   const totals = seatsTotals(org.seats);
   const seatPct =
@@ -667,6 +691,8 @@ export default async function CustomerDetailPage({
           />
         </>
       )}
+
+      {tab === "aroh" && <ArohPanel slug={org.slug} app={aroh} error={arohError} />}
 
       {tab === "access" && (
         <AccessActions

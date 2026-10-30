@@ -15,6 +15,11 @@
  *    and the page goes there with `window.location.assign`. Deny goes to
  *    `deny_redirect_to` from step 1.
  *
+ * D-EA-11: when step 1 answers `first_party: true` with `redirect_to`, the
+ * gateway already minted a code for a first-party client that the member
+ * approved before. The page goes there at once and draws no form. The
+ * gateway alone decides that (`isContinueView` in `consent.ts`).
+ *
  * The organization is the member's current session's (EA3-25), read through
  * `useAccess()`. Approve binds that organization, so Approve waits until
  * the page can name it.
@@ -44,6 +49,7 @@ import {
   gateWaitMs,
   initialChoice,
   isCheckView,
+  isContinueView,
   organizationName,
   pinChoices,
   refusalFor,
@@ -181,6 +187,14 @@ export default function ConsentScreen({ parsed }: { parsed: ParsedRequest }) {
     (async () => {
       try {
         const res = await postJson(CHECK_URL, request, controller.signal);
+        if (res.ok && isContinueView(res.json)) {
+          // D-EA-11: a first-party client that the member already approved.
+          // The gateway minted the code, so no screen shows and no click is
+          // asked. Every other client gets the screen and its approve gate.
+          setPhase({ kind: "leaving", message: "Signing you in." });
+          window.location.assign(res.json.redirect_to);
+          return;
+        }
         if (res.ok && isCheckView(res.json)) {
           setPhase({ kind: "ready", view: res.json });
         } else {

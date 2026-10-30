@@ -2,6 +2,8 @@
 
 **Status: DECIDED (D97, 2026-10-10). Updated 2026-10-16 (EA-6e and EA-6g are MERGED and live). Updated 2026-10-26 (MCP-G5: `list_tasks` takes `parent_task_id` and `include_descendants`). EA-1 and EA-2a are BUILT, dark, and merged in #884 (commit `898cfbc89`).**
 
+**D-EA-11 is BUILT 2026-10-30 and not merged (branch `mt-8f6a0f39-aroh-first-party`, Metorite task 1109). It ships dark.** A first-party client signs a member in again with no consent click, and a new approval of it replaces the old connection (§10.7). The list `agent_first_party_client_ids` is empty by default, so nothing changes until an operator names a client. The fence is `tests/unit/test_agent_first_party.py`.
+
 **MCP-G1 is BUILT 2026-10-29 and not merged (branch `mt-003e8384-mcp-projects`, Metorite task 355).** Four tools join the edge: `create_project`, `update_project`, `preview_move_tasks` and `move_tasks` (§9.2, EA3-53). Each tool calls the route that the Projects app uses, so the app decides who sees a new node and who may move a task. No tool writes a grant.
 
 **MCP-G1, the rules in short.** A connection with pins makes no space. A move commits only with the `preview_id` of a preview of the same selection. An agent never widens who sees a task: a move that shows a task to a new member gets 403 `audience_widens` (fix round 1). The four pairs join `MCP_WRITE_ROUTES`, and `PATCH /projects/nodes/{project_id}` takes `If-Match`, with no migration. The fence is `tests/unit/test_mcp_edge_projects.py`, and the mutations P1 to P5 are each red.
@@ -282,6 +284,7 @@ The owner suggested on 2026-10-11 that the Integrations app should list inbound 
 - **Allowlist:** `MCP_ROUTES` in `packages/acb_auth/acb_auth/agent_oauth.py` (EA-3a, §9.5). The edge client and branch 0 of the gateway both read it.
 - **Flag:** a `Settings` field `agent_access_enabled`, default false, which reads `AGENT_ACCESS_ENABLED`. The edge and the gateway read the same flag through `agent_oauth.enabled()`.
 - **EA-3 Settings:** `agent_edge_signing_key` and `agent_edge_signing_key_previous`, both default empty. `agent_edge_gateway_url`, default `http://127.0.0.1:8080`. §10.1 gives their rules.
+- **D-EA-11 Setting:** `agent_first_party_client_ids`, default empty, so no client is first-party. Only the gateway reads it. §10.7 gives its rules.
 - **Do not touch:** `routes/oauth.py` (a different OAuth client, retired by WS-54), `routes/integrations.py`, `integration_connections`, `outbound_guard.py`, `nav.ts` and `launch_surface.md`. Two exceptions. `CHROMELESS_ROUTES` in `nav.ts` gains `/connect` (EA-4a). The Integrations pane loses its `feature` in `nav.ts`, and its row in `launch_surface.md` §2 changes to match (EA-4b, D-EA-9). `/connect/authorize` gets no `PUBLIC_PAGES` entry in `proxy.ts`, because the page needs a signed-in member. Reuse `outbound_guard.py` and never edit it. Do not name a new module `oauth.py`.
 - **Lifetimes** are `Settings` defaults, so a test can assert them.
   - Access token: 3600 seconds.
@@ -291,7 +294,7 @@ The owner suggested on 2026-10-11 that the Integrations app should list inbound 
   - Unused registered client: 1 day.
 - **No grace window.** A client that sends two refreshes at once loses the connection. The client must serialize its refreshes.
 
-## 6. Decisions D-EA-1 to D-EA-10 (D-EA-1 to D-EA-8 taken, D97. D-EA-9 and D-EA-10 taken 2026-10-14)
+## 6. Decisions D-EA-1 to D-EA-11 (D-EA-1 to D-EA-8 taken, D97. D-EA-9 and D-EA-10 taken 2026-10-14. D-EA-11 taken 2026-10-30)
 
 The owner accepted every default below in chat on 2026-10-10, with the words "go ahead with your recommendations for all". Nothing here re-opens D1 to D94. D97 in work_plan.md §3 records them.
 
@@ -307,6 +310,7 @@ The owner accepted every default below in chat on 2026-10-10, with the words "go
 | D-EA-8 | Who may connect | An organization admin switches the feature on. Then any member may connect, unless the admin restricts clients to an allow list | Default OFF keeps a new tenant safe |
 | D-EA-9 | Where members and admins manage connections | **Decided: owner, 2026-10-14, in chat.** Integrations opens to all members. Each member sees an AI agents view. `integrations:manage` sees all agent connections. The two stores stay apart. §5.4 | The owner suggested it on 2026-10-11. One place to see and revoke every connection |
 | D-EA-10 | Agent runs on a task, and the question an agent asks a member | **Decided: owner, 2026-10-14, in chat.** Take Plane's run, activity and signal model (§12.1). (1) Any member who can see the task may answer, and the pill names the run's member. (2) The waiting state is a marker beside the task status, not a new status. (3) The bell and a "Waiting on me" filter tell the member. Browser push waits for WS-51 S7 | The owner asked that people and outside coding agents work together inside Metorite. The owner said "learn from Plane as much as possible" |
+| D-EA-11 | May a first-party client sign a member in again with no consent click | **Decided: owner, 2026-10-30 (Metorite task 1109).** Yes, for a client that an operator names in `agent_first_party_client_ids`, and only when the member already holds a live connection of that client whose scopes cover the request. A new approval of such a client replaces the member's older connection of it. The list is empty by default. §10.7 holds the rules and the threat analysis. Every other client keeps the consent page and its approve gate | The owner asked for a sign-in to Aroh with no hiccups. A member who already approved Aroh should not click Approve again on each device, and the list of connected agents should show one Aroh. The list is an operator setting and not the admin allow list of D-EA-8: it widens trust, so only the operator of the box sets it |
 
 ### 6.1 The engineering decisions of the EA-3 audit (EA3-1 to EA3-8, 2026-10-11)
 
@@ -1166,6 +1170,7 @@ On success, branch 0 attaches the `AgentScope` of §7.3. It does not call `_bind
 | Consent phishing (a fake client with a trusted name) | Show the verified origin from the client metadata. Show the redirect host. An admin may restrict to an allow list (D-EA-8) |
 | Open registration abuse | Client ID Metadata Documents need a fetch with a size, time and address limit (no private addresses). Dynamic registration is rate limited and expires unused clients after one day |
 | Confused deputy | One consent per client and per member. State and PKCE are required. `iss` is checked by the client, and we send it |
+| A first-party client signs a member in with no click (D-EA-11) | Only an exact client id on the operator's list, on a live connection whose scopes cover the request, with `state`, to an `https` redirect at the client's own origin. §10.7 holds the full analysis |
 | A write by a read-only connection | Scope check before the call, and the fence in §9.5 |
 | Over-reading by a broad grant | Pins and the personal-project switch (D-EA-4), inside the visibility seam (§7.3). A 100-row cap, and a per-connection quota |
 | Prompt injection from a task text | §9.4 |
@@ -1256,7 +1261,7 @@ The consent page is `/connect/authorize` on the control plane. A member sees it 
 - It takes a project pin picker. The picker lists up to 50 visible projects that are not personal. No pin means every project the member sees (§7).
 - It takes `include_personal`, a checkbox that is on by default (D-EA-4, amended 2026-10-30). A body that leaves it out reads as false.
 - It has an Approve button and a Deny button. Deny navigates to `deny_redirect_to`.
-- ⚠️ **The approve gate (double-clickjacking).** An attacker's page can move its opener to this page between the two clicks of a double-click. So Approve stays off until the page is visible and has focus, and then for 500 ms more. A `blur` or a change to hidden starts the wait again. The click checks the gate again. Fences: `consent.test.ts` and `e2e/connect-authorize.spec.ts`.
+- ⚠️ **The approve gate (double-clickjacking).** An attacker's page can move its opener to this page between the two clicks of a double-click. So Approve stays off until the page is visible and has focus, and then for 500 ms more. A `blur` or a change to hidden starts the wait again. The click checks the gate again. Fences: `consent.test.ts` and `e2e/connect-authorize.spec.ts`. The gate binds every screen that the page draws, for a first-party client too. Only the check answer of §10.7 rule 1 draws no screen.
 
 ### 10.6 The organization allowlist (EA3-27, slice EA-10p)
 
@@ -1290,6 +1295,60 @@ The flag of §5.5 is global, so when it is on, each organization can connect an 
 Until both units restart, the old list stays in force on the unit that did not restart.
 
 **A replay still revokes.** The refresh path runs the reuse check before the list check (fix round 1). So a replay of a spent refresh token revokes its connection, also when the organization is off the list.
+
+### 10.7 First-party clients (D-EA-11, Metorite task 1109)
+
+**The problem.** Aroh is the owner's personal assistant app. It signs a member in through this server, as the CIMD client `https://aroh.dev.metorite.com/hub/oauth/client-metadata.json` with the redirect `https://aroh.dev.metorite.com/hub/auth/callback`. Before D-EA-11, the consent page asked for Approve on each authorization, and each approval added a connection. So a second device asked again, and the list of connected agents filled with Aroh rows.
+
+**The setting.** `AGENT_FIRST_PARTY_CLIENT_IDS` is the Setting `agent_first_party_client_ids`, a string with the default `""`.
+
+- It holds CIMD client id URLs with a comma between them. The parser removes the spaces around each entry and changes nothing else.
+- The match is exact, string for string. A change of case, a slash at the end, another path on the same host, or the host alone does not match.
+- The parser drops `*` and each entry that `is_cimd_client_id` refuses. So one entry trusts one client at most.
+- An empty value trusts no client. This is the default, and then every client gets the consent page as before.
+- `acb_auth.agent_oauth.is_first_party(client_id)` is the one reader. Only the gateway reads it.
+- The list is an operator setting, not the admin allow list of D-EA-8. It widens trust, so only the env file of the box sets it. `env_guard` refuses each `AGENT_*` name on an Integrations write. A change on a box is gate `enforcement-flip`, and a unit reads it at process start (§10.6).
+
+**Rule 1: the check with no click.** `POST /agent-access/authorize/check` runs every check of §10.5 and §10.6 first: the member check, the organization allowlist, the CIMD fetch, the redirect match, the response type, PKCE with S256 and the resource. Then, for a first-party client only, it answers `{"first_party": true, "redirect_to": ...}` with a new code and NO consent ticket, when ALL of these hold:
+
+1. The request carries a `state` that is not empty.
+2. The redirect URI is in the `redirect_uris` of the document as the exact string. The loopback rule of §10.4 does not apply here.
+3. `first_party_redirect_allowed` passes it. The URI is `https`, with a host and no user name or password, and at the origin of the client id: the same scheme, host and port.
+4. The member of the session holds a live connection of this client in the organization of the session, and its scopes cover each requested scope. `projects:write` covers `projects:read`, and `offline_access` must be held as itself.
+
+The code goes on that connection. So the pins and the personal switch stay as the member chose them, and the store adds no row. The code binds the requested scopes, the PKCE challenge of this request, the redirect and the resource, as an approval does. The answer carries `Cache-Control: no-store`. The page goes to `redirect_to` at once and draws no form.
+
+When one condition fails, the answer is the consent screen as before, never an error. A revoke that lands between the read and the mint gives the screen too.
+
+**Rule 2: one connection for each member and client.** `approve` for a first-party client calls `create_connection` with `replace_same_client=True`. In the transaction of the insert, the store revokes every connection of this member and this client in the bound organization, and every token of each. The lock order of `agent_tokens.py` rule 3 holds: the connection rows, then the tokens. For every other client the flag is false, and an approval adds a row as before.
+
+**Rule 3: nothing changes for another client.** A client off the list gets the screen, the ticket and the approve gate of §10.5 on each authorization. The page shows the screen for any answer that is not the exact first-party shape with an `https` redirect (`isContinueView` in `consent.ts`). The page never trusts a client by its name or its host. A client that calls itself "Aroh" at another host, or at the same host on another path, is not trusted.
+
+**Threat analysis.** The path with no click removes the human step for one class of request. Each threat below names the control that stays.
+
+| Threat | Control |
+|---|---|
+| Double-clickjacking or a hidden click (§10.5) | The path asks for no click, and it grants nothing new. It mints a code only on a connection that the member already approved, for scopes that the connection already holds. A client off the list keeps the approve gate. A first-party request with no covering connection gets the screen and its gate |
+| A page of an attacker sends the browser to `/connect/authorize` for Aroh, with a PKCE challenge that the attacker made, to get a code for the member (silent authorization, as OIDC `prompt=none`) | The code goes only to the redirect URI of the client's own document, as the exact `https` string at the client's own origin (rule 1, conditions 2 and 3). The attacker cannot read that redirect unless it controls the client's origin. The code lives 60 seconds and works once. ⚠️ **Residual.** The client must keep the code out of reach at its callback. It checks `state` against the browser's own session first, sends no `Referer` (`Referrer-Policy: no-referrer`), loads no outside script on the callback and has no open redirect. These are conditions to list a client (below) |
+| Login CSRF: the attacker gets the member's browser to land on the client with a code that the attacker started | Rule 1 condition 1 needs `state`. The client must bind `state` to the browser session and refuse a callback whose `state` it did not issue. This is the duty of the client, as in every OAuth flow |
+| A look-alike client with a trusted name | The match is the exact client id URL, never `client_name` and never the host alone. A near miss gets the screen, which names the verified host first (§10.5) |
+| A loopback or private-use redirect, which any local process could take | Rule 1 conditions 2 and 3 refuse each of them. Such a request gets the screen |
+| A stolen or changed document at the host of the client | The server trusts what the host of the client id serves. Rule 1 condition 3 keeps the redirect on that host, so a change of the document cannot send a code to another host with no click. A takeover of the host of the client is out of reach of this server. Revoke the connections and take the client off the list |
+| A replay of a code of the path | The code spend and `revoke_replayed_code` are as before. A replay revokes the whole connection. One connection can now hold the codes of more than one device, so a replay signs out every device of the member. That fails closed |
+| A member who left, or an organization off the list | The member check, the allowlist and the flag run before the path (a fence holds the order in `check_authorize`). The token endpoint and branch 0 check the seat and the list again on each call |
+| A replace that ends the connection of another member | The replace matches the organization, the member and the client id. Fence: `test_a_replace_touches_only_this_member_and_client` |
+| An operator lists a client by mistake | The list is empty by default and needs an env write on the box. Take the client off the list and restart the gateway to return to the screen |
+
+**What a client must do before an operator lists it.** The owner or a reviewer checks each item.
+
+1. It is our own app, and we control the host of its client id and of its redirect.
+2. Its document lists only `https` redirect URIs at its own origin.
+3. Its callback checks `state` against the browser session before it reads the code. It sends no `Referer`, loads no outside script and has no open redirect.
+4. It makes its own PKCE pair for each sign-in, and it serializes its refreshes (§5.5).
+
+**What D-EA-11 does not change.** The scopes, the token lifetimes, the CIMD checks and the consent page of every other client stay the same. The admin allow list of D-EA-8 and the organization switch (EA-4c) are still not built. A link to Aroh in the Metorite app is out of scope. The owner decided on 2026-10-30 that only a person who has the Aroh address uses Aroh.
+
+**Fences.** `tests/unit/test_agent_first_party.py`. Ten named mutations each turn it red: any client is first-party, no `state` check, no origin rule, no scope cover, no replace, a replace for every member, a replace that keeps the old tokens, `*` trusts every client, a case fold, and a check that never skips. `consent.test.ts` holds `isContinueView`. `e2e/connect-authorize.spec.ts` holds the page with no form, and the approve gate of §10.5 for every other client.
 
 ## 11. Schema addition: task references
 
@@ -1973,6 +2032,7 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 | SW-11a | **BUILT 2026-10-25 on `sw11-attention-mt-eb3949d0`, not merged (Metorite task #342).** **Needs attention (§12.7).** `GET /projects/needs-attention`, `POST /projects/agent-runs/{run_id}/resume`, the lens of the board, the header badge and the read `needs_attention`. Live at the merge. No migration | Each kind lists its fixture and none of its near misses. A restricted member sees only what they can open, and organization B sees nothing. Resume hands the run back with `needs_agent` `answered`, and Close ends it with the task unchanged. A member with no right gets 403. `test_needs_attention_r8.py` (R8), each rule red under a named mutation. The manifest, UI-action and paging fences pass, and vitest `needsAttention.test.ts` passes. A visual review at four widths, in light mode, at compact density and under a changed accent | AGENT-SAFE |
 | MCP-G2 | **BUILT 2026-10-25, not merged (branch `g2-agent-fields-mt-61131dc3`, task #356). It goes live at the merge under `agent_access_writes_enabled`, which is ON (EA3-36).** **More fields, and `set_assignees` (§9.2, EA3-52).** `create_task` and `update_task` take `importance`, `leveraged`, `estimate_mins` and `start_date`. `create_task` takes `assignees`. `update_task` takes `parent_task_id` for a move inside the project. The new tool `set_assignees` replaces the set. The PUT of the assignees and the task move join `MCP_WRITE_ROUTES`, and both routes take `If-Match`. **Files:** `routes/projects/tasks.py`, `acb_auth/agent_oauth.py`, `skill_projects/manifest.py` (three `FIELD_EXEMPT` entries), `agent_edge/tools.py`. No migration. Branch 0 does not change | `tests/unit/test_mcp_edge_assignees.py`, R8 through the real gateway app, each red under a named mutation (A1 to A29). **R1** a create with an assignee, `importance` and `estimate_mins` stores them, and the assignee gets one bell that names the client. **R2** a swap of one person gives one bell to the added person only. **R3** a hidden member, a suspended member and a made-up address get one text, and nothing changes. **R4** and **R5** the PUT and the move refuse a stale version. **R6** the move refuses a parent in another project. **R7** the move refuses a cycle. **R9** the edge and branch 0 refuse a connection without `projects:write` **Fix round 1:** **R13** an agent cannot assign a member with no grant. Its text is the text of a made-up address. **R14** the PUT of an agent refuses any change after its read. **R15** holds the gateway cap, and **R16** the estimate ceiling. **R17** holds a person who stays, and **R18** the text of a personal project. **R19** holds the seam `notifications.grant_holders`. **Fix round 2:** **R20** holds each way in, through a grant or the admin read right. **R21** holds a stored row in another case. | AGENT-SAFE |
 | MCP-G1 | **BUILT 2026-10-29, not merged (branch `mt-003e8384-mcp-projects`, Metorite task 355). It goes live at the merge under `agent_access_writes_enabled`, which is ON (EA3-36).** **Projects and moves over MCP (§9.2, EA3-53).** `create_project`, `update_project`, `preview_move_tasks` and `move_tasks`. **Files:** `routes/projects/tree.py`, `routes/projects/move.py`, `acb_auth/agent_oauth.py`, `skill_projects/manifest.py` (one `FIELD_EXEMPT` entry), `agent_edge/tools.py` and `agent_edge/mcp.py`. No migration. Branch 0 does not change | `tests/unit/test_mcp_edge_projects.py`: 82 database-free tests, and 10 R8 tests through the real gateway app. **R1** a new subproject has no grant, and a second member sees it only when that member sees its parent. **R2** a new space has the one `org` grant of a space that the app makes. A member with no grant sees it, and a member of another organization and a pinned connection do not. **R3** a pinned connection makes no space (the edge text, and the gateway 403). It makes a node under a pinned project only. **R4** the version rule, the status of a space, the narrowing of a lead, and a PATCH of a member that does not change. **R5** an epic moves with its two subtasks, and a second call moves nothing. **R6** a made-up preview id moves nothing, and a signed move with no `accepted_drops` gets 422. **R7** D-OP-14 holds. **R8** another organization gets "Project not found." **R9** a task or a destination outside the pins is not found. **R10** a read connection writes nothing. **Fix round 1:** **R11** a move from a `group:` project to an `org` project gets 403 `audience_widens`, and the member's own move lands. **R12** an epic moves into a child of the same grants, and the gateway lets a narrower move through. **R13** a personal task into a team project gets 403. **R14** a connection pinned to a folder makes a project in it. The mutations P1 to P5 are each red | AGENT-SAFE |
+| EA-16 | **BUILT 2026-10-30, not merged (branch `mt-8f6a0f39-aroh-first-party`, Metorite task 1109). It ships dark: `agent_first_party_client_ids` is empty by default.** **First-party clients (§10.7, D-EA-11).** The Setting and `agent_oauth.is_first_party`, `agent_oauth.first_party_redirect_allowed`, `agent_tokens.live_connections_of_client`, `replace_same_client` on `agent_tokens.create_connection`, rule 13 of `gateway/routes/agent_access.py`, and `isContinueView` on the consent page. No migration and no new route | `tests/unit/test_agent_first_party.py` passes on R8, and ten named mutations each turn it red (§10.7). The suites `test_agent_oauth_server.py` and `test_agent_connection_tokens.py` stay green. `consent.test.ts` and `e2e/connect-authorize.spec.ts` hold the page | AGENT-SAFE. The flip on a box is OWNER-GATE (`enforcement-flip`). It changes an authorization path, so it needs the full review loop: an independent verification and an adversarial review before it merges |
 
 Order: EA-0, then EA-1 and EA-2, then EA-3a, then EA-3b-1 and EA-3b-2, then EA-2c, then EA-4a and EA-5, then EA-6 to EA-9, then EA-10 and EA-11. EA-4b and EA-4c come later, and neither gates a pilot (EA3-25). EA-2c touches no file of EA-3b, so it can run in parallel with EA-3b. It must merge before EA-4. EA-6 and EA-5 can run in parallel after EA-3b-2. EA-3c runs when a copy of the 2026-07-28 text is in the tree. EA-6e and EA-6g build in parallel, because EA-6e touches `mcp.py` and not `tools.py`, and EA-6g touches `tools.py` and not `mcp.py`.
 
@@ -2640,6 +2700,11 @@ The connect card of EA-4b and `docs/external_agents_connect.md` show this table.
   2. P2. The edge clamps `limit` for each op to 50, and it cuts each list of an answer to 50 rows (AD-12). `describe_app` shows the bound of the edge.
   3. A refusal at the stamp, and a door write while the writes flag is off, each write their audit row (§19.7).
 - 2026-10-30 — MCP-P0 fix round 1, after the spec audit (MCP-P1a GO-NARROWED, MCP-P2a NO-GO). MCP-P1a fails closed for each write that needs an approval (AD-18). MCP-P2a opens no B or C op except `save_draft`. Each op that can cause mail to leave is `sends` (AD-19). §19.13 gains the gates, the verify commands and the dependencies. §19.1 gains the non-goals. A read that calls a model is off the door. This round also fixes the stale anchors.
+- 2026-10-30 — D-EA-11 and slice EA-16 (Metorite task 1109). The owner asked for a sign-in to Aroh with no hiccups.
+  1. §10.7 holds the rules and the threat analysis. §6 holds D-EA-11, and §10.2 holds one more row.
+  2. A first-party client on `agent_first_party_client_ids` signs a member in again with no click, on a live connection whose scopes cover the request. A new approval of it replaces the old connection and revokes its tokens.
+  3. Every other client keeps the screen, the ticket and the approve gate. The list is empty by default.
+  4. Scope change, owner, 2026-10-30: no Aroh link in the Metorite app. Only a person who has the Aroh address uses Aroh.
 
 ## 19. One manifest, two doors: every app over the MCP (MCP-P0, D136)
 

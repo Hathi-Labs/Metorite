@@ -8,7 +8,9 @@ calls these two routes as the signed-in member, through the BFF:
 
 * ``POST /agent-access/authorize/check`` — validate an authorize request and
   return what the consent screen needs: the verified client name and origin,
-  the redirect host and the requested scopes.
+  the redirect host and the requested scopes. For a first-party client that
+  the member already approved, it returns the redirect with a code instead
+  (rule 13, D-EA-11).
 * ``POST /agent-access/authorize/approve`` — validate it again, create the
   connection, mint a code, and return the redirect URL that carries ``code``,
   ``state`` and ``iss`` (RFC 9207).
@@ -84,6 +86,24 @@ The public half (metadata, ``token``, ``revoke``) is the edge unit
     token, a hash or a client id. The admin's pair of routes is
     ``routes/integrations_agents.py``, and it shares :func:`connection_out`
     and :func:`audit_revoke`. Fence: ``tests/unit/test_agent_connections_r8.py``.
+
+13. ⚠️ **First-party clients (D-EA-11, spec §10.7).** A client whose id is,
+    string for string, on ``agent_first_party_client_ids`` is first-party.
+    The default list is empty, so nothing below runs until an operator sets
+    it. For such a client, ``check`` runs every check of rules 1 to 11 and
+    :func:`_validate` first. Then it answers ``{"first_party": true,
+    "redirect_to": ...}`` with a code, and no ticket, only when ALL of these
+    hold: the request carries ``state``, the redirect URI is ``https``, on
+    the client's own origin, and in the document's list as the exact
+    string, and the member holds a live connection of this client in this
+    organization whose scopes cover every requested scope. The code goes on
+    that connection, so the pins and the personal switch stay as the member
+    chose them. Any other case gets the consent screen as before, never an
+    error. ``approve`` for a first-party client replaces the member's older
+    connections of that client, and revokes their tokens, in the
+    transaction of the insert. Nothing changes for a client that is not on
+    the list: the screen, the ticket and the approve gate of the page stay.
+    Fence: ``tests/unit/test_agent_first_party.py``.
 
 What is not here: dynamic client registration (EA-2b), pre-registered
 clients, the organization switch and the client allow list (EA-4c), the audit
@@ -590,6 +610,58 @@ async def _spend_ticket(req: ApproveRequest, binding: _TicketBinding) -> None:
         raise refused
 
 
+# ── First-party clients (rule 13, D-EA-11) ──────────────────────────────────
+
+
+async def _first_party_redirect(
+    req: AuthorizeRequest, email: str, validated: _Validated
+) -> str | None:
+    """The redirect with a new code when the member already approved this
+    first-party client for these scopes (rule 13), else ``None``.
+
+    ``None`` means "show the consent screen as before". Each condition fails
+    to the screen, never to an error, and in this order: the client is on
+    the list, the request carries ``state``, the redirect URI is in the
+    document's list as the exact string, :func:`agent_oauth.first_party_redirect_allowed`
+    passes it, and one live connection of this member and client covers
+    every requested scope. :func:`_validate` already checked PKCE, the
+    response type, the resource and the redirect. The member is the
+    session's, and the organization is the bound tenant (rule 1).
+    """
+    if not agent_oauth.is_first_party(req.client_id):
+        return None
+    if not req.state:
+        return None
+    if req.redirect_uri not in validated.metadata.get("redirect_uris", []):
+        return None
+    if not agent_oauth.first_party_redirect_allowed(req.client_id, req.redirect_uri):
+        return None
+    granted = agent_oauth.scope_string(validated.scopes)
+    for connection in await agent_tokens.live_connections_of_client(email, req.client_id):
+        if not all(agent_oauth.scope_holds(connection.scopes, s) for s in validated.scopes):
+            continue
+        try:
+            code = await agent_tokens.mint_code(
+                connection.id,
+                client_id=req.client_id,
+                code_challenge=req.code_challenge or "",
+                redirect_uri=req.redirect_uri,
+                resource=agent_oauth.resource(),
+                scope=granted,
+            )
+        except LookupError:
+            # A revoke landed after the read. The screen asks again.
+            return None
+        _log.info(
+            "agent_access.first_party_continued",
+            connection_id=connection.id,
+            client_host=agent_oauth.client_origin(req.client_id),
+            scopes=granted,
+        )
+        return _redirect(req, {"code": code})
+    return None
+
+
 # ── The two routes ──────────────────────────────────────────────────────────
 
 
@@ -597,13 +669,23 @@ async def _spend_ticket(req: ApproveRequest, binding: _TicketBinding) -> None:
 async def check_authorize(
     req: AuthorizeRequest,
     user: UserContext = Depends(get_current_user),
-) -> AuthorizeView:
+) -> AuthorizeView | JSONResponse:
     """Validate an authorize request for the consent screen, and give the
     one-time consent ticket (rule 10). Writes nothing else except the cache
-    of the client's metadata."""
+    of the client's metadata.
+
+    ⚠️ The one exception is rule 13: for a first-party client that the
+    member already approved for these scopes, the answer is
+    ``{"first_party": true, "redirect_to": ...}`` with a new code, and no
+    ticket. The answer then carries a code, so no cache may keep it.
+    """
     email = _member(user)
     _require_org_allowed()
     validated = await _validate(req)
+    continued = await _first_party_redirect(req, email, validated)
+    if continued is not None:
+        return JSONResponse(
+            {"first_party": True, "redirect_to": continued}, headers=_NO_STORE)
     ticket = await _mint_ticket(_binding(req, email, str(current_tenant())))
     display, is_app = agent_oauth.redirect_display(req.redirect_uri)
     return AuthorizeView(
@@ -654,6 +736,9 @@ async def approve_authorize(
         scopes=granted.split(" "),
         pinned_projects=[str(p) for p in req.pinned_projects],
         include_personal=req.include_personal,
+        # Rule 13: a first-party approval replaces the member's older
+        # connection of this client. False for every other client.
+        replace_same_client=agent_oauth.is_first_party(req.client_id),
     )
     try:
         code = await agent_tokens.mint_code(
