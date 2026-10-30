@@ -2119,6 +2119,7 @@ def _read_at_a_tool_result(steer: Any, author: str, text: str, *, typed: Any) ->
     assert text.strip() in out, "the model reads the steer"
 
 
+@pytest.mark.usefixtures("_no_card")  # PZ-32: the typed words alone, as in TestGrounding
 class TestPz31SteeredWords:
     def test_an_own_typed_steer_read_at_a_tool_result_grounds_a_later_save(
         self, own_chat, steer_mod,
