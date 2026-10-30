@@ -100,6 +100,8 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - The run check of each call keys on `tool_packs.PACK_RUN_KEY`, which the server mints for each run. It never keys on `run_id`, which a client can set.
    - `_pack_held` fails closed. ⚠️ A held pack drops each tool that `_is_egress` names, and that drop is the only held-set control of a pack run.
    - Do not copy the bodies of `_is_egress`, `_run_no_egress` or `_gate_injected_tool` into it. `_pack_owner_module` is the one loader of a pack owner. Fence: `test_pack_guards.py`.
+   - OA-8i: `_pack_call` asks `tool_packs.pack_write_refusal` before its first await. `_pack_delegation_refusal` asks with `starts=True`, because its one caller starts the hand-off.
+   - The `finally` of `_run_sub_agent_streaming` tells the calling run's record whether the hand-off finished (`_pack_handoff_ended`), before any await. Fence: `test_pack_no_double_write.py`.
 27. **The packs of a turn load only in the member's own web chat with the orchestrator** (WS-67 OA-7c, `one_assistant_context.md` §4.2.2). It ships dark behind `TOOL_PACKS`.
    - `_start_pack_turn` is the one caller of `tool_packs.packs_on`. It starts the read of the sticky packs as the first statement of the main try. The `finally` of that try cancels a read that the run did not await.
    - No read starts for a shared room, a batch run (WhatsApp, D115) or a delegated run. No read starts with no card channel or no verified member. With the flag off, no pack state is read or written.

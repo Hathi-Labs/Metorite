@@ -1,6 +1,6 @@
 # Core brief — the 07:30 brief, the 18:30 close-out, and silence between
 
-**Status: ACTIVE, BR-2a-1 and BR-2c-1 BUILT 2026-10-29 (dark).** Verified
+**Status: ACTIVE, BR-2a-1, BR-2c-1 and BR-2c-2 BUILT 2026-10-29 and 2026-10-30 (dark).** Verified
 against code on 2026-10-28, at `origin/main` `bd0efea9c`.
 
 Five slices are built and dark. BR-1a is the job queue
@@ -275,8 +275,8 @@ BR-1b builds.
   that it uses.
 - **The check (BR-4b).** A sentence with no known claim id fails. A number in
   a sentence that no cited claim holds fails. The number check uses the shape
-  of `_numbers` (`assistant_profile.py:612`). BR-2a-2 makes it one public
-  helper and copies nothing. A failure keeps the template lead, and the run
+  of `_numbers` (`assistant_profile.py:612`). BR-4b made it one public
+  helper, `numbers_in`, and copies nothing. A failure keeps the template lead, and the run
   logs `brief.phrase_refused`.
 - **The words of the lines never change.** The model writes the lead only.
 
@@ -303,7 +303,7 @@ words.
 
 1. **My Day.** A standalone card of the brief reads today's run through
    `GET /brief/today`. It is a component of its own, not a kind of the MD-7
-   feed. BR-2c-2 builds it. This spec owns its data.
+   feed. BR-2c-2 built it (`BriefCard.tsx`, flag `NEXT_PUBLIC_BRIEF_CARD`). This spec owns its data.
 2. **The chat's first turn.** BUILT in BR-2c-1. With `BRIEF_IN_APP` on,
    `POST /chat/sessions/{id}/brief` reads the stored run through the read
    of item 3. When the run is `ready` or `delivered`, the chat reads no
@@ -469,9 +469,9 @@ and the at-most-once rule needs AUTO-2's `UNATTENDED_LEDGER`.
 |---|---|---|---|---|
 | 1 | BR-4: the two tables and the store module | BR-1a | none | AGENT-SAFE |
 | 2 | BR-2a-1: the planner and the gather, with the template lead. **BUILT 2026-10-29, dark** | 1, AUTO-2 (#814), the BR-1b detached mode (#642) | `BRIEF_ENABLED`, `BRIEF_ORGS` | AGENT-SAFE to build. The production flip: `enforcement-flip` |
-| 3 | BR-4b: the claim fence | 2 | none | AGENT-SAFE |
+| 3 | BR-4b: the claim fence. **BUILT 2026-10-30, not wired. BR-2a-2 calls it** | 2 | none | AGENT-SAFE |
 | 4 | BR-2a-2: the phrase step | 3 | `BRIEF_COMPOSE` | AGENT-SAFE to build. **OWNER-GATE** to flip in production (credits, §3a rule 3) |
-| 5 | BR-2c: in-app delivery and the read route. **BR-2c-1 (the route and the chat turn) BUILT 2026-10-29, dark.** BR-2c-2 is the My Day card | 2 | `BRIEF_IN_APP`, `NEXT_PUBLIC_BRIEF_CARD` | AGENT-SAFE. The production flip: `enforcement-flip` |
+| 5 | BR-2c: in-app delivery and the read route. **BR-2c-1 (the route and the chat turn) BUILT 2026-10-29, dark. BR-2c-2 (the My Day card) BUILT 2026-10-30, dark,** in `src/lib/shell/BriefCard.tsx` behind `NEXT_PUBLIC_BRIEF_CARD`. A 404 or a failed read draws nothing, and the brief of the day before wears its date | 2 | `BRIEF_IN_APP`, `NEXT_PUBLIC_BRIEF_CARD` | AGENT-SAFE. The production flip: `enforcement-flip` |
 | 6 | BR-2d: the monitor | 2, AUTO-2 | none | AGENT-SAFE |
 | 7 | BR-2b with BR-7b: the close-out | 2 | `BRIEF_CLOSEOUT` | AGENT-SAFE. The production flip: `enforcement-flip` |
 | 8 | BR-7a: the effect registry and its fence | BR-1a | none | AGENT-SAFE |

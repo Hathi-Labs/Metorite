@@ -36,19 +36,21 @@
  */
 
 import { useState } from "react";
+import Link from "next/link";
 import Button from "@/components/ui/Button";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { DismissableCard } from "@/components/ToolCardShell";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { curlyQuotes } from "@/lib/receiptText";
+import { LANGUAGES } from "@/app/settings/assistant/lib/profile";
 
 /** Each profile write, by the label of its receipt. */
 const ACTION_META: Record<string, { icon: string; label: string }> = {
   profile_remember: { icon: "Bookmark", label: "Noted" },
-  profile_forget: { icon: "Trash2", label: "Forgot from your profile" },
-  profile_set: { icon: "SlidersHorizontal", label: "Profile preference set" },
-  profile_alias: { icon: "Users", label: "Profile alias changed" },
+  profile_forget: { icon: "Trash2", label: "Removed from your profile" },
+  profile_set: { icon: "SlidersHorizontal", label: "Changed how I answer" },
+  profile_alias: { icon: "Users", label: "Changed a name for a person" },
   profile_undo: { icon: "Undo2", label: "Undid your last profile change" },
   // PZ-27, PZ-30. The tool is routed so a FAILED call still draws "Not saved".
   // A mark (`profile: saved`) and a read draw no card: the interview is a
@@ -60,21 +62,19 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
 export const PROFILE_CARD_TOOLS: readonly string[] = Object.keys(ACTION_META);
 
 /**
- * True when this event draws a receipt. A `profile_interview` read has no
- * machine line, so its result is "unknown" and the card draws nothing. A
- * saved mark draws nothing either (PZ-30). A refusal other than `no_answer`
- * and an error still draw, so a failed write is not silent.
+ * True when this event draws a receipt. A `profile_interview` read, a saved
+ * mark and a refused mark draw nothing (PZ-30). A failed interview call and
+ * every other profile write, refused or not, still draw.
  */
 export function drawsReceipt(e: ToolEvent): boolean {
   if (!isProfileCardTool(e.name)) return false;
-  if (e.name !== "profile_interview" || e.status === "error") return true;
-  const { status, reason } = readProfileResult(e.result || "");
-  if (status === "refused" && reason === NO_ANSWER) return false;
-  return status === "refused";
+  if (e.name !== "profile_interview") return true;
+  // A mark is bookkeeping, not a write the member asked for. A refusal of it
+  // (after a search in the turn, or with no due line) draws nothing. Only a
+  // failed call draws, so a broken write is not silent.
+  return e.status === "error";
 }
 
-/** The reason of a mark `answered` with nothing saved. `assistant_profile.NO_ANSWER`. */
-const NO_ANSWER = "no_answer";
 /**
  * The start of a line that only the model reads. `profile_tools.FOR_ASSISTANT`.
  * That line and every line after it are for the model, so the card drops them.
@@ -192,6 +192,57 @@ export function readProfileResult(result: string): {
   };
 }
 
+const LENGTH_WORDS: Record<string, string> = {
+  short: "Shorter answers",
+  default: "Usual length",
+  detailed: "Longer answers",
+};
+const FORMALITY_WORDS: Record<string, string> = {
+  casual: "Less formal",
+  neutral: "Neutral tone",
+  formal: "More formal",
+};
+const GREETING_WORDS: Record<string, string> = {
+  none: "No greeting",
+  brief: "Short greeting",
+  warm: "Warm greeting",
+};
+
+const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+
+/**
+ * The body of a `profile_set` or `profile_alias` receipt, in plain words, built
+ * from the call's ARGUMENTS. The result text is for the model (it holds braces,
+ * keys and "alias"), so the card never shows it for these two tools. An unknown
+ * argument draws nothing: never a brace, a key or a language code.
+ */
+export function profileReceiptBody(name: string, args: Record<string, unknown> | undefined): string {
+  const a = args ?? {};
+  if (name === "profile_alias") {
+    const alias = str(a.alias);
+    const email = str(a.email);
+    if (!alias) return "";
+    return email ? `“${alias}” now means ${email}` : `Removed “${alias}”`;
+  }
+  if (name !== "profile_set") return "";
+  const value = isRecord(a.value) ? a.value : {};
+  const lines: string[] = [];
+  if (a.key === "style") {
+    if (typeof value.length === "string" && LENGTH_WORDS[value.length]) lines.push(LENGTH_WORDS[value.length]);
+    if (typeof value.language === "string" && LANGUAGES[value.language.toLowerCase()]) {
+      lines.push(`Answers in ${LANGUAGES[value.language.toLowerCase()]}`);
+    }
+    if (Array.isArray(value.notes)) {
+      for (const n of value.notes) if (str(n)) lines.push(`Note: ${str(n)}`);
+    }
+  } else if (a.key === "address") {
+    if (str(value.name)) lines.push(`Call you ${str(value.name)}`);
+    if (typeof value.formality === "string" && FORMALITY_WORDS[value.formality]) lines.push(FORMALITY_WORDS[value.formality]);
+    if (typeof value.greeting === "string" && GREETING_WORDS[value.greeting]) lines.push(GREETING_WORDS[value.greeting]);
+  }
+  return lines.join("\n");
+}
+
 /** The relay call of an Undo: its URL, verb and body. */
 export function undoRequest(undo: ProfileUndo): { url: string; method: string; body?: string } {
   const base = "/api/auth/me/assistant-profile";
@@ -224,7 +275,11 @@ type UndoState = "idle" | "busy" | "done" | "failed";
 /** The receipt of one profile write, with its Undo. */
 export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
   const meta = ACTION_META[e.name] ?? { icon: "Wrench", label: e.name.replace(/_/g, " ") };
-  const { text, undo, status, reason } = readProfileResult(e.result || "");
+  const parsed = readProfileResult(e.result || "");
+  const { undo, status, reason } = parsed;
+  // A saved set or alias reads from the call's arguments, never the model text.
+  const fromArgs = e.name === "profile_set" || e.name === "profile_alias";
+  const text = fromArgs && status === "saved" ? profileReceiptBody(e.name, e.args) : parsed.text;
   // The member said no on the confirm card (PZ-6b): not saved, and no error.
   const declined = e.status !== "error" && status === "refused" && reason === "declined";
   // A refusal is never "Saved to your profile" (fix round 1, P1).
@@ -238,6 +293,14 @@ export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
   const title = failed || declined ? "Not saved" : status === "duplicate" ? "Already saved" : label;
   const icon = failed || declined ? "X" : status === "duplicate" ? "Check" : replaced ? "Replace" : meta.icon;
 
+  // The first line of the text, unless it only repeats the title ("Not saved"
+  // over "Not saved."). The body still shows the lines after it.
+  const first = text.split("\n")[0];
+  const plain = (x: string) => x.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+  const repeats = plain(first) === plain(title);
+  const summary = repeats ? undefined : first;
+  const bodyText = repeats ? text.split("\n").slice(1).join("\n").trim() : text;
+
   const onUndo = async () => {
     if (!undo || state === "busy" || state === "done") return;
     setState("busy");
@@ -245,7 +308,7 @@ export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
   };
 
   return (
-    <RollupCard id={`tool:${e.id}`} title={title} icon={icon} summary={text.split("\n")[0]} receipt={!failed} header="own">
+    <RollupCard id={`tool:${e.id}`} title={title} icon={icon} summary={summary} receipt={!failed} header="own">
       <div
         className={`rounded-lg border px-2.5 py-2 ${
           failed ? "border-destructive/40 bg-destructive/5" : "border-sidebar-border bg-secondary/40"
@@ -253,8 +316,8 @@ export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
       >
         <RollupHeader className={`text-[11px] ${tone}`} />
         <RollupBody>
-          {text && (
-            <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap break-words">{text}</div>
+          {bodyText && (
+            <div className="mt-0.5 text-xs text-muted-foreground whitespace-pre-wrap break-words">{bodyText}</div>
           )}
           {status === "saved" && !failed && undo && (
             <div className="mt-1 flex items-center gap-2">
@@ -264,11 +327,19 @@ export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
                 icon="Undo2"
                 onClick={onUndo}
                 disabled={state === "busy" || state === "done"}
-                className="gap-1 text-[10px] text-primary"
+                className="gap-1 text-xs text-primary"
               >
                 {state === "done" ? "Undone" : "Undo"}
               </Button>
-              {state === "failed" && <span className="text-[10px] text-destructive">Undo failed. Change it in Settings.</span>}
+              {state === "failed" && (
+                <span className="text-xs text-destructive">
+                  Undo failed.{" "}
+                  <Link href="/settings/assistant" className="underline underline-offset-2">
+                    Change it in Assistant settings
+                  </Link>
+                  .
+                </span>
+              )}
             </div>
           )}
         </RollupBody>

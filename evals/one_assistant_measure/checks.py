@@ -72,8 +72,14 @@ class Observation:
     sub_work_calls: list[tuple[str, dict[str, Any], str]] = field(default_factory=list)
     #: Each write that the fake CRM and Projects gateway answered this turn.
     work_writes: list[tuple[str, str, Any]] = field(default_factory=list)
-    #: The tasks handed to each owner of a pack, by agent name (any tool).
+    #: The tasks handed to each owner of a pack, by agent name (any tool). A
+    #: hand-off that the product refused is in :attr:`handoffs_refused`, not
+    #: here (OA-8i): it ran no work.
     handoffs: dict[str, list[str]] = field(default_factory=dict)
+    #: OA-8i. Each try of a hand-off that the product refused, by owner. It
+    #: fails no ``no_*_delegation`` check and is no hand-off turn of stop
+    #: result 11. The report counts it on its own row.
+    handoffs_refused: dict[str, list[str]] = field(default_factory=dict)
     #: The packs the model loaded with ``load_skill_tools`` in this turn.
     loaded: list[str] = field(default_factory=list)
     #: The owners whose packs were on in this run. Empty for an email-only chat.
@@ -163,6 +169,85 @@ def tasks_of(tool_calls: list[tuple[str, str]], agent: str = EA) -> list[str]:
 def handoffs_of(tool_calls: list[tuple[str, str]]) -> dict[str, list[str]]:
     """The tasks handed to each owner of a pack: ``{agent: [task, ...]}``."""
     return {owner: tasks for owner in OWNERS if (tasks := tasks_of(tool_calls, owner))}
+
+
+def _template(text: str) -> str:
+    """A pattern of the refusal *text*: each ``{field}`` matches any text."""
+    return ".+?".join(re.escape(part) for part in re.split(r"\{\w+\}", text))
+
+
+def handoff_refusals() -> tuple[re.Pattern[str], ...]:
+    """The answers of a hand-off that the product refused, from the product's
+    own texts (``acb_skills.tool_packs``): the refusal of each pack, the
+    loader refusal (OA-7i) and the refusal after a write (OA-8i). A refusal
+    that this list does not name counts as a hand-off that ran, so the check
+    errs to failing."""
+    from acb_skills import tool_packs as tp
+
+    texts = {found.delegation_refusal for found in tp.PACKS.values() if found.delegation_refusal}
+    texts |= {tp.LOADER_HANDOFF_REFUSED, tp.WROTE_HANDOFF_REFUSED}
+    return tuple(re.compile(_template(text), re.DOTALL) for text in sorted(texts))
+
+
+def handoff_refused(result: str) -> bool:
+    """True when *result* is, in full, the answer to a hand-off that the
+    product refused (:func:`handoff_refusals`)."""
+    text = str(result or "").strip()
+    return bool(text) and any(p.fullmatch(text) for p in handoff_refusals())
+
+
+def _branch_of(result: str, owner: str) -> str:
+    """The answer of the *owner* branch in the joined answer of
+    ``call_agents_parallel`` (``[agent]`` then its answer), or ``""``."""
+    head = f"[{owner}]\n"
+    at = str(result or "").find(head)
+    if at < 0:
+        return ""
+    rest = str(result)[at + len(head):]
+    return re.split(r"\n\n\[[\w-]+\]\n", rest, maxsplit=1)[0]
+
+
+def refused_handoffs_of(events: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """OA-8i. The tries of a hand-off of the orchestrator's own run that the
+    product refused, by owner: ``{agent: [task, ...]}``.
+
+    It pairs each tool call with its result by ``toolCallId``. A call of
+    ``call_agents_parallel`` is refused for one owner when that owner's
+    branch of the joined answer is a refusal."""
+    calls: dict[str, list[str]] = {}
+    for e in events:
+        kind = e.get("type")
+        cid = str(e.get("toolCallId") or "")
+        if kind == "TOOL_CALL_START":
+            calls[cid] = [str(e.get("toolCallName") or ""), str(e.get("args") or ""), "", ""]
+        elif kind == "TOOL_CALL_ARGS" and cid in calls:
+            calls[cid][2] += str(e.get("delta") or "")
+        elif kind == "TOOL_CALL_RESULT" and cid in calls:
+            calls[cid][3] = str(e.get("content") or "")
+    out: dict[str, list[str]] = {}
+    for name, args, deltas, result in calls.values():
+        for owner in OWNERS:
+            answer = _branch_of(result, owner) if name == "call_agents_parallel" else result
+            if not handoff_refused(answer):
+                continue
+            for task in tasks_of([(name, args or deltas)], owner):
+                out.setdefault(owner, []).append(task)
+    return out
+
+
+def without(handoffs: dict[str, list[str]],
+            refused: dict[str, list[str]]) -> dict[str, list[str]]:
+    """*handoffs* less one task for each task of *refused*: the hand-offs that
+    ran. An owner with no task left drops out."""
+    out: dict[str, list[str]] = {}
+    for owner, tasks in handoffs.items():
+        left = list(tasks)
+        for task in refused.get(owner, []):
+            if task in left:
+                left.remove(task)
+        if left:
+            out[owner] = left
+    return out
 
 
 def loads_of(tool_calls: list[tuple[str, str]]) -> list[str]:
@@ -889,7 +974,23 @@ def _not_spawned(obs: Observation, _arg: Any) -> bool | None:
     return obs.spawned == 0
 
 
-_JOB = re.compile(r"^Job (\d+) \(.*?\):(.*)$")
+_JOB = re.compile(r"^Job (\d+) \(.*?\):.*$", re.MULTILINE)
+_FRAME_END = re.compile(r"^<<<END [A-Z ]+ [0-9a-f]+>>>$", re.MULTILINE)
+
+
+def job_blocks(text: str) -> list[str]:
+    """The job blocks of one ``spawn_subagents`` result, in order.
+
+    The result is a data note, then the blocks inside one marker frame, then
+    the notes of jobs that did not run. The first header follows the open
+    marker line at once, with no blank line before it. A split on blank lines
+    misses it, so a call with one job read as "no job block" (OA-9f). A block
+    ends at the next header or at the close marker. The renderer indents a
+    value that spans lines, so a header never starts inside an item."""
+    end = _FRAME_END.search(text)
+    body = text[:end.start()] if end else text
+    starts = [m.start() for m in _JOB.finditer(body)]
+    return [body[a:b].rstrip("\n") for a, b in zip(starts, [*starts[1:], len(body)], strict=False)]
 
 
 def items_contract_problems(results: list[str]) -> list[str]:
@@ -901,7 +1002,7 @@ def items_contract_problems(results: list[str]) -> list[str]:
 
     problems: list[str] = []
     for text in results:
-        blocks = [b for b in re.split(r"\n\n(?=Job \d+ )", text) if _JOB.match(b.split("\n")[0])]
+        blocks = job_blocks(text)
         if not blocks:
             problems.append("no job block")
         for block in blocks:

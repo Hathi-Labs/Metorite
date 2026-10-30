@@ -153,7 +153,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS | Workstream | State | Owning spec | Gates · next |
 |---|---|---|---|---|
 | WS-CZ | **Customer Zero**: Fracktal and Shaurrya Tele (DEWiN) | 🟢 active · M0 | none yet | Metorite: epic 519 (Metorite Application) · next H-259, BO-23b, CP-8-act, H-326 |
-| WS-TS | **Tenancy and Security**: a second organization is safe | 🟢 active · M1 | `specs/saas_multitenancy.md` · `specs/saas_multitenancy_handover.md` | Metorite: epic 520 · gates H3.2 (D120) and WS-40-Q (D121) · next AX-0, H-249, H-312, H2 |
+| WS-TS | **Tenancy and Security**: a second organization is safe | 🟢 active · M1 | `specs/saas_multitenancy.md` · `specs/saas_multitenancy_handover.md` | Metorite: epic 520 · gates H3.2 (D120) and WS-40-Q (D121) · H6a done 2026-10-29 (parity fence, H3.3 enacted) · next AX-0, H-249, H-312, H2 |
 | WS-CM | **Console and Money**: seats, credits, invoices | 🟡 gated · M2 | `specs/customer_console.md` | Metorite: epic 478 (Billing & Accounts) · gates H-14 and the rate card (D123) · next H-170, CP-10 |
 | WS-TO | **Trust and Operations**: enforced controls, restore, compliance | 🟢 active · M1 | `specs/box_hardening.md` | Metorite: epic 521 (Platform & CI/CD) · SBX-0 decided (D130, `specs/agent_sandbox.md`) · next WS-1e, WS-3, BH-3 with SBX-1, the WS-37 spec (D119.4) |
 | WS-PL | **Platform and CI**: delivery, staging, branch protection | 🟢 active · M1 | `specs/development_and_delivery_framework.md` | Metorite: project Platform & CI/CD · next WS-38a, WS-38e, WS-5a |
@@ -3900,8 +3900,10 @@ accepted every recommendation of the spec. Board: **WS-55**. Owning spec:
    second identity system.
 3. **Authority.** An agent acts as one member. Its power is the member's live
    access, cut down by the scopes and project pins the member chose.
-4. **Personal projects** stay out of reach unless the member ticks a box on the
-   consent page. The box is off.
+4. **Personal projects** are in reach unless the member clears a box on the
+   consent page. The box is on. *(Amended 2026-10-30 by the owner: "by
+   default, including personal projects would be on." The first rule kept
+   the box off. D-EA-4 of `external_agent_access.md` records it, task 1057.)*
 5. **Version 1 has no personal access token.** Interactive OAuth only.
 6. **Company context** is the name, domain and branding. It also holds the
    shared memory that the member may read. This lasts until a company profile

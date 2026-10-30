@@ -536,6 +536,9 @@ _CONTRACT_CALLERS = [
     "apps/services/orchestrator/orchestrator/executor.py",
     "packages/acb_skills/acb_skills/agent_tools.py",
     "packages/acb_skills/acb_skills/tier_policy.py",
+    # WS-67 OA-8i: `pack_write_refusal` reads `annotated_read_only`, the one
+    # read-only test of a pack tool, so no second read-only list exists.
+    "packages/acb_skills/acb_skills/tool_packs.py",
 ]
 
 
