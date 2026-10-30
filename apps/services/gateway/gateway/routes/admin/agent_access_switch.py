@@ -1,16 +1,23 @@
 """``/auth/me/agent-access`` — the member's switch for agent deletes (WS-55 EA-6h).
 
-Spec: ``project-docs/specs/external_agent_access.md`` EA3-51 and §15 EA-6h.
-The column is ``user_settings.agent_delete_enabled`` (migration 295). It is
-layer 1 of the four layers of EA3-51: "Let my AI agents delete tasks",
-default OFF.
+Spec: ``project-docs/specs/external_agent_access.md`` EA3-51 and §15 EA-6h
+and EA-6i. The column is ``user_settings.agent_delete_enabled`` (migrations
+295 and 316). It is layer 1 of the four layers of EA3-51: "Let my AI agents
+delete tasks".
+
+**Default ON (EA-6i).** The owner, 2026-10-30: "Agents delete switch should
+default to on." So a member who has not chosen reads as on. That is no
+settings row, or a row that holds NULL. Only a stored ``false`` is off.
+Migration 316 turned each old ``false`` into NULL, because the old default
+and an explicit off were the same value.
 
 =========  ===========================================================
 Route      Does
 =========  ===========================================================
-``GET``    ``{"delete_enabled": bool}``. False when the member has no
-           settings row
-``PUT``    Body ``{"delete_enabled": bool}``. Sets the switch
+``GET``    ``{"delete_enabled": bool}``. True when the member has not
+           chosen (no settings row, or NULL)
+``PUT``    Body ``{"delete_enabled": bool}``. Writes an explicit
+           ``true`` or ``false``
 =========  ===========================================================
 
 **Who reads it.** The Integrations app (the AI agents view), and the MCP edge
@@ -31,7 +38,9 @@ The member comes from the session and the tenant from the bound session,
 never from the body (R5, R11). The body forbids an extra field. A failed read
 answers 503, never false, so a database fault never reads as "off" in the
 UI. The delete route reads the switch inside its own transaction, and an
-error there fails the delete. Fence: ``tests/unit/test_mcp_edge_delete.py``.
+error there fails the delete. Fences: ``tests/unit/test_mcp_edge_delete.py``
+and ``tests/unit/test_agent_delete_default_r8.py`` (the four states and
+migration 316).
 """
 
 from __future__ import annotations
@@ -85,10 +94,19 @@ def _require_enabled() -> None:
 
 
 async def delete_enabled(db: Any, uid: str) -> bool:
-    """True only when the member *uid* turned the switch on in the bound
-    organization. No row is false. A failed read raises."""
+    """Is the switch of the member *uid* on, in the bound organization?
+
+    EA-6i: the switch is ON until the member turns it off. No row is on,
+    NULL ("the member has not chosen") is on, ``true`` is on, and only
+    ``false`` is off. An empty *uid* is off, and no read runs. A failed
+    read raises, so a fault never reads as on or as off.
+    """
+    if not uid:
+        return False
     row = (await db.execute(_sql(_READ_SQL), {"uid": uid})).first()
-    return bool(row is not None and row[0] is True)
+    if row is None or row[0] is None:
+        return True
+    return row[0] is True
 
 
 @me_router.get("/me/agent-access", summary="The caller's agent switches (EA-6h)")
