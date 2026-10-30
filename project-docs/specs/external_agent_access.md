@@ -1572,9 +1572,9 @@ The PR and CI data come from `github_integration.md` (WS-54). This section draws
 | Run state | The card |
 |---|---|
 | `working`, `answered` | A 2 px accent edge with a light that travels round it, and a live line at the foot: the client glyph, a live dot and `agent_note` |
-| `queued` | A still, dashed accent edge |
+| `queued` | A still, thin, solid accent edge (EA-13h, 2026-10-30: no dashed edge) |
 | `awaiting` | A still amber edge, and "Needs you" with the first line of the question |
-| `stale` | A muted, dashed gray edge, and "<client> idle" |
+| `stale` | An accent glow that breathes slowly (EA-13h). The pill says "idle", so the line shows only the agent's last note |
 | `failed` | A still red edge |
 
 - The edge is a status loop (`DESIGN_SYSTEM.md` §4), and it moves `transform` only. With reduced motion it stays lit and still.

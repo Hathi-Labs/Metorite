@@ -73,6 +73,28 @@ describe("the stylesheet", () => {
     expect(css).not.toContain('data-agent-edge="muted"');
     expect(css).not.toContain('data-agent-edge="dashed-accent"');
   });
+
+  // A change of state must not move the card: each edge takes 2px on each side.
+  it("gives every edge the same 2px box", () => {
+    const rule = (edge: string) =>
+      css.match(new RegExp(`\\[data-agent-edge="${edge}"\\]\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+    for (const edge of ["steady", "breathing", "warning", "destructive"]) {
+      expect(rule(edge), edge).toMatch(/border:\s*2px solid/);
+    }
+    expect(rule("live")).toMatch(/padding:\s*2px/);
+  });
+
+  // The band is even round each corner: the edge's corner is the card's plus 2px.
+  it("rounds the edge to the card's corner plus 2px", () => {
+    expect(css).toMatch(/\[data-agent-edge\]\s*\{[^}]*border-radius:\s*calc\(var\(--radius-lg\) \+ 2px\)/);
+  });
+
+  // DESIGN_SYSTEM §4: a loop moves transform or opacity only.
+  it("breathes with opacity only", () => {
+    const frames = css.match(/@keyframes agent-edge-breathe\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
+    expect(frames).toContain("opacity");
+    expect(frames).not.toMatch(/box-shadow|border|width|height/);
+  });
 });
 
 describe("the board applies the look", () => {
