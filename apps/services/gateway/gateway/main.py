@@ -516,6 +516,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # due jobs of each org. Dark by default: with JOB_QUEUE off it starts no
     # task. Fence: test_job_queue.py.
     try:
+        # The brief's kinds and hooks register at import (WS-BRIEF BR-2a-1,
+        # gateway/brief/run.py), so the worker holds them from its first tick.
+        # Its own try: an import error loses the brief, never the queue.
+        import gateway.brief.run  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.brief_jobs_skipped", error=str(exc))
+    try:
         from gateway.jobs.worker import start_job_worker
         _log.info("gateway.job_worker", started=await start_job_worker())
     except Exception as exc:
