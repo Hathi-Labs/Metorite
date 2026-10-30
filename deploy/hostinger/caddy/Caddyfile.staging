@@ -3,9 +3,9 @@
 # installs THIS file, not ./Caddyfile, on a box whose .env says
 # DEPLOY_ENV=staging. The production file stays the default.
 #
-# ⚠️ Three hosts and no more: the staging gateway, the staging workbench and the
-# owner's Claude account switcher (below). No marketing apex, no operator
-# console, no MCP edge. A staging box that claimed
+# ⚠️ Four hosts and no more: the staging gateway, the staging workbench, the
+# owner's Claude account switcher and the Aroh demo (below). No marketing apex,
+# no operator console, no MCP edge. A staging box that claimed
 # a production name would ask Let's Encrypt for that name's certificate and
 # could answer for it.
 #
@@ -86,4 +86,17 @@ dev.metorite.com {
 accounts.dev.metorite.com {
 	encode zstd gzip
 	reverse_proxy 127.0.0.1:4777
+}
+
+# --- Aroh demo (a separate app, not Metorite staging) ---
+# Aroh is the owner's personal-assistant app (task mt-4c4bd36e). Its front
+# door is a systemd user unit of `dev` on loopback :8787. It signs each person
+# in with Metorite (agent OAuth) and holds its own sessions. The block holds ONE
+# directive on purpose: no `header_up`, so no identity header can reach it. It
+# has no `encode`, because Aroh streams its replies (SSE) and a compressor can
+# hold them back. Caddy flushes an event stream at once by itself.
+# Fence: tests/unit/test_deploy_env.py
+# test_the_aroh_block_only_proxies_to_loopback.
+aroh.dev.metorite.com {
+	reverse_proxy 127.0.0.1:8787
 }
