@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from evals.one_assistant_measure import checks as ck
-from evals.one_assistant_measure import fanout, pack
+from evals.one_assistant_measure import fanout, pack, spend
 from evals.one_assistant_measure import mailbox as mb
 from evals.one_assistant_measure import workgateway as wg
 from evals.one_assistant_measure.scenarios import SCENARIOS, Scenario, all_scenarios
@@ -141,7 +141,19 @@ def cost_of(usage: dict[str, Any], card: dict[str, Any] = RATE_CARD) -> tuple[fl
 
 
 def call_row(c: ModelCall) -> dict[str, Any]:
+    """One row per model call, with its counted USD.
+
+    Three corrections to the vendor figure (2026-10-30 drain). A call with no
+    usage frame that was not refused is priced from its request size, as the
+    worst case (``cost_source`` ``estimate``). A call that starts in a DeepSeek
+    peak band counts double (``peak``), because ``usage.cost`` does not know
+    the band. A refused call (status 4xx or 5xx) costs nothing."""
     usd, source = cost_of(c.usage)
+    if not c.usage and (c.status is None or c.status < 400):
+        usd, source = spend.unseen_usage_usd(c.request_chars, RATE_CARD), "estimate"
+    peak = bool(c.wall) and spend.is_peak(datetime.fromtimestamp(c.wall, UTC))
+    if peak:
+        usd *= spend.PEAK_FACTOR
 
     def since(t: float | None) -> float | None:
         return round(t - c.started, 3) if t is not None else None
@@ -154,7 +166,7 @@ def call_row(c: ModelCall) -> dict[str, Any]:
         "cached": cached_of(c.usage), "completion": int(c.usage.get("completion_tokens") or 0),
         "reasoning": int((c.usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
                          or 0),
-        "cost_usd": round(usd, 6), "cost_source": source,
+        "cost_usd": round(usd, 6), "cost_source": source, "peak": peak,
     }
 
 
@@ -425,6 +437,29 @@ def _use_router(harness: RoutingHarness, router: tuple[str, str]) -> None:
     mp.setattr(settings, "graphiti_enabled", False, raising=False)
     harness.allow = (base + "/",)
     _system_one_seam(mp)
+    tap_system_one(mp, harness.model_calls)
+
+
+def tap_system_one(mp: Any, sink: list[ModelCall]) -> None:
+    """Put the wire tap on the System-1 client, so its turn-kind call counts.
+
+    ``system_one._build_agent`` builds its own client for each call. The tap
+    wrapped the chat agents only, so this call reached the Router unseen: the
+    rows of run 5 (2026-10-30) show one send more than model calls in each turn
+    that asked the turn kind. The call is a buffered ``tier-fast`` request, so
+    the card prices it."""
+    from acb_skills import system_one
+
+    from evals.routing.harness import _tap
+
+    real = system_one._build_agent
+
+    def build(*args: Any, **kwargs: Any) -> Any:
+        agent, async_client = real(*args, **kwargs)
+        _tap([agent], "system-one", sink)
+        return agent, async_client
+
+    mp.setattr(system_one, "_build_agent", build)
 
 
 #: The tools of the orchestrator that read the LOCAL database of the machine
@@ -478,10 +513,12 @@ def _system_one_seam(mp: Any) -> None:
 def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
              tier: str | None = None, timeout: float = 60.0, repeat: int = 1,
              models: dict[str, ReplyModel] | None = None,
-             on_turn: Any = None) -> list[dict[str, Any]]:
+             on_turn: Any = None, should_stop: Any = None) -> list[dict[str, Any]]:
     """One chat of *sc* on *arm*: each turn through the real orchestrator run.
 
     *router* None is a scripted run: the plans of *sc* play, or *models*.
+    *should_stop* is called before each turn after the first: when it answers
+    True the chat ends there, so a budget stops the run inside a long chat.
     Returns one row for each turn.
     """
     from acb_common import get_settings
@@ -548,6 +585,8 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
         history = [dict(h) for h in sc.history]
         thread: str | None = None
         for index, turn in enumerate(sc.turns):
+            if index and should_stop is not None and should_stop():
+                break
             marks = (len(gateway.calls), len(member.cards), len(harness.model_calls),
                      len(tap.events), len(harness.sent), len(harness.passed),
                      len(store.calls), len(work.calls))
@@ -587,6 +626,9 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
             )
             result = ck.check_turn(turn, obs)
             calls = [call_row(c) for c in harness.model_calls[marks[2]:]]
+            # A send that reached the Router and that no tap saw is counted at
+            # the worst case, never at zero (2026-10-30 drain).
+            unseen = max(0, len(harness.passed) - marks[5] - len(calls))
             events = [{**e, "calls_before": e["calls_before"] - marks[2]}
                       for e in tap.events[marks[3]:]]
             row = {
@@ -599,6 +641,8 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 "model_calls": calls,
                 "sent": harness.sent[marks[4]:],
                 "router_sends": len(harness.passed) - marks[5],
+                "unseen_sends": unseen,
+                "unseen_usd": round(spend.unseen_sends_usd(unseen, RATE_CARD), 6),
                 "handoffs": [ck.handoff_kind(t) for t in obs.tasks],
                 "set": sc.set, "surface": sc.surface,
                 "work_tools": [n for n, _, _ in [*obs.work_calls, *obs.sub_work_calls]],
@@ -720,7 +764,7 @@ def turn_totals(row: dict[str, Any]) -> dict[str, Any]:
         "prompt": sum(c["prompt"] for c in calls),
         "cached": sum(c["cached"] for c in calls),
         "completion": sum(c["completion"] for c in calls),
-        "cost_usd": sum(c["cost_usd"] for c in calls),
+        "cost_usd": sum(c["cost_usd"] for c in calls) + float(row.get("unseen_usd") or 0.0),
         # The calls of one turn run one after the other, so this is the part
         # of the turn that the model took. The rest is the platform's.
         "model_s": sum(c["dur_s"] or 0.0 for c in calls),
@@ -1051,6 +1095,8 @@ def report(data: dict[str, Any]) -> str:
     row("Output tokens per turn", lambda v: v["completion_per_turn"])
     row("Cost per turn, USD", lambda v: v["cost_per_turn_usd"])
     row("Cost of the arm, USD", lambda v: v["cost_usd"])
+    if data.get("rows"):
+        lines += ["", "Counted spend by agent (USD):", "", spend.spend_table(data["rows"])]
     scen = sorted({k for a in arms for k in s[a]["by_scenario"]})
     lines += ["", "| Scenario | " + " | ".join(arms) + " |", "|---" + "|---" * len(arms) + "|"]
     for k in scen:
@@ -1127,7 +1173,12 @@ def _write(out: Path, data: dict[str, Any]) -> None:
     data["spent_this_chunk_usd"] = round(
         float(data.get("spent_usd") or 0.0) - float(data.get("spent_before_usd") or 0.0), 4)
     data["summary"] = summarise(data["rows"])
+    data["spend_by_agent"] = {k: round(v, 4) for k, v in spend.spend_by_agent(data["rows"]).items()}
     out.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 def router_up(base: str, timeout: float = 3.0) -> bool:
@@ -1158,10 +1209,15 @@ def _lost_the_router(rows: list[dict[str, Any]]) -> bool:
 
 def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tuple[str, ...],
              *, repeat: int, tier: str, budget: float, out: Path, timeout: float,
-             first_repeat: int = 1, spent_before: float = 0.0) -> dict[str, Any]:
+             first_repeat: int = 1, spent_before: float = 0.0,
+             allow_peak: bool = True, clock: Any = None) -> dict[str, Any]:
     """The live chats. *budget* caps the spend, counted from *spent_before*,
-    so a run in chunks keeps one cap. A chat that lost the Router is dropped,
-    and the run stops."""
+    so a run in chunks keeps one cap. The check runs before each chat AND
+    before each turn after the first, so one long chat cannot pass the cap by
+    more than one turn. A chat that lost the Router is dropped, and the run
+    stops. Unless *allow_peak*, the run also stops before a chat that would
+    start in a DeepSeek peak band (*clock* gives the time, for a test)."""
+    clock = clock or utc_now
     data: dict[str, Any] = {
         "date": datetime.now(UTC).date().isoformat(), "sha": _sha(), "tier": tier,
         "email_tier": "tier-powerful (its own default, the floor of a delegated run)",
@@ -1197,10 +1253,14 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
             for arm in order:
                 if spent >= budget:
                     return stop(f"the budget: USD {spent:.3f} spent before {sc.id} {arm} r{rep}")
+                ok, why = spend.peak_gate(clock(), allow_peak)
+                if not ok:
+                    return stop(f"peak band before {sc.id} {arm} r{rep}. {why}")
                 if not router_up(router[0]):
                     return stop(f"the Router does not answer before {sc.id} {arm} r{rep}")
                 rows = run_chat(sc, arm, router=router, tier=tier, timeout=timeout,
-                                repeat=rep, on_turn=on_turn)
+                                repeat=rep, on_turn=on_turn,
+                                should_stop=lambda: spent >= budget)
                 if _lost_the_router(rows) or not router_up(router[0]):
                     data["dropped"].append({"scenario": sc.id, "arm": arm, "repeat": rep,
                                             "usd": round(sum(turn_totals(r)["cost_usd"]
@@ -1209,6 +1269,9 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
                                 "the chat is dropped")
                 data["rows"] += rows
                 data["spent_usd"] = round(spent, 4)
+                if len(rows) < len(sc.turns):
+                    return stop(f"the budget: USD {spent:.3f} spent inside {sc.id} {arm} r{rep}, "
+                                f"after turn {len(rows)} of {len(sc.turns)}")
                 _write(out, data)
     data["spent_usd"] = round(spent, 4)
     _write(out, data)
@@ -1360,6 +1423,8 @@ def main(argv: list[str] | None = None) -> int:
                              "chunk spent by itself and uses it as --spent-before")
     parser.add_argument("--tier", default="tier-balanced", help="the orchestrator's tier")
     parser.add_argument("--budget-usd", type=float, default=5.0)
+    parser.add_argument("--allow-peak", action="store_true",
+                        help="live: run inside a DeepSeek peak band (twice the price)")
     parser.add_argument("--timeout", type=float, default=300.0, help="live: seconds a turn")
     parser.add_argument("--out", default=str(HERE / "results.json"))
     args = parser.parse_args(argv)
@@ -1414,6 +1479,11 @@ def main(argv: list[str] | None = None) -> int:
         # Fix round 1: the Router is reached through a tunnel on this machine.
         print(f"NO-GO: {router[0]} is not on this machine. Open the tunnel to the Console.")
         return EXIT_NO_GO
+    peak_ok, peak_why = spend.peak_gate(utc_now(), args.allow_peak)
+    if peak_why:
+        print(peak_why)
+    if not peak_ok:
+        return EXIT_NO_GO
     ok, why = _preflight(router, args.tier)
     print(why)
     if not ok:
@@ -1422,7 +1492,8 @@ def main(argv: list[str] | None = None) -> int:
         [Path(p) for p in args.spent_before_from.split(",") if p.strip()])
     data = run_live(router, scenarios, arms, repeat=max(1, args.repeat), tier=args.tier,
                     budget=args.budget_usd, out=out, timeout=args.timeout,
-                    first_repeat=args.first_repeat, spent_before=before)
+                    first_repeat=args.first_repeat, spent_before=before,
+                    allow_peak=args.allow_peak)
     print(report(data))
     print(f"results: {out}")
     return EXIT_PASS
