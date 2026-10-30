@@ -2843,6 +2843,10 @@ async def run_agent_stream_endpoint(
     # so the payload never carries it on. Cleaned against the packs that name
     # an app, bound for the run below, and never read for a tenant or a member.
     _surface = req.payload.pop("surface", None)
+    # H-337: the session names the member, never the body. The claim goes
+    # HERE, before the saved turn and the turn route read the payload. It
+    # goes always, so a room run keeps its `room:` memory id.
+    _drop_identity_claims(req.payload, user)
     _edit_keep = [_new_user_id, req.assistant_message_id or ""]
     # WS-51 S4: the member's turn, as they typed it. The server saves it
     # below, before the run starts, so a tab closed at once keeps it. The
@@ -3952,6 +3956,41 @@ def _session_member(user: Any) -> str | None:
     return email if "@" in email else None
 
 
+#: The body keys that name a person. ``executor._payload_user`` reads them.
+_IDENTITY_CLAIMS = ("user_email", "user_id")
+
+
+def _drop_identity_claims(
+    payload: dict[str, Any], user: Any, *, keep_own: bool = False,
+) -> None:
+    """Remove the body's claim of the run's member, in place. H-337.
+
+    🔴 **The session names the member, never the body.** The executor binds
+    the memory id and the acting user of the gateway-calling tools from
+    ``user_email`` or ``user_id`` (``executor._bind_run_identity``). So a
+    body claim could rebind them to another member, in a solo chat too.
+    ``_run_member`` lets the session win for billing only.
+
+    A service caller has no person (``_session_member`` is None). Its claim
+    is the only identity it has, so the claim stays.
+
+    ``keep_own=True`` keeps a claim that names the session's member, in any
+    letter case. The stream route removes each claim, because a room run keeps
+    the ``room:`` id that the route sets. Fence:
+    ``tests/unit/test_chat_payload_identity_claims.py``.
+    """
+    member = _session_member(user)
+    if member is None:
+        return
+    for key in _IDENTITY_CLAIMS:
+        if key not in payload:
+            continue
+        claim = str(payload.get(key) or "").strip()
+        if keep_own and claim.lower() == member.lower():
+            continue
+        payload.pop(key, None)
+
+
 @router.post("/run", response_model=AgentRunResponse)
 async def run_agent_sync(
     req: AgentRunRequest,
@@ -3978,6 +4017,9 @@ async def run_agent_sync(
         await _refuse_if_another_run_is_active(
             req.thread_id, (getattr(user, "email", "") or "").strip(),
         )
+    # H-337: a claim that names another member goes. An API caller's own
+    # claim stays, because this route sets no memory id of its own.
+    _drop_identity_claims(req.payload, user, keep_own=True)
     run_id = req.run_id or str(uuid.uuid4())
 
     try:
@@ -4045,6 +4087,8 @@ async def run_agent_async(
         await _refuse_if_another_run_is_active(
             req.thread_id, (getattr(user, "email", "") or "").strip(),
         )
+    # H-337: the same rule as `run_agent_sync`.
+    _drop_identity_claims(req.payload, user, keep_own=True)
     run_id = req.run_id or str(uuid.uuid4())
 
     async def _run() -> None:

@@ -67,6 +67,7 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - **The endpoint check is the boundary of record.** The three run doors call `assert_can_run_agent`. The filtered `GET /agent` is UX only. Registry writes need `agents:manage`.
    - ⚠️ `/agent/webhook/{source}` starts a run from the internet. It checks HMAC-SHA256 over the raw body, and it FAILS CLOSED with 503 when no secret is set.
    - The run doors check the room and call `chat.prepare_new_session`. Fences: `test_h227_thread_scope.py`, `test_agent_list_tier_routed.py`.
+   - 🔴 **The session names the run's member, never the body** (H-337). `_drop_identity_claims` removes `user_email` and `user_id` before the executor reads them. The stream door removes each claim. `/agent/run` and `/agent/run/async` keep a claim of the session's own member. A service caller keeps its claim. Fence: `test_chat_payload_identity_claims.py`.
 3. routes/chat.py -- **Chat history and `GET /chat/active-sessions`.**
    - **Authorization is MEMBERSHIP, not ownership.** Each predicate goes through `gateway/rooms.py`. **Every helper opens `acb_graph.tenant_session(organization_id)`, never `get_session()`.** A session of another tenant gets no access and no write. Fences: `test_chat_write_under_rls.py`, `test_rooms.py`.
    - 🔴 **A human turn changes only when its own author writes it.** `_attribute` takes the email from the caller, never from the body.
