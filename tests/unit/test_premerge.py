@@ -63,22 +63,61 @@ def repo(tmp_path: Path) -> Path:
     _git(tmp_path, "clone", "-q", str(origin), str(work))
     _git(work, "checkout", "-q", "-b", "main")
     _commit(work, "infra/postgres/315_base.sql")
+    _commit(work, "shared.md", "a\nb\nc\nd\ne\n")
     _git(work, "push", "-q", "origin", "main")
     _git(work, "checkout", "-q", "-b", "feat")
     return work
 
 
-def _advance_main(repo: Path, path: str) -> None:
+def _advance_main(repo: Path, path: str, text: str = "x\n") -> None:
     """Another PR merges: main moves on while `feat` waits."""
     _git(repo, "checkout", "-q", "main")
-    _commit(repo, path)
+    _commit(repo, path, text)
     _git(repo, "push", "-q", "origin", "main")
     _git(repo, "checkout", "-q", "feat")
 
 
-def _run(repo: Path) -> subprocess.CompletedProcess[str]:
+def _run(repo: Path, **env: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run([_BASH, SCRIPT.as_posix()], cwd=repo, capture_output=True,
-                          text=True, encoding="utf-8", env=_ENV, timeout=120)
+                          text=True, encoding="utf-8", env={**_ENV, **env}, timeout=120)
+
+
+def _both_sides_change_shared(repo: Path) -> None:
+    """Both sides edit shared.md on different lines: a clean merge with overlap."""
+    _commit(repo, "shared.md", "A\nb\nc\nd\ne\n")
+    _advance_main(repo, "shared.md", "a\nb\nc\nd\nE\n")
+
+
+_FAILS = 'echo "FAILED tests/t.py::test_a - boom"; exit 1'
+
+
+def test_a_test_that_fails_only_when_merged_blocks(repo):
+    """Green alone, red together: the case the overlap step exists for."""
+    _both_sides_change_shared(repo)
+    res = _run(repo, PREMERGE_AFFECTED_CMD=_FAILS, PREMERGE_RERUN_CMD="true")
+    assert res.returncode == 1
+    assert "tests/t.py::test_a" in res.stderr and "pass on the branch alone" in res.stderr
+    assert not (repo / ".git" / "MERGE_HEAD").exists()
+
+
+def test_a_test_that_fails_alone_too_does_not_block(repo):
+    """Six tests fail on the Windows PC and pass in CI. They must not block a
+    merge they did not come from (LD-3b, 2026-10-30)."""
+    _both_sides_change_shared(repo)
+    head = _git(repo, "rev-parse", "HEAD")
+    res = _run(repo, PREMERGE_AFFECTED_CMD=_FAILS, PREMERGE_RERUN_CMD=_FAILS)
+    assert res.returncode == 0, res.stderr
+    assert "did not cause them" in res.stdout and "PASS" in res.stdout
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert _git(repo, "status", "--porcelain") == ""
+    assert _git(repo, "symbolic-ref", "--short", "HEAD") == "feat"
+
+
+def test_a_run_that_names_no_test_blocks(repo):
+    _both_sides_change_shared(repo)
+    res = _run(repo, PREMERGE_AFFECTED_CMD="echo boom; exit 2", PREMERGE_RERUN_CMD="true")
+    assert res.returncode == 1
+    assert "no test is named" in res.stderr
 
 
 def test_a_branch_that_contains_main_passes(repo):
@@ -115,6 +154,7 @@ def test_a_conflict_fails_and_leaves_the_worktree_as_it_was(repo):
     assert "conflicts in: notes.md" in res.stderr
     assert _git(repo, "rev-parse", "HEAD") == head
     assert _git(repo, "status", "--porcelain") == ""
+    assert _git(repo, "symbolic-ref", "--short", "HEAD") == "feat"
     assert not (repo / ".git" / "MERGE_HEAD").exists()
 
 
@@ -139,6 +179,7 @@ def test_a_clean_behind_branch_passes_and_the_trial_merge_is_undone(repo):
     assert "PASS" in res.stdout
     assert _git(repo, "rev-parse", "HEAD") == head
     assert _git(repo, "status", "--porcelain") == ""
+    assert _git(repo, "symbolic-ref", "--short", "HEAD") == "feat"
     assert not (repo / ".git" / "MERGE_HEAD").exists()
 
 
