@@ -14,11 +14,13 @@
 
 import Icon from "@/components/Icon";
 
-export type BadgeTone = "neutral" | "primary" | "success" | "warning" | "destructive";
+export type BadgeTone = "neutral" | "primary" | "info" | "success" | "warning" | "destructive";
 
 const TONES: Record<BadgeTone, string> = {
   neutral: "bg-secondary text-muted-foreground",
   primary: "bg-primary/10 text-primary",
+  // The blue a status means. It does not follow the member's accent.
+  info: "bg-info/10 text-info",
   success: "bg-success/10 text-success",
   warning: "bg-warning/10 text-warning",
   destructive: "bg-destructive/10 text-destructive",
