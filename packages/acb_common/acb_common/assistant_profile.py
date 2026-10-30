@@ -231,11 +231,15 @@ async def members_app_prefs(db: Any, org: str, app: str) -> list[tuple[str, dict
 
 #: The interview (PZ-26, ``personalization.md`` §14.3). One table: the id of
 #: each area and its starting question, in the order the interview asks. The
-#: model asks in its own words, so the question is an example.
+#: model asks in its own words, so the question is an example. PZ-32 puts
+#: ``name`` first and ``language`` second, so a first sitting learns what to
+#: call the member, and in which language, before anything else.
 AREAS: dict[str, str] = {
+    "name": "What should I call you, and how formal should I be?",
+    "language": "Which language should I answer you in?",
     "role": "What is your role, and what takes most of your week?",
     "goals": "What are the one to three things you most want to move this quarter?",
-    "good_day": "What would make today a win for you?",
+    "good_day": "What makes a day a win for you?",
     "decisions": "Do you want options with a recommendation, or only the answer?",
     "detail": "Do you want the headline first, or the full reasoning?",
     "rhythm": "When do you do deep work, and when must I not interrupt?",
@@ -248,6 +252,9 @@ AREAS: dict[str, str] = {
 #: The model reads the intent and asks in its own words. The starting
 #: question is only an example.
 AREA_INTENTS: dict[str, str] = {
+    "name": "what to call them and how formal to be, so each reply addresses them as they like",
+    "language": ("which language they want answers in, so each reply comes in it. "
+                 "When they already write in one, ask only whether to keep it"),
     "role": "their role and what fills most of their week, so help fits their real work",
     "goals": "what they most want to move this quarter, so plans and reminders point at it",
     "good_day": "what makes a day a win for them, so daily plans aim at it",
@@ -259,6 +266,10 @@ AREA_INTENTS: dict[str, str] = {
     "peeves": "what assistants do that annoys them, so you stop doing it",
     "people": "who they work with most, so names and mail resolve to the right people",
 }
+#: The areas that a ``profile_set`` change answers, and never a fact (PZ-32):
+#: the key of the profile that each one writes. ``detail`` writes ``style``
+#: too, and a fact can answer it, so it is not here.
+SET_AREAS: dict[str, str] = {"name": "address", "language": "style"}
 #: The state of an area (§14.3). An area with no entry is open.
 INTERVIEW_STATES: tuple[str, ...] = ("asked", "answered", "skipped", "never")
 #: The most hours between two questions (§14.4, limit 1).
@@ -1176,11 +1187,15 @@ def apply_interview_mark(interview: Any, area: str, state: str,
 
 def start_interview(interview: Any, now: datetime, sitting: bool = False) -> dict[str, Any]:
     """The interview with ``started_at`` set once. No area changes. With
-    *sitting*, ``sitting_at`` is *now*: the member starts a sitting."""
+    *sitting*, ``sitting_at`` and ``last_asked_at`` are *now*: the member
+    starts a sitting, and the sitting asks its questions now. So the daily
+    due line waits :data:`DUE_HOURS` after it, even when the model asks and
+    never marks an area ``asked`` (PZ-32, P1-3)."""
     out = _stored_interview(interview) or {}
     out.setdefault("started_at", _format_time(now))
     if sitting:
         out["sitting_at"] = _format_time(now)
+        out["last_asked_at"] = _format_time(now)
     return out
 
 
@@ -1246,14 +1261,55 @@ def answer_since(interview: Any, area: str) -> datetime | None:
     return max(known) if known else None
 
 
+#: The fields of ``address`` that answer the area ``name`` (PZ-32).
+_NAME_FIELDS = frozenset({"name", "formality"})
+
+
+def put_areas(last_change: Any) -> frozenset[str]:
+    """The interview areas that one chat ``put`` answers (PZ-32).
+
+    *last_change* is the raw :data:`LAST_CHANGE` record. A ``put`` record
+    holds the new object (``after``) and the object before it (``prior``),
+    so the changed fields are their difference:
+
+    * ``address`` with a changed ``name`` or ``formality`` answers ``name``;
+    * ``style`` with a changed ``language`` answers ``language``;
+    * ``style`` with any other changed field answers ``detail``.
+
+    So a change of the language alone never closes ``detail``, and a change
+    of the length alone never closes ``language``. A record with no
+    ``after`` (not written by a ``put`` of this shape) answers ``detail``
+    for ``style``, as before PZ-32, and nothing else. The gateway's undo of
+    a chat change opens these areas again. Pure.
+    """
+    last = last_change if isinstance(last_change, dict) else {}
+    if last.get("op") != "put":
+        return frozenset()
+    key, after, prior = last.get("key"), last.get("after"), last.get("prior")
+    if not isinstance(after, dict):
+        return frozenset({"detail"}) if key == "style" else frozenset()
+    prior = prior if isinstance(prior, dict) else {}
+    changed = {k for k in {*after, *prior} if after.get(k) != prior.get(k)}
+    if key == "address":
+        return frozenset({"name"}) if changed & _NAME_FIELDS else frozenset()
+    if key != "style":
+        return frozenset()
+    out = {"language"} if "language" in changed else set()
+    if changed - {"language"}:
+        out.add("detail")
+    return frozenset(out)
+
+
 def area_has_answer(profile: Any, area: str, last_change: Any = None) -> bool:
     """True when the stored *profile* holds a FRESH answer for *area*.
 
     An area that is ``answered`` already stays answered. Else the evidence
     must be no older than :func:`answer_since`, by server times only:
 
-    * a fact with ``area == area`` whose ``at`` is not earlier;
-    * for ``detail``, a chat ``put`` of ``style`` in *last_change*;
+    * a fact with ``area == area`` whose ``at`` is not earlier, for each
+      area but those of :data:`SET_AREAS`;
+    * for ``name``, ``language`` and ``detail``, a chat ``put`` in
+      *last_change* that :func:`put_areas` says answers the area (PZ-32);
     * for ``people``, a chat ``post`` or ``patch`` of an alias in
       *last_change*.
 
@@ -1272,7 +1328,7 @@ def area_has_answer(profile: Any, area: str, last_change: Any = None) -> bool:
     if since is None:
         return False
     facts = stored.get("facts") if isinstance(stored.get("facts"), list) else []
-    for fact in facts:
+    for fact in facts if area not in SET_AREAS else ():
         at = _parse_time(fact.get("at")) if isinstance(fact, dict) else None
         if fact.get("area") == area and at is not None and at >= since:
             return True
@@ -1283,8 +1339,8 @@ def area_has_answer(profile: Any, area: str, last_change: Any = None) -> bool:
     # The interview times have whole seconds, and so does the record.
     if datetime.fromtimestamp(int(at), UTC) < since:
         return False
-    if area == "detail":
-        return last.get("op") == "put" and last.get("key") == "style"
+    if area in ("name", "language", "detail"):
+        return area in put_areas(last)
     if area == "people":
         return last.get("op") in ("post", "patch") and last.get("list") == "aliases"
     return False
@@ -1408,8 +1464,11 @@ def _aliases_line(aliases: list[dict[str, Any]]) -> str:
 
 
 def _fact_line(fact: dict[str, Any]) -> str:
+    """One fact of the block: its id, its text, then its kind, the interview
+    area that it answers (PZ-32, P1-1) and its day, each when it has one."""
     day = fact["at"][:10] if fact["at"] else ""
-    tail = f"{fact['kind']}, {day}" if day else fact["kind"]
+    area = f"area {fact['area']}" if fact.get("area") else ""
+    tail = ", ".join(x for x in (fact["kind"], area, day) if x)
     return f"- [{fact['id']}] {fact['text']} ({tail})"
 
 
@@ -1457,7 +1516,8 @@ def render_block(raw: Any, fallback_name: str = "") -> str:
     aliases = [{"alias": _one_line(a["alias"]), "email": _one_line(a["email"])}
                for a in profile["aliases"]]
     facts = [{"id": _one_line(f["id"]), "text": _one_line(f["text"]),
-              "kind": f["kind"], "at": _one_line(f.get("at") or ""), "n": n}
+              "kind": f["kind"], "at": _one_line(f.get("at") or ""),
+              "area": f.get("area") or "", "n": n}
              for n, f in enumerate(profile["facts"])]
     own_name = _own_name(address.get("name"))
     # The fallback comes from the directory: check its shape again here, so

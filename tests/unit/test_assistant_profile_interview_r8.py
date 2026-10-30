@@ -157,7 +157,7 @@ async def test_a_full_profile_still_takes_a_mark(db) -> None:
         for area in acp.AREAS:
             await _mark(db.org_a, user, area, "asked", "chat")
         stored = _column(db, email)
-    assert len(stored["facts"]) == 40 and len(stored["interview"]["areas"]) == 10
+    assert len(stored["facts"]) == 40 and len(stored["interview"]["areas"]) == len(acp.AREAS)
     assert acp.profile_size(stored) > acp.PROFILE_MAX  # it passed because it is excluded
 
 
@@ -431,6 +431,74 @@ async def test_detail_and_people_take_their_own_evidence(db) -> None:
         done = await _mark(db.org_a, user, "people", "answered", "chat")
     assert {a: v["state"] for a, v in done["areas"].items()} == {
         "detail": "answered", "people": "answered"}
+
+
+async def _chat_address(org: str, user: UserContext, value: dict) -> dict:
+    with _tenant(org):
+        return await _ap().put_assistant_profile(body={"key": "address", "value": value},
+                                                 user=user, x_profile_via="chat")
+
+
+async def test_name_language_answer_rules(db) -> None:
+    """PZ-32: `name` needs a fresh chat put of the address name or formality,
+    and `language` a fresh chat put that changes style.language. A fact
+    answers neither. A language change never closes `detail`, and a length
+    change never closes `language`. The undo of the language change opens
+    `language` again and leaves `detail` closed."""
+    first, second = _address(), _address()
+    db.made.extend([first, second])
+    one, two = _member(first), _member(second)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, one)
+        for area in ("name", "language", "detail"):
+            await _mark(db.org_a, one, area, "asked", "chat")
+        # A fact with the area is no answer of `name` or `language`.
+        await _add_area_fact(db.org_a, one, "Call me Ana", "name")
+        await _add_area_fact(db.org_a, one, "Answer in Hindi", "language")
+        for area in ("name", "language", "detail"):
+            with pytest.raises(HTTPException) as exc:
+                await _mark(db.org_a, one, area, "answered", "chat")
+            assert exc.value.detail["reason"] == acp.NO_ANSWER
+        # The language alone: `language` passes, `detail` does not.
+        await _chat_style(db.org_a, one, {"language": "hi-IN"})
+        with pytest.raises(HTTPException):
+            await _mark(db.org_a, one, "detail", "answered", "chat")
+        await _mark(db.org_a, one, "language", "answered", "chat")
+        # The address name: `name` passes.
+        await _chat_address(db.org_a, one, {"name": "Ana"})
+        done = await _mark(db.org_a, one, "name", "answered", "chat")
+        assert {a: v["state"] for a, v in done["areas"].items()} == {
+            "name": "answered", "language": "answered", "detail": "asked"}
+
+        # The second member: the length alone closes `detail`, not `language`.
+        await _sit(db.org_a, two)
+        await _mark(db.org_a, two, "language", "asked", "chat")
+        await _mark(db.org_a, two, "detail", "asked", "chat")
+        await _chat_style(db.org_a, two, {"length": "short"})
+        with pytest.raises(HTTPException):
+            await _mark(db.org_a, two, "language", "answered", "chat")
+        await _mark(db.org_a, two, "detail", "answered", "chat")
+        # The undo of a language change opens `language`, and `detail` stays.
+        await _chat_style(db.org_a, two, {"length": "short", "language": "ta"})
+        await _mark(db.org_a, two, "language", "answered", "chat")
+        await _undo(db.org_a, two)
+        read = await _get(db.org_a, two)
+    assert read["style"] == {"length": "short"}
+    assert {a: v["state"] for a, v in read["interview"]["areas"].items()} == {
+        "detail": "answered"}
+
+
+async def test_a_sitting_sets_last_asked_at(db) -> None:
+    """PZ-32 (P1-3): the start of a sitting is a question asked now, so the
+    due line waits a day after it."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        sat = await _sit(db.org_a, user)
+    assert sat["last_asked_at"] == sat["sitting_at"]
+    later = acp._parse_time(sat["sitting_at"])
+    assert acp.due_area(sat, later) == ""
 
 
 async def _sleep_a_second() -> None:

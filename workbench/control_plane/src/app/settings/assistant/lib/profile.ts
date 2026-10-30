@@ -53,9 +53,11 @@ export interface Style {
  * Fence: `interviewAreas.test.ts` reads that file and compares.
  */
 export const INTERVIEW_AREAS = [
+  { id: "name", label: "What to call you", question: "What should I call you, and how formal should I be?" },
+  { id: "language", label: "Your language", question: "Which language should I answer you in?" },
   { id: "role", label: "Your role", question: "What is your role, and what takes most of your week?" },
   { id: "goals", label: "Your goals", question: "What are the one to three things you most want to move this quarter?" },
-  { id: "good_day", label: "A good day", question: "What would make today a win for you?" },
+  { id: "good_day", label: "A good day", question: "What makes a day a win for you?" },
   { id: "decisions", label: "How you decide", question: "Do you want options with a recommendation, or only the answer?" },
   { id: "detail", label: "How much detail", question: "Do you want the headline first, or the full reasoning?" },
   { id: "rhythm", label: "Your rhythm", question: "When do you do deep work, and when must I not interrupt?" },

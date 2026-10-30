@@ -142,6 +142,7 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     mark_changed,
     may_ask,
     profile_size,
+    put_areas,
     stored_app_prefs,
     stored_profile,
 )
@@ -154,8 +155,8 @@ logger = logging.getLogger(__name__)
 
 FactKind = Literal["about", "routine", "preference", "work", "relationship"]
 #: The areas of the interview (PZ-26). ``AREAS`` is the one table.
-AreaId = Literal["role", "goals", "good_day", "decisions", "detail", "rhythm",
-                 "channels", "energy", "peeves", "people"]
+AreaId = Literal["name", "language", "role", "goals", "good_day", "decisions", "detail",
+                 "rhythm", "channels", "energy", "peeves", "people"]
 InterviewState = Literal["asked", "answered", "skipped", "never"]
 
 
@@ -626,10 +627,11 @@ def undo_last_change(raw: Any, now: float) -> tuple[dict[str, Any] | None, str]:
             return None, UNDO_CHANGED
         prior = last.get("prior")
         out[key] = prior if isinstance(prior, dict) else {}
-        if key == "style":
-            # A chat style change is the answer of `detail` (fix of
-            # 2026-10-27). Its undo opens the area again.
-            _reopen(out, "detail")
+        # A chat change of the address or the style answers `name`,
+        # `language` or `detail` (fix of 2026-10-27, PZ-32). Its undo opens
+        # each area that it answered again (`put_areas`, the one rule).
+        for area in sorted(put_areas(last)):
+            _reopen(out, area)
         return out, ""
     lkey = last.get("list")
     if lkey not in ("facts", "aliases"):

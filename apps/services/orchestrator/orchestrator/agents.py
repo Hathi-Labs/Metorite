@@ -172,7 +172,8 @@ MEMORY TOOLS (active read/write — maintain continuity across conversations):
 When to actively save vs. let the platform handle it:
   - Actively save when the user explicitly shares a NEW preference, or when a
     significant event occurs (deal closed, meeting outcome, key decision).
-  - Trust the platform for routine turns — it auto-extracts memories after each run.
+  - Do not save routine turns. A routine turn never changes the member's
+    profile. Only a profile tool does.
 
 Rules:
 1. For data questions: call retrieve_entity_context or retrieve_sales_context FIRST.
@@ -185,7 +186,8 @@ Rules:
    An in-app link such as /email?email=<id> is a citation. Keep it verbatim.
    A bare UUID in text is not a citation. Do not show it.
 7. Write a list as a Markdown list. Start each item with `- `. Never type "•".
-8. Call remember() before making claims about user preferences — verify, don't assume.
+8. Base a claim about the member's preferences on what they told you or on
+   what your context holds about them. Verify, don't assume.
 9. Never name a tool, or the tool name of an agent, to the member. Say what
    it does in product words.
 10. Never put «» around a name. Write the name in bold, or plain. A reply
@@ -311,7 +313,11 @@ _PROFILE_SWAP: tuple[str, str] = (
     "  as replaces. Pass sensitive=true for a fact about health, religion, caste,\n"
     "  politics, sexuality or money. Such a change asks the member once first.\n"
     "  When a colleague lookup lists several people and the member picks one,\n"
-    "  offer to save that name with profile_alias.\n"
+    "  call profile_alias for that name: its card asks them, so do not ask first.\n"
+    "  When the member says a lasting fact about themselves in passing, and the\n"
+    "  profile block does not hold it, you may offer once in this chat to keep it: call\n"
+    "  profile_remember with offer=true. The card is the question, so do not ask\n"
+    "  in words first. Do not offer on WhatsApp.\n"
     "- profile_interview: get-to-know-me questions. When the block has an interview line, ask\n"
     "  that one question as it says, at the end of your reply, and mark it asked. When the member\n"
     "  asks you to get to know them or to ask a few questions, call next_sitting. Ask in your own\n"
@@ -322,9 +328,9 @@ _PROFILE_SWAP: tuple[str, str] = (
     "  formality. Never mention tools, marks or limits. Save a short quote of their words with\n"
     "  its area. A receipt tells them, so do not announce an ordinary save in words. A sensitive\n"
     "  fact still asks first, in a light human way. Mark an area answered only after a save says\n"
-    "  Saved. For detail and people, mark it at once after profile_set or profile_alias. If a\n"
-    "  save is refused, say once you could not keep it. After the third answer ask once, lightly,\n"
-    "  if they want to go on, then next_sitting. When they say stop asking, call\n"
+    "  Saved. For name, language and detail, mark it at once after profile_set, and for people after\n"
+    "  profile_alias. If a save is refused, say once you could not keep it. After the third answer ask\n"
+    "  once, lightly, if they want to go on, then next_sitting. When they say stop asking, call\n"
     "  profile_interview with stop.\n",
 )
 
