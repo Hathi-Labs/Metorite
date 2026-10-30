@@ -141,6 +141,28 @@ def test_an_archived_child_leaves_the_parent_count_like_the_summary_walk():
     assert "archived_at IS NULL" in pm_tree.NODE_DESCENDANTS_SQL
 
 
+def test_an_archived_parent_still_counts_its_archived_children():
+    """OP-12b. An archive stamps the whole subtree, so "Home" archived with
+    "Garden" and "Repairs" under it reads 5 open, as its Overview does
+    (`NODE_DESCENDANTS_ARCHIVED_SQL` keeps archived children)."""
+    stamp = "2026-10-30T00:00:00Z"
+    tree = [{"id": "root", "children": [
+        {"id": "home", "archived_at": stamp, "children": [
+            {"id": "garden", "archived_at": stamp, "children": []},
+            {"id": "repairs", "archived_at": stamp, "children": []},
+        ]},
+    ]}]
+    counts = {"root": (1, 0, 0), "garden": (3, 0, 0), "repairs": (2, 0, 0)}
+
+    pm_tree._attach_progress(tree, counts)
+
+    home = tree[0]["children"][0]
+    assert home["tasks"] == 5
+    # The live root still leaves the archived Home out of its own count.
+    assert tree[0]["tasks"] == 1
+    assert "p.archived_at IS NULL" not in pm_tree.NODE_DESCENDANTS_ARCHIVED_SQL
+
+
 def test_a_count_for_a_node_outside_the_tree_is_ignored():
     """A task in a project the forest read did not return - a personal
     project, say - belongs to no row here. The alternative is a total that

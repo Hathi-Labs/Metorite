@@ -601,7 +601,8 @@ function ProjectNav({
                   onSelect(personalHead.root as ProjectRow);
                   onPicked?.();
                 }}
-                icon={<Icon name="Lock" className="h-4 w-4 shrink-0" aria-hidden />}
+                // No `title` on a rail row (AGENTS.md rule 12): the lock carries the hint for a screen reader.
+                icon={<Icon name="Lock" className="h-4 w-4 shrink-0" role="img" aria-label={PERSONAL_SECTION_HINT} />}
                 meta={
                   openCount(personalHead.root) ? (
                     <>
@@ -639,7 +640,6 @@ function ProjectNav({
                 />}
                 buttonProps={{
                   "aria-current": !app && selectedId === personalHead.root.id ? "page" : undefined,
-                  title: PERSONAL_SECTION_HINT,
                 }}
               />
               {personalAdd ? (
