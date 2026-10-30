@@ -625,6 +625,24 @@ def test_r8_a_late_check_back_or_give_up_plans_no_push(world) -> None:
     assert planned == {check: "reminder_check", give_up: "reminder_unconfirmed"}
 
 
+def test_r8_a_due_push_never_goes_more_than_its_ttl_after_fire_at(world, monkeypatch) -> None:
+    """Ruling j at the send step. The fire planned on time, and no send came
+    for an hour (for example, the keys were missing). The row is young on
+    its own clock, but the send comes more than the TTL after ``fire_at``, so
+    it ends ``expired``. The control fired one minute before that send."""
+    org, at = world.p.org_b, _utc(10, 15)
+    ttl = push_message.ttl_of("reminder_due")
+    old = _seed(world, ALICE, at)
+    _steps(world, org, [old], at)
+    send_at = at + timedelta(seconds=ttl + 60)
+    fresh = _seed(world, BOB, send_at - timedelta(seconds=60))
+    _steps(world, org, [fresh], send_at - timedelta(seconds=60))
+    assert _send(world, org, send_at) == Counter(push_expired=1, push_sent=1)
+    assert [(r.state, r.reason) for r in _outbox(world, ALICE)] == [("skipped", "expired")]
+    assert [p["tag"] for p in _payloads(world, BOB)] == [fresh]
+    assert _payloads(world, ALICE) == []
+
+
 # ── The caps ───────────────────────────────────────────────────────────────
 
 
