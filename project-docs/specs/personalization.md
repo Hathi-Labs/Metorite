@@ -29,6 +29,19 @@ says which name it uses. The production flip stays an owner act.
 **PZ-30 BUILT 2026-10-27, dark.** The interview reads as a talk, not a form.
 See §14.4 "PZ-30 as built".
 
+**PZ-32 BUILT 2026-10-30. The card writes are dark.** The interview gains
+the areas `name` and `language`, and asks them first. A stop holds for the
+new areas too. Migration 317 gives a stop from before PZ-32 its
+`stopped_at`, once. See §5.5 "As built (PZ-32)" and §14.4 "PZ-32 as built".
+
+Two write paths ship dark behind `ASSISTANT_PROFILE_CARD_WRITES_ORGS`, an
+org list that is empty by default. With the flag on for an org, a card in
+the web chat grounds a value that the member did not type (D-PZ-21). The
+assistant can also offer once in a chat to keep a fact that the member said
+in passing (D-PZ-22). With the flag off, both paths behave as before PZ-32.
+A flip of the flag on a box is gate `enforcement-flip`. The new areas, the
+stop fix and the other fixes use the profile switch, and need no flag.
+
 **Interview save fix BUILT 2026-10-27.** On production a refused save
 still closed the `goals` area. The gateway now refuses a chat mark
 `answered` with no saved answer. See §14.4 "PZ-26 as built" item 9 and
@@ -542,8 +555,13 @@ routes as the member, with the internal bearer and `X-User-Email`.
   before their answer reaches the model. The end of a delegated or
   specialist run closes the parent's switch too. The memory pre-read runs
   before the run starts, so it cannot close the switch. The confirm rule
-  and the typed-words rule below cover it. Fence:
-  `tests/unit/test_profile_write_tools.py`.
+  covers it. With `ASSISTANT_PROFILE_CARD_WRITES_ORGS` off for the org, and
+  on WhatsApp, the typed-words rule below covers it too. With the flag on,
+  the web chat asks a card for a value that the member did not type, so a
+  value from the pre-read can save after the member approves the exact text
+  (PZ-32, D-PZ-21). An offer never takes such a value. Fences:
+  `tests/unit/test_profile_write_tools.py` and
+  `tests/unit/test_profile_pz32.py`.
 - **CODE, the main fence: a confirm for an address, a link or a number**
   (fix round 2). Some free-text values never write from the chat at once.
   These are a value with an email address, a URL or a bare domain, and a
@@ -671,6 +689,89 @@ Fences: `tests/unit/test_profile_write_tools.py`,
 `tests/unit/test_resolve_person.py`,
 `tests/unit/test_assistant_profile_r8.py` and
 `src/components/profile/ProfileToolCards.test.ts`.
+
+**As built (PZ-32, 2026-10-30).** The owner asked on 2026-10-30 that the
+questions of the chat fill in the member's profile, and that the chat uses
+it. PZ-32 makes the card the ground of a value, and adds the offer to
+remember (D-PZ-21, D-PZ-22).
+
+- **The flag.** `ASSISTANT_PROFILE_CARD_WRITES_ORGS` is a comma list of
+  organization ids, or `*`. Empty means off, and that is the default.
+  `assistant_profile.card_writes_for(org)` is its one reader, and it takes
+  the run's org. `profile_tools._card_channel` asks it, so with the flag off
+  the two paths below behave as before PZ-32. A value that the member did
+  not type refuses with `not_your_words`. An offer answers `no_offer` and
+  shows no card. The persona line of the offer comes only with the flag on
+  (`agents._PROFILE_CARD_SWAP`). The name ends in `_ORGS`, so a SIGHUP
+  reload applies a flip. The flip on a box is gate `enforcement-flip`.
+- **CODE: a card grounds a value** (D-PZ-21, it extends D-PZ-2). Before,
+  `_ground` refused a value before the card showed. So the address that a
+  lookup gave for an alias never saved. A rephrase of an interview answer
+  never saved either. Now `_write_gate` runs first, as before. A value that
+  the typed words do not hold then asks the ONE card of the write. The card
+  shows the exact value and names the reason "You did not type these exact
+  words in this message". Only an approve writes it.
+- **The approve is bound three ways.** The card shows the exact payload of
+  the write, and the answer carries a word only, never a payload. Each card
+  has its own id and its own Future. `request_confirmation(responder=...)`
+  counts an answer only from the run's own member. `/agent/respond-input`
+  takes that member from the session, and a body field cannot name it.
+  `executor.resolve_user_input` answers only for the thread that owns the
+  card. Fence: `tests/unit/test_profile_pz32.py`, which runs the real card
+  gate and the real resolver.
+- **The fences of `_write_gate` stay first.** A shared room, a closed run, a
+  WhatsApp run with writes off and a marked session get no card. After an
+  approve, `_still_open` checks the run again. A read of other content or a
+  mark while the card waits refuses the write.
+- **Where no card can show.** On WhatsApp, and in a run with no card
+  channel, the typed-words rule refuses with `not_your_words`, as before.
+  A removal of an alias shows no card, so only the typed words ground it.
+- **Where the card does not ground** (repair round 1). A turn with no typed
+  words gets no such card: a Continue, a card answer, a paste. A style note
+  never gets it, because each later block carries the note. A sensitive
+  value that the member did not type asks a second card for the sensitive
+  reason alone (D-PZ-16), as an offer does.
+- **The offer to remember** (D-PZ-22). `profile_remember(offer=true)` is
+  the offer. The card is the question, so the chat does not ask in words
+  first. It shows the exact text under the title "Remember this about
+  you?", and nothing saves without the yes. A chat offers once at most.
+  `_claim_offer` takes one `SET NX` key in tenant Redis,
+  `cc:<org>:profile-offer:<session>:<member hash>`, for 30 days. A second
+  offer, a Redis fault and a run with no card refuse with `no_offer`. The
+  offer is web only. A fact that the profile already holds, in any kind,
+  gets no offer. A sensitive fact asks a second card (D-PZ-16).
+- **Only the typed words ground an offer** (repair round 1). The card says
+  "You said it in this chat". So a text from a memory, the pre-read or a
+  Continue turn refuses with `no_offer`, and the chat keeps its one offer.
+- **A refusal before the card of an offer is silent** (repair round 2). An
+  offer asks `_offer_ground` first. Then each refusal before the card is
+  `no_offer`, and the old reason follows "For the assistant:". Examples are
+  a closed turn, a marked session, learning off and an unknown area. The
+  member did not ask to save the fact, so the chat must not show "Not
+  saved". This holds with the flag off too, because the schema of the tool
+  shows `offer` in each org.
+- **The receipt of an offer.** `ProfileToolCards.tsx` draws nothing for
+  `no_offer`. It draws nothing for "Already saved" when the call holds
+  `offer=true` either. The member saw no question, so the chat shows no
+  answer.
+- **An unknown area refuses** (P1-2). `profile_remember` with an area that
+  is not in `AREAS` refuses. The member reads only "I could not save that."
+  The ids and the tool name follow for the model only. Before, it saved the
+  fact, left the area out and said Saved. `name` and `language` refuse
+  there too, because `profile_set` answers them.
+- **The block names the area of a fact** (P1-1): `- [id] text (kind, area
+  goals, day)`. The cap of 6,000 characters counts the tag (P2-2).
+- **The persona** drops the claim that the platform extracts memories on
+  its own. Rule 8 no longer asks for `remember()`, because that read
+  closes the profile writes of the turn. With the flag on, the persona line
+  names the offer, and says that the alias card is the offer of an alias.
+- **Left as is (owner call).** The list of sensitive words asks more than
+  it must, on purpose (D-PZ-16). §11 item 4 holds the question.
+  `memory_tools._close_profile_writes` stays the fence of an untrusted read.
+
+Fences: `tests/unit/test_profile_pz32.py`,
+`tests/unit/test_profile_write_tools.py` and
+`tests/unit/test_assistant_profile_interview_r8.py`.
 
 ---
 
@@ -839,6 +940,9 @@ uv run pytest tests/unit/test_assistant_profile_offboarding_r8.py tests/unit/tes
 uv run pytest tests/unit/test_admin_member_purge.py tests/unit/test_admin_member_offboarding.py tests/unit/test_operator_door.py -q
 # PZ-10
 uv run python -m evals.personalization --offline
+# PZ-32
+uv run pytest tests/unit/test_profile_pz32.py tests/unit/test_profile_write_tools.py tests/unit/test_assistant_profile_interview.py tests/unit/test_assistant_profile_interview_r8.py tests/unit/test_interview_tone.py -q
+cd workbench/control_plane && npx vitest run src/app/settings/assistant
 ```
 
 **Fences (R7).** `test_tenant_coverage.py` holds the column under the row's
@@ -859,6 +963,11 @@ the order of the preamble. `test_resolve_person_r8.py` holds the one-org read.
    PZ-10 exists.
 3. **Should Mem0 promote into the profile?** `memory_architecture.md` §6.4
    promotes a fact that is used three times. That waits on WS-7.
+4. **Should the list of sensitive words ask less?** (owner call, PZ-32
+   review item P2-1). `assistant_profile.SENSITIVE_WORDS` asks more than it
+   must, on purpose (D-PZ-16). One more card costs the member one tap. A
+   missed card keeps a sensitive fact with no second yes. With the offer of D-PZ-22, an
+   offered sensitive fact asks two cards. PZ-32 leaves the list as it is.
 
 ---
 
@@ -1179,15 +1288,23 @@ The first release needs one organization.
 
 ### 14.3 The interview areas
 
-The interview has ten areas. Each area has one starting question and a
+The interview has twelve areas. Each area has one starting question and a
 target in the profile. The questions are examples. The model asks in its
 own words, in the member's language and style.
 
+**The order (PZ-32).** A sitting asks the first three open areas of the
+table. `name` comes first, so the first thing that the assistant learns is
+what to call the member. `language` comes second, because each later answer
+reads better in the right language. Then `role`, as before. The owner chose
+the two areas on 2026-10-30.
+
 | Area id | Starting question | Saves as |
 |---|---|---|
+| `name` | "What should I call you, and how formal should I be?" | `address.name` and `address.formality`, through `profile_set` |
+| `language` | "Which language should I answer you in?" | `style.language`, through `profile_set` |
 | `role` | "What is your role, and what takes most of your week?" | fact, kind `work` |
 | `goals` | "What are the one to three things you most want to move this quarter?" | fact, kind `work` |
-| `good_day` | "What would make today a win for you?" | fact, kind `preference` |
+| `good_day` | "What makes a day a win for you?" | fact, kind `preference` |
 | `decisions` | "Do you want options with a recommendation, or only the answer?" | fact, kind `preference` |
 | `detail` | "Do you want the headline first, or the full reasoning?" | `style.length`, and a fact when it needs words |
 | `rhythm` | "When do you do deep work, and when must I not interrupt?" | fact, kind `routine` |
@@ -1358,6 +1475,91 @@ and said it felt too robotic.
    `tests/fixtures/interview_tone_cases.json` (six answers for PZ-10). No
    model runs. The interview, tool and card tests changed too.
 
+**PZ-32 as built (2026-10-30).** The owner asked that the questions of the
+chat fill in the member's profile.
+
+1. `AREAS` holds twelve areas, with `name` and `language` first (§14.3).
+   `AREA_INTENTS`, the TS list in `lib/profile.ts`, the gateway type
+   `AreaId` and the persona name both areas. The labels read "What to call
+   you" and "Your language".
+2. `SET_AREAS` names the two areas that only `profile_set` answers. A fact
+   never answers them. `put_areas(last_change)` is the ONE rule of the areas
+   that a chat `put` answers. The `put` record holds `after` and `prior`, so
+   the rule compares them, and needs no new field.
+   - A changed `address.name` or `address.formality` answers `name`.
+   - A changed `style.language` answers `language`.
+   - Any other changed field of the style answers `detail`.
+
+   So a change of the language never closes `detail`. The undo of a chat
+   `put` opens each area that the `put` answered.
+3. When `profile_set` says "Already set", the profile already holds the
+   answer, and no change can come. The refusal of the mark tells the model
+   to mark the area `never`.
+4. The start of a sitting sets `last_asked_at` too (P1-3). So the due line
+   waits a day after a sitting. This is true also when the model asks a
+   question and marks no area `asked`.
+5. The token count of a native session reads the context in a peek scope
+   (`executor._interview_peek`, P1-4). Before, the count recorded the due
+   line in `_INTERVIEW_SHOWN`, so the context of the model lost the line.
+   The fallback text of a structured run reads in the same scope. The
+   context that the model reads is the first step after it, before any
+   import. So a failed import still records the memo, and the model reads
+   the line in the fallback text (repair round 1).
+6. The question of `good_day` asks for a lasting preference: "What makes a
+   day a win for you?" Before, it asked about today only. (P2-2 is the cap
+   of the block with the area tags, §5.5.)
+7. **Reach reads neither `rhythm` nor `channels` yet** (D-PZ-23). Their
+   answers are facts in the profile and in the block. No Reach rule reads
+   them until PZ-18 builds the preference contract of §12.6.
+8. **A stop holds for each area** (repair round 1). Before, a stop marked
+   each open area `never`, so the new areas `name` and `language` stayed
+   open, and a member who said stop got "What should I call you?". Now:
+   - `POST /interview` with `{"stop": true}` is the one stop write. It sets
+     `stopped_at` and marks `never` each area that is not answered
+     (`stop_interview`).
+   - `interview_stopped` reads `stopped_at` only (repair round 2). The shape
+     of the areas never decides a stop, so an undo or a mark keeps it.
+   - Migration `317_assistant_profile_interview_stopped.sql` backfills a
+     stop from before PZ-32 once. Such a row has no `stopped_at`, and each
+     of the ten old areas (`OLD_AREAS`) is `answered` or `never`, with one
+     or more `never`. The migration sets `stopped_at` (the row's
+     `last_asked_at`, or now) and marks `name` and `language` `never`, as
+     `stop_interview` does. It changes no other row. A member who marked
+     some areas `never` one by one and answered the rest has the same
+     shape, so the migration reads that member as stopped too.
+   - The backfill runs once. Its last step puts `PZ-32 stop backfill done`
+     in the comment of the table `user_settings`, in its own transaction. A
+     later run finds that text and changes nothing, and so does a replay
+     that runs 294 first. The mark is not on the column, because 294 writes
+     the comment of the column with no condition. The guard is needed,
+     because the runner re-applies a file whose checksum changes, and
+     `MIGRATION_REPLAY_ALL` re-applies each file. After the first run,
+     the old shape proves no stop: a member who reset an area and answered
+     it matches, and so does a member who never said stop. A second
+     backfill would stop each of them.
+   - The backfill locks each row that it matches (`FOR UPDATE OF us`), so a
+     reset in Settings at that moment wins. It never writes a row with no
+     `interview` object, because that would clear the whole column.
+   - The deploy window (R6). The deploy applies 317 and then restarts the
+     services, so the old code runs for a few minutes. An old-code write of
+     the interview drops `stopped_at` and the new areas. So a stop in that
+     window keeps the old shape, as today.
+   - `open_areas`, `due_area` and `may_ask` obey it. So no area opens again
+     after a stop, an area of a later release included.
+   - A reset of the whole interview drops the key, and the stop with it. A
+     reset of one area ends the stop and opens that area only
+     (`reset_interview_area`). It writes no mark on any other area. After a
+     stop or the backfill, each other area is already `answered` or
+     `never`.
+   - "Get to know me" after a stop starts no sitting. The model gets one
+     line for the member: they asked to stop, and Settings → Assistant can
+     reset an area.
+9. Fences: `tests/unit/test_profile_pz32.py`,
+   `tests/unit/test_assistant_profile_interview.py`,
+   `tests/unit/test_assistant_profile_interview_r8.py`,
+   `tests/unit/test_interview_stop_backfill_r8.py` and
+   `interviewAreas.test.ts`.
+
 ### 14.5 The slices
 
 | Slice | What | Done when | Gate · tier |
@@ -1367,6 +1569,7 @@ and said it felt too robotic.
 | **PZ-27** | "Get to know me", the first-chat offer, and the interview list on Settings → Assistant settings | A test shows the button opens the chat with the fixed message. The visual review passes | AGENT-SAFE · LOW. **BUILT 2026-10-25, dark.** The visual review is UNVERIFIED |
 | **PZ-30** | A natural interview: a plain start message, intents instead of questions, tone rules, no card for a mark, three areas a sitting (§14.4) | A test shows each area has an intent, the persona holds each tone rule, a mark draws no card, and a sitting gives three | AGENT-SAFE · MEDIUM. **BUILT 2026-10-27, dark** |
 | **PZ-31** | The member's own typed steer grounds a profile save (§5.5). Each steer stores a `typed` flag, and the run counts the typed steers of the run member | A test shows an own typed steer grounds a save after the follow-up and after a tool result. A test shows that a steer of another member, a card answer, a Continue turn, a pasted mail and a steer with no flag ground nothing | AGENT-SAFE · **HIGH** (who may write a profile). **BUILT 2026-10-29** |
+| **PZ-32** | The areas `name` and `language` (§14.3). A card grounds a value, and the offer to remember (§5.5, D-PZ-21, D-PZ-22), both dark behind `ASSISTANT_PROFILE_CARD_WRITES_ORGS`. A stop holds for each area. The fixes P1-1 to P1-5, P2-2 and P2-3 (persona only) | An approved card saves both aliases for "Raj and Priya". A card of another payload, member or thread, a decline and a marked session save nothing. With the flag off, each value that the member did not type refuses, an offer shows no card, and the persona has no offer line. A stop, a stop from before PZ-32 (after migration 317) and a reset of one area each read right. A refusal before the card of an offer draws nothing. A sensitive value that the member did not type asks twice. A fact line prints its area. An unknown area refuses. A sitting sets `last_asked_at`. A native token count keeps the memo. Twelve areas, and each new area needs its own `put`. The persona holds no "auto-extracts". The offer comes once a chat, only for typed words, saves nothing on no, and a sensitive offer asks twice. The block with area tags stays at 6,000 characters or less | AGENT-SAFE · **HIGH** (what may write a profile). **BUILT 2026-10-30, the card writes dark.** The flag flip is gate `enforcement-flip` |
 | **PZ-11** | After PZ-27: the staging test, then the production switch with `ASSISTANT_PROFILE_ORGS` set to Hathi Labs | Verified on staging | **OWNER-GATE** for production |
 
 ### 14.6 How this fits phase 2
@@ -1375,3 +1578,14 @@ The interview is the "about you" half of the setup coach of §12.5. When
 PZ-16 builds `setup_status`, each open area becomes a setup item. PZ-17
 then owns the timing, and the due line of PZ-26 moves into it. The limits
 stay the same.
+
+### 14.7 Decisions (PZ-32)
+
+The owner made these calls in chat on 2026-10-30. The numbers follow
+D-PZ-20, and a check of `origin/main` at merge confirms them (R1).
+
+| # | Question | Decision |
+|---|---|---|
+| **D-PZ-21** | May a card ground a value that the member did not type? | Yes, in the web chat. It extends D-PZ-2. The one card of the write shows the exact value, and only the approve of the run's own member writes it. A marked session, a closed run and WhatsApp get no such card |
+| **D-PZ-22** | May the assistant offer to keep a fact that the member said in passing? | Yes, once in a chat, on one card that shows the exact text. Nothing saves without the yes. A sensitive fact asks a second card (D-PZ-16). The offer is web only |
+| **D-PZ-23** | Does Reach read the areas `rhythm` and `channels`? | Not yet. They wait for PZ-18 |

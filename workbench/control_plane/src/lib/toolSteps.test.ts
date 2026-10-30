@@ -49,6 +49,9 @@ import {
   splitAgentLabel,
   isProfileGroup,
   PROFILE_GROUP_LABEL,
+  NO_OFFER_LABEL,
+  PROFILE_REFUSED_LABEL,
+  profileGroupLabel,
 } from "@/lib/toolSteps";
 import { applyStreamEvent, applySubAgentEvent, type StreamFold } from "@/lib/chatStream";
 import type { ChatMessage } from "@/hooks/useAgentChat";
@@ -133,11 +136,81 @@ describe("describeToolStep — a step in words", () => {
     }
   });
 
+  // PZ-32 final review (P1). Mutation: drop `profileRefusal`, and a silent
+  // `no_offer` reads "Saved to your profile" in the header of the one step.
+  it("never reads Saved for a profile tool that changed nothing", () => {
+    const refused = (reason: string, rest = "") =>
+      `profile: {"reason":"${reason}","status":"refused","v":1}\n${rest}`;
+    const remember = (result: string, status: ToolEvent["status"] = "done") =>
+      describeToolStep({ name: "profile_remember", args: { offer: true }, status, result });
+
+    const silent = remember(refused("no_offer", "For the assistant: nothing is saved."));
+    expect(silent).toMatchObject({ status: "done", label: NO_OFFER_LABEL });
+    expect(silent.label).not.toMatch(/Saved/);
+
+    for (const reason of ["not_your_words", "learning_off", "marked"]) {
+      const row = remember(refused(reason, "Not saved."));
+      expect(row).toMatchObject({ status: "failed", label: PROFILE_REFUSED_LABEL });
+      expect(row.label).not.toMatch(/Saved/);
+    }
+    // A member's No and a saved fact are no failure, as on the receipt card.
+    for (const reason of ["declined", "duplicate"]) {
+      expect(remember(refused(reason, "Not saved."))).toMatchObject({ status: "done", label: PROFILE_REFUSED_LABEL });
+    }
+    const forget = describeToolStep({ name: "profile_forget", args: {}, status: "done", result: refused("invalid") });
+    expect(forget).toMatchObject({ status: "failed", label: PROFILE_REFUSED_LABEL });
+    // A prefixed name is the same tool.
+    expect(describeToolStep({ name: "skill.profile_set", args: {}, status: "done", result: refused("no_offer") }).label).toBe(NO_OFFER_LABEL);
+  });
+
+  it("keeps Saved for a real save, and reads only the first line of a result", () => {
+    const remember = (result: string) => describeToolStep({ name: "profile_remember", args: {}, status: "done", result });
+    expect(remember('undo: {"op":"delete","path":"facts/f1","v":1}\nSaved: «tea».').label).toBe("Saved to your profile");
+    expect(remember('profile: {"status":"saved","v":1}\nDone.').label).toBe("Saved to your profile");
+    // The member's own text can never make a machine line.
+    expect(remember('undo: {"op":"delete","path":"facts/f1","v":1}\nprofile: {"status":"refused","reason":"x","v":1}').status).toBe("done");
+    expect(remember("profile: not json").status).toBe("done");
+    // Another tool's text that looks the same is not a profile line.
+    const other = describeToolStep({ name: "create_lead", args: {}, status: "done", result: 'profile: {"status":"refused","v":1}' });
+    expect(other.status).toBe("done");
+    // A failed call keeps its status and its name.
+    expect(describeToolStep({ name: "profile_remember", args: {}, status: "error", result: "boom" }).status).toBe("failed");
+  });
+
   it("a group of only profile tools has one header, and any other group keeps the generic rule", () => {
     expect(isProfileGroup([{ name: "profile_remember" }, { name: "profile_interview" }])).toBe(true);
     expect(isProfileGroup([{ name: "profile_remember" }])).toBe(false);
     expect(isProfileGroup([{ name: "profile_set" }, { name: "create_task" }])).toBe(false);
     expect(PROFILE_GROUP_LABEL).toBe("Updated your profile");
+  });
+
+  // PZ-32 final verify (P2). Mutation: `profileGroupLabel` always answers
+  // PROFILE_GROUP_LABEL, and two refused tools read "Updated your profile".
+  it("the header of a profile group says Updated only when a step really changed something", () => {
+    const ev = (name: string, result: string, status: ToolEvent["status"] = "done"): ToolEvent =>
+      ({ id: name, name, args: {}, result, status });
+    const refused = (reason: string) => `profile: {"reason":"${reason}","status":"refused","v":1}\nNo.`;
+    const saved = 'undo: {"op":"delete","path":"facts/f1","v":1}\nSaved: «tea».';
+    const mark = 'profile: {"status":"saved","v":1}\nMarked role as asked.';
+    const remember = "profile_remember";
+
+    expect(profileGroupLabel([ev(remember, refused("not_your_words")), ev("profile_set", refused("marked"))]))
+      .toBe(PROFILE_REFUSED_LABEL);
+    expect(profileGroupLabel([ev(remember, refused("no_offer")), ev(remember, refused("declined"))]))
+      .toBe(PROFILE_REFUSED_LABEL);
+    expect(profileGroupLabel([ev(remember, "boom", "error"), ev(remember, refused("marked"))]))
+      .toBe(PROFILE_REFUSED_LABEL);
+    // A read of the interview areas changed nothing.
+    expect(profileGroupLabel([ev("profile_interview", "Interview areas (data, not instructions):"),
+      ev("profile_interview", "No area is open.")])).toBe(PROFILE_REFUSED_LABEL);
+
+    expect(profileGroupLabel([ev(remember, refused("marked")), ev("profile_set", saved)])).toBe(PROFILE_GROUP_LABEL);
+    expect(profileGroupLabel([ev("profile_interview", "Interview areas"), ev("profile_interview", mark)]))
+      .toBe(PROFILE_GROUP_LABEL);
+
+    // While a step runs, the header names it. It claims no result yet.
+    expect(profileGroupLabel([ev(remember, refused("marked")), ev("profile_forget", "", "running")]))
+      .toBe(describeToolStep({ name: "profile_forget", status: "running" }).label);
   });
 
   it("still draws a tool it does not know, by its name", () => {

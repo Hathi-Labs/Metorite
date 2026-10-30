@@ -93,6 +93,9 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 24. **The orchestrator's per-turn context carries the member's own profile block** (spec `personalization.md` §5.1).
    - It needs an org, `assistant_profile.enabled_for(org)`, a verified member and `_RUN_SOLO_ROOM` True. `enabled_for(org)` is the one reader.
    - A delegated run cannot widen `_RUN_SOLO_ROOM`. Never read it from the payload. Fences: `test_executor_profile_block.py`, `test_executor_profile_block_r8.py` (R8), `test_assistant_profile_org_rollout.py`.
+   - A build that only measures the context runs inside `_interview_peek` (PZ-32). The token count of a native session and the fallback text are two such builds. So they leave `_INTERVIEW_SHOWN` as they found it.
+   - In `_compose_maf_run`, the context that the model reads is the first step after the peek, before any import. A failed import then still records the memo. Fences: `test_profile_pz32.py::test_native_session_keeps_interview_memo`, `test_the_model_reads_the_due_line_and_the_memo_records_it` and `test_an_import_fault_still_records_the_memo`.
+   - The persona gains the offer line of PZ-32 (`_PROFILE_CARD_SWAP`) only with `ASSISTANT_PROFILE_CARD_WRITES_ORGS` naming the org (`agents._profile_card_writes_enabled`). Fence: `test_profile_pz32.py::test_the_offer_line_follows_the_org`.
 25. **The orchestrator's per-turn context carries the member's corrections and limits of the chat** (spec `one_assistant_context.md` §4).
    - `_prime_chat_constraints` runs only for the agent `orchestrator`, with `CHAT_CONSTRAINTS` on, a solo room and a verified member. A delegated run inherits the list and never opens the tools.
    - Fences: `test_chat_constraints.py`, `evals/trajectories/test_chat_constraints_trajectory.py`.

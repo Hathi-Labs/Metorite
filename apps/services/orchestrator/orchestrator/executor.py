@@ -35,7 +35,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable, Iterator
 
 from acb_audit import AuditEvent, record
 from acb_common import get_logger, get_settings
@@ -833,6 +833,24 @@ def _interview_now() -> Any:
 #: own map, so a rare second line can come after a restart or on another box.
 _INTERVIEW_SHOWN: dict[tuple[str, str], Any] = {}
 
+#: True while a build of the context only measures it, as the token count of
+#: a native session does (PZ-32, P1-4). The due line then goes into the text,
+#: so the count is right, and :data:`_INTERVIEW_SHOWN` does not change, so
+#: the build that the model reads still gets the line.
+_INTERVIEW_PEEK: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_interview_peek", default=False)
+
+
+@contextlib.contextmanager
+def _interview_peek() -> Iterator[None]:
+    """A scope in which a context build leaves :data:`_INTERVIEW_SHOWN` as
+    it found it. Closing restores the value it found."""
+    token = _INTERVIEW_PEEK.set(True)
+    try:
+        yield
+    finally:
+        _INTERVIEW_PEEK.reset(token)
+
 
 def _with_interview_line(block: str, interview: Any, key: tuple[str, str] | None = None) -> str:
     """*block* with the due line of the interview (PZ-26, §14.4), or *block*.
@@ -861,7 +879,7 @@ def _with_interview_line(block: str, interview: Any, key: tuple[str, str] | None
         line = assistant_profile.interview_due_line(interview, now)
         if not line or len(block) + 1 + len(line) > assistant_profile.RENDER_MAX:
             return block
-        if key is not None:
+        if key is not None and not _INTERVIEW_PEEK.get():
             _INTERVIEW_SHOWN.pop(key, None)
             _INTERVIEW_SHOWN[key] = now
             while len(_INTERVIEW_SHOWN) > _PROFILE_CACHE_MAX:
@@ -8877,15 +8895,23 @@ def _compose_maf_run(
             _compose_maf_run_input(agent_name, run_id, event_payload, integrations),
             None,
         )
-    message = _build_event_message(agent_name, run_id, event_payload, integrations)
+    # The fallback string is built first, so it only peeks at the interview
+    # memo. The context below is what the model reads, and it records the
+    # due line (PZ-32, P1-4). The context is the FIRST step of the try, before
+    # any import, so an import that fails still leaves the memo recorded: the
+    # model then reads the string, which holds the line (PZ-32 repair, P2-7).
+    # Fence: tests/unit/test_profile_pz32.py.
+    with _interview_peek():
+        message = _build_event_message(agent_name, run_id, event_payload, integrations)
     try:
+        context_text = _run_context_text(event_payload, integrations, agent_name).strip()
+
         from acb_llm import assemble_run_context
         from acb_llm.prompt_cache import CACHE_BREAK
         from agent_framework import Message as _MAFMsg
 
         from orchestrator._native_run_context import RunContextProvider
 
-        context_text = _run_context_text(event_payload, integrations, agent_name).strip()
         _model = _active_run_model.get() or ""
         # The context block goes in as the system context so the window fit
         # counts it. It then leaves the list and travels by the provider.
@@ -9148,8 +9174,12 @@ async def _begin_native_session(
         current = str(
             event_payload.get("message") or event_payload.get("user_query") or ""
         )
+        # The count only measures the context, so it peeks at the interview
+        # memo. The build that the model reads records the due line (PZ-32).
+        with _interview_peek():
+            context_text = _run_context_text(event_payload, integrations, agent_name)
         reserve = count_message_tokens([
-            {"role": "system", "content": _run_context_text(event_payload, integrations, agent_name)},
+            {"role": "system", "content": context_text},
             {"role": "user", "content": current},
         ], model) + _agent_prompt_reserve_tokens(agent)
         return await native_session_store.begin_turn(

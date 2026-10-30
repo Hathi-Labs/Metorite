@@ -142,6 +142,7 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     mark_changed,
     may_ask,
     profile_size,
+    put_areas,
     stored_app_prefs,
     stored_profile,
 )
@@ -154,8 +155,8 @@ logger = logging.getLogger(__name__)
 
 FactKind = Literal["about", "routine", "preference", "work", "relationship"]
 #: The areas of the interview (PZ-26). ``AREAS`` is the one table.
-AreaId = Literal["role", "goals", "good_day", "decisions", "detail", "rhythm",
-                 "channels", "energy", "peeves", "people"]
+AreaId = Literal["name", "language", "role", "goals", "good_day", "decisions", "detail",
+                 "rhythm", "channels", "energy", "peeves", "people"]
 InterviewState = Literal["asked", "answered", "skipped", "never"]
 
 
@@ -213,11 +214,14 @@ class InterviewMark(BaseModel):
 
 class InterviewStart(BaseModel):
     """What ``POST .../interview`` accepts (PZ-26). ``sitting`` is true when
-    the member starts a sitting, and absent for a "no thanks"."""
+    the member starts a sitting, and absent for a "no thanks". ``stop`` is
+    true when the member says stop asking (PZ-32 repair). It writes
+    ``stopped_at``. A body cannot hold both."""
 
     model_config = ConfigDict(extra="forbid")
 
     sitting: bool = False
+    stop: bool = False
 
 
 class FactPatch(BaseModel):
@@ -626,10 +630,11 @@ def undo_last_change(raw: Any, now: float) -> tuple[dict[str, Any] | None, str]:
             return None, UNDO_CHANGED
         prior = last.get("prior")
         out[key] = prior if isinstance(prior, dict) else {}
-        if key == "style":
-            # A chat style change is the answer of `detail` (fix of
-            # 2026-10-27). Its undo opens the area again.
-            _reopen(out, "detail")
+        # A chat change of the address or the style answers `name`,
+        # `language` or `detail` (fix of 2026-10-27, PZ-32). Its undo opens
+        # each area that it answered again (`put_areas`, the one rule).
+        for area in sorted(put_areas(last)):
+            _reopen(out, area)
         return out, ""
     lkey = last.get("list")
     if lkey not in ("facts", "aliases"):
@@ -1223,17 +1228,26 @@ async def start_assistant_interview(
     """Set ``started_at`` once. It marks no area, so no question is due
     until a sitting asks one. "No thanks" to the offer calls it with no body.
     Body ``{"sitting": true}`` also sets ``sitting_at``: the member starts a
-    sitting, and for two hours the chat may mark an area ``asked``."""
-    from acb_common.assistant_profile import start_interview
+    sitting, and for two hours the chat may mark an area ``asked``.
+
+    Body ``{"stop": true}`` is "stop asking" (PZ-32 repair, P1-1). In one
+    transaction it sets ``stopped_at`` and marks ``never`` each area that is
+    not answered (``stop_interview``). No area opens again, a new area of a
+    later release included, until a reset in Settings."""
+    from acb_common.assistant_profile import start_interview, stop_interview
 
     uid = _member(user)
     via = _via(x_profile_via)
     # No body is a "no thanks". A direct call gets the `Body` default object,
     # which is no body either.
     raw = body if isinstance(body, (dict, list, str, int, float, bool)) else {}
-    sitting = _validate(InterviewStart, raw).sitting
+    start = _validate(InterviewStart, raw)
+    if start.sitting and start.stop:
+        raise _refuse("give sitting or stop, not both")
+    if start.stop:
+        return await _interview_write(uid, via, lambda cur: stop_interview(cur, _now()))
     return await _interview_write(
-        uid, via, lambda cur: start_interview(cur, _now(), sitting))
+        uid, via, lambda cur: start_interview(cur, _now(), start.sitting))
 
 
 @me_router.post("/me/assistant-profile/interview/{area}",
@@ -1290,19 +1304,15 @@ async def reset_assistant_interview_area(
 ) -> Response:
     """The area is open again. The facts stay. A Settings act: a chat call
     (``X-Profile-Via``) is a 422. ``reset_at`` records the time, so a fact
-    from before the reset never answers the area again."""
+    from before the reset never answers the area again. A reset ends a stop,
+    and only this area opens (``reset_interview_area``, PZ-32 repair)."""
+    from acb_common.assistant_profile import reset_interview_area
+
     uid = _member(user)
     if _via(x_profile_via) is not None:
         raise _refuse(INTERVIEW_RESET_IN_SETTINGS)
     _area(area)
-
-    def _build(cur: Any) -> dict[str, Any]:
-        cur = dict(cur or {})
-        cur["areas"] = {k: v for k, v in (cur.get("areas") or {}).items() if k != area}
-        cur["reset_at"] = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
-        return cur
-
-    await _interview_write(uid, None, _build)
+    await _interview_write(uid, None, lambda cur: reset_interview_area(cur, area, _now()))
     return Response(status_code=204)
 
 
