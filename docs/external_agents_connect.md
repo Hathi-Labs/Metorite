@@ -59,7 +59,7 @@ The description of the task is the brief of the agent. Metorite limits what the 
 
 - **The scopes.** Clear a box to give less. You cannot add a scope that the agent did not ask for.
 - **Project pins.** Pin the agent to one or more projects. With no pin, the agent reaches each project that you see.
-- **Personal projects.** Your personal projects stay out. The box that includes them is off. Select it only if you want the agent to read them.
+- **Personal projects.** The box "Include my personal projects" is on. With it on, the agent reaches your personal projects and your own notes in Knowledge. Clear it to keep them private. When you pin projects, the agent reaches only the pinned projects, and this box adds nothing.
 
 ## What the agent can do
 
