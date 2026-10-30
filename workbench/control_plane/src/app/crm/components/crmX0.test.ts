@@ -97,14 +97,15 @@ describe("the setup hub offers the actions of each state (§19.11 item 1)", () =
     expect(labels("none", false)).toEqual({ main: ["Use Metorite"], other: [] });
   });
 
-  it("Mirror, connected: Sync now, then Disconnect, Switch to Metorite, Start over", () => {
+  it("Mirror, connected: Sync now, then Disconnect, Switch to Metorite (start empty), Start over", () => {
     expect(hubState("mirror", conn("connected"))).toBe("mirror-connected");
     expect(labels("mirror-connected")).toEqual({
       main: ["Sync now"],
-      other: ["Disconnect", "Switch to Metorite", "Start over"],
+      other: ["Disconnect", "Switch to Metorite, start empty", "Start over"],
     });
     const html = drawHub("mirror", conn("connected"));
-    for (const word of ["Sync now", "Disconnect", "Switch to Metorite", "Start over", "Connected"]) {
+    const words = ["Sync now", "Disconnect", "Switch to Metorite, start empty", "Start over", "Connected"];
+    for (const word of words) {
       expect(html).toContain(word);
     }
     expect(html).not.toContain("Reconnect Zoho");
@@ -116,7 +117,7 @@ describe("the setup hub offers the actions of each state (§19.11 item 1)", () =
     }
     expect(labels("mirror-disconnected")).toEqual({
       main: ["Reconnect Zoho (keeps the records)"],
-      other: ["Switch to Metorite", "Start over"],
+      other: ["Switch to Metorite, start empty", "Start over"],
     });
     // The production state of 2026-10-12: 547 deals and a disconnected Zoho.
     const html = drawHub("mirror", conn("disconnected"));
@@ -132,7 +133,7 @@ describe("the setup hub offers the actions of each state (§19.11 item 1)", () =
     expect(hubState("mirror", conn("needs_reset"))).toBe("mirror-needs-reset");
     expect(labels("mirror-needs-reset")).toEqual({
       main: ["Start over with the new account"],
-      other: ["Reconnect Zoho (keeps the records)", "Switch to Metorite", "Start over"],
+      other: ["Reconnect Zoho (keeps the records)", "Switch to Metorite, start empty", "Start over"],
     });
     expect(ACTIONS["start-over-new-account"].dialog?.then).toBe("mirror");
   });
@@ -207,6 +208,9 @@ describe("only the hub offers a change of setup", () => {
       "lib/api.ts",
       "components/SetupHub.tsx",
       "components/StartOverDialog.tsx",
+      // CRM-Z10b is NOT on this list (D133 as amended 2026-10-29). Its card,
+      // its dialog and its steps take both switch labels from `lib/setup.ts`,
+      // so this scan covers them again.
     ]);
     for (const file of crmSources()) {
       if (allowed.has(file)) continue;
