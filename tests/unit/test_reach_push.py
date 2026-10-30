@@ -28,6 +28,10 @@ Run (one R8 suite at a time, because the ``promoted`` fixture drops
   ``test_r8_a_push_row_never_counts_in_the_whatsapp_cap``.
 * M5. ``push_channel.quiet_blocks``: answer False.
   ``test_r8_a_check_back_and_a_give_up_plan_nothing_in_quiet_hours``.
+* M6. ``push_channel.push_on``: drop ``push_flags.enabled()``.
+  ``test_r8_with_push_off_no_row_is_planned_so_a_later_flip_sends_no_burst``.
+* M7. ``push_channel.read_facts``: a TTL 1,000 times longer.
+  ``test_r8_a_planned_row_older_than_its_ttl_expires``.
 
 ⚠️ It SKIPS without ``TENANT_LADDER_DATABASE_URL``, and a skip is not a pass.
 """

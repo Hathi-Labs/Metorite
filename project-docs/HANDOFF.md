@@ -107,6 +107,11 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** task #1116 is not Done → still pending.
 - **Added:** 2026-10-30 · WS-63 PZ-32 session
 
+### H-437 · Confirm migration 318 and the first reminder push on production after the release · [AGENT]
+- **Metorite:** no task yet. The session that merges RE-9b files one and puts its number here.
+- **Check:** `curl -s https://api.metorite.com/version`. An `applied_sha` without the RE-9b merge means that the release has not run. After it runs, find `318_reach_outbox_web_push.sql` in the migration ledger. Then count the `reach_outbox` rows with `channel = 'web_push'` by `state` and `reason`. Many `no_keys` or `error` rows mean that the send step needs a look.
+- **Added:** 2026-10-31 · WS-66 RE-9b session
+
 ### H-416 · Decide whether the staging apply installs the staging flag tool itself · [OWNER]
 - **Metorite:** #772. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** on the dev box (srv1747539), run
