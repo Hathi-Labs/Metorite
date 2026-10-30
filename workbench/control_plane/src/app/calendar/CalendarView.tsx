@@ -13,6 +13,9 @@
 import { AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
+import Modal from "@/components/ui/Modal";
+import { useToast } from "@/components/ui/Toast";
+import { useRouter } from "next/navigation";
 import Icon from "@/components/Icon";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -61,6 +64,21 @@ import { MonthGrid } from "./components/MonthGrid";
 import { UnscheduledRail } from "./components/UnscheduledRail";
 import { CalendarDeepLink } from "./components/CalendarDeepLink";
 import { scrollTopFor, type CalendarLink, type ClockTime } from "./lib/calendarLink";
+import { ReminderFormModal, type ReminderFormValue } from "./components/ReminderFormModal";
+import { RemindersPanel, RemindersList } from "./components/RemindersPanel";
+import {
+  createReminder,
+  moveReminder,
+  pickZone,
+  reminderChatPath,
+  reopenReminder,
+  resolveReminder,
+  useReminders,
+  wallInputs,
+  whenText,
+  type ZonedTime,
+} from "./lib/reminders";
+import { browserTimeZone } from "@/app/tasks/lib/utils";
 
 export function CalendarView() {
   const { isMobile } = useViewMode();
@@ -95,6 +113,53 @@ export function CalendarView() {
   // exact time); absent ⇒ opened from the FAB (auto-place into the first free
   // slot of `day`). The rail is desktop-only, so this is the phone path.
   const [sheet, setSheet] = useState<{ day: Date; at?: Date } | null>(null);
+
+  // Reminders (WS-66 RM-5). A reminder is a point in time: it takes no
+  // capacity and never enters the task store. `absent` (a 404 or a 403) draws
+  // nothing at all: no pin, chip, panel, button or error (§9).
+  const router = useRouter();
+  const toast = useToast();
+  const { list: remList, run: runReminder } = useReminders();
+  const remShown = remList.status === "ready";
+  const remZone = pickZone(settings.timezone, browserTimeZone());
+  const [remForm, setRemForm] = useState<{ mode: "new" } | { mode: "move"; id: string } | null>(null);
+  const [remSheet, setRemSheet] = useState(false);
+  const openReminder = (id: string) => router.push(reminderChatPath(id));
+  const showWords = (variant: "success" | "error", title: string, action?: { label: string; onClick: () => void }) =>
+    toast.show({ key: "calendar-reminder", variant, title, action });
+  const moveReminderTo = async (id: string, to: ZonedTime): Promise<string | null> => {
+    const out = await runReminder(() => moveReminder(id, { fireAt: to.iso, tz: remZone }));
+    if (out.ok) showWords("success", `Moved to ${whenText(to.ms, remZone)}`);
+    else showWords("error", out.words);
+    return out.ok ? null : out.words;
+  };
+  const resolveReminderAs = async (id: string, action: "done" | "drop") => {
+    const out = await runReminder(() => resolveReminder(id, action));
+    if (!out.ok) return showWords("error", out.words);
+    showWords("success", action === "done" ? "Reminder done" : "Reminder dropped", {
+      label: "Undo",
+      onClick: () => void runReminder(() => reopenReminder(id)),
+    });
+  };
+  const submitReminderForm = async (v: ReminderFormValue): Promise<string | null> => {
+    if (!remForm) return null;
+    if (remForm.mode === "move") {
+      const words = await moveReminderTo(remForm.id, v.when);
+      if (!words) setRemForm(null);
+      return words;
+    }
+    const out = await runReminder(() =>
+      createReminder({ title: v.title, kind: v.kind, fireAt: v.when.iso, tz: remZone }),
+    );
+    if (!out.ok) {
+      showWords("error", out.words);
+      return out.words;
+    }
+    showWords("success", `Reminder set for ${whenText(v.when.ms, remZone)}`);
+    setRemForm(null);
+    return null;
+  };
+  const moving = remForm?.mode === "move" ? remList.rows.find((r) => r.id === remForm.id) : undefined;
   // One live clock drives the now-line, the current-block ring and the Now/Next
   // countdowns so the whole surface ages in real time (30s tick).
   const now = useNow();
@@ -500,6 +565,30 @@ export function CalendarView() {
         <Icon name="Wand2" className="h-3.5 w-3.5" />
         <span className="hidden sm:inline">Rebuild my day</span>
       </button>
+      {remShown && (
+        <button
+          type="button"
+          onClick={() => setRemForm({ mode: "new" })}
+          title="New reminder: set a time and a title"
+          aria-label="New reminder"
+          className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+        >
+          <Icon name="BellPlus" className="h-3.5 w-3.5" />
+          <span className="hidden 2xl:inline">New reminder</span>
+        </button>
+      )}
+      {remShown && isMobile && (
+        <button
+          type="button"
+          onClick={() => setRemSheet(true)}
+          title="Your open reminders"
+          aria-label="Reminders"
+          className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+        >
+          <Icon name="Bell" className="h-3.5 w-3.5" />
+          {remList.rows.length > 0 && <span className="tabular-nums">{remList.rows.length}</span>}
+        </button>
+      )}
       <button
         type="button"
         onClick={() => setSettingsOpen((v) => !v)}
@@ -646,6 +735,9 @@ export function CalendarView() {
                 setMode("day");
               }}
               onOpen={openFocus}
+              reminders={remShown ? remList.rows : []}
+              reminderZone={remZone}
+              onOpenReminder={openReminder}
             />
           ) : (
             <TimeGrid
@@ -678,31 +770,56 @@ export function CalendarView() {
               onReschedulePopup={openSchedule}
               onMoveToFree={moveToNextFree}
               onDelete={(id) => requestDelete([id])}
+              reminders={remShown ? remList.rows : []}
+              reminderZone={remZone}
+              onOpenReminder={openReminder}
+              onMoveReminder={(id, to) => void moveReminderTo(id, to)}
+              onPickReminderMove={(id) => setRemForm({ mode: "move", id })}
+              onResolveReminder={(id, action) => void resolveReminderAs(id, action)}
             />
           )}
         </div>
 
         {/* Unscheduled rail — click a task to timebox it into the focused day.
             Hidden in month mode. */}
-        {mode !== "month" && (
-          <UnscheduledRail
-            tasks={unscheduled}
-            capacityMins={leverageStats.totalMins}
-            capacityTarget={capacityTarget}
-            leveragedMins={leverageStats.leveragedMins}
-            oneThingId={oneThingId}
-            onToggleOneThing={handleToggleOneThing}
-            dueSoon={dueSoon}
-            urgentWindowHours={settings.urgentWindowHours}
-            doneStats={doneStats}
-            onPlan={() => setPlanMode("plan")}
-            onOpen={openFocus}
-            onTimebox={(t) =>
-              schedule(t, mode === "week" ? startOfWeek(anchor) : anchor)
-            }
-            onReschedulePopup={openSchedule}
-            onDelete={(id) => requestDelete([id])}
-          />
+        {(mode !== "month" || remShown) && (
+          <div className="hidden min-h-0 shrink-0 flex-col md:flex">
+            {/* Reminders panel — in every mode, so month mode keeps it. On a
+                phone the title bar's Reminders button opens it as a sheet. */}
+            {remShown && (
+              <RemindersPanel
+                rows={remList.rows}
+                total={remList.total}
+                zone={remZone}
+                onNew={() => setRemForm({ mode: "new" })}
+                onOpen={openReminder}
+                onMove={(id) => setRemForm({ mode: "move", id })}
+                onResolve={(id, action) => void resolveReminderAs(id, action)}
+              />
+            )}
+            {mode !== "month" && (
+              <div className="flex min-h-0 flex-1">
+                <UnscheduledRail
+                  tasks={unscheduled}
+                  capacityMins={leverageStats.totalMins}
+                  capacityTarget={capacityTarget}
+                  leveragedMins={leverageStats.leveragedMins}
+                  oneThingId={oneThingId}
+                  onToggleOneThing={handleToggleOneThing}
+                  dueSoon={dueSoon}
+                  urgentWindowHours={settings.urgentWindowHours}
+                  doneStats={doneStats}
+                  onPlan={() => setPlanMode("plan")}
+                  onOpen={openFocus}
+                  onTimebox={(t) =>
+                    schedule(t, mode === "week" ? startOfWeek(anchor) : anchor)
+                  }
+                  onReschedulePopup={openSchedule}
+                  onDelete={(id) => requestDelete([id])}
+                />
+              </div>
+            )}
+          </div>
         )}
       </div>
 
@@ -724,6 +841,43 @@ export function CalendarView() {
             <span className="text-sm tabular-nums">{unscheduled.length}</span>
           )}
         </button>
+      )}
+
+      {remForm?.mode === "new" && (
+        <ReminderFormModal
+          mode="new"
+          zone={remZone}
+          onSubmit={submitReminderForm}
+          onClose={() => setRemForm(null)}
+        />
+      )}
+      {remForm?.mode === "move" && moving && (
+        <ReminderFormModal
+          mode="move"
+          zone={remZone}
+          heading={moving.title}
+          initial={wallInputs(moving.fireMs, remZone)}
+          onSubmit={submitReminderForm}
+          onClose={() => setRemForm(null)}
+        />
+      )}
+      {remSheet && remShown && (
+        <Modal open onClose={() => setRemSheet(false)} title="Reminders" icon="Bell" placement="sheet" size="md" className="max-h-[80dvh]">
+          <RemindersList
+            rows={remList.rows}
+            total={remList.total}
+            zone={remZone}
+            onOpen={(id) => {
+              setRemSheet(false);
+              openReminder(id);
+            }}
+            onMove={(id) => {
+              setRemSheet(false);
+              setRemForm({ mode: "move", id });
+            }}
+            onResolve={(id, action) => void resolveReminderAs(id, action)}
+          />
+        </Modal>
       )}
 
       {sheet && (
