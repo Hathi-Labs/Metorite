@@ -86,7 +86,7 @@ def _check(answer: Any, claims: Mapping[str, Any]) -> FenceResult:
             return _fail("unknown_claim")
         backed: set[str] = set()
         for i in ids:
-            backed |= numbers_in(_held(claims[i]))
-        if not numbers_in(sentence) <= backed:
+            backed |= numbers_in(_held(claims[i]), grouped=True)
+        if not numbers_in(sentence, grouped=True) <= backed:
             return _fail("unbacked_number")
     return _pass()

@@ -881,11 +881,19 @@ def _tokens(pattern: re.Pattern[str], text: str) -> set[str]:
     return {hit.rstrip(_TRAIL) for hit in pattern.findall(text)} - {""}
 
 
-def numbers_in(text: str) -> set[str]:
+#: A comma between two digits: the group mark of "1,200" and "1,20,000".
+_GROUP_COMMA = re.compile(r"(?<=\d),(?=\d)")
+
+
+def numbers_in(text: str, *, grouped: bool = False) -> set[str]:
     """Each number of *text* as its digits only, so a split number is one.
     The one public number extractor: the core brief fence imports it
-    (``gateway/brief/fence.py``). A comma is no separator, so "1,200" is the
-    two numbers "1" and "200"."""
+    (``gateway/brief/fence.py``). By default a comma is no separator, so
+    "1,200" is the two numbers "1" and "200". With *grouped*, a comma between
+    two digits is a group mark, so "1,200" is "1200". The brief fence uses
+    *grouped*, so a claim of "1,200" never backs a sentence that says "200"."""
+    if grouped:
+        text = _GROUP_COMMA.sub("", text)
     return {"".join(ch for ch in hit if ch.isdigit()) for hit in _NUMBER.findall(text)}
 
 

@@ -68,12 +68,27 @@ def test_malformed_input_fails_closed_and_never_raises():
 
 def test_number_forms_follow_the_shared_helper():
     """Catches a private number rule. The rupee sign is dropped, so
-    "₹500" is 500. A comma is no separator, so "1,200" is 1 and 200 and
-    "1200" is another number: the fence fails closed on it."""
+    "₹500" is 500. The fence reads a comma between digits as a group mark,
+    so "1,200" and "1200" are the same number."""
     assert check_phrase([s("Pay ₹500.", "c2")], CLAIMS).ok
     assert check_phrase([s("Pay 500.", "c2")], CLAIMS).ok
     assert check_phrase([s("Total 1,200.", "c4")], CLAIMS).ok
-    assert check_phrase([s("Total 1200.", "c4")], CLAIMS).reason == "unbacked_number"
+    assert check_phrase([s("Total 1200.", "c4")], CLAIMS).ok
+
+
+def test_a_fragment_of_a_grouped_number_is_not_backed():
+    """Catches the fence without ``grouped=True``: then "1,200" splits into
+    "1" and "200", and a claim of 1,200 backs a sentence that says 200."""
+    assert check_phrase([s("Total 200.", "c4")], CLAIMS).reason == "unbacked_number"
+    assert check_phrase([s("Total 1.", "c4")], CLAIMS).reason == "unbacked_number"
+
+
+def test_the_default_helper_keeps_its_old_shape():
+    """Catches a change to the default, which the profile write guard uses."""
+    from acb_common.assistant_profile import numbers_in
+    assert numbers_in("1,200") == {"1", "200"}
+    assert numbers_in("1,200", grouped=True) == {"1200"}
+    assert numbers_in("1,20,000 and 3", grouped=True) == {"120000", "3"}
 
 
 def test_the_brief_imports_the_one_public_helper():
