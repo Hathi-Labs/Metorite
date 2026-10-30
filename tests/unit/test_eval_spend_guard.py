@@ -6,7 +6,6 @@ Each test fixes the clock. Mutations are named in the docstrings.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from types import SimpleNamespace
 
 from evals.one_assistant_measure import run, spend
 from evals.one_assistant_measure.scenarios import scenario
@@ -102,17 +101,19 @@ def test_the_spend_is_counted_for_each_agent() -> None:
     assert "| total | 6.0000 |" in table
 
 
-def test_system_one_has_the_wire_tap(monkeypatch) -> None:
-    """Mutation: drop ``tap_system_one`` from ``_use_router`` -> the client stays bare."""
+def test_system_one_has_the_wire_tap() -> None:
+    """A live harness puts the tap on the client that System 1 builds.
+    Mutation: drop ``tap_system_one`` from ``_use_router`` -> the client stays bare."""
     from acb_skills import system_one
 
-    http = SimpleNamespace(_transport=object())
-    agent = SimpleNamespace(client=SimpleNamespace(client=SimpleNamespace(_client=http)))
-    monkeypatch.setattr(system_one, "_build_agent", lambda *a, **k: (agent, object()))
-    sink: list = []
-    run.tap_system_one(monkeypatch, sink)
-    system_one._build_agent()
-    assert isinstance(http._transport, _WireTap)
+    from evals.routing.harness import RoutingHarness
+
+    with RoutingHarness(live=True, real_specialists=True) as harness:
+        run._use_router(harness, ("http://127.0.0.1:1", "k-test"))
+        agent, async_client = system_one._build_agent()
+        http = agent.client.client._client
+        assert isinstance(http._transport, _WireTap)
+        assert harness.model_calls == []
 
 
 # -- the cap, inside a chat ---------------------------------------------------
