@@ -2624,6 +2624,7 @@ The connect card of EA-4b and `docs/external_agents_connect.md` show this table.
   3. A pinned connection makes no space. The gateway refuses it with 403, and the edge refuses first.
   4. `update_project` takes no date, because a node has no date column.
   5. The chat door is there already. The chat tools `create_project`, `update_project` and `move_task` reach the same routes, each with one card. MCP-G1 adds no chat tool.
+- 2026-10-30 — §19.10a, the assistant's view of Email (tasks 1092 to 1095). An outside assistant triages, reads a thread with its context, polls the changes and turns a mail into a task, each in one or two calls, with no model run. Four class A rows of §19.10 changed state or called a model. MCP-P2a now pins each one. The owner answered MCP-Q7 to MCP-Q12 on 2026-10-30, as recommended.
 - 2026-10-30 — EA-4b (Metorite task 1057). The owner amended D-EA-4: personal access is on by default. The consent page ticks "Include my personal projects", and the member can untick it. An existing connection keeps the value its member chose. The server reads a body without the field as false. This answers MCP-Q6, and task 1056 builds it. Fence: `workbench/control_plane/e2e/connect-authorize.spec.ts`.
 - 2026-10-30 — MCP-G1 fix round 1, after the adversarial review (HIGH tier).
   1. P1. An agent never widens who sees a task. The gateway compares the audience of each moved task through `notifications.project_grant_holders`, and a wider move gets 403 `audience_widens`. The preview gives `audience`. A personal task into a team project is wider.
@@ -2981,7 +2982,7 @@ The router is `gateway.routes.email`, with 136 method and path pairs from 135 de
 | Rule decisions | `POST /email/rules/history/{exec_id}/approve`, `/reject` and `/undo` | X | "The member reviews what the rules did, in Email." |
 | Senders | `POST /email/newsletters` and `POST /email/cold-senders`, B. `POST /email/unsubscribe`, C, because it reaches the sender | B, C | One op for each row. `unsubscribe` has `sends` |
 | Settings of Mira for mail | The writes of the assistant settings, the always-copy list, the voice profile, the email knowledge and the learned patterns | B or C in the app | `off_door`: "These writes change how Mira works on every later mail. An always-copy entry copies each later send to an address." |
-| AI runs | `POST /email/draft-reply`, `/compose-assist`, `/rules/generate`, `/assistant/writing-style/generate`, `/voice-profile/build`, `/messages/summaries`, `/cleanup/auto-categorize`, `/senders/categorize`, `/reply-zero/reclassify` and `/follow-ups/scan` | A or B in the app | `off_door`: AD-11 |
+| AI runs | `POST /email/draft-reply`, `/compose-assist`, `/rules/generate`, `/assistant/writing-style/generate`, `/voice-profile/build`, `/cleanup/auto-categorize`, `/senders/categorize`, `/reply-zero/reclassify` and `/follow-ups/scan` | A or B in the app | `off_door`: AD-11 |
 | The cards of Mira | `/email/held-card`, `/email/reply-card`, `POST /email/drafts/save` (the draft card of the chat), `GET /email/reply-recipients`, `GET /email/recent-reply` and `GET /email/drafts/seal` | As in the app | `off_door`: "The door has its own card. The request route reads the seal itself." |
 | Content the door does not carry | `GET /email/messages/{message_id}/html`, `/inline`, `GET /email/image-proxy` and `GET /email/attachments/{attachment_id}/download` | A in the app | `off_door`: "HTML, images and files stay in the app. The door gives the text." |
 | Accounts, OAuth, sync, webhooks, storage, cleanup and the digest send | `accounts.py`, `oauth.py`, `sync.py`, `storage.py`, `cleanup.py` and `POST /email/digest/send` | X | §19.11 |
@@ -2989,6 +2990,132 @@ The router is `gateway.routes.email`, with 136 method and path pairs from 135 de
 The classes "B in the app" and "A or B in the app" are a first reading. MCP-P2a sets each row from the router and from the email agent of Mira (`apps/agents/agent-email-assistant/agents.py`), and the fence then holds it.
 
 **The Door column of §19.9 and §19.10 is the state after MCP-P2b.** In MCP-P2a, each B and C row except `save_draft` carries `off_door`: "Waits for the approval path of MCP-P1b." MCP-P2b replaces each such reason with its `op`.
+
+### 19.10a The assistant's view of Email (MCP-P2e to MCP-P2g)
+
+**The answer.** §19.10 maps each Email route to one op. That serves a person who clicks. It does not serve an outside assistant that must triage, understand and act. That assistant needs few calls, not one call for each row. So §19.10a adds three composite reads, two small reads, one cross-app write and four pins. Every read reuses data that Email already stores. No new op calls a model (AD-11).
+
+**The principle.** Metorite stores the facts and the member's state. The outside agent brings its own model for the judgement. So Metorite returns signals, not verdicts. Metorite stores no urgency flag and no thread summary today. The agent reads the signals and the trimmed text. It decides what is urgent and writes its own summary.
+
+#### 19.10a.1 What Email stores today
+
+| Fact for the agent | Where it lives | Written by | Model call? |
+|---|---|---|---|
+| Read, starred, flagged, importance (from the provider), labels, categories, folder, snooze | `email_messages` (`is_read`, `is_starred`, `is_flagged`, `importance`, `labels`, `categories`, `folder`, `snoozed_until`) | Sync, and the state routes | No |
+| Reply state of a thread: `NEEDS_REPLY`, `AWAITING`, `FYI`, `DONE`, with `reason` and `classified_at` | `email_thread_status` (migration 27) | The rules pipeline, and `POST /email/reply-zero/resolve` | Yes, when written. A read costs none |
+| Sender category (Newsletter, Marketing, Receipt, Calendar, Notification, Cold Email, Personal, Support) | `email_senders` (migration 22) | The sender categorizer | Yes, when written |
+| Cold sender verdict | `email_cold_senders` | The cold-email gate | Yes, when written |
+| Fact with a quote, an amount and a due date | `email_insights` (migration 231), behind `insights_enabled` | The Insights job | Yes, when written |
+| Rule outcome for each mail | `email_executed_rules`, read by `GET /email/messages/{id}/timeline` and `/rules/history` | The rules engine | Yes, when written |
+| Task that came from a mail | `pm_tasks.origin` with `kind`, `account_id`, `thread_id`, `email_id` (migration 211, index on `email_id`) | `POST /tasks/capture/from-email` | That route calls a model |
+| Closing the task marks the thread Done, and the reverse | `routes/tasks/email_link.py` | Task close, thread resolve | No |
+| CRM link of a mail | None stored. The CRM timeline derives it from the address (`routes/crm/activities.py`, `_record_addresses` and `_email_entries`) | Read time | No |
+| Follow-up windows | `email_assistant_settings` (`follow_up_days`, `follow_up_awaiting_days`) | The member | No |
+| Attachment text, OCR included | A cache, read by `GET /email/attachments/{id}/text` | First read | No model. OCR is a local child process |
+| Thread summary | **Not stored anywhere** | n/a | n/a |
+| Shared mailbox grant and level | `email_mailbox_grants`, read by `mailbox_predicate` (`mailbox_access.py:103`) | The mailbox manager | No |
+
+#### 19.10a.2 Four pins on the ops of §19.10
+
+Each pin is a defect in a class A row. A fence in MCP-P2a (task 866) must hold each one, because MCP-P2a is not built yet. The fence is `test_no_door_read_calls_a_model`, and `get_message` must leave `is_read` unchanged.
+
+| Pin | Route | The trap | The pin |
+|---|---|---|---|
+| P-1 | `GET /email/messages/{message_id}` | `mark_read` defaults to true. A read by an agent marks the mail read and destroys the unread signal. | The manifest fixes `mark_read=false`. It also fixes `trim=true` as the default. `trim` cuts the quoted chain, the signature and the footer. |
+| P-2 | `GET /email/search` | `hybrid=true` embeds the query. That is a model call. | The manifest fixes `hybrid=false`. |
+| P-3 | `GET /email/digest` | `_generate_digest` calls `_digest_brief`. That function asks a model for one sentence (`digest.py:821`). The answer is cached for one day. | The route gains a `brief` switch. The door sends `brief=false`. |
+| P-4 | `GET /email/reply-zero` | On a mailbox with no status, the GET starts `_maybe_classify_threads` in the background. That is a model run (`replyzero.py:3129`). | The route gains `classify=false`. The door sends it. A mailbox with no status returns an empty list and `classified: false`. |
+
+Two more corrections to the table of §19.10.
+
+- `POST /email/messages/summaries` sits in the row "AI runs". It is **not** an AI run. It resolves ids to sender, subject, date and thread in one query (`transport/messages.py:679`). Move it to class A. The door op is `get_message_headers`.
+- `GET /email/contacts/card` writes the contact directory as a side effect (`_remember_contact`). It stays class A, because the write only caches what a signature teaches. The fence says so.
+
+#### 19.10a.3 The composite reads (class A, MCP-P2e)
+
+A composite read is ONE new gateway route in a new module, `routes/email/agent_view.py`. It joins stored rows in SQL. The edge does not chain calls, because each call counts against the 300 reads of AD-13. Each route uses `mailbox_predicate(level="read")` and the one tenant session. Each route is a manifest row with an `op`. None calls a model.
+
+**`triage_now`** answers: what needs me now?
+
+- Route: `GET /email/triage`. Arguments: `mailbox?` (one id, else every mailbox the member reads and keeps in All inboxes), `window_days` (1 to 90, default 14) and `limit` (1 to 50).
+- Source: the SQL of `GET /email/priority` (`transport/messages.py:499`). A refactor lifts it into one shared function that takes a list of mailbox ids. The score stays: Reply Zero `NEEDS_REPLY` 100, unread 40, high importance 30, starred 20, human sender 15. Newsletter, marketing, cold and notification senders stay out. This is one seam, not a copy.
+- Groups in the result, each capped at `limit`: `needs_reply` (ranked), `awaiting_reply` (older than the follow-up window, oldest first), `due_soon` (open `email_insights` facts with `due_on` in the next 7 days, only when `insights_enabled`) and `snoozed_back` (the snooze ended in the last day).
+- Each row: `mailbox`, `thread_id`, `message_id`, `subject`, `from` (name and address), `received_at`, `reply_status`, `reason`, `is_read`, `importance`, `starred`, `sender_category`, `score`, `reasons[]`, `thread_count` and `has_attachments`.
+- No `urgent` field. The row holds the signals, and the agent judges. See MCP-Q8.
+- New route: yes. It refactors `priority_inbox` and adds no table.
+
+**`get_thread_context`** answers: what is this thread, and what do we know about it?
+
+- Route: `GET /email/threads/context`. Arguments: `account_id` and `thread_id`, or `message_id` alone. A `thread_id` can repeat in two mailboxes, so the mailbox is part of the key. The `read_thread` tool of Mira has the same rule (`agent-email-assistant/agents.py:1377`).
+- Messages: the newest 25, oldest first. Each has `id`, `from`, `to`, `cc`, `date`, `folder`, `is_read` and a `body` trimmed by `quoting.strip_for_reading`. Each attachment has `id`, `filename`, `mime_type`, `size` and a pointer to `get_attachment_text`. A `next_cursor` pages older messages.
+- State: `reply_status`, `reason`, `classified_at`, `snoozed_until`, `labels`, `starred`, `importance`, the draft ids of the thread, and the last five rule outcomes from `email_executed_rules`.
+- People: each participant with `internal` or `external` (by the own-address rule in `automation/identity.py`), `sender_category`, the cold-sender status and the counts of the contact card.
+- Facts: the `email_insights` rows of the thread, when the feature is on.
+- Tasks: the `pm_tasks` rows whose `origin.email_id` is a message of the thread. Only tasks that the member sees under the Projects seam (`resolve_visibility`). Each has `id`, `short_id`, `title`, `status`, `due_at` and the assignees. This block needs `projects:read` on the connection.
+- CRM: the contacts, leads, organizations and deals that match a participant address. The match is the inverse of `_record_addresses`. It needs a new CRM function, `match_by_email(addresses)`, that applies `require_crm_access`. This block needs `crm:read` on the connection and the member's CRM access. Without either, the block is `null` and the answer says `crm: "not granted"`.
+- No `summary` key. The answer says "Metorite stores no thread summary. Write your own." The thread text is enough for an outside model.
+- Bound: 256 KiB (AD-12). The route cuts the oldest bodies first and sets `truncated`.
+- New route: yes. New CRM function: yes. New table: no.
+
+**`changes_since`** answers: what changed since my last check? It serves an agent that polls (D140.4, pull first).
+
+- Route: `GET /email/changes`. Arguments: `cursor?`, `mailbox?` and `limit` (1 to 50).
+- The first call has no cursor. It returns `rows: []` and a `cursor` that means "now". The argument `since?` (an ISO time) starts from a past time instead.
+- Row kinds: `message_new`, `message_state` (read, star, folder, labels or snooze changed) and `thread_status` (the reply state changed). Each row has the ids, the new values and `changed_at`. No row holds a body.
+- The cursor is opaque. It holds `(updated_at, id)` of `email_messages` and `classified_at` of `email_thread_status`. The route reads in keyset order, so a page never repeats a row.
+- **Gaps that the answer states.** A deleted message and a purged mailbox give no row. An agent that needs them reads again with `triage_now`. A change that the provider makes shows after the next sync.
+- New route: yes. New migration (R6, expand only): `idx_email_messages_account_updated` on `email_messages (account_id, updated_at, id)`. Take the number at build time (R1). The R8 suite must prove that each writer of state bumps `updated_at`: the PATCH, the snooze, the bulk route, the resolve route and the sync. A writer that does not bump it is a defect, and the slice fixes it.
+- Cost: one call for each poll. A poll every 10 minutes is 1 read in 10 minutes, far under the 300 reads of AD-13.
+
+**Two small reads.**
+
+| Op | Route | Why |
+|---|---|---|
+| `get_message_headers` | `POST /email/messages/summaries` (a POST that only reads) | 50 ids become 50 rows in one call. Class A. The edge needs a read-only POST, which §19.4 already allows |
+| `get_writing_context` | `GET /email/voice-profile`, `GET /email/knowledge` and `GET /email/learned-patterns` | An agent that drafts for the member needs the member's voice and the company facts that Mira uses. Class A. Every string is untrusted text (AD-10). The writes stay `off_door` |
+
+#### 19.10a.4 The cross-app writes (MCP-P2f)
+
+| Job | Op | Route | Class | Notes |
+|---|---|---|---|---|
+| An email becomes a task | `create_task_from_email` | New: `POST /email/messages/{message_id}/task` | B | Takes `project_id?` (default: the personal project of the member), `title`, `description?` and `due_at?`. It calls `item_source().insert_capture` with the `origin` link, as `capture_from_email` does, but with **no model call**. It is idempotent on `origin.email_id`. The approval card shows the title, the project and the subject of the mail |
+| An email links to a CRM record | None new. The agent uses the CRM door: `create_contact`, `create_lead` or a logged activity (B), with the sender address | The CRM routes of §19.9 | B | Metorite stores no email-to-CRM link table. The tie is the address. The CRM timeline shows the thread from the address. A record that carries the address shows the thread at once |
+| Mark a thread done | `resolve_reply_zero` | `POST /email/reply-zero/resolve` | B | Already in §19.10. It closes linked tasks (`email_link.py`). The card says so |
+| Archive, mark read, label, snooze | The `PATCH` ops of §19.10 | | B | One card for each call |
+| Triage many | `bulk_message_state` | `POST /email/messages/bulk` | C | Already in §19.10. **One card lists up to 50 ids** and the action. A delete in a bulk call asks a second time. Without this op, an agent that archives 30 newsletters opens 30 cards |
+
+Why the existing task tools do not serve the first job.
+
+- `create_task` of the Projects door cannot set `origin`.
+- `POST /tasks/capture/from-email` calls a model (`routes/tasks/capture_email.py`, `_llm_capture`), so AD-11 keeps it off the door.
+- A task that `create_task` makes with `source_ref` has no thread link. Closing it does not mark the mail Done, and the thread context does not list it.
+
+⚠️ The reverse effect already exists. A Projects door write `set_task_status` to a done status marks the linked thread Done and takes it off the reply queue (`email_link.py`, `propagate_task_done_to_thread`). The Projects door asks no card (MCP-Q5). So the task result must carry `linked_email: {account_id, thread_id}`, and the tool text must say so. Fence: a unit test that a task with an email origin returns the link.
+
+#### 19.10a.5 What stays off, and why
+
+| What | Reason |
+|---|---|
+| `POST /email/send` (a raw send), the AI draft routes (`/draft-reply`, `/compose-assist`), `/rules/test`, `/senders/categorize`, `/cleanup/auto-categorize`, `/reply-zero/reclassify`, `/follow-ups/scan` | AD-11. The outside agent writes its own text. It saves a draft with `save_draft`, and the member sends |
+| Every `sends` op | AD-19. Each asks the member each time. A send to an outside person always asks (D124.2, D131.7). `AGENT_DOOR_SENDS` stays off until the owner turns it on |
+| The writes of Mira's settings, the always-copy list, the voice profile and the learned patterns | They change how Mira acts on every later mail. §19.10 keeps them `off_door` |
+| Rule writes, rule runs and rule decisions | No change from §19.10 |
+| Semantic search (`hybrid=true`) | It embeds the query. The agent re-ranks the rows of `search` with its own model |
+| The HTML of a mail, the inline images and the file download | The door gives text. A file stays in the app |
+| A thread summary | None is stored. A stored summary needs a model run for each thread. See MCP-Q8 |
+
+#### 19.10a.6 Shared mailboxes and visibility
+
+- Every new route calls `mailbox_predicate(level="read")`. A mailbox that the member cannot read gives a 404, as in the app. A shared mailbox reads at the grant level of the member. A send from a shared mailbox needs the `send` level, and a shared draft row names `drafted_by`.
+- `triage_now` and `changes_since` follow the All inboxes rule of the app. A mailbox that the member keeps separate (`keep_separate`) stays out unless the call names it.
+- **A known split.** The CRM timeline holds a copy of the owner scope, `_email_account_scope` (`routes/crm/activities.py:322`). It uses `user_id = :uid`, not the seam. So a shared-mailbox thread does not show on a CRM record. The CRM block of `get_thread_context` must not claim to be complete. Fence: the R8 suite makes a shared thread and checks that the block says `private mailboxes only`.
+- `create_task_from_email` is for a private mailbox only in v1. `capture_from_email` also checks `a.user_id`. A shared-mailbox thread gets 422 `shared_mailbox_unsupported`. MCP-Q10 asks the owner.
+- Thread assignment (`email_thread_assignments`) has no read route today. An agent cannot ask who owns a shared thread. WS-65 owns that route. When it ships, its row joins the manifest.
+- The personal opt-in of D-EA-4 does not apply to Email (MCP-Q9).
+
+#### 19.10a.7 The owner questions and the slices
+
+MCP-Q7 to MCP-Q12 are in §19.14. MCP-P2e, MCP-P2f and MCP-P2g are in §19.13, with their verify commands. The four pins of 19.10a.2 belong to MCP-P2a (task 866), because MCP-P2a is not built yet.
 
 ### 19.11 What stays X on every app
 
@@ -3054,9 +3181,12 @@ Each slice is HIGH tier unless it names another tier, so it runs the full loop. 
 |---|---|---|---|
 | MCP-P1a ✅ BUILT 2026-10-30 (dark) | **The generic door, with reads and proposals. Knowledge first.** `acb_common/app_manifests/` with `base.py` and `knowledge.py`, and the re-export. The four tools in `agent_edge/tools.py`. `GET /agent-access/apps` and `GET /agent-access/apps/{app}`. In branch 0: the door pairs, the app scope, the read limit, the audit row and the refusal of AD-18. The scopes `knowledge:read` and `knowledge:write` | An agent lists its apps, describes Knowledge, reads a page and files a proposed edit. The edit waits in the Knowledge Review view. A call with no Knowledge scope gets the 403 `insufficient_scope` and reveals no data. The member's visibility decides each row on R8. A B or C door op that is not a proposal gets 403 `approval_required` at branch 0, and the edge sends no request for it | `tests/unit/test_app_door_coverage.py` (AD-2, AD-3, the builder and the schema). `tests/unit/test_mcp_edge_app_door.py` pins the four tools, the texts, AD-10 and AD-12. `tests/unit/test_mcp_edge_app_door_r8.py` with `pytestmark = _DB_GATE`. `test_knowledge_chat_coverage.py` stays green with no edit. `test_branch_zero_digest_is_pinned` changes on purpose. `test_a_write_with_no_approval_fails_closed` registers a test manifest with one B op, and it is red under the mutation that drops AD-18 |
 | MCP-P1b | **The approval path.** The migration of AD-5. `POST /agent-access/apps/{app}/requests`, the two request reads, the decision route, the spend of AD-6, the digest of AD-17, the card and its home (MCP-Q3) | An agent asks for a class B write. The member approves on the card, and the agent sends it once. A decline, an expiry, a second spend, a changed body and a spend by another connection each change nothing. No app run shows on the board, in `my_work` or in Needs attention | `tests/unit/test_app_requests_r8.py` with `_DB_GATE`, each rule red under a named mutation. A vitest suite for the card. The digest test changes on purpose |
-| MCP-P2a | **The CRM and Email manifests, with reads and drafts.** It needs MCP-P1a only. `app_manifests/crm.py` and `email.py` from §19.9 and §19.10. A coverage test for each that walks the real router. The `save_draft` proposal. Each other B and C row carries the `off_door` reason of §19.10 | An agent reads a deal, its contact and the contact's last mail. It saves a reply draft that waits in Email, and nothing is sent. A member with no CRM access gets nothing from CRM. A mailbox that the member cannot open gives nothing. Each CRM and Email row that Mira's tools reach names the tool, or `planned` names MCP-P2c. No B or C row has an `op`, except `save_draft`. No class A door op calls a model | `tests/unit/test_crm_door_coverage.py` and `tests/unit/test_email_door_coverage.py`, each red on an unclassed route, on a route of §19.11 with an op, and on a B or C `op` other than `save_draft`. `test_no_door_read_calls_a_model` calls each class A door op once on R8, with a tripwire on `acompletion` (`packages/acb_llm/acb_llm/client.py:20`). A call that reaches it fails and names the op. `tests/unit/test_mcp_edge_crm_email_r8.py` with `_DB_GATE` |
+| MCP-P2a | **The CRM and Email manifests, with reads and drafts.** It needs MCP-P1a only. `app_manifests/crm.py` and `email.py` from §19.9 and §19.10. A coverage test for each that walks the real router. The `save_draft` proposal. Each other B and C row carries the `off_door` reason of §19.10. **It also holds the four pins and the two corrections of §19.10a.2 (2026-10-30)** | An agent reads a deal, its contact and the contact's last mail. It saves a reply draft that waits in Email, and nothing is sent. A member with no CRM access gets nothing from CRM. A mailbox that the member cannot open gives nothing. Each CRM and Email row that Mira's tools reach names the tool, or `planned` names MCP-P2c. No B or C row has an `op`, except `save_draft`. No class A door op calls a model | `tests/unit/test_crm_door_coverage.py` and `tests/unit/test_email_door_coverage.py`, each red on an unclassed route, on a route of §19.11 with an op, and on a B or C `op` other than `save_draft`. `test_no_door_read_calls_a_model` calls each class A door op once on R8, with a tripwire on `acompletion` (`packages/acb_llm/acb_llm/client.py:20`). A call that reaches it fails and names the op. `tests/unit/test_mcp_edge_crm_email_r8.py` with `_DB_GATE` |
 | MCP-P2b | **CRM writes and Email sends, through MCP-P1b.** It replaces each `off_door` reason of MCP-P2a with its `op`. The display hooks of CRM and Email. The `expect` of a send. `AGENT_DOOR_SENDS` | A CRM edit and a CRM delete each wait for the card. In Mirror mode, the edge refuses a record write before any request, and no card opens. A send waits for the card, and an edit of the draft after the card sends nothing. The card marks an outside address. With `AGENT_DOOR_SENDS` off, `describe_app` marks each `sends` op unavailable, and branch 0 refuses it. That covers a rule write, an unsubscribe and a rule run too | `tests/unit/test_app_requests_crm_email_r8.py` with `_DB_GATE`. `test_every_op_that_can_send_is_sends` holds AD-19 by route list |
 | MCP-P2c | **Tier MEDIUM. Mira's CRM and Email tools read the manifests.** The CRM agent and the email agent of Mira call `allowed` before each request, as `skill_projects/client.py:164` does | Each route that Mira's CRM or Email tools send is a row that names the tool. The client refuses a route that the manifest does not give to the tool | `tests/unit/test_mira_crm_email_manifest_client.py`, a recording fake gateway, as `test_projects_agent_writes.py` does. It does not gate the door |
+| MCP-P2e | **The composite reads.** `routes/email/agent_view.py` with `triage_now`, `get_thread_context` and `changes_since`. The shared priority function. `match_by_email` in CRM. The index migration. `get_writing_context`. It needs MCP-P2a | An agent lists what needs a reply across three mailboxes in one call. It reads a thread with its tasks and CRM records in one call. It polls changes with one call. A member with no CRM access gets `crm: null`. A mailbox that the member cannot read gives no row. A shared thread says `private mailboxes only` for CRM | `tests/unit/test_email_agent_view.py`. `tests/unit/test_email_agent_view_r8.py` with `_DB_GATE`, each rule red under a named mutation: the mailbox predicate, the CRM access check, the keyset order and the bump of `updated_at`. `test_no_door_read_calls_a_model` covers the three ops |
+| MCP-P2f | **The cross-app writes.** `POST /email/messages/{id}/task`, its op `create_task_from_email`, the card text, and `linked_email` on the task result. It needs MCP-P1b and MCP-P2a | An agent proposes a task from a mail. The member approves the card. The task carries `origin`, shows in `get_thread_context`, and closes the thread when the member closes it. A second call makes no second task. A shared mailbox gets 422 | `tests/unit/test_email_task_from_email_r8.py` with `_DB_GATE`. `test_email_task_route_calls_no_model` with the tripwire |
+| MCP-P2g | **Person and company context.** One read, `get_contact_context`, in the Email app. Input: an address. Output: the contact card, the CRM records that match the address and its domain, the open tasks that name the person, and the last five threads. It needs MCP-P2e | An agent asks for the history with one person in one call. The CRM and task blocks follow the scopes of MCP-Q7. Calendar joins when it has a manifest | `tests/unit/test_email_contact_context_r8.py` with `_DB_GATE` |
 | MCP-P3 | **Scopes per app on the consent page, and the admin switch.** The `check` answer with the app lines. The switch in Integrations, AI agents, and its read in branch 0 | A connection made before CRM had a manifest does not reach CRM until the member grants the new line. The test records what Claude Code does when the member clears that line. An admin switch turned off refuses the app at once, for each connection. The visual review passes on the consent page and on Integrations, AI agents | `consent.test.ts`, `e2e/connect-authorize.spec.ts`, and `tests/unit/test_agent_app_switch_r8.py` with `_DB_GATE` |
 | MCP-P4 | **LOW tier. No live app without a manifest.** `tests/unit/test_app_manifest_coverage.py` reads the live set of `src/lib/nav.ts` (`launch_surface.md` §2). Each live pane names a manifest through `App.pane`, or it has a `PLANNED` row that names a Metorite task | A new live pane with no manifest fails, and the failure names the pane. The test starts green, because Calendar, People, Meetings, WhatsApp and the others hold `PLANNED` rows | The test itself, red under a named mutation that adds a live pane |
 | MCP-P5 | Studio over the MCP, after STU-0, the sandbox slices and MCP-P1b. Its manifest joins the door. A publish stays a person's act on a card (D127.2) | Its own spec | Its own spec |
@@ -3091,6 +3221,9 @@ Each slice is HIGH tier unless it names another tier, so it runs the full loop. 
 | MCP-P2a | `uv run pytest -q -p no:cacheprovider tests/unit/test_crm_door_coverage.py tests/unit/test_email_door_coverage.py tests/unit/test_mcp_edge_crm_email_r8.py -rs` |
 | MCP-P2b | `uv run pytest -q -p no:cacheprovider tests/unit/test_app_requests_crm_email_r8.py tests/unit/test_email_door_coverage.py -rs` |
 | MCP-P2c | `uv run pytest -q -p no:cacheprovider tests/unit/test_mira_crm_email_manifest_client.py -rs` |
+| MCP-P2e | `uv run pytest -q -p no:cacheprovider tests/unit/test_email_agent_view.py tests/unit/test_email_agent_view_r8.py tests/unit/test_email_door_coverage.py -rs` |
+| MCP-P2f | `uv run pytest -q -p no:cacheprovider tests/unit/test_email_task_from_email_r8.py tests/unit/test_app_requests_crm_email_r8.py -rs` |
+| MCP-P2g | `uv run pytest -q -p no:cacheprovider tests/unit/test_email_contact_context_r8.py -rs` |
 | MCP-P3 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_app_switch_r8.py tests/unit/test_agent_oauth_server.py -rs`. In `workbench/control_plane`: `npx vitest run src/app/connect/authorize/consent.test.ts` and `npx playwright test e2e/connect-authorize.spec.ts` |
 | MCP-P4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_app_manifest_coverage.py -rs` |
 
@@ -3104,6 +3237,12 @@ Each slice is HIGH tier unless it names another tier, so it runs the full loop. 
 | MCP-Q4 | Is the Email door on or off by default for an organization? | **On for reads and drafts,** once the member grants the scope and MCP-P3 is live. Each `sends` op stays off until the owner turns on `AGENT_DOOR_SENDS`. After that, every such op still asks |
 | MCP-Q5 | Do the existing Projects write tools join the card rule of D124.2? | **No.** They keep the rules of EA-6. A Projects write is undoable and the timeline names its client. A card for each status move stops the coding routine. A class C act keeps its approval |
 | MCP-Q6 | Does the personal opt-in (D-EA-4) also cover the member's own Drive sources in Knowledge (`list_sources`, `get_source_tree`)? They follow their own owner rule, and they ignore `include_personal` | **ANSWERED 2026-10-30: yes.** The owner made personal access on by default (D-EA-4, amended), and it stays the member's switch. A member who unticks it expects no private file names to reach the agent. So the Drive sources respect the switch before the Knowledge door goes on in production (task 1056). A source that a member shares with a team space stays readable |
+| MCP-Q7 | A composite read carries CRM and task data. Does it need `crm:read` and `projects:read` too? | **ANSWERED 2026-10-30 by the owner: as recommended.** **Yes.** A block without its scope is `null` and says so. One scope per app stays true (D124.1). The agent asks for the CRM line on the consent page |
+| MCP-Q8 | Should Metorite store an urgency flag or a thread summary that its own model makes? | **ANSWERED 2026-10-30 by the owner: as recommended.** **No, not in v1.** The outside agent brings its own model (D-EA-7), and it reads the signals of `triage_now`. A stored flag spends AI credits for each mail and can differ from the view of the member. Revisit when a real agent shows that the signals are not enough |
+| MCP-Q9 | Email is always personal. Does `include_personal=false` (D-EA-4) hide the mailboxes of the member from a connection? | **ANSWERED 2026-10-30 by the owner: as recommended.** **No.** The scope `email:read` on the consent page is the opt-in for mail. The consent line must say "your mail, including private mailboxes" |
+| MCP-Q10 | May the door read shared mailboxes? May it create a task from a shared thread? | **ANSWERED 2026-10-30 by the owner: as recommended.** **Read: yes, at the level of the member. A task from a shared thread: no, until WS-65 settles who owns the task.** No send from a shared mailbox in v1 |
+| MCP-Q11 | A bulk triage opens one card for up to 50 messages. Is one approval enough? | **ANSWERED 2026-10-30 by the owner: as recommended.** **Yes** for archive, mark read, label and snooze. A bulk delete asks a second time, as D131.7 requires |
+| MCP-Q12 | Is polling enough, or does the owner want a push to the agent? | **ANSWERED 2026-10-30 by the owner: as recommended.** **Polling now (D140.4).** Push waits for WS-56. `changes_since` keeps its shape when push arrives |
 
 ### 19.15 What this section changes in the rest of this spec
 
