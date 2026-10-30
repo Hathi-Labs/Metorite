@@ -58,8 +58,9 @@ from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 logger = logging.getLogger(__name__)
 
-#: The three keys of ``my_day_prefs`` (§16 MD-2d).
-PREF_KEYS: tuple[str, ...] = ("mutes", "open_in_app", "corrections")
+#: The keys of ``my_day_prefs``: three of §16 MD-2d, and ``hide_push_details``
+#: (WS-66 RE-9a), a boolean.
+PREF_KEYS: tuple[str, ...] = ("mutes", "open_in_app", "corrections", "hide_push_details")
 #: The longest list of kinds that ``mutes`` and ``open_in_app`` take.
 MAX_KINDS = 29
 #: The most lines that ``corrections`` takes.
@@ -124,7 +125,16 @@ def _corrections(value: Any) -> list[str]:
     return lines
 
 
-_CLEAN = {"mutes": _kinds, "open_in_app": _kinds, "corrections": _corrections}
+def _flag(value: Any) -> bool:
+    # A strict bool: `1`, "true" and null are refused, so the stored value
+    # is never a string that reads as true by accident (WS-66 RE-9a).
+    if not isinstance(value, bool):
+        raise ValueError("the value is true or false")
+    return value
+
+
+_CLEAN = {"mutes": _kinds, "open_in_app": _kinds, "corrections": _corrections,
+          "hide_push_details": _flag}
 
 
 class PrefPut(BaseModel):
@@ -132,7 +142,7 @@ class PrefPut(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    key: Literal["mutes", "open_in_app", "corrections"]
+    key: Literal["mutes", "open_in_app", "corrections", "hide_push_details"]
     value: Any
 
     @model_validator(mode="after")
@@ -161,6 +171,8 @@ def stored_prefs(raw: Any) -> dict[str, Any]:
     v = raw.get("corrections")
     if isinstance(v, list):
         out["corrections"] = [x for x in v if isinstance(x, str)][:MAX_CORRECTIONS]
+    if isinstance(raw.get("hide_push_details"), bool):
+        out["hide_push_details"] = raw["hide_push_details"]
     return out
 
 

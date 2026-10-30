@@ -242,6 +242,27 @@ async def test_another_organization_neither_reads_nor_writes_the_prefs(db, app_e
     assert dict(_stored(db, email))[db.org_a] == {"corrections": [_LINE]}
 
 
+async def test_hide_push_details_is_one_members_own(db) -> None:
+    """WS-66 RE-9a: member B in the same org, and the same address in org B,
+    read nothing of member A's ``hide_push_details``."""
+    a_email, b_email = _address(), _address()
+    db.made.extend([a_email, b_email])
+    a, b = _member(a_email), _member(b_email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        saved = await _put(db.org_a, a, "hide_push_details", True)
+        assert saved == {"hide_push_details": True}
+        assert await _get(db.org_a, a) == {"hide_push_details": True}
+        # Another member of the same org reads nothing.
+        assert await _get(db.org_a, b) == {}
+        # The same address in org B reads nothing.
+        assert await _get(db.org_b, a) == {}
+        # A second key keeps the flag.
+        both = await _put(db.org_a, a, "mutes", ["overdue"])
+    assert both == {"hide_push_details": True, "mutes": ["overdue"]}
+    assert _stored(db, b_email) == []
+    assert dict(_stored(db, a_email)) == {db.org_a: both}
+
+
 def test_an_unbound_write_is_refused(db, app_engine) -> None:  # noqa: F811
     from gateway.routes.shell.prefs import _MERGE_PREFS, _NEW_PREFS
     from gateway.routes.tasks.settings import upsert_settings_sql

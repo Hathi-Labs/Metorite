@@ -420,6 +420,48 @@ export async function fetchFeed(limit = FEED_LIMIT): Promise<FeedAnswer> {
   return carried;
 }
 
+// ── The member's feed prefs: the ONE client (WS-66 RE-9a) ───────────────────
+
+/** The stored prefs: `user_settings.my_day_prefs`, as the gateway returns it. */
+export type FeedPrefs = Readonly<Record<string, unknown>>;
+
+const PREFS_URL = "/api/shell/feed/prefs";
+
+/**
+ * Read the member's prefs. `null` means the read failed, so a caller draws no
+ * guess. A key the member never set is absent from the object. The body names
+ * no member and no tenant, because the gateway takes both from the session.
+ */
+export async function loadFeedPrefs(): Promise<FeedPrefs | null> {
+  try {
+    const res = await fetch(PREFS_URL, { cache: "no-store" });
+    if (!res.ok) return null;
+    const data: unknown = await res.json();
+    return data && typeof data === "object" ? (data as FeedPrefs) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Save one pref, and return all the prefs the server stored. `null` means the
+ * save failed, and the caller keeps the old value.
+ */
+export async function saveFeedPref(key: string, value: unknown): Promise<FeedPrefs | null> {
+  try {
+    const res = await fetch(PREFS_URL, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, value }),
+    });
+    if (!res.ok) return null;
+    const data: unknown = await res.json();
+    return data && typeof data === "object" ? (data as FeedPrefs) : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── A failed source keeps its cards for a while (§6.1, MD-2b) ───────────────
 
 /** How long a failed source keeps the cards of its last `ok` answer (§6.1). */
