@@ -1867,6 +1867,12 @@ try:
     from gateway.routes.chat_reminder import router as _chat_reminder_router
 
     app.include_router(_chat_reminder_router)
+
+    # WS-BRIEF BR-2c-1 — `GET /brief/today`, the member's stored brief
+    # (`core_brief.md` §5 item 3). Dark: `BRIEF_IN_APP` off answers 404.
+    from gateway.routes.brief_today import router as _brief_today_router
+
+    app.include_router(_brief_today_router)
 except Exception:  # pragma: no cover
     pass
 

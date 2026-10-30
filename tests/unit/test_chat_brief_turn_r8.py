@@ -17,7 +17,27 @@ What this proves:
   gets no row, because the stamp in ``user_settings.my_day_prefs`` says so;
 * a day with no brief answers 204, writes no row and no stamp;
 * another member's session answers 404 and gets no row;
-* every row lands in the member's organization.
+* every row lands in the member's organization;
+* WS-BRIEF BR-2c-1: with ``BRIEF_IN_APP`` off, a stored run changes
+  nothing, and the post is the composition of the feed, byte for byte. With
+  it on, a ``ready`` run gives the lead and the pills, with no feed read,
+  and the pills are ``plan.brief_parts(...).lines`` of the same cards. With
+  it on and no ``ready`` run, the post is the composition;
+* repair round 1, P1-1: a stored post takes the run's date as its stamp
+  and its row id. Two fresh chats, one before the day start and one after,
+  make one post, and a stamp of the day before does not stop the first;
+* repair round 1, P2-a: a stored read that fails on the database logs
+  ``chat_brief.stored_failed``, and the post is the composition.
+
+**The mutation (R7) of BR-2c-1.** Commit first, restore with git after.
+In ``post_brief``, read the stored run with the switch off too (drop
+``if brief_flags.in_app(org) else None``).
+``test_the_switch_off_posts_the_composition_with_a_stored_run_present``
+goes red. In ``post_brief``, set ``day = today`` (the feed day) after the
+stored run gives its date.
+``test_a_stored_run_posts_once_across_the_day_start`` goes red.
+In ``_stored_or_none``, drop the ``try``.
+``test_a_failed_stored_read_posts_the_composition`` goes red.
 
 Run::
 
@@ -399,3 +419,256 @@ async def test_a_session_of_another_organization_is_404(graph_as_app, feed):
     finally:
         _unseed_member(ns, alice)
         _unseed_member(ns, zed)
+
+
+# ── BR-2c-1: the stored run ──────────────────────────────────────────────────
+
+
+def _brief_switches(monkeypatch, org: str, *, in_app: bool) -> None:
+    from types import SimpleNamespace
+
+    from gateway.brief import flags
+
+    monkeypatch.setattr(flags, "get_settings", lambda: SimpleNamespace(
+        brief_enabled=True, brief_orgs=org, brief_in_app=in_app))
+
+
+def _linked(card: dict) -> dict:
+    """A card with the in-app href that the gather keeps."""
+    return {**card, "href": f"/email?thread={card['signal_id'].split(':')[-1]}"}
+
+
+async def _store_run(org: str, email: str, cards: list[dict], *, state: str = "ready",
+                     lead: str | None = None, slot_at: datetime | None = None) -> str:
+    """A stored run of today, made as the run makes it: ``gather.claims``,
+    the template lead, and the guarded moves."""
+    from acb_common.db import tenant_session
+    from gateway.brief import gather, store
+    from gateway.reach import plan
+
+    today = NOW.astimezone(ZoneInfo("Asia/Kolkata")).date()
+    async with tenant_session(org) as db:
+        run = (await store.create_run(
+            db, email, kind="brief", local_date=today,
+            slot_at=slot_at or NOW - timedelta(hours=2, minutes=30))).run
+        if state == "empty":
+            await store.set_state(db, email, run.id, "empty", now=NOW, from_state="planned")
+            return run.id
+        parts = plan.brief_parts(cards, today, now=NOW)
+        await store.add_claims(db, email, run.id, gather.claims(cards, NOW))
+        await store.set_state(db, email, run.id, "gathered", now=NOW, from_state="planned")
+        await store.set_lead(db, email, run.id, lead or plan.brief_lead(parts),
+                             source="template")
+        await store.set_state(db, email, run.id, "ready", now=NOW, from_state="gathered")
+    return run.id
+
+
+def _drop_runs(ns, email: str) -> None:
+    with ns.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM brief_runs WHERE member_email = :u"), {"u": email})
+
+
+#: The answer before BR-2c-1, for the two cards of ``_two_cards``.
+GOLDEN_LEAD = "Your day, Thu 22 Oct. 2 things need you."
+GOLDEN_PILLS = ['Reply to Priya Shah: "Q3 pricing" (waiting 40 min)',
+                'Reply to Priya Shah: "Renewal" (waiting 40 min)']
+
+
+def _two_cards() -> list[dict]:
+    return [_card("email:a:t1", "Q3 pricing"), _card("email:a:t2", "Renewal")]
+
+
+def _golden_event() -> dict:
+    """The event of the composition of ``_two_cards``, as the route wrote
+    it before BR-2c-1."""
+    from gateway.reach import plan
+    from gateway.routes import chat_brief
+
+    parts = plan.brief_parts(_two_cards(), NOW.date(), now=NOW)
+    assert parts is not None and plan.brief_lead(parts) == GOLDEN_LEAD
+    assert parts.lines == GOLDEN_PILLS
+    return chat_brief.brief_event(parts)
+
+
+async def test_the_switch_off_posts_the_composition_with_a_stored_run_present(
+        graph_as_app, feed, monkeypatch):
+    """(d) ``BRIEF_IN_APP`` off: a ready run with other words is in the store,
+    and the post is the composition of the feed, byte for byte."""
+    ns = graph_as_app
+    org, email = ns.org_a, _address("flo")
+    _seed_member(ns, email, org)
+    _brief_switches(monkeypatch, org, in_app=False)
+    feed["cards"] = _two_cards()
+    feed["reads"] = 0
+    sid = f"cf5-{uuid.uuid4().hex[:12]}"
+    try:
+        _new_session(sid, email, org)
+        async with tenant_engine_scope(ns.app_url.render_as_string(hide_password=False)):
+            await _store_run(org, email, [_linked(_card("email:a:t9", "Stored words"))],
+                             lead="Stored lead. 1 thing needs you.")
+            got = await _post(ns, sid, _member(email, org))
+        assert got == {"posted": True, "message_id": "brief-2026-10-22",
+                       "preview": GOLDEN_LEAD}
+        [row] = _rows(ns, sid)
+        assert row.content == GOLDEN_LEAD
+        assert row.custom_events == [_golden_event()]
+        assert feed["reads"] == 1
+    finally:
+        _drop_runs(ns, email)
+        _unseed_member(ns, email)
+
+
+async def test_the_switch_on_posts_the_stored_run_with_no_feed_read(
+        graph_as_app, feed, monkeypatch):
+    """(e) ``BRIEF_IN_APP`` on: the pills are the claims' text in position
+    order, and they equal ``plan.brief_parts(...).lines`` of the same
+    cards. The feed is not read, and the run stays ``ready``: the chat
+    writes nothing to the run."""
+    from gateway.reach import plan
+
+    ns = graph_as_app
+    org, email = ns.org_a, _address("gus")
+    _seed_member(ns, email, org)
+    _brief_switches(monkeypatch, org, in_app=True)
+    cards = [_linked(c) for c in _two_cards()]
+    feed["cards"] = []  # a feed read would say "no brief"
+    feed["reads"] = 0
+    sid = f"cf5-{uuid.uuid4().hex[:12]}"
+    try:
+        _new_session(sid, email, org)
+        async with tenant_engine_scope(ns.app_url.render_as_string(hide_password=False)):
+            run_id = await _store_run(org, email, cards)
+            got = await _post(ns, sid, _member(email, org))
+        assert feed["reads"] == 0
+        assert got == {"posted": True, "message_id": "brief-2026-10-22",
+                       "preview": GOLDEN_LEAD}
+        [row] = _rows(ns, sid)
+        assert row.content == GOLDEN_LEAD
+        [event] = row.custom_events
+        pills = event["value"]["props"]["data"]["pills"]
+        with ns.admin_engine.connect() as c:
+            texts = [r[0] for r in c.execute(text(
+                "SELECT text FROM brief_claims WHERE run_id = CAST(:r AS uuid) "
+                "ORDER BY position"), {"r": run_id})]
+            run_state = c.execute(text(
+                "SELECT state FROM brief_runs WHERE id = CAST(:r AS uuid)"),
+                {"r": run_id}).scalar()
+        parts = plan.brief_parts(cards, NOW.date(), now=NOW)
+        assert parts is not None
+        assert pills == texts == parts.lines == GOLDEN_PILLS
+        # The same card as the composition of the same cards, byte for byte.
+        assert row.custom_events == [_golden_event()]
+        assert _stamp(ns, email) == "2026-10-22"
+        assert _sealed(ns, sid, "brief-2026-10-22") is True
+        assert run_state == "ready"
+    finally:
+        _drop_runs(ns, email)
+        _unseed_member(ns, email)
+
+
+@pytest.mark.parametrize("stored", [None, "empty"])
+async def test_the_switch_on_with_no_ready_run_posts_the_composition(
+        graph_as_app, feed, monkeypatch, stored):
+    """With the switch on and no ``ready`` run, the post falls back to the
+    composition of the feed, as before."""
+    ns = graph_as_app
+    org, email = ns.org_a, _address("hal")
+    _seed_member(ns, email, org)
+    _brief_switches(monkeypatch, org, in_app=True)
+    feed["cards"] = _two_cards()
+    feed["reads"] = 0
+    sid = f"cf5-{uuid.uuid4().hex[:12]}"
+    try:
+        _new_session(sid, email, org)
+        async with tenant_engine_scope(ns.app_url.render_as_string(hide_password=False)):
+            if stored is not None:
+                await _store_run(org, email, [], state=stored)
+            got = await _post(ns, sid, _member(email, org))
+        assert feed["reads"] == 1
+        assert got["preview"] == GOLDEN_LEAD
+        [row] = _rows(ns, sid)
+        assert row.custom_events == [_golden_event()]
+    finally:
+        _drop_runs(ns, email)
+        _unseed_member(ns, email)
+
+
+async def test_a_stored_run_posts_once_across_the_day_start(graph_as_app, feed, monkeypatch):
+    """P1-1. The brief runs at 07:00 in Kolkata, before the 09:00 day start.
+    The member's stamp is of the day before. A fresh chat at 07:30 (the feed
+    day is still 21 October) posts the run of 22 October, with its date as
+    the id and the stamp. A second fresh chat at 09:30 posts nothing."""
+    from acb_common.db import bind_tenant, release_tenant
+    from gateway.routes import chat_brief
+
+    ns = graph_as_app
+    org, email = ns.org_a, _address("ivy")
+    _seed_member(ns, email, org)
+    _brief_switches(monkeypatch, org, in_app=True)
+    feed["cards"] = []  # a feed read would say "no brief"
+    feed["reads"] = 0
+    early = datetime(2026, 10, 22, 2, 0, tzinfo=UTC)  # 07:30 in Kolkata
+    late = datetime(2026, 10, 22, 4, 0, tzinfo=UTC)  # 09:30 in Kolkata
+    sid, sid2 = f"cf5-{uuid.uuid4().hex[:12]}", f"cf5-{uuid.uuid4().hex[:12]}"
+    user = _member(email, org)
+    try:
+        _new_session(sid, email, org)
+        _new_session(sid2, email, org)
+        async with tenant_engine_scope(ns.app_url.render_as_string(hide_password=False)):
+            await _store_run(org, email, [_linked(c) for c in _two_cards()],
+                             slot_at=datetime(2026, 10, 22, 1, 30, tzinfo=UTC))
+            token = bind_tenant(org)
+            try:
+                await chat_brief._mark(email, chat_brief.BRIEF_STAMP_KEY, "2026-10-21")
+            finally:
+                release_tenant(token)
+            monkeypatch.setattr(chat_brief, "_now", lambda: early)
+            first = await _post(ns, sid, user)
+            monkeypatch.setattr(chat_brief, "_now", lambda: late)
+            second = await _post(ns, sid2, user)
+        assert first == {"posted": True, "message_id": "brief-2026-10-22",
+                         "preview": GOLDEN_LEAD}
+        assert _status(second) == 204
+        assert [r.id for r in _rows(ns, sid)] == ["brief-2026-10-22"]
+        assert _rows(ns, sid2) == []
+        assert _stamp(ns, email) == "2026-10-22"
+        assert feed["reads"] == 0
+    finally:
+        _drop_runs(ns, email)
+        _unseed_member(ns, email)
+
+
+async def test_a_failed_stored_read_posts_the_composition(graph_as_app, feed, monkeypatch):
+    """P2-a. The stored read fails on the database (a statement that the
+    database refuses). The route logs ``chat_brief.stored_failed`` with the
+    error class only, and posts the composition of the feed. It never
+    answers 500."""
+    from gateway.brief import store
+    from gateway.routes import chat_brief
+
+    ns = graph_as_app
+    org, email = ns.org_a, _address("jon")
+    _seed_member(ns, email, org)
+    _brief_switches(monkeypatch, org, in_app=True)
+    feed["cards"] = _two_cards()
+    feed["reads"] = 0
+    monkeypatch.setattr(store, "_READ_LATEST_RUN_SQL", "SELECT * FROM brief_runs_not_here")
+    logged: list = []
+    monkeypatch.setattr(chat_brief._log, "warning",
+                        lambda event, **kw: logged.append((event, kw)))
+    sid = f"cf5-{uuid.uuid4().hex[:12]}"
+    try:
+        _new_session(sid, email, org)
+        async with tenant_engine_scope(ns.app_url.render_as_string(hide_password=False)):
+            await _store_run(org, email, [_linked(_card("email:a:t9", "Stored words"))],
+                             lead="Stored lead. 1 thing needs you.")
+            got = await _post(ns, sid, _member(email, org))
+        assert got == {"posted": True, "message_id": "brief-2026-10-22",
+                       "preview": GOLDEN_LEAD}
+        [row] = _rows(ns, sid)
+        assert row.custom_events == [_golden_event()]
+        assert feed["reads"] == 1
+        assert logged == [("chat_brief.stored_failed", {"error": "ProgrammingError"})]
+    finally:
+        _drop_runs(ns, email)
+        _unseed_member(ns, email)

@@ -122,7 +122,9 @@ def _typed_now() -> str:
 
     The route binds them before any server rewrite of ``message``. So a
     Continue turn, whose message quotes the assistant's own reply, reads
-    ``""``, and so do the supersede note and a replayed steer.
+    ``""``, and so does the supersede note. Since PZ-31, the member's own
+    typed steers count too (replayed or read at a tool result). A card
+    answer, a Continue and another member's steer still count nothing.
     """
     try:
         from acb_common.assistant_profile import typed_words

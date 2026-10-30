@@ -572,6 +572,15 @@ class Settings(BaseSettings):
     # §10 row 2. Fence: tests/unit/test_brief_run.py.
     brief_enabled: bool = False
     brief_orgs: str = ""
+    # `brief_in_app` (WS-BRIEF BR-2c-1, 2026-10-29) is the switch of the
+    # in-app delivery, default OFF. On, `GET /brief/today` serves the stored
+    # run, and the chat's first turn shows its lines. Off, the route answers
+    # 404, and the chat's first turn composes from the feed as before. It
+    # holds for an org only when `BRIEF_ENABLED` and `BRIEF_ORGS` hold too.
+    # The one reader is `gateway.brief.flags.in_app`. A flip on a box is gate
+    # `enforcement-flip`. Spec: core_brief.md §5 and §10 row 5. Fence:
+    # tests/unit/test_brief_today.py.
+    brief_in_app: bool = False
 
     # ── Web push (WS-66 PN-1, 2026-10-25) ───────────────────────────────────
     #

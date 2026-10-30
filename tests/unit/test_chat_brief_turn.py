@@ -12,6 +12,9 @@ What this holds without a database:
   ``mint=True`` nowhere (``test_rooms.py`` keeps that literal in
   ``routes/agent.py`` alone), and it is registered in ``main.py``.
 
+* WS-BRIEF BR-2c-1: the stored run gives the same parts as the composition
+  of the same cards, the "more" count included (``stored_parts``).
+
 The database half is ``test_chat_brief_turn_r8.py``.
 """
 from __future__ import annotations
@@ -154,3 +157,83 @@ class TestTheSeams:
         module = pathlib.Path(chat_brief.__file__).read_text(encoding="utf-8")
         for word in ("litellm", "tier_", "decide(", "complete(", "acompletion"):
             assert word not in module, word
+
+
+class TestTheStoredRun:
+    """BR-2c-1: a run that the gather wrote from some cards gives the chat
+    the same title, lines and rest as ``plan.brief_parts`` of those cards."""
+
+    @staticmethod
+    def _stored(cards: list[dict]):
+        from gateway.brief import gather, store
+
+        parts = plan.brief_parts(cards, TODAY, now=NOW)
+        assert parts is not None
+        claims = [store.Claim(
+            id=f"c{c.position}", run_id="r", position=c.position, section=c.section,
+            text=c.text, source_app=c.source_app, source_kind=c.source_kind,
+            source_id=c.source_id, source_ids=(), href=c.href, value=None,
+            value_path=None, fingerprint=c.fingerprint) for c in gather.claims(cards, NOW)]
+        run = store.Run(
+            id="r", member_email="a@x.test", kind="brief", local_date=TODAY, slot_at=NOW,
+            state="ready", lead=plan.brief_lead(parts), lead_source="template",
+            lead_claim_ids=(), model_request_id=None, unattended_run_id=None, error=None,
+            created_at=NOW, ready_at=NOW, delivered_at=None)
+        return parts, chat_brief.stored_parts(run, list(reversed(claims)))
+
+    def test_the_stored_parts_are_the_composed_parts(self):
+        cards = [{**card("email:a:t1"), "href": "/email?thread=t1"},
+                 {**card("tasks:1", "overdue", title="Send the deck", facts={"days_late": 2},
+                         score=40), "href": "/tasks?task=1"}]
+        parts, stored = self._stored(cards)
+        assert stored is not None
+        lead, got = stored
+        assert lead == plan.brief_lead(parts)
+        assert got == parts
+        assert chat_brief.brief_event(got) == chat_brief.brief_event(parts)
+
+    def test_the_rest_survives_the_store(self):
+        cards = [{**card(f"tasks:{i}", "overdue", title=f"Task {i}", score=60 - i,
+                         facts={"days_late": 1}), "href": f"/tasks?task={i}"}
+                 for i in range(9)]
+        parts, stored = self._stored(cards)
+        assert stored is not None and stored[1] == parts and parts.rest == 2
+
+
+# ── BR-2c-1 repair: a stored run dated before the feed day is not used ───────
+
+
+async def _stored_for(monkeypatch, run_date: date, today: date):
+    """``_stored_brief`` with the store read stubbed to one served run."""
+    from types import SimpleNamespace
+
+    from gateway.routes import brief_today
+
+    run = SimpleNamespace(local_date=run_date)
+
+    async def fake_read_today(org, user, email, kind, now):
+        return run, []
+
+    monkeypatch.setattr(brief_today, "read_today", fake_read_today)
+    monkeypatch.setattr(chat_brief, "stored_parts",
+                        lambda r, claims: ("lead", plan.BriefParts("t", [], 0)))
+    return await chat_brief._stored_brief(
+        "org", None, "m@example.com", datetime(2026, 10, 22, 0, 30, tzinfo=UTC), today)
+
+
+async def test_a_stored_run_dated_before_the_feed_day_is_not_used(monkeypatch) -> None:
+    """A member with a 05:00 day start opens a fresh chat at 06:00. The newest
+    served run is of the day before. The chat must not post yesterday's
+    brief: ``_stored_brief`` answers None, and the route composes from the
+    feed. Mutation: remove the ``run.local_date < today`` check, and this
+    test goes red."""
+    got = await _stored_for(monkeypatch, date(2026, 10, 21), date(2026, 10, 22))
+    assert got is None
+
+
+async def test_a_stored_run_of_the_feed_day_or_later_is_used(monkeypatch) -> None:
+    """The control: a run of the feed day, or of the calendar day after it
+    (a day start after the brief time), is used, with the run's own date."""
+    for run_date in (date(2026, 10, 22), date(2026, 10, 23)):
+        got = await _stored_for(monkeypatch, run_date, date(2026, 10, 22))
+        assert got is not None and got[0] == run_date
