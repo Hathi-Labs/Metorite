@@ -53,11 +53,21 @@ the member is the row's own ``member_email``, which the route took from the
 session. After each write the loop bumps the member's My Day version
 (``cache.bump_member_safe``), so the feed reads the new card.
 
+**The web push** (WS-66 RE-9b, §5.6 "Settled 2026-10-30 (RE-9)"). Steps 1,
+2 and 5 each plan ONE web push in their own transaction, through
+``reach.push_channel.plan_reminder_push`` on the step's session ``db``, keyed
+by the ledger row of the step. After the steps of an org, :func:`run_org`
+calls ``push_channel.send_planned`` once. The loop never calls the sender
+itself, and it holds no session while a push goes out. A crash leaves a
+planned row, and the next tick sends it. Both need ``WEB_PUSH_ENABLED`` and
+``calendar_reminders``, and no ``REACH_*`` flag.
+
 **Dark by default.** With ``calendar_reminders`` off, :func:`start_reminder_loop`
 starts no task, and :func:`run_tick` does nothing.
 
 Fence: ``tests/unit/test_reminder_loop.py`` (R8, frozen clock, two orgs, two
-workers) and ``tests/unit/test_reminder_slot.py`` (pure).
+workers), ``tests/unit/test_reminder_slot.py`` (pure) and
+``tests/unit/test_reach_push.py`` (R8, the web push).
 """
 
 from __future__ import annotations
@@ -72,6 +82,7 @@ from acb_common import get_logger
 from acb_common.db import bind_tenant, release_tenant, tenant_session
 from sqlalchemy import text
 
+from gateway.reach import push_channel
 from gateway.reminders import slot
 
 _log = get_logger("reminders.loop")
@@ -231,10 +242,12 @@ async def member_busy(db: Any, member: str, now: datetime,
 # ── One row ─────────────────────────────────────────────────────────────────
 
 
-async def _ledger(db: Any, row: Any, event: str, detail: dict[str, Any]) -> None:
+async def _ledger(db: Any, row: Any, event: str, detail: dict[str, Any]) -> str:
+    """One ledger row of a step. Answers its id, the second half of the key of
+    the step's web push (RE-9b)."""
     from gateway.routes.projects.reminders import _ledger as write
 
-    await write(db, row.id, event, {**detail, "by": "metorite"})
+    return await write(db, row.id, event, {**detail, "by": "metorite"})
 
 
 async def _fire(db: Any, row: Any, day: Any, now: datetime) -> str:
@@ -249,22 +262,24 @@ async def _fire(db: Any, row: Any, day: Any, now: datetime) -> str:
         "next_check_at = :check, updated_at = now() "
         "WHERE id = CAST(:id AS uuid)"),
         {"now": now, "check": check_at, "id": str(row.id)})
-    await _ledger(db, row, "fired", {
+    event_id = await _ledger(db, row, "fired", {
         "fire_at": _iso(row.fire_at), "at": _iso(now),
         "next_check_at": _iso(check_at), "cycles": int(row.cycles),
     })
+    await push_channel.plan_reminder_push(db, row, event_id, "reminder_due", day, now)
     return "fired"
 
 
-async def _give_up(db: Any, row: Any, now: datetime, reason: str) -> str:
+async def _give_up(db: Any, row: Any, day: Any, now: datetime, reason: str) -> str:
     """Step 5: ``unconfirmed``. Nothing more, until the member answers."""
     await db.execute(text(
         "UPDATE reminders SET state = 'unconfirmed', next_check_at = NULL, "
         "updated_at = now() WHERE id = CAST(:id AS uuid)"), {"id": str(row.id)})
-    await _ledger(db, row, "gave_up", {
+    event_id = await _ledger(db, row, "gave_up", {
         "reason": reason, "at": _iso(now), "cycles": int(row.cycles),
         "from_state": row.state,
     })
+    await push_channel.plan_reminder_push(db, row, event_id, "reminder_unconfirmed", day, now)
     return "gave_up"
 
 
@@ -279,9 +294,10 @@ async def _check_back(db: Any, row: Any, day: Any, now: datetime, done: int) -> 
     await db.execute(text(
         "UPDATE reminders SET next_check_at = :next, updated_at = now() "
         "WHERE id = CAST(:id AS uuid)"), {"next": next_at, "id": str(row.id)})
-    await _ledger(db, row, "check_back", {
+    event_id = await _ledger(db, row, "check_back", {
         "number": number, "at": _iso(now), "next_check_at": _iso(next_at),
     })
+    await push_channel.plan_reminder_push(db, row, event_id, "reminder_check", day, now)
     return "check_back"
 
 
@@ -306,12 +322,12 @@ async def _ladder(db: Any, row: Any, day: Any, now: datetime) -> str:
     """Steps 2 to 5 of a ``due`` row whose check time came."""
     first = row.first_fired_at or now
     if now - first >= GIVE_UP_AFTER:
-        return await _give_up(db, row, now, "72h")
+        return await _give_up(db, row, day, now, "72h")
     done = int((await db.execute(text(_CHECKS_SQL), {"id": str(row.id)})).scalar_one())
     if done < (IMPORTANT_CHECKS if row.important else CHECKS):
         return await _check_back(db, row, day, now, done)
     if int(row.cycles) >= MAX_CYCLES:
-        return await _give_up(db, row, now, "cycles")
+        return await _give_up(db, row, day, now, "cycles")
     return await _brief_and_move(db, row, day, now)
 
 
@@ -379,12 +395,27 @@ async def run_org(org: str, now: datetime | None = None) -> Counter[str]:
                 counts[outcome] += 1
             if outcome in EVENTS:
                 touched.add(member)
+    counts.update(await _send_pushes(org, at))
     if touched:
         from gateway.routes.shell import cache
 
         for member in sorted(touched):
             await cache.bump_member_safe(org, member)
     return counts
+
+
+async def _send_pushes(org: str, now: datetime) -> Counter[str]:
+    """The send step of RE-9b, after the commits of every step of *org*: each
+    planned web push goes through ``push_channel.send_planned``. It never
+    raises, so a failed send never stops the loop. A row it did not send stays
+    planned, and the next tick tries it again."""
+    if _stopping.is_set():
+        return Counter()
+    try:
+        return await push_channel.send_planned(org, now, _stopping.is_set)
+    except Exception as exc:
+        _log.warning("reminders.push_failed", error=type(exc).__name__)
+        return Counter()
 
 
 async def run_tick(now: datetime | None = None) -> dict[str, Counter[str]]:

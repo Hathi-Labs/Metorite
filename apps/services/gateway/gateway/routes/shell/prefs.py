@@ -248,6 +248,30 @@ _MERGE_PREFS = (
 )
 
 
+#: The member's row in the BOUND tenant, with the address in any case (WS-66
+#: RE-9b). The reminder loop knows only the lower case that
+#: ``reminders.member_email`` holds. The session's own spelling wins, then the
+#: newest row, as ``tasks.settings.member_settings`` reads it.
+_READ_ANY_CASE_SQL = (
+    "SELECT my_day_prefs FROM user_settings "
+    "WHERE organization_id = {org} AND lower(user_id) = lower(:uid) "
+    "ORDER BY (user_id = :uid) DESC, updated_at DESC LIMIT 1"
+)
+
+
+async def hide_push_details(db: Any, member: str) -> bool:
+    """True when *member* turned on "Hide details on the lock screen"
+    (``hide_push_details``, RE-9a). Read on *db*, a session that the caller
+    bound to the tenant, for the send step of a reminder push (RE-9b). No row,
+    or no key, is False."""
+    from gateway.routes.tasks.settings import _BOUND_ORG
+    from sqlalchemy import text
+
+    row = (await db.execute(text(_READ_ANY_CASE_SQL.format(org=_BOUND_ORG)),
+                            {"uid": member})).first()
+    return row is not None and stored_prefs(row[0]).get("hide_push_details") is True
+
+
 async def _read(db: Any, uid: str) -> Any:
     from gateway.routes.tasks.settings import _BOUND_ORG
     from sqlalchemy import text
