@@ -10129,17 +10129,20 @@ under the wrong name, and their deals sat in extra lanes at the end.
   The heal renames the rows, but a rename moves no deal. An incremental
   read lists a deal only after it changes in Zoho. So the deals of S1 stay
   under "Gamma".
-- **The full read of a chain.** Before it writes, `_mirror_statuses`
-  checks for a row of a listed value that holds the label of another listed
-  value. A label that two values share does not count. When it finds one,
-  it queues ONE full read of the entity (Deals for Stage, Leads for
-  Lead_Status). The queue is the re-read list of the field rules
-  (`_add_rereads`), in the same transaction. That read maps each record by
-  its label again, and its last page takes the entity off the list. A
-  healed org has no such row, so the next picklist read queues nothing. A
-  plain rename queues no full read, because the fold of item 8 moves the
-  deals. The same check covers two values that trade labels. The check
-  runs inside `ctx.page`, so a Native org never reaches it.
+- **The check of a chain.** Before it writes, `_mirror_statuses` checks
+  for a row of a listed value that holds the label of another listed value.
+  A row that holds its own label does not count, also when a second value
+  shares that label. The check does not depend on the Zoho order. A check
+  on the park of `_source_status` alone misses the chain when S2 comes
+  first. The same check covers two values that trade labels. It runs inside
+  `ctx.page`, so a Native org never reaches it.
+- **The full read of a chain.** When the check finds a row, the step queues
+  ONE full read of the entity (Deals for Stage, Leads for Lead_Status). The
+  queue is the re-read list of the field rules (`_add_rereads`), in the
+  same transaction. That read maps each record by its label again, and its
+  last page takes the entity off the list. A healed org has no such row, so
+  the next picklist read queues nothing. A plain rename queues no full
+  read, because the fold of item 8 moves the deals.
 - **The step order.** Each run reads the picklists before discovery writes
   the pipelines (`_execute`). `_pipeline_stage_status` matches a stage by the
   Zoho id first. So a run whose picklist read fails still puts each place on

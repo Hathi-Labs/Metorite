@@ -340,7 +340,7 @@ def test_a_picklist_value_is_named_by_its_zoho_label() -> None:
     assert (values[2].type, values[2].forecast_category) == ("won", "Closed Won")
 
 
-def test_a_label_collision_needs_a_listed_row_and_one_owner_of_the_label() -> None:
+def test_a_label_collision_needs_a_listed_row_that_holds_a_label_not_its_own() -> None:
     """Task #1096 (``crm_platform.md`` §20.6, "the chain"). The check queues a
     full read, so a false answer costs a full read on each picklist read."""
     from types import SimpleNamespace
@@ -360,10 +360,14 @@ def test_a_label_collision_needs_a_listed_row_and_one_owner_of_the_label() -> No
     assert not engine._label_collision(chain, [row("S1", "Alpha"), row("S2", "Delta")], listed)
     # Zoho no longer lists the value of the row, so the gone rule owns it.
     assert not engine._label_collision(chain, [row("S9", "Beta")], listed)
-    # Two values share the label. No full read can tell their records apart,
-    # and each picklist read would queue one more.
+    # Two values share the label, and the rows take it in turns. No full read
+    # can tell their records apart, and each read would queue one more.
     shared = [value("Beta", "S1"), value("Beta", "S2")]
     assert not engine._label_collision(shared, [row("S1", "Beta [S2]"), row("S2", "Beta")], listed)
+    assert not engine._label_collision(shared, [row("S1", "Beta"), row("S2", "Beta [S1]")], listed)
+    # The shared label on the row of a third value is a true collision.
+    assert engine._label_collision(
+        [*shared, value("Delta", "S3")], [row("S3", "Beta")], frozenset({"S1", "S2", "S3"}))
     # A value with no Zoho id owns no label.
     assert not engine._label_collision(
         [value("Beta", None)], [row("S1", "Beta")], frozenset({"S1"}))

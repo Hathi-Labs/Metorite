@@ -1366,9 +1366,10 @@ def _label_collision(
 
     A record pull finds its row by the label that the record carries. So each
     record of that other value went onto the wrong row. The rename of the
-    picklist read cannot move them, because a row keeps its records. Only a
-    label that one value holds counts. A label that two values share cannot
-    tell their records apart.
+    picklist read cannot move them, because a row keeps its records. A row
+    that holds its own label does not count, also when a second value shares
+    that label. No read can tell those records apart, and a repeat of the
+    check must not queue a read on each picklist read.
     """
     owners: dict[str, set[str]] = {}
     for value in values:
@@ -1376,7 +1377,7 @@ def _label_collision(
             owners.setdefault(value.name, set()).add(value.ext_id)
     for row in rows:
         ext, holders = str(row.ext_id), owners.get(str(row.name))
-        if ext in listed and holders is not None and len(holders) == 1 and ext not in holders:
+        if ext in listed and holders is not None and ext not in holders:
             return True
     return False
 
