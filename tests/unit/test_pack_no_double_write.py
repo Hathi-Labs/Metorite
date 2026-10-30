@@ -13,9 +13,11 @@ turns it red (R7).
    on every hand-off seam. A cancelled card counts as a write.
 2. A read-only tool, then a hand-off -> it runs.
 3. Reverse: a hand-off, then a write tool of the owner's pack -> refused,
-   while the specialist tool stays in the run.
+   while the specialist tool stays in the run. A hand-off that failed or
+   timed out still refuses the write, with its own text.
 4. One model step with both calls: exactly one runs, in either order.
-5. Email and CRM parity, and the reverse that does not apply to them.
+5. Email and CRM parity. Both directions hold only while the specialist tool
+   stays in the run, so the email setup hand-off stays open after a mail read.
 6. The order of the answers: an older refusal keeps its text.
 7. Flag off: no record, so nothing changes.
 
@@ -228,10 +230,21 @@ async def test_a_pack_write_after_a_hand_off_to_its_owner_refuses(
     assert applied.record.wrote == {} and applied.record.handed == {PA}
 
 
-async def test_the_reverse_holds_on_the_streaming_seam_too(store, agents, monkeypatch) -> None:
+def _failed(tool: str = "create_personal_task") -> str:
+    return tp.HANDED_FAILED_WRITE_REFUSED.format(tool=tool)
+
+
+async def test_a_failed_hand_off_on_the_streaming_seam_still_refuses_with_its_own_text(
+    store, agents, monkeypatch,
+) -> None:
     """The specialist tool goes through ``_run_sub_agent_streaming``, which
-    records the hand-off before any work. Mutation: ask the seam with
-    ``starts=False`` -> no record -> the write lands -> red."""
+    records the hand-off before any work. Here the sub-run fails at its load.
+    A failed specialist may have written part of the work, so the write still
+    refuses. The answer says that the hand-off did not finish, so the model
+    does not hand the step over again (OA-8i review, P2). Mutation: ask the
+    seam with ``starts=False`` -> no record -> the write lands -> red.
+    Mutation: drop the ``handed_failed`` branch of ``write_refusal`` -> the
+    answer sends the model back to the failed hand-off -> red."""
     started: list[str] = []
 
     async def no_load(name: str, **_k: Any) -> Any:
@@ -243,11 +256,52 @@ async def test_the_reverse_holds_on_the_streaming_seam_too(store, agents, monkey
     approve(monkeypatch)
     applied = await _held_projects(agents)
     with L._in_run(applied), _queue():
-        await _tool(agents, "projects_assistant").func(task="Make a task from it")
+        out = await _tool(agents, "projects_assistant").func(task="Make a task from it")
         made = await _tool(agents, "create_personal_task").func(title="Confirm 250 boards")
     assert started == [PA], "non-vacuity: the hand-off passed its refusal"
-    assert made == tp.HANDED_WRITE_REFUSED.format(tool="create_personal_task")
+    assert "failed" in str(out), out
+    assert applied.record.handed == {PA} and applied.record.handed_failed == {PA}
+    assert made == _failed() and _posts(calls) == []
+    assert "did not finish" in made and "hand this step over" not in made
+
+
+async def test_a_timed_out_hand_off_counts_as_not_finished(store, agents, monkeypatch) -> None:
+    """``call_agent`` stops a slow sub-run at its time limit. The sub-run may
+    have written already, so the write refuses, with the text of a hand-off
+    that did not finish. Mutation: record the end of the hand-off only in
+    the ``except`` of the seam, not in its ``finally`` -> a cancel records
+    nothing -> red."""
+
+    async def slow_load(_name: str, **_k: Any) -> Any:
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(ex, "_load_agent_off_loop", slow_load)
+    monkeypatch.setattr(L.agent_tools, "_SUB_AGENT_TIMEOUT", 0.05)
+    calls = fake_gateway(monkeypatch, _gateway)
+    approve(monkeypatch)
+    applied = await _held_projects(agents)
+    with L._in_run(applied), _queue():
+        out = await L.agent_tools.call_agent(PA, "Make a task from the mail of Priya")
+        made = await _tool(agents, "create_personal_task").func(title="Confirm 250 boards")
+    assert "timed out" in str(out), out
+    assert applied.record.handed_failed == {PA} and made == _failed()
     assert _posts(calls) == []
+
+
+def test_a_hand_off_that_finished_keeps_the_plain_answer() -> None:
+    """Only a hand-off that did not finish changes the answer, and only an
+    owner that a hand-off reached is recorded. Mutation: record every end as
+    failed -> red."""
+    some = _record(("projects",))
+    some.handoff_ended(PA, finished=False)
+    assert some.handed_failed == set(), "no hand-off started"
+    some.handoff_starts(PA)
+    tp.handoff_ended(PA, {tp.PACKS_KEY: some}, finished=True)
+    assert some.write_refusal(PA, "create_task") == tp.HANDED_WRITE_REFUSED.format(
+        tool="create_task")
+    tp.handoff_ended(PA, {tp.PACKS_KEY: some}, finished=False)
+    assert some.write_refusal(PA, "create_task") == _failed("create_task")
+    tp.handoff_ended(PA, None, finished=False)  # no record: nothing, and no raise
 
 
 # ── 4. One model step with both calls ───────────────────────────────────────
@@ -329,13 +383,18 @@ async def _email_only(agents: list[Any]) -> Any:
     return applied
 
 
-async def test_email_parity_a_pack_write_refuses_the_hand_off(
+async def test_email_parity_the_setup_hand_off_stays_open_after_a_mail_read(
     store, agents, monkeypatch, email_owner,
 ) -> None:
-    """The rule reads the risk mark only, so it holds for the email owner
-    too. A read-only mark records nothing. ``query_inbox`` is not marked
-    read-only, so it counts as a write, and a setup hand-off after it in the
-    same turn refuses. Mutation: limit the rule to the Projects owner -> red."""
+    """OA-8i review, P1. "Find the newsletters in my inbox and make a rule
+    that archives them": the model calls ``query_inbox`` from the pack, then
+    hands the rule to the email assistant, as the email rules route it. No
+    email tool says ``read_only=True``, so the read is recorded as a write.
+    The email pack took the specialist tool away (the owner is in
+    ``replaced``), so the hand-off carries only setup work that the run
+    cannot hold, and it stays OPEN. A read-only mark records nothing.
+    Mutation: drop the ``replaced`` check of ``PackRun.wrote_refusal`` -> the
+    hand-off answers the refusal and no rule is made -> red."""
     ran = L._fake_run_agent(monkeypatch)
     applied = await _email_only(agents)
     reader, query = (_tool(agents, n) for n in ("read_email", "query_inbox"))
@@ -343,9 +402,11 @@ async def test_email_parity_a_pack_write_refuses_the_hand_off(
         await reader(email_id="m-1")
         assert applied.record.wrote == {} and tp.delegation_refusal(EA) is None
         await query(query="newsletters")
-        out = await L.agent_tools.call_agent(EA, "Make a rule that files newsletters.")
-    assert out == _wrote("query_inbox") and ran == []
-    assert applied.record.wrote == {EA: "query_inbox"}
+        assert applied.record.wrote == {EA: "query_inbox"}, "non-vacuity: a read counts"
+        assert tp.delegation_refusal(EA) is None
+        out = await L.agent_tools.call_agent(EA, "Make a rule that archives newsletters.")
+    assert "ran" in out and ran == [EA]
+    assert applied.record.handed == {EA}
 
 
 async def test_email_parity_a_pack_call_after_a_setup_hand_off_still_runs(
@@ -445,7 +506,8 @@ def test_only_an_owner_of_a_pack_is_recorded_and_an_ask_records_nothing() -> Non
 def test_the_texts_name_the_tool_and_no_other_assistant() -> None:
     """The house voice of the pack refusals: "Not run.", and no assistant
     named. Mutation: name the specialist in a text -> red."""
-    for text in (tp.WROTE_HANDOFF_REFUSED, tp.HANDED_WRITE_REFUSED):
+    for text in (tp.WROTE_HANDOFF_REFUSED, tp.HANDED_WRITE_REFUSED,
+                 tp.HANDED_FAILED_WRITE_REFUSED):
         assert text.startswith("Not run.") and "{tool}" in text
         filled = text.format(tool="create_task")
         for owner in (PA, EA, CRM, "projects_assistant", "email_assistant", "agent"):

@@ -1397,6 +1397,19 @@ def _pack_delegation_refusal(agent_name: str) -> str | None:
     return refused
 
 
+def _pack_handoff_ended(agent_name: str, parent_ctx: Any, *, finished: bool) -> None:
+    """Tell the calling run's pack record whether a hand-off finished (WS-67
+    OA-8i review, P2). *parent_ctx* is the calling run's context, read before
+    the sub-run derived its own. The rule is ``tool_packs.handoff_ended``.
+    Never raises."""
+    try:
+        from acb_skills.tool_packs import handoff_ended
+
+        handoff_ended(agent_name, parent_ctx, finished=finished)
+    except Exception:
+        return
+
+
 def _without_pack_keys(agent_name: str = "") -> dict[str, Any]:
     """The changes that take the pack keys out of a derived run context, so a
     delegated run never inherits the run key or the record of its parent.
@@ -2426,6 +2439,10 @@ async def _run_sub_agent_streaming(
 
     # B6 Phase-5 Tier 0: init before the try so the finally can always restore.
     _integration_env_token: IntegrationEnvToken = None
+    # WS-67 OA-8i review, P2: True once the sub-agent's own run ended. The
+    # finally tells the calling run's pack record whether the hand-off
+    # finished, also after a raise, a timeout or a Stop.
+    _sub_done = False
 
     # Delegation is a run too, and until now it was invisible to everyone
     # outside the tab that started it: SUB_AGENT_* events reach the parent's
@@ -2777,6 +2794,7 @@ async def _run_sub_agent_streaming(
                         "delta": final_text,
                     })
 
+            _sub_done = True  # OA-8i: the sub-agent's run ended
             # §7.1.1: the ids this email sub-run worked on, for the next turn.
             await _record_email_working_set(
                 agent_name, _parent_ctx_sub, _ws_before, _sub_calls, _emit_sub_event,
@@ -2818,6 +2836,9 @@ async def _run_sub_agent_streaming(
             f"\n{_sub_drop}" if _sub_drop else ""
         )
     finally:
+        # WS-67 OA-8i review, P2: first, before any await, the calling run's
+        # pack record learns whether this hand-off finished.
+        _pack_handoff_ended(agent_name, _parent_ctx_sub, finished=_sub_done)
         _drop_agent_push(run_id, "the sub-task did not finish")
         try:
             from acb_common import publish_activity

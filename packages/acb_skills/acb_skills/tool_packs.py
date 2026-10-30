@@ -90,6 +90,7 @@ __all__ = [
     "current_surface",
     "delegation_refusal",
     "drop_sticky",
+    "handoff_ended",
     "load_tool",
     "loadable",
     "matched_layer",
@@ -976,6 +977,10 @@ class PackRun:
     #: OA-8i. The owners of a pack that a hand-off of this run reached. Only
     #: :meth:`handoff_starts` writes it.
     handed: set[str] = field(default_factory=set, compare=False, repr=False)
+    #: OA-8i review, P2. The owners in :attr:`handed` whose hand-off failed,
+    #: timed out or stopped before it finished. Only :meth:`handoff_ended`
+    #: writes it.
+    handed_failed: set[str] = field(default_factory=set, compare=False, repr=False)
 
     @classmethod
     def of(
@@ -1042,6 +1047,15 @@ class PackRun:
         """OA-8i. The answer to a hand-off to *agent_name* after this run
         called a write tool of a pack of that owner, or None.
 
+        The refusal holds only while the specialist tool of the owner stays
+        in the run (the owner is not in :attr:`replaced`), as in
+        :meth:`write_refusal`. Where a pack took that tool away, the hand-off
+        stays open only for the work of a pack that the run cannot hold: the
+        setup route of the email rules, or ``call_agent`` after
+        :data:`LOAD_NO_PATH`. That work cannot repeat a pack write. No email
+        tool is marked read-only, so without this rule a mail read would
+        close the setup route (OA-8i review, P1).
+
         A hand-off that started before the write keeps its answer. The write
         tool refuses in that order (:meth:`write_refusal`), so the two sets
         never both name an owner. The check of :attr:`handed` keeps the answer
@@ -1049,7 +1063,7 @@ class PackRun:
         frame each answer)."""
         name = str(agent_name or "")
         tool = self.wrote.get(name)
-        if not tool or name in self.handed:
+        if not tool or name in self.handed or name in self.replaced:
             return None
         return WROTE_HANDOFF_REFUSED.format(tool=tool)
 
@@ -1081,9 +1095,22 @@ class PackRun:
         if name in self.handed:
             if name in self.replaced:
                 return None
+            if name in self.handed_failed:
+                return HANDED_FAILED_WRITE_REFUSED.format(tool=tool)
             return HANDED_WRITE_REFUSED.format(tool=tool)
         self.wrote.setdefault(name, str(tool))
         return None
+
+    def handoff_ended(self, agent_name: str, *, finished: bool) -> None:
+        """OA-8i review, P2. Record that a hand-off of this run to
+        *agent_name* ended, and whether it finished. A hand-off that failed,
+        timed out or stopped may have written part of the work, so a pack
+        write after it still refuses. Its answer then says that the hand-off
+        did not finish (:data:`HANDED_FAILED_WRITE_REFUSED`), so the model
+        does not loop back to it."""
+        name = str(agent_name or "")
+        if not finished and name in self.handed:
+            self.handed_failed.add(name)
 
     def add(self, slug: str, held: bool) -> None:
         """Record that ``load_skill_tools`` added pack *slug* in this run.
@@ -1623,7 +1650,8 @@ def delegation_refusal(
     to the owner is refused in this run too (:meth:`PackRun.refusal`).
 
     OA-8i: after a write tool of a pack of the owner ran in this run, the
-    hand-off answers :data:`WROTE_HANDOFF_REFUSED`. *starts* is True at a
+    hand-off answers :data:`WROTE_HANDOFF_REFUSED`, while the owner's
+    specialist tool stays in the run (:meth:`PackRun.wrote_refusal`). *starts* is True at a
     seam that starts the hand-off when the answer is None: the streaming
     seam, ``call_agent`` and each branch of ``call_agents_parallel``. Then a
     None answer records the hand-off on the record
@@ -1687,6 +1715,23 @@ def pack_write_refusal(
     if refused is not None:
         _log.info("tool_packs.write_after_handoff_refused", owner=str(owner or ""), tool=name)
     return refused
+
+
+def handoff_ended(
+    agent_name: Any, ctx: Mapping[str, Any] | None, *, finished: bool,
+) -> None:
+    """OA-8i review, P2. Record on the record of *ctx* that a hand-off to
+    *agent_name* ended, and whether it finished (:meth:`PackRun.handoff_ended`).
+
+    *ctx* is the run context of the CALLING run, which the streaming seam
+    read before it derived the context of the sub-run. A run with no record
+    records nothing. Never raises."""
+    try:
+        run = (ctx or {}).get(PACKS_KEY)
+        if isinstance(run, PackRun):
+            run.handoff_ended(str(agent_name or ""), finished=finished)
+    except Exception as exc:
+        _log.warning("tool_packs.handoff_end_failed", error=type(exc).__name__)
 
 
 # ── OA-7e: layer (b), the meta tool ``load_skill_tools`` (§4.2.2) ───────────
@@ -1794,6 +1839,16 @@ HANDED_WRITE_REFUSED = (
     "Not run. In this turn a hand-off already has this work, so {tool} would "
     "do it a second time. Tell the member the result of the hand-off. If "
     "that result does not cover this step, hand this step over the same way."
+)
+#: OA-8i review, P2. The answer of a write tool of a pack after a hand-off to
+#: the owner failed, timed out or stopped in this run. That hand-off may have
+#: written part of the work, so the write still refuses. A second hand-off
+#: would loop back to the one that failed.
+HANDED_FAILED_WRITE_REFUSED = (
+    "Not run. In this turn a hand-off of this work did not finish, and it "
+    "may have done part of it, so {tool} could do it a second time. Tell the "
+    "member that the work did not finish, and what was done. Do not try the "
+    "hand-off again, and do not do the work with your own tools in this turn."
 )
 
 #: Builds ONE pack for ONE run: ``_tool_injection._pack_tools`` with the run
