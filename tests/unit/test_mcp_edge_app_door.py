@@ -532,6 +532,21 @@ class TestAd12TheRowCap:
         out = _ok(await _tool("app_read", {"app": "knowledge", "op": "list_pages"}))
         assert len(out["result"]["pages"]) == 50 and out["truncated"] is False
 
+    async def test_a_lowered_limit_with_a_full_list_says_truncated(self, edge):
+        """The clamp sent the cap in place of the agent's ``limit``, and a
+        list came back full. More rows can exist, so ``truncated`` is true.
+        A list under the cap, or a limit that the clamp did not lower, is
+        not cut."""
+        tree = f"/knowledge/sources/{SPACE}/tree"
+        full = [{"id": f"n{i}"} for i in range(tools.DOOR_PAGE_MAX)]
+        cases = ((2000, full, True), (2000, full[:30], False),
+                 (tools.DOOR_PAGE_MAX, full, False))
+        for sent, nodes, expected in cases:
+            edge.gateway.answers[("GET", tree)] = (200, {"nodes": nodes})
+            out = _ok(await _tool("app_read", {"app": "knowledge", "op": "get_source_tree",
+                                               "args": {"source_id": SPACE, "limit": sent}}))
+            assert out["truncated"] is expected, (sent, len(nodes))
+
     async def test_describe_app_shows_the_bound_of_the_edge(self, edge):
         edge.gateway.answers[("GET", "/agent-access/apps/knowledge")] = (200, {"ops": [
             {"op": "get_source_tree", "available": True, "args": {

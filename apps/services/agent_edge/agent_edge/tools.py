@@ -6159,6 +6159,17 @@ def door_rows(result: Any, limit: int = DOOR_PAGE_MAX) -> tuple[Any, bool]:
     return out, cut
 
 
+def door_full(result: Any, limit: int = DOOR_PAGE_MAX) -> bool:
+    """True when *result* is a list of *limit* rows or more, or holds one at
+    its top level (AD-12). After :func:`door_limit` lowered the agent's
+    ``limit``, a full list means that more rows can exist."""
+    if isinstance(result, list):
+        return len(result) >= limit
+    if isinstance(result, dict):
+        return any(isinstance(v, list) and len(v) >= limit for v in result.values())
+    return False
+
+
 def _door_app(app_id: Any) -> app_manifests.App:
     """The door app *app_id*, or the fixed tool error of §19.4."""
     found = app_manifests.app(app_id)
@@ -6502,8 +6513,11 @@ async def _app_read(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     number = 1
     if page is not None and (page.limit in sent or page.cursor in sent):
         raise ToolError(TEXT_PAGE_ARGS)
+    lowered = False
     if sent.get(DOOR_LIMIT_ARG) is not None:
-        sent[DOOR_LIMIT_ARG] = door_limit(sent[DOOR_LIMIT_ARG])
+        clamped = door_limit(sent[DOOR_LIMIT_ARG])
+        lowered = int(sent[DOOR_LIMIT_ARG]) > clamped
+        sent[DOOR_LIMIT_ARG] = clamped
     if page is None:
         if "cursor" in args or "limit" in args:
             raise ToolError(TEXT_NO_PAGES)
@@ -6539,6 +6553,9 @@ async def _app_read(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
             except ValueError:
                 next_cursor = None
     rows, cut = door_rows(door_value(body, _plain_of(door)))
+    # The clamp lowered the agent's limit and a list came back full, so
+    # more rows can exist that the answer does not name.
+    cut = cut or (lowered and door_full(rows))
     result, truncated = door_cut(rows)
     return {"result": result, "next_cursor": next_cursor,
             "truncated": truncated or cut or (more and next_cursor is None)}

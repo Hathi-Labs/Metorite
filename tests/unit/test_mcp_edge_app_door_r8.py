@@ -427,14 +427,31 @@ class TestTheDoor:
         out = _ok(await _result(
             live, "a", "app_write", app="knowledge", op="propose",
             idempotency_key=f"page-{uuid.uuid4().hex[:12]}",
-            args={"kind": "page", "title": "New idea", "body_md": "Text"}))
+            args={"kind": "page", "title": "New idea", "body_md": "Text",
+                  "space_id": live.team}))
         page = out["result"]["id"]
         assert live.seeder.one(
             "SELECT state || '|' || (origin->>'kind') || '|' || (origin->>'via')"
-            " FROM kb_pages WHERE id = CAST(:p AS uuid)", p=page) == "draft|agent_proposal|mcp"
+            " || '|' || space_id::text FROM kb_pages WHERE id = CAST(:p AS uuid)",
+            p=page) == f"draft|agent_proposal|mcp|{live.team}"
         hidden = await _result(live, "b", "app_read", app="knowledge", op="get_page",
                                args={"page_id": page})
         assert _text(hidden) == "Knowledge has nothing at that id."
+
+    async def test_a_page_proposal_with_no_space_does_not_land_in_my_notes(self, live):
+        """D-EA-4, §19.8. ``include_personal`` false: a page proposal that
+        names no space would land in the ``me`` space, which this connection
+        cannot read. The gateway answers 422 on ``space_id`` and files no
+        draft."""
+        drafts = ("SELECT count(*) FROM kb_pages WHERE space_id = CAST(:s AS uuid)"
+                  " AND state = 'draft'")
+        before = live.seeder.one(drafts, s=live.me)
+        refused = await _result(
+            live, "a", "app_write", app="knowledge", op="propose",
+            idempotency_key=f"page-{uuid.uuid4().hex[:12]}",
+            args={"kind": "page", "title": "Stray idea", "body_md": "Text"})
+        assert _text(refused) == "Metorite could not use that input. Check: space_id."
+        assert live.seeder.one(drafts, s=live.me) == before
 
     async def test_each_door_call_writes_one_audit_row(self, live):
         await _result(live, "a", "app_read", app="knowledge", op="list_spaces")
