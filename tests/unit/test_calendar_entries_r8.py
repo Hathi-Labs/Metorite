@@ -24,22 +24,32 @@ another member, or of an ``external`` entry, answers 404 and changes nothing.
 A naive time is 422. A purged member leaves no entry. An all-day entry
 returns the same dates in every ``tz``.
 
-**The mutations (R7).** Each turned the named test red. Commit before each.
+**The mutations (R7).** Each turned the named test red on 2026-10-31.
+Commit before each.
 
 * M1. ``entries.py`` ``read_my_entries``: drop ``VISIBLE_SQL`` (the owner or
-  attendee predicate) from the read.
+  attendee predicate) from the read. Bob read Alice's entry.
   ``test_r8_a_colleague_who_is_not_an_attendee_sees_none_and_changes_nothing``.
 * M2. ``entries.py`` ``MINE_SQL``: drop ``owner_email = :me``, the rule of
-  the PATCH load.
+  the PATCH load. Bob's DELETE answered 204.
   ``test_r8_a_colleague_who_is_not_an_attendee_sees_none_and_changes_nothing``.
-* M3. ``entries.py``: drop ``dependencies=_ON`` from one route.
+* M3. ``entries.py``: drop ``dependencies=_ON`` from the PATCH route. The
+  PATCH answered 200 with the flag off.
   ``test_r8_the_flag_off_gives_todays_read_and_404_on_every_route``.
-* M4. ``entries.py`` ``_instant``: accept a time with no offset.
+* M4. ``entries.py`` ``_instant``: read a time with no offset as UTC. A
+  naive ``ends_at`` answered 201.
   ``test_r8_a_naive_time_and_a_bad_pair_are_a_422_and_write_nothing``.
 * M5. ``319_calendar_entries.sql``: drop the CHECK
-  ``calendar_entries_external_pair``, or the index
-  ``calendar_entries_external_uq``.
+  ``calendar_entries_external_pair`` (a half pair was stored), or the index
+  ``calendar_entries_external_uq`` (a twin was stored). Each run alone.
   ``test_r8_a_written_out_event_gets_no_twin``.
+* M6. ``members.py``: drop the org predicate of the ``calendar_entries``
+  purge row. The superuser run deleted org A's entry too (3, not 2).
+  ``test_r8_a_member_purge_leaves_no_entry[superuser]``.
+* M7. ``members.py``: drop the ``calendar_entries`` purge row. The
+  Knowledge connection delete then failed on
+  ``calendar_entries_connection_id_fkey``, so the order is load-bearing.
+  ``test_r8_a_member_purge_leaves_no_entry[app]``.
 """
 
 from __future__ import annotations
