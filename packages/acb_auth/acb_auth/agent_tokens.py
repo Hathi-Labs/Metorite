@@ -13,7 +13,7 @@ row of ``agent_connection``. The authorization server (EA-2a, the edge's
 (a spent code seen again revokes its connection) and the ``agent_client``
 cache, :func:`get_client` and :func:`cache_cimd_client`. EA-3a added
 :func:`read_live_connection` for branch 0 of the gateway, and
-:func:`lookup_token` now returns the scopes, the pins, the personal opt-in and
+:func:`lookup_token` now returns the scopes, the pins, the personal switch and
 the origin of the connection it read. EA-4b added :func:`list_connections`
 and :func:`revoke_connection_scoped` for the AI agents view of the
 Integrations app. Both take the organization from the bound request, and the

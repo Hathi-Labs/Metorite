@@ -260,7 +260,8 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
   const rows = useMemo(() => scopeRows(view.scopes), [view.scopes]);
   const [chosen, setChosen] = useState<Set<string>>(() => initialChoice(view));
   const [pins, setPins] = useState<string[]>([]);
-  const [includePersonal, setIncludePersonal] = useState(false);
+  // On by default (owner 2026-10-30, D-EA-4 as amended). The member can untick it.
+  const [includePersonal, setIncludePersonal] = useState(true);
   const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [projects, setProjects] = useState<PinChoice[] | null>(null);
@@ -491,7 +492,7 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
           <span className="min-w-0">
             <span className="block text-foreground">Include my personal projects</span>
             <span className="block text-xs text-muted-foreground">
-              Off by default. Your personal projects stay private unless you tick this.
+              On by default. Untick this to keep your personal projects and your own notes private.
             </span>
           </span>
         </label>
