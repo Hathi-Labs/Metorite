@@ -1394,8 +1394,10 @@ few members find it.
    the reader goes in `gateway/push/flags.py`. It reads the settings at call
    time, never at import (`test_flag_reload.py`). Add the prefix
    `PUSH_PROMPT_` to `env_guard.py`, as `BRIEF_` is, so that a tenant env
-   cannot open the flag. Add the name to the env templates and the staging
-   README. `GET /push/public-key` adds `prompt`, true only when the flag
+   cannot open the flag. The staging flag tool (`acb-staging-flag`) does not
+   take this name, because its `HELD_RE` holds every `PUSH` key off on
+   staging. An agent with a dated `env-write` grant sets it in the staging
+   `.env` instead, and reports the act. `GET /push/public-key` adds `prompt`, true only when the flag
    holds for the session's org. With the
    flag off, the chat draws no sheet and writes nothing. The Notifications
    section of My Profile does not change.
