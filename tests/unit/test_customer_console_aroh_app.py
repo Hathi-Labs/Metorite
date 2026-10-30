@@ -754,12 +754,14 @@ class TestTheMintCli:
 
     def test_grant_only_grows_the_set(self, db, boxes):
         from customer_console import deployment_keys as dk
+        from customer_console.keys import split_key
 
         with db.connect() as c:
             trans = c.begin()
             try:
                 token = mint_deployment_key(c, deployment_id=boxes["metorite"])
-                prefix = token.rsplit("_", 1)[0]
+                # split_key, never rsplit: the secret's alphabet holds "_" (keys.py).
+                prefix = split_key(token)[0]
                 assert dk.grant(c, prefix=prefix, capabilities=("serve", "resolve")) == [
                     "resolve", "serve"]
                 with pytest.raises(dk.KeyRefused, match="no live deployment key"):
