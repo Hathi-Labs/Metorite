@@ -7,20 +7,22 @@
  * and the motion live in `globals.css` (`[data-agent-edge]`), from tokens.
  * The state names come from `AGENT_STATES` in `lib/statusAccent.ts`.
  *
- * | state            | edge          | line                              |
- * | working/answered | live          | "<client> · <agent_note>"         |
- * | queued           | dashed-accent | "Queued for <client>"             |
- * | awaiting         | warning       | "Needs you: <question>"           |
- * | stale            | muted         | "<client> idle"                   |
- * | failed           | destructive   | none (the Failed chip says it)    |
- * | no open run      | none          | none                              |
+ * | state            | edge        | line                              |
+ * | working/answered | live        | "<client> · <agent_note>"         |
+ * | queued           | steady      | "Queued for <client>"             |
+ * | awaiting         | warning     | "Needs you: <question>"           |
+ * | stale (idle)     | breathing   | the agent's last note, else none  |
+ * | failed           | destructive | none (the Failed chip says it)    |
+ * | no open run      | none        | none                              |
  *
- * Only "live" moves, because motion means "working".
+ * No edge is dashed (EA-13h, owner 2026-10-30). "live" travels round the card.
+ * "breathing" glows slowly and means idle. "steady" is still. The pill already
+ * says "idle", so the stale line never repeats it.
  */
 
 import { type AgentPillFacts, agentPillText, asAgentState, clientName } from "./agentRuns";
 
-export type AgentEdge = "live" | "dashed-accent" | "warning" | "muted" | "destructive";
+export type AgentEdge = "live" | "steady" | "warning" | "breathing" | "destructive";
 
 export interface AgentCardLook {
   edge: AgentEdge | null;
@@ -49,14 +51,14 @@ export function agentCardLook(
             : agentPillText(known, facts).text,
       };
     case "queued":
-      return { edge: "dashed-accent", line: `Queued for ${client}` };
+      return { edge: "steady", line: `Queued for ${client}` };
     case "awaiting":
       return {
         edge: "warning",
         line: note ? `Needs you: ${note}` : agentPillText(known, facts).text,
       };
     case "stale":
-      return { edge: "muted", line: `${client} idle` };
+      return { edge: "breathing", line: note };
     case "failed":
       return { edge: "destructive", line: null };
     default:

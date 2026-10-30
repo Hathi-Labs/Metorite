@@ -29,10 +29,14 @@ describe("agentCardLook", () => {
 
   it("queued, stale and failed are still edges", () => {
     expect(agentCardLook("queued", { clientVia: via })).toEqual({
-      edge: "dashed-accent",
+      edge: "steady",
       line: "Queued for Claude Code",
     });
-    expect(agentCardLook("stale", { clientVia: via })).toEqual({ edge: "muted", line: "Claude Code idle" });
+    expect(agentCardLook("stale", { clientVia: via })).toEqual({ edge: "breathing", line: null });
+    expect(agentCardLook("stale", { clientVia: via, note: " ran the tests " })).toEqual({
+      edge: "breathing",
+      line: "ran the tests",
+    });
     expect(agentCardLook("failed")).toEqual({ edge: "destructive", line: null });
   });
 
@@ -44,8 +48,32 @@ describe("agentCardLook", () => {
     expect(agentCardLook("awaiting").line).toBe("Waiting for an answer");
   });
 
+  it("no state maps to a dashed or muted edge", () => {
+    for (const st of ["working", "answered", "queued", "awaiting", "stale", "failed"]) {
+      const edge = agentCardLook(st, { clientVia: via }).edge ?? "";
+      expect(edge).not.toMatch(/dashed|muted/);
+    }
+  });
+
   it("stopping changes nothing", () => {
     expect(agentCardLook("stopping").edge).toBeNull();
+  });
+});
+
+describe("the stylesheet", () => {
+  const css = readFileSync(
+    fileURLToPath(new URL("../../globals.css", import.meta.url)),
+    "utf8",
+  );
+  it("has no dashed rule on an agent edge, and draws each edge it names", () => {
+    const rules = css.match(/\[data-agent-edge[^{]*\{[^}]*\}/g) ?? [];
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/dashed/);
+    for (const edge of ["live", "steady", "breathing", "warning", "destructive"]) {
+      expect(css).toContain(`[data-agent-edge="${edge}"]`);
+    }
+    expect(css).not.toContain('data-agent-edge="muted"');
+    expect(css).not.toContain('data-agent-edge="dashed-accent"');
   });
 });
 
