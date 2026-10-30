@@ -24,8 +24,8 @@ of the old `user_id`, H3 phase-4 promotion, and running the prod backfill remain
 enacted**) ·
 **H6a DONE 2026-10-29 (D120):** the parity and gap fence of the sign-in cutover is in
 `test_h3_rls_promotion_rehearsal.py::TestH6aIdentityParity` and
-`test_h6_identity_shadow.py::TestFlagOnAndFlagOffAgree`. It found no drift on the ladder, so no
-reconcile migration exists. H6a enacted §H3.3 (D120.3). The flips stay OWNER-GATE. ·
+`test_h6_identity_shadow.py::TestFlagOnAndFlagOffAgree`. It found no `app_user`-to-shadow drift
+on the ladder, so no reconcile migration exists. H6a enacted §H3.3 (D120.3). The flips stay OWNER-GATE. ·
 **Created:** 2026-08-08 ·
 **Owner:** vjvarada ·
 ⚠️ **Updated 2026-08-19: a ticket was minted that this runbook has no H-slot for —
@@ -1070,7 +1070,8 @@ read sites and `_record_signin_request` still read `app_user`.
 `promote_invited_member` (`routes/signin.py`), which reads `_INVITED_MEMBERSHIPS_SQL`
 (`access.py`). `console_resolve.py` reads them in `_READ_SQL` and `_RESOLVED_ORGS_SQL`. The
 RBAC writers select `FROM user_identity` in `admin/_common.py`, `groups.py` and `members.py`.
-None of these binds the tenant of a session.
+In `access.py`, `membership_of` (the signup pre-flight), `_BOOTSTRAP_OWNER_SQL` (gateway start)
+and `_MIRROR_STATUS_SQL` read them too. None of these binds the tenant of a session.
 
 **H6a (2026-10-29, D120) — the parity and gap fence, no flip.** On the promoted ladder, after
 migrations 182 and 183, every `app_user` row has its `user_identity` and `org_membership`
@@ -1079,10 +1080,16 @@ unbound. One active plus one suspended membership binds the active org, and two 
 deny. A suspended or purged member binds no tenant, and a member bound to org A reads no org B
 row.
 
-Flag ON and flag OFF agree on the non-promoted ladder. Fences:
+For a clean member, flag ON and flag OFF agree on the non-promoted ladder. Fences:
 `test_h3_rls_promotion_rehearsal.py::TestH6aIdentityParity` and
-`test_h6_identity_shadow.py::TestFlagOnAndFlagOffAgree`. The ladder showed no drift, so H6a
-wrote no reconcile migration.
+`test_h6_identity_shadow.py::TestFlagOnAndFlagOffAgree`. The ladder showed no `app_user`-to-shadow
+drift, so H6a wrote no reconcile migration.
+
+⚠️ **The reverse gap.** The Console upsert (`console_resolve._UPSERT_MEMBERSHIP_SQL`) can leave
+an ACTIVE membership in an org where the email has no active `app_user` row. Then flag ON sees
+two active orgs and denies, and flag OFF binds the `app_user` org. `_REVERSE_GAP_SQL` in the
+rehearsal suite finds this shape. Its fence is `test_the_reverse_gap_finds_a_stale_active_membership`.
+Run that query on the live box before the flip (the pre-flip checklist below).
 
 ⚠️ **SLICE 1 SHIPPED 2026-08-22 (WS-29, DARK — no read moved).** The shadow tables were
 COMPLETE only for members present at 159 and STALE for every invite/bootstrap since. Slice
@@ -1405,6 +1412,11 @@ cutover, built exactly as stated above and no wider (RBAC re-key remains slice 4
   the SQL level).
 
 ### H6 PRE-FLIP RLS-BINDING CHECKLIST · ◐ 4 fixes SHIPPED (dark) 2026-08-22 · 2 OWNER-DECISION items + the H4 dependency OPEN
+
+**Before the `IDENTITY_CUTOVER` flip (H6a review, 2026-10-30):** run both parity reads of
+`test_h3_rls_promotion_rehearsal.py` on the live database, read-only. `_PARITY_GAP_SQL` and
+`_REVERSE_GAP_SQL` must each return zero rows. A row in either one means a member whom flag ON
+and flag OFF bind differently.
 
 The systematic RLS-binding audit that this checklist records asked one question of
 every site that touches an RLS-FORCED table: *does it run on a session with
