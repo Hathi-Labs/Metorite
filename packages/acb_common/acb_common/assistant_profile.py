@@ -72,6 +72,163 @@ LENGTH: tuple[str, ...] = ("short", "default", "detailed")
 FACT_KINDS: tuple[str, ...] = ("about", "routine", "preference", "work", "relationship")
 FACT_SOURCES: tuple[str, ...] = ("chat", "whatsapp", "settings")
 
+#: The preferences that an app reads from the profile, and declares here
+#: (``personalization.md`` §12.6, owner rule of 2026-10-24). The key is the
+#: app, and the value holds each preference with its default. An app reads
+#: them through :func:`app_prefs` only, never from the column. The stored
+#: shape is ``apps.<app>.<key>``. The setup coach (PZ-16) reads this table
+#: for its items. A time is ``HH:MM``, on the member's clock.
+APP_PREFERENCES: dict[str, dict[str, Any]] = {
+    # WS-BRIEF BR-2a-1 (``core_brief.md`` §9 Q1 and Q5, owner 2026-10-29):
+    # every active member gets the brief at 07:30 and the close-out at 18:30
+    # in their zone, and each member can turn it off or move both.
+    "brief": {"enabled": True, "brief_time": "07:30", "closeout_time": "18:30"},
+}
+
+_CLOCK = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def clock_time(value: Any) -> str | None:
+    """A time of day as ``HH:MM`` (24 hours), or None for any other value."""
+    return value if isinstance(value, str) and _CLOCK.fullmatch(value) else None
+
+
+def _app_pref(value: Any, default: Any) -> Any:
+    """One stored preference, or its *default* when the shape is wrong. The
+    default sets the shape: a bool, or a ``HH:MM`` time."""
+    if isinstance(default, bool):
+        return value if isinstance(value, bool) else default
+    return clock_time(value) or default
+
+
+def app_prefs(raw: Any, app: str) -> dict[str, Any]:
+    """The preferences of *app*: the stored ``apps.<app>`` object over the
+    declared defaults of :data:`APP_PREFERENCES`. Lenient, as
+    :func:`stored_profile` is: a key of the wrong shape takes its default,
+    and a key that the app did not declare drops. An app that declared
+    nothing raises."""
+    raw = _as_dict(raw)
+    apps = raw.get("apps") if isinstance(raw, dict) else None
+    return _one_app(apps.get(app) if isinstance(apps, dict) else None, app)
+
+
+def _one_app(stored: Any, app: str) -> dict[str, Any]:
+    """The stored object of one app over its declared defaults."""
+    declared = APP_PREFERENCES[app]
+    stored = _as_dict(stored)
+    stored = stored if isinstance(stored, dict) else {}
+    return {key: _app_pref(stored.get(key), default) for key, default in declared.items()}
+
+
+def all_app_prefs(raw: Any) -> dict[str, dict[str, Any]]:
+    """The preferences of every declared app, as the GET of the profile
+    answers them under ``apps``."""
+    return {app: app_prefs(raw, app) for app in APP_PREFERENCES}
+
+
+def clean_app_prefs(value: Any) -> dict[str, Any]:
+    """The strict write of the key ``apps`` (``PUT /auth/me/assistant-profile``).
+
+    *value* is ``{<app>: {<key>: <value>, ...}}``, with ONE declared app and
+    at least one declared key of it. A key whose default is a bool takes a
+    bool. A time key takes ``HH:MM`` from 00:00 to 23:59. Any other shape
+    raises ValueError. The write merges these keys into ``apps.<app>``, and
+    every other key stays."""
+    if not isinstance(value, dict) or len(value) != 1:
+        raise ValueError("apps holds exactly one app")
+    ((app, prefs),) = value.items()
+    declared = APP_PREFERENCES.get(app) if isinstance(app, str) else None
+    if declared is None:
+        raise ValueError(f"the app is one of {', '.join(APP_PREFERENCES)}")
+    if not isinstance(prefs, dict) or not prefs:
+        raise ValueError("an app takes at least one preference")
+    out: dict[str, Any] = {}
+    for key, one in prefs.items():
+        if key not in declared:
+            raise ValueError(f"the preferences of {app} are {', '.join(declared)}")
+        if isinstance(declared[key], bool):
+            if not isinstance(one, bool):
+                raise ValueError(f"{key} is true or false")
+        elif clock_time(one) is None:
+            raise ValueError(f"{key} is a time from 00:00 to 23:59, as HH:MM")
+        out[key] = one
+    return {app: out}
+
+
+#: THE row rule of the app preferences (BR-2a-1 repair round 2, P2-2). The
+#: rows of one member match in any case. The row that holds ``apps.<app>``
+#: wins, then the lower-case row, then the first ``user_id``. Every reader
+#: and the one writer (the ``PUT`` of ``apps``) take this rule, so a
+#: case-variant row cannot show the member one value and give the planner
+#: another. This is the shape of ``number_system.READ_SQL`` and its
+#: ``ROW_SQL``: the row with a value wins, and the write goes to that row.
+#: ``{t}`` is the table prefix: empty here, ``s.`` in the join of
+#: :data:`MEMBERS_APP_SQL`. One text, so the two orders cannot drift.
+_APP_ROW_ORDER_TEMPLATE = (
+    "({t}assistant_profile -> 'apps' -> CAST(:app AS text) IS NULL), "
+    "({t}user_id <> lower({t}user_id)), {t}user_id"
+)
+APP_ROW_ORDER = _APP_ROW_ORDER_TEMPLATE.format(t="")
+
+#: The row of :data:`APP_ROW_ORDER` for one member: its ``user_id`` and its
+#: ``apps.<app>``, never the rest of the profile. ``{org}`` is the one
+#: placeholder. :data:`APP_READ_SQL` fills it with a bind, and the profile
+#: route fills it with the bound tenant of its session. ``:m`` is the
+#: verified member, from the caller and never from a payload (R5).
+APP_ROW_SQL_TEMPLATE = (
+    "SELECT user_id, assistant_profile -> 'apps' -> CAST(:app AS text) "
+    "FROM user_settings WHERE organization_id = {org} AND lower(user_id) = lower(:m) "
+    f"ORDER BY {APP_ROW_ORDER} LIMIT 1"
+)
+#: :data:`APP_ROW_SQL_TEMPLATE` with the org as a bind, ``:org``.
+APP_READ_SQL = APP_ROW_SQL_TEMPLATE.replace("{org}", "CAST(:org AS uuid)")
+
+#: The stored object of one app for each ACTIVE member of ``:org``, one row
+#: for each member. ``DISTINCT ON`` holds one row for each address in any
+#: case, and the order is :data:`APP_ROW_ORDER`, so the planner reads the
+#: row that the member reads and writes. A case-variant row can never add a
+#: second, opted-in copy of a member who opted out.
+MEMBERS_APP_SQL = (
+    "SELECT DISTINCT ON (lower(u.email)) lower(u.email), "
+    "s.assistant_profile -> 'apps' -> CAST(:app AS text) "
+    "FROM app_user u LEFT JOIN user_settings s "
+    "ON s.organization_id = u.organization_id AND lower(s.user_id) = lower(u.email) "
+    "WHERE u.organization_id = CAST(:org AS uuid) AND u.status = 'active' "
+    "ORDER BY lower(u.email), " + _APP_ROW_ORDER_TEMPLATE.format(t="s.")
+)
+
+
+def stored_app_prefs(stored: Any, app: str) -> dict[str, Any]:
+    """The stored ``apps.<app>`` object *stored* over the declared defaults.
+    The column of :data:`APP_ROW_SQL_TEMPLATE` reads through it."""
+    return _one_app(stored, app)
+
+
+async def member_app_prefs(db: Any, org: str, member: str, app: str) -> dict[str, Any]:
+    """The preferences of *app* for *member*, read in the caller's session.
+
+    The caller opened ``tenant_session(org)`` and resolved *member* from a
+    trusted source. The read takes ``apps.<app>`` only (:data:`APP_READ_SQL`)."""
+    from sqlalchemy import text
+
+    if app not in APP_PREFERENCES:  # an app that declared nothing raises before the read
+        raise KeyError(app)
+    row = (await db.execute(text(APP_READ_SQL), {"app": app, "org": org, "m": member})).first()
+    return _one_app(row[1] if row is not None else None, app)
+
+
+async def members_app_prefs(db: Any, org: str, app: str) -> list[tuple[str, dict[str, Any]]]:
+    """The active members of *org* with the preferences of *app*, in address
+    order, one entry for each member (:data:`MEMBERS_APP_SQL`). The one bulk
+    reader of app preferences: an app job reads its members here, and never
+    from the column (§12.6). The caller's session binds the tenant."""
+    from sqlalchemy import text
+
+    if app not in APP_PREFERENCES:
+        raise KeyError(app)
+    rows = (await db.execute(text(MEMBERS_APP_SQL), {"app": app, "org": org})).all()
+    return [(str(r[0]), _one_app(r[1], app)) for r in rows]
+
 #: The interview (PZ-26, ``personalization.md`` §14.3). One table: the id of
 #: each area and its starting question, in the order the interview asks. The
 #: model asks in its own words, so the question is an example.

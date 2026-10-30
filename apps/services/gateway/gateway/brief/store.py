@@ -31,6 +31,20 @@ date, and their claims by cascade. ``jobs.prune`` of BR-1b calls it with a
 **A retry.** The UNIQUE index ``brief_claims_run_position_key`` holds one
 claim for each position of a run. :func:`add_claims` skips a position that
 has a claim, so a retry of the same claims makes no second set.
+
+**The moves (BR-2a-1).** :func:`set_state` with ``from_state`` changes the
+row only when it is in that state (``UPDATE ... WHERE state = :from``), and
+only along :data:`TRANSITIONS`: ``planned`` to ``gathered`` to ``ready``,
+``planned`` to ``empty``, and ``planned`` to ``failed`` (a slot that gets
+no brief, with the reason). So a second gather of a run that moved on
+changes nothing. :func:`set_lead` writes the lead, and :func:`link_run` the
+ledger row of AUTO-2 of the current try.
+
+**A moved slot (BR-2a-1, repair round 2).** :func:`discard_planned` deletes
+a run that is still ``planned`` and has no claim. The run calls it when the
+member moved the brief time after an earlier try made the row. So the day
+has no row, and the planner plans the new time. A ``failed`` row would hold
+the UNIQUE of the day, and the brief of the new time would be lost.
 """
 
 from __future__ import annotations
@@ -51,6 +65,14 @@ STATES: tuple[str, ...] = (
 SECTIONS: tuple[str, ...] = ("now", "needs_you", "numbers", "done", "moved", "acted")
 #: The bound of the CHECK ``brief_claims_source_ids_max``.
 MAX_SOURCE_IDS = 50
+#: The moves that :func:`set_state` makes with a ``from_state`` guard
+#: (``core_brief.md`` §4.2). Each is ``(from, to)``. ``delivered`` (BR-2c)
+#: and ``phrasing`` (BR-2a-2) add their own rows when they ship.
+TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
+    ("planned", "gathered"), ("gathered", "ready"), ("planned", "empty"),
+    ("planned", "failed")})
+#: The two sources of a lead, as the CHECK ``brief_runs_lead_source`` holds them.
+LEAD_SOURCES: tuple[str, ...] = ("template", "model")
 
 _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 
@@ -83,6 +105,26 @@ _SET_STATE_SQL = (
     "AND id = CAST(:id AS uuid)"
 )
 
+#: The guarded move: the same UPDATE, and the row must be in ``:frm``.
+_SET_STATE_FROM_SQL = _SET_STATE_SQL + " AND state = CAST(:frm AS text)"
+
+_SET_LEAD_SQL = (
+    "UPDATE brief_runs SET lead = :lead, lead_source = :src, "
+    "lead_claim_ids = CAST(:ids AS uuid[]) "
+    f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
+    "AND id = CAST(:id AS uuid)"
+)
+
+#: The link to the ledger row of the current try. A retry after a release
+#: (``unattended.release`` deletes the row of the failed try) links its own
+#: row, so the link never names a row that is gone.
+_LINK_RUN_SQL = (
+    "UPDATE brief_runs SET unattended_run_id = CAST(:u AS uuid) "
+    f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
+    "AND id = CAST(:id AS uuid) "
+    "AND unattended_run_id IS DISTINCT FROM CAST(:u AS uuid)"
+)
+
 #: The run must be of the bound org and of the member, or no row goes in.
 #: A position that has a claim takes no second one (a retry).
 _ADD_CLAIM_SQL = (
@@ -103,6 +145,15 @@ _READ_CLAIMS_SQL = (
     "JOIN brief_runs r ON r.organization_id = c.organization_id AND r.id = c.run_id "
     f"WHERE c.organization_id = {_BOUND_ORG} AND r.member_email = :m "
     "AND c.run_id = CAST(:run AS uuid) ORDER BY c.position, c.id"
+)
+
+#: Only a run that gathered nothing goes: the state is ``planned``, and no
+#: claim names it.
+_DISCARD_PLANNED_SQL = (
+    f"DELETE FROM brief_runs r WHERE r.organization_id = {_BOUND_ORG} "
+    "AND r.member_email = :m AND r.id = CAST(:id AS uuid) AND r.state = 'planned' "
+    "AND NOT EXISTS (SELECT 1 FROM brief_claims c "
+    "WHERE c.organization_id = r.organization_id AND c.run_id = r.id)"
 )
 
 #: The claims go by the ``ON DELETE CASCADE`` of ``brief_claims_run_fk``.
@@ -231,17 +282,62 @@ async def read_run(db: Any, member: str, *, kind: str, local_date: date) -> Run 
 
 
 async def set_state(db: Any, member: str, run_id: str, state: str, *, now: datetime,
-                    error: str | None = None) -> bool:
+                    error: str | None = None, from_state: str | None = None) -> bool:
     """Move the run *run_id* of *member* to *state*.
 
     ``ready`` stamps ``ready_at`` and ``delivered`` stamps ``delivered_at``
     with *now*. *error* is the error type only, never a payload. Answers
     False when no run of the member has the id.
+
+    With *from_state*, the row moves only when it is in that state, and the
+    pair must be in :data:`TRANSITIONS`. A row in another state answers
+    False and does not change. The gather of BR-2a-1 always passes it.
     """
     if state not in STATES:
         raise BriefStoreError(f"state must be one of {STATES}")
-    result: Any = await db.execute(text(_SET_STATE_SQL), {
-        "st": state, "err": error, "now": now, "m": _member(member), "id": run_id})
+    params: dict[str, Any] = {
+        "st": state, "err": error, "now": now, "m": _member(member), "id": run_id}
+    if from_state is None:
+        result: Any = await db.execute(text(_SET_STATE_SQL), params)
+    else:
+        if (from_state, state) not in TRANSITIONS:
+            raise BriefStoreError(f"no move from {from_state!r} to {state!r}")
+        result = await db.execute(text(_SET_STATE_FROM_SQL), {**params, "frm": from_state})
+    return bool(getattr(result, "rowcount", 0))
+
+
+async def set_lead(db: Any, member: str, run_id: str, lead: str, *, source: str,
+                   claim_ids: tuple[str, ...] = ()) -> bool:
+    """Write the lead of the run *run_id* of *member*. *source* is
+    ``template`` (code wrote it from the counts) or ``model``. A model lead
+    must cite a claim, and the CHECK ``brief_runs_model_lead_cites`` holds
+    it. Answers False when no run of the member has the id."""
+    if source not in LEAD_SOURCES:
+        raise BriefStoreError(f"source must be one of {LEAD_SOURCES}")
+    if not isinstance(lead, str) or not lead.strip():
+        raise BriefStoreError("lead must be a non-empty string")
+    result: Any = await db.execute(text(_SET_LEAD_SQL), {
+        "lead": lead, "src": source, "ids": list(claim_ids), "m": _member(member),
+        "id": run_id})
+    return bool(getattr(result, "rowcount", 0))
+
+
+async def link_run(db: Any, member: str, run_id: str, unattended_run_id: str) -> bool:
+    """Link the run *run_id* of *member* to the ledger row of AUTO-2 of the
+    current try. A retry after a released try links its new row. The answer
+    is False when the run already names that row, or when no run of the
+    member has the id."""
+    result: Any = await db.execute(text(_LINK_RUN_SQL), {
+        "u": unattended_run_id, "m": _member(member), "id": run_id})
+    return bool(getattr(result, "rowcount", 0))
+
+
+async def discard_planned(db: Any, member: str, run_id: str) -> bool:
+    """Delete the run *run_id* of *member* when it is ``planned`` and has no
+    claim. A run that moved on, or that has a claim, stays. Answers True
+    when the row went."""
+    result: Any = await db.execute(text(_DISCARD_PLANNED_SQL), {
+        "m": _member(member), "id": run_id})
     return bool(getattr(result, "rowcount", 0))
 
 

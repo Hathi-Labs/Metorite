@@ -228,7 +228,8 @@ class TestTheToolRecords:
         assert "expected_version" in assign and "untrusted_text" in assign
         update = tools.UPDATE_TASK.description
         assert "parent_task_id" in update and "set_assignees" in update
-        assert "Metorite app" in update and "2 for Important" in update
+        # MCP-G1: a move to another project names the two move tools.
+        assert "preview_move_tasks" in update and "2 for Important" in update
         create = tools.CREATE_TASK.description
         assert "assignees" in create and "no task is made" in create
         assert "anybody new" in create

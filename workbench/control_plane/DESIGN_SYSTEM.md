@@ -161,10 +161,11 @@ A literal is right only when the value is **not a theme decision**:
    Facebook" button is Meta's, not ours.
 3. **Identity** — a per-person avatar hue derived from their email must be
    *stable*; deriving it from the theme defeats the thing it is for.
-4. **Our brand mark.** The Metorite comet keeps its own gradient in every mode
-   and under every accent (owner, 2026-10-11). A comet that an accent turns
-   pink is no longer the mark. `components/MetoriteMark.tsx` holds the stops,
-   copied from `brand/`, and `app/icon.svg` is the tab icon.
+4. **Our brand mark.** The Metorite comet keeps its own colour under every
+   accent (owner, 2026-10-11). It is solid black in light mode and solid white
+   in dark mode, with no gradient (owner, 2026-10-30). A comet that an accent
+   turns pink is no longer the mark. `components/MetoriteMark.tsx` holds the
+   fills, copied from `brand/`, and `app/icon.svg` is the tab icon.
 
 "It would be a lot of work to migrate" is not on this list — that is debt, and
 it belongs in the conformance test's baseline where it stays visible.

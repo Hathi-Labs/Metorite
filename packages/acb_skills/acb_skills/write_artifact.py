@@ -1350,7 +1350,7 @@ GENUI_TEMPLATES: frozenset[str] = frozenset({
     "weatherCard", "statDashboard", "barChart", "sparkTrend", "comparison",
     "progressTracker", "recipeCard", "flightStatus", "trainStatus", "formCard",
     "optionPicker", "timeline", "taskBoard", "dataGrid", "reportCard",
-    "planCard", "chart", "report",
+    "planCard", "chart", "report", "reminderCard",
 })
 
 #: The renderer drops a node deeper than this (``Node``'s depth guard).
@@ -1579,6 +1579,7 @@ GENUI_TEMPLATE_SHAPES: Mapping[str, str] = MappingProxyType({
     "planCard": "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ key, title, owner?, effort_mins, start?, due, after?:[key], phase?, important?:bool, leveraged?:bool, impact?, urgency?, effort?, priority?, fit?, hours?, marks?:[string], warnings?:[string] }], capacity?, warnings?:[string], risks?:[string] }",
     "chart": "{ type('bar'|'line'|'area'|'donut'|'progress'|'scatter'|'heatmap'|'radar'|'box'|'waterfall'|'funnel'|'calendar'|'gantt'), title?, subtitle?, unit?, labels?:[string], values?:[number], series?:[{name,values}], stacked?:bool, tones?:[status], totals?:[number], center?, groups?:[{name,points|values}], x_name?, y_name?, x?, y?, axes?, max?, steps?:[{label,value}|{label,total:true}], days?:[[date,n]], rows?:[{label,start,end,progress,status}], today? }",
     "report": "{ kind?('metorite.report'), path?, pdf?, title, subtitle?, for?, date?, period?, summary?(bold, italic, lists), kpis?:[{label,value,unit?,delta?,good?('up'|'down')}](8), sections:[{ heading?, text?, bullets?:[string], visual?:{ kind('chart'|'stats'|'table'|'board'|'timeline'|'gantt'|'agenda'), title?, ... } }](1-30), sources?:[string] }",
+    "reminderCard": "{ reminderId, title, when?, zone?, state('scheduled'|'due'|'unconfirmed'|'done'|'dropped'|'cancelled'), resolution?, kind?('action'|'notice'), link? }",
 })
 
 #: The templates that collect the member's input. Each one pairs with
@@ -1783,7 +1784,8 @@ async def emit_generative_ui(ui: str) -> dict:
        You give the data, and the design is fixed. Names: weatherCard,
        statDashboard, barChart, sparkTrend, comparison, progressTracker,
        recipeCard, flightStatus, trainStatus, formCard, optionPicker,
-       timeline, taskBoard, dataGrid, reportCard, planCard, chart, report. To get
+       timeline, taskBoard, dataGrid, reportCard, planCard, chart, report,
+       reminderCard. To get
        the data shape of a template, call with its name and no ``data``. Nothing is
        drawn. An empty or unknown name returns the shape of each template.
 

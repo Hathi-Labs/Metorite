@@ -42,6 +42,7 @@ import { StatusChip } from "@/components/StatusChip";
 import { useOverflowTip } from "@/components/ui/OverflowTip";
 import { LEGEND, parseTaskRows, taskRowFacts, type ProjectTaskRow } from "@/lib/projectToolRows";
 import { statusAccent } from "@/lib/statusAccent";
+import { noteReminderReceipt } from "@/lib/shell/reminderOpen";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -778,6 +779,14 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const outcome = classifyActionResult(result, e.status, e.name);
   useEffect(() => {
     if ((outcome === "done" || outcome === "partial") && isFreshReceipt(e)) announceChange(e.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
+  }, [outcome, e.id]);
+  // A reminder the model changed in this chat: the reminder card above reads
+  // the page's store, so the receipt writes the new state there (RM-4). A
+  // replayed receipt is old, and a chip may have moved the row since.
+  useEffect(() => {
+    if (outcome !== "done" || !isFreshReceipt(e)) return;
+    noteReminderReceipt(e.name, result);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
   }, [outcome, e.id]);
   const rowId = rowIdOf(result);

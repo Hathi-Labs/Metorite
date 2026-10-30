@@ -114,6 +114,11 @@ _EXEMPT = {
     # or the org's own words, and no record table. They work in Mirror mode
     # only. The raw-write fence below does not read this list either.
     "rules.py",
+    # CRM-Z10b: the switch to Native. Phase 1 starts a sync run. Phase 2
+    # writes the mode, the names, the watermark, and the two raw writes that
+    # the fence below allows by name. It writes no record table. The guard
+    # would refuse it, because the mode is `mirror` until phase 2 commits.
+    "cutover.py",
 }
 
 
@@ -201,6 +206,68 @@ def test_the_mirror_upsert_does_not_call_the_guard() -> None:
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.AsyncFunctionDef) and n.name == "upsert_from_source")
     assert "assert_writable" not in _calls(fn)
+
+
+# ── CRM-Z10b: the guard holds the mode FOR SHARE ────────────────────────────
+
+
+class _ModeRecorder:
+    """A session that answers each read with one ``crm_settings`` row."""
+
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+        self.statements: list[str] = []
+
+    async def execute(self, statement: Any, params: Any = None) -> Any:
+        self.statements.append(" ".join(str(statement).split()))
+        row = type("Row", (), {"mode": self.mode})()
+        return type("Result", (), {"first": lambda _self: row})()
+
+
+_ORG = "0b0e8c1e-5c7a-4f6e-9a35-c3d0c0de0001"
+
+
+async def test_the_mode_read_takes_a_share_lock_only_when_asked() -> None:
+    from gateway.routes.crm import core
+
+    db = _ModeRecorder("mirror")
+    assert await core.is_mirror_mode(db, _ORG) is True
+    assert await core.is_mirror_mode(db, _ORG, lock=True) is True
+    assert await core.is_mirror_mode(db, None, lock=True) is True
+    assert not db.statements[0].endswith("FOR SHARE")
+    assert db.statements[1].endswith("FOR SHARE")
+    assert db.statements[2] == "SELECT mode FROM crm_settings FOR SHARE"
+
+
+async def test_the_write_guard_and_the_overlay_check_hold_the_mode() -> None:
+    """An overlay edit that read ``mirror`` holds the row until it commits, so
+    the switch to Native folds that edit and never runs beside it. The R8
+    race is ``test_crm_cutover_switch_r8.py`` item 18."""
+    from acb_common.db import bind_tenant, release_tenant
+    from gateway.routes.crm import admin, core
+
+    db = _ModeRecorder("mirror")
+    await core.assert_writable(db, _ORG, "crm_deal_statuses", {"ui_color": "red"})
+    assert db.statements and db.statements[-1].endswith("FOR SHARE")
+    db.statements.clear()
+    token = bind_tenant(_ORG)
+    try:
+        assert await admin._check_mode(db, "crm_deal_statuses", {"ui_color": "red"})
+    finally:
+        release_tenant(token)
+    assert db.statements[0].endswith("FOR SHARE")
+    # The order route picks its column from a mode it holds.
+    tree = ast.parse((_CRM / "admin.py").read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "order_statuses")
+    reads = [
+        c for c in ast.walk(fn)
+        if isinstance(c, ast.Call) and getattr(c.func, "id", "") == "is_mirror_mode"
+    ]
+    assert reads and all(
+        any(k.arg == "lock" and getattr(k.value, "value", None) is True for k in c.keywords)
+        for c in reads
+    )
 
 
 # ── The database tests ──────────────────────────────────────────────────────
@@ -526,6 +593,14 @@ _RAW_ALLOW = {
     # calls them, after its own `assert_writable`, in the same session.
     "field_studio.py::write_section_position",
     "field_studio.py::write_field_position",
+    # CRM-Z10b: the switch to Native. Phase 2 folds the overlay into the two
+    # status tables and makes each field a Metorite field, in ONE transaction,
+    # after it holds `crm_settings` FOR UPDATE and checks the mode is still
+    # `mirror`. The guard would refuse both, because the mode IS `mirror`
+    # until the same transaction ends. Only `cutover.py` names the two
+    # (`test_crm_upsert_from_source_fence.py`).
+    "cutover.py::fold_cutover_overlay",
+    "cutover.py::own_cutover_fields",
 }
 _REFUSES = {"assert_writable", "refuse_in_mirror_mode"}
 

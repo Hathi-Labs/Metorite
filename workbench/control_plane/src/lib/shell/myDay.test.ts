@@ -216,6 +216,18 @@ describe("Needs you", () => {
     expect(failedLines({ approvals: "absent" })).toEqual([]);
   });
 
+  it("words a failed reminders source, which the server keys by source and not by app", () => {
+    // WS-66 RM-2b repair: `reminders` is a source of the Calendar app.
+    const sources = { tasks: "ok", projects: "ok", email: "ok", reminders: "failed" } as const;
+    expect(failedLines(sources)).toEqual([
+      "Calendar did not answer, so its reminders may be missing.",
+    ]);
+    // With no rows, the card must say the gap and never the all-clear.
+    const failed = failedLines(sources).length > 0;
+    expect(emptyNeedsLine(failed)).not.toBe("Nothing needs you right now.");
+    expect(summaryLine(0, 0, failed)).toBe("Your calendar is clear.");
+  });
+
   it("draws each app with its own manifest icon", () => {
     expect(appIcon("tasks")).toBe("CheckSquare");
     expect(appIcon("projects")).toBe("FolderKanban");

@@ -125,6 +125,14 @@ describe("the source map of MD-3b (source_apps, §14.1a)", () => {
     expect(sourceApp(undefined, "email")).toBe("email");
     expect(sourceApp({}, "calendar")).toBe("calendar");
     expect(sourceApp(MAP, "constructor")).toBe("constructor");
+    // WS-66 RM-2b repair: a failed reminders source says reminders, under the app Calendar.
+    expect(feedFailedLines({ reminders: "failed" }, { reminders: "calendar" })).toEqual([
+      "Calendar did not answer, so its reminders may be missing.",
+    ]);
+    expect(feedFailedLines({ reminders: "failed", calendar: "failed" }, { reminders: "calendar" })).toEqual([
+      "Calendar did not answer, so its reminders may be missing.",
+      "Calendar did not answer, so its time blocks may be missing.",
+    ]);
     expect(feedFailedLines({ calendar: "failed", email: "failed" })).toEqual([
       "Email did not answer, so its replies may be missing.",
       "Calendar did not answer, so its time blocks may be missing.",

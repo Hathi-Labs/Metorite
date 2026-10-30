@@ -195,6 +195,48 @@ def test_activity_recovered_is_no_entity_of_sync_health() -> None:
     assert sync._failed(counts) == 2
 
 
+def test_run_only_and_run_final_are_no_entity_of_sync_health() -> None:
+    """CRM-Z10b: the keys of an "on its own" run, and the mark of the final
+    sync of the switch, sit in ``counts``. Each key joins ``NOT_ENTITY_KEYS``,
+    pinned to the engine, so no Sync health row and no ``failed`` sum reads
+    it. A resumed import carries neither."""
+    from gateway.routes.crm import sync
+
+    assert engine.RUN_ONLY_KEY == "run_only"
+    assert engine.RUN_FINAL_KEY == "run_final"
+    for key in (engine.RUN_ONLY_KEY, engine.RUN_FINAL_KEY):
+        assert key in sync.NOT_ENTITY_KEYS
+    counts = {"deals": {"seen": 1, "failed": 2},
+              engine.RUN_ONLY_KEY: {"module:Products": 1, "failed": 1},
+              engine.RUN_FINAL_KEY: {"final": 1, "failed": 1}}
+    keys = sync._entity_keys(counts, {})
+    assert engine.RUN_ONLY_KEY not in keys and engine.RUN_FINAL_KEY not in keys
+    assert sync._failed(counts) == 2
+    merged = engine._merge_counts(counts)
+    assert engine.RUN_ONLY_KEY not in merged and engine.RUN_FINAL_KEY not in merged
+
+
+def test_the_final_sync_walks_each_offset_paged_core_entity_now() -> None:
+    """CRM-Z10b round 4 (P2-2): an offset-paged core entity has no cursor to
+    move, so only its walk reads it. The final sync walks each one that
+    finished its first import, and not a held or an unavailable one."""
+    done = datetime(2026, 10, 29, tzinfo=UTC)
+
+    def row(entity: str, state: dict, initial: datetime | None = done) -> tuple[str, CursorRow]:
+        module = engine.changed_module(entity)
+        return module, CursorRow(module, None, state, initial, None)
+
+    cursors = dict([
+        row("company", {"offset_paged": True}),
+        row("contact", {"offset_paged": True, "unavailable": True}),
+        row("lead", {"offset_paged": True}),
+        row("deal", {"offset_paged": False}),
+        row("note", {"offset_paged": True}, initial=None),
+    ])
+    assert engine._final_walks(cursors, frozenset()) == {"company", "lead"}
+    assert engine._final_walks(cursors, frozenset({"leads"})) == {"company"}
+
+
 def test_a_resumed_import_does_not_carry_the_recovered_count() -> None:
     """Each run row keeps its own recoveries, and Sync health sums the rows of
     7 days. A count carried into the next row would be summed twice."""

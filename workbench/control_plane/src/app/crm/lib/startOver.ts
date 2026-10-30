@@ -1,7 +1,8 @@
 // ── The start-over dialog (WS-53 CRM-X0, spec crm_platform.md §19.11 item 5) ─
 //
 // Each change that needs an empty CRM opens this dialog: Switch to Metorite,
-// Connect Zoho from Native mode, Start over, and a different Zoho account.
+// start empty (the hub or the cutover card), Connect Zoho from Native mode,
+// Start over, and a different Zoho account.
 // Three steps, in this order:
 //
 //   1. counts   — the records of each entity, and that the change removes them.

@@ -480,10 +480,12 @@ async def _validate(req: AuthorizeRequest) -> _Validated:
     if req.resource != agent_oauth.resource():
         raise fail("invalid_target", "resource must name this server's MCP endpoint.")
     try:
+        # No `scope`: the advertised resource scopes, so the scope of an app
+        # that ships dark is never granted by default (MCP-P1a).
         scopes = (
             agent_oauth.parse_scope(req.scope)
             if req.scope is not None
-            else agent_oauth.RESOURCE_SCOPES
+            else agent_oauth.advertised_resource_scopes()
         )
     except ValueError:
         raise fail("invalid_scope", "scope is malformed.") from None
