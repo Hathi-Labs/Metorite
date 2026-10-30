@@ -39,7 +39,9 @@ The public half (metadata, ``token``, ``revoke``) is the edge unit
 5. **PKCE S256 only.** No ``code_challenge``, or a method other than ``S256``
    (``plain`` included), is refused.
 6. **The member can narrow, never widen.** ``scopes`` in an approval must be a
-   subset of what the client requested. ``include_personal`` defaults false
+   subset of what the client requested. ``include_personal`` is false in a
+   body that leaves it out, so a broken client fails closed. The consent page
+   ticks it by default, and sends it on each approve
    (D-EA-4).
 7. ⚠️ **The client's metadata comes through ``gateway.outbound_guard``**, the
    one SSRF seam, with a size cap and a time cap of its own. Only this half
@@ -196,7 +198,8 @@ class ApproveRequest(AuthorizeRequest):
     #: Project ids that limit the connection. Empty means every project the
     #: member sees (spec §7).
     pinned_projects: list[UUID] = Field(default_factory=list, max_length=_MAX_PINS)
-    #: D-EA-4: personal projects stay out unless the member opts in.
+    #: D-EA-4 (amended 2026-10-30): the consent page ticks it by default and
+    #: always sends it. A body that leaves it out reads as false.
     include_personal: bool = False
     #: The ticket that ``check`` gave (rule 10). Optional in the model, so a
     #: request without it is the 400 of rule 10 and not a 422.

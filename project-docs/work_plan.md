@@ -164,7 +164,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-CRM | **CRM**: native mode, the Zoho mirror, and the cutover from one to the other | 🟢 active · M1 | `specs/crm_platform.md` | Metorite: epic 477, cutover sub-epic CRM-Z10 · CRM-Z10f decided (D133) · next H-333, CRM-Z10a to Z10e (the switch, owner ask 2026-10-28), CRM-U13, the whole-app UX batch, H-366 |
 | WS-WA | **WhatsApp** | 🟡 gated · M2 | `specs/whatsapp_message_manager.md` · `specs/whatsapp_assistant_channel.md` | Metorite: epic 476 · D115 freeze, lifted for brief task 8 only (D122.3) · next BR-8a, E-20 |
 | WS-KB | **Knowledge** | 🟢 active · M2 | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | Metorite: project Knowledge · no P0 or P1 · next H-401, KC-1 |
-| WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_base.md` §20 · `specs/company_context.md` (KG-0 writes `specs/knowledge_graph.md`) | Metorite: epic 783 (Knowledge) · D128 · gate MEM-3 (the memory shape) · next KG-0, KG-1, KG-9 |
+| WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_graph.md` · `specs/knowledge_base.md` §20 · `specs/company_context.md` | Metorite: epic 783 (Knowledge) · D128, D132 · 2026-10-29: KG-0 written, KG-1, KG-2 and KG-3a built · next KG-4 and KG-9, then KG-3b after the KG-2 backfill |
 | WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` · `specs/agent_coordination.md` (D140) | Metorite: epics 321 (coordination, D135 and D140), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · MCP-P1a built dark 2026-10-30 (`external_agent_access.md` §19) · next tasks 1045 and 1054, SW-4, SW-10b (the sweep on staging first), then SW-29a and SW-30a, and MCP-P1b and MCP-P2a |
 | WS-STU | **Studio**: tool packs, workflows, AI apps | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 491 (Agent Tooling) · D127 · next STU-0, then SKL-1 and SKL-2 after SBX-1 |
 | WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) | Metorite: epic 492, sub-epic UX-D · UI-G1 is built · next UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
@@ -3900,8 +3900,10 @@ accepted every recommendation of the spec. Board: **WS-55**. Owning spec:
    second identity system.
 3. **Authority.** An agent acts as one member. Its power is the member's live
    access, cut down by the scopes and project pins the member chose.
-4. **Personal projects** stay out of reach unless the member ticks a box on the
-   consent page. The box is off.
+4. **Personal projects** are in reach unless the member clears a box on the
+   consent page. The box is on. *(Amended 2026-10-30 by the owner: "by
+   default, including personal projects would be on." The first rule kept
+   the box off. D-EA-4 of `external_agent_access.md` records it, task 1057.)*
 5. **Version 1 has no personal access token.** Interactive OAuth only.
 6. **Company context** is the name, domain and branding. It also holds the
    shared memory that the member may read. This lasts until a company profile

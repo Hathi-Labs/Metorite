@@ -52,6 +52,11 @@ interface Props {
   /** Show the "what the AI still cannot see about you" meter (`/people/me`). */
   showCompleteness?: boolean;
   onSaved?: (person: PersonDetail) => void;
+  /**
+   * True on `/people/me`: the page is the member's own, whatever the payload's
+   * `is_self` says. The copy then speaks to "you", never "them".
+   */
+  selfRoute?: boolean;
 }
 
 /** A read-only value, rendered so "restricted" never looks like "empty". */
@@ -268,6 +273,7 @@ export function ProfilePanels({
   includePrivate = true,
   showCompleteness = false,
   onSaved,
+  selfRoute = false,
 }: Props) {
   const [draft, setDraft] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
@@ -280,7 +286,7 @@ export function ProfilePanels({
   // every payload (D-PC-1) — and an ABSENT flag reads as "not me", so a
   // gateway that has not answered yet says "About them" rather than telling a
   // colleague their own name is theirs.
-  const self = person.is_self === true;
+  const self = selfRoute || person.is_self === true;
   const sections = useMemo(
     () => renderSections(person, { includePrivate }),
     [person, includePrivate]
@@ -299,7 +305,7 @@ export function ProfilePanels({
       // holding no grant can save their own profile only via the first
       // (D-PC-15), so this is not a cosmetic choice of URL.
       const saved = await peopleApi.update(
-        person.is_self ? "me" : person.id,
+        self ? "me" : person.id,
         pending,
       );
       setDraft({});
@@ -437,6 +443,18 @@ export function ProfilePanels({
                     <ReadValue field={field} />
                   )}
                 </dd>
+                {self && field.spec.name === "preferred_name" ? (
+                  <p className="text-[11px] text-muted-foreground">
+                    The assistant uses this unless you set a name in{" "}
+                    <Link
+                      href="/settings/assistant"
+                      className="text-foreground underline underline-offset-2"
+                    >
+                      Assistant settings
+                    </Link>
+                    .
+                  </p>
+                ) : null}
               </div>
             ))}
           </dl>

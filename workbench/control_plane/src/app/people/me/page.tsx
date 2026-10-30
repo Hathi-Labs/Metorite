@@ -289,6 +289,7 @@ export default function MyProfilePage() {
           <ProfilePanels
             person={state.person}
             showCompleteness
+            selfRoute
             onSaved={(p) => setState({ kind: "resolved", person: p })}
           />
         </>

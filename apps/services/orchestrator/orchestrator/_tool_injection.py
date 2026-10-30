@@ -3240,6 +3240,10 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
     2. STRICT (owner, fix round 1): when the chat read mail since the build
        (``read_untrusted_answer``), this call is held although the build was
        open. An egress tool then answers the held answer and does not run.
+    2a. OA-8i: a write tool after a hand-off to the owner started in this run
+       refuses, and else the write is recorded on the run's record
+       (``tool_packs.pack_write_refusal``). No await comes between the run
+       check and the record, so a hand-off in the same model step sees it.
     3. It marks the chat session for an owner of :data:`UNTRUSTED_INPUT_AGENTS`,
        BEFORE the tool body runs (EM-G11f3, as before an email sub-run).
     4. It runs the gated tool inside ``tool_packs.owner_scope``. The gate reads
@@ -3272,7 +3276,7 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
         clone.func = _pack_call(inner, owner, held, run_key, slug)
         return clone
     from acb_skills.egress import _register_platform_wrapper
-    from acb_skills.tool_packs import PACK_RUN_KEY, note_used, owner_scope
+    from acb_skills.tool_packs import PACK_RUN_KEY, note_used, owner_scope, pack_write_refusal
 
     gate_on = os.environ.get("AGENT_PERMISSION_MODE", "enforce").strip().lower() != (
         "approve_all"
@@ -3291,6 +3295,9 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
         held_now = held or read_untrusted_answer(ctx)
         if held_now and not held and _is_egress(fn):
             return _held_in_turn(owner, name)
+        twice = pack_write_refusal(owner, name, ctx)  # OA-8i, before any await
+        if twice is not None:
+            return twice
         await _mark_pack_session(owner, ctx)
         try:
             with owner_scope(owner, held_now):

@@ -50,6 +50,8 @@ import {
   capOutput,
   commandOf,
   describeToolStep,
+  isProfileGroup,
+  PROFILE_GROUP_LABEL,
   splitAgentLabel,
   type StepKind,
   type StepStatus,
@@ -697,6 +699,7 @@ export default function ThinkingContainer({
   // The newest step, in words, for the header while the turn works.
   const lastLabel = useMemo(() => {
     if (toolEvents.length > 0) {
+      if (isProfileGroup(toolEvents)) return PROFILE_GROUP_LABEL;
       return describeToolStep(toolEvents[toolEvents.length - 1]).label;
     }
     if (progressLines.length > 0) {
@@ -720,6 +723,7 @@ export default function ThinkingContainer({
         : "Finished thinking";
     }
     if (toolEvents.length === 1) return describeToolStep(toolEvents[0]).label;
+    if (isProfileGroup(toolEvents)) return PROFILE_GROUP_LABEL;
     const counts = new Map<StepKind, number>();
     for (const t of toolEvents) {
       const k = describeToolStep(t).kind;

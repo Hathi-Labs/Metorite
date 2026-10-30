@@ -146,7 +146,7 @@ def test_the_fanout_chats_run_on_the_pack_and_the_spawn_arm() -> None:
     """Phase 3: five fan-out chats, no skip. A research chat spawns on the spawn
     arm and reads page by page on the pack arm. Delegation holds no spawn tool.
     Mutation: give one fan-out chat ``skip`` text → ``runnable`` drops it → red."""
-    assert len(FANOUT_SCENARIOS) == 5 and all(s.set == "fanout" for s in FANOUT_SCENARIOS)
+    assert len(FANOUT_SCENARIOS) == 6 and all(s.set == "fanout" for s in FANOUT_SCENARIOS)
     assert not any(s.skip for s in WORK_SCENARIOS)
     assert run.runnable(tuple(FANOUT_SCENARIOS)) == tuple(FANOUT_SCENARIOS)
     assert run.arms_for(FANOUT_SCENARIOS[0], run.ALL_ARMS) == ("pack", run.SPAWN_ARM)
@@ -154,29 +154,33 @@ def test_the_fanout_chats_run_on_the_pack_and_the_spawn_arm() -> None:
     assert run.arms_for(scenario("crm_pipeline"), (run.SPAWN_ARM,)) == ()
 
 
-@pytest.mark.parametrize("sid", ["fan_companies", "fan_invoices"])
+@pytest.mark.parametrize("sid", ["fan_contracts"])
 def test_a_research_chat_spawns_and_its_children_parse(sid: str) -> None:
     """The spawn arm holds the tool, the model spawns, five children read fixture
     pages, and the answer of each parses (§6.4). The pack arm reads page by page.
+    OA-9f: only the heavy chat (five long contracts) spawns.
     Mutation: ``WorkerModel`` answers plain text → ``items_contract`` red."""
     sc = scenario(sid)
     models = run.scripted_models(sc, run.SPAWN_ARM)
-    (row,) = run.run_chat(sc, run.SPAWN_ARM, models=models)
+    row, follow = run.run_chat(sc, run.SPAWN_ARM, models=models)
+    assert follow["passed"] and follow["spawned"] == 0, follow["checks"]
     assert row["passed"] and row["spawned"] == 1 and row["items_problems"] == [], row["checks"]
     assert row["checks"]["spawned"] is True and row["checks"]["items_contract"] is True
     assert "spawn_subagents" in _names(models[ORCHESTRATOR].bodies[0])
-    assert row["web_fetches"] == 5 + (5 if sid == "fan_invoices" else 0) and row["web_unknown"] == []
+    assert row["web_fetches"] == 5 and row["web_unknown"] == []
     assert any(e["event"] == "measure.fanout" and e["ms"] >= 0 for e in row["pack_events"])
     models = run.scripted_models(sc, "pack")
-    (solo,) = run.run_chat(sc, "pack", models=models)
+    solo, _follow = run.run_chat(sc, "pack", models=models)
     assert solo["passed"] and solo["spawned"] == 0 and solo["checks"]["spawned"] is None
     assert "spawn_subagents" not in _names(models[ORCHESTRATOR].bodies[0])
     assert not any(e["event"] == "measure.fanout" for e in solo["pack_events"])
 
 
-@pytest.mark.parametrize("sid", ["fan_tasks", "fan_one_read", "fan_three_searches"])
-def test_one_read_one_task_and_three_searches_do_not_spawn(sid: str) -> None:
-    """Mutation: make the plan spawn → ``not_spawned`` red."""
+@pytest.mark.parametrize("sid", ["fan_companies", "fan_invoices", "fan_tasks", "fan_one_read",
+                                 "fan_three_searches"])
+def test_light_reads_one_task_and_three_searches_do_not_spawn(sid: str) -> None:
+    """OA-9f: five company pages and ten invoice pages are light reads. The model
+    makes them itself, in one step. Mutation: make the plan spawn → ``not_spawned`` red."""
     from acb_common import get_settings
 
     (row,) = run.run_chat(scenario(sid), run.SPAWN_ARM)
@@ -188,7 +192,7 @@ def test_the_invoices_total_comes_from_the_fixtures() -> None:
     from evals.one_assistant_measure import fanout
 
     assert fanout.INVOICE_TOTAL == 233_400 and len(fanout.INVOICES) == 10
-    (row,) = run.run_chat(scenario("fan_invoices"), run.SPAWN_ARM)
+    (row,) = run.run_chat(scenario("fan_invoices"), "pack")
     assert row["checks"]["totals_the_invoices"] is True
 
 
@@ -266,8 +270,8 @@ def test_the_stop_results_9_and_10_read_the_spawn_arm(scripted) -> None:
     rows, _ = scripted
     summary = run.summarise(rows)
     spawn = summary[run.SPAWN_ARM]
-    assert spawn["fanout_calls"] >= 2 and spawn["fanout_ms_mean"] is not None
-    assert spawn["not_spawned_turns"] == 3 and spawn["spawned_on_not_spawned"] == 0
+    assert spawn["fanout_calls"] >= 1 and spawn["fanout_ms_mean"] is not None
+    assert spawn["not_spawned_turns"] == 5 and spawn["spawned_on_not_spawned"] == 0
     states = {n: s for n, s, _ in run.stop_results(summary)}
     assert states[10] == "ok" and states[9] in ("ok", "STOP")
     slow = json.loads(json.dumps(summary))
@@ -1112,7 +1116,7 @@ def test_the_fixture_hosts_look_like_businesses_and_the_guard_still_refuses_a_re
     not fetch. The new hosts are invented business names. The fixtures answer
     the tools, and an httpx request to any host (also these) still meets the
     trap of the scripted run.
-    Mutation: put `.example` back in `INVOICE_BASE` → the first assert is red."""
+    Mutation: put `.example` back in a `SUPPLIER_HOSTS` host → the first assert is red."""
     import asyncio
 
     import httpx
@@ -1122,7 +1126,7 @@ def test_the_fixture_hosts_look_like_businesses_and_the_guard_still_refuses_a_re
 
     urls = [*fanout.PAGES, fanout.PRICE_URL]
     assert all(".example" not in u and u.startswith("https://") for u in urls)
-    assert fanout.PRICE_URL in fanout.PAGES and len(fanout.PAGES) == 16
+    assert fanout.PRICE_URL in fanout.PAGES and len(fanout.PAGES) == 21
 
     async def go() -> list[str]:
         out = []
@@ -1138,9 +1142,9 @@ def test_the_fixture_hosts_look_like_businesses_and_the_guard_still_refuses_a_re
     with RoutingHarness() as harness:
         assert asyncio.run(go()) == ["trap", "trap"]
         assert len(harness.sent) == 2
-    for sid in ("fan_invoices", "fan_one_read"):
-        (row,) = run.run_chat(scenario(sid), run.SPAWN_ARM if sid == "fan_invoices" else "pack")
-        assert row["passed"] and row["web_unknown"] == [], (sid, row["checks"])
+    for sid in ("fan_invoices", "fan_one_read", "fan_contracts"):
+        for row in run.run_chat(scenario(sid), run.SPAWN_ARM if sid == "fan_contracts" else "pack"):
+            assert row["passed"] and row["web_unknown"] == [], (sid, row["checks"])
 
 
 @pytest.mark.parametrize(("text", "want"), [
@@ -1250,3 +1254,305 @@ def test_a_re_score_never_turns_a_pass_into_a_fail() -> None:
     wrote["answer"] = "x"
     run.rescore({"rows": [wrote], "stopped": None})
     assert wrote["checks"]["no_unasked_write"] is False
+
+
+# ── OA-8i: a hand-off that the product refused is counted on its own ────────
+
+
+def _hand(cid: str, name: str, args: dict[str, Any], result: str) -> list[dict[str, Any]]:
+    """The events of one tool call of the orchestrator and its result."""
+    return [{"type": "TOOL_CALL_START", "toolCallId": cid, "toolCallName": name,
+             "args": json.dumps(args)},
+            {"type": "TOOL_CALL_RESULT", "toolCallId": cid, "content": result}]
+
+
+def test_a_refused_hand_off_is_read_from_its_result() -> None:
+    """The result must be a refusal text of ``tool_packs`` in full: the pack
+    refusal, the loader refusal or the OA-8i refusal. An answer of the owner,
+    or a refusal with more text after it, is a hand-off that ran.
+    Mutation: match a prefix ("Not run") in place of the full text -> the
+    owner's answer that starts so reads as refused -> red."""
+    loader = tool_packs.LOADER_HANDOFF_REFUSED.format(owner=PROJECTS, packs="projects")
+    wrote = tool_packs.WROTE_HANDOFF_REFUSED.format(tool="create_personal_task")
+    fan = (f"[{PROJECTS}]\n{tool_packs.PACKS['projects'].delegation_refusal}\n\n"
+           f"[{CRM}]\nFound the deal.")
+    tasks = json.dumps([{"agent": PROJECTS, "message": "Plan it"},
+                        {"agent": CRM, "message": "Find it"}])
+    events = [
+        *_hand("a", "call_agent", {"agent_name": PROJECTS, "message": "Mobile App?"}, loader),
+        *_hand("b", "projects_assistant", {"task": "Make a task"}, wrote),
+        *_hand("c", "crm_assistant", {"task": "Move the deal"}, "Moved the deal to Proposal."),
+        *_hand("d", "call_agent", {"agent_name": CRM, "message": "Log a call"},
+               "Not run. I logged nothing, because the deal is closed."),
+        *_hand("e", "call_agents_parallel", {"tasks": tasks}, fan),
+    ]
+    refused = ck.refused_handoffs_of(events)
+    assert refused == {PROJECTS: ["Mobile App?", "Make a task", "Plan it"]}
+    assert ck.handoff_refused(loader) and ck.handoff_refused(f"  {wrote}\n")
+    assert not ck.handoff_refused(f"{wrote} And then I made it.")
+    assert not ck.handoff_refused("") and not ck.handoff_refused("Moved the deal.")
+    every = {PROJECTS: ["Mobile App?", "Make a task", "Plan it", "Rename"], CRM: ["Move"]}
+    assert ck.without(every, refused) == {PROJECTS: ["Rename"], CRM: ["Move"]}
+    assert ck.without({PROJECTS: ["Plan it"]}, refused) == {}
+
+
+def test_a_refused_hand_off_fails_no_check_and_one_that_ran_still_does() -> None:
+    """``pm_miss`` r1 and r2 of OA-8e run 4: the loader reached the owner, the
+    hand-off was refused, and only the orchestrator ran. Mutation: read
+    ``handoffs_refused`` in ``_no_delegation`` -> the refused case fails -> red.
+    Mutation: drop the hand-offs that ran from the check -> red."""
+    need = {"owners": pack.OWNERS, "needs": "projects", "reachable": frozenset({"projects"})}
+    words = "What is the Mobile App up to?"
+    tried = _obs(handoffs_refused={PROJECTS: [words]}, **need)
+    assert _auto("no_projects_delegation", tried) is True
+    assert _auto("no_projects_delegation", _obs(handoffs={PROJECTS: [words]}, **need)) is False
+    both = _obs(handoffs={PROJECTS: ["x"]}, handoffs_refused={PROJECTS: ["y"]}, **need)
+    assert _auto("no_projects_delegation", both) is False
+    # A refused try is no route: right_pack needs a pack tool that ran.
+    assert _one("right_pack", "projects", tried) is False
+    work = [("project_summary", {}, "Mobile App has 3 tasks")]
+    assert _one("right_pack", "projects", _obs(
+        work_calls=work, handoffs_refused={PROJECTS: [words]}, **need)) is True
+
+
+def _pm_miss_with_a_refused_hand_off() -> dict[str, Any]:
+    """``pm_miss`` as run 4 played it: the model hands off first, the loader
+    refusal answers, and then it loads the pack and reads the project."""
+    sc = scenario("pm_miss")
+    orch = ReplyModel([
+        tool_turn("call_agent", {"agent_name": PROJECTS,
+                                 "message": "What is the Mobile App up to?"}, call_id="call_1"),
+        tool_turn("load_skill_tools", {"pack": "projects"}, call_id="call_2"),
+        tool_turn("projects_tree", {}, call_id="call_3"),
+        tool_turn("project_summary", {"project_id": wg.NODE_MOBILE}, call_id="call_4"),
+        text_turn("Mobile App has 3 tasks and 2 of them are overdue."),
+    ])
+    (row,) = run.run_chat(sc, "pack", models={ORCHESTRATOR: orch})
+    return row
+
+
+def test_a_refused_hand_off_in_the_real_run_passes_and_is_counted() -> None:
+    """Through the real run: the refused hand-off shows in ``handoffs_refused``,
+    and neither in ``specialist_handoffs`` nor in the reasons of stop result
+    11. Mutation: give ``Observation`` every hand-off in ``run_chat`` (drop
+    ``ck.without``) -> the check fails and the reason is ``model_choice`` -> red."""
+    row = _pm_miss_with_a_refused_hand_off()
+    assert row["handoffs_refused"] == {PROJECTS: 1}, row["pack_events"]
+    assert row["specialist_handoffs"] == {} and row["handoff_reasons"] == {}
+    assert row["checks"]["no_projects_delegation"] is True, row["checks"]
+    assert row["passed"], row["checks"]
+    assert {c["agent"] for c in row["model_calls"]} == {ORCHESTRATOR}
+
+
+def test_the_run_4_double_write_is_refused_in_the_real_run() -> None:
+    """``mix_task_from_mail`` turn 2 of run 4, through the real run: the email
+    and core packs are held, the specialist stays, and the model makes the
+    task and then hands it to ``projects_assistant``. The hand-off answers the
+    OA-8i refusal, so one card and one write. Mutation: drop the OA-8i step
+    of ``PackRun.refusal`` -> the specialist starts with no scripted model ->
+    the row ends in an error -> red."""
+    from evals.one_assistant_measure.scenarios import Scenario
+
+    sc = Scenario("oa8i_double_write", "A task, then the same task handed off", (
+        Turn("Make a task from it", (Check("no_unasked_write", 1),), Plan()),
+    ), set="mixed", surface="email")
+    orch = ReplyModel([
+        tool_turn("create_personal_task", {"title": "Confirm 250 boards for Priya"},
+                  call_id="call_1"),
+        tool_turn("projects_assistant", {"task": "Make a task from the mail of Priya"},
+                  call_id="call_2"),
+        text_turn("Captured the private task: Confirm 250 boards for Priya."),
+    ])
+    (row,) = run.run_chat(sc, "pack", models={ORCHESTRATOR: orch})
+    loaded = next(e for e in row["pack_events"] if e["event"] == "executor.packs_loaded")
+    assert loaded["packs"] == "['email', 'projects']", loaded
+    assert PROJECTS not in loaded["via_loader"], "non-vacuity: the specialist stays"
+    assert row["error"] is None, row["error"]
+    assert row["work_writes"] == ["POST /projects/my/tasks"] and row["cards"] == 1
+    assert row["handoffs_refused"] == {PROJECTS: 1} and row["specialist_handoffs"] == {}
+    assert {c["agent"] for c in row["model_calls"]} == {ORCHESTRATOR}
+    assert any(e["event"] == "tool_packs.handoff_after_write_refused"
+               for e in row["pack_events"]), row["pack_events"]
+
+
+def test_stop_11_does_not_count_a_refused_hand_off_and_the_report_shows_it(scripted) -> None:
+    """A refused try is no hand-off turn, so stop result 11 stays ``ok``. The
+    summary and the report still show it. A hand-off that ran keeps STOP.
+    Mutation: drop the ``Hand-offs that the product refused`` row -> red."""
+    rows, _ = scripted
+    tried = [json.loads(json.dumps(r)) for r in rows]
+    victim = next(r for r in tried if r["arm"] == "pack")
+    victim["handoffs_refused"] = {PROJECTS: 2}
+    summary = run.summarise(tried)
+    assert summary["pack"]["handoffs_refused"] == {PROJECTS: 2}
+    state, why = {n: (s, w) for n, s, w in run.stop_results(summary)}[11]
+    assert state == "ok" and "Refused hand-offs, not counted: 2" in why, why
+    text = run.report({"summary": summary})
+    assert "| Hand-offs that the product refused |" in text and "'projects-assistant': 2" in text
+    victim["handoff_reasons"] = {PROJECTS: "model_choice"}
+    assert {n: s for n, s, _ in run.stop_results(run.summarise(tried))}[11] == "STOP"
+
+
+# ── OA-9f: when to spawn ─────────────────────────────────────────────────────
+
+
+def test_the_invoice_pages_sit_on_the_suppliers_own_public_sites() -> None:
+    """Run 3: in 3 of 6 turns the model refused to fetch, because the host read as
+    an account login. An invoice page now sits on the supplier's own site.
+    Mutation: put ``accounts.`` or ``/login`` back into ``invoice_url`` → red."""
+    from evals.one_assistant_measure import fanout
+
+    assert len({fanout.invoice_url(n) for n, _, _ in fanout.INVOICES}) == 10
+    for number, supplier, _ in fanout.INVOICES:
+        url = fanout.invoice_url(number)
+        assert url in fanout.PAGES
+        assert url.startswith(f"https://{fanout.SUPPLIER_HOSTS[supplier]}/")
+        assert not re.search(r"account|login|portal|billing-hub|\.example", url), url
+
+
+def test_the_contract_fixtures_are_long_and_hide_the_two_facts() -> None:
+    """Each contract is about 40,000 characters. The payment term sits after
+    character 20,000 and the penalty after character 30,000, at a different
+    place for each vendor. So a plain fetch (8,000) reads neither fact, and the
+    reader must ask for the whole text. The facts are the only day count and the
+    only percent figure of the vendor. The text is the same on every call.
+    Mutation: put the penalty before the cut (``PENALTY_AFTER = 5_000``) → red."""
+    from evals.one_assistant_measure import contracts, fanout
+
+    assert len(contracts.CONTRACTS) == 5
+    assert len({d for _, _, d, _ in contracts.CONTRACTS}) == 5
+    assert len({p for _, _, _, p in contracts.CONTRACTS}) == 5
+    places = set()
+    for vendor, host, days, percent in contracts.CONTRACTS:
+        text = fanout.PAGES[fanout.contract_url(host)]
+        assert 40_000 <= len(text) <= 41_000 and text == contracts.contract_text(vendor, days, percent)
+        pay, late = text.index(f"within {days} days"), text.index(f"penalty of {percent} percent")
+        places.add((pay, late))
+        assert text.count(f"within {days} days") == 1 and text.count(f"penalty of {percent} percent") == 1
+        assert pay >= 20_000 and late >= 30_000 and pay < late
+        assert len(re.findall(r"percent", text)) == 2  # the penalty, and its limit of ten
+        other = text.replace(f"within {days} days", "").replace(f"{percent} percent", "")
+        assert not re.search(rf"(?<![\d.]){days}(?!\d)", re.sub(r"^\d+\. ", "", other, flags=re.M))
+    assert len(places) == 5  # a different place for each vendor
+    # A URL with no page stays a clear failure.
+    assert fanout.contract_url("www.nowhere-vendor.com") not in fanout.PAGES
+
+
+def test_the_fixture_fetch_cuts_like_the_real_tool() -> None:
+    """The real ``fetch_page`` (web_tools.py) cuts at ``max_chars`` (default 8000,
+    floor 500, no upper cap) and adds a marker. A default fetch of a contract
+    holds no fact, and a fetch with enough ``max_chars`` holds both.
+    Mutation: make the fixture ignore ``max_chars`` → the cut cases go red."""
+    import asyncio
+
+    import pytest as _pytest
+    from acb_skills import web_tools
+
+    from evals.one_assistant_measure import contracts, fanout
+
+    _vendor, host, days, percent = contracts.CONTRACTS[0]
+    url = fanout.contract_url(host)
+    fixtures = fanout.WebFixtures()
+    with _pytest.MonkeyPatch.context() as mp:
+        fixtures.install(mp)
+        short = asyncio.run(web_tools.fetch_page(url))
+        whole = asyncio.run(web_tools.fetch_page(url, max_chars=60_000))
+        tiny = asyncio.run(web_tools.fetch_page(url, max_chars=10))
+    assert "[... truncated at 8000 chars]" in short
+    assert f"within {days} days" not in short and "penalty of" not in short
+    assert f"within {days} days" in whole and f"penalty of {percent} percent" in whole
+    assert "truncated" not in whole
+    assert "[... truncated at 500 chars]" in tiny
+
+
+def _swapped(sc):
+    """A copy of *sc* whose answer gives the first vendor the facts of the second."""
+    from dataclasses import replace
+
+    turn = sc.turns[0]
+    answer = turn.plan.answer.replace("21 days, 0.5 percent", "45 days, 1.5 percent", 1)
+    return replace(sc, turns=(replace(turn, plan=replace(turn.plan, answer=answer)), *sc.turns[1:]))
+
+
+def test_the_contract_chat_is_the_research_chat_and_checks_each_vendor() -> None:
+    """The ``research`` mark (stop 9) is the ``spawned`` check, so it sits on
+    ``fan_contracts`` only. The answer must pair each vendor with its two facts.
+    Mutation: drop ``Check("spawned")`` from ``fan_contracts`` → the research
+    list is empty → red."""
+    sc = scenario("fan_contracts")
+    names = [c.name or c.kind for c in sc.turns[0].checks]
+    assert "spawned" in names and "items_contract" in names
+    assert sum(n.startswith("terms_of_") for n in names) == 5
+    research = [s.id for s in FANOUT_SCENARIOS
+                if any(c.kind == "spawned" for t in s.turns for c in t.checks)]
+    assert research == ["fan_contracts"] and len(sc.turns) == 2
+    row, follow = run.run_chat(sc, run.SPAWN_ARM)
+    assert row["research"] is True and row["passed"], row["checks"]
+    # Turn 2 asks which vendor is strictest (Kaveri, 3 percent) and the cost of a
+    # 10-day delay on a 5 lakh order: one full week, Rs 15,000. It is no research turn.
+    assert follow["research"] is False and follow["passed"], follow["checks"]
+    assert follow["checks"]["names_the_strictest"] and follow["checks"]["costs_the_delay"]
+    assert follow["model_calls"] is not None  # the prompt tokens of turn 2 are recorded per call
+    bad = _swapped(sc)
+    miss, _ = run.run_chat(bad, run.SPAWN_ARM, models=run.scripted_models(bad, run.SPAWN_ARM))
+    assert miss["passed"] is False and miss["checks"]["terms_of_bharat"] is False
+
+
+def test_a_call_with_one_job_is_a_job_block() -> None:
+    """Run 3, ``fan_companies`` r1 and r2: ``items_contract`` read "no job block".
+    The real result opens the first block on the line after the open marker, with
+    no blank line, so the old split lost it. A call with one job had no block at
+    all. This is a harness bug: the product renders the header (``_render_items``).
+    Mutation: go back to the split on blank lines → this case is red."""
+    from evals.one_assistant_measure import fanout
+
+    sc = scenario("fan_companies")
+    jobs = fanout.jobs_for([fanout.company_url("Orbit Labs")])
+    turn = Turn("Read the Orbit page please", (Check("spawned"),),
+                Plan((("spawn_subagents", {"jobs": jobs}),), "Orbit makes sensors."))
+    one = type(sc)("fan_one_job", "one job", (turn,), set="fanout")
+    (row,) = run.run_chat(one, run.SPAWN_ARM)
+    assert row["spawned"] == 1 and row["items_problems"] == [], row["items_problems"]
+    assert row["checks"]["items_contract"] is True
+
+
+def test_job_blocks_read_the_real_frame_and_stop_at_the_close_marker() -> None:
+    from acb_skills.untrusted import UntrustedFrame
+
+    frame = UntrustedFrame.new()
+    one = 'Job 1 ("Read a"):\n- [quoted] Orbit (source: https://o.com/a)'
+    two = 'Job 2 ("Read b"):\n- [quoted] Kestrel\n  second line (source: https://k.com/b)'
+    for blocks in ([one], [one, two]):
+        text = "\n\n".join([frame.note("The blocks hold pages."),
+                           frame.wrap("SUB AGENT ITEMS", "\n\n".join(blocks)),
+                           "Job 3 did not run: it named a tool this chat lacks."])
+        got = ck.job_blocks(text)
+        assert len(got) == len(blocks) and got[0].startswith("Job 1 ")
+        assert "Job 3" not in got[-1] and "<<<" not in got[-1]
+        assert ck.items_contract_problems([text]) == []
+    assert ck.job_blocks("No job ran.") == []
+
+
+def test_every_path_of_a_child_that_goes_wrong_is_a_named_problem() -> None:
+    """The paths checked for "no job block" (OA-9f). A child that fetches a URL
+    with no fixture still returns a quoted item, so it breaks no contract (the
+    unknown URL shows in ``web_unknown``). A child that returns prose gives an
+    unstructured item. A timeout gives an error line. Each is named, and none
+    reads as "no job block" while a header is present.
+    Mutation: ignore ``unstructured`` in ``items_contract_problems`` → the prose case is red."""
+    from evals.one_assistant_measure import fanout
+
+    sc = scenario("fan_companies")
+    url = "https://www.helixlabs-sensors.com/"  # the root, as the run 3 child asked
+    turn = Turn("Read the Helix page please", (Check("spawned"),),
+                Plan((("spawn_subagents", {"jobs": fanout.jobs_for([url])}),), "Helix: no page."))
+    one = type(sc)("fan_unknown_url", "unknown url", (turn,), set="fanout")
+    (row,) = run.run_chat(one, run.SPAWN_ARM)
+    assert row["items_problems"] == [] and row["web_unknown"] == [f"fetch {url}"]
+    models = run.scripted_models(one, run.SPAWN_ARM)
+    models["worker"] = ReplyModel([text_turn("Helix is a small firm with about fifty staff.")])
+    (prose,) = run.run_chat(one, run.SPAWN_ARM, models=models)
+    assert prose["items_problems"] and "no job block" not in prose["items_problems"]
+    assert "did not parse" in prose["items_problems"][0]
+    err = 'Job 1 ("Read a"): Error: no answer in 120s, so the job was stopped.'
+    assert ck.items_contract_problems([err]) == [err[:40] + ": error"]

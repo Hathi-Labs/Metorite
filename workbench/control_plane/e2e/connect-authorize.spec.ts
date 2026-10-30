@@ -114,7 +114,8 @@ test.describe("the consent page of an outside agent", () => {
     await expect(page.getByText("Stay connected")).toBeVisible();
     // offline_access has no box.
     await expect(page.getByRole("checkbox", { name: "Stay connected" })).toHaveCount(0);
-    await expect(page.getByLabel("Include my personal projects")).not.toBeChecked();
+    // On by default (owner 2026-10-30, D-EA-4 as amended).
+    await expect(page.getByLabel("Include my personal projects")).toBeChecked();
     await expect(page.getByTestId("consent-pins").getByText("Project Seven")).toBeVisible();
     // No chrome: the page is standalone.
     await expect(page.locator("aside")).toHaveCount(0);
@@ -140,8 +141,18 @@ test.describe("the consent page of an outside agent", () => {
       consent_ticket: VIEW.consent_ticket,
       scopes: ["projects:read", "offline_access"],
       pinned_projects: ["p-7"],
-      include_personal: false,
+      include_personal: true,
     });
+  });
+
+  test("unticking personal access sends it as false", async ({ page }) => {
+    const approvals = await stub(page);
+    await page.goto(PAGE);
+    await page.getByLabel("Include my personal projects").uncheck();
+    await page.getByRole("button", { name: "Approve" }).click();
+    await page.waitForURL(APPROVED);
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0].postDataJSON().include_personal).toBe(false);
   });
 
   test("approve is off when every permission is cleared", async ({ page }) => {
