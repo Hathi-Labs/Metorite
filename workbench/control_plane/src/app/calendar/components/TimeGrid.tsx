@@ -773,6 +773,8 @@ export function TimeGrid({
                         : CARD_TONE.base;
                 const surface = isPast ? tone.past : isNow ? tone.now : tone.rest;
                 const range = fmtRange(b.start, end, { compact: narrow });
+                // a one-row card is 21 px tall, so its toolbar buttons are smaller
+                const btnPad = layout.rows === "one" ? "p-px" : "p-0.5";
                 const planned = fmtLeft(Math.max(1, Math.round(mins)));
                 const titleCls = [
                   "min-w-0 flex-1 text-left text-xs font-medium",
@@ -976,7 +978,9 @@ export function TimeGrid({
                         background so it never overlaps text. On the current
                         block, Focus is a labelled button that is always there.
                         Pin, unschedule and the rest are in the menu. */}
-                    <div className="absolute right-1 top-0.5 z-[1] flex items-center gap-1">
+                    <div
+                      className={`absolute right-1 z-[1] flex items-center gap-1 ${layout.rows === "one" ? "inset-y-0" : "top-0.5"}`}
+                    >
                       <div className="reveal-on-hover flex items-center rounded border border-border bg-background shadow-sm">
                         {!isDone && !isNow && (
                           <button
@@ -987,7 +991,7 @@ export function TimeGrid({
                               e.stopPropagation();
                               onFocusMode(b.item);
                             }}
-                            className="tech-transition rounded p-0.5 text-muted-foreground hover:text-primary focus-visible:ring-2 focus-visible:ring-ring"
+                            className={`tech-transition rounded ${btnPad} text-muted-foreground hover:text-primary focus-visible:ring-2 focus-visible:ring-ring`}
                           >
                             <Icon name="Play" className="h-3.5 w-3.5" fill="currentColor" />
                           </button>
@@ -1009,7 +1013,7 @@ export function TimeGrid({
                               onToggleOneThing(b.item.id);
                             }}
                             className={[
-                              "tech-transition rounded p-0.5 focus-visible:ring-2 focus-visible:ring-ring",
+                              `tech-transition rounded ${btnPad} focus-visible:ring-2 focus-visible:ring-ring`,
                               isOneThing
                                 ? "text-warning"
                                 : "text-muted-foreground hover:text-warning",
@@ -1030,7 +1034,7 @@ export function TimeGrid({
                             e.stopPropagation();
                             setCtx({ x: e.clientX, y: e.clientY, item: b.item, day });
                           }}
-                          className="tech-transition rounded p-0.5 text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                          className={`tech-transition rounded ${btnPad} text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring`}
                         >
                           <Icon name="MoreHorizontal" className="h-3.5 w-3.5" />
                         </button>
@@ -1044,7 +1048,7 @@ export function TimeGrid({
                             e.stopPropagation();
                             onFocusMode(b.item);
                           }}
-                          className="tech-transition inline-flex items-center gap-1 rounded bg-primary px-1.5 text-[11px] font-medium leading-4 text-primary-foreground hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring"
+                          className="tech-transition inline-flex h-4 items-center gap-1 rounded bg-primary px-1.5 text-[11px] font-medium leading-none text-primary-foreground hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring"
                         >
                           <Icon name="Play" className="h-3 w-3" fill="currentColor" />
                           Focus
