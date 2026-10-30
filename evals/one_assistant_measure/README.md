@@ -179,6 +179,16 @@ The row counts hand-offs by owner (`specialist_handoffs`) and, for email, by
 kind (`handoffs`). The timing and cache columns are the email
 ones, and the report adds them for each set.
 
+OA-8i: the row counts each try of a hand-off that the product refused on its
+own (`handoffs_refused`). The result of the call must be a refusal text of
+`acb_skills.tool_packs` in full. Such a try ran no work. So it fails no
+`no_*_delegation` check, and stop result 11 does not count it. The report
+shows it on its own row.
+
+A hand-off that ran still fails the check. The email check
+`no_email_delegation` reads the tasks. So a hand-off of mail work that the
+product refused still fails it.
+
 ### What the report adds
 
 `run --report` prints one table per set and arm: pass, first text and total

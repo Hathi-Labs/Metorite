@@ -743,16 +743,47 @@ select optgroup {
   }
 }
 
-/* EA-13g: an agent's card looks alive while the agent holds it. The `<li>` of
-   a board card carries `data-agent-edge` (`agentCardLook`). Every edge is 2px.
-   Only "live" moves, because motion means "working". Under reduced motion the
-   live edge stays lit and still. Tokens only. */
+/* EA-13g, EA-13h: an agent's card looks alive while the agent holds it. The
+   `<li>` of a board card carries `data-agent-edge` (`agentCardLook`). No edge
+   is dashed (owner, 2026-10-30). Tokens only, so each organisation's accent
+   shows through.
+   - live: the accent travels round the card and fades out behind itself.
+   - breathing (idle): a soft accent glow rises and falls. The glow is a still
+     layer (`::after`) whose opacity moves (§4: transform and opacity only).
+   - steady (queued): a still, thin, solid accent edge.
+   - warning, destructive: a 2px solid border.
+   EVERY edge is 2px on each side (a border, or the padding of live), so a
+   change of state never moves the card or the cards below it. The corner of
+   the edge is the card's own corner plus 2px (`--radius-lg` of
+   TaskCardShell), so the band is even round each corner. The card's own
+   1px border hides inside an edge, so one clean ring shows.
+   Under reduced motion each edge stays still: live stays lit, breathing is a
+   soft still glow. */
 [data-agent-edge] {
-  border-radius: 0.5rem;
+  border-radius: calc(var(--radius-lg) + 2px);
 }
-[data-agent-edge="dashed-accent"] { border: 2px dashed var(--primary); }
+[data-agent-edge] > [role="button"] {
+  border-color: transparent;
+}
+[data-agent-edge="steady"] {
+  border: 2px solid color-mix(in srgb, var(--primary) 40%, transparent);
+}
+[data-agent-edge="breathing"] {
+  position: relative;
+  border: 2px solid color-mix(in srgb, var(--primary) 30%, transparent);
+}
+[data-agent-edge="breathing"]::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--primary) 45%, transparent),
+    0 0 10px 2px color-mix(in srgb, var(--primary) 26%, transparent);
+  opacity: 0.45;
+}
 [data-agent-edge="warning"] { border: 2px solid var(--warning); }
-[data-agent-edge="muted"] { border: 2px dashed var(--muted-foreground); }
 [data-agent-edge="destructive"] { border: 2px solid var(--destructive); }
 [data-agent-edge="live"] {
   position: relative;
@@ -767,6 +798,10 @@ select optgroup {
 @keyframes agent-edge-travel {
   from { transform: translate(-50%, -50%) rotate(0deg); }
   to   { transform: translate(-50%, -50%) rotate(360deg); }
+}
+@keyframes agent-edge-breathe {
+  0%, 100% { opacity: 0.15; }
+  50%      { opacity: 1; }
 }
 @keyframes agent-live-dot {
   0%, 100% { opacity: 1; }
@@ -787,6 +822,9 @@ select optgroup {
     background: conic-gradient(from 0deg, transparent 0 70%, var(--primary) 100%);
     transform: translate(-50%, -50%);
     animation: agent-edge-travel 3s linear infinite;
+  }
+  [data-agent-edge="breathing"]::after {
+    animation: agent-edge-breathe 3.5s ease-in-out infinite;
   }
   .agent-live-dot {
     animation: agent-live-dot 1.6s ease-in-out infinite;
