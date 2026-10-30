@@ -193,6 +193,8 @@ class ModelCall:
     #: The model that the response names, for example the vendor's model id.
     served: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
+    #: ``time.time()`` at the start. 0 is the epoch, which is off peak.
+    wall: float = 0.0
 
 
 class _TapStream(httpx.AsyncByteStream):
@@ -285,7 +287,7 @@ class _WireTap(httpx.AsyncBaseTransport):
             agent=self._agent, model=str(body.get("model") or ""),
             stream=bool(body.get("stream")), messages=len(body.get("messages") or []),
             tools=len(body.get("tools") or []), request_chars=len(raw),
-            started=time.monotonic(),
+            started=time.monotonic(), wall=time.time(),
         )
         self._sink.append(call)
         response = await self._inner.handle_async_request(request)

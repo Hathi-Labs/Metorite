@@ -7,6 +7,8 @@
 *.timer         text eol=lf
 # systemd drop-ins (WS-49 BH-7). A CRLF line here is parsed wrong too.
 deploy/hostinger/**/*.conf text eol=lf
+# dev_up.sh reads this line by line. A CRLF copy dropped every switch (LD-1).
+scripts/dev_up/*.env text eol=lf
 deploy/hostinger/caddy/Caddyfile text eol=lf
 deploy/hostinger/known_hosts text eol=lf
 # WS-49 BH-6: the root copy lists. root_env.sh reads the names file as root.

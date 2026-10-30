@@ -33,6 +33,22 @@ import {
   type OutcomeById,
 } from "./shared";
 import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
+import {
+  MOVE_NOTE,
+  REMINDER_DRAG_TYPE,
+  clockText,
+  dropTime,
+  nudgeTime,
+  pinGlyphTone,
+  pinNeedsCompact,
+  pinSegments,
+  pinTone,
+  pinTop,
+  remindersOnDay,
+  type BlockBox,
+  type CalReminder,
+  type ZonedTime,
+} from "../lib/reminders";
 
 
 // ── Day / Week hour grid ─────────────────────────────────────────────────────
@@ -61,6 +77,12 @@ export function TimeGrid({
   onReschedulePopup,
   onMoveToFree,
   onDelete,
+  reminders = [],
+  reminderZone = "UTC",
+  onOpenReminder,
+  onMoveReminder,
+  onPickReminderMove,
+  onResolveReminder,
 }: {
   days: Date[];
   items: MyTask[];
@@ -100,6 +122,18 @@ export function TimeGrid({
   onMoveToFree: (item: MyTask) => void;
   /** "Delete task…" → the store's confirm-first delete flow. */
   onDelete: (id: string) => void;
+  /** The open reminders (WS-66 RM-5). Each draws as a line with no height. It
+   *  takes no lane and no capacity, and it never joins `blocksForDay`. */
+  reminders?: CalReminder[];
+  /** The zone whose wall clock places a pin. */
+  reminderZone?: string;
+  /** A tap on a pin opens the chat of the reminder (RM-4). */
+  onOpenReminder?: (id: string) => void;
+  /** A drop or an Alt+Arrow moves a reminder to a named time. */
+  onMoveReminder?: (id: string, to: ZonedTime) => void;
+  /** "Move to…" opens the date and time form. */
+  onPickReminderMove?: (id: string) => void;
+  onResolveReminder?: (id: string, action: "done" | "drop") => void;
 }) {
   const hours = Array.from({ length: dayEnd - dayStart }, (_, i) => dayStart + i);
   const gridHeight = hours.length * HOUR_PX;
@@ -117,6 +151,7 @@ export function TimeGrid({
     item: MyTask;
     day: Date;
   } | null>(null);
+  const [rctx, setRctx] = useState<{ x: number; y: number; row: CalReminder } | null>(null);
   const lpTimer = useRef<number | null>(null);
   const lpFired = useRef(false);
   const startLongPress = (e: React.PointerEvent, item: MyTask, day: Date) => {
@@ -139,6 +174,13 @@ export function TimeGrid({
   const handleDrop = (e: React.DragEvent, day: Date) => {
     e.preventDefault();
     setDragOverKey(null);
+    // A reminder pin has its own drag type. It moves a reminder and never
+    // reaches the task `reschedule` below.
+    const pin = e.dataTransfer.getData(REMINDER_DRAG_TYPE);
+    if (pin) {
+      dropReminder(e, day, pin);
+      return;
+    }
     const raw = e.dataTransfer.getData(DRAG_TYPE);
     if (!raw) return;
     let p: DragPayload;
@@ -163,6 +205,36 @@ export function TimeGrid({
       new Date(start.getTime() + p.durationMins * 60000),
       wasScheduled ? "Moved block" : "Scheduled",
     );
+  };
+
+  const dropReminder = (e: React.DragEvent, day: Date, raw: string) => {
+    let p: { id: string; grabOffsetMins: number };
+    try {
+      p = JSON.parse(raw) as { id: string; grabOffsetMins: number };
+    } catch {
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mins =
+      dayStart * 60 + snap(((e.clientY - rect.top) / HOUR_PX) * 60 - p.grabOffsetMins);
+    const to = dropTime(day, mins, reminderZone);
+    if (to) onMoveReminder?.(p.id, to);
+  };
+
+  const onPinDragStart = (e: React.DragEvent, row: CalReminder) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    // The line sits at the middle of the button.
+    const grabOffsetMins = ((e.clientY - (rect.top + rect.height / 2)) / HOUR_PX) * 60;
+    e.dataTransfer.setData(REMINDER_DRAG_TYPE, JSON.stringify({ id: row.id, grabOffsetMins }));
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const onPinKeyDown = (e: React.KeyboardEvent, row: CalReminder) => {
+    if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const to = nudgeTime(row, e.key === "ArrowDown" ? 1 : -1, reminderZone);
+    if (to) onMoveReminder?.(row.id, to);
   };
 
   const onBlockDragStart = (e: React.DragEvent, b: Block) => {
@@ -223,7 +295,9 @@ export function TimeGrid({
 
   return (
     <div className="min-w-fit">
-      {/* Column headers (week) */}
+      {/* Column headers (week). The grid body below is its own stacking
+          context (`relative z-0`), so no pin, now line or block in it can
+          draw over this header when the grid scrolls under it. */}
       {days.length > 1 && (
         <div className="sticky top-0 z-10 flex border-b border-border bg-background">
           <div className="w-14 shrink-0" />
@@ -252,7 +326,10 @@ export function TimeGrid({
         </div>
       )}
 
-      <div className="flex">
+      {/* `relative z-0`: one stacking context for the whole body. The z-20 of
+          a pin and of the now line, and the z-10 of the current block, stay
+          inside it and under the sticky week header (z-10) above. */}
+      <div className="relative z-0 flex">
         {/* Hour gutter — each row is EXACTLY HOUR_PX so the labels stay in
             lockstep with the day-column hour lines and the now-line (a per-row
             negative margin here used to compound, drifting the labels ~3h up by
@@ -277,6 +354,28 @@ export function TimeGrid({
           const blocks = blocksForDay(items, day);
           const deadlines = deadlinesForDay(items, day);
           const today = sameDay(day, now);
+          const pins = remindersOnDay(reminders, day, reminderZone);
+          // The task blocks of this column as spans of minutes. A pin whose
+          // label would sit on one draws compact (`pinNeedsCompact`). The
+          // block height is at least 20 px, as drawn below.
+          const spans = blocks.map((b) => {
+            const start = minutesInto(b.start);
+            const mins = (b.end.getTime() - b.start.getTime()) / 60000;
+            return { start, end: start + Math.max(mins, (20 / HOUR_PX) * 60) };
+          });
+          // The blocks in their lanes, drawn below. A pin line stops at the
+          // edge of each lane a block holds at its height (`pinSegments`).
+          const laid = layoutBlocks(blocks);
+          const boxes: BlockBox[] = laid.map(({ block: b, lane, lanes }) => {
+            const end = resizing?.id === b.item.id ? new Date(resizing.endMs) : b.end;
+            const mins = (end.getTime() - b.start.getTime()) / 60000;
+            return {
+              top: Math.max(0, ((minutesInto(b.start) - dayStart * 60) / 60) * HOUR_PX),
+              height: Math.max(20, (mins / 60) * HOUR_PX - 2),
+              lane,
+              lanes,
+            };
+          });
           const dayKey = day.toISOString();
           const nowTop =
             ((minutesInto(now) - dayStart * 60) / 60) * HOUR_PX;
@@ -456,8 +555,72 @@ export function TimeGrid({
                 </div>
               )}
 
+              {/* reminder pins (WS-66 RM-5) — a line with no height at the
+                  minute of the reminder. Not a block: no lane, no capacity.
+                  The line is pointer-events-none. The button is the handle.
+                  The line stops at the edge of a block, so it never strikes
+                  through the block's title (`pinSegments`). */}
+              {pins.map(({ row, minutes }) => {
+                const top = pinTop(minutes, dayStart, HOUR_PX);
+                if (top < 0 || top > gridHeight) return null;
+                const clock = clockText(row.fireMs, reminderZone);
+                const compact = pinNeedsCompact(minutes, spans, HOUR_PX);
+                return (
+                  <div
+                    key={`rm-${row.id}`}
+                    className="pointer-events-none absolute inset-x-0 z-20"
+                    style={{ top }}
+                  >
+                    {pinSegments(top, boxes).map((s) => (
+                      <div
+                        key={s.from}
+                        aria-hidden
+                        className={`absolute top-0 border-t-2 ${pinTone(row.state)}`}
+                        style={{ left: `${s.from * 100}%`, width: `${(s.to - s.from) * 100}%` }}
+                      />
+                    ))}
+                    <button
+                      type="button"
+                      draggable
+                      onDragStart={(e) => onPinDragStart(e, row)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onOpenReminder?.(row.id);
+                      }}
+                      onKeyDown={(e) => onPinKeyDown(e, row)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setRctx({ x: e.clientX, y: e.clientY, row });
+                      }}
+                      aria-label={`Reminder, ${clock}: ${row.title}`}
+                      aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+                      title={`${clock} · ${row.title}. Drag to move it, or press Alt+Arrow. ${MOVE_NOTE}`}
+                      className={[
+                        compact
+                          ? // Over a block: a small bell on the left edge of
+                            // the column, half out in the gutter. It has no
+                            // text, so it covers no block title.
+                            "-left-2 -top-2 h-4 w-4 justify-center rounded-full"
+                          : "left-0 -top-2.5 max-w-full gap-0.5 rounded-sm px-1 text-[10px] leading-4",
+                        // A finger needs 24 px. On a touch screen an empty
+                        // layer grows the target to 24 px, and the look stays.
+                        "pointer-coarse:before:absolute pointer-coarse:before:-inset-1",
+                        `pointer-events-auto absolute inline-flex cursor-grab items-center bg-background focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing ${pinGlyphTone(row.state)}`,
+                      ].join(" ")}
+                    >
+                      <Icon name="Bell" className="h-3 w-3 shrink-0" />
+                      {!compact && <span className="shrink-0 tabular-nums">{clock}</span>}
+                      {!compact && days.length === 1 && (
+                        <span className="min-w-0 truncate text-foreground">{row.title}</span>
+                      )}
+                    </button>
+                  </div>
+                );
+              })}
+
               {/* scheduled blocks — overlaps split into side-by-side lanes */}
-              {layoutBlocks(blocks).map(({ block: b, lane, lanes }) => {
+              {laid.map(({ block: b, lane, lanes }) => {
                 const end =
                   resizing?.id === b.item.id ? new Date(resizing.endMs) : b.end;
                 const top =
@@ -853,6 +1016,41 @@ export function TimeGrid({
             />
           );
         })()}
+
+      {rctx && (
+        <ContextMenu
+          x={rctx.x}
+          y={rctx.y}
+          onClose={() => setRctx(null)}
+          items={[
+            {
+              kind: "item",
+              label: "Open in chat",
+              icon: themedIcon("ExternalLink"),
+              onSelect: () => onOpenReminder?.(rctx.row.id),
+            },
+            {
+              kind: "item",
+              label: "Move to…",
+              icon: themedIcon("CalendarClock"),
+              onSelect: () => onPickReminderMove?.(rctx.row.id),
+            },
+            {
+              kind: "item",
+              label: "Done",
+              icon: themedIcon("Check"),
+              onSelect: () => onResolveReminder?.(rctx.row.id, "done"),
+            },
+            {
+              kind: "item",
+              label: "Drop",
+              icon: themedIcon("X"),
+              danger: true,
+              onSelect: () => onResolveReminder?.(rctx.row.id, "drop"),
+            },
+          ]}
+        />
+      )}
     </div>
   );
 }

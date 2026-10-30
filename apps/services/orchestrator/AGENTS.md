@@ -75,6 +75,8 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - Fences: `test_delegation_no_egress.py`, `evals/email_injection/`.
 18. **A covered agent's run takes its tier from the policy** (D90, spec `ai_tier_routing.md` §4.5). The policy lives in `acb_skills.tier_policy`, and the executor holds only the glue.
    - `_tier_policy_for_run` is the one entry. Fence: `test_tier_policy.py`.
+   - The parallel start (2026-10-30, §4.3) is dark behind `AI_TURN_KIND_PARALLEL`. Only the native Tier 1 stream of `run_agent_stream` uses it. The batch path, a sub-agent, a delegated run and a Copilot SDK agent still await the answer.
+   - The stream loop takes the answer only while a pull is in flight, so a cancel closes the request inside its stream. Each output of the loop calls `seal()` first. `_apply_parallel_tier` mirrors the tier site, so change both together. Fence: `test_turn_kind_parallel.py`.
 19. **A Mirror run gets no CRM record write** (spec `crm_platform.md` §20.10 item 4).
    - `_drop_mirror_record_writes` runs right after `_apply_own_tool_scope`, at all three sites. In Mirror mode it drops `MIRROR_RECORD_WRITES`, and `log_activity` stays. Fence: `test_crm_mirror_run_tools.py`.
 20. **A self-anneal retry holds no tool that the first try did not hold.** Access is an intersection, never a union.

@@ -277,6 +277,40 @@ and the key. Close the tunnel with Ctrl+C in that shell.
      --out evals/one_assistant_measure/results_<date>.json
    ```
 
+### Spend rules (after the drain of 2026-10-30)
+
+A live run goes through the production Router, on the one DeepSeek account.
+On 2026-10-30 the account ran out of funds, and production chat failed for
+about 50 minutes. The harness total had read USD 4.62, and the Router had
+billed USD 12.70 for the eval member. Three rules now bind each run.
+
+1. **Count every call, and count the unknown at the worst case.**
+   - The wire tap now covers the System-1 client. Before, each turn that asked
+     the turn kind sent one request that no tap saw.
+   - A call with no usage frame counts from the size of its request
+     (`cost_source` `estimate`), and not as USD 0.
+   - A send that reached the Router and that no tap saw counts at a worst case
+     of 20k input tokens and 4k output tokens (`unseen_usd` on the row).
+   - A call that starts in a peak band counts double (`peak` on the call).
+   - A refused call (status 4xx or 5xx) counts nothing.
+
+   The counted total is a safe upper bound, not an exact bill. Compare it with
+   the `usage_event` rows of the eval member after each run.
+2. **The budget stops the run at once.** `--budget-usd` counts the earlier
+   chunks too (`--spent-before` and `--spent-before-from`). The runner checks it
+   before each chat and before each turn after the first. A chat that crosses
+   the cap ends there, and the file says `stopped`.
+3. **Do not run in a peak band.** DeepSeek charges double in two bands.
+   They run from 01:00 to 04:00 and from 06:00 to 10:00 UTC, Monday to Friday
+   (<https://api-docs.deepseek.com/quick_start/pricing/>). The bands are
+   `spend.PEAK_BANDS_UTC`. `--live` refuses to start in a band and prints the
+   next off-peak start. Pass `--allow-peak` to override. A run that reaches a
+   band between two chats stops, unless you passed `--allow-peak`.
+
+The report prints the counted spend of each agent: the orchestrator, each
+specialist, the worker, `system-one` and `unseen`. Read it to see where the
+money went.
+
 **The System-1 seam (eval only).** Production runs the turn-kind request, because
 `routing_is_on()` is true there. The eval has no Console, so `system_one._ask`
 would answer `router_off`. In a live run, `run._system_one_seam` makes
