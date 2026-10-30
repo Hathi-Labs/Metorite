@@ -9,7 +9,7 @@
  *
  * | state            | edge        | line                              |
  * | working/answered | live        | "<client> · <agent_note>"         |
- * | queued           | steady      | "Queued for <client>"             |
+ * | queued           | steady      | none (the pill says "Queued for") |
  * | awaiting         | warning     | "Needs you: <question>"           |
  * | stale (idle)     | breathing   | the agent's last note, else none  |
  * | failed           | destructive | none (the Failed chip says it)    |
@@ -17,7 +17,7 @@
  *
  * No edge is dashed (EA-13h, owner 2026-10-30). "live" travels round the card.
  * "breathing" glows slowly and means idle. "steady" is still. The pill already
- * says "idle", so the stale line never repeats it.
+ * says "idle" or "Queued for", so the stale and queued lines never repeat it.
  */
 
 import { type AgentPillFacts, agentPillText, asAgentState, clientName } from "./agentRuns";
@@ -51,7 +51,7 @@ export function agentCardLook(
             : agentPillText(known, facts).text,
       };
     case "queued":
-      return { edge: "steady", line: `Queued for ${client}` };
+      return { edge: "steady", line: null };
     case "awaiting":
       return {
         edge: "warning",

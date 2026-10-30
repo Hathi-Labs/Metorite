@@ -28,10 +28,8 @@ describe("agentCardLook", () => {
   });
 
   it("queued, stale and failed are still edges", () => {
-    expect(agentCardLook("queued", { clientVia: via })).toEqual({
-      edge: "steady",
-      line: "Queued for Claude Code",
-    });
+    // The pill says "Queued for Claude Code", so the line does not repeat it.
+    expect(agentCardLook("queued", { clientVia: via })).toEqual({ edge: "steady", line: null });
     expect(agentCardLook("stale", { clientVia: via })).toEqual({ edge: "breathing", line: null });
     expect(agentCardLook("stale", { clientVia: via, note: " ran the tests " })).toEqual({
       edge: "breathing",
