@@ -2326,9 +2326,24 @@ async def merge_status_from_source(
       stays.
     * Each deal or lead, each pipeline membership and each saved view that
       names *drop_id* moves to *keep_id*. A pipeline that holds both rows
-      keeps one membership, at the place of *keep_id*.
+      keeps one membership, at the place of *keep_id*. These are the only
+      references to a status id: the foreign keys of ``crm_deals``,
+      ``crm_leads`` and ``crm_pipeline_stages``, and the ``status`` filter of
+      a view.
     * ``crm_status_changes`` stores names, not ids, so it needs no change.
+    * **The overlay rule** (task #1096). The kept row's overlay wins. A NULL
+      overlay column of the kept row takes the value of the folded row, so a
+      value that only the folded row holds does not go. The columns are
+      :data:`MIRROR_OVERLAY_COLUMNS` less ``hidden``. ``hidden`` is NOT NULL,
+      so the merge cannot tell "never set" from "shown on purpose", and the
+      kept row's value stays. An empty ``required_fields`` of a kept deal
+      stage takes the list of the folded row in the same way.
     * The *drop_id* row goes, and the kept row takes *name*.
+
+    The sync calls it in two cases. A Zoho rename that a record pull read
+    first, and the heal of an org that the old name rule split (a row named by
+    ``actual_value`` with the Zoho id, and a row named by the label with
+    none).
 
     It takes no savepoint and catches nothing. The caller runs it inside one
     transaction, and a failed statement fails the caller's step.
@@ -2375,6 +2390,25 @@ async def merge_status_from_source(
             "WHERE entity = :entity AND filters->>'status' = :drop"
         ),
         {**ids, "entity": view_entity},
+    )
+    # The overlay rule of the docstring: the kept row wins, and a NULL column
+    # of it takes the folded row's value. Before the DELETE, which ends the
+    # folded row.
+    fills = [
+        f"{column} = COALESCE(k.{column}, d.{column})"
+        for column in sorted(MIRROR_OVERLAY_COLUMNS[table] - {"hidden"})
+    ]
+    if table == "crm_deal_statuses":
+        fills.append(
+            "required_fields = CASE WHEN cardinality(k.required_fields) = 0 "
+            "THEN d.required_fields ELSE k.required_fields END"
+        )
+    await db.execute(
+        text(
+            f"UPDATE {table} k SET {', '.join(fills)} FROM {table} d "
+            "WHERE k.id = CAST(:keep AS uuid) AND d.id = CAST(:drop AS uuid)"
+        ),
+        ids,
     )
     await db.execute(text(f"DELETE FROM {table} WHERE id = CAST(:drop AS uuid)"), ids)
     await db.execute(

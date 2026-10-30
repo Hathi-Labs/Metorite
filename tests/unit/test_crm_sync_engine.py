@@ -313,6 +313,33 @@ def test_sync_health_reads_short_by_only_from_an_entity_cursor() -> None:
         "organizations": 3, "module:Payments_Made": 1944}
 
 
+def test_a_picklist_value_is_named_by_its_zoho_label() -> None:
+    """Task #1096 (``crm_platform.md`` §20.6 item 7): a Stage or Lead_Status
+    value is named by ``display_value``, the label that a record carries.
+    ``actual_value`` is the fallback. The order stays ``sequence_number``."""
+    from types import SimpleNamespace
+
+    ctx = SimpleNamespace(mapping=mapping)
+    values = engine._picklist_values(ctx, {"api_name": "Stage", "pick_list_values": [
+        {"id": "S2", "actual_value": "Confirmation and Advance",
+         "display_value": "New Lead", "sequence_number": 2, "probability": 20},
+        {"id": "S3", "actual_value": "Closed Won", "display_value": "Delivered & Installed",
+         "sequence_number": 3, "forecast_category": {"name": "Closed Won"}},
+        {"id": "S1", "actual_value": "Re-Evaluate", "display_value": "Re-Evaluate",
+         "sequence_number": 1},
+        {"id": "S4", "actual_value": "No Label", "sequence_number": 4},
+        {"id": "S5", "actual_value": "Blank Label", "display_value": " ",
+         "sequence_number": 5},
+        {"display_value": "-None-", "actual_value": "-None-", "sequence_number": 0},
+    ]})
+    assert [(v.name, v.ext_id, v.position) for v in values] == [
+        ("Re-Evaluate", "S1", 1), ("New Lead", "S2", 2),
+        ("Delivered & Installed", "S3", 3), ("No Label", "S4", 4),
+        ("Blank Label", "S5", 5)]
+    assert values[1].probability == 20
+    assert (values[2].type, values[2].forecast_category) == ("won", "Closed Won")
+
+
 def test_a_field_def_is_made_only_for_a_custom_field() -> None:
     custom = mapping.map_field_def("deal", {
         "api_name": "Region", "field_label": "Region", "data_type": "picklist",

@@ -1104,7 +1104,8 @@ _STATUS_ID_SQL = "SELECT id FROM {table} WHERE name = :name"
 
 # The picklist read is the one step that keeps the source values current
 # (CRM-C3, §20.6 items 7 to 9). It matches a row by the Zoho id of the value
-# first, then by name.
+# first, then by name. The name is the Zoho label (``display_value``), which
+# is the name that a record carries (task #1096).
 _STATUS_BY_EXT_SQL = "SELECT id, name FROM {table} WHERE ext_id = :ext"
 _STATUS_BY_NAME_SQL = "SELECT id, ext_id FROM {table} WHERE name = :name"
 _PICKLIST_INSERT_SQL = (
@@ -1218,7 +1219,11 @@ async def _source_status(
     When the name belongs to ANOTHER row than the id row:
 
     * that row has no Zoho id (a record pull made it before this read): the
-      fenced door ``core.merge_status_from_source`` folds it into the id row;
+      fenced door ``core.merge_status_from_source`` folds it into the id row.
+      This also heals an org that the old name rule split (task #1096). That
+      rule named the id row by ``actual_value``, so each record that carried
+      the label made a second row with no Zoho id. The label is now the name,
+      so the next picklist read folds each such row into its id row;
     * that row holds the id of another value that Zoho still lists: two
       values traded names, so it moves aside until its own value names it;
     * that row holds an id that Zoho no longer lists: it moves aside too, and
@@ -1300,12 +1305,23 @@ def _picklist_type(item: dict[str, Any], name: str) -> str:
 def _picklist_values(
     ctx: _Ctx, definition: dict[str, Any],
 ) -> list[_PicklistValue]:
-    """The values of one picklist definition, in Zoho order."""
+    """The values of one picklist definition, in Zoho order.
+
+    The name of a value is its LABEL (``display_value``), and
+    ``actual_value`` is the fallback (WS-53 task #1096, ``crm_platform.md``
+    §20.6 item 7). A Zoho admin who renames a value changes the label only.
+    ``actual_value`` keeps the first name. A record carries the label in
+    ``Stage`` and ``Lead_Status``, so a row named by ``actual_value`` gave a
+    second row for each renamed value. The order stays ``sequence_number``.
+    """
     items = [i for i in definition.get("pick_list_values") or [] if isinstance(i, dict)]
     items.sort(key=lambda i: int(i.get("sequence_number") or 0))
     values: list[_PicklistValue] = []
     for position, item in enumerate(items):
-        name = str(item.get("actual_value") or item.get("display_value") or "").strip()
+        name = (
+            str(item.get("display_value") or "").strip()
+            or str(item.get("actual_value") or "").strip()
+        )
         if not name or name == "-None-":
             continue
         raw_prob = item.get("probability")
@@ -2915,6 +2931,36 @@ async def _write_roles(
     ctx.step("deal_contacts", "deleted", removed)
 
 
+async def _pipeline_stage_status(db: Any, stage: dict[str, Any]) -> str:
+    """The status row of one pipeline stage (task #1096).
+
+    1. The row whose Zoho id is the ``ext_id`` of the stage, when the stage
+       has one and such a row exists. A map entry of a Zoho pipeline carries
+       the id of its Stage picklist value. So the stage finds its row even in
+       a run that did not read the picklist, where the row can still have an
+       old name.
+    2. Else the row with the name (the Zoho label), through
+       :func:`_ensure_status`. A stage that no row has is appended.
+
+    The step adds a row and a membership only. It never renames a row, and it
+    never moves the order or the probability of a row (§20.6 item 7).
+    """
+    ext = stage.get("ext_id")
+    category = stage.get("forecast_category")
+    if ext:
+        row = (await db.execute(
+            text(_STATUS_BY_EXT_SQL.format(table=DEAL_STATUSES)), {"ext": str(ext)},
+        )).first()
+        if row is not None:
+            if category:
+                await db.execute(text(_FORECAST_SQL), {"id": str(row.id), "category": category})
+            return str(row.id)
+    return await _ensure_status(
+        db, DEAL_STATUSES, stage["name"], type_=stage.get("type"),
+        forecast_category=category,
+    )
+
+
 async def _mirror_pipelines(
     ctx: _Ctx, db: Any, rows: list[dict[str, Any]],
 ) -> None:
@@ -2924,6 +2970,12 @@ async def _mirror_pipelines(
     pipelines share is one row with two memberships. A stage the picklist did
     not list is appended. A pipeline that Zoho no longer lists is deleted here,
     and its deals keep their row with a NULL pipeline.
+
+    Each stage finds its row by its Zoho id first, then by its label
+    (:func:`_pipeline_stage_status`). A run that mirrors the pipelines reads
+    the picklist first (:func:`_execute`), so a label row with no Zoho id is
+    already folded into its id row. When that picklist read fails, the id
+    match still puts the membership on the id row.
     """
     seen: list[str] = []
     for position, row in enumerate(rows):
@@ -2938,10 +2990,7 @@ async def _mirror_pipelines(
             })
             members: list[tuple[str, int]] = []
             for stage in row.get("stages") or []:
-                status_id = await _ensure_status(
-                    db, DEAL_STATUSES, stage["name"], type_=stage.get("type"),
-                    forecast_category=stage.get("forecast_category"),
-                )
+                status_id = await _pipeline_stage_status(db, stage)
                 if all(status_id != existing for existing, _ in members):
                     members.append((status_id, len(members)))
             await set_pipeline_stages_from_source(db, str(pipeline.id), members)
