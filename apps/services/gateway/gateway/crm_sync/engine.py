@@ -1139,10 +1139,14 @@ _FORECAST_SQL = (
 #: A pipeline stage that names ``won`` or ``lost`` gives its row that type, also
 #: a row that exists already. The insert above never changes an existing row,
 #: so without this a stage first seen as ``open`` stayed open for good.
+#: A stage with a Zoho id finds its row by that id when a row holds it, else
+#: by name (task #1096). A row can hold an old name until the picklist read.
 _STAGE_TYPE_SQL = (
     "UPDATE crm_deal_statuses SET type = :type "
-    "WHERE organization_id = CAST(:org AS uuid) AND name = :name "
-    "AND type IS DISTINCT FROM :type"
+    "WHERE organization_id = CAST(:org AS uuid) AND type IS DISTINCT FROM :type "
+    "AND CASE WHEN EXISTS (SELECT 1 FROM crm_deal_statuses x WHERE "
+    "x.organization_id = CAST(:org AS uuid) AND x.ext_id = CAST(:ext AS text)) "
+    "THEN ext_id = CAST(:ext AS text) ELSE name = :name END"
 )
 #: The stage types a pipeline can state. A stage with no type keeps its row.
 STAGE_TYPES = ("won", "lost")
@@ -1168,9 +1172,22 @@ def stage_types(pipelines: list[dict[str, Any]]) -> dict[str, str]:
 
 
 async def _apply_stage_types(db: Any, org: str, pipelines: list[dict[str, Any]]) -> None:
-    """Give each mirrored stage the type its pipeline names (won or lost)."""
+    """Give each mirrored stage the type its pipeline names (won or lost).
+
+    A stage that carries the Zoho id of its value finds its row by that id
+    first (task #1096). A profile from before that change has no id, so its
+    stages find their rows by name, as before.
+    """
+    ids: dict[str, str] = {}
+    for pipeline in pipelines:
+        for stage in (pipeline.get("stages") or []) if isinstance(pipeline, dict) else []:
+            if isinstance(stage, dict) and stage.get("ext_id") and isinstance(stage.get("name"), str):
+                ids.setdefault(stage["name"], str(stage["ext_id"]))
     for name, kind in stage_types(pipelines).items():
-        await db.execute(text(_STAGE_TYPE_SQL), {"org": org, "name": name, "type": kind})
+        await db.execute(
+            text(_STAGE_TYPE_SQL),
+            {"org": org, "name": name, "type": kind, "ext": ids.get(name)},
+        )
 
 
 async def _ensure_status(
@@ -1225,7 +1242,9 @@ async def _source_status(
       the label made a second row with no Zoho id. The label is now the name,
       so the next picklist read folds each such row into its id row;
     * that row holds the id of another value that Zoho still lists: two
-      values traded names, so it moves aside until its own value names it;
+      values traded names, so it moves aside until its own value names it.
+      Its records can belong to this value, and
+      :func:`_mirror_statuses` queues one full read for that case;
     * that row holds an id that Zoho no longer lists: it moves aside too, and
       the gone rule marks it. Its deals keep it.
 
@@ -1335,6 +1354,33 @@ def _picklist_values(
     return values
 
 
+#: Each status row with a Zoho id, for the label check of :func:`_mirror_statuses`.
+_STATUS_EXT_ROWS_SQL = "SELECT ext_id, name FROM {table} WHERE ext_id IS NOT NULL"
+
+
+def _label_collision(
+    values: list[_PicklistValue], rows: list[Any], listed: frozenset[str],
+) -> bool:
+    """True when the row of one listed value holds the label of ANOTHER listed
+    value (task #1096).
+
+    A record pull finds its row by the label that the record carries. So each
+    record of that other value went onto the wrong row. The rename of the
+    picklist read cannot move them, because a row keeps its records. Only a
+    label that one value holds counts. A label that two values share cannot
+    tell their records apart.
+    """
+    owners: dict[str, set[str]] = {}
+    for value in values:
+        if value.ext_id:
+            owners.setdefault(value.name, set()).add(value.ext_id)
+    for row in rows:
+        ext, holders = str(row.ext_id), owners.get(str(row.name))
+        if ext in listed and holders is not None and len(holders) == 1 and ext not in holders:
+            return True
+    return False
+
+
 async def _mirror_statuses(
     ctx: _Ctx, db: Any, entity: str, definitions: list[dict[str, Any]],
 ) -> None:
@@ -1344,6 +1390,15 @@ async def _mirror_statuses(
     the definition was read. A run that could not read it marks nothing. A
     row with no Zoho id (a stage that only a pipeline lists, and
     ``UNKNOWN_STATUS``) is never marked. A list with no Zoho id marks nothing.
+
+    Before it writes, the step looks for a row that holds the label of
+    another listed value (:func:`_label_collision`). The old name rule made
+    such a row when one label was the ``actual_value`` of another value. A
+    Zoho edit that trades two labels makes one too. Then the step queues ONE
+    full read of the entity through the re-read list (:func:`_add_rereads`),
+    in this transaction. That read maps each record by its label again,
+    after this step named each row by its label. A repaired org has no such
+    row, so the next read queues nothing.
     """
     api_name, table = _STATUS_FIELDS[entity]
     for definition in definitions:
@@ -1351,6 +1406,8 @@ async def _mirror_statuses(
             continue
         values = _picklist_values(ctx, definition)
         listed = frozenset(v.ext_id for v in values if v.ext_id)
+        rows = (await db.execute(text(_STATUS_EXT_ROWS_SQL.format(table=table)))).fetchall()
+        collided = _label_collision(values, list(rows), listed)
         for value in values:
             async with savepoint(db):
                 await _source_status(db, table, value, listed)
@@ -1358,6 +1415,9 @@ async def _mirror_statuses(
             await db.execute(
                 text(_STATUS_GONE_SQL.format(table=table)), {"listed": sorted(listed)},
             )
+        if collided:
+            await _add_rereads(ctx, db, {entity})
+            _log.info("crm.sync.status_label_collision entity=%s reread=%s", entity, entity)
 
 
 @dataclass
@@ -2972,10 +3032,14 @@ async def _mirror_pipelines(
     and its deals keep their row with a NULL pipeline.
 
     Each stage finds its row by its Zoho id first, then by its label
-    (:func:`_pipeline_stage_status`). A run that mirrors the pipelines reads
+    (:func:`_pipeline_stage_status`). Most runs that mirror the pipelines read
     the picklist first (:func:`_execute`), so a label row with no Zoho id is
-    already folded into its id row. When that picklist read fails, the id
-    match still puts the membership on the id row.
+    already folded into its id row. Some runs do not read it first. The
+    picklist read can fail. An early discovery of CRM-Q10 stores a new
+    profile, so discovery is no longer due. An incremental run then skips the
+    picklist read, and :func:`_mirror_deferred_pipelines` mirrors the stored
+    profile. In each such run the id match still puts the membership on the id
+    row. The next picklist read folds the label row.
     """
     seen: list[str] = []
     for position, row in enumerate(rows):

@@ -24,7 +24,13 @@ b2. a pipeline stage finds its row by the Zoho id first, in a run whose
     picklist read failed;
 c. the same for ``Lead_Status``;
 d. a value whose label equals its internal value behaves as before;
-e. two values that trade labels in one read keep their rows.
+e. two values that trade labels in one read keep their rows;
+f. the chain: the label of one value is the ``actual_value`` of another.
+   The heal queues ONE full read, and each deal lands on the row of its own
+   value. A plain rename queues no full read;
+g. the merge shows a lane when either row showed (the hidden rule);
+h. the merge fills an empty ``required_fields`` from the folded row;
+i. a pipeline stage type finds its row by the Zoho id first.
 
 The fake sends no ``display_value`` while it builds the split state. The sync
 then names each value by ``actual_value``, as the old rule did with a real
@@ -294,7 +300,7 @@ async def test_an_org_in_the_split_state_heals_on_its_next_picklist_read(c3) -> 
     assert _members(c3.p, c3.org_a) == sorted(
         ("Sales", by_ext[x][0].id, place) for place, x in enumerate(("S1", "S2", "S3", "S4")))
     # The overlay rule: the kept row wins, and a NULL of it takes the value
-    # of the folded row. `hidden` stays as the kept row had it.
+    # of the folded row. The kept row showed, so the merged row shows (g).
     assert (s2.ui_position, s2.ui_probability, s2.ui_color, s2.max_dwell_days,
             s2.hidden) == (1, 33, "violet", 7, False)
     assert (s3.ui_position, s3.ui_color, s3.ui_probability) == (12, "teal", None)
@@ -405,10 +411,23 @@ async def test_a_value_whose_label_is_its_internal_value_is_unchanged(c3) -> Non
 # ── e. Two values trade labels in one read ───────────────────────────────────
 
 
+def _restage(z: Any, ident: str, stage: str) -> None:
+    """Give a fake deal a new ``Stage`` and keep its ``Modified_Time``. Zoho
+    does this when it relabels the value of the deal: the record carries the
+    new label, and it does not count as a change."""
+    for record in z.data["Deals"]:
+        if record["id"] == ident:
+            record["Stage"] = stage
+
+
 @pytest.mark.parametrize("first", ["S1", "S2"])
 async def test_two_values_that_trade_labels_keep_their_rows(c3, first) -> None:  # noqa: F811
     """Zoho swaps the labels of two values and keeps each ``actual_value``.
-    Each row keeps its id, its overlay and its deals, in either read order."""
+    Each row keeps its id, its overlay and its deals, in either read order.
+
+    Each deal then carries the new label of its value, as in Zoho. The trade
+    queues one full read (f), and that read maps each deal to its row again.
+    """
     c3.a.stages = [
         {"id": "S1", "actual_value": "Stage A", "display_value": "Qualify",
          "sequence_number": 1},
@@ -425,6 +444,8 @@ async def test_two_values_that_trade_labels_keep_their_rows(c3, first) -> None: 
 
     c3.a.stages[0]["display_value"] = "Propose"
     c3.a.stages[1]["display_value"] = "Qualify"
+    _restage(c3.a, "d1", "Propose")
+    _restage(c3.a, "d2", "Qualify")
     if first == "S2":
         c3.a.stages[0]["sequence_number"], c3.a.stages[1]["sequence_number"] = 2, 1
     await _picklist_run(c3, c3.org_a, c3.a)
@@ -436,3 +457,187 @@ async def test_two_values_that_trade_labels_keep_their_rows(c3, first) -> None: 
     assert rows["Propose"].ui_probability == 33
     assert _deal_status(c3.p, c3.org_a, "d1") == row1
     assert _deal_status(c3.p, c3.org_a, "d2") == row2
+
+
+# ── f. The chain: one value's label is another value's actual_value ─────────
+
+
+def _chain_shape(z: Any, *, labels: bool, s2_first: bool) -> None:
+    """S1: ``actual_value`` "Alpha", label "Beta". S2: ``actual_value`` "Beta",
+    label "Gamma". Without *labels* the fake sends no ``display_value``.
+    *s2_first* puts S2 first in the Zoho order, so the picklist read meets S2
+    first. Each pipeline map entry carries the id of its value."""
+    values = [("S1", "Alpha", "Beta"), ("S2", "Beta", "Gamma")]
+    if s2_first:
+        values.reverse()
+    items, maps = [], []
+    for seq, (ident, actual, label) in enumerate(values, start=1):
+        item: dict[str, Any] = {"id": ident, "actual_value": actual, "sequence_number": seq}
+        if labels:
+            item["display_value"] = label
+        items.append(item)
+        maps.append({**item, "forecast_category": {"name": "Pipeline"},
+                     "forecast_type": "Open"})
+    z.stages = items
+    z.pipelines = {"pipeline": [
+        {"id": "p1", "display_value": "Sales", "default": True, "maps": maps}]}
+
+
+def _full_reads(z: Any, start: int, module: str) -> int:
+    """How many reads of the record list of *module* began with no
+    ``If-Modified-Since`` after request *start*: each is a full read."""
+    return sum(
+        1 for r in z.requests[start:]
+        if r.method == "GET" and r.url.path.endswith(f"/crm/v2/{module}")
+        and "ids" not in r.url.params and r.url.params.get("page", "1") == "1"
+        and "If-Modified-Since" not in r.headers
+    )
+
+
+def _rereads(p: Any, org: str) -> set[str]:
+    """The entities on the re-read list of the field rules cursor."""
+    rows = _q(p, "SELECT cursor_state FROM crm_sync_cursors WHERE organization_id = "
+                 "CAST(:o AS uuid) AND module = 'zoho:field_rules'", o=org)
+    return set(((rows[0][0] if rows else None) or {}).get("reread") or ())
+
+
+@pytest.mark.parametrize("s2_first", [False, True], ids=["S1-first", "S2-first"])
+async def test_the_chain_heals_with_one_full_read_of_the_deals(c3, s2_first) -> None:  # noqa: F811
+    """The old rule named S2's row "Beta", the label of S1. So the deal of S1,
+    which carries "Beta", sat on S2's row. The heal names each row by its
+    label, but a rename moves no deal. So the picklist read queues one full
+    read of the deals, and that read puts each deal on its own row. The
+    incremental read of the same run does not list the deal of S1, because it
+    did not change in Zoho. A second run queues nothing."""
+    from gateway.crm_sync import engine
+
+    _chain_shape(c3.a, labels=False, s2_first=s2_first)
+    _deal(c3.a, "d1", 1, Stage="Beta")   # a deal of S1
+    _deal(c3.a, "d2", 2, Stage="Gamma")  # a deal of S2
+    await _sync(c3, c3.org_a, c3.a)
+    before = _rows(c3.p, _DEAL_ROWS_SQL, c3.org_a)
+    assert {n: r.ext_id for n, r in before.items()} == {
+        "Alpha": "S1", "Beta": "S2", "Gamma": None}
+    s1_row, s2_row = before["Alpha"].id, before["Beta"].id
+    assert _deal_status(c3.p, c3.org_a, "d1") == s2_row  # the wrong row
+
+    _chain_shape(c3.a, labels=True, s2_first=s2_first)
+    _discovery_due(c3.p, c3.org_a)
+    start = len(c3.a.requests)
+    result = await engine.run_org(c3.org_a)
+    assert (result.status, result.kind) == ("ok", "incremental"), result
+
+    by_ext = _by_ext(c3.p, _DEAL_ROWS_SQL, c3.org_a)
+    assert None not in by_ext, by_ext[None]
+    assert {x: [(r.id, r.name) for r in rs] for x, rs in by_ext.items()} == {
+        "S1": [(s1_row, "Beta")], "S2": [(s2_row, "Gamma")]}
+    assert _deal_status(c3.p, c3.org_a, "d1") == s1_row
+    assert _deal_status(c3.p, c3.org_a, "d2") == s2_row
+    assert _members(c3.p, c3.org_a) == sorted(
+        ("Sales", row, place) for place, row in enumerate(
+            (s2_row, s1_row) if s2_first else (s1_row, s2_row)))
+    # One full read ran in this run, and it left the re-read list.
+    assert _full_reads(c3.a, start, "Deals") == 1
+    assert "deal" not in _rereads(c3.p, c3.org_a)
+
+    # A second run with the picklist read due queues nothing and moves nothing.
+    snapshot = sorted(tuple(r) for r in _q(c3.p, _DEAL_ROWS_SQL, o=c3.org_a))
+    _discovery_due(c3.p, c3.org_a)
+    start = len(c3.a.requests)
+    assert (await engine.run_org(c3.org_a)).status == "ok"
+    assert _full_reads(c3.a, start, "Deals") == 0
+    assert _rereads(c3.p, c3.org_a) == set()
+    assert sorted(tuple(r) for r in _q(c3.p, _DEAL_ROWS_SQL, o=c3.org_a)) == snapshot
+    assert _deal_status(c3.p, c3.org_a, "d1") == s1_row
+
+
+async def test_a_plain_rename_heals_with_no_full_read(c3) -> None:  # noqa: F811
+    """S2 and S3 were renamed, and no label is another value's old name. The
+    fold of item 8 moves each deal, so the heal queues no full read."""
+    from gateway.crm_sync import engine
+
+    await _split_state(c3)
+    _zoho_shape(c3.a, labels=True)
+    _discovery_due(c3.p, c3.org_a)
+    start = len(c3.a.requests)
+    result = await engine.run_org(c3.org_a)
+    assert (result.status, result.kind) == ("ok", "incremental"), result
+    assert None not in _by_ext(c3.p, _DEAL_ROWS_SQL, c3.org_a)
+    assert _full_reads(c3.a, start, "Deals") == 0
+    assert _rereads(c3.p, c3.org_a) == set()
+
+
+# ── g and h. The hidden rule and the required fields of the merge ────────────
+
+
+async def test_the_merge_shows_a_lane_when_either_row_showed(c3) -> None:  # noqa: F811
+    """An admin hid the empty Zoho-id lane of S2 while the label row held its
+    deals. The merged row holds the deals, so it shows. S3: both rows were
+    hidden, so the merged row stays hidden."""
+    ids = await _split_state(c3)
+    _set(c3.p, "crm_deal_statuses", ids["Confirmation and Advance"], hidden=True)
+    _set(c3.p, "crm_deal_statuses", ids["Closed Won"], hidden=True)
+    _set(c3.p, "crm_deal_statuses", ids["Delivered & Installed"], hidden=True)
+    _zoho_shape(c3.a, labels=True)
+    await _picklist_run(c3, c3.org_a, c3.a)
+
+    by_ext = _by_ext(c3.p, _DEAL_ROWS_SQL, c3.org_a)
+    s2, s3 = by_ext["S2"][0], by_ext["S3"][0]
+    assert (s2.id, s2.hidden) == (ids["Confirmation and Advance"], False)
+    assert _deal_status(c3.p, c3.org_a, "d2") == s2.id
+    assert (s3.id, s3.hidden) == (ids["Closed Won"], True)
+
+
+async def test_the_merge_fills_empty_required_fields_from_the_folded_row(c3) -> None:  # noqa: F811
+    """S2: the kept row requires nothing, and the label row requires the
+    amount, so the merged row requires the amount. S3: the kept row has its
+    own list, and it keeps it."""
+    ids = await _split_state(c3)
+    _set(c3.p, "crm_deal_statuses", ids["New Lead"], required_fields=["amount"])
+    _set(c3.p, "crm_deal_statuses", ids["Closed Won"], required_fields=["close_date"])
+    _set(c3.p, "crm_deal_statuses", ids["Delivered & Installed"],
+         required_fields=["amount"])
+    _zoho_shape(c3.a, labels=True)
+    await _picklist_run(c3, c3.org_a, c3.a)
+
+    required = {r[0]: list(r[1]) for r in _q(
+        c3.p, "SELECT ext_id, required_fields FROM crm_deal_statuses "
+              "WHERE organization_id = CAST(:o AS uuid)", o=c3.org_a)}
+    assert required["S2"] == ["amount"]
+    assert required["S3"] == ["close_date"]
+    assert required["S1"] == []
+
+
+# ── i. A pipeline stage type finds its row by the Zoho id first ──────────────
+
+
+async def test_a_stage_type_finds_its_row_by_the_zoho_id_first(c3) -> None:  # noqa: F811
+    """The rows still carry the names of the old rule (the picklist read did
+    not run). The profile names the stages by label, with the Zoho id. A
+    stage with an id that a row holds goes to that row. A stage with no such
+    row goes by name, as before."""
+    from acb_common.db import tenant_session
+    from gateway.crm_sync import engine
+
+    with c3.p.admin_engine.begin() as c:
+        for name, ext, position in (("Alpha", "S1", 0), ("Beta", "S2", 1),
+                                    ("Gamma", None, 2), ("Delta", None, 3)):
+            c.execute(text(
+                "INSERT INTO crm_deal_statuses (organization_id, name, position, type, "
+                "ext_id) VALUES (CAST(:o AS uuid), :n, :p, 'open', :x)"),
+                {"o": c3.org_a, "n": name, "p": position, "x": ext})
+    pipelines = [{"stages": [
+        {"name": "Beta", "ext_id": "S1", "type": "lost"},
+        {"name": "Gamma", "ext_id": "S2", "type": "won"},
+        {"name": "Delta", "ext_id": "S9", "type": "won"},  # no row holds S9
+    ]}]
+    async with tenant_session(c3.org_a) as db:
+        await engine._apply_stage_types(db, c3.org_a, pipelines)
+
+    types = {(r[0], r[1]): r[2] for r in _q(
+        c3.p, "SELECT name, ext_id, type FROM crm_deal_statuses "
+              "WHERE organization_id = CAST(:o AS uuid)", o=c3.org_a)}
+    assert types == {
+        ("Alpha", "S1"): "lost", ("Beta", "S2"): "won",
+        ("Gamma", None): "open", ("Delta", None): "won",
+    }

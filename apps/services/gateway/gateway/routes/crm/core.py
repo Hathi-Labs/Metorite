@@ -1849,8 +1849,11 @@ FIELD_STUDIO_TABLES: frozenset[str] = frozenset({"crm_field_defs", "crm_field_se
 
 #: The Metorite-only columns of each settings table (WS-53 CRM-C3, migration
 #: 257, ``crm_platform.md`` §20.6 item 1). In Mirror mode an admin may write
-#: these and no other column. The sync never writes them, and no Zoho write
-#: reads them (D95: one store, two writers, fenced doors).
+#: these and no other column. No Zoho write reads them (D95: one store, two
+#: writers, fenced doors). The sync writes them in one case only. When
+#: :func:`merge_status_from_source` folds two rows, the kept row takes the
+#: folded row's value for a NULL column, and ``hidden`` follows its own rule
+#: (task #1096). No other SQL of the sync names them.
 #: ``max_dwell_days`` is here because UX-Q5 lets a Mirror admin set it (§19.4).
 #: Fence: ``tests/unit/test_crm_mirror_readonly.py`` names this map exactly, and
 #: its SQL scan refuses each of these names in ``crm_sync/`` and ``crm_sources/``.
@@ -2334,10 +2337,14 @@ async def merge_status_from_source(
     * **The overlay rule** (task #1096). The kept row's overlay wins. A NULL
       overlay column of the kept row takes the value of the folded row, so a
       value that only the folded row holds does not go. The columns are
-      :data:`MIRROR_OVERLAY_COLUMNS` less ``hidden``. ``hidden`` is NOT NULL,
-      so the merge cannot tell "never set" from "shown on purpose", and the
-      kept row's value stays. An empty ``required_fields`` of a kept deal
-      stage takes the list of the folded row in the same way.
+      :data:`MIRROR_OVERLAY_COLUMNS` less ``hidden``. An empty
+      ``required_fields`` of a kept deal stage takes the list of the folded
+      row in the same way.
+    * **The hidden rule** (task #1096). ``hidden`` is NOT NULL, so the merge
+      cannot tell "never set" from "shown on purpose". The kept row shows
+      when either row showed. An admin can hide the empty Zoho-id lane while
+      the folded row holds the records. A lane that shows in error costs less
+      than a hidden lane that holds deals.
     * The *drop_id* row goes, and the kept row takes *name*.
 
     The sync calls it in two cases. A Zoho rename that a record pull read
@@ -2392,12 +2399,13 @@ async def merge_status_from_source(
         {**ids, "entity": view_entity},
     )
     # The overlay rule of the docstring: the kept row wins, and a NULL column
-    # of it takes the folded row's value. Before the DELETE, which ends the
-    # folded row.
+    # of it takes the folded row's value. The hidden rule: the kept row shows
+    # when either row showed. Before the DELETE, which ends the folded row.
     fills = [
         f"{column} = COALESCE(k.{column}, d.{column})"
         for column in sorted(MIRROR_OVERLAY_COLUMNS[table] - {"hidden"})
     ]
+    fills.append("hidden = k.hidden AND d.hidden")
     if table == "crm_deal_statuses":
         fills.append(
             "required_fields = CASE WHEN cardinality(k.required_fields) = 0 "
