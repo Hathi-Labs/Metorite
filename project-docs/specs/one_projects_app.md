@@ -1,6 +1,6 @@
 # One Projects app — My Tasks becomes a view, and the phone shows the work
 
-**Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
+**Status: ACTIVE, 2026-10-23. OP-12b is BUILT 2026-10-30 (task 1108, UI only, no migration): one name and one heading for the private space (§4.1, D-OP-2).** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
 **WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-2 is BUILT 2026-10-24, dark, with fix round 2. OP-3 is BUILT 2026-10-24 (task #297), dark behind the OP-2 flag: the server half and the sidebar half. OP-10 is BUILT 2026-10-24, with fix rounds 1 and 2 (D-OP-16): a folder becomes a project through `POST /projects/nodes/{id}/convert`, with the tree menu entry, the chat tool `convert_folder_to_project`, eval case PO-28 and an R8 test (`test_projects_folder_convert.py`). OP-2b is BUILT 2026-10-24 and meets §4.3. OP-5 is not built. OP-4 is BUILT 2026-10-24 (task #298), dark behind the OP-2 flag, with fix round 2: the /tasks redirect keeps the NS-4b `fill.*` keys and opens capture through the `capture` ShellJob, and `chatLink` no longer rewrites /tasks. Post-merge fixes are BUILT 2026-10-25, with no migration. #128 has a stopgap: the board and My work read again on a chat write, and on focus or on a return to the tab (at most once in 15 s). #8 is fixed: the page closes the phone drawer only when it opened it. #11 is fixed: a move refreshes My work and the open panel. The feed names the app My work, and "Show all" opens `/projects?app=my-today`. "New task" falls back to `/tasks?do=capture` for a member with `feature:tasks` and no `feature:projects`. The visible "My Tasks" labels of Email, Notes and the chat cards now say My work. The labels of the two lists are renamed (WS-64, 2026-10-27, labels only): Inbox is now "My task inbox", and "My Next Actions" is now "My tasks". The internal ids `my-inbox`, `my-next`, `INBOX` and `NEXT` stay. The same change keeps archived projects out of the summaries, My work and every picker (§9, OP-11 slice 1). OP-11 "My tasks" is IN PROGRESS. Its server half is BUILT 2026-10-27, with no migration: one "mine" (`core.mine_clause`), `scope=mine` on the list and the calendar, `GET /projects/my/summary`, `subject=me` on Analytics, and the MCP edge fixes of audit P1-3 and P1-4 (§9 OP-11, "The server half"). Its UI half is BUILT 2026-10-27 on branch `ws64-op11-my-tasks-ui`, with fix round 1, behind the My work flag: the My tasks roll-up space with the project tabs, the chips, a board by stage, a project chip on each row, and the old list ids as aliases (§9 OP-11, "The UI half"). The Timeline tab is not built.
 
@@ -155,7 +155,7 @@ Projects
 │   ├── Waiting for       4
 │   ├── Someday / Maybe   9
 │   └── Done
-├── Personal  🔒                ← my personal space (the personal root)
+├── Personal  🔒  4             ← the HEADING is the personal root. A press opens the space
 │   ├── Health                  ← an Area, now a folder of the space
 │   ├── Home
 │   └── Side project
@@ -164,6 +164,16 @@ Projects
 │   └── Sales
 └── Reports · AI chat · Settings
 ```
+
+**One name for each place (OP-12b, owner, 2026-10-30).** The owner asked, with a screenshot: "I am still confused about the difference between my tasks and the space that shows up as my tasks under a personal rollup [...] Why does that exist in two places?" The rules:
+
+- The **Personal heading IS the private space**. A press on it opens the board, list and overview of the personal root. The root never draws as its own row. Its Areas sit directly under the heading.
+- The display name is **"Personal"** everywhere: the sidebar, the page title, the breadcrumb, the project chip, the pickers and the search results. One function does it, `displayNodeName` in `lib/tree.ts`. The stored name stays "My tasks", and no migration renames it.
+- **My tasks** is only the roll-up of every task that is mine. A private task wears a lock labelled "Private" in My tasks.
+- **Counts say what they count.** Each sidebar number is open tasks (not done, not cancelled). The Overview tile "Tasks" is now "Open", with the same number, and "Done" stays beside it.
+- The private space says "Only you can see this. These tasks also show in My tasks." under its title.
+- With no folder or project under Personal, the sidebar shows "No personal folders or projects yet." and an "Add one" link (owner, 2026-10-30: "in case the user has not explicitly created any personal spaces, it should show that there are no personal spaces available"). The "+" of the heading offers New project and New folder, so the line names both.
+- Fences: `personalTree.test.ts` (the root is no row, the display name, the empty line, the count agreement).
 
 - **My work** is a set of views across every project, company and personal.
   It shows the tasks assigned to me, and the tasks of my personal space. It is
@@ -363,7 +373,7 @@ list of pending routes is empty since OP-6d.
 | Id | Decision | Default |
 |---|---|---|
 | **D-OP-1** | My Tasks stops being an app. Projects holds it as the My work section. The store of D53 does not change | Accept (owner directive) |
-| **D-OP-2** | The personal root shows in Projects as one private space, named "Personal". Areas are its folders | Accept |
+| **D-OP-2** | The personal root shows in Projects as one private space, named "Personal". Areas are its folders. Amended 2026-10-30 (OP-12b): the PERSONAL heading IS the space and the root draws as no row. "Personal" is the display name everywhere, whatever the stored name. Each sidebar count is open tasks | Accept. Owner, 2026-10-30, verbatim: "I am still confused about the difference between my tasks and the space that shows up as my tasks under a personal rollup [...] Why does that exist in two places?" |
 | **D-OP-3** | The name of the section is **My work** | Accept. Other names: "My tasks", "Me" |
 | **D-OP-4** | `feature:tasks` gates My work and Personal. `feature:projects` gates the company tree | Accept |
 | **D-OP-5** | `/tasks` redirects. The nav entry "My Tasks" leaves `launch_surface.md` §2, so fourteen panes are live (fifteen today, 2026-10-24) | Accept, in OP-4. **Applied 2026-10-25.** |

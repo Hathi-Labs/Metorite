@@ -610,6 +610,7 @@ async def _open_and_done(db: Any, vis: Any) -> dict[str, tuple[int, int, int]]:
 
 def _attach_progress(
     nodes: list[dict], counts: dict[str, tuple[int, int, int]],
+    parent_archived: bool = False,
 ) -> tuple[int, int, int]:
     """Stamp `tasks`, `done` and `cancelled` on every node, for its subtree.
 
@@ -635,12 +636,21 @@ def _attach_progress(
         own_total, own_done, own_cancelled = counts.get(
             str(node["id"]), (0, 0, 0),
         )
+        archived = node.get("archived_at") is not None
         kid_total, kid_done, kid_cancelled = _attach_progress(
-            node.get("children") or [], counts,
+            node.get("children") or [], counts, parent_archived or archived,
         )
         node["tasks"] = own_total + kid_total
         node["done"] = own_done + kid_done
         node["cancelled"] = own_cancelled + kid_cancelled
+        # OP-12b. An archived child of a LIVE parent stamps its OWN subtree
+        # (the Archived fold draws it), but its tasks leave the parent's count.
+        # The summary walk (`NODE_DESCENDANTS_SQL`) skips it, so the sidebar
+        # number and the Overview "Open" must agree. Under an ARCHIVED parent
+        # the walk keeps archived children (`NODE_DESCENDANTS_ARCHIVED_SQL`),
+        # because an archive stamps the whole subtree, so they count there.
+        if archived and not parent_archived:
+            continue
         subtotal += node["tasks"]
         subdone += node["done"]
         subcancelled += node["cancelled"]
