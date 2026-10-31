@@ -144,12 +144,54 @@ Each point keeps the seam that owns it today. Only the place where the seam read
 
 ### 5.1 Two tables
 
-Names are proposals. Migration numbers are taken at build time (R1).
+**The tables hold installs and contributions, never a manifest.** A Studio package is a row of `apps` (`114_custom_apps.sql`), and its versions are rows of `app_versions`. A system package is a file of §3.3. System packages have no rows here. The migration is `infra/postgres/NNN_package_registry.sql`, with the number taken at build time (R1).
 
-- **`package_install`**: `organization_id`, `id`, `package_id`, `version`, `scope_kind` (`private`, `group`, `org`, `system`), `scope_subject`, `installed_by`, `ends_at` (nullable), `state` (`active`, `needs_setup`, `paused`, `archived`), timestamps.
-- **`package_contribution`**: `organization_id`, `install_id`, `point`, `key`, `payload jsonb`, `position`.
+**`package_install`**: one row for each install of one Studio app at one scope.
 
-Both tables carry FORCE ROW LEVEL SECURITY through the `get_db()` seam (R5). System packages have no rows. They come from the files of §3.3.
+| Column | Type and rule |
+|---|---|
+| `organization_id` | `uuid NOT NULL`, the tenant default and FK of `315_brief_runs.sql` |
+| `id` | `uuid NOT NULL DEFAULT gen_random_uuid()`, the primary key |
+| `app_id` | `uuid NOT NULL`. FK `(organization_id, app_id)` to `apps (organization_id, id)`, `ON DELETE CASCADE` |
+| `version` | `int NULL`, an `app_versions.version` of the app. NULL means the owner's working draft |
+| `scope_kind` | `text NOT NULL`, CHECK in `private`, `group`, `org` |
+| `scope_subject` | `text NOT NULL`. The owner's email for `private`, `group:<slug>` for `group`, and `org` for `org` |
+| `installed_by` | `text NOT NULL`, CHECK `installed_by = lower(installed_by)` |
+| `ends_at` | `timestamptz NULL`. NULL means the install does not expire |
+| `state` | `text NOT NULL DEFAULT 'active'`, CHECK in `active`, `paused`, `archived` |
+| `archived_at` | `timestamptz NULL`. CHECK: it is set when, and only when, `state` is `archived` |
+| `created_at`, `updated_at` | `timestamptz NOT NULL DEFAULT now()` |
+
+Constraints and indexes of `package_install`:
+- `UNIQUE (organization_id, id)`, the target of the child FK.
+- `UNIQUE (organization_id, app_id, scope_kind, scope_subject)`. One app has one install at each scope.
+- CHECK `version IS NOT NULL OR scope_kind = 'private'`. Only the owner runs a draft.
+- CHECK on `scope_subject`: `org` for `org`, a `group:` prefix for `group`, and a lower-case address with no prefix for `private`.
+- A partial index on `(organization_id, ends_at) WHERE ends_at IS NOT NULL`, for the expiry job.
+
+**`package_contribution`**: one row for each claim of one install at one point (§4).
+
+| Column | Type and rule |
+|---|---|
+| `organization_id` | `uuid NOT NULL`, the tenant default and FK |
+| `install_id` | `uuid NOT NULL`. FK `(organization_id, install_id)` to `package_install (organization_id, id)`, `ON DELETE CASCADE` |
+| `point` | `text NOT NULL`, CHECK in the 13 points of §4 |
+| `key` | `text NOT NULL`, the key that the point's conflict rule names (an `href`, a job id, a card key) |
+| `payload` | `jsonb NOT NULL DEFAULT '{}'`, CHECK `octet_length(payload::text) <= 65536` |
+| `position` | `int NOT NULL DEFAULT 0` |
+
+The primary key is `(organization_id, install_id, point, key)`.
+
+**Both tables** take the ENABLE, FORCE and policy block of `312_jobs.sql`, in DO blocks, through the `get_db()` seam (R5).
+
+**`apps` gains one key.** The migration adds `UNIQUE (organization_id, id)` to `apps`, so that the composite FK can point at it. `id` is the primary key already, so no row can break it. This is an expand step (R6).
+
+Five decisions that the columns carry:
+1. **`needs_setup` is not stored.** The resolve computes it from the needs (§5.2 step 4), so it can never be stale.
+2. **The scope grammar is D12's.** The code that writes a row (PKG-5 and later) passes each `scope_subject` through `normalize_grant_subject`. That function is in `acb_auth/permissions.py`. Do not copy it.
+3. **A share with named people stays `private`.** The people get rows in `app_grants`, the sharing table of `114_custom_apps.sql`. So `apps.visibility = people` maps to a private install plus grants. The resolve (PKG-5) shows a private install to its owner and to each grantee.
+4. **A duplicate claim is refused in code, not by an index.** Some points allow many claims (`triggers`, `slot`), and a private claim conflicts only with what its owner sees. PKG-5 checks the claims of §4 in the install transaction, under `pg_advisory_xact_lock` on the organization.
+5. **A purge deletes the member's private installs.** Their contributions go by the cascade. An org or group install that the member made stays, and the purge counts it. This follows the rule of `routes/admin/members.py`: "purge the person, keep their work".
 
 ### 5.2 One resolve call
 
@@ -305,7 +347,7 @@ Mode, density and accent live in the browser only today (`lib/theme/storage.ts`)
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **PKG-4** | The two tables of §5.1 | Expand-only migration (R6). R8: org B reads none of org A's rows. `test_tenant_coverage.py` passes | HIGH | AGENT-SAFE |
+| **PKG-4** | The two tables of §5.1, the key on `apps`, the generated tenant files, and the purge rows of §5.1 decision 5 | Expand-only migration (R6). R8 in `tests/unit/test_package_registry_r8.py`: org B reads none of org A's rows, an unbound session reads none, a contribution cannot point at another org's install, and a delete of an install deletes its contributions. `test_tenant_coverage.py` passes with a new case `test_the_package_registry_tables_are_tenant_scoped`. `test_admin_member_purge.py` passes with the new rows | HIGH | AGENT-SAFE |
 | **PKG-5** | `GET /shell/manifest`, the resolve of §5.2. The fields of §3.1 join the A2 model, and `validate_manifest` checks the P0 files | R8: a private install shows for its owner only, a group install for its members only. A contribution with a feature the viewer lacks never shows. A duplicate claim fails at install | HIGH | AGENT-SAFE |
 | **PKG-6** | The workbench reads the resolved manifest behind the flag | With the flag off, the shell is byte-for-byte as before. With it on, an org install shows in the sidebar, ⌘K and the bell. Visual review in four contexts | STD | AGENT-SAFE |
 | **PKG-7** | Features from installs pass the one entitlement seam | A feature that only an install declares is visible to a holder of `*`. The `FEATURES` tuple stays the system list | HIGH | AGENT-SAFE |
@@ -387,10 +429,12 @@ Each path was read on `f59a636b5`.
 - `packages/acb_skills/acb_skills/tool_packs.py` (`PACKS`)
 
 **Schema**
-- `infra/postgres/114_custom_apps.sql` (`apps`, `app_versions`, `app_data`), `155_projects_custom_fields.sql`, `244_crm_mirror_columns.sql` (`crm_field_defs`), `239_user_settings_per_org.sql`, `240` (`shell_prefs`)
+- New migrations are `infra/postgres/NNN_*.sql`. The patterns to copy are `312_jobs.sql` (the RLS block) and `315_brief_runs.sql` (two tables and a composite FK). `scripts/gen_tenant_migration.py` writes `infra/postgres/generated/`
+- `infra/postgres/114_custom_apps.sql` (`apps`, `app_versions`, `app_grants`, `app_data`), `155_projects_custom_fields.sql`, `244_crm_mirror_columns.sql` (`crm_field_defs`), `239_user_settings_per_org.sql`, `240` (`shell_prefs`)
 
 **Tests**
-- `tests/unit/test_shell_intent.py` (`TestOneJobList`), `tests/unit/test_auth_me_shell.py` (`TestOneVocabulary`), `tests/unit/test_tenant_coverage.py`
+- `tests/unit/test_shell_intent.py` (`TestOneJobList`), `tests/unit/test_auth_me_shell.py` (`TestOneVocabulary`), `tests/unit/test_tenant_coverage.py`, `tests/unit/test_studio_catalog_r8.py` (the R8 pattern), `tests/unit/test_admin_member_purge.py`
+- `apps/services/gateway/gateway/routes/admin/members.py` (`_PURGE_DELETES`, `_PURGE_KEEPS`)
 
 ---
 
