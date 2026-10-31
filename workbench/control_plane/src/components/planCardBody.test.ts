@@ -229,11 +229,27 @@ const HASHES: Record<string, string> = {
   optionPicker: "6aa5a27afd7fe91f4573b18db35dac31879d9b42fa87b021c274409de347f2b3",
 };
 
+/**
+ * The markup with every glass-look class removed (D141, `glass_look.md`).
+ * A `glass:` class applies only under `<html data-look="glass">`, so it is no
+ * change to the classic card. Removing them keeps the hashes above, which
+ * were taken before the glass look existed: the test then also proves the
+ * classic markup did not change.
+ */
+function classicMarkup(html: string): string {
+  return html
+    .replace(/class="([^"]*)"/g, (_, cls: string) => {
+      const kept = cls.split(" ").filter((t) => !t.split(":").slice(0, -1).includes("glass"));
+      return `class="${kept.join(" ")}"`;
+    })
+    .replace(/ class=""/g, "");
+}
+
 describe("a form that is not a plan", () => {
   for (const [name, data] of NON_PLAN_SAMPLES) {
     it(`${name} renders unchanged`, () => {
       const html = renderToStaticMarkup(createElement(() => TEMPLATE_REGISTRY[name](data, { onAction: () => {} })));
-      expect(createHash("sha256").update(html).digest("hex")).toBe(HASHES[name]);
+      expect(createHash("sha256").update(classicMarkup(html)).digest("hex")).toBe(HASHES[name]);
       expect(html).not.toContain("data-plan");
     });
   }
