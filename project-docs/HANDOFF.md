@@ -93,6 +93,11 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** task #1116 is not Done → still pending.
 - **Added:** 2026-10-30 · WS-63 PZ-32 session
 
+### H-440 · Confirm migration 318 and the first reminder push on production after the release · [AGENT]
+- **Metorite:** #1119.
+- **Check:** `curl -s https://api.metorite.com/version`. An `applied_sha` without the RE-9b merge means that the release has not run. After it runs, find `318_reach_outbox_web_push.sql` in the migration ledger. Then count the `reach_outbox` rows with `channel = 'web_push'` by `state` and `reason`. Many `no_keys` or `error` rows mean that the send step needs a look.
+- **Added:** 2026-10-31 · WS-66 RE-9b session. Minted as H-437, and renumbered to H-440 at merge because main took H-437 first. The owner merged RE-9b with no staging test, because the staging box expired on 2026-10-31.
+
 ### H-431 · Look at Settings → Assistant settings, and say what still feels stiff · [OWNER]
 - **Metorite:** #261 (PZ-11). The task holds the checks and the state.
 - **Check:** task #261 is not Done → still pending. On app.metorite.com: reload, open the account menu, choose Settings → Assistant settings, then start an empty chat and press "Yes, start". Tell the agent what looks wrong and what feels stiff.

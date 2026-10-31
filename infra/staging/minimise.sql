@@ -22,7 +22,8 @@
 --   4. Keeps an identity only for a member of a kept organization.
 --   5. Blanks every credential, in the kept organizations too. Staging holds
 --      no production secret, so the ciphertext would only be dead weight.
---      It also blanks each member's assistant profile (WS-63 PZ-9).
+--      It also blanks each member's assistant profile (WS-63 PZ-9), and it
+--      deletes every web push subscription (WS-66 RE-9b).
 --   6. Refuses when any credential-shaped column still holds a value. A new
 --      credential column fails the export until it is blanked here.
 --   7. Refuses when any JSON value looks like a live token (a bearer header,
@@ -109,6 +110,8 @@ BEGIN
   TRUNCATE public.agent_client, public.auth_email_otp_token, public.email_detached_purges;
   DELETE FROM public.agent_token;
   DELETE FROM public.provider_keys;
+  -- A push subscription is a device credential. Staging must not push to a real phone (WS-66 RE-9b).
+  DELETE FROM public.push_subscriptions;
   UPDATE public.email_accounts          SET credentials_encrypted = '', webhook_client_state = NULL;
   UPDATE public.integration_connections SET credentials_encrypted = NULL;
   UPDATE public.task_accounts           SET credentials_encrypted = '', last_delta_token = NULL;

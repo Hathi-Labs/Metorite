@@ -53,18 +53,45 @@ the member is the row's own ``member_email``, which the route took from the
 session. After each write the loop bumps the member's My Day version
 (``cache.bump_member_safe``), so the feed reads the new card.
 
+**The web push** (WS-66 RE-9b, §5.6 "Settled 2026-10-30 (RE-9)"). Steps 1,
+2 and 5 each plan ONE web push in their own transaction, through
+``reach.push_channel.plan_reminder_push`` on the step's session ``db``, keyed
+by the ledger row of the step. A step more than the TTL of its kind after
+its due time plans no push (ruling j). The loop never calls the sender
+itself, and it holds no session while a push goes out. A crash leaves a
+planned row, and the next tick sends it. Both need ``WEB_PUSH_ENABLED`` and
+``calendar_reminders``, and no ``REACH_*`` flag.
+
+**Fires first, then one bounded send phase** (ruling k). :func:`run_tick`
+takes the steps of EVERY org first, with no network call. Then one send
+phase calls ``push_channel.send_planned`` for each org, under one deadline
+for the whole tick: no row starts after :data:`SEND_PHASE_S`. So a stalled
+push service in one org never delays the fires of a later org. A row that
+did not start stays planned, and the next tick sends it. No
+``asyncio.wait_for`` cancels a send: ``push.sender.send_to_member`` bounds
+itself with ``SEND_BUDGET_S``, and a cancel in its middle would leave its
+device sends running and its row claimed.
+
+**No org starves** (ruling k). Each tick starts the send phase at the next
+org (:data:`_send_turn`). In the first round, each org may start rows only
+in its fair share of the time left, and always one row. A second round
+gives the time still left to the orgs that still hold rows.
+
 **Dark by default.** With ``calendar_reminders`` off, :func:`start_reminder_loop`
 starts no task, and :func:`run_tick` does nothing.
 
 Fence: ``tests/unit/test_reminder_loop.py`` (R8, frozen clock, two orgs, two
-workers) and ``tests/unit/test_reminder_slot.py`` (pure).
+workers), ``tests/unit/test_reminder_slot.py`` (pure) and
+``tests/unit/test_reach_push.py`` (R8, the web push).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections import Counter
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -72,6 +99,7 @@ from acb_common import get_logger
 from acb_common.db import bind_tenant, release_tenant, tenant_session
 from sqlalchemy import text
 
+from gateway.reach import push_channel
 from gateway.reminders import slot
 
 _log = get_logger("reminders.loop")
@@ -84,6 +112,14 @@ BATCH = 50
 ROUNDS = 4
 #: The seconds that a stop waits for a tick in progress.
 STOP_GRACE_SECONDS = 30
+#: The seconds in which the send phase of one tick may START a row (ruling
+#: k). A row that started runs to its end, inside the 20 s of
+#: ``push.sender.SEND_BUDGET_S``. A fire comes within one tick of
+#: ``fire_at`` (``TICK_SECONDS``, plus the short work of the tick before),
+#: and its ``send_to_member`` call starts inside the send phase of that
+#: tick. A healthy push service sends each row in well under a second, so
+#: the call starts a few seconds after the fire, inside the 90 s of §5.6.
+SEND_PHASE_S = 30
 
 #: Step 5 (§5.4): give up at the brief once Metorite moved the reminder this
 #: many times, or at any step once this long passed after the first fire.
@@ -102,6 +138,10 @@ EVENTS: tuple[str, ...] = ("fired", "check_back", "briefed", "rescheduled", "gav
 
 _task: asyncio.Task[None] | None = None
 _stopping = asyncio.Event()
+#: The turn of the send phase: each tick starts at the next org, so an org
+#: that fills the phase on every tick starves no other org (ruling k). Each
+#: process keeps its own turn.
+_send_turn = 0
 
 
 def loop_enabled() -> bool:
@@ -115,6 +155,11 @@ def loop_enabled() -> bool:
 def _now() -> datetime:
     """The loop's one clock. A test freezes THIS."""
     return datetime.now(UTC)
+
+
+def _monotonic() -> float:
+    """The stopwatch of the send phase. A test advances THIS."""
+    return time.monotonic()
 
 
 async def _orgs() -> list[str]:
@@ -231,10 +276,12 @@ async def member_busy(db: Any, member: str, now: datetime,
 # ── One row ─────────────────────────────────────────────────────────────────
 
 
-async def _ledger(db: Any, row: Any, event: str, detail: dict[str, Any]) -> None:
+async def _ledger(db: Any, row: Any, event: str, detail: dict[str, Any]) -> str:
+    """One ledger row of a step. Answers its id, the second half of the key of
+    the step's web push (RE-9b)."""
     from gateway.routes.projects.reminders import _ledger as write
 
-    await write(db, row.id, event, {**detail, "by": "metorite"})
+    return await write(db, row.id, event, {**detail, "by": "metorite"})
 
 
 async def _fire(db: Any, row: Any, day: Any, now: datetime) -> str:
@@ -249,22 +296,26 @@ async def _fire(db: Any, row: Any, day: Any, now: datetime) -> str:
         "next_check_at = :check, updated_at = now() "
         "WHERE id = CAST(:id AS uuid)"),
         {"now": now, "check": check_at, "id": str(row.id)})
-    await _ledger(db, row, "fired", {
+    event_id = await _ledger(db, row, "fired", {
         "fire_at": _iso(row.fire_at), "at": _iso(now),
         "next_check_at": _iso(check_at), "cycles": int(row.cycles),
     })
+    await push_channel.plan_reminder_push(db, row, event_id, "reminder_due", day, now,
+                                          due_at=row.fire_at)
     return "fired"
 
 
-async def _give_up(db: Any, row: Any, now: datetime, reason: str) -> str:
+async def _give_up(db: Any, row: Any, day: Any, now: datetime, reason: str) -> str:
     """Step 5: ``unconfirmed``. Nothing more, until the member answers."""
     await db.execute(text(
         "UPDATE reminders SET state = 'unconfirmed', next_check_at = NULL, "
         "updated_at = now() WHERE id = CAST(:id AS uuid)"), {"id": str(row.id)})
-    await _ledger(db, row, "gave_up", {
+    event_id = await _ledger(db, row, "gave_up", {
         "reason": reason, "at": _iso(now), "cycles": int(row.cycles),
         "from_state": row.state,
     })
+    await push_channel.plan_reminder_push(db, row, event_id, "reminder_unconfirmed", day, now,
+                                          due_at=row.next_check_at)
     return "gave_up"
 
 
@@ -279,9 +330,11 @@ async def _check_back(db: Any, row: Any, day: Any, now: datetime, done: int) -> 
     await db.execute(text(
         "UPDATE reminders SET next_check_at = :next, updated_at = now() "
         "WHERE id = CAST(:id AS uuid)"), {"next": next_at, "id": str(row.id)})
-    await _ledger(db, row, "check_back", {
+    event_id = await _ledger(db, row, "check_back", {
         "number": number, "at": _iso(now), "next_check_at": _iso(next_at),
     })
+    await push_channel.plan_reminder_push(db, row, event_id, "reminder_check", day, now,
+                                          due_at=row.next_check_at)
     return "check_back"
 
 
@@ -306,12 +359,12 @@ async def _ladder(db: Any, row: Any, day: Any, now: datetime) -> str:
     """Steps 2 to 5 of a ``due`` row whose check time came."""
     first = row.first_fired_at or now
     if now - first >= GIVE_UP_AFTER:
-        return await _give_up(db, row, now, "72h")
+        return await _give_up(db, row, day, now, "72h")
     done = int((await db.execute(text(_CHECKS_SQL), {"id": str(row.id)})).scalar_one())
     if done < (IMPORTANT_CHECKS if row.important else CHECKS):
         return await _check_back(db, row, day, now, done)
     if int(row.cycles) >= MAX_CYCLES:
-        return await _give_up(db, row, now, "cycles")
+        return await _give_up(db, row, day, now, "cycles")
     return await _brief_and_move(db, row, day, now)
 
 
@@ -338,7 +391,9 @@ async def step(org: str, reminder_id: str, now: datetime) -> str | None:
 
 
 async def run_org(org: str, now: datetime | None = None) -> Counter[str]:
-    """Every due row of *org*, once. Answers the count of each outcome."""
+    """Every due row of *org*, once: the steps only, with no network call.
+    The send phase of :func:`run_tick` sends their pushes. Answers the count
+    of each outcome."""
     at = now or _now()
     counts: Counter[str] = Counter()
     active: dict[str, bool] = {}
@@ -387,12 +442,100 @@ async def run_org(org: str, now: datetime | None = None) -> Counter[str]:
     return counts
 
 
+class _Share:
+    """The stop test of one org in the first round of the send phase: the
+    phase is over, or the org's share of the time ended. The first row of
+    the org always starts while the phase runs. ``send_planned`` asks it
+    only while a row is left, so ``stopped`` says that the org still holds
+    rows."""
+
+    def __init__(self, over: Callable[[], bool], until: float) -> None:
+        self.over, self.until = over, until
+        self.first, self.stopped = True, False
+
+    def __call__(self) -> bool:
+        first, self.first = self.first, False
+        if self.over() or (not first and _monotonic() >= self.until):
+            self.stopped = True
+        return self.stopped
+
+
+async def _send_org(org: str, clock: Callable[[], datetime],
+                    stop: Callable[[], bool]) -> Counter[str]:
+    """The planned pushes of *org*, bound to *org*. It never raises."""
+    token = bind_tenant(org)
+    try:
+        return await push_channel.send_planned(org, clock, stop)
+    except Exception as exc:  # a failed send never stops the loop
+        _log.warning("reminders.push_failed", error=type(exc).__name__)
+        return Counter()
+    finally:
+        release_tenant(token)
+
+
+async def _send_phase(orgs: list[str], now: datetime | None,
+                      out: dict[str, Counter[str]]) -> None:
+    """The send step of RE-9b, once in a tick, after the steps of EVERY org
+    (ruling k). Each org's planned pushes go through
+    ``push_channel.send_planned``, bound to that org. One deadline bounds
+    the whole phase: no row starts :data:`SEND_PHASE_S` after the phase
+    began. A row that did not start stays planned for the next tick.
+
+    **No org starves.** The phase starts at the next org on each tick
+    (:data:`_send_turn`). In the first round, each org may start rows only
+    in its share of the time left: that time over the count of orgs still to
+    go. Its first row always starts. The second round gives the time still
+    left to the orgs that still hold rows, in the same order.
+
+    The clock of a row is the time of its start, so the quiet hours of a row
+    read its send time, not the start of the tick. With a frozen *now* the
+    clock starts there and moves with the stopwatch. It adds each org's
+    counts to *out*, and it never raises."""
+    global _send_turn
+    if _stopping.is_set() or not orgs:
+        return
+    start = _monotonic()
+    deadline = start + SEND_PHASE_S
+    base = now or _now()
+
+    def clock() -> datetime:
+        return base + timedelta(seconds=_monotonic() - start)
+
+    def over() -> bool:
+        return _stopping.is_set() or _monotonic() >= deadline
+
+    turn = _send_turn % len(orgs)
+    _send_turn += 1
+    order = orgs[turn:] + orgs[:turn]
+    held: list[str] = []
+    for n, org in enumerate(order):
+        if over():
+            break
+        at = _monotonic()
+        share = _Share(over, at + (deadline - at) / (len(order) - n))
+        sent = await _send_org(org, clock, share)
+        if sent:
+            out.setdefault(org, Counter()).update(sent)
+        if share.stopped:
+            held.append(org)
+    for org in held:
+        if over():
+            break
+        sent = await _send_org(org, clock, over)
+        if sent:
+            out.setdefault(org, Counter()).update(sent)
+    if over():
+        _log.info("reminders.push_phase_over")
+
+
 async def run_tick(now: datetime | None = None) -> dict[str, Counter[str]]:
-    """One pass over every org. Never raises."""
+    """One pass over every org: the steps of each org first, then one send
+    phase for all of them (ruling k). Never raises."""
     if not loop_enabled():
         return {}
     out: dict[str, Counter[str]] = {}
-    for org in await _orgs():
+    orgs = await _orgs()
+    for org in orgs:
         if _stopping.is_set():
             break
         token = bind_tenant(org)
@@ -404,6 +547,7 @@ async def run_tick(now: datetime | None = None) -> dict[str, Counter[str]]:
             _log.warning("reminders.org_failed", error=type(exc).__name__)
         finally:
             release_tenant(token)
+    await _send_phase(orgs, now, out)
     return out
 
 
