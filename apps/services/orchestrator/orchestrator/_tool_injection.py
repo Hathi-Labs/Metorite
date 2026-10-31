@@ -1677,13 +1677,12 @@ def _append_instructions(agent: Any, block: str, marker: str) -> bool:
 async def _crm_facts_rows(facts: Any, read: Callable[[], Awaitable[list[Any]]]) -> list[Any]:
     """The rows of an early read (*facts*), else of *read*. A fault in the
     early read gives no rows, as a failed read does (SPD-1 part 2). A cancel
-    still ends the run."""
+    still ends the run: ``CancelledError`` is a ``BaseException``, so the
+    ``except`` below never takes it."""
     if facts is None:
         return await read()
     try:
         rows = await facts
-    except asyncio.CancelledError:
-        raise
     except Exception:  # the block is advice: a run never fails on it
         return []
     return list(rows) if isinstance(rows, list) else []

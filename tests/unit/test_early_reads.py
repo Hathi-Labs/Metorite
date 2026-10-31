@@ -12,7 +12,8 @@ Mutations this file catches (R7):
   other than the orchestrator, for a run with ``no_egress``, for an org off
   ``CRM_QUESTIONS_ORGS``, or with no verified solo member.
 * A task reads outside the run's context (the member or org of another run).
-* ``settle`` skips a cache fill, or lets a fault of one end the run.
+* ``settle`` skips either cache fill (no timing: a gate holds one fill),
+  or lets a fault of one end the run.
 * ``close`` leaves a read running after the run ends, or leaves a fault
   unread, so asyncio logs it.
 * A failed import of the email context ends the turn (it skips only the
@@ -121,17 +122,25 @@ async def test_each_read_runs_in_the_context_of_its_own_run(reads) -> None:
     assert sorted(reads["facts"]) == ["run-a", "run-b"]
 
 
-async def test_settle_waits_for_both_caches() -> None:
-    done: list[str] = []
+@pytest.mark.parametrize("held", ["knowledge", "mailboxes"])
+async def test_settle_waits_for_both_caches(held: str) -> None:
+    """No timing: the fill named *held* waits on a gate, so ``settle`` must
+    still be waiting while the gate is shut. (On Windows asyncio runs timers
+    within one clock tick together, so two sleeps cannot order the fills.)"""
+    gate = asyncio.Event()
 
-    async def slow(name: str, delay: float) -> None:
-        await asyncio.sleep(delay)
-        done.append(name)
+    async def fill(name: str) -> None:
+        if name == held:
+            await gate.wait()
 
-    early = ex._EarlyReads(asyncio.ensure_future(slow("knowledge", 0.01)),
-                           asyncio.ensure_future(slow("mailboxes", 0.03)))
-    await early.settle()
-    assert sorted(done) == ["knowledge", "mailboxes"], "a cache fill was not awaited"
+    early = ex._EarlyReads(asyncio.ensure_future(fill("knowledge")),
+                           asyncio.ensure_future(fill("mailboxes")))
+    settling = asyncio.ensure_future(early.settle())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not settling.done(), f"settle did not wait for the {held} fill"
+    gate.set()
+    await settling
 
 
 async def test_settle_never_raises() -> None:
