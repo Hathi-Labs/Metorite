@@ -55,13 +55,31 @@ Repair round 1 (rulings d, i, j and k):
 * M15. Migration 318: drop the partial index.
   ``test_the_list_of_planned_pushes_has_a_partial_index``.
 
+Repair round 2:
+
+* M17. ``loop._send_phase``: a fixed order (``turn = 0``).
+  ``test_r8_an_org_that_fills_the_phase_on_every_tick_starves_no_other``.
+* M17b. ``loop._send_phase``: no share (``until`` is infinite).
+  ``test_r8_a_slow_push_service_delays_no_fire_and_the_phase_has_a_deadline``.
+* M14b. ``push_channel.plan_reminder_push``: ``local_date=now.date()``.
+  ``test_r8_the_cap_counts_the_local_date_of_the_member``.
+* M16. ``loop._send_phase``: ``over()`` ignores ``_stopping``.
+  ``test_r8_a_stop_ends_the_send_phase``.
+* M11b. ``push_channel.send_planned``: read the clock once for each org.
+  ``test_r8_the_send_phase_reads_the_clock_of_each_row``.
+* M13b. ``_ClaimRace._lock_waiters``: no filter on the database and the key.
+  ``test_r8_the_member_lock_stops_two_claims_from_passing_the_cap``.
+
 ⚠️ It SKIPS without ``TENANT_LADDER_DATABASE_URL``, and a skip is not a pass.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import threading
+import time
 import uuid
 from collections import Counter
 from datetime import UTC, datetime, timedelta
@@ -85,12 +103,14 @@ from gateway.routes.projects import reminders as rm
 from gateway.routes.shell import cache, needs
 from gateway.routes.shell.state import Day
 from requests.structures import CaseInsensitiveDict
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 
 from tests.unit._tenant_ladder import _exec_file, tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
+    _URL,
     app_engine,
     promoted,
 )
@@ -389,8 +409,11 @@ def test_r8_a_due_reminder_sends_one_push_within_90_s_of_fire_at(world, app_engi
                           fire + timedelta(seconds=loop.TICK_SECONDS - 1))
     assert before == {}
     assert tick[org]["fired"] == 1 and tick[org]["push_sent"] == 1
-    # One tick and the whole send budget fit inside the 90 seconds.
-    assert loop.TICK_SECONDS + sender.SEND_BUDGET_S <= 90
+    # The fire comes within one tick, and its send_to_member call starts
+    # inside the send phase of that tick (ruling k). A healthy push service
+    # takes well under a second for each row, so the call starts long before
+    # the phase ends.
+    assert loop.TICK_SECONDS + loop.SEND_PHASE_S <= 90
 
     [post] = world.service.posts
     assert post["url"] == _endpoint(ALICE)
@@ -727,8 +750,10 @@ def test_r8_the_cap_counts_the_local_date_of_the_member(world) -> None:
     starts at 01:00 (``Day.feed_day``). Ten due pushes go on her 10 March.
     At 01:30 on her 11 March it is still 10 March in UTC, and her eleventh
     push of that UTC date sends, because the cap counts her own date.
-    Notices have no check-back, so no other push goes. (A start hour of 0
-    reads as 7 in ``tasks.settings._load``, so the test uses 1.)"""
+    Each tick reads a UTC clock, as ``loop._now`` does in production, so a
+    cap date of ``now.date()`` would be the UTC date and fail. Notices have
+    no check-back, so no other push goes. (A start hour of 0 reads as 7 in
+    ``tasks.settings._load``, so the test uses 1.)"""
     org = world.p.org_b
     with world.p.admin_engine.begin() as c:
         c.execute(text("UPDATE user_settings SET day_start_hour = 1 WHERE user_id = :u"),
@@ -736,10 +761,10 @@ def test_r8_the_cap_counts_the_local_date_of_the_member(world) -> None:
     for n in range(push_channel.DUE_CAP):
         _seed(world, PRIYA, _ist(10, 10) + timedelta(seconds=n), title=f"D{n:02d}",
               kind="notice")
-    [first] = _ticks(world, _ist(10, 10, 1))
+    [first] = _ticks(world, _ist(10, 10, 1).astimezone(UTC))
     assert first[org]["push_sent"] == push_channel.DUE_CAP
-    next_day = _ist(11, 1, 30)
-    assert next_day.astimezone(UTC).date() == _ist(10, 10).astimezone(UTC).date()
+    next_day = _ist(11, 1, 30).astimezone(UTC)
+    assert next_day.tzinfo is UTC and next_day.date() == _ist(10, 10).astimezone(UTC).date()
     late = _seed(world, PRIYA, next_day, title="Next day", kind="notice")
     [second] = _ticks(world, next_day)
     assert second[org]["fired"] == 1
@@ -749,21 +774,36 @@ def test_r8_the_cap_counts_the_local_date_of_the_member(world) -> None:
     assert rows[-1].dedupe_key.split(":")[1] == late and rows[-1].state == "sent"
 
 
+#: An advisory lock that a session waits on, by its 64-bit key. A lock on
+#: one ``bigint`` has ``objsubid = 1``, with the key in ``classid`` (high 32
+#: bits) and ``objid`` (low 32 bits).
+_WAITING_KEY = (
+    "locktype = 'advisory' AND NOT granted AND objsubid = 1 "
+    "AND ((classid::bigint << 32) | objid::bigint) = :k"
+)
+
+
 class _ClaimRace:
     """Two send steps each count the cap, then wait here for the other. Each
     waits until the other arrives too, or until the other waits on the
-    member lock. So without the lock both counts come before either commit."""
+    member lock. So without the lock both counts come before either commit.
 
-    def __init__(self, world: Any) -> None:
+    Only a waiter on the member lock of THIS race counts: this database and
+    this key (repair round 2, P3-4). A waiter of another suite never lets a
+    worker go on early."""
+
+    def __init__(self, world: Any, key: int) -> None:
         self.world = world
+        self.key = key
         self.arrived = 0
         self.saw_the_lock_wait = False
 
     def _lock_waiters(self) -> int:
         with self.world.p.admin_engine.connect() as c:
             return int(c.execute(text(
-                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
-                "AND NOT granted")).scalar_one())
+                f"SELECT count(*) FROM pg_locks WHERE {_WAITING_KEY} AND database = "
+                "(SELECT oid FROM pg_database WHERE datname = current_database())"),
+                {"k": self.key}).scalar_one())
 
     async def after_count(self) -> None:
         self.arrived += 1
@@ -777,12 +817,64 @@ class _ClaimRace:
         raise AssertionError("the second send step never came")
 
 
+def _member_lock_key(world: Any, org: str, member: str) -> int:
+    """The key of ``outbox._MEMBER_LOCK_SQL`` for *member* of *org*."""
+    with world.p.admin_engine.connect() as c:
+        return int(c.execute(text(
+            "SELECT hashtextextended('reach_push:' || :o || ':' || :m, 0)"),
+            {"o": org, "m": member}).scalar_one())
+
+
+def _hold_and_wait(engine: Any, key: int) -> None:
+    """A second session that waits on *key*, then lets it go."""
+    with engine.connect() as c:
+        c.execute(text("SELECT pg_advisory_lock(:k)"), {"k": key})
+        c.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": key})
+
+
+@contextlib.contextmanager
+def _foreign_waiters(world: Any, key: int) -> Any:
+    """Two advisory lock waiters that the race must not count: one in this
+    database on another key, and one in another database (the ladder
+    database) on the race's own key."""
+    other = create_engine(make_url(_URL))
+    pairs = [(world.p.admin_engine, key ^ 1), (other, key)]
+    holders: list[tuple[Any, int]] = []
+    threads: list[threading.Thread] = []
+    try:
+        for engine, k in pairs:
+            holder = engine.connect()
+            holder.execute(text("SELECT pg_advisory_lock(:k)"), {"k": k})
+            holders.append((holder, k))
+            thread = threading.Thread(target=_hold_and_wait, args=(engine, k), daemon=True)
+            thread.start()
+            threads.append(thread)
+        for _ in range(200):  # 10 s at most
+            with world.p.admin_engine.connect() as c:
+                seen = sum(int(c.execute(text(f"SELECT count(*) FROM pg_locks WHERE {_WAITING_KEY}"),
+                                         {"k": k}).scalar_one()) for _, k in pairs)
+            if seen == len(pairs):
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("the foreign waiters never waited")
+        yield
+    finally:
+        for holder, k in holders:
+            holder.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": k})
+            holder.close()
+        for thread in threads:
+            thread.join(10)
+        other.dispose()
+
+
 def test_r8_the_member_lock_stops_two_claims_from_passing_the_cap(world, monkeypatch) -> None:
     """Repair round 1, finding 4 (ruling d). Alice has 9 due pushes sent
     today and two planned rows. Two send steps claim the two rows at once.
     Without the member lock, both counts read 9 and both send, so 11 go.
     With it, the second claim waits for the first commit, counts 10, and
-    ends ``capped``."""
+    ends ``capped``. Two foreign waiters run the whole time, and the race
+    counts neither (repair round 2, P3-4)."""
     org, at = world.p.org_b, _utc(10, 15)
     with world.p.admin_engine.begin() as c:
         for n in range(push_channel.DUE_CAP - 1):
@@ -796,7 +888,7 @@ def test_r8_the_member_lock_stops_two_claims_from_passing_the_cap(world, monkeyp
     assert _steps(world, org, [x, y], at + timedelta(seconds=1)) == ["fired", "fired"]
     ids = [r.id for r in _outbox(world, ALICE) if r.state == "planned"]
     assert len(ids) == 2
-    race = _ClaimRace(world)
+    race = _ClaimRace(world, _member_lock_key(world, org, ALICE))
     real = push_channel.read_facts
 
     async def read_then_wait(db: Any, row: Any, now: datetime) -> Any:
@@ -809,7 +901,9 @@ def test_r8_the_member_lock_stops_two_claims_from_passing_the_cap(world, monkeyp
     async def both() -> list[str]:
         return list(await asyncio.gather(*(push_channel._send_one(org, i, at) for i in ids)))
 
-    got = _in_org(world, org, both)
+    with _foreign_waiters(world, race.key):
+        assert race._lock_waiters() == 0  # neither foreign waiter counts
+        got = _in_org(world, org, both)
     assert sorted(got) == ["capped", "sent"]
     assert len(world.service.posts) == 1
     # Non-vacuity: the second claim waited on the lock while the first held it.
@@ -920,14 +1014,17 @@ def test_r8_no_device_skips_and_every_device_failing_fails(world) -> None:
 def test_r8_a_slow_push_service_delays_no_fire_and_the_phase_has_a_deadline(
     world, monkeypatch,
 ) -> None:
-    """Repair round 1, finding 3. Each push of org A costs 12 s on the
-    stopwatch of the send phase. Org B still fires before the first push of
-    org A. No row starts after ``SEND_PHASE_S`` (30 s), so the fourth row of
-    org A and the row of org B stay planned, and the next tick sends them."""
+    """Repair round 1, finding 3, and round 2, P2-1. Each push of org A costs
+    12 s on the stopwatch of the send phase, and the phase starts at org A.
+    Org B still fires before the first push of org A. Org A starts rows only
+    in its share (15 s), so org B sends in the same tick. Then org A takes
+    the time left. No row starts after ``SEND_PHASE_S`` (30 s), so the
+    fourth row of org A stays planned, and the next tick sends it."""
     a, b, at = world.p.org_a, world.p.org_b, _utc(10, 15)
     assert loop.SEND_PHASE_S == 30
     stopwatch = SimpleNamespace(t=0.0)
     monkeypatch.setattr(loop, "_monotonic", lambda: stopwatch.t)
+    monkeypatch.setattr(loop, "_send_turn", 0)
     theirs = [_seed(world, CAROL, at, org=a, title=f"A{n}") for n in range(4)]
     ours = _seed(world, ALICE, at)
     seen_at_first_post: list[str] = []
@@ -943,44 +1040,100 @@ def test_r8_a_slow_push_service_delays_no_fire_and_the_phase_has_a_deadline(
     monkeypatch.setattr(outbound_guard, "request_https", slow)
     [first] = _ticks(world, at)
     assert first[a] == Counter(fired=4, push_sent=3)
-    assert first[b] == Counter(fired=1)
+    assert first[b] == Counter(fired=1, push_sent=1)
     # Org B fired before org A sent anything.
     assert seen_at_first_post == ["due"]
     left = [r for r in _outbox(world, CAROL) if r.state == "planned"]
     assert len(left) == 1 and left[0].reason is None
-    assert [(r.state, r.reason) for r in _outbox(world, ALICE)] == [("planned", None)]
+    assert [(r.state, r.reason) for r in _outbox(world, ALICE)] == [("sent", None)]
 
     [second] = _ticks(world, at + timedelta(seconds=loop.TICK_SECONDS))
-    assert second == {a: Counter(push_sent=1), b: Counter(push_sent=1)}
+    assert second == {a: Counter(push_sent=1)}
     tags = Counter(p["tag"] for m in (CAROL, ALICE) for p in _payloads(world, m))
     assert tags == Counter({rid: 1 for rid in (*theirs, ours)})
 
 
+def test_r8_an_org_that_fills_the_phase_on_every_tick_starves_no_other(
+    world, monkeypatch,
+) -> None:
+    """Repair round 2, P2-1. Each push of org A costs 30 s on the stopwatch,
+    so its first row fills the send phase on every tick, and no share can
+    help. The phase starts at the next org on each tick, so the row of org B
+    goes on the second tick."""
+    a, b, at = world.p.org_a, world.p.org_b, _utc(10, 15)
+    stopwatch = SimpleNamespace(t=0.0)
+    monkeypatch.setattr(loop, "_monotonic", lambda: stopwatch.t)
+    monkeypatch.setattr(loop, "_send_turn", 0)
+    for n in range(4):
+        _seed(world, CAROL, at, org=a, title=f"A{n}")
+    ours = _seed(world, ALICE, at)
+    real = world.service.request_https
+
+    async def slow(method, url, **kw):
+        if url == _endpoint(CAROL):
+            stopwatch.t += loop.SEND_PHASE_S
+        return await real(method, url, **kw)
+
+    monkeypatch.setattr(outbound_guard, "request_https", slow)
+    first, second, third = _ticks(world, at, at + timedelta(seconds=loop.TICK_SECONDS),
+                                  at + timedelta(seconds=2 * loop.TICK_SECONDS))
+    assert first == {a: Counter(fired=4, push_sent=1), b: Counter(fired=1)}
+    assert second == {a: Counter(push_sent=1), b: Counter(push_sent=1)}
+    assert third == {a: Counter(push_sent=1)}
+    assert [p["tag"] for p in _payloads(world, ALICE)] == [ours]
+
+
 def test_r8_the_send_phase_reads_the_clock_of_each_row(world, monkeypatch) -> None:
-    """Ruling k: the quiet hours of a row read the time of its send, not the
-    start of the tick. The tick starts at 19:59:50 in Kolkata, and the
-    stopwatch passes 20:00 before the check-back of Priya starts."""
+    """Ruling k: the quiet hours of each row read the time of its own send,
+    not the start of the tick or of the org (repair round 2, P3-2). The tick
+    starts at 19:59:50 in Kolkata, and Priya has two check-backs. The first
+    push costs 15 s on the stopwatch, so the second starts at 20:00:05, in
+    her quiet hours."""
     org = world.p.org_b
     stopwatch = SimpleNamespace(t=0.0)
     monkeypatch.setattr(loop, "_monotonic", lambda: stopwatch.t)
+    monkeypatch.setattr(loop, "_send_turn", 0)  # org A, then org B: one call for Priya
     at = _ist(10, 19, 59) + timedelta(seconds=50)
-    rid = _seed(world, PRIYA, _ist(10, 18), state="due", first_fired_at=_ist(10, 18),
-                next_check_at=at)
-    real_send_planned = push_channel.send_planned
+    rids = [_seed(world, PRIYA, _ist(10, 18), title=f"C{n}", state="due",
+                  first_fired_at=_ist(10, 18), next_check_at=at) for n in range(2)]
+    real = world.service.request_https
 
-    async def later(org_id, clock, stopping=None):
-        if org_id == org:
-            stopwatch.t += 15  # the sends of org A ran past 20:00
-            assert clock() == at + timedelta(seconds=15)
-        return await real_send_planned(org_id, clock, stopping)
+    async def slow(method, url, **kw):
+        if url == _endpoint(PRIYA):
+            stopwatch.t += 15
+        return await real(method, url, **kw)
 
-    monkeypatch.setattr(push_channel, "send_planned", later)
+    monkeypatch.setattr(outbound_guard, "request_https", slow)
     [tick] = _ticks(world, at)
-    assert tick[org] == Counter(check_back=1, push_quiet=1)
-    assert world.service.posts == []
-    [row] = _outbox(world, PRIYA)
-    assert (row.kind, row.state, row.reason) == ("reminder_check", "skipped", "quiet")
-    assert [e.event for e in _ledger(world, rid)] == ["check_back"]
+    assert tick[org] == Counter(check_back=2, push_sent=1, push_quiet=1)
+    assert len(_payloads(world, PRIYA)) == 1
+    rows = sorted((r.kind, r.state, r.reason or "") for r in _outbox(world, PRIYA))
+    assert rows == [("reminder_check", "sent", ""), ("reminder_check", "skipped", "quiet")]
+    for rid in rids:
+        assert "check_back" in [e.event for e in _ledger(world, rid)]
+
+
+def test_r8_a_stop_ends_the_send_phase(world, monkeypatch) -> None:
+    """Repair round 2, P3-1. A stop of the loop (``_stopping``) during the
+    send phase ends the phase after the row in progress. The rows left stay
+    planned, and the next run sends them."""
+    a, at = world.p.org_a, _utc(10, 15)
+    monkeypatch.setattr(loop, "_send_turn", 0)
+    for n in range(3):
+        _seed(world, CAROL, at, org=a, title=f"S{n}")
+    real = world.service.request_https
+
+    async def stop_now(method, url, **kw):
+        loop._stopping.set()
+        return await real(method, url, **kw)
+
+    monkeypatch.setattr(outbound_guard, "request_https", stop_now)
+    try:
+        [tick] = _ticks(world, at)
+    finally:
+        loop._stopping.clear()
+    assert tick[a] == Counter(fired=3, push_sent=1)
+    assert sorted(r.state for r in _outbox(world, CAROL)) == ["planned", "planned", "sent"]
 
 
 def test_r8_a_send_that_raises_keeps_the_row_and_the_loop_goes_on(world, monkeypatch) -> None:

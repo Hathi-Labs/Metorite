@@ -72,6 +72,11 @@ did not start stays planned, and the next tick sends it. No
 itself with ``SEND_BUDGET_S``, and a cancel in its middle would leave its
 device sends running and its row claimed.
 
+**No org starves** (ruling k). Each tick starts the send phase at the next
+org (:data:`_send_turn`). In the first round, each org may start rows only
+in its fair share of the time left, and always one row. A second round
+gives the time still left to the orgs that still hold rows.
+
 **Dark by default.** With ``calendar_reminders`` off, :func:`start_reminder_loop`
 starts no task, and :func:`run_tick` does nothing.
 
@@ -86,6 +91,7 @@ import asyncio
 import contextlib
 import time
 from collections import Counter
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -108,8 +114,11 @@ ROUNDS = 4
 STOP_GRACE_SECONDS = 30
 #: The seconds in which the send phase of one tick may START a row (ruling
 #: k). A row that started runs to its end, inside the 20 s of
-#: ``push.sender.SEND_BUDGET_S``. A healthy send takes well under a second,
-#: so a fire and its push still fit in the 90 s of §5.6.
+#: ``push.sender.SEND_BUDGET_S``. A fire comes within one tick of
+#: ``fire_at``, and its ``send_to_member`` call starts inside the send phase
+#: of that tick. So ``TICK_SECONDS + SEND_PHASE_S`` (90 s) bounds the call,
+#: the 90 s of §5.6. A healthy push service sends each row in well under a
+#: second, so the call usually starts a few seconds after the fire.
 SEND_PHASE_S = 30
 
 #: Step 5 (§5.4): give up at the brief once Metorite moved the reminder this
@@ -129,6 +138,10 @@ EVENTS: tuple[str, ...] = ("fired", "check_back", "briefed", "rescheduled", "gav
 
 _task: asyncio.Task[None] | None = None
 _stopping = asyncio.Event()
+#: The turn of the send phase: each tick starts at the next org, so an org
+#: that fills the phase on every tick starves no other org (ruling k). Each
+#: process keeps its own turn.
+_send_turn = 0
 
 
 def loop_enabled() -> bool:
@@ -429,6 +442,37 @@ async def run_org(org: str, now: datetime | None = None) -> Counter[str]:
     return counts
 
 
+class _Share:
+    """The stop test of one org in the first round of the send phase: the
+    phase is over, or the org's share of the time ended. The first row of
+    the org always starts while the phase runs. ``send_planned`` asks it
+    only while a row is left, so ``stopped`` says that the org still holds
+    rows."""
+
+    def __init__(self, over: Callable[[], bool], until: float) -> None:
+        self.over, self.until = over, until
+        self.first, self.stopped = True, False
+
+    def __call__(self) -> bool:
+        first, self.first = self.first, False
+        if self.over() or (not first and _monotonic() >= self.until):
+            self.stopped = True
+        return self.stopped
+
+
+async def _send_org(org: str, clock: Callable[[], datetime],
+                    stop: Callable[[], bool]) -> Counter[str]:
+    """The planned pushes of *org*, bound to *org*. It never raises."""
+    token = bind_tenant(org)
+    try:
+        return await push_channel.send_planned(org, clock, stop)
+    except Exception as exc:  # a failed send never stops the loop
+        _log.warning("reminders.push_failed", error=type(exc).__name__)
+        return Counter()
+    finally:
+        release_tenant(token)
+
+
 async def _send_phase(orgs: list[str], now: datetime | None,
                       out: dict[str, Counter[str]]) -> None:
     """The send step of RE-9b, once in a tick, after the steps of EVERY org
@@ -437,35 +481,51 @@ async def _send_phase(orgs: list[str], now: datetime | None,
     the whole phase: no row starts :data:`SEND_PHASE_S` after the phase
     began. A row that did not start stays planned for the next tick.
 
+    **No org starves.** The phase starts at the next org on each tick
+    (:data:`_send_turn`). In the first round, each org may start rows only
+    in its share of the time left: that time over the count of orgs still to
+    go. Its first row always starts. The second round gives the time still
+    left to the orgs that still hold rows, in the same order.
+
     The clock of a row is the time of its start, so the quiet hours of a row
     read its send time, not the start of the tick. With a frozen *now* the
     clock starts there and moves with the stopwatch. It adds each org's
     counts to *out*, and it never raises."""
+    global _send_turn
     if _stopping.is_set() or not orgs:
         return
     start = _monotonic()
+    deadline = start + SEND_PHASE_S
     base = now or _now()
 
     def clock() -> datetime:
         return base + timedelta(seconds=_monotonic() - start)
 
     def over() -> bool:
-        return _stopping.is_set() or _monotonic() - start >= SEND_PHASE_S
+        return _stopping.is_set() or _monotonic() >= deadline
 
-    for org in orgs:
+    turn = _send_turn % len(orgs)
+    _send_turn += 1
+    order = orgs[turn:] + orgs[:turn]
+    held: list[str] = []
+    for n, org in enumerate(order):
         if over():
-            _log.info("reminders.push_phase_over")
             break
-        token = bind_tenant(org)
-        try:
-            sent = await push_channel.send_planned(org, clock, over)
-        except Exception as exc:  # a failed send never stops the loop
-            _log.warning("reminders.push_failed", error=type(exc).__name__)
-            sent = Counter()
-        finally:
-            release_tenant(token)
+        at = _monotonic()
+        share = _Share(over, at + (deadline - at) / (len(order) - n))
+        sent = await _send_org(org, clock, share)
         if sent:
             out.setdefault(org, Counter()).update(sent)
+        if share.stopped:
+            held.append(org)
+    for org in held:
+        if over():
+            break
+        sent = await _send_org(org, clock, over)
+        if sent:
+            out.setdefault(org, Counter()).update(sent)
+    if over():
+        _log.info("reminders.push_phase_over")
 
 
 async def run_tick(now: datetime | None = None) -> dict[str, Counter[str]]:
