@@ -168,6 +168,20 @@ describe("the interview section (PZ-27)", () => {
     for (const word of ["Answered", "Asked", "Skipped", "Stopped asking", "Not asked yet"]) expect(html).toContain(word);
     expect(html).toContain("bg-success/10");
     expect(html).toContain("bg-warning/10");
+    expect(html).toContain("bg-info/10");
+    expect(html).toContain("text-info");
+  });
+
+  it("draws the Asked badge in the info tone and never in the accent (H-435)", () => {
+    const html = draw({ profile: withInterview });
+    const at = html.indexOf(">Asked<");
+    expect(at).toBeGreaterThan(0);
+    const badge = html.slice(html.lastIndexOf("<span", at), at);
+    expect(badge).toContain("bg-info/10");
+    expect(badge).toContain("text-info");
+    expect(badge).not.toContain("text-primary");
+    expect(badge).not.toContain("bg-primary");
+    expect(html).toContain("bg-secondary text-muted-foreground");
   });
 
   it("draws Reset only for an area that has a state", () => {
