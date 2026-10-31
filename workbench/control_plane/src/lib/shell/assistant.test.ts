@@ -952,8 +952,9 @@ describe("the chat's chrome on a phone (CF-8, chat_first_surface.md §4.8)", () 
 
   it("the chat drops its agent row and its Share row on the phone, and keeps the room on", () => {
     const src = chat();
-    expect(src).toMatch(/\{!compact && !phoneChrome && \(\s*<div data-chat-agent-row=""/);
-    expect(src).toMatch(/\{!compact && !phoneChrome && \(\s*<div data-chat-room-row=""/);
+    // One guard holds both rows: the glass head puts them on one line (GL-10).
+    expect(src).toMatch(/\{!compact && !phoneChrome && \(\s*<div data-chat-head=""[^>]*>\s*<div data-chat-agent-row=""/);
+    expect(src).toMatch(/<div data-chat-head=""[\s\S]*?data-chat-agent-row=""[\s\S]*?<div data-chat-room-row=""/);
     expect(src).toContain("useRoom(sessionId, viewerEmail, { enabled: !compact });");
   });
 

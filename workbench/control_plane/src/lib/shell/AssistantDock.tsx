@@ -929,14 +929,18 @@ function AssistantSurface({ phone }: { phone: boolean }) {
       : "fixed inset-0 z-50 flex flex-col bg-background glass:bg-card pt-safe pb-safe"
     : form === "full"
       ? // In glass the full view is the page's content card (`AppShell`'s
-        // FULL_MAIN): the same 8 px inset, corners and shadow.
-        "absolute inset-0 z-20 flex flex-col bg-background glass:top-2 glass:right-2 glass:bottom-2 glass:rounded-2xl glass:shadow-card"
+        // FULL_MAIN): the same 8 px inset, corners and shadow. It takes the
+        // chat's own surface, so its header and the chat are one block. It clips to
+        // its corners, since the chat inside paints a square surface (owner,
+        // 2026-10-31: the bottom of the panel had no edge).
+        "absolute inset-0 z-20 flex flex-col bg-background glass:top-2 glass:right-2 glass:bottom-2 glass:rounded-2xl glass:bg-card glass:shadow-card glass:overflow-hidden"
       : floats
         ? // A narrow desktop: the same panel, over the right of the page.
           "absolute inset-y-0 right-0 z-20 flex max-w-[90%] flex-col border-l border-border bg-card shadow-xl glass:glass-menu-flat glass:border-transparent"
         : // A wide desktop: the panel sits over the spacer, beside the page.
-          // In glass it is a second card, 8 px in from the window's edge.
-          "absolute inset-y-0 right-0 z-20 flex flex-col border-l border-border bg-card glass:border-transparent glass:glass-surface glass:top-2 glass:right-2 glass:bottom-2 glass:rounded-2xl glass:shadow-card";
+          // In glass it is a second card, 8 px in from the window's edge,
+          // clipped to its corners as the full view is.
+          "absolute inset-y-0 right-0 z-20 flex flex-col border-l border-border bg-card glass:border-transparent glass:glass-surface glass:top-2 glass:right-2 glass:bottom-2 glass:rounded-2xl glass:shadow-card glass:overflow-hidden";
   // The glass card is 8 px narrower than the spacer, so its left edge stays
   // where the spacer begins and the gap to the page card is 8 px too.
   const glassLook = useDocumentLook() === "glass";
