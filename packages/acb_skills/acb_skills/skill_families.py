@@ -653,9 +653,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     "projects-reminders": {
         "label": "Projects reminders",
         "summary": (
-            "The member's own reminders: set one, list them, change the "
-            "time, snooze, resolve, reopen, or promote one to a task. A "
-            "reminder is not a task."
+            "The member's own reminders, which are not tasks: set one, list "
+            "them, change the time, snooze, resolve, reopen, or promote one "
+            "to a task."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for the "

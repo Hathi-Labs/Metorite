@@ -330,8 +330,8 @@ def test_the_pack_flag_turns_on_every_pack_of_each_owner() -> None:
     want = {s for o in pack.OWNERS for s in tool_packs.owner_packs(o)}
     assert slugs == want and flag["tool_packs_orgs"] == run.ds.ORG
     assert {"crm-records", "projects", "projects-plan", "projects-structure",
-            "projects-bulk"} <= slugs
-    assert len(tool_packs.owner_packs(PROJECTS)) == 4
+            "projects-bulk", "projects-reminders"} <= slugs
+    assert len(tool_packs.owner_packs(PROJECTS)) == 5
     # The email chats keep the email owner alone, as in OA-7h.
     assert set(run.pack_flag()["tool_packs"].split(",")) == set(tool_packs.owner_packs(EA))
     assert run.owners_of(scenario("read_invoice")) == (EA,)
