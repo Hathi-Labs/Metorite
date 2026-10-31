@@ -240,7 +240,6 @@ const BARE_LOOP_DEBT: Record<string, number> = {
   "app/agents/page.tsx": 1,
   "app/artifacts/page.tsx": 1,
   "app/calendar/components/NowNextBar.tsx": 2,
-  "app/calendar/components/TimeGrid.tsx": 2,
   "app/email/components/automation/AISettingsView.tsx": 1,
   "app/email/components/automation/AnalyticsView.tsx": 4,
   "app/email/components/automation/ai-settings/TestTab.tsx": 1,
