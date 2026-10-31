@@ -25,7 +25,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from acb_llm.jobs import default_tier
 from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
 from gateway.routes.tasks.core import (
@@ -166,11 +165,8 @@ async def _llm_plan(
             model=model, fallback_model="tier-balanced",
             messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("title", "description", json=True)},
                       {"role": "user", "content": user}],
-            # A plan is a judgement job: the model thinks first, so the cap
-            # holds the thinking and the JSON (task 1128).
-            temperature=0.2, max_tokens=8000,
+            temperature=0.2, max_tokens=2200,
             response_format={"type": "json_object"},
-            job="judgement",
         )
         raw = resp.choices[0].message.content or ""
         data = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
@@ -250,9 +246,8 @@ async def plan_project(
         raise HTTPException(status_code=400, detail="A project name is required.")
     uid = _uid(user)
     async with _tenant_session() as db:
-        # A plan is a judgement job, so it runs on that job's tier and not
-        # on the member's clarify tier (task 1128).
-        model = default_tier("judgement")
+        from gateway.routes.tasks.settings import task_models
+        model = (await task_models(db, uid))["clarify"]
         people, projects_brief = await _plan_context(
             db, uid, f"{name} {req.description or ''}")
         plan = await _llm_plan(

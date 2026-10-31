@@ -817,7 +817,6 @@ async def _llm_propose(
             temperature=0.0,
             max_tokens=500,
             response_format={"type": "json_object"},
-            job="structured",
         )
         raw = resp.choices[0].message.content or ""
         start, end = raw.find("{"), raw.rfind("}")
@@ -1129,10 +1128,8 @@ async def _find_parent_task(
             model=model, fallback_model="tier-fast",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            # 120, not 40, so the small JSON answer fits (task 1128).
-            temperature=0.0, max_tokens=120,
+            temperature=0.0, max_tokens=40,
             response_format={"type": "json_object"},
-            job="structured",
         )
         raw = resp.choices[0].message.content or ""
         data = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
@@ -1365,7 +1362,6 @@ async def _llm_enrich(
                       {"role": "user", "content": user}],
             temperature=0.0, max_tokens=250,
             response_format={"type": "json_object"},
-            job="structured",
         )
         raw = resp.choices[0].message.content or ""
         data = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
@@ -1513,7 +1509,6 @@ async def _llm_suggest_title(title: str, notes: str | None, model: str) -> dict[
                       {"role": "user", "content": user}],
             temperature=0.0, max_tokens=120,
             response_format={"type": "json_object"},
-            job="structured",
         )
         raw = resp.choices[0].message.content or ""
         data = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
@@ -1711,7 +1706,6 @@ async def _llm_atomize(
                       {"role": "user", "content": user}],
             temperature=0.0,
             max_tokens=1500,
-            job="structured",
         )
         raw = resp.choices[0].message.content or ""
         start, end = raw.find("{"), raw.rfind("}")

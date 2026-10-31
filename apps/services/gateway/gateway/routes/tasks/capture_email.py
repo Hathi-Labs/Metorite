@@ -297,7 +297,6 @@ async def _llm_capture(
             temperature=0.0, max_tokens=450,
             feature="tasks.capture_email",
             response_format={"type": "json_object"},
-            job="structured",
         )
         raw = resp.choices[0].message.content or ""
         start, end = raw.find("{"), raw.rfind("}")
@@ -1085,7 +1084,6 @@ async def _llm_detect_commitment(
             temperature=0.0, max_tokens=450,
             feature="tasks.capture_email",
             response_format={"type": "json_object"},
-            job="structured",
         )
         raw = resp.choices[0].message.content or ""
         start, end = raw.find("{"), raw.rfind("}")

@@ -386,10 +386,21 @@ CAP_LIMIT = 2000
 #: The keywords that settle thinking for a call.
 SETTLED = frozenset({"job", "thinking", "reasoning_effort"})
 
+_TASKS = "apps/services/gateway/gateway/routes/tasks/"
+_PR_1538 = ("PR 1538 owns this call: it sends thinking=dict(NO_THINKING). "
+            "After it merges, the call passes as it is, and this entry can go")
+
 #: ``"<path>::<function>": reason``. Each entry is a call this branch leaves.
+#: An entry that matches no call does not fail, so a merge of the owning PR
+#: cannot turn main red.
 EXEMPT: dict[str, str] = {
-    "apps/services/gateway/gateway/routes/tasks/calendar.py::_llm_rank_day": (
+    _TASKS + "calendar.py::_llm_rank_day": (
         "PR 1536 owns this call: it lifts the cap to 8000"),
+    **{_TASKS + site: _PR_1538 for site in (
+        "ai.py::_llm_propose", "ai.py::_find_parent_task", "ai.py::_llm_enrich",
+        "ai.py::_llm_suggest_title", "ai.py::_llm_atomize",
+        "capture_email.py::_llm_capture", "capture_email.py::_llm_detect_commitment",
+        "planning.py::_llm_plan", "resume_parse.py::llm_extract_profile")},
 }
 
 

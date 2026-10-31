@@ -124,14 +124,13 @@ async def llm_extract_profile(text: str) -> dict[str, Any]:
             "the text actually states — never infer a credential."
         )
         resp, _used = await acompletion_with_fallback(
-            model="tier-fast",
+            model="tier-balanced",
             fallback_model="tier-balanced",
             messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("summary", json=True)},
                       {"role": "user", "content": snippet}],
             temperature=0.0,
             max_tokens=500,
             response_format={"type": "json_object"},
-            job="structured",
         )
         raw = resp.choices[0].message.content or ""
         start, end = raw.find("{"), raw.rfind("}")
