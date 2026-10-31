@@ -275,6 +275,7 @@ Every AI call names its job (task 1128). Pass `job="structured"`, `"writing"` or
 - `acb_llm/jobs.py` holds the one table. A structured or writing job turns thinking off. A judgement job thinks, and its cap is at least 6000.
 - ⚠️ DeepSeek V4 counts its thinking against `max_tokens`. A small cap with thinking on returns no text.
 - A member or env tier keeps its tier, and the job still turns thinking off.
+- The Tasks calls send `thinking=dict(NO_THINKING)` (PR 1538). `tasks/core.py::NO_THINKING` is `acb_llm.jobs.THINKING_OFF`. Do not write a second literal of it.
 - An empty answer is no answer. Do not read it as "no match" or "nothing to say". The seam logs `acb_llm.empty_answer`, and the caller fails closed.
 - Fence: `tests/unit/test_llm_jobs.py`. It fails on a call with a cap under 2000 that names no job and sends no `thinking`.
 

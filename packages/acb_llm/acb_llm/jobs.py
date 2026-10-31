@@ -39,7 +39,10 @@ How a call names its job
 job="writing")`` and ``completion_on_router(..., job=...)`` read it. The two
 ``_llm_json`` helpers (``gateway/routes/email/core.py`` and
 ``gateway/routes/notes/summaries.py``) pass it through. A caller that sends
-``thinking`` or ``reasoning_effort`` itself keeps its own value.
+``thinking`` or ``reasoning_effort`` itself keeps its own value. The Tasks
+calls send ``thinking=dict(NO_THINKING)`` (PR 1538), and
+``routes/tasks/core.py::NO_THINKING`` is :data:`THINKING_OFF` under another
+name. A new name for the value imports it, and writes no second literal.
 
 Thinking off, and the vendors that refuse it
 ---------------------------------------------
