@@ -1197,12 +1197,17 @@ def generation(member: str) -> int:
 #: gave it, so the member matches in any case, as ``number_system.READ_SQL``
 #: does. When two rows match, the row with a profile wins, then the
 #: lower-case row.
-READ_SQL = (
+#: ``{org}`` is the one placeholder. The executor fills it with a bind
+#: (:data:`READ_SQL`), and the gateway fills it with the bound tenant of its
+#: session. One statement reads the row for the model and for "Read as text"
+#: (PZ-20a), so the two cannot pick different rows.
+READ_SQL_TEMPLATE = (
     "SELECT assistant_profile FROM user_settings "
-    "WHERE organization_id = CAST(:org AS uuid) AND lower(user_id) = lower(:m) "
+    "WHERE organization_id = {org} AND lower(user_id) = lower(:m) "
     "ORDER BY (assistant_profile IS NULL), (user_id <> lower(user_id)) "
     "LIMIT 1"
 )
+READ_SQL = READ_SQL_TEMPLATE.replace("{org}", "CAST(:org AS uuid)")
 
 #: The two fallbacks of the form of address (§5.2, PZ-4) and the member's
 #: zone, in ONE row: ``people.preferred_name``, ``people.timezone`` and

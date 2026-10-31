@@ -834,9 +834,15 @@ async def get_assistant_profile_block(
     ``{"enabled": false, "text": ""}`` and the route reads nothing. The
     member comes from the session and the org from the bound session (R5).
     The route takes no address, query or body. A failed read answers 503,
-    never an empty text. The answer carries ``Cache-Control: no-store``.
+    never an empty text. Each answer, the 503 too, carries
+    ``Cache-Control: no-store``. The read is the executor's ``READ_SQL``.
     """
-    from acb_common.assistant_profile import ADDRESS_SQL_TEMPLATE, enabled_for, member_block
+    from acb_common.assistant_profile import (
+        ADDRESS_SQL_TEMPLATE,
+        READ_SQL_TEMPLATE,
+        enabled_for,
+        member_block,
+    )
 
     headers = {"Cache-Control": "no-store"}
     if not enabled_for(getattr(user, "organization_id", None)):
@@ -844,12 +850,15 @@ async def get_assistant_profile_block(
     uid = _member(user)
     try:
         async with _tenant_session() as db:
-            row = await _read(db, uid)
+            # The executor's own statements, so the view and the model read
+            # the same row (any case of the address, the row with a profile first).
+            row = (await db.execute(_sql(READ_SQL_TEMPLATE), {"m": uid})).first()
             names = (await db.execute(_sql(ADDRESS_SQL_TEMPLATE), {"m": uid})).first()
     except Exception as exc:
         logger.warning("auth.assistant_profile.block_failed",
                        extra={"error": type(exc).__name__})
-        raise HTTPException(status_code=503, detail="unavailable") from exc
+        raise HTTPException(status_code=503, detail="unavailable",
+                            headers=headers) from exc
     preferred, _zone, display = names[:3] if names else (None, None, None)
     text = member_block(row[0] if row is not None else None, preferred, display)
     return JSONResponse({"enabled": True, "text": text}, headers=headers)

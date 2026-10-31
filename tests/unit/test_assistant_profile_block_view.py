@@ -193,7 +193,7 @@ def test_the_member_is_the_session_s_and_the_org_is_the_bound_one(
     _client(_user("bo@alpha.example")).get(
         URL, params={"member": "ana@alpha.example", "org": "x"})
     (read, names) = db.sql
-    assert read[1] == {"uid": "bo@alpha.example"}
+    assert read[1] == {"m": "bo@alpha.example"}
     assert names[1] == {"m": "bo@alpha.example"}
     assert "current_setting('app.tenant_id', true)" in read[0]
     assert "{org}" not in names[0] and ":org" not in names[0]
@@ -213,11 +213,12 @@ def test_a_failed_read_is_a_503_never_an_empty_text(
     res = _client().get(URL)
     assert res.status_code == 503
     assert res.json() == {"detail": "unavailable"}
+    assert res.headers["cache-control"] == "no-store"
     assert "text" not in res.json()
 
 
 def test_the_route_adds_no_sql_of_its_own() -> None:
     src = inspect.getsource(ap.get_assistant_profile_block)
-    assert "_read(db, uid)" in src and "ADDRESS_SQL_TEMPLATE" in src
+    assert "READ_SQL_TEMPLATE" in src and "ADDRESS_SQL_TEMPLATE" in src
     for word in ("INSERT", "UPDATE", "DELETE", "SELECT"):
         assert word not in src
