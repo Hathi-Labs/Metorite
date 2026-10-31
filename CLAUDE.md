@@ -228,15 +228,9 @@ LOW slice skips the reviewer. What you drop is the wait.
 **⚠️ Staging is retired** *(D144, owner directive, 2026-10-31)*. A merge moves
 `main` and nothing else. Production moves at 21:30 UTC each day. An agent may
 also dispatch `deploy.yml` after the merge, and the run ships the tip of `main`
-at once. This replaces the next rule. Verify by evidence: `/version`
-`applied_sha` and the smoke jobs. `.claude/commands/next-ticket.md` step 7 holds
-the commands.
-
-**⚠️ Do not push to production yourself** *(owner directive, 2026-10-27)*. Do
-not run `gh workflow run deploy.yml`. Production takes the 21:30 UTC release.
-Run a manual dispatch only when the owner asks for it in your session, or when
-production is down. A dark feature never needs one. If you think a change
-cannot wait, ask the owner.
+at once. This replaces the "do not push to production" rule of 2026-10-27.
+Verify by evidence: `/version` `applied_sha` and the smoke jobs.
+`.claude/commands/next-ticket.md` step 7 holds the commands.
 
 **⚠️ WORK UNDER A METORITE TASK** *(owner directive, 2026-10-28, D135)*.
 The owner watches the board, so work that is not on it is invisible. Every

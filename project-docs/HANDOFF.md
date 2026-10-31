@@ -83,15 +83,10 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-433 · Check the chat prompt for notifications on a real phone, on dev.metorite.com · [OWNER]
+### H-433 · Check the chat prompt for notifications on a real phone, on production · [OWNER]
 - **Metorite:** #600 (OB-8). The task holds the checks and the state.
-- **Check:** `ssh metorite 'sudo -n grep -c "^PUSH_PROMPT_ORGS=" /opt/acb/app/.env'`. A count of 0 means production still waits for the owner's check. An agent sets the flag only after the owner says yes.
-- **Added:** 2026-10-30 · WS-OB OB-8 session
-
-### H-434 · Check the assistant's offer and approval cards on dev.metorite.com · [OWNER]
-- **Metorite:** #1114. The task holds the full entry.
-- **Check:** `ssh metorite 'sudo -n grep -c "^ASSISTANT_PROFILE_CARD_WRITES_ORGS=" /opt/acb/app/.env'`. A count of 0 means production still waits for the owner's check. An agent sets the flag only after the owner says yes.
-- **Added:** 2026-10-30 · WS-63 PZ-32 session
+- **Check:** task #600 is not Done → still pending. `PUSH_PROMPT_ORGS=*` is set in production since 2026-10-31 (D144, staging retired). The owner checks the three choices on an Android phone and in the iPhone Home Screen app.
+- **Added:** 2026-10-30 · WS-OB OB-8 session · rewritten 2026-10-31
 
 ### H-439 · Decide when production gets the glass look (GL-9) · [OWNER]
 - **Metorite:** #1193. The task holds the full entry. Owner, 2026-10-31: "don't deploy to production until I say so."
@@ -102,13 +97,6 @@ line — never reclaim a number by deleting the other entry.
 - **Metorite:** #1116. The task holds the question and a recommendation.
 - **Check:** task #1116 is not Done → still pending.
 - **Added:** 2026-10-30 · WS-63 PZ-32 session
-
-### H-416 · Decide whether the staging apply installs the staging flag tool itself · [OWNER]
-- **Metorite:** #772. The task holds the full entry (moved 2026-10-28, D118).
-- **Check:** on the dev box (srv1747539), run
-  `cmp /opt/acb/app/deploy/hostinger/staging/acb-staging-flag /usr/local/sbin/acb-staging-flag`.
-  A difference means the installed tool is behind the repo copy. If it exits 0, or the owner has said no, delete this entry.
-- **Added:** 2026-10-26 · owner, in chat, 2026-10-25
 
 ### H-431 · Look at Settings → Assistant settings, and say what still feels stiff · [OWNER]
 - **Metorite:** #261 (PZ-11). The task holds the checks and the state.
