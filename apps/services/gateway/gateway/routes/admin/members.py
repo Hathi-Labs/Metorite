@@ -41,6 +41,7 @@ from acb_auth.console_resolve import (
 from acb_auth.permissions import matched_by
 from acb_common.assistant_profile import CLEAR_FOR_MEMBER_SQL_TEMPLATE, mark_changed
 from fastapi import Depends, HTTPException
+from gateway.assistant_summaries import clear_for_member
 from gateway.routes.admin._common import (
     PURGE_OUTCOME,
     _iso,
@@ -1124,6 +1125,10 @@ async def purge_member_rows(
         await db.execute(
             text(rows.delete_sql), _purge_params(rows, uid=uid, email=addr)
         )
+    # WS-63 PZ-33a: the private chats went above, with their summaries. A
+    # shared room of the member stays, so its summary is cleared here, in
+    # this transaction, through the one module of the column.
+    await clear_for_member(db, addr)
 
     # WS-53 CRM-Q33: the member's address in the CRM state that no delete
     # above reaches, in this transaction, and the member's CRM keys.

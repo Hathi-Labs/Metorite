@@ -55,6 +55,7 @@ The names it may write:
 | `ASSISTANT_PROFILE_ENABLED` | The master switch of the assistant profile (WS-63 PZ-25). It reaches no one |
 | `ASSISTANT_PROFILE_ORGS` | The organizations that get the assistant profile. Empty means each one |
 | `ASSISTANT_PROFILE_CARD_WRITES_ORGS` | The organizations whose chat may ask a card for a profile value that the member did not type, and offer to keep a fact (WS-63 PZ-32). Empty means none. It reaches no one |
+| `ASSISTANT_CHAT_SUMMARY_ORGS` | The organizations that get a summary of each private chat (WS-63 PZ-33). Empty means none. Its job spends `tier-fast` credits of each listed org. It reaches no one. The production flip is owner-only (D-PZ-35) |
 | `ATTACHMENT_OCR` | OCR of a scanned attachment (WS-67 OA-3). It spends CPU on the box, and no money. It reaches no one |
 | `JOB_QUEUE` | The job worker in the gateway (WS-BRIEF BR-1a). It runs the queued jobs and reaches no one |
 | `UNATTENDED_LEDGER` | The ledger of unattended runs (AUTO-2). It writes rows only. Reach stays held on staging |
