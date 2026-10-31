@@ -115,6 +115,7 @@ import {
 import { markChatFirstMessage } from "./shellPrefs";
 import {
   dockFloats,
+  dockFoldsNav,
   ASSISTANT_AGENT,
   ASSISTANT_NAME,
   ASSISTANT_PERSONA,
@@ -158,6 +159,7 @@ import { surfaceOfPane } from "./surface";
 import { chatFilesHref, mergeFileEntry, sessionTitle } from "./chatHistory";
 import { SessionPicker } from "./SessionPicker";
 import { useDocumentLook } from "@/lib/theme/glassTokens";
+import { useOptionalSidebarFold } from "@/components/SidebarFold";
 
 /** The gap round a glass card on the grouped frame: `FULL_MAIN`'s 8 px margins. */
 const GLASS_CARD_INSET = 8;
@@ -690,6 +692,15 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   // page instead of sitting beside it (owner, 2026-10-14).
   const canDock = !phone;
   const floats = dockFloats(vw, phone);
+  // A tight window gives the page its room: the side panel opens beside it,
+  // and the app sidebar folds to its rail (owner, 2026-11-01). Once per
+  // opening, so the member's own toggle wins after it.
+  const fold = useOptionalSidebarFold();
+  const docked = st.open && form === "dock" && !floats;
+  useEffect(() => {
+    if (docked && dockFoldsNav(vw, phone) && fold && !fold.collapsed) fold.foldForWork();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the panel docks
+  }, [docked]);
   const chat = useAssistantChat(st.open, { phone, chatFirst });
   const pathname = usePathname();
   const router = useRouter();
@@ -936,7 +947,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
         "absolute inset-0 z-20 flex flex-col bg-background glass:top-2 glass:right-2 glass:bottom-2 glass:rounded-2xl glass:bg-card glass:shadow-card glass:overflow-hidden"
       : floats
         ? // A narrow desktop: the same panel, over the right of the page.
-          "absolute inset-y-0 right-0 z-20 flex max-w-[90%] flex-col border-l border-border bg-card shadow-xl glass:glass-menu-flat glass:border-transparent"
+          // In glass it is a card too, 8 px in from the window's edge.
+          "absolute inset-y-0 right-0 z-20 flex max-w-[90%] flex-col border-l border-border bg-card shadow-xl glass:glass-menu-flat glass:border-transparent glass:top-2 glass:right-2 glass:bottom-2 glass:rounded-2xl glass:overflow-hidden"
         : // A wide desktop: the panel sits over the spacer, beside the page.
           // In glass it is a second card, 8 px in from the window's edge,
           // clipped to its corners as the full view is.

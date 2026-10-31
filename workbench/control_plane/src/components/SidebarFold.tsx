@@ -75,6 +75,11 @@ export function useSidebarFold(): SidebarFold {
   return fold;
 }
 
+/** The fold, or null where no provider is mounted (the phone layout). */
+export function useOptionalSidebarFold(): SidebarFold | null {
+  return useContext(FoldContext);
+}
+
 export function SidebarFoldProvider({
   placement,
   children,

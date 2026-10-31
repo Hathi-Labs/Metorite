@@ -24,6 +24,8 @@ import {
   DOCK_MAX,
   DOCK_MIN,
   DOCK_MIN_VIEWPORT,
+  DOCK_ROOMY_VIEWPORT,
+  dockFoldsNav,
   STALE_CHAT_MS,
   STRIP_TEXT_MAX,
   __resetAssistantForTests,
@@ -109,6 +111,13 @@ describe("the two forms", () => {
   it("below the floor the side panel floats over the page, and a phone has none", () => {
     expect(dockFloats(DOCK_MIN_VIEWPORT, false)).toBe(false);
     expect(dockFloats(DOCK_MIN_VIEWPORT - 1, false)).toBe(true);
+    // Owner, 2026-11-01: the panel sits beside the page on a 1280 window,
+    // and a tight window folds the app sidebar instead of floating the panel.
+    expect(dockFloats(1280, false)).toBe(false);
+    expect(dockFoldsNav(1280, false)).toBe(true);
+    expect(dockFoldsNav(DOCK_ROOMY_VIEWPORT, false)).toBe(false);
+    expect(dockFoldsNav(DOCK_MIN_VIEWPORT - 1, false)).toBe(false);
+    expect(dockFoldsNav(1280, true)).toBe(false);
     expect(dockFloats(390, true)).toBe(false);
   });
 

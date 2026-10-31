@@ -90,8 +90,23 @@ export const DOCK_MAX = 720;
  * Below this window width the side panel FLOATS over the right of the page,
  * instead of sitting beside it (owner, 2026-10-14: "I'm not sure when to
  * expect the sidebar or the full screen"). It is still the side panel.
+ * 1024, not 1280 (owner, 2026-11-01: "Chat is supposed to slide alongside
+ * the main application"): a 1920 screen at 150 % is a 1280 window, and the
+ * panel floated there. `dockFoldsNav` gives the page its room instead.
  */
-export const DOCK_MIN_VIEWPORT = 1280;
+export const DOCK_MIN_VIEWPORT = 1024;
+
+/** Below this window width, opening the side panel folds the app sidebar. */
+export const DOCK_ROOMY_VIEWPORT = 1440;
+
+/**
+ * Does opening the side panel fold the app sidebar to its rail? Only on a
+ * desktop where the panel sits beside the page and the window is tight, so
+ * the page keeps its width. The member's own toggle opens it again.
+ */
+export function dockFoldsNav(viewportWidth: number, isMobile: boolean): boolean {
+  return !isMobile && !dockFloats(viewportWidth, isMobile) && viewportWidth < DOCK_ROOMY_VIEWPORT;
+}
 
 /** A width the panel may take: a whole number between the two ends. */
 export function clampDockWidth(width: number): number {
