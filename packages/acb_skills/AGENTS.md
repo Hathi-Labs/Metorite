@@ -17,7 +17,13 @@ not write a second copy of that seam. A bare test file name is under
 1. loader.py -- `load_agent()` is the main entry point. It supports a GitHub `repo_url` and a `local_path`.
 2. integrations.py -- `build_integrations()` resolves credentials from the Integration Registry.
 3. agent_tools.py -- `call_agent`, `call_agents_parallel` and `call_agent_background` for cross-agent delegation.
-4. web_tools.py -- `web_search` (DuckDuckGo) and `fetch_page` (Jina Reader). It needs no credential.
+4. web_tools.py -- `web_search` and `fetch_page` (spec `web_research.md` §3.1). They need no credential.
+   - `web_search` asks SerpAPI when a key is set, and then the free `ddgs` engines.
+   - `fetch_page` reads through ONE guard. Each hop checks its host with `acb_common.public_address.pinned_public_address` before the request, and it connects to that address. Do not write a second address rule, and never import `gateway` here.
+   - The guard follows at most 5 redirects by hand. A read stops at 20 seconds and 15 MB. `_client` is the one client builder, with no redirect and no proxy from the env.
+   - Jina Reader gets a URL only after the whole chain passes the guard. Jina's text wins, and the direct read is the fallback.
+   - `UntrustedFrame` wraps the output in a `WEB PAGE` block. The URL and the type sit inside it. A refusal is one line that names the host, never the path.
+   - Fence: `test_web_fetch_guard.py`.
 5. write_artifact.py -- the `write_artifact` tool, which surfaces created files in the UI.
    - The chat shows a card for each file, so the tool texts tell the model to paste no link. Fence: `test_artifact_link_prompts.py`.
    - It owns the run's artifact context, the ContextVar seam that every workspace tool reads through `artifact_context()`. Never add a module-level dict for run state.
