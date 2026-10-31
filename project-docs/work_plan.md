@@ -167,7 +167,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_graph.md` · `specs/knowledge_base.md` §20 · `specs/company_context.md` | Metorite: epic 783 (Knowledge) · D128, D132 · 2026-10-29: KG-0 written, KG-1, KG-2 and KG-3a built · next KG-4 and KG-9, then KG-3b after the KG-2 backfill |
 | WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` · `specs/agent_coordination.md` (D140) | Metorite: epics 321 (coordination, D135 and D140), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · MCP-P1a built dark 2026-10-30 (`external_agent_access.md` §19) · next tasks 1045 and 1054, SW-4, SW-10b (the sweep on staging first), then SW-29a and SW-30a, and MCP-P1b and MCP-P2a |
 | WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · milestone is STU-Q6 | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141 · STU-0 spec merged with this row · next B1 (the read-only action catalog), then the Stage 1 slices of §15 as the owner answers STU-Q1 and STU-Q2 |
-| WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) | Metorite: epic 492, sub-epic UX-D · UI-G1 is built · next UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
+| WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) · `specs/glass_look.md` (phase GL, D143) | Metorite: epic 492, sub-epic UX-D, task 1125 (GL) · UI-G1 is built · **GL (owner, 2026-10-31): Aroh's glass look, LIVE in production since 2026-10-31 05:38 UTC behind `NEXT_PUBLIC_UI_LOOK` (GL-9 done on the owner's word; staging no longer exists). GL-0 to GL-4 built (gate and tokens, primitives, shell, chat). Next GL-5 (the tint) and GL-6 (one pass per app)** · then UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
 | WS-WH | **Writing Help** | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 493 · next WA-1 |
 | WS-CHAT | **AI chat**: Mira, the one assistant | 🟢 active · M1 | `specs/one_assistant_context.md` · `specs/chat_first_surface.md` | Metorite: project AI Chat Interface, epic 470 · a parallel session owns it · next #469 with BR-5, #471, WS-58, SUB-1 (the sub-agent policy for OA-9) |
 | WS-PRE | **Preview apps**: Notes, Meetings, Dashboard | ⏸ after Phase 2 · M4 | `specs/note_taker_app.md` · `specs/meeting_bot_platform_plan.md` | Metorite: epic 494 · next E-28, E-25 |
@@ -4885,6 +4885,33 @@ The owner answered the proposal of the Metorite epic 1129, "Recent chats and ope
 8. **Dated facts (PZ-22, Metorite task 317).** A fact gains `since` and `superseded_by`. A replaced fact stays, hidden from the block.
 9. **Who flips (the agent's recommendation).** The production flip of `ASSISTANT_CHAT_SUMMARY_ORGS` is owner-only (§6 D4). Its job spends the org's credits with no request of the member. Each other flip of §15 is gate `enforcement-flip`. The owner did not see this item one by one, and may overrule it.
 10. **The defaults.** The owner saw items 1 to 8 in chat. D-PZ-25 to D-PZ-30, D-PZ-33 and D-PZ-35 of the spec's §15.11 are the agent's design defaults. The owner may overrule any of them. §15.12 holds five questions, each with a default.
+
+### D143 — Aroh comes into Metorite. Its glass design language becomes the one look, staging first, and it stays revertable until the owner approves it (2026-10-31)
+
+The owner said on 2026-10-31, in chat: "Earlier, I was planning to have Aroh as a separate application, independent of Metorite but connected to the same operator console, but I am undoing that decision." The owner asked to lift Aroh's UI/UX system into Metorite: the Apple-like feel, the colours, the chat interface, a more tasteful use of the company's highlight colour, the file manager, and later Aroh's tools. The owner set three conditions the same day: do it systematically across every app, make it revertable, and change nothing in production until the owner says so. Board: **WS-UX**, phase GL. Owning spec: `specs/glass_look.md`. Metorite: task 1125, under epic 492.
+
+1. **Aroh does not ship as a separate app.** Its interface, its chat patterns and later its tools come into Metorite. The Console seats for Aroh (tasks 1105 and 1109) stop. The Aroh repo stays as the reference.
+2. **Glass becomes the one look, after the owner approves it on staging.** Until then two looks exist. Production keeps classic. The build gate `NEXT_PUBLIC_UI_LOOK=glass` puts glass on staging, where glass is the default. This is a bounded exception to `DESIGN_SYSTEM.md` §0, and for the trial it bounds D69.1 (one look) and D69.3 (three knobs, no font control): the Design switch is a fourth knob, and glass brings its own face. GL-Z ends both exceptions and leaves one look.
+3. **Production changes only on the owner's word.** An agent never writes the gate on production (GL-9, OWNER-GATE). A merge still reaches production each night, so every GL change keeps the classic look whole: glass applies only under `<html data-look="glass">`.
+4. **Colour means something.** The tint is the organization's highlight colour. It marks only what a member can act on, what is selected, and the member's own chat bubble. State takes the status colours, and an icon tile takes a system colour.
+5. **The artifact library takes Aroh's Files design** (WS-60 AM-2). WS-60 keeps every data rule.
+6. **Aroh's tools come in through the tool-pack seam** (WS-67), in their own spec (GL-8).
+
+### D144 — Staging is retired. A merge may ship to production by a dispatch (2026-10-31)
+
+Owner directive, 2026-10-31, in chat. Metorite: task 1215. It supersedes the staging parts of the 2026-10-17 directive and of WS-38. It replaces the 2026-10-27 rule "Do not push to production yourself".
+
+```text
+"you can push directly to production. Instead of using a VPS, I will be using a local workstation and later on set that up for CI/CD."
+```
+
+1. **Staging is retired.** The dev and staging VPS `srv1747539` (`dev.metorite.com`) stays cancelled. Its plan expired on 2026-10-31, and the VM is suspended. Production `srv1914284` does not change.
+2. **A merge may ship at once.** After a merge, an agent may run `gh workflow run deploy.yml --ref main -f reason="<why>"`. The run ships the tip of `main`.
+3. **The care stays.** The unit-test job on the tip of `main` must pass first. For a migration in the range, confirm the pre-migration backup in the production journal. The evidence is `/version` `applied_sha` and the smoke jobs. Report it in the same message as the act.
+4. **A dispatch ships every merge on `main`.** Name what goes out.
+5. **The daily release stays.** It runs at 21:30 UTC and is the default clock. `RELEASE_HOLD` still stops it.
+6. **Flags wait on production.** A flag that waited for a staging check now waits for the owner's check on production.
+7. **A local workstation will become the CI/CD box.** Nobody has built it.
 
 
 ## 4. Single-owner registry (who owns duplicated work)

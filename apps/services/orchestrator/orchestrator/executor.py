@@ -802,9 +802,7 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
         if read is not None:
             raw, preferred, zone, display = read
             stored = assistant_profile.stored_profile(raw)
-            name = assistant_profile.resolve_address_name(
-                stored["address"].get("name"), preferred, display)
-            block = assistant_profile.render_block(raw, name)
+            block = assistant_profile.member_block(raw, preferred, display)
             greeting = assistant_profile.effective_greeting(raw) if block else ""
             if stored["learning"] is True:
                 interview = stored.get("interview")
@@ -1423,6 +1421,103 @@ class _SetupLaps:
                 "executor.setup_steps_ms", agent=agent_name, run_id=run_id,
                 total_ms=sum(self.steps.values()), **self.steps,
             )
+
+
+async def _early_crm_facts() -> list[Any]:
+    """The CRM facts of this run, read as the member. Never raises."""
+    from acb_skills.org_facts_tools import crm_facts_for_run
+
+    return await crm_facts_for_run()
+
+
+class _EarlyReads:
+    """Chat speed SPD-1 part 2: three reads of a streamed run's setup that
+    need only the run binding. They start beside the agent load, so they no
+    longer run one after another before the first model request.
+
+    Production, 2026-10-30: 53% of chat turns came more than 5 minutes after
+    the one before, so the caches of these reads were cold. The knowledge
+    index (about 270 ms cold), the mailbox list (part of a 1.1 s cold email
+    context) and the CRM facts (283 ms median) each waited in turn.
+
+    * ``knowledge`` fills the cache of :func:`_prime_knowledge_index`.
+    * ``mailboxes`` fills the mailbox cache that :func:`_prime_email_context`
+      reads, under that function's own rule (:func:`_email_ctx_member`).
+    * ``crm_facts`` is the value that :func:`_add_crm_facts_block` would read.
+      That function keeps its own rule and only takes this value in place of
+      its own read. It starts only for the orchestrator, outside a
+      ``no_egress`` run, for an org on ``CRM_QUESTIONS_ORGS``. That gate is
+      WIDER than the rule of the block: the early read cannot see whether the
+      run will hold a CRM tool (an admin can turn the ``crm`` skill family
+      off). In that case the read still goes out, as the member, and the
+      block drops its value, so the model sees nothing of it. Reading the
+      toggle first would cost a sync DB read on the loop, which costs more
+      than the read it saves (review of SPD-1 part 2, P2).
+
+    Each task copies the run's context when it starts, so it reads as the
+    run's member and org, never a request field (R5). Nothing here writes
+    the run's context. :meth:`settle` awaits the two cache fills before the
+    first reader of the caches. :meth:`close` cancels what the run did not
+    await. Fence: ``tests/unit/test_early_reads.py``.
+    """
+
+    __slots__ = ("crm_facts", "knowledge", "mailboxes")
+
+    def __init__(
+        self, knowledge: asyncio.Future[Any] | None = None,
+        mailboxes: asyncio.Future[Any] | None = None,
+        crm_facts: asyncio.Future[Any] | None = None,
+    ) -> None:
+        self.knowledge = knowledge
+        self.mailboxes = mailboxes
+        self.crm_facts = crm_facts
+
+    @classmethod
+    def start(cls, agent_name: str, *, no_egress: bool) -> _EarlyReads:
+        knowledge = asyncio.ensure_future(_prime_knowledge_index(agent_name))
+        mailboxes = crm_facts = None
+        if agent_name == _EMAIL_CTX_AGENT:
+            member = _email_ctx_member()
+            org = _current_run_org()
+            if member and org:
+                try:
+                    from acb_skills import email_chat_context as ecc
+                except ImportError:  # as _prime_email_context: no block, never the turn
+                    ecc = None
+                if ecc is not None:
+                    mailboxes = asyncio.ensure_future(ecc.prime_mailboxes(str(org), member))
+            if not no_egress and _crm_questions_on(org):
+                crm_facts = asyncio.ensure_future(_early_crm_facts())
+        return cls(knowledge, mailboxes, crm_facts)
+
+    async def settle(self) -> None:
+        """Await the two cache fills. Each one never raises, and a fault
+        here leaves the cache as the read left it."""
+        for task in (self.knowledge, self.mailboxes):
+            if task is not None:
+                with contextlib.suppress(Exception):
+                    await task
+
+    def close(self) -> None:
+        """Cancel each read that is still running, and read the outcome of
+        each one that ended, so asyncio logs no unread exception."""
+        for task in (self.knowledge, self.mailboxes, self.crm_facts):
+            if task is None:
+                continue
+            if not task.done():
+                task.cancel()
+            elif not task.cancelled():
+                task.exception()
+
+
+def _crm_questions_on(org: Any) -> bool:
+    """``CRM_QUESTIONS_ORGS`` names *org*. Fails closed."""
+    try:
+        from acb_skills.crm_tools import questions_org_on
+
+        return bool(org) and bool(questions_org_on(org))
+    except Exception:
+        return False
 
 
 def _pack_delegation_refusal(agent_name: str) -> str | None:
@@ -5958,6 +6053,9 @@ async def run_agent_stream(
     # Chat speed (2026-10-30): the same task while a parallel start waits for
     # its answer, else None. The Tier 1 loop settles it (§4.3).
     _par_task: asyncio.Future[Any] | None = None
+    # Chat speed SPD-1 part 2: the reads that start beside the load. The
+    # finally cancels what the run did not await.
+    _early: _EarlyReads | None = None
 
     try:
         # WS-67 OA-7c: the read of layer (a) runs beside the load, and the
@@ -5996,10 +6094,12 @@ async def run_agent_stream(
         # RUN_ERROR then reads like an agent that cannot load.
         await _assert_may_run_agent(agent_name)
         _laps.lap("access")
-        # WS-61 KB-4a: read the orchestrator's Knowledge index block here,
-        # because the per-turn context is built by sync code.
-        await _prime_knowledge_index(agent_name)
-        _laps.lap("knowledge")
+        # WS-61 KB-4a: the orchestrator's Knowledge index block is read
+        # before the per-turn context, because sync code builds that context.
+        # SPD-1 part 2: it starts here with two other reads, beside the load,
+        # and `_early.settle()` awaits it before the first reader.
+        _early = _EarlyReads.start(agent_name, no_egress=_stream_no_egress)
+        _laps.lap("early_start")
         with await _load_agent_off_loop(
             agent_name,
             run_id=run_id,
@@ -6075,7 +6175,8 @@ async def run_agent_stream(
             # CRM-Q32-8: the holder of this run learns whether the run still
             # holds the reply of a question card (`mark_run`).
             _run_tools = await _add_crm_facts_block(
-                agents, _run_tools, no_egress=_stream_no_egress, mark_run=True)
+                agents, _run_tools, no_egress=_stream_no_egress, mark_run=True,
+                facts=_early.crm_facts)
             _laps.lap("crm_facts")
             _log_agent_tools_resolved(agent_name, agents, _own_tools)
             agents = _log_request_tools_view(agents, agent_name)
@@ -6236,6 +6337,10 @@ async def run_agent_stream(
 
             if agents:
                 _tier_task = asyncio.ensure_future(_ask_run_tier(agents[0]))
+            # SPD-1 part 2: the knowledge index and the mailbox list that
+            # started beside the load are in their caches before any reader.
+            await _early.settle()
+            _laps.lap("early_reads")
             # §7.1.1: the mailboxes and the email working set of this chat,
             # read now that the session is bound, for the sync context.
             await _prime_email_context(agent_name)
@@ -8215,6 +8320,9 @@ async def run_agent_stream(
         # apply awaited it.
         if _pack_task is not None and not _pack_task.done():
             _pack_task.cancel()
+        # SPD-1 part 2: the early reads that the run did not await.
+        if _early is not None:
+            _early.close()
         # H-363: a turn that was cancelled, or stopped on any other path,
         # pushes nothing. The request goes, and the log says so.
         _drop_agent_push(run_id, "the turn did not finish")

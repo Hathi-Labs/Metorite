@@ -18,12 +18,12 @@ export type BadgeTone = "neutral" | "primary" | "info" | "success" | "warning" |
 
 const TONES: Record<BadgeTone, string> = {
   neutral: "bg-secondary text-muted-foreground",
-  primary: "bg-primary/10 text-primary",
+  primary: "bg-primary/10 text-primary glass:bg-primary/12",
   // The blue a status means. It does not follow the member's accent.
-  info: "bg-info/10 text-info",
-  success: "bg-success/10 text-success",
-  warning: "bg-warning/10 text-warning",
-  destructive: "bg-destructive/10 text-destructive",
+  info: "bg-info/10 text-info glass:bg-info/12",
+  success: "bg-success/10 text-success glass:bg-success/12",
+  warning: "bg-warning/10 text-warning glass:bg-warning/12",
+  destructive: "bg-destructive/10 text-destructive glass:bg-destructive/12",
 };
 
 /**
@@ -32,6 +32,11 @@ const TONES: Record<BadgeTone, string> = {
  * here rather than copying the string, or the two drift apart.
  */
 export const BADGE_SHAPE = "inline-flex items-center gap-1 rounded-md";
+/**
+ * The glass look: a pill, with Aroh's padding and type (D143, GL-2). Only
+ * `Badge` wears it. `EntityPill` reads `BADGE_SHAPE` and keeps its own shape.
+ */
+const GLASS_PILL = "glass:rounded-full glass:px-2.5 glass:py-0.5 glass:text-footnote glass:font-medium";
 /** The shape plus `.cc-control`: the themed focus ring and hover layer. */
 export const BADGE_BASE = `cc-control ${BADGE_SHAPE}`;
 
@@ -89,7 +94,7 @@ export default function Badge({
   return (
     <span
       title={title}
-      className={`${BADGE_BASE} ${dims.chip} ${ink === "foreground" ? TONES[tone].replace(/\btext-\S+/, "text-foreground") : TONES[tone]} ${className}`}
+      className={`${BADGE_BASE} ${dims.chip} ${GLASS_PILL} ${ink === "foreground" ? TONES[tone].replace(/\btext-\S+/, "text-foreground") : TONES[tone]} ${className}`}
     >
       {dot && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
       {icon && <Icon name={icon} size={dims.icon} />}

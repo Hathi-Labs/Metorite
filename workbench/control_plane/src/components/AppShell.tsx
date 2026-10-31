@@ -244,7 +244,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     // Fence: `src/lib/scrollWithin.test.ts` and `e2e/email-composer-scroll.spec.ts`.
     return (
       <SidebarFoldProvider placement={frame === "full" ? "bar" : "rail"}>
-      <div data-app-shell="" className={frame === "full" ? "relative flex h-dvh flex-col overflow-clip" : "relative flex h-dvh overflow-clip"}>
+      <div data-app-shell="" className={`${frame === "full" ? "relative flex h-dvh flex-col overflow-clip" : "relative flex h-dvh overflow-clip"} glass:bg-grouped`}>
         {frame === "full" ? (
           <ShellFrame lead={<BarBrand />}>
             <div className="flex min-h-0 flex-1">
@@ -336,7 +336,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           nav, so pages get the full viewport. pt-safe on the shell keeps
           content out of the notch/status bar. */}
       {/* `relative overflow-clip` for the reason of the desktop root above. */}
-      <div data-app-shell="" className="relative flex flex-col overflow-clip bg-background pt-safe" style={{ height: "100dvh" }}>
+      <div data-app-shell="" className="relative flex flex-col overflow-clip bg-background glass:bg-grouped pt-safe" style={{ height: "100dvh" }}>
         {/* Page content — pb-nav reserves the fixed bottom bar's FULL height
             (content + safe-area inset), so nothing hides under it */}
         {shellBarOn() ? (
@@ -367,7 +367,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {chatOn ? null : <AgentPill />}
 
         {/* Bottom navigation bar — fixed at viewport bottom, never scrolls. pb-safe lifts it above the iOS home indicator */}
-        <div className="fixed bottom-0 inset-x-0 z-50 border-t border-border bg-card/90 backdrop-blur pb-safe">
+        <div className="fixed bottom-0 inset-x-0 z-50 border-t border-border bg-card/90 backdrop-blur pb-safe glass:border-t-0 glass:glass-chrome glass:rounded-t-2xl">
           {/* CF-2: one nudge above the Ask tab, for a member who never wrote
               to the assistant. Behind the chat-first flag. */}
           {chatOn ? <ChatNudge placement="tab" /> : null}
@@ -394,8 +394,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               onClick={closeDrawer}
             />
             {/* Solid, not glass: the page's words read through a translucent
-                sheet and made every menu look broken (owner, 2026-10-09). */}
-            <aside className="absolute inset-x-0 bottom-0 flex max-h-[85%] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl chat-fade-in">
+                sheet and made every menu look broken (owner, 2026-10-09).
+                Glass keeps the reason: the sheet takes the menu material, the
+                near-opaque one (95%) that is made to read over anything, so
+                no word of the page shows through it (D143, GL-3). */}
+            <aside className="absolute inset-x-0 bottom-0 flex max-h-[85%] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl chat-fade-in glass:border-t-0 glass:glass-menu-flat">
               {/* Drag handle */}
               <div className="flex justify-center pt-2 pb-1">
                 <div className="w-10 h-1 rounded-full bg-muted-foreground/30" />
@@ -432,7 +435,7 @@ function BarBrand() {
   const { access, loading } = useAccess();
   const workspace = shouldPollWorkspace(access, loading);
   return (
-    <div data-shell-brand className="flex w-64 shrink-0 items-center pr-2">
+    <div data-shell-brand className="flex w-64 shrink-0 items-center pr-2 glass:pl-2">
       {/* ⚠️ The control sits in a column exactly as wide as the folded rail
           (`w-14`), centred, so it is on the same vertical line as the rail's
           icons below it (owner, 2026-10-10: "in line with all the icons of the
@@ -576,16 +579,16 @@ function MobileBottomNavInner({
             <Link
               href={home.href}
               onClick={close}
-              className={`rounded-lg px-3 py-2.5 tech-transition flex items-center gap-2.5 ${
+              className={`rounded-lg glass:rounded-row px-3 py-2.5 tech-transition flex items-center gap-2.5 ${
                 isActive(pathname, home.href)
                   ? "bg-primary/10 text-primary"
                   : "text-muted-foreground hover:bg-secondary hover:text-foreground"
               }`}
             >
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground">
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground glass:bg-transparent glass:text-primary">
                 <AppIcon name={home.icon} size={15} />
               </span>
-              <span className="text-sm font-medium">{home.label}</span>
+              <span className="text-sm font-medium glass:text-subhead">{home.label}</span>
             </Link>
           </div>
         )}
@@ -594,8 +597,8 @@ function MobileBottomNavInner({
             <div
               className={
                 section.sub
-                  ? "px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60"
-                  : "px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
+                  ? "px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 glass:normal-case glass:tracking-normal glass:text-caption"
+                  : "px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground glass:normal-case glass:tracking-normal glass:text-footnote"
               }
             >
               {section.label}
@@ -613,16 +616,16 @@ function MobileBottomNavInner({
                     href={p.href}
                     onClick={close}
                     aria-label={rowName(p.label, appNeeds[p.href], b?.label, floor)}
-                    className={`rounded-lg px-3 py-2.5 tech-transition flex items-center gap-2.5 ${
+                    className={`rounded-lg glass:rounded-row px-3 py-2.5 tech-transition flex items-center gap-2.5 ${
                       active
                         ? "bg-primary/10 text-primary"
                         : "text-muted-foreground hover:bg-secondary hover:text-foreground"
                     }`}
                   >
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground">
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground glass:bg-transparent glass:text-primary">
                       <AppIcon name={p.icon} size={15} strokeWidth={active ? 2.5 : 2} />
                     </span>
-                    <span className="text-sm font-medium">{p.label}</span>
+                    <span className="text-sm font-medium glass:text-subhead">{p.label}</span>
                     {b ? (
                       <NavBadge count={b.count} tone={b.tone} label={b.label} />
                     ) : meta?.kind === "needs" ? (

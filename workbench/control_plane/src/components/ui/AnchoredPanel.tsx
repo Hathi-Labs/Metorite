@@ -103,7 +103,8 @@ export type PanelVariant = "panel" | "tip";
 
 /** The surface classes of each variant. Exported for the markup test. */
 export const PANEL_SURFACES: Record<PanelVariant, string> = {
-  panel: "overflow-y-auto rounded-md border border-border bg-card shadow-md",
+  panel:
+    "overflow-y-auto rounded-md border border-border bg-card shadow-md glass:rounded-2xl glass:border-transparent glass:glass-menu",
   tip: "pointer-events-none rounded-md bg-tooltip text-tooltip-foreground shadow-md",
 };
 

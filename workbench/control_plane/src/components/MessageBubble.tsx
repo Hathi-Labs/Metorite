@@ -596,7 +596,7 @@ function MessageBubble({
           <div className="max-w-[88%] sm:max-w-[78%]">
             <div
               onDoubleClick={startEdit}
-              className={`px-4 py-2.5 text-[13px] sm:text-sm leading-relaxed bg-primary/15 text-foreground rounded-2xl rounded-tr-md tech-transition ${startEdit ? "cursor-pointer select-none hover:bg-primary/20" : ""}`}
+              className={`px-4 py-2.5 text-[13px] sm:text-sm leading-relaxed bg-primary/15 text-foreground rounded-2xl rounded-tr-md tech-transition ${cardAnswer ? "" : "glass:bg-primary glass:text-primary-foreground "}glass:text-body glass:sm:text-body glass:leading-normal glass:rounded-[20px] glass:rounded-br-[6px] ${startEdit ? `cursor-pointer select-none hover:bg-primary/20${cardAnswer ? "" : " glass:hover:bg-primary"}` : ""}`}
               title={startEdit ? "Double-click to edit" : undefined}
             >
               {cardAnswer ? (
@@ -771,7 +771,7 @@ function MessageBubble({
                 {b.indexes.map((i) => renderGenUi(i))}
               </div>
             ) : (
-              <div key={`text-${k}`} className="mt-3 text-[12px] sm:text-[13px] text-foreground leading-relaxed min-w-0">
+              <div key={`text-${k}`} className="mt-3 text-[12px] sm:text-[13px] text-foreground leading-relaxed min-w-0 glass:text-body glass:sm:text-body glass:leading-normal glass:glass-prose">
                 <MarkdownBody
                   content={b.text}
                   onChoice={onChoice}

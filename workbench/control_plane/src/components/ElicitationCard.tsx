@@ -205,6 +205,13 @@ export default function ElicitationCard({
   const declinedNote = declinedNoteFor(questions.map(statedDefault));
   const aside = declined ? declinedNote : answered ? plainTitle(answered) : undefined;
   const canDecline = !!onDecline && !closed;
+  // Glass only (GL-4): a card that wants an answer is tinted, and a settled
+  // card is a plain surface. Each has a solid icon tile in a system colour.
+  const glassFrame = !closed
+    ? "glass:glass-card-tile glass:rounded-[22px] glass:border-primary/20 glass:bg-primary/[0.05] glass:p-3"
+    : `glass:glass-card-tile glass:rounded-[22px] glass:border-transparent glass:glass-surface glass:p-3 ${
+        declined ? "glass:[--tile:var(--system-gray)]" : "glass:[--tile:var(--system-green)]"
+      }`;
 
   return (
     <RollupCard
@@ -218,7 +225,7 @@ export default function ElicitationCard({
       <section
         aria-label={title}
         data-elicitation-card={declined ? "declined" : isAnswered ? "answered" : "open"}
-        className={CARD_FRAME_CLASS}
+        className={`${CARD_FRAME_CLASS} ${glassFrame}`}
       >
         {canDecline ? (
           <div className="flex min-w-0 items-center gap-1.5">

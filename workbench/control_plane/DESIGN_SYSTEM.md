@@ -30,6 +30,31 @@ own theme names. The contrast gate measures them. It is a mirror, and
 `themes.test.ts` fails if it drifts from the stylesheet. Change a value in
 both, or in neither.)*
 
+### 0a. The one exception: the glass trial (D143, 2026-10-31)
+
+The owner chose Aroh's design language, **glass**, as the next look. Until the
+owner approved production on 2026-10-31 (GL-9), the look above stays beside
+it as Classic, one switch away. `project-docs/specs/glass_look.md` owns the
+trial.
+
+- Glass applies only under `<html data-look="glass">`. The build gate
+  `NEXT_PUBLIC_UI_LOOK=glass` lets the server render that attribute.
+  Production has the gate since 2026-10-31. A build with no gate renders
+  classic.
+- `globals.css` holds the glass token blocks after the classic `:root` and
+  `.light` blocks. Do not edit the classic values for glass.
+- A glass difference in a component goes behind the `glass:` variant. For
+  example, `rounded-lg glass:rounded-full`. Under classic it matches nothing.
+- The glass materials (`glass-chrome`, `glass-menu`, `glass-surface`,
+  `glass-press`, `glass-scroll-edge`) and the glass type styles
+  (`text-subhead`, `text-body` and the others) go only behind `glass:`.
+- `src/lib/theme/glassLook.test.ts` fences all three rules, and it measures
+  the contrast of the glass pairs.
+- Settings → Appearance → Design switches one member between New and Classic.
+
+GL-Z ends the trial. Then glass becomes the `:root` and `.light` values, every
+`glass:` class becomes a plain class, and this section goes.
+
 **What a member may still change**, at Settings → Appearance — these adjust the
 one look, they do not replace it:
 
@@ -218,6 +243,11 @@ import Badge from "@/components/ui/Badge";
 `Button` — `variant`: `primary | secondary | ghost | destructive | text`;
 `size`: `sm | md | lg | icon-xs | icon-sm | icon | none`; plus `icon`,
 `loading`, `radius`, `layout`.
+
+`Switch` (`components/ui/Switch.tsx`, GL-2) — the one on/off switch:
+`checked`, `onChange`, `label`, `disabled`, `classic`. Pass `label` unless a
+`<label>` around it names it. No other file draws `role="switch"`. Fence:
+the "one switch" test in `src/components/rawControls.test.ts`.
 
 **Why this is a component and not a documented class string.** Colour can be a
 class. *Control personality* cannot: the hover state layer, the outline on

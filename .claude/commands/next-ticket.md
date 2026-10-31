@@ -141,33 +141,21 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   with today's main (migration numbers, H-ids, D-numbers, files both sides
   changed). Exit 1 means merge `origin/main` into the branch, fix, push, and
   wait for `pr-check` again. Then watch the `deploy` run to green.
-- **⚠️ A merge does NOT deploy to production (WS-38, since 2026-10-16).** The
-  push run moves the `staging` ref only. Production moves at 21:30 UTC (03:00
-  IST) each day. Report the merge as "reaches production at the next daily
-  release".
-- **⚠️ Do not dispatch production** (owner directive, 2026-10-27). Run
-  `gh workflow run deploy.yml --ref main -f reason="<why>"` only when the owner
-  asks for it in this session, or when production is down. A dark feature
-  never needs it. If you think a change cannot wait, ask the owner. After a
-  run that the owner asked for, watch it and report the SHA that
-  `GET /version` serves. Do not call a hotfix done before you see that SHA.
-- **⚠️ Smoke-test it on staging (owner directive, 2026-10-17, narrowed by
-  LD-2 on 2026-10-30).** Steps 4 and 5 tested the behaviour locally. Staging
-  checks what the PC cannot. Wait until
-  `curl -s https://api.dev.metorite.com/version` shows your merge SHA, or a later
-  one, as `sha` and `applied_sha`. Then sign in on `https://dev.metorite.com`
-  with the same Google or Microsoft account as on production. Load the page of
-  the change, and check one acceptance criterion there.
-- **Test in full on staging only what the PC cannot:** the deploy path
-  (`deploy/`, units, Caddy, env files), a real OAuth sign-in or connect, a real
-  provider webhook or sync, and a migration on production-shaped data. Report
-  "verified locally, staging smoke at `<sha>`, reaches production at the next
-  daily release". If staging does not answer, write "staging not up", and do
-  not claim the test.
-- If staging shows a defect, fix forward or revert before 21:30 UTC. To stop
-  that night's release, set the repository variable `RELEASE_HOLD` to `1`. A
-  hotfix goes to staging first too, unless production is down.
-  `specs/staging_and_daily_release.md` owns the design.
+- **Ship it (D144, owner directive, 2026-10-31).** Staging is retired. A merge
+  moves `main` only. Production moves at 21:30 UTC, or when you dispatch it.
+- Dispatch only after the unit-test job on the tip of `main` passes (see the
+  next bullet).
+- Check the range: `git log <prod applied_sha>..origin/main`. List the
+  migrations under `infra/postgres/` in it.
+- Dispatch: `gh workflow run deploy.yml --ref main -f reason="<why>"`. The run
+  ships every merge in the range. Name them in your report.
+- Watch the run. Confirm that `/version` `applied_sha` shows the tip and that
+  the smoke jobs pass. For a migration, read the pre-migration backup line in
+  the production journal.
+- Report "shipped to production at `<sha>`". Do not call it done before you see
+  that SHA.
+- `RELEASE_HOLD` stops the daily release only. Set it to `1` to hold that
+  night's run. `specs/staging_and_daily_release.md` owns the design.
 - Watch the job `Unit tests (a signal on a push, a gate on a release)` in that
   same `deploy` run to its end. On a push it does not gate, so two PRs that
   pass alone and fail together can land on `main`. A red `main` also blocks
