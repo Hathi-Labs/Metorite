@@ -91,12 +91,16 @@ class FakeOutbox:
                 return True
         return False
 
+    # The two budget reads count WhatsApp rows only, as the real SQL does
+    # (WS-66 RE-9b). ``test_reach_push.py`` runs the real SQL.
     async def interrupts_since(self, org, member, since):
         return sum(1 for r in self.rows if r["kind"] == "interrupt" and r["state"] == "sent"
+                   and r.get("channel", "whatsapp") == "whatsapp"
                    and r["member"] == member and r["created_at"] >= since)
 
     async def urgent_since(self, org, member, since):
         return sum(1 for r in self.rows if r["kind"] == "interrupt" and r["state"] == "sent"
+                   and r.get("channel", "whatsapp") == "whatsapp"
                    and r["member"] == member and r["created_at"] >= since
                    and r["key"].startswith("urgent:"))
 
@@ -1261,3 +1265,59 @@ class TestRemindersStayOffWhatsApp:
         from gateway.routes.shell import needs
 
         assert classes.NOT_ON_WHATSAPP == needs.REMINDER_KINDS
+
+
+# ── WS-66 RE-9b: a web push row is never WhatsApp's ─────────────────────────
+
+
+def _push_row(n: int, state: str = "planned", kind: str = "reminder_due") -> dict:
+    return {"id": f"ob-push-{n}", "org": ORG, "member": ME, "channel": "web_push",
+            "kind": kind, "key": f"reminder:r-{n}:e-{n}", "body": "reminder",
+            "state": state, "local_date": TODAY, "created_at": NOW}
+
+
+class TestWebPushRowsStayOffWhatsApp:
+    """The reminder loop plans and sends a ``web_push`` row
+    (``reach/push_channel.py``). The Reach loop and ``whatsapp.deliver``
+    never read one, send one or count one."""
+
+    async def test_a_planned_push_row_is_untouched_by_a_tick(self, world):
+        await loop.member_pass(ORG, ME)
+        planned = _push_row(1)
+        world.outbox.rows.append(planned)
+        before = dict(planned)
+        world.cards = [*every_reminder(), card("email:a:t1")]
+        assert await loop.member_pass(ORG, ME) == "interrupt:sent"
+        assert await loop.run_tick() == {(ORG, ME): "nothing"}
+        assert planned == before
+        # One WhatsApp message, for the email only.
+        [call] = world.sent.calls
+        assert call["kind"] == "interrupt" and SECRET not in _words(world)
+
+    async def test_sent_push_rows_never_count_in_the_whatsapp_cap(self, world, monkeypatch):
+        monkeypatch.setattr(get_settings(), "reach_daily_cap", 1)
+        await loop.member_pass(ORG, ME)
+        for n in range(3):
+            world.outbox.rows.append({**_push_row(n, "sent", "interrupt"),
+                                      "key": f"urgent:push-{n}"})
+        world.cards = [card("email:a:t1")]
+        assert await loop.member_pass(ORG, ME) == "interrupt:sent"
+        # The control: one WhatsApp interrupt fills the cap of 1.
+        world.cards = [card("email:a:t1"), card("email:a:t2")]
+        assert await loop.member_pass(ORG, ME) == "capped"
+
+    def test_the_whatsapp_path_names_no_push_row(self):
+        """``reach/loop.py``, ``reach/whatsapp.py`` and ``reach/routes.py``
+        import no push module and name no ``web_push`` row."""
+        import ast
+        from pathlib import Path
+
+        root = Path(loop.__file__).resolve().parent
+        for name in ("loop.py", "whatsapp.py", "routes.py"):
+            body = (root / name).read_text(encoding="utf-8")
+            assert "web_push" not in body and "push_channel" not in body, name
+            for node in ast.walk(ast.parse(body)):
+                if isinstance(node, ast.ImportFrom):
+                    mods = {str(node.module), *(f"{node.module}.{a.name}" for a in node.names)}
+                    assert not any("push" in m.split(".")[-1] for m in mods
+                                   if m.startswith("gateway.")), (name, mods)

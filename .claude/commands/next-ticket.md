@@ -102,9 +102,26 @@ and report. Never stash the work of another session.
 in full. If it reports BLOCKED, stop the cycle and report — do not dispatch a
 second implementer to route around a block.
 - **A slice that changes what the app does or draws runs locally first.** The
-  implementer starts `bash scripts/dev_up.sh` in its worktree. It checks each
-  criterion in the running app before it reports, and it leaves the stack up
-  for the verifier. `engineering_practice.md` §1.2 owns the stack.
+  implementer starts `bash scripts/dev_up.sh` in its worktree when it starts
+  the slice. It checks each criterion in the running app before it reports, and
+  it leaves the stack up for the preview and the verifier.
+  `engineering_practice.md` §1.2 owns the stack.
+
+**4b — Preview, then wait for the owner (D145).** Skip this step for a slice
+with nothing to see: docs, tests, a script, or a refactor with no change in
+behaviour.
+- Push the branch and open the PR as a draft, so `pr-check` runs now.
+- Send the owner one message, in chat and with `post_agent_activity` as a
+  `response`. It holds the local URL, what changed in three lines or fewer,
+  where to click, and the `visual-review` captures for a UI change.
+- Call `ask_on_task` with the options **Approve** and **Change it**. Then call
+  `get_agent_run` with `wait_seconds` 20 until the answer arrives.
+- **Change it:** send the owner's words to a fresh `ws-implementer` as a repair
+  round, then preview again.
+- **No answer in this session:** leave the draft PR and the open question,
+  and end the cycle with `AWAITING-OWNER`. The next session finds the answer in
+  `my_work`.
+- `engineering_practice.md` §1.3 owns this step.
 
 **5 — Verify.** Dispatch `ws-verifier`. It checks each behaviour criterion on
 the local stack itself (`bash scripts/dev_up.sh --check`, then the criterion
@@ -131,29 +148,33 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   next cycle — write it for an agent with no memory of this one. Change the
   `work_plan.md` §2 row only when the workstream's spec or epic changes. Confirm the
   owning spec's status header (R4) is current. If it is not, do it now.
-- Commit, push the branch, open a PR with `gh`. The PR body: WS id, the slice
-  built, acceptance evidence, verification output, reviewer findings, and what
-  was deferred.
+- Commit, push the branch, and open the PR with `gh` (step 4b opened it as a
+  draft for a slice with something to see). The PR body: WS id, the slice
+  built, the owner's approval, acceptance evidence, verification output,
+  reviewer findings, the gate result, and what waits for a later slice.
+- **Run the local staging gate (D145).** After the owner approves, run
+  `bash scripts/stage_local.sh > <log> 2>&1` in the worktree, beside steps 5
+  and 6. A pass posts `local-staging` on the head commit. A new commit needs a
+  new pass. Until LD-9 lands, run `bash scripts/ci_local.sh` instead, and name
+  the steps that ran in the PR body.
 - **Merge it and watch it** (root `CLAUDE.md` §3a and §4). Wait for `pr-check`
   to go green. Then run `bash scripts/premerge.sh` in the worktree, in the
   same command as the merge:
-  `bash scripts/premerge.sh && gh pr merge <n> --squash`. It tests the merge
-  with today's main (migration numbers, H-ids, D-numbers, files both sides
-  changed). Exit 1 means merge `origin/main` into the branch, fix, push, and
-  wait for `pr-check` again. Then watch the `deploy` run to green.
-- **Ship it (D144, owner directive, 2026-10-31).** Staging is retired. A merge
-  moves `main` only. Production moves at 21:30 UTC, or when you dispatch it.
-- Dispatch only after the unit-test job on the tip of `main` passes (see the
-  next bullet).
-- Check the range: `git log <prod applied_sha>..origin/main`. List the
-  migrations under `infra/postgres/` in it.
-- Dispatch: `gh workflow run deploy.yml --ref main -f reason="<why>"`. The run
-  ships every merge in the range. Name them in your report.
-- Watch the run. Confirm that `/version` `applied_sha` shows the tip and that
-  the smoke jobs pass. For a migration, read the pre-migration backup line in
-  the production journal.
-- Report "shipped to production at `<sha>`". Do not call it done before you see
-  that SHA.
+  `bash scripts/premerge.sh > <log> 2>&1 && gh pr merge <n> --squash`. It tests
+  the merge with today's main (migration numbers, H-ids, D-numbers, files both
+  sides changed). From LD-10 it also refuses a head commit with no
+  `local-staging` pass. Exit 1 means merge `origin/main` into the branch, fix,
+  push, and run the gate and `pr-check` again. Then watch the `deploy` run to
+  green.
+- **Production moves at 21:30 UTC (D145).** Do not dispatch `deploy.yml` after
+  a merge. Dispatch only for a hotfix that the owner asks for in this session,
+  or when production is down. Then follow D144 point 3: the unit-test job on
+  the tip of `main` passes first, you name every merge in
+  `git log <prod applied_sha>..origin/main`, and you confirm the pre-migration
+  backup for a migration.
+- Report "merged at `<sha>`, reaches production at tonight's release". After
+  the release, confirm `/version` `applied_sha`. Do not call it live before you
+  see that SHA.
 - `RELEASE_HOLD` stops the daily release only. Set it to `1` to hold that
   night's run. `specs/staging_and_daily_release.md` owns the design.
 - Watch the job `Unit tests (a signal on a push, a gate on a release)` in that
@@ -182,15 +203,17 @@ blocked from doing. Report the exact gate id the owner must grant.
 
 ## Final report
 
-Ten lines or fewer:
+Twelve lines or fewer:
 
 ```
 CYCLE: WS-n — <slice>
 AUDIT:    GO | GO-NARROWED | NO-GO | skipped (small slice) — <one line>
 BUILT:    <one line>
+PREVIEW:  APPROVED | AWAITING-OWNER | skipped (nothing to see) — <the URL>
 VERIFY:   PASS | FAIL — <the decisive evidence>
 TIER:     HIGH | STANDARD | LOW — <one line why>
 REVIEW:   APPROVE | n findings | skipped (LOW)
+GATE:     local-staging PASS | FAIL at <step> | ci_local.sh only (before LD-9)
 PR:       <url, or why none>
 BOARD:    <how the WS row now reads>
 OWNER NEEDS TO: <gated actions, or "nothing">

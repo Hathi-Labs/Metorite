@@ -33,12 +33,14 @@ both, or in neither.)*
 ### 0a. The one exception: the glass trial (D143, 2026-10-31)
 
 The owner chose Aroh's design language, **glass**, as the next look. Until the
-owner approves it, it runs as a trial on staging, and production keeps the
-look above. `project-docs/specs/glass_look.md` owns the trial.
+owner approved production on 2026-10-31 (GL-9), the look above stays beside
+it as Classic, one switch away. `project-docs/specs/glass_look.md` owns the
+trial.
 
 - Glass applies only under `<html data-look="glass">`. The build gate
-  `NEXT_PUBLIC_UI_LOOK=glass` lets the server render that attribute. Staging
-  has the gate, and production has not.
+  `NEXT_PUBLIC_UI_LOOK=glass` lets the server render that attribute.
+  Production has the gate since 2026-10-31. A build with no gate renders
+  classic.
 - `globals.css` holds the glass token blocks after the classic `:root` and
   `.light` blocks. Do not edit the classic values for glass.
 - A glass difference in a component goes behind the `glass:` variant. For

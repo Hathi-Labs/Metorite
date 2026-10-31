@@ -11,11 +11,10 @@
  *
  * ⚠️ Read at BUILD time. Next.js inlines `process.env.NEXT_PUBLIC_UI_LOOK`
  * only where the full name is written out, so keep it written out here.
- * Staging carries the line in `workbench/control_plane/.env.local`.
- * Production carries NO line until the owner says so (GL-9, OWNER-GATE).
- * Never write `NEXT_PUBLIC_UI_LOOK=classic` on production: the nightly
- * staging refresh copies production's NEXT_PUBLIC keys onto staging, and
- * that line would turn glass off there.
+ * Production carries the line in `workbench/control_plane/.env.local` since
+ * 2026-10-31 (GL-9: the owner said so in chat, and staging no longer
+ * exists). To revert every member to classic, delete that line and
+ * rebuild. A member reverts alone with Settings → Appearance → Design.
  *
  * Glass applies through ONE attribute on <html>. The server renders it when
  * the gate is on, so the default never flashes. The boot script removes it

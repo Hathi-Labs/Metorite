@@ -51,6 +51,15 @@ _KINDS: dict[str, tuple[Urgency, int]] = {
 KINDS = frozenset(_KINDS)
 
 
+def ttl_of(kind: str) -> int:
+    """The time to live of *kind*, in seconds. The send step of RE-9b skips a
+    planned row older than this (``reach/push_channel.py``), so a late retry
+    never sends a push that the push service would already drop."""
+    if kind not in _KINDS:
+        raise KeyError(kind)
+    return _KINDS[kind][1]
+
+
 def reminder_url(reminder_id: str) -> str:
     """The tap target: a path on this app (``PushMessage.payload`` checks it)."""
     return f"/chat?reminder={quote(str(reminder_id), safe='')}"
