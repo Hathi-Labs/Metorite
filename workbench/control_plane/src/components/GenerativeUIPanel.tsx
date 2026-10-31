@@ -108,6 +108,8 @@ const PANEL_HIDDEN_EVENTS = new Set([
   // The one assistant's mailbox mark (§7.1.1 rule 6). The transcript draws
   // it as a line, so the fold must not show it again as data.
   "email_mailbox_mark",
+  // The "used your profile" mark (PZ-20b). The message footer draws it.
+  "assistant_profile_used",
   // A file the turn wrote. `ArtifactCard` already renders it, with Open and
   // Download; the fold showed the same event again as raw data (UX review
   // 2026-09-23).
