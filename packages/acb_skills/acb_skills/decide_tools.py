@@ -10,12 +10,16 @@ returns a short line the model reads: the answer and how sure it is.
 (CLAUDE.md §4). A second decide client here would be a defect.
 
 🔴 **It sends NO member, on purpose (the R11 finding, §6A.14 CP-13d).** The
-run's member comes from ``event_payload["user_email"]``, and three gateway
-doors pass a caller's payload through unchanged (``/agent/run/stream``,
-``/agent/run``, ``/agent/run/async``). The webhook door spreads the sender's
-payload. A tool cannot tell a server-bound member from a claimed one. On the
-deployment arm ``X-CC-Member`` SELECTS the tenant, so a claimed member would
-be a tenant chosen by request input. So the tool sends none:
+run's member comes from ``event_payload["user_email"]``. Since H-337 the
+three gateway doors (``/agent/run/stream``, ``/agent/run``,
+``/agent/run/async``) drop a signed-in member's body claim
+(``routes/agent.py::_drop_identity_claims``). The two sync doors keep a
+claim of the member's own address, set to the session's address. But a
+service caller keeps its
+claim, and the webhook door spreads the sender's payload. A tool still
+cannot tell a server-bound member from a claimed one. On the deployment arm
+``X-CC-Member`` SELECTS the tenant, so a claimed member would be a tenant
+chosen by request input. So the tool sends none:
 
 * the org arm names its organization by the key, and the call serves;
 * the deployment arm refuses locally in the client, with no request, and the

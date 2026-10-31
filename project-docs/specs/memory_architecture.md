@@ -55,6 +55,14 @@ vs shared instancing)
 > manifest file**, and **does its memory-management skill do its own compaction** when the
 > bank grows? If it has a compaction protocol, we should port that rather than invent one.
 
+> **Answered 2026-10-30.** We read the repo on that day. Here are the two answers.
+
+> **No index or manifest file.** The repo keeps neither. `briefing.py` builds a briefing of about 6 KB at the start of a session. The SQLite FTS store of `memory_db.py` is the long-term index. The template file of the repo, `agent_repo_compatibility.md`, names an `agent_memory_index.json`. §10 question 1 cites that name, but the memory folder has no such file.
+
+> **Yes, it compacts itself.** Each file has a size cap: 25 KB for the context file, 20 KB for the insights and 15 KB for the session log. `memory_bank.py --consolidate --keep 15` moves the older sessions to an archive file. It first checks that SQLite holds each one, so they stay searchable. Each cycle also runs a dedup and a cross-reference audit.
+
+> [`personalization.md`](personalization.md) §15 says what Metorite takes from the repo, and what it does not take.
+
 ---
 
 ## 1. We don't have a memory system. We have seven.

@@ -12,8 +12,10 @@ seam, and the first two detached kinds: `brief.plan` and `brief.run`
 AUTO-2 (Metorite #814) adds the ledger of unattended runs in section 9. It is
 BUILT and dark, and its switch `UNATTENDED_LEDGER` is OFF.
 
-The switch `JOB_QUEUE` is OFF. No producer exists yet. The rest of BR-1b
-moves the first producers.
+The first producer is the brief. The seed hook of section 5c enqueues
+`brief.plan`, and `brief.plan` enqueues `brief.run`. The switch `JOB_QUEUE`
+is OFF. The rest of BR-1b moves the reminder loop, send-later and the
+agent-run sweeps onto the queue.
 
 This page is the engineering reference of the queue. It is not a product
 spec, so `project-docs/INDEX.md` does not list it.
@@ -265,6 +267,11 @@ worker.register("email.send_later", send, mode="detached", idempotent=True)
 - **The first consumer.** `brief/planner.py` seeds `brief.plan` for each org
   that `BRIEF_ENABLED` and `BRIEF_ORGS` admit. `brief/run.py` adds the hook
   at import, and `main.py` imports it before the worker starts.
+- **The next consumer (planned, not built).** WS-63 PZ-33b adds
+  `assistant_summaries.seed`. It enqueues the detached kind
+  `assistant.chat_summary` for each org that `ASSISTANT_CHAT_SUMMARY_ORGS`
+  admits, and only with the Router on. `personalization.md` §15.3 holds the
+  design.
 - **Fence.** `test_r8_run_org_runs_each_seed_hook_once_for_each_org_and_bucket`
   in `test_job_queue.py`.
 
