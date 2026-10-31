@@ -2,7 +2,7 @@
 
 /**
  * The workflow gallery, moved out of `/workflows` into the Studio library
- * (`ai_studio.md` §14 E1). The Studio page owns the one `<h1>`. This section
+ * (`ai_studio.md` §14 E1). The Studio page owns the one page heading. This section
  * heads itself with an `<h2>`. Module Studio now lives on a Studio tab.
  *
  * Data:  list    GET  /api/workflows
@@ -145,7 +145,7 @@ export default function WorkflowsGallery() {
           >
             <Icon name="RefreshCw" className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
           </button>
-          <Button size="lg" layout="flex items-center" onClick={onCreate} disabled={creating}>
+          <Button size="lg" layout="flex items-center whitespace-nowrap shrink-0" onClick={onCreate} disabled={creating}>
             {creating ? (
               <Icon name="Loader2" className="w-4 h-4 animate-spin" />
             ) : (

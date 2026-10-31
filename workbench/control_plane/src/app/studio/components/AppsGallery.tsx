@@ -2,7 +2,7 @@
 
 /**
  * The Custom Apps gallery, moved out of `/build/apps` into the Studio library
- * (`ai_studio.md` §14 A1). The Studio page owns the one `<h1>`, so this
+ * (`ai_studio.md` §14 A1). The Studio page owns the one page heading, so this
  * section heads itself with an `<h2>`. The run page and the Workshop stay at
  * `/build/apps/[slug]` and `/build/apps/[slug]/edit`.
  *
@@ -461,7 +461,7 @@ export default function AppsGallery() {
           >
             <Icon name="RefreshCw" className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
           </button>
-          <Button size="lg" layout="flex items-center" onClick={() => createApp("")} disabled={creating}>
+          <Button size="lg" layout="flex items-center whitespace-nowrap shrink-0" onClick={() => createApp("")} disabled={creating}>
             {creating ? (
               <Icon name="Loader2" className="w-4 h-4 animate-spin" />
             ) : (
@@ -573,6 +573,11 @@ export default function AppsGallery() {
                   ? "Describe the tool you need in the bar above and the Workshop will build it with you."
                   : "Switch filters, or describe a new tool above."}
               </p>
+              {apps.length === 0 && (
+                <Button size="none" layout="" onClick={() => createApp("")} disabled={creating} className="px-4 py-2 text-sm">
+                  Create an app
+                </Button>
+              )}
             </div>
           )}
 

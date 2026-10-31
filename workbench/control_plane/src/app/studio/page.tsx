@@ -7,7 +7,7 @@
  * the choice lives in the URL (`?kind=apps|workflows|skills`). Module Studio
  * is a second tab (`?tab=modules`).
  *
- * The page owns the one `<h1>`, through `AppTopBar`. The sections under it
+ * The page owns the one page heading, through `AppTopBar`. The sections under it
  * head themselves with an `<h2>`. The Apps section shows only to a member who
  * holds `build.apps`. Skills have no data yet, so that section is a plain
  * empty state and never a fake row.
@@ -31,6 +31,9 @@ import AppsGallery from "./components/AppsGallery";
 import WorkflowsGallery from "./components/WorkflowsGallery";
 
 const KINDS = ["all", "apps", "workflows", "skills"] as const;
+/** The raised panel every library section sits on (DESIGN_SYSTEM §3 `bg-card`). */
+const PANEL = "rounded-xl border border-border bg-card overflow-hidden shrink-0";
+
 type Kind = (typeof KINDS)[number];
 
 function readKind(raw: string | null): Kind {
@@ -93,11 +96,11 @@ function StudioLibrary() {
             activeId={kind === "apps" && !canBuildApps ? "all" : kind}
             onChange={(id) => go({ kind: id as Kind })}
           />
-          <div className="flex-1 overflow-y-auto">
-            {showApps && <AppsGallery />}
-            {showWorkflows && <WorkflowsGallery />}
+          <div className="flex-1 overflow-y-auto p-3 sm:p-4 flex flex-col gap-3 sm:gap-4">
+            {showApps && <div className={PANEL}><AppsGallery /></div>}
+            {showWorkflows && <div className={PANEL}><WorkflowsGallery /></div>}
             {showSkills && (
-              <section aria-label="Skills" className="flex flex-col">
+              <section aria-label="Skills" className={`flex flex-col ${PANEL}`}>
                 <div className="px-4 sm:px-6 py-3 border-b border-border">
                   <h2 className="text-sm font-bold text-foreground">Skills</h2>
                 </div>
