@@ -4,8 +4,10 @@
 directive of 2026-10-31. Decision **D141**. Board row **WS-UX** (phase GL).
 Metorite task #1125, under epic 492.
 
-**GL-0 and GL-1 are BUILT, 2026-10-31,** on staging only. Next: GL-2, GL-3
-and GL-4, which can run in parallel. §9 holds two questions for the owner.
+**GL-0 and GL-1 are BUILT, 2026-10-31,** on staging only. **GL-4 (the chat)
+is BUILT, 2026-10-31,** on its branch, with every change behind `glass:`.
+Next: GL-2 and GL-3, which can run in parallel. §9 holds two questions for the
+owner.
 
 ---
 

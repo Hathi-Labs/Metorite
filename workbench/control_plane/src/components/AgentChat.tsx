@@ -2284,7 +2284,7 @@ export default function AgentChat({
         {/* Scroll-to-bottom floating button */}
         {showScrollBtn && (
           <button onClick={scrollToBottom}
-            className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 w-8 h-8 rounded-full bg-card border border-border text-foreground shadow-lg flex items-center justify-center hover:bg-secondary hover:text-foreground tech-transition"
+            className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 w-8 h-8 rounded-full bg-card border border-border text-foreground shadow-lg flex items-center justify-center hover:bg-secondary hover:text-foreground tech-transition glass:glass-chrome glass:glass-press glass:border-transparent glass:hover:bg-transparent"
             aria-label="Scroll to bottom">
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M4 6l4 4 4-4" />
@@ -2477,7 +2477,7 @@ export default function AgentChat({
       </div>
 
       {/* ── Input area + VS Code-style bottom bar ─────────────────────── */}
-      <form onSubmit={handleSubmit} className={`shrink-0 border-t border-border bg-card/40 ${phoneChrome ? "px-4" : "px-3 sm:px-4"} pt-2 pb-safe-full`}>
+      <form onSubmit={handleSubmit} className={`shrink-0 border-t border-border bg-card/40 glass:border-transparent glass:bg-transparent ${phoneChrome ? "px-4" : "px-3 sm:px-4"} pt-2 pb-safe-full`}>
         {/* VS Code-style Todos panel — latest assistant turn's todo list */}
         {(() => {
           for (let i = messages.length - 1; i >= 0; i--) {
@@ -2599,8 +2599,19 @@ export default function AgentChat({
               at the right: Send, or Stop while a run is live and the box is
               empty. There is no send mode: a send during a run steers it
               (`lib/chatSteer.ts`). */}
+          {/* Glass only (GL-4): while a run is live, a spectrum turns round
+              the capsule. The glow is a SIBLING of the composer, never an
+              ancestor, so its filter cannot flatten the composer's blur. It
+              is `hidden` in classic. */}
+          <div className="relative">
+          {isRunActive && (
+            <div aria-hidden data-testid="working-glow" className="hidden glass:block glass:glass-working-glow absolute -inset-1 rounded-[30px]">
+              <div className="glass:glass-glow-ring" />
+            </div>
+          )}
           <div data-chat-composer className={[
             "rounded-2xl border border-border bg-secondary/50 focus-within:border-primary/40 tech-transition",
+            "glass:relative glass:rounded-[26px] glass:border-transparent glass:focus-within:border-transparent glass:glass-chrome",
             canSend ? "" : "pointer-events-none opacity-40",
           ].join(" ")}>
             <textarea ref={inputRef} value={input}
@@ -2871,6 +2882,7 @@ export default function AgentChat({
                 large={phoneChrome}
               />
             </div>
+          </div>
           </div>
 
           {/* A Stop that did not stop the run: it is still live, and the

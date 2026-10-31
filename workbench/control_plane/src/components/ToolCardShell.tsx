@@ -66,7 +66,7 @@ export function ToolCardShell({
       header="own"
       animate={animate}
     >
-      <div data-tool-card="" className={CARD_FRAME_CLASS}>
+      <div data-tool-card="" className={`${CARD_FRAME_CLASS} glass:glass-card-tile glass:rounded-[22px] glass:border-transparent glass:glass-surface glass:p-3`}>
         <div className="flex min-w-0 items-center gap-1.5">
           <div className="min-w-0 flex-1">
             <CollapsibleCardHeader lead={icon} />
