@@ -802,9 +802,7 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
         if read is not None:
             raw, preferred, zone, display = read
             stored = assistant_profile.stored_profile(raw)
-            name = assistant_profile.resolve_address_name(
-                stored["address"].get("name"), preferred, display)
-            block = assistant_profile.render_block(raw, name)
+            block = assistant_profile.member_block(raw, preferred, display)
             greeting = assistant_profile.effective_greeting(raw) if block else ""
             if stored["learning"] is True:
                 interview = stored.get("interview")
