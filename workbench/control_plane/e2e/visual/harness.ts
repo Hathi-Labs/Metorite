@@ -287,6 +287,7 @@ export async function captureContexts(
 
   const start = page.viewportSize() ?? { width: 1440, height: 900 };
   const prefix = options.look === "glass" ? "glass-" : "";
+  const lookBefore = await page.evaluate(() => document.documentElement.getAttribute("data-look"));
   if (options.look === "glass") await setLook(page, "glass");
   for (const ctx of wanted) {
     await page.setViewportSize({ width: ctx.width, height: ctx.height });
@@ -294,6 +295,7 @@ export async function captureContexts(
     await capture(page, `${baseName}--${prefix}${ctx.name}`, out);
     if (ctx.undo) await ctx.undo(page);
   }
+  if (options.look === "glass") await setLook(page, lookBefore === "glass" ? "glass" : "classic");
   await page.setViewportSize(start);
 }
 

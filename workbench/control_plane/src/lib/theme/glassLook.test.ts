@@ -141,13 +141,58 @@ describe("the glass token blocks", () => {
     expect(GLOBALS.slice(classicLight - 30, classicLight)).not.toContain("data-look");
   });
 
-  it("keep every glass-only token out of the classic blocks", () => {
-    const root = block(GLOBALS, ":root {");
-    const light = block(GLOBALS, ".light {");
-    for (const token of GLASS_ONLY_TOKENS) {
-      expect.soft(root[token], `:root ${token}`).toBeUndefined();
-      expect.soft(light[token], `.light ${token}`).toBeUndefined();
+  it("keep every glass-only token out of every classic block", () => {
+    // Every block whose selector is exactly `:root` or `.light`, not only the
+    // first: the scrollbars open a second `:root` block further down.
+    const heads = [...GLOBALS.matchAll(/(^|\n)[ \t]*(:root|\.light)[ \t]*\{/g)];
+    expect(heads.length).toBeGreaterThanOrEqual(3);
+    for (const h of heads) {
+      const body = block(GLOBALS.slice(h.index), `${h[2]}`);
+      for (const token of GLASS_ONLY_TOKENS) {
+        expect.soft(body[token], `${h[2]} block at ${h.index}: ${token}`).toBeUndefined();
+      }
     }
+  });
+
+  it("hand reduced motion the glass durations too", () => {
+    // The glass block out-specifies the `:root` of the reduce block, so the
+    // reduce block must name glass itself (review of GL-1, P1).
+    const reduce = GLOBALS.indexOf("@media (prefers-reduced-motion: reduce) {", GLOBALS.indexOf("── Reduced motion"));
+    expect(reduce).toBeGreaterThan(-1);
+    const glass = block(GLOBALS.slice(reduce), DARK);
+    expect(glass["--motion-duration"]).toBe("0.01ms");
+    expect(glass["--sheet-duration"]).toBe("0.01ms");
+    expect(glass["--spring-duration"]).toBe("0.01ms");
+  });
+
+  it("leave the focus ring at full strength", () => {
+    // A half-strength halo measured under 3 : 1 on every glass surface
+    // (WCAG 1.4.11). Glass keeps the primitives' own ring.
+    expect(GLOBALS).not.toMatch(/data-look="glass"\][^{]*:focus-visible[^{]*\{[^}]*color-mix/);
+  });
+
+  it("restate in the light block every colour that classic light owns", () => {
+    // The dark glass block matches <html> in light mode too, and it
+    // out-specifies classic `.light`. So a token that glass sets in dark and
+    // classic sets in light must be restated in the glass light block, or
+    // the dark value shows in light. The accent pair is the one exception:
+    // it is var(--primary), which resolves to the light tint there.
+    const dark = block(GLOBALS, DARK);
+    const light = block(GLOBALS, LIGHT);
+    const classicLight = block(GLOBALS, ".light {");
+    const leaks = Object.keys(dark).filter(
+      (t) => t in classicLight && !(t in light) && !["--accent", "--accent-foreground"].includes(t),
+    );
+    expect(leaks).toEqual([]);
+  });
+
+  it("make the accent follow the tint", () => {
+    // A member's or an organization's accent sets --primary inline. A fixed
+    // --accent would leave a second blue beside it.
+    const dark = block(GLOBALS, DARK);
+    expect(dark["--accent"]).toBe("var(--primary)");
+    expect(dark["--accent-foreground"]).toBe("var(--primary-foreground)");
+    expect(block(GLOBALS, LIGHT)["--accent"]).toBeUndefined();
   });
 
   it("define only tokens that classic defines, or a listed glass-only token", () => {
@@ -192,8 +237,25 @@ function sourceFiles(): string[] {
  * back, but the SHAPE they draw (a capsule, a blur, an iOS type size) is
  * still glass, so they must not apply there.
  */
-const GLASS_ONLY_CLASS =
-  /^(glass-(chrome|menu|surface|press|scroll-edge)|bg-grouped|bg-field|bg-segment|(bg|text|border|ring|fill|stroke)-system-[a-z]+(\/\d+)?|shadow-card|shadow-glass|text-(caption|footnote|label|subhead|callout|body|headline|title|title-lg|largetitle))$/;
+const COLOUR_PREFIX =
+  "(bg|text|border(-[xytrblse])?|ring|ring-offset|outline|divide|fill|stroke|from|via|to|decoration|caret|accent|placeholder|shadow|inset-shadow)";
+
+const GLASS_ONLY_CLASS = new RegExp(
+  "^(" +
+    // Every glass material and every glass motion utility (GL-1, GL-4).
+    "glass-[a-z0-9-]+" +
+    // A glass-only colour after ANY colour prefix.
+    `|${COLOUR_PREFIX}-(system-[a-z]+|grouped|field|segment)` +
+    "|shadow-card|shadow-glass" +
+    "|text-(caption|footnote|label|subhead|callout|body|headline|title|title-lg|largetitle)" +
+    ")$",
+);
+
+/** The utility of a class token: no variants, no `!`, no `/opacity` or `/line-height` modifier. */
+function utilityOf(token: string): string {
+  const parts = token.split(":");
+  return parts[parts.length - 1].replace(/^!|!$/g, "").replace(/\/.*$/, "");
+}
 
 /**
  * Files that render ONLY under glass, so their classes need no variant. A file
@@ -211,14 +273,38 @@ describe("glass-only classes", () => {
       // A class token: variants joined by ':' and then the utility.
       for (const m of text.matchAll(/[!\w:/\[\].-]+/g)) {
         const token = m[0];
-        const parts = token.split(":");
-        const utility = parts[parts.length - 1].replace(/^!/, "");
-        if (!GLASS_ONLY_CLASS.test(utility)) continue;
-        if (parts.slice(0, -1).includes("glass")) continue;
+        if (!GLASS_ONLY_CLASS.test(utilityOf(token))) continue;
+        if (token.split(":").slice(0, -1).includes("glass")) continue;
         offenders.push(`${rel}: ${token}`);
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  it("recognise the forms a later slice could slip past it", () => {
+    // Review of GL-1, P1: each of these escaped the first regex.
+    for (const bare of [
+      "text-body!",
+      "!text-body",
+      "bg-field/80",
+      "text-body/6",
+      "bg-system-blue/[0.2]",
+      "outline-system-blue",
+      "from-system-pink",
+      "text-field",
+      "border-segment",
+      "border-t-grouped",
+      "glass-working-glow",
+      "hover:glass-chrome",
+    ]) {
+      expect.soft(GLASS_ONLY_CLASS.test(utilityOf(bare)), bare).toBe(true);
+    }
+    for (const fine of ["glass:text-body!", "md:glass:bg-field/80", "glass:hover:bg-system-blue"]) {
+      expect.soft(fine.split(":").slice(0, -1).includes("glass"), fine).toBe(true);
+    }
+    for (const classic of ["text-sm", "bg-card", "tech-glass", "text-primary", "bg-secondary/50", "border-border"]) {
+      expect.soft(GLASS_ONLY_CLASS.test(utilityOf(classic)), classic).toBe(false);
+    }
   });
 });
 
@@ -244,46 +330,86 @@ function over(top: Rgba, under: Rgba): Rgba {
   };
 }
 
+/** A tone at `pct` percent over an opaque surface: the 10 % chip of `statusAccent.ts`. */
+function tint(tone: Rgba, pct: number, under: Rgba): Rgba {
+  return over({ ...tone, a: pct / 100 }, under);
+}
+
+const AA = 4.5;
+
 /**
- * The pairs that carry text. `on` names the surface, and `under` the opaque
- * surface below a translucent one. AA is 4.5 for text. A filled control's
- * label is 3.0, as Apple's own dark-mode buttons are (white on #0a84ff).
+ * The pairs that carry text, mirroring `contrast.test.ts` for classic
+ * (DESIGN_SYSTEM.md §7), plus the glass surfaces. A translucent background
+ * is blended over each opaque surface it can sit on (`under`), and the pair
+ * must pass on every one of them.
+ *
+ * Glass measures the tint AS TEXT at 4.5, where classic asks 3.0: Aroh's
+ * rule is that text in the tint passes 4.5 on every surface.
  */
-const PAIRS: { fg: string; bg: string; under?: string; min: number }[] = [
-  { fg: "--foreground", bg: "--background", min: 4.5 },
-  { fg: "--foreground", bg: "--card", min: 4.5 },
-  { fg: "--popover-foreground", bg: "--popover", min: 4.5 },
-  { fg: "--tooltip-foreground", bg: "--tooltip", min: 4.5 },
-  { fg: "--muted-foreground", bg: "--background", min: 4.5 },
-  { fg: "--muted-foreground", bg: "--card", min: 4.5 },
-  { fg: "--foreground", bg: "--secondary", under: "--card", min: 4.5 },
-  { fg: "--foreground", bg: "--muted", under: "--card", min: 4.5 },
-  { fg: "--primary", bg: "--background", min: 4.5 },
-  { fg: "--primary", bg: "--card", min: 4.5 },
-  { fg: "--primary-foreground", bg: "--primary", min: 3.0 },
-  ...["--destructive", "--success", "--warning", "--info", "--violet"].flatMap((tone) => [
-    { fg: tone, bg: "--background", min: 4.5 },
-    { fg: tone, bg: "--card", min: 4.5 },
-    { fg: `${tone}-foreground`, bg: tone, min: 4.5 },
+type Pair = { fg: string; bg: string; under?: string[]; min: number; chip?: boolean };
+const SURFACES = ["--background", "--card"];
+const STATUS = ["--destructive", "--success", "--warning", "--info", "--violet"];
+const CATEGORICAL = Array.from({ length: 12 }, (_, i) => `--cat-${i + 1}`);
+
+const PAIRS: Pair[] = [
+  { fg: "--foreground", bg: "--background", min: AA },
+  { fg: "--card-foreground", bg: "--card", min: AA },
+  { fg: "--popover-foreground", bg: "--popover", min: AA },
+  { fg: "--tooltip-foreground", bg: "--tooltip", min: AA },
+  { fg: "--muted-foreground", bg: "--background", min: AA },
+  { fg: "--muted-foreground", bg: "--card", min: AA },
+  { fg: "--primary-foreground", bg: "--primary", min: AA },
+  { fg: "--secondary-foreground", bg: "--secondary", under: SURFACES, min: AA },
+  { fg: "--foreground", bg: "--muted", under: SURFACES, min: AA },
+  { fg: "--accent-foreground", bg: "--accent", min: AA },
+  { fg: "--sidebar-primary-foreground", bg: "--sidebar-primary", min: AA },
+  { fg: "--sidebar-foreground", bg: "--sidebar-background", under: SURFACES, min: AA },
+  { fg: "--primary", bg: "--background", min: AA },
+  { fg: "--primary", bg: "--card", min: AA },
+  ...STATUS.flatMap((tone): Pair[] => [
+    { fg: `${tone}-foreground`, bg: tone, min: AA },
+    { fg: tone, bg: "--background", min: AA },
+    { fg: tone, bg: "--card", min: AA },
+    { fg: tone, bg: "--muted", under: SURFACES, min: AA },
+    { fg: tone, bg: tone, under: ["--card"], min: AA, chip: true },
   ]),
-  { fg: "--sidebar-foreground", bg: "--sidebar-background", under: "--background", min: 4.5 },
+  ...CATEGORICAL.flatMap((cat): Pair[] => SURFACES.map((bg) => ({ fg: cat, bg, min: AA }))),
 ];
 
+/** The glass tokens of one mode, with classic beneath for what glass does not redefine. */
+function glassTokens(mode: "dark" | "light"): Record<string, string> {
+  const classic = mode === "dark" ? block(GLOBALS, ":root {") : { ...block(GLOBALS, ":root {"), ...block(GLOBALS, ".light {") };
+  return { ...classic, ...block(GLOBALS, DARK), ...(mode === "light" ? block(GLOBALS, LIGHT) : {}) };
+}
+
+/** A token's colour, following `var(--x)` within the same token set. */
+function colourOf(tokens: Record<string, string>, name: string): Rgba {
+  let value = tokens[name];
+  for (let hop = 0; value && hop < 5; hop++) {
+    const ref = value.match(/^var\((--[\w-]+)\)$/);
+    if (!ref) break;
+    value = tokens[ref[1]];
+  }
+  if (!value) throw new Error(`No value for ${name}`);
+  return rgba(value);
+}
+
 describe("glass contrast", () => {
-  for (const [mode, head] of [
-    ["dark", DARK],
-    ["light", LIGHT],
-  ] as const) {
-    // Light inherits what it does not redefine from dark.
-    const tokens = { ...block(GLOBALS, DARK), ...(mode === "light" ? block(GLOBALS, LIGHT) : {}) };
+  for (const mode of ["dark", "light"] as const) {
+    const tokens = glassTokens(mode);
     for (const pair of PAIRS) {
-      it(`${mode}: ${pair.fg} on ${pair.bg} ≥ ${pair.min}`, () => {
-        let bg = rgba(tokens[pair.bg]);
-        if (bg.a < 1) bg = over(bg, rgba(tokens[pair.under ?? "--background"]));
-        const fg = over(rgba(tokens[pair.fg]), bg);
-        const ratio = contrastRatio(fg, bg);
-        expect(ratio, `${head} ${pair.fg} on ${pair.bg}: ${ratio.toFixed(2)}`).toBeGreaterThanOrEqual(pair.min);
-      });
+      const unders = pair.under ?? [null];
+      for (const under of unders) {
+        const label = `${mode}: ${pair.fg} on ${pair.chip ? `its 10% chip` : pair.bg}${under ? ` over ${under}` : ""} ≥ ${pair.min}`;
+        it(label, () => {
+          let bg = colourOf(tokens, pair.bg);
+          if (pair.chip) bg = tint(bg, 10, colourOf(tokens, under!));
+          else if (bg.a < 1) bg = over(bg, colourOf(tokens, under ?? "--background"));
+          const fg = over(colourOf(tokens, pair.fg), bg);
+          const ratio = contrastRatio(fg, bg);
+          expect(ratio, `${label}: ${ratio.toFixed(2)}`).toBeGreaterThanOrEqual(pair.min);
+        });
+      }
     }
   }
 

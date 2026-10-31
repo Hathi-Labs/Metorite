@@ -28,8 +28,8 @@ cannot hold by "do not merge". It holds by a **gate**:
 
 - The new look lives beside the current one. Its tokens and classes apply
   only under `<html data-look="glass">`.
-- A build-time gate, `NEXT_PUBLIC_UI_LOOK=glass`, lets the pre-paint script
-  set that attribute. Staging carries the line. Production carries no line,
+- A build-time gate, `NEXT_PUBLIC_UI_LOOK=glass`, lets the server render
+  that attribute. Staging carries the line. Production carries no line,
   so production renders the current look, byte for byte.
 - On staging, Settings → Appearance shows a **Design** switch (New or
   Classic). The owner compares both looks on the same data, in one click.
@@ -44,7 +44,7 @@ The names in this spec:
 | **classic** | The look in production today. `globals.css` `:root` and `.light` |
 | **glass** | The new look, lifted from Aroh (`../Aroh/apps/web/src/index.css`, `../Aroh/docs/design.md`) |
 | **the gate** | `NEXT_PUBLIC_UI_LOOK`. Unset or any value other than `glass` means classic |
-| **the attribute** | `data-look="glass"` on `<html>`. Only the boot script sets it |
+| **the attribute** | `data-look="glass"` on `<html>`. The server renders it when the gate is on. The boot script and the store remove it for a member who chose Classic |
 | **the variant** | The Tailwind variant `glass:`. A class behind it applies only under the attribute |
 
 ---
@@ -148,6 +148,10 @@ script runs before paint and reads only build-time values and local storage.
 A per-org rollout is not needed: the owner asked for staging, then
 production.
 
+**A new staging box.** `deploy/hostinger/bootstrap_staging.sh` does not
+write the gate. A rebuilt staging box renders classic until someone adds the
+line to `workbench/control_plane/.env.local` and rebuilds.
+
 **Why staging keeps its line.** `scripts/staging_refresh.sh` §6 copies each
 `NEXT_PUBLIC_*` key that production HAS onto staging's `.env.local`. It never
 deletes a line. Production has no `NEXT_PUBLIC_UI_LOOK` line, so staging keeps
@@ -156,8 +160,10 @@ nightly refresh would copy it onto staging and turn glass off there.
 
 ### 4.2 The attribute and the member's switch
 
-`src/lib/theme/boot.ts` sets `data-look="glass"` on `<html>` when the gate is
-`glass` and the member has not chosen Classic. The member's choice lives
+`src/app/layout.tsx` renders `data-look="glass"` on `<html>` when the gate is
+`glass`, so the default never flashes. `src/lib/theme/boot.ts` removes it
+before paint when the member has chosen Classic, and the store
+(`store.ts`, `applyLook`) sets or removes it when the member switches. The member's choice lives
 under the key `cc-look`, per account, like the other appearance keys
 (`storage.ts`, `scope.ts`). The React store owns the switch, and the boot
 script reads the same key before paint.
@@ -176,9 +182,11 @@ All in `src/app/globals.css`. The classic blocks do not change.
    The density and accent inline styles still win over both.
 2. **New tokens** that classic does not have: `--background-grouped`,
    `--field`, `--segment`, `--system-*`, `--glass-*`, `--card-shadow`,
-   `--glow-*`, `--term-*`. Each also gets a classic value equal to the
-   nearest classic token, so a classic page that meets one by accident
-   renders as classic.
+   `--glow-*`. Each colour token among them has a classic fallback in
+   `@theme inline`, so a classic page that meets one by accident renders as
+   classic. The material tokens (`--glass-*`, `--glow-*`, `--card-shadow`)
+   have no fallback: only the glass-only utilities read them, and those sit
+   behind `glass:`.
 3. **The variant.** `@custom-variant glass (&:where([data-look="glass"],
    [data-look="glass"] *));` A component writes its glass difference as
    `glass:<class>`. Under classic the class matches nothing.
@@ -393,10 +401,11 @@ remains, and every fence passes.
 | Rule | Fence |
 |---|---|
 | The classic token values do not change | `src/lib/theme/themes.test.ts` (exists). The manifest mirrors classic |
-| The boot script sets the attribute only when the gate is `glass` | `src/lib/theme/glassLook.test.ts` (GL-1) |
+| Only a gated build carries look code: the boot script holds none without the gate | `src/lib/theme/glassLook.test.ts` (GL-1) |
 | A glass-only utility appears only behind `glass:`, or in a glass-only file | `glassLook.test.ts` (GL-1) |
 | The glass block defines no token that classic lacks, except the §4.3 list | `glassLook.test.ts` (GL-1) |
-| Each glass text pair passes AA | `src/lib/theme/contrast.test.ts`, with a glass mirror (GL-1) |
+| Each glass text pair passes AA, on the page, the card, a muted panel and its 10 % chip | `src/lib/theme/glassLook.test.ts` (GL-1), which reads the glass blocks of `globals.css` |
+| Reduced motion stops glass motion too | `glassLook.test.ts` (GL-1) |
 | Each glass keyframe answers reduced motion | `src/lib/theme/motion.test.ts` (exists) |
 | Production does not carry the gate | ADVISORY. No test reads a box. GL-9 is OWNER-GATE |
 
@@ -435,11 +444,12 @@ On staging, after a merge:
 
 ```bash
 curl -s https://api.dev.metorite.com/version      # the merge SHA
-curl -s https://dev.metorite.com/ | grep -c 'data-look'
+curl -s https://dev.metorite.com/signin | grep -c 'data-look'
 ```
 
-The second line counts the boot script's reference to the attribute. It is 0
-when the gate is off.
+The second line counts the attribute on the sign-in page. `/` answers a
+signed-out caller with a redirect, so it counts 0 even with the gate on. The
+count is 0 when the gate is off.
 
 ---
 
@@ -452,3 +462,4 @@ answers.
 |---|---|---|
 | Q1 | "The company's highlight colour": is it each customer organisation's own brand colour, set once by its admin? | Yes. GL-5 adds an organisation accent, and glass uses it as the one tint |
 | Q2 | With no organisation accent, which blue is the tint? | Aroh's Apple blue (`#0068d6` light, `#0a84ff` dark). Classic's sky blue stays in classic |
+| Q3 | In dark mode, white on Apple's `#0a84ff` is 3.65 : 1, under AA for a button label. Accept Apple's white, or keep AA? | Keep AA: black ink on the tint in dark, as `accentInk()` already picks for a light accent. GL-5's text shade of the tint may let a deeper fill take white |

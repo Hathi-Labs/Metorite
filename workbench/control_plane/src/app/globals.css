@@ -277,9 +277,9 @@
    ../Aroh/apps/web/src/index.css and ../Aroh/docs/design.md.
 
    ⚠️ A TRANSITION, not a second theme. Glass applies ONLY under
-   `<html data-look="glass">`, and only the pre-paint boot script sets that
-   attribute, and only when the build gate NEXT_PUBLIC_UI_LOOK is `glass`
-   (staging). Production has no gate, so it never matches these blocks and
+   `<html data-look="glass">`. The server renders that attribute only when
+   the build gate NEXT_PUBLIC_UI_LOOK is `glass` (staging). The boot script
+   and the store remove it for a member who chose Classic. Production has no gate, so it never matches these blocks and
    renders the classic `:root` / `.light` above, unchanged. GL-Z deletes the
    classic blocks once the owner approves glass in production.
 
@@ -333,24 +333,32 @@ html[data-look="glass"] {
   --tooltip-foreground: #f5f5f7;
 
   /* The tint. Apple's dark-mode blue: 4.5 : 1 as text on black and on dark
-     cards. A member's or an organization's accent replaces it inline. */
+     cards. A member's or an organization's accent replaces it inline.
+     The ink on it is black, not Apple's white: white on #0a84ff is 3.65 : 1,
+     under AA for a button's label. `accentInk()` makes the same choice for
+     an accent this light. Open for the owner: glass_look.md §9 Q3. */
   --primary: #0a84ff;
-  --primary-foreground: #ffffff;
+  --primary-foreground: #000000;
 
   /* Fills are translucent, as Apple's are, so they read on any surface. */
   --secondary: rgb(118 118 128 / 0.24);
   --secondary-foreground: #f5f5f7;
   --muted: rgb(118 118 128 / 0.3);
   --muted-foreground: #98989d;
-  /* Glass has one tint. `--accent` is the tint too, so the classic orange
-     highlight does not appear beside it. */
-  --accent: #0a84ff;
-  --accent-foreground: #ffffff;
+  /* Glass has one tint. `--accent` IS the tint, so the classic orange
+     highlight does not appear beside it, and a member's or an
+     organization's accent (which sets --primary inline) moves both. The
+     light block does not redefine these two: var() resolves on <html>, so
+     they follow the light --primary there. */
+  --accent: var(--primary);
+  --accent-foreground: var(--primary-foreground);
   --field: rgb(118 118 128 / 0.18);
   --segment: #636366;
 
-  /* Apple's higher-contrast status colours: they carry text. */
-  --destructive: #ff6961;
+  /* Apple's higher-contrast status colours: they carry text. Red, blue and
+     violet sit a step lighter than Apple's, so each passes 4.5 : 1 on a
+     muted panel and on its own 10 % chip as well as on the card. */
+  --destructive: #ff7b72;
   --destructive-foreground: #000000;
   --success: #30d158;
   --success-foreground: #000000;
@@ -358,10 +366,13 @@ html[data-look="glass"] {
   --warning-foreground: #000000;
   /* A status blue, fixed: NOT the tint, so an accent change never repaints
      what a status means (statusAccent.test.ts). */
-  --info: #0a84ff;
+  --info: #5eb0ff;
   --info-foreground: #000000;
-  --violet: #bf5af2;
+  --violet: #da8fff;
   --violet-foreground: #000000;
+  /* The one categorical slot that misses 4.5 on the glass dark card
+     (#1c1c1e), a step lighter. The other eleven keep their classic values. */
+  --cat-10: hsl(240 85% 74%);
 
   --border: rgb(84 84 88 / 0.5);
   --input: rgb(84 84 88 / 0.65);
@@ -402,7 +413,7 @@ html[data-look="glass"] {
   --sidebar-background: rgb(30 30 32 / 0.66);
   --sidebar-foreground: #f5f5f7;
   --sidebar-primary: #0a84ff;
-  --sidebar-primary-foreground: #ffffff;
+  --sidebar-primary-foreground: #000000;
   --sidebar-accent: rgb(118 118 128 / 0.28);
   --sidebar-accent-foreground: #f5f5f7;
   --sidebar-border: rgb(255 255 255 / 0.08);
@@ -434,21 +445,22 @@ html[data-look="glass"].light {
   --secondary-foreground: #1d1d1f;
   --muted: rgb(120 120 128 / 0.16);
   --muted-foreground: #6e6e73;
-  --accent: #0068d6;
-  --accent-foreground: #ffffff;
   --field: #ffffff;
   --segment: #ffffff;
 
-  --destructive: #d70015;
+  --destructive: #c0001a;
   --destructive-foreground: #ffffff;
-  --success: #1e7f36;
+  --success: #146c2b;
   --success-foreground: #ffffff;
-  --warning: #c93400;
+  --warning: #b02e00;
   --warning-foreground: #ffffff;
-  --info: #0068d6;
+  --info: #0059b8;
   --info-foreground: #ffffff;
   --violet: #8944ab;
   --violet-foreground: #ffffff;
+  /* The dark block's --cat-10 also matches here and out-specifies classic
+     `.light`, so light restates classic's light value. */
+  --cat-10: hsl(240 85% 56%);
 
   --border: rgb(60 60 67 / 0.13);
   --input: rgb(60 60 67 / 0.2);
@@ -570,7 +582,7 @@ html[data-look="glass"].light {
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar-border: var(--sidebar-border);
-  /* Glass-only tokens (D141). Each falls back to the nearest classic token,
+  /* Glass-only colour tokens (D141). Each falls back to the nearest classic token,
      so a classic page that meets one renders classic. glassLook.test.ts
      holds the list. */
   --color-grouped: var(--background-grouped, var(--background));
@@ -743,15 +755,22 @@ body {
   box-shadow: var(--card-shadow);
 }
 
-/* A press answers the finger: a control dips while it is held. */
+/* A press answers the finger: a control dips while it is held. 160 ms is
+   Aroh's press, shorter than a change of state on purpose. The motion sits
+   behind `no-preference`, so under reduced motion the control holds still.
+   The gate lives inside the utility, so the variant form
+   `glass:glass-press` carries it too. (A nested `reduce` block here would
+   come before the file's main reduce block, which tests read first.) */
 @utility glass-press {
-  transition:
-    transform 160ms var(--motion-easing),
-    background-color 160ms ease,
-    color 160ms ease,
-    opacity 160ms ease;
-  &:active:not(:disabled) {
-    transform: scale(0.96);
+  @media (prefers-reduced-motion: no-preference) {
+    transition:
+      transform 160ms var(--motion-easing),
+      background-color 160ms ease,
+      color 160ms ease,
+      opacity 160ms ease;
+    &:active:not(:disabled) {
+      transform: scale(0.96);
+    }
   }
 }
 
@@ -795,11 +814,6 @@ html[data-look="glass"] .tech-glass-subtle {
 html[data-look="glass"] body {
   letter-spacing: -0.006em;
   font-optical-sizing: auto;
-}
-
-/* Keyboard focus: a soft tinted halo, as on macOS. */
-html[data-look="glass"] :focus-visible {
-  outline-color: color-mix(in srgb, var(--ring) 50%, transparent);
 }
 
 /* ── Control primitives ─────────────────────────────────────────────────
@@ -2390,10 +2404,18 @@ html.panel-swap::view-transition-new(assistant-panel) {
   }
 
   /* Themes set their own motion feel; honouring the OS preference has to
-     override whichever one is active. */
+     override whichever one is active. The glass block (D141) is more
+     specific than `:root`, so it is named here too, or glass would keep its
+     0.28 s and 220 ms under reduced motion. glassLook.test.ts fences it.
+     The classic rule stays as it was, so classic does not change. */
   :root {
     --motion-duration: 0.01ms;
     --spring-duration: 0.01ms;
+  }
+  html[data-look="glass"] {
+    --motion-duration: 0.01ms;
+    --spring-duration: 0.01ms;
+    --sheet-duration: 0.01ms;
   }
 
   *,
