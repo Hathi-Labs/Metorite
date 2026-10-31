@@ -845,10 +845,14 @@ async def test_tier(
         text = await complete(
             tier=LLMTier(tier_id),
             messages=[{"role": "user", "content": "Reply with only: OK"}],
-            max_tokens=10,
+            max_tokens=64,
+            job="structured",
         )
         elapsed = int((time.monotonic() - t0) * 1000)
-        return TestResult(success=True, response=(text or "").strip() or "(empty response)", latency_ms=elapsed)
+        reply = (text or "").strip()
+        # An empty answer is a failed test, not a pass (task 1128).
+        return TestResult(success=bool(reply), response=reply or "(empty response)",
+                          latency_ms=elapsed)
     except Exception as exc:
         elapsed = int((time.monotonic() - t0) * 1000)
         return TestResult(success=False, response=str(exc), latency_ms=elapsed)

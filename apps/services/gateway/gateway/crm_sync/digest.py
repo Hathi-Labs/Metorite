@@ -94,8 +94,13 @@ MODULE_SLUG = "crm"
 #: The tier of the one request (item 8).
 TIER = "tier-powerful"
 
-#: The output cap of the one request (item 8).
-MAX_TOKENS = 800
+#: The output cap of the one request (item 8). 1500 since task 1128: the
+#: model used the whole old cap of 800 on 6 of 6 calls on production. The
+#: request now asks for no thinking too (``JOB``).
+MAX_TOKENS = 1500
+
+#: The job of the one request (``acb_llm.jobs``): prose a member reads.
+JOB = "writing"
 
 #: The tries of one org in one week (item 11). The CHECK of the migration
 #: holds the same number.
@@ -572,7 +577,7 @@ async def _complete(messages: list[dict[str, str]]) -> tuple[str, str | None]:
 
     resp, _used = await context.acompletion_with_fallback(
         model=TIER, messages=messages, max_tokens=MAX_TOKENS, temperature=0.2,
-        feature=FEATURE,
+        feature=FEATURE, job=JOB,
     )
     content = resp.choices[0].message.content or ""
     rid = getattr(resp, "id", None)
@@ -653,6 +658,8 @@ class Digested:
     tries: int = 0
     requests: int = 0
     rejected: int = 0
+    #: Answers with no text. Not a number-check rejection (task 1128).
+    empty: int = 0
     parts: int = 0
     missing: int = 0
     request_ids: tuple[str, ...] = field(default_factory=tuple)
@@ -719,7 +726,7 @@ async def _digest(org: str, should_stop: Callable[[], bool], now: datetime) -> D
 
     messages = messages_for(numbers)
     request_ids: list[str] = []
-    requests = rejected = tries = 0
+    requests = rejected = empty = tries = 0
     reason = "rejected"
     while True:
         if should_stop():
@@ -743,7 +750,16 @@ async def _digest(org: str, should_stop: Callable[[], bool], now: datetime) -> D
         if request_id:
             request_ids.append(request_id)
         body = body.strip()
-        bad = check(body, numbers) if body else ["(empty)"]
+        if not body:
+            # The model gave no text. That is not a number the check refused,
+            # so it gets its own line and count (task 1128). Store nothing,
+            # and write again while the week has a try left.
+            empty += 1
+            _log.warning("crm.digest.empty_answer", organization_id=org,
+                         week=label, request_id=request_id)
+            await _failed(org, week, request_id)
+            continue
+        bad = check(body, numbers)
         if not bad:
             reason = "stored" if await _store(org, week, numbers, body, request_id) \
                 else "done_already"
@@ -755,7 +771,8 @@ async def _digest(org: str, should_stop: Callable[[], bool], now: datetime) -> D
                   request_id=request_id, bad_numbers=len(bad))
         await _failed(org, week, request_id)
     return Digested(reason, week=label, tries=tries, requests=requests, rejected=rejected,
-                    parts=parts, missing=missing, request_ids=tuple(request_ids))
+                    empty=empty, parts=parts, missing=missing,
+                    request_ids=tuple(request_ids))
 
 
 __all__ = [

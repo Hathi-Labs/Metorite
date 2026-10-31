@@ -291,14 +291,27 @@ def _load_action_attachments(
     return out
 
 
+class TemplateFillFailed(Exception):
+    """A ``{{...}}`` template got no filled text from the model (task 1128).
+
+    The action that needs the text fails, and the action loop records the
+    error. The raw template, braces and all, never reaches a label, a
+    subject or a draft. It is NOT ``LLMUnavailable``: the job keeps the
+    actions that it already took.
+    """
+
+
 async def _render_template(template: str, email: dict[str, str]) -> str:
     """Fill an inbox-zero-style ``{{...}}`` template against the email context.
 
     Placeholders describe what to generate, e.g. ``{{choose "urgent",
     "normal"}}`` for a LABEL prompt or ``{{summarize the request}}`` in a draft.
     Returns the input unchanged when it has no ``{{`` placeholders (the common
-    case) so static fields never incur an LLM call. Best-effort: falls back to
-    the raw template on any error."""
+    case) so static fields never incur an LLM call.
+
+    Raises :class:`TemplateFillFailed` when the model call fails or gives no
+    text. The old fall back to the raw template wrote the ``{{...}}`` text
+    into the mailbox, so the caller's action now fails with a clear log."""
     if not template or "{{" not in template:
         return template
     try:
@@ -325,13 +338,16 @@ async def _render_template(template: str, email: dict[str, str]) -> str:
                           {"role": "user",
                            "content": f"Template:\n{template}\n\nEmail:\n{ctx}"}],
                 temperature=0, max_tokens=1000,
-                feature="email.template_fill",
+                feature="email.template_fill", job="writing",
             )
         out = (resp.choices[0].message.content or "").strip()
-        return out or template
     except Exception as exc:
         _log.warning("email.template_render_failed", error=str(exc)[:200])
-        return template
+        raise TemplateFillFailed("the template fill failed") from exc
+    if not out:
+        _log.warning("email.template_render_empty")
+        raise TemplateFillFailed("the template fill gave no text")
+    return out
 
 
 async def _draft_from_address(

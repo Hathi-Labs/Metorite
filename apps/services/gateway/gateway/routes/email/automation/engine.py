@@ -887,6 +887,7 @@ async def _llm_pick_rule(
                  {"role": "user", "content": user_prompt}],
                 max_tokens=800,
                 feature="rule_match",
+                job="structured",
             )
             if isinstance(data, dict) and isinstance(data.get("index"), int):
                 idx = data["index"]
@@ -898,6 +899,10 @@ async def _llm_pick_rule(
             if data is None and content.strip():
                 _log.warning("email.llm_pick_rule_unparseable",
                              model=_used, sample=content[:200])
+            elif not content.strip():
+                # The model gave no text. The log must not read as "no rule
+                # fits" (task 1128).
+                _log.warning("email.llm_pick_rule_empty", model=_used)
             return None
         except Exception as exc:  # noqa: BLE001
             # The call failed (gateway/network/timeout) — NOT a no-match. Signal it
@@ -976,6 +981,7 @@ async def _llm_pick_rules(
                  {"role": "user", "content": user_prompt}],
                 max_tokens=1500,
                 feature="rule_match",
+                job="structured",
             )
             out: list[dict[str, Any]] = []
             seen: set[int] = set()
@@ -994,6 +1000,9 @@ async def _llm_pick_rules(
                 # read as "no rules apply" (see _llm_pick_rule).
                 _log.warning("email.llm_pick_rules_unparseable",
                              model=_used, sample=content[:200])
+            elif not content.strip():
+                # No text at all: not "no rules apply" (task 1128).
+                _log.warning("email.llm_pick_rules_empty", model=_used)
             return out
         except Exception as exc:  # noqa: BLE001
             # The call failed — NOT "no rules apply". Signal it (see _llm_pick_rule).

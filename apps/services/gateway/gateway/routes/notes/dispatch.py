@@ -235,7 +235,7 @@ async def _draft_email(action, meeting, recipient: str, excerpts: list[str]) -> 
             else ""
         )
     )
-    data = await _llm_json(_EMAIL_DRAFT_SYSTEM + "\n\n" + voice_prompt("email", json=True), user, "tier-balanced", max_tokens=700)
+    data = await _llm_json(_EMAIL_DRAFT_SYSTEM + "\n\n" + voice_prompt("email", json=True), user, "tier-balanced", max_tokens=700, job="writing")
     if not data:
         return None
     subject = str(data.get("subject") or "").strip()
@@ -399,7 +399,7 @@ async def _dispatch_document(action, meeting, owner_email: str) -> str:
             else ""
         )
     )
-    data = await _llm_json(_DOC_DRAFT_SYSTEM + "\n\n" + voice_prompt("title", "summary", json=True), user, "tier-balanced", max_tokens=1800)
+    data = await _llm_json(_DOC_DRAFT_SYSTEM + "\n\n" + voice_prompt("title", "summary", json=True), user, "tier-balanced", max_tokens=1800, job="writing")
     title = str((data or {}).get("title") or "").strip() or action.description[:80]
     markdown = str((data or {}).get("markdown") or "").strip()
     if not markdown:

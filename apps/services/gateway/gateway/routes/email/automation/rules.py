@@ -756,13 +756,15 @@ async def _llm_generate_rules(prompt: str, *,
             'short. Omit empty fields. Output {"rules": []} if nothing parses.'
         )
         # Rule authoring is quality-sensitive generation → powerful tier; JSON
-        # forced; generous budget so several rules aren't truncated.
+        # forced. A judgement job: the model thinks first, so the cap holds
+        # the thinking and several rules (task 1128).
         data, _content, _used = await _llm_json(
             "tier-powerful",
             [{"role": "system", "content": sys_prompt + "\n\n" + voice_prompt("title", json=True)},
              {"role": "user", "content": prompt[:4000]}],
-            max_tokens=2500,
+            max_tokens=8000,
             feature="rules_generate",
+            job="judgement",
         )
         rules = data.get("rules") if isinstance(data, dict) else data
         got = _normalize_generated_rules(rules)

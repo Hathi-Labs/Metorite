@@ -710,11 +710,12 @@ async def _llm_extract_reply_memories(
             f"SENT:\n{frame.wrap('SENT', sent[:2000])}"
         )
         data, _content, _used = await _llm_json(
-            "tier-powerful",
+            "tier-balanced",
             [{"role": "system", "content": sys_prompt},
              {"role": "user", "content": user}],
             max_tokens=1000,
             feature="reply_memory",
+            job="structured",
         )
         items = data.get("memories") if isinstance(data, dict) else None
         out: list[dict[str, str]] = []
@@ -897,8 +898,8 @@ async def _llm_summarize_writing_style(prefs: list[str]) -> str:
                 model="tier-powerful",
                 messages=[{"role": "system", "content": sys_prompt},
                           {"role": "user", "content": "Preferences:\n" + listed}],
-                temperature=0.2, max_tokens=1000,
-                feature="email.voice_profile",
+                temperature=0.2, max_tokens=1500,
+                feature="email.voice_profile", job="writing",
             )
         return (resp.choices[0].message.content or "").strip()[:1500]
     except Exception as exc:  # noqa: BLE001
@@ -1610,16 +1611,26 @@ async def _draft_consult_plan(
              {"role": "user", "content": user_prompt}],
             max_tokens=500,
             feature="draft_consult",
+            job="structured",
         )
-        consult = data.get("consult", []) if isinstance(data, dict) else []
+        if not isinstance(data, dict):
+            # No readable plan, an empty answer above all. That is not "no
+            # specialist needed", so the activity says the qualifier was not
+            # there (task 1128).
+            _log.warning("email.draft_plan_unreadable",
+                         content_chars=len(_content or ""))
+            await _emit_activity(
+                on_activity, kind="qualify", emailKind="", consults=0,
+                detail=_QUALIFIER_UNAVAILABLE)
+            return []
+        consult = data.get("consult", [])
         out = []
         for c in consult:
             if isinstance(c, dict) and c.get("agent") in _CONSULT_AGENTS \
                     and c.get("question"):
                 out.append({"agent": c["agent"], "question": str(c["question"])})
         out = out[:2]
-        email_kind = (
-            str(data.get("kind", ""))[:40] if isinstance(data, dict) else "")
+        email_kind = str(data.get("kind", ""))[:40]
         # The kind is logged so we can audit gating decisions against real
         # traffic and tighten the prompt if consults stay noisy — and streamed
         # to the composer so the user SEES why a specialist was (not) called.
@@ -1635,8 +1646,13 @@ async def _draft_consult_plan(
         _log.warning("email.draft_plan_failed", error=str(exc)[:200])
         await _emit_activity(
             on_activity, kind="qualify", emailKind="", consults=0,
-            detail="qualifier unavailable — drafting from the thread alone")
+            detail=_QUALIFIER_UNAVAILABLE)
         return []
+
+
+#: The activity line when the consult qualifier gave no plan: it failed, or
+#: it answered nothing that reads as a plan.
+_QUALIFIER_UNAVAILABLE = "qualifier unavailable — drafting from the thread alone"
 
 
 _PLACEHOLDER_LINE_RE = re.compile(

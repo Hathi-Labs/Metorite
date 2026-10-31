@@ -23,7 +23,11 @@ from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
 from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
-from gateway.routes.whatsapp.automation.drafting import detect_language
+from gateway.routes.whatsapp.automation.drafting import (
+    NO_MODEL_ANSWER,
+    DraftUnavailable,
+    detect_language,
+)
 from gateway.routes.whatsapp.core import _tenant_session, router
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -240,9 +244,10 @@ async def draft_nudge(
 ) -> tuple[str, str, str] | None:
     """Draft a gentle nudge chasing a commitment THEY owe us.
 
-    Returns ``(chat_id, nudge_text, language)`` or None on any non-applicable /
-    failure case: unknown commitment, not a 'theirs' commitment, LLM failure, or
-    a NO_DRAFT verdict. Never fabricates. Does not commit.
+    Returns ``(chat_id, nudge_text, language)`` or None on a non-applicable
+    case: unknown commitment, not a 'theirs' commitment, or a NO_DRAFT
+    verdict. A failed model call or an answer with no text raises
+    ``DraftUnavailable`` (task 1128). Never fabricates. Does not commit.
     """
     row = (await db.execute(
         text("""SELECT k.chat_id, k.direction, k.text, k.due_hint, c.name
@@ -265,16 +270,19 @@ async def draft_nudge(
         from acb_llm.context import acompletion_with_fallback
         resp, _used = await acompletion_with_fallback(
             model=_NUDGE_MODEL, fallback_model=_NUDGE_FALLBACK,
-            messages=messages, temperature=0.4, max_tokens=200,
-            feature="whatsapp.nudge",
+            messages=messages, temperature=0.4, max_tokens=300,
+            feature="whatsapp.nudge", job="writing",
         )
         content = (resp.choices[0].message.content or "").strip()
     except Exception as exc:
         _log.warning("whatsapp.nudge.llm_failed",
                      commitment_id=commitment_id, error=str(exc)[:200])
-        return None
+        raise DraftUnavailable("the nudge call failed") from exc
 
-    if not content or content.strip().upper() == "NO_DRAFT":
+    if not content:
+        _log.warning("whatsapp.nudge.empty_answer", commitment_id=commitment_id)
+        raise DraftUnavailable("the nudge call gave no text")
+    if content.upper() == "NO_DRAFT":
         return None
     return str(row.chat_id), content, detect_language(content)
 
@@ -313,7 +321,10 @@ async def draft_commitment_nudge(
     async with _tenant_session() as db:
         account_id = await _assert_theirs_commitment_owned(
             db, commitment_id, user.email or "anonymous")
-        result = await draft_nudge(db, account_id, commitment_id)
+        try:
+            result = await draft_nudge(db, account_id, commitment_id)
+        except DraftUnavailable as exc:
+            raise HTTPException(status_code=502, detail=NO_MODEL_ANSWER) from exc
         if result is None:
             raise HTTPException(
                 status_code=422,

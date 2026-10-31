@@ -489,7 +489,7 @@ class TestThePrompt:
     def test_a_small_input_is_not_cut(self):
         assert dg.fit(_numbers()) == _numbers()
 
-    async def test_one_request_to_the_powerful_tier_with_800_tokens(self, monkeypatch):
+    async def test_one_request_to_the_powerful_tier_with_1500_tokens(self, monkeypatch):
         from acb_llm import context
 
         seen: list[dict[str, Any]] = []
@@ -504,15 +504,18 @@ class TestThePrompt:
         assert (body, rid) == ("Open deals: 12.", "req-1")
         assert len(seen) == 1
         assert seen[0]["model"] == "tier-powerful" and dg.TIER == "tier-powerful"
-        assert seen[0]["max_tokens"] == 800 == dg.MAX_TOKENS
+        # Task 1128: 800 was used up on 6 of 6 production calls. The writing
+        # job asks for no thinking, and the cap holds a longer text.
+        assert seen[0]["max_tokens"] == 1500 == dg.MAX_TOKENS
+        assert seen[0]["job"] == "writing" == dg.JOB
         assert seen[0]["feature"] == "crm.digest"
         assert "fallback_model" not in seen[0]
 
     def test_the_cost_bound_is_three_requests_of_bounded_size(self):
         assert dg.MAX_TRIES == 3
         assert dg.INPUT_CHARS == 8000
-        # About 2,000 tokens in and 800 out, 3 times: about 8,400 tokens.
-        assert dg.MAX_TRIES * (dg.INPUT_CHARS // 4 + dg.MAX_TOKENS) == 8400
+        # About 2,000 tokens in and 1500 out, 3 times: about 10,500 tokens.
+        assert dg.MAX_TRIES * (dg.INPUT_CHARS // 4 + dg.MAX_TOKENS) == 10500
 
     def test_the_migration_holds_the_cap_of_three(self):
         found = [f for f in (REPO / "infra/postgres").glob("*.sql")
@@ -737,9 +740,17 @@ class TestTheStep:
         assert again.requests == 0 and len(state["calls"]) == 3
 
     async def test_an_empty_text_counts_a_try(self, monkeypatch):
+        """Task 1128: an empty answer is no number-check rejection. It counts
+        as ``empty``, logs its own line, and the week tries again."""
         state = _step_fakes(monkeypatch, replies=["  ", "Qualify holds 12 deals."])
-        got = await dg.digest_after_run(ORG, now=NOW)
-        assert got.rejected == 1 and state["stored"][0] == "Qualify holds 12 deals."
+        with structlog.testing.capture_logs() as caps:
+            got = await dg.digest_after_run(ORG, now=NOW)
+        assert got.empty == 1 and got.rejected == 0 and got.requests == 2
+        assert state["stored"][0] == "Qualify holds 12 deals."
+        assert state["failed"] == ["req-1"]
+        events = [c["event"] for c in caps]
+        assert "crm.digest.empty_answer" in events
+        assert "crm.digest.rejected" not in events
 
     async def test_no_answer_stops_the_step(self, monkeypatch):
         state = _step_fakes(monkeypatch)

@@ -275,6 +275,7 @@ async def _fill(job: Job, words: str) -> dict[str, str]:
             max_tokens=200,
             temperature=0.0,
             source="shell",
+            job="structured",
         )
     except RoutedRefusal:
         return {}
