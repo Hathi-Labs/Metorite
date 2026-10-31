@@ -1626,9 +1626,11 @@ summary job, which is owner-only (§15.8).
 ### 15.1 The owner's ask
 
 The owner asked for the memory pattern of the owner's `agent-startup-guru`
-repo in Metorite. On 2026-10-30 the owner answered the proposal in chat: "go
-ahead with your recommendations". So each default of §15.11 stands. The
-owner made these calls:
+repo in Metorite. On 2026-10-30 the agent put a proposal in chat, and the
+owner answered: "go ahead with your recommendations". The owner saw and
+accepted items 1 to 4 below, the start-of-chat briefing (PZ-34), MEM-2
+brought forward, and dated facts (PZ-22). Item 5 restates D132. §15.11 says
+which decisions are the agent's design defaults:
 
 1. **Mira keeps a short summary of each private chat.** It holds two or
    three lines and the follow-ups. Mira does not ask each time.
@@ -1637,7 +1639,9 @@ owner made these calls:
 3. **Forget and offboarding delete the summaries** (PZ-9, §7 item 6).
 4. **A promise becomes a task only on one yes card.** "I will send the
    deck on Friday" asks one card, as the profile offer of D-PZ-22 does.
-5. **Mem0 and Graphiti stay retired** (D132). Long-term recall is MEM-2
+5. **Mem0 and Graphiti stay retired** (D132). The owner asked about this on
+   2026-10-30. The agent recommended that D132 stands, and the owner did not
+   overrule it. Long-term recall is MEM-2
    (Metorite task 821), a full-text search over past chats. It now covers
    the summaries, and it comes forward.
 
@@ -2266,9 +2270,15 @@ uv run pytest tests/unit/test_assistant_profile.py tests/unit/test_profile_write
 
 ### 15.11 Decisions
 
-The owner accepted each default on 2026-10-30: "go ahead with your
-recommendations". `work_plan.md` §3 records them as **D141**. The numbers
-follow D-PZ-23, and a check of `origin/main` at merge confirms them (R1).
+`work_plan.md` §3 records these as **D141**. The numbers follow D-PZ-23,
+and a check of `origin/main` at merge confirms them (R1). Two kinds of
+decision are in this table:
+
+- **The owner saw and accepted these in chat** on 2026-10-30 ("go ahead with
+  your recommendations"): D-PZ-24, D-PZ-31, D-PZ-32 and D-PZ-34.
+- **These are the agent's design defaults** under that blanket answer:
+  D-PZ-25 to D-PZ-30, D-PZ-33 and D-PZ-35. The owner did not see them one by
+  one, and may overrule any of them.
 
 | # | Question | Decision |
 |---|---|---|

@@ -4858,12 +4858,12 @@ The owner answered the proposal of the Metorite epic 1129, "Recent chats and ope
 2. **The member controls it (PZ-35).** Only the member sees a summary. Settings → Assistant settings shows each one with Delete, and one switch turns them off.
 3. **Forget and offboarding delete them.** Forget (PZ-9) and the end of access remove each summary of the member.
 4. **A promise becomes a task only on one yes card (PZ-36).** A promise asks one card, as the profile offer of D-PZ-22 does. Nothing saves without the yes.
-5. **Recall stays one path.** Mem0 and Graphiti stay retired (D132.4). Long-term recall is MEM-2 (Metorite task 821), a full-text search over past chats.
+5. **Recall stays one path.** Mem0 and Graphiti stay retired (D132.4). The owner asked about this on 2026-10-30, the agent recommended that D132 stands, and the owner did not overrule it. Long-term recall is MEM-2 (Metorite task 821), a full-text search over past chats.
 6. **MEM-2 comes forward.** Its search now covers the summaries too.
 7. **A chat opens with the recent chats (PZ-34).** One bounded block holds the newest 3 summaries and the member's open tasks that are due.
 8. **Dated facts (PZ-22, Metorite task 317).** A fact gains `since` and `superseded_by`. A replaced fact stays, hidden from the block.
-9. **Who flips.** The production flip of `ASSISTANT_CHAT_SUMMARY_ORGS` is owner-only (§6 D4). Its job spends the org's credits with no request of the member. Each other flip of §15 is gate `enforcement-flip`.
-10. **The defaults.** D-PZ-24 to D-PZ-35 of the spec's §15.11 stand. §15.12 holds five questions, each with a default.
+9. **Who flips (the agent's recommendation).** The production flip of `ASSISTANT_CHAT_SUMMARY_ORGS` is owner-only (§6 D4). Its job spends the org's credits with no request of the member. Each other flip of §15 is gate `enforcement-flip`. The owner did not see this item one by one, and may overrule it.
+10. **The defaults.** The owner saw items 1 to 8 in chat. D-PZ-25 to D-PZ-30, D-PZ-33 and D-PZ-35 of the spec's §15.11 are the agent's design defaults under the blanket answer, and the owner may overrule any of them. §15.12 holds five questions, each with a default.
 
 
 ## 4. Single-owner registry (who owns duplicated work)
