@@ -465,6 +465,29 @@ def test_the_verify_never_restores_into_the_live_cluster() -> None:
     )
 
 
+def test_the_verify_container_gives_an_index_build_256mb() -> None:
+    """🔴 LD-8c, incident 2026-10-31 02:37 UTC. The restore failed with
+    "memory required is 65 MB, maintenance_work_mem is 64 MB" in the build of
+    a vector index, and the deep verify failed. 64 MB is the image default.
+    Mutation: drop `-c maintenance_work_mem=256MB` from the `docker run` of
+    the verify container, and this fails. The executed happy path below
+    checks the same flag in the argv that reaches docker."""
+    lines = _joined_executable_lines(_BACKUP)
+    runs = [ln for ln in lines if "docker run" in ln]
+    assert len(runs) == 1, f"one verify container, and {len(runs)} docker run line(s)"
+    run = runs[0]
+    assert "-c maintenance_work_mem=256MB" in run, (
+        "the verify container must start with -c maintenance_work_mem=256MB"
+    )
+    # One index builds at a time, so the 256 MB is a peak and not a multiple.
+    assert "-c max_parallel_maintenance_workers=0" in run, run
+    default_cap = re.search(r'verify_memory="\$\{BACKUP_VERIFY_MEMORY:-(\d+)g\}"',
+                            _BACKUP.read_text(encoding="utf-8"))
+    assert default_cap and int(default_cap.group(1)) >= 1, (
+        "the default cap must stay 1g or more: 256 MB plus shared_buffers must fit"
+    )
+
+
 _STUBS = r"""
 set -u
 W="$(mktemp -d)"
@@ -700,6 +723,9 @@ def test_a_working_docker_verifies_in_the_container_only() -> None:
     lines = calls.splitlines()
     run = next(ln for ln in lines if ln.startswith("docker run"))
     assert "--network none" in run and "--memory 1g" in run, run
+    assert "-c maintenance_work_mem=256MB" in run, (
+        "LD-8c: the verify container must give an index build 256 MB"
+    )
     assert "pgvector/pgvector:pg17" in run, "the image must follow the live major"
     assert "POSTGRES_PASSWORD=" not in run, "the password reached docker's argv"
     assert any(

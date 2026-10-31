@@ -4,6 +4,13 @@
 run proved the timer. **The off-box copy is BUILT (2026-10-08).** It stays
 OFF until the owner does the four steps in §4.2 (H-123).
 
+**2026-10-31, LD-8c:** the deep verify failed on the night of 2026-10-31.
+The restore of a vector index needed 65 MB, and the verify container gave it
+64 MB. The container now starts with `-c maintenance_work_mem=256MB`, under
+its 1g cap. The fence is `tests/unit/test_backup_deploy_wiring.py`. Nobody has
+measured the fix on the box yet. The proof is the first nightly run after the
+deploy, with "restore verified" in the journal.
+
 **2026-10-29, H-259 / WS-25d:** a failed nightly backup now reaches a person.
 The job `backup-timer` in `vps-health.yml` reads `acb-backup.service` and
 `acb-backup.timer` each hour. It opens one issue, "Nightly backup failed", in

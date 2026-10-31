@@ -17,6 +17,9 @@ What it fences:
 4. It refuses, and changes nothing, on an unknown or empty slug list.
 5. It refuses a new table that has no ``organization_id`` and no rule.
 6. It refuses a credential-shaped column that still holds a value.
+7. It leaves no web push subscription, no plugin auth and no hash of a
+   WhatsApp link or reply code (LD-8c). Step 6 also matches ``p256dh``,
+   ``auth`` (the whole name only) and ``code_hash``.
 """
 
 from __future__ import annotations
@@ -205,6 +208,89 @@ def test_the_legacy_mcp_auth_is_blanked(clone) -> None:
         row = c.execute(text("SELECT headers::text, env_vars::text FROM mcp_servers "
                              "WHERE name = 'zz'")).one()
     assert row == ("{}", "{}")
+
+
+def test_the_push_subscriptions_are_emptied(clone) -> None:
+    """LD-8c. A subscription holds the endpoint of a real device and its two
+    keys. No row may leave, in a kept organization too. Mutation: drop the
+    TRUNCATE in ``minimise.sql``, and step 6 refuses on ``p256dh``."""
+    with clone.begin() as c:
+        c.execute(text(
+            "INSERT INTO push_subscriptions (organization_id, member_email, endpoint, "
+            "p256dh, auth) VALUES (:o, 'push@h3rls.test', "
+            "'https://push.example.test/ld8c-1', 'BLd8cPublicKey', 'ld8cAuthSecret')"),
+            {"o": clone.org_a})
+    res = _run(clone, "h3rls-a")
+    assert res.returncode == 0, res.stdout + res.stderr
+    with clone.connect() as c:
+        assert c.execute(text("SELECT count(*) FROM push_subscriptions")).scalar_one() == 0
+
+
+def test_the_plugin_auth_and_the_code_hashes_are_blanked(clone) -> None:
+    """LD-8c. ``plugins.auth_config`` is NOT NULL, so it becomes ``{}``.
+    ``whatsapp_member_links.code_hash`` becomes ``''``, because a pending row
+    must hold a hash. ``whatsapp_pending_acts.confirm_code_hash`` becomes
+    NULL, because its CHECK takes NULL or 64 hex characters only. Each row
+    stays. Mutation: drop one UPDATE. The plugin assertion fails, or step 6
+    refuses on a code hash."""
+    code_hash = "a" * 64
+    with clone.begin() as c:
+        c.execute(text(
+            "INSERT INTO plugins (organization_id, name, label, manifest_url, auth_type, "
+            "auth_config) VALUES (:o, 'ld8c-plugin', 'LD-8c', "
+            "'https://plugin.example.test/ai-plugin.json', 'api_key', CAST(:a AS jsonb))"),
+            {"o": clone.org_a, "a": '{"type": "api_key", "value": "plain-plugin-key"}'})
+        link = c.execute(text(
+            "INSERT INTO whatsapp_member_links (organization_id, member_email, status, "
+            "code_hash, code_expires_at) VALUES (:o, 'wa@h3rls.test', 'pending', :h, "
+            "now() + interval '15 minutes') RETURNING id"),
+            {"o": clone.org_a, "h": code_hash}).scalar_one()
+        c.execute(text("INSERT INTO chat_session (id, organization_id) VALUES ('ld8c-chat', :o)"),
+                  {"o": clone.org_a})
+        c.execute(text(
+            "INSERT INTO whatsapp_pending_acts (organization_id, member_email, wa_id, "
+            "chat_session_id, link_id, tool_name, arguments, card_text, expires_at, "
+            "confirm_code_hash) VALUES (:o, 'wa@h3rls.test', '919900000001', 'ld8c-chat', "
+            ":l, 'send_email', CAST('{}' AS jsonb), 'Send it?', now() + interval '1 hour', :h)"),
+            {"o": clone.org_a, "l": link, "h": code_hash})
+    res = _run(clone, "h3rls-a")
+    assert res.returncode == 0, res.stdout + res.stderr
+    with clone.connect() as c:
+        auth = c.execute(text(
+            "SELECT auth_config::text FROM plugins WHERE name = 'ld8c-plugin'")).scalar_one()
+        link_row = c.execute(text(
+            "SELECT code_hash, status FROM whatsapp_member_links WHERE id = :l"),
+            {"l": link}).one()
+        act_hash = c.execute(text(
+            "SELECT confirm_code_hash FROM whatsapp_pending_acts WHERE link_id = :l"),
+            {"l": link}).scalar_one()
+    assert auth == "{}", auth
+    assert tuple(link_row) == ("", "pending"), link_row
+    assert act_hash is None, act_hash
+
+
+@pytest.mark.parametrize("column", ["p256dh", "auth", "reset_code_hash"])
+def test_a_push_key_or_a_code_hash_left_behind_refuses(clone, column: str) -> None:
+    """LD-8c: step 6 matches the three new names. A new column of that name
+    fails the export until it is blanked above."""
+    with clone.begin() as c:
+        c.execute(text(f"CREATE TABLE public.zz_k (organization_id uuid, {column} text)"))
+        c.execute(text("INSERT INTO public.zz_k VALUES (:o, 'held')"), {"o": clone.org_a})
+    res = _run(clone, "h3rls-a")
+    assert res.returncode != 0
+    assert f"zz_k.{column}" in res.stderr
+
+
+def test_a_name_that_only_starts_with_auth_passes(clone) -> None:
+    """``^auth$`` is a whole name. ``author`` and ``auth_type`` hold no key,
+    so a value in them must not stop the export."""
+    with clone.begin() as c:
+        c.execute(text(
+            "CREATE TABLE public.zz_a (organization_id uuid, author text, auth_type text)"))
+        c.execute(text("INSERT INTO public.zz_a VALUES (:o, 'Ada', 'oauth2')"),
+                  {"o": clone.org_a})
+    res = _run(clone, "h3rls-a")
+    assert res.returncode == 0, res.stdout + res.stderr
 
 
 @pytest.mark.parametrize("value", [
