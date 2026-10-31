@@ -83,6 +83,17 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-441 · Prove that a restore gets 256 MB through the production pooler, and make `restore_db.sh` fail on a failed restore · [AGENT]
+- **Metorite:** no task yet, so the full entry is here. The parent is #1229 (LD-8c).
+- **Why:** LD-8c sends `maintenance_work_mem=256MB` to each restore through `PGOPTIONS`. A pooler must pass the `options` startup parameter on to the server. Nobody has checked the Supabase pooler of production. Also, `restore_db.sh` ends each `pg_restore` with `| tail -20 || true`. A failed index build prints an error, and the script goes on as if the restore worked.
+- **Do this:**
+  1. On the production box, run `psql -tAc 'show maintenance_work_mem'` with `PGOPTIONS='-c maintenance_work_mem=256MB'` and the PG names of `/etc/acb/root.env`.
+  2. `256MB` means the pooler passes it. An error, or any other value, means a restore there needs another way. Record the result in the PR of part 3.
+  3. In `restore_db.sh`, keep the exit code of `pg_restore`. Print each `pg_restore: error` line, and exit 1 on one. Fence it in `tests/unit/test_backup_deploy_wiring.py`.
+- **Check:** `rg -n 'tail -20 \|\| true' scripts/restore_db.sh`. A hit means part 3 is open. Part 1 stays open until a PR records the pooler result.
+- **Authority:** LD-8c review, 2026-10-31, finding 2. `specs/backup_and_restore.md` §2 holds the 256 MB rule.
+- **Added:** 2026-10-31 · LD-8c repair round 1, branch `ld8c-backup-minimise-mt-d6426e98`
+
 ### H-433 · Check the chat prompt for notifications on a real phone, on production · [OWNER]
 - **Metorite:** #600 (OB-8). The task holds the checks and the state.
 - **Check:** task #600 is not Done → still pending. `PUSH_PROMPT_ORGS=*` is set in production since 2026-10-31 (D144, staging retired). The owner checks the three choices on an Android phone and in the iPhone Home Screen app.

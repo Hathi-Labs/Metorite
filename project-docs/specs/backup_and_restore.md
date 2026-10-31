@@ -11,6 +11,11 @@ its 1g cap. The fence is `tests/unit/test_backup_deploy_wiring.py`. Nobody has
 measured the fix on the box yet. The proof is the first nightly run after the
 deploy, with "restore verified" in the journal.
 
+**The rule since LD-8c: every restore of these dumps gives the index build
+256 MB.** The rule is in §2 under the design decisions. `restore_db.sh` and
+`staging_refresh.sh` obey it now. H-441 holds two open checks. The first is
+the production pooler. The second is the `|| true` of `restore_db.sh`.
+
 **2026-10-29, H-259 / WS-25d:** a failed nightly backup now reaches a person.
 The job `backup-timer` in `vps-health.yml` reads `acb-backup.service` and
 `acb-backup.timer` each hour. It opens one issue, "Nightly backup failed", in
@@ -132,6 +137,25 @@ it is not built. `box_hardening.md` §5 BH-6 owns the change.
   touches nothing live. Overwriting live needs `--target acb --force`, takes an
   unconditional pre-restore dump first, and stops the gateway so users are not
   served half-restored state.
+- **🔴 Every restore of these dumps runs with `maintenance_work_mem=256MB`
+  (LD-8c, 2026-10-31).** The dump holds an IVFFlat vector index. Its build
+  needs more than the 64 MB server default, so a restore at the default
+  stops with "memory required is 65 MB". This rule binds each script that
+  restores a dump, and each new one.
+  - The verify container starts with `-c maintenance_work_mem=256MB`.
+  - A restore into a server that you do not start sets it for its own
+    session. Use `env "PGOPTIONS=-c maintenance_work_mem=256MB" pg_restore`
+    inside the `pg`/`pgi` seam or the `docker exec`. In `restore_db.sh`,
+    `restore_256` is the one way to restore.
+  - The setting is a limit for one session. It changes no server setting.
+  - Fences: `tests/unit/test_backup_deploy_wiring.py` (the verify container
+    and `restore_db.sh`, in both modes) and `tests/unit/test_staging_box.py`
+    (`staging_refresh.sh`).
+  - ⚠️ A pooler must pass the `options` startup parameter on to the server.
+    Nobody has checked the production pooler yet (H-441).
+  - ⚠️ `restore_db.sh` still hides the exit code of `pg_restore` behind
+    `| tail -20 || true`. A failed index build prints an error, and the
+    script goes on. That is a known gap (H-441).
 
 ## 3. Runbook
 

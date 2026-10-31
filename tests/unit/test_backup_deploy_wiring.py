@@ -201,6 +201,125 @@ def test_the_pg_seam_actually_reaches_docker_in_docker_mode() -> None:
         assert "STUB exec -i testc echo two" in out, f"{script}: pgi missed -i"
 
 
+_RESTORE_DB = _ROOT / "scripts/restore_db.sh"
+_ROOM = "PGOPTIONS=-c maintenance_work_mem=256MB"
+
+
+def test_every_restore_in_restore_db_gives_an_index_build_256mb() -> None:
+    """🔴 LD-8c, static half. The nightly verify failed on 2026-10-31 with
+    "memory required is 65 MB, maintenance_work_mem is 64 MB", and every
+    restore of these dumps builds that vector index. So `restore_256` holds
+    the setting, and each pg_restore with a target database goes through it.
+    The seam may only LIST an archive. Mutation: put back
+    `pgi pg_restore -U ... -d`, or drop the `env` part of `restore_256`, and
+    this fails."""
+    lines = _joined_executable_lines(_RESTORE_DB)
+    fn = [ln for ln in lines if ln.startswith("restore_256()")]
+    assert len(fn) == 1, "restore_db.sh lost its restore_256 function"
+    assert f'pgi env "{_ROOM}" pg_restore "$@"' in fn[0], fn[0]
+    restores = [ln for ln in lines if re.search(r"\b(pg_restore|restore_256)\b", ln)
+                and not ln.startswith("restore_256()")]
+    targeted = [ln for ln in restores if re.search(r"(?:\s-d\s|--dbname)", ln)]
+    assert len(targeted) == 3, f"three restores (live, one table, scratch): {targeted}"
+    for ln in targeted:
+        assert re.match(r"\s*restore_256 ", ln), (
+            f"a restore that does not give the index build 256 MB: {ln.strip()!r}"
+        )
+    for ln in restores:
+        if re.search(r"\bpgi? pg_restore\b", ln):
+            assert "--list" in ln, f"a bare restore through the seam: {ln.strip()!r}"
+
+
+_RESTORE_STUBS = r"""
+set -u
+W="$(mktemp -d)"
+export W
+night="$W/backups/2026-10-31T023000Z"
+mkdir -p "$W/app" "$night" "$W/bin"
+printf 'POSTGRES_USER=acb\n' > "$W/app/.env"
+printf 'DUMP\n' > "$night/acb.dump"
+printf 'taken_utc: 2026-10-31T02:30:00Z\n' > "$night/MANIFEST.txt"
+CALLS="$W/calls.log"
+: > "$CALLS"
+export CALLS
+# A FILE and not a function: `env` finds pg_restore by PATH.
+cat > "$W/bin/pg_restore" <<'STUB'
+#!/usr/bin/env bash
+printf 'pg_restore PGOPTIONS=[%s] %s\n' "${PGOPTIONS:-}" "$*" >> "$CALLS"
+cat > /dev/null
+STUB
+chmod +x "$W/bin/pg_restore"
+export PATH="$W/bin:$PATH"
+psql() { printf 'psql %s\n' "$*" >> "$CALLS"; echo 1; }
+createdb() { printf 'createdb %s\n' "$*" >> "$CALLS"; }
+pg_dump() { printf 'pg_dump %s\n' "$*" >> "$CALLS"; echo DUMP; }
+systemctl() { printf 'systemctl %s\n' "$*" >> "$CALLS"; }
+# Each argument in brackets, so the test sees where one argument ends.
+docker() {
+  if [ "$1" = "ps" ]; then echo acb-postgres; return 0; fi
+  { printf 'docker'; printf ' [%s]' "$@"; printf '\n'; } >> "$CALLS"
+  if [ "${2:-}" = "-i" ]; then cat > /dev/null; fi
+  case " $* " in *" pg_dump "*) echo DUMP ;; esac
+  return 0
+}
+export -f psql createdb pg_dump systemctl docker
+for mode in docker local; do
+  for args in "" "--table pm_tasks" "--target acb --force"; do
+    printf '== %s %s\n' "$mode" "$args" >> "$CALLS"
+    # shellcheck disable=SC2086
+    PG_MODE="$mode" APP_DIR="$W/app" BACKUP_DIR="$W/backups" \
+      bash scripts/restore_db.sh $args < /dev/null > "$W/out.txt" 2>&1
+    rc=$?
+    printf 'RC=%s\n' "$rc" >> "$CALLS"
+    [ "$rc" = 0 ] || cat "$W/out.txt" >> "$CALLS"
+  done
+done
+cat "$CALLS"
+rm -rf "$W"
+"""
+
+
+def test_restore_db_sends_256mb_to_pg_restore_in_both_modes() -> None:
+    """🔴 LD-8c, executed half. Runs the REAL restore_db.sh in docker mode and
+    in local mode, on each of its three paths: the scratch database, one
+    table, and the live database. Each restore must reach pg_restore with
+    PGOPTIONS. In docker mode, `env` and the setting must be in the argv of
+    `docker exec`, because docker passes no host env into the container.
+    Mutation: replace `env "PGOPTIONS=..."` in `restore_256` with a
+    `PGOPTIONS=...` before pgi. Local mode still passes, and docker mode
+    fails."""
+    import subprocess
+
+    run = subprocess.run(
+        ["bash"], input=_RESTORE_STUBS.encode(), capture_output=True, timeout=60,
+        cwd=_ROOT, env=_hermetic_env(),
+    )
+    out = run.stdout.decode(errors="replace")
+    assert run.returncode == 0, run.stderr.decode(errors="replace")[:600]
+    blocks = dict(
+        (head.strip(), body) for head, _, body in
+        (part.partition("\n") for part in out.split("== ")[1:])
+    )
+    assert len(blocks) == 6, out
+    for head, body in blocks.items():
+        assert "RC=0" in body, f"{head}: {body}"
+        if head.startswith("docker"):
+            restores = [ln for ln in body.splitlines()
+                        if ln.startswith("docker [exec] [-i]") and "[pg_restore]" in ln
+                        and "[--list]" not in ln]
+            assert len(restores) == 1, f"{head}: {body}"
+            assert restores[0].startswith(
+                f"docker [exec] [-i] [acb-postgres] [env] [{_ROOM}] [pg_restore] "
+            ), f"{head}: {restores[0]}"
+        else:
+            restores = [ln for ln in body.splitlines()
+                        if ln.startswith("pg_restore ") and "--list" not in ln]
+            assert len(restores) == 1, f"{head}: {body}"
+            assert restores[0].startswith(
+                "pg_restore PGOPTIONS=[-c maintenance_work_mem=256MB] -U acb -d "
+            ), f"{head}: {restores[0]}"
+
+
 def test_no_deploy_script_redirects_into_shared_tmp() -> None:
     """`fs.protected_regular=2` (Ubuntu default) forbids opening an existing
     file in a sticky world-writable dir owned by another user -- ROOT TOO. A

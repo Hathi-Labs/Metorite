@@ -18,13 +18,15 @@ What it fences:
 5. It refuses a new table that has no ``organization_id`` and no rule.
 6. It refuses a credential-shaped column that still holds a value.
 7. It leaves no web push subscription, no plugin auth and no hash of a
-   WhatsApp link or reply code (LD-8c). Step 6 also matches ``p256dh``,
-   ``auth`` (the whole name only) and ``code_hash``.
+   WhatsApp link or reply code, and it closes each open WhatsApp act
+   (LD-8c). Step 6 also matches ``p256dh``, ``auth`` (the whole name only),
+   ``code_hash``, ``encryption_key`` and ``token`` (a part of a name).
 """
 
 from __future__ import annotations
 
 import itertools
+import json
 import pathlib
 import subprocess
 import uuid
@@ -227,19 +229,28 @@ def test_the_push_subscriptions_are_emptied(clone) -> None:
 
 
 def test_the_plugin_auth_and_the_code_hashes_are_blanked(clone) -> None:
-    """LD-8c. ``plugins.auth_config`` is NOT NULL, so it becomes ``{}``.
-    ``whatsapp_member_links.code_hash`` becomes ``''``, because a pending row
-    must hold a hash. ``whatsapp_pending_acts.confirm_code_hash`` becomes
-    NULL, because its CHECK takes NULL or 64 hex characters only. Each row
-    stays. Mutation: drop one UPDATE. The plugin assertion fails, or step 6
-    refuses on a code hash."""
+    """LD-8c. ``plugins.auth_config`` is NOT NULL, so it becomes ``{}``. The
+    install route (``gateway/routes/integrations.py``) writes manifest.auth
+    to ``auth_config`` and the whole manifest to ``manifest``, so the seed
+    puts the same auth object in both, and the ``auth`` key must go from
+    ``manifest`` too. ``whatsapp_member_links.code_hash`` becomes ``''``,
+    because a pending row must hold a hash.
+    ``whatsapp_pending_acts.confirm_code_hash`` becomes NULL, because its
+    CHECK takes NULL or 64 hex characters only. Each row stays. Mutation:
+    drop one SET. A plugin assertion fails, or step 6 refuses on a code
+    hash."""
     code_hash = "a" * 64
+    auth = {"type": "service_http", "authorization_type": "bearer",
+            "verification_tokens": {"openai": "plain-plugin-key"}}
+    manifest = {"schema_version": "v1", "name_for_model": "ld8c", "auth": auth,
+                "api": {"type": "openapi", "url": "https://plugin.example.test/openapi.yaml"}}
     with clone.begin() as c:
         c.execute(text(
             "INSERT INTO plugins (organization_id, name, label, manifest_url, auth_type, "
-            "auth_config) VALUES (:o, 'ld8c-plugin', 'LD-8c', "
-            "'https://plugin.example.test/ai-plugin.json', 'api_key', CAST(:a AS jsonb))"),
-            {"o": clone.org_a, "a": '{"type": "api_key", "value": "plain-plugin-key"}'})
+            "auth_config, manifest) VALUES (:o, 'ld8c-plugin', 'LD-8c', "
+            "'https://plugin.example.test/ai-plugin.json', 'service_http', "
+            "CAST(:a AS jsonb), CAST(:m AS jsonb))"),
+            {"o": clone.org_a, "a": json.dumps(auth), "m": json.dumps(manifest)})
         link = c.execute(text(
             "INSERT INTO whatsapp_member_links (organization_id, member_email, status, "
             "code_hash, code_expires_at) VALUES (:o, 'wa@h3rls.test', 'pending', :h, "
@@ -256,17 +267,59 @@ def test_the_plugin_auth_and_the_code_hashes_are_blanked(clone) -> None:
     res = _run(clone, "h3rls-a")
     assert res.returncode == 0, res.stdout + res.stderr
     with clone.connect() as c:
-        auth = c.execute(text(
-            "SELECT auth_config::text FROM plugins WHERE name = 'ld8c-plugin'")).scalar_one()
+        plugin = c.execute(text(
+            "SELECT auth_config::text, manifest FROM plugins WHERE name = 'ld8c-plugin'")).one()
         link_row = c.execute(text(
             "SELECT code_hash, status FROM whatsapp_member_links WHERE id = :l"),
             {"l": link}).one()
         act_hash = c.execute(text(
             "SELECT confirm_code_hash FROM whatsapp_pending_acts WHERE link_id = :l"),
             {"l": link}).scalar_one()
-    assert auth == "{}", auth
+    assert plugin[0] == "{}", plugin[0]
+    assert "auth" not in plugin[1], plugin[1]
+    assert "plain-plugin-key" not in json.dumps(plugin[1]), plugin[1]
+    # The rest of the manifest stays: only the auth goes.
+    assert plugin[1] == {k: v for k, v in manifest.items() if k != "auth"}, plugin[1]
     assert tuple(link_row) == ("", "pending"), link_row
     assert act_hash is None, act_hash
+
+
+def test_each_open_whatsapp_act_closes(clone) -> None:
+    """LD-8c, review finding 3. A NULL ``confirm_code_hash`` turns an email
+    act into one that a plain Confirm answers. So a ``pending`` or
+    ``running`` act becomes ``expired``, a closed state of 242, and a closed
+    act keeps its state. Mutation: drop the ``state`` SET, and the pending
+    act stays open."""
+    code_hash = "b" * 64
+    with clone.begin() as c:
+        link = c.execute(text(
+            "INSERT INTO whatsapp_member_links (organization_id, member_email, status, "
+            "code_hash, code_expires_at) VALUES (:o, 'acts@h3rls.test', 'pending', :h, "
+            "now() + interval '15 minutes') RETURNING id"),
+            {"o": clone.org_a, "h": code_hash}).scalar_one()
+        c.execute(text("INSERT INTO chat_session (id, organization_id) VALUES ('ld8c-acts', :o)"),
+                  {"o": clone.org_a})
+        for state in ("pending", "running", "done", "cancelled"):
+            c.execute(text(
+                "INSERT INTO whatsapp_pending_acts (organization_id, member_email, wa_id, "
+                "chat_session_id, link_id, tool_name, arguments, card_text, state, "
+                "offered_at, offered_wamid, expires_at, confirm_code_hash) VALUES (:o, "
+                "'acts@h3rls.test', '919900000002', 'ld8c-acts', :l, 'send_email', "
+                "CAST('{}' AS jsonb), :card, :s, now(), :w, now() + interval '1 hour', :h)"),
+                {"o": clone.org_a, "l": link, "card": f"act {state}", "s": state,
+                 "w": f"wamid.ld8c.{state}", "h": code_hash})
+    res = _run(clone, "h3rls-a")
+    assert res.returncode == 0, res.stdout + res.stderr
+    with clone.connect() as c:
+        rows = dict(c.execute(text(
+            "SELECT card_text, state FROM whatsapp_pending_acts WHERE link_id = :l"),
+            {"l": link}).all())
+        hashes = c.execute(text(
+            "SELECT count(*) FROM whatsapp_pending_acts WHERE confirm_code_hash IS NOT NULL")
+        ).scalar_one()
+    assert rows == {"act pending": "expired", "act running": "expired",
+                    "act done": "done", "act cancelled": "cancelled"}, rows
+    assert hashes == 0
 
 
 @pytest.mark.parametrize("column", ["p256dh", "auth", "reset_code_hash"])
@@ -279,6 +332,22 @@ def test_a_push_key_or_a_code_hash_left_behind_refuses(clone, column: str) -> No
     res = _run(clone, "h3rls-a")
     assert res.returncode != 0
     assert f"zz_k.{column}" in res.stderr
+
+
+@pytest.mark.parametrize("column", [
+    "access_token", "auth_token", "id_token", "bot_token", "encryption_key"])
+def test_a_token_or_a_key_left_behind_refuses(clone, column: str) -> None:
+    """LD-8c, review finding 4. Step 6 matches ``token`` as a part of a name,
+    and ``encryption_key``. Before, only four token names matched, so an
+    ``access_token`` with a value left in the copy. Mutation: put the four
+    token names back in place of ``token``, and the token cases fail."""
+    with clone.begin() as c:
+        c.execute(text(f"CREATE TABLE public.zz_t (organization_id uuid, {column} text)"))
+        c.execute(text("INSERT INTO public.zz_t VALUES (:o, 'ya29.held-value')"),
+                  {"o": clone.org_a})
+    res = _run(clone, "h3rls-a")
+    assert res.returncode != 0
+    assert f"zz_t.{column}" in res.stderr
 
 
 def test_a_name_that_only_starts_with_auth_passes(clone) -> None:

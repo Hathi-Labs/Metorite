@@ -68,6 +68,25 @@ PG_MODE="${PG_MODE:-docker}"
 pg()  { if [ "$PG_MODE" = "local" ]; then "$@"; else docker exec "$PG_CONTAINER" "$@"; fi; }
 pgi() { if [ "$PG_MODE" = "local" ]; then "$@"; else docker exec -i "$PG_CONTAINER" "$@"; fi; }
 
+# restore_256 <pg_restore args> — the one way this script restores a dump.
+#
+# 🔴 LD-8c, incident 2026-10-31 02:37 UTC. The nightly verify failed with
+# "memory required is 65 MB, maintenance_work_mem is 64 MB", in the build of
+# an IVFFlat vector index. 64 MB is the server default, and every restore of
+# these dumps builds that index. So each restore here sends
+# maintenance_work_mem=256MB to the server, through libpq's PGOPTIONS.
+#
+# `env` sets PGOPTIONS for pg_restore alone, and it does that in both modes.
+# Through `docker exec` it runs INSIDE the container, so the libpq of the
+# container reads it. A plain PGOPTIONS=... before pgi would stay on the host.
+# The setting is a limit for one session, and it changes no server setting.
+#
+# ⚠️ Through a pooler, the pooler must pass the `options` startup parameter
+# on to the server. A pooler that refuses it fails the connection. H-441
+# holds the check of the production pooler.
+# Fence: tests/unit/test_backup_deploy_wiring.py.
+restore_256() { pgi env "PGOPTIONS=-c maintenance_work_mem=256MB" pg_restore "$@"; }
+
 require_postgres() {
   if [ "$PG_MODE" = "local" ]; then
     command -v psql >/dev/null || { echo "ERROR: PG_MODE=local but psql is not on PATH." >&2; exit 1; }
@@ -142,7 +161,11 @@ if [ -n "$TARGET" ] && [ "$TARGET" = "$DB" ]; then
   say "Restoring into '$TARGET' (clean)"
   # --clean --if-exists drops each object before recreating it, so this is a
   # true replacement rather than a merge into whatever is already there.
-  pgi pg_restore -U "$PG_USER" -d "$TARGET" \
+  # ⚠️ KNOWN GAP (LD-8c, H-441): `| tail -20 || true` hides the exit code of
+  # pg_restore. A failed index build prints an error, `tail` keeps only the
+  # last 20 lines, and the script goes on as if the restore worked. The two
+  # restores of the scratch path have the same gap.
+  restore_256 -U "$PG_USER" -d "$TARGET" \
       --clean --if-exists --no-owner --no-acl < "$SRC" 2>&1 | tail -20 || true
 
   say "Restarting gateway + workbench"
@@ -159,10 +182,12 @@ pg createdb -U "$PG_USER" "$SCRATCH" 2>/dev/null || true
 if [ -n "$TABLE" ]; then
   # Single-table extraction is the whole reason for the -Fc custom format.
   say "Restoring only table '$TABLE'"
-  pgi pg_restore -U "$PG_USER" -d "$SCRATCH" \
+  # ⚠️ KNOWN GAP (LD-8c, H-441): `|| true` hides a failed restore. See above.
+  restore_256 -U "$PG_USER" -d "$SCRATCH" \
       --no-owner --no-acl --table "$TABLE" < "$SRC" 2>&1 | tail -20 || true
 else
-  pgi pg_restore -U "$PG_USER" -d "$SCRATCH" \
+  # ⚠️ KNOWN GAP (LD-8c, H-441): `|| true` hides a failed restore. See above.
+  restore_256 -U "$PG_USER" -d "$SCRATCH" \
       --no-owner --no-acl < "$SRC" 2>&1 | tail -20 || true
 fi
 
