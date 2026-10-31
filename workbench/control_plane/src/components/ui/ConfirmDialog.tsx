@@ -124,7 +124,7 @@ export default function ConfirmDialog({
         ) : null}
         <p className="whitespace-pre-line text-xs text-foreground">{words.body}</p>
         {words.note ? (
-          <p className="flex items-start gap-1.5 rounded-md border border-border bg-secondary/50 px-2.5 py-2 text-[11px] text-muted-foreground">
+          <p className="flex items-start gap-1.5 rounded-md border border-border bg-secondary/50 glass:border-transparent glass:rounded-lg px-2.5 py-2 text-[11px] text-muted-foreground">
             <Icon name="Info" className="mt-0.5 h-3 w-3 shrink-0" />
             <span>{words.note}</span>
           </p>
