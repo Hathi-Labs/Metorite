@@ -12,7 +12,13 @@ A read. No action runs here. Three sources feed it:
 * A manifest row keeps ``route.cls``.
 * An integration tool: ``read_only`` is A. ``destructive`` or ``open_world``
   is C. Every other tool is B.
-* A published workflow is B.
+* A published workflow is B. Its ``input_schema`` is null until a workflow
+  declares a trigger input (``workflows.variables`` are start values).
+
+Source 2 is empty until a tool registers with an integration. Today the
+registry holds only tools with ``integration=None``.
+
+A manifest row takes ``input_schema`` from ``agent_apps.args_schema`` (AD-9).
 
 No row is class X. ``output_schema`` is null for every row until a later
 slice defines it. ``connection`` names the integration, or is null. The
@@ -25,11 +31,11 @@ from __future__ import annotations
 from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_feature_router
-from acb_common.app_manifests import door_ops, every_app, path_params
+from acb_common.app_manifests import door_ops, every_app
 from fastapi import APIRouter, Depends, HTTPException
 from gateway.db import tenant_session as _tenant_session
+from gateway.routes.agent_apps import args_schema
 from gateway.routes.studio import flags
-from gateway.routes.workflows.core import parse_jsonb
 from gateway.routes.workflows.engine.tool_args import parse_args_schema
 from gateway.routes.workflows.tools import list_tools
 from sqlalchemy import text
@@ -43,7 +49,7 @@ router = APIRouter(
 NOT_FOUND = "Not found"
 
 _WORKFLOWS_SQL = text(
-    "SELECT id, name, variables FROM workflows "
+    "SELECT id, name FROM workflows "
     "WHERE status = 'published' ORDER BY name, id"
 )
 
@@ -62,18 +68,12 @@ def _manifest_rows() -> list[dict[str, Any]]:
         if app.door != "ops":
             continue
         for name, op in door_ops(app).items():
-            params = path_params(op.route.path)
-            keys = (*params, *op.route.query)
             rows.append({
                 "id": f"{app.id}.{name}",
                 "title": op.route.title,
                 "source": "manifest",
                 "class": op.route.cls,
-                "input_schema": {
-                    "type": "object",
-                    "properties": {k: {"type": "string"} for k in keys},
-                    "required": list(params),
-                },
+                "input_schema": args_schema(app.id, name),
                 "output_schema": None,
                 "connection": None,
                 "app": app.id,
@@ -112,13 +112,12 @@ async def _workflow_rows() -> list[dict[str, Any]]:
         found = (await db.execute(_WORKFLOWS_SQL)).fetchall()
     rows: list[dict[str, Any]] = []
     for row in found:
-        variables = parse_jsonb(row.variables, {})
         rows.append({
             "id": f"workflow:{row.id}",
             "title": row.name,
             "source": "workflow",
             "class": "B",
-            "input_schema": variables if isinstance(variables, dict) and variables else {},
+            "input_schema": None,
             "output_schema": None,
             "connection": None,
             "app": None,

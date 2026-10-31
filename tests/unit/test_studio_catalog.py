@@ -196,7 +196,7 @@ class TestTheRows:
         assert row["input_schema"]["required"] == ["name"]
         assert set(row["input_schema"]["properties"]) == {"name", "note"}
 
-    def test_a_workflow_is_class_b_with_its_variables(self, monkeypatch, db):
+    def test_a_workflow_is_class_b_with_no_input_schema(self, monkeypatch, db):
         _open(monkeypatch, "*")
         one, two = _wf("One"), _wf("Two", {"topic": "x"})
         db.rows = [one, two]
@@ -204,8 +204,32 @@ class TestTheRows:
                 if r["source"] == "workflow"}
         assert set(rows) == {f"workflow:{one.id}", f"workflow:{two.id}"}
         assert all(r["class"] == "B" for r in rows.values())
-        assert rows[f"workflow:{one.id}"]["input_schema"] == {}
-        assert rows[f"workflow:{two.id}"]["input_schema"] == {"topic": "x"}
+        # variables are start values, not an input schema (runner.py state["vars"]).
+        assert all(r["input_schema"] is None for r in rows.values())
+
+    def test_a_manifest_schema_is_the_door_args_schema(self, monkeypatch, db):
+        from gateway.routes.agent_apps import args_schema
+
+        _open(monkeypatch, "*")
+        rows = {r["id"]: r for r in _client().get(URL).json()["actions"]
+                if r["source"] == "manifest"}
+        for app in every_app():
+            if app.door != "ops":
+                continue
+            for name in door_ops(app):
+                assert rows[f"{app.id}.{name}"]["input_schema"] == args_schema(app.id, name)
+        propose = args_schema("knowledge", "propose")
+        assert "kind" in propose["required"]
+        assert "kind" in rows["knowledge.propose"]["input_schema"]["required"]
+        listed = args_schema("knowledge", "list_pages")
+        assert "q" in listed["properties"]
+        assert "q" in rows["knowledge.list_pages"]["input_schema"]["properties"]
+
+    def test_tripwire_the_real_registry_has_no_integration_tool(self):
+        # No monkeypatch. Today list_tools() holds http.request, notify.activity
+        # and notify.whatsapp, all with integration=None, so source 2 gives 0 rows.
+        # The first tool that registers with an integration must update this test.
+        assert actions._integration_rows() == []
 
     def test_the_query_reads_published_only(self, monkeypatch, db):
         _open(monkeypatch, "*")

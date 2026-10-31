@@ -26,6 +26,11 @@ d. An unbound session sees no workflow at all (the role cannot bypass RLS).
 that is not bound to the tenant (``get_session_factory()()`` in place of
 ``_tenant_session()``). ``test_r8_an_org_sees_its_own_published_workflows``
 goes red, because the app role then reads no row.
+
+A second mutation: read with a session that bypasses RLS (a superuser or
+BYPASSRLS engine). Both ``test_r8_an_org_sees_its_own_published_workflows``
+and ``test_r8_an_org_never_sees_another_orgs_workflow`` go red. The
+independent verifier ran it on 2026-10-31 and got ``2 failed, 3 passed``.
 """
 
 from __future__ import annotations
@@ -87,15 +92,15 @@ def _user(org: str) -> UserContext:
         access=build_access(["feature:workflows"]), organization_id=org)
 
 
-def _as(world, org: str | None):
+def _as(world, org: str):
     """Call the real handler on the app-role engine with *org* bound."""
 
     async def _go():
         dsn = world.app_url.render_as_string(hide_password=False)
         async with tenant_engine_scope(dsn):
-            token = bind_tenant(org) if org else None
+            token = bind_tenant(org)
             try:
-                return await actions.list_actions(_user(org or world.org_a))
+                return await actions.list_actions(_user(org))
             finally:
                 release_tenant(token)
 
