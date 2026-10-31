@@ -59,7 +59,24 @@ export default function Sidebar() {
   // 2026-10-09). This rail reads it, and runs the work listener below, which
   // needs to know what is inside the rail.
   const fold = useSidebarFold();
-  const { collapsed, armedRef, foldForWork } = fold;
+  const { collapsed: storedCollapsed, armedRef, foldForWork } = fold;
+  // Peek (owner, 2026-11-01): while the pointer rests on a folded rail's head,
+  // the whole sidebar shows over the page, and the page does not move. It
+  // ends when the pointer leaves it or the member opens an app. The mark in
+  // the head pins it open. Every draw below reads the folded state as peek
+  // leaves it, so the peek draws the open sidebar.
+  const [peek, setPeek] = useState(false);
+  const peekTimer = useRef<number | undefined>(undefined);
+  const collapsed = storedCollapsed && !peek;
+  const startPeek = () => {
+    if (!storedCollapsed) return;
+    window.clearTimeout(peekTimer.current);
+    peekTimer.current = window.setTimeout(() => setPeek(true), 180);
+  };
+  const endPeek = () => {
+    window.clearTimeout(peekTimer.current);
+    setPeek(false);
+  };
   const armFold = fold.arm;
   // `placement === "bar"`: the full-width bar carries the logo and the
   // control, so this rail draws no head.
@@ -117,6 +134,11 @@ export default function Sidebar() {
   const railSections = shellNav
     ? shellSidebar(sections, shell.loading ? undefined : shell.layout)
     : sections;
+  useEffect(() => {
+    window.clearTimeout(peekTimer.current);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the peek ends when the fold or the page changes
+    setPeek(false);
+  }, [storedCollapsed, pathname]);
   // Glass: the folded rail fades at its foot while apps sit below it, since
   // it has no bar to show that it scrolls (review of GL-10, a 1366x768 window).
   const navRef = useRef<HTMLElement>(null);
@@ -365,10 +387,18 @@ export default function Sidebar() {
     return null;
   }
 
+  // The organization's initial, for the folded rail's head.
+  const orgInitial = (access.organization.display_name || access.organization.slug || "").trim().charAt(0).toUpperCase();
+
   return (
+    <>
+    {/* While it peeks, the rail keeps its place in the row, so the page does not move. */}
+    {peek ? <div aria-hidden data-sidebar-peek-space="" className="w-14 shrink-0 glass:m-2" /> : null}
     <aside
       ref={asideRef}
       data-collapsed={collapsed ? "true" : "false"}
+      data-peek={peek ? "" : undefined}
+      onMouseLeave={peek ? endPeek : undefined}
       // A fold widens <main> but fires no window `resize`, and some layouts
       // measure only on that event. Tell them once the width settles.
       onTransitionEnd={(e) => {
@@ -378,18 +408,25 @@ export default function Sidebar() {
       }}
       className={`sidebar-rail shrink-0 border-r flex flex-col overflow-hidden bg-sidebar border-sidebar-border glass:m-2 glass:rounded-2xl glass:border-r-0 glass:glass-chrome-flat ${
         collapsed ? "w-14" : "w-64"
-      }`}
+      } ${peek ? "absolute inset-y-0 left-0 z-40 shadow-2xl glass:shadow-glass glass:bg-popover!" : ""}`}
     >
       {/* Header. With the full-width shell bar, the bar carries the logo and
           the fold control instead, so the logo stays in view when this rail
           folds (owner, 2026-10-09). */}
       {head && (
-        <div className={`flex items-center border-b border-sidebar-border ${collapsed ? "justify-center p-3" : "justify-between px-4 py-4"}`}>
+        <div
+          data-sidebar-head=""
+          onMouseEnter={storedCollapsed && !peek ? startPeek : undefined}
+          onMouseLeave={storedCollapsed && !peek ? endPeek : undefined}
+          className={`flex items-center border-b border-sidebar-border ${collapsed ? "justify-center p-3" : "justify-between px-4 py-4"} glass:border-b-0 ${collapsed ? "glass:px-0 glass:pt-3 glass:pb-1" : "glass:gap-2 glass:pl-3 glass:pr-2 glass:pt-3 glass:pb-1"}`}
+        >
           {!collapsed && (
             // The customer's mark when they have uploaded one, ours when they
             // have not. `maxWidth` is what stops a wide wordmark from pushing the
-            // collapse control off the 256px rail.
-            <OrgBrandLockup fallbackCaption="Control Plane" maxWidth={152} />
+            // collapse control off the 256px rail. One line, as the bar drew it.
+            <div className="min-w-0">
+              <OrgBrandLockup fallbackCaption="Control Plane" height={24} maxWidth={176} compact />
+            </div>
           )}
           {/* WS-51 S3: with the shell bar off, this head is the top of the
               page, so the activity control sits here, beside the fold. The
@@ -397,7 +434,7 @@ export default function Sidebar() {
           <div className={`flex items-center gap-1 ${collapsed ? "flex-col" : ""}`}>
             {!barOn && dockOn ? <ShellBell /> : null}
             {!barOn ? <ActivityControl /> : null}
-            <SidebarFoldButton />
+            <SidebarFoldButton mark={orgInitial || undefined} />
           </div>
         </div>
       )}
@@ -571,6 +608,7 @@ export default function Sidebar() {
         </div>
       )}
     </aside>
+    </>
   );
 }
 

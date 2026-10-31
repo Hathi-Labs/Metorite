@@ -133,6 +133,19 @@ export function SidebarFoldProvider({
     setCollapsed(false);
   }, [setCollapsed]);
 
+  // Ctrl+\ (Cmd+\ on a Mac) folds and opens the sidebar (owner, 2026-11-01).
+  // The fold button's tooltip names it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "\\" && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        toggle();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [toggle]);
+
   // The pulse runs three times (`.sidebar-beacon`, about 3.7s), then ends.
   useEffect(() => {
     if (!pulsing) return;
@@ -174,6 +187,10 @@ export function SidebarFoldProvider({
   return <FoldContext.Provider value={value}>{children}</FoldContext.Provider>;
 }
 
+/** The fold's keys, in the member's own keyboard words. */
+const FOLD_KEYS =
+  typeof navigator !== "undefined" && /mac|iphone|ipad/i.test(navigator.platform) ? "⌘\\" : "Ctrl+\\";
+
 /**
  * The fold control, and its tip. One component for both places.
  *
@@ -182,7 +199,7 @@ export function SidebarFoldProvider({
  * chevron at the top of the window points at nothing, and a panel glyph
  * would copy the apps' own rail toggles beside it.
  */
-export function SidebarFoldButton() {
+export function SidebarFoldButton({ mark }: { mark?: string } = {}) {
   const fold = useSidebarFold();
   const anchorRef = useRef<HTMLElement>(null);
   const label = fold.collapsed ? "Expand sidebar" : "Collapse sidebar";
@@ -211,17 +228,33 @@ export function SidebarFoldButton() {
             aria-expanded={!fold.collapsed}
           />
         </span>
+      ) : fold.collapsed && mark ? (
+        // Folded: the organization's initial keeps the company in view
+        // (owner, 2026-10-09), and turns into the open glyph on hover or focus.
+        <button
+          ref={anchorRef as RefObject<HTMLButtonElement>}
+          key={fold.beacon}
+          onClick={fold.toggle}
+          data-sidebar-mark=""
+          className={`group relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-accent text-sm font-semibold text-sidebar-foreground tech-transition ${beaconClass}`}
+          title={`${label} (${FOLD_KEYS})`}
+          aria-label={label}
+          aria-expanded={false}
+        >
+          <span aria-hidden className="group-hover:opacity-0 group-focus-visible:opacity-0">{mark}</span>
+          <Icon name="ChevronsRight" size={16} className="absolute opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" />
+        </button>
       ) : (
         <button
           ref={anchorRef as RefObject<HTMLButtonElement>}
           key={fold.beacon}
           onClick={fold.toggle}
           className={`shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${beaconClass}`}
-          title={label}
+          title={`${label} (${FOLD_KEYS})`}
           aria-label={label}
           aria-expanded={!fold.collapsed}
         >
-          {fold.collapsed ? <Icon name="ChevronRight" size={16} /> : <Icon name="ChevronLeft" size={16} />}
+          {fold.collapsed ? <Icon name="ChevronsRight" size={16} /> : <Icon name="ChevronsLeft" size={16} />}
         </button>
       )}
       {fold.tipOpen && fold.collapsed && (
