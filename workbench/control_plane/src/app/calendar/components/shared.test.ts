@@ -299,6 +299,58 @@ describe("blockLayout — what a card draws, by length and real width", () => {
     expect(blockLayout(60, 44, false).check).toBe(false);
   });
 
+  it("shows a range whole or not at all, on the meta row too", () => {
+    // 300 px: full, with the length.
+    expect(blockLayout(60, 300, false)).toMatchObject({ metaRange: "full", duration: true });
+    // 150 px: full does not fit with the length, so the length goes first.
+    const mid = blockLayout(60, 150, false);
+    expect(mid.metaRange).toBe("full");
+    expect(mid.duration).toBe(false);
+    // 120 px: the compact form.
+    expect(blockLayout(60, 120, false).metaRange).toBe("compact");
+    // 92 px, a week card: the start time alone, never "9:00-10:0".
+    expect(blockLayout(60, 92, false).metaRange).toBe("start");
+    // 44 px, a lane of a week card: no range.
+    expect(blockLayout(60, 44, false).metaRange).toBe(false);
+  });
+
+  it("drops the chips before it cuts a range, on the meta row", () => {
+    const l = blockLayout(60, 200, false, { isNow: true });
+    expect(l.metaRange).not.toBe(false);
+    const narrow = blockLayout(60, 92, false, { isNow: true });
+    expect(narrow.chips).toBe(false);
+    expect(narrow.metaRange).toBe("start");
+  });
+
+  it("keeps the title room on a done, fixed card of a week column", () => {
+    const o = { hasActual: true, isFixed: true };
+    for (const w of [76, 92, 120, 163]) {
+      const l = blockLayout(30, w, false, o);
+      const base = l.check ? 34 : 12;
+      const used =
+        base +
+        (l.rangeOnTitle === "full" ? 102 : l.rangeOnTitle === "compact" ? 68 : l.rangeOnTitle === "start" ? 38 : 0) +
+        (l.actual ? 52 : 0) +
+        (l.lock ? 30 : 0);
+      expect(w - used).toBeGreaterThanOrEqual(Math.min(Math.max(48, w * 0.4), w - base));
+    }
+    // 92 px: the actual mark and the lock give way to the title.
+    const l = blockLayout(30, 92, false, o);
+    expect(l.actual).toBe(false);
+    expect(l.lock).toBe(false);
+    // A wide card keeps both.
+    const wide = blockLayout(30, 480, false, o);
+    expect(wide.actual).toBe(true);
+    expect(wide.lock).toBe(true);
+  });
+
+  it("steps the one-row range down: full, compact, start, none", () => {
+    expect(blockLayout(30, 400, false).rangeOnTitle).toBe("full");
+    expect(blockLayout(30, 200, false).rangeOnTitle).toBe("compact");
+    expect(blockLayout(30, 140, false).rangeOnTitle).toBe("start");
+    expect(blockLayout(30, 92, false).rangeOnTitle).toBe(false);
+  });
+
   it("sets the meta row by width", () => {
     expect(blockLayout(60, 300, false)).toMatchObject({
       metaRange: "full",

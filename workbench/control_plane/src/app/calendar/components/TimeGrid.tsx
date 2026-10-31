@@ -31,6 +31,7 @@ import {
   fmtLeft,
   fmtRange,
   leftText,
+  type RangeForm,
   deadlinesForDay,
   layoutBlocks,
   reservedWindowsForDay,
@@ -791,6 +792,8 @@ export function TimeGrid({
                 const layout = blockLayout(mins, cardW, Boolean(b.item.parent), {
                   isNow,
                   overlaps: conflict,
+                  hasActual: actualMins != null,
+                  isFixed,
                 });
                 const one = layout.rows === "one";
                 const cardTop = Math.max(0, top) + 1;
@@ -815,15 +818,22 @@ export function TimeGrid({
                   layout.wrapTitle ? "line-clamp-2" : "truncate",
                   isDone || isPast ? `${META} ${isDone ? "line-through" : ""}` : "text-foreground",
                 ].join(" ");
-                const fullRange = fmtRange(b.start, end);
-                const compactRange = fmtRange(b.start, end, { compact: true });
+                // A range shows whole or not at all (`blockLayout` picks the form).
+                const rangeText = (form: RangeForm) =>
+                  form === "full"
+                    ? fmtRange(b.start, end)
+                    : form === "compact"
+                      ? fmtRange(b.start, end, { compact: true })
+                      : form === "start"
+                        ? fmtClockShort(b.start)
+                        : "";
                 const nowChip = isNow ? (
-                  <Badge tone="info" size="md" className="shrink-0 text-foreground!">
+                  <Badge tone="info" size="md" ink="foreground" className="shrink-0">
                     Now · {leftText(end, now)}
                   </Badge>
                 ) : null;
                 const overlapChip = conflict ? (
-                  <Badge tone="destructive" size="md" className="shrink-0 text-foreground!">
+                  <Badge tone="destructive" size="md" ink="foreground" className="shrink-0">
                     Overlaps
                   </Badge>
                 ) : null;
@@ -978,13 +988,13 @@ export function TimeGrid({
                           <>
                             {layout.chips && nowChip}
                             {layout.chips && overlapChip}
-                            {actualChip}
-                            {lockMark}
+                            {layout.actual && actualChip}
+                            {layout.lock && lockMark}
                             {layout.rangeOnTitle && (
                               <span
                                 className={`shrink-0 text-[11px] tabular-nums ${META}`}
                               >
-                                {layout.rangeOnTitle === "full" ? fullRange : compactRange}
+                                {rangeText(layout.rangeOnTitle)}
                               </span>
                             )}
                           </>
@@ -1011,10 +1021,12 @@ export function TimeGrid({
                           className={`flex min-w-0 items-center gap-1.5 ${layout.check ? "pl-[22px]" : ""} text-[11px] leading-[14px] ${META}`}
                         >
                           {layout.chips && nowChip}
-                          <span className="shrink-0 tabular-nums">
-                            {layout.metaRange === "full" ? fullRange : compactRange}
-                            {layout.duration && ` · ${planned}`}
-                          </span>
+                          {layout.metaRange && (
+                            <span className="shrink-0 tabular-nums">
+                              {rangeText(layout.metaRange)}
+                              {layout.duration && layout.metaRange === "full" && ` · ${planned}`}
+                            </span>
+                          )}
                           {layout.crumb === "inline" && (
                             <ParentCrumb
                               parent={b.item.parent}
@@ -1024,9 +1036,9 @@ export function TimeGrid({
                           {layout.energy && b.item.energy && (
                             <span className="capitalize">· {b.item.energy}</span>
                           )}
-                          {lockMark}
+                          {layout.lock && lockMark}
                           {layout.chips && overlapChip}
-                          {actualChip}
+                          {layout.actual && actualChip}
                           {outcome && layout.outcome === "inline" && (
                             <span className="min-w-0 truncate font-medium text-warning">
                               → {outcome}
@@ -1044,7 +1056,7 @@ export function TimeGrid({
                     <div
                       className={`absolute right-1 z-[1] flex items-center gap-1 ${one ? "inset-y-0" : "top-0.5"}`}
                     >
-                      <div className="reveal-on-hover pointer-events-none flex items-center gap-0.5 rounded border border-border bg-background px-0.5 shadow-sm focus-within:pointer-events-auto group-hover:pointer-events-auto">
+                      <div className="reveal-on-hover reveal-on-hover-live flex items-center gap-0.5 rounded border border-border bg-background px-0.5 shadow-sm">
                         {!isDone && !layout.focus && (
                           <button
                             type="button"
@@ -1115,7 +1127,7 @@ export function TimeGrid({
                           aria-label="Focus on this block"
                           title="Focus — full-screen room + timer"
                           onClick={openFocus}
-                          className="h-4 gap-1 px-1.5 text-[11px] leading-none"
+                          className="relative h-4 gap-1 px-1.5 text-[11px] leading-none pointer-coarse:before:absolute pointer-coarse:before:-inset-1"
                         >
                           <Icon name="Play" className="h-3 w-3" fill="currentColor" />
                           Focus
@@ -1128,7 +1140,7 @@ export function TimeGrid({
                           aria-label="Focus on this block"
                           title="Focus — full-screen room + timer"
                           onClick={openFocus}
-                          className="h-4 w-4 p-0"
+                          className="relative h-4 w-4 p-0 pointer-coarse:before:absolute pointer-coarse:before:-inset-1"
                         >
                           <Icon name="Play" className="h-3 w-3" fill="currentColor" />
                         </Button>

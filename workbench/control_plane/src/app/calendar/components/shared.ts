@@ -118,6 +118,13 @@ export type BlockRows = "one" | "two" | "three";
 /** The always-visible Focus button of the current card. */
 export type FocusForm = "label" | "icon" | false;
 
+/**
+ * The form of the time range. A range shows WHOLE or not at all, because a
+ * range cut through a number reads as a wrong time ("8:00–9" for 8:00–9:30).
+ * full "8:00 – 9:30 AM", compact "8:00–9:30", start "8:00", then none.
+ */
+export type RangeForm = "full" | "compact" | "start" | false;
+
 export type BlockLayout = {
   /** one: title and range on a single row. two: a title row and a meta row.
    *  three: the same, plus the optional lines of `blockLines`. */
@@ -125,16 +132,20 @@ export type BlockLayout = {
   /** The title may wrap to two lines (a card of 2 hours or more). */
   wrapTitle: boolean;
   /** The time range on the title row (a one-row card only). */
-  rangeOnTitle: "full" | "compact" | false;
+  rangeOnTitle: RangeForm;
   /** The Focus button of the current card: a label, an icon, or none. */
   focus: FocusForm;
   /** The "Now" and "Overlaps" chips draw. */
   chips: boolean;
+  /** The "on time" or "+12m" mark of a done block draws. */
+  actual: boolean;
+  /** The lock mark of a fixed block draws. */
+  lock: boolean;
   /** The check circle draws. A card under 90 px gives its room to the title. */
   check: boolean;
   /** The range on the meta row (a card of two or three rows). */
-  metaRange: "full" | "compact";
-  /** The "· 1h" length after the range. */
+  metaRange: RangeForm;
+  /** The "· 1h" length after a full range. */
   duration: boolean;
   energy: boolean;
   crumb: "own" | "inline" | null;
@@ -142,20 +153,33 @@ export type BlockLayout = {
   outcome: false | "inline" | "own";
 };
 
-// Widths in px of what a one-row card can hold, at 11 px text. The title keeps
-// at least TITLE_MIN_PX, or 40% of the card, whichever is more.
+// Widths in px of what a card can hold, at 11 px text. The title keeps at
+// least TITLE_MIN_PX, or 40% of the card, whichever is more.
 const TITLE_MIN_PX = 48;
 const TITLE_MIN_SHARE = 0.4;
 const ROW_BASE_PX = 34; // left bar and padding, the check circle and its gap
 const ROW_BASE_NO_CHECK_PX = 12; // the same, with no check circle
+const META_INDENT_PX = 22; // the meta row lines up under the title
 const CHECK_MIN_PX = 90;
 const GAP_PX = 6;
 const W_FOCUS_LABEL = 56;
 const W_FOCUS_ICON = 20;
-const W_RANGE_FULL = 96;
-const W_RANGE_COMPACT = 62;
+const W_RANGE: Record<Exclude<RangeForm, false>, number> = {
+  full: 96,
+  compact: 62,
+  start: 32,
+};
+const W_DURATION = 34; // " · 1h 30m"
 const W_NOW_CHIP = 88;
 const W_OVERLAP_CHIP = 62;
+const W_ACTUAL = 46; // "on time", "+12m"
+const W_LOCK = 24;
+
+const NEXT_RANGE: Record<Exclude<RangeForm, false>, RangeForm> = {
+  full: "compact",
+  compact: "start",
+  start: false,
+};
 
 /**
  * What a card on the grid draws, from its length and its REAL width in px.
@@ -169,48 +193,58 @@ const W_OVERLAP_CHIP = 62;
  * - 90 minutes or more: the lines of `blockLines` have their own rows. From
  *   120 minutes the title may wrap to two lines.
  *
- * The title keeps at least 48 px or 40% of the card. As the card narrows, a
- * one-row card drops, in this order: the Focus label (the icon stays), the
- * range (full, then compact, then none), the chips, and last the Focus icon.
- * The Focus of the hover toolbar still reaches a card that lost its own.
+ * The title keeps at least 48 px or 40% of the card. As a one-row card
+ * narrows it drops, in this order: the Focus label (the icon stays), the
+ * range (full, compact, start, none), the chips, the Focus icon, the actual
+ * mark and last the lock. The meta row drops the same way, so a range is
+ * never cut: it shows whole or not at all. The Focus of the hover toolbar
+ * still reaches a card that lost its own.
  */
 export function blockLayout(
   mins: number,
   widthPx: number,
   isStep: boolean,
-  opts: { isNow?: boolean; overlaps?: boolean } = {},
+  opts: {
+    isNow?: boolean;
+    overlaps?: boolean;
+    /** A done block with a planned-against-actual mark. */
+    hasActual?: boolean;
+    /** A fixed block, which draws a lock. */
+    isFixed?: boolean;
+  } = {},
 ): BlockLayout {
   const title = Math.max(TITLE_MIN_PX, widthPx * TITLE_MIN_SHARE);
   const lines = blockLines(mins, isStep);
   const check = widthPx >= CHECK_MIN_PX;
   const base = check ? ROW_BASE_PX : ROW_BASE_NO_CHECK_PX;
-  const meta = {
-    metaRange: widthPx >= 170 ? ("full" as const) : ("compact" as const),
-    duration: widthPx >= 150,
-    energy: widthPx >= 240,
-  };
+  const energy = widthPx >= 240;
+  const chipCost = () =>
+    (opts.isNow ? W_NOW_CHIP + GAP_PX : 0) +
+    (opts.overlaps ? W_OVERLAP_CHIP + GAP_PX : 0);
+
+  let chips = Boolean(opts.isNow || opts.overlaps);
+  let actual = Boolean(opts.hasActual);
+  let lock = Boolean(opts.isFixed);
 
   if (mins < 45) {
     let focus: FocusForm = opts.isNow ? "label" : false;
-    let range: "full" | "compact" | false = "full";
-    let chips = Boolean(opts.isNow || opts.overlaps);
+    let range: RangeForm = "full";
     const cost = () =>
       base +
       title +
       (focus === "label" ? W_FOCUS_LABEL + GAP_PX : 0) +
       (focus === "icon" ? W_FOCUS_ICON + GAP_PX : 0) +
-      (range === "full" ? W_RANGE_FULL + GAP_PX : 0) +
-      (range === "compact" ? W_RANGE_COMPACT + GAP_PX : 0) +
-      (chips
-        ? (opts.isNow ? W_NOW_CHIP + GAP_PX : 0) +
-          (opts.overlaps ? W_OVERLAP_CHIP + GAP_PX : 0)
-        : 0);
+      (range ? W_RANGE[range] + GAP_PX : 0) +
+      (chips ? chipCost() : 0) +
+      (actual ? W_ACTUAL + GAP_PX : 0) +
+      (lock ? W_LOCK + GAP_PX : 0);
     while (cost() > widthPx) {
       if (focus === "label") focus = "icon";
-      else if (range === "full") range = "compact";
-      else if (range === "compact") range = false;
+      else if (range) range = NEXT_RANGE[range];
       else if (chips) chips = false;
       else if (focus === "icon") focus = false;
+      else if (actual) actual = false;
+      else if (lock) lock = false;
       else break;
     }
     return {
@@ -219,8 +253,12 @@ export function blockLayout(
       rangeOnTitle: range,
       focus,
       chips,
+      actual,
+      lock,
       check,
-      ...meta,
+      metaRange: "compact",
+      duration: false,
+      energy,
       crumb: null,
       outcome: false,
     };
@@ -235,29 +273,56 @@ export function blockLayout(
       : room >= W_FOCUS_ICON + GAP_PX
         ? "icon"
         : false;
-  const chips = widthPx >= 150;
+
+  // The meta row: the range keeps its room, or it steps down.
+  const avail = widthPx - 12 - (check ? META_INDENT_PX : 0);
+  let metaRange: RangeForm = "full";
+  let duration = true;
+  const metaCost = () =>
+    (metaRange ? W_RANGE[metaRange] + GAP_PX : 0) +
+    (duration ? W_DURATION : 0) +
+    (chips ? chipCost() : 0) +
+    (actual ? W_ACTUAL + GAP_PX : 0) +
+    (lock ? W_LOCK + GAP_PX : 0);
+  while (metaCost() > avail) {
+    if (duration) duration = false;
+    else if (metaRange) metaRange = NEXT_RANGE[metaRange];
+    else if (chips) chips = false;
+    else if (actual) actual = false;
+    else if (lock) lock = false;
+    else break;
+  }
+  // Chips outrank the range only while the range still fits whole. If the
+  // range is gone but a start time would fit without the chips, show it.
+  if (!metaRange && !chips) {
+    const without = (actual ? W_ACTUAL + GAP_PX : 0) + (lock ? W_LOCK + GAP_PX : 0);
+    if (without + W_RANGE.start + GAP_PX <= avail) metaRange = "start";
+  }
+
+  const common = {
+    focus,
+    chips,
+    actual,
+    lock,
+    check,
+    metaRange,
+    duration,
+    energy,
+    rangeOnTitle: false as const,
+    crumb: lines.crumb,
+  };
   if (mins < 90) {
     return {
       rows: "two",
       wrapTitle: false,
-      rangeOnTitle: false,
-      focus,
-      chips,
-      check,
-      ...meta,
-      crumb: lines.crumb,
+      ...common,
       outcome: lines.outcome && widthPx >= 220 ? "inline" : false,
     };
   }
   return {
     rows: "three",
     wrapTitle: mins >= 120 && widthPx >= 140,
-    rangeOnTitle: false,
-    focus,
-    chips,
-    check,
-    ...meta,
-    crumb: lines.crumb,
+    ...common,
     outcome: lines.outcome ? "own" : false,
   };
 }
