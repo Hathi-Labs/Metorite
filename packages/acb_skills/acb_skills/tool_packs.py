@@ -718,7 +718,7 @@ PACKS: dict[str, Pack] = {
     ),
     "projects-plan": Pack(
         slug="projects-plan",
-        when="Load for team load, capacity, reports, a timeline or a plan from a goal.",
+        when="Load for team load, capacity, status reports, a timeline, a plan from a goal, task links, repeats, new projects or export.",
         rules=_PROJECTS_PLAN_RULES,
         words=_PROJECTS_PLAN_WORDS,
         replaces_core="projects",
@@ -728,7 +728,7 @@ PACKS: dict[str, Pack] = {
     ),
     "projects-structure": Pack(
         slug="projects-structure",
-        when="Load to change a project's statuses, fields, tags, access or saved views.",
+        when="Load to change statuses, task types, custom fields, tags, project access, saved views, areas, notifications or the intake queue.",
         rules=_PROJECTS_STRUCTURE_RULES,
         words=_PROJECTS_STRUCTURE_WORDS,
         replaces_core="projects",
@@ -738,7 +738,7 @@ PACKS: dict[str, Pack] = {
     ),
     "projects-bulk": Pack(
         slug="projects-bulk",
-        when="Load for two or more tasks at once, and to archive, move or delete.",
+        when="Load for many tasks at once, and to archive, delete, move, merge, attach a file, watch, nudge or undo a change.",
         rules=_PROJECTS_BULK_RULES,
         words=_PROJECTS_BULK_WORDS,
         replaces_core="projects",
@@ -748,8 +748,8 @@ PACKS: dict[str, Pack] = {
     ),
     "projects-reminders": Pack(
         slug="projects-reminders",
-        when=("Load when the member asks to be reminded, or names a reminder: "
-              "set, list, move, snooze or resolve it. A reminder is not a task."),
+        when=("Load for \"remind me\", and to list, move, snooze or resolve a reminder. "
+              "A reminder is not a task."),
         rules=_PROJECTS_REMINDERS_RULES,
         words=_PROJECTS_REMINDERS_WORDS,
         replaces_core="projects",

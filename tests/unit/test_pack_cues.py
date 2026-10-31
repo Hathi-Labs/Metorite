@@ -40,12 +40,12 @@ WHEN = {
     "projects": (
         "Load for tasks, projects and my work: find, create, update, assign and complete. "
         "Also for a question on a named project or task."),
-    "projects-plan": "Load for team load, capacity, reports, a timeline or a plan from a goal.",
-    "projects-structure": "Load to change a project's statuses, fields, tags, access or saved views.",
-    "projects-bulk": "Load for two or more tasks at once, and to archive, move or delete.",
+    "projects-plan": "Load for team load, capacity, status reports, a timeline, a plan from a goal, task links, repeats, new projects or export.",
+    "projects-structure": "Load to change statuses, task types, custom fields, tags, project access, saved views, areas, notifications or the intake queue.",
+    "projects-bulk": "Load for many tasks at once, and to archive, delete, move, merge, attach a file, watch, nudge or undo a change.",
     "projects-reminders": (
-        "Load when the member asks to be reminded, or names a reminder: "
-        "set, list, move, snooze or resolve it. A reminder is not a task."),
+        'Load for "remind me", and to list, move, snooze or resolve a reminder. '
+        "A reminder is not a task."),
 }
 
 
