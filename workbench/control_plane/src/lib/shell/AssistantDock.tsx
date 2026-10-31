@@ -948,7 +948,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   // at 390 px, and six would leave 90, so Files moves into the chat's "…"
   // control (`chat_first_surface.md` §4.8).
   const phoneChrome = phone && chatFirst;
-  const phoneTap = phoneChrome ? "h-11 w-11" : "";
+  const phoneTap = phoneChrome ? "h-11 w-11 glass:h-11 glass:w-11 glass:pointer-coarse:h-11 glass:pointer-coarse:w-11" : "";
   const moreActs = useMemo(
     () =>
       phoneChrome && chat.activeId
