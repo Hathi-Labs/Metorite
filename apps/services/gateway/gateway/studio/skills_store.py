@@ -30,12 +30,22 @@ one. Two calls at once give two numbers. The primary key
 ``(organization_id, skill_id, version)`` refuses a second row of one number,
 if some other path tries one.
 
+**The slug.** A slug is unique for each owner in an org, not for each org.
+Two members may each hold the slug ``layoff-plan``, so
+:class:`SkillSlugTaken` tells a member nothing about a skill of another
+member. A tool pack id (F3) uses the skill ``id``, never the slug.
+
 **The body.** :func:`add_version` checks a light shape only: an object with a
 non-empty ``description`` and ``instructions``, and ``actions`` as a list of
 strings. The other parts of §3.5 (``cards``, ``knowledge``, ``tests``) pass
 as given. The full manifest check is A2, and this module does not import it.
-The CHECK ``studio_skill_versions_body_size`` caps the JSON text at
-:data:`MAX_BODY_BYTES`, and the store refuses a bigger body first.
+The CHECK ``studio_skill_versions_body_size`` caps the jsonb text at
+:data:`MAX_BODY_BYTES`, and the store refuses a bigger body first. The store
+measures its own JSON text, and that text has the same length as the jsonb
+text, because :func:`check_body` refuses each value that Postgres writes
+longer (a float with an exponent) or refuses (a NUL, a lone surrogate).
+``test_studio_skills_r8.py`` stores a body of exactly the limit, so the two
+limits stay in step.
 
 **State.** :func:`set_state` writes one of :data:`STATES`. F1 holds no
 transition table. F2 and J1 own the rules of a move.
@@ -45,6 +55,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import uuid
 from collections.abc import Mapping
@@ -62,6 +73,8 @@ VISIBILITIES: tuple[str, ...] = ("private", "group", "org")
 #: The bound of the CHECK ``studio_skill_versions_body_size``: the JSON text
 #: of a body, in bytes (256 KiB).
 MAX_BODY_BYTES = 262144
+#: A float of this size or more is refused. See :func:`_check_values`.
+MAX_FLOAT = 1e15
 #: The bounds of the CHECKs ``studio_skills_name``, ``studio_skills_slug`` and
 #: ``studio_skills_description``.
 MAX_NAME_CHARS = 120
@@ -78,11 +91,11 @@ _SKILL_COLUMNS = (
 )
 _VERSION_COLUMNS = "skill_id::text, version, body, content_hash, created_by, created_at"
 
-#: A slug that the org holds already makes no row. The store then refuses.
+#: A slug that the member holds already makes no row. The store then refuses.
 _CREATE_SQL = (
     "INSERT INTO studio_skills (name, slug, description, owner_email) "
     "VALUES (:name, :slug, :desc, :m) "
-    "ON CONFLICT (organization_id, slug) DO NOTHING "
+    "ON CONFLICT (organization_id, owner_email, slug) DO NOTHING "
     f"RETURNING {_SKILL_COLUMNS}"
 )
 
@@ -137,7 +150,11 @@ class SkillStoreError(ValueError):
 
 
 class SkillSlugTaken(SkillStoreError):
-    """The org holds a skill with this slug already."""
+    """The member holds a skill with this slug already, in this org.
+
+    The text names no slug and no other member: a slug is unique for each
+    owner, so this error tells nothing about a skill of a colleague.
+    """
 
 
 @dataclass(frozen=True)
@@ -194,15 +211,30 @@ def _text(value: object, field: str, *, limit: int, required: bool) -> str:
     return value
 
 
-def _holds_nul(value: object) -> bool:
-    """True when a string anywhere in *value*, a key too, holds a NUL."""
+def _check_values(value: object) -> None:
+    """Refuse each value, a key too, that jsonb refuses or writes longer.
+
+    jsonb refuses the NUL character. A lone surrogate has no UTF-8 form,
+    and :func:`check_body` refuses it when it encodes the text.
+    """
     if isinstance(value, str):
-        return "\x00" in value
-    if isinstance(value, Mapping):
-        return any(_holds_nul(k) or _holds_nul(v) for k, v in value.items())
-    if isinstance(value, list | tuple):
-        return any(_holds_nul(v) for v in value)
-    return False
+        if "\x00" in value:
+            raise SkillStoreError("body must not hold a NUL character")
+    elif isinstance(value, float):
+        # Postgres writes each jsonb number with all its digits, so a float
+        # in exponent form (1e308 becomes 309 digits) grows past the
+        # measured size.
+        if (not math.isfinite(value) or abs(value) >= MAX_FLOAT
+                or "e" in float.__repr__(value)):
+            raise SkillStoreError(
+                "a body number must be finite and below 10^15, with no exponent")
+    elif isinstance(value, Mapping):
+        for k, v in value.items():
+            _check_values(k)
+            _check_values(v)
+    elif isinstance(value, list | tuple):
+        for v in value:
+            _check_values(v)
 
 
 def check_body(body: object) -> str:
@@ -211,6 +243,9 @@ def check_body(body: object) -> str:
     The body must be an object with a non-empty ``description`` and
     ``instructions``. ``actions``, when present, is a list of non-empty
     strings. The JSON text holds at most :data:`MAX_BODY_BYTES` bytes.
+    No string holds a NUL or a lone surrogate. A float is finite, below
+    :data:`MAX_FLOAT`, and JSON writes it with no exponent. Then the text
+    has the length of the jsonb text that the CHECK measures.
     """
     if not isinstance(body, Mapping):
         raise SkillStoreError("body must be an object")
@@ -224,15 +259,18 @@ def check_body(body: object) -> str:
             or not all(isinstance(a, str) and a.strip() for a in actions)):
         raise SkillStoreError("body.actions must be a list of non-empty strings")
     try:
-        # The separators of the jsonb text form, so the count is close to
-        # what the CHECK measures.
+        # The separators of the jsonb text form. With the value checks
+        # below, the count is the count that the CHECK makes.
         encoded = json.dumps(dict(body), ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise SkillStoreError("body must be plain JSON") from exc
-    if _holds_nul(body):
-        # jsonb refuses the NUL character, in a key or in a value.
-        raise SkillStoreError("body must not hold a NUL character")
-    if len(encoded.encode("utf-8")) > MAX_BODY_BYTES:
+    # After the dump, which refuses a circular body, so the walk ends.
+    _check_values(body)
+    try:
+        size = len(encoded.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise SkillStoreError("body must not hold a lone surrogate") from exc
+    if size > MAX_BODY_BYTES:
         raise SkillStoreError(f"body holds at most {MAX_BODY_BYTES} bytes of JSON")
     return encoded
 
@@ -265,9 +303,10 @@ async def create_skill(db: Any, member: str, *, name: str, slug: str,
                        description: str = "") -> Skill:
     """Create a skill of *member*, private and in ``draft``, with no version.
 
-    Raises :class:`SkillSlugTaken` when the org holds the slug already, and
-    then writes no row. The slug is lower-case letters and digits, with one
-    hyphen between parts, at most 64 characters.
+    Raises :class:`SkillSlugTaken` when *member* holds the slug already in
+    this org, and then writes no row. Another member may hold the same slug.
+    The slug is lower-case letters and digits, with one hyphen between parts,
+    at most 64 characters.
     """
     m = _member(member)
     clean_name = _text(name, "name", limit=MAX_NAME_CHARS, required=True).strip()
@@ -279,7 +318,7 @@ async def create_skill(db: Any, member: str, *, name: str, slug: str,
     row = (await db.execute(text(_CREATE_SQL), {
         "name": clean_name, "slug": slug, "desc": desc, "m": m})).first()
     if row is None:
-        raise SkillSlugTaken(f"the slug {slug!r} is taken in this organization")
+        raise SkillSlugTaken("You already have a skill with this name")
     return _skill(row)
 
 

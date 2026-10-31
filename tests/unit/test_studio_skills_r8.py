@@ -21,8 +21,11 @@ is not a pass.
 
 a. The migration applies, and both tables have ENABLE and FORCE RLS.
 b. A new skill is private, a draft, and has no version.
-c. One slug for each org. The CHECKs hold the states, the visibilities, the
-   owner, the slug, the name, the description and the version body.
+c. One slug for each owner, so two members may each hold one slug, and a
+   refusal names no skill of a colleague. The CHECKs hold the states, the
+   visibilities, the owner, the slug, the name, the description and the
+   version body. The store refuses each body that the CHECK refuses, and a
+   body of exactly the store's limit passes the CHECK.
 d. Versions take the numbers 1, 2, 3 in order, and the newest is current.
 e. A stored version cannot change: the trigger refuses each UPDATE, also as
    the superuser. A DELETE of the skill takes its versions.
@@ -50,11 +53,18 @@ h. The member purge deletes the member's skills of this org, and their
 * M4. ``routes/admin/members.py``: drop the ``studio_skills`` row of
   ``_PURGE_DELETES``. ``test_r8_a_member_purge_removes_the_skills_of_this_org_only``
   goes red, and so do two tests of ``test_admin_member_purge.py``.
+* M5. The migration and the store: make the slug key
+  ``UNIQUE (organization_id, slug)`` again.
+  ``test_r8_a_slug_is_unique_for_each_owner`` goes red.
+* M6. ``skills_store.py``: drop the float branch of ``_check_values``.
+  ``test_r8_a_refused_body_writes_nothing`` and the grown-body cases of
+  ``test_the_store_refuses_a_body_that_jsonb_refuses_or_grows`` go red.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 import uuid
@@ -199,7 +209,13 @@ def test_the_migration_holds_the_checks_the_rls_and_the_trigger() -> None:
     for value in store.STATES + store.VISIBILITIES:
         assert f"'{value}'" in sql, value
     assert re.search(r"\bvisibility\s+TEXT NOT NULL DEFAULT 'private'", sql)
-    assert "UNIQUE (organization_id, slug)" in sql
+    # One slug for each owner. One slug for each org would leak a private
+    # skill's name through the refusal.
+    assert "UNIQUE (organization_id, owner_email, slug)" in sql
+    assert "UNIQUE (organization_id, slug)" not in sql
+    assert "ON CONFLICT (organization_id, owner_email, slug)" in store._CREATE_SQL
+    # The target of the versions' foreign key stays.
+    assert "UNIQUE (organization_id, id)" in sql
     assert "FOREIGN KEY (organization_id, skill_id)" in sql
     assert "REFERENCES studio_skills (organization_id, id) ON DELETE CASCADE" in sql
     assert "PRIMARY KEY (organization_id, skill_id, version)" in sql
@@ -263,23 +279,39 @@ def test_r8_a_new_skill_is_private_and_a_draft_with_no_version(world) -> None:
 # ── c. The slug and the CHECKs ─────────────────────────────────────────────
 
 
-def test_r8_a_second_skill_with_the_slug_is_refused(world) -> None:
+def test_r8_a_slug_is_unique_for_each_owner(world) -> None:
+    """Two members of one org may each own ``layoff-plan``. So Ben's create
+    succeeds, and no refusal tells him the name of a private skill of Ana.
+    The same member twice is refused, in any case of the address."""
     a, b = world.p.org_a, world.p.org_b
+    slug = "layoff-plan"
 
-    async def go() -> tuple[str, store.Skill]:
-        await _create(a)
+    async def go() -> dict[str, Any]:
+        out: dict[str, Any] = {"anas": await _create(a, member=ANA, slug=slug)}
+        out["bens"] = await _create(a, member=BEN, slug=slug)
+        with pytest.raises(store.SkillSlugTaken) as taken:
+            await _create(a, member=ANA, slug=slug)
+        out["message"] = str(taken.value)
         with pytest.raises(store.SkillSlugTaken):
-            await _create(a, member=BEN)
-        # Another org may hold the same slug.
-        other = await _create(b)
-        return "ok", other
+            await _create(a, member=ANA.upper(), slug=slug)
+        # Another org may hold the same slug for the same address.
+        out["other"] = await _create(b, member=ANA, slug=slug)
+        async with tenant_session(a) as db:
+            out["ben_lists"] = await store.list_for(db, BEN)
+        return out
 
-    _, other = _go(world, go)
-    assert other.slug == _slug()
-    assert _count(world, "studio_skills") == 2
-    # The table refuses a second row on its own, not only the store.
-    err = _refused(world, a, _RAW_SKILL, _skill_params(slug=_slug()))
+    out = _go(world, go)
+    anas, bens, other = out["anas"], out["bens"], out["other"]
+    assert anas.slug == bens.slug == other.slug == slug
+    assert len({anas.id, bens.id, other.id}) == 3
+    assert (anas.owner_email, bens.owner_email) == (ANA, BEN)
+    assert out["message"] == "You already have a skill with this name"
+    assert [s.id for s in out["ben_lists"]] == [bens.id]
+    assert _count(world, "studio_skills") == 3
+    # The table refuses a second row of one owner on its own, not only the store.
+    err = _refused(world, a, _RAW_SKILL, _skill_params(slug=slug))
     assert "studio_skills_slug_key" in err
+    assert _count(world, "studio_skills") == 3
 
 
 @pytest.mark.parametrize(("params", "constraint"), [
@@ -361,6 +393,133 @@ def test_the_content_hash_is_canonical() -> None:
     assert store.content_hash(one) == store.content_hash(two)
     assert len(store.content_hash(one)) == 64
     assert store.content_hash(one) != store.content_hash({**one, "actions": ["b"]})
+
+
+# ── c. The store's limit and the CHECK's limit ─────────────────────────────
+
+#: Python writes 1e308 as ``1e+308``, 6 bytes, so the store measures 7248
+#: bytes. Postgres writes each one with 309 digits, so the CHECK measures
+#: some 280000 bytes and refuses.
+_GROWN = {"description": "d", "instructions": "i", "x": [1e308] * 900}
+#: ``json.loads`` takes a lone surrogate. It has no UTF-8 form.
+_SURROGATE = json.loads('{"description": "d", "instructions": "\\ud800"}')
+
+#: The three bodies of the review. The store refuses each, before the
+#: database, with a SkillStoreError.
+_JSONB_BAD = {
+    "grown_float": _GROWN,
+    "nan": {"description": "d", "instructions": "i", "x": float("nan")},
+    "lone_surrogate": _SURROGATE,
+}
+
+
+def _with(value: Any) -> dict[str, Any]:
+    return {"description": "d", "instructions": "i", "x": [value]}
+
+
+@pytest.mark.parametrize("body", [
+    *_JSONB_BAD.values(),
+    _with(float("inf")), _with(float("-inf")),
+    _with(1e16), _with(-1e16), _with(1e15), _with(1e-5), _with(1e-300),
+    {"description": "d", "instructions": "i", "k": {"n": [[2.5e20]]}},
+    json.loads('{"description": "d", "instructions": "i", "\\udfff": 1}'),
+], ids=[*_JSONB_BAD, "inf", "minus_inf", "1e16", "minus_1e16", "1e15", "1e-5",
+        "1e-300", "nested_float", "surrogate_key"])
+def test_the_store_refuses_a_body_that_jsonb_refuses_or_grows(body: Any) -> None:
+    """A SkillStoreError, and never a UnicodeEncodeError or a DBAPIError. The
+    session is None, so a call that reached the database fails on it."""
+    with pytest.raises(store.SkillStoreError):
+        store.check_body(body)
+    with pytest.raises(store.SkillStoreError):
+        asyncio.run(store.add_version(None, ANA, str(uuid.uuid4()), body))
+
+
+@pytest.mark.parametrize("value", [
+    0.5, -3.25, 0.0001, 123456789012345.6, -999999999999999.9, 0.0,
+    10 ** 20, -(10 ** 20), 7, True, None,
+])
+def test_the_store_takes_a_number_whose_text_does_not_grow(value: Any) -> None:
+    """A float below 10^15 with no exponent, and any whole number: Postgres
+    writes each with the digits that Python writes."""
+    assert json.loads(store.check_body(_with(value)))["x"] == [value]
+
+
+def _body_of_size(size: int) -> dict[str, Any]:
+    """A body whose JSON text is *size* bytes. It holds each kind of value
+    whose text could differ between Python and Postgres: escapes, control
+    characters, text of 2, 3 and 4 bytes, floats, whole numbers, booleans,
+    null, an empty object and an empty list, and keys out of jsonb order."""
+    body: dict[str, Any] = {
+        "description": "Use it for a \u201cquote\u201d, a tab\t, a / and a \\.\n",
+        "instructions": "i",
+        "actions": ["crm.read_deal"],
+        "cards": [{"bb": [1.5, -2, 0.25, 123456789012345.6, True, False, None]}],
+        "knowledge": [{"zz": {}, "a": [], "ctl": "\x01\x1f\x7f", "ls": "\u2028"}],
+        "tests": [{"q": "\u20ac and \U0001f600", "n": 10 ** 20}],
+    }
+    pad = size - len(store.check_body(body).encode("utf-8"))
+    body["instructions"] = "i" * (1 + pad)
+    return body
+
+
+def test_r8_a_body_at_the_store_limit_passes_the_check(world) -> None:
+    """The store measures its JSON text, and the CHECK measures the jsonb
+    text. A body of exactly MAX_BODY_BYTES passes both and is stored at that
+    length. One byte more, and the store refuses, and so does the CHECK. So
+    the two limits stay in step."""
+    a = world.p.org_a
+    body = _body_of_size(store.MAX_BODY_BYTES)
+    assert len(store.check_body(body).encode("utf-8")) == store.MAX_BODY_BYTES
+    over = {**body, "instructions": body["instructions"] + "i"}
+    with pytest.raises(store.SkillStoreError):
+        store.check_body(over)
+
+    async def go() -> store.Version | None:
+        skill = await _create(a)
+        async with tenant_session(a) as db:
+            return await store.add_version(db, ANA, skill.id, body)
+
+    v = _go(world, go)
+    assert v is not None and v.version == 1 and v.body == body
+    with world.p.admin_engine.connect() as c:
+        stored = c.execute(text(
+            "SELECT octet_length(body::text) FROM studio_skill_versions "
+            "WHERE skill_id = CAST(:i AS uuid)"), {"i": v.skill_id}).scalar_one()
+    assert stored == store.MAX_BODY_BYTES
+    # The CHECK refuses the next byte on its own, not only the store.
+    raw = json.dumps(over, ensure_ascii=False)
+    err = _refused(world, a, _RAW_VERSION, _version_params(v.skill_id, v=2, body=raw))
+    assert "studio_skill_versions_body_size" in err
+    assert _count(world, "studio_skill_versions") == 1
+
+
+def test_r8_a_refused_body_writes_nothing(world) -> None:
+    """The CHECK refuses the Python text of the grown body, so only the
+    store's own refusal stands between it and a DBAPIError. Each of the three
+    bodies raises a SkillStoreError before a statement. The session stays
+    usable, and no version and no number moves."""
+    a = world.p.org_a
+    skill = _go(world, lambda: _create(a))
+    raw = json.dumps(_GROWN, ensure_ascii=False)
+    assert len(raw.encode("utf-8")) < store.MAX_BODY_BYTES
+    err = _refused(world, a, _RAW_VERSION, _version_params(skill.id, body=raw))
+    assert "studio_skill_versions_body_size" in err
+
+    async def go() -> list[store.Skill | None]:
+        after: list[store.Skill | None] = []
+        for body in _JSONB_BAD.values():
+            async with tenant_session(a) as db:
+                with pytest.raises(store.SkillStoreError):
+                    await store.add_version(db, ANA, skill.id, body)
+                # A failed statement would end the transaction, and this
+                # read would raise.
+                after.append(await store.get_skill(db, ANA, skill.id))
+        return after
+
+    after = _go(world, go)
+    assert len(after) == len(_JSONB_BAD)
+    assert all(s is not None and s.current_version is None for s in after)
+    assert _count(world, "studio_skill_versions") == 0
 
 
 # ── d. Versions in order ───────────────────────────────────────────────────
