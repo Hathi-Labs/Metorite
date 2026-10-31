@@ -169,6 +169,23 @@ describe("/api/auth/me/assistant-profile", () => {
     expect(asked).toHaveLength(0);
   });
 
+  // PZ-20a. Mutation: forward the query, and the "member" case fails.
+  it("GET /block forwards to its path with no query (PZ-20a)", async () => {
+    stub(() => new Response(JSON.stringify({ enabled: true, text: "x" }), { status: 200 }));
+    const block = await import("./block/route");
+    const res = await block.GET(req("/block?member=b@example.com", "GET"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ enabled: true, text: "x" });
+    expect(asked[0].url).toBe(`${GW}/block`);
+    expect(asked[0].init?.method).toBe("GET");
+    stub(() => new Response(JSON.stringify({ detail: "unavailable" }), { status: 503 }));
+    expect((await block.GET(req("/block", "GET"))).status).toBe(503);
+    signedIn = false;
+    stub(() => new Response("{}", { status: 200 }));
+    expect((await block.GET(req("/block", "GET"))).status).toBe(401);
+    expect(asked).toHaveLength(0);
+  });
+
   // PZ-9. Mutation: drop the header pass-through in the relay, and the
   // filename check fails. Forward the raw query, and the "evil" case fails.
   it("GET /export forwards the format and passes the download headers through", async () => {
