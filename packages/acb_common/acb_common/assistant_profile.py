@@ -495,13 +495,15 @@ PROFILE_USED_EVENT = "assistant_profile_used"
 
 def has_stored_content(raw: Any) -> bool:
     """True when the member's own stored profile holds something: an address
-    field, a style key, an alias or a fact. A profile that is empty gives
-    False, even when the block holds the directory name (PZ-20b, owner
-    decision 2026-10-30). It reads through :func:`stored_profile`, the one
-    parser."""
-    stored = stored_profile(raw)
-    return bool(
-        stored["address"] or stored["style"] or stored["aliases"] or stored["facts"])
+    field, a style key, an alias or a fact (PZ-20b, owner decision
+    2026-10-30).
+
+    The test is the block of the stored value with no directory name. It is
+    not empty only when the stored value adds a line to the block. So an
+    empty list, an empty object or an empty string counts as nothing, and a
+    block of the directory name only gives False. :func:`render_block` reads
+    through :func:`stored_profile`, the one parser."""
+    return bool(render_block(raw))
 
 
 def _parse_time(value: Any) -> datetime | None:
