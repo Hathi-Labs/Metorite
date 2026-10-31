@@ -785,7 +785,7 @@ export default function ThinkingContainer({
   }, [isActive, toolEvents]);
 
   return (
-    <div className="my-2 rounded-lg border border-border/40 bg-card/30 overflow-hidden glass:rounded-[14px] glass:border-border glass:bg-transparent" data-trail="">
+    <div className="my-2 rounded-lg border border-border/40 bg-card/30 overflow-hidden glass:rounded-[14px] glass:border-transparent glass:bg-secondary/50" data-trail="">
       {/* ── Header ─────────────────────────────────────────────────── */}
       <button
         type="button"

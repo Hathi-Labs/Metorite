@@ -21,6 +21,12 @@ folded and 4.75rem wide, as in ClickUp. Each item is an icon with its label
 below. The page is one rounded card on the frame. The fold button and the
 Sidebar choice in Settings are hidden in glass. Classic is unchanged.
 
+**GL-10b is BUILT on its branch, 2026-10-31, not yet merged** (task #1233). It
+takes the rest of the chat into glass: the session list, the empty state, the
+hint row, the action bar, the artifact panels, and the colour edge. The edge
+is a glow element that always draws round the composer and round the top-bar
+Ask field. Its `data-glow` is `rest`, `live` or `waiting`.
+
 ---
 
 ## 0. The answer in one screen
