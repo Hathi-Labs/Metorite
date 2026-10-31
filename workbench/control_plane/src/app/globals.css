@@ -278,10 +278,11 @@
 
    ⚠️ A TRANSITION, not a second theme. Glass applies ONLY under
    `<html data-look="glass">`. The server renders that attribute only when
-   the build gate NEXT_PUBLIC_UI_LOOK is `glass` (staging). The boot script
-   and the store remove it for a member who chose Classic. Production has no gate, so it never matches these blocks and
-   renders the classic `:root` / `.light` above, unchanged. GL-Z deletes the
-   classic blocks once the owner approves glass in production.
+   the build gate NEXT_PUBLIC_UI_LOOK is `glass`. Production carries the
+   gate since 2026-10-31 (GL-9, the owner's word). The boot script and the
+   store remove it for a member who chose Classic, and a build with no gate
+   never matches these blocks and renders the classic `:root` / `.light`
+   above. GL-Z deletes the classic blocks once glass has settled.
 
    Rules for these blocks:
      • They come AFTER `:root` and `.light`. themes.test.ts reads the FIRST

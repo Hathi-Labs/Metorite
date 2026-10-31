@@ -4,10 +4,12 @@
 directive of 2026-10-31. Decision **D143**. Board row **WS-UX** (phase GL).
 Metorite task #1125, under epic 492.
 
-**GL-0 to GL-4 are BUILT, 2026-10-31,** on staging only: the gate and the
-tokens (GL-1), the primitives (GL-2), the shell (GL-3) and the chat (GL-4).
-Next: GL-5 (the tint) and GL-6 (one pass per app). §9 holds three questions
-for the owner.
+**GL-0 to GL-4 are BUILT and GL-9 is DONE, 2026-10-31.** The gate and the
+tokens (GL-1), the primitives (GL-2), the shell (GL-3) and the chat (GL-4)
+are LIVE in production since 05:38 UTC (deploy run 41170905098, commit
+`997ea6e0a`). The owner said in chat: "staging doesn't exist anymore. You
+can push to production directly." Next: GL-5 (the tint) and GL-6 (one pass
+per app). §9 holds three questions for the owner.
 
 ---
 
@@ -381,12 +383,17 @@ needs tenant scope, because Aroh trusts one owner:
 9. The tool factory: tools the agent builds, tests and versions.
 10. Voice in the composer, and image generation as a tool.
 
-### GL-9 · Production — OWNER-GATE
+### GL-9 · Production — OWNER-GATE · DONE 2026-10-31
 
 The owner writes `NEXT_PUBLIC_UI_LOOK=glass` into production's `.env.local`,
 or tells an agent to in chat. The next build serves it.
 
 **Done when** `app.metorite.com` serves glass, and the owner says so.
+
+**Done.** The owner said so in chat on 2026-10-31. An agent wrote the line
+on srv1914284 (backup `.env.local.bak-20261031T050134Z`) and dispatched
+`deploy.yml`. `api.metorite.com/version` serves `997ea6e0a` as `applied_sha`,
+and `app.metorite.com/signin` renders `data-look="glass"`.
 
 ### GL-Z · One look again — AGENT-SAFE after the owner's word
 
