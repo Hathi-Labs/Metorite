@@ -121,7 +121,7 @@ function fileIcon(artifact: ArtifactMeta): React.ReactNode {
   const ext = getExt(artifact.name);
   const mime = artifact.mimeType ?? "";
   const kind = (name: string, icon: string) => (
-    <Icon name={icon} size={15} className={`shrink-0 ${categoricalAccent(name).text}`} />
+    <Icon name={icon} size={15} className={`shrink-0 ${categoricalAccent(name).text} glass:text-primary-foreground`} />
   );
   if (classifyArtifact(artifact.name, artifact.path, mime, "workspace") === "report") return kind("report", "FileChartColumn");
   if (IMAGE_EXTS.has(ext) || mime.startsWith("image/")) return kind("image", "FileImage");
@@ -130,8 +130,8 @@ function fileIcon(artifact: ArtifactMeta): React.ReactNode {
   if (["pdf"].includes(ext) || mime === "application/pdf") return kind("pdf", "FileText");
   if (["xlsx", "xls"].includes(ext)) return kind("sheet", "FileSpreadsheet");
   if (isArchive(artifact.name, mime))
-    return <Icon name="FileArchive" size={15} className="shrink-0 text-muted-foreground" />;
-  return <Icon name="File" size={15} className="shrink-0 text-muted-foreground" />;
+    return <Icon name="FileArchive" size={15} className="shrink-0 text-muted-foreground glass:text-primary-foreground" />;
+  return <Icon name="File" size={15} className="shrink-0 text-muted-foreground glass:text-primary-foreground" />;
 }
 
 // ─── Component ─────────────────────────────────────────────────────────────────
@@ -263,14 +263,14 @@ export default function ArtifactCard({
       role={isDoc ? "button" : undefined}
       tabIndex={isDoc ? 0 : undefined}
       aria-label={isDoc ? `Open ${artifact.name}` : undefined}
-      className={`@container mt-3 rounded-lg border border-border bg-card/40 px-2.5 py-2 flex items-center gap-2.5 group/card transition-colors hover:border-primary/30 ${
+      className={`@container mt-3 rounded-lg border border-border bg-card/40 px-2.5 py-2 flex items-center gap-2.5 group/card transition-colors hover:border-primary/30 glass:rounded-[22px] glass:border-transparent glass:glass-surface glass:p-3 glass:hover:border-transparent ${
         isDoc
           ? "cursor-pointer hover:bg-card focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           : ""
       }`}
     >
       {/* Icon */}
-      <div className="shrink-0 w-8 h-8 rounded-md bg-secondary flex items-center justify-center">
+      <div className="shrink-0 w-8 h-8 rounded-md bg-secondary flex items-center justify-center glass:size-10 glass:rounded-[12px] glass:bg-system-blue">
         {fileIcon(artifact)}
       </div>
 

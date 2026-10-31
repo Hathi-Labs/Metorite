@@ -785,6 +785,156 @@ body {
   mask-image: linear-gradient(to bottom, #000 35%, transparent);
 }
 
+/* ── Glass chat (GL-4, D141) ──────────────────────────────────────────────
+   The chat's own motion and materials. Each name carries the `glass-` prefix
+   and a component uses it only behind the variant (`glass:glass-glow-ring`),
+   so under classic it matches nothing. glassLook.test.ts fails on a bare use.
+
+   The animation of each one is a plain rule keyed on the variant's own class
+   (`.glass\:glass-glow-ring`), inside `html[data-look="glass"]`. motion.test.ts
+   reads plain rules, not `@utility` bodies, and it needs every keyframe
+   gated by `no-preference` in this section.
+
+   The working glow is the one decorative motion of glass. It means a run is
+   live and a message now steers it. It draws only while the run streams, and
+   it holds still under reduced motion. It is a SIBLING of the composer, never
+   an ancestor, so its filter does not break the composer's backdrop blur. */
+
+@property --glow-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes glass-glow-turn {
+  to {
+    --glow-angle: 360deg;
+  }
+}
+
+@keyframes glass-caret-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+
+@keyframes glass-dot-rise {
+  0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-2px); }
+}
+
+@keyframes glass-shimmer-sweep {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* The bloom: the box blurs the ring after the ring is cut, so both edges are soft. */
+@utility glass-working-glow {
+  pointer-events: none;
+  filter: blur(10px);
+  opacity: 0.95;
+}
+
+/* The spectrum, cut to a ring by a mask so the field itself stays clear. */
+@utility glass-glow-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 6px;
+  background: conic-gradient(from var(--glow-angle), var(--glow-1), var(--glow-2), var(--glow-3), var(--glow-4), var(--glow-5), var(--glow-1));
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+}
+
+/* The answer's own text styles. The headings of a Markdown body keep their
+   classic class strings (markdownChatGolden.test.ts holds them byte for byte),
+   so glass sizes them from the wrapper. They step up with the 17 px body. */
+@utility glass-prose {
+  & h1 {
+    font-size: var(--text-title);
+    border-bottom-color: transparent;
+  }
+  & h2 {
+    font-size: var(--text-headline);
+  }
+  & h3,
+  & h4 {
+    font-size: var(--text-body);
+  }
+}
+
+/* Three dots: the run has started and no word has arrived. */
+@utility glass-typing-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background-color: currentColor;
+  opacity: 0.6;
+}
+
+/* A card's icon is a solid tile in a system colour, with the ink of the tint
+   on it. `--tile` names the colour and defaults to system blue. The utility
+   goes on the card's frame and finds the icon that sits before the title (the
+   header lives in ui/Collapsible, which this slice does not edit). */
+@utility glass-card-tile {
+  & :is(svg, span.flex):has(+ [data-rollup-title]) {
+    box-sizing: border-box;
+    width: 1.75rem;
+    height: 1.75rem;
+    padding: 0.4375rem;
+    border-radius: 0.5rem;
+    background-color: var(--tile, var(--system-blue));
+    color: var(--primary-foreground);
+    align-items: center;
+    justify-content: center;
+  }
+  & [data-rollup-title] {
+    font-size: var(--text-subhead);
+  }
+}
+
+/* A sweeping highlight on the label of something that works. */
+@utility glass-shimmer-text {
+  background: linear-gradient(90deg, var(--muted-foreground) 0%, var(--foreground) 45%, var(--muted-foreground) 90%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* Each loop runs only for a member who has not asked for less motion. Under
+   reduced motion the glow holds still and still says "working", and the
+   dots, the caret and the shimmer hold still as well. */
+@media (prefers-reduced-motion: no-preference) {
+  html[data-look="glass"] .glass\:glass-glow-ring {
+    animation: glass-glow-turn 5s linear infinite;
+  }
+  html[data-look="glass"] .stream-caret {
+    animation: glass-caret-blink 1s ease-in-out infinite;
+  }
+  html[data-look="glass"] .glass\:glass-typing-dot {
+    animation: glass-dot-rise 1.2s ease-in-out infinite;
+  }
+  html[data-look="glass"] .glass\:glass-typing-dot:nth-child(2) {
+    animation-delay: 0.18s;
+  }
+  html[data-look="glass"] .glass\:glass-typing-dot:nth-child(3) {
+    animation-delay: 0.36s;
+  }
+  html[data-look="glass"] .glass\:glass-shimmer-text {
+    animation: glass-shimmer-sweep 2.2s linear infinite;
+  }
+}
+html[data-look="glass"] .stream-caret {
+  background-color: var(--primary);
+}
+
 /* The surfaces every app already uses take the glass materials. These two
    rules are the widest lever of GL-1: each panel, popover, drawer and modal
    that wears tech-glass becomes Aroh's glass with no change to its code. */

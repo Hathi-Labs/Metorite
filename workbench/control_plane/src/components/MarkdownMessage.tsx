@@ -716,7 +716,7 @@ export default function MarkdownMessage({
   const showThinking = isThinkingActive || hasTools || hasReasoning || hasNarration;
 
   return (
-    <div className="text-[12px] sm:text-[13px] text-foreground leading-relaxed min-w-0">
+    <div className="text-[12px] sm:text-[13px] text-foreground leading-relaxed min-w-0 glass:text-body glass:sm:text-body glass:leading-normal glass:glass-prose">
       {/* Thinking container — groups the whole working phase (reasoning + tool calls + status) */}
       {showThinking && (
         <div className="mb-3">
