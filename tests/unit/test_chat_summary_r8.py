@@ -328,6 +328,18 @@ async def test_9_a_newer_mark_wins_over_an_older_write(db) -> None:
     assert (got.text, got.through, got.mark_through) == ("", None, "m4")
 
 
+async def test_p3_forget_clears_a_chat_whose_user_id_has_outer_space(db) -> None:
+    """The solo rule trims ``user_id`` (``SOLO_ROOM_SQL``), so a padded id is
+    the member's chat. Forget must clear it too (review round 2, P3)."""
+    sid = _chat(db, org=db.org_a, user_id=f"  {ALICE} ", subjects=(ALICE,))
+    _message(db, org=db.org_a, sid=sid, mid="m1", ts=100)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _summarise(db.org_a, sid)
+        assert await _in(db.org_a, summaries.clear_for_member, ALICE) >= 1
+        got = await _in(db.org_a, summaries.read, sid)
+    assert got == summaries.Stored(through="m1", through_ms=100)
+
+
 async def test_a_bad_value_is_refused_before_any_sql(db) -> None:
     sid = _chat(db, org=db.org_a, user_id=ALICE, subjects=(ALICE,))
     async with tenant_engine_scope(_app_dsn(db)):
