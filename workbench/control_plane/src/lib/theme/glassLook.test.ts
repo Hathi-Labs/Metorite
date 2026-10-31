@@ -266,6 +266,32 @@ function utilityOf(token: string): string {
  */
 const GLASS_ONLY_FILES: string[] = [];
 
+// ── The colour edge and the scrollbars (GL-10) ───────────────────────────────
+
+describe("the colour edge round the chat", () => {
+  it("turns only while a run is live: rest and waiting hold still", () => {
+    // DESIGN_SYSTEM.md §4b: only a status loops, and attention never loops.
+    // The rule must sit inside the no-preference gate with the turn itself.
+    const gate = GLOBALS.indexOf("@media (prefers-reduced-motion: no-preference)", GLOBALS.indexOf("glass-glow-turn 5s") - 400);
+    const body = GLOBALS.slice(gate, GLOBALS.indexOf("\n}\n", gate));
+    expect(body).toContain("animation: glass-glow-turn 5s linear infinite;");
+    expect(body).toMatch(/\[data-glow="rest"\] > \.glass\\:glass-glow-ring,\s*html\[data-look="glass"\] \[data-glow="waiting"\] > \.glass\\:glass-glow-ring \{\s*animation: none;/);
+  });
+
+  it("styles each state the chat can be in", () => {
+    for (const state of ["rest", "live", "waiting"]) {
+      expect(GLOBALS, state).toContain(`.glass\\:glass-working-glow[data-glow="${state}"]`);
+    }
+  });
+});
+
+describe("glass scrollbars", () => {
+  it("hide the thumb until the pointer is over the pane", () => {
+    expect(GLOBALS).toMatch(/html\[data-look="glass"\] \* \{\s*scrollbar-color: transparent transparent;/);
+    expect(GLOBALS).toMatch(/html\[data-look="glass"\] \*:hover \{\s*scrollbar-color: var\(--scrollbar-thumb\) transparent;/);
+  });
+});
+
 describe("glass-only classes", () => {
   it("appear only behind the glass: variant", () => {
     const offenders: string[] = [];

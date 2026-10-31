@@ -326,7 +326,11 @@ html[data-look="glass"] {
      concentric corner of Aroh's sidebar rows. */
   --glass-radius-row: 0.875rem;
 
-  --background: #000000;
+  /* The frame and the content card (GL-10). The shell, the top bar and the
+     rail sit on the grouped frame. Each app renders inside ONE rounded card
+     on `--background`, one step lighter than the frame in dark and white in
+     light, so every app's panes share the card's corners. */
+  --background: #121214;
   --background-grouped: #000000;
   --foreground: #f5f5f7;
   --card: #1c1c1e;
@@ -435,9 +439,9 @@ html[data-look="glass"] {
 html[data-look="glass"].light {
   --elevation: 0 10px 34px rgb(0 0 0 / 0.08), 0 1px 3px rgb(0 0 0 / 0.05);
 
-  /* Pages sit on Apple's grouped grey, and cards are white on it. The chat
-     reads on white: GL-4 sets its surface to --card. */
-  --background: #f2f2f7;
+  /* The frame is Apple's grouped grey, and the content card is white
+     (GL-10). Cards inside an app keep their hairline on the white card. */
+  --background: #ffffff;
   --background-grouped: #f2f2f7;
   --foreground: #1d1d1f;
   --card: #ffffff;
@@ -882,6 +886,36 @@ body {
   opacity: 0.95;
 }
 
+/* The colour edge round the chat (GL-10, owner 2026-10-31: "the color
+   highlight around the chat interface is missing"). The glow element is
+   always present in glass and says its state in `data-glow`:
+     rest      a still, soft spectrum: the chat is here, waiting for words
+     live      Aroh's turning spectrum, at full strength: a run is live, and
+               a message now steers it (the one decorative motion)
+     waiting   still and bright: the run waits on the member (attention
+               never loops, DESIGN_SYSTEM.md §4b)
+   `data-glow-focus="true"` (the composer has focus) lifts the rest state;
+   it is the composer's focus cue in glass, beside its ring.
+   An element with no `data-glow` is the GL-4 markup, which rendered only
+   while live, so it keeps the live look. */
+html[data-look="glass"] .glass\:glass-working-glow {
+  transition: opacity var(--motion-duration) var(--motion-easing);
+}
+html[data-look="glass"] .glass\:glass-working-glow[data-glow="rest"] {
+  opacity: 0.4;
+}
+html[data-look="glass"] .glass\:glass-working-glow[data-glow="rest"][data-glow-focus="true"] {
+  opacity: 0.75;
+}
+html[data-look="glass"] .glass\:glass-working-glow[data-glow="waiting"] {
+  opacity: 0.85;
+}
+html[data-look="glass"] .glass\:glass-working-glow[data-glow="live"] {
+  opacity: 1;
+  inset: -0.375rem;
+  filter: blur(12px);
+}
+
 /* The spectrum, cut to a ring by a mask so the field itself stays clear. */
 @utility glass-glow-ring {
   position: absolute;
@@ -961,8 +995,14 @@ body {
    dots and the shimmer hold still as well. The caret keeps the classic
    `animate-pulse` of `lib/streamCaret.ts`, as it does in classic. */
 @media (prefers-reduced-motion: no-preference) {
+  /* Only a live run turns the spectrum. At rest and while the run waits on
+     the member, it holds still. */
   html[data-look="glass"] .glass\:glass-glow-ring {
     animation: glass-glow-turn 5s linear infinite;
+  }
+  html[data-look="glass"] [data-glow="rest"] > .glass\:glass-glow-ring,
+  html[data-look="glass"] [data-glow="waiting"] > .glass\:glass-glow-ring {
+    animation: none;
   }
   html[data-look="glass"] .stream-caret {
     animation: glass-caret-blink 1s ease-in-out infinite;
@@ -2423,6 +2463,26 @@ html.panel-swap::view-transition-new(assistant-panel) {
 
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
+}
+
+/* Glass scrollbars (GL-10, owner 2026-10-31: "scroll wheel on side is
+   bad"). Apple draws the thumb only while you are over the pane, so a
+   floating panel never shows a grey bar along its edge. The thumb is
+   transparent until the pointer is over the scroller, then it is the same
+   thin pill as classic. Keyboard and wheel scrolling do not change. Both
+   syntaxes, for the reason the classic block gives. `.scrollbar-hide` still
+   wins: it sets the width to none, and these rules set only the colour. */
+html[data-look="glass"] * {
+  scrollbar-color: transparent transparent;
+}
+html[data-look="glass"] *:hover {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+html[data-look="glass"] *::-webkit-scrollbar-thumb {
+  background-color: transparent;
+}
+html[data-look="glass"] *:hover::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
 }
 
 /* ── Reveal on hover ──────────────────────────────────────────────────── */
