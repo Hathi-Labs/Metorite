@@ -74,7 +74,7 @@ the thing that used to EXPOSE a breach for free: one theme switch and every
 hardcoded value announced itself. The breach is still a breach. Nothing shows
 it to you now.
 
-Eleven rules on top of the three above. Each one exists because somebody broke it:
+Twelve rules on top of the three above. Each one exists because somebody broke it:
 
 4. **One vocabulary per concept, in `src/lib/` or `src/components/`, consumed by
    every app.** Status and lane colour is `src/lib/statusAccent.ts` — the single
