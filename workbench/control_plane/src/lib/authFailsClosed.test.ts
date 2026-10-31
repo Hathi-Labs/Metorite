@@ -132,6 +132,36 @@ describe("currentIdentity — no silent grant", () => {
     });
   });
 
+  // LD-8b: `dev_up.sh --data prod --as <email>` sets DEV_SIGNED_IN_EMAIL to a
+  // real member of the production copy. A production box that carries the
+  // same variable must still refuse, or it hands that member to anyone.
+  it("returns null in production even when DEV_SIGNED_IN_EMAIL is set", async () => {
+    vi.stubEnv("DEV_SIGNED_IN_EMAIL", "owner@customer.example");
+    try {
+      posture.enabled = true;
+      posture.session = null;
+
+      expect(await currentIdentity()).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("signs a laptop in as DEV_SIGNED_IN_EMAIL when it is set", async () => {
+    vi.stubEnv("DEV_SIGNED_IN_EMAIL", "owner@customer.example");
+    try {
+      posture.enabled = false;
+      posture.session = null;
+
+      expect(await currentIdentity()).toEqual({
+        email: "owner@customer.example",
+        role: "employee",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("prefers the real session whenever there is one", async () => {
     posture.enabled = true;
     posture.session = { user: { email: "buyer@customer.example" } };

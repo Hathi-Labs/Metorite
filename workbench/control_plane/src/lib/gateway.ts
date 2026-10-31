@@ -97,6 +97,22 @@ export interface Identity {
 const DEV_IDENTITY: Identity = { email: "dev@fracktal.in", role: "employee" };
 
 /**
+ * The laptop's identity. `scripts/dev_up.sh --data prod --as <email>` sets
+ * `DEV_SIGNED_IN_EMAIL` to a real member of the production copy (LD-8b), and
+ * the role follows the same rule as a session. With no variable it is
+ * `DEV_IDENTITY`. Only the `!isAuthEnabled` branch of `currentIdentity` calls
+ * this, so a production box with the variable set still gets `null`.
+ */
+function devIdentity(): Identity {
+  const email = (process.env.DEV_SIGNED_IN_EMAIL ?? "").trim();
+  if (!email) return DEV_IDENTITY;
+  return {
+    email,
+    role: EXECUTIVE_EMAILS.has(email.toLowerCase()) ? "executive" : "employee",
+  };
+}
+
+/**
  * Thrown when a call needs a person and there is nobody signed in.
  *
  * Deliberately an exception rather than a null return: the previous helper
@@ -126,7 +142,7 @@ export async function currentIdentity(): Promise<Identity | null> {
     // auth() throws outside a request context (build-time evaluation, tests).
     // Fall through: no session is no session, however we failed to find one.
   }
-  return isAuthEnabled ? null : DEV_IDENTITY;
+  return isAuthEnabled ? null : devIdentity();
 }
 
 /**
