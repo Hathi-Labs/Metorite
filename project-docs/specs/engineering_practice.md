@@ -241,35 +241,100 @@ the PR body.
 **Steps 1 to 3 are advisory (R7).** No test makes a skipped preview fail. The
 owner sees a missing preview, because no approval arrives.
 
-#### 1.3.1 The production copy on this PC (LD-8)
+#### 1.3.1 The production copy on this PC (LD-8a, LD-8b, LD-8c)
+
+**Status, 2026-10-31:** 🟠 specified, not built. The spec-auditor gave
+GO-NARROWED and split LD-8 into three slices. LD-8c goes first.
 
 **Owner approval, 2026-10-31, in chat.** Production writes a reduced copy each
 night (`scripts/staging_export.sh`). It holds the organizations in
-`STAGING_EXPORT_SLUGS`, with every credential blanked by
-`infra/staging/minimise.sql`. It is about 83 MB, at
-`/var/lib/acb-staging-export/current/` on the production box, group `acb`.
+`STAGING_EXPORT_SLUGS`, minimised by `infra/staging/minimise.sql`. It is about
+83 MB, at `/var/lib/acb-staging-export/current/` on the production box. The
+files are `root:acb`, mode 0640, so `ssh metorite` (user `acb`) reads them with
+no sudo.
 
-- `scripts/prod_copy.sh` pulls it over `ssh metorite` into
-  `~/.metorite/prod-copy/<date>/`, with mode 0700. It checks `SHA256SUMS`. It
-  refuses a copy older than 36 hours, and keeps the 2 newest copies.
-- `bash scripts/dev_up.sh --data prod` restores the newest copy instead of the
-  demo seed. It follows `scripts/staging_refresh.sh` steps 4 to 6. It creates
-  the roles and extensions that the dump names, runs `pg_restore`, and gives
-  the gateway `acb_app` so FORCE RLS binds.
-- It takes production's switches from the copy's `flags.env`, with the
-  outbound switches held off. This replaces `--refresh-flags`, which reads the
-  retired staging box.
-- It deletes `push_subscriptions` again after the restore, as
-  `staging_refresh.sh` does (RE-9b). Then it applies the branch's pending
-  migrations.
-- The sign-in works as a real member of the copy.
-- The copy stays on this PC. It never goes into git, a log, a PR or a chat
-  message.
-- Fences: `tests/unit/test_dev_up.py` and `tests/unit/test_prod_copy.py`.
+**Measured 2026-10-31, and the reason LD-8c goes first:**
 
-**Measured 2026-10-31 08:40 UTC:** the newest copy on production was from
-2026-10-30 02:38 UTC, 30 hours old. The copy of 2026-10-31 did not arrive.
-LD-8 finds out why, and `prod_copy.sh` prints the age of each copy it takes.
+- **The copy still holds secrets.** `minimise.sql` keeps `push_subscriptions`,
+  the live push keys of real devices (`endpoint`, `p256dh`, `auth`). It also
+  keeps `plugins.auth_config`, `whatsapp_member_links.code_hash` and
+  `whatsapp_pending_acts.confirm_code_hash`. No script deletes them.
+- **The nightly backup check fails.** On 2026-10-31 at 02:37 UTC, the restore
+  in the verify container stopped: "memory required is 65 MB,
+  maintenance_work_mem is 64 MB". The dump exists, but nobody proved it
+  restorable. `staging_export.sh` runs only after a good verify, so no copy
+  arrived.
+- So **no copy comes to this PC before LD-8c lands and the next backup
+  passes.** The owner approved a copy with its credentials blanked.
+
+**LD-8c: AGENT-SAFE to build, HIGH to land (deploy path).** It ships at the
+21:30 UTC release.
+
+- `scripts/backup_db.sh` starts the verify container with
+  `-c maintenance_work_mem=256MB`. Fence: `tests/unit/test_backup_deploy_wiring.py`.
+- `minimise.sql` truncates `push_subscriptions`, and blanks the three columns
+  above. Its step 6 name check also catches `p256dh`, `auth` and `code_hash`.
+  Fences: `tests/unit/test_staging_minimise_r8.py` (R8) and
+  `tests/unit/test_staging_export.py`.
+- Proof: the backup at 02:30 UTC on 2026-11-01 logs "restore verified", and a
+  new `current` copy appears.
+
+**LD-8a: `scripts/prod_copy.sh`. AGENT-SAFE, HIGH.**
+
+- It pulls the copy over `ssh metorite` with `scp` or `ssh ... tar`, because
+  Git Bash has no `rsync`. The target is `~/.metorite/prod-copy/<UTC date>/`.
+- It limits the folder to the current user with `icacls`: no inheritance, one
+  principal. NTFS ignores a POSIX mode, so the test checks the ACL.
+- It checks `SHA256SUMS`. It takes the age from the remote `stat -c %Y` of
+  `staging.dump`, prints it, and refuses a copy older than 36 hours.
+- It keeps the 2 newest copies. It refuses a target inside a git work tree. It
+  never prints the content of a file.
+- Fence: `tests/unit/test_prod_copy.py`, with `ssh` replaced by a stub
+  (`PROD_COPY_SSH`). It covers a bad checksum, a stale copy, the retention of
+  2, and a target inside a git work tree.
+
+**LD-8b: `bash scripts/dev_up.sh --data prod --as <email>`. AGENT-SAFE, HIGH.**
+
+- The dump is `pg_dump` 17 (archive format 1.16). So this mode uses
+  `pgvector/pgvector:pg17`. `.dev_up/state` records the data mode, and a switch
+  needs `--reset`.
+- It ports `scripts/staging_refresh.sh` steps 4 to 6 into the container, as one
+  `bash -c` run: the roles from `roles.txt`, the schemas and extensions from
+  `extensions.txt`, then `pg_restore --no-owner --no-acl` with the
+  `SCHEMA - public` entry left out. A line `pg_restore: error` stops it.
+- Before the gateway starts, it runs `DELETE FROM push_subscriptions`. This is
+  a second defence after LD-8c.
+- It skips the demo seed and the RLS promotion replay, because the copy holds
+  both. It grants `acb_app` (NOSUPERUSER NOBYPASSRLS). Then
+  `apply_migrations.sh` applies the branch's pending migrations.
+- It reads production's switches through `DEV_UP_FLAGS_FILE=<copy>/flags.env`
+  and the existing `flag_env`, so every held switch stays off. It never writes
+  `scripts/dev_up/prod_flags.env`.
+- `--as` names the member to sign in as. It must be an `app_user` with an
+  active `org_membership`. With no `--as`, it refuses and lists the active
+  members.
+- The web app reads `DEV_SIGNED_IN_EMAIL` in `src/lib/gateway.ts`, in the
+  `!isAuthEnabled` branch only. Production still returns no identity. Fence:
+  `src/lib/authFailsClosed.test.ts`. The UI gate of
+  `workbench/control_plane/AGENTS.md` applies.
+- Fences: new cases in `tests/unit/test_dev_up.py`. R8 on the restored copy:
+  `relforcerowsecurity` holds on the tenant tables, `push_subscriptions` has 0
+  rows, and `acb_app` reads 0 rows of another organization.
+
+**Non-goals.** No write to production. No change to the export schedule. The
+copy is never used by CI, never goes into git, a log, a PR or a chat message,
+and never leaves this PC.
+
+**Verify with:**
+
+```sh
+uv run pytest tests/unit/test_prod_copy.py tests/unit/test_dev_up.py \
+  tests/unit/test_staging_export.py tests/unit/test_staging_box.py \
+  tests/unit/test_backup_deploy_wiring.py -q
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_staging_minimise_r8.py -q
+cd workbench/control_plane && npx vitest run src/lib/authFailsClosed.test.ts
+```
 
 #### 1.3.2 What local staging cannot test
 
