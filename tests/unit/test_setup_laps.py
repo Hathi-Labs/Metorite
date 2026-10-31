@@ -24,9 +24,9 @@ from orchestrator import executor as ex
 
 #: The laps of ``run_agent_stream``, in the order the setup runs them.
 STREAM_LAPS = (
-    "start", "access", "knowledge", "load", "authorizer", "build", "packs",
+    "start", "access", "early_start", "load", "authorizer", "build", "packs",
     "crm_mirror", "inject", "crm_facts", "mcp", "workspace", "bind",
-    "email_context", "constraints", "rehydrate", "skills", "tier_wait",
+    "early_reads", "email_context", "constraints", "rehydrate", "skills", "tier_wait",
     "model_prep", "session_load", "compose",
 )
 

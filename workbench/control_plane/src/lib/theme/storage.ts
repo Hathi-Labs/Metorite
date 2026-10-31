@@ -38,6 +38,11 @@ export const STORAGE_KEYS = {
    * the built-in default.
    */
   orgDensity: "cc-density-org",
+  /**
+   * The member's Design choice (D143): `classic`, or absent for glass. Read
+   * only when the build carries the glass gate (`look.ts`).
+   */
+  look: "cc-look",
 } as const;
 
 // ⚠️ `cc-theme`, `cc-theme-org` and the `data-theme` attribute were removed
@@ -231,6 +236,8 @@ export const themeStorage = {
     // removing the accent cannot leave orphaned ink behind.
     tabWrite(STORAGE_KEYS.accentInk, c ? accentInk(c) || null : null);
   },
+  getLook: () => read(inTab(STORAGE_KEYS.look)),
+  setLook: (l: string | null) => tabWrite(STORAGE_KEYS.look, l),
   getOrgDensity: () => read(inTab(STORAGE_KEYS.orgDensity)) as Density | null,
   setOrgDensity: (d: Density) => tabWrite(STORAGE_KEYS.orgDensity, d),
   /** The colour mode of this tab's scope, or the bare key with no scope. */

@@ -373,7 +373,8 @@ describe("solid controls go through the Button primitive", () => {
   // 21 since the same day: that Send button is the `Button` primitive now.
   // 20 since 2026-10-12: the composer's split Send/Queue/Steer pill is gone.
   // Send and Stop are one `ChatSendButton` (`lib/chatSteer.ts`).
-  const SOLID_BUTTON_DEBT = 20;
+  // 19 since 2026-10-31: the Meeting copilot switch is a `Switch` now (GL-2).
+  const SOLID_BUTTON_DEBT = 19;
 
   function solidButtons(): Record<string, number> {
     const out: Record<string, number> = {};
