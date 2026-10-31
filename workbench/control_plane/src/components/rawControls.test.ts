@@ -142,7 +142,7 @@ describe("raw buttons that look like controls", () => {
 });
 
 /**
- * One switch (GL-2 review, D142). `components/ui/Switch.tsx` is the only
+ * One switch (GL-2 review, D143). `components/ui/Switch.tsx` is the only
  * `role="switch"` in the product. A hand-rolled switch passes every other
  * fence and stays the classic shape under glass, which is how three copies
  * grew before GL-2 moved them onto the primitive. Budget: zero.

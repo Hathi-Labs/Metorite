@@ -33,7 +33,7 @@ const TONES: Record<BadgeTone, string> = {
  */
 export const BADGE_SHAPE = "inline-flex items-center gap-1 rounded-md";
 /**
- * The glass look: a pill, with Aroh's padding and type (D142, GL-2). Only
+ * The glass look: a pill, with Aroh's padding and type (D143, GL-2). Only
  * `Badge` wears it. `EntityPill` reads `BADGE_SHAPE` and keeps its own shape.
  */
 const GLASS_PILL = "glass:rounded-full glass:px-2.5 glass:py-0.5 glass:text-footnote glass:font-medium";

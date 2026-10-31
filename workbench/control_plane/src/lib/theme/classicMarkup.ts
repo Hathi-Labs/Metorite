@@ -1,5 +1,5 @@
 /**
- * Rendered markup as the classic look sees it (D142, `glass_look.md`).
+ * Rendered markup as the classic look sees it (D143, `glass_look.md`).
  *
  * A `glass:` class applies only under `<html data-look="glass">`, so it is
  * no change to a classic page. A golden test of rendered HTML passes its

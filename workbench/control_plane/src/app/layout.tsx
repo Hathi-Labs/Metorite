@@ -18,7 +18,7 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-// The glass look's face off Apple devices (D142): Inter, the closest open
+// The glass look's face off Apple devices (D143): Inter, the closest open
 // relative of SF Pro. `preload: false`, so a page in the classic look never
 // fetches it. A browser downloads a face only when text uses it.
 const inter = Inter({

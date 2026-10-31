@@ -30,7 +30,7 @@ const BASE =
   "cc-control rounded-lg border border-border bg-background text-foreground " +
   "placeholder:text-muted-foreground outline-none focus:border-primary/50 " +
   "disabled:cursor-not-allowed disabled:opacity-60 " +
-  // The glass look (D142, GL-2), all behind `glass:`. The ring of keyboard
+  // The glass look (D143, GL-2), all behind `glass:`. The ring of keyboard
   // focus is GL-1's tinted outline; the border takes the tint on focus. A
   // 16 px face on a touch screen stops iOS from zooming the page on focus,
   // and it is pinned in px because density scales rem.

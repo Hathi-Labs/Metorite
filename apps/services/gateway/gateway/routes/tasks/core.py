@@ -44,6 +44,27 @@ router = APIRouter(
 )
 
 
+# ── AI calls ask for no reasoning ────────────────────────────────────────────
+#: The ``thinking`` value that every AI call of this package sends.
+#:
+#: 🔴 **Why (2026-10-31, task #1122).** The Router binds ``tier-fast`` and
+#: ``tier-balanced`` to ``deepseek/deepseek-flash`` and ``tier-powerful`` to
+#: ``deepseek/deepseek-v4-pro``. Both models think by default, and the vendor
+#: counts the reasoning in ``completion_tokens``. These calls ask for one small
+#: JSON object with a cap of 40 to 2200 tokens. So the reasoning used up the
+#: cap, the reply came back with ``finish_reason=length`` and empty
+#: ``content``, and the JSON parse failed. Production ``usage_event``,
+#: 2026-10-25 to 10-30: 19 of 20 Tasks calls stopped at exactly their cap.
+#: The email status call had the same fault and the same fix
+#: (``replyzero._STATUS_THINKING``).
+#:
+#: ⚠️ **One exception: the day plan** (``calendar._llm_rank_day``). Task 1123
+#: lets it think, with a cap of ``PLAN_MAX_TOKENS`` that leaves room for it.
+#: Fence: ``tests/unit/test_tasks_ai_no_thinking.py``, which names the
+#: exception.
+NO_THINKING: dict[str, str] = {"type": "disabled"}
+
+
 # ── People directory (HR) access ─────────────────────────────────────────────
 # Spec: project-docs/specs/colleague_onboarding.md §4 N4 (owner-answered
 # 2026-08-04, "directory open, HR fields restricted").

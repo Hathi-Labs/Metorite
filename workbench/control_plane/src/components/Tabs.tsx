@@ -155,7 +155,7 @@ export default function Tabs({
       } ${CONTAINER} ${className}`}
     >
       <div
-        // Glass (D142, GL-2): Aroh's TabBar, a capsule track holding capsule segments.
+        // Glass (D143, GL-2): Aroh's TabBar, a capsule track holding capsule segments.
         className="flex items-center gap-0.5 p-0.5 rounded-lg bg-secondary/50 glass:rounded-full glass:bg-secondary glass:p-[3px]"
         role="tablist"
       >

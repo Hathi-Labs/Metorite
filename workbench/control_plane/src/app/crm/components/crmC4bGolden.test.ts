@@ -192,7 +192,7 @@ if (OUT) {
       it(`draws ${surface} as the golden file`, () => {
         const golden = readFileSync(join(GOLDEN, `${surface}.html`), "utf8");
         expect(golden.length).toBeGreaterThan(200);
-        // Compared without glass-look classes (D142): they apply only under
+        // Compared without glass-look classes (D143): they apply only under
         // <html data-look="glass">, so the classic markup must equal the golden.
         expect(classicMarkup(draw(surface, OFF), { collapseSpaces: true })).toBe(classicMarkup(golden, { collapseSpaces: true }));
         expect(classicMarkup(draw(surface, null), { collapseSpaces: true })).toBe(classicMarkup(golden, { collapseSpaces: true }));

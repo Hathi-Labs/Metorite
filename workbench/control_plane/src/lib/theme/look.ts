@@ -1,5 +1,5 @@
 /**
- * The look gate (D142, `project-docs/specs/glass_look.md` §4).
+ * The look gate (D143, `project-docs/specs/glass_look.md` §4).
  *
  * Metorite carries two looks for a bounded time: **classic**, the look in
  * production, and **glass**, Aroh's design language. The gate decides

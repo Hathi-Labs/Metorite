@@ -42,7 +42,7 @@ type AppearanceState = {
   /** Member's accent override; `null` keeps the theme's own primary. */
   accent: string | null;
   /**
-   * The look in force (D142). Always `classic` when the build has no glass
+   * The look in force (D143). Always `classic` when the build has no glass
    * gate. A transition axis: GL-Z removes it with the classic look.
    */
   look: Look;

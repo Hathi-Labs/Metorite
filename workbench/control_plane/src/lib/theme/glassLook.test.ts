@@ -1,5 +1,5 @@
 /**
- * The glass look's fences (D142, `project-docs/specs/glass_look.md` §6).
+ * The glass look's fences (D143, `project-docs/specs/glass_look.md` §6).
  *
  * Glass ships beside classic for a bounded time, and production must keep
  * classic byte for byte until the owner says otherwise. These tests hold

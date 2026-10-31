@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from acb_llm.voice import voice_prompt
+from gateway.routes.tasks.core import NO_THINKING
 
 # A small base vocabulary so a résumé skill that no one in people has yet is
 # still detected. The PRIMARY vocabulary is the org's existing skills (passed in),
@@ -130,6 +131,7 @@ async def llm_extract_profile(text: str) -> dict[str, Any]:
                       {"role": "user", "content": snippet}],
             temperature=0.0,
             max_tokens=500,
+            thinking=dict(NO_THINKING),
             response_format={"type": "json_object"},
         )
         raw = resp.choices[0].message.content or ""

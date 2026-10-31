@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 import { gotoAndSettle, setLook, stubApi } from "./visual/harness";
 
 /**
- * The glass rail must not trap its own menus (D142, GL-3 review P1).
+ * The glass rail must not trap its own menus (D143, GL-3 review P1).
  *
  * `backdrop-filter` makes an element the containing block of every
  * `position: fixed` child, and the rail's `overflow: hidden` then clips that

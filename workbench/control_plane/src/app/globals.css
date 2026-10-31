@@ -22,7 +22,7 @@
        mirror, and mirrors go stale — so themes.test.ts parses this
        stylesheet and fails if the two drift. Change a value in both.
      • Do not reintroduce a second look. See DESIGN_SYSTEM.md §1. The one
-       bounded exception is the glass trial (D142, DESIGN_SYSTEM.md §0a),
+       bounded exception is the glass trial (D143, DESIGN_SYSTEM.md §0a),
        whose blocks sit below `.light` and apply only under data-look.
    ──────────────────────────────────────────────────────────────────────── */
 
@@ -270,7 +270,7 @@
   --sidebar-ring: hsl(198 89% 50%);
 }
 
-/* ── The glass look (D142, project-docs/specs/glass_look.md) ─────────────
+/* ── The glass look (D143, project-docs/specs/glass_look.md) ─────────────
    Aroh's design language: Apple's current interface (the 26-series "Liquid
    Glass" releases). Content fills the window. The controls that steer it
    float above it as translucent glass. Source of record:
@@ -592,7 +592,7 @@ html[data-look="glass"].light {
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar-border: var(--sidebar-border);
-  /* Glass-only colour tokens (D142). Each falls back to the nearest classic token,
+  /* Glass-only colour tokens (D143). Each falls back to the nearest classic token,
      so a classic page that meets one renders classic. glassLook.test.ts
      holds the list. */
   --color-grouped: var(--background-grouped, var(--background));
@@ -631,7 +631,7 @@ html[data-look="glass"].light {
      exactly Tailwind's own defaults (8/10/12/12/16/24px), so the shipped look
      is unchanged; Fluent's 0.25rem squares everything off and Material's 1rem
      rounds it. max() keeps a small --radius from producing negative values. */
-  /* Glass (D142) sets its own steps through `--glass-radius-*`. Classic never
+  /* Glass (D143) sets its own steps through `--glass-radius-*`. Classic never
      defines those, so each step falls back to its classic value unchanged. */
   --radius-sm: var(--glass-radius-sm, max(0px, calc(var(--radius) - 4px)));
   --radius-md: var(--glass-radius-md, max(0px, calc(var(--radius) - 2px)));
@@ -731,7 +731,7 @@ body {
   box-shadow: var(--elevation);
 }
 
-/* ── Glass materials (D142) ───────────────────────────────────────────────
+/* ── Glass materials (D143) ───────────────────────────────────────────────
    Use each one behind the variant (`glass:glass-chrome`), or in a component
    that renders only in glass. glassLook.test.ts fails on a bare use.
 
@@ -832,7 +832,7 @@ body {
   mask-image: linear-gradient(to bottom, #000 35%, transparent);
 }
 
-/* ── Glass chat (GL-4, D142) ──────────────────────────────────────────────
+/* ── Glass chat (GL-4, D143) ──────────────────────────────────────────────
    The chat's own motion and materials. Each name carries the `glass-` prefix
    and a component uses it only behind the variant (`glass:glass-glow-ring`),
    so under classic it matches nothing. glassLook.test.ts fails on a bare use.
@@ -2622,7 +2622,7 @@ html.panel-swap::view-transition-new(assistant-panel) {
   }
 
   /* Themes set their own motion feel; honouring the OS preference has to
-     override whichever one is active. The glass block (D142) is more
+     override whichever one is active. The glass block (D143) is more
      specific than `:root`, so it is named here too, or glass would keep its
      0.28 s and 220 ms under reduced motion. glassLook.test.ts fences it.
      The classic rule stays as it was, so classic does not change. */

@@ -118,7 +118,7 @@ const SIZES: Record<ButtonSize, string> = {
 };
 
 /**
- * The glass look (D142, `glass_look.md` GL-2). Every class here sits behind
+ * The glass look (D143, `glass_look.md` GL-2). Every class here sits behind
  * `glass:`, so under classic it matches nothing and the button is unchanged.
  * The shape is Aroh's: a capsule, a fill and no border, a press dip, and a
  * 32 px height (40 px on a touch screen).

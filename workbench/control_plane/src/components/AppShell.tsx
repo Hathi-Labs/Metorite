@@ -397,7 +397,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 sheet and made every menu look broken (owner, 2026-10-09).
                 Glass keeps the reason: the sheet takes the menu material, the
                 near-opaque one (95%) that is made to read over anything, so
-                no word of the page shows through it (D142, GL-3). */}
+                no word of the page shows through it (D143, GL-3). */}
             <aside className="absolute inset-x-0 bottom-0 flex max-h-[85%] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl chat-fade-in glass:border-t-0 glass:glass-menu-flat">
               {/* Drag handle */}
               <div className="flex justify-center pt-2 pb-1">
