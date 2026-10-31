@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type RefObject } from "react";
 import { useSession, signOut } from "next-auth/react";
 import { forgetThisDevice } from "@/lib/push";
 import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
@@ -117,8 +117,8 @@ export default function Sidebar() {
   const railSections = shellNav
     ? shellSidebar(sections, shell.loading ? undefined : shell.layout)
     : sections;
-  // Glass: the rail fades at its foot while apps sit below it, since it has
-  // no bar to show that it scrolls (review of GL-10, a 1366x768 window).
+  // Glass: the folded rail fades at its foot while apps sit below it, since
+  // it has no bar to show that it scrolls (review of GL-10, a 1366x768 window).
   const navRef = useRef<HTMLElement>(null);
   const moreBelow = useMoreBelow(
     navRef,
@@ -377,7 +377,7 @@ export default function Sidebar() {
         }
       }}
       className={`sidebar-rail shrink-0 border-r flex flex-col overflow-hidden bg-sidebar border-sidebar-border glass:m-2 glass:rounded-2xl glass:border-r-0 glass:glass-chrome-flat ${
-        collapsed ? "w-14 glass:w-20" : "w-64"
+        collapsed ? "w-14" : "w-64"
       }`}
     >
       {/* Header. With the full-width shell bar, the bar carries the logo and
@@ -428,7 +428,7 @@ export default function Sidebar() {
           <>
           {shellNav && (
             // The same column as a group's items, so Home lines up with them.
-            <div className={collapsed ? "flex flex-col gap-1 p-2 pb-0 glass:gap-0.5 glass:px-0.5 glass:pt-1" : "flex flex-col gap-0.5 px-2 pt-2"}>
+            <div className={collapsed ? "flex flex-col gap-1 p-2 pb-0" : "flex flex-col gap-0.5 px-2 pt-2"}>
               <NavLink pane={home} pathname={pathname} collapsed={collapsed} onNavigate={armFold} shellNav />
             </div>
           )}
@@ -497,7 +497,7 @@ export default function Sidebar() {
 
       {/* All apps (NS-2): every app the member holds, each with its purpose. */}
       {shellNav && !accessLoading && launcherGroups(sections).length > 0 && (
-        <div className={`border-t border-sidebar-border ${collapsed ? "flex justify-center p-2 glass:px-0.5" : "px-2 py-2"}`}>
+        <div className={`border-t border-sidebar-border ${collapsed ? "flex justify-center p-2" : "px-2 py-2"}`}>
           <button
             type="button"
             onClick={() => openLauncher()}
@@ -506,13 +506,11 @@ export default function Sidebar() {
             aria-haspopup="dialog"
             // `cc-link`: the house focus ring, as the account foot wears it.
             className={`cc-link flex items-center gap-2.5 rounded-lg glass:rounded-row text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${
-              collapsed
-                ? "justify-center p-2.5 glass:w-full glass:flex-col glass:gap-0.5 glass:rounded-xl glass:px-0 glass:py-1.5"
-                : "w-full px-3 py-2 text-[13px] glass:text-subhead font-medium"
+              collapsed ? "justify-center p-2.5" : "w-full px-3 py-2 text-[13px] glass:text-subhead font-medium"
             }`}
           >
-            <Icon name="LayoutGrid" size={collapsed ? 18 : 16} className={collapsed ? "" : "glass:text-primary"} />
-            {collapsed ? <RailLabel>All apps</RailLabel> : <span>All apps</span>}
+            <Icon name="LayoutGrid" size={collapsed ? 18 : 16} className="glass:text-muted-foreground" />
+            {!collapsed && <span>All apps</span>}
           </button>
         </div>
       )}
@@ -615,21 +613,18 @@ function AddAppsRow({
   const name = addAppsName(needs, badge?.label, needsFloor);
   if (collapsed) {
     return (
-      <div className="flex flex-col gap-1 p-2 glass:gap-0.5 glass:px-0.5 glass:py-1" data-nav-add-apps="">
+      <div className="flex flex-col gap-1 p-2" data-nav-add-apps="">
         <button
           type="button"
           onClick={onOpen}
           title={name}
           aria-label={name}
           aria-haspopup="dialog"
-          className="cc-link relative flex items-center justify-center rounded-lg glass:rounded-xl p-2.5 glass:flex-col glass:gap-0.5 glass:px-0 glass:py-1.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
+          className="cc-link relative flex items-center justify-center rounded-lg glass:rounded-row p-2.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
         >
-          <RailIconSlot>
-            <Icon name="Plus" size={18} className="shrink-0" />
-            {badge ? <NavBadge count={badge.count} tone={badge.tone} label={badge.label} placement="corner" /> : null}
-            {meta?.kind === "needs" ? <NeedsDot /> : null}
-          </RailIconSlot>
-          <RailLabel>Add</RailLabel>
+          <Icon name="Plus" size={18} className="shrink-0 glass:text-muted-foreground" />
+          {badge ? <NavBadge count={badge.count} tone={badge.tone} label={badge.label} placement="corner" /> : null}
+          {meta?.kind === "needs" ? <NeedsDot /> : null}
         </button>
       </div>
     );
@@ -813,7 +808,7 @@ function NavSectionBlock({
   if (collapsed) {
     return (
       <div data-nav-section={section.id}>
-        <div className="flex flex-col gap-1 p-2 glass:gap-0.5 glass:px-0.5 glass:py-1">
+        <div className="flex flex-col gap-1 p-2">
           {section.items.map((p) => (
             <NavLink
               key={p.href}
@@ -1007,35 +1002,34 @@ export function NavLink({
         }
         data-nav-row={pane.href}
         aria-label={name}
-        className={`rounded-lg glass:rounded-xl tech-transition flex items-center justify-center p-2.5 relative glass:flex-col glass:gap-0.5 glass:px-0 glass:py-1.5 ${
+        className={`rounded-lg glass:rounded-row tech-transition flex items-center justify-center p-2.5 relative ${
           active
-            ? "bg-primary/15 glass:bg-primary/12 text-primary"
+            ? "bg-primary/15 text-primary glass:bg-sidebar-accent glass:text-sidebar-foreground"
             : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
         }`}
       >
-        <RailIconSlot>
-          {/* `shrink-0`: a squeezed rail must not shrink the icon (task 998). */}
-          <Icon name={pane.icon} size={18} strokeWidth={active ? 2.5 : 2} className="shrink-0" />
-          {/* The icon has no text, so the link's name starts with the pane's. */}
-          {badge !== undefined && badge > 0 && <span className="sr-only">{pane.label}</span>}
-          <NavBadge
-            count={badge ?? 0}
-            tone={badgeTone}
-            label={badgeLabel ?? String(badge ?? 0)}
-            placement="corner"
-          />
-          {/* Folded, the needs count is a quiet dot. The number is in the
-              link's name and in its tooltip. */}
-          {meta?.kind === "needs" ? <NeedsDot /> : null}
-        </RailIconSlot>
-        <RailLabel>{railShortName(pane.label)}</RailLabel>
+        {/* `shrink-0`: a squeezed rail must not shrink the icon (task 998). */}
+        <Icon name={pane.icon} size={18} strokeWidth={active ? 2.5 : 2} className="shrink-0" />
+        {/* The icon has no text, so the link's name starts with the pane's. */}
+        {badge !== undefined && badge > 0 && <span className="sr-only">{pane.label}</span>}
+        <NavBadge
+          count={badge ?? 0}
+          tone={badgeTone}
+          label={badgeLabel ?? String(badge ?? 0)}
+          placement="corner"
+        />
+        {/* Folded, the needs count is a quiet dot. The number is in the
+            link's name and in its tooltip. */}
+        {meta?.kind === "needs" ? <NeedsDot /> : null}
       </Link>
     );
   }
 
+  // Glass (owner's reference, 2026-10-31): white labels and grey icons, and
+  // the open app takes a neutral fill. The tint is for what a member acts on.
   const tone = active
-    ? "bg-primary/15 glass:bg-primary/10 text-primary"
-    : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground";
+    ? "bg-primary/15 text-primary glass:bg-sidebar-accent glass:text-sidebar-foreground"
+    : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground glass:text-sidebar-foreground/85";
   const link = (
       <Link
         key={pane.href}
@@ -1057,7 +1051,7 @@ export function NavLink({
         className={`rounded-lg glass:rounded-row tech-transition px-3 py-2 text-sm ${onRowMenu ? "min-w-0 flex-1" : tone}`}
       >
         <div className="flex items-center gap-2.5">
-          <Icon name={pane.icon} size={16} strokeWidth={active ? 2.5 : 2} className="glass:text-primary" />
+          <Icon name={pane.icon} size={16} strokeWidth={active ? 2.5 : 2} className={active ? "glass:text-sidebar-foreground" : "glass:text-muted-foreground"} />
           <span className="font-medium text-[13px] glass:text-subhead">{pane.label}</span>
           {/* With a menu, the badge gives its place to the "···" on hover or
               focus, as a `RailRow` count does (`rail-row-meta`). It is
@@ -1159,43 +1153,13 @@ export function NeedsCount({ text }: { text: string }) {
   );
 }
 
-/**
- * The rail's short form of an app's name. A long name that starts with "My"
- * drops it ("My WhatsApp" → "WhatsApp"), so it fits the 80 px rail at 12 px.
- * The link's title and accessible name keep the full name.
- */
-export function railShortName(label: string): string {
-  return label.length > 10 && label.startsWith("My ") ? label.slice(3) : label;
-}
-
-/**
- * GL-10c: the glass rail draws a label under each icon. Classic never sees it
- * (`hidden`, so it takes no space and the folded rail is as it was).
- */
-function RailLabel({ children }: { children: ReactNode }) {
-  return (
-    <span aria-hidden className="hidden w-full truncate text-center font-medium leading-tight glass:block glass:text-caption glass:tracking-tight">
-      {children}
-    </span>
-  );
-}
-
-/**
- * The icon with its badge. In classic it is `contents`, so it adds no box and
- * the badge still sits on the link. In glass it is the box the badge sits on,
- * so the badge rides the icon and not the wide tile.
- */
-function RailIconSlot({ children }: { children: ReactNode }) {
-  return <span className="contents glass:relative glass:inline-flex">{children}</span>;
-}
-
 /** The folded rail's form of the count: a small muted dot on the icon. */
 function NeedsDot() {
   return (
     <span
       aria-hidden
       data-nav-needs="dot"
-      className="pointer-events-none absolute top-1.5 right-1.5 glass:top-0 glass:right-0 h-1.5 w-1.5 rounded-full bg-muted-foreground"
+      className="pointer-events-none absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-muted-foreground"
     />
   );
 }

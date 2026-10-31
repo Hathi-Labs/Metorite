@@ -174,7 +174,7 @@ export function ShareSheet({
                         addParticipant(room.sessionId, d.subject, role)
                       )
                     }
-                    className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left hover:bg-secondary disabled:opacity-50 glass:rounded-[14px]"
+                    className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left hover:bg-secondary disabled:opacity-50 glass:rounded-[10px]"
                   >
                     {d.kind === "group" ? (
                       <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-secondary text-muted-foreground">
@@ -207,7 +207,7 @@ export function ShareSheet({
           )}
 
           {error && (
-            <p className="mt-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive glass:rounded-[14px] glass:border-transparent">
+            <p className="mt-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive glass:rounded-[10px] glass:border-transparent">
               {error}
             </p>
           )}
@@ -222,7 +222,7 @@ export function ShareSheet({
               return (
                 <li
                   key={p.subject}
-                  className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 glass:rounded-[14px]"
+                  className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 glass:rounded-[10px]"
                 >
                   {p.kind === "person" ? (
                     <PersonAvatar
@@ -321,7 +321,7 @@ export function ShareSheet({
                       )
                     }
                     className={[
-                      "flex-1 rounded-lg border px-3 py-2 text-left text-xs tech-transition glass:rounded-[14px] glass:border-transparent glass:text-footnote",
+                      "flex-1 rounded-lg border px-3 py-2 text-left text-xs tech-transition glass:rounded-[10px] glass:border-transparent glass:text-footnote",
                       room.settings.historyVisibility === value
                         ? "border-primary bg-primary/10 text-foreground glass:bg-primary/12"
                         : "border-border text-muted-foreground hover:text-foreground glass:bg-secondary",
@@ -343,7 +343,7 @@ export function ShareSheet({
           <h3 className="mt-5 mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-faint">
             What the agents can reach here
           </h3>
-          <div className="rounded-lg border border-border bg-background/60 p-3 glass:rounded-[14px] glass:border-transparent glass:bg-secondary">
+          <div className="rounded-lg border border-border bg-background/60 p-3 glass:rounded-[10px] glass:border-transparent glass:bg-secondary">
             {room.cap.degraded ? (
               <p className="flex items-start gap-2 text-xs text-muted-foreground">
                 <Icon name="AlertTriangle" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />

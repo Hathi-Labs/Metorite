@@ -223,7 +223,7 @@ export function PresenceRail({
         </ul>
 
         {adding && (
-          <ul className="mt-1 max-h-48 space-y-0.5 overflow-y-auto rounded-lg border border-border bg-background p-1 glass:rounded-[14px] glass:border-transparent glass:bg-secondary">
+          <ul className="mt-1 max-h-48 space-y-0.5 overflow-y-auto rounded-lg border border-border bg-background p-1 glass:rounded-[10px] glass:border-transparent glass:bg-secondary">
             {addable.map((name) => (
               <li key={name}>
                 <Button variant="ghost" size="none" radius="keep" layout="flex items-center" disabled={busy !== null} onClick={() =>

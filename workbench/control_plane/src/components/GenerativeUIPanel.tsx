@@ -35,7 +35,7 @@ function JsonView({ value }: { value: Json }): React.ReactElement {
         new Set(value.flatMap((row) => Object.keys(row as object))),
       );
       return (
-        <div className="overflow-x-auto glass:rounded-[14px] glass:bg-secondary">
+        <div className="overflow-x-auto glass:rounded-[10px] glass:bg-secondary">
           <table className="w-full text-left text-xs glass:text-footnote">
             <thead>
               <tr className="border-b border-border text-muted-foreground">
@@ -199,7 +199,7 @@ export default function GenerativeUIPanel({
       <ToolCardShell title="Interactive view" icon={<Icon name="LayoutTemplate" size={13} />} defaultCollapsed>
         <div className="space-y-3">
           {hasState && (
-            <div className="rounded-md bg-card/50 p-2 glass:rounded-[14px] glass:bg-secondary glass:p-3">
+            <div className="rounded-md bg-card/50 p-2 glass:rounded-[10px] glass:bg-secondary glass:p-3">
               <JsonView value={shownState} />
             </div>
           )}
@@ -207,7 +207,7 @@ export default function GenerativeUIPanel({
             displayEvents.map((ev, i) => {
               const renderer = CUSTOM_EVENT_RENDERERS[ev.name];
               return (
-                <div key={i} className="rounded-md bg-card/50 p-2 glass:rounded-[14px] glass:bg-secondary glass:p-3">
+                <div key={i} className="rounded-md bg-card/50 p-2 glass:rounded-[10px] glass:bg-secondary glass:p-3">
                   {renderer ? (
                     renderer(ev.value)
                   ) : (

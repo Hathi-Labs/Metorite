@@ -4,9 +4,8 @@ import { expect, test, type Page } from "@playwright/test";
  * The folded rail keeps its icons at full size when it scrolls (Metorite task
  * 998, owner report 2026-10-29).
  *
- * The rail is always folded now (GL-Z1, D146), and the glass rail is 80px
- * wide. It was 56px in classic. When its app list is taller than the window,
- * the nav scrolls, and a real scrollbar takes its width out of that rail. The
+ * The folded rail is 56px wide. When its app list is taller than the window,
+ * the nav scrolls, and a real scrollbar takes its width out of those 56px. The
  * icon is a flex item, so the browser shrank it to fit what was left: 9px in
  * this test's Chromium, against the 18px of "All apps", which sits outside
  * the scroller.
@@ -52,6 +51,7 @@ test.use({
 
 const rail = (page: Page) => page.locator("aside[data-collapsed]");
 const nav = (page: Page) => rail(page).locator("nav");
+const bar = (page: Page) => page.locator("[data-shell-bar]");
 
 test.beforeEach(async ({ page }) => {
   await stubApi(page);
@@ -61,9 +61,10 @@ test.beforeEach(async ({ page }) => {
     localStorage.setItem("cc-shell-nav", "1");
   });
   await page.goto("/settings/appearance");
-  // The glass rail never opens, so there is no fold to click.
+  await expect(rail(page)).toHaveAttribute("data-collapsed", "false");
+  await bar(page).getByRole("button", { name: "Collapse sidebar" }).click();
   await expect(rail(page)).toHaveAttribute("data-collapsed", "true");
-  await expect.poll(async () => Math.round((await rail(page).boundingBox())?.width ?? 0)).toBe(80);
+  await expect.poll(async () => (await rail(page).boundingBox())?.width).toBeLessThan(60);
 });
 
 test("every app icon in the folded rail keeps 18px while the rail scrolls", async ({ page }) => {
@@ -100,4 +101,8 @@ test("the folded rail still scrolls to its last app", async ({ page }) => {
   expect(await nav(page).evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
 });
 
-// The open rail's thin scrollbar test is retired (GL-Z1, D146): no rail opens.
+test("the open rail keeps its thin scrollbar", async ({ page }) => {
+  await bar(page).getByRole("button", { name: "Expand sidebar" }).click();
+  await expect(rail(page)).toHaveAttribute("data-collapsed", "false");
+  expect(await nav(page).evaluate((el) => getComputedStyle(el).scrollbarWidth)).toBe("thin");
+});

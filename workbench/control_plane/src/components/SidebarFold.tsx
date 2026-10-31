@@ -36,7 +36,6 @@ import {
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
-import { useDocumentLook } from "@/lib/theme/glassTokens";
 import {
   HINT_DISMISS_MS,
   isPlainNavClick,
@@ -90,10 +89,7 @@ export function SidebarFoldProvider({
   const [storedCollapsed, setCollapsedState] = useState(() =>
     typeof window === "undefined" ? false : readCollapsed(),
   );
-  // GL-10c: the glass rail never opens (owner, 2026-10-31, the ClickUp rail).
-  // The stored choice stays as it is, so classic keeps it when the look flips.
-  const glass = useDocumentLook() === "glass";
-  const collapsed = glass || storedCollapsed;
+  const collapsed = storedCollapsed;
   const armedRef = useRef(false);
   // `pulsing` says whether this fold's pulse still runs. It ends by itself,
   // and on the member's own toggle, so a later manual collapse does not pulse
@@ -193,7 +189,7 @@ export function SidebarFoldButton() {
       {fold.placement === "bar" ? (
         // `data-sidebar-fold`: the fold's own control is never "a menu is
         // open" (`floatingOpen`), though it is expanded outside the rail.
-        <span ref={anchorRef} key={fold.beacon} data-sidebar-fold className="inline-flex shrink-0 glass:hidden">
+        <span ref={anchorRef} key={fold.beacon} data-sidebar-fold className="inline-flex shrink-0">
           <Button
             variant="ghost"
             size="icon-sm"
@@ -215,7 +211,7 @@ export function SidebarFoldButton() {
           ref={anchorRef as RefObject<HTMLButtonElement>}
           key={fold.beacon}
           onClick={fold.toggle}
-          className={`shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition glass:hidden ${beaconClass}`}
+          className={`shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${beaconClass}`}
           title={label}
           aria-label={label}
           aria-expanded={!fold.collapsed}

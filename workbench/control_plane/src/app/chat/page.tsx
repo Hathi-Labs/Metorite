@@ -208,7 +208,7 @@ function AgentPickerModal({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-lg rounded-xl glass:rounded-[22px] border border-border bg-card p-5 shadow-2xl tech-glass-subtle flex flex-col max-h-[85vh]"
+        className="w-full max-w-lg rounded-xl glass:rounded-[16px] border border-border bg-card p-5 shadow-2xl tech-glass-subtle flex flex-col max-h-[85vh]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between shrink-0">

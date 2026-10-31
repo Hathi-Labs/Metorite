@@ -166,7 +166,7 @@ export default function FileUploadButton({
 
   return (
     <div
-      className={`relative rounded-lg border-2 border-dashed transition-colors glass:rounded-[22px] ${
+      className={`relative rounded-lg border-2 border-dashed transition-colors glass:rounded-[16px] ${
         dragOver
           ? "border-primary bg-primary/10"
           : state.phase === "error"

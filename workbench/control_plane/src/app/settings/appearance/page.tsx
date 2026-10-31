@@ -29,7 +29,6 @@ import Tabs from "@/components/Tabs";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useAppearanceStore, effectiveDensity } from "@/lib/theme/store";
-import { useDocumentLook } from "@/lib/theme/glassTokens";
 import { isSafeColor } from "@/lib/theme/css";
 import type { AppearanceSettings, Density, ThemeMode } from "@/lib/theme/types";
 import { DENSITY_SCALE } from "@/lib/theme/types";
@@ -237,7 +236,6 @@ function PersonalSettings() {
  * opened from it. Per browser, like the rest of this tab.
  */
 function SidebarSettings() {
-  const glass = useDocumentLook() === "glass";
   const [on, setOn] = useState(() =>
     typeof window === "undefined" ? true : autoFoldEnabled(),
   );
@@ -251,8 +249,6 @@ function SidebarSettings() {
     setAutoFoldEnabled(next);
     setOn(next);
   };
-  // GL-10c: the glass rail never opens, so there is nothing to choose.
-  if (glass) return null;
   return (
     <section>
       <SectionHeading

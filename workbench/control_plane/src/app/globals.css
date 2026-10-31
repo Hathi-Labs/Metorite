@@ -314,17 +314,19 @@ html[data-look="glass"] {
   --glass-blur: 28px;
   --elevation: 0 10px 34px rgb(0 0 0 / 0.55), 0 1px 3px rgb(0 0 0 / 0.3);
 
-  /* Larger, softer corners. The steps are Aroh's 6 · 8 · 12 · 18 · 22 · 28,
-     in rem so density scales them. Capsules use rounded-full. */
+  /* Softer corners at desktop proportions (owner, 2026-10-31: the elements
+     were larger than needed). The steps are 6 · 8 · 12 · 14 · 16 · 20, in rem
+     so density scales them. Aroh's 18 · 22 · 28 are phone corners. Capsules
+     use rounded-full. */
   --radius: 0.75rem;
   --glass-radius-sm: 0.375rem;
   --glass-radius-md: 0.5rem;
-  --glass-radius-xl: 1.125rem;
-  --glass-radius-2xl: 1.375rem;
-  --glass-radius-3xl: 1.75rem;
-  /* A row inside a 22 px panel with an 8 px inset: 22 - 8 = 14 px, the
-     concentric corner of Aroh's sidebar rows. */
-  --glass-radius-row: 0.875rem;
+  --glass-radius-xl: 0.875rem;
+  --glass-radius-2xl: 1rem;
+  --glass-radius-3xl: 1.25rem;
+  /* A row inside a 16 px panel with a 6 px inset: 16 - 6 = 10 px, the
+     concentric corner of a sidebar row. */
+  --glass-radius-row: 0.625rem;
 
   /* The frame and the content card (GL-10). The shell, the top bar and the
      rail sit on the grouped frame. Each app renders inside ONE rounded card
@@ -618,19 +620,22 @@ html[data-look="glass"].light {
   --shadow-glass: var(--glass-shadow, var(--elevation));
   --font-sans: var(--font-app);
   --font-mono: var(--font-app-mono);
-  /* The named text styles of glass, at Apple's iOS sizes, in rem so density
+  /* The named text styles of glass, at desktop sizes (owner, 2026-10-31:
+     "the UI/UX elements are a little larger than needed"). Apple's iOS sizes
+     (body 17) are for a phone held close. A desktop reads body at 15 and UI
+     labels at 13 to 14, as macOS and the work apps do. In rem, so density
      scales them. Nothing in glass is smaller than 12 px. A glass component
-     uses these, never text-[Npx]. Classic does not use them. */
+     uses these, never text-[Npx]. */
   --text-caption: 0.75rem;
   --text-footnote: 0.8125rem;
-  --text-label: 0.875rem;
-  --text-subhead: 0.9375rem;
-  --text-callout: 1rem;
-  --text-body: 1.0625rem;
-  --text-headline: 1.1875rem;
-  --text-title: 1.375rem;
-  --text-title-lg: 1.75rem;
-  --text-largetitle: 2.125rem;
+  --text-label: 0.8125rem;
+  --text-subhead: 0.875rem;
+  --text-callout: 0.875rem;
+  --text-body: 0.9375rem;
+  --text-headline: 1rem;
+  --text-title: 1.25rem;
+  --text-title-lg: 1.5rem;
+  --text-largetitle: 1.75rem;
   /* The whole radius scale is derived from --radius so a theme controls the
      app's roundness with one value. At RapidTool's 0.75rem these resolve to
      exactly Tailwind's own defaults (8/10/12/12/16/24px), so the shipped look
@@ -957,6 +962,20 @@ html[data-look="glass"] [data-glow="waiting"] + .glass\:glass-spectrum-edge::bef
     opacity: 0.6;
     transition: opacity var(--motion-duration) var(--motion-easing);
   }
+}
+
+/* A card in the chat thread, one step above the page surface (owner,
+   2026-10-31: the cards did not lift from the page). The page and the chat
+   are the card colour, so a card takes the popover step: #2c2c2e on #1c1c1e
+   in dark, white with the card shadow in light, as Aroh's cards on its
+   thread. Never on a panel or a page: those are the surface itself. */
+@utility glass-raised {
+  /* Inside the card, "the card" is this surface: a template's inline
+     `var(--card)` fill (a table head, a column, a chart box) blends with it
+     instead of drawing a darker block. */
+  --card: var(--popover);
+  background-color: var(--popover);
+  box-shadow: var(--card-shadow);
 }
 
 /* The spectrum, cut to a ring by a mask so the field itself stays clear. */

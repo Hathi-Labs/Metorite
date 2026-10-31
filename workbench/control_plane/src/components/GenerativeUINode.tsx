@@ -157,7 +157,7 @@ function Node({
         // The header is the fold's `<button>`: plain words, never a link
         // (review of #945, P2, `plainTitle`).
         return (
-          <div className="rounded-lg border border-border/60 bg-card/50 p-3 glass:rounded-[22px] glass:border-transparent glass:glass-surface glass:p-3 glass:glass-card-tile">
+          <div className="rounded-lg border border-border/60 bg-card/50 p-3 glass:rounded-[16px] glass:border-transparent glass:glass-surface glass:p-3 glass:glass-card-tile">
             <CollapsibleCardHeader
               title={title === null ? undefined : plainTitle(s(props.title))}
               quiet={title === null}
@@ -171,7 +171,7 @@ function Node({
         );
       }
       return (
-        <div className="rounded-lg border border-border/60 bg-card/50 p-3 space-y-2 glass:rounded-[14px] glass:border-transparent glass:bg-secondary">
+        <div className="rounded-lg border border-border/60 bg-card/50 p-3 space-y-2 glass:rounded-[10px] glass:border-transparent glass:bg-secondary">
           {title !== null && (
             <div className="text-sm font-semibold text-foreground glass:text-subhead">{title}</div>
           )}
@@ -234,7 +234,7 @@ function Node({
     case "keyValue": {
       const pairs = Array.isArray(props.pairs) ? props.pairs : [];
       return (
-        <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[12px] glass:rounded-[14px] glass:bg-secondary glass:p-3 glass:text-footnote">
+        <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[12px] glass:rounded-[10px] glass:bg-secondary glass:p-3 glass:text-footnote">
           {pairs.map((p, i) => {
             const pair = (p ?? {}) as Record<string, unknown>;
             return (
@@ -258,7 +258,7 @@ function Node({
       const cols = tableColumns(props.columns, rows);
       const hasHeader = cols.some((c) => c.label.trim());
       return (
-        <div className="overflow-x-auto rounded-md border border-border/60 glass:rounded-[14px] glass:border-transparent glass:bg-secondary">
+        <div className="overflow-x-auto rounded-md border border-border/60 glass:rounded-[10px] glass:border-transparent glass:bg-secondary">
           <table className="w-full text-left text-[12px] glass:text-footnote">
             {hasHeader && (
               <thead className="bg-secondary/60 glass:bg-transparent">
@@ -296,7 +296,7 @@ function Node({
 
     case "code":
       return (
-        <pre className="rounded-md bg-muted border border-border p-2.5 overflow-x-auto text-[11px] text-foreground font-mono glass:rounded-[14px] glass:border-transparent glass:bg-secondary glass:text-caption">
+        <pre className="rounded-md bg-muted border border-border p-2.5 overflow-x-auto text-[11px] text-foreground font-mono glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:text-caption">
           {s(props.text)}
         </pre>
       );
@@ -338,7 +338,7 @@ function Node({
     case "callout": {
       const accent = accentForHue(TONE_HUE[s(props.tone, "info")] ?? "blue");
       return (
-        <div className={`rounded-md border border-border border-l-2 px-3 py-2 space-y-1 glass:rounded-[14px] glass:border-transparent glass:border-l-0 ${accent.bar} ${accent.soft}`}>
+        <div className={`rounded-md border border-border border-l-2 px-3 py-2 space-y-1 glass:rounded-[10px] glass:border-transparent glass:border-l-0 ${accent.bar} ${accent.soft}`}>
           {props.title != null && (
             <div className="text-[12px] font-semibold text-foreground"><GenUiText text={s(props.title)} /></div>
           )}

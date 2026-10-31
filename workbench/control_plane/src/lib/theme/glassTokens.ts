@@ -106,8 +106,8 @@ export const GLASS_CC_SHARED: Readonly<Record<string, string>> = {
   "--cc-font": '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", system-ui, sans-serif',
   "--cc-mono": 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono", Consolas, monospace',
   "--cc-heading-tracking": "-0.022em",
-  "--cc-radius": "1.125rem",
-  "--cc-button-radius": "0.875rem",
+  "--cc-radius": "0.875rem",
+  "--cc-button-radius": "0.625rem",
   "--cc-duration": "0.28s",
   "--cc-ease": "cubic-bezier(0.32, 0.72, 0, 1)",
 };

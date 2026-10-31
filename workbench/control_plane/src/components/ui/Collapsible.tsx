@@ -164,7 +164,7 @@ export const CARD_FRAME_CLASS = "rounded-lg border border-border bg-card/40 px-2
  * passes `header="own"` draws its own glass frame, so this is not part of
  * `CARD_FRAME_CLASS`: two frames would compete.
  */
-const GLASS_ROLLUP_FRAME = "glass:rounded-[22px] glass:border-transparent glass:glass-surface glass:p-3 glass:glass-card-tile";
+const GLASS_ROLLUP_FRAME = "glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-4 glass:glass-card-tile";
 
 /**
  * ⚠️ **The body has no hanging indent** (owner feedback, 2026-10-10). It
@@ -316,7 +316,7 @@ export function CollapsibleCardHeader({
       <span
         data-rollup-chevron=""
         aria-hidden
-        className={`flex shrink-0 text-muted-foreground transition-transform duration-200 ease-out group-hover:text-foreground motion-reduce:transition-none ${shut ? "-rotate-90" : ""}`}
+        className={`flex shrink-0 text-muted-foreground transition-transform duration-200 ease-out group-hover:text-foreground motion-reduce:transition-none glass:order-last glass:ml-auto ${shut ? "-rotate-90" : ""}`}
       >
         <Icon name="ChevronDown" size={12} />
       </span>

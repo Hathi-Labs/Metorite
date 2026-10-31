@@ -42,7 +42,7 @@ export default function GenUIFallback({ node }: { node: FallbackNode }) {
   if (tree.length > 0) {
     const title = text(props.title ?? props.label ?? props.name).trim();
     return (
-      <div data-genui-fallback="tree" className="rounded-lg border border-border/60 bg-card/50 p-3 space-y-2 glass:rounded-[22px] glass:border-transparent glass:glass-surface glass:p-3">
+      <div data-genui-fallback="tree" className="rounded-lg border border-border/60 bg-card/50 p-3 space-y-2 glass:rounded-[16px] glass:border-transparent glass:glass-surface glass:p-3">
         {title && <div className="text-sm font-semibold text-foreground glass:text-subhead">{title}</div>}
         <TreeList items={tree} />
       </div>
@@ -51,7 +51,7 @@ export default function GenUIFallback({ node }: { node: FallbackNode }) {
   const lines = fallbackLines(node);
   if (lines.length === 0) return null;
   return (
-    <div data-genui-fallback="card" className="rounded-lg border border-border/60 bg-card/50 p-3 space-y-1 glass:rounded-[22px] glass:border-transparent glass:glass-surface glass:p-3">
+    <div data-genui-fallback="card" className="rounded-lg border border-border/60 bg-card/50 p-3 space-y-1 glass:rounded-[16px] glass:border-transparent glass:glass-surface glass:p-3">
       <div className="text-[11px] text-muted-foreground">This card could not be shown.</div>
       {lines.map((l, i) => (
         <p key={i} className="text-[13px] leading-relaxed text-foreground">{l}</p>

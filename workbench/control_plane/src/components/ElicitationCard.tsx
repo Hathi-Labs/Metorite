@@ -208,8 +208,8 @@ export default function ElicitationCard({
   // Glass only (GL-4): a card that wants an answer is tinted, and a settled
   // card is a plain surface. Each has a solid icon tile in a system colour.
   const glassFrame = !closed
-    ? "glass:glass-card-tile glass:rounded-[22px] glass:border-primary/20 glass:bg-primary/[0.05] glass:p-3"
-    : `glass:glass-card-tile glass:rounded-[22px] glass:border-transparent glass:glass-surface glass:p-3 ${
+    ? "glass:glass-card-tile glass:rounded-[16px] glass:border-primary/20 glass:bg-primary/[0.05] glass:p-3"
+    : `glass:glass-card-tile glass:rounded-[16px] glass:border-transparent glass:glass-surface glass:p-3 ${
         declined ? "glass:[--tile:var(--system-gray)]" : "glass:[--tile:var(--system-green)]"
       }`;
 

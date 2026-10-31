@@ -96,7 +96,7 @@ function SessionRow({
         layout="flex items-center"
         onClick={onSelect}
         aria-current={on ? "true" : undefined}
-        className={`w-full gap-2 rounded-md px-2 py-1.5 text-left text-sm glass:rounded-[14px] glass:px-3 glass:py-2 glass:text-label ${
+        className={`w-full gap-2 rounded-md px-2 py-1.5 text-left text-sm glass:rounded-[10px] glass:px-3 glass:py-2 glass:text-label ${
           on ? "bg-primary/10 text-primary glass:bg-sidebar-accent glass:text-foreground" : ""
         }`}
       >
@@ -200,7 +200,7 @@ export function SessionPicker({
       ? "h-full w-72 shrink-0 border-r border-border bg-card glass:border-transparent"
       : variant === "sheet" || variant === "list"
         ? "h-full w-full bg-card"
-        : "w-full rounded-lg border border-border bg-popover shadow-lg glass:rounded-[22px] glass:border-transparent glass:glass-menu-flat";
+        : "w-full rounded-lg border border-border bg-popover shadow-lg glass:rounded-[16px] glass:border-transparent glass:glass-menu-flat";
   return (
     <nav
       aria-label="Chats"

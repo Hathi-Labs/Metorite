@@ -2325,7 +2325,7 @@ export default function AgentChat({
                 size={48}
                 className="tech-glow"
                 fallback={
-                  <div className="w-12 h-12 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center tech-glow glass:rounded-[14px] glass:border-transparent glass:bg-secondary">
+                  <div className="w-12 h-12 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center tech-glow glass:rounded-[10px] glass:border-transparent glass:bg-secondary">
                     <div className="w-2.5 h-2.5 rounded-full bg-success" />
                   </div>
                 }
@@ -2602,12 +2602,12 @@ export default function AgentChat({
               ancestor, so its filter cannot flatten the composer's blur. It
               is `hidden` in classic. */}
           <div className="relative">
-          <div aria-hidden data-testid="working-glow" data-glow={glowState} data-glow-focus={composerFocused ? "true" : "false"} className="hidden glass:block glass:glass-working-glow absolute -inset-1 rounded-[30px]">
+          <div aria-hidden data-testid="working-glow" data-glow={glowState} data-glow-focus={composerFocused ? "true" : "false"} className="hidden glass:block glass:glass-working-glow absolute -inset-1 rounded-[24px]">
             <div className="glass:glass-glow-ring" />
           </div>
           <div data-chat-composer onFocus={() => setComposerFocused(true)} onBlur={() => setComposerFocused(false)} className={[
             "rounded-2xl border border-border bg-secondary/50 focus-within:border-primary/40 tech-transition",
-            "glass:relative glass:z-10 glass:rounded-[26px] glass:border-transparent glass:focus-within:border-transparent glass:glass-chrome glass:glass-spectrum-edge",
+            "glass:relative glass:z-10 glass:rounded-[20px] glass:border-transparent glass:focus-within:border-transparent glass:glass-chrome glass:glass-spectrum-edge",
             canSend ? "" : "pointer-events-none opacity-40",
           ].join(" ")}>
             <textarea ref={inputRef} value={input}
@@ -2624,10 +2624,9 @@ export default function AgentChat({
               }
               className="block w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-[16px] sm:text-sm text-foreground placeholder-muted-foreground focus:outline-none overflow-y-auto scrollbar-thin disabled:opacity-50 disabled:cursor-not-allowed glass:px-[18px] glass:pt-3.5"
               style={{ minHeight: "36px" }} />
-            {/* Glass: the capsule's corner is 26 px, so the text sits 18 px in
-                and the bar 10 px in, which puts the round Send button (r 16)
-                concentric with the corner (owner, 2026-10-31: the text was
-                too close to the rounded corner). */}
+            {/* Glass: the capsule's corner is 20 px, so the text sits 18 px in
+                and the bar 10 px in, clear of the corner (owner, 2026-10-31:
+                the text was too close to the rounded corner). */}
 
             {/* The bar: tools at the left, the one primary control at the
                 right. On a phone the agent's controls take a row of their

@@ -61,7 +61,7 @@ export default function TodoPanel({
   if (todos.length === 0) return null;
 
   return (
-    <div className="max-w-3xl mx-auto mb-2 rounded-lg border border-border/50 bg-card/70 overflow-hidden glass:rounded-[22px] glass:border-transparent glass:glass-surface">
+    <div className="max-w-3xl mx-auto mb-2 rounded-lg border border-border/50 bg-card/70 overflow-hidden glass:rounded-[16px] glass:border-transparent glass:glass-surface">
       {/* Header */}
       <button
         type="button"

@@ -13,16 +13,16 @@
  */
 
 /** A settled card: a 22 px surface with a hairline and no border. */
-export const G_SETTLED = "glass:rounded-[22px] glass:border-transparent glass:glass-surface glass:p-3";
+export const G_SETTLED = "glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-4";
 
 /**
  * A card that failed, or that wants the member's care. It keeps the tint
  * its classic tone gives it, and takes the glass corner and padding.
  */
-export const G_TINTED = "glass:rounded-[22px] glass:p-3";
+export const G_TINTED = "glass:rounded-[16px] glass:p-4";
 
 /** An inner group on a card: a rounded block on the secondary fill. */
-export const G_INNER = "glass:rounded-[14px] glass:border-transparent glass:bg-secondary";
+export const G_INNER = "glass:rounded-[10px] glass:border-transparent glass:bg-secondary";
 
 /**
  * The glass frame for a tone string such as `toneFor()` returns: a failed

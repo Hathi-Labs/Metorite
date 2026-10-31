@@ -120,13 +120,14 @@ type Data = Record<string, unknown>;
  *
  * Never the chrome or menu material here: a card holds non-portalled `fixed` children.
  */
-const G_FRAME = "glass:glass-card-tile glass:rounded-[22px]! glass:border-transparent! glass:glass-surface! glass:p-3!";
-/** The frame of a card that waits on the member: tinted, as Aroh's CardShell. */
-const G_FRAME_ASK = "glass:glass-card-tile glass:rounded-[22px]! glass:border-primary/20! glass:bg-primary/[0.05]! glass:p-3!";
+const G_FRAME = "glass:glass-card-tile glass:rounded-[16px]! glass:border-transparent! glass:glass-raised! glass:p-4!";
+/** The frame of a card that waits on the member: the raised card with a
+ *  hairline in the tint. A wash of the tint read as navy on the dark page. */
+const G_FRAME_ASK = "glass:glass-card-tile glass:rounded-[16px]! glass:border-primary/35! glass:glass-raised! glass:p-4!";
 /** A frame whose children bring their own padding (a table, a comparison). */
-const G_FRAME_FLUSH = "glass:glass-card-tile glass:rounded-[22px]! glass:border-transparent! glass:glass-surface!";
+const G_FRAME_FLUSH = "glass:glass-card-tile glass:rounded-[16px]! glass:border-transparent! glass:glass-raised!";
 /** An inner group: a rounded block on the card, with no border. */
-const G_BLOCK = "glass:rounded-[14px]! glass:border-transparent! glass:bg-secondary!";
+const G_BLOCK = "glass:rounded-[10px]! glass:border-transparent! glass:bg-secondary!";
 /** A field of a form: a rounded fill with no border. */
 const G_FIELD = "glass:rounded-[10px]! glass:border-transparent! glass:bg-field!";
 /** The solid tile's colour, one per kind of card. */
@@ -676,7 +677,8 @@ function Comparison({ data }: { data: Data }) {
       <div style={{ display: "grid", gridTemplateColumns: `140px repeat(${options.length}, 1fr)` }}>
         <div style={{ background: "var(--card)" }} />
         {options.map((o, i) => (
-          <div key={i} style={{
+          // Glass: the badge is the tint, so the column takes the tint too.
+          <div key={i} className={o.recommended ? "glass:bg-primary/[0.10]!" : undefined} style={{
             padding: "8px 10px", fontSize: TYPE.xs, fontWeight: 600, textAlign: "center",
             color: "var(--foreground)",
             // The highlight family of the Recommended badge, so the column
@@ -691,14 +693,14 @@ function Comparison({ data }: { data: Data }) {
         ))}
         {rowLabels.map((label, ri) => (
           <div key={label} style={{ display: "contents" }}>
-            <div style={{ padding: "8px 10px", fontSize: TYPE.caption, color: "var(--muted-foreground)",
+            <div className="glass:bg-transparent!" style={{ padding: "8px 10px", fontSize: TYPE.caption, color: "var(--muted-foreground)",
               borderTop: "1px solid var(--border)", background: ri % 2 ? "var(--secondary)" : "transparent" }}>
               {label}
             </div>
             {options.map((o, ci) => {
               const row = arr(o.rows).map((r) => (r ?? {}) as Data).find((r) => str(r.label) === label);
               return (
-                <div key={ci} style={{ padding: "8px 10px", fontSize: TYPE.xs, textAlign: "center",
+                <div key={ci} className={o.recommended ? "glass:bg-primary/[0.06]!" : "glass:bg-transparent!"} style={{ padding: "8px 10px", fontSize: TYPE.xs, textAlign: "center",
                   color: "var(--foreground)", borderTop: "1px solid var(--border)", borderLeft: "1px solid var(--border)",
                   background: o.recommended ? "color-mix(in srgb, var(--warning) 6%, transparent)" : (ri % 2 ? "var(--secondary)" : "transparent") }}>
                   {row ? str(row.value) : "—"}
@@ -1101,7 +1103,8 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                   style={{ width: 40, height: 22, borderRadius: 999, border: "1px solid var(--border)",
                     background: v ? "var(--primary)" : "var(--secondary)", position: "relative",
                     cursor: locked ? "default" : "pointer", transition: "background 0.2s var(--cc-ease, ease)" }}>
-                  <span style={{ position: "absolute", top: 2, left: v ? 20 : 2, width: 16, height: 16,
+                  {/* Glass: the knob is white in both states, as a system switch. */}
+                  <span className="glass:bg-white! glass:shadow-sm" style={{ position: "absolute", top: 2, left: v ? 20 : 2, width: 16, height: 16,
                     borderRadius: "50%", background: v ? "var(--primary-foreground)" : "var(--foreground)",
                     transition: "left 0.2s var(--cc-ease, ease)" }} />
                 </button>
@@ -1220,7 +1223,7 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           return (
             <button key={id} type="button" onClick={() => toggle(id)} disabled={locked}
               aria-pressed={active}
-              className={`glass:rounded-[14px]! ${active ? "glass:bg-primary/[0.12]!" : "glass:border-transparent! glass:bg-secondary!"}`}
+              className={`glass:rounded-[10px]! ${active ? "glass:bg-primary/[0.12]!" : "glass:border-transparent! glass:bg-secondary!"}`}
               // A column from the top: a button centres its content, so an
               // option with a Recommended badge set the row height and the
               // titles beside it sat lower (follow-up 5 of #766).
@@ -1745,7 +1748,7 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
         </div>
       ) : (
         <>
-          <div ref={scrollRef} className="glass:rounded-[14px] glass:ring-1 glass:ring-border" style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
+          <div ref={scrollRef} className="glass:rounded-[10px] glass:ring-1 glass:ring-border" style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr>

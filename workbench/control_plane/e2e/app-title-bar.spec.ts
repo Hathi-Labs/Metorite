@@ -12,7 +12,7 @@ import { stubApi } from "./visual/harness";
  *
  *   1. Every live pane, My Day, and the four Settings sub-pages draw exactly
  *      one `<h1>` and exactly one app bar, at 1440 and at 390.
- *   2. At 1024 beside the glass rail (it never opens), Calendar (with every tool up), Email,
+ *   2. At 1024 with the sidebar OPEN, Calendar (with every tool up), Email,
  *      Projects and the CRM keep every control of the bar inside the window,
  *      and the name overlaps no control. Measured in round 2: Month ended at
  *      x=1095, and the h1 painted over "< Today".
@@ -267,7 +267,7 @@ async function barFits(page: Page, width: number) {
   }, width);
 }
 
-test.describe("at 1024 beside the glass rail, nothing leaves the bar", () => {
+test.describe("at 1024 with the sidebar open, nothing leaves the bar", () => {
   test.use({ viewport: { width: 1024, height: 768 } });
 
   // 1024, then a half-snapped 1920 window (960) and a small one (800), where
@@ -279,8 +279,8 @@ test.describe("at 1024 beside the glass rail, nothing leaves the bar", () => {
       await page.goto("/calendar");
       const bar = page.locator('[data-app-bar="desktop"]');
       await expect(bar.getByRole("heading", { level: 1, name: "Calendar" })).toBeVisible();
-      // The glass rail never opens (D146), so it is 80 px wide and folded.
-      await expect(page.locator("aside[data-collapsed]")).toHaveAttribute("data-collapsed", "true");
+      // The sidebar is open, as the member left it.
+      await expect(page.locator("aside[data-collapsed]")).toHaveAttribute("data-collapsed", "false");
       // The maximal state was reached: each of these is in the bar.
       await expect(bar.locator('[title*="due within 2 weeks"]')).toBeVisible();
       for (const name of ["Start day", "Review", "Fit what's left", "Calendar settings", "Previous", "Next"]) {

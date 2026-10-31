@@ -99,7 +99,7 @@ export default function AskPin({
       data-ask-pin=""
       role="status"
       aria-live="polite"
-      className="max-w-3xl mx-auto mb-2 rounded-lg border border-primary/30 bg-primary/5 chat-fade-in glass:rounded-[22px] glass:border-transparent glass:bg-primary/12"
+      className="max-w-3xl mx-auto mb-2 rounded-lg border border-primary/30 bg-primary/5 chat-fade-in glass:rounded-[16px] glass:border-transparent glass:bg-primary/12"
     >
       <Button
         type="button"
@@ -108,7 +108,7 @@ export default function AskPin({
         radius="keep"
         layout="flex items-center"
         onClick={show}
-        className="w-full min-w-0 gap-2 rounded-lg px-3 py-1.5 text-left text-[11px] glass:rounded-[22px] glass:px-4 glass:py-2 glass:text-footnote"
+        className="w-full min-w-0 gap-2 rounded-lg px-3 py-1.5 text-left text-[11px] glass:rounded-[16px] glass:px-4 glass:py-2 glass:text-footnote"
         aria-label={`${PIN_LEAD[ask.kind]}: ${ask.title}. Show it`}
       >
         <Icon name="BellRing" size={13} className="shrink-0 text-primary" />

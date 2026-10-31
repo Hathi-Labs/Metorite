@@ -551,7 +551,7 @@ function ProjectEvidenceBody({ event: e }: { event: ToolEvent }) {
   const link = body.match(/^\s*link:\s*(\/projects\?[\w=&-]+)\s*$/m)?.[1] ?? "";
   const isList = LIST_TOOLS.has(e.name) || !(e.name in INFO_META);
   return (
-    <div className="rounded-md border border-border/60 bg-card/60 px-2.5 py-2 min-w-0 text-[11px] glass:rounded-[14px] glass:border-transparent glass:bg-secondary glass:px-3 glass:text-footnote">
+    <div className="rounded-md border border-border/60 bg-card/60 px-2.5 py-2 min-w-0 text-[11px] glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:px-3 glass:text-footnote">
       <ShowMore className="-mx-1 px-1">
         {isList && rows.length > 0 ? (
           <>

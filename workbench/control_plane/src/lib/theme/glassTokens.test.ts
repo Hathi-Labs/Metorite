@@ -94,7 +94,7 @@ describe("the glass block through appTokens", () => {
     const map = appTokenMap(THEME, "dark", "glass");
     expect(map["--cc-card"]).toBe("#1c1c1e");
     expect(map["--cc-primary"]).toBe("#0a84ff");
-    expect(map["--cc-radius"]).toBe("1.125rem");
+    expect(map["--cc-radius"]).toBe("0.875rem");
     expect(map["--cc-font"]).toContain("-apple-system");
     expect(map["--cc-font"]).not.toMatch(/var\(/);
   });

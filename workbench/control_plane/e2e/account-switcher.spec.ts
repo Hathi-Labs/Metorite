@@ -55,12 +55,10 @@ const footerButton = (page: Page) => page.getByRole("button", { name: /^Accounts
 test.describe("desktop", () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
-  // GL-Z1 (D146): the glass rail is always folded, and the folded old footer
-  // holds no Sign out button, so this test no longer reads one.
-  test("flag off: the old footer, and no account switcher", async ({ page }) => {
+  test("flag off: the old footer, with Sign out", async ({ page }) => {
     await stub(page, { enabled: false });
     await page.goto("/settings/appearance");
-    await expect(page.locator("aside[data-collapsed]")).toBeVisible();
+    await expect(page.locator("aside").getByTitle("Sign out")).toBeVisible();
     await expect(footerButton(page)).toHaveCount(0);
   });
 

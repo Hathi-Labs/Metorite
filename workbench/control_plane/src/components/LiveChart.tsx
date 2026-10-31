@@ -143,7 +143,10 @@ export default function LiveChart({ spec, bare = false, maxHeight, label }: {
     void import("@/lib/charts/echarts").then(({ echarts }) => {
       if (!alive) return;
       const c = echarts.init(el, null, { renderer: "svg", width, height: built.height });
-      c.setOption(built.option as never);
+      // Glass: the chart draws on its card, not on the classic palette's own
+      // dark fill, which read as a well inside the raised card (owner, 2026-10-31).
+      const glass = document.documentElement.getAttribute("data-look") === "glass";
+      c.setOption((glass ? { ...(built.option as object), backgroundColor: "transparent" } : built.option) as never);
       chart = c;
     });
     return () => {
@@ -162,7 +165,7 @@ export default function LiveChart({ spec, bare = false, maxHeight, label }: {
     <div
       ref={box}
       data-chart-max-height={maxHeight}
-      className={bare ? undefined : "glass:rounded-[14px]! glass:border-transparent!"}
+      className={bare ? undefined : "glass:rounded-[10px]! glass:border-transparent! glass:bg-transparent!"}
       {...(scrollProps ?? {})}
       style={
         bare

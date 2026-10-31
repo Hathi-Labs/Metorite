@@ -175,7 +175,7 @@ export function AppTopBar({
             <Button
               variant="ghost"
               size="icon-sm"
-              selected={rail.open}
+              aria-expanded={rail.open}
               icon={rail.open ? "PanelLeftClose" : "PanelLeftOpen"}
               aria-label={railLabel(rail)}
               title={railLabel(rail)}

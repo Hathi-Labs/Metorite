@@ -209,7 +209,7 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
       </div>
 
       {form.notices.length > 0 && (
-        <ul className="space-y-1 rounded-md border border-border px-2.5 py-1.5 glass:rounded-[14px] glass:border-transparent glass:bg-secondary glass:px-3 glass:py-2" aria-label="Before you send">
+        <ul className="space-y-1 rounded-md border border-border px-2.5 py-1.5 glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:px-3 glass:py-2" aria-label="Before you send">
           {form.notices.map((n, i) => (
             <li key={i} className="break-words text-xs text-foreground" data-reply-notice="">
               {n}
@@ -218,7 +218,7 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
         </ul>
       )}
 
-      <figure className="space-y-0.5 rounded-md border border-border bg-muted/40 px-2.5 py-2 glass:rounded-[14px] glass:border-transparent glass:bg-secondary glass:px-3 glass:py-2.5" aria-label="The email">
+      <figure className="space-y-0.5 rounded-md border border-border bg-muted/40 px-2.5 py-2 glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:px-3 glass:py-2.5" aria-label="The email">
         <p className="flex min-w-0 flex-wrap gap-x-2 text-[11px] text-muted-foreground">
           <span className="min-w-0 break-words font-medium text-foreground">{form.original.from}</span>
           {when && <span>{when}</span>}

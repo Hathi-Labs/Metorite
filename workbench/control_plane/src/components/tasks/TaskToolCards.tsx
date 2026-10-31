@@ -256,10 +256,10 @@ function TaskRowView({ row }: { row: TaskRow }) {
   };
   const done = state === "done";
   return (
-    <div className="flex items-center gap-1 rounded-md border border-transparent hover:border-border transition-colors glass:rounded-[14px]">
+    <div className="flex items-center gap-1 rounded-md border border-transparent hover:border-border transition-colors glass:rounded-[10px]">
       <button
         onClick={() => openTask(row.id)}
-        className="flex-1 min-w-0 text-left px-1.5 py-1 rounded-md hover:bg-secondary/60 glass:rounded-[14px]"
+        className="flex-1 min-w-0 text-left px-1.5 py-1 rounded-md hover:bg-secondary/60 glass:rounded-[10px]"
         title="Open in My work"
       >
         <span

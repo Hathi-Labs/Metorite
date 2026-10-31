@@ -72,7 +72,7 @@ export default function ContextRing({
     <div
       className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50
         rounded-lg border border-border bg-popover px-3 py-2.5 shadow-xl
-        text-xs whitespace-nowrap glass:rounded-[18px] glass:border-transparent glass:glass-menu glass:text-caption
+        text-xs whitespace-nowrap glass:rounded-[14px] glass:border-transparent glass:glass-menu glass:text-caption
         animate-in fade-in slide-in-from-bottom-1 duration-150"
     >
       {/* Arrow */}

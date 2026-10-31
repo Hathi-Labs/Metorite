@@ -11,7 +11,7 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *      sit over the command bar: 1024, 1280 and 1440, with the bell on and
  *      off, at three densities.
  *   2. The foot is the account row: the avatar, the name and the email when
- *      open (retired, D146), and the avatar alone, on the rail's icon column
+ *      open, and the avatar alone when folded, on the rail's icon column
  *      within 1px at three densities.
  *   3. Its menu holds, in order: the current account, marked, the others,
  *      Add, You, Settings, Sign out, and "Sign out of all accounts" with more
@@ -233,9 +233,31 @@ test.describe("the right group never crowds the command bar", () => {
 test.describe("the sidebar foot is the account row", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  // GL-Z1 (D146): the glass rail never opens, so the foot is always the
-  // avatar alone. The open foot's test (name and email under the avatar) is
-  // retired with the open rail. The folded tests below hold the avatar.
+  test("open: the avatar, the name, and the email muted under it, with the full tip", async ({ page }) => {
+    await flags(page);
+    await stub(page);
+    await page.goto("/settings/appearance");
+    await expect(trigger(page)).toHaveAccessibleName("Account and settings: vjvarada@hathilabs.com");
+    await expect(trigger(page)).toHaveAttribute("title", "Vijay Varada\nvjvarada@hathilabs.com\nHathi Labs LLP");
+    await expect(trigger(page)).toContainText("Vijay Varada");
+    const email = trigger(page).locator("[data-account-email]");
+    await expect(email).toHaveText("vjvarada@hathilabs.com");
+    // Muted and cut, never wrapped.
+    const look = await email.evaluate((el) => {
+      const s = getComputedStyle(el);
+      return { overflow: s.textOverflow, wrap: s.whiteSpace };
+    });
+    expect(look).toEqual({ overflow: "ellipsis", wrap: "nowrap" });
+    // Under the name.
+    const n = await box(trigger(page).getByText("Vijay Varada", { exact: true }));
+    expect((await box(email)).y).toBeGreaterThan(n.y);
+    // The foot is the rail's last block, and inside the rail.
+    expect(await foot(page).evaluate((el) => el.parentElement?.lastElementChild === el)).toBe(true);
+    const t = await box(trigger(page));
+    const a = await box(aside(page));
+    expect(t.x).toBeGreaterThanOrEqual(a.x);
+    expect(t.x + t.width).toBeLessThanOrEqual(a.x + a.width);
+  });
 
   test("the foot wears the house focus ring, the same as All apps and Add apps", async ({ page }) => {
     await flags(page);
@@ -610,10 +632,10 @@ test.describe("the foot's one menu", () => {
 // placed by its bottom edge, so at 1280x600 its top sat at y=-36.
 test.describe("a short window", () => {
   for (const height of [600, 720]) {
-    {
-      test(`1280x${height}, folded: the top stays in the window, and the last row is reachable`, async ({ page }) => {
+    for (const folded of [false, true]) {
+      test(`1280x${height}, ${folded ? "folded" : "open"}: the top stays in the window, and the last row is reachable`, async ({ page }) => {
         await page.setViewportSize({ width: 1280, height });
-        await flags(page, { extra: { "cc-sidebar-collapsed": "1" } });
+        await flags(page, { extra: folded ? { "cc-sidebar-collapsed": "1" } : {} });
         await stub(page, THREE);
         await page.goto("/settings/appearance");
         // From the keyboard: in the dev build, Next's own badge sits over the
@@ -751,9 +773,9 @@ test.describe("no organization", () => {
 test.describe("no Metorite logo in the shell", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  {
-    test("with no logo, the comet is the top-left badge only, folded", async ({ page }) => {
-      await flags(page, { extra: { "cc-sidebar-collapsed": "1" } });
+  for (const collapsed of [false, true]) {
+    test(`with no logo, the comet is the top-left badge only${collapsed ? ", folded" : ""}`, async ({ page }) => {
+      await flags(page, { extra: collapsed ? { "cc-sidebar-collapsed": "1" } : {} });
       await stub(page, THREE, [], {}, NO_LOGO);
       await page.goto("/settings/appearance");
       await expect(trigger(page)).toBeVisible();
