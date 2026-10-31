@@ -71,6 +71,7 @@
       "tests/unit/test_pm_task_insert_sites.py",
       "tests/unit/test_pr_check_triggers.py",
       "tests/unit/test_premerge.py",
+      "tests/unit/test_prod_copy.py",
       "tests/unit/test_projects_migration.py",
       "tests/unit/test_projects_org_vocabularies.py",
       "tests/unit/test_projects_timeline_page_size.py",

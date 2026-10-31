@@ -243,8 +243,10 @@ owner sees a missing preview, because no approval arrives.
 
 #### 1.3.1 The production copy on this PC (LD-8a, LD-8b, LD-8c)
 
-**Status, 2026-10-31:** 🟠 specified, not built. The spec-auditor gave
-GO-NARROWED and split LD-8 into three slices. LD-8c goes first.
+**Status, 2026-10-31:** 🟡 LD-8a is built: `scripts/prod_copy.sh`, with the
+fence `tests/unit/test_prod_copy.py`. No copy came to this PC yet, because
+LD-8c and a verified backup come first. The spec-auditor gave GO-NARROWED and
+split LD-8 into three slices. LD-8c goes first.
 
 **Owner approval, 2026-10-31, in chat.** Production writes a reduced copy each
 night (`scripts/staging_export.sh`). It holds the organizations in
@@ -279,19 +281,41 @@ no sudo.
 - Proof: the backup at 02:30 UTC on 2026-11-01 logs "restore verified", and a
   new `current` copy appears.
 
-**LD-8a: `scripts/prod_copy.sh`. AGENT-SAFE, HIGH.**
+**LD-8a: `scripts/prod_copy.sh`. AGENT-SAFE, HIGH. Built 2026-10-31.**
 
-- It pulls the copy over `ssh metorite` with `scp` or `ssh ... tar`, because
-  Git Bash has no `rsync`. The target is `~/.metorite/prod-copy/<UTC date>/`.
-- It limits the folder to the current user with `icacls`: no inheritance, one
-  principal. NTFS ignores a POSIX mode, so the test checks the ACL.
-- It checks `SHA256SUMS`. It takes the age from the remote `stat -c %Y` of
-  `staging.dump`, prints it, and refuses a copy older than 36 hours.
+- It pulls the copy over `ssh metorite` with `ssh ... tar`, because Git Bash
+  has no `rsync`.
+- `current` is a symlink to one `r.<stamp>` folder. The pull follows it with
+  `readlink -f` first. So the age and the files come from the same folder.
+- It limits the base folder and each copy folder to the current user. It does
+  this before data goes into them. On Windows it uses `icacls`, with no
+  inheritance and one principal. NTFS ignores a POSIX mode, so the test checks
+  the ACL. On Linux it uses mode 700 and `umask 077`.
+- It checks `SHA256SUMS`, which must name the four data files, each one time.
+- It takes the age from the remote `stat -c %Y` of `staging.dump`, and prints
+  it. It refuses a copy more than 36 whole hours old, as `staging_refresh.sh`
+  does.
 - It keeps the 2 newest copies. It refuses a target inside a git work tree. It
   never prints the content of a file.
+- Exit 0 means done. Exit 1 is a refusal. Exit 2 is a usage or environment
+  error.
 - Fence: `tests/unit/test_prod_copy.py`, with `ssh` replaced by a stub
-  (`PROD_COPY_SSH`). It covers a bad checksum, a stale copy, the retention of
-  2, and a target inside a git work tree.
+  (`PROD_COPY_SSH`). It covers a bad checksum, a stale copy and the retention
+  of 2. It also covers a git work tree, the symlink, the ACL and the output.
+
+**The copy layout. LD-8b reads it, so no slice may change it.**
+
+- The base folder is `~/.metorite/prod-copy/`. A test sets `PROD_COPY_DIR` in
+  its place.
+- Each copy is one folder, named for the UTC time of the export, for example
+  `20261101T023814Z`. The name comes from the mtime of `staging.dump`.
+- The names sort by time, and LD-8b takes the newest name.
+- A copy folder holds exactly five files: `staging.dump`, `roles.txt`,
+  `extensions.txt`, `flags.env` and `SHA256SUMS`.
+- The pull writes into a `.partial-<stamp>.<pid>` folder first. It checks that
+  folder, and then renames it. When a pull fails, no folder gets a copy's name.
+- A name that starts with `.` is never a copy, and LD-8b ignores it. The
+  script keeps its lock in `.lock`.
 
 **LD-8b: `bash scripts/dev_up.sh --data prod --as <email>`. AGENT-SAFE, HIGH.**
 
