@@ -1394,6 +1394,35 @@ def _log_pack_request_tools(agents: list[Any]) -> None:
     log("executor.pack_request_tools", tools=count, cap=MAX_REQUEST_TOOLS)
 
 
+class _SetupLaps:
+    """Chat speed SPD-1: the ms of each setup step of a streamed run, up to
+    its first model request.
+
+    Each lap is the time since the lap before, so the laps add up to the
+    whole setup, and a step that logs nothing still shows. A name that laps
+    twice adds up. :meth:`log` writes ONE ``executor.setup_steps_ms`` line.
+    The class logs nothing else. Fence: ``tests/unit/test_setup_laps.py``.
+    """
+
+    __slots__ = ("_last", "steps")
+
+    def __init__(self, started: float) -> None:
+        self._last = started
+        self.steps: dict[str, int] = {}
+
+    def lap(self, step: str) -> None:
+        now = time.monotonic()
+        self.steps[step] = self.steps.get(step, 0) + round((now - self._last) * 1000)
+        self._last = now
+
+    def log(self, agent_name: str, run_id: str) -> None:
+        with contextlib.suppress(Exception):  # a timing line never ends a run
+            _log.info(
+                "executor.setup_steps_ms", agent=agent_name, run_id=run_id,
+                total_ms=sum(self.steps.values()), **self.steps,
+            )
+
+
 def _pack_delegation_refusal(agent_name: str) -> str | None:
     """The pack refusal of a hand-off to *agent_name* from this frame, or None.
 
@@ -5786,6 +5815,8 @@ async def run_agent_stream(
     # emitted in the finally below. Duration is measured from here.
     import time as _time
     _activity_started = _time.monotonic()
+    # Chat speed SPD-1: the ms of each setup step, up to the first request.
+    _laps = _SetupLaps(_activity_started)
     try:
         from acb_common import publish_activity
         publish_activity(
@@ -5957,24 +5988,29 @@ async def run_agent_stream(
 
         # Emit RUN_STARTED immediately so the UI can show ThinkingContainer at once.
         yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
+        _laps.lap("start")
 
         # §15.4: refused as absent unless a first-party admin runs it. The
         # RUN_ERROR then reads like an agent that cannot load.
         await _assert_may_run_agent(agent_name)
+        _laps.lap("access")
         # WS-61 KB-4a: read the orchestrator's Knowledge index block here,
         # because the per-turn context is built by sync code.
         await _prime_knowledge_index(agent_name)
+        _laps.lap("knowledge")
         with await _load_agent_off_loop(
             agent_name,
             run_id=run_id,
             repo_name=_registry_repo_name,
             local_path=_registry_local_path,
         ) as loaded:
+            _laps.lap("load")
             mandatory = loaded.config.get("integrations", [])
             optional = loaded.config.get("optional_integrations", [])
             # One access lookup for the run. The integrations below and the
             # MCP servers of a native agent (WS-8c) read the same answer.
             _authorizer = await _integration_authorizer(event_payload, thread_id)
+            _laps.lap("authorizer")
             # Filter BEFORE the env injection below, so a credential the
             # acting member may not use never enters the run's environment at
             # all — not merely absent from state["integrations"].
@@ -5992,6 +6028,7 @@ async def run_agent_stream(
             _agent_md_spec = _apply_agent_md_overrides(
                 agents, loaded.agent_dir, agent_name,
             )
+            _laps.lap("build")
             # WS-67 OA-7c: the packs of this turn go in here, BEFORE
             # `_inject_agent_tools`. Each pack tool carries `__cc_gated__`, so
             # the injection gates none twice. The build reads the server's
@@ -6010,6 +6047,7 @@ async def run_agent_stream(
                 agent_config=loaded.config,
                 is_authorized=_authorizer,
             )
+            _laps.lap("packs")
             _apply_own_tool_scope(
                 agents, loaded.config.get("own_tool_scope") or None,
             )
@@ -6017,6 +6055,7 @@ async def run_agent_stream(
             await _drop_mirror_record_writes(
                 agents, no_egress=_stream_no_egress,
             )
+            _laps.lap("crm_mirror")
             _own_tools = _count_agent_tools(agents)  # WS-8o
             _run_tools = _inject_agent_tools(
                 agents,
@@ -6029,11 +6068,13 @@ async def run_agent_stream(
                 agent_config=loaded.config,  # D85: the sharing block
                 no_egress=_stream_no_egress,  # H-236
             )  # inject call_agent / call_agent_background
+            _laps.lap("inject")
             # CRM-Q32-5: the CRM facts block, read as the member.
             # CRM-Q32-8: the holder of this run learns whether the run still
             # holds the reply of a question card (`mark_run`).
             _run_tools = await _add_crm_facts_block(
                 agents, _run_tools, no_egress=_stream_no_egress, mark_run=True)
+            _laps.lap("crm_facts")
             _log_agent_tools_resolved(agent_name, agents, _own_tools)
             agents = _log_request_tools_view(agents, agent_name)
             if _pack_apply is not None:
@@ -6057,6 +6098,7 @@ async def run_agent_stream(
                     opened=_mcp_opened,
                     member_present=_authorizer is not None and not _batch_thread,
                 )
+            _laps.lap("mcp")
 
             # Per-session workspace override (Custom Apps builder sessions):
             # resolved once here, reused for the artifact context and the
@@ -6092,6 +6134,7 @@ async def run_agent_stream(
             # H-363: the HEAD before this turn, for every tier. The end-of-turn
             # push step pushes only the commits after it.
             _run_base_head = await _get_current_head(_git_dir) if _git_dir else ""
+            _laps.lap("workspace")
             # H-201 (§21.16): a shared run's partition is its tenant key,
             # o:<org>, which exists only now. Stamp it, so the logs and the
             # presence snapshot show where this run works.
@@ -6165,6 +6208,7 @@ async def run_agent_stream(
                 # run key of the pack calls and the record of the packs go in
                 # now, before any tool can run. A delegated run drops both.
                 _derive_ctx(**_pack_apply.context())
+            _laps.lap("bind")
 
             # Chat speed (2026-10-25): the tier question asks System 1, and it
             # took 1.3 to 3.0 s in production. Its inputs are final once the
@@ -6193,9 +6237,11 @@ async def run_agent_stream(
             # §7.1.1: the mailboxes and the email working set of this chat,
             # read now that the session is bound, for the sync context.
             await _prime_email_context(agent_name)
+            _laps.lap("email_context")
             # WS-67 OA-4: this chat's kept corrections and limits, beside the
             # working set, for the sync context and each delegated task.
             await _prime_chat_constraints(agent_name)
+            _laps.lap("constraints")
             try:
                 # Ensure the three visible workspace directories exist so the
                 # Files Viewer sidebar shows them even before the agent writes
@@ -6226,6 +6272,7 @@ async def run_agent_stream(
                     )
             except Exception:
                 pass
+            _laps.lap("rehydrate")
 
             # Skills-as-an-index bodies (QM-2) — see the MAF path above for
             # why this sits after the rehydrate. No-op while the switch is off.
@@ -6236,6 +6283,7 @@ async def run_agent_stream(
                 ),
                 agent_config=loaded.config,
             )
+            _laps.lap("skills")
 
             if not agents:
                 raise ValueError(f"Agent {agent_name!r}: build_agents() returned empty list.")
@@ -6327,6 +6375,7 @@ async def run_agent_stream(
             # WS-67 OA-7f: layer (c). The packs that System 1 asked for load
             # before the first model request, through the guarded builder.
             _apply_turn_pack_items(agents, _tier_run)
+            _laps.lap("tier_wait")
             # Chat speed: the setup of the run, up to the first model request.
             # `tier_wait_ms` is what the tier question still cost after the
             # overlap. Fence: tests/unit/test_chat_speed_slice2.py.
@@ -6519,6 +6568,7 @@ async def run_agent_stream(
             # Safety net: if streaming raises BEFORE emitting anything, fall
             # through to the proven Tier 2 batch path below.
             if not _is_copilot_sdk and hasattr(agent, "run"):
+                _laps.lap("model_prep")
                 # WS-43t2: with the flag on, load this run's stored session.
                 # It logs ONE outcome line. None means no session at all.
                 _session_turn = await _begin_native_session(
@@ -6526,6 +6576,7 @@ async def run_agent_stream(
                     run_id=run_id, caller_thread_id=_caller_thread_id,
                     delegated=_delegated_run, instance=_agent_instance,
                 )
+                _laps.lap("session_load")
                 # WS-43t1: flag OFF returns today's string and no provider.
                 # Flag ON returns structured turns, and a context provider
                 # that _agent_for_run attaches to THIS run only (§15.9.5).
@@ -6535,6 +6586,10 @@ async def run_agent_stream(
                     native=True, session_turn=_session_turn,
                     agent=agent,
                 )
+                _laps.lap("compose")
+                # Chat speed SPD-1: the steps of a native run's setup, logged
+                # once, just before its stream opens.
+                _laps.log(agent_name, run_id)
                 # Context-pressure notice (audit CX6): eviction was silent —
                 # a long conversation just degraded as oldest turns dropped.
                 # Surface one unobtrusive progress line so the user knows.

@@ -2270,6 +2270,11 @@ The chat-speed work (#1313, #1323) owns latency. These points touch it:
    OA-5's harness is those evals. Share it, and do not build a second one.
 3. **The timing lines.** OA-5 reads `agent.run_timing` and
    `executor.run_setup_ms`. Keep their names and fields stable.
+   SPD-1 (Metorite #1126) adds `executor.setup_steps_ms`. A native streamed
+   run logs it once, just before its stream opens. Each field is the ms of
+   one setup step, measured from the step before, and `total_ms` is their
+   sum. So the line also counts `session_load` and `compose`, which come
+   after `run_setup_ms`. Fence: `tests/unit/test_setup_laps.py`.
 4. **OCR.** OA-3 adds time to `read_attachment`. It runs off the event
    loop with a cap, so it must not block other runs.
 5. **OA-1 adds tokens.** A task now holds the member's words. Expect a
