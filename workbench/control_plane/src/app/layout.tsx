@@ -1,7 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono, Inter } from "next/font/google";
 import "./globals.css";
-import { GLASS_LOOK, glassGateOn, LOOK_ATTRIBUTE } from "@/lib/theme/look";
+import { GLASS_LOOK, LOOK_ATTRIBUTE } from "@/lib/theme/look";
 
 // The app's two faces, reached through `--font-app` / `--font-app-mono`.
 // next/font self-hosts and subsets them, so no request ever leaves for
@@ -62,16 +62,13 @@ export const viewport: Viewport = {
   viewportFit: "cover",
 };
 
-const GLASS = glassGateOn();
-
-const fontVariables = [geistSans.variable, geistMono.variable, GLASS ? inter.variable : ""]
+const fontVariables = [geistSans.variable, geistMono.variable, inter.variable]
   .filter(Boolean)
   .join(" ");
 
-// With the glass gate on (staging), the server renders the look, so the
-// default never flashes. The boot script takes it off before paint for a
-// member who chose Classic. With the gate off, no attribute ever exists.
-const lookAttributes = GLASS ? { [LOOK_ATTRIBUTE]: GLASS_LOOK } : {};
+// Glass is the only look (D146), so the server renders the attribute on
+// every page and nothing takes it off.
+const lookAttributes = { [LOOK_ATTRIBUTE]: GLASS_LOOK };
 
 export default function RootLayout({
   children,

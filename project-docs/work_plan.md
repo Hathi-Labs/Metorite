@@ -167,7 +167,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_graph.md` · `specs/knowledge_base.md` §20 · `specs/company_context.md` | Metorite: epic 783 (Knowledge) · D128, D132 · 2026-10-29: KG-0 written, KG-1, KG-2 and KG-3a built · next KG-4 and KG-9, then KG-3b after the KG-2 backfill |
 | WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` · `specs/agent_coordination.md` (D140) | Metorite: epics 321 (coordination, D135 and D140), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · MCP-P1a built dark 2026-10-30 (`external_agent_access.md` §19) · next tasks 1045 and 1054, SW-4, SW-10b (the sweep on staging first), then SW-29a and SW-30a, and MCP-P1b and MCP-P2a |
 | WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · milestone is STU-Q6 | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141 · STU-0 spec merged with this row · next B1 (the read-only action catalog), then the Stage 1 slices of §15 as the owner answers STU-Q1 and STU-Q2 |
-| WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) · `specs/glass_look.md` (phase GL, D143) | Metorite: epic 492, sub-epic UX-D, task 1125 (GL) · UI-G1 is built · **GL (owner, 2026-10-31): Aroh's glass look, LIVE in production since 2026-10-31 05:38 UTC behind `NEXT_PUBLIC_UI_LOOK` (GL-9 done on the owner's word; staging no longer exists). GL-0 to GL-4 built (gate and tokens, primitives, shell, chat). Next GL-5 (the tint) and GL-6 (one pass per app)** · then UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
+| WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) · `specs/glass_look.md` (phase GL, D143) | Metorite: epic 492, sub-epic UX-D, task 1125 (GL) · UI-G1 is built · **GL (owner, 2026-10-31): Aroh's glass look, LIVE in production since 2026-10-31 05:38 UTC behind `NEXT_PUBLIC_UI_LOOK` (GL-9 done on the owner's word; staging no longer exists). GL-0 to GL-4 built (gate and tokens, primitives, shell, chat). GL-10 is built (cards, rail, chat edge). **GL-Z1 is built, 2026-10-31 (D146): glass is the only look, and the Design switch and the gate are gone.** Next GL-Z2 (fold each `glass:` class into a plain class, then delete the classic token blocks), then GL-5 and GL-6** · then UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
 | WS-WH | **Writing Help** | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 493 · next WA-1 |
 | WS-CHAT | **AI chat**: Mira, the one assistant | 🟢 active · M1 | `specs/one_assistant_context.md` · `specs/chat_first_surface.md` | Metorite: project AI Chat Interface, epic 470 · a parallel session owns it · next #469 with BR-5, #471, WS-58, SUB-1 (the sub-agent policy for OA-9) |
 | WS-PRE | **Preview apps**: Notes, Meetings, Dashboard | ⏸ after Phase 2 · M4 | `specs/note_taker_app.md` · `specs/meeting_bot_platform_plan.md` | Metorite: epic 494 · next E-28, E-25 |
@@ -4933,6 +4933,21 @@ The owner also approved, the same day, that production's nightly reduced copy li
 
 `specs/engineering_practice.md` §1.3 owns the loop.
 
+
+### D146 — Glass is the only look. The Design switch goes (2026-10-31)
+
+Owner directive, 2026-10-31, in chat. It ends the trial that D143 point 2 opened. Board: **WS-UX**, phase GL, slices GL-Z1 and GL-Z2.
+
+```text
+"We confirm that we want to be on the new UI. I don't think we need to have the ability to switch between the old UI and new UI, so just work on the new UI itself. We don't need to keep the switch. That way, you can look at everything from a fresh perspective and optimize everything for the new UI."
+```
+
+1. **Glass is the only look.** Every page draws glass, for every member, in every build. Nothing turns classic back on.
+2. **The Design switch goes.** Settings → Appearance no longer offers Classic. The build gate `NEXT_PUBLIC_UI_LOOK` is dead, and a box that still sets it does no harm. The boot script no longer reads the `cc-look` key.
+3. **GL-Z1 is the runtime half.** The server always renders `data-look="glass"`. The gate, the switch and the stored choice go. The classic token blocks and the `glass:` classes stay for now.
+4. **GL-Z2 is the contract half.** A codemod folds each `glass:` class into a plain class. Then the classic token blocks, the `data-look` attribute and the `glass:` variant go.
+5. **New work targets glass.** An agent no longer writes a classic fallback. An agent looks at each surface fresh, and tunes it for glass.
+6. **This closes D143 point 2, and it ends the exceptions to D69.1 and D69.3.** The look is one again, and `DESIGN_SYSTEM.md` §0 says so.
 
 ## 4. Single-owner registry (who owns duplicated work)
 

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { gotoAndSettle, setLook, stubApi } from "./visual/harness";
+import { gotoAndSettle, stubApi } from "./visual/harness";
 
 /**
  * The glass rail must not trap its own menus (D143, GL-3 review P1).
@@ -14,8 +14,8 @@ import { gotoAndSettle, setLook, stubApi } from "./visual/harness";
  * both of those: the menu must reach past the rail, and it must be the
  * topmost element there.
  *
- * The glass CSS ships in every build, so the test turns glass on with the
- * attribute and needs no `NEXT_PUBLIC_UI_LOOK`. The menu has two frames: the
+ * Glass is the only look (D146), so the page already carries the attribute.
+ * The menu has two frames: the
  * account foot ("Account and settings", with the shell flags of production)
  * and the older footer ("Accounts", the CI default, which needs the account
  * switcher on). Both are fixed inside the rail and wider than it, so the test
@@ -47,8 +47,8 @@ const SHELL = { preset: null, answered: "skipped", pins: null, known: null, card
 const MENU_BUTTON = /^(Account and settings: admin@example\.com|Accounts: signed in as)/;
 const MENU = /^(Account and settings|Accounts)$/;
 
-for (const look of ["glass", "classic"] as const) {
-  test(`the account menu reaches past the rail and sits on top (${look})`, async ({ page }) => {
+{
+  test("the account menu reaches past the rail and sits on top", async ({ page }) => {
     test.setTimeout(120_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     await stubApi(
@@ -57,7 +57,6 @@ for (const look of ["glass", "classic"] as const) {
       { arrayPaths: /^(notes|chat|agent|apps|agents)\b/ },
     );
     await gotoAndSettle(page, "/projects", 4000);
-    await setLook(page, look);
 
     const rail = page.locator("aside.sidebar-rail").first();
     const railBox = await rail.boundingBox();

@@ -123,7 +123,7 @@ export function documentLook(): Look {
   return document.documentElement.getAttribute(LOOK_ATTRIBUTE) === GLASS_LOOK ? "glass" : "classic";
 }
 
-/** Subscribe to a change of the look (a member's Settings → Appearance → Design). */
+/** Subscribe to a change of the look attribute. */
 export function subscribeLook(onChange: () => void): () => void {
   if (typeof MutationObserver === "undefined" || typeof document === "undefined") return () => {};
   const mo = new MutationObserver(onChange);
@@ -133,10 +133,9 @@ export function subscribeLook(onChange: () => void): () => void {
 
 /**
  * The look the document carries, kept current: a component reads it as the
- * CSS does. A server render is classic. The appearance store holds the
- * member's CHOICE; this is what the page draws (they differ in a build with
- * the gate off, and in e2e, where `setLook` sets only the attribute).
+ * CSS does. The server renders glass on every page (D146), so the server
+ * snapshot is glass and a server render matches the client.
  */
 export function useDocumentLook(): Look {
-  return useSyncExternalStore(subscribeLook, documentLook, () => "classic" as const);
+  return useSyncExternalStore(subscribeLook, documentLook, () => "glass" as const);
 }

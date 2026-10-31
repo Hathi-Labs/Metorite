@@ -444,104 +444,30 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
   const aside = (page: Page) => page.locator("aside[data-collapsed]");
   const box = async (l: ReturnType<Page["locator"]>) => (await l.boundingBox())!;
 
-  test("the shell bar alone: the bar sits over the page column, and the sidebar keeps its head", async ({ page }) => {
-    await shellOn(page);
-    await stub(page);
-    await page.goto("/settings/appearance");
-    await expect(bar(page)).toBeVisible();
-    // Exactly the NS-1 frame: the bar starts where the rail ends.
-    expect(Math.round((await box(bar(page))).x)).toBe(Math.round((await box(aside(page))).width));
-    await expect(aside(page).getByRole("button", { name: "Collapse sidebar" })).toBeVisible();
-    await expect(aside(page).locator("a[href='/']").first()).toBeVisible();
-    await expect(bar(page).getByRole("button", { name: /sidebar/ })).toHaveCount(0);
-  });
-
-  test("both flags: one bar across the whole width, with the fold control and the logo", async ({ page }) => {
-    await shellOn(page);
-    await page.addInitScript(() => localStorage.setItem("cc-shell-nav", "1"));
-    await stub(page);
-    await page.goto("/settings/appearance");
-    const b = await box(bar(page));
-    expect(b.x).toBe(0);
-    expect(Math.round(b.width)).toBe(1440);
-    // One row: the bar is its own height, nothing wraps under it.
-    expect(Math.round(b.height)).toBe(44);
-    const brand = bar(page).locator("[data-shell-brand]");
-    const fold = brand.getByRole("button", { name: "Collapse sidebar" });
-    await expect(fold).toHaveAttribute("aria-expanded", "true");
-    // The Menu glyph, never a panel glyph: an app's own rail toggle in this
-    // bar wears PanelLeftOpen/Close, and two look-alike controls with two
-    // jobs make a member guess (review, 2026-10-09).
-    await expect(fold.locator("svg.lucide-menu")).toHaveCount(1);
-    await expect(fold.locator("svg[class*='lucide-panel-left']")).toHaveCount(0);
-    await expect(brand.locator("a[href='/']")).toContainText("Acme");
-    // The rail has no head of its own now: no second logo, no second control.
-    // (Its Home link also goes to "/", so the logo is found by its name.)
-    await expect(aside(page).getByRole("link", { name: "Acme" })).toHaveCount(0);
-    await expect(aside(page).getByRole("button", { name: /sidebar/ })).toHaveCount(0);
-    // The sidebar starts under the bar.
-    expect(Math.round((await box(aside(page))).y)).toBe(Math.round(b.height));
-  });
-
-  test("both flags: the logo stays in view when the sidebar folds, and the bar button opens it again", async ({ page }) => {
-    await shellOn(page);
-    await page.addInitScript(() => localStorage.setItem("cc-shell-nav", "1"));
-    await stub(page);
-    await page.goto("/settings/appearance");
-    const brand = bar(page).locator("[data-shell-brand]");
-    const logo = brand.locator("a[href='/']");
-    const before = await box(logo);
-
-    await brand.getByRole("button", { name: "Collapse sidebar" }).click();
-    await expect(aside(page)).toHaveAttribute("data-collapsed", "true");
-    await expect.poll(async () => (await aside(page).boundingBox())?.width).toBeLessThan(60);
-    // The owner's point: folded, the organization's logo is still there.
-    await expect(logo).toBeVisible();
-    expect(await box(logo)).toEqual(before);
-    expect(Math.round((await box(bar(page))).width)).toBe(1440);
-    // One glyph for both states. `aria-expanded` carries the state.
-    await expect(brand.getByRole("button", { name: "Expand sidebar" }).locator("svg.lucide-menu")).toHaveCount(1);
-    // The state survives a reload, under the same key as before.
-    expect(await page.evaluate(() => localStorage.getItem("cc-sidebar-collapsed"))).toBe("1");
-
-    await brand.getByRole("button", { name: "Expand sidebar" }).click();
-    await expect(aside(page)).toHaveAttribute("data-collapsed", "false");
-  });
-
-  // Owner, 2026-10-10: folded, the menu control must sit "in line with all
-  // the icons of the sidebar", and the logo must keep a gap from it.
-  for (const density of ["1", "0.875", "1.125"]) {
-    test(`both flags: the menu control is centred over the folded rail's icons (scale ${density})`, async ({ page }) => {
+  // GL-Z1 (D146): glass is the only look. The shell bar spans the whole
+  // width above the rail, in both frames. The rail is 80 px and never opens,
+  // so it holds no fold control and the bar holds none either. The tests of
+  // the fold, its reload state and the folded icon centres are retired with
+  // the open rail. `sidebarFold.test.ts` still fences the pure rules.
+  for (const nav of [false, true]) {
+    test(`${nav ? "both flags" : "the shell bar alone"}: one bar across the whole width, over the glass rail`, async ({ page }) => {
       await shellOn(page);
-      await page.addInitScript(() => {
-        localStorage.setItem("cc-shell-nav", "1");
-        localStorage.setItem("cc-sidebar-collapsed", "1");
-      });
+      if (nav) await page.addInitScript(() => localStorage.setItem("cc-shell-nav", "1"));
       await stub(page);
       await page.goto("/settings/appearance");
+      const b = await box(bar(page));
+      expect(b.x).toBe(0);
+      expect(Math.round(b.width)).toBe(1440);
+      // One row: the bar is its own height, nothing wraps under it.
+      expect(Math.round(b.height)).toBe(44);
+      // The rail starts under the bar and is 80 px wide.
+      const rail = await box(aside(page));
+      expect(rail.y).toBeGreaterThanOrEqual(b.height);
+      expect(Math.round(rail.width)).toBe(80);
       await expect(aside(page)).toHaveAttribute("data-collapsed", "true");
-      // The rail draws its skeleton until the layout read answers (the star
-      // model, 2026-10-11), so wait for the real rows.
-      await expect(aside(page).locator("nav a").first()).toBeVisible();
-      // After the load, never in `addInitScript` (`setScale` says why).
-      await setScale(page, density);
-      const brand = bar(page).locator("[data-shell-brand]");
-      const fold = await box(brand.getByRole("button", { name: "Expand sidebar" }));
-      const foldCentre = fold.x + fold.width / 2;
-      // Every icon of the folded rail shares one centre line.
-      const centres = await aside(page)
-        .locator("nav a svg, nav button svg")
-        .evaluateAll((els) =>
-          els
-            .map((e) => e.getBoundingClientRect())
-            .filter((r) => r.width > 0 && r.height > 0)
-            .map((r) => r.x + r.width / 2),
-        );
-      expect(centres.length).toBeGreaterThan(2);
-      for (const c of centres) expect(Math.abs(c - foldCentre), `an icon at ${c} vs the control at ${foldCentre}`).toBeLessThanOrEqual(1);
-      // The logo keeps a gap from the control.
-      const logo = await box(brand.locator("a[href='/']"));
-      expect(logo.x - (fold.x + fold.width)).toBeGreaterThanOrEqual(8);
+      // The organization's logo stays in the bar, and no fold control shows.
+      await expect(bar(page).locator("[data-shell-brand] a[href='/']")).toBeVisible();
+      await expect(page.getByRole("button", { name: /sidebar/ })).toHaveCount(0);
     });
   }
 

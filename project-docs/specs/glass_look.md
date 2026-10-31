@@ -1,8 +1,16 @@
 # The glass look — Aroh's design language across Metorite
 
 **Status: ACTIVE, 2026-10-31. Verified against code on 2026-10-31.** Owner
-directive of 2026-10-31. Decision **D143**. Board row **WS-UX** (phase GL).
+directive of 2026-10-31. Decisions **D143** and **D146**. Board row **WS-UX** (phase GL).
 Metorite task #1125, under epic 492.
+
+**GL-Z1 is BUILT, 2026-10-31 (D146).** Glass is the only look. The owner
+said: "We confirm that we want to be on the new UI ... We don't need to keep
+the switch." The server always renders `data-look="glass"`. The gate, the
+Design switch and the stored `cc-look` choice are gone. The classic token
+blocks and the `glass:` classes stay until **GL-Z2**, which folds them. §0,
+§4.1, §4.2 and §4.5 below describe the trial that GL-Z1 ended, and each
+carries a note that says so.
 
 **GL-0 to GL-4 are BUILT and GL-9 is DONE, 2026-10-31.** The gate and the
 tokens (GL-1), the primitives (GL-2), the shell (GL-3) and the chat (GL-4)
@@ -30,6 +38,10 @@ Ask field. Its `data-glow` is `rest`, `live` or `waiting`.
 ---
 
 ## 0. The answer in one screen
+
+> **GL-Z1 (D146) ended the trial.** The gate, the Design switch and the revert
+> paths below are history. Glass is the only look, and no setting turns
+> classic back on. The text keeps the record of how the trial worked.
 
 The owner withdrew the plan to run Aroh as a separate app (2026-10-31). Aroh's
 interface comes into Metorite instead. Aroh follows Apple's current interface
@@ -152,7 +164,13 @@ multi-tenant.
 
 ## 4. The mechanism
 
-### 4.1 The gate
+### 4.1 The gate (REMOVED by GL-Z1, D146)
+
+**GL-Z1 removed the gate.** `look.ts` no longer reads `NEXT_PUBLIC_UI_LOOK`, and
+`layout.tsx` renders the attribute with no check. A box that still sets the
+variable does no harm. `glassLook.test.ts` fences it: `look.ts` exports no
+gate, and no source file reads the variable. The rest of this section is the
+record of the trial.
 
 `NEXT_PUBLIC_UI_LOOK` is read at build time, so the server render and the
 browser agree. Values:
@@ -178,7 +196,14 @@ deletes a line. Production has no `NEXT_PUBLIC_UI_LOOK` line, so staging keeps
 its own. ⚠️ Never write `NEXT_PUBLIC_UI_LOOK=classic` on production. The
 nightly refresh would copy it onto staging and turn glass off there.
 
-### 4.2 The attribute and the member's switch
+### 4.2 The attribute and the member's switch (switch REMOVED by GL-Z1, D146)
+
+**GL-Z1 removed the switch.** `layout.tsx` renders `data-look="glass"` on every
+page. The boot script holds no look code, except one line that clears the
+old `cc-look` key. The store holds no look, and Settings → Appearance holds no
+Design section. `useDocumentLook()` answers `glass` for a server render.
+`glassLook.test.ts` fences each of these. The rest of this section is the
+record of the trial.
 
 `src/app/layout.tsx` renders `data-look="glass"` on `<html>` when the gate is
 `glass`, so the default never flashes. `src/lib/theme/boot.ts` removes it
@@ -232,7 +257,11 @@ it with `preload: false` and adds its variable only when the gate is on. A
 browser downloads a font only when text uses it, so classic does not pay for
 Inter.
 
-### 4.5 The revert paths
+### 4.5 The revert paths (ended by GL-Z1, D146)
+
+**There is no revert path in the product now.** The owner chose to keep one
+look. The only way back is `git revert` of the GL-Z1 pull request, and GL-Z2
+ends that too. The table below is the record of the trial.
 
 | Who | How | Time |
 |---|---|---|
@@ -411,15 +440,29 @@ on srv1914284 (backup `.env.local.bak-20261031T050134Z`) and dispatched
 `deploy.yml`. `api.metorite.com/version` serves `997ea6e0a` as `applied_sha`,
 and `app.metorite.com/signin` renders `data-look="glass"`.
 
-### GL-Z · One look again — AGENT-SAFE after the owner's word
+### GL-Z1 · The runtime half — BUILT 2026-10-31 (D146)
 
-Glass values become the `:root` and `.light` values. Each `glass:` class folds
-into a plain class, and each classic class it replaced goes. The attribute,
-the switch, the gate and the classic blocks go. `DESIGN_SYSTEM.md` §0 is
-rewritten for the one glass look.
+The owner said the word on 2026-10-31. The server always renders
+`data-look="glass"`. `look.ts` loses the gate. The boot script, the store and
+the storage layer lose the member's choice. Settings → Appearance loses the
+Design switch. `useDocumentLook()` answers `glass` on the server. The e2e
+specs that drove the open rail or the Classic look change with it.
+
+**Done when** nothing can turn classic on, and the fences in §6 pass.
+**Done:** `glassLook.test.ts` holds the fences. The classic token blocks and
+the `glass:` classes stay for GL-Z2.
+
+### GL-Z2 · The contract half — AGENT-SAFE, NEXT
+
+Glass values become the `:root` and `.light` values. A codemod folds each
+`glass:` class into a plain class, and each classic class it replaced goes.
+The attribute, the `glass:` variant and the classic token blocks go.
+`themes.ts` takes the glass values. `DESIGN_SYSTEM.md` §0a goes.
 
 **Done when** no `glass:` variant, no `data-look` and no classic token block
-remains, and every fence passes.
+remains, and every fence passes. The fences that hold classic values
+(`themes.test.ts`, the `classicMarkup()` goldens, "glass-only classes only
+behind `glass:`") retire in the same change.
 
 ---
 
@@ -428,13 +471,13 @@ remains, and every fence passes.
 | Rule | Fence |
 |---|---|
 | The classic token values do not change | `src/lib/theme/themes.test.ts` (exists). The manifest mirrors classic |
-| Only a gated build carries look code: the boot script holds none without the gate | `src/lib/theme/glassLook.test.ts` (GL-1) |
+| Nothing turns classic on: no gate, no switch, no stored choice, and the boot script never touches the attribute (D146) | `src/lib/theme/glassLook.test.ts` (GL-Z1). It retires in GL-Z2 |
 | A glass-only utility appears only behind `glass:`, or in a glass-only file | `glassLook.test.ts` (GL-1) |
 | The glass block defines no token that classic lacks, except the §4.3 list | `glassLook.test.ts` (GL-1) |
 | Each glass text pair passes AA, on the page, the card, a muted panel and its 10 % chip | `src/lib/theme/glassLook.test.ts` (GL-1), which reads the glass blocks of `globals.css` |
 | Reduced motion stops glass motion too | `glassLook.test.ts` (GL-1) |
 | Each glass keyframe answers reduced motion | `src/lib/theme/motion.test.ts` (exists) |
-| Production does not carry the gate | ADVISORY. No test reads a box. GL-9 is OWNER-GATE |
+| Production does not carry the gate | RETIRED by GL-Z1. The variable does nothing now |
 
 ---
 

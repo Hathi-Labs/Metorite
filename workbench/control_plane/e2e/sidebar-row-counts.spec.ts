@@ -18,7 +18,12 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *   8. The phone drawer shows the same counts.
  *   9. A feed read that fails as a whole (502) takes every number off.
  *  10. A capped source prints "15+" and says "15 or more need you".
- *  11. "Add apps" says the run badge's words and the needs, open and folded.
+ *  11. "Add apps" says the run badge's words and the needs.
+ *
+ * GL-Z1 (D146): glass is the only look, and its rail never opens. The rail
+ * shows a quiet dot for a count, and the link name says the number. The
+ * tests of the open rail's quiet number and its hover "···" are retired, and
+ * the rest read the link name and the dot.
  *
  * Mutations, run by hand (2026-10-11), each seen to fail:
  *   - drop `needs={appNeeds[p.href]}` from the open rail's `NavLink`: seven
@@ -180,7 +185,8 @@ async function stub(
 
 const sidebar = (page: Page) => page.locator("aside[data-collapsed]");
 const row = (page: Page, href: string) => sidebar(page).locator(`[data-nav-row="${href}"]`);
-const count = (page: Page, href: string) => row(page, href).locator('[data-nav-needs="count"]');
+const dot = (page: Page, href: string) => row(page, href).locator('[data-nav-needs="dot"]');
+const link = (page: Page, name: string) => sidebar(page).getByRole("link", { name, exact: true });
 
 test.describe("desktop", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
@@ -190,22 +196,19 @@ test.describe("desktop", () => {
   test("Email 3 and Tasks 2 (on Projects): each row says its number, quietly, and its name says it in words", async ({ page }) => {
     await stub(page);
     await page.goto("/settings/appearance");
-    await expect(count(page, "/email")).toHaveText("3");
-    await expect(count(page, "/projects")).toHaveText("2");
-    await expect(sidebar(page).getByRole("link", { name: "My Email, 3 need you", exact: true })).toBeVisible();
-    await expect(sidebar(page).getByRole("link", { name: "Projects, 2 need you", exact: true })).toBeVisible();
+    await expect(link(page, "My Email, 3 need you")).toBeVisible();
+    await expect(link(page, "Projects, 2 need you")).toBeVisible();
     // My Tasks is a preview pane, so it has no row of its own.
     await expect(row(page, "/tasks")).toHaveCount(0);
-    // Quiet: the muted text token, no fill, and never the badge vocabulary.
-    await expect(count(page, "/email")).toHaveClass(/text-muted-foreground/);
-    await expect(count(page, "/email")).not.toHaveClass(/bg-/);
+    // A quiet dot, and never the badge vocabulary.
+    await expect(dot(page, "/email")).toHaveCount(1);
     await expect(row(page, "/email").locator("[data-nav-badge]")).toHaveCount(0);
   });
 
   test("a failed email source shows no number on Email, never a 0", async ({ page }) => {
     await stub(page, { email: "failed" });
     await page.goto("/settings/appearance");
-    await expect(count(page, "/projects")).toHaveText("2");
+    await expect(link(page, "Projects, 2 need you")).toBeVisible();
     await expect(row(page, "/email")).toBeVisible();
     await expect(row(page, "/email").locator("[data-nav-needs]")).toHaveCount(0);
     await expect(sidebar(page).getByRole("link", { name: "My Email", exact: true })).toBeVisible();
@@ -215,7 +218,7 @@ test.describe("desktop", () => {
     await page.clock.install();
     const store = await stub(page);
     await page.goto("/settings/appearance");
-    await expect(count(page, "/email")).toHaveText("3");
+    await expect(link(page, "My Email, 3 need you")).toBeVisible();
     // The next answer says the email source failed. The one poll reads it.
     store.email = "failed";
     const before = store.needsGets;
@@ -223,15 +226,15 @@ test.describe("desktop", () => {
     await expect.poll(() => store.needsGets).toBeGreaterThan(before);
     await expect(row(page, "/email").locator("[data-nav-needs]")).toHaveCount(0);
     await expect(sidebar(page).getByRole("link", { name: "My Email", exact: true })).toBeVisible();
-    await expect(count(page, "/projects")).toHaveText("2");
+    await expect(link(page, "Projects, 2 need you")).toBeVisible();
   });
 
   test("a feed read that fails as a whole takes every number off", async ({ page }) => {
     await page.clock.install();
     const store = await stub(page);
     await page.goto("/settings/appearance");
-    await expect(count(page, "/email")).toHaveText("3");
-    await expect(count(page, "/projects")).toHaveText("2");
+    await expect(link(page, "My Email, 3 need you")).toBeVisible();
+    await expect(link(page, "Projects, 2 need you")).toBeVisible();
     // The next poll gets a 502. The cache keeps the last answer, so a row
     // that read the cache would keep its old number.
     store.status = 502;
@@ -243,18 +246,17 @@ test.describe("desktop", () => {
     // The feed answers again, and the numbers come back.
     store.status = 200;
     await page.clock.fastForward(61_000);
-    await expect(count(page, "/email")).toHaveText("3");
+    await expect(link(page, "My Email, 3 need you")).toBeVisible();
   });
 
   test("a capped source shows 15+, and its name says 15 or more", async ({ page }) => {
     await stub(page, { capped: true });
     await page.goto("/settings/appearance");
-    await expect(count(page, "/email")).toHaveText("15+");
-    await expect(sidebar(page).getByRole("link", { name: "My Email, 15 or more need you", exact: true })).toBeVisible();
-    await expect(count(page, "/projects")).toHaveText("2");
+    await expect(link(page, "My Email, 15 or more need you")).toBeVisible();
+    await expect(link(page, "Projects, 2 need you")).toBeVisible();
   });
 
-  test("Add apps keeps the run badge's words beside the needs, open and folded", async ({ page }) => {
+  test("Add apps keeps the run badge's words beside the needs", async ({ page }) => {
     // Projects and Chat are not starred. A run of the Tasks agent folds to
     // Chat, and Chat is hidden too, so the run counts on Add apps.
     const runs = [{ threadId: "th-1", agentName: "task-manager", state: "running", startedAt: hoursAgo(0.1) }];
@@ -266,51 +268,25 @@ test.describe("desktop", () => {
     await expect(addApps).toHaveAccessibleName(name, { timeout: 15_000 });
     // The run badge wins the slot, so the quiet count does not show.
     await expect(addApps.locator("[data-nav-badge]")).toHaveText("1");
-    await expect(addApps.locator('[data-nav-needs="count"]')).toHaveCount(0);
   });
 
   test("hiding Projects moves its 2 (the due tasks) onto Add apps", async ({ page }) => {
     await stub(page);
     await page.goto("/settings/appearance");
-    await expect(count(page, "/projects")).toHaveText("2");
+    await expect(link(page, "Projects, 2 need you")).toBeVisible();
     const addApps = sidebar(page).locator("[data-nav-add-apps] button");
-    await expect(addApps.locator('[data-nav-needs="count"]')).toHaveCount(0);
+    await expect(addApps).toHaveAccessibleName("Add apps");
 
     await row(page, "/projects").getByRole("link").click({ button: "right" });
     await page.getByRole("menuitem", { name: "Hide from sidebar" }).click();
     await expect(row(page, "/projects")).toHaveCount(0);
-    await expect(addApps.locator('[data-nav-needs="count"]')).toHaveText("2");
     await expect(addApps).toHaveAccessibleName("Add apps, 2 need you in hidden apps");
     // Email keeps its own row and its own number.
-    await expect(count(page, "/email")).toHaveText("3");
+    await expect(link(page, "My Email, 3 need you")).toBeVisible();
   });
 
-  test("hover on a row still shows its ···, and the count gives way", async ({ page }) => {
-    await stub(page);
-    await page.goto("/settings/appearance");
-    const more = row(page, "/email").getByRole("button", { name: "More for My Email" });
-    // The slot that holds the count (`rail-row-meta`), which the CSS clips.
-    const slot = row(page, "/email").locator(".rail-row-meta");
-    await expect(count(page, "/email")).toBeVisible();
-    expect((await slot.boundingBox())?.width ?? 0).toBeGreaterThan(2);
-    await row(page, "/email").hover();
-    await expect(more).toBeVisible();
-    // The count is clipped from sight, and the name still says it.
-    await expect.poll(async () => (await slot.boundingBox())?.width ?? 0).toBeLessThanOrEqual(1);
-    await expect(sidebar(page).getByRole("link", { name: "My Email, 3 need you", exact: true })).toBeVisible();
-    await more.click();
-    await expect(page.getByRole("menuitem", { name: "Hide from sidebar" })).toBeVisible();
-  });
-
-  test("folded, Add apps keeps the run badge's words beside the needs", async ({ page }) => {
-    const runs = [{ threadId: "th-1", agentName: "task-manager", state: "running", startedAt: hoursAgo(0.1) }];
-    await stub(page, { folded: true, runs, pins: ["/calendar", "/email", "/people"] });
-    await page.goto("/settings/appearance");
-    const addApps = sidebar(page).locator("[data-nav-add-apps] button");
-    await expect(addApps).toHaveAccessibleName("Add apps, 1 assistant running, 2 need you in hidden apps", {
-      timeout: 15_000,
-    });
-  });
+  // The hover "···" test and the folded Add apps duplicate are retired
+  // (GL-Z1, D146). The glass rail draws no "···", and it is always folded.
 
   test("the folded rail shows a quiet dot, and the name keeps the number", async ({ page }) => {
     await stub(page, { folded: true });
@@ -328,10 +304,9 @@ test.describe("desktop", () => {
     await stub(page, { myDay: true });
     await page.goto("/");
     await expect(page.getByTestId("needs-you").getByText("Send the quote")).toBeVisible();
-    await expect(count(page, "/projects")).toHaveText("2");
+    await expect(link(page, "Projects, 2 need you")).toBeVisible();
     await page.getByTestId("needs-you").getByRole("button", { name: "Mark Send the quote done" }).click();
-    await expect(count(page, "/projects")).toHaveText("1");
-    await expect(sidebar(page).getByRole("link", { name: "Projects, 1 needs you", exact: true })).toBeVisible();
+    await expect(link(page, "Projects, 1 needs you")).toBeVisible();
   });
 
   test("the sidebar adds no fetch of its own: My Day reads the feed as often with it as without it", async ({ browser }) => {
@@ -343,7 +318,7 @@ test.describe("desktop", () => {
       const store = await stub(page, { myDay: true, nav });
       await page.goto("/");
       await expect(page.getByTestId("needs-you").getByText("Send the quote")).toBeVisible();
-      if (nav) await expect(count(page, "/email")).toHaveText("3");
+      if (nav) await expect(link(page, "My Email, 3 need you")).toBeVisible();
       await page.waitForTimeout(2500);
       await page.close();
       return store.needsGets;

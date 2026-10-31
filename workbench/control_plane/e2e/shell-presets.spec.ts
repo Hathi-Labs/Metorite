@@ -163,7 +163,8 @@ async function shape(page: Page, root = sidebar(page)): Promise<[string, string[
   return root.locator("[data-nav-section]").evaluateAll((els) =>
     els.map((el) => [
       el.getAttribute("data-nav-section") ?? "",
-      [...el.querySelectorAll("a")].map((a) => a.textContent?.trim() ?? ""),
+      // The glass rail draws a short label, and its link names the app in aria-label.
+      [...el.querySelectorAll("a")].map((a) => a.getAttribute("aria-label") ?? a.textContent?.trim() ?? ""),
     ]),
   );
 }
@@ -333,18 +334,16 @@ test("Add apps ends the sidebar, opens All apps with the hint, and lines up with
   await page.keyboard.press("Escape");
   await expect.poll(() => shape(page)).toEqual([["across", ["Projects"]]]);
 
-  // Its icon sits on the same centre line as the row above it, open and folded.
+  // Its icon sits on the same centre line as the row above it. The glass
+  // rail never opens (D146), so it is always the folded rail.
   const centre = async (el: ReturnType<Page["locator"]>) => {
     const box = await el.locator("svg").first().boundingBox();
     return box!.x + box!.width / 2;
   };
   const rowAbove = sidebar(page).locator('[data-nav-section="across"] a').last();
   expect(Math.abs((await centre(add)) - (await centre(rowAbove)))).toBeLessThanOrEqual(1);
-  await page.getByRole("button", { name: "Collapse sidebar" }).first().click();
   await expect(sidebar(page)).toHaveAttribute("data-collapsed", "true");
-  const folded = sidebar(page).getByRole("button", { name: "Add apps" });
-  await expect(folded).toHaveAttribute("title", "Add apps");
-  await expect.poll(async () => Math.abs((await centre(folded)) - (await centre(rowAbove)))).toBeLessThanOrEqual(1);
+  await expect(add).toHaveAttribute("title", "Add apps");
 });
 
 test("Change my layout asks again: the same answer keeps the stars, a new one gives its defaults", async ({ page }) => {
@@ -625,43 +624,12 @@ test.describe("My Day draws its cards in one order", () => {
 test.describe("a row's menu hides an app, and Undo brings it back", () => {
   const STARRED = { ...EMPTY, preset: "engineer", answered: "answered", pins: ENGINEER_STARS, known: KNOWN };
 
-  test("the ··· hides the app, and Undo restores it, with one write each way", async ({ page }) => {
-    const store = await stub(page, STARRED);
-    await page.goto("/settings/appearance");
-    await expect.poll(() => shape(page)).toContainEqual(["across", ["Projects"]]);
-    const row = sidebar(page).getByRole("link", { name: "Projects", exact: true });
-    // The ··· is a sibling: the link keeps its own name.
-    await expect(row).toHaveCount(1);
-    await row.hover();
-    const more = sidebar(page).getByRole("button", { name: "More for Projects" });
-    await expect(more).toBeVisible();
-    await more.click();
-    await expect(page.getByRole("menu")).toBeVisible();
-    // The "···" stays in view while its menu is open, with the pointer gone.
-    // Read the paint: Playwright calls an element at opacity 0 "visible".
-    await page.mouse.move(900, 600);
-    await expect
-      .poll(() => more.evaluate((el) => getComputedStyle(el.closest(".rail-row-actions")!).opacity))
-      .toBe("1");
-    await page.getByRole("menuitem", { name: "Hide from sidebar" }).click();
-    await expect.poll(() => store.puts.length).toBe(1);
-    // Projects was the last of its category, so the focus goes to the next
-    // row: Chat.
-    await expect(sidebar(page).getByRole("link", { name: "Chat", exact: true })).toBeFocused();
-    expect(store.puts[0]).toMatchObject({ pins: ["/calendar", "/email", "/chat"], known: KNOWN });
-    await expect.poll(() => shape(page)).toEqual([
-      ["personal", ["Calendar", "My Email"]],
-      ["studio", ["Chat"]],
-    ]);
-    const toast = page.getByLabel("Notifications");
-    await expect(toast.getByText("Projects hidden from your sidebar.")).toBeVisible();
-    await toast.getByRole("button", { name: "Undo" }).click();
-    await expect.poll(() => store.puts.length).toBe(2);
-    expect(store.puts[1]).toMatchObject({ pins: ENGINEER_STARS, known: KNOWN });
-    await expect.poll(() => shape(page)).toContainEqual(["across", ["Projects"]]);
-  });
+  // GL-Z1 (D146): the glass rail never opens, so it draws no "···" on a row.
+  // The tests of the "···" (its hide, its keyboard path) are retired with the
+  // open rail. The right-click menu below is the way in, and the last test of
+  // this file holds its Hide and Undo.
 
-  test("a right-click opens the same menu, open or folded, and Home has none", async ({ page }) => {
+  test("a right-click opens the row menu, and Home has none", async ({ page }) => {
     await stub(page, STARRED);
     await page.goto("/settings/appearance");
     await expect.poll(() => shape(page)).toContainEqual(["studio", ["Chat"]]);
@@ -675,113 +643,14 @@ test.describe("a row's menu hides an app, and Undo brings it back", () => {
     await expect(page.getByRole("menuitem", { name: "Hide from sidebar" })).toHaveCount(0);
     await expect(sidebar(page).getByRole("button", { name: /^More for (Home|My Day)$/ })).toHaveCount(0);
 
-    // Folded: no ···, and a right-click still opens the menu.
-    await page.getByRole("button", { name: "Collapse sidebar" }).first().click();
-    await expect(sidebar(page)).toHaveAttribute("data-collapsed", "true");
+    // The rail draws no "···".
     await expect(sidebar(page).locator("[data-row-more]")).toHaveCount(0);
-    await sidebar(page).locator('a[href="/chat"]').click({ button: "right" });
-    await expect(page.getByRole("menuitem", { name: "Hide from sidebar" })).toBeVisible();
-  });
-
-  test("from the keyboard: the ··· opens with Enter, and Escape closes it and returns the focus", async ({ page }) => {
-    await stub(page, STARRED);
-    await page.goto("/settings/appearance");
-    await expect.poll(() => shape(page)).toContainEqual(["across", ["Projects"]]);
-    await sidebar(page).getByRole("link", { name: "Projects", exact: true }).focus();
-    await page.keyboard.press("Tab");
-    const more = sidebar(page).getByRole("button", { name: "More for Projects" });
-    await expect(more).toBeFocused();
-    await expect(more).toBeVisible();
-    await page.keyboard.press("Enter");
-    await expect(page.getByRole("menuitem", { name: "Hide from sidebar" })).toBeFocused();
-    // The arrow keys move through the menu, and wrap.
-    await page.keyboard.press("ArrowDown");
-    await expect(page.getByRole("menuitem", { name: "Open in new tab" })).toBeFocused();
-    await page.keyboard.press("ArrowDown");
-    await expect(page.getByRole("menuitem", { name: "Hide from sidebar" })).toBeFocused();
-    await page.keyboard.press("Escape");
-    await expect(page.getByRole("menuitem", { name: "Hide from sidebar" })).toHaveCount(0);
-    await expect(more).toBeFocused();
-    await page.keyboard.press("Space");
-    await expect(page.getByRole("menuitem", { name: "Hide from sidebar" })).toBeFocused();
   });
 });
 
-test.describe("a category folds, per account", () => {
-  const STARRED = { ...EMPTY, preset: "engineer", answered: "answered", pins: ENGINEER_STARS, known: KNOWN };
-  const heading = (page: Page, id: string) => sidebar(page).locator(`[data-nav-section="${id}"] > button`);
-
-  test("a fold shows the count, survives a reload, and toggles from the keyboard", async ({ page }) => {
-    await stub(page, STARRED);
-    await page.goto("/settings/appearance");
-    await expect.poll(() => shape(page)).toContainEqual(["personal", ["Calendar", "My Email"]]);
-    const personal = heading(page, "personal");
-    await expect(personal).toHaveAttribute("aria-expanded", "true");
-    await personal.focus();
-    await page.keyboard.press("Enter");
-    await expect(personal).toHaveAttribute("aria-expanded", "false");
-    await expect(personal).toHaveText(/Personal Center \(2\)/);
-    await expect.poll(() => shape(page)).toContainEqual(["personal", []]);
-    // Kept per account, so a reload keeps it.
-    await page.reload();
-    await expect(heading(page, "personal")).toHaveAttribute("aria-expanded", "false");
-    await expect(heading(page, "personal")).toHaveText(/Personal Center \(2\)/);
-    await heading(page, "personal").focus();
-    await page.keyboard.press("Space");
-    await expect(heading(page, "personal")).toHaveAttribute("aria-expanded", "true");
-  });
-
-  test("another account's folds never apply", async ({ page }) => {
-    await page.addInitScript(() => {
-      localStorage.setItem("cc-sidebar-folds:ben@beta.example|org2", JSON.stringify({ personal: true }));
-      localStorage.setItem("cc-sidebar-folds:priya@example.com|other-org", JSON.stringify({ personal: true }));
-    });
-    await stub(page, STARRED);
-    await page.goto("/settings/appearance");
-    await expect.poll(() => shape(page)).toContainEqual(["personal", ["Calendar", "My Email"]]);
-    await expect(heading(page, "personal")).toHaveAttribute("aria-expanded", "true");
-    // Priya folds AI Studio. Then another member signs in on this browser:
-    // Ben sees AI Studio open, because Priya's folds are hers.
-    await heading(page, "studio").click();
-    await expect(heading(page, "studio")).toHaveAttribute("aria-expanded", "false");
-    await stub(page, STARRED, {
-      me: { ...MEMBER, email: "ben@beta.example", organization: { id: "org2", slug: "beta", display_name: "Beta" } },
-    });
-    await page.reload();
-    await expect.poll(() => shape(page)).toContainEqual(["studio", ["Chat"]]);
-    await expect(heading(page, "studio")).toHaveAttribute("aria-expanded", "true");
-  });
-
-  test("the category of the current route opens, whatever was stored", async ({ page }) => {
-    // Once per test, not on every load: the page must keep what it writes.
-    await page.addInitScript(() => {
-      if (sessionStorage.getItem("folds-seeded")) return;
-      sessionStorage.setItem("folds-seeded", "1");
-      localStorage.setItem("cc-sidebar-folds:priya@example.com|org1", JSON.stringify({ across: true, studio: true }));
-    });
-    await stub(page, { ...STARRED, pins: [...ENGINEER_STARS, "/people"] });
-    await page.goto("/settings/appearance");
-    await expect(heading(page, "across")).toHaveAttribute("aria-expanded", "false");
-    await page.goto("/people");
-    // AI Studio is the witness: once it reads folded, the stored folds have
-    // loaded, so an open Apps is the rule and not the first frame.
-    await expect(heading(page, "studio")).toHaveAttribute("aria-expanded", "false");
-    await expect(heading(page, "across")).toHaveAttribute("aria-expanded", "true");
-    await expect(sidebar(page).getByRole("link", { name: "People", exact: true })).toBeVisible();
-    // While the member is on one of its apps, its fold is off, so a press
-    // never seems to do nothing.
-    await expect(heading(page, "across")).toHaveAttribute("aria-disabled", "true");
-    // ONE press: two would cancel out, and prove nothing.
-    await heading(page, "across").focus();
-    await page.keyboard.press("Enter");
-    await expect(heading(page, "across")).toHaveAttribute("aria-expanded", "true");
-    await expect(heading(page, "studio")).not.toHaveAttribute("aria-disabled", "true");
-    // The presses stored nothing: away from People, Apps is still open.
-    await page.goto("/settings/appearance");
-    await expect(heading(page, "studio")).toHaveAttribute("aria-expanded", "false");
-    await expect(heading(page, "across")).toHaveAttribute("aria-expanded", "true");
-  });
-});
+// GL-Z1 (D146): the category folds ("a category folds, per account") exist only
+// on the open rail. The glass rail draws no heading, so those tests are retired.
+// `sidebarFolds.test.ts` still fences the stored folds.
 
 // ── Fix round, 2026-10-11 ───────────────────────────────────────────────────
 
