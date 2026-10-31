@@ -28,7 +28,7 @@ from gateway.routes.shell.intent import JOBS
 ROOT = Path(__file__).resolve().parents[2]
 NAV = ROOT / "workbench" / "control_plane" / "src" / "lib" / "nav.ts"
 PRESETS = ROOT / "workbench" / "control_plane" / "src" / "lib" / "shell" / "presets.ts"
-REGISTRY = ROOT / "workbench" / "control_plane" / "src" / "lib" / "shell" / "registry.ts"
+REGISTRY = ROOT / "workbench" / "control_plane" / "src" / "lib" / "shell" / "jobs.generated.ts"
 
 
 class _Result:
@@ -353,8 +353,8 @@ class TestOneVocabulary:
         So this reads the TypeScript, as `TestOneJobList` does, and it fails
         when the two lists drift."""
         source = REGISTRY.read_text(encoding="utf-8")
-        match = re.search(r"export const JOBS[^=]*=\s*\[(.*?)\n\];", source, re.S)
-        assert match, "JOBS not found in registry.ts"
+        match = re.search(r"export const GENERATED_JOBS[^=]*=\s*\[(.*?)\n\];", source, re.S)
+        assert match, "GENERATED_JOBS not found in jobs.generated.ts"
         ts_ids = set(re.findall(r'^\s+id: "([a-z-]+)",$', match.group(1), re.M))
         assert len(ts_ids) >= 10
         assert me._job_ids() == ts_ids

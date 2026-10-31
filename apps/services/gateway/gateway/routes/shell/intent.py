@@ -42,6 +42,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from acb_auth import UserContext, get_current_user
+from acb_common.app_manifests.shell_manifest import load_jobs
 from fastapi import Depends, HTTPException
 from gateway.routes.shell.search import router
 from pydantic import BaseModel, ConfigDict, Field
@@ -102,77 +103,25 @@ class Job:
 ADMIN_PERMISSION = "admin:members:read"
 
 
-#: The jobs, in step with `workbench/control_plane/src/lib/shell/registry.ts`
-#: `JOBS` (ids, links and owning apps). `test_shell_intent.py` fails if the two
-#: drift, because a job the bar shows and the coordinator cannot pick, or the
-#: other way round, is two answers to "what can I do here".
-JOBS: tuple[Job, ...] = (
-    Job("capture", "New task", "add a task, a to-do or a reminder for themselves",
-        "projects", "/projects?do=capture",
-        {"title": "the task itself, in the member's own words, without 'remind me to'"},
-        fallback_feature="tasks", fallback_href="/tasks?do=capture"),
-    Job("compose", "Write an email", "write, send or reply to an email",
-        "email", "/email?do=compose",
-        {"to": "who the email goes to: a name or an email address",
-         "subject": "a short subject line for the email"}),
-    Job("plan-day", "Plan my day", "plan, schedule or look at their day, their calendar or their agenda",
-        "tasks", "/calendar"),
-    Job("new-project", "New space", "start a new space, project or department board in Projects",
-        "projects", "/projects?do=new-project"),
-    Job("new-chat", "New chat", "start a new conversation with the AI assistant",
-        "chat", "/chat?do=new-chat"),
-    Job("invite", "Invite a member", "invite a new person to join the organization",
-        None, "/settings/organization?do=invite", admin=True),
-    Job("new-lead", "New lead", "add a new sales lead or prospect to the CRM",
-        "crm", "/crm?do=new-lead"),
-    # WS-53 CRM-X2 (crm_platform.md §19.6). Each opens a form or a list in
-    # the CRM and saves nothing.
-    Job("new-deal", "New deal", "add a new deal or sales opportunity to the CRM",
-        "crm", "/crm?do=new-deal"),
-    Job("log-call", "Log a call", "log a phone call with a lead, a contact or a customer in the CRM",
-        "crm", "/crm?do=log-call"),
-    Job("find-record", "Find a record", "find a lead, a deal, a contact or a company in the CRM",
-        "crm", "/crm?do=find-record"),
-    Job("add-mcp", "Add an MCP server", "connect a new MCP server, a tool source for the agents",
-        "integrations", "/integrations?do=add-mcp"),
-    Job("review-integrations", "Review connections", "review the connections the company has made and their health",
-        "integrations", "/integrations"),
-    # WS-55 EA-4b (D-EA-9). The AI agents view of Integrations is open to every
-    # member, so this job needs no feature. The two jobs above keep
-    # `integrations`, which `registry.ts` names on each job.
-    Job("connect-agent", "Connect an AI agent",
-        "connect an outside AI agent such as Claude Code to Metorite, or see and revoke their agents",
-        None, "/integrations?view=agents"),
-    Job("find-person", "Find a colleague", "find a colleague, or who knows or does something",
-        "people", "/people"),
-    # WS-61 KB-12 (knowledge_base.md §11). The jobs landed with the promotion
-    # to live, because this list filters by feature and not by launch status.
-    # A link job, and a form that saves nothing.
-    Job("find-knowledge", "Find in Knowledge",
-        "find a page, a policy, a handbook entry or a how-to the company wrote down",
-        "knowledge", "/knowledge/search"),
-    Job("write-page", "Write a page",
-        "write a new page of company knowledge, such as a policy, a handbook entry or a how-to",
-        "knowledge", "/knowledge?do=write-page"),
-    # WS-61 KC-8e. Two link jobs that open the Add a product and Add a topic
-    # form. No fields: the form saves nothing, and the member presses Add.
-    Job("add-product", "Add a product",
-        "add a product of the company to the Knowledge directory, with a name and other names",
-        "knowledge", "/knowledge?do=add-product"),
-    Job("add-topic", "Add a topic",
-        "add a topic to the Knowledge directory, with a name and other names",
-        "knowledge", "/knowledge?do=add-topic"),
-    Job("edit-profile", "Update my profile", "change their own profile, skills, CV or working hours",
-        None, "/people/me"),
-    Job("appearance", "Change how Metorite looks", "change the theme, dark or light mode, density or accent",
-        None, "/settings/appearance"),
-    Job("whatsapp-reply", "Reply on WhatsApp", "answer the customers who wrote to the business on WhatsApp",
-        "whatsapp", "/whatsapp"),
-    # NS-6 slice 6c (D99): Artifacts lists each chat's files. A link job.
-    Job("find-chat-file", "Find a file from a chat", "find a file, report or document the assistant made in a chat",
-        "artifacts", "/artifacts"),
-    Job("review-approvals", "Review pending approvals", "check and approve what the AI wants to send before it goes out",
-        "approvals", "/approvals"),
+#: The jobs. They come from the shell manifests
+#: (`acb_common/app_manifests/shell/*.json`, WS-PKG PKG-1), the same files that
+#: generate `workbench/control_plane/src/lib/shell/jobs.generated.ts`, which
+#: `registry.ts` serves as `JOBS`. One source feeds both lists, so a job the bar
+#: shows and the coordinator cannot pick cannot happen. The order is the
+#: `position` of each job, and it sets the order of the model prompt.
+JOBS: tuple[Job, ...] = tuple(
+    Job(
+        id=s.id,
+        label=s.label,
+        meaning=s.meaning,
+        feature=s.feature,
+        href=s.href,
+        fields=dict(s.fields),
+        admin=s.admin,
+        fallback_feature=s.fallback_feature,
+        fallback_href=s.fallback_href,
+    )
+    for s in load_jobs()
 )
 
 #: The option that means "not a job": the assistant takes it.

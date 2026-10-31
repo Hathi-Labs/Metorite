@@ -112,7 +112,8 @@
       "tests/unit/test_projects_field_parity.py",
       "tests/unit/test_projects_report_sections_lockstep.py",
       "tests/unit/test_projects_ui_actions.py",
-      "tests/unit/test_reference_links.py"
+      "tests/unit/test_reference_links.py",
+      "tests/unit/test_shell_manifests.py"
     ]
   },
   "ts": {
