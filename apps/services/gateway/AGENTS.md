@@ -63,11 +63,11 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - Each args schema comes from `route.dependant` of the live route (AD-9), never from a hand list. `agent_oauth.door_available` decides each op.
    - Fences: `test_mcp_edge_app_door.py`, `test_mcp_edge_app_door_r8.py`, `test_app_door_coverage.py`.
 0p. assistant_summaries.py -- **The ONE reader and writer of `chat_session.member_summary`** (WS-63 PZ-33a, `personalization.md` §15.3). No other module names the column.
-   - Each function takes a session that the caller opened with `tenant_session(org)`. No function takes an org or a member. The caller reads the member from `chat_session.user_id` under RLS.
+   - Each function takes a session that the caller opened with `tenant_session(org)`, or the sync `acb_graph` session for `clear_on_share`. No function takes an org. Only `clear_for_member` takes a member, from the session or the member record. ⚠️ Each caller checks the member: a statement finds the chat by its id, and RLS binds only the tenant.
    - ⚠️ A write sets that column only. It never changes `updated_at`, `last_preview` or `message_count`.
    - ⚠️ `{"v": 1, "off": true}` is a Delete of the member. No mark and no write changes it. The marked write holds the mark in its WHERE, so a Delete during the model call wins.
-   - The answer checks are pure. They call `typed_text`, `is_sensitive`, `needs_confirm` and `grounded` of `acb_common.assistant_profile`, and copy none of them. An answer that does not parse writes nothing.
-   - The module imports no litellm and no streamed completion. No list, room, history or staff source imports it.
+   - The answer checks are pure. They call `typed_text`, `is_sensitive`, `needs_confirm`, `grounded`, `sensitive_terms` and `confirm_form_without_token` of `acb_common.assistant_profile`, and copy none of them. The stored text as one string must pass them too. An answer that does not parse writes nothing. An `Answer` comes only from `check_answer`.
+   - The module imports no litellm and no streamed completion. An allow list holds its importers: `routes/rooms.py` (`clear_on_share`) and `routes/admin/members.py` (`clear_for_member`). A new importer fails `test_chat_summary_private.py` until its slice adds it.
    - Fences: `test_chat_summary.py`, `test_chat_summary_private.py`, `test_chat_summary_r8.py`.
 1. main.py -- **The app factory and the lifespan.** It also serves `/copilot/chat`, the AG-UI endpoint. ⚠️ **A loop's flag gate lives INSIDE its start function, never as an `if` in main.py.** So each flag has one reader. main.py starts and stops each loop UNCONDITIONALLY. Fences: `test_launch_defang_kill_switches.py`, `test_crm_zoho_sync.py`, `test_ingestion_consumer.py::test_gateway_lifespan_starts_the_consumer_and_stops_it_after_yield`.
 2. routes/agent.py -- **The agent run doors, the registry and the mutation inbox.**

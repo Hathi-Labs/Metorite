@@ -23,7 +23,11 @@ the column, and when a module that is not on its list imports this one.
   reads the member from ``chat_session.user_id`` under RLS, never from a
   payload (R11).
 * There is no plain write. A summary reaches the column only through
-  :func:`check_answer` and :func:`write_marked`.
+  :func:`check_answer` and :func:`write_marked`. ⚠️ An :class:`Answer`
+  must come only from :func:`check_answer`. The type checks the caps, and
+  it cannot check the drops. So the review of PZ-33b must check that its
+  caller runs :func:`check_answer` and then :func:`write_marked`, and builds
+  no :class:`Answer` of its own.
 * A write sets ``member_summary`` only. It never changes ``updated_at``,
   ``last_preview`` or ``message_count``. So the chat keeps its place in the
   list, and the idle clock does not move. ``routes/chat.py`` keeps the same
@@ -77,6 +81,7 @@ from typing import Any
 
 from acb_common.assistant_profile import (
     confirm_form_without_token,
+    fold,
     grounded,
     is_sensitive,
     needs_confirm,
@@ -114,9 +119,16 @@ _ROW_BREAK = "\n;\n"
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
 #: The form of a stored time.
 _STAMP = "%Y-%m-%dT%H:%M:%SZ"
-#: A mark between two digits that ``needs_confirm`` does not read as a
-#: number joint. "98450/12345" reads as one number for the check.
-_DIGIT_JOINT = re.compile(r"(?<=\d)[/\\|_](?=\d)")
+#: One to three marks between two digits, with spaces around them or not.
+#: ``needs_confirm`` reads only a space, a dot, a dash and a bracket as a
+#: number joint. So for this check "98450/12345", "98450 – 12345",
+#: "98450! 12345" and "984, 501, 2345" each read as one number (review rounds
+#: 1 and 2). An underscore counts too, as it did in round 1.
+_DIGIT_JOINT = re.compile(r"(?<=\d)\s*(?:[^\w\s]|_){1,3}\s*(?=\d)")
+#: A domain in words behind the end of a sentence: "acme. Example dot com".
+#: ``needs_confirm`` reads a domain in words only after "at". It runs on
+#: folded text.
+_SPOKEN_DOT = re.compile(r"\w[.!?]\s+[^\W\d_]+\s+dot\s+[^\W\d_]{2,24}\b")
 
 
 class SummaryShapeError(ValueError):
@@ -154,7 +166,7 @@ def _is_member_row(row: Any, member: Any) -> bool:
     which the model wrote, so it grounds nothing (``routes/agent.py``)."""
     if _field(row, "role") != "user" or is_brief_row(row):
         return False
-    if is_card_answer_text(str(_field(row, "content") or "")):
+    if is_card_answer_text(str(_field(row, "content") or "").strip()):
         return False
     if _field(row, "author_kind") not in (None, "", "human"):
         return False
@@ -239,19 +251,28 @@ def sentences(value: str) -> list[str]:
     return [s for s in (_one_line(p) for p in _SENTENCE_END.split(value)) if s]
 
 
+def _joint(text: str) -> str:
+    """*text* with each mark of :data:`_DIGIT_JOINT` as a dash. Each typed
+    row keeps its own joints: the row break stays, so two rows never join
+    into one number."""
+    return _ROW_BREAK.join(_DIGIT_JOINT.sub("-", part) for part in text.split(_ROW_BREAK))
+
+
 def _flagged(line: str) -> bool:
-    """True when *line* holds a sensitive word, an address, a link or a long
-    number. A slash, a bar or an underscore between two digits counts as a
-    number joint here."""
-    return (is_sensitive(line) or needs_confirm(line)
-            or needs_confirm(_DIGIT_JOINT.sub("-", line)))
+    """True when *line* holds a sensitive word, an address, a link, a long
+    number (:func:`_joint`) or a domain in words behind the end of a
+    sentence (:data:`_SPOKEN_DOT`)."""
+    return (is_sensitive(line) or needs_confirm(line) or needs_confirm(_joint(line))
+            or _SPOKEN_DOT.search(fold(line)) is not None)
 
 
 def _keep(line: str, words: str) -> bool:
     """True when the summary may store *line*. A line that is not flagged
     stays. A flagged line stays only when each of these holds:
 
-    * the typed words of the member hold the line (``grounded``);
+    * the typed words of the member hold the line (``grounded``). Both sides
+      read each number through :func:`_joint`, so "98450 – 12345" needs the
+      member to have typed that one number;
     * they hold each sensitive term of the line (``sensitive_terms``). So 80%
       of the words of a line is not enough when the member never typed the
       sensitive word itself;
@@ -263,7 +284,7 @@ def _keep(line: str, words: str) -> bool:
     stores what the member did not say (D-PZ-16, D-PZ-28)."""
     if not _flagged(line):
         return True
-    if not grounded(line, words):
+    if not grounded(_joint(line), _joint(words)):
         return False
     if not sensitive_terms(line) <= sensitive_terms(words):
         return False
@@ -523,7 +544,7 @@ RETURNING id
 CLEAR_FOR_MEMBER_SQL = f"""
 UPDATE chat_session AS s
    SET member_summary = {_CLEARED}
- WHERE lower(s.user_id) = :member
+ WHERE lower(regexp_replace(s.user_id, '^[[:space:]]+|[[:space:]]+$', '', 'g')) = :member
    AND s.organization_id = {_BOUND_ORG}
    AND (s.member_summary IS NOT NULL
         OR EXISTS (SELECT 1 FROM chat_message m WHERE m.session_id = s.id))

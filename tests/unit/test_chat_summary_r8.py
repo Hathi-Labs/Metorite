@@ -14,7 +14,7 @@ whole ladder and two organizations:
   were;
 - item 9: a Delete (``off``) after the mark wins. The marked write has the
   mark in its WHERE, so it changes nothing. A newer mark wins the same way,
-  and so does a Forget, which sets the column to NULL;
+  and so does a Forget, which clears the summary and its mark;
 - item 8: ``SOLO_ROOM_SQL`` and ``room_is_solo(resolve_room_access(...))``
   agree on each row: a NULL visibility, a mixed-case address, a ``group:``
   row, an ``org`` row and a chat with no participant row among them. The

@@ -23,11 +23,14 @@ Review round 1 (2026-10-31) adds:
   that crosses the end of a line drops the whole answer (P1-a);
 - a sensitive line stays only when the member typed each sensitive term, and
   a line with a form that ``grounded`` cannot match drops (P1-b);
-- a card answer is not a typed row (P1-c).
+- a card answer is not a typed row (P1-c), with a leading space too;
+- review round 2: one to three marks between two digits join one number,
+  for the flag and for the grounding, and a domain in words behind the end
+  of a sentence is flagged (``_DIGIT_JOINT``, ``_SPOKEN_DOT``).
 
 Mutations, each red here: drop the sensitive-line rule of ``_keep``; drop
-the sensitive-term rule; drop the joined-text check (``_passes``); count a
-card answer as typed; let ``member_texts`` skip ``typed_text``; let
+the sensitive-term rule; drop the joined-text check (``_passes``); put the
+round-1 ``_DIGIT_JOINT`` back; count a card answer as typed; let ``member_texts`` skip ``typed_text``; let
 ``prompt_rows`` read ``tool_events``; drop the brief-row check; drop
 ``enabled_for`` from ``chat_summary_for``.
 """
@@ -326,6 +329,59 @@ def test_the_sensitive_terms_and_the_forms_with_no_token() -> None:
         assert not ap.confirm_form_without_token(value), value
 
 
+# ── Review round 2: number joints and a domain behind a sentence end ───────
+
+#: Each answer stored a number or a domain that the member never typed
+#: before round 2 (re-verify of 752d076a6).
+ROUND_2_DROPS = [
+    ("Call 98450 – 12345 today.", []),
+    ("Call 98450–12345 today.", []),
+    ("Call 98450 — 12345 today.", []),
+    ("Call 98450, 12345 today.", []),
+    ("Call 98450; 12345 today.", []),
+    ("Call 98450: 12345 today.", []),
+    ("Call 98450? 12345 waits.", []),
+    ("Call 98450! 12345 today.", []),
+    ("Call 98450!12345 today.", []),
+    ("Call 98450+12345 today.", []),
+    ("Call 98450~12345 today.", []),
+    ("Call 98450*12345 today.", []),
+    ("Call 984, 501, 2345 today.", []),
+    ("Call Priya on 98450 –", ["12345 later"]),
+    ("Call Priya on 98450,", ["12345 later"]),
+    ("Call 98450! 12345 waits.", []),
+    ("See acme. Example dot com has it.", []),
+    ("See acme! Example dot com has it.", []),
+]
+
+
+@pytest.mark.parametrize(("text", "follow"), ROUND_2_DROPS,
+                         ids=[f"{i}:{t[:24]}" for i, (t, _f) in enumerate(ROUND_2_DROPS)])
+def test_round_2_a_joined_number_or_domain_writes_nothing(text: str, follow: list[str]) -> None:
+    words = summaries.member_words(PROBE_ROWS, MEMBER)
+    assert summaries.check_answer(_answer(text, follow), words) is None
+
+
+@pytest.mark.parametrize(("text", "typed"), [
+    ("Planned the deck. Send it to Priya.", None),
+    ("Meet at 10:30 for the Q3, 2026 plan.", None),
+    ("Call 98450–12345 today.", "call 98450-12345 today"),
+    ("Call 98450/12345 today.", "call 98450/12345 today"),
+], ids=["two sentences", "a time and a quarter", "a typed number with a dash",
+        "a typed number with a slash"])
+def test_round_2_keeps_what_is_no_new_number(text: str, typed: str | None) -> None:
+    rows = PROBE_ROWS if typed is None else [_row("m1", "user", typed, author_email=MEMBER)]
+    out = summaries.check_answer(_answer(text), summaries.member_words(rows, MEMBER))
+    assert out is not None and out.text == text
+
+
+def test_round_2_two_typed_rows_never_join_into_one_number() -> None:
+    rows = [_row("m1", "user", "Room 98450 is booked.", author_email=MEMBER),
+            _row("m2", "user", "Ticket 12345 is open.", author_email=MEMBER)]
+    words = summaries.member_words(rows, MEMBER)
+    assert summaries.check_answer(_answer("Call 98450–12345 today."), words) is None
+
+
 # ── Review round 1, P1-c: a card answer is not a typed row ──────────────────
 
 
@@ -340,6 +396,9 @@ def test_a_card_answer_is_not_a_typed_row() -> None:
         _row("m3", "user", "My answer to your last question: yes", author_email=MEMBER),
     ]
     assert summaries.member_texts(rows, MEMBER) == ["Help me answer Ravi."]
+    # A leading space does not hide a card answer (review round 2).
+    spaced = [rows[0], _row("m4", "user", "  " + card, author_email=MEMBER)]
+    assert summaries.member_texts(spaced, MEMBER) == ["Help me answer Ravi."]
     assert all("ravi.k" not in w for _who, w in summaries.prompt_rows(rows, MEMBER))
     words = summaries.member_words(rows, MEMBER)
     assert summaries.check_answer(_answer(
