@@ -418,7 +418,7 @@ export default function Modal({
             finalFocus={returnFocus}
             className={`flex ${
               CALLER_SETS_MAX_HEIGHT.test(className) ? "" : "max-h-full"
-            } w-full ${SIZES[size]} flex-col overflow-hidden rounded-lg border border-border bg-card shadow-lg outline-none ${className}`}
+            } w-full ${SIZES[size]} flex-col overflow-hidden rounded-lg border border-border bg-card shadow-lg outline-none glass:rounded-2xl glass:border-transparent glass:glass-menu ${className}`}
           >
             {title ? (
               <header className="flex items-center gap-2 border-b border-border px-3 py-2">

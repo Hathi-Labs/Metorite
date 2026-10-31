@@ -4,7 +4,7 @@
 directive of 2026-10-31. Decision **D141**. Board row **WS-UX** (phase GL).
 Metorite task #1125, under epic 492.
 
-**GL-0 and GL-1 are BUILT, 2026-10-31,** on staging only. Next: GL-2, GL-3
+**GL-0, GL-1 and GL-2 are BUILT, 2026-10-31,** on staging only. Next: GL-3
 and GL-4, which can run in parallel. §9 holds two questions for the owner.
 
 ---
