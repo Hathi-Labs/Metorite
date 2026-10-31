@@ -1,8 +1,10 @@
 "use client";
 
 import Icon, { themedIcon } from "@/components/Icon";
+import Badge from "@/components/ui/Badge";
+import Button from "@/components/ui/Button";
 import { ParentCrumb } from "@/components/TaskMeta";
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   type EnergyWindow,
   type DayTemplate,
@@ -20,12 +22,16 @@ import {
   HOUR_PX,
   DOW,
   SNAP_MINS,
-  blockLines,
+  blockLayout,
   DRAG_TYPE,
+  elapsedPct,
   snap,
   minutesInto,
-  fmtClock,
+  fmtClockShort,
   fmtLeft,
+  fmtRange,
+  leftText,
+  type RangeForm,
   deadlinesForDay,
   layoutBlocks,
   reservedWindowsForDay,
@@ -50,6 +56,80 @@ import {
   type ZonedTime,
 } from "../lib/reminders";
 
+
+// ── the card tones ───────────────────────────────────────────────────────────
+// One rule for each state. A state sets the accent bar and the tint, and it
+// never stacks with another. The surface is a token mixed into `--background`,
+// so it is opaque: no hour line and no now line shows through a card.
+//
+// The tints are light on purpose. Text on a card is `META` (below) or
+// `text-foreground`, and both clear 4.5 : 1 on every surface here, in light and
+// dark (DESIGN_SYSTEM.md §7, measured on 2026-10-31). `text-muted-foreground`
+// does not: it is 4.6 : 1 on white and falls under 4.5 on any tint.
+type CardTone = {
+  bar: string;
+  /** The bar of the current block, before "now" fills it. */
+  track: string;
+  border: string;
+  rest: string;
+  now: string;
+  past: string;
+  /** The faint layer over the elapsed part of the current block. */
+  elapsed: string;
+};
+const CARD_TONE: Record<
+  "base" | "leveraged" | "one" | "conflict" | "done",
+  CardTone
+> = {
+  base: {
+    bar: "bg-primary",
+    track: "bg-primary/35",
+    border: "border-primary/25 hover:border-primary/50",
+    rest: "bg-[color-mix(in_srgb,var(--primary)_5%,var(--background))]",
+    now: "bg-[color-mix(in_srgb,var(--primary)_7%,var(--background))]",
+    past: "bg-[color-mix(in_srgb,var(--primary)_3%,var(--background))]",
+    elapsed: "bg-primary/5",
+  },
+  leveraged: {
+    bar: "bg-warning",
+    track: "bg-warning/35",
+    border: "border-primary/25 hover:border-primary/50",
+    rest: "bg-[color-mix(in_srgb,var(--primary)_5%,var(--background))]",
+    now: "bg-[color-mix(in_srgb,var(--primary)_7%,var(--background))]",
+    past: "bg-[color-mix(in_srgb,var(--primary)_3%,var(--background))]",
+    elapsed: "bg-primary/5",
+  },
+  one: {
+    bar: "bg-warning",
+    track: "bg-warning/35",
+    border: "border-warning/40 hover:border-warning/70",
+    rest: "bg-[color-mix(in_srgb,var(--warning)_8%,var(--background))]",
+    now: "bg-[color-mix(in_srgb,var(--warning)_10%,var(--background))]",
+    past: "bg-[color-mix(in_srgb,var(--warning)_4%,var(--background))]",
+    elapsed: "bg-warning/5",
+  },
+  conflict: {
+    bar: "bg-destructive",
+    track: "bg-destructive/35",
+    border: "border-destructive/35 hover:border-destructive/60",
+    rest: "bg-[color-mix(in_srgb,var(--destructive)_5%,var(--background))]",
+    now: "bg-[color-mix(in_srgb,var(--destructive)_8%,var(--background))]",
+    past: "bg-[color-mix(in_srgb,var(--destructive)_3%,var(--background))]",
+    elapsed: "bg-destructive/5",
+  },
+  done: {
+    bar: "bg-success",
+    track: "bg-success/35",
+    border: "border-success/25 hover:border-success/50",
+    rest: "bg-[color-mix(in_srgb,var(--success)_5%,var(--background))]",
+    now: "bg-[color-mix(in_srgb,var(--success)_5%,var(--background))]",
+    past: "bg-[color-mix(in_srgb,var(--success)_5%,var(--background))]",
+    elapsed: "bg-success/5",
+  },
+};
+/** Secondary text on a card: `--muted-foreground` pulled 30% toward the
+ *  foreground, so it reads at 4.5 : 1 or more on each tint. */
+const META = "text-[color-mix(in_srgb,var(--muted-foreground),var(--foreground)_30%)]";
 
 // ── Day / Week hour grid ─────────────────────────────────────────────────────
 export function TimeGrid({
@@ -137,6 +217,12 @@ export function TimeGrid({
 }) {
   const hours = Array.from({ length: dayEnd - dayStart }, (_, i) => dayStart + i);
   const gridHeight = hours.length * HOUR_PX;
+  // Where the time pill sits in the gutter: day view, today, inside the grid.
+  const pillRaw = ((minutesInto(now) - dayStart * 60) / 60) * HOUR_PX;
+  const pillTop =
+    days.length === 1 && sameDay(days[0], now) && pillRaw >= 0 && pillRaw <= gridHeight
+      ? pillRaw
+      : null;
   // Live resize (transient end while dragging the handle) + drop-target column.
   const removal = useRemoval();
   const [resizing, setResizing] = useState<{ id: string; endMs: number } | null>(null);
@@ -150,7 +236,26 @@ export function TimeGrid({
     y: number;
     item: MyTask;
     day: Date;
+    /** Opened from the keyboard: the menu takes the focus, and gives it back. */
+    kbd?: boolean;
+    /** The ⋯ button that opened it. */
+    button?: HTMLElement;
   } | null>(null);
+  // The width of a day column, so a card knows its real width in px.
+  const [colW, setColW] = useState(0);
+  const colObs = useRef<ResizeObserver | null>(null);
+  const measureCol = useCallback((el: HTMLDivElement | null) => {
+    colObs.current?.disconnect();
+    colObs.current = null;
+    if (!el) return;
+    setColW(Math.round(el.getBoundingClientRect().width));
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      setColW(Math.round(entries[0].contentRect.width));
+    });
+    ro.observe(el);
+    colObs.current = ro;
+  }, []);
   const [rctx, setRctx] = useState<{ x: number; y: number; row: CalReminder } | null>(null);
   const lpTimer = useRef<number | null>(null);
   const lpFired = useRef(false);
@@ -327,30 +432,45 @@ export function TimeGrid({
       )}
 
       {/* `relative z-0`: one stacking context for the whole body. The z-20 of
-          a pin and of the now line, and the z-10 of the current block, stay
-          inside it and under the sticky week header (z-10) above. */}
+          a pin stays inside it, under the sticky week header (z-10) above.
+          The now line and the cards have no z-index, so they stay there too. */}
       <div className="relative z-0 flex">
         {/* Hour gutter — each row is EXACTLY HOUR_PX so the labels stay in
             lockstep with the day-column hour lines and the now-line (a per-row
             negative margin here used to compound, drifting the labels ~3h up by
             late evening). The label is centred on the hour line at the row top. */}
-        <div className="w-14 shrink-0">
+        <div className="relative w-14 shrink-0">
           {hours.map((h) => (
             <div
               key={h}
               style={{ height: HOUR_PX }}
               className="relative pr-2 text-right text-[10px] text-muted-foreground"
             >
-              <span className="absolute right-2 top-0 -translate-y-1/2">
-                {h % 12 === 0 ? 12 : h % 12}
-                {h < 12 ? "am" : "pm"}
-              </span>
+              {/* the pill below hides the label it would sit on */}
+              {!(
+                pillTop != null && Math.abs(pillTop - (h - dayStart) * HOUR_PX) < 14
+              ) && (
+                <span className="absolute right-2 top-0 -translate-y-1/2">
+                  {h % 12 === 0 ? 12 : h % 12}
+                  {h < 12 ? "am" : "pm"}
+                </span>
+              )}
             </div>
           ))}
+          {/* The live time (day view), in the gutter and level with the now
+              line, so it never covers a card. */}
+          {pillTop != null && (
+            <span
+              className="pointer-events-none absolute right-0.5 -translate-y-1/2 whitespace-nowrap rounded bg-primary px-1 text-[11px] font-semibold leading-4 tabular-nums text-primary-foreground shadow-sm"
+              style={{ top: pillTop }}
+            >
+              {fmtClockShort(now)}
+            </span>
+          )}
         </div>
 
         {/* Day columns */}
-        {days.map((day) => {
+        {days.map((day, di) => {
           const blocks = blocksForDay(items, day);
           const deadlines = deadlinesForDay(items, day);
           const today = sameDay(day, now);
@@ -382,6 +502,7 @@ export function TimeGrid({
           return (
             <div
               key={dayKey}
+              ref={di === 0 ? measureCol : undefined}
               onDragOver={(e) => {
                 e.preventDefault();
                 e.dataTransfer.dropEffect = "move";
@@ -539,19 +660,16 @@ export function TimeGrid({
                 </div>
               )}
 
-              {/* now line — pulses so "where am I in the day" is glanceable; a
-                  live time pill (day view) makes the exact time readable. */}
+              {/* now line. It has no z-index and it comes before the cards, so
+                  every card draws over it: the line never strikes through a
+                  title. The time pill is in the gutter. The current card shows
+                  the elapsed part as a layer that ends at this line. */}
               {today && nowTop >= 0 && nowTop <= gridHeight && (
                 <div
-                  className="pointer-events-none absolute inset-x-0 z-20 border-t-2 border-primary"
+                  className="pointer-events-none absolute inset-x-0 border-t-2 border-primary"
                   style={{ top: nowTop }}
                 >
-                  <span className="absolute -left-1 -top-1 h-2 w-2 animate-pulse rounded-full bg-primary" />
-                  {days.length === 1 && (
-                    <span className="absolute left-1 -top-2 rounded bg-primary px-1 text-[9px] font-semibold leading-tight text-primary-foreground shadow-sm">
-                      {fmtClock(now)}
-                    </span>
-                  )}
+                  <span className="absolute -left-1 -top-1 h-2 w-2 rounded-full bg-primary motion-safe:animate-pulse" />
                 </div>
               )}
 
@@ -619,7 +737,12 @@ export function TimeGrid({
                 );
               })}
 
-              {/* scheduled blocks — overlaps split into side-by-side lanes */}
+              {/* scheduled blocks — overlaps split into side-by-side lanes.
+                  One card anatomy: a 3 px accent bar carries the state colour,
+                  the surface is opaque (so no hour line and no now line shows
+                  through), and each state sets its own bar and tint without
+                  stacking (task 1124). What a card draws follows its REAL
+                  width (`blockLayout`), not the view. */}
               {laid.map(({ block: b, lane, lanes }) => {
                 const end =
                   resizing?.id === b.item.id ? new Date(resizing.endMs) : b.end;
@@ -634,10 +757,12 @@ export function TimeGrid({
                   !isDone &&
                   b.start.getTime() <= now.getTime() &&
                   b.end.getTime() > now.getTime();
+                // Past and not done: muted, so the eye goes to now and next.
+                const isPast = !isDone && b.end.getTime() <= now.getTime();
                 // Fixed (meeting) block — roll-over/replan leave it put.
                 const isFixed = b.item.flexible === false;
-                // Leverage lens (80/20): leveraged work reads gold at a glance;
-                // the ★ One Thing gets the strongest treatment on the grid.
+                // ★ One Thing: the warning bar and tint. Leveraged work
+                // (80/20) takes the warning bar and keeps the default tint.
                 const isOneThing = b.item.id === oneThingId && !isDone;
                 const isLeveraged =
                   !isDone && !conflict && (b.item.leveraged || isOneThing);
@@ -660,9 +785,89 @@ export function TimeGrid({
                         ),
                       )
                     : null;
-                const lines = blockLines(mins, Boolean(b.item.parent));
                 const leftPct = (lane / lanes) * 100;
                 const widthPct = 100 / lanes;
+                // The card's width in px: the column, split by its lanes.
+                const cardW = (colW || 600) * (widthPct / 100) - 4;
+                const layout = blockLayout(mins, cardW, Boolean(b.item.parent), {
+                  isNow,
+                  overlaps: conflict,
+                  hasActual: actualMins != null,
+                  isFixed,
+                });
+                const one = layout.rows === "one";
+                const cardTop = Math.max(0, top) + 1;
+                // The elapsed part of the current block: a faint layer from
+                // the card's top down to "now", and the fill of the accent bar.
+                const elapsed = isNow ? elapsedPct(b.start, end, now) : 0;
+                const tone = isDone
+                  ? CARD_TONE.done
+                  : conflict
+                    ? CARD_TONE.conflict
+                    : isOneThing
+                      ? CARD_TONE.one
+                      : isLeveraged
+                        ? CARD_TONE.leveraged
+                        : CARD_TONE.base;
+                const surface = isPast ? tone.past : isNow ? tone.now : tone.rest;
+                const planned = fmtLeft(Math.max(1, Math.round(mins)));
+                // A one-row card is 21 px tall, so its toolbar buttons are small.
+                const btnCls = `tech-transition relative rounded ${one ? "p-px" : "p-0.5"} focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:before:absolute pointer-coarse:before:-inset-1`;
+                const titleCls = [
+                  "min-w-0 flex-1 text-left text-xs font-medium",
+                  layout.wrapTitle ? "line-clamp-2" : "truncate",
+                  isDone || isPast ? `${META} ${isDone ? "line-through" : ""}` : "text-foreground",
+                ].join(" ");
+                // A range shows whole or not at all (`blockLayout` picks the form).
+                const rangeText = (form: RangeForm) =>
+                  form === "full"
+                    ? fmtRange(b.start, end)
+                    : form === "compact"
+                      ? fmtRange(b.start, end, { compact: true })
+                      : form === "start"
+                        ? fmtClockShort(b.start)
+                        : "";
+                const nowChip = isNow ? (
+                  <Badge tone="info" size="md" ink="foreground" className="shrink-0">
+                    Now · {leftText(end, now)}
+                  </Badge>
+                ) : null;
+                const overlapChip = conflict ? (
+                  <Badge tone="destructive" size="md" ink="foreground" className="shrink-0">
+                    Overlaps
+                  </Badge>
+                ) : null;
+                const actualChip =
+                  actualMins != null ? (
+                    <span
+                      title={`Planned ${plannedMins}m · actually took ${actualMins}m`}
+                      className={[
+                        "shrink-0 text-[11px] font-medium leading-4 tabular-nums",
+                        actualMins > plannedMins
+                          ? "text-warning"
+                          : actualMins < plannedMins
+                            ? "text-success"
+                            : META,
+                      ].join(" ")}
+                    >
+                      {actualMins === plannedMins
+                        ? "on time"
+                        : (actualMins > plannedMins ? "+" : "−") +
+                          fmtLeft(Math.abs(actualMins - plannedMins))}
+                    </span>
+                  ) : null;
+                const lockMark = isFixed ? (
+                  <span
+                    title="Fixed — the planner does not move this block"
+                    className={`inline-flex shrink-0 ${META}`}
+                  >
+                    <Icon name="Lock" className="h-3 w-3" aria-label="Fixed" role="img" />
+                  </span>
+                ) : null;
+                const openFocus = (e: React.MouseEvent) => {
+                  e.stopPropagation();
+                  onFocusMode(b.item);
+                };
                 return (
                   <div
                     key={b.item.id}
@@ -696,7 +901,7 @@ export function TimeGrid({
                     onPointerUp={cancelLongPress}
                     onPointerCancel={cancelLongPress}
                     style={{
-                      top: Math.max(0, top),
+                      top: cardTop,
                       height,
                       left: `calc(${leftPct}% + 2px)`,
                       width: `calc(${widthPct}% - 4px)`,
@@ -705,204 +910,242 @@ export function TimeGrid({
                       conflict ? "Overlaps another block — double-booked" : undefined
                     }
                     className={[
-                      "group absolute cursor-grab overflow-hidden rounded-md border px-1.5 py-0.5 text-left active:cursor-grabbing",
-                      isDone
-                        ? "border-success/40 bg-success/10"
-                        : conflict
-                          ? "border-destructive/60 bg-destructive/10"
-                          : isOneThing
-                            ? "border-warning/80 bg-warning/15 shadow-[0_0_12px_color-mix(in_srgb,var(--warning)_18%,transparent)]"
-                            : isLeveraged
-                              ? "border-warning/50 bg-warning/10"
-                              : isNow
-                                ? "border-primary bg-primary/20"
-                                : "border-primary/40 bg-primary/10",
-                      isNow
-                        ? "z-10 ring-2 ring-primary ring-offset-1 ring-offset-background shadow-md"
-                        : "",
-                      // A pinned block gets a solid left accent so "this won't
-                      // move" is glanceable, not only on the lock icon.
-                      isFixed && !isDone ? "border-l-2 border-l-primary" : "",
-                      // Leveraged work carries a gold left edge even when other
-                      // states (now/fixed) win the fill.
-                      isLeveraged && !isFixed
-                        ? "border-l-2 border-l-warning"
-                        : "",
+                      "group absolute cursor-grab overflow-hidden rounded-md border text-left active:cursor-grabbing",
+                      "transition-[box-shadow,border-color] duration-[var(--motion-duration)] hover:shadow-md",
+                      "has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring",
+                      surface,
+                      tone.border,
+                      isNow ? "shadow-sm" : "",
                     ].join(" ")}
                   >
-                    <div className="flex items-start gap-1">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onComplete(b.item);
-                        }}
-                        aria-label={isDone ? "Mark not done" : "Mark done"}
-                        title={isDone ? "Mark as not done" : "Mark done"}
-                        className={[
-                          "mt-[1px] flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border",
-                          isDone
-                            ? "border-success bg-success text-success-foreground"
-                            : "border-muted-foreground/50 text-transparent hover:border-success hover:text-success/70",
-                        ].join(" ")}
-                      >
-                        <Icon name="Check" className="h-2.5 w-2.5" strokeWidth={3} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onOpen(b.item.id)}
-                        className={[
-                          "min-w-0 flex-1 truncate text-left text-[11px] font-medium",
-                          isDone
-                            ? "text-muted-foreground line-through"
-                            : "text-foreground",
-                        ].join(" ")}
-                      >
-                        {isOneThing && (
-                          <span className="text-warning">★ </span>
-                        )}
-                        {b.item.title}
-                      </button>
-                    </div>
-                    {/* D-PM-38 S4 — a scheduled step is a block like any
-                        other, and names its parent with the shared crumb.
-                        On a short block the crumb shares the clock line, so
-                        the block keeps both and nothing falls off its edge
-                        (`blockLines`). */}
-                    {lines.crumb === "own" && (
-                      <ParentCrumb parent={b.item.parent} className="pl-[18px]" />
+                    {/* elapsed part of the current block: a faint layer. No
+                        text sits on a dark band. */}
+                    {elapsed > 0 && (
+                      <span
+                        aria-hidden
+                        className={`pointer-events-none absolute inset-x-0 top-0 ${tone.elapsed}`}
+                        style={{ height: `${elapsed}%` }}
+                      />
                     )}
-                    {/* outcome ribbon — why this block matters (tall blocks).
-                        A step's block spends one line on its crumb, so the
-                        ribbon needs a taller block there. */}
-                    {outcome && lines.outcome && (
-                      <div className="truncate pr-3 text-[9px] font-medium text-warning/90">
-                        → {outcome}
-                      </div>
-                    )}
-                    <div className="flex min-w-0 items-center gap-1 text-[9px] text-muted-foreground">
-                      <span className="shrink-0">{fmtClock(b.start)}</span>
-                      {lines.crumb === "inline" && (
-                        <ParentCrumb parent={b.item.parent} className="min-w-0" />
-                      )}
-                      {b.item.energy && (
-                        <span className="capitalize">· {b.item.energy}</span>
-                      )}
+                    {/* the one place a state shows its colour. On the current
+                        block the elapsed part is solid and the rest is faint. */}
+                    <span
+                      aria-hidden
+                      className={`absolute inset-y-0 left-0 w-[3px] ${isNow ? tone.track : tone.bar} ${isPast ? "opacity-50" : ""}`}
+                    >
                       {isNow && (
-                        <span className="ml-auto inline-flex items-center gap-0.5 pr-3 font-semibold text-primary">
-                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
-                          now
-                        </span>
-                      )}
-                      {actualMins != null && (
                         <span
-                          title={`Planned ${plannedMins}m · actually took ${actualMins}m`}
-                          className={[
-                            "ml-auto inline-flex shrink-0 items-center pr-3 font-medium tabular-nums",
-                            actualMins > plannedMins
-                              ? "text-warning"
-                              : actualMins < plannedMins
-                                ? "text-success"
-                                : "text-muted-foreground",
-                          ].join(" ")}
-                        >
-                          {actualMins === plannedMins
-                            ? "on time"
-                            : (actualMins > plannedMins ? "+" : "−") +
-                              fmtLeft(Math.abs(actualMins - plannedMins))}
-                        </span>
-                      )}
-                    </div>
-                    {/* ▶ enter the Focus room. Always visible on the current
-                        block (the one you should be in), hover elsewhere. */}
-                    {!isDone && (
-                      <button
-                        type="button"
-                        aria-label="Focus on this block"
-                        title="Focus — full-screen room + timer"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onFocusMode(b.item);
-                        }}
-                        className={[
-                          "tech-transition absolute right-[54px] top-0.5 rounded p-0.5",
-                          isNow
-                            ? "text-primary hover:bg-black/10"
-                            : "text-muted-foreground hover:bg-black/10 hover:text-primary reveal-on-hover",
-                        ].join(" ")}
-                      >
-                        <Icon name="Play" className="h-3 w-3" fill="currentColor" />
-                      </button>
-                    )}
-                    {/* ★ commit / uncommit the One Thing (today only). */}
-                    {!isDone && sameDay(day, now) && (
-                      <button
-                        type="button"
-                        aria-label={
-                          isOneThing ? "Unset the One Thing" : "Make this the One Thing"
-                        }
-                        title={
-                          isOneThing
-                            ? "Your One Thing today. Click to unset."
-                            : "If only one thing gets done today… make it this."
-                        }
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onToggleOneThing(b.item.id);
-                        }}
-                        className={[
-                          "tech-transition absolute right-[36px] top-0.5 rounded p-0.5",
-                          isOneThing
-                            ? "text-warning hover:bg-black/10"
-                            : "text-muted-foreground hover:bg-black/10 hover:text-warning reveal-on-hover",
-                        ].join(" ")}
-                      >
-                        <Icon name="Star"
-                          className="h-3 w-3"
-                          fill={isOneThing ? "currentColor" : "none"}
+                          className={`absolute inset-x-0 top-0 ${tone.bar}`}
+                          style={{ height: `${elapsed}%` }}
                         />
-                      </button>
-                    )}
-                    {/* Fixed ↔ flexible. A fixed (meeting) block is skipped by
-                        roll-over/replan; the lock is persistent when fixed and
-                        hover-to-pin when flexible. */}
-                    <button
-                      type="button"
-                      aria-label={isFixed ? "Make flexible" : "Pin as fixed"}
-                      title={
-                        isFixed
-                          ? "Fixed — the planner won't move this. Click to make flexible."
-                          : "Flexible — auto-moves when you replan. Click to pin as fixed."
-                      }
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onSetFlexible(b.item, isFixed);
-                      }}
+                      )}
+                    </span>
+                    <div
                       className={[
-                        "tech-transition absolute right-[18px] top-0.5 rounded p-0.5",
-                        isFixed
-                          ? "text-primary hover:bg-black/10"
-                          : "text-muted-foreground hover:bg-black/10 hover:text-foreground reveal-on-hover",
+                        "relative flex h-full min-w-0 flex-col pl-2 pr-1",
+                        layout.rows === "three" ? "pt-0.5" : "justify-center",
                       ].join(" ")}
                     >
-                      {isFixed ? (
-                        <Icon name="Lock" className="h-3 w-3" />
-                      ) : (
-                        <Icon name="Unlock" className="h-3 w-3" />
+                      <div
+                        className={[
+                          "flex min-w-0 gap-1.5",
+                          layout.wrapTitle ? "items-start" : "items-center",
+                          // keep the Focus button clear of the title
+                          layout.focus === "label"
+                            ? "pr-[62px]"
+                            : layout.focus === "icon"
+                              ? "pr-[26px]"
+                              : "",
+                        ].join(" ")}
+                      >
+                        {layout.check && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onComplete(b.item);
+                          }}
+                          aria-label={isDone ? "Mark not done" : "Mark done"}
+                          title={isDone ? "Mark as not done" : "Mark done"}
+                          className={[
+                            "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
+                            layout.wrapTitle ? "mt-px" : "",
+                            isDone
+                              ? "border-success bg-success text-success-foreground"
+                              : "border-muted-foreground/60 text-transparent hover:border-success hover:text-success/70",
+                          ].join(" ")}
+                        >
+                          <Icon name="Check" className="h-3 w-3" strokeWidth={3} />
+                        </button>
+                        )}
+                        {/* the title is a real button, so Tab reaches it. A click
+                            bubbles to the card, which opens the task. */}
+                        <button type="button" className={titleCls}>
+                          {isOneThing && <span className="text-warning">★ </span>}
+                          {b.item.title}
+                        </button>
+                        {one && (
+                          <>
+                            {layout.chips && nowChip}
+                            {layout.chips && overlapChip}
+                            {layout.actual && actualChip}
+                            {layout.lock && lockMark}
+                            {layout.rangeOnTitle && (
+                              <span
+                                className={`shrink-0 text-[11px] tabular-nums ${META}`}
+                              >
+                                {rangeText(layout.rangeOnTitle)}
+                              </span>
+                            )}
+                          </>
+                        )}
+                      </div>
+                      {/* D-PM-38 S4 — a scheduled step names its parent with
+                          the shared crumb. Under 90 minutes it shares the
+                          meta row, from 90 it has its own line
+                          (`blockLayout`). */}
+                      {layout.crumb === "own" && (
+                        <ParentCrumb
+                          parent={b.item.parent}
+                          className={`${layout.check ? "pl-[22px]" : ""} text-[11px]! leading-[14px]! ${META}!`}
+                        />
                       )}
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Unschedule"
-                      title="Remove from calendar"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onUnschedule(b.item);
-                      }}
-                      className="tech-transition absolute right-0.5 top-0.5 rounded p-0.5 text-muted-foreground hover:bg-black/10 hover:text-destructive reveal-on-hover"
+                      {/* outcome ribbon — why this block matters (tall blocks) */}
+                      {outcome && layout.outcome === "own" && (
+                        <div className={`truncate ${layout.check ? "pl-[22px]" : ""} text-[11px] font-medium leading-[14px] text-warning`}>
+                          → {outcome}
+                        </div>
+                      )}
+                      {!one && (
+                        <div
+                          className={`flex min-w-0 items-center gap-1.5 ${layout.check ? "pl-[22px]" : ""} text-[11px] leading-[14px] ${META}`}
+                        >
+                          {layout.chips && nowChip}
+                          {layout.metaRange && (
+                            <span className="shrink-0 tabular-nums">
+                              {rangeText(layout.metaRange)}
+                              {layout.duration && layout.metaRange === "full" && ` · ${planned}`}
+                            </span>
+                          )}
+                          {layout.crumb === "inline" && (
+                            <ParentCrumb
+                              parent={b.item.parent}
+                              className={`min-w-0 text-[11px]! ${META}!`}
+                            />
+                          )}
+                          {layout.energy && b.item.energy && (
+                            <span className="capitalize">· {b.item.energy}</span>
+                          )}
+                          {layout.lock && lockMark}
+                          {layout.chips && overlapChip}
+                          {layout.actual && actualChip}
+                          {outcome && layout.outcome === "inline" && (
+                            <span className="min-w-0 truncate font-medium text-warning">
+                              → {outcome}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {/* The toolbar: on hover and on keyboard focus, on a solid
+                        background so it never overlaps text. Hidden, it takes
+                        no tap, so a tap on the card's end opens the task.
+                        The current block shows its own Focus button, as a
+                        label or an icon (`blockLayout`). Pin, unschedule and
+                        the rest are in the ⋯ menu. */}
+                    <div
+                      className={`absolute right-1 z-[1] flex items-center gap-1 ${one ? "inset-y-0" : "top-0.5"}`}
                     >
-                      <Icon name="X" className="h-3 w-3" />
-                    </button>
+                      <div className="reveal-on-hover reveal-on-hover-live flex items-center gap-0.5 rounded border border-border bg-background px-0.5 shadow-sm">
+                        {!isDone && !layout.focus && (
+                          <button
+                            type="button"
+                            aria-label="Focus on this block"
+                            title="Focus — full-screen room + timer"
+                            onClick={openFocus}
+                            className={`${btnCls} text-muted-foreground hover:text-primary`}
+                          >
+                            <Icon name="Play" className="h-3.5 w-3.5" fill="currentColor" />
+                          </button>
+                        )}
+                        {/* ★ commit / uncommit the One Thing (today only). */}
+                        {!isDone && sameDay(day, now) && cardW >= 130 && (
+                          <button
+                            type="button"
+                            aria-label={
+                              isOneThing ? "Unset the One Thing" : "Make this the One Thing"
+                            }
+                            title={
+                              isOneThing
+                                ? "Your One Thing today. Click to unset."
+                                : "If only one thing gets done today… make it this."
+                            }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onToggleOneThing(b.item.id);
+                            }}
+                            className={`${btnCls} ${isOneThing ? "text-warning" : "text-muted-foreground hover:text-warning"}`}
+                          >
+                            <Icon
+                              name="Star"
+                              className="h-3.5 w-3.5"
+                              fill={isOneThing ? "currentColor" : "none"}
+                            />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          aria-label="More actions"
+                          aria-haspopup="menu"
+                          aria-expanded={ctx?.button != null && ctx.item.id === b.item.id}
+                          title="More actions — pin, reschedule, remove"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            // Anchor on the button. A keyboard press has
+                            // detail 0, so the menu takes the focus, and the
+                            // focus comes back here when it closes.
+                            const button = e.currentTarget;
+                            const r = button.getBoundingClientRect();
+                            setCtx({
+                              x: Math.max(4, r.right - 196),
+                              y: r.bottom + 2,
+                              item: b.item,
+                              day,
+                              kbd: e.detail === 0,
+                              button,
+                            });
+                          }}
+                          className={`${btnCls} text-muted-foreground hover:text-foreground`}
+                        >
+                          <Icon name="MoreHorizontal" className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      {layout.focus === "label" && (
+                        <Button
+                          variant="primary"
+                          size="none"
+                          aria-label="Focus on this block"
+                          title="Focus — full-screen room + timer"
+                          onClick={openFocus}
+                          className="relative h-4 gap-1 px-1.5 text-[11px] leading-none pointer-coarse:before:absolute pointer-coarse:before:-inset-1"
+                        >
+                          <Icon name="Play" className="h-3 w-3" fill="currentColor" />
+                          Focus
+                        </Button>
+                      )}
+                      {layout.focus === "icon" && (
+                        <Button
+                          variant="primary"
+                          size="none"
+                          aria-label="Focus on this block"
+                          title="Focus — full-screen room + timer"
+                          onClick={openFocus}
+                          className="relative h-4 w-4 p-0 pointer-coarse:before:absolute pointer-coarse:before:-inset-1"
+                        >
+                          <Icon name="Play" className="h-3 w-3" fill="currentColor" />
+                        </Button>
+                      )}
+                    </div>
                     {/* drag the bottom edge to change duration */}
                     <div
                       onPointerDown={(e) => startResize(e, b)}
@@ -1012,7 +1255,13 @@ export function TimeGrid({
               x={ctx.x}
               y={ctx.y}
               items={menu}
-              onClose={() => setCtx(null)}
+              autoFocus={ctx.kbd}
+              onClose={() => {
+                const button = ctx.button;
+                const kbd = ctx.kbd;
+                setCtx(null);
+                if (kbd) button?.focus();
+              }}
             />
           );
         })()}
