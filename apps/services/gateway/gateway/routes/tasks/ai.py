@@ -23,6 +23,7 @@ from acb_llm.voice import voice_prompt
 from fastapi import Depends
 from gateway.routes.tasks.core import (
     DEFAULT_CONTEXTS,
+    NO_THINKING,
     _parse_jsonb,
     _tenant_session,
     _uid,
@@ -816,6 +817,7 @@ async def _llm_propose(
                       {"role": "user", "content": user}],
             temperature=0.0,
             max_tokens=500,
+            thinking=dict(NO_THINKING),
             response_format={"type": "json_object"},
         )
         raw = resp.choices[0].message.content or ""
@@ -1128,7 +1130,7 @@ async def _find_parent_task(
             model=model, fallback_model="tier-fast",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            temperature=0.0, max_tokens=40,
+            temperature=0.0, max_tokens=40, thinking=dict(NO_THINKING),
             response_format={"type": "json_object"},
         )
         raw = resp.choices[0].message.content or ""
@@ -1360,7 +1362,7 @@ async def _llm_enrich(
             model=model, fallback_model="tier-balanced",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            temperature=0.0, max_tokens=250,
+            temperature=0.0, max_tokens=250, thinking=dict(NO_THINKING),
             response_format={"type": "json_object"},
         )
         raw = resp.choices[0].message.content or ""
@@ -1507,7 +1509,7 @@ async def _llm_suggest_title(title: str, notes: str | None, model: str) -> dict[
             model=model, fallback_model="tier-balanced",
             messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("title", json=True)},
                       {"role": "user", "content": user}],
-            temperature=0.0, max_tokens=120,
+            temperature=0.0, max_tokens=120, thinking=dict(NO_THINKING),
             response_format={"type": "json_object"},
         )
         raw = resp.choices[0].message.content or ""
@@ -1706,6 +1708,7 @@ async def _llm_atomize(
                       {"role": "user", "content": user}],
             temperature=0.0,
             max_tokens=1500,
+            thinking=dict(NO_THINKING),
         )
         raw = resp.choices[0].message.content or ""
         start, end = raw.find("{"), raw.rfind("}")
