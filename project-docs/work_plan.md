@@ -123,7 +123,7 @@ The core function brief sets the phases (D119). Customer zero comes first inside
 | **M1** | Phase 1, the rest | December 2026 | Pilot-ready. Brief tasks 1 to 7 are done, the isolation tests pass, and a second organization is safe. |
 | **M2** | Phase 2 | 31 March 2027 | The first paid customer. Brief tasks 8 to 15 and the money path. |
 | **M3** | Phase 2 operations | 31 March 2027, if the brief needs it | Restore, compliance and observability. An item that is not on the brief moves to Phase 3. |
-| **M4** | Phase 3 | after Phase 2 | Studio, the UX System, Writing Help, MCP data parity, Notes and Workflows. |
+| **M4** | Phase 3 | after Phase 2 | The UX System, Writing Help, MCP data parity and Notes. Studio and Workflows left M4 on 2026-10-31 (D141, WS-STU). |
 
 ⚠️ **Timing.** Ten six-week pilots must complete in December, so they start by mid-November. Phase 1 has about three weeks of build time before the first pilot. **Ten pilots are ten organizations.** Tenant isolation (M1) lands before the first pilot outside customer zero (D119.5).
 
@@ -166,7 +166,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-KB | **Knowledge** | 🟢 active · M2 | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | Metorite: project Knowledge · no P0 or P1 · next H-401, KC-1 |
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_graph.md` · `specs/knowledge_base.md` §20 · `specs/company_context.md` | Metorite: epic 783 (Knowledge) · D128, D132 · 2026-10-29: KG-0 written, KG-1, KG-2 and KG-3a built · next KG-4 and KG-9, then KG-3b after the KG-2 backfill |
 | WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` · `specs/agent_coordination.md` (D140) | Metorite: epics 321 (coordination, D135 and D140), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · MCP-P1a built dark 2026-10-30 (`external_agent_access.md` §19) · next tasks 1045 and 1054, SW-4, SW-10b (the sweep on staging first), then SW-29a and SW-30a, and MCP-P1b and MCP-P2a |
-| WS-STU | **Studio**: tool packs, workflows, AI apps | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 491 (Agent Tooling) · D127 · next STU-0, then SKL-1 and SKL-2 after SBX-1 |
+| WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · milestone is STU-Q6 | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141 · STU-0 spec merged with this row · next B1 (the read-only action catalog), then the Stage 1 slices of §15 as the owner answers STU-Q1 and STU-Q2 |
 | WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) | Metorite: epic 492, sub-epic UX-D · UI-G1 is built · next UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
 | WS-WH | **Writing Help** | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 493 · next WA-1 |
 | WS-CHAT | **AI chat**: Mira, the one assistant | 🟢 active · M1 | `specs/one_assistant_context.md` · `specs/chat_first_surface.md` | Metorite: project AI Chat Interface, epic 470 · a parallel session owns it · next #469 with BR-5, #471, WS-58, SUB-1 (the sub-agent policy for OA-9) |
@@ -4849,6 +4849,27 @@ The owner asked on 2026-10-30, in chat, to "research how Linear uses its project
 10. **The lease is two hours, from the newest activity of any author.** A question keeps the task for three leases. This replaces the 15-minute TTL of the first text of SW-4.
 
 **What stays open.** Five questions wait for the owner (`agent_coordination.md` §8). They are the `agent:<name>` assignee and the delegate, a shared agent, the first cloud agent, cost and goals, and who may end another member's run.
+
+### D141 — AI Studio starts now. A skill creator replaces the agent creator (2026-10-31)
+
+Owner directive, 2026-10-31, in chat. Board: **WS-STU**. Owning spec: `specs/ai_studio.md`. Metorite: project "AI Studio", epic 491, spec task 1135. It extends D127 and changes none of its rules.
+
+```text
+"start building the AI app studio and the app studio suite to create
+miniature mini apps within Metorite to extend the functionality of
+integrations or operations for which we do not have any existing UI/UX."
+
+"The AI Studio would combine workflows or playbooks and the actual AI
+chat UI creator, and instead of an agent creator, we will have some
+sort of skill creator."
+```
+
+1. **Studio starts now.** WS-STU leaves M4 (§2.0) and is active. The milestone of each stage is open as STU-Q6.
+2. **A skill creator replaces the agent creator.** A member teaches Mira a skill. A member does not build a second assistant. The Agent Workshop retires (slice F9).
+3. **Three use cases.** A workflow alone on a schedule, a workflow with an app, and a workflow with an app and a skill that extends the chat. The spec adds a skill alone as a fourth shape.
+4. **Apps reuse the existing UI and connectors.** Boards, calendars, Gantt charts and the other views, with workflow, connector and mind map views added. Apps connect to the MCP servers and connectors of Integrations and to the chat.
+
+**What stays open.** Nine questions wait for the owner (`ai_studio.md` §12, STU-Q1 to Q9). The first two decide the Stage 1 slices: is an app a declarative manifest first, and is "skill" the member's name for a D127 tool pack.
 
 
 ## 4. Single-owner registry (who owns duplicated work)
