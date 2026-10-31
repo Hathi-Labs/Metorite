@@ -121,7 +121,7 @@ export function useMobileDrawer(): MobileDrawerCtx {
  * inside an app (`globals.css`, the blur and containing-block note).
  */
 const FULL_MAIN =
-  "min-h-0 min-w-0 flex-1 overflow-auto glass:mt-2 glass:mr-2 glass:mb-2 glass:rounded-2xl glass:bg-background glass:shadow-card";
+  "min-h-0 min-w-0 flex-1 overflow-auto glass:mt-2 glass:mr-2 glass:mb-2 glass:rounded-2xl glass:bg-card glass:shadow-card";
 
 // ---------------------------------------------------------------------------
 // AppShell

@@ -2779,6 +2779,15 @@ html[data-look="glass"] :is(main, [role="dialog"], [role="menu"], [role="listbox
   letter-spacing: normal;
 }
 
+/* ── GL-10, one surface (owner, 2026-10-31) ───────────────────────────────
+   The content card is the app's surface (`AppShell`'s FULL_MAIN, bg-card).
+   An app root that fills the card and paints the page colour would draw a
+   second tone under the title bar, so in glass it takes the card's surface.
+   Its panes keep their own. */
+html[data-look="glass"] main .h-full.bg-background {
+  background-color: transparent;
+}
+
 /* ── GL-6, controls slice: the toolbar size ────────────────────────────────
    One height for a toolbar row: 28 px. `Input sm`, `SelectButton`, `Button sm`
    and a segment track all draw it. A title-bar action is a toolbar control, so

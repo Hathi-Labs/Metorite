@@ -285,6 +285,19 @@ describe("the colour edge round the chat", () => {
   });
 });
 
+describe("one surface for each app", () => {
+  it("draws the content card in the card colour, and an app root takes it", () => {
+    // Owner, 2026-10-31: the title bar and the app are one block.
+    const shell = readFileSync(join(SRC, "components", "AppShell.tsx"), "utf8");
+    expect(shell).toMatch(/const FULL_MAIN =\s*"[^"]*glass:rounded-2xl glass:bg-card glass:shadow-card"/);
+    expect(GLOBALS).toMatch(/html\[data-look="glass"\] main \.h-full\.bg-background \{\s*background-color: transparent;/);
+    // The title bar hangs no fade and no hairline: they drew the band.
+    const bar = readFileSync(join(SRC, "components", "AppTopBar.tsx"), "utf8");
+    expect(bar).not.toContain("glass-scroll-edge");
+    expect(bar.match(/glass:border-b-0 glass:bg-transparent/g)?.length).toBe(2);
+  });
+});
+
 describe("glass scrollbars", () => {
   it("hide the thumb until the pointer is over the pane", () => {
     expect(GLOBALS).toMatch(/html\[data-look="glass"\] \* \{\s*scrollbar-color: transparent transparent;/);
