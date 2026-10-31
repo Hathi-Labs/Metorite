@@ -43,9 +43,11 @@ MARKERS = {
 }
 
 # A stand-in for ssh. It logs each call, then runs the remote command here,
-# with the production export folder mapped onto the fake one.
+# with the production export folder mapped onto the fake one. During the
+# pull, it also lists the names in the base folder.
 STUB = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB_LOG"
+case "$*" in *"-cf -"*) ls -A "$PROD_COPY_DIR" > "$STUB_LOG.during" ;; esac
 while [ $# -gt 0 ]; do
   case "$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac
 done
@@ -308,6 +310,17 @@ def test_a_failed_pull_keeps_no_folder_with_a_final_name(tmp_path: Path) -> None
     assert res.returncode == 2, res.stderr
     assert "the pull from metorite failed" in res.stderr
     assert list(base.iterdir()) == [], "a failed pull left a folder behind"
+
+
+@needs_bash
+def test_the_pull_writes_into_a_dot_partial_folder(tmp_path: Path) -> None:
+    """While the data comes in, no folder has a copy's name. A killed run
+    leaves a .partial folder, and LD-8b ignores a name that starts with "."."""
+    export = _make_export(tmp_path)
+    assert _run(tmp_path, export).returncode == 0
+    during = (tmp_path / "ssh.log.during").read_text(encoding="utf-8").split()
+    assert during and all(n.startswith(".") for n in during), during
+    assert any(n.startswith(f".partial-{_stamp(export.mtime)}.") for n in during), during
 
 
 @needs_bash
