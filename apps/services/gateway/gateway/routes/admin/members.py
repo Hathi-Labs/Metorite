@@ -803,6 +803,15 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # key to `brief_runs`.
     _PersonRows("brief_runs", "brief_runs",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-STU F1: the member's AI Studio skills of THIS organization. In F1 a
+    # skill is private, and only its owner reads it, so a purged member
+    # leaves none behind. The clause names the bound org beside RLS, as
+    # `brief_runs` does, so the same address in another org keeps its
+    # skills. The versions, `studio_skill_versions`, go by their
+    # `ON DELETE CASCADE` key to `studio_skills`. J2 adds a shared skill, and
+    # J2 decides if a shared one stays.
+    _PersonRows("studio_skills", "studio_skills",
+                f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"),
     # WS-63 PZ-9 (personalization.md §7 point 6): the member's settings row
     # of THIS organization, and with it the assistant profile. The row is the
     # member's own preferences, so the whole row goes. A member has one row
