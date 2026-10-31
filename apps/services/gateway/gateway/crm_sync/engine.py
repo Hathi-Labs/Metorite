@@ -242,8 +242,9 @@ LABEL_REREAD_KEY = "label_reread"
 #: rename, when the read of that entity is ``in_progress``. The pages of that
 #: read used the old row names. So a read for a rule or a label read starts
 #: again from page 1, also in a later run whose check does not fire. The next
-#: page of the entity writes a new state through :func:`cursor_state`, so the
-#: key goes. A read with no such mark goes on, and the label read follows.
+#: page of the entity writes a new state, through :func:`cursor_state` or the
+#: state of the last page, so the key goes. A read with no such mark goes on,
+#: and the label read follows.
 LABEL_RESTART_KEY = "label_restart"
 #: CRM-Q24: the ``SourceError.code`` of a tie at one second that is wider
 #: than the provider serves by offset (``ZohoTieTooWide``). A test pins the
@@ -3615,7 +3616,11 @@ async def _mark_label_restart(ctx: _Ctx, db: Any, entity: str) -> None:
     caller's transaction, when a read of it stopped (``in_progress``). Every
     other key of the state stays, so the read keeps its marks (task #1117).
     A cursor that is not in progress gets no key, because its next read
-    starts from page 1."""
+    starts from page 1. A held cursor (``held_skipped``) keeps its status.
+
+    The row also goes into ``ctx.cursors``. A later step of this run that
+    writes the cursor from that map (:func:`_mark_held_skipped`) then keeps
+    the key."""
     old = _row(ctx, changed_module(entity))
     state = old.state or {}
     if not state.get("in_progress") or state.get(LABEL_RESTART_KEY):
@@ -3624,7 +3629,7 @@ async def _mark_label_restart(ctx: _Ctx, db: Any, entity: str) -> None:
         old.module, old.last_pulled_at, {**state, LABEL_RESTART_KEY: True},
         old.initial_done_at, old.last_reconciled_at,
     )
-    await _save_cursor(ctx, db, row, "partial")
+    await _save_cursor(ctx, db, row, "held" if state.get("held_skipped") else "partial")
     ctx.cursors[old.module] = row
 
 

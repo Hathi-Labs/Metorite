@@ -34,7 +34,8 @@ f. the chain: the label of one value is the ``actual_value`` of another.
    stopped goes on from its page;
 f2. the check writes the restart of a stopped read into the cursor of its
     own entity (task #1117). A run that stops after the check, on a stop or
-    on its budget, keeps it, and the next run reads from page 1. The first
+    on its budget, keeps it, and the next run reads from page 1. So does a
+    run whose hold (CRM-Q16) skips the deals, until the release. The first
     page of that read drops it. A cursor that is not in progress gets no
     restart;
 g. the merge shows a lane when either row showed (the hidden rule);
@@ -65,10 +66,12 @@ from tests.unit.test_crm_stage_overlay_r8 import (  # noqa: F401  (c3 is a fixtu
     c3,
 )
 from tests.unit.test_crm_sync_engine_r8 import (  # noqa: F401  (ns is a fixture)
+    _admin,
     _assert_non_priv,
     _q,
     ns,
 )
+from tests.unit.test_crm_sync_holds_r8 import _call_json
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
     app_engine,
@@ -851,11 +854,10 @@ def _queue_label_read(p: Any, org: str, entity: str) -> None:
             {"o": org, "s": json.dumps({"applied": [], "label_reread": [entity]})})
 
 
-async def _a_saved_restart(env: Any, way: str) -> tuple[str, str]:
+async def _a_page_under_the_old_names(env: Any) -> tuple[str, str, dict[str, Any]]:
     """A label read stops at page 2. An admin trades two labels, and the next
-    run reads page 2 under the old row names, then stops. The run after that
-    renames the rows and stops before it reads a deal page, on a stop or on
-    its budget. The cursor keeps the restart. It gives the rows of S1 and S2."""
+    run reads page 2 under the old row names, then stops at page 3. It gives
+    the rows of S1 and S2, and the deal cursor at page 3."""
     from gateway.crm_sync import engine
 
     _five_deals_in_the_chain(env.a)
@@ -885,6 +887,16 @@ async def _a_saved_restart(env: Any, way: str) -> tuple[str, str]:
     at_page_three = _cursor(env.p, env.org_a, "zoho:deal")
     assert at_page_three["in_progress"] is True, at_page_three
     assert at_page_three["since"] != state["since"]  # it moved on a page
+    return s1_row, s2_row, at_page_three
+
+
+async def _a_saved_restart(env: Any, way: str) -> tuple[str, str]:
+    """After :func:`_a_page_under_the_old_names`, a run renames the rows and
+    stops before it reads a deal page, on a stop or on its budget. The cursor
+    keeps the restart. It gives the rows of S1 and S2."""
+    from gateway.crm_sync import engine
+
+    s1_row, s2_row, at_page_three = await _a_page_under_the_old_names(env)
 
     # The check fires and renames the rows. The run stops before a deal page.
     _discovery_due(env.p, env.org_a)
@@ -966,6 +978,42 @@ async def test_the_first_page_of_the_restart_drops_the_restart(c3) -> None:  # n
     assert _rereads(c3.p, c3.org_a) == set()
 
 
+async def test_a_held_deal_cursor_keeps_the_restart_until_the_release(c3) -> None:  # noqa: F811
+    """The check fires in the first run that a hold (CRM-Q16) skips the deals.
+    That run marks the cursor ``held_skipped`` from the cursor map of the run.
+    So the check puts its row into that map too, or the mark drops the key.
+    After the release, the read starts from page 1 (task #1117)."""
+    from gateway.crm_sync import engine
+
+    s1_row, s2_row, _ = await _a_page_under_the_old_names(c3)
+    admin = _admin("admin@crm-sync.test", c3.org_a)
+    held = await _call_json(admin, "PUT", "/crm/sync/modules/deals", {"sync": False})
+    assert held.status_code == 200, held.text
+
+    # The check fires and renames the rows. The hold skips the deals.
+    _discovery_due(c3.p, c3.org_a)
+    start = len(c3.a.requests)
+    run = await engine.run_org(c3.org_a)
+    assert (run.status, run.counts["deals"]["held"]) == ("ok", 1), run
+    assert _record_reads(c3.a, start, "Deals") == 0
+    rows = _rows(c3.p, _DEAL_ROWS_SQL, c3.org_a)
+    assert (rows["Gamma"].id, rows["Beta"].id) == (s1_row, s2_row)
+    state = _cursor(c3.p, c3.org_a, "zoho:deal")
+    assert state["held_skipped"] is True and state[engine.LABEL_RESTART_KEY] is True, state
+    assert _rereads(c3.p, c3.org_a) == {"deal"}
+
+    released = await _call_json(admin, "PUT", "/crm/sync/modules/deals", {"sync": True})
+    assert released.status_code == 200, released.text
+    start = len(c3.a.requests)
+    assert (await engine.run_org(c3.org_a)).status == "ok"
+    assert _full_reads(c3.a, start, "Deals") == 1  # from page 1
+    assert _deal_status(c3.p, c3.org_a, "d1") == s1_row
+    for ident in ("d2", "d3", "d4", "d5"):
+        assert _deal_status(c3.p, c3.org_a, ident) == s2_row, ident
+    assert _rereads(c3.p, c3.org_a) == set()
+    assert engine.LABEL_RESTART_KEY not in _cursor(c3.p, c3.org_a, "zoho:deal")
+
+
 async def test_the_check_writes_no_restart_into_a_cursor_that_is_not_in_progress(c3) -> None:  # noqa: F811
     """The chain fires the check after a read that ended. The run stops before
     a deal page. The cursor gets no restart, and the label read of the next
@@ -1008,17 +1056,18 @@ async def test_the_check_of_a_lead_status_writes_the_restart_into_the_lead_curso
     ]
     c3.a.add("Leads", "l1", 1, Last_Name="One", Lead_Status="Beta")   # a lead of L1
     c3.a.add("Leads", "l2", 2, Last_Name="Two", Lead_Status="Gamma")  # a lead of L2
+    c3.a.add("Leads", "l3", 3, Last_Name="Three", Lead_Status="Gamma")  # on page 2
     await _sync(c3, c3.org_a, c3.a)
     before = _rows(c3.p, _LEAD_ROWS_SQL, c3.org_a)
     l1_row, l2_row = before["Alpha"].id, before["Beta"].id
-    # A label read of the leads that stopped at page 2.
+    # A label read of the leads stops at page 2, as ``_at_page_two`` stops one.
     _queue_label_read(c3.p, c3.org_a, "lead")
-    with c3.p.admin_engine.begin() as c:
-        c.execute(text(
-            "UPDATE crm_sync_cursors SET cursor_state = cursor_state || CAST(:s AS jsonb) "
-            "WHERE organization_id = CAST(:o AS uuid) AND module = 'zoho:lead'"),
-            {"o": c3.org_a, "s": json.dumps(
-                {"in_progress": True, "page": 2, engine.LABEL_REREAD_KEY: True})})
+    start = len(c3.a.requests)
+    assert (await engine.run_org(c3.org_a, should_stop=lambda: (
+        _full_reads(c3.a, start, "Leads") >= 1
+        and c3.a.requests[-1].url.path != "/crm/v2/Leads"))).status == "stopped"
+    state = _cursor(c3.p, c3.org_a, "zoho:lead")
+    assert state["in_progress"] is True and state[engine.LABEL_REREAD_KEY] is True, state
     deal_before = _cursor(c3.p, c3.org_a, "zoho:deal")
 
     c3.a.lead_statuses[0]["display_value"] = "Beta"
