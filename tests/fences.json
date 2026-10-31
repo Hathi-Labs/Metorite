@@ -88,6 +88,7 @@
       "tests/unit/test_worktree_remove.py"
     ],
     "process": [
+      "tests/unit/test_chat_parity.py",
       "tests/unit/test_chat_placement_classes.py",
       "tests/unit/test_chat_placement_instructions.py",
       "tests/unit/test_ci_pc.py",
