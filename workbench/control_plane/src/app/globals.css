@@ -2467,6 +2467,26 @@ html.panel-swap::view-transition-new(assistant-panel) {
   }
 }
 
+/*
+ * A toolbar that reveals with `reveal-on-hover` also takes its CLICKS only
+ * when it shows. `opacity: 0` alone still takes a tap, so a tap on the end of
+ * a card would hit a hidden button. `group-hover:pointer-events-auto` is the
+ * broken spelling: Tailwind wraps it in `@media (hover: hover)`, which never
+ * matches on a touch-capable display, so the buttons are shown and dead.
+ * This rule has no media query, and it uses `:has(:focus-visible)`, never
+ * `:focus-within`, so a mouse click does not hold the toolbar live.
+ *
+ * Fence: `src/lib/revealOnHover.test.ts`.
+ */
+@utility reveal-on-hover-live {
+  pointer-events: none;
+
+  .group:hover &,
+  &:has(:focus-visible) {
+    pointer-events: auto;
+  }
+}
+
 /* ── A rail row's trailing zone (`components/ui/RailRow.tsx`) ─────────── */
 /*
  * One zone at the right end of a row holds two things in turn. At rest it

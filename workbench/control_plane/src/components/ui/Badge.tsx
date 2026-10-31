@@ -44,7 +44,7 @@ export function badgeTone(tone: BadgeTone = "neutral"): string {
   return TONES[tone];
 }
 
-export type BadgeSize = "sm" | "xs";
+export type BadgeSize = "md" | "sm" | "xs";
 
 /**
  * Size is a PROP, not something a call site can pass through `className`.
@@ -55,6 +55,8 @@ export type BadgeSize = "sm" | "xs";
  * card meta lines, where a full-size badge crowds the row it annotates.
  */
 const SIZES: Record<BadgeSize, { chip: string; icon: number }> = {
+  /** 11 px on a 16 px line: for a badge in a row that is under 24 px tall. */
+  md: { chip: "px-1 text-[11px] leading-4", icon: 11 },
   sm: { chip: "px-1.5 py-0.5 text-[10px]", icon: 11 },
   xs: { chip: "px-1 py-0.5 text-[9px]", icon: 10 },
 };
@@ -62,6 +64,12 @@ const SIZES: Record<BadgeSize, { chip: string; icon: number }> = {
 export type BadgeProps = {
   tone?: BadgeTone;
   size?: BadgeSize;
+  /**
+   * "foreground" draws the label in `foreground` on the tone's tint. Use it
+   * where the tone's own ink does not reach 4.5 : 1 on the surface behind the
+   * badge, such as a tinted card. The tint still carries the state.
+   */
+  ink?: "tone" | "foreground";
   /** Lucide icon name rendered before the label. */
   icon?: string;
   /** Renders a filled dot instead of an icon — the app's status convention. */
@@ -75,6 +83,7 @@ export type BadgeProps = {
 export default function Badge({
   tone = "neutral",
   size = "sm",
+  ink = "tone",
   icon,
   dot = false,
   title,
@@ -85,7 +94,7 @@ export default function Badge({
   return (
     <span
       title={title}
-      className={`${BADGE_BASE} ${dims.chip} ${GLASS_PILL} ${TONES[tone]} ${className}`}
+      className={`${BADGE_BASE} ${dims.chip} ${GLASS_PILL} ${ink === "foreground" ? TONES[tone].replace(/\btext-\S+/, "text-foreground") : TONES[tone]} ${className}`}
     >
       {dot && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
       {icon && <Icon name={icon} size={dims.icon} />}
