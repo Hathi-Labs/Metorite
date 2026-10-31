@@ -89,7 +89,7 @@ export interface ShellJob {
  * `scripts/gen_shell_manifests.py`. Edit a manifest, never `jobs.generated.ts`.
  * ONE source feeds this list and the coordinator's `intent.JOBS`.
  */
-export const JOBS: readonly ShellJob[] = GENERATED_JOBS;;
+export const JOBS: readonly ShellJob[] = GENERATED_JOBS;
 
 export type ItemGroup = "do" | "go";
 
