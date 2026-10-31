@@ -76,3 +76,38 @@ def test_nested_interface_keys_match_the_schema():
     }
     for ts_name, defn in pairs.items():
         assert _interface_keys(ts_name) == set(schema["$defs"][defn]["properties"]), ts_name
+
+
+def _interface_types(name: str) -> dict[str, str]:
+    """Map each key of an interface to the text of its type."""
+    m = re.search(rf"export interface {name} \{{(.*?)\n\}}", _ts(), re.S)
+    assert m, f"{name} is missing from manifest.ts"
+    return {k: v.strip() for k, v in re.findall(r"^  (\w+)\??:\s*(.*?);", m.group(1), re.M)}
+
+
+def test_every_schema_def_has_a_ts_interface_with_the_same_keys():
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    assert len(schema["$defs"]) >= 13
+    for name, defn in schema["$defs"].items():
+        assert _interface_keys(name) == set(defn["properties"]), name
+
+
+def test_every_ts_interface_is_a_schema_def():
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    declared = set(re.findall(r"^export interface (\w+)", _ts(), re.M))
+    assert declared - {"StudioManifest", "ManifestError"} == set(schema["$defs"])
+
+
+def test_typed_union_fields_name_their_union_in_ts():
+    """A field that the schema types as an enum is a union in TS, never `string`."""
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    unions = {"FieldDef.type": "FieldType", "ViewDef.block": "BlockName"}
+    found = 0
+    for name, defn in schema["$defs"].items():
+        for key, prop in defn["properties"].items():
+            if "enum" in prop or "const" in prop:
+                found += 1
+                assert _interface_types(name)[key] == unions[f"{name}.{key}"], f"{name}.{key}"
+    assert found == len(unions)
+    top = _interface_types("StudioManifest")
+    assert top["studio"] == "StudioVersion"

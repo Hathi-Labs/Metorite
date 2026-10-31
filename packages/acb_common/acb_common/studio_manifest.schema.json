@@ -131,14 +131,14 @@
         "type": {
           "enum": [
             "text",
-            "long-text",
+            "longText",
             "number",
             "money",
             "date",
             "datetime",
             "checkbox",
             "select",
-            "multi-select",
+            "multiSelect",
             "person",
             "relation",
             "file",
@@ -460,8 +460,8 @@
             "stat",
             "calendar",
             "timeline",
-            "mind-map",
-            "process-flow",
+            "mindMap",
+            "processFlow",
             "checklist",
             "map",
             "markdown"

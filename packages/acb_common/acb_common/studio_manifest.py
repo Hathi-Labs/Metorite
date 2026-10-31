@@ -23,24 +23,31 @@ import re
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from acb_common.app_manifests.base import APP_ID_PATTERN, CLASSES, OP_PATTERN, UUID_PATTERN
+from acb_common.secret_shapes import SECRET_SHAPES, is_secret_key
 
 STUDIO_VERSION = 1
 
 FIELD_TYPES: tuple[str, ...] = (
-    "text", "long-text", "number", "money", "date", "datetime", "checkbox",
-    "select", "multi-select", "person", "relation", "file", "url", "email",
+    "text", "longText", "number", "money", "date", "datetime", "checkbox",
+    "select", "multiSelect", "person", "relation", "file", "url", "email",
     "phone", "geo",
 )  # fmt: skip
 
 BLOCKS: tuple[str, ...] = (
     "table", "form", "detail", "board", "chart", "stat", "calendar",
-    "timeline", "mind-map", "process-flow", "checklist", "map", "markdown",
+    "timeline", "mindMap", "processFlow", "checklist", "map", "markdown",
 )  # fmt: skip
 
 OBJECT_OPS: tuple[str, ...] = ("list", "get", "create", "update", "delete")
+
+#: The caps that bound the work. Each refusal names a path and one sentence.
+MAX_DOC_BYTES = 256 * 1024
+MAX_STRING_CHARS = 20_000
+MAX_LIST_ITEMS = 500
+MAX_DEPTH = 20  # the same bound as `_GENUI_MAX_DEPTH` in `acb_skills/write_artifact.py`
 
 #: A key that v1 refuses, and the slice that lifts the refusal.
 RESERVED_KEYS: dict[str, str] = {
@@ -50,21 +57,22 @@ RESERVED_KEYS: dict[str, str] = {
     "formula": "C7",
     "code": "L1",
 }
-RESERVED_FIELD_TYPES: dict[str, str] = {"formula": "C7", "rollup": "C7", "roll-up": "C7"}
-RESERVED_BLOCKS: dict[str, str] = {"code": "L1", "custom": "L1", "custom-ui": "L1"}
+RESERVED_FIELD_TYPES: dict[str, str] = {"formula": "C7", "rollup": "C7"}
+RESERVED_BLOCKS: dict[str, str] = {"code": "L1", "custom": "L1", "customUi": "L1"}
 
 #: Subtrees that hold member data, not structure. The reserved-key scan skips them.
 _DATA_KEYS = frozenset({"set", "where", "when", "args"})
 
 _NAME = r"[a-z][a-z0-9_]{0,47}"
 _DASHED = r"[a-z][a-z0-9_-]{0,47}"
-_RELATION_TO = re.compile(rf"^{APP_ID_PATTERN}\.{_NAME}$")
+_RELATION_TO = re.compile(rf"{APP_ID_PATTERN}\.{_NAME}")
 _OPS = "|".join(OBJECT_OPS)
+# `fullmatch` everywhere: Python `$` also matches before a final newline.
 _USES_RE = re.compile(
-    rf"^(?:object:(?P<obj>{_NAME})\.(?P<op>{_OPS})"
+    rf"(?:object:(?P<obj>{_NAME})\.(?P<op>{_OPS})"
     rf"|integration:(?P<integ>{_NAME}(?:\.{_NAME})?)"
     rf"|workflow:(?P<wf>{UUID_PATTERN})"
-    rf"|(?P<app>{APP_ID_PATTERN})\.(?P<appop>{OP_PATTERN}))$"
+    rf"|(?P<app>{APP_ID_PATTERN})\.(?P<appop>{OP_PATTERN}))"
 )
 
 _COLOR_KEYS = frozenset({"color", "colour", "font", "fontsize", "font_size", "font-size"})
@@ -76,24 +84,9 @@ _NAMED_COLORS = frozenset({
     "gray", "grey", "brown", "cyan", "magenta", "teal", "navy", "maroon", "olive",
     "lime", "aqua", "silver", "gold", "indigo", "violet", "crimson", "coral",
 })  # fmt: skip
-_HEX_RE = re.compile(r"^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
+_HEX_RE = re.compile(r"#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})")
 _COLOR_FN_RE = re.compile(r"\b(?:rgb|rgba|hsl|hsla)\s*\(", re.IGNORECASE)
 _PX_RE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?px\b", re.IGNORECASE)
-
-#: The shapes of a credential in a string value. ``test_studio_manifest.py`` tests each.
-_CREDENTIAL_RES = tuple(
-    re.compile(p)
-    for p in (
-        r"\bsk-[A-Za-z0-9_-]{16,}",
-        r"\bAKIA[0-9A-Z]{16}\b",
-        r"\bgh[pousr]_[A-Za-z0-9]{20,}",
-        r"\bxox[abprs]-[A-Za-z0-9-]{10,}",
-        r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
-        r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
-        r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]{16,}",
-        r"(?i)\b(?:password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S{6,}",
-    )
-)
 
 
 class ManifestError(BaseModel):
@@ -107,14 +100,14 @@ class ManifestError(BaseModel):
 
 
 class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class FieldDef(_Strict):
     key: str = Field(pattern=rf"^{_NAME}$")
     type: Literal[
-        "text", "long-text", "number", "money", "date", "datetime", "checkbox",
-        "select", "multi-select", "person", "relation", "file", "url", "email",
+        "text", "longText", "number", "money", "date", "datetime", "checkbox",
+        "select", "multiSelect", "person", "relation", "file", "url", "email",
         "phone", "geo",
     ]  # fmt: skip
     label: str | None = None
@@ -152,7 +145,7 @@ class ViewDef(_Strict):
     id: str = Field(pattern=rf"^{_DASHED}$")
     block: Literal[
         "table", "form", "detail", "board", "chart", "stat", "calendar",
-        "timeline", "mind-map", "process-flow", "checklist", "map", "markdown",
+        "timeline", "mindMap", "processFlow", "checklist", "map", "markdown",
     ]  # fmt: skip
     title: str | None = None
     source: Source | None = None
@@ -214,6 +207,15 @@ class Shell(_Strict):
 
 class Manifest(_Strict):
     studio: Literal[1]
+
+    @field_validator("studio", mode="before")
+    @classmethod
+    def _studio_is_the_integer_one(cls, v: Any) -> Any:
+        # `Literal[1]` also accepts `True` and `1.0`, even in strict mode.
+        if type(v) is not int:
+            raise ValueError("`studio` must be the whole number 1")
+        return v
+
     id: str = Field(pattern=rf"^{_DASHED}$")
     name: str
     purpose: str
@@ -230,9 +232,27 @@ class Manifest(_Strict):
 # --- the validator ---------------------------------------------------------
 
 
+_GOT = " Got `"
+
+
+def _short(value: Any, limit: int = 40) -> str:
+    """The echo of a bad value: one line, at most ``limit`` characters."""
+    text = value if isinstance(value, str) else repr(value)
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _got(value: Any) -> str:
+    return f"{_GOT}{_short(value)}`."
+
+
 def _cap(text: str, limit: int = 25) -> str:
-    words = text.split()
-    return text if len(words) <= limit else " ".join(words[: limit - 1]) + " ..."
+    """Cut the head to ``limit`` words. The ` Got `...`` tail stays last and whole."""
+    head, sep, tail = text.partition(_GOT)
+    words = head.split()
+    if len(words) > limit:
+        head = " ".join(words[: limit - 1]) + " ..."
+    return head + sep + tail
 
 
 def _path(loc: list[Any]) -> str:
@@ -242,46 +262,100 @@ def _path(loc: list[Any]) -> str:
     return out
 
 
-def _err(path: str, message: str) -> ManifestError:
-    return ManifestError(path=path, message=_cap(message))
+def _err(path: str, message: str, limit: int = 25) -> ManifestError:
+    return ManifestError(path=path, message=_cap(message, limit))
 
 
 def _reserved(name: str, slice_id: str, what: str = "") -> str:
-    return f"{what}`{name}` is reserved for slice {slice_id} and v1 does not accept it."
+    return f"{what}`{_short(name)}` is reserved for slice {slice_id} and v1 does not accept it."
 
 
-def _scan(node: Any, loc: list[Any], out: list[ManifestError], key: str = "") -> None:
-    """Walk the raw document for the reserved, style, size and credential refusals."""
+def _limit_error(doc: Any) -> ManifestError | None:
+    """The first cap that ``doc`` breaks, or ``None``. Iterative, so depth cannot overflow."""
+    total = 0
+    stack: list[tuple[Any, list[Any], int]] = [(doc, [], 0)]
+    while stack:
+        node, loc, depth = stack.pop()
+        if depth > MAX_DEPTH:
+            return _err(_path(loc), f"The nesting is deeper than {MAX_DEPTH} levels. Flatten it.")
+        if isinstance(node, dict):
+            total += 2 + sum(len(str(k)) + 4 for k in node)
+            stack.extend((v, [*loc, k], depth + 1) for k, v in node.items())
+        elif isinstance(node, list):
+            if len(node) > MAX_LIST_ITEMS:
+                return _err(
+                    _path(loc), f"This list has more than {MAX_LIST_ITEMS} items. Split it."
+                )
+            total += 2 + len(node)
+            stack.extend((v, [*loc, i], depth + 1) for i, v in enumerate(node))
+        elif isinstance(node, str):
+            if len(node) > MAX_STRING_CHARS:
+                return _err(
+                    _path(loc),
+                    f"This text is longer than {MAX_STRING_CHARS} characters. Shorten it.",
+                )
+            total += len(node) + 2
+        elif node is None or isinstance(node, (bool, int, float)):
+            total += 8
+        else:
+            return _err(_path(loc), "This value is not JSON. Use text, numbers, lists and objects.")
+        if total > MAX_DOC_BYTES:
+            return _err(
+                "$", f"The manifest is larger than {MAX_DOC_BYTES // 1024} KiB. Shorten it."
+            )
+    return None
+
+
+def _scan(
+    node: Any,
+    loc: list[Any],
+    out: list[ManifestError],
+    key: str = "",
+    secret: bool = False,
+    depth: int = 0,
+) -> None:
+    """Walk the raw document for the reserved, style and credential refusals.
+
+    ``_limit_error`` runs first, so the depth is bounded. The guard stays as a backstop.
+    ``secret`` is true under a key whose name says it holds a secret.
+    """
+    if depth > MAX_DEPTH:
+        return
     if isinstance(node, dict):
         for k, v in node.items():
             here = [*loc, k]
             lk = str(k).lower()
-            if k in RESERVED_KEYS and key not in _DATA_KEYS:
+            if isinstance(k, str) and k in RESERVED_KEYS and key not in _DATA_KEYS:
                 out.append(_err(_path(here), _reserved(k, RESERVED_KEYS[k], "Key ")))
                 continue
             if lk in _COLOR_KEYS:
                 out.append(
                     _err(
                         _path(here),
-                        f"Key `{k}` is a style choice. A manifest names none. The renderer owns the look.",
+                        f"Key `{_short(k)}` is a style choice. A manifest names none."
+                        " The renderer owns the look.",
                     )
                 )
                 continue
-            _scan(v, here, out, key if key in _DATA_KEYS else lk)
+            sub_key = key if key in _DATA_KEYS else lk
+            _scan(v, here, out, sub_key, secret or is_secret_key(k), depth + 1)
     elif isinstance(node, list):
         for i, v in enumerate(node):
-            _scan(v, [*loc, i], out, key)
+            _scan(v, [*loc, i], out, key, secret, depth + 1)
     elif isinstance(node, str):
         p = _path(loc)
-        if _HEX_RE.match(node.strip()) or _COLOR_FN_RE.search(node):
+        if _HEX_RE.fullmatch(node.strip()) or _COLOR_FN_RE.search(node):
             out.append(_err(p, "A colour literal is not allowed. The renderer owns every colour."))
         elif key in _STYLE_KEYS and node.strip().lower() in _NAMED_COLORS:
             out.append(
-                _err(p, f"The colour name `{node}` is not allowed. The renderer owns every colour.")
+                _err(
+                    p,
+                    f"A colour name is not allowed. The renderer owns every colour.{_got(node)}",
+                )
             )
         if _PX_RE.search(node):
             out.append(_err(p, "A pixel size is not allowed. The renderer owns every size."))
-        if any(r.search(node) for r in _CREDENTIAL_RES):
+        if (secret and node.strip()) or any(rx.search(node) for _, rx in SECRET_SHAPES):
             out.append(
                 _err(p, "This value looks like a credential. Remove it and use a connection.")
             )
@@ -295,25 +369,31 @@ def _structure_errors(exc: ValidationError, skip: set[str]) -> list[ManifestErro
         last = loc[-1] if loc else ""
         typ = e["type"]
         val = e.get("input")
+        limit = 25
         if path in skip:
             continue
         if typ == "extra_forbidden":
-            msg = f"`{last}` is not a v1 manifest key. Remove it."
+            msg = f"`{_short(last)}` is not a v1 manifest key. Remove it."
         elif last == "block" and typ == "literal_error":
-            if val in RESERVED_BLOCKS:
-                msg = _reserved(str(val), RESERVED_BLOCKS[str(val)], "Block ")
+            if isinstance(val, str) and val in RESERVED_BLOCKS:
+                msg = _reserved(val, RESERVED_BLOCKS[val], "Block ")
             else:
-                msg = f"Block `{val}` is unknown. Use {', '.join(BLOCKS[:-1])} or {BLOCKS[-1]}."
+                msg = f"Block is unknown. Use {', '.join(BLOCKS[:-1])} or {BLOCKS[-1]}.{_got(val)}"
+                limit = 25 + len(BLOCKS)
         elif last == "type" and typ == "literal_error":
-            if val in RESERVED_FIELD_TYPES:
-                msg = _reserved(str(val), RESERVED_FIELD_TYPES[str(val)], "Field type ")
+            if isinstance(val, str) and val in RESERVED_FIELD_TYPES:
+                msg = _reserved(val, RESERVED_FIELD_TYPES[val], "Field type ")
             else:
-                msg = f"Field type `{val}` is unknown. Use one of the {len(FIELD_TYPES)} v1 types."
+                msg = (
+                    "Field type is unknown. "
+                    f"Use {', '.join(FIELD_TYPES[:-1])} or {FIELD_TYPES[-1]}.{_got(val)}"
+                )
+                limit = 25 + len(FIELD_TYPES)
         elif typ == "missing":
-            msg = f"`{last}` is required here."
+            msg = f"`{_short(last)}` is required here."
         else:
-            msg = f"Value is not valid here. {e['msg']}"
-        out.append(_err(path, msg))
+            msg = f"Value is not valid here. {e['msg']}."
+        out.append(_err(path, msg, limit))
     return out
 
 
@@ -322,41 +402,48 @@ def _dupes(items: list[str], base: str, what: str, out: list[ManifestError]) -> 
     for i, ident in enumerate(items):
         if ident in seen:
             out.append(
-                _err(f"{base}[{i}]", f"The {what} `{ident}` is used twice. Each must be unique.")
+                _err(
+                    f"{base}[{i}]",
+                    f"The {what} `{_short(ident)}` is used twice. Each must be unique.",
+                )
             )
         seen.add(ident)
 
 
 def _undeclared(path: str, kind: str, name: str, where: str, out: list[ManifestError]) -> None:
-    out.append(_err(path, f"{kind} `{name}` is not declared in {where}."))
+    out.append(_err(path, f"{kind} `{_short(name)}` is not declared in {where}."))
 
 
 def _check_uses(
     a: ActionDef, path: str, objects: dict[str, set[str]], catalog: Mapping[str, str] | None
 ) -> ManifestError | None:
-    m = _USES_RE.match(a.uses)
+    m = _USES_RE.fullmatch(a.uses)
     if not m:
         return _err(
             path,
-            f"`{a.uses}` is not an action id. Use object:<name>.<op>, <app>.<op>, "
-            "integration:<action> or workflow:<uuid>.",
+            "Not an action id. Use object:<name>.<op>, <app>.<op>, "
+            f"integration:<action> or workflow:<uuid>.{_got(a.uses)}",
         )
     if m.group("obj"):
         if m.group("obj") not in objects:
-            return _err(path, f"Object `{m.group('obj')}` is not declared in this manifest.")
+            return _err(
+                path, f"Object `{_short(m.group('obj'))}` is not declared in this manifest."
+            )
         return None
     if catalog is None:
         return None
     cls = catalog.get(a.uses)
     if cls is None:
         return _err(
-            path, f"Action `{a.uses}` is not in the catalog. Pick one that the catalog serves."
+            path,
+            "That action is not in the catalog. Pick one that the catalog serves." + _got(a.uses),
         )
     if cls not in CLASSES:
-        return _err(path, f"Action `{a.uses}` has the unknown class `{cls}`.")
+        return _err(path, f"That action has the unknown class `{_short(cls)}`.{_got(a.uses)}")
     if cls == "X":
         return _err(
-            path, f"Action `{a.uses}` is class X. It is on no door and a package cannot use it."
+            path,
+            "That action is class X. It is on no door and a package cannot use it." + _got(a.uses),
         )
     return None
 
@@ -369,13 +456,21 @@ def _check_view(
     out: list[ManifestError],
 ) -> None:
     p = f"$.views[{vi}]"
-    obj = v.object or (v.source.object if v.source else None)
+    src_obj = v.source.object if v.source else None
+    obj = v.object or src_obj
     if v.source and v.source.action and v.source.action not in action_ids:
         _undeclared(f"{p}.source.action", "Action", v.source.action, "`actions`", out)
-    if obj is not None and obj not in objects:
-        where = f"{p}.object" if v.object else f"{p}.source.object"
-        _undeclared(where, "Object", obj, "this manifest", out)
-    elif obj is not None:
+    if v.object and src_obj and v.object != src_obj:
+        out.append(
+            _err(
+                f"{p}.source.object",
+                "A view names one object. `object` and `source.object` differ.",
+            )
+        )
+    for where, name in ((f"{p}.object", v.object), (f"{p}.source.object", src_obj)):
+        if name is not None and name not in objects:
+            _undeclared(where, "Object", name, "this manifest", out)
+    if obj is not None and obj in objects and not (v.object and src_obj and v.object != src_obj):
         named: list[tuple[str, str]] = []
         named += [(f"{p}.fields[{i}]", x) for i, x in enumerate(v.fields)]
         named += [(f"{p}.columns[{i}]", x) for i, x in enumerate(v.columns)]
@@ -388,7 +483,9 @@ def _check_view(
             named += [(f"{p}.card.meta[{i}]", x) for i, x in enumerate(v.card.meta)]
         for where, name in named:
             if name not in objects[obj]:
-                out.append(_err(where, f"Field `{name}` is not a field of object `{obj}`."))
+                out.append(
+                    _err(where, f"Field `{_short(name)}` is not a field of object `{_short(obj)}`.")
+                )
     if v.submit and v.submit not in action_ids:
         _undeclared(f"{p}.submit", "Action", v.submit, "`actions`", out)
     for i, name in enumerate(v.actions):
@@ -401,21 +498,79 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
         _dupes([f.key for f in o.fields], f"$.objects[{oi}].fields", "field key", out)
         for fi, f in enumerate(o.fields):
             p = f"$.objects[{oi}].fields[{fi}]"
-            if f.type in ("select", "multi-select") and not f.options:
+            if f.type in ("select", "multiSelect") and not f.options:
                 out.append(_err(f"{p}.options", "A select field needs at least one option."))
             if f.type == "relation":
                 if not f.to:
                     out.append(_err(f"{p}.to", "A relation field needs a `to` target."))
-                elif f.to not in objects and not _RELATION_TO.match(f.to):
+                elif f.to not in objects and not _RELATION_TO.fullmatch(f.to):
                     out.append(
                         _err(
                             f"{p}.to",
-                            f"`{f.to}` is not a declared object or an <app>.<object> target.",
+                            f"Not a declared object or an <app>.<object> target.{_got(f.to)}",
                         )
                     )
 
 
-def _check_links(m: Manifest, objects: dict[str, set[str]], out: list[ManifestError]) -> None:
+def _check_skill_ref(
+    path: str,
+    name: str,
+    action_ids: set[str],
+    objects: dict[str, set[str]],
+    catalog: Mapping[str, str] | None,
+    out: list[ManifestError],
+) -> None:
+    """A skill names an action by its id, or by `object:<name>.<op>` of a declared object."""
+    mm = _USES_RE.fullmatch(name)
+    if not (name in action_ids or (mm and mm.group("obj") in objects)):
+        _undeclared(path, "Action", name, "`actions`", out)
+    elif catalog is not None and catalog.get(name) == "X":
+        out.append(_err(path, "That action is class X. A package cannot use it." + _got(name)))
+
+
+def _check_set_keys(
+    ai: int, a: ActionDef, objects: dict[str, set[str]], out: list[ManifestError]
+) -> None:
+    """A create or update action sets only fields of its target object."""
+    m = _USES_RE.fullmatch(a.uses)
+    if not (m and m.group("obj") in objects and m.group("op") in ("create", "update")):
+        return
+    for key in a.set or {}:
+        if key not in objects[m.group("obj")]:
+            out.append(
+                _err(
+                    f"$.actions[{ai}].set.{key}",
+                    f"Field `{_short(key)}` is not a field of object `{m.group('obj')}`.",
+                )
+            )
+
+
+def _check_skill(
+    skill: Skill,
+    action_ids: set[str],
+    view_ids: set[str],
+    objects: dict[str, set[str]],
+    catalog: Mapping[str, str] | None,
+    out: list[ManifestError],
+) -> None:
+    for i, name in enumerate(skill.actions):
+        _check_skill_ref(f"$.skill.actions[{i}]", name, action_ids, objects, catalog, out)
+    for i, ex in enumerate(skill.examples):
+        if ex.action is not None:
+            _check_skill_ref(
+                f"$.skill.examples[{i}].action", ex.action, action_ids, objects, catalog, out
+            )
+    for i, name in enumerate(skill.cards):
+        if name not in view_ids:
+            _undeclared(f"$.skill.cards[{i}]", "Card", name, "`views`", out)
+
+
+def _check_links(
+    m: Manifest,
+    objects: dict[str, set[str]],
+    catalog: Mapping[str, str] | None,
+    out: list[ManifestError],
+) -> None:
     action_ids = {a.id for a in m.actions}
     view_ids = {v.id for v in m.views}
     for wi, w in enumerate(m.workflows):
@@ -424,15 +579,7 @@ def _check_links(m: Manifest, objects: dict[str, set[str]], out: list[ManifestEr
             _undeclared(f"$.workflows[{wi}].trigger.record", "Object", rec, "this manifest", out)
 
     if m.skill:
-        for i, name in enumerate(m.skill.actions):
-            mm = _USES_RE.match(name)
-            if name in action_ids or (mm and mm.group("obj") in objects):
-                continue
-            _undeclared(f"$.skill.actions[{i}]", "Action", name, "`actions`", out)
-        for i, name in enumerate(m.skill.cards):
-            if name not in view_ids:
-                _undeclared(f"$.skill.cards[{i}]", "Card", name, "`views`", out)
-
+        _check_skill(m.skill, action_ids, view_ids, objects, catalog, out)
     if m.shell:
         for i, j in enumerate(m.shell.jobs):
             if j.view not in view_ids:
@@ -459,9 +606,10 @@ def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[Man
         bad = _check_uses(a, f"$.actions[{ai}].uses", objects, catalog)
         if bad:
             out.append(bad)
+        _check_set_keys(ai, a, objects, out)
     for vi, v in enumerate(m.views):
         _check_view(vi, v, objects, action_ids, out)
-    _check_links(m, objects, out)
+    _check_links(m, objects, catalog, out)
     return out
 
 
@@ -474,6 +622,9 @@ def validate_manifest(doc: Any, *, catalog: Mapping[str, str] | None = None) -> 
     """
     if not isinstance(doc, dict):
         return [_err("$", "A manifest is a JSON object.")]
+    too_big = _limit_error(doc)
+    if too_big:
+        return [too_big]
     scanned: list[ManifestError] = []
     _scan(doc, [], scanned)
     skip = {e.path for e in scanned}

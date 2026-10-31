@@ -8,14 +8,14 @@ export type ClassLetter = "A" | "B" | "C" | "X";
 
 export type FieldType =
   | "text"
-  | "long-text"
+  | "longText"
   | "number"
   | "money"
   | "date"
   | "datetime"
   | "checkbox"
   | "select"
-  | "multi-select"
+  | "multiSelect"
   | "person"
   | "relation"
   | "file"
@@ -33,8 +33,8 @@ export type BlockName =
   | "stat"
   | "calendar"
   | "timeline"
-  | "mind-map"
-  | "process-flow"
+  | "mindMap"
+  | "processFlow"
   | "checklist"
   | "map"
   | "markdown";
