@@ -10500,9 +10500,12 @@ not an agent.**
     drafting set the member from the session or the account owner. Workflow
     nodes, Projects agent dispatch and scheduled runs name nobody. A sub-agent
     from `call_agent` inherits its parent's binding.
-  - Caller-chosen paths. `POST /agent/run/stream`, `POST /agent/run` and
-    `POST /agent/run/async` pass `req.payload` to the executor unchanged.
-    `POST /agent/webhook/{source}` spreads the signed sender's payload.
+  - Caller-chosen paths. Since H-337 (2026-10-30), `POST /agent/run/stream`,
+    `POST /agent/run` and `POST /agent/run/async` drop a signed-in member's
+    body claim (`_drop_identity_claims` in `routes/agent.py`). The two sync
+    doors keep a claim of the member's own address, set to the session's
+    address. A service caller keeps its claim. `POST /agent/webhook/{source}` spreads the signed
+    sender's payload.
   - The Control Plane chat proxy builds its own payload with no member, so a
     browser cannot choose one today. But the gateway takes the member from the
     body, and any holder of the internal token or the webhook secret can name

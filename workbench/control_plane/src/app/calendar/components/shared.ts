@@ -109,6 +109,280 @@ export function blockLines(
     : { crumb: "inline", outcome: false };
 }
 
+// ── a block's card (the task block cards redesign, task 1124) ────────────────
+
+/** How tall a card is, by its length. The grid draws `mins / 60 * HOUR_PX - 2`
+ *  pixels, so 30 minutes is 21 px, 45 is 32 px, 60 is 44 px and 90 is 67 px. */
+export type BlockRows = "one" | "two" | "three";
+
+/** The always-visible Focus button of the current card. */
+export type FocusForm = "label" | "icon" | false;
+
+/**
+ * The form of the time range. A range shows WHOLE or not at all, because a
+ * range cut through a number reads as a wrong time ("8:00–9" for 8:00–9:30).
+ * full "8:00 – 9:30 AM", compact "8:00–9:30", start "8:00", then none.
+ */
+export type RangeForm = "full" | "compact" | "start" | false;
+
+export type BlockLayout = {
+  /** one: title and range on a single row. two: a title row and a meta row.
+   *  three: the same, plus the optional lines of `blockLines`. */
+  rows: BlockRows;
+  /** The title may wrap to two lines (a card of 2 hours or more). */
+  wrapTitle: boolean;
+  /** The time range on the title row (a one-row card only). */
+  rangeOnTitle: RangeForm;
+  /** The Focus button of the current card: a label, an icon, or none. */
+  focus: FocusForm;
+  /** The "Now" and "Overlaps" chips draw. */
+  chips: boolean;
+  /** The "on time" or "+12m" mark of a done block draws. */
+  actual: boolean;
+  /** The lock mark of a fixed block draws. */
+  lock: boolean;
+  /** The check circle draws. A card under 90 px gives its room to the title. */
+  check: boolean;
+  /** The range on the meta row (a card of two or three rows). */
+  metaRange: RangeForm;
+  /** The "· 1h" length after a full range. */
+  duration: boolean;
+  energy: boolean;
+  crumb: "own" | "inline" | null;
+  /** The "→ outcome" text: on its own line, or at the end of the meta row. */
+  outcome: false | "inline" | "own";
+};
+
+// Widths in px of what a card can hold, at 11 px text. The title keeps at
+// least TITLE_MIN_PX, or 40% of the card, whichever is more.
+const TITLE_MIN_PX = 48;
+const TITLE_MIN_SHARE = 0.4;
+const ROW_BASE_PX = 34; // left bar and padding, the check circle and its gap
+const ROW_BASE_NO_CHECK_PX = 12; // the same, with no check circle
+const META_INDENT_PX = 22; // the meta row lines up under the title
+const CHECK_MIN_PX = 90;
+const GAP_PX = 6;
+const W_FOCUS_LABEL = 56;
+const W_FOCUS_ICON = 20;
+const W_RANGE: Record<Exclude<RangeForm, false>, number> = {
+  full: 96,
+  compact: 62,
+  start: 32,
+};
+const W_DURATION = 34; // " · 1h 30m"
+const W_NOW_CHIP = 88;
+const W_OVERLAP_CHIP = 62;
+const W_ACTUAL = 46; // "on time", "+12m"
+const W_LOCK = 24;
+
+const NEXT_RANGE: Record<Exclude<RangeForm, false>, RangeForm> = {
+  full: "compact",
+  compact: "start",
+  start: false,
+};
+
+/**
+ * What a card on the grid draws, from its length and its REAL width in px.
+ *
+ * - Under 45 minutes: ONE row. A 30-minute card is 21 px tall.
+ * - 45 to 89 minutes: a title row and a meta row. 45 minutes is 30 px inside
+ *   its border, which two 11 px lines just fill. A plain block keeps its
+ *   "→ outcome" from 45 minutes, as `blockLines` has it, and a step keeps its
+ *   crumb on the meta row. A third line does not fit at 11 px, so the outcome
+ *   ends the meta row here, where main drew it on its own line.
+ * - 90 minutes or more: the lines of `blockLines` have their own rows. From
+ *   120 minutes the title may wrap to two lines.
+ *
+ * The title keeps at least 48 px or 40% of the card. As a one-row card
+ * narrows it drops, in this order: the Focus label (the icon stays), the
+ * range (full, compact, start, none), the chips, the Focus icon, the actual
+ * mark and last the lock. The meta row drops the same way, so a range is
+ * never cut: it shows whole or not at all. The Focus of the hover toolbar
+ * still reaches a card that lost its own.
+ */
+export function blockLayout(
+  mins: number,
+  widthPx: number,
+  isStep: boolean,
+  opts: {
+    isNow?: boolean;
+    overlaps?: boolean;
+    /** A done block with a planned-against-actual mark. */
+    hasActual?: boolean;
+    /** A fixed block, which draws a lock. */
+    isFixed?: boolean;
+  } = {},
+): BlockLayout {
+  const title = Math.max(TITLE_MIN_PX, widthPx * TITLE_MIN_SHARE);
+  const lines = blockLines(mins, isStep);
+  const check = widthPx >= CHECK_MIN_PX;
+  const base = check ? ROW_BASE_PX : ROW_BASE_NO_CHECK_PX;
+  const energy = widthPx >= 240;
+  const chipCost = () =>
+    (opts.isNow ? W_NOW_CHIP + GAP_PX : 0) +
+    (opts.overlaps ? W_OVERLAP_CHIP + GAP_PX : 0);
+
+  let chips = Boolean(opts.isNow || opts.overlaps);
+  let actual = Boolean(opts.hasActual);
+  let lock = Boolean(opts.isFixed);
+
+  if (mins < 45) {
+    let focus: FocusForm = opts.isNow ? "label" : false;
+    let range: RangeForm = "full";
+    const cost = () =>
+      base +
+      title +
+      (focus === "label" ? W_FOCUS_LABEL + GAP_PX : 0) +
+      (focus === "icon" ? W_FOCUS_ICON + GAP_PX : 0) +
+      (range ? W_RANGE[range] + GAP_PX : 0) +
+      (chips ? chipCost() : 0) +
+      (actual ? W_ACTUAL + GAP_PX : 0) +
+      (lock ? W_LOCK + GAP_PX : 0);
+    while (cost() > widthPx) {
+      if (focus === "label") focus = "icon";
+      else if (range) range = NEXT_RANGE[range];
+      else if (chips) chips = false;
+      else if (focus === "icon") focus = false;
+      else if (actual) actual = false;
+      else if (lock) lock = false;
+      else break;
+    }
+    return {
+      rows: "one",
+      wrapTitle: false,
+      rangeOnTitle: range,
+      focus,
+      chips,
+      actual,
+      lock,
+      check,
+      metaRange: "compact",
+      duration: false,
+      energy,
+      crumb: null,
+      outcome: false,
+    };
+  }
+
+  // Two or three rows: the title row holds the Focus button alone.
+  const room = widthPx - base - title;
+  const focus: FocusForm = !opts.isNow
+    ? false
+    : room >= W_FOCUS_LABEL + GAP_PX
+      ? "label"
+      : room >= W_FOCUS_ICON + GAP_PX
+        ? "icon"
+        : false;
+
+  // The meta row: the range keeps its room, or it steps down.
+  const avail = widthPx - 12 - (check ? META_INDENT_PX : 0);
+  let metaRange: RangeForm = "full";
+  let duration = true;
+  const metaCost = () =>
+    (metaRange ? W_RANGE[metaRange] + GAP_PX : 0) +
+    (duration ? W_DURATION : 0) +
+    (chips ? chipCost() : 0) +
+    (actual ? W_ACTUAL + GAP_PX : 0) +
+    (lock ? W_LOCK + GAP_PX : 0);
+  while (metaCost() > avail) {
+    if (duration) duration = false;
+    else if (metaRange) metaRange = NEXT_RANGE[metaRange];
+    else if (chips) chips = false;
+    else if (actual) actual = false;
+    else if (lock) lock = false;
+    else break;
+  }
+  // Chips outrank the range only while the range still fits whole. If the
+  // range is gone but a start time would fit without the chips, show it.
+  if (!metaRange && !chips) {
+    const without = (actual ? W_ACTUAL + GAP_PX : 0) + (lock ? W_LOCK + GAP_PX : 0);
+    if (without + W_RANGE.start + GAP_PX <= avail) metaRange = "start";
+  }
+
+  const common = {
+    focus,
+    chips,
+    actual,
+    lock,
+    check,
+    metaRange,
+    duration,
+    energy,
+    rangeOnTitle: false as const,
+    crumb: lines.crumb,
+  };
+  if (mins < 90) {
+    return {
+      rows: "two",
+      wrapTitle: false,
+      ...common,
+      outcome: lines.outcome && widthPx >= 220 ? "inline" : false,
+    };
+  }
+  return {
+    rows: "three",
+    wrapTitle: mins >= 120 && widthPx >= 140,
+    ...common,
+    outcome: lines.outcome ? "own" : false,
+  };
+}
+
+/**
+ * "4:26 – 4:56" or "4:26 – 5:26 AM". The start drops its AM or PM when the
+ * end shares it. `compact` also drops the period and the spaces, for a narrow
+ * card: "4:26–4:56". `locale` is for tests.
+ */
+export function fmtRange(
+  start: Date,
+  end: Date,
+  opts: { compact?: boolean; locale?: string } = {},
+): string {
+  const f = new Intl.DateTimeFormat(opts.locale, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const parts = (d: Date) => f.formatToParts(d);
+  const text = (ps: Intl.DateTimeFormatPart[], period: boolean) =>
+    ps
+      .filter((p) => period || p.type !== "dayPeriod")
+      .map((p) => p.value)
+      .join("")
+      .replace(/\s/g, " ") // ICU puts a narrow no-break space before AM
+      .trim();
+  const a = parts(start);
+  const b = parts(end);
+  const periodOf = (ps: Intl.DateTimeFormatPart[]) =>
+    ps.find((p) => p.type === "dayPeriod")?.value ?? "";
+  const samePeriod = periodOf(a) === periodOf(b);
+  if (opts.compact) return `${text(a, false)}–${text(b, false)}`;
+  return `${text(a, !samePeriod)} – ${text(b, true)}`;
+}
+
+/** "4:39", the clock without AM or PM: the pill of the hour gutter. The hour
+ *  labels beside it carry the period. `locale` is for tests. */
+export function fmtClockShort(d: Date, locale?: string): string {
+  return new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" })
+    .formatToParts(d)
+    .filter((p) => p.type !== "dayPeriod")
+    .map((p) => p.value)
+    .join("")
+    .trim();
+}
+
+/** How far through a block "now" is, as a whole percent from 0 to 100. */
+export function elapsedPct(start: Date, end: Date, now: Date): number {
+  const span = end.getTime() - start.getTime();
+  if (span <= 0) return 0;
+  const pct = ((now.getTime() - start.getTime()) / span) * 100;
+  return Math.round(Math.min(100, Math.max(0, pct)));
+}
+
+/** "12m left", "1h 5m left", "<1m left" for a block that holds "now". */
+export function leftText(end: Date, now: Date): string {
+  const mins = Math.ceil((end.getTime() - now.getTime()) / 60000);
+  return `${fmtLeft(Math.max(0, mins))} left`;
+}
+
 // ── the unscheduled rail ─────────────────────────────────────────────────────
 
 /** A step of mine that I can schedule: it is itself NEXT, and not filed. The

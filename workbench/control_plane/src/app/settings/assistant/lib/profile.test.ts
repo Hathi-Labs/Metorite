@@ -5,6 +5,7 @@ import {
   ProfileError,
   errorText,
   exportPath,
+  fetchBlock,
   fetchExport,
   fetchProfile,
   forgetAll,
@@ -209,5 +210,42 @@ describe("the interview (PZ-27)", () => {
       { url: "/api/auth/me/assistant-profile/interview/good_day", method: "DELETE", body: undefined },
       { url: "/api/auth/me/assistant-profile/interview", method: "DELETE", body: undefined },
     ]);
+  });
+});
+
+// PZ-20a: "Read as text". Mutation: let a 503 resolve with "", and the 503
+// case fails. Drop the shape check, and the bad-shape case fails.
+describe("fetchBlock", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("asks the proxy with no query and returns the text as sent", async () => {
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      seen.push(url);
+      return new Response(JSON.stringify({ enabled: true, text: "## About line" }), { status: 200 });
+    }));
+    expect(await fetchBlock()).toEqual({ enabled: true, text: "## About line" });
+    expect(seen).toEqual(["/api/auth/me/assistant-profile/block"]);
+  });
+
+  it("passes an off org through", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ enabled: false, text: "" }), { status: 200 })));
+    expect(await fetchBlock()).toEqual({ enabled: false, text: "" });
+  });
+
+  it("throws a ProfileError on a 503, never an empty text", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ detail: "unavailable" }), { status: 503 })));
+    await expect(fetchBlock()).rejects.toBeInstanceOf(ProfileError);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("offline"); }));
+    await expect(fetchBlock()).rejects.toMatchObject({ status: 0 });
+  });
+
+  it("throws on a body of the wrong shape", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ text: 1 }), { status: 200 })));
+    await expect(fetchBlock()).rejects.toBeInstanceOf(ProfileError);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not json", { status: 200 })));
+    await expect(fetchBlock()).rejects.toBeInstanceOf(ProfileError);
   });
 });
