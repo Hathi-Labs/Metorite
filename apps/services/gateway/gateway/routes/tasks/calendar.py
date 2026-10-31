@@ -38,7 +38,6 @@ from gateway.routes.tasks.core import (
     # bottom of this file (H4 — the RLS-EXEMPT `organization` read; see the
     # comment there); every request handler AND per-user rollover uses
     # `_tenant_session`.
-    NO_THINKING,
     _get_db,
     _log,
     _tenant_session,
@@ -384,30 +383,28 @@ DEFAULT_PLANNING_PROMPT = (
     "constraints or mood I give for today."
 )
 
-
-class _NoAnswer(ValueError):
-    """The reply held no JSON at all. The message is the plain reason."""
-
-
-def _plan_json(resp: Any) -> dict:
-    """The JSON object of a plan reply.
-
-    Raises :class:`_NoAnswer` when the reply holds no JSON at all, so the user
-    reads the cause and not "JSONDecodeError" (#1122).
-    """
-    raw = resp.choices[0].message.content or ""
-    if "{" not in raw:
-        finish = getattr(resp.choices[0], "finish_reason", None)
-        raise _NoAnswer(
-            "the AI model ran out of room before it answered"
-            if finish == "length" else "the AI model sent no answer")
-    return json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
+# The answer cap of the day-plan call. The member's "chat" model can be a
+# model that thinks before it answers (tier-powerful is deepseek-v4-pro), and
+# its thinking counts against max_tokens. At 1200 every call on 2026-10-30
+# spent the whole cap on thinking and returned empty content (task 1123). The
+# JSON answer itself needs about 1000 tokens, so the rest is room to think.
+# Fence: tests/unit/test_calendar_plan_llm.py.
+PLAN_MAX_TOKENS = 8000
 
 
-def _failure_reason(exc: Exception) -> str:
-    if isinstance(exc, _NoAnswer):
-        return str(exc)
-    return f"the AI call failed ({type(exc).__name__}: {str(exc)[:120]})"
+def _empty_plan_reason(choice: Any, raw: str) -> str | None:
+    """The human reason when the plan answer holds no JSON at all, else None.
+
+    Names the cause instead of a JSONDecodeError: a finish reason of "length"
+    means the model used the whole cap, its thinking included."""
+    if "{" in raw:
+        return None
+    finish = getattr(choice, "finish_reason", None)
+    _log.warning("tasks.calendar.plan_llm_empty", finish_reason=finish,
+                 content_len=len(raw))
+    if finish == "length":
+        return "the AI model used its whole answer budget before it gave a plan"
+    return "the AI model gave no plan"
 
 
 async def _llm_rank_day(
@@ -507,13 +504,18 @@ async def _llm_rank_day(
             model=model, fallback_model="tier-balanced",
             messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("summary", json=True)},
                       {"role": "user", "content": user}],
-            temperature=0.2, max_tokens=1200, thinking=dict(NO_THINKING),
+            temperature=0.2, max_tokens=PLAN_MAX_TOKENS,
             response_format={"type": "json_object"},
         )
-        data = _plan_json(resp)
+        choice = resp.choices[0]
+        raw = choice.message.content or ""
+        empty = _empty_plan_reason(choice, raw)
+        if empty:
+            return None, None, empty
+        data = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
     except Exception as exc:
         _log.warning("tasks.calendar.plan_llm_failed", error=str(exc)[:160])
-        return None, None, _failure_reason(exc)
+        return None, None, f"the AI call failed ({type(exc).__name__}: {str(exc)[:120]})"
     valid = {c["id"] for c in cands}
     seen: set[str] = set()
     ordered: list[dict] = []

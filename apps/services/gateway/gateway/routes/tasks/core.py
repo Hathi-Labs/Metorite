@@ -55,9 +55,13 @@ router = APIRouter(
 #: cap, the reply came back with ``finish_reason=length`` and empty
 #: ``content``, and the JSON parse failed. Production ``usage_event``,
 #: 2026-10-25 to 10-30: 19 of 20 Tasks calls stopped at exactly their cap.
-#: Rebuild my day showed "JSONDecodeError: Expecting value". The email status
-#: call had the same fault and the same fix (``replyzero._STATUS_THINKING``).
-#: Fence: ``tests/unit/test_tasks_ai_no_thinking.py``.
+#: The email status call had the same fault and the same fix
+#: (``replyzero._STATUS_THINKING``).
+#:
+#: ⚠️ **One exception: the day plan** (``calendar._llm_rank_day``). Task 1123
+#: lets it think, with a cap of ``PLAN_MAX_TOKENS`` that leaves room for it.
+#: Fence: ``tests/unit/test_tasks_ai_no_thinking.py``, which names the
+#: exception.
 NO_THINKING: dict[str, str] = {"type": "disabled"}
 
 
