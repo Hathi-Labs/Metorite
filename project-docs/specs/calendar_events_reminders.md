@@ -795,8 +795,9 @@ after the review of the Opus reviewer and the verifier. The code is
     rows only in its fair share of the time left. The share is that time
     over the count of orgs still to go, and the first row of each org
     always starts. A second round gives the time still left to the orgs
-    that still hold rows. So an org that fills the phase on every tick
-    delays the others by one tick at most.
+    that still hold rows. So each org goes first once in N ticks, for N
+    orgs, and no org waits longer than that. An org that fills the phase
+    on every tick can delay the next org by up to N - 1 ticks.
   - **A stop.** A stop of the loop ends the send phase after the row in
     progress. The rows left stay `planned`.
   - **The 90 s.** A fire comes within one tick of `fire_at`: `TICK_SECONDS`
