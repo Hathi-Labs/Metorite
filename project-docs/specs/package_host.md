@@ -293,7 +293,7 @@ Mode, density and accent live in the browser only today (`lib/theme/storage.ts`)
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **PKG-1** | The manifest folder, its loader and the TypeScript generator (§3.3). Move the ⌘K jobs into it: one source for `registry.ts` `JOBS` and `intent.py` `JOBS` | Both lists come from the files. `test_shell_intent.py::TestOneJobList` still passes. A new test fails when the generated copy is stale. No job changes its id, label, link or gate | STD | AGENT-SAFE |
+| **PKG-1** | The manifest folder, its loader and the TypeScript generator (§3.3). Move the ⌘K jobs into it: one source for `registry.ts` `JOBS` and `intent.py` `JOBS` | Both lists come from the files. The `TestOneJobList` assertions pass, with their TypeScript parser pointed at the generated copy or the loader. A new test fails when the generated copy is stale. No job changes its id, label, link, gate or order | STD | AGENT-SAFE |
 | **PKG-2** | Move the panes, the presets and the cards into the files: `SHELL_PANES`, `SHELL_PRESETS` and `SHELL_CARDS` derive from them | `test_auth_me_shell.py::TestOneVocabulary` passes. `nav.test.ts` still counts 14 live panes | STD | AGENT-SAFE |
 | **PKG-3** | Move `SCOPE_APPS`, `ALSO_SERVES`, `HREF_FEATURES` and `ALWAYS_ALLOWED` into the files | A test fails when a shell map is written by hand outside the files. The search, dock and access tests pass unchanged | STD | AGENT-SAFE |
 
@@ -348,7 +348,7 @@ Research of 2026-11-01. The full notes, with a "Not verified" line for each sour
 
 | Product | What it does | We take | We do not take |
 |---|---|---|---|
-| **DeepSeek Harness** (vendor repo, Cordis kernel) | About 150 plugin services. Each registration returns a disposer. A plugin with an unmet need waits in `PENDING`. A UI slot has one owner | Disposal by install (§5.3), `needs_setup` (§5.4), one owner for each key (§4) | Plugins in the main process with full trust. Its `SAFETY.md` says it "must not be treated as secure or production-ready" |
+| **DeepSeek Harness** (vendor repo, Cordis kernel) | About 150 plugin services. Each registration returns a disposer. A plugin with an unmet need waits in `PENDING`. A UI slot has one owner | Disposal by install (§5.3), `needs_setup` (§5.4), one owner for each key (§4) | Plugins in the main process with full trust. Its own safety notice says it "must not be treated as secure or production-ready" |
 | **Backstage** (vendor docs) | Every feature is an extension with an `attachTo` parent, and the host can override any extension | Built-in apps are packages too (§3) | Compiled-in third-party code |
 | **VS Code** (vendor docs) | Manifest contributions, lazy activation, a remote kill | One manifest of contributions, the kill switch (§5.3) | Extension code with editor rights |
 | **MCP Apps** (open standard, 2026-01-26) | A sandboxed `ui://` view, CSP from declared domains, a separate origin | The T2 rules (§7) | Optional consent for writes |
