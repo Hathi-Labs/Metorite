@@ -3,7 +3,7 @@
 > **Product:** Metorite · **Feature:** web search, page and file reading, crawling, browsing and research jobs for the one assistant · **Updated:** 2026-11-01 · **Owner:** vjvarada
 > **Status:** 📐 **SPEC ONLY (WEB-0).** Nothing new is built. `web_search` and `fetch_page` exist today (§2).
 > **Verified against code on 2026-11-01 at `f59a636b5`.** Each path in §12 was read on that commit.
-> **Board:** WS-WEB in `work_plan.md` §2.1. **Decision:** D147. D85, D117, D124, D129, D130 and D139 bind it.
+> **Board:** WS-WEB in `work_plan.md` §2.1. **Decision:** D148. D85, D117, D124, D129, D130 and D139 bind it.
 > **Metorite:** project "Agent Tooling", epic 1235, this spec task 1237. The slices WEB-1 to WEB-12 are tasks 1259 to 1270, in order.
 > **Research first:** §10 here, the open-source survey of 2026-11-01, with the licences.
 > **Gate summary:** every slice is AGENT-SAFE, except WEB-5, which waits on WEB-Q1, and the live eval of WEB-12 above USD 0.50.
@@ -169,7 +169,7 @@ The table is tenant-scoped. WS-43 CA runs and Studio builds can use the same rec
 
 ## 8. Harness lessons carried here
 
-The owner chose these on 2026-11-01 (D146, PKG-Q5). Each one lands in this workstream first, and the other workstreams can reuse it.
+The owner chose these on 2026-11-01 (D147, PKG-Q5). Each one lands in this workstream first, and the other workstreams can reuse it.
 
 1. **Replay tests** (DeepSeek Harness `snapshots/`). A web turn is recorded once, with its model calls and its network replies. Then it replays with a stubbed model and a stubbed network. The tool chain gets free and repeatable tests (WEB-12).
 2. **"Model-visible means logged."** Each page that Mira reads is logged as an event with its URL, reader, size and spill locator. A replay and an audit both need it (WEB-12).

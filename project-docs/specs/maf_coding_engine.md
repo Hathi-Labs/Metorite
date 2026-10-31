@@ -5732,7 +5732,7 @@ The order is: CA-1 first. Then CA-2 and CA-3. Then the rest, as each
 
 #### CA-4 (task 1032) — Network: egress proxy, web fetch, web search, package install. This is WS-43g.
 
-**Since D147, the web service has its own owner.** `web_research.md` owns the fetch guard, the readers and the search providers. CA-4 owns the coding session's egress proxy and its profiles, and its `web_fetch` and `web_search` call that one service.
+**Since D148, the web service has its own owner.** `web_research.md` owns the fetch guard, the readers and the search providers. CA-4 owns the coding session's egress proxy and its profiles, and its `web_fetch` and `web_search` call that one service.
 
 **CA-4 is WS-43g.** Build it once, here. The WS-43g text of §11 stays the
 verification contract, and CA-4 adds the tools on top. Nobody builds the proxy

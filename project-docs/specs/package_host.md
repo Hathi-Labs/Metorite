@@ -3,7 +3,7 @@
 > **Product:** Metorite · **Feature:** the package host (the shell registry, installs, slots and the arrangement layer) · **Updated:** 2026-11-01 · **Owner:** vjvarada
 > **Status:** 📐 **SPEC ONLY (PKG-0).** Nothing in this spec is built.
 > **Verified against code on 2026-11-01 at `f59a636b5`.** Each path in §12 was read on that commit.
-> **Board:** WS-PKG in `work_plan.md` §2.1. **Decision:** D146. D12, D49, D87, D89, D111, D127, D136 and D141 bind it.
+> **Board:** WS-PKG in `work_plan.md` §2.1. **Decision:** D147. D12, D49, D87, D89, D111, D127, D136, D141 and D146 bind it.
 > **Metorite:** project "Package Host", epic 1234, this spec task 1236. The slices PKG-1 to PKG-20 are tasks 1239 to 1258, in order.
 > **Research first:** the comment "Research notes, 2026-11-01" on epic 491, copied into §11.
 > **Gate summary:** every slice is AGENT-SAFE. The slices that change what a member sees follow the D145 loop: preview, owner approval, then the gates.
@@ -78,6 +78,10 @@ This spec does not add a second app model. It grows the AI Studio package (`ai_s
 | `needs` | this spec | The connections, features and packages that this package needs (§5.4) |
 | `overrides` | this spec | The changes an overlay makes (§8.4) |
 | `objects`, `actions`, `views`, `workflows`, `skill` | `ai_studio.md` | Unchanged |
+
+**A2 is built** (#1562). The model and `validate_manifest` are in `packages/acb_common/acb_common/studio_manifest.py`. The JSON Schema is `studio_manifest.schema.json` beside it, and the TypeScript twin is `lib/studio/manifest.ts`. The model refuses an unknown key, so PKG-5 adds the fields of this table to that one model. Do not write a second model.
+
+**The P0 files hold fragments.** Each file of §3.3 holds the `contributes` block of one built-in app. `shell_manifest.py` (PKG-1) reads the files and checks only what the loader needs. At PKG-5, `validate_manifest` checks the fragments too, and the loader keeps only the file read.
 
 ### 3.2 A built-in app
 
@@ -180,7 +184,7 @@ A package names what it needs: a connection, a feature, or another package. A mi
 | `group:<slug>` | The members of the group | A member of the group with `feature:studio` |
 | `private` | One member | Any member with `feature:studio` |
 
-### 6.2 The lifecycle of an app made in chat (D146, PKG-Q2)
+### 6.2 The lifecycle of an app made in chat (D147, PKG-Q2)
 
 1. **Made.** Mira builds the app in chat. It is private, and `ends_at` is 30 days later.
 2. **Kept.** The member taps Keep. `ends_at` becomes null.
@@ -302,7 +306,7 @@ Mode, density and accent live in the browser only today (`lib/theme/storage.ts`)
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
 | **PKG-4** | The two tables of §5.1 | Expand-only migration (R6). R8: org B reads none of org A's rows. `test_tenant_coverage.py` passes | HIGH | AGENT-SAFE |
-| **PKG-5** | `GET /shell/manifest`, the resolve of §5.2 | R8: a private install shows for its owner only, a group install for its members only. A contribution with a feature the viewer lacks never shows. A duplicate claim fails at install | HIGH | AGENT-SAFE |
+| **PKG-5** | `GET /shell/manifest`, the resolve of §5.2. The fields of §3.1 join the A2 model, and `validate_manifest` checks the P0 files | R8: a private install shows for its owner only, a group install for its members only. A contribution with a feature the viewer lacks never shows. A duplicate claim fails at install | HIGH | AGENT-SAFE |
 | **PKG-6** | The workbench reads the resolved manifest behind the flag | With the flag off, the shell is byte-for-byte as before. With it on, an org install shows in the sidebar, ⌘K and the bell. Visual review in four contexts | STD | AGENT-SAFE |
 | **PKG-7** | Features from installs pass the one entitlement seam | A feature that only an install declares is visible to a holder of `*`. The `FEATURES` tuple stays the system list | HIGH | AGENT-SAFE |
 | **PKG-8** | Studio H1 and H2 use this path. `ai_studio.md` §14 points here | An installed Studio app reaches every point of §4 through the registry. No Studio-only list exists | STD | AGENT-SAFE |
@@ -421,7 +425,7 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 
 ## 15. Owner questions
 
-The owner accepted PKG-Q1 to PKG-Q5 as recommended on 2026-11-01 (D146).
+The owner accepted PKG-Q1 to PKG-Q5 as recommended on 2026-11-01 (D147).
 
 | Id | Question | Answer |
 |---|---|---|
