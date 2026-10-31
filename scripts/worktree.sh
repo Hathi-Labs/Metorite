@@ -12,7 +12,8 @@
 # Usage:
 #   bash scripts/worktree.sh new <slug> [base]   # base defaults to origin/main
 #   bash scripts/worktree.sh list
-#   bash scripts/worktree.sh remove <slug>
+#   bash scripts/worktree.sh remove <slug>           # refuses a dirty worktree
+#   bash scripts/worktree.sh remove --force <slug>   # deletes its unsaved work
 #
 # ⚠️ `remove` IS THE DANGEROUS ONE, and it is why this file exists rather than
 # a line in a README. Some worktrees here carry a `node_modules` JUNCTION
@@ -24,6 +25,9 @@
 #   • given a real non-empty directory, it REFUSES
 # So the safe case succeeds and the dangerous case stops, with no test for
 # "is this a junction" that could get the answer wrong.
+#
+# `remove` also refuses a worktree with uncommitted or untracked work (LD-6).
+# Another session may be editing there. Fence: tests/unit/test_worktree_remove.py.
 set -euo pipefail
 
 # Worktrees live BESIDE the repo, never inside it. Inside, every tool that
@@ -40,7 +44,7 @@ fi
 REPO="$(git rev-parse --show-toplevel)"
 cmd="${1:-}"
 
-usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
 wt_path() { printf '%s-%s' "$WT_ROOT" "$1"; }
 
@@ -80,10 +84,34 @@ list)
   ;;
 
 remove)
-  slug="${2:-}"
+  force=0; slug=""
+  for a in "${@:2}"; do
+    if [ "$a" = "--force" ]; then force=1; else slug="$a"; fi
+  done
   [ -n "$slug" ] || usage
   path="$(wt_path "$slug")"
   [ -d "$path" ] || { echo "!! no worktree at $path"; exit 1; }
+
+  # ⚠️ UNSAVED WORK BEFORE ANYTHING ELSE (LD-6). This script once passed
+  # --force every time, and --force deletes exactly the uncommitted and
+  # untracked files. Another session may still be editing here. So check
+  # first, before the dev stack stops and the junction goes: a refusal must
+  # leave the worktree as it was. Ignored files (node_modules, .venv,
+  # .dev_up) do not count, so a finished worktree passes.
+  dirty="$(git -C "$path" status --porcelain 2>/dev/null || true)"
+  if [ -n "$dirty" ] && [ "$force" != 1 ]; then
+    echo "!! $path has uncommitted or untracked work:"
+    printf '%s\n' "$dirty" | head -20 | sed 's/^/     /'
+    echo "   Commit it or move it. To delete it anyway:"
+    echo "      bash scripts/worktree.sh remove --force $slug"
+    exit 1
+  fi
+  # The branch survives the removal, so unpushed commits are not lost. Say so
+  # anyway: a branch nobody pushed is easy to forget.
+  ahead="$(git -C "$path" rev-list --count HEAD --not --remotes 2>/dev/null || echo 0)"
+  if [ "$ahead" != 0 ]; then
+    echo "   ⚠️ $ahead commit(s) on this branch are on no remote. The branch keeps them."
+  fi
 
   # ⚠️ A RUNNING PROCESS FIRST. Measured 2026-09-03: this script removed a
   # worktree that still had `uvicorn` and `python` serving out of its `.venv`.
@@ -131,7 +159,11 @@ remove)
     fi
   fi
 
-  git -C "$REPO" worktree remove "$path" --force
+  if [ "$force" = 1 ]; then
+    git -C "$REPO" worktree remove --force "$path"
+  else
+    git -C "$REPO" worktree remove "$path"
+  fi
   echo "   removed $path"
   echo "   ⚠️ The BRANCH still exists. Delete it when it is merged:"
   echo "      git -C \"$REPO\" branch -d $slug"
