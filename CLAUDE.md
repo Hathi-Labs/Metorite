@@ -217,7 +217,7 @@ delivery makes a silent failed deploy more likely, not less.
 > **audit** the spec is dispatchable → **implement** one narrowed slice and
 > **run it locally** (`scripts/dev_up.sh`) → **verify** independently, on the
 > local stack → **review** the diff adversarially, by risk tier. Then **open a
-> PR**, **merge it**, **watch the run**, and **smoke-test it on staging**.
+> PR**, **merge it**, **watch the run**, and **ship it**.
 
 **Merging is not skipping the loop.** Verify always runs, and the verifier is
 never the implementer. A small slice (LOW, or STANDARD in build) skips the
@@ -225,18 +225,12 @@ audit when its Metorite task states the acceptance criteria (owner request,
 2026-10-30). Review depth follows the risk tier in `next-ticket.md` step 1b. A
 LOW slice skips the reviewer. What you drop is the wait.
 
-**⚠️ A merge is NOT a production deploy (WS-38).** A merge runs lint and tests,
-then moves the `staging` ref. Staging (`https://dev.metorite.com`) serves that
-ref within about 15 minutes. **Production moves once a day, at 21:30 UTC
-(03:00 IST)**, to the tip of `main` if its tests pass.
-`specs/staging_and_daily_release.md` owns the design, and
-`tests/unit/test_daily_release.py` is the fence.
-
-**⚠️ Do not push to production yourself** *(owner directive, 2026-10-27)*. Do
-not run `gh workflow run deploy.yml`. Production takes the 21:30 UTC release.
-Run a manual dispatch only when the owner asks for it in your session, or when
-production is down. A dark feature never needs one. If you think a change
-cannot wait, ask the owner.
+**⚠️ Staging is retired** *(D144, owner directive, 2026-10-31)*. A merge moves
+`main` and nothing else. Production moves at 21:30 UTC each day. An agent may
+also dispatch `deploy.yml` after the merge, and the run ships the tip of `main`
+at once. This replaces the "do not push to production" rule of 2026-10-27.
+Verify by evidence: `/version` `applied_sha` and the smoke jobs.
+`.claude/commands/next-ticket.md` step 7 holds the commands.
 
 **⚠️ WORK UNDER A METORITE TASK** *(owner directive, 2026-10-28, D135)*.
 The owner watches the board, so work that is not on it is invisible. Every
@@ -257,14 +251,6 @@ session that changes the repo or a box follows these steps:
    done, what is left and the next step.
 
 A session that only reads or answers needs no task.
-
-**⚠️ TEST ON STAGING BEFORE PRODUCTION** *(owner directive, 2026-10-17)*.
-Since 2026-10-30 agents test the behaviour on the local stack first. Staging is
-a smoke check, plus what the PC cannot test (`next-ticket.md` step 7).
-Staging holds a reduced copy of four organizations. Every outbound switch is
-OFF there, so staging sends no mail and calls no CRM. Write nothing there that
-must last. The dev box `srv1747539` is also the staging box. A session on it
-must not listen on port 80, 443, 3001, 8080, 8091, 5435 or 18090.
 
 Rules that make it work:
 
