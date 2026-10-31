@@ -104,7 +104,7 @@ export default function InterviewOffer({
     <div
       role="region"
       aria-label="Get to know me"
-      className="w-full max-w-sm rounded-xl border border-border bg-card px-4 py-3 text-left"
+      className="w-full max-w-sm rounded-xl border border-border bg-card px-4 py-3 text-left glass:rounded-[22px] glass:border-transparent glass:glass-surface glass:p-4"
     >
       <div className="flex items-start justify-between gap-2">
         <p className="min-w-0 text-sm font-medium text-foreground">Want me to get to know you?</p>
@@ -120,7 +120,7 @@ export default function InterviewOffer({
           }}
         />
       </div>
-      <p className="mt-0.5 text-xs text-muted-foreground">
+      <p className="mt-0.5 text-xs text-muted-foreground glass:text-footnote">
         I ask a few short questions now, then at most one a day. You can stop any time. Your
         answers help me write and plan the way you like. You see and edit them in{" "}
         <Link href="/settings/assistant" className="text-foreground underline underline-offset-2">

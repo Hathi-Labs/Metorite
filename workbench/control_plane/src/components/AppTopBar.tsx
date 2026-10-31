@@ -143,7 +143,7 @@ export function AppTopBar({
         {back ? <BackLink back={back} /> : null}
         <div className="flex min-w-0 flex-1">{name}</div>
         {actions || tools ? (
-          <div className="flex shrink-0 items-center gap-0.5">
+          <div data-app-bar-actions className="flex shrink-0 items-center gap-0.5">
             {actions}
             {tools}
           </div>
@@ -191,7 +191,7 @@ export function AppTopBar({
         ) : null}
         {name}
       </div>
-      {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
+      {actions ? <div data-app-bar-actions className="flex shrink-0 items-center gap-1">{actions}</div> : null}
       {tools ? (
         <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1">{tools}</div>
       ) : null}

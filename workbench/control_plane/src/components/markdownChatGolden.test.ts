@@ -20,6 +20,7 @@ import { MarkdownBody } from "@/components/MarkdownMessage";
 import { buildEntityIndex } from "@/lib/entityIndex";
 import { OWNER_ANSWER, OWNER_TOOL_EVENTS } from "@/lib/entityPills.fixture";
 import { resolveTaskRefs } from "@/lib/taskRefs";
+import { classicMarkup } from "@/lib/theme/classicMarkup";
 
 // The inputs and the modes the goldens were written from. They live in this
 // test file: `#120` reads as a colour to the conformance scan, which skips
@@ -82,7 +83,8 @@ describe("the chat's Markdown is the one it was before TR-5", () => {
     for (const [name, mode] of Object.entries(CHAT_GOLDEN_MODES)) {
       it(`input ${i} in mode ${name}`, () => {
         const props = { content, ...mode, entityIndex: mode.entityPills ? index : undefined };
-        expect(renderToStaticMarkup(createElement(MarkdownBody, props))).toBe(GOLDEN[`${i}:${name}`]);
+        // GL-6: a `glass:` token is no change to classic, so the golden reads classic markup.
+        expect(classicMarkup(renderToStaticMarkup(createElement(MarkdownBody, props)))).toBe(GOLDEN[`${i}:${name}`]);
       });
     }
   });

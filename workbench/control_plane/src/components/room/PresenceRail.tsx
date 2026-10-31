@@ -103,7 +103,7 @@ export function PresenceRail({
   );
 
   return (
-    <aside className="flex w-full flex-col gap-5 overflow-y-auto border-l border-border bg-sidebar px-3 py-4 text-sm lg:w-72">
+    <aside className="flex w-full flex-col gap-5 overflow-y-auto border-l border-border bg-sidebar px-3 py-4 text-sm lg:w-72 glass:border-l-0 glass:bg-transparent">
       {onClose && (
         <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={onClose} aria-label="Close room panel" className="self-end rounded-md lg:hidden">
           <Icon name="X" className="h-4 w-4" />
@@ -223,7 +223,7 @@ export function PresenceRail({
         </ul>
 
         {adding && (
-          <ul className="mt-1 max-h-48 space-y-0.5 overflow-y-auto rounded-lg border border-border bg-background p-1">
+          <ul className="mt-1 max-h-48 space-y-0.5 overflow-y-auto rounded-lg border border-border bg-background p-1 glass:rounded-[14px] glass:border-transparent glass:bg-secondary">
             {addable.map((name) => (
               <li key={name}>
                 <Button variant="ghost" size="none" radius="keep" layout="flex items-center" disabled={busy !== null} onClick={() =>

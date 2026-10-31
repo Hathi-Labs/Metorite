@@ -256,10 +256,10 @@ function TaskRowView({ row }: { row: TaskRow }) {
   };
   const done = state === "done";
   return (
-    <div className="flex items-center gap-1 rounded-md border border-transparent hover:border-border transition-colors">
+    <div className="flex items-center gap-1 rounded-md border border-transparent hover:border-border transition-colors glass:rounded-[14px]">
       <button
         onClick={() => openTask(row.id)}
-        className="flex-1 min-w-0 text-left px-1.5 py-1 rounded-md hover:bg-secondary/60"
+        className="flex-1 min-w-0 text-left px-1.5 py-1 rounded-md hover:bg-secondary/60 glass:rounded-[14px]"
         title="Open in My work"
       >
         <span
@@ -394,7 +394,7 @@ function PlanResultCard({ event: e }: { event: ToolEvent }) {
             <button
               onClick={apply}
               disabled={state === "busy"}
-              className="inline-flex items-center gap-1 rounded-md border border-primary/50 bg-primary/10 px-2 py-1 text-[10px] font-medium text-primary hover:bg-primary/20 disabled:opacity-60"
+              className="inline-flex items-center gap-1 rounded-md border border-primary/50 bg-primary/10 px-2 py-1 text-[10px] font-medium text-primary hover:bg-primary/20 disabled:opacity-60 glass:rounded-full glass:border-transparent glass:bg-primary/12 glass:px-2.5 glass:text-caption"
             >
               {state === "busy" ? (
                 <AppIcon name="Loader2" size={10} className="animate-spin" />
