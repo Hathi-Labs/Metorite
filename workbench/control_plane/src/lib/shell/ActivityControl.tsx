@@ -143,7 +143,7 @@ export function ActivityButton({
       aria-haspopup="dialog"
       aria-expanded={open}
       onClick={onOpen}
-      className={`relative ${className}`}
+      className={`relative glass:glass-chrome glass:glass-press glass:rounded-full ${className}`}
     >
       {badge ? (
         <NavBadge

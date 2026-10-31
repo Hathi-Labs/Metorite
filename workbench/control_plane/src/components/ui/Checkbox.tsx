@@ -56,7 +56,11 @@ const BASE =
   "indeterminate:border-primary indeterminate:bg-primary " +
   "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 " +
   "focus-visible:ring-offset-background " +
-  "disabled:cursor-not-allowed disabled:opacity-60";
+  "disabled:cursor-not-allowed disabled:opacity-60 " +
+  // The glass look (D143, GL-2): Apple's rounded square, a tint fill when on.
+  "glass:rounded-sm glass:border-input glass:bg-field " +
+  "glass:checked:border-primary glass:checked:bg-primary " +
+  "glass:indeterminate:border-primary glass:indeterminate:bg-primary";
 
 export type CheckboxProps = Omit<
   React.InputHTMLAttributes<HTMLInputElement>,

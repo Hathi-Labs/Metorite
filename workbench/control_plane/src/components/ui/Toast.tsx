@@ -350,7 +350,7 @@ function ToastViewport() {
               key={toast.id}
               toast={toast}
               data-cc-toast={variant}
-              className="pointer-events-auto flex w-full items-start gap-2 rounded-lg border border-border bg-card p-3 shadow-lg outline-none transition-opacity duration-150 data-[ending-style]:opacity-0 data-[limited]:hidden data-[starting-style]:opacity-0"
+              className="pointer-events-auto flex w-full items-start gap-2 rounded-lg border border-border bg-card p-3 shadow-lg outline-none glass:rounded-2xl glass:border-transparent glass:glass-chrome transition-opacity duration-150 data-[ending-style]:opacity-0 data-[limited]:hidden data-[starting-style]:opacity-0"
             >
               <Icon
                 name={ICONS[variant] ?? ICONS.loading}
