@@ -358,7 +358,9 @@ a side canvas with Preview and Files tabs. GL changes no data rule of WS-60.
 ### GL-8 · Aroh's tools — a separate spec
 
 The inventory of Aroh's skills, tools and connections, and what Metorite
-lacks, goes into a new spec under WS-STU and WS-67. GL does not build it.
+lacks, goes into AI Studio: WS-STU, `specs/ai_studio.md` and D141 (a skill
+creator replaces the agent creator), with the tool-pack seam of WS-67. GL
+does not build it.
 
 The survey of 2026-10-31 ranked these by their effect on the chat. Each
 needs tenant scope, because Aroh trusts one owner:
