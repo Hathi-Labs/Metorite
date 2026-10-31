@@ -53,7 +53,7 @@ export function MirrorNote() {
   return (
     <div
       role="note"
-      className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/40 px-4 py-1.5"
+      className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/40 px-4 py-1.5 glass:mx-4 glass:mt-2 glass:rounded-xl glass:border-0 glass:bg-secondary glass:py-2"
     >
       <Icon name="Info" size={14} className="shrink-0 text-muted-foreground" />
       <p className="min-w-0 flex-1 text-xs text-muted-foreground">{MIRROR_LINE}</p>
@@ -73,7 +73,7 @@ export function StalledBanner({
   return (
     <div
       role="alert"
-      className="flex shrink-0 flex-wrap items-center gap-2 border-b border-warning/30 bg-warning/10 px-4 py-2"
+      className="flex shrink-0 flex-wrap items-center gap-2 border-b border-warning/30 bg-warning/10 px-4 py-2 glass:mx-4 glass:mt-2 glass:rounded-xl glass:border-0"
     >
       <Icon name="AlertCircle" size={14} className="shrink-0 text-warning" />
       <p className="min-w-0 flex-1 text-xs text-foreground">{stalledSentence(status, isAdmin)}</p>
@@ -115,7 +115,7 @@ export function ImportProgress({ status }: { status: SyncStatus }) {
   const percent = progressPercent(status);
   const detail = progressDetail(status);
   return (
-    <div className="shrink-0 border-b border-border bg-card/40 px-4 py-3" aria-live="polite">
+    <div className="shrink-0 border-b border-border bg-card/40 px-4 py-3 glass:mx-4 glass:mt-2 glass:rounded-xl glass:border-0 glass:bg-secondary" aria-live="polite">
       <p className="mb-1.5 text-xs font-medium text-foreground">
         {status.kind === "import" || status.kind === null
           ? "Importing from Zoho. You can keep working."

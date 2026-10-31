@@ -2762,3 +2762,33 @@ html[data-look="glass"] nav[data-more-below] {
   }
 }
 
+/* ── GL-6, app group B: Projects, Tasks, People, Knowledge, Approvals,
+   Organisation, Integrations, Settings ──────────────────────────────────
+   Two floors that glass sets for the whole look. They live here because the
+   apps hold hundreds of `text-[10px]`, `text-[11px]` and `uppercase` uses.
+   A per-class edit would touch every file, and GL-Z2 folds the classes later.
+   • Nothing in glass is smaller than 12 px (the `--text-caption` step).
+   • A small heading is sentence case. The uppercase micro-label belongs to
+     classic. A badge keeps its shape and loses only the capitals.
+   The `main` scope keeps the shell chrome and the chat out of the rule. */
+html[data-look="glass"] main :is(.text-\[9px\], .text-\[10px\], .text-\[11px\]) {
+  font-size: var(--text-caption);
+}
+html[data-look="glass"] :is(main, [role="dialog"], [role="menu"], [role="listbox"]) .uppercase {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* ── GL-6, controls slice: the toolbar size ────────────────────────────────
+   One height for a toolbar row: 28 px. `Input sm`, `SelectButton`, `Button sm`
+   and a segment track all draw it. A title-bar action is a toolbar control, so
+   a text button there takes the same size, whatever size the app asked for.
+   The rule is unlayered, so it beats the utility classes of `Button`. An icon
+   button carries `glass:w-*` and keeps its own box. A touch screen keeps 40 px. */
+@media (pointer: fine) {
+  html[data-look="glass"] [data-app-bar-actions] .cc-button:not([class*="glass:w-"]) {
+    height: 1.75rem;
+    padding-inline: 0.75rem;
+    font-size: var(--text-footnote);
+  }
+}

@@ -208,7 +208,7 @@ function AgentPickerModal({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-lg rounded-xl border border-border bg-card p-5 shadow-2xl tech-glass-subtle flex flex-col max-h-[85vh]"
+        className="w-full max-w-lg rounded-xl glass:rounded-[22px] border border-border bg-card p-5 shadow-2xl tech-glass-subtle flex flex-col max-h-[85vh]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between shrink-0">
@@ -224,7 +224,7 @@ function AgentPickerModal({
         <div className="overflow-y-auto flex-1 min-h-0 -mr-2 pr-2">
         {/* Default — Metorite */}
         <div className="mb-2">
-          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5 glass:normal-case glass:tracking-normal glass:text-footnote glass:text-muted-foreground">
             Default
           </div>
           <AgentPickerCard
@@ -238,7 +238,7 @@ function AgentPickerModal({
 
         {/* Copilot SDK Agents — talk directly to GitHub Copilot SDK */} 
         <div className="mt-4">
-          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5 glass:normal-case glass:tracking-normal glass:text-footnote glass:text-muted-foreground">
             Copilot SDK agents
           </div>
           {loading ? (
@@ -270,7 +270,7 @@ function AgentPickerModal({
 
         {/* MAF Agents — run through Microsoft Agent Framework */}
         <div className="mt-4">
-          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5 glass:normal-case glass:tracking-normal glass:text-footnote glass:text-muted-foreground">
             MAF agents
           </div>
           {loading ? (
