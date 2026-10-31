@@ -4897,6 +4897,22 @@ The owner said on 2026-10-31, in chat: "Earlier, I was planning to have Aroh as 
 5. **The artifact library takes Aroh's Files design** (WS-60 AM-2). WS-60 keeps every data rule.
 6. **Aroh's tools come in through the tool-pack seam** (WS-67), in their own spec (GL-8).
 
+### D144 — Staging is retired. A merge may ship to production by a dispatch (2026-10-31)
+
+Owner directive, 2026-10-31, in chat. Metorite: task 1215. It supersedes the staging parts of the 2026-10-17 directive and of WS-38. It replaces the 2026-10-27 rule "Do not push to production yourself".
+
+```text
+"you can push directly to production. Instead of using a VPS, I will be using a local workstation and later on set that up for CI/CD."
+```
+
+1. **Staging is retired.** The dev and staging VPS `srv1747539` (`dev.metorite.com`) stays cancelled. Its plan expired on 2026-10-31, and the VM is suspended. Production `srv1914284` does not change.
+2. **A merge may ship at once.** After a merge, an agent may run `gh workflow run deploy.yml --ref main -f reason="<why>"`. The run ships the tip of `main`.
+3. **The care stays.** The unit-test job on the tip of `main` must pass first. For a migration in the range, confirm the pre-migration backup in the production journal. The evidence is `/version` `applied_sha` and the smoke jobs. Report it in the same message as the act.
+4. **A dispatch ships every merge on `main`.** Name what goes out.
+5. **The daily release stays.** It runs at 21:30 UTC and is the default clock. `RELEASE_HOLD` still stops it.
+6. **Flags wait on production.** A flag that waited for a staging check now waits for the owner's check on production.
+7. **A local workstation will become the CI/CD box.** Nobody has built it.
+
 
 ## 4. Single-owner registry (who owns duplicated work)
 
