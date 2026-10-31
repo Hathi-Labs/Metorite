@@ -307,6 +307,16 @@ def test_the_refresh_holds_the_deploy_lock_while_the_database_is_away() -> None:
     assert body.index("pg_restore") < body.index("flock -u 9") < body.index("vps_pull.sh")
 
 
+def test_the_refresh_deletes_every_copied_push_subscription_before_the_deploy() -> None:
+    """WS-66 RE-9b: staging and production hold one VAPID key pair. A copied
+    subscription would let a reminder that fires on staging push to a real
+    member's phone. The delete runs after the restore and before the deploy
+    starts the gateway again, so a later subscription on staging stays."""
+    body = _code(_REFRESH)
+    delete = body.index('dpsql -d postgres -c "DELETE FROM public.push_subscriptions"')
+    assert body.rindex("pg_restore") < delete < body.index("vps_pull.sh")
+
+
 def test_the_refresh_proves_the_serving_commit() -> None:
     body = _code(_REFRESH)
     assert "another deploy holds the lock" in body, "a skipped deploy must not read as done"

@@ -22,10 +22,10 @@
 --   4. Keeps an identity only for a member of a kept organization.
 --   5. Blanks every credential, in the kept organizations too. Staging holds
 --      no production secret, so the ciphertext would only be dead weight.
---      It also blanks each member's assistant profile (WS-63 PZ-9). It
---      empties the web push subscriptions, and blanks the plugin auth (in
---      both columns that hold it) and the hashes of the WhatsApp link and
---      reply codes. It closes each open WhatsApp act (LD-8c).
+--      It also blanks each member's assistant profile (WS-63 PZ-9), and it
+--      deletes every web push subscription (WS-66 RE-9b). It blanks the
+--      plugin auth (in both columns that hold it) and the hashes of the
+--      WhatsApp link and reply codes. It closes each open WhatsApp act (LD-8c).
 --   6. Refuses when any credential-shaped column still holds a value. A new
 --      credential column fails the export until it is blanked here.
 --   7. Refuses when any JSON value looks like a live token (a bearer header,
@@ -112,6 +112,8 @@ BEGIN
   TRUNCATE public.agent_client, public.auth_email_otp_token, public.email_detached_purges;
   DELETE FROM public.agent_token;
   DELETE FROM public.provider_keys;
+  -- A push subscription is a device credential. Staging must not push to a real phone (WS-66 RE-9b).
+  DELETE FROM public.push_subscriptions;
   UPDATE public.email_accounts          SET credentials_encrypted = '', webhook_client_state = NULL;
   UPDATE public.integration_connections SET credentials_encrypted = NULL;
   UPDATE public.task_accounts           SET credentials_encrypted = '', last_delta_token = NULL;
@@ -125,9 +127,6 @@ BEGIN
   -- The member's own words to the assistant (WS-63 PZ-9, personalization.md
   -- §7 point 5). No copy of the profile leaves production.
   UPDATE public.user_settings           SET assistant_profile = NULL;
-  -- Web push (306). The endpoint is a URL that reaches a real device, and
-  -- p256dh and auth are the keys of that device. A copy must send no push.
-  TRUNCATE public.push_subscriptions;
   -- The auth of a plugin (14_plugins.sql). NOT NULL, so '{}' and not NULL.
   -- The install route writes the same object twice: `auth_config` holds
   -- manifest.auth, and `manifest` holds the whole manifest. So the `auth` key

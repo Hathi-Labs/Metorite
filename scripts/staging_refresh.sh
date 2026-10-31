@@ -16,7 +16,8 @@
 #      That key can read the export folder and nothing else (rrsync -ro).
 #   3. Checks the checksums and the age (36 hours at most).
 #   4. Drops and rebuilds the database `postgres` in acb-staging-db: the roles
-#      and extensions the dump names, then pg_restore.
+#      and extensions the dump names, then pg_restore. Then it deletes every
+#      copied web push subscription, so staging pushes to no real phone.
 #   5. Gives the gateway the non-owner role acb_app (handover §H3), so RLS binds
 #      staging as it binds production (R5).
 #   6. Copies production's feature switches into the two env files, except the
@@ -122,6 +123,11 @@ if [ "$rc" != "0" ] || grep -qE '^pg_restore: error' "$log"; then
   grep -E '^pg_restore: error' "$log" | head -20 >&2 || true
   fail "pg_restore failed (exit $rc). See $log"
 fi
+# A push subscription is a device credential of a real member, so staging
+# deletes each copied one and never pushes to a real phone (WS-66 RE-9b). The
+# export deletes them too. This runs at the refresh only, so a subscription
+# that a member makes on dev.metorite.com after it stays.
+dpsql -d postgres -c "DELETE FROM public.push_subscriptions" < /dev/null
 
 # ── 5. The gateway's role: not owner, not superuser, no RLS bypass ───────────
 dpsql -d postgres <<SQL

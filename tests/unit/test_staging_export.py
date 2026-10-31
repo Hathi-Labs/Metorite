@@ -117,14 +117,15 @@ def test_the_minimise_step_blanks_push_keys_plugin_auth_and_code_hashes() -> Non
     """LD-8c: the export carries no push subscription, no plugin auth and no
     hash of a WhatsApp code, and no WhatsApp act stays open. Each blank comes
     BEFORE step 6, because step 6 refuses a value in a matching column. The
-    behaviour is proven in ``test_staging_minimise_r8.py`` (R8)."""
+    behaviour is proven in ``test_staging_minimise_r8.py`` (R8). The push
+    subscriptions go through RE-9b's DELETE (the test below)."""
     sql = (_ROOT / "infra/staging/minimise.sql").read_text(encoding="utf-8")
     body, step6 = sql.split("-- 6. Nothing credential-shaped is left.", 1)
     # One space for each run of white space, so the alignment of a column
     # does not decide the result.
     flat = " ".join(body.split())
     for stmt in (
-        "TRUNCATE public.push_subscriptions;",
+        "DELETE FROM public.push_subscriptions;",
         "UPDATE public.plugins SET auth_config = '{}'::jsonb, manifest = manifest - 'auth';",
         "UPDATE public.whatsapp_member_links SET code_hash = '' WHERE code_hash IS NOT NULL;",
         "UPDATE public.whatsapp_pending_acts SET confirm_code_hash = NULL, "
@@ -151,6 +152,16 @@ def test_the_credential_names_match_any_token_and_key() -> None:
         assert names.search(name), name
     for name in ("author_email", "auth_type", "created_at"):
         assert not names.search(name), name
+
+
+def test_the_minimise_step_deletes_every_push_subscription() -> None:
+    """WS-66 RE-9b: a push subscription is a device credential. A copied one
+    would let a reminder that fires on staging push to a real member's phone.
+    The staging refresh deletes them too (``test_staging_box.py``)."""
+    sql = (_ROOT / "infra/staging/minimise.sql").read_text(encoding="utf-8")
+    body = sql.split("-- 6. Nothing credential-shaped is left.", 1)[0]
+    code = [ln.strip() for ln in body.splitlines() if not ln.lstrip().startswith("--")]
+    assert "DELETE FROM public.push_subscriptions;" in code
 
 
 def test_a_tenant_cannot_set_the_slugs() -> None:
