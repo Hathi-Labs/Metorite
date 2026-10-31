@@ -25,7 +25,8 @@
 -- with the indexes of 266 the list read is a scan of the whole table. EXPLAIN
 -- on a copy of the ladder with 200,000 old push rows and 5 planned rows
 -- showed a parallel seq scan before, and an index scan on this index after.
--- The index holds only the planned web push rows, so it stays small. `reach_outbox_state_known` already allows planned, sent, skipped and
+-- The index holds only the planned web push rows, so it stays small.
+-- `reach_outbox_state_known` already allows planned, sent, skipped and
 -- failed, and the table already has FORCE row level security.
 -- The number is taken at build time (R1). On 2026-10-31 main held 317, and no
 -- open branch held 318. Check it again at merge.

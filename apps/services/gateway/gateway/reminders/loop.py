@@ -115,10 +115,10 @@ STOP_GRACE_SECONDS = 30
 #: The seconds in which the send phase of one tick may START a row (ruling
 #: k). A row that started runs to its end, inside the 20 s of
 #: ``push.sender.SEND_BUDGET_S``. A fire comes within one tick of
-#: ``fire_at``, and its ``send_to_member`` call starts inside the send phase
-#: of that tick. So ``TICK_SECONDS + SEND_PHASE_S`` (90 s) bounds the call,
-#: the 90 s of §5.6. A healthy push service sends each row in well under a
-#: second, so the call usually starts a few seconds after the fire.
+#: ``fire_at`` (``TICK_SECONDS``, plus the short work of the tick before),
+#: and its ``send_to_member`` call starts inside the send phase of that
+#: tick. A healthy push service sends each row in well under a second, so
+#: the call starts a few seconds after the fire, inside the 90 s of §5.6.
 SEND_PHASE_S = 30
 
 #: Step 5 (§5.4): give up at the brief once Metorite moved the reminder this
