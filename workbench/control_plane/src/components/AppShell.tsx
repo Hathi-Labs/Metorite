@@ -111,6 +111,18 @@ export function useMobileDrawer(): MobileDrawerCtx {
   return useContext(MobileDrawerCtx);
 }
 
+/**
+ * The page of the full frame. In glass (GL-10c) it is ONE rounded card on the
+ * grouped frame, so every app draws inside one surface and its inner panes
+ * clip to the card's corners. The margins match the rail's 8px inset.
+ * `overflow-auto` clips to the radius, so the card still scrolls its page.
+ * ⚠️ No `backdrop-filter`, `filter`, `transform`, `opacity` or `mask` here:
+ * each one makes the card the containing block of every fixed modal and menu
+ * inside an app (`globals.css`, the blur and containing-block note).
+ */
+const FULL_MAIN =
+  "min-h-0 min-w-0 flex-1 overflow-auto glass:mt-2 glass:mr-2 glass:mb-2 glass:rounded-2xl glass:bg-background glass:shadow-card";
+
 // ---------------------------------------------------------------------------
 // AppShell
 // ---------------------------------------------------------------------------
@@ -255,13 +267,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   both shell flags. */}
               {chatOn ? (
                 <AssistantWorkArea assistant={<AssistantDock />}>
-                  <main className="min-h-0 min-w-0 flex-1 overflow-auto">
+                  <main className={FULL_MAIN}>
                     <AccountStateBanner />
                     <AccessGate>{children}</AccessGate>
                   </main>
                 </AssistantWorkArea>
               ) : (
-                <main className="min-h-0 min-w-0 flex-1 overflow-auto">
+                <main className={FULL_MAIN}>
                   <AccountStateBanner />
                   <AccessGate>{children}</AccessGate>
                 </main>

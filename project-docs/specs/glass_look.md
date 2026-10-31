@@ -11,6 +11,11 @@ are LIVE in production since 05:38 UTC (deploy run 41170905098, commit
 can push to production directly." Next: GL-5 (the tint) and GL-6 (one pass
 per app). §9 holds three questions for the owner.
 
+**GL-10c is BUILT, 2026-10-31 (task #1233).** In glass, the rail is always
+folded and 4.75rem wide, as in ClickUp. Each item is an icon with its label
+below. The page is one rounded card on the frame. The fold button and the
+Sidebar choice in Settings are hidden in glass. Classic is unchanged.
+
 ---
 
 ## 0. The answer in one screen
