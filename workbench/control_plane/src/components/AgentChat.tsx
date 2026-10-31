@@ -2613,7 +2613,7 @@ export default function AgentChat({
           </div>
           <div data-chat-composer onFocus={() => setComposerFocused(true)} onBlur={() => setComposerFocused(false)} className={[
             "rounded-2xl border border-border bg-secondary/50 focus-within:border-primary/40 tech-transition",
-            "glass:relative glass:z-10 glass:rounded-[26px] glass:border-transparent glass:focus-within:border-transparent glass:focus-within:outline glass:focus-within:outline-1 glass:focus-within:outline-primary/40 glass:glass-chrome",
+            "glass:relative glass:z-10 glass:rounded-[26px] glass:border-transparent glass:focus-within:border-transparent glass:glass-chrome glass:glass-spectrum-edge",
             canSend ? "" : "pointer-events-none opacity-40",
           ].join(" ")}>
             <textarea ref={inputRef} value={input}
@@ -2628,14 +2628,18 @@ export default function AgentChat({
                     ? `Add to the reply of ${currentAgentLabel}…`
                     : `Message ${currentAgentLabel}…`
               }
-              className="block w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-[16px] sm:text-sm text-foreground placeholder-muted-foreground focus:outline-none overflow-y-auto scrollbar-thin disabled:opacity-50 disabled:cursor-not-allowed"
+              className="block w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-[16px] sm:text-sm text-foreground placeholder-muted-foreground focus:outline-none overflow-y-auto scrollbar-thin disabled:opacity-50 disabled:cursor-not-allowed glass:px-[18px] glass:pt-3.5"
               style={{ minHeight: "36px" }} />
+            {/* Glass: the capsule's corner is 26 px, so the text sits 18 px in
+                and the bar 10 px in, which puts the round Send button (r 16)
+                concentric with the corner (owner, 2026-10-31: the text was
+                too close to the rounded corner). */}
 
             {/* The bar: tools at the left, the one primary control at the
                 right. On a phone the agent's controls take a row of their
                 own above Attach and the primary control, so neither row wraps
                 into a staircase (visual review, 2026-10-12, 390 px). */}
-            <div className="flex flex-wrap items-end gap-1 px-1.5 pb-1.5">
+            <div className="flex flex-wrap items-end gap-1 px-1.5 pb-1.5 glass:px-2.5 glass:pb-2.5">
               <FileUploadButton sessionId={sessionId}
                 onUploadComplete={(files) => {
                   // The note names read_attachment, the one reader of an

@@ -925,6 +925,39 @@ html[data-look="glass"] [data-testid="ask-glow"].glass\:glass-working-glow {
 html[data-look="glass"] [data-testid="ask-glow"] > .glass\:glass-glow-ring {
   padding: 3px;
 }
+/* The field's own edge brightens with the bloom: on focus, and while a run
+   is live or waits on the member. The field follows its glow, so `+` reads
+   the glow's state. */
+html[data-look="glass"] [data-glow-focus="true"] + .glass\:glass-spectrum-edge::before,
+html[data-look="glass"] [data-glow="live"] + .glass\:glass-spectrum-edge::before,
+html[data-look="glass"] [data-glow="waiting"] + .glass\:glass-spectrum-edge::before {
+  opacity: 1;
+}
+
+/* The crisp edge of the field itself (GL-10, owner 2026-10-31). On a white
+   page the bloom alone fades to a pastel haze, so the field carries a 2 px
+   hairline in the same spectrum. It replaces the blue focus outline: focus
+   lifts the hairline and the bloom together. The field must be positioned. */
+@utility glass-spectrum-edge {
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 2px;
+    pointer-events: none;
+    background: conic-gradient(from var(--glow-angle), var(--glow-1), var(--glow-2), var(--glow-3), var(--glow-4), var(--glow-5), var(--glow-1));
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(#000 0 0) content-box exclude,
+      linear-gradient(#000 0 0);
+    opacity: 0.6;
+    transition: opacity var(--motion-duration) var(--motion-easing);
+  }
+}
 
 /* The spectrum, cut to a ring by a mask so the field itself stays clear. */
 @utility glass-glow-ring {
@@ -1013,6 +1046,9 @@ html[data-look="glass"] [data-testid="ask-glow"] > .glass\:glass-glow-ring {
   html[data-look="glass"] [data-glow="rest"] > .glass\:glass-glow-ring,
   html[data-look="glass"] [data-glow="waiting"] > .glass\:glass-glow-ring {
     animation: none;
+  }
+  html[data-look="glass"] [data-glow="live"] + .glass\:glass-spectrum-edge::before {
+    animation: glass-glow-turn 5s linear infinite;
   }
   html[data-look="glass"] .stream-caret {
     animation: glass-caret-blink 1s ease-in-out infinite;
@@ -2258,6 +2294,11 @@ a.kb-subpage:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px
   opacity: 1;
   transform: none;
 }
+/* In glass the side panel sits 8 px in from the window's edge, so it rides
+   out its own width plus that gap. */
+html[data-look="glass"] .assistant-panel[data-panel-form="dock"]:not([data-shown]) {
+  transform: translateX(calc(100% + 0.5rem));
+}
 .assistant-panel[data-moving][data-panel-form="dock"] {
   transition: transform var(--panel-duration) var(--panel-easing);
 }
@@ -2493,6 +2534,13 @@ html[data-look="glass"] *::-webkit-scrollbar-thumb {
 }
 html[data-look="glass"] *:hover::-webkit-scrollbar-thumb {
   background-color: var(--scrollbar-thumb);
+}
+/* The folded rail hides its bar (task 998), so while apps sit below its edge
+   it fades there. `Sidebar.tsx` sets the attribute only in glass, and only
+   while the list can still scroll down. */
+html[data-look="glass"] nav[data-more-below] {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
 }
 
 /* ── Reveal on hover ──────────────────────────────────────────────────── */

@@ -42,11 +42,11 @@
  * our React (trusted, templated) vs. their DOM/JS (untrusted, sandboxed).
  */
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { buildIconMap } from "@/lib/iconSvg";
 import { appTokenMap } from "@/lib/theme/app-tokens";
-import { documentLook, subscribeLook } from "@/lib/theme/glassTokens";
+import { useDocumentLook } from "@/lib/theme/glassTokens";
 import { BRIDGE, buildSrcDoc } from "@/lib/theme/sandbox-frame";
 import { THEME } from "@/lib/theme/themes";
 import { useMode } from "@/lib/theme/surfaces";
@@ -112,7 +112,7 @@ export default function SandboxedHtml({
   // The look (D143, GL-10a): a glass page hands the frame the glass `--cc-*`
   // values. Read from `<html data-look>`, as the stylesheet reads it. A change
   // of look patches the open frame, as a change of mode does.
-  const look = useSyncExternalStore(subscribeLook, documentLook, () => "classic" as const);
+  const look = useDocumentLook();
 
   // One pack, in the bundle, resolved synchronously — so this no longer waits
   // on an Iconify collection or re-runs when one arrives (the theming engine

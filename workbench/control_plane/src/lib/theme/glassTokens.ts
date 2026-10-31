@@ -18,6 +18,8 @@
  * list keeps its classic value in glass too (`--cc-border-width` and the
  * control personality tokens).
  */
+import { useSyncExternalStore } from "react";
+
 import { GLASS_LOOK, LOOK_ATTRIBUTE, type Look } from "./look";
 import type { ThemeMode } from "./types";
 
@@ -127,4 +129,14 @@ export function subscribeLook(onChange: () => void): () => void {
   const mo = new MutationObserver(onChange);
   mo.observe(document.documentElement, { attributes: true, attributeFilter: [LOOK_ATTRIBUTE] });
   return () => mo.disconnect();
+}
+
+/**
+ * The look the document carries, kept current: a component reads it as the
+ * CSS does. A server render is classic. The appearance store holds the
+ * member's CHOICE; this is what the page draws (they differ in a build with
+ * the gate off, and in e2e, where `setLook` sets only the attribute).
+ */
+export function useDocumentLook(): Look {
+  return useSyncExternalStore(subscribeLook, documentLook, () => "classic" as const);
 }

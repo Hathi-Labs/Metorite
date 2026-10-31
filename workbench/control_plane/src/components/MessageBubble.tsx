@@ -491,7 +491,7 @@ function MessageBubble({
             )}
           </div>
           {message.content.trim() && (
-            <div className="flex items-center gap-2 mt-1 pl-0.5 glass:opacity-60 glass:transition-opacity glass:hover:opacity-100 glass:focus-within:opacity-100">
+            <div className="flex items-center gap-2 mt-1 pl-0.5">
               <MessageActionBar
                 content={cardAnswer ? cardAnswerText(cardAnswer) : message.content}
                 messageId={message.id}
@@ -605,7 +605,7 @@ function MessageBubble({
                 <p className="whitespace-pre-wrap break-words">{message.content}</p>
               )}
             </div>
-            <div className="flex items-center justify-end gap-2 mt-1 pr-0.5 opacity-100 transition-opacity glass:opacity-60 glass:hover:opacity-100 glass:focus-within:opacity-100">
+            <div className="flex items-center justify-end gap-2 mt-1 pr-0.5 opacity-100 transition-opacity">
               {message.content.trim() && (
                 <MessageActionBar
                   content={cardAnswer ? cardAnswerText(cardAnswer) : message.content}
@@ -813,7 +813,7 @@ function MessageBubble({
         customEvents={message.customEvents}
       />
       {!message.streaming && (
-        <div className="flex items-center gap-2 mt-1.5 opacity-100 transition-opacity glass:opacity-60 glass:hover:opacity-100 glass:focus-within:opacity-100">
+        <div className="flex items-center gap-2 mt-1.5 opacity-100 transition-opacity">
           {message.content.trim() && (
             <MessageActionBar
               content={message.content}

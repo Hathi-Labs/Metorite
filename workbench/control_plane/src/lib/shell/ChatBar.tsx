@@ -230,7 +230,7 @@ export function AskField() {
       <div
         onFocusCapture={() => setFocused(true)}
         onBlurCapture={() => setFocused(false)}
-        className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background px-3 tech-transition focus-within:border-primary/50 hover:border-primary/40 glass:relative glass:z-10 glass:rounded-full glass:border-transparent glass:bg-transparent glass:glass-chrome glass:focus-within:border-transparent glass:focus-within:outline glass:focus-within:outline-1 glass:focus-within:outline-primary/40"
+        className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background px-3 tech-transition focus-within:border-primary/50 hover:border-primary/40 glass:relative glass:z-10 glass:rounded-full glass:border-transparent glass:bg-transparent glass:glass-chrome glass:focus-within:border-transparent glass:glass-spectrum-edge"
       >
         <Icon name="Sparkles" size={15} className="shrink-0 text-primary" />
         {/* A bare field inside the bar's own box: the box is the control's

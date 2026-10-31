@@ -283,12 +283,35 @@ describe("the colour edge round the chat", () => {
       expect(GLOBALS, state).toContain(`.glass\\:glass-working-glow[data-glow="${state}"]`);
     }
   });
+
+  it("gives each field a crisp spectrum edge that turns only while a run is live", () => {
+    // On a white page the bloom alone fades to a haze (owner, 2026-10-31).
+    expect(GLOBALS).toContain("@utility glass-spectrum-edge");
+    const gate = GLOBALS.indexOf("@media (prefers-reduced-motion: no-preference)", GLOBALS.indexOf("glass-glow-turn 5s") - 400);
+    const body = GLOBALS.slice(gate, GLOBALS.indexOf("\n}\n", gate));
+    expect(body).toMatch(/\[data-glow="live"\] \+ \.glass\\:glass-spectrum-edge::before \{\s*animation: glass-glow-turn 5s/);
+    for (const rel of ["components/AgentChat.tsx", "lib/shell/ChatBar.tsx"]) {
+      const text = readFileSync(join(SRC, rel), "utf8");
+      expect(text, rel).toContain("glass:glass-spectrum-edge");
+      // The edge is the focus cue in glass. A second, blue outline drew two rings.
+      expect(text, rel).not.toContain("glass:focus-within:outline-primary");
+    }
+  });
 });
 
 describe("glass scrollbars", () => {
   it("hide the thumb until the pointer is over the pane", () => {
     expect(GLOBALS).toMatch(/html\[data-look="glass"\] \* \{\s*scrollbar-color: transparent transparent;/);
     expect(GLOBALS).toMatch(/html\[data-look="glass"\] \*:hover \{\s*scrollbar-color: var\(--scrollbar-thumb\) transparent;/);
+  });
+
+  it("fade the barless rail at its foot while apps sit below it", () => {
+    // Review of GL-10: at 1366x768 the rail hid Organisation and Integrations
+    // with no cue, and the glass rail cannot open.
+    expect(GLOBALS).toMatch(/html\[data-look="glass"\] nav\[data-more-below\] \{[^}]*mask-image: linear-gradient\(to bottom/);
+    const sidebar = readFileSync(join(SRC, "components", "Sidebar.tsx"), "utf8");
+    expect(sidebar).toContain('data-more-below={moreBelow ? "" : undefined}');
+    expect(sidebar).toMatch(/useMoreBelow\(\s*navRef,\s*useDocumentLook\(\) === "glass" && collapsed,/);
   });
 });
 

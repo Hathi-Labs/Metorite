@@ -36,7 +36,7 @@ import {
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
-import { useAppearanceStore } from "@/lib/theme/store";
+import { useDocumentLook } from "@/lib/theme/glassTokens";
 import {
   HINT_DISMISS_MS,
   isPlainNavClick,
@@ -92,7 +92,7 @@ export function SidebarFoldProvider({
   );
   // GL-10c: the glass rail never opens (owner, 2026-10-31, the ClickUp rail).
   // The stored choice stays as it is, so classic keeps it when the look flips.
-  const glass = useAppearanceStore((s) => s.look) === "glass";
+  const glass = useDocumentLook() === "glass";
   const collapsed = glass || storedCollapsed;
   const armedRef = useRef(false);
   // `pulsing` says whether this fold's pulse still runs. It ends by itself,
