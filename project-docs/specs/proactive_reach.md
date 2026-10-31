@@ -355,12 +355,14 @@ member_email, created_at)` for the budget and the report. A unique index on
 **The channel and the budget (RE-9b, 2026-10-30).** Migration 266 allows
 only the channel `whatsapp` and the kinds `brief` and `interrupt`
 (`reach_outbox_channel_known`, `reach_outbox_kind_known`). RE-9b adds one
-expand-only migration. It takes the next free number at build time (316 on
-2026-10-30). It adds `web_push` and the three reminder kinds.
+expand-only migration. It took 318 on 2026-10-31
+(`318_reach_outbox_web_push.sql`). It adds `web_push` and the three reminder
+kinds. **RE-9b is BUILT 2026-10-31** (`calendar_events_reminders.md` §5.6).
 
-The budget reads
-(`outbox._PLAN_SQL` and `_SENT_SINCE_SQL`, `reach/outbox.py:40, 56`) then
-count by channel. A push row never counts in the WhatsApp cap. `reminder_due`
+As built, the WhatsApp budget reads `_SENT_SINCE_SQL` and `_URGENT_SINCE_SQL`
+(`reach/outbox.py`) count `channel = 'whatsapp'` only. `outbox.plan` still
+writes WhatsApp rows only, and `outbox.plan_push` writes a push row. A push
+row never counts in the WhatsApp cap. `reminder_due`
 has its own counter, with a limit of 10 each day for each member. Each cap
 counts `sent` rows on `web_push` for one member and one local date.
 `reminder_check` counts its own `web_push` rows against `REACH_DAILY_CAP`.

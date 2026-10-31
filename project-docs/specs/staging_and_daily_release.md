@@ -1,5 +1,7 @@
 # Staging and the daily release — a second deployment that takes every merge
 
+**Status update, 2026-10-31:** staging is retired (D144). The daily release and the dispatch stay.
+
 **Status:** 🟠 **PROPOSED, 2026-10-15. Revised 2026-10-16:** staging goes on the dev box (§5).
 
 **Built:** 🔨 phase 1, the daily clock (§5.7), 🔨 phase 2 (§5.8 and §5.9), and 🔨 the code of phases 4 and 5 (§5.11).

@@ -34,12 +34,18 @@ import {
 } from "./storage";
 import { isSafeColor } from "./css";
 import { accentInk } from "./contrast";
+import { applyLook, resolveLook, type Look } from "./look";
 
 type AppearanceState = {
   /** Member's density override; `null` inherits the org default. */
   userDensity: Density | null;
   /** Member's accent override; `null` keeps the theme's own primary. */
   accent: string | null;
+  /**
+   * The look in force (D143). Always `classic` when the build has no glass
+   * gate. A transition axis: GL-Z removes it with the classic look.
+   */
+  look: Look;
 
   /** Organisation defaults, refreshed from the backend on mount. */
   orgDensity: Density;
@@ -51,6 +57,8 @@ type AppearanceState = {
 
   setUserDensity: (density: Density | null) => void;
   setAccent: (color: string | null) => void;
+  /** The Design switch. A no-op when the build has no glass gate. */
+  setLook: (look: Look) => void;
   setOrgDefaults: (org: { density: Density; allowUserOverride: boolean }) => void;
   hydrate: () => void;
   /** Read storage again, for an appearance scope that just moved. */
@@ -89,11 +97,14 @@ function applyToDocument(state: AppearanceState): void {
     if (ink) root.style.setProperty(prop, ink);
     else root.style.removeProperty(prop);
   }
+
+  applyLook(state.look);
 }
 
 export const useAppearanceStore = create<AppearanceState>((set, get) => ({
   userDensity: null,
   accent: null,
+  look: resolveLook(null),
   orgDensity: "default",
   allowUserOverride: true,
   hydrated: false,
@@ -108,6 +119,14 @@ export const useAppearanceStore = create<AppearanceState>((set, get) => ({
     const next = color && isSafeColor(color) ? color : null;
     themeStorage.setAccent(next);
     set({ accent: next });
+    applyToDocument(get());
+  },
+
+  setLook: (look) => {
+    const next = resolveLook(look);
+    // Stored only with the gate on, so a production browser keeps no key.
+    if (next === look) themeStorage.setLook(look === "classic" ? "classic" : null);
+    set({ look: next });
     applyToDocument(get());
   },
 
@@ -127,6 +146,7 @@ export const useAppearanceStore = create<AppearanceState>((set, get) => ({
     set({
       userDensity: themeStorage.getDensity(),
       accent: themeStorage.getAccent(),
+      look: resolveLook(themeStorage.getLook()),
       orgDensity: storedOrgDensity ?? "default",
       hydrated: true,
     });

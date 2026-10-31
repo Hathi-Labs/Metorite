@@ -25,8 +25,13 @@
   holds the one `reminders` source). **RE-9 (the reminder push) is SPECIFIED,
   2026-10-30.** RE-9 splits into RE-9a and RE-9b. See §5.6 and §10.1.
   **RE-9a (the push message builder and the "Hide details on the lock
-  screen" setting) is BUILT, 2026-10-30, dark.** It sends nothing. RE-9b is
-  not built.
+  screen" setting) is BUILT, 2026-10-30, dark.** It sends nothing.
+  **RE-9b (a due reminder sends a real web push) is BUILT 2026-10-31.** It is
+  not dark. It sends wherever `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS`
+  are on, and production has both on. Its code is in migration 318 and in
+  `reach/push_channel.py`, and its rules are the rulings a to k of §5.6.
+  Repair round 1 (2026-10-31) added the rulings i to k to that list.
+  Repair round 2 widened ruling k on the same day.
   **OB-8 (the chat asks a phone member to turn on notifications) is
   BUILT, 2026-10-30, dark** behind `PUSH_PROMPT_ORGS` (§10.4). No box
   has the flag on.
@@ -503,12 +508,13 @@ row makes a card. Reach plans the card like any other.
 | `reminder_check` | Step 2 | `interrupt`, inside the cap, never in quiet hours. An overflow goes to the brief | Done · Not yet · Drop · Open |
 | `reminder_unconfirmed` | Step 5 | `brief` | Make it a task · Pick a time · Drop |
 
-The Reach class column is the target of RE-9. **In RM-2 each of the three
-kinds has the class `none`** in `reach/classes.py` (decision B1 of
-2026-10-25). Today Reach sends only on WhatsApp, to members on its
-allowlist, and D114.7 keeps reminders off WhatsApp. RE-9 raises the three
-kinds to `urgent`, `interrupt` and `brief` on web push. RE-9 also adds the
-D114.3 exception to the Reach budget.
+The Reach class column is the target of RE-9. In RM-2 each of the three
+kinds had the class `none` in `reach/classes.py` (decision B1 of
+2026-10-25). **Since RE-9b (2026-10-31) the three kinds are `urgent`,
+`interrupt` and `brief`**, and they reach the member by web push only
+(`reach/push_channel.py`). The Reach loop still sends only on WhatsApp, to
+members on its allowlist, and D114.7 keeps reminders off WhatsApp. The
+D114.3 exception is the own cap of `reminder_due` on web push.
 
 **A class does not keep a card out of the WhatsApp brief** (review of
 RM-2, 2026-10-26). The class gates an interrupt only, and the brief takes
@@ -638,7 +644,8 @@ except `POST /push/test`. WS-51 S7 (H-289) reuses the same send step later.
      today, and RE-9b makes it return the id of the row.
    - **The send step.** A function in `gateway/reach/` sends each planned
      `web_push` row through `send_to_member`. `run_org` in
-     `reminders/loop.py:340` calls it after the commit of the steps. It needs
+     `reminders/loop.py:340` calls it after the commit of the steps. (Ruling
+     k moves this call to one send phase of `run_tick`.) It needs
      no `REACH_*` flag, and `reach/loop.py` never runs it. It marks the row
      `sent` or `failed`. It writes the `reminder_events` row `delivered` or
      `failed` (migration 307 allows both, and the channel `push`). The loop
@@ -665,11 +672,11 @@ except `POST /push/test`. WS-51 S7 (H-289) reuses the same send step later.
    It counts outbox rows with the state `sent` on the channel `web_push`
    only. `reminder_due` has its own counter, with a limit of 10. The eleventh
    sends nothing. `reminder_check` uses the interrupt daily cap of Reach: the
-   setting `reach_daily_cap` (`packages/acb_common/acb_common/settings.py:551`,
+   setting `reach_daily_cap` (`packages/acb_common/acb_common/settings.py:560`,
    default 3), read by `flags.daily_cap()` (`reach/flags.py:64`). It counts
-   `web_push` rows of kind `reminder_check` only. `_SENT_SINCE_SQL`
-   (`reach/outbox.py:56`) counts by channel, so a push row never counts in the
-   WhatsApp cap.
+   `web_push` rows of kind `reminder_check` only. As built, `_SENT_SINCE_SQL`
+   and `_URGENT_SINCE_SQL` (`reach/outbox.py`) count `channel = 'whatsapp'`
+   only, so a push row never counts in the WhatsApp cap.
 4. **The setting.** The key `hide_push_details` joins `PREF_KEYS`
    (`routes/shell/prefs.py:62`) in `user_settings.my_day_prefs`. The existing
    prefs route writes it. The route needs four code points, not only
@@ -682,18 +689,123 @@ except `POST /push/test`. WS-51 S7 (H-289) reuses the same send step later.
    org. The org name goes in `body`, because `sw.js` reads only `title`,
    `body`, `url` and `tag`. With the key on, `body` holds the org name and no
    reminder text.
-5. **The migration.** It takes the next free number at build time (316 on
-   2026-10-30). Check it again at build and at merge (R1). It widens
+5. **The migration.** It takes the next free number at build time. RE-9b
+   took 318 on 2026-10-31 (`infra/postgres/318_reach_outbox_web_push.sql`).
+   Check it again at merge (R1). It widens
    `reach_outbox_channel_known` to add `web_push`, and `reach_outbox_kind_known`
    to add the three reminder kinds (migration 266, `:51-52`). It is expand
    only (R6). `outbox._PLAN_SQL` fixes the channel `whatsapp`
-   (`reach/outbox.py:40`), and `_SENT_SINCE_SQL` counts interrupt rows of any
-   channel (`reach/outbox.py:56-60`). So the budget reads count by channel,
+   (`reach/outbox.py:40`). Before RE-9b, `_SENT_SINCE_SQL` counted interrupt
+   rows of any channel. As built, `_SENT_SINCE_SQL` and `_URGENT_SINCE_SQL`
+   count `channel = 'whatsapp'` only. So the budget reads count by channel,
    and `reminder_due` has its own counter. `proactive_reach.md` §7.1 states
    the same.
 6. **The 90 seconds.** The acceptance measures from `fire_at` to the
    `send_to_member` call, with a frozen clock. Delivery to the device is the
    owner's device check, the PN-1 HANDOFF item.
+
+**Rulings of RE-9b, 2026-10-31.**
+
+Rulings a to d come from the spec-auditor, e to g from the builder, and h
+from the supervisor. Rulings i to k come from repair round 1 (2026-10-31),
+after the review of the Opus reviewer and the verifier. The code is
+`gateway/reach/push_channel.py` and the push helpers of
+`gateway/reach/outbox.py`. The fence is `tests/unit/test_reach_push.py`.
+
+- **a. The gate.** The plan step and the send step run only while
+  `push.flags.enabled()` and `reminders_enabled()` are both true. With push
+  off, the plan step writes no row. So a later flip sends no burst of old
+  pushes.
+- **b. The bound of a retry.** A planned row older than the TTL of its kind
+  becomes `skipped`, reason `expired`. The TTLs are 3,600 s, 14,400 s and
+  43,200 s (`push_message.ttl_of`). Missing VAPID keys keep the row
+  `planned`, reason `no_keys`. A later tick tries it again, never past the
+  TTL.
+- **c. No device.** A member with no device gives `skipped`, reason
+  `no_device`, and no ledger row. One device or more that took the push
+  gives `sent` and a `delivered` ledger row. Every device failing gives
+  `failed` and a `failed` ledger row. Both ledger rows have the channel
+  `push`.
+- **d. The caps at send time.** The send step counts each cap again just
+  before each send, and it sends the rows of one member in order. The count
+  holds the `sent` rows and each row that another send step holds now. A
+  transaction advisory lock on the org and the member serialises two claims
+  of one member, so a second worker cannot pass the cap. A cap counts the
+  member's own date (`Day.feed_day` in the zone of the member), never the
+  UTC date. Each rule has an R8 fence. In the first, two claims wait for
+  each other after the count. In the second, a member in Kolkata has two
+  local dates on one UTC date, and the tick reads a UTC clock.
+- **e. The claim.** A send step claims a planned row before it sends: it sets
+  `reason = 'sending'` and `sent_at` to the claim time. The claim holds for
+  `outbox.PUSH_LEASE_S` (120 s). No session stays open during the send. A
+  second worker skips a row under a live claim. The claim of a step that
+  crashed runs out, and a later tick sends the row again. Migration 318 adds no column for
+  this.
+- **f. A stale row.** The send step reads the reminder again. The state must
+  still be `due` (for `reminder_due` and `reminder_check`) or `unconfirmed`.
+  No newer step may be in the ledger: `fired`, `check_back`, `briefed`,
+  `rescheduled`, `snoozed`, `done`, `dropped`, `promoted`, `gave_up` or
+  `reopened`. Otherwise the row becomes `skipped`, reason `closed` or
+  `moved`. A retry of a `reminder_check` or `reminder_unconfirmed` row in
+  quiet hours becomes `skipped`, reason `quiet`.
+- **g. A failed plan.** The plan insert runs in a SAVEPOINT. An error logs
+  `reach.push.plan_failed` and plans nothing. The step and its ledger row
+  stand, so the card stays in My Day.
+- **h. Staging.** Staging sends no reminder push to a copied device: the
+  export and the staging refresh both remove push_subscriptions.
+  (`infra/staging/minimise.sql` and `scripts/staging_refresh.sh`. Fences:
+  `tests/unit/test_staging_export.py` and `tests/unit/test_staging_box.py`.)
+  The rows on staging at merge time are deleted once by hand at merge, and
+  the refresh deletes them each night after that.
+- **i. The hide setting reads every spelling.** A `user_settings` row keys
+  on the spelling of the session that wrote it, for example
+  `Ravi.K@acme.com`. The send step knows only the lower case of
+  `reminders.member_email`. So `prefs.hide_push_details` reads the key over
+  every spelling of the address, and one `true` hides the details. A
+  lower-case row with no key never outvotes it. The read fails closed, as
+  the agent switch of EA-6i does.
+- **j. A late step sends no push.** A step that runs more than the TTL of
+  its kind after its due time plans no push. An outage or a flag flip must
+  not send a burst of old reminders, and `reminder_due` may break quiet
+  hours. The fire, its ledger row and the My Day card stay as they are. The
+  plan step writes no row, so the step uses no slot of a cap.
+  - **The due time.** `reminder_due` counts from `fire_at`.
+    `reminder_check` and `reminder_unconfirmed` count from `next_check_at`,
+    the time that their step came due. A check-back that waited for quiet
+    hours counts as late too.
+  - **At the send.** The send step also ends a `reminder_due` row more than
+    its TTL after `fire_at` (`skipped`, reason `expired`). The other two
+    kinds keep the TTL from the plan time of ruling b.
+- **k. Fires first, then one send phase.** `run_tick` takes the steps of
+  every org first, and a step makes no network call. Then one send phase
+  sends the planned pushes of each org, under one deadline for the whole
+  tick: no row starts after `loop.SEND_PHASE_S` (30 s). A row that started
+  runs to its end, inside `push.sender.SEND_BUDGET_S` (20 s). A row that did
+  not start stays `planned`, and the next tick sends it.
+  - **The clock.** The quiet hours of a row read the clock at the start of
+    that row, not the start of the tick.
+  - **No cancel.** No `asyncio.wait_for` cancels a send. A cancel in the
+    middle of `send_to_member` would leave its device sends running and its
+    row claimed.
+  - **An error.** A send that raises an error other than `RuntimeError`
+    releases its row at once, with the reason `error`. An error in the send
+    phase never stops the loop.
+  - **No org starves** (repair round 2). Each tick starts the send phase at
+    the next org (`loop._send_turn`). In the first round, each org starts
+    rows only in its fair share of the time left. The share is that time
+    over the count of orgs still to go, and the first row of each org
+    always starts. A second round gives the time still left to the orgs
+    that still hold rows. So each org goes first once in N ticks, for N
+    orgs, and no org waits longer than that. An org that fills the phase
+    on every tick can delay the next org by up to N - 1 ticks.
+  - **A stop.** A stop of the loop ends the send phase after the row in
+    progress. The rows left stay `planned`.
+  - **The 90 s.** A fire comes within one tick of `fire_at`: `TICK_SECONDS`
+    (60 s), plus the short work of the tick before. Its `send_to_member`
+    call starts inside the send phase of that tick, so at most
+    `SEND_PHASE_S` (30 s) after the phase starts. A healthy push service
+    sends each row in well under a second, so the call starts a few
+    seconds after the fire, inside the 90 s.
 
 **As built (RM-2, 2026-10-25).** The cards come from the feed source
 `reminders` in `routes/shell/feed.py`. Code computes each card from the row
@@ -1201,7 +1313,7 @@ _DB_GATE`, because `deploy.yml` has no ladder database.
 | **RM-3** The chat tools — ✅ **BUILT 2026-10-26, dark** | After RM-1 | §5.8 in `skill_projects`: seven tools on the one confirm card, until CF-6. The `set-reminder` command-bar job and the `capture` change wait for CE-3 and RM-5 (§5.8) | "Remind me at 5 to get a haircut" saves one row at 17:00 in my zone, and the reply quotes that time and zone. A time with no offset is refused | `test_projects_chat_coverage.py`, `tests/unit/test_reminder_tools.py`, `test_projects_agent_writes.py`, `test_wac_writes.py` |
 | **RM-2b** The reminder bell (Metorite task 443) — **BUILT 2026-10-30, dark** — AGENT-SAFE, tier MEDIUM, ships dark | After RM-2 | §5.6 "Settled 2026-10-30 (RM-2b)". Move `reminders` to one ungated needs provider in `routes/shell/needs.py` with its feed `signals` thunk, and remove the feed-only registration. Add the three kinds to `KIND_ORDER`, `NEWEST_FIRST` and `feed_rank.BASE`. Client: `NeedsApp`, `NeedsKind`, `KIND_ORDER` and `NEEDS_APP_HREF.calendar` in `src/lib/shell/needs.ts`. The row is a link to `reminder_href(id)`. Shift the five needs bases of `feed_rank.BASE` up by 3 (63, 59, 55, 51, 47), and give the reminder kinds 46, 45 and 44. Move `_reminder_signal`, `reminder_href` and `REMINDER_KINDS` into `needs.py`, with no re-export from `feed.py`, and update every importer (§5.6 RM-2b decision 6). The UI gate of `DESIGN_SYSTEM.md` §11 applies. **Non-goals:** a second bell, a second source id, any change to `NotificationBell.tsx` in Projects, Done, Later or Open acts on the row (D101), a Calendar count in the sidebar (the server keys `sources` and `totals` by `reminders`, and the client reads them by `NeedsApp`), and the push (RE-9) | With the flag on and a due reminder, `GET /shell/needs` returns one item of kind `reminder_due`, app `calendar`, with the href `/chat?do=new-chat&reminder=<id>`. A check-back row gives `reminder_check`. An unconfirmed row gives `reminder_unconfirmed`. A scheduled row gives none. Member B and org B never see the reminder of member A (R8). With the flag off, no reminder item shows and `sources.reminders` reads `absent`. The feed still gives one card for each reminder, with no duplicate. The shell bell draws the row with the one look, and no second bell exists. My Day reminder cards rank above the MD-3 feed-only cards. A feed `drop` from `decide` on a reminder card moves it to Later, and does not delete or resolve the reminder | New cases in `tests/unit/test_shell_needs.py` and `tests/unit/test_shell_needs_r8.py` (`pytestmark = _DB_GATE`). The updated pins in `test_shell_feed.py`, `test_feed_rank.py` (a new line: the three reminder bases sit between `agent_asks` and the lowest shifted needs base) and `test_feed_fold_fingerprint.py`. A new case in `tests/unit/test_feed_decide.py`: a `drop` of a reminder card gives Later. A client case in `src/lib/shell/needs.test.ts`. **Verify:** `uv run pytest tests/unit/test_shell_needs.py tests/unit/test_shell_needs_r8.py tests/unit/test_shell_feed.py tests/unit/test_feed_rank.py tests/unit/test_feed_fold_fingerprint.py tests/unit/test_reminder_loop.py tests/unit/test_reminders_r8.py tests/unit/test_reach_loop.py tests/unit/test_feed_decide.py tests/unit/test_feed_task_kinds.py tests/unit/test_crm_digest.py`, then in `workbench/control_plane`: `npx tsc --noEmit && npx vitest run src/lib/shell/needs.test.ts src/lib/shell/shellBell.test.ts src/lib/shell/seams.test.ts` |
 | **RE-9a** The push message and the hide setting (Metorite task 431) — ✅ **BUILT 2026-10-30, dark** (AGENT-SAFE, tier STANDARD) | After PN-1, RM-2 | §5.6 "Settled 2026-10-30 (RE-9)", decision 4. A pure `PushMessage` builder in `gateway/reach/` for the three reminder kinds. The key `hide_push_details` in `PREF_KEYS` (`routes/shell/prefs.py:62`), and its toggle in `NotificationsSection.tsx`. The prefs route needs four code points: `PREF_KEYS`, `PrefPut.key` (`:135`), a boolean arm in `_CLEAN` (`:127`) and `stored_prefs` (`:144`). Without the last, the toggle never reads back. The org name goes in the payload `body`, because `sw.js` reads only `title`, `body`, `url` and `tag`. The UI gate applies. **Non-goals:** no send, no trigger, no migration, no class change | The builder gives the title and time with the url `/chat?reminder=<id>` and the tag of the reminder id. With `hide_push_details` on, the title is "Metorite: a reminder", and no title or time text is in the payload. The `body` holds the org name and no reminder text. The prefs route writes the key, and org B and member B read nothing of it (R8) | New cases in `tests/unit/test_reach_push_message.py` (new), `tests/unit/test_my_day_prefs.py` and `tests/unit/test_my_day_prefs_r8.py`, and a client case for the toggle. **Verify:** `uv run pytest tests/unit/test_reach_push_message.py tests/unit/test_my_day_prefs.py tests/unit/test_my_day_prefs_r8.py tests/unit/test_reach_plan.py`, then `npx tsc --noEmit && npx vitest run src/app/people` in `workbench/control_plane` |
-| **RE-9b** A due reminder sends a real web push — AGENT-SAFE to build dark, tier HIGH (a migration, and a send to real devices) | After RE-9a and RM-2. It does not wait for RM-2b | §5.6 "Settled 2026-10-30 (RE-9)", decisions 1 to 3, 5 and 6. The migration (the next free number at build time, 316 on 2026-10-30), the classes in `reach/classes.py:73-75`, the plan step and the send step in `gateway/reach/`, the calls from `_fire`, `_check_back` and `_give_up` in `reminders/loop.py`, the per-channel budget, and the R8 acceptance. The plan step takes the session `db` of the loop and writes the row through a new helper in `reach/outbox.py`, with no new `tenant_session` or `get_db` site (R5). The dedupe key is `reminder:<reminder id>:<reminder_events id>`. `run_org` calls the send step after the commit, with no `REACH_*` flag. The margin of the 90 s is one tick (`TICK_SECONDS` = 60) plus the send. The outbox `body` holds the fixed text "reminder". The caps count `sent` rows on `web_push` for one member and one local date: 10 for `reminder_due`, and `reach_daily_cap` (default 3) for `reminder_check`. **Non-goals:** WhatsApp (D115), the S7 chat events, a new channel setting (RE-7), and any new flag | A frozen-clock R8 test fires a `reminder_due` row and sends one push through a faked `outbound_guard.request_https` within 90 s of `fire_at`. The decrypted payload holds the url `/chat?reminder=<id>`. A hidden-details member gets no title. A replay of the same tick sends once, and two workers send once. The push of the second cycle is sent, because each ledger row gives its own key. The push is sent with `REACH_ENABLED`, `REACH_ORGS` and `REACH_MEMBERS` all off. A done, dropped or moved reminder sends nothing. `reminder_check` and `reminder_unconfirmed` send nothing in quiet hours. The eleventh `reminder_due` of a day sends nothing. A `reminder_check` over the interrupt cap sends nothing, and its card stays in My Day. Push rows do not count in the WhatsApp cap, and `_SENT_SINCE_SQL` counts by channel. The Reach loop and `channel.deliver` never touch a `web_push` row. `plan.on_whatsapp` still removes the three reminder kinds after their class changes. Org B reads nothing of org A | `tests/unit/test_reach_push.py` (new, `pytestmark = _DB_GATE`), `tests/unit/test_reach_plan.py` and `tests/unit/test_reach_loop.py` (the WhatsApp fence). **Verify:** `bash scripts/dev_db.sh`, then `uv run pytest tests/unit/test_reach_push.py tests/unit/test_reach_plan.py tests/unit/test_reach_loop.py tests/unit/test_reach_r8.py tests/unit/test_reminder_loop.py tests/unit/test_reminders_r8.py tests/unit/test_push_subscriptions.py`. The production flip needs no new owner act (D114.8): an agent flips both flags once each slice passes on dev.metorite.com. The owner checks a real device through the PN-1 HANDOFF item |
+| **RE-9b** A due reminder sends a real web push — ✅ **BUILT 2026-10-31. Not dark: it sends wherever `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS` are on (production: both on)** (AGENT-SAFE, tier HIGH: a migration, and a send to real devices) | After RE-9a and RM-2. It does not wait for RM-2b | §5.6 "Settled 2026-10-30 (RE-9)", decisions 1 to 3, 5 and 6, and the rulings a to k of RE-9b. The migration (`infra/postgres/318_reach_outbox_web_push.sql`, the next free number on 2026-10-31), the classes in `apps/services/gateway/gateway/reach/classes.py`, the plan step and the send step in `apps/services/gateway/gateway/reach/push_channel.py`, the calls from `_fire`, `_check_back` and `_give_up` in `reminders/loop.py`, the per-channel budget, and the R8 acceptance. The plan step takes the session `db` of the loop and writes the row through a new helper in `reach/outbox.py`, with no new `tenant_session` or `get_db` site (R5). The dedupe key is `reminder:<reminder id>:<reminder_events id>`. The send phase of `run_tick` calls the send step after the steps of every org, with no `REACH_*` flag (ruling k). The margin of the 90 s is one tick (`TICK_SECONDS` = 60) plus the send phase (`SEND_PHASE_S` = 30, ruling k). The outbox `body` holds the fixed text "reminder". The caps count `sent` rows on `web_push` for one member and one local date: 10 for `reminder_due`, and `reach_daily_cap` (default 3) for `reminder_check`. **Non-goals:** WhatsApp (D115), the S7 chat events, a new channel setting (RE-7), and any new flag | A frozen-clock R8 test fires a `reminder_due` row and sends one push through a faked `outbound_guard.request_https` within 90 s of `fire_at`. The decrypted payload holds the url `/chat?reminder=<id>`. A hidden-details member gets no title. A replay of the same tick sends once, and two workers send once. The push of the second cycle is sent, because each ledger row gives its own key. The push is sent with `REACH_ENABLED`, `REACH_ORGS` and `REACH_MEMBERS` all off. A done, dropped or moved reminder sends nothing. `reminder_check` and `reminder_unconfirmed` send nothing in quiet hours. The eleventh `reminder_due` of a day sends nothing. A `reminder_check` over the interrupt cap sends nothing, and its card stays in My Day. Push rows do not count in the WhatsApp cap, and `_SENT_SINCE_SQL` counts by channel. The Reach loop and `whatsapp.deliver` never touch a `web_push` row. `plan.on_whatsapp` still removes the three reminder kinds after their class changes. Org B reads nothing of org A | `tests/unit/test_reach_push.py` (new, `pytestmark = _DB_GATE`), `tests/unit/test_reach_plan.py` and `tests/unit/test_reach_loop.py` (the WhatsApp fence). **Verify:** `bash scripts/dev_db.sh`, then `uv run pytest tests/unit/test_reach_push.py tests/unit/test_reach_plan.py tests/unit/test_reach_loop.py tests/unit/test_reach_r8.py tests/unit/test_reminder_loop.py tests/unit/test_reminders_r8.py tests/unit/test_push_subscriptions.py tests/unit/test_reach_push_message.py tests/unit/test_tenancy_boundary.py`. The production flip needs no new owner act (D114.8): an agent flips both flags once each slice passes on dev.metorite.com. The owner checks a real device through the PN-1 HANDOFF item |
 | **RM-4** A tap opens the chat — ✅ **BUILT 2026-10-29, dark** (AGENT-SAFE) | After RM-3 | §5.7: `/chat?reminder=<id>`, the code-built first message, the chips, the `reminder` context block. As built: §5.7 | A tap on a push opens the chat with the reminder message and no model call. Done from a chip ends the reminder and offers Undo | `src/app/chat/reminderOpen.test.ts` (new, `.ts` because vitest runs `*.test.ts` only), `tests/unit/test_reminder_context.py` and `tests/unit/test_reminders_r8.py` |
 | **RM-5** The Calendar UI and the New reminder form — ✅ **BUILT 2026-10-30. It draws wherever `CALENDAR_REMINDERS` is on (production: on). The client has no flag of its own (§9)** (AGENT-SAFE) | After RM-1 | The pin and the Month chip of §6.2. The Reminders panel: Upcoming, Waiting on you, Unconfirmed. **The New reminder form** (owner decision, 2026-10-30, no D-number): a member makes a reminder in the Calendar with no chat. A button in the title bar tools and a button in the panel header open one `Modal` (`src/components/ui/Modal.tsx`) with a title (200 characters at most), a date and a time (the next half hour by default), and a kind (action or notice). The form makes a standalone reminder and sends no subject. The time is read in the browser zone, which is the zone of the grid, and goes out as ISO with the offset beside `tz`. The form does not read `user_settings.timezone`, because it holds "UTC" until the settings load. The form refuses a time at or before now, under its field. A drag of a pin, or Alt+ArrowUp and Alt+ArrowDown (15 minutes of real time), calls `/reschedule` once. The Calendar refuses a drag or a key move to a time at or before now, and a toast says why. A move of a scheduled reminder offers Undo. A "Move to…" item opens the same date and time controls. A move starts the reminder again, so an unconfirmed pin goes back to cycle 0. A tap on a pin or a panel row opens `/chat?do=new-chat&reminder=<id>`. The panel shows in every mode, and a phone opens it as a sheet from the title bar. With the routes at 404 or 403 the Calendar draws no pin, chip, panel or button and shows no error. | A reminder draws as a line with no height and takes no capacity. Drag moves `fire_at`. With the flag off the Calendar draws nothing. The form sends `fire_at` with an offset and `tz`, and the pin shows at that minute. A reminder changes no `leverageStats` | `reminders.test.ts` beside `lib/reminders.ts` (zone to ISO across a clock change, the split by state, the pin, the absent state on a 404, the one-call `/reschedule`), the conformance suite, `uiGates.test.ts`, and a visual review. Non-goals: events, the full Task, Event and Reminder composer (CE-3), the link picker, the `set-reminder` and `new-event` jobs, push (RE-9b), and the bell glyph (RM-5b) |
 | **RM-5b** The bell glyph on Tasks and Projects | After RM-5 | The bell glyph of §6.5 on a Tasks or Projects card, for the member who set the reminder. Split from RM-5 on 2026-10-30 | A linked card shows the glyph to its own member only | A vitest for the card chip, and the conformance suite |

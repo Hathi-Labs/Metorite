@@ -214,10 +214,11 @@ delivery makes a silent failed deploy more likely, not less.
 **Feature by feature, app by app — one narrowed slice at a time.** The loop
 (`/next-ticket`, defined in `.claude/commands/next-ticket.md`):
 
-> **audit** the spec is dispatchable → **implement** one narrowed slice and
-> **run it locally** (`scripts/dev_up.sh`) → **verify** independently, on the
-> local stack → **review** the diff adversarially, by risk tier. Then **open a
-> PR**, **merge it**, **watch the run**, and **smoke-test it on staging**.
+> **audit** the spec is dispatchable → **implement** one narrowed slice with
+> the local stack up (`scripts/dev_up.sh`) → **preview** it to the owner and
+> wait for **approval** → **verify** independently and **review** by risk tier,
+> beside the **local staging gate** (`scripts/stage_local.sh`). Then **merge
+> it**. Production takes it at the 21:30 UTC release.
 
 **Merging is not skipping the loop.** Verify always runs, and the verifier is
 never the implementer. A small slice (LOW, or STANDARD in build) skips the
@@ -225,18 +226,22 @@ audit when its Metorite task states the acceptance criteria (owner request,
 2026-10-30). Review depth follows the risk tier in `next-ticket.md` step 1b. A
 LOW slice skips the reviewer. What you drop is the wait.
 
-**⚠️ A merge is NOT a production deploy (WS-38).** A merge runs lint and tests,
-then moves the `staging` ref. Staging (`https://dev.metorite.com`) serves that
-ref within about 15 minutes. **Production moves once a day, at 21:30 UTC
-(03:00 IST)**, to the tip of `main` if its tests pass.
-`specs/staging_and_daily_release.md` owns the design, and
-`tests/unit/test_daily_release.py` is the fence.
+**⚠️ PREVIEW, APPROVE, GATE, MERGE** *(D145, owner directive, 2026-10-31)*.
+The owner retired staging (D144), and this PC does its job now.
 
-**⚠️ Do not push to production yourself** *(owner directive, 2026-10-27)*. Do
-not run `gh workflow run deploy.yml`. Production takes the 21:30 UTC release.
-Run a manual dispatch only when the owner asks for it in your session, or when
-production is down. A dark feature never needs one. If you think a change
-cannot wait, ask the owner.
+1. **Show the owner the change first.** Send the local URL, what changed, where
+   to click and the captures. Then ask on the task: Approve or Change it.
+2. **Run the full gates after the approval.** `scripts/stage_local.sh` tests the
+   merge with today's `main`. It runs the full suite and the production build.
+   It rehearses the migrations on production's reduced copy, and runs smoke.
+   A pass posts `local-staging` on the head commit, and `premerge.sh` needs it.
+3. **Production moves once a day, at 21:30 UTC.** Do not dispatch `deploy.yml`
+   after a merge. Dispatch only for a hotfix the owner asks for, or when
+   production is down.
+
+A slice with nothing to see skips step 1. Until LD-8 to LD-10 land, the gate is
+`scripts/ci_local.sh` and then `premerge.sh`. `engineering_practice.md` §1.3
+owns the loop, and `next-ticket.md` steps 4b and 7 hold the commands.
 
 **⚠️ WORK UNDER A METORITE TASK** *(owner directive, 2026-10-28, D135)*.
 The owner watches the board, so work that is not on it is invisible. Every
@@ -257,14 +262,6 @@ session that changes the repo or a box follows these steps:
    done, what is left and the next step.
 
 A session that only reads or answers needs no task.
-
-**⚠️ TEST ON STAGING BEFORE PRODUCTION** *(owner directive, 2026-10-17)*.
-Since 2026-10-30 agents test the behaviour on the local stack first. Staging is
-a smoke check, plus what the PC cannot test (`next-ticket.md` step 7).
-Staging holds a reduced copy of four organizations. Every outbound switch is
-OFF there, so staging sends no mail and calls no CRM. Write nothing there that
-must last. The dev box `srv1747539` is also the staging box. A session on it
-must not listen on port 80, 443, 3001, 8080, 8091, 5435 or 18090.
 
 Rules that make it work:
 

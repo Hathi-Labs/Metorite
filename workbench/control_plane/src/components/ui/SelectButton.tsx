@@ -484,7 +484,7 @@ function OptionRow({
       aria-disabled={option.disabled || undefined}
       disabled={option.disabled}
       onClick={() => onPick(option.value)}
-      className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs ${
+      className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs glass:rounded-lg ${
         option.disabled
           ? "cursor-not-allowed text-muted-foreground"
           : "hover:bg-muted"
