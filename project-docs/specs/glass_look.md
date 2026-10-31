@@ -11,6 +11,12 @@ are LIVE in production since 05:38 UTC (deploy run 41170905098, commit
 can push to production directly." Next: GL-5 (the tint) and GL-6 (one pass
 per app). §9 holds three questions for the owner.
 
+**GL-10b is BUILT on its branch, 2026-10-31, not yet merged** (task #1233). It
+takes the rest of the chat into glass: the session list, the empty state, the
+hint row, the action bar, the artifact panels, and the colour edge. The edge
+is a glow element that always draws round the composer and round the top-bar
+Ask field. Its `data-glow` is `rest`, `live` or `waiting`.
+
 ---
 
 ## 0. The answer in one screen

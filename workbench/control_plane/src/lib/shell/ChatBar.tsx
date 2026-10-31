@@ -132,6 +132,7 @@ export function AskField() {
   const shell = useShellPrefs();
   const [text, setText] = useState("");
   const [showing, setShowing] = useState(false);
+  const [focused, setFocused] = useState(false);
   // The highlighted result by its KEY, as the modal holds it: Find rows land
   // late and move the rows around them. Null is the field, where Enter asks.
   const [activeKey, setActiveKey] = useState<string | null>(null);
@@ -220,7 +221,17 @@ export function AskField() {
       }}
       className="relative w-full max-w-xl shrink"
     >
-      <div className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background px-3 tech-transition focus-within:border-primary/50 hover:border-primary/40">
+      {/* Glass only (GL-10b): the colour edge round the field, at rest. A
+          SIBLING of the field, never its ancestor, so the blur holds. */}
+      <div className="relative">
+      <div aria-hidden data-testid="ask-glow" data-glow="rest" data-glow-focus={focused ? "true" : "false"} className="hidden glass:block glass:glass-working-glow absolute -inset-1 rounded-full">
+        <div className="glass:glass-glow-ring" />
+      </div>
+      <div
+        onFocusCapture={() => setFocused(true)}
+        onBlurCapture={() => setFocused(false)}
+        className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background px-3 tech-transition focus-within:border-primary/50 hover:border-primary/40 glass:relative glass:z-10 glass:rounded-full glass:border-transparent glass:bg-transparent glass:glass-chrome glass:focus-within:border-transparent glass:focus-within:outline glass:focus-within:outline-1 glass:focus-within:outline-primary/40"
+      >
         <Icon name="Sparkles" size={15} className="shrink-0 text-primary" />
         {/* A bare field inside the bar's own box: the box is the control's
             border and focus ring, so the field draws neither (as the old
@@ -260,6 +271,7 @@ export function AskField() {
         <kbd className="shrink-0 rounded border border-border px-1.5 py-0.5 font-sans text-[10px] text-muted-foreground">
           {keyLabel}
         </kbd>
+      </div>
       </div>
 
       {panel ? (

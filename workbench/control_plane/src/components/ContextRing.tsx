@@ -72,11 +72,11 @@ export default function ContextRing({
     <div
       className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50
         rounded-lg border border-border bg-popover px-3 py-2.5 shadow-xl
-        text-xs whitespace-nowrap
+        text-xs whitespace-nowrap glass:rounded-[18px] glass:border-transparent glass:glass-menu glass:text-caption
         animate-in fade-in slide-in-from-bottom-1 duration-150"
     >
       {/* Arrow */}
-      <div className="absolute top-full left-1/2 -translate-x-1/2
+      <div className="absolute top-full left-1/2 -translate-x-1/2 glass:hidden
         w-0 h-0 border-l-4 border-r-4 border-t-4
         border-l-transparent border-r-transparent border-t-border" />
 

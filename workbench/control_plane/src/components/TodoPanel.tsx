@@ -61,7 +61,7 @@ export default function TodoPanel({
   if (todos.length === 0) return null;
 
   return (
-    <div className="max-w-3xl mx-auto mb-2 rounded-lg border border-border/50 bg-card/70 overflow-hidden">
+    <div className="max-w-3xl mx-auto mb-2 rounded-lg border border-border/50 bg-card/70 overflow-hidden glass:rounded-[22px] glass:border-transparent glass:glass-surface">
       {/* Header */}
       <button
         type="button"
@@ -70,12 +70,12 @@ export default function TodoPanel({
       >
         <Icon name="ChevronDown" size={12}
           className={`shrink-0 text-muted-foreground transition-transform duration-150 ${expanded ? "" : "-rotate-90"}`} />
-        <span className="text-xs font-semibold text-foreground">
+        <span className="text-xs font-semibold text-foreground glass:text-label">
           Todos ({doneCount}/{todos.length})
         </span>
         {/* Folded, the one line still says what the run does now. */}
         {!expanded && activeTitle && (
-          <span data-todo-active="" className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+          <span data-todo-active="" className="min-w-0 flex-1 truncate text-xs text-muted-foreground glass:text-footnote">
             {activeTitle}
           </span>
         )}
@@ -91,7 +91,7 @@ export default function TodoPanel({
             const done = isDone(t.status);
             const active = isActive(t.status);
             return (
-              <li key={t.id} className="flex items-center gap-2.5 text-xs leading-snug">
+              <li key={t.id} className="flex items-center gap-2.5 text-xs leading-snug glass:text-footnote">
                 <span className="shrink-0 flex items-center justify-center w-4 h-4">
                   {done ? (
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="none">

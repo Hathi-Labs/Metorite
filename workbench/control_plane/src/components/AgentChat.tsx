@@ -804,6 +804,10 @@ export default function AgentChat({
   // A remount's "checking" offers no Stop and no "working…" until the
   // server lists the run (`isRunActiveForUi`, re-review of #1171).
   const isRunActive = isRunActiveForUi(run);
+  // Glass (GL-10b): the colour edge around the composer is always drawn. Its
+  // state says what the run is doing, and the caller's CSS keys on it.
+  const glowState = isRunActive ? (run.phase === "waiting_for_you" ? "waiting" : "live") : "rest";
+  const [composerFocused, setComposerFocused] = useState(false);
   const runView = useSteadyRunView(run);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -2237,12 +2241,12 @@ export default function AgentChat({
           where the host provides its own toolbar, and on a phone with the
           chat-first flag on, where the "…" control carries the status). */}
       {!compact && !phoneChrome && (
-      <div data-chat-agent-row="" className="flex items-center gap-2 h-9 px-4 border-b border-border bg-card/40 shrink-0">
+      <div data-chat-agent-row="" className="flex items-center gap-2 h-9 px-4 border-b border-border bg-card/40 shrink-0 glass:border-transparent glass:bg-transparent glass:h-11">
         <div className={`w-2 h-2 rounded-full shrink-0 ${isRunActive ? "bg-warning motion-safe:animate-pulse" : "bg-success"}`} />
         <AgentAvatar libraryId={agentAvatars[currentAgentName]} size={20} fallback={null} />
-        <span className="text-xs font-medium text-foreground truncate">{currentAgentLabel}</span>
+        <span className="text-xs font-medium text-foreground truncate glass:text-label glass:font-semibold">{currentAgentLabel}</span>
         {isRunActive && (
-          <span className="hidden sm:inline text-[10px] text-warning">working…</span>
+          <span className="hidden sm:inline text-[10px] text-warning glass:text-caption">working…</span>
         )}
         {agentRuntime === "github-copilot" && currentAgentEntry?.repo_url && (
           <a href={currentAgentEntry.repo_url} target="_blank" rel="noopener noreferrer"
@@ -2254,7 +2258,7 @@ export default function AgentChat({
           </a>
         )}
         {isRoom && (
-          <Button variant="ghost" size="none" radius="keep" layout="" onClick={() => setRailOpen((v) => !v)} className="ml-auto shrink-0 rounded-md px-1.5 py-0.5 text-[11px] lg:hidden">
+          <Button variant="ghost" size="none" radius="keep" layout="" onClick={() => setRailOpen((v) => !v)} className="ml-auto shrink-0 rounded-md px-1.5 py-0.5 text-[11px] lg:hidden glass:glass-chrome glass:glass-press glass:rounded-full glass:px-3 glass:py-1 glass:text-caption">
             {railOpen ? "Hide room" : "Room"}
           </Button>
         )}
@@ -2264,7 +2268,7 @@ export default function AgentChat({
       {/* Who is in this conversation, and what it costs the agents. Renders a
           lone Share button while you are alone — see RoomHeader. */}
       {!compact && !phoneChrome && (
-        <div data-chat-room-row="" className="shrink-0 border-b border-border bg-card/20 px-4 py-2">
+        <div data-chat-room-row="" className="shrink-0 border-b border-border bg-card/20 px-4 py-2 glass:border-transparent glass:bg-transparent">
           <RoomHeader room={room} presence={presence} onChanged={refreshRoom} />
         </div>
       )}
@@ -2327,16 +2331,16 @@ export default function AgentChat({
                 size={48}
                 className="tech-glow"
                 fallback={
-                  <div className="w-12 h-12 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center tech-glow">
+                  <div className="w-12 h-12 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center tech-glow glass:rounded-[14px] glass:border-transparent glass:bg-secondary">
                     <div className="w-2.5 h-2.5 rounded-full bg-success" />
                   </div>
                 }
               />
-              <div className="text-muted-foreground text-sm font-medium">
+              <div className="text-muted-foreground text-sm font-medium glass:text-headline glass:font-semibold">
                 Chat with <span className="text-foreground">{currentAgentLabel}</span>
               </div>
               {agentDescription && currentAgentName === agentName && (
-                <div className="text-muted-foreground/60 text-xs max-w-sm leading-relaxed">{agentDescription}</div>
+                <div className="text-muted-foreground/60 text-xs max-w-sm leading-relaxed glass:text-muted-foreground glass:text-subhead">{agentDescription}</div>
               )}
               {/* PZ-27: the "Get to know me" offer. It shows only when its own rule holds. */}
               <InterviewOffer isOrchestrator={isOrchestrator} messageCount={messages.length} isRoom={isRoom} />
@@ -2501,13 +2505,13 @@ export default function AgentChat({
             one place. It used to sit in a second row INSIDE the message box,
             and took its bottom from the message. */}
         {composerRowShown && (
-        <div className="max-w-3xl mx-auto mb-1.5 flex min-h-5 items-center gap-2 text-[11px] text-muted-foreground">
+        <div className="max-w-3xl mx-auto mb-1.5 flex min-h-5 items-center gap-2 text-[11px] text-muted-foreground glass:text-caption">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             {runView ? (
               <RunStatusRow view={runView} placement="composer" />
             ) : !compact && !phoneChrome ? (
-              <span className="hidden sm:inline text-[10px]">
-                <kbd className="text-muted-foreground">{sendKeys}</kbd> send · <kbd className="text-muted-foreground">⏎</kbd> new line
+              <span className="hidden sm:inline text-[10px] glass:text-caption">
+                <kbd className="text-muted-foreground glass:font-sans">{sendKeys}</kbd> send · <kbd className="text-muted-foreground glass:font-sans">⏎</kbd> new line
               </span>
             ) : null}
           </div>
@@ -2604,14 +2608,12 @@ export default function AgentChat({
               ancestor, so its filter cannot flatten the composer's blur. It
               is `hidden` in classic. */}
           <div className="relative">
-          {isRunActive && run.phase !== "waiting_for_you" && (
-            <div aria-hidden data-testid="working-glow" className="hidden glass:block glass:glass-working-glow absolute -inset-1 rounded-[30px]">
-              <div className="glass:glass-glow-ring" />
-            </div>
-          )}
-          <div data-chat-composer className={[
+          <div aria-hidden data-testid="working-glow" data-glow={glowState} data-glow-focus={composerFocused ? "true" : "false"} className="hidden glass:block glass:glass-working-glow absolute -inset-1 rounded-[30px]">
+            <div className="glass:glass-glow-ring" />
+          </div>
+          <div data-chat-composer onFocus={() => setComposerFocused(true)} onBlur={() => setComposerFocused(false)} className={[
             "rounded-2xl border border-border bg-secondary/50 focus-within:border-primary/40 tech-transition",
-            "glass:relative glass:z-10 glass:rounded-[26px] glass:border-transparent glass:focus-within:border-ring glass:glass-chrome",
+            "glass:relative glass:z-10 glass:rounded-[26px] glass:border-transparent glass:focus-within:border-transparent glass:focus-within:outline glass:focus-within:outline-1 glass:focus-within:outline-primary/40 glass:glass-chrome",
             canSend ? "" : "pointer-events-none opacity-40",
           ].join(" ")}>
             <textarea ref={inputRef} value={input}
