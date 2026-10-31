@@ -562,8 +562,8 @@ export function ToolStepRow({
           {agentWords ? (
             <span className="flex items-baseline gap-1 min-w-0">
               <span
-                className={`text-[11.5px] shrink-0 ${
-                  running ? "chat-shimmer-text" : failed ? "text-destructive" : "text-foreground"
+                className={`text-[11.5px] shrink-0 glass:text-footnote ${
+                  running ? "chat-shimmer-text glass:glass-shimmer-text" : failed ? "text-destructive" : "text-foreground"
                 }`}
               >
                 {agentWords.lead}
@@ -572,15 +572,15 @@ export function ToolStepRow({
             </span>
           ) : (
             <span
-              className={`text-[11.5px] truncate ${step.target ? "flex-none max-w-[75%]" : "min-w-0"} ${
-                running ? "chat-shimmer-text" : failed ? "text-destructive" : "text-foreground"
+              className={`text-[11.5px] truncate glass:text-footnote ${step.target ? "flex-none max-w-[75%]" : "min-w-0"} ${
+                running ? "chat-shimmer-text glass:glass-shimmer-text" : failed ? "text-destructive" : "text-foreground"
               }`}
             >
               {step.label}
             </span>
           )}
           {step.target && (
-            <span className="text-[11px] font-mono truncate min-w-0 px-1 py-px rounded bg-secondary/60 border border-border/40 text-muted-foreground">
+            <span className="text-[11px] font-mono truncate min-w-0 px-1 py-px rounded bg-secondary/60 border border-border/40 text-muted-foreground glass:text-caption">
               {step.target}
             </span>
           )}
@@ -785,7 +785,7 @@ export default function ThinkingContainer({
   }, [isActive, toolEvents]);
 
   return (
-    <div className="my-2 rounded-lg border border-border/40 bg-card/30 overflow-hidden" data-trail="">
+    <div className="my-2 rounded-lg border border-border/40 bg-card/30 overflow-hidden glass:rounded-[14px] glass:border-border glass:bg-transparent" data-trail="">
       {/* ── Header ─────────────────────────────────────────────────── */}
       <button
         type="button"
@@ -807,9 +807,17 @@ export default function ThinkingContainer({
           )}
         </span>
         <span className="flex flex-1 items-center gap-2 min-w-0">
-        <span title={title} className={`text-xs font-medium min-w-0 truncate ${isActive ? "chat-shimmer-text" : "text-muted-foreground"}`}>
+        <span title={title} className={`text-xs font-medium min-w-0 truncate glass:text-label ${isActive ? "chat-shimmer-text glass:glass-shimmer-text" : "text-muted-foreground"}`}>
           {title}
         </span>
+        {/* Glass only (GL-4): three dots while the run has shown no step yet. */}
+        {isActive && !hasContent && (
+          <span aria-hidden className="hidden glass:inline-flex shrink-0 items-center gap-1 text-muted-foreground">
+            <span className="glass:glass-typing-dot" />
+            <span className="glass:glass-typing-dot" />
+            <span className="glass:glass-typing-dot" />
+          </span>
+        )}
         {!isActive && failedCount > 0 && (
           <span className="shrink-0 text-[10px] text-destructive">
             {failedCount} failed

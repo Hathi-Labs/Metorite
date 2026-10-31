@@ -1041,3 +1041,74 @@ def test_the_address_sql_names_the_org_on_both_sides() -> None:
     assert "lower(u.email) = lower(:m)" in sql
     assert "::" not in sql and "{org}" not in sql
     assert ap.ADDRESS_SQL_TEMPLATE.count("{org}") == 1
+
+
+# ── PZ-20c: "what do you know about me" ────────────────────────────────────
+#
+# These tests prove ONE thing: the instruction reaches the model, on the
+# right turns only. No offline test can prove that the model obeys it. The
+# eval prompt in the PZ-10 list of the spec is ADVISORY (R7) until PZ-10
+# ships. Known tension: with Mem0 text in ``memory_context``, the footer
+# still says "this block only". The footer does not change.
+
+
+def _footers(parts: list[str]) -> list[str]:
+    return [p for p in parts if ap.BLOCK_FOOTER in p]
+
+
+def test_a_solo_turn_holds_the_footer_as_the_last_line_of_the_block(run) -> None:
+    payload = {"memory_context": "Mem0 says: likes tea", "system_context": "persona"}
+    parts = _parts(payload=payload)
+    (block,) = _blocks(parts)
+    assert block.splitlines()[-1] == ap.BLOCK_FOOTER
+    # One footer in the whole context, and it sits in the block.
+    assert _footers(parts) == [block]
+
+
+@pytest.mark.parametrize("case", ["shared_room", "no_member", "flag_off", "other_org_off"])
+def test_a_turn_with_no_block_holds_no_footer(run, monkeypatch, case: str) -> None:
+    token = None
+    if case == "shared_room":
+        token = ex._RUN_SOLO_ROOM.set(False)
+    elif case == "no_member":
+        run["member"] = ""  # a webhook run has no verified member
+    elif case == "flag_off":
+        _flag(monkeypatch, False)
+    else:
+        monkeypatch.setattr(get_settings(), "assistant_profile_orgs",
+                            "99999999-9999-4999-8999-999999999999", raising=False)
+    try:
+        parts = _parts(payload={"memory_context": "a fact"})
+    finally:
+        if token is not None:
+            ex._RUN_SOLO_ROOM.reset(token)
+    assert _footers(parts) == []
+    assert run["reads"] == []
+
+
+def test_the_block_holds_only_the_members_own_text(run) -> None:
+    """The block equals ``render_block`` of the one stored row that the
+    member's read returned. The text of another member never enters."""
+    run["raw"] = {**EXAMPLE, "facts": [
+        {"id": "f9", "text": "Owns a boat in Goa", "kind": "about",
+         "source": "chat", "at": "2026-10-24T09:00:00Z"}]}
+    other_marker = "Secret of bo@alpha.example"
+    parts = _parts(payload={"message": other_marker})
+    (block,) = _blocks(parts)
+    assert block == ap.render_block(run["raw"], "")
+    assert block == ap.member_block(run["raw"], "", "")
+    assert "Owns a boat in Goa" in block
+    assert run["reads"] == [(ORG, MEMBER)]
+    # The payload is client input. Its text is not a part of the block.
+    assert other_marker not in block
+
+
+def test_the_executor_and_the_settings_view_share_one_builder(run) -> None:
+    """PZ-20a: the route calls ``member_block``, and so does the executor."""
+    run["preferred"], run["display"] = "Viju", "Ana Rao"
+    run["raw"] = {"v": 1, "facts": [{"id": "f1", "text": "Likes tea", "kind": "preference",
+                                     "source": "chat", "at": "2026-10-23T11:00:00Z"}]}
+    (block,) = _blocks(_parts())
+    assert block == ap.member_block(run["raw"], "Viju", "Ana Rao")
+    assert 'Address them as "Viju"' not in block  # a directory name is only a name
+    assert 'Their directory name is "Viju"' in block

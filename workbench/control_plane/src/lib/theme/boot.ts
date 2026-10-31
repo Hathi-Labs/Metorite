@@ -38,10 +38,16 @@ import {
   SCOPE_SEPARATOR,
   STORAGE_KEYS,
 } from "./storage";
+import { glassGateOn, LOOK_ATTRIBUTE } from "./look";
 
 /**
  * The script source. Generated rather than hand-written so the density scale
  * and storage keys stay in lockstep with the modules that own them.
+ *
+ * The look (D143): with the glass gate on, the server renders the attribute,
+ * and this script removes it for a member who chose Classic. With the gate
+ * off, the script holds no look code at all, so a production page cannot
+ * reach glass whatever its storage says. `glassLook.test.ts` fences both.
  */
 export function themeBootScript(): string {
   const scales = JSON.stringify(DENSITY_SCALE);
@@ -49,12 +55,15 @@ export function themeBootScript(): string {
   const accentInkProps = JSON.stringify(ACCENT_INK_PROPERTIES);
   const mode = JSON.stringify(MODE_STORAGE_KEY);
   const sep = JSON.stringify(SCOPE_SEPARATOR);
+  const look = glassGateOn()
+    ? `if(ls.getItem(k(${JSON.stringify(STORAGE_KEYS.look)}))==="classic")d.removeAttribute(${JSON.stringify(LOOK_ATTRIBUTE)});\n`
+    : "";
 
   return `(function(){try{
 var d=document.documentElement,ls=window.localStorage;
 var s=ls.getItem(${JSON.stringify(APPEARANCE_SCOPE_KEY)});
 function k(n){return s?n+${sep}+s:n;}
-if(s){try{var m=ls.getItem(k(${mode}));if(m)ls.setItem(${mode},m);else ls.removeItem(${mode});}catch(e){}}
+${look}if(s){try{var m=ls.getItem(k(${mode}));if(m)ls.setItem(${mode},m);else ls.removeItem(${mode});}catch(e){}}
 var scale=${scales};
 var den=ls.getItem(k(${JSON.stringify(STORAGE_KEYS.density)}))||ls.getItem(k(${JSON.stringify(STORAGE_KEYS.orgDensity)}));
 if(scale[den])d.style.setProperty(${JSON.stringify(DENSITY_PROPERTY)},String(scale[den]));
