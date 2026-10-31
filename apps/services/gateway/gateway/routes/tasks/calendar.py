@@ -383,6 +383,29 @@ DEFAULT_PLANNING_PROMPT = (
     "constraints or mood I give for today."
 )
 
+# The answer cap of the day-plan call. The member's "chat" model can be a
+# model that thinks before it answers (tier-powerful is deepseek-v4-pro), and
+# its thinking counts against max_tokens. At 1200 every call on 2026-10-30
+# spent the whole cap on thinking and returned empty content (task 1123). The
+# JSON answer itself needs about 1000 tokens, so the rest is room to think.
+# Fence: tests/unit/test_calendar_plan_llm.py.
+PLAN_MAX_TOKENS = 8000
+
+
+def _empty_plan_reason(choice: Any, raw: str) -> str | None:
+    """The human reason when the plan answer holds no JSON at all, else None.
+
+    Names the cause instead of a JSONDecodeError: a finish reason of "length"
+    means the model used the whole cap, its thinking included."""
+    if "{" in raw:
+        return None
+    finish = getattr(choice, "finish_reason", None)
+    _log.warning("tasks.calendar.plan_llm_empty", finish_reason=finish,
+                 content_len=len(raw))
+    if finish == "length":
+        return "the AI model used its whole answer budget before it gave a plan"
+    return "the AI model gave no plan"
+
 
 async def _llm_rank_day(
     cands: list[dict], energy_note: str | None, capacity_mins: int, model: str,
@@ -481,10 +504,14 @@ async def _llm_rank_day(
             model=model, fallback_model="tier-balanced",
             messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("summary", json=True)},
                       {"role": "user", "content": user}],
-            temperature=0.2, max_tokens=1200,
+            temperature=0.2, max_tokens=PLAN_MAX_TOKENS,
             response_format={"type": "json_object"},
         )
-        raw = resp.choices[0].message.content or ""
+        choice = resp.choices[0]
+        raw = choice.message.content or ""
+        empty = _empty_plan_reason(choice, raw)
+        if empty:
+            return None, None, empty
         data = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
     except Exception as exc:
         _log.warning("tasks.calendar.plan_llm_failed", error=str(exc)[:160])
