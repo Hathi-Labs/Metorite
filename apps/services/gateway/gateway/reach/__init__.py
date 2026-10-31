@@ -10,4 +10,7 @@
   outside this package imports it (``test_reach_requests.py``).
 * ``loop`` — the 60-second loop. ``routes`` — ``/reach/preview``,
   ``/reach/brief`` and ``/reach/tell-me``.
+* ``push_message`` and ``push_channel`` — the web push of a reminder (WS-66
+  RE-9a, RE-9b). The reminder loop plans and sends it. ``loop`` never runs
+  it, and ``whatsapp`` never sees a ``web_push`` row.
 """

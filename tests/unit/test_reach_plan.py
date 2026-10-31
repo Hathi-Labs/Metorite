@@ -83,6 +83,108 @@ class TestTheClasses:
         assert got == cls
 
 
+class TestTheReminderClasses:
+    """WS-66 RE-9b (``calendar_events_reminders.md`` §5.6, decision 3). The
+    three reminder kinds reach the member by web push, and never on WhatsApp."""
+
+    def test_the_three_classes(self):
+        assert {k: classes.REACH_CLASS[k] for k in classes.NOT_ON_WHATSAPP} == {
+            "reminder_due": "urgent", "reminder_check": "interrupt",
+            "reminder_unconfirmed": "brief"}
+
+    def test_on_whatsapp_still_removes_the_three_kinds(self):
+        reminders = [card(f"reminders:r{n}", kind, group="now", app="calendar")
+                     for n, kind in enumerate(sorted(classes.NOT_ON_WHATSAPP))]
+        task = card("tasks:1", "approval")
+        assert plan.on_whatsapp([*reminders, task]) == [task]
+        # A reminder folded under another card keeps that card off too.
+        folded = {**task, "folded": ["reminder_due"]}
+        assert plan.on_whatsapp([folded]) == []
+        # The WhatsApp path reads its candidates through on_whatsapp.
+        got = plan.interrupt_candidates(plan.on_whatsapp([*reminders, task]), set(), NOW)
+        assert [c["signal_id"] for c in got] == ["tasks:1"]
+        # The class alone would let two of them interrupt: the control.
+        alone = plan.interrupt_candidates(reminders, set(), NOW)
+        assert {c["kind"] for c in alone} == {"reminder_due", "reminder_check"}
+
+
+class TestThePushRules:
+    """The pure rules of ``reach/push_channel.py`` (WS-66 RE-9b)."""
+
+    QUIET = datetime(2026, 10, 15, 17, 0, tzinfo=UTC)  # 22:30 in Kolkata
+
+    def test_only_an_urgent_kind_breaks_quiet_hours(self):
+        from gateway.reach import push_channel
+
+        assert plan.in_quiet_hours(DAY, self.QUIET, True)
+        assert not push_channel.quiet_blocks("reminder_due", DAY, self.QUIET)
+        assert push_channel.quiet_blocks("reminder_check", DAY, self.QUIET)
+        assert push_channel.quiet_blocks("reminder_unconfirmed", DAY, self.QUIET)
+        for kind in classes.NOT_ON_WHATSAPP:
+            assert not push_channel.quiet_blocks(kind, DAY, NOW)
+
+    def test_the_caps(self, monkeypatch):
+        from acb_common.settings import get_settings
+        from gateway.reach import push_channel
+
+        monkeypatch.setattr(get_settings(), "reach_daily_cap", 3)
+        assert push_channel.cap_of("reminder_due") == push_channel.DUE_CAP == 10
+        assert push_channel.cap_of("reminder_check") == 3
+        assert push_channel.cap_of("reminder_unconfirmed") is None
+
+    def test_the_key_holds_the_reminder_and_its_step(self):
+        from gateway.reach import push_channel
+
+        rid, eid = "0b8f6a8e-3c1d-4d4e-9f00-1a2b3c4d5e6f", "6f5e4d3c-2b1a-4f00-9e4d-1d3c8e6a8f0b"
+        key = push_channel.dedupe_key(rid, eid)
+        assert key == f"reminder:{rid}:{eid}"
+        assert push_channel.parse_key(key) == (rid, eid)
+        for bad in ("reminder:x:y", f"urgent:{rid}:{eid}", f"reminder:{rid}", ""):
+            assert push_channel.parse_key(bad) is None
+
+    def test_the_ttl_of_each_kind(self):
+        from gateway.reach import push_message
+
+        assert {k: push_message.ttl_of(k) for k in push_message.KINDS} == {
+            "reminder_due": 3600, "reminder_check": 4 * 3600,
+            "reminder_unconfirmed": 12 * 3600}
+        with pytest.raises(KeyError):
+            push_message.ttl_of("brief")
+
+
+def test_the_push_adds_no_session_site():
+    """R5 (WS-66 RE-9b): the plan step takes the loop's own session, and the
+    send step opens its sessions in ``reach/outbox.py`` only. The push channel
+    opens none, the loop keeps its two, and ``push/`` keeps its five."""
+    import ast
+    from pathlib import Path
+
+    gw = Path(__file__).resolve().parents[2] / "apps/services/gateway/gateway"
+    opens = {"tenant_session", "_tenant_session", "get_db", "get_session"}
+
+    def tree(rel: str) -> ast.Module:
+        return ast.parse((gw / rel).read_text(encoding="utf-8"))
+
+    def sites(rel: str) -> int:
+        return sum(1 for n in ast.walk(tree(rel)) if isinstance(n, ast.Call)
+                   and getattr(n.func, "id", getattr(n.func, "attr", None)) in opens)
+
+    def names(rel: str) -> set[str]:
+        found: set[str] = set()
+        for n in ast.walk(tree(rel)):
+            if isinstance(n, ast.ImportFrom):
+                found |= {str(n.module)} | {a.name for a in n.names}
+            elif isinstance(n, ast.Import):
+                found |= {a.name for a in n.names}
+        return found
+
+    assert sites("reach/push_channel.py") == 0
+    assert sites("reminders/loop.py") == 2
+    assert sum(sites(f"push/{f.name}") for f in (gw / "push").glob("*.py")) == 5
+    # The channel reaches the network through the one sender only.
+    assert not names("reach/push_channel.py") & {"outbound_guard", "acb_common.db", "httpx"}
+
+
 class TestTheCandidates:
     def test_a_new_needs_reply_is_a_candidate(self):
         got = plan.interrupt_candidates([card("email:a:t1")], set(), NOW)

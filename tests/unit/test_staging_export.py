@@ -112,6 +112,16 @@ def test_the_minimise_step_blanks_the_assistant_profile() -> None:
     assert "UPDATE public.user_settings           SET assistant_profile = NULL;" in body
 
 
+def test_the_minimise_step_deletes_every_push_subscription() -> None:
+    """WS-66 RE-9b: a push subscription is a device credential. A copied one
+    would let a reminder that fires on staging push to a real member's phone.
+    The staging refresh deletes them too (``test_staging_box.py``)."""
+    sql = (_ROOT / "infra/staging/minimise.sql").read_text(encoding="utf-8")
+    body = sql.split("-- 6. Nothing credential-shaped is left.", 1)[0]
+    code = [ln.strip() for ln in body.splitlines() if not ln.lstrip().startswith("--")]
+    assert "DELETE FROM public.push_subscriptions;" in code
+
+
 def test_a_tenant_cannot_set_the_slugs() -> None:
     """The name decides whose data leaves the production box."""
     from acb_common.env_guard import is_platform_env
