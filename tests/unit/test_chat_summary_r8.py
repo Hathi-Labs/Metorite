@@ -13,7 +13,8 @@ whole ladder and two organizations:
   ``updated_at``, ``last_preview``, ``message_count`` and the title as they
   were;
 - item 9: a Delete (``off``) after the mark wins. The marked write has the
-  mark in its WHERE, so it changes nothing. A newer mark wins the same way;
+  mark in its WHERE, so it changes nothing. A newer mark wins the same way,
+  and so does a Forget, which sets the column to NULL;
 - item 8: ``SOLO_ROOM_SQL`` and ``room_is_solo(resolve_room_access(...))``
   agree on each row: a NULL visibility, a mixed-case address, a ``group:``
   row, an ``org`` row and a chat with no participant row among them. The
@@ -237,6 +238,21 @@ async def test_9_a_delete_after_the_mark_wins(db) -> None:
         got = await _in(db.org_a, summaries.read, sid)
     assert got == summaries.Stored(off=True)
     assert _row(db, sid)["member_summary"] == {"v": 1, "off": True}
+
+
+async def test_9_a_forget_after_the_mark_wins_too(db) -> None:
+    """Forget (PZ-35, §15.5) sets the column to NULL, not to ``off``. So only
+    the mark in the WHERE stops the write of a model call that was running."""
+    sid = _chat(db, org=db.org_a, user_id=ALICE, subjects=(ALICE,))
+    async with tenant_engine_scope(_app_dsn(db)):
+        assert await _in(db.org_a, summaries.mark, sid, through="m3", at=NOW)
+        with db.admin_engine.begin() as c:
+            c.execute(text("UPDATE chat_session SET member_summary = NULL WHERE id = :s"),
+                      {"s": sid})
+        wrote = await _in(db.org_a, summaries.write_marked, sid, ANSWER,
+                          through="m3", through_ms=1, at=NOW)
+    assert wrote is False
+    assert _row(db, sid)["member_summary"] is None
 
 
 async def test_9_a_newer_mark_wins_over_an_older_write(db) -> None:
