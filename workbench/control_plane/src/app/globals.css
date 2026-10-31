@@ -902,18 +902,28 @@ html[data-look="glass"] .glass\:glass-working-glow {
   transition: opacity var(--motion-duration) var(--motion-easing);
 }
 html[data-look="glass"] .glass\:glass-working-glow[data-glow="rest"] {
-  opacity: 0.4;
+  opacity: 0.6;
+  inset: -0.3125rem;
 }
 html[data-look="glass"] .glass\:glass-working-glow[data-glow="rest"][data-glow-focus="true"] {
-  opacity: 0.75;
+  opacity: 0.95;
 }
 html[data-look="glass"] .glass\:glass-working-glow[data-glow="waiting"] {
   opacity: 0.85;
 }
 html[data-look="glass"] .glass\:glass-working-glow[data-glow="live"] {
   opacity: 1;
-  inset: -0.375rem;
-  filter: blur(12px);
+  inset: -0.5rem;
+  filter: blur(14px);
+}
+/* The top-bar Ask field is 32 px high, so its edge is a thinner, tighter
+   ring than the composer's. */
+html[data-look="glass"] [data-testid="ask-glow"].glass\:glass-working-glow {
+  inset: -0.125rem;
+  filter: blur(6px);
+}
+html[data-look="glass"] [data-testid="ask-glow"] > .glass\:glass-glow-ring {
+  padding: 3px;
 }
 
 /* The spectrum, cut to a ring by a mask so the field itself stays clear. */

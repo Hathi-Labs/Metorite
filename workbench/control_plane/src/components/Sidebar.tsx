@@ -990,7 +990,7 @@ export function NavLink({
               link's name and in its tooltip. */}
           {meta?.kind === "needs" ? <NeedsDot /> : null}
         </RailIconSlot>
-        <RailLabel>{pane.label}</RailLabel>
+        <RailLabel>{railLabel(pane.label)}</RailLabel>
       </Link>
     );
   }
@@ -1125,6 +1125,15 @@ export function NeedsCount({ text }: { text: string }) {
  * GL-10c: the glass rail draws a label under each icon. Classic never sees it
  * (`hidden`, so it takes no space and the folded rail is as it was).
  */
+/**
+ * The rail's short form of an app's name. A long name that starts with "My"
+ * drops it ("My WhatsApp" → "WhatsApp"), so it fits the 80 px rail at 12 px.
+ * The link's title and accessible name keep the full name.
+ */
+export function railLabel(label: string): string {
+  return label.length > 10 && label.startsWith("My ") ? label.slice(3) : label;
+}
+
 function RailLabel({ children }: { children: ReactNode }) {
   return (
     <span aria-hidden className="hidden w-full truncate text-center font-medium leading-tight glass:block glass:text-caption glass:tracking-tight">
