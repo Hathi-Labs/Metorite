@@ -29,7 +29,9 @@ from acb_llm import ChoiceAnswer, DecideUnavailable
 from gateway.routes.shell import intent
 
 ROOT = Path(__file__).resolve().parents[2]
-REGISTRY_TS = ROOT / "workbench/control_plane/src/lib/shell/registry.ts"
+# PKG-1: the jobs of the bar are generated from the shell manifests, so the
+# parsers read the generated copy. `registry.ts` re-exports it as `JOBS`.
+REGISTRY_TS = ROOT / "workbench/control_plane/src/lib/shell/jobs.generated.ts"
 NAV_TS = ROOT / "workbench/control_plane/src/lib/nav.ts"
 
 
@@ -282,7 +284,7 @@ class TestTheAnswer:
 class TestOneJobList:
     def _ts_jobs(self) -> dict[str, tuple[str, str]]:
         src = REGISTRY_TS.read_text(encoding="utf-8")
-        block = src[src.index("export const JOBS"):src.index("];", src.index("export const JOBS"))]
+        block = src[src.index("export const GENERATED_JOBS"):src.index("];", src.index("export const GENERATED_JOBS"))]
         out = {}
         for m in re.finditer(
             r'id: "([^"]+)",\s*label: "([^"]+)",.*?app: "([^"]+)",\s*href: "([^"]+)"', block, re.S,
@@ -313,7 +315,7 @@ class TestOneJobList:
     def _ts_job_fallbacks(self) -> dict[str, tuple[str, str]]:
         """The jobs of `registry.ts` that name a `fallback` (WS-64)."""
         src = REGISTRY_TS.read_text(encoding="utf-8")
-        block = src[src.index("export const JOBS"):src.index("];", src.index("export const JOBS"))]
+        block = src[src.index("export const GENERATED_JOBS"):src.index("];", src.index("export const GENERATED_JOBS"))]
         out: dict[str, tuple[str, str]] = {}
         for chunk in re.split(r"\n  \{", block)[1:]:
             job_id = re.search(r'id: "([^"]+)"', chunk)
@@ -345,7 +347,7 @@ class TestOneJobList:
     def _ts_job_features(self) -> dict[str, str]:
         """The jobs of `registry.ts` that name a `feature` of their own (EA-4b)."""
         src = REGISTRY_TS.read_text(encoding="utf-8")
-        block = src[src.index("export const JOBS"):src.index("];", src.index("export const JOBS"))]
+        block = src[src.index("export const GENERATED_JOBS"):src.index("];", src.index("export const GENERATED_JOBS"))]
         out: dict[str, str] = {}
         for chunk in re.split(r"\n  \{", block)[1:]:
             job_id = re.search(r'id: "([^"]+)"', chunk)

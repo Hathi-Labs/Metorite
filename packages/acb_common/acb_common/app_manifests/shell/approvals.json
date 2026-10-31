@@ -1,0 +1,27 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "approvals",
+  "contributes": {
+    "jobs": [
+      {
+        "id": "review-approvals",
+        "label": "Review pending approvals",
+        "position": 230,
+        "words": [
+          "approve",
+          "approval",
+          "approvals",
+          "pending",
+          "review",
+          "outgoing"
+        ],
+        "icon": "ShieldCheck",
+        "app": "/approvals",
+        "href": "/approvals",
+        "meaning": "check and approve what the AI wants to send before it goes out",
+        "feature": "approvals"
+      }
+    ]
+  }
+}
