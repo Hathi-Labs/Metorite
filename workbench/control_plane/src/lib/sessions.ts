@@ -879,6 +879,9 @@ export interface PersistedMessage {
    *  as the speaker; `role` only says which side of the conversation it is. */
   authorEmail?: string;
   authorKind?: "human" | "agent" | "system";
+  /** The member of the run, as the server stored it (PZ-20b). Read only:
+   *  a save never sends it, and the server takes it from the caller. */
+  runMemberEmail?: string;
   /** Server-side redaction — content is a notice, not the turn's real text. */
   redacted?: boolean;
   redactedCaps?: string[];
@@ -1203,6 +1206,7 @@ export async function fetchMessagesFromDb(
       todos?: { id: string; title: string; status: string }[];
       authorEmail?: string | null;
       authorKind?: "human" | "agent" | "system" | null;
+      runMemberEmail?: string | null;
       redacted?: boolean;
       redactedCaps?: string[];
     }>;
@@ -1229,6 +1233,8 @@ export async function fetchMessagesFromDb(
       // (which is the old, unattributed look) is a single check.
       authorEmail: r.authorEmail ?? undefined,
       authorKind: r.authorKind ?? undefined,
+      // PZ-20b: the member of the run, for the second check of the mark.
+      runMemberEmail: r.runMemberEmail ?? undefined,
       redacted: r.redacted || undefined,
       redactedCaps: r.redactedCaps,
     }));
