@@ -157,7 +157,8 @@ come across with the outbound ones held off, by the pattern of
 `scripts/staging_refresh.sh`. Fence: `tests/unit/test_dev_up.py`.
 
 **What it cannot test.** The stack holds no keys. Mail sync, sending, WhatsApp,
-CRM sync, OAuth sign-in and model calls do not work. Test those on staging.
+CRM sync, OAuth sign-in and model calls do not work. The owner retired staging
+(D144), so §1.3.2 says where those get their check.
 
 **Why the ladder runs inside the container.** Measured 2026-10-30 on the
 Windows PC: `apply_migrations.sh` from Git Bash took 515 s for 310 files and
@@ -165,6 +166,118 @@ Windows PC: `apply_migrations.sh` from Git Bash took 515 s for 310 files and
 
 ⚠️ **Never point `pytest` at this database.** The suites reset what they touch
 (§1.1). `--env` prints `DEV_UP_*` names, never `DATABASE_URL`, for that reason.
+
+### 1.3 Preview, approve, gate, merge: the owner loop (D145)
+
+**Owner directive, 2026-10-31 (Metorite task LD-7).** Show the owner a change
+the moment it works. Run the full gates after the owner approves it. Move
+production once a day.
+
+```text
+build ──▶ preview ──▶ owner approves ──▶ local staging gate ──▶ merge ──▶ 21:30 UTC release
+            ▲               │
+            └── change it ◀─┘
+```
+
+**1. Build with the stack up.** Start `bash scripts/dev_up.sh` in the worktree
+when the slice starts, not when it ends. The gateway reloads and `next dev`
+reloads, so the preview is ready when the code is.
+
+**2. Preview.** When the slice works in the running app, send the owner one
+message, in chat and on the task. It holds these four items:
+
+- The URL of the page that shows the change, on `127.0.0.1`.
+- What changed, in three lines or fewer.
+- Where to click, step by step.
+- For a UI change, the captures of the `visual-review` skill.
+
+Then call `ask_on_task` with two options, **Approve** and **Change it**. In
+the same step, push the branch and open the PR as a draft. GitHub's
+`pr-check` then runs while the owner looks.
+
+A slice with nothing to see skips the preview. Docs, tests, a script and a
+refactor with no change in behaviour go straight to step 4.
+
+**3. The owner answers.**
+
+- **Approve:** go to step 4.
+- **Change it:** build again, then send a new preview.
+- **No answer in this session:** leave the PR as a draft and the question
+  open. The next session finds the answer in `my_work` as `run_answered`.
+
+**4. The local staging gate (LD-9).** Run `bash scripts/stage_local.sh` in the
+worktree. The independent verifier, and the reviewer by tier, run beside it.
+The gate tests the merge of the branch with today's `origin/main`, not the
+branch alone. It runs four steps:
+
+1. The full pr-check suite, in the `metorite-ci` distro (`scripts/ci_local.sh`).
+2. The production build: `next build` and `next start`, and the gateway with
+   no reload, as `acb_app` under FORCE RLS.
+3. The migration rehearsal. It restores last night's reduced copy at
+   production's migration ledger. Then `scripts/apply_migrations.sh`, the
+   runner that the deploy uses, applies the branch's new migrations.
+4. Smoke: health, `/version`, the tenant-isolation check and the Playwright
+   smoke set.
+
+A pass posts the commit status `local-staging` = `success` on the exact head
+commit, with a summary of the run. A failure posts `failure` and names the
+step. Fence: `tests/unit/test_stage_local.py` (LD-9).
+
+**5. Merge.** Run `bash scripts/premerge.sh > <log> 2>&1 && gh pr merge <n>
+--squash`. From LD-10, `premerge.sh` refuses a head commit with no
+`local-staging` pass. A new commit on the branch needs a new pass. LD-10 names
+its fence.
+
+**6. Production, once a day.** The release at 21:30 UTC ships the tip of
+`main` (§2 and `specs/staging_and_daily_release.md` §4). An agent dispatches
+`deploy.yml` only for a hotfix that the owner asks for, or when production is
+down. Report a merge as "reaches production at tonight's release". After the
+release, confirm `/version` `applied_sha`.
+
+**Until LD-8 to LD-10 land.** The preview runs on the demo seed. The gate is
+`bash scripts/ci_local.sh`, and then `premerge.sh`. Name the steps that ran in
+the PR body.
+
+**Steps 1 to 3 are advisory (R7).** No test makes a skipped preview fail. The
+owner sees a missing preview, because no approval arrives.
+
+#### 1.3.1 The production copy on this PC (LD-8)
+
+**Owner approval, 2026-10-31, in chat.** Production writes a reduced copy each
+night (`scripts/staging_export.sh`). It holds the organizations in
+`STAGING_EXPORT_SLUGS`, with every credential blanked by
+`infra/staging/minimise.sql`. It is about 83 MB, at
+`/var/lib/acb-staging-export/current/` on the production box, group `acb`.
+
+- `scripts/prod_copy.sh` pulls it over `ssh metorite` into
+  `~/.metorite/prod-copy/<date>/`, with mode 0700. It checks `SHA256SUMS`. It
+  refuses a copy older than 36 hours, and keeps the 2 newest copies.
+- `bash scripts/dev_up.sh --data prod` restores the newest copy instead of the
+  demo seed. It follows `scripts/staging_refresh.sh` steps 4 to 6. It creates
+  the roles and extensions that the dump names, runs `pg_restore`, and gives
+  the gateway `acb_app` so FORCE RLS binds.
+- It takes production's switches from the copy's `flags.env`, with the
+  outbound switches held off. This replaces `--refresh-flags`, which reads the
+  retired staging box.
+- It deletes `push_subscriptions` again after the restore, as
+  `staging_refresh.sh` does (RE-9b). Then it applies the branch's pending
+  migrations.
+- The sign-in works as a real member of the copy.
+- The copy stays on this PC. It never goes into git, a log, a PR or a chat
+  message.
+- Fences: `tests/unit/test_dev_up.py` and `tests/unit/test_prod_copy.py`.
+
+**Measured 2026-10-31 08:40 UTC:** the newest copy on production was from
+2026-10-30 02:38 UTC, 30 hours old. The copy of 2026-10-31 did not arrive.
+LD-8 finds out why, and `prod_copy.sh` prints the age of each copy it takes.
+
+#### 1.3.2 What local staging cannot test
+
+This PC holds no production keys. So it cannot test OAuth sign-in on the real
+domain, mail, WhatsApp, CRM sync or model calls. It cannot test Caddy, the
+systemd units or `deploy/*.sh` on a box either. The release's own smoke jobs
+(`smoke` and `chat-smoke`) check those on production, and then the owner does.
+A flag that needs a live check still waits for the owner (D144 point 6).
 
 ## 2. Release: deploy is not release
 

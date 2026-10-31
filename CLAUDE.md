@@ -214,10 +214,11 @@ delivery makes a silent failed deploy more likely, not less.
 **Feature by feature, app by app — one narrowed slice at a time.** The loop
 (`/next-ticket`, defined in `.claude/commands/next-ticket.md`):
 
-> **audit** the spec is dispatchable → **implement** one narrowed slice and
-> **run it locally** (`scripts/dev_up.sh`) → **verify** independently, on the
-> local stack → **review** the diff adversarially, by risk tier. Then **open a
-> PR**, **merge it**, **watch the run**, and **ship it**.
+> **audit** the spec is dispatchable → **implement** one narrowed slice with
+> the local stack up (`scripts/dev_up.sh`) → **preview** it to the owner and
+> wait for **approval** → **verify** independently and **review** by risk tier,
+> beside the **local staging gate** (`scripts/stage_local.sh`). Then **merge
+> it**. Production takes it at the 21:30 UTC release.
 
 **Merging is not skipping the loop.** Verify always runs, and the verifier is
 never the implementer. A small slice (LOW, or STANDARD in build) skips the
@@ -225,12 +226,22 @@ audit when its Metorite task states the acceptance criteria (owner request,
 2026-10-30). Review depth follows the risk tier in `next-ticket.md` step 1b. A
 LOW slice skips the reviewer. What you drop is the wait.
 
-**⚠️ Staging is retired** *(D144, owner directive, 2026-10-31)*. A merge moves
-`main` and nothing else. Production moves at 21:30 UTC each day. An agent may
-also dispatch `deploy.yml` after the merge, and the run ships the tip of `main`
-at once. This replaces the "do not push to production" rule of 2026-10-27.
-Verify by evidence: `/version` `applied_sha` and the smoke jobs.
-`.claude/commands/next-ticket.md` step 7 holds the commands.
+**⚠️ PREVIEW, APPROVE, GATE, MERGE** *(D145, owner directive, 2026-10-31)*.
+The owner retired staging (D144), and this PC does its job now.
+
+1. **Show the owner the change first.** Send the local URL, what changed, where
+   to click and the captures. Then ask on the task: Approve or Change it.
+2. **Run the full gates after the approval.** `scripts/stage_local.sh` tests the
+   merge with today's `main`: the full suite, the production build, a migration
+   rehearsal on production's reduced copy, and smoke. A pass posts
+   `local-staging` on the head commit, and `premerge.sh` needs it.
+3. **Production moves once a day, at 21:30 UTC.** Do not dispatch `deploy.yml`
+   after a merge. Dispatch only for a hotfix the owner asks for, or when
+   production is down.
+
+A slice with nothing to see skips step 1. Until LD-8 to LD-10 land, the gate is
+`scripts/ci_local.sh` and then `premerge.sh`. `engineering_practice.md` §1.3
+owns the loop, and `next-ticket.md` steps 4b and 7 hold the commands.
 
 **⚠️ WORK UNDER A METORITE TASK** *(owner directive, 2026-10-28, D135)*.
 The owner watches the board, so work that is not on it is invisible. Every

@@ -4913,6 +4913,26 @@ Owner directive, 2026-10-31, in chat. Metorite: task 1215. It supersedes the sta
 6. **Flags wait on production.** A flag that waited for a staging check now waits for the owner's check on production.
 7. **A local workstation will become the CI/CD box.** Nobody has built it.
 
+### D145 — Preview, owner approval, local staging gate, merge, daily release (2026-10-31)
+
+Owner directive, 2026-10-31, in chat. Metorite: task 1224 (LD-7), under epic 1100. It supersedes D144 point 2. D144 points 1, 3, 5, 6 and 7 stand.
+
+```text
+"I want to be able to see instantly what features and changes you've done so that I can approve it, and then we can run full CI/CD gates to actually see if the build passes. I want instant gratification about the feature being added. If I'm fine with it, then we can do the CI/CD to local staging, and once a day, it can go to production."
+```
+
+The owner also approved, the same day, that production's nightly reduced copy lives on this PC. That copy holds 4 organizations with every credential blanked (`infra/staging/minimise.sql`).
+
+1. **The owner sees a change first.** When a slice changes what the app does or draws, the agent shows it running on this PC. The agent gives the URL, what changed, where to click, and captures. Then it asks on the task.
+2. **The owner approves before the gates.** The full gates run after the owner approves. A change request goes back to the build.
+3. **Local staging replaces staging.** `scripts/stage_local.sh` (LD-9) runs on this PC. It runs the full pr-check suite, the production build, a migration rehearsal on the reduced copy, and smoke tests. A pass posts the `local-staging` status on the exact head commit.
+4. **A merge needs the pass** (LD-10). `scripts/premerge.sh` refuses a head commit with no `local-staging` pass. GitHub's `pr-check` still runs.
+5. **Production moves once a day.** The release runs at 21:30 UTC. An agent does not dispatch `deploy.yml` after a merge. It dispatches only for a hotfix that the owner asks for, or when production is down.
+6. **Until LD-8 to LD-10 land**, the preview runs on the demo seed, and the gate is `bash scripts/ci_local.sh` and then `scripts/premerge.sh`.
+7. **The home server takes the same scripts later.** They run on Linux unchanged.
+
+`specs/engineering_practice.md` §1.3 owns the loop.
+
 
 ## 4. Single-owner registry (who owns duplicated work)
 
