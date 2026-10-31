@@ -2240,8 +2240,13 @@ export default function AgentChat({
       {/* Agent header — VS Code-style minimal bar (hidden in compact embeds,
           where the host provides its own toolbar, and on a phone with the
           chat-first flag on, where the "…" control carries the status). */}
+      {/* Glass (owner, 2026-10-31): the agent row and the room row are one
+          line on the thread's own column (50rem less the 16 px gutters is the
+          thread's 48rem), so the name and Share line up with the messages.
+          Classic keeps its two full-width rows: the wrapper is `contents`. */}
       {!compact && !phoneChrome && (
-      <div data-chat-agent-row="" className="flex items-center gap-2 h-9 px-4 border-b border-border bg-card/40 shrink-0 glass:border-transparent glass:bg-transparent glass:h-11">
+      <div data-chat-head="" className="contents glass:mx-auto glass:flex glass:w-full glass:max-w-[50rem] glass:shrink-0 glass:items-center glass:gap-2 glass:px-4">
+      <div data-chat-agent-row="" className="flex items-center gap-2 h-9 px-4 border-b border-border bg-card/40 shrink-0 glass:min-w-0 glass:flex-1 glass:px-0 glass:border-transparent glass:bg-transparent glass:h-11">
         <div className={`w-2 h-2 rounded-full shrink-0 ${isRunActive ? "bg-warning motion-safe:animate-pulse" : "bg-success"}`} />
         <AgentAvatar libraryId={agentAvatars[currentAgentName]} size={20} fallback={null} />
         <span className="text-xs font-medium text-foreground truncate glass:text-label glass:font-semibold">{currentAgentLabel}</span>
@@ -2263,14 +2268,12 @@ export default function AgentChat({
           </Button>
         )}
       </div>
-      )}
-
       {/* Who is in this conversation, and what it costs the agents. Renders a
           lone Share button while you are alone — see RoomHeader. */}
-      {!compact && !phoneChrome && (
-        <div data-chat-room-row="" className="shrink-0 border-b border-border bg-card/20 px-4 py-2 glass:border-transparent glass:bg-transparent">
+        <div data-chat-room-row="" className="shrink-0 border-b border-border bg-card/20 px-4 py-2 glass:border-transparent glass:bg-transparent glass:px-0 glass:py-0">
           <RoomHeader room={room} presence={presence} onChanged={refreshRoom} />
         </div>
+      </div>
       )}
 
       {/* Missing integrations banner (compact) */}
