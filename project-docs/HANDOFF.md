@@ -97,11 +97,6 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `ssh metorite 'sudo -n grep -c "^ASSISTANT_PROFILE_CARD_WRITES_ORGS=" /opt/acb/app/.env'`. A count of 0 means production still waits for the owner's check. An agent sets the flag only after the owner says yes.
 - **Added:** 2026-10-30 · WS-63 PZ-32 session
 
-### H-435 · Stop the "Asked" interview badge from following the accent · [AGENT]
-- **Metorite:** #1115. The task holds the full entry.
-- **Check:** `grep -n 'asked: "primary"' workbench/control_plane/src/app/settings/assistant/AssistantPane.tsx`. A hit means still pending.
-- **Added:** 2026-10-30 · WS-63 PZ-32 session
-
 ### H-436 · Decide whether work words stop tripping the sensitive-fact card · [OWNER]
 - **Metorite:** #1116. The task holds the question and a recommendation.
 - **Check:** task #1116 is not Done → still pending.
