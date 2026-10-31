@@ -272,12 +272,12 @@ SHELL_CARDS: frozenset[str] = frozenset({
 SHELL_PANES: frozenset[str] = frozenset({
     "/tasks", "/calendar", "/people/me", "/dashboard", "/email", "/whatsapp",
     "/notes", "/memory", "/artifacts", "/projects", "/crm", "/people", "/chat",
-    "/workflows", "/build/apps", "/build/agents", "/approvals",
+    "/studio", "/approvals",
     "/settings/organization", "/settings/appearance", "/agents",
     "/integrations", "/observability", "/knowledge",
 })
 
-#: Caps on each list. There are 23 panes, 5 cards and 11 jobs today.
+#: Caps on each list. There are 21 panes, 5 cards and 11 jobs today.
 MAX_PINS = 24
 MAX_CARDS = 8
 MAX_JOBS = 16

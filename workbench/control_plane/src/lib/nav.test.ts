@@ -361,3 +361,13 @@ describe("every live app has a job (NS-2 done-when 1)", () => {
     expect(JOBS.some((j) => j.app === href), `${href} has no job in lib/shell/registry.ts`).toBe(true);
   });
 });
+
+describe("the Studio library pane (ai_studio.md §14 A1)", () => {
+  it("PANES holds /studio as a preview pane, and none of the three old hrefs", () => {
+    const studio = PANES.find((p) => p.href === "/studio");
+    expect(studio?.launch).toBe("preview");
+    for (const old of ["/workflows", "/build/apps", "/build/agents"]) {
+      expect(PANES.some((p) => p.href === old), `${old} is a redirect now`).toBe(false);
+    }
+  });
+});

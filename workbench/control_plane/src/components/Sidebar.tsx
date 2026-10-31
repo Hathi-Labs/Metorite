@@ -838,7 +838,7 @@ function NavSectionBlock({
               {...badgeFor(p.href)}
               needs={appNeeds[p.href]}
               needsFloor={appFloors?.has(p.href)}
-              pinnedApps={p.href === "/build/apps" ? pinnedApps : undefined}
+              pinnedApps={p.href === "/studio" ? pinnedApps : undefined}
               shellNav={shellNav}
               onRowMenu={onRowMenu}
               menuOpen={menuHref === p.href}

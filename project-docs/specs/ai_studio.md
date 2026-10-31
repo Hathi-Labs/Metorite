@@ -1,7 +1,7 @@
 # AI Studio — skills, workflows and apps that a company builds for itself (WS-STU)
 
 > **Product:** Metorite · **Feature:** AI Studio (`/studio`) · **Updated:** 2026-10-31 · **Owner:** vjvarada
-> **Status:** 🔨 **B1 BUILT and dark (2026-10-31)** behind `STUDIO_ORGS`, which is empty on every box. Every other slice is spec only. The pieces it reuses are built, and §16 names each one.
+> **Status:** 🔨 **B1 BUILT and dark (2026-10-31)** behind `STUDIO_ORGS`, which is empty on every box. **A1 and E1 BUILT (2026-11-01)** as the `/studio` preview pane. The pane needs neither `STUDIO_ORGS` nor a new feature. Every other slice is spec only. The pieces it reuses are built, and §16 names each one.
 > **Verified against code on 2026-10-31 at `57b91f721`.** Each path in §16 was read on that commit.
 > **Board:** WS-STU in `work_plan.md` §2. **Decisions:** D127 (one app, three kinds), D139 (one coding harness), **D141** (Studio starts now, and a skill creator replaces the agent creator), **D146** (the owner's answers of 2026-10-31: layered apps, a typed object store, first-party templates). D124, D130, D131 and D136 bind it too.
 > **Metorite:** project "AI Studio", umbrella epic #491, this spec task #1135. Each group of §14 has its own epic under #491.
@@ -487,13 +487,13 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 | Field | Value |
 |---|---|
-| **Team** | `ai-studio` |
+| **Team** | `studio` |
 | **Purpose** (blurb) | "Build skills, workflows and apps for your team." |
 | **Jobs** | "Build an app" (describe bar), "Teach Mira a skill" (skill draft), "Automate a task" (workflow draft). Each opens its draft route |
 | **Search provider** | Packages, workflows and skills by name and purpose |
 | **Needs you** | A share waiting on your approval, a failed run of your workflow, a skill test that broke after an edit |
 | **Home cards** | "Your apps" (altitude: me), "Waiting for approval" (altitude: admin) |
-| **Agent** | `studio-builder` |
+| **Agent** | `app-builder` until G1 adds `studio-builder` |
 | **Own palette, bell, assistant rail or ⌘K** | None |
 
 ---
@@ -506,7 +506,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **A1** | The Studio pane at `/studio` (preview). One library lists apps (`apps`), workflows (`workflows`) and skills (F1, when it exists). `/workflows`, `/build/apps` and `/build/agents` redirect to it. `nav.ts` holds one preview pane in place of three | The three old routes answer 308 to `/studio`. `nav.test.ts` moves its preview count in the same PR. The library shows each kind with its owner and state. Visual review in four contexts | STD | AGENT-SAFE |
+| **A1** | The Studio pane at `/studio` (preview). One library lists apps (`apps`), workflows (`workflows`) and skills (F1, when it exists). A kind filter reads `?kind=`. Module Studio is a tab. The create, fork, pin and delete flows of apps and the create, duplicate and delete flows of workflows move in. `/workflows`, `/build/apps` and `/build/agents` redirect to it. `nav.ts` holds one preview pane in place of three | The old routes answer 308 to `/studio`. The run page and the Workshop under `/build/apps/{slug}` stay. A new `nav.test.ts` case holds `/studio` as the one preview pane. The mirrors move too: `SHELL_PANES` in `me.py`, `PREVIEW_BAR_HOME` and `app-title-bar.spec.ts`, and `runActivity.test.ts`. The library shows each kind with its owner and state. Apps show only to a member who holds `build.apps`. Visual review in four contexts | STD | AGENT-SAFE |
 | **A2** | The package manifest schema v1 and its one validator: `packages/acb_common/acb_common/studio_manifest.py` (pydantic, pure data, no gateway import), the committed export `studio_manifest.schema.json`, and hand-written TypeScript types in `workbench/control_plane/src/lib/studio/manifest.ts` held equal by a parity test (no code generator, as the genUI lockstep does). `validate_manifest(doc, *, catalog=None)` takes the catalog as an input: a map of action id to class. With no catalog it checks structure only. **The `uses` grammar:** `object:<name>.(list|get|create|update|delete)`, `<app>.<op>`, `integration:<action>` or `workflow:<uuid>` (B1's ids). An `object:` action is checked against the package's own objects. **Not yet in v1:** `rules`, a state machine (C6), a formula or roll-up (C7) and a code block (L1) are reserved keys, and each refusal names the slice that lifts it. A logic module (B4) needs no key: it is a catalog action | Each refusal of §3.7 has a test that fails with a JSON path and one sentence: an unknown block, an action the catalog does not serve, a class X action, a colour, a pixel size, a credential-shaped string, a field that a view names and the object lacks, an undeclared submit, skill action or card, a bad relation, a duplicate id, a select with no options. The §3.6 example validates with no catalog and with a fake one. The committed JSON Schema equals the live export. `test_studio_manifest_ts_parity.py` holds the TypeScript types equal | STD | AGENT-SAFE |
 | **A3** | The package store: `apps` gains a nullable `format` (`code` or `manifest`) and `manifest jsonb`. No second app table | An expand-only migration (R6). R8: org B reads none of A's packages. `test_tenant_coverage.py` passes | HIGH | AGENT-SAFE |
 | **A4** | Publish, version, roll back and install, over `app_versions` | A rollback restores the older manifest in one call. An open workflow run keeps its version | STD | AGENT-SAFE |
@@ -557,7 +557,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **E1** | The workflow editor at `/studio/workflows/{id}`, the same engine and components | Every `/workflows` test passes on the new route | LOW | AGENT-SAFE |
+| **E1** | The workflow editor at `/studio/workflows/{id}`, the same engine and components | `/workflows/{id}` answers 308 to the new route. `nav.test.ts`, `entities.test.ts`, `studioRedirects.test.ts` and the ratchet suites pass. The editor keeps its own toolbar until it gets an `AppTopBar` | LOW | AGENT-SAFE |
 | **E2** | Fan-in and loops (`workflows_app.md` §8.3b and §8.3c, unchanged) | The acceptance of §8.3b and §8.3c | STD | AGENT-SAFE |
 | **E3** | Studio triggers: record, form submit, button, skill | Each trigger starts one run, with the org bound | STD | AGENT-SAFE. Unattended triggers wait on H-328 |
 | **E4** | The human step node: a task in `pm_tasks`, and a wait until it is done | The run resumes once when the task moves to done. A cancelled task fails the step | STD | AGENT-SAFE |

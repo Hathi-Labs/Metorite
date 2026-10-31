@@ -1,7 +1,10 @@
 "use client";
 
 /**
- * /build/apps — the Custom Apps gallery.
+ * The Custom Apps gallery, moved out of `/build/apps` into the Studio library
+ * (`ai_studio.md` §14 A1). The Studio page owns the one `<h1>`, so this
+ * section heads itself with an `<h2>`. The run page and the Workshop stay at
+ * `/build/apps/[slug]` and `/build/apps/[slug]/edit`.
  *
  * Small software, built by the team, for the team (docs/app-workshop §5).
  * A describe-to-create bar seeds the Workshop builder chat; app cards open
@@ -14,7 +17,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import FilterPills from "@/components/FilterPills";
-import type { AppMeta } from "./lib/types";
+import type { AppMeta } from "@/app/build/apps/lib/types";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -253,7 +256,7 @@ function AppCard({
 
 // ─── Page ─────────────────────────────────────────────────────────────────
 
-export default function CustomAppsPage() {
+export default function AppsGallery() {
   const router = useRouter();
   const { data: session } = useSession();
   const myEmail = (session?.user?.email ?? "").toLowerCase();
@@ -441,13 +444,11 @@ export default function CustomAppsPage() {
   }, [apps, filter, myEmail]);
 
   return (
-    <div className="flex flex-col h-full">
-      {/* ── Page header ─────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-border shrink-0">
+    <section className="flex flex-col" aria-label="Apps">
+      {/* ── Section header ─────────────────────────────────────────────── */}
+      <div className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-border shrink-0">
         <div>
-          <h1 className="text-base sm:text-lg font-bold text-foreground">
-            Custom Apps
-          </h1>
+          <h2 className="text-sm font-bold text-foreground">Apps</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
             Small software, built by the team, for the team
           </p>
@@ -455,7 +456,7 @@ export default function CustomAppsPage() {
         <div className="flex items-center gap-2">
           <button
             onClick={fetchApps}
-            title="Refresh"
+            title="Refresh apps"
             className="p-2 rounded-lg border border-border text-muted-foreground hover:bg-secondary tech-transition"
           >
             <Icon name="RefreshCw" className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
@@ -498,7 +499,7 @@ export default function CustomAppsPage() {
       )}
 
       {/* ── Content ─────────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-y-auto">
+      <div>
         <div className="p-4 sm:p-6 flex flex-col gap-5">
           {/* Describe-to-create (genesis bar) */}
           <div className="rounded-2xl border border-border bg-card p-4 sm:p-5 flex flex-col gap-3 bg-gradient-to-br from-primary/5 to-transparent">
@@ -597,6 +598,6 @@ export default function CustomAppsPage() {
           )}
         </div>
       </div>
-    </div>
+    </section>
   );
 }

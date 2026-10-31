@@ -128,6 +128,7 @@ const HREF_FEATURES: ReadonlyArray<[string, string]> = [
   ["/dashboard", "dashboard"],
   ["/observability", "observability"],
   ["/artifacts", "artifacts"],
+  ["/studio", "workflows"],
   ["/workflows", "workflows"],
   ["/settings/models", "models"],
   ["/agents", "agents"],
