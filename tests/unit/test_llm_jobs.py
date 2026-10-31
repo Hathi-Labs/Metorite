@@ -386,20 +386,11 @@ CAP_LIMIT = 2000
 #: The keywords that settle thinking for a call.
 SETTLED = frozenset({"job", "thinking", "reasoning_effort"})
 
-_TASKS = "apps/services/gateway/gateway/routes/tasks/"
-_PR_1538 = ("PR 1538 owns this call: it sends thinking=dict(NO_THINKING). "
-            "After it merges, the call passes as it is, and this entry can go")
-
-#: ``"<path>::<function>": reason``. Each entry is a call this branch leaves.
-#: An entry that matches no call does not fail, so a merge of the owning PR
-#: cannot turn main red.
-EXEMPT: dict[str, str] = {
-    **{_TASKS + site: _PR_1538 for site in (
-        "ai.py::_llm_propose", "ai.py::_find_parent_task", "ai.py::_llm_enrich",
-        "ai.py::_llm_suggest_title", "ai.py::_llm_atomize",
-        "capture_email.py::_llm_capture", "capture_email.py::_llm_detect_commitment",
-        "planning.py::_llm_plan", "resume_parse.py::llm_extract_profile")},
-}
+#: ``"<path>::<function>": reason``. Each entry is a call that may keep a small
+#: cap with no job, and the reason. An entry that matches no call does not
+#: fail, so a merge of the PR that owns the call cannot turn main red. Empty:
+#: the nine Tasks calls pass through ``thinking=dict(NO_THINKING)`` (PR 1538).
+EXEMPT: dict[str, str] = {}
 
 
 def _module_constants(tree: ast.Module) -> dict[str, Any]:
@@ -556,6 +547,9 @@ def test_the_fence_can_fail() -> None:
         "    await completion_on_router(tier='t', max_tokens=9,"
         " extra={'thinking': {}})\n"
         "    await acompletion_with_fallback(model='t', max_tokens=3000)\n"
+        # The Tasks shape of PR 1538: a thinking= keyword settles it too.
+        "    await acompletion_with_fallback(model='t', max_tokens=40,"
+        " thinking=dict(NO_THINKING))\n"
     )
     walker = _walk_source("planted.py", planted)
     assert walker.unsettled == [
