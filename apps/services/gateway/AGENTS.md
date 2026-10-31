@@ -270,6 +270,14 @@ why the strip is safe. Do not point one of them at the public hostname.
 5. Audit all write operations via acb_audit.record()
 6. A new `/projects` route needs an entry in `skill_projects/manifest.py` (item 12d).
 
+### Adding an AI call
+Every AI call names its job (task 1128). Pass `job="structured"`, `"writing"` or `"judgement"` to `acompletion_with_fallback`, `_llm_json`, `complete` or `completion_on_router`.
+- `acb_llm/jobs.py` holds the one table. A structured or writing job turns thinking off. A judgement job thinks, and its cap is at least 6000.
+- ⚠️ DeepSeek V4 counts its thinking against `max_tokens`. A small cap with thinking on returns no text.
+- A member or env tier keeps its tier, and the job still turns thinking off.
+- An empty answer is no answer. Do not read it as "no match" or "nothing to say". The seam logs `acb_llm.empty_answer`, and the caller fails closed.
+- Fence: `tests/unit/test_llm_jobs.py`. It fails on a call with a cap under 2000 that names no job and sends no `thinking`.
+
 ### Mutation inbox flow
 1. Pending commits listed via GET /agent/mutations/pending
 2. Approve: POST /agent/mutations/pending/{id}/approve -> git push (GitHub) or keep (local)
