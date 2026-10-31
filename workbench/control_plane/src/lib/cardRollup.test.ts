@@ -47,6 +47,7 @@ import {
   turnThenArrival,
 } from "@/lib/cardRollup";
 import { EMPTY_CONFIRMATIONS, confirmationReducer } from "@/lib/confirmationQueue";
+import { classicMarkup } from "@/lib/theme/classicMarkup";
 
 /** `createElement` with children passed the way JSX passes them. */
 const createElement = rawElement as unknown as (type: unknown, props: unknown, ...children: unknown[]) => ReactElement;
@@ -273,7 +274,7 @@ describe("one toggle, one place, inside the card", () => {
     );
     expect(count(html, "data-rollup-toggle")).toBe(1);
     expect(count(html, ">Pipeline<")).toBe(1);
-    expect(html).toMatch(/<div class="rounded-lg border border-border\/60 bg-card\/50 p-3"><button[^>]*data-rollup-toggle/);
+    expect(classicMarkup(html)).toMatch(/<div class="rounded-lg border border-border\/60 bg-card\/50 p-3"><button[^>]*data-rollup-toggle/);
   });
 
   it("MessageBubble hands the toggle to a root that owns its head, and only to one", () => {

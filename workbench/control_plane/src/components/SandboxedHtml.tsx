@@ -42,10 +42,11 @@
  * our React (trusted, templated) vs. their DOM/JS (untrusted, sandboxed).
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { buildIconMap } from "@/lib/iconSvg";
 import { appTokenMap } from "@/lib/theme/app-tokens";
+import { documentLook, subscribeLook } from "@/lib/theme/glassTokens";
 import { BRIDGE, buildSrcDoc } from "@/lib/theme/sandbox-frame";
 import { THEME } from "@/lib/theme/themes";
 import { useMode } from "@/lib/theme/surfaces";
@@ -108,6 +109,10 @@ export default function SandboxedHtml({
   // GenerativeUINode, through the whole node tree) purely to reach this
   // component — five copies of one expression.
   const mode = useMode();
+  // The look (D143, GL-10a): a glass page hands the frame the glass `--cc-*`
+  // values. Read from `<html data-look>`, as the stylesheet reads it. A change
+  // of look patches the open frame, as a change of mode does.
+  const look = useSyncExternalStore(subscribeLook, documentLook, () => "classic" as const);
 
   // One pack, in the bundle, resolved synchronously — so this no longer waits
   // on an Iconify collection or re-runs when one arrives (the theming engine
@@ -120,7 +125,7 @@ export default function SandboxedHtml({
   // paint reads them here; every change after that arrives as a patch in the
   // effect below.
   const srcDoc = useMemo(
-    () => buildSrcDoc(html, THEME, mode, icons),
+    () => buildSrcDoc(html, THEME, mode, icons, look),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [html],
   );
@@ -134,10 +139,10 @@ export default function SandboxedHtml({
     // Safe here: the payload is CSS variable values, and the frame is the only
     // recipient (we hold its window handle directly).
     win.postMessage(
-      { __cc: true, kind: "theme", mode, vars: appTokenMap(THEME, mode), icons },
+      { __cc: true, kind: "theme", mode, vars: appTokenMap(THEME, mode, look), icons },
       "*",
     );
-  }, [mode, icons, srcDoc]);
+  }, [mode, look, icons, srcDoc]);
 
   useEffect(() => {
     function onMessage(ev: MessageEvent) {

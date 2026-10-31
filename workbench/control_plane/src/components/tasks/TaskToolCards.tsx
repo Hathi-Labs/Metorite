@@ -38,6 +38,7 @@ import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { placementOf } from "@/lib/chatPlacement";
 import { memberLine } from "@/lib/receiptText";
+import { G_SETTLED, G_TINTED } from "@/components/glassCard";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -481,10 +482,10 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
     <div
       className={`rounded-lg border px-2.5 py-2 ${
         failed
-          ? "border-destructive/40 bg-destructive/5"
+          ? "border-destructive/40 bg-destructive/5 "+G_TINTED
           : meta.danger
-            ? "border-warning/40 bg-warning/5"
-            : "border-sidebar-border bg-secondary/40"
+            ? "border-warning/40 bg-warning/5 "+G_TINTED
+            : "border-sidebar-border bg-secondary/40 "+G_SETTLED
       }`}
     >
       <RollupHeader className={`text-[11px] ${tone}`} />

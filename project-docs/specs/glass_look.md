@@ -11,6 +11,11 @@ are LIVE in production since 05:38 UTC (deploy run 41170905098, commit
 can push to production directly." Next: GL-5 (the tint) and GL-6 (one pass
 per app). §9 holds three questions for the owner.
 
+**GL-10a is BUILT, 2026-10-31 (task #1233).** The generative-UI cards, the tool cards
+and the sandbox `--cc-*` values now draw in glass. Each class sits behind `glass:`, so classic
+stays byte for byte. `glassCards.test.ts` holds the classic hashes. `glassTokens.test.ts`
+fences the glass sandbox values against `globals.css`.
+
 ---
 
 ## 0. The answer in one screen

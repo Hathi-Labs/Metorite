@@ -95,7 +95,7 @@ function AddressRow({
   // A held reply card (§21) marks each person that the server classed as
   // new or as the person of the thread. Each person has a tick box.
   return (
-    <div className="flex gap-3 text-xs" data-reply-recipients={label.toLowerCase()}>
+    <div className="flex gap-3 text-xs glass:text-footnote" data-reply-recipients={label.toLowerCase()}>
       <dt className="w-10 shrink-0 pt-px text-muted-foreground" title={label === "Bcc" ? BCC_LABEL : undefined}>
         {label}
       </dt>
@@ -202,14 +202,14 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
   return (
     <div className="space-y-2.5" data-reply-card="">
       <div className="min-w-0">
-        <p className="break-words text-xs font-medium leading-relaxed text-foreground" data-reply-summary="">
+        <p className="break-words text-xs font-medium leading-relaxed text-foreground glass:text-label" data-reply-summary="">
           {replySummary(form, replyAll, ticks)}
         </p>
         {detail && <p className="mt-0.5 break-words text-[11px] text-muted-foreground">{detail}</p>}
       </div>
 
       {form.notices.length > 0 && (
-        <ul className="space-y-1 rounded-md border border-border px-2.5 py-1.5" aria-label="Before you send">
+        <ul className="space-y-1 rounded-md border border-border px-2.5 py-1.5 glass:rounded-[14px] glass:border-transparent glass:bg-secondary glass:px-3 glass:py-2" aria-label="Before you send">
           {form.notices.map((n, i) => (
             <li key={i} className="break-words text-xs text-foreground" data-reply-notice="">
               {n}
@@ -218,7 +218,7 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
         </ul>
       )}
 
-      <figure className="space-y-0.5 rounded-md border border-border bg-muted/40 px-2.5 py-2" aria-label="The email">
+      <figure className="space-y-0.5 rounded-md border border-border bg-muted/40 px-2.5 py-2 glass:rounded-[14px] glass:border-transparent glass:bg-secondary glass:px-3 glass:py-2.5" aria-label="The email">
         <p className="flex min-w-0 flex-wrap gap-x-2 text-[11px] text-muted-foreground">
           <span className="min-w-0 break-words font-medium text-foreground">{form.original.from}</span>
           {when && <span>{when}</span>}
