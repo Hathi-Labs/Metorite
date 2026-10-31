@@ -725,7 +725,7 @@ function DraftResultCard({
   // folds (`lib/cardRollup.ts` rule 1). Then it is a receipt, and may fold.
   return (
     <RollupCard id={`tool:${e.id}`} title="Draft reply" icon="PenLine" header="own" pending={!done}>
-    <div data-email-card="draft" className={`${CARD_FRAME_CLASS} glass:rounded-[22px] glass:border-transparent glass:glass-surface glass:p-3`}>
+    <div data-email-card="draft" className={`${CARD_FRAME_CLASS} ${done ? "glass:rounded-[22px] glass:border-transparent glass:glass-surface glass:p-3" : "glass:rounded-[22px] glass:p-3 glass:border-primary/20 glass:bg-primary/[0.05]"}`}>
       <CardHead tone="text-primary" aside={head.from ? `from ${head.from}` : undefined} />
       <RollupBody className="pt-1.5">
       <Textarea

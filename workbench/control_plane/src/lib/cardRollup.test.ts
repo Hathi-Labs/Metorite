@@ -299,7 +299,7 @@ describe("one toggle, one place, inside the card", () => {
       createElement(RollupCard, { id: "genui:m-1:1", title: "Table", rows: 9 }, createElement("table", null)),
     );
     expect(count(html, "data-rollup-toggle")).toBe(1);
-    expect(html).toContain(`<div data-rollup-frame="" class="${CARD_FRAME_CLASS}"><button`);
+    expect(classicMarkup(html)).toContain(`<div data-rollup-frame="" class="${CARD_FRAME_CLASS}"><button`);
   });
 
   it("a generative-UI card in the side panel (no chat card) keeps its title", () => {

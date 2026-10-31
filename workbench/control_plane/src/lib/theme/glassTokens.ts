@@ -45,7 +45,7 @@ export const GLASS_CC_SOURCE: Readonly<Record<string, string>> = {
 /** The glass values that differ by colour mode. */
 export const GLASS_CC_COLOURS: Readonly<Record<ThemeMode, Readonly<Record<string, string>>>> = {
   dark: {
-    "--cc-bg": "#000000",
+    "--cc-bg": "#121214",
     "--cc-card": "#1c1c1e",
     "--cc-fg": "#f5f5f7",
     "--cc-muted": "#98989d",
@@ -63,7 +63,7 @@ export const GLASS_CC_COLOURS: Readonly<Record<ThemeMode, Readonly<Record<string
     "--cc-shadow": "0 0 0 0.5px rgb(255 255 255 / 0.06)",
   },
   light: {
-    "--cc-bg": "#f2f2f7",
+    "--cc-bg": "#ffffff",
     "--cc-card": "#ffffff",
     "--cc-fg": "#1d1d1f",
     "--cc-muted": "#6e6e73",
