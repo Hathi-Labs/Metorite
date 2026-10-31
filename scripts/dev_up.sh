@@ -32,9 +32,9 @@
 # WITH --data prod (engineering_practice.md §1.3.1):
 #   * Postgres 17, because the copy is pg_dump 17 output (archive format 1.16);
 #   * the restore of scripts/staging_refresh.sh steps 4 to 6, inside the container;
-#   * the restore runs with maintenance_work_mem=256MB. An IVFFlat index on the
-#     embeddings of a large mailbox needs more than the 64 MB default. That
-#     stopped production's nightly verify on 2026-10-31;
+#   * the pg17 container runs with -c maintenance_work_mem=256MB. An IVFFlat
+#     index on the embeddings of a large mailbox needs more than the 64 MB
+#     default. That stopped production's nightly verify on 2026-10-31;
 #   * DELETE FROM push_subscriptions on each start, before the gateway starts;
 #   * no demo seed and no RLS promotion replay, because the copy holds both;
 #   * production's switches from the copy's flags.env, with the outbound ones OFF;
@@ -340,11 +340,9 @@ done < "$d/extensions.txt"
 # already. Restore from a list without that one entry, so the restore has no error.
 pg_restore -l "$d/staging.dump" | grep -vE "^[0-9]+; [0-9]+ [0-9]+ SCHEMA - public " > "$d/staging.list"
 rc=0
-# maintenance_work_mem: an IVFFlat index (lists = 100) on about 9,500 vector(1536)
-# rows needs 65 MB, and the default is 64 MB. Production's nightly verify
-# failed that way on 2026-10-31, and the copy keeps the largest mailboxes.
-PGOPTIONS='-c maintenance_work_mem=256MB' \
-  pg_restore -U acb -d acb_dev --no-owner --no-acl -L "$d/staging.list" "$d/staging.dump" > "$d/restore.log" 2>&1 || rc=$?
+# The server runs with maintenance_work_mem=256MB (start_containers), for the
+# IVFFlat indexes that this restore builds.
+pg_restore -U acb -d acb_dev --no-owner --no-acl -L "$d/staging.list" "$d/staging.dump" > "$d/restore.log" 2>&1 || rc=$?
 cat "$d/restore.log"
 if [ "$rc" != "0" ] || grep -qE '^pg_restore: error' "$d/restore.log"; then
   grep -E '^pg_restore: error' "$d/restore.log" | head -20 >&2 || true
@@ -485,7 +483,13 @@ pg_sql() { dk exec -i "$NAME-pg" psql -X -q -v ON_ERROR_STOP=1 -U acb -d acb_dev
 
 start_containers() {
   local mount_root="$REPO" image
+  local -a pg_args=()
   [ "$WIN" = 1 ] && mount_root="$(cd "$REPO" && pwd -W)"
+  # --data prod: an IVFFlat index (lists = 100) on about 9,500 vector(1536)
+  # rows needs 65 MB, and the default is 64 MB. Production's nightly verify
+  # failed that way on 2026-10-31, and the copy keeps the largest mailboxes.
+  # The flag goes AFTER the image: before it, -c is docker's --cpu-shares.
+  if [ "$DATA" = prod ]; then pg_args=(-c maintenance_work_mem=256MB); fi
   # A container of the other mode holds the other data. Never build on it.
   image="$(dk inspect -f '{{.Config.Image}}' "$NAME-pg" 2>/dev/null || true)"
   if [ -n "$image" ] && [ "$image" != "$PG_IMAGE" ]; then
@@ -499,7 +503,7 @@ start_containers() {
       dk run -d --name "$NAME-pg" --label "metorite.dev_up=$REPO" \
         -e POSTGRES_USER=acb -e POSTGRES_PASSWORD=acb -e POSTGRES_DB=acb_dev \
         -v "$mount_root/infra:/app/infra:ro" -v "$mount_root/scripts:/app/scripts:ro" \
-        -p "127.0.0.1:$DB_PORT:5432" "$PG_IMAGE" >/dev/null
+        -p "127.0.0.1:$DB_PORT:5432" "$PG_IMAGE" "${pg_args[@]}" >/dev/null
     fi
   fi
   if [ "$(dk inspect -f '{{.State.Running}}' "$NAME-redis" 2>/dev/null || true)" != true ]; then

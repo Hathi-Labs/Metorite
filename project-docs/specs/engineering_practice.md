@@ -337,8 +337,10 @@ bash scripts/dev_up.sh --reset --data demo          # back to the demo seed
   `.` is a pull that did not finish, so the run ignores it.
 - Before a restore, the script checks that all five files are there, and that
   `SHA256SUMS` names the four data files. Then it runs `sha256sum -c`.
-- The restore runs with `maintenance_work_mem=256MB` (`PGOPTIONS`). An IVFFlat
-  index on a large mailbox needs more than the 64 MB default.
+- The pg17 container starts with `-c maintenance_work_mem=256MB`, after the
+  image name. An IVFFlat index on a large mailbox needs more than the 64 MB
+  default. A server flag reaches every session. `PGOPTIONS` is not used,
+  because the Supabase session pooler ignores it (measured 2026-10-31).
 - The stack keeps the copy that it restored, and its `flags.env`. A newer copy
   needs `--reset`.
 - The member check reads the list of active members as `acb`, and matches

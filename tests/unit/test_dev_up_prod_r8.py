@@ -18,6 +18,7 @@ What it fences:
 4. ``push_subscriptions`` has 0 rows after the restore, and after each start.
 5. ``acb_app`` is NOSUPERUSER NOBYPASSRLS, and reads 0 rows of another organization.
 6. The roles and extensions of the copy arrive, and ``apply_migrations.sh`` ran.
+7. The server runs with ``maintenance_work_mem=256MB``, from the container's flag.
 
 Every container is private to this run, and the suite removes each one. It
 never touches the database of ``TENANT_LADDER_DATABASE_URL``, because another
@@ -278,6 +279,20 @@ def test_force_rls_holds_on_every_tenant_table_of_the_copy(restored) -> None:
     assert after == restored.forced, f"lost FORCE RLS: {sorted(restored.forced - after)}"
     assert marker == f"dev_up: prod copy {_STAMP}"
     assert probe == 1, "the policy that names a role of the copy did not arrive"
+
+
+def test_the_server_has_room_for_the_ivfflat_index(restored) -> None:
+    """The flag of the pg17 container reached the server (LD-8c's 65 MB index)."""
+    eng = create_engine(restored.url())
+    try:
+        with eng.connect() as c:
+            value = c.execute(text("SHOW maintenance_work_mem")).scalar_one()
+            source = c.execute(text("SELECT source FROM pg_settings "
+                                    "WHERE name = 'maintenance_work_mem'")).scalar_one()
+    finally:
+        eng.dispose()
+    assert value == "256MB", value
+    assert source == "command line", source
 
 
 def test_the_restore_made_the_roles_and_extensions_of_the_copy(restored) -> None:

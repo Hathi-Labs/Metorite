@@ -445,17 +445,30 @@ class TestTheRestore:
         # docker cp, because pg_restore -L needs a file it can seek in.
         assert restore.index('dk cp "$host_copy/$f"') < restore.index('bash -c "$RESTORE_SH"')
 
-    def test_the_restore_has_room_for_the_ivfflat_index(self):
+    def test_the_prod_server_has_room_for_the_ivfflat_index(self):
         """An IVFFlat index (lists = 100) on about 9,500 vector(1536) rows
         needs 65 MB. The default is 64 MB, and production's nightly verify
-        failed that way on 2026-10-31 (LD-8c)."""
-        sh = _restore_sh()
+        failed that way on 2026-10-31 (LD-8c). The setting is a server flag
+        of the pg17 container, so every session of the restore has it. R8
+        reads it back with SHOW in test_dev_up_prod_r8.py."""
+        start = _fn("start_containers")
         match = re.search(
-            r"PGOPTIONS='-c maintenance_work_mem=(\d+)MB' \\\n\s+pg_restore -U acb -d acb_dev", sh)
-        assert match, "the pg_restore of the copy lost its maintenance_work_mem"
+            r'if \[ "\$DATA" = prod \]; then pg_args=\(-c maintenance_work_mem=(\d+)MB\); fi', start)
+        assert match, "the pg17 container of --data prod lost its maintenance_work_mem"
         assert int(match.group(1)) >= 256
+        # After the image name: before it, -c is docker's --cpu-shares.
+        assert '"$PG_IMAGE" "${pg_args[@]}" >/dev/null' in start
+        # A memory cap under 1g would undo the setting.
+        cap = re.search(r"--memory[= ](\d+)([mg])", start)
+        assert cap is None or (cap.group(2) == "g" and int(cap.group(1)) >= 1)
         header = BODY[: BODY.index("set -euo pipefail")]
         assert "maintenance_work_mem=256MB" in header
+
+    def test_the_demo_server_keeps_the_flags_it_has_today(self):
+        """pg_args is empty in demo mode, so the demo container is unchanged."""
+        start = _fn("start_containers")
+        assert "local -a pg_args=()" in start
+        assert start.count("pg_args=(") == 2, "one empty default and one prod value"
 
     def test_the_copy_holds_the_promotion_so_neither_seed_nor_promotion_runs(self):
         prod = _fn("build_prod_database")
