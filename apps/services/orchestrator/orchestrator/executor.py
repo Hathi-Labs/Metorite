@@ -719,7 +719,8 @@ _PROFILE_AGENT = "orchestrator"
 #: (PZ-26), so the due line is computed per turn with the clock. A miss is cached
 #: too, so a member with no profile costs one read a minute. A write in this
 #: process moves the count, so the next turn reads again.
-_PROFILE_CACHE: dict[tuple[str, str], tuple[float, int, str, str, str, Any]] = {}
+#: The last field says whether the stored profile holds something (PZ-20b).
+_PROFILE_CACHE: dict[tuple[str, str], tuple[float, int, str, str, str, Any, bool]] = {}
 _PROFILE_TTL_SECONDS = 60.0
 _PROFILE_CACHE_MAX = 4096
 
@@ -797,21 +798,23 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
     if hit and now - hit[0] < _PROFILE_TTL_SECONDS and hit[1] == gen:
         return (_with_interview_line(hit[2], hit[5], key), hit[3], hit[4])
     block, zone, greeting, interview = "", "", "", None
+    has_stored = False
     try:
         read = _read_member_profile(str(org), member)
         if read is not None:
             raw, preferred, zone, display = read
             stored = assistant_profile.stored_profile(raw)
+            has_stored = assistant_profile.has_stored_content(raw)
             block = assistant_profile.member_block(raw, preferred, display)
             greeting = assistant_profile.effective_greeting(raw) if block else ""
             if stored["learning"] is True:
                 interview = stored.get("interview")
     except Exception:
-        block, zone, greeting, interview = "", "", "", None
+        block, zone, greeting, interview, has_stored = "", "", "", None, False
     if not block:
-        zone, greeting, interview = "", "", None
+        zone, greeting, interview, has_stored = "", "", None, False
     _PROFILE_CACHE.pop(key, None)
-    _PROFILE_CACHE[key] = (now, gen, block, zone, greeting, interview)
+    _PROFILE_CACHE[key] = (now, gen, block, zone, greeting, interview, has_stored)
     while len(_PROFILE_CACHE) > _PROFILE_CACHE_MAX:
         _PROFILE_CACHE.pop(next(iter(_PROFILE_CACHE)))
     return (_with_interview_line(block, interview, key), zone, greeting)
@@ -885,6 +888,33 @@ def _with_interview_line(block: str, interview: Any, key: tuple[str, str] | None
         return f"{block}\n{line}"
     except Exception:
         return block
+
+
+def _profile_used_sse(agent_name: str) -> str | None:
+    """The SSE line of the "used your profile" mark, or ``None`` (PZ-20b).
+
+    ``personalization.md`` §13.3 item 1 and §13.4. The mark shows when the
+    turn holds a block from a stored profile that is not empty. A block of the
+    directory name only draws none. The four conditions of §5.1 stay in
+    :func:`_member_profile_entry`, so this helper adds none of its own. The
+    call runs inside :func:`_interview_peek`, so it does not use up the due
+    line of the interview. The value holds no profile text. No exception
+    escapes. Fence: ``tests/unit/test_profile_used_event.py``."""
+    try:
+        from acb_common import assistant_profile
+
+        with _interview_peek():
+            block = _member_profile_entry(agent_name)[0]
+        if not block:
+            return None
+        key = (str(_current_run_org()), _verified_run_member())
+        hit = _PROFILE_CACHE.get(key)
+        if not hit or not hit[6]:
+            return None
+        return _sse({"type": "CUSTOM", "name": assistant_profile.PROFILE_USED_EVENT,
+                     "value": {"v": 1}})
+    except Exception:
+        return None
 
 
 def _member_profile_block(agent_name: str) -> str:
@@ -5994,6 +6024,11 @@ async def run_agent_stream(
         # RUN_ERROR then reads like an agent that cannot load.
         await _assert_may_run_agent(agent_name)
         _laps.lap("access")
+        # PZ-20b: the "used your profile" mark. After the access check, so a
+        # refused run shows none.
+        _profile_mark = _profile_used_sse(agent_name)
+        if _profile_mark is not None:
+            yield _profile_mark
         # WS-61 KB-4a: read the orchestrator's Knowledge index block here,
         # because the per-turn context is built by sync code.
         await _prime_knowledge_index(agent_name)

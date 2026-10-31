@@ -485,6 +485,25 @@ def stored_profile(raw: Any) -> dict[str, Any]:
     return out
 
 
+#: The CUSTOM event that marks a turn whose prompt held the member's own
+#: profile (PZ-20b, ``personalization.md`` §13.3 item 1). The value is
+#: ``{"v": 1}`` and holds no profile text. The web twin is
+#: ``PROFILE_USED_EVENT`` in ``workbench/control_plane/src/lib/profileMark.ts``.
+#: Fence: ``tests/unit/test_profile_used_event.py``.
+PROFILE_USED_EVENT = "assistant_profile_used"
+
+
+def has_stored_content(raw: Any) -> bool:
+    """True when the member's own stored profile holds something: an address
+    field, a style key, an alias or a fact. A profile that is empty gives
+    False, even when the block holds the directory name (PZ-20b, owner
+    decision 2026-10-30). It reads through :func:`stored_profile`, the one
+    parser."""
+    stored = stored_profile(raw)
+    return bool(
+        stored["address"] or stored["style"] or stored["aliases"] or stored["facts"])
+
+
 def _parse_time(value: Any) -> datetime | None:
     """A stored time as an aware UTC datetime, or None when it does not parse."""
     if not isinstance(value, str):
