@@ -242,6 +242,11 @@ import Badge from "@/components/ui/Badge";
 `size`: `sm | md | lg | icon-xs | icon-sm | icon | none`; plus `icon`,
 `loading`, `radius`, `layout`.
 
+`Switch` (`components/ui/Switch.tsx`, GL-2) — the one on/off switch:
+`checked`, `onChange`, `label`, `disabled`, `classic`. Pass `label` unless a
+`<label>` around it names it. No other file draws `role="switch"`. Fence:
+the "one switch" test in `src/components/rawControls.test.ts`.
+
 **Why this is a component and not a documented class string.** Colour can be a
 class. *Control personality* cannot: the hover state layer, the outline on
 solid fills, the focus-ring width, the label tracking. None of that is

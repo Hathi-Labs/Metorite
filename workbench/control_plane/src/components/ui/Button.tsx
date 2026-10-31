@@ -131,9 +131,15 @@ const SIZES: Record<ButtonSize, string> = {
  */
 const GLASS_BASE = "glass:glass-press glass:text-subhead glass:font-medium";
 const GLASS_CAPSULE = "glass:[--button-radius:9999px]";
+/**
+ * A disabled primary keeps its dim look under the pointer: the hover rules
+ * are emitted after `disabled:opacity-50` with the same specificity, so they
+ * must exclude a disabled button themselves (GL-2 review).
+ */
+const GLASS_PRIMARY_HOVER = "glass:not-disabled:hover:opacity-100 glass:not-disabled:hover:brightness-110";
 /** A filled glass variant swaps its fill on `selected`, so each state has its own set. */
 const GLASS_VARIANTS: Record<ButtonVariant, string> = {
-  primary: "glass:hover:opacity-100 glass:hover:brightness-110",
+  primary: GLASS_PRIMARY_HOVER,
   secondary:
     "glass:border-transparent glass:bg-secondary glass:text-foreground glass:hover:border-transparent glass:hover:bg-muted glass:hover:text-foreground",
   ghost: "",
@@ -141,7 +147,7 @@ const GLASS_VARIANTS: Record<ButtonVariant, string> = {
   text: "",
 };
 const GLASS_SELECTED: Record<ButtonVariant, string> = {
-  primary: "glass:hover:opacity-100 glass:hover:brightness-110",
+  primary: GLASS_PRIMARY_HOVER,
   secondary:
     "glass:border-transparent glass:bg-primary/12 glass:text-primary glass:hover:border-transparent glass:hover:bg-primary/16",
   ghost: "",
@@ -159,8 +165,14 @@ const GLASS_SIZES: Record<ButtonSize, string> = {
   none: "",
 };
 
-/** The glass classes of one button. A bare text action keeps its size. */
+/**
+ * The glass classes of one button. A bare text action keeps its size. A
+ * `size="none"` button keeps its whole box, as the size's contract says: the
+ * caller supplies padding, gap, text size and shape, often for a card or a
+ * multi-line row, so glass adds only the press (GL-2 review).
+ */
 export function glassButtonClasses(a: { variant: ButtonVariant; size: ButtonSize; selected?: boolean; radius?: "theme" | "keep" }): string {
+  if (a.size === "none") return "glass:glass-press";
   const parts = [GLASS_BASE];
   if (a.radius !== "keep" && a.variant !== "text") parts.push(GLASS_CAPSULE);
   parts.push(a.selected ? GLASS_SELECTED[a.variant] : GLASS_VARIANTS[a.variant]);

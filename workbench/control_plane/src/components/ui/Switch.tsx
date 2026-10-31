@@ -27,7 +27,9 @@
  * - `outlined`: 36 by 20 px with a border and a tinted fill (Meeting copilot).
  *
  * A `<button>` toggles on Space and Enter by itself, so the keyboard needs no
- * handler here. `label` is required because a switch has no text of its own.
+ * handler here. Pass `label` unless a `<label>` around the switch already
+ * names it: `aria-label` would override that name (GL-2 review, the email
+ * onboarding switches).
  */
 
 export type SwitchClassic = "default" | "compact" | "outlined";
@@ -101,8 +103,11 @@ export function switchClasses(classic: SwitchClassic, checked: boolean) {
 export interface SwitchProps {
   checked: boolean;
   onChange: (next: boolean) => void;
-  /** The accessible name. Required: a switch has no text of its own. */
-  label: string;
+  /**
+   * The accessible name. Leave it out ONLY when a `<label>` around the switch
+   * names it, because `aria-label` overrides the label's text.
+   */
+  label?: string;
   disabled?: boolean;
   /** Native tooltip. */
   title?: string;
@@ -127,7 +132,7 @@ export function Switch({
       type="button"
       role="switch"
       aria-checked={checked}
-      aria-label={label}
+      aria-label={label || undefined}
       title={title}
       disabled={disabled}
       onClick={() => onChange(!checked)}

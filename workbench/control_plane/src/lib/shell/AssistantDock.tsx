@@ -927,7 +927,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
       ? "absolute inset-0 z-20 flex flex-col bg-background glass:bg-card"
       : floats
         ? // A narrow desktop: the same panel, over the right of the page.
-          "absolute inset-y-0 right-0 z-20 flex max-w-[90%] flex-col border-l border-border bg-card shadow-xl glass:glass-chrome glass:border-transparent"
+          "absolute inset-y-0 right-0 z-20 flex max-w-[90%] flex-col border-l border-border bg-card shadow-xl glass:glass-menu-flat glass:border-transparent"
         : // A wide desktop: the panel sits over the spacer, beside the page.
           "absolute inset-y-0 right-0 z-20 flex flex-col border-l border-border bg-card glass:border-transparent glass:glass-surface";
 

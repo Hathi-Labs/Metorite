@@ -406,6 +406,13 @@ html[data-look="glass"] {
   /* Content cards: a hairline and a soft lift instead of a border. */
   --card-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.06);
 
+  /* The glyph on a solid icon tile, white in both modes, as in Apple's
+     Settings. It does not follow the tint, so a member's accent never
+     recolours a tile. On the light orange and green tiles it is about
+     2.2 : 1; each tile sits beside a title that says the same thing, so the
+     glyph is not the only carrier (WCAG 1.4.11). */
+  --tile-foreground: #ffffff;
+
   /* The spectrum round the composer while a run is live. */
   --glow-1: #0a84ff;
   --glow-2: #64d2ff;
@@ -601,6 +608,7 @@ html[data-look="glass"].light {
   --color-system-green: var(--system-green, var(--success));
   --color-system-teal: var(--system-teal, var(--cat-6));
   --color-system-gray: var(--system-gray, var(--muted-foreground));
+  --color-tile-foreground: var(--tile-foreground, var(--primary-foreground));
   --shadow-card: var(--card-shadow, none);
   --shadow-glass: var(--glass-shadow, var(--elevation));
   --font-sans: var(--font-app);
@@ -928,7 +936,7 @@ body {
     padding: 0.4375rem;
     border-radius: 0.5rem;
     background-color: var(--tile, var(--system-blue));
-    color: var(--primary-foreground);
+    color: var(--tile-foreground);
     align-items: center;
     justify-content: center;
   }
@@ -949,7 +957,8 @@ body {
 
 /* Each loop runs only for a member who has not asked for less motion. Under
    reduced motion the glow holds still and still says "working", and the
-   dots, the caret and the shimmer hold still as well. */
+   dots and the shimmer hold still as well. The caret keeps the classic
+   `animate-pulse` of `lib/streamCaret.ts`, as it does in classic. */
 @media (prefers-reduced-motion: no-preference) {
   html[data-look="glass"] .glass\:glass-glow-ring {
     animation: glass-glow-turn 5s linear infinite;

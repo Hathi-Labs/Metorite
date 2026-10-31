@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 import { TEMPLATE_REGISTRY } from "./genUITemplates";
 import { RowEditor } from "./PlanCardBody";
 import { planRowsFrom, planSubmit } from "@/app/projects/lib/planCard";
+import { classicMarkup } from "@/lib/theme/classicMarkup";
 
 const TASKS = [
   { key: "t1", title: "Build the memory store", owner: "ayush@x.io", effort_mins: 240,
@@ -228,22 +229,6 @@ const HASHES: Record<string, string> = {
   formCard: "d4beb33a4b8f6cf694d87069f7d2096e8518fec2e7b33062eb73f861063e6884",
   optionPicker: "6aa5a27afd7fe91f4573b18db35dac31879d9b42fa87b021c274409de347f2b3",
 };
-
-/**
- * The markup with every glass-look class removed (D141, `glass_look.md`).
- * A `glass:` class applies only under `<html data-look="glass">`, so it is no
- * change to the classic card. Removing them keeps the hashes above, which
- * were taken before the glass look existed: the test then also proves the
- * classic markup did not change.
- */
-function classicMarkup(html: string): string {
-  return html
-    .replace(/class="([^"]*)"/g, (_, cls: string) => {
-      const kept = cls.split(" ").filter((t) => !t.split(":").slice(0, -1).includes("glass"));
-      return `class="${kept.join(" ")}"`;
-    })
-    .replace(/ class=""/g, "");
-}
 
 describe("a form that is not a plan", () => {
   for (const [name, data] of NON_PLAN_SAMPLES) {

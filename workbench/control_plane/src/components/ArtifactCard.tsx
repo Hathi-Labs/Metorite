@@ -121,7 +121,7 @@ function fileIcon(artifact: ArtifactMeta): React.ReactNode {
   const ext = getExt(artifact.name);
   const mime = artifact.mimeType ?? "";
   const kind = (name: string, icon: string) => (
-    <Icon name={icon} size={15} className={`shrink-0 ${categoricalAccent(name).text} glass:text-primary-foreground`} />
+    <Icon name={icon} size={15} className={`shrink-0 ${categoricalAccent(name).text} glass:text-tile-foreground`} />
   );
   if (classifyArtifact(artifact.name, artifact.path, mime, "workspace") === "report") return kind("report", "FileChartColumn");
   if (IMAGE_EXTS.has(ext) || mime.startsWith("image/")) return kind("image", "FileImage");
@@ -130,8 +130,8 @@ function fileIcon(artifact: ArtifactMeta): React.ReactNode {
   if (["pdf"].includes(ext) || mime === "application/pdf") return kind("pdf", "FileText");
   if (["xlsx", "xls"].includes(ext)) return kind("sheet", "FileSpreadsheet");
   if (isArchive(artifact.name, mime))
-    return <Icon name="FileArchive" size={15} className="shrink-0 text-muted-foreground glass:text-primary-foreground" />;
-  return <Icon name="File" size={15} className="shrink-0 text-muted-foreground glass:text-primary-foreground" />;
+    return <Icon name="FileArchive" size={15} className="shrink-0 text-muted-foreground glass:text-tile-foreground" />;
+  return <Icon name="File" size={15} className="shrink-0 text-muted-foreground glass:text-tile-foreground" />;
 }
 
 // ─── Component ─────────────────────────────────────────────────────────────────

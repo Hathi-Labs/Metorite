@@ -2231,8 +2231,8 @@ export default function AgentChat({
   const tap = phoneChrome ? "h-11 w-11" : "h-8 w-8";
 
   return (
-    <div className="flex h-full bg-background">
-    <div className="flex flex-col h-full flex-1 min-w-0 bg-background">
+    <div className="flex h-full bg-background glass:bg-card">
+    <div className="flex flex-col h-full flex-1 min-w-0 bg-background glass:bg-card">
       {/* Agent header — VS Code-style minimal bar (hidden in compact embeds,
           where the host provides its own toolbar, and on a phone with the
           chat-first flag on, where the "…" control carries the status). */}
@@ -2284,7 +2284,7 @@ export default function AgentChat({
         {/* Scroll-to-bottom floating button */}
         {showScrollBtn && (
           <button onClick={scrollToBottom}
-            className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 w-8 h-8 rounded-full bg-card border border-border text-foreground shadow-lg flex items-center justify-center hover:bg-secondary hover:text-foreground tech-transition glass:glass-chrome glass:glass-press glass:border-transparent glass:hover:bg-transparent"
+            className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 w-8 h-8 rounded-full bg-card border border-border text-foreground shadow-lg flex items-center justify-center hover:bg-secondary hover:text-foreground tech-transition glass:glass-chrome glass:glass-press glass:border-transparent"
             aria-label="Scroll to bottom">
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M4 6l4 4 4-4" />
@@ -2604,14 +2604,14 @@ export default function AgentChat({
               ancestor, so its filter cannot flatten the composer's blur. It
               is `hidden` in classic. */}
           <div className="relative">
-          {isRunActive && (
+          {isRunActive && run.phase !== "waiting_for_you" && (
             <div aria-hidden data-testid="working-glow" className="hidden glass:block glass:glass-working-glow absolute -inset-1 rounded-[30px]">
               <div className="glass:glass-glow-ring" />
             </div>
           )}
           <div data-chat-composer className={[
             "rounded-2xl border border-border bg-secondary/50 focus-within:border-primary/40 tech-transition",
-            "glass:relative glass:rounded-[26px] glass:border-transparent glass:focus-within:border-transparent glass:glass-chrome",
+            "glass:relative glass:z-10 glass:rounded-[26px] glass:border-transparent glass:focus-within:border-ring glass:glass-chrome",
             canSend ? "" : "pointer-events-none opacity-40",
           ].join(" ")}>
             <textarea ref={inputRef} value={input}

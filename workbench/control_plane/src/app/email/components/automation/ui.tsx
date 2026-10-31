@@ -77,7 +77,11 @@ export function Toggle({
   onChange: (enabled: boolean) => void;
   disabled?: boolean;
   title?: string;
-  /** The accessible name. Falls back to `title`, then to "Toggle". */
+  /**
+   * The accessible name. Leave it out when a `<label>` wraps the toggle, as
+   * on the onboarding rules step: that label names it, and an `aria-label`
+   * would override it.
+   */
   label?: string;
 }) {
   // The shared switch (D141, GL-2). `compact` is this toggle's classic shape.
@@ -85,7 +89,7 @@ export function Toggle({
     <Switch
       checked={enabled}
       onChange={onChange}
-      label={label ?? title ?? "Toggle"}
+      label={label}
       title={title}
       disabled={disabled}
       classic="compact"
