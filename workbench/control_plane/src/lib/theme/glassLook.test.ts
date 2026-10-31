@@ -61,6 +61,7 @@ const GLASS_ONLY_TOKENS = [
   "--glass-radius-xl",
   "--glass-radius-2xl",
   "--glass-radius-3xl",
+  "--glass-radius-row",
   ...["blue", "indigo", "purple", "pink", "red", "orange", "yellow", "green", "teal", "gray"].map(
     (c) => `--system-${c}`,
   ),

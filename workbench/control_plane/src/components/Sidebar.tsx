@@ -367,7 +367,7 @@ export default function Sidebar() {
           window.dispatchEvent(new Event("resize"));
         }
       }}
-      className={`sidebar-rail shrink-0 border-r flex flex-col overflow-hidden bg-sidebar border-sidebar-border glass:m-2 glass:rounded-2xl glass:border-r-0 glass:glass-chrome ${
+      className={`sidebar-rail shrink-0 border-r flex flex-col overflow-hidden bg-sidebar border-sidebar-border glass:m-2 glass:rounded-2xl glass:border-r-0 glass:glass-chrome-flat ${
         collapsed ? "w-14" : "w-64"
       }`}
     >
@@ -494,7 +494,7 @@ export default function Sidebar() {
             aria-label="All apps"
             aria-haspopup="dialog"
             // `cc-link`: the house focus ring, as the account foot wears it.
-            className={`cc-link flex items-center gap-2.5 rounded-lg glass:rounded-[0.875rem] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${
+            className={`cc-link flex items-center gap-2.5 rounded-lg glass:rounded-row text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${
               collapsed ? "justify-center p-2.5" : "w-full px-3 py-2 text-[13px] glass:text-subhead font-medium"
             }`}
           >
@@ -609,7 +609,7 @@ function AddAppsRow({
           title={name}
           aria-label={name}
           aria-haspopup="dialog"
-          className="cc-link relative flex items-center justify-center rounded-lg glass:rounded-[0.875rem] p-2.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
+          className="cc-link relative flex items-center justify-center rounded-lg glass:rounded-row p-2.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
         >
           <Icon name="Plus" size={18} className="shrink-0 glass:text-primary" />
           {badge ? <NavBadge count={badge.count} tone={badge.tone} label={badge.label} placement="corner" /> : null}
@@ -625,7 +625,7 @@ function AddAppsRow({
         onClick={onOpen}
         aria-haspopup="dialog"
         aria-label={name === "Add apps" ? undefined : name}
-        className="cc-link rounded-lg glass:rounded-[0.875rem] px-3 py-2 text-left text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
+        className="cc-link rounded-lg glass:rounded-row px-3 py-2 text-left text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
       >
         <span className="flex items-center gap-2.5">
           <Icon name="Plus" size={16} />
@@ -964,14 +964,14 @@ export function NavLink({
         }
         data-nav-row={pane.href}
         aria-label={name}
-        className={`rounded-lg glass:rounded-[0.875rem] tech-transition flex items-center justify-center p-2.5 relative ${
+        className={`rounded-lg glass:rounded-row tech-transition flex items-center justify-center p-2.5 relative ${
           active
             ? "bg-primary/15 glass:bg-primary/10 text-primary"
             : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
         }`}
       >
         {/* `shrink-0`: a squeezed rail must not shrink the icon (task 998). */}
-        <Icon name={pane.icon} size={18} strokeWidth={active ? 2.5 : 2} className="shrink-0 glass:text-primary" />
+        <Icon name={pane.icon} size={18} strokeWidth={active ? 2.5 : 2} className="shrink-0" />
         {/* The icon has no text, so the link's name starts with the pane's. */}
         {badge !== undefined && badge > 0 && <span className="sr-only">{pane.label}</span>}
         <NavBadge
@@ -1008,7 +1008,7 @@ export function NavLink({
         data-nav-row={onRowMenu ? undefined : pane.href}
         // With a menu, the ROW carries the tone, so the "···" sits on the
         // same tint. The link keeps the full width at rest.
-        className={`rounded-lg glass:rounded-[0.875rem] tech-transition px-3 py-2 text-sm ${onRowMenu ? "min-w-0 flex-1" : tone}`}
+        className={`rounded-lg glass:rounded-row tech-transition px-3 py-2 text-sm ${onRowMenu ? "min-w-0 flex-1" : tone}`}
       >
         <div className="flex items-center gap-2.5">
           <Icon name={pane.icon} size={16} strokeWidth={active ? 2.5 : 2} className="glass:text-primary" />
@@ -1040,7 +1040,7 @@ export function NavLink({
         // keyboard focus anywhere in the row, shows it, and `data-pinned`
         // holds it while its menu is open. It takes no click at rest.
         <div
-          className={`group relative flex items-center rounded-lg glass:rounded-[0.875rem] tech-transition ${tone}`}
+          className={`group relative flex items-center rounded-lg glass:rounded-row tech-transition ${tone}`}
           data-nav-row={pane.href}
           data-has-actions=""
           data-pinned={menuOpen ? "" : undefined}

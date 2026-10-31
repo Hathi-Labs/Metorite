@@ -321,6 +321,9 @@ html[data-look="glass"] {
   --glass-radius-xl: 1.125rem;
   --glass-radius-2xl: 1.375rem;
   --glass-radius-3xl: 1.75rem;
+  /* A row inside a 22 px panel with an 8 px inset: 22 - 8 = 14 px, the
+     concentric corner of Aroh's sidebar rows. */
+  --glass-radius-row: 0.875rem;
 
   --background: #000000;
   --background-grouped: #000000;
@@ -628,6 +631,9 @@ html[data-look="glass"].light {
   --radius-xl: var(--glass-radius-xl, var(--radius));
   --radius-2xl: var(--glass-radius-2xl, calc(var(--radius) + 4px));
   --radius-3xl: var(--glass-radius-3xl, calc(var(--radius) + 12px));
+  /* `rounded-row` exists for glass only (used as `glass:rounded-row`). Its
+     classic fallback is the classic `rounded-lg`. */
+  --radius-row: var(--glass-radius-row, var(--radius));
 }
 
 /* Density: scales the root font size, and with it every rem-based size
@@ -725,7 +731,15 @@ body {
    ancestor that has a mask, a filter, opacity < 1 or its own
    backdrop-filter. So never put a mask, a filter or an opacity on a
    scroller that holds glass, and a menu opened inside glass takes
-   glass-menu (near opaque), not glass-chrome. */
+   glass-menu (near opaque), not glass-chrome.
+
+   The containing-block rule (GL-3 review): backdrop-filter also makes the
+   element the containing block of every `position: fixed` descendant. A
+   fixed menu, popover or scrim inside it is then placed and clipped by that
+   element, not by the window. So a surface that HOLDS fixed children (the
+   rail, which holds the account menu and the row menus; the phone drawer)
+   takes glass-chrome-flat or glass-menu-flat, which carry the colour, the
+   edge and the shadow with no filter. */
 
 /* Floating chrome: translucent, blurred, a lit top edge and a hairline. */
 @utility glass-chrome {
@@ -743,6 +757,31 @@ body {
   background-color: var(--glass-thick-bg);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
   backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  box-shadow:
+    inset 0 0.5px 0 0 var(--glass-highlight),
+    0 0 0 0.5px var(--glass-edge),
+    var(--glass-shadow);
+}
+
+/* The same two materials with no filter, for a surface that holds
+   `position: fixed` children (the containing-block rule above) and has
+   nothing moving behind it: the rail sits on the plain grouped surface, and
+   the phone drawer on its scrim. Blur over a plain surface shows nothing,
+   so these lose no look. They create no containing block and no stacking
+   context, so a fixed menu inside stays placed, sized and layered by the
+   window. (A ::before layer under `isolation: isolate` was tried first: it
+   kept the blur, but the stacking context put the account menu UNDER the
+   page. Measured in Chromium 148, 2026-10-31.) */
+@utility glass-chrome-flat {
+  background-color: var(--glass-bg);
+  box-shadow:
+    inset 0 0.5px 0 0 var(--glass-highlight),
+    0 0 0 0.5px var(--glass-edge),
+    var(--glass-shadow);
+}
+
+@utility glass-menu-flat {
+  background-color: var(--glass-thick-bg);
   box-shadow:
     inset 0 0.5px 0 0 var(--glass-highlight),
     0 0 0 0.5px var(--glass-edge),

@@ -390,7 +390,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {drawerOpen && (
           <div className="fixed inset-0 z-[70]">
             <div
-              className="absolute inset-0 bg-black/60 glass:bg-black/30"
+              className="absolute inset-0 bg-black/60"
               onClick={closeDrawer}
             />
             {/* Solid, not glass: the page's words read through a translucent
@@ -398,7 +398,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 Glass keeps the reason: the sheet takes the menu material, the
                 near-opaque one (95%) that is made to read over anything, so
                 no word of the page shows through it (D141, GL-3). */}
-            <aside className="absolute inset-x-0 bottom-0 flex max-h-[85%] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl chat-fade-in glass:border-t-0 glass:glass-menu">
+            <aside className="absolute inset-x-0 bottom-0 flex max-h-[85%] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl chat-fade-in glass:border-t-0 glass:glass-menu-flat">
               {/* Drag handle */}
               <div className="flex justify-center pt-2 pb-1">
                 <div className="w-10 h-1 rounded-full bg-muted-foreground/30" />
@@ -579,7 +579,7 @@ function MobileBottomNavInner({
             <Link
               href={home.href}
               onClick={close}
-              className={`rounded-lg glass:rounded-[0.875rem] px-3 py-2.5 tech-transition flex items-center gap-2.5 ${
+              className={`rounded-lg glass:rounded-row px-3 py-2.5 tech-transition flex items-center gap-2.5 ${
                 isActive(pathname, home.href)
                   ? "bg-primary/10 text-primary"
                   : "text-muted-foreground hover:bg-secondary hover:text-foreground"
@@ -616,7 +616,7 @@ function MobileBottomNavInner({
                     href={p.href}
                     onClick={close}
                     aria-label={rowName(p.label, appNeeds[p.href], b?.label, floor)}
-                    className={`rounded-lg glass:rounded-[0.875rem] px-3 py-2.5 tech-transition flex items-center gap-2.5 ${
+                    className={`rounded-lg glass:rounded-row px-3 py-2.5 tech-transition flex items-center gap-2.5 ${
                       active
                         ? "bg-primary/10 text-primary"
                         : "text-muted-foreground hover:bg-secondary hover:text-foreground"
