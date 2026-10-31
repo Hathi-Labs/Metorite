@@ -102,6 +102,7 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
     assert sf.pack_slugs() == (
         "email", "email-setup", "crm-records",
         "projects", "projects-plan", "projects-structure", "projects-bulk",
+        "projects-reminders",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA

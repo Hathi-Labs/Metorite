@@ -1197,7 +1197,8 @@ CHILD_TOOLS: dict[str, frozenset[str]] = {
     "projects-structure": frozenset({
         "intake_queue", "my_areas", "my_contexts", "notifications", "project_access",
         "project_views", "watchers"}),
-    "projects-bulk": frozenset({"list_reminders", "my_led_projects"}),
+    "projects-bulk": frozenset({"my_led_projects"}),
+    "projects-reminders": frozenset({"list_reminders"}),
 }
 
 #: The calls that put an event on the run's stream: a card, a page move, a

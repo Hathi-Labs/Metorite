@@ -610,7 +610,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "Many tasks at once, and the acts that are hard to undo: "
             "create, file, merge or bulk-edit tasks, archive, restore, "
             "move or delete a task or a project, comments and attachments, "
-            "reminders, a nudge, a revert, watch, and the edit forms."
+            "a nudge, a revert, watch, and the edit forms."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for bulk work "
@@ -618,7 +618,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "turn needs them. It holds the tools to create, file, merge and "
             "bulk-edit tasks, to archive, restore, move and delete a task "
             "or a project, to edit or delete a comment or an attachment, "
-            "the reminders, a nudge, a revert, a watch, and the edit forms. "
+            "a nudge, a revert, a watch, and the edit forms. "
             "Each act asks the member first. A run loads a pack only where "
             "tool packs are on, so until then this switch has no effect."
         ),
@@ -636,21 +636,45 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "edit_comment",
             "edit_task",
             "file_tasks",
-            "list_reminders",
             "merge_tasks",
             "move_project",
             "my_led_projects",
             "nudge_task",
+            "revert_activity",
+            "unarchive_project",
+            "unarchive_task",
+            "watch",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    "projects-reminders": {
+        "label": "Projects reminders",
+        "summary": (
+            "The member's own reminders: set one, list them, change the "
+            "time, snooze, resolve, reopen, or promote one to a task. A "
+            "reminder is not a task."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for the "
+            "member's reminders, for the main assistant to load when a turn "
+            "says \"remind me\" or names a reminder. A reminder is its own "
+            "object. It is not a task, and it may name a task as its "
+            "subject. The pack holds the tools to set, list, change, "
+            "reschedule, resolve, reopen and promote a reminder. Each write "
+            "asks the member first. A run loads a pack only where tool "
+            "packs are on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "list_reminders",
             "promote_reminder",
             "reopen_reminder",
             "reschedule_reminder",
             "resolve_reminder",
-            "revert_activity",
             "set_reminder",
-            "unarchive_project",
-            "unarchive_task",
             "update_reminder",
-            "watch",
         ),
         "owner": "projects-assistant",
         "core": False,

@@ -43,6 +43,9 @@ WHEN = {
     "projects-plan": "Load for team load, capacity, reports, a timeline or a plan from a goal.",
     "projects-structure": "Load to change a project's statuses, fields, tags, access or saved views.",
     "projects-bulk": "Load for two or more tasks at once, and to archive, move or delete.",
+    "projects-reminders": (
+        "Load when the member asks to be reminded, or names a reminder: "
+        "set, list, move, snooze or resolve it. A reminder is not a task."),
 }
 
 
@@ -127,8 +130,11 @@ def test_the_bulk_rule_reaches_the_persona_of_a_run_that_holds_the_core_pack() -
 
 
 @pytest.mark.parametrize(("label", "base", "bulk_offered"), [
-    ("real base, trim off", 61, False),
-    ("org on the CRM list, trim off", 64, False),
+    # MT-1228: projects-bulk lost the 7 reminder tools (28 to 21), so it fits at
+    # the two real bases. The 70 case keeps the "not offered" path under test.
+    ("real base, trim off", 61, True),
+    ("org on the CRM list, trim off", 64, True),
+    ("a larger base, trim off", 70, False),
     ("trim on", 52, True),
 ])
 def test_the_bulk_rule_has_a_path_at_each_real_base(
