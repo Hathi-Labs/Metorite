@@ -188,7 +188,7 @@ Measured on 2026-10-23. Paths are from the repository root.
 
 | Piece | Where | State |
 |---|---|---|
-| Mem0 per-member recall | `packages/acb_memory/acb_memory/mem0_client.py` | Built, **dark**. `mem0_enabled` defaults to False (`acb_common/settings.py:1340`). Mem0 rows carry no `organization_id` (H-307). H-336 and H-337 hold it off |
+| Mem0 per-member recall | `packages/acb_memory/acb_memory/mem0_client.py` | Built, **dark**. `mem0_enabled` defaults to False (`acb_common/settings.py:1340`). Mem0 rows carry no `organization_id` (H-307). H-336, H-407 and H-438 (task 1127) hold it off. H-337 closed on 2026-10-30 |
 | Memory compartments | `acb_memory/compartments.py:72` `scope_key` | Built. `prefs:<email>` is the only store of preferences, and it lives in Mem0, so it is dark too |
 | Memory pre-read for each turn | `apps/services/gateway/gateway/memory_preread.py:95` | Built. Reads nothing while Mem0 is off. A shared room reads no private memory |
 | Memory tools | `packages/acb_skills/acb_skills/memory_tools.py` | Built. **Defect, §2.1** |
@@ -935,8 +935,8 @@ Each slice is one PR. Each lands dark. The risk tier follows
 
 **Tasks that this spec does not use.** #248 (short-term session memory) is
 built: the chat history window and the Redis memory block. #250 (semantic
-recall) is Mem0, and WS-7 owns its turn-on (H-336, H-337, H-307). #254 and
-#255 wait on D-PZ-9.
+recall) is Mem0, and WS-7 owns its turn-on (H-307, H-336, H-407, H-438 for
+task 1127). H-337 closed on 2026-10-30. #254 and #255 wait on D-PZ-9.
 
 ---
 
@@ -1244,7 +1244,7 @@ The owner decided on 2026-10-30 that the PZ-20b mark shows only when the member'
   do this. Our phase 2 reads sent mail only after consent, and keeps
   derived features only (§12).
 - **Mem0 for this.** It stays off until WS-7 fixes its tenancy (H-307,
-  H-336, H-337, H-407).
+  H-336, H-407, H-438 for task 1127). H-337 closed on 2026-10-30.
 
 ---
 
