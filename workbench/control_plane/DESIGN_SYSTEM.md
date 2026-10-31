@@ -30,7 +30,7 @@ own theme names. The contrast gate measures them. It is a mirror, and
 `themes.test.ts` fails if it drifts from the stylesheet. Change a value in
 both, or in neither.)*
 
-### 0a. The one exception: the glass trial (D141, 2026-10-31)
+### 0a. The one exception: the glass trial (D142, 2026-10-31)
 
 The owner chose Aroh's design language, **glass**, as the next look. Until the
 owner approves it, it runs as a trial on staging, and production keeps the

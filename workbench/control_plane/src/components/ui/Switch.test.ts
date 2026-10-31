@@ -1,5 +1,5 @@
 /**
- * `Switch` — one switch, two looks (D141, GL-2).
+ * `Switch` — one switch, two looks (D142, GL-2).
  *
  * `vitest.config.ts` runs in `node`, so these tests render to markup and read
  * the class strings. The pixel claim, that classic is unchanged, is the

@@ -1,7 +1,7 @@
 # The glass look — Aroh's design language across Metorite
 
 **Status: ACTIVE, 2026-10-31. Verified against code on 2026-10-31.** Owner
-directive of 2026-10-31. Decision **D141**. Board row **WS-UX** (phase GL).
+directive of 2026-10-31. Decision **D142**. Board row **WS-UX** (phase GL).
 Metorite task #1125, under epic 492.
 
 **GL-0 to GL-4 are BUILT, 2026-10-31,** on staging only: the gate and the
@@ -86,7 +86,7 @@ The names in this spec:
 
 ---
 
-## 2. Decision D141 (owner, 2026-10-31)
+## 2. Decision D142 (owner, 2026-10-31)
 
 `work_plan.md` §3 holds the record. In short:
 
@@ -234,9 +234,9 @@ Each slice is a pull request, or a few. Each one is additive until GL-Z. Each
 UI slice passes the UI gate of `DESIGN_SYSTEM.md` §11, with the captures
 taken in glass, plus one capture in classic that shows no change.
 
-### GL-0 · This spec, D141, the board row — AGENT-SAFE
+### GL-0 · This spec, D142, the board row — AGENT-SAFE
 
-**Done when** this file is in `INDEX.md`, D141 is in `work_plan.md` §3, and
+**Done when** this file is in `INDEX.md`, D142 is in `work_plan.md` §3, and
 the WS-UX row names phase GL.
 
 ### GL-1 · The gate and the token layer — AGENT-SAFE

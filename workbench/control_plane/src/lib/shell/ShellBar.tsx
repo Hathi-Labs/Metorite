@@ -97,7 +97,7 @@ function isTyping(target: EventTarget | null): boolean {
 }
 
 /**
- * Glass (D141, GL-3): each shell control floats as its own glass circle, as
+ * Glass (D142, GL-3): each shell control floats as its own glass circle, as
  * Aroh's `GlassButton` does. The bell and the activity control wear the same
  * classes inside their own files. Classic matches none of these classes.
  */

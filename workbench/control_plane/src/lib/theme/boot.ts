@@ -44,7 +44,7 @@ import { glassGateOn, LOOK_ATTRIBUTE } from "./look";
  * The script source. Generated rather than hand-written so the density scale
  * and storage keys stay in lockstep with the modules that own them.
  *
- * The look (D141): with the glass gate on, the server renders the attribute,
+ * The look (D142): with the glass gate on, the server renders the attribute,
  * and this script removes it for a member who chose Classic. With the gate
  * off, the script holds no look code at all, so a production page cannot
  * reach glass whatever its storage says. `glassLook.test.ts` fences both.

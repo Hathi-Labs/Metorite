@@ -201,7 +201,7 @@ export function AppTopBar({
 }
 
 /**
- * Glass (D141, GL-3): content blurs and fades as it passes under the bar. An
+ * Glass (D142, GL-3): content blurs and fades as it passes under the bar. An
  * overlay hung below the bar, never a mask on a scroller (the blur rule in
  * `globals.css`). Classic draws nothing: the box is `hidden` there.
  */

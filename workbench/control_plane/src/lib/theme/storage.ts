@@ -39,7 +39,7 @@ export const STORAGE_KEYS = {
    */
   orgDensity: "cc-density-org",
   /**
-   * The member's Design choice (D141): `classic`, or absent for glass. Read
+   * The member's Design choice (D142): `classic`, or absent for glass. Read
    * only when the build carries the glass gate (`look.ts`).
    */
   look: "cc-look",

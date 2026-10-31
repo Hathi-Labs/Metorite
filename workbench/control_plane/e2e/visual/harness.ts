@@ -245,7 +245,7 @@ export interface CaptureOptions {
   /** Contexts to capture. Defaults to all of {@link CONTEXTS}. */
   only?: string[];
   /**
-   * Capture in the glass look (D141, `glass_look.md`). Sets
+   * Capture in the glass look (D142, `glass_look.md`). Sets
    * `data-look="glass"` on <html> for every context, and names each file
    * `<name>--glass-<context>`. The glass CSS ships in every build, so this
    * works without the gate. Only the Inter face needs the gate

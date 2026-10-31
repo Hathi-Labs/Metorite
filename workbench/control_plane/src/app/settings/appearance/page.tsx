@@ -234,7 +234,7 @@ function PersonalSettings() {
 }
 
 /**
- * The Design switch (D141, `glass_look.md` §4.2). It exists only while two
+ * The Design switch (D142, `glass_look.md` §4.2). It exists only while two
  * looks exist: the build carries the glass gate (staging) and GL-Z has not
  * yet removed the classic look. It sits OUTSIDE the organisation lock, so
  * anyone reviewing the new look can compare it with the old one.

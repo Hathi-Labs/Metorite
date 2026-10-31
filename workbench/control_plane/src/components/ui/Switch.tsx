@@ -5,7 +5,7 @@
  *
  *     <Switch checked={on} onChange={setOn} label="Show Status column" />
  *
- * ## Why this exists (D141, `glass_look.md` GL-2)
+ * ## Why this exists (D142, `glass_look.md` GL-2)
  *
  * Three local copies drew a switch each: the email automation `Toggle`, the
  * Tasks settings modal (two of them) and the Meeting copilot toggle in Notes.

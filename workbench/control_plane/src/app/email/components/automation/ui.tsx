@@ -84,7 +84,7 @@ export function Toggle({
    */
   label?: string;
 }) {
-  // The shared switch (D141, GL-2). `compact` is this toggle's classic shape.
+  // The shared switch (D142, GL-2). `compact` is this toggle's classic shape.
   return (
     <Switch
       checked={enabled}
