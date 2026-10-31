@@ -5,8 +5,13 @@ import type { DayTemplate } from "@/app/tasks/lib/api";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
+  blockLayout,
   blockLines,
+  elapsedPct,
+  fmtClockShort,
+  fmtRange,
   layoutBlocks,
+  leftText,
   plannerCandidates,
   reservedWindowsForDay,
 } from "./shared";
@@ -194,5 +199,234 @@ describe("blockLines — a one-hour step block fits (review of #492)", () => {
   it("a plain block keeps the ribbon from 45 minutes, as before", () => {
     expect(blockLines(44, false)).toEqual({ crumb: null, outcome: false });
     expect(blockLines(60, false)).toEqual({ crumb: null, outcome: true });
+  });
+});
+
+describe("blockLayout — what a card draws, by length and real width", () => {
+  it("draws one row under 45 minutes, and two rows from 45", () => {
+    expect(blockLayout(30, 400, false).rows).toBe("one");
+    expect(blockLayout(44, 400, false).rows).toBe("one");
+    expect(blockLayout(45, 400, false).rows).toBe("two");
+    expect(blockLayout(89, 400, false).rows).toBe("two");
+    expect(blockLayout(90, 400, false).rows).toBe("three");
+  });
+
+  it("keeps the full range on a wide one-row card", () => {
+    expect(blockLayout(30, 400, false)).toMatchObject({
+      rangeOnTitle: "full",
+      focus: false,
+      chips: false,
+    });
+  });
+
+  it("shortens the range, then drops it, as the card narrows", () => {
+    expect(blockLayout(30, 200, false).rangeOnTitle).toBe("compact");
+    expect(blockLayout(30, 110, false).rangeOnTitle).toBe(false);
+    expect(blockLayout(30, 76, false).rangeOnTitle).toBe(false);
+  });
+
+  it("drops the Focus label, then the range, then the chips, then the icon", () => {
+    const now = { isNow: true };
+    expect(blockLayout(30, 520, false, now)).toMatchObject({
+      focus: "label",
+      rangeOnTitle: "full",
+      chips: true,
+    });
+    // 300 px: the label goes first, and the range after it.
+    expect(blockLayout(30, 300, false, now)).toMatchObject({
+      focus: "icon",
+      rangeOnTitle: false,
+      chips: true,
+    });
+    // 160 px: the chip goes, the icon stays.
+    expect(blockLayout(30, 160, false, now)).toMatchObject({
+      focus: "icon",
+      chips: false,
+    });
+    // A week card of 92 px or a lane of 76 px: the title keeps the room.
+    expect(blockLayout(30, 92, false, now)).toMatchObject({
+      focus: false,
+      rangeOnTitle: false,
+      chips: false,
+    });
+    expect(blockLayout(30, 76, false, now).focus).toBe(false);
+  });
+
+  it("drops the Overlaps chip on a narrow overlapping pair", () => {
+    const o = { overlaps: true };
+    expect(blockLayout(30, 400, false, o).chips).toBe(true);
+    // 163 px, a day view of two lanes at 390 px: the title is not cut.
+    expect(blockLayout(30, 163, false, o).chips).toBe(false);
+  });
+
+  it("keeps a title room of 48 px or 40% of the card", () => {
+    const widths = [76, 92, 120, 163, 200, 300, 480, 900];
+    for (const w of widths) {
+      for (const opts of [{}, { isNow: true }, { overlaps: true }]) {
+        const l = blockLayout(30, w, false, opts);
+        const used =
+          34 +
+          (l.focus === "label" ? 62 : l.focus === "icon" ? 26 : 0) +
+          (l.rangeOnTitle === "full" ? 102 : l.rangeOnTitle === "compact" ? 68 : 0) +
+          (l.chips
+            ? ("isNow" in opts ? 94 : 0) + ("overlaps" in opts ? 68 : 0)
+            : 0);
+        expect(w - used).toBeGreaterThanOrEqual(Math.min(48, w - 34));
+        if (used > 34) expect(w - used).toBeGreaterThanOrEqual(Math.max(48, w * 0.4));
+      }
+    }
+  });
+
+  it("keeps the outcome from 45 minutes on a plain block, as blockLines does", () => {
+    expect(blockLayout(45, 400, false).outcome).toBe("inline");
+    expect(blockLayout(60, 400, false).outcome).toBe("inline");
+    expect(blockLayout(60, 150, false).outcome).toBe(false); // too narrow
+    expect(blockLayout(90, 400, false).outcome).toBe("own");
+    // A step under 90 minutes gives way, as in blockLines.
+    expect(blockLayout(60, 400, true).outcome).toBe(false);
+  });
+
+  it("keeps the crumb of a step on the meta row under 90 minutes", () => {
+    expect(blockLayout(45, 400, true).crumb).toBe("inline");
+    expect(blockLayout(60, 400, true).crumb).toBe("inline");
+    expect(blockLayout(90, 400, true).crumb).toBe("own");
+    expect(blockLayout(60, 400, false).crumb).toBe(null);
+  });
+
+  it("drops the check circle from a card under 90 px, and gives the room to the title", () => {
+    expect(blockLayout(30, 92, false).check).toBe(true);
+    expect(blockLayout(30, 89, false).check).toBe(false);
+    expect(blockLayout(60, 44, false).check).toBe(false);
+  });
+
+  it("shows a range whole or not at all, on the meta row too", () => {
+    // 300 px: full, with the length.
+    expect(blockLayout(60, 300, false)).toMatchObject({ metaRange: "full", duration: true });
+    // 150 px: full does not fit with the length, so the length goes first.
+    const mid = blockLayout(60, 150, false);
+    expect(mid.metaRange).toBe("full");
+    expect(mid.duration).toBe(false);
+    // 120 px: the compact form.
+    expect(blockLayout(60, 120, false).metaRange).toBe("compact");
+    // 92 px, a week card: the start time alone, never "9:00-10:0".
+    expect(blockLayout(60, 92, false).metaRange).toBe("start");
+    // 44 px, a lane of a week card: no range.
+    expect(blockLayout(60, 44, false).metaRange).toBe(false);
+  });
+
+  it("drops the chips before it cuts a range, on the meta row", () => {
+    const l = blockLayout(60, 200, false, { isNow: true });
+    expect(l.metaRange).not.toBe(false);
+    const narrow = blockLayout(60, 92, false, { isNow: true });
+    expect(narrow.chips).toBe(false);
+    expect(narrow.metaRange).toBe("start");
+  });
+
+  it("keeps the title room on a done, fixed card of a week column", () => {
+    const o = { hasActual: true, isFixed: true };
+    for (const w of [76, 92, 120, 163]) {
+      const l = blockLayout(30, w, false, o);
+      const base = l.check ? 34 : 12;
+      const used =
+        base +
+        (l.rangeOnTitle === "full" ? 102 : l.rangeOnTitle === "compact" ? 68 : l.rangeOnTitle === "start" ? 38 : 0) +
+        (l.actual ? 52 : 0) +
+        (l.lock ? 30 : 0);
+      expect(w - used).toBeGreaterThanOrEqual(Math.min(Math.max(48, w * 0.4), w - base));
+    }
+    // 92 px: the actual mark and the lock give way to the title.
+    const l = blockLayout(30, 92, false, o);
+    expect(l.actual).toBe(false);
+    expect(l.lock).toBe(false);
+    // A wide card keeps both.
+    const wide = blockLayout(30, 480, false, o);
+    expect(wide.actual).toBe(true);
+    expect(wide.lock).toBe(true);
+  });
+
+  it("steps the one-row range down: full, compact, start, none", () => {
+    expect(blockLayout(30, 400, false).rangeOnTitle).toBe("full");
+    expect(blockLayout(30, 200, false).rangeOnTitle).toBe("compact");
+    expect(blockLayout(30, 140, false).rangeOnTitle).toBe("start");
+    expect(blockLayout(30, 92, false).rangeOnTitle).toBe(false);
+  });
+
+  it("sets the meta row by width", () => {
+    expect(blockLayout(60, 300, false)).toMatchObject({
+      metaRange: "full",
+      duration: true,
+      energy: true,
+    });
+    expect(blockLayout(60, 120, false)).toMatchObject({
+      metaRange: "compact",
+      duration: false,
+      energy: false,
+    });
+  });
+
+  it("keeps a Focus button on a two-row card by the room it has", () => {
+    expect(blockLayout(60, 300, false, { isNow: true }).focus).toBe("label");
+    expect(blockLayout(60, 130, false, { isNow: true }).focus).toBe("icon");
+    expect(blockLayout(60, 80, false, { isNow: true }).focus).toBe(false);
+  });
+
+  it("lets the title wrap from 120 minutes on a card that is wide enough", () => {
+    expect(blockLayout(119, 400, false).wrapTitle).toBe(false);
+    expect(blockLayout(120, 400, false).wrapTitle).toBe(true);
+    expect(blockLayout(120, 100, false).wrapTitle).toBe(false);
+  });
+});
+
+describe("fmtClockShort — the pill of the gutter", () => {
+  it("drops the period, so the pill fits the gutter", () => {
+    expect(fmtClockShort(new Date(2099, 5, 15, 12, 59), "en-US")).toBe("12:59");
+    expect(fmtClockShort(new Date(2099, 5, 15, 4, 39), "en-US")).toBe("4:39");
+    expect(fmtClockShort(new Date(2099, 5, 15, 16, 5), "en-GB")).toBe("16:05");
+  });
+});
+
+describe("fmtRange — the time range of a card", () => {
+  const at = (h: number, m: number) => new Date(2099, 5, 15, h, m);
+  it("drops the start period when the end shares it", () => {
+    expect(fmtRange(at(4, 26), at(5, 26), { locale: "en-US" })).toBe(
+      "4:26 – 5:26 AM",
+    );
+  });
+  it("keeps both periods across noon", () => {
+    expect(fmtRange(at(11, 30), at(12, 30), { locale: "en-US" })).toBe(
+      "11:30 AM – 12:30 PM",
+    );
+  });
+  it("has a compact form for a narrow card", () => {
+    expect(fmtRange(at(16, 26), at(16, 56), { compact: true, locale: "en-US" })).toBe(
+      "4:26–4:56",
+    );
+  });
+  it("keeps a 24-hour clock without a period", () => {
+    expect(fmtRange(at(16, 26), at(17, 26), { locale: "en-GB" })).toBe(
+      "16:26 – 17:26",
+    );
+  });
+});
+
+describe("elapsedPct and leftText — the Now card", () => {
+  const start = new Date(2099, 5, 15, 4, 26);
+  const end = new Date(2099, 5, 15, 4, 56);
+  it("is the percent of the block that has passed", () => {
+    expect(elapsedPct(start, end, new Date(2099, 5, 15, 4, 41))).toBe(50);
+    expect(elapsedPct(start, end, new Date(2099, 5, 15, 4, 26))).toBe(0);
+  });
+  it("clamps before the start and after the end", () => {
+    expect(elapsedPct(start, end, new Date(2099, 5, 15, 3, 0))).toBe(0);
+    expect(elapsedPct(start, end, new Date(2099, 5, 15, 9, 0))).toBe(100);
+  });
+  it("is 0 for a block with no length", () => {
+    expect(elapsedPct(start, start, start)).toBe(0);
+  });
+  it("names the minutes left, rounded up", () => {
+    expect(leftText(end, new Date(2099, 5, 15, 4, 44))).toBe("12m left");
+    expect(leftText(end, new Date(2099, 5, 15, 4, 43, 30))).toBe("13m left");
+    expect(leftText(end, new Date(2099, 5, 15, 3, 51))).toBe("1h 5m left");
+    expect(leftText(end, end)).toBe("<1m left");
   });
 });
