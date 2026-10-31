@@ -233,7 +233,7 @@ One JSON document holds the package. Slice A2 writes its schema and its one vali
   ],
   "skill": {
     "description": "Use for site visits: plan one, find one, check in, close one.",
-    "instructions": "skills/visits.md",
+    "instructions": "Ask which customer first. Show the board card. Close a visit only on the member's card.",
     "actions": ["object:visit.create", "close_visit"],
     "cards": ["board", "check_in"]
   },
