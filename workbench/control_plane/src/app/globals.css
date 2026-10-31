@@ -1034,7 +1034,7 @@ html[data-look="glass"] [data-glow="waiting"] + .glass\:glass-spectrum-edge::bef
    goes on the card's frame and finds the icon that sits before the title (the
    header lives in ui/Collapsible, which this slice does not edit). */
 @utility glass-card-tile {
-  & :is(svg, span.flex):has(+ [data-rollup-title]) {
+  & :is(svg, span.flex):not([data-rollup-chevron]):has(+ [data-rollup-title]) {
     box-sizing: border-box;
     width: 1.75rem;
     height: 1.75rem;
@@ -1211,6 +1211,11 @@ select optgroup {
   letter-spacing: var(--control-label-tracking);
   text-transform: var(--control-label-transform);
   transition: all var(--motion-duration) var(--motion-easing);
+}
+/* Glass: what a member types is text, not a label. The label weight made a
+   draft reply read as bold (owner, 2026-11-01). */
+html[data-look="glass"] .cc-control:is(input, textarea) {
+  font-weight: 400;
 }
 
 /* Keyboard focus only — a mouse click should not draw a ring.

@@ -168,7 +168,7 @@ export default function CardStack({ total, index, onGo, keys, noun, children }: 
               key={i}
               aria-hidden
               data-card-stack-edge=""
-              className={`absolute inset-0 rounded-lg border border-primary/30 bg-card shadow-sm glass:rounded-[16px] glass:border-transparent glass:glass-surface ${nudge && i === 0 ? "card-stack-lift" : ""}`}
+              className={`absolute inset-0 rounded-lg border border-primary/30 bg-card shadow-sm glass:rounded-[16px] glass:border-transparent glass:glass-raised ${nudge && i === 0 ? "card-stack-lift" : ""}`}
               style={{
                 transform: `translateY(${y}px) scale(${scale}) rotate(${rotate}deg)`,
                 transition: dragging ? undefined : "transform var(--spring-duration) var(--spring-easing)",

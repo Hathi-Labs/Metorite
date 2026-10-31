@@ -104,7 +104,7 @@ export default function InterviewOffer({
     <div
       role="region"
       aria-label="Get to know me"
-      className="w-full max-w-sm rounded-xl border border-border bg-card px-4 py-3 text-left glass:rounded-[16px] glass:border-transparent glass:glass-surface glass:p-4"
+      className="w-full max-w-sm rounded-xl border border-border bg-card px-4 py-3 text-left glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-4"
     >
       <div className="flex items-start justify-between gap-2">
         <p className="min-w-0 text-sm font-medium text-foreground">Want me to get to know you?</p>

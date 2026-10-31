@@ -157,7 +157,7 @@ function Node({
         // The header is the fold's `<button>`: plain words, never a link
         // (review of #945, P2, `plainTitle`).
         return (
-          <div className="rounded-lg border border-border/60 bg-card/50 p-3 glass:rounded-[16px] glass:border-transparent glass:glass-surface glass:p-3 glass:glass-card-tile">
+          <div className="rounded-lg border border-border/60 bg-card/50 p-3 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3 glass:glass-card-tile">
             <CollapsibleCardHeader
               title={title === null ? undefined : plainTitle(s(props.title))}
               quiet={title === null}

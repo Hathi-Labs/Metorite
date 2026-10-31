@@ -579,7 +579,7 @@ function useOpenEmail() {
 export function receiptTone(failed: boolean, danger = false): { frame: string; icon: string } {
   if (failed) return { frame: "rounded-lg border px-2.5 py-2 border-destructive/40 bg-destructive/5 glass:rounded-[16px] glass:p-3", icon: "text-destructive" };
   if (danger) return { frame: "rounded-lg border px-2.5 py-2 border-warning/40 bg-warning/5 glass:rounded-[16px] glass:p-3", icon: "text-warning" };
-  return { frame: "rounded-lg border px-2.5 py-2 border-sidebar-border bg-secondary/40 glass:rounded-[16px] glass:border-transparent glass:glass-surface glass:p-3", icon: "text-success" };
+  return { frame: "rounded-lg border px-2.5 py-2 border-sidebar-border bg-secondary/40 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3", icon: "text-success" };
 }
 
 /** A small control in a dense card row. The shared `Button`, at the card's
@@ -725,7 +725,7 @@ function DraftResultCard({
   // folds (`lib/cardRollup.ts` rule 1). Then it is a receipt, and may fold.
   return (
     <RollupCard id={`tool:${e.id}`} title="Draft reply" icon="PenLine" header="own" pending={!done}>
-    <div data-email-card="draft" className={`${CARD_FRAME_CLASS} ${done ? "glass:rounded-[16px] glass:border-transparent glass:glass-surface glass:p-3" : "glass:rounded-[16px] glass:p-3 glass:border-primary/20 glass:bg-primary/[0.05]"}`}>
+    <div data-email-card="draft" className={`${CARD_FRAME_CLASS} ${done ? "glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3" : "glass:rounded-[16px] glass:p-3 glass:border-primary/35 glass:glass-raised"}`}>
       <CardHead tone="text-primary" aside={head.from ? `from ${head.from}` : undefined} />
       <RollupBody className="pt-1.5">
       <Textarea
@@ -1232,7 +1232,7 @@ function EmailListCard({ events }: { events: ToolEvent[] }) {
 
   return (
     <RollupCard id={`tool:${events[0].id}`} title={meta.label} icon={iconName} rows={rows.length} header="own">
-    <div data-email-card="list" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 glass:rounded-[16px] glass:border-transparent glass:glass-surface glass:p-3">
+    <div data-email-card="list" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
       <CardHead tone="text-primary">
         {actionable.length > 1 && (
           <BulkButtons
@@ -1372,7 +1372,7 @@ function EmailGroupsCard({ event: e }: { event: ToolEvent }) {
       header="own"
       summary={groups.map((g) => g.title).join(", ")}
     >
-    <div data-email-card="groups" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden glass:rounded-[16px] glass:border-transparent glass:glass-surface glass:p-3">
+    <div data-email-card="groups" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
       <CardHead tone="text-primary" aside={`in ${groups.length} group${groups.length > 1 ? "s" : ""}`} />
       <RollupBody className="pt-2">
       <div className="space-y-1.5">
@@ -1708,7 +1708,7 @@ function EmailPreviewCard({ event: e }: { event: ToolEvent }) {
   if (!id) {
     return (
       <RollupCard id={`tool:${e.id}`} title={subject} icon="Mail" header="own">
-      <div data-email-card="preview" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 glass:rounded-[16px] glass:border-transparent glass:glass-surface glass:p-3">
+      <div data-email-card="preview" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
         <CardHead tone="text-primary" aside={from || undefined} />
       </div>
       </RollupCard>
@@ -1716,7 +1716,7 @@ function EmailPreviewCard({ event: e }: { event: ToolEvent }) {
   }
 
   return (
-    <div className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden glass:rounded-[16px] glass:border-transparent glass:glass-surface glass:p-3">
+    <div className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
       <EmailRow
         row={{ id, sender: from || "(unknown sender)", subject }}
         defaultOpen
@@ -2322,7 +2322,7 @@ function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) 
   // A question back to the member waits on the member: it never folds.
   return (
     <RollupCard id={`tool:${e.id}`} title={meta.label} icon={meta.icon} header="own" pending={kind === "question"}>
-    <div data-email-card="no-action" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 glass:rounded-[16px] glass:border-transparent glass:glass-surface glass:p-3">
+    <div data-email-card="no-action" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
       <CardHead tone="text-muted-foreground" />
       <RollupBody>
           {/* No clamp: a question lists each mailbox, and each one matters. */}
