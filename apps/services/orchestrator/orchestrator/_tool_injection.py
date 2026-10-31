@@ -1674,9 +1674,24 @@ def _append_instructions(agent: Any, block: str, marker: str) -> bool:
     return False
 
 
+async def _crm_facts_rows(facts: Any, read: Callable[[], Awaitable[list[Any]]]) -> list[Any]:
+    """The rows of an early read (*facts*), else of *read*. A fault in the
+    early read gives no rows, as a failed read does (SPD-1 part 2). A cancel
+    still ends the run."""
+    if facts is None:
+        return await read()
+    try:
+        rows = await facts
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # the block is advice: a run never fails on it
+        return []
+    return list(rows) if isinstance(rows, list) else []
+
+
 async def _add_crm_facts_block(
     agents: list[Any], run_tools: Any, *, no_egress: bool = False,
-    mark_run: bool = False,
+    mark_run: bool = False, facts: Any = None,
 ) -> frozenset[str]:
     """Add the CRM facts block to a run that holds a CRM tool (WS-53
     CRM-Q32-5, ``crm_platform.md`` §18.14.4): the answered facts of the money
@@ -1708,6 +1723,13 @@ async def _add_crm_facts_block(
     holds ``crm_answer_question`` (``crm_tools.mark_answer_tool``). A run
     that lost the tool shows no question card, because no tool could send
     the pick. A sub-agent shares its parent's holder, so it never marks.
+
+    Chat speed SPD-1 part 2: *facts* is a read of ``crm_facts_for_run`` that
+    the streamed run started early (``executor._EarlyReads``). The rule below
+    still decides whether the run reads facts at all. When it does, the
+    value of *facts* takes the place of a second read. When it does not, the
+    value is never used, and the run cancels the read. A read that failed
+    gives no rows, as a read here does.
     """
     held = frozenset(run_tools or ())
     try:
@@ -1729,7 +1751,7 @@ async def _add_crm_facts_block(
     # Follow-up: the run's own org must be on the list, so a run of another
     # org on a box that lists one sends no request either.
     if holds_crm and not no_egress and questions_org_on(_run_org_or_none()):
-        rows = await crm_facts_for_run()
+        rows = await _crm_facts_rows(facts, crm_facts_for_run)
     if not rows:
         _drop_own_tools(agents, facts_tools)
         if mark_run:
