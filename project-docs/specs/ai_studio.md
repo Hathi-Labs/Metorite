@@ -224,7 +224,7 @@ One JSON document holds the package. Slice A2 writes its schema and its one vali
   }],
   "actions": [
     {"id": "close_visit", "uses": "object:visit.update", "set": {"status": "done"}},
-    {"id": "tell_customer", "uses": "whatsapp.send_template"}
+    {"id": "tell_customer", "uses": "integration:whatsapp.send_template"}
   ],
   "views": [
     {"id": "board", "block": "board", "source": {"object": "visit"},
@@ -507,7 +507,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
 | **A1** | The Studio pane at `/studio` (preview). One library lists apps (`apps`), workflows (`workflows`) and skills (F1, when it exists). `/workflows`, `/build/apps` and `/build/agents` redirect to it. `nav.ts` holds one preview pane in place of three | The three old routes answer 308 to `/studio`. `nav.test.ts` moves its preview count in the same PR. The library shows each kind with its owner and state. Visual review in four contexts | STD | AGENT-SAFE |
-| **A2** | The package manifest schema v1 and its one validator (Python, in `acb_common`), with a JSON Schema export and the TypeScript types | Each refusal of §3.6 has a test that fails with a JSON path and one sentence. The TypeScript types come from the schema, and a test holds them equal | STD | AGENT-SAFE |
+| **A2** | The package manifest schema v1 and its one validator: `packages/acb_common/acb_common/studio_manifest.py` (pydantic, pure data, no gateway import), the committed export `studio_manifest.schema.json`, and hand-written TypeScript types in `workbench/control_plane/src/lib/studio/manifest.ts` held equal by a parity test (no code generator, as the genUI lockstep does). `validate_manifest(doc, *, catalog=None)` takes the catalog as an input: a map of action id to class. With no catalog it checks structure only. **The `uses` grammar:** `object:<name>.(list|get|create|update|delete)`, `<app>.<op>`, `integration:<action>` or `workflow:<uuid>` (B1's ids). An `object:` action is checked against the package's own objects. **Not yet in v1:** `rules`, a state machine (C6), a formula or roll-up (C7) and a code block (L1) are reserved keys, and each refusal names the slice that lifts it. A logic module (B4) needs no key: it is a catalog action | Each refusal of §3.7 has a test that fails with a JSON path and one sentence: an unknown block, an action the catalog does not serve, a class X action, a colour, a pixel size, a credential-shaped string, a field that a view names and the object lacks, an undeclared submit, skill action or card, a bad relation, a duplicate id, a select with no options. The §3.6 example validates with no catalog and with a fake one. The committed JSON Schema equals the live export. `test_studio_manifest_ts_parity.py` holds the TypeScript types equal | STD | AGENT-SAFE |
 | **A3** | The package store: `apps` gains a nullable `format` (`code` or `manifest`) and `manifest jsonb`. No second app table | An expand-only migration (R6). R8: org B reads none of A's packages. `test_tenant_coverage.py` passes | HIGH | AGENT-SAFE |
 | **A4** | Publish, version, roll back and install, over `app_versions` | A rollback restores the older manifest in one call. An open workflow run keeps its version | STD | AGENT-SAFE |
 
@@ -568,7 +568,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **F1** | The skill store: a skill and its versions, tenant-scoped, private by default (§3.5) | Expand-only migration. R8: org B reads none. `test_tenant_coverage.py` passes | HIGH | AGENT-SAFE |
+| **F1** | The skill store: `studio_skills` and `studio_skill_versions` (immutable), tenant-scoped, private by default (§3.5). One expand-only migration in the shape of `315_brief_runs.sql`, with its own ENABLE, FORCE and policy, and a composite key so a version cannot point at another org's skill. Regenerate `infra/postgres/generated/` with `scripts/gen_tenant_migration.py`. A store module `gateway/studio/skills_store.py`, beside `gateway/brief/store.py`. **No route:** F2 owns the routes, and J1 owns the feature gate. The member purge (`routes/admin/members.py`) removes the member's skills | R8: org B reads none of org A's skills or versions, red first with FORCE removed. A skill is private by default. A stored version cannot be updated. Two `add_version` calls at once give two numbers or one clean refusal. `test_tenant_coverage.py` passes with a new case. `test_admin_member_purge.py` passes, and the purge removes the member's skills of this org only | HIGH | AGENT-SAFE |
 | **F2** | The skill creator in Studio: describe, draft, edit, publish (§7) | A member drafts, edits and publishes a private skill. Visual review in four contexts | STD | AGENT-SAFE |
 | **F3** | Published skills load as org tool packs in `tool_packs.choose` | A turn that matches a skill loads its actions and its rules. A skill of another member that is not shared never loads | HIGH | AGENT-SAFE. After WS-67 is live |
 | **F4** | Skill tests on a dry-run door | A test fails when the turn calls another action. No write leaves the dry-run door. A test run stops at its credit cap | STD | AGENT-SAFE |
