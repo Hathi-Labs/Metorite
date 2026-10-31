@@ -21,7 +21,13 @@ whole ladder and two organizations:
   async seam runs the same SQL;
 - item 10: the member purge deletes the summary with the private chat, and
   the chat of the same address in another org keeps its summary;
-- the store reads and writes no chat of another org (R5).
+- the store reads and writes no chat of another org (R5);
+- review round 1 (P2-a): Forget (``clear_for_member``) keeps a Delete
+  ``off``, and leaves each other chat a waterline at its newest row, in the
+  bound org only;
+- review round 1 (P2-b): a chat that stops being solo through the room
+  routes loses its summary (``clear_on_share``), and the purge clears the
+  summary of a shared room of the member.
 
 A hermetic fake agrees with any SQL that it gets, so none of this could be
 proved without the database.
@@ -29,7 +35,8 @@ proved without the database.
 Mutations, each red here: the write also sets ``updated_at = now()`` (item
 6); drop the mark from the WHERE of the marked write (item 9); make
 ``SOLO_ROOM_SQL`` ignore a ``group:`` row (item 8); drop the
-``private_chat_sessions`` row of the purge (item 10).
+``private_chat_sessions`` row of the purge (item 10); let Forget write NULL
+(P2-a); skip ``clear_on_share`` in the room routes (P2-b).
 """
 
 from __future__ import annotations
@@ -138,6 +145,22 @@ def _chat(ns, *, org: str, user_id: str, visibility: str | None = "private",
     return sid
 
 
+def _message(ns, *, org: str, sid: str, mid: str, ts: int) -> None:
+    """One row of the chat, seeded as the superuser."""
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_message (id, session_id, role, content, timestamp_ms, "
+            "organization_id) VALUES (:id, :s, 'user', 'Plan the deck.', :ts, "
+            "CAST(:o AS uuid))"), {"id": mid, "s": sid, "ts": ts, "o": org})
+
+
+async def _summarise(org: str, sid: str, through: str = "m3") -> None:
+    """The flow of the job: a mark, then the marked write."""
+    assert await _in(org, summaries.mark, sid, through=through, at=NOW)
+    assert await _in(org, summaries.write_marked, sid, ANSWER, through=through,
+                     through_ms=1, at=NOW)
+
+
 def _row(ns, sid: str) -> dict[str, Any] | None:
     """The chat row as the superuser sees it."""
     with ns.admin_engine.connect() as c:
@@ -183,14 +206,17 @@ async def test_6_each_write_keeps_the_place_of_the_chat(db) -> None:
         assert await _in(db.org_a, summaries.write_marked, sid, ANSWER,
                          through="m3", through_ms=1_761_900_000_000, at=NOW)
         states.append(_row(db, sid))
-        assert await _in(db.org_a, summaries.write, sid,
+        assert await _in(db.org_a, summaries.mark, sid, through="m4", at=NOW)
+        assert await _in(db.org_a, summaries.write_marked, sid,
                          summaries.Answer(text="Kept the old price."),
                          through="m4", through_ms=1_761_900_000_100, at=NOW)
+        states.append(_row(db, sid))
+        assert await _in(db.org_a, summaries.clear_for_member, ALICE) >= 1
         states.append(_row(db, sid))
         assert await _in(db.org_a, summaries.turn_off, sid)
         states.append(_row(db, sid))
     seen = [json.dumps(s["member_summary"], sort_keys=True) for s in states]
-    assert len(set(seen)) == 4, "each step must change the summary"
+    assert len(set(seen)) == 5, "each step must change the summary"
     for state in states:
         assert _kept(state) == _kept(before), "a summary write moved the chat"
 
@@ -231,9 +257,9 @@ async def test_9_a_delete_after_the_mark_wins(db) -> None:
         wrote = await _in(db.org_a, summaries.write_marked, sid, ANSWER,
                           through="m3", through_ms=1_761_900_000_000, at=NOW)
         assert wrote is False
-        # No later mark and no plain write changes it either.
+        # No later mark and no later write changes it either.
         assert await _in(db.org_a, summaries.mark, sid, through="m4", at=NOW) is False
-        assert await _in(db.org_a, summaries.write, sid, ANSWER, through="m4",
+        assert await _in(db.org_a, summaries.write_marked, sid, ANSWER, through="m4",
                          through_ms=1, at=NOW) is False
         got = await _in(db.org_a, summaries.read, sid)
     assert got == summaries.Stored(off=True)
@@ -241,18 +267,53 @@ async def test_9_a_delete_after_the_mark_wins(db) -> None:
 
 
 async def test_9_a_forget_after_the_mark_wins_too(db) -> None:
-    """Forget (PZ-35, §15.5) sets the column to NULL, not to ``off``. So only
-    the mark in the WHERE stops the write of a model call that was running."""
+    """Forget (PZ-35, §15.5) clears the summary and its mark, but it does not
+    write ``off``. So only the mark in the WHERE stops the write of a model
+    call that was running."""
     sid = _chat(db, org=db.org_a, user_id=ALICE, subjects=(ALICE,))
+    _message(db, org=db.org_a, sid=sid, mid="m3", ts=1_761_900_000_000)
     async with tenant_engine_scope(_app_dsn(db)):
         assert await _in(db.org_a, summaries.mark, sid, through="m3", at=NOW)
-        with db.admin_engine.begin() as c:
-            c.execute(text("UPDATE chat_session SET member_summary = NULL WHERE id = :s"),
-                      {"s": sid})
+        assert await _in(db.org_a, summaries.clear_for_member, ALICE) >= 1
         wrote = await _in(db.org_a, summaries.write_marked, sid, ANSWER,
                           through="m3", through_ms=1, at=NOW)
     assert wrote is False
-    assert _row(db, sid)["member_summary"] is None
+    assert _row(db, sid)["member_summary"] == {
+        "v": 1, "through": "m3", "through_ms": 1_761_900_000_000}
+
+
+async def test_p2a_forget_keeps_a_delete_and_a_waterline_in_this_org_only(db) -> None:
+    """A Delete stays ``off``, so it does not come back. Each other chat keeps
+    only a waterline at its newest row, so no job summarises it again. The
+    chats of another member and of another org keep their summaries."""
+    deleted = _chat(db, org=db.org_a, user_id=ALICE, subjects=(ALICE,))
+    kept = _chat(db, org=db.org_a, user_id=ALICE_CAPS, subjects=(ALICE,))
+    never = _chat(db, org=db.org_a, user_id=ALICE, subjects=(ALICE,))
+    empty = _chat(db, org=db.org_a, user_id=ALICE, subjects=(ALICE,))
+    bobs = _chat(db, org=db.org_a, user_id=BOB, subjects=(BOB,))
+    elsewhere = _chat(db, org=db.org_b, user_id=ALICE, subjects=(ALICE,))
+    for sid, org in ((deleted, db.org_a), (kept, db.org_a), (never, db.org_a),
+                     (bobs, db.org_a), (elsewhere, db.org_b)):
+        _message(db, org=org, sid=sid, mid="m1", ts=100)
+        _message(db, org=org, sid=sid, mid="m2", ts=200)
+    async with tenant_engine_scope(_app_dsn(db)):
+        for sid, org in ((deleted, db.org_a), (kept, db.org_a), (bobs, db.org_a),
+                         (elsewhere, db.org_b)):
+            await _summarise(org, sid)
+        assert await _in(db.org_a, summaries.turn_off, deleted)
+        count = await _in(db.org_a, summaries.clear_for_member, f"  {ALICE.upper()} ")
+        after = {sid: await _in(db.org_a, summaries.read, sid)
+                 for sid in (deleted, kept, never, bobs)}
+        other = await _in(db.org_b, summaries.read, elsewhere)
+    assert count == 3, "the three chats of the member with a row or a summary"
+    assert after[deleted] == summaries.Stored(off=True)
+    for sid in (kept, never):
+        assert after[sid] == summaries.Stored(through="m2", through_ms=200), sid
+    assert _row(db, empty)["member_summary"] is None, "a chat with nothing stays NULL"
+    assert after[bobs].text == ANSWER.text and other.text == ANSWER.text
+    with pytest.raises(summaries.SummaryShapeError):
+        async with tenant_engine_scope(_app_dsn(db)):
+            await _in(db.org_a, summaries.clear_for_member, " ")
 
 
 async def test_9_a_newer_mark_wins_over_an_older_write(db) -> None:
@@ -276,7 +337,8 @@ async def test_a_bad_value_is_refused_before_any_sql(db) -> None:
             await _in(db.org_a, summaries.mark, sid, through="m3",
                       at=datetime(2026, 10, 31, 10, 0))
         with pytest.raises(summaries.SummaryShapeError):
-            await _in(db.org_a, summaries.write, sid, {"text": "raw"},  # type: ignore[arg-type]
+            await _in(db.org_a, summaries.write_marked, sid,
+                      {"text": "raw"},  # type: ignore[arg-type]
                       through="m3", through_ms=1, at=NOW)
     assert _row(db, sid)["member_summary"] is None
 
@@ -290,8 +352,6 @@ async def test_the_store_reaches_no_chat_of_another_org(db) -> None:
         assert await _in(db.org_a, summaries.mark, sid, through="m3", at=NOW)
         assert await _in(db.org_b, summaries.read, sid) is None
         assert await _in(db.org_b, summaries.mark, sid, through="m9", at=NOW) is False
-        assert await _in(db.org_b, summaries.write, sid, ANSWER, through="m9",
-                         through_ms=1, at=NOW) is False
         assert await _in(db.org_b, summaries.write_marked, sid, ANSWER, through="m3",
                          through_ms=1, at=NOW) is False
         assert await _in(db.org_b, summaries.turn_off, sid) is False
@@ -382,6 +442,40 @@ async def test_8_the_solo_sql_selects_through_the_async_seam(db) -> None:
     assert [r.id for r in rows] == sorted([legacy, owner])
 
 
+# ── Review round 1, P2-b: a chat that stops being solo loses its summary ───
+
+
+async def test_p2b_a_chat_that_gets_a_second_party_loses_its_summary(graph_as_app) -> None:
+    from gateway.routes import rooms as room_routes
+
+    ns = graph_as_app
+    joined = _chat(ns, org=ns.org_a, user_id=ALICE, subjects=(ALICE,))
+    shown = _chat(ns, org=ns.org_a, user_id=ALICE, subjects=(ALICE,))
+    people = _chat(ns, org=ns.org_a, user_id=ALICE, subjects=(ALICE,))
+    floor = _chat(ns, org=ns.org_a, user_id=ALICE, subjects=(ALICE,))
+    deleted = _chat(ns, org=ns.org_a, user_id=ALICE, subjects=(ALICE,))
+    for sid in (joined, shown, people, floor, deleted):
+        _message(ns, org=ns.org_a, sid=sid, mid="m3", ts=300)
+    async with tenant_engine_scope(_app_dsn(ns)):
+        for sid in (joined, shown, people, floor, deleted):
+            await _summarise(ns.org_a, sid)
+        assert await _in(ns.org_a, summaries.turn_off, deleted)
+        # The route helpers, as `add_participant` and `patch_room` call them.
+        room_routes._add_participant(joined, BOB, "member", ALICE, waterline_ms=1,
+                                     organization_id=ns.org_a)
+        room_routes._update_room(shown, {"visibility": "org"}, ns.org_a)
+        room_routes._set_visibility(people, "people", ns.org_a)
+        room_routes._update_room(floor, {"floor_mode": "driver"}, ns.org_a)
+        room_routes._add_participant(deleted, BOB, "member", ALICE, waterline_ms=1,
+                                     organization_id=ns.org_a)
+        got = {sid: await _in(ns.org_a, summaries.read, sid)
+               for sid in (joined, shown, people, floor, deleted)}
+    for sid in (joined, shown, people):
+        assert got[sid] == summaries.Stored(through="m3", through_ms=300), sid
+    assert got[floor].text == ANSWER.text, "a solo chat keeps its summary"
+    assert got[deleted] == summaries.Stored(off=True)
+
+
 # ── Item 10: the purge takes the summary with the private chat ─────────────
 
 
@@ -431,17 +525,29 @@ async def test_10_the_purge_deletes_the_summary_with_the_private_chat(purge_worl
     mine = _chat(ns, org=ns.org_a, user_id=ns.leaver, subjects=(ns.leaver,))
     other_org = _chat(ns, org=ns.org_b, user_id=ns.leaver, subjects=(ns.leaver,))
     bobs = _chat(ns, org=ns.org_a, user_id=BOB, subjects=(BOB,))
+    # A summary written while the room was solo, and the room then shared by
+    # a path that bypasses the room routes. The purge keeps the room.
+    shared = _chat(ns, org=ns.org_a, user_id=ns.leaver, subjects=(ns.leaver,))
     async with tenant_engine_scope(_app_dsn(ns)):
-        for org, sid in ((ns.org_a, mine), (ns.org_b, other_org), (ns.org_a, bobs)):
-            assert await _in(org, summaries.mark, sid, through="m3", at=NOW)
-            assert await _in(org, summaries.write_marked, sid, ANSWER, through="m3",
-                             through_ms=1, at=NOW)
+        for org, sid in ((ns.org_a, mine), (ns.org_b, other_org), (ns.org_a, bobs),
+                         (ns.org_a, shared)):
+            await _summarise(org, sid)
+        with ns.admin_engine.begin() as c:
+            c.execute(text("UPDATE chat_session SET visibility = 'people' WHERE id = :s"),
+                      {"s": shared})
+            c.execute(text(
+                "INSERT INTO chat_session_participant (session_id, subject, role, "
+                "organization_id) VALUES (:s, :b, 'member', CAST(:o AS uuid))"),
+                {"s": shared, "b": BOB, "o": ns.org_a})
         async with tenant_session(ns.org_a) as session:
             member = await get_member(session, ns.org_a, ns.leaver)
             deleted, _kept, _plans = await purge_member_rows(
                 session, ns.org_a, member, actor_email=ns.owner_email)
     assert deleted["private_chat_sessions"] == 1
     assert _row(ns, mine) is None, "the private chat and its summary must go"
+    room = _row(ns, shared)
+    assert room is not None, "the purge keeps a shared room"
+    assert "text" not in room["member_summary"], "the purge must clear its summary"
     for sid in (other_org, bobs):
         kept = _row(ns, sid)
         assert kept is not None and kept["member_summary"]["text"] == ANSWER.text, sid

@@ -11,8 +11,11 @@ the source as text:
 (b) No SQL text that reads ``chat_session`` reads the whole row: no
     ``SELECT *``, no ``RETURNING *``, no ``s.*`` and no row as JSON. So no
     reader gets the column by accident (R6 of the slice).
-(c) The chat list, a shared room, ``history_tools`` and each staff source
-    import nothing of ``assistant_summaries``.
+(c) Only the modules on :data:`IMPORTERS` import ``assistant_summaries``,
+    and each one imports only the names that its entry lists. It is an allow
+    list: a new importer fails closed until its slice adds it here, in
+    review. So no chat list, room read, history search or staff route reaches
+    a summary by an import.
 (d) The module imports no litellm and calls no ``acompletion_stream_text``:
     those paths write no usage row (H-287), and PZ-33 adds no fourth.
 
@@ -21,8 +24,8 @@ scan that reads nothing cannot pass.
 
 Mutations, each red here: name ``member_summary`` in ``routes/chat.py``;
 write ``SELECT s.* FROM chat_session s`` in any module; import
-``gateway.assistant_summaries`` from ``routes/rooms.py``; add ``import
-litellm`` to the module.
+``gateway.assistant_summaries`` from ``routes/chat.py``; import ``read`` in
+``routes/rooms.py``; add ``import litellm`` to the module.
 """
 
 from __future__ import annotations
@@ -52,24 +55,23 @@ MIGRATION = re.compile(r"^\d+_chat_session_member_summary\.sql$")
 #: The staging blank of PZ-35 (§15.5). It may name the column when it lands.
 STAGING_BLANK = ROOT / "infra" / "staging" / "minimise.sql"
 
-#: The sources that must import nothing of the module (c). The member's own
-#: routes of PZ-35 (`routes/admin/assistant_profile.py`) are not staff
-#: routes, so they are not here.
-NO_IMPORT = (
-    GATEWAY / "routes" / "chat.py",
-    GATEWAY / "routes" / "rooms.py",
-    GATEWAY / "rooms.py",
-    GATEWAY / "room_stream.py",
-    ROOT / "packages" / "acb_skills" / "acb_skills" / "history_tools.py",
-    GATEWAY / "routes" / "operator.py",
-    GATEWAY / "routes" / "crm",
-    GATEWAY / "routes" / "people",
-    GATEWAY / "routes" / "tasks" / "people.py",
-    ROOT / "apps" / "services" / "customer_console",
-)
-#: The staff tree, minus the member's own routes.
-ADMIN = GATEWAY / "routes" / "admin"
-OWN_ROUTES = {"assistant_profile.py", "assistant_profile_people.py"}
+#: (c) The ONLY modules of the platform that may import the module, and the
+#: names that each may import. Each one only clears a summary:
+#:
+#: * the room routes clear it when a chat stops being solo (P2-b);
+#: * the member purge clears it on the member's shared rooms (P2-b).
+#:
+#: A later slice adds its own entry here, in review: the job of PZ-33b
+#: (`gateway/main.py` and its handler module), the briefing of PZ-34
+#: (`orchestrator/executor.py`), the Settings routes, Forget and the removal
+#: of PZ-35 (`routes/admin/assistant_profile.py`, `routes/admin/members.py`)
+#: and the search of MEM-2 (`acb_skills/history_tools.py`).
+IMPORTERS: dict[Path, frozenset[str]] = {
+    GATEWAY / "routes" / "rooms.py": frozenset({"clear_on_share"}),
+    GATEWAY / "routes" / "admin" / "members.py": frozenset({"clear_for_member"}),
+}
+#: The trees that (c) reads: all code of the platform.
+PLATFORM = (ROOT / "apps", ROOT / "packages")
 
 #: A SQL text that reads `chat_session` as a table.
 _TABLE_REF = re.compile(r"(?i)\b(?:from|join|update|into)\s+(?:public\.)?chat_session\b(?!_)")
@@ -196,49 +198,66 @@ def test_b_no_sql_file_reads_the_whole_chat_session_row() -> None:
     assert not bad, bad
 
 
-# ── (c) The list, the rooms, the history search and staff import nothing ────
+# ── (c) An allow list of importers ──────────────────────────────────────────
 
 
-def _no_import_files() -> list[Path]:
+def _platform_files() -> list[Path]:
     out: list[Path] = []
-    for root in NO_IMPORT:
-        out += [root] if root.is_file() else sorted(root.rglob("*.py"))
-    out += [p for p in sorted(ADMIN.rglob("*.py")) if p.name not in OWN_ROUTES]
+    for root in PLATFORM:
+        out += [f for f in sorted(root.rglob("*.py"))
+                if not {"tests", ".venv", "__pycache__", "node_modules"}
+                & set(f.relative_to(ROOT).parts)]
     return out
 
 
-def _imports_the_module(path: Path) -> list[str]:
+def _imports_of_the_module(path: Path) -> list[tuple[str, frozenset[str] | None]]:
+    """Each import of the module in *path*, as ``(statement, names)``. The
+    names are None for an import of the whole module, which no entry of
+    :data:`IMPORTERS` allows."""
     tree = ast.parse(path.read_text(encoding="utf-8-sig"))
-    where = _rel(path)
-    out: list[str] = []
+    out: list[tuple[str, frozenset[str] | None]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            out += [f"{where}: import {a.name}" for a in node.names
+            out += [(f"import {a.name}", None) for a in node.names
                     if IMPORT_NAME in a.name]
         elif isinstance(node, ast.ImportFrom):
             names = [a.name for a in node.names]
-            if IMPORT_NAME in (node.module or "") or IMPORT_NAME in names:
-                out.append(f"{where}: from {node.module or '.'} import {names}")
+            if IMPORT_NAME in (node.module or ""):
+                out.append((f"from {node.module} import {names}", frozenset(names)))
+            elif IMPORT_NAME in names:
+                out.append((f"from {node.module or '.'} import {names}", None))
     return out
 
 
-def test_c_the_scan_of_importers_reaches_the_files_it_names() -> None:
-    files = _no_import_files()
-    for must in (GATEWAY / "routes" / "chat.py", GATEWAY / "routes" / "rooms.py",
-                 ADMIN / "members.py", GATEWAY / "routes" / "operator.py",
+def _import_problems(paths: list[Path],
+                     importers: dict[Path, frozenset[str]] = IMPORTERS) -> list[str]:
+    problems: list[str] = []
+    for path in paths:
+        allowed = importers.get(path, frozenset())
+        for statement, names in _imports_of_the_module(path):
+            if names is None or not names <= allowed:
+                problems.append(f"{_rel(path)}: {statement}")
+    return problems
+
+
+def test_c_the_scan_of_importers_reads_the_whole_platform() -> None:
+    files = _platform_files()
+    for must in (*IMPORTERS, GATEWAY / "routes" / "chat.py",
                  ROOT / "packages" / "acb_skills" / "acb_skills" / "history_tools.py"):
         assert must in files, must
-    assert all(p.name not in OWN_ROUTES for p in files)
+    assert len(files) > 500, len(files)
 
 
-def test_c_no_list_room_history_or_staff_source_imports_the_module() -> None:
-    """(c) MEM-2 (§15.7) may give ``history_tools`` the member's own
-    summaries, through the solo rule. That slice changes this fence, in
-    review. PZ-35 adds the removal's clear to ``members.py`` the same way."""
-    problems: list[str] = []
-    for path in _no_import_files():
-        problems += _imports_the_module(path)
-    assert not problems, problems
+def test_c_only_the_listed_modules_import_the_module() -> None:
+    """(c) A module off the list, or a name off its entry, fails closed."""
+    assert _import_problems(_platform_files()) == []
+
+
+def test_c_each_listed_importer_still_imports_the_module() -> None:
+    """An entry with no import is a stale permission. Take it out."""
+    for path, names in IMPORTERS.items():
+        found = [n for _s, n in _imports_of_the_module(path) if n]
+        assert found and set().union(*found) == names, (_rel(path), found)
 
 
 # ── (d) No litellm and no stream ────────────────────────────────────────────
@@ -276,6 +295,7 @@ def test_the_fences_can_fail(tmp_path: Path) -> None:
         "import litellm\n"
         "from acb_llm.context import acompletion_stream_text\n"
         "from gateway import assistant_summaries\n"
+        "from gateway.assistant_summaries import read\n"
         "SQL = 'SELECT s.id, s.member_summary FROM chat_session s'\n"
         "ROW = 'SELECT s.* FROM chat_session s WHERE s.id = :sid'\n"
         "JSON = 'SELECT row_to_json(cs) FROM chat_session cs'\n"
@@ -288,7 +308,10 @@ def test_the_fences_can_fail(tmp_path: Path) -> None:
     assert any("s.*" in b for b in bad), bad
     assert any("the row cs as JSON" in b for b in bad), bad
     assert any("a star" in b for b in bad), bad
-    assert _imports_the_module(planted)
+    assert len(_import_problems([planted])) == 2
+    # A listed importer may not take a name off its entry.
+    entry = {planted: frozenset({"clear_on_share"})}
+    assert len(_import_problems([planted], entry)) == 2
     assert len(_model_paths(planted)) >= 2
     # The plain reads of today pass: a named column list is no whole-row read.
     assert _whole_row_reads("SELECT s.id, s.title FROM chat_session s WHERE x") == []
