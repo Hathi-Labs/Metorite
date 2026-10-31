@@ -535,13 +535,14 @@ html[data-look="glass"].light {
    variant after the bare utility. */
 @custom-variant glass (&:where([data-look="glass"], [data-look="glass"] *));
 
-/* "Touch" means a device whose only pointer is a finger: a phone or a tablet.
-   Tailwind's own `pointer-coarse` is `(pointer: coarse)`, and a laptop with a
-   touch screen can report that while its member uses the trackpad, so every
-   control drew at its 40 to 44 px touch size there (owner, 2026-11-01: "the
-   pills ... seem a little large"). A device that can hover has a mouse or a
-   trackpad, so it takes the desktop sizes. */
-@custom-variant pointer-coarse (@media (hover: none) and (pointer: coarse));
+/* "Touch" means a phone or a small tablet: a finger is the only pointer AND
+   the window is narrower than a laptop's. Tailwind's own `pointer-coarse` is
+   `(pointer: coarse)`. A Windows laptop with a touch screen can report
+   coarse, and even no hover, while its member uses the trackpad, so every
+   control drew at its 40 to 44 px touch size (owner, 2026-11-01: "the pills
+   ... seem a little large", twice). The window width is the signal a hybrid
+   device cannot get wrong: from 1024 px, a control takes the desktop size. */
+@custom-variant pointer-coarse (@media (hover: none) and (pointer: coarse) and (max-width: 1023px));
 
 @theme inline {
   --color-background: var(--background);
@@ -2826,7 +2827,7 @@ html[data-look="glass"] main .h-full.bg-background {
    a text button there takes the same size, whatever size the app asked for.
    The rule is unlayered, so it beats the utility classes of `Button`. An icon
    button carries `glass:w-*` and keeps its own box. A touch screen keeps 40 px. */
-@media (hover: hover) {
+@media (min-width: 1024px) {
   html[data-look="glass"] [data-app-bar-actions] .cc-button:not([class*="glass:w-"]) {
     height: 1.75rem;
     padding-inline: 0.75rem;

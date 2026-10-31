@@ -43,6 +43,7 @@ import {
   owedAfterSteer,
   scheduleFollowUpRetry,
   enterSends,
+  TOUCH_KEYBOARD_QUERY,
   settleFollowUpAnswer,
   isSteered,
   lastNonSteer,
@@ -503,6 +504,9 @@ describe("the send keys", () => {
     // A touch keyboard has no Shift: Enter is a new line, Send sends.
     expect(enterSends({ key: "Enter" }, true)).toBe(false);
     expect(enterSends({ key: "a" }, false)).toBe(false);
+    // A touch laptop can report no hover and a coarse pointer: the width
+    // keeps it a desktop, so Enter sends there.
+    expect(TOUCH_KEYBOARD_QUERY).toContain("(max-width: 1023px)");
   });
 
   it("the composer bar gives the free width to the spacer, not the controls", () => {

@@ -367,9 +367,15 @@ export function enterSends(
   return !touch && !e.shiftKey && !e.altKey;
 }
 
-/** A touch screen with no hover: its keyboard has no Shift+Enter. */
+/**
+ * A phone or a small tablet: its on-screen keyboard has no Shift+Enter. The
+ * width test matters: a Windows laptop with a touch screen can report no
+ * hover and a coarse pointer, and Enter must still send there (the same rule
+ * as the `pointer-coarse` variant in globals.css).
+ */
+export const TOUCH_KEYBOARD_QUERY = "(hover: none) and (pointer: coarse) and (max-width: 1023px)";
 export function touchKeyboard(): boolean {
-  return typeof window !== "undefined" && Boolean(window.matchMedia?.("(hover: none) and (pointer: coarse)").matches);
+  return typeof window !== "undefined" && Boolean(window.matchMedia?.(TOUCH_KEYBOARD_QUERY).matches);
 }
 
 /**
