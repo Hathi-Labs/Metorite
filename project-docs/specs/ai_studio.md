@@ -592,6 +592,8 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 ### Group H — The shell
 
+**Since D147, H1 and H2 run on the package-host registry.** `package_host.md` owns the registry, the scopes, the lifetimes and the slots. PKG-8 moves H1 and H2 onto it, and J2, J3 and M1 share its install path (PKG-9 to PKG-12).
+
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
 | **H1** | Installed apps in the sidebar, per org | An installed app shows for a member who may open it, and for no one else. `nav.test.ts` still counts only the built-in live panes | STD | AGENT-SAFE |
