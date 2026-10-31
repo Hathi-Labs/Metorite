@@ -8,7 +8,7 @@ one parser of the profile. Repair round 1 (2026-10-24): only a private room
 of one is solo, and a detached run is never solo. A profile write ends the
 cached block.
 
-**§15 ACCEPTED 2026-10-30 (D141), nothing of it built.** It adds the
+**§15 ACCEPTED 2026-10-30 (D142), nothing of it built.** It adds the
 epic "Recent chats and open loops" (Metorite task 1129). PZ-33 keeps chat
 summaries, and PZ-34 opens a chat with a briefing. PZ-35 adds the Settings
 controls, and PZ-36 turns a promise into a task on one yes card. PZ-22
@@ -1600,7 +1600,7 @@ D-PZ-20, and a check of `origin/main` at merge confirms them (R1).
 
 ## 15. Recent chats and open loops (ACCEPTED, 2026-10-30)
 
-**Status: ACCEPTED, 2026-10-30 (D141). Nothing is built.** Verified
+**Status: ACCEPTED, 2026-10-30 (D142). Nothing is built.** Verified
 against code on 2026-10-31, at `origin/main` `ce57cf0c2`. The Metorite epic
 is task 1129, "Recent chats and open loops". Task 1130 is this section. The
 spec audit of 2026-10-31 split PZ-33 into PZ-33a and PZ-33b (§15.9).
@@ -2270,7 +2270,7 @@ uv run pytest tests/unit/test_assistant_profile.py tests/unit/test_profile_write
 
 ### 15.11 Decisions
 
-`work_plan.md` §3 records these as **D141**. The numbers follow D-PZ-23,
+`work_plan.md` §3 records these as **D142**. The numbers follow D-PZ-23,
 and a check of `origin/main` at merge confirms them (R1). Two kinds of
 decision are in this table:
 
