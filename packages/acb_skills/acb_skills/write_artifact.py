@@ -1406,6 +1406,11 @@ def genui_refusal(spec: dict) -> str | None:
                 f"{', '.join(sorted(GENUI_NODE_TYPES))}. For a hierarchy, use "
                 "a markdown node with a nested list."
             )
+        # `source` binds a node to a Studio page's data door (STU-D1). Chat
+        # has no door, so the key would do nothing there.
+        node_props = node.get("props")
+        if isinstance(node_props, dict) and "source" in node_props:
+            return f"{where}.props.source: source works on a Studio page only. Remove it."
         if kind == "template":
             props = node.get("props")
             name = props.get("name") if isinstance(props, dict) else None
