@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Inter } from "next/font/google";
 import "./globals.css";
+import { GLASS_LOOK, glassGateOn, LOOK_ATTRIBUTE } from "@/lib/theme/look";
 
 // The app's two faces, reached through `--font-app` / `--font-app-mono`.
 // next/font self-hosts and subsets them, so no request ever leaves for
@@ -15,6 +16,16 @@ const geistSans = Geist({
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+});
+
+// The glass look's face off Apple devices (D143): Inter, the closest open
+// relative of SF Pro. `preload: false`, so a page in the classic look never
+// fetches it. A browser downloads a face only when text uses it.
+const inter = Inter({
+  variable: "--font-inter",
+  subsets: ["latin"],
+  preload: false,
+  display: "swap",
 });
 
 import AppShell from "@/components/AppShell";
@@ -51,7 +62,16 @@ export const viewport: Viewport = {
   viewportFit: "cover",
 };
 
-const fontVariables = [geistSans.variable, geistMono.variable].join(" ");
+const GLASS = glassGateOn();
+
+const fontVariables = [geistSans.variable, geistMono.variable, GLASS ? inter.variable : ""]
+  .filter(Boolean)
+  .join(" ");
+
+// With the glass gate on (staging), the server renders the look, so the
+// default never flashes. The boot script takes it off before paint for a
+// member who chose Classic. With the gate off, no attribute ever exists.
+const lookAttributes = GLASS ? { [LOOK_ATTRIBUTE]: GLASS_LOOK } : {};
 
 export default function RootLayout({
   children,
@@ -63,6 +83,7 @@ export default function RootLayout({
       lang="en"
       suppressHydrationWarning
       className={`${fontVariables} h-full antialiased`}
+      {...lookAttributes}
     >
       <body className="h-full bg-background text-foreground antialiased">
         {/* Applies the stored density and accent before anything paints, so

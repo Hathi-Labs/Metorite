@@ -922,14 +922,14 @@ function AssistantSurface({ phone }: { phone: boolean }) {
     ? strip
       ? // The strip: a row on the bottom nav. The sheet's body stays under it.
         "assistant-peek-bottom fixed inset-x-0 z-40 overflow-hidden border-t border-border bg-card"
-      : "fixed inset-0 z-50 flex flex-col bg-background pt-safe pb-safe"
+      : "fixed inset-0 z-50 flex flex-col bg-background glass:bg-card pt-safe pb-safe"
     : form === "full"
-      ? "absolute inset-0 z-20 flex flex-col bg-background"
+      ? "absolute inset-0 z-20 flex flex-col bg-background glass:bg-card"
       : floats
         ? // A narrow desktop: the same panel, over the right of the page.
-          "absolute inset-y-0 right-0 z-20 flex max-w-[90%] flex-col border-l border-border bg-card shadow-xl"
+          "absolute inset-y-0 right-0 z-20 flex max-w-[90%] flex-col border-l border-border bg-card shadow-xl glass:glass-menu-flat glass:border-transparent"
         : // A wide desktop: the panel sits over the spacer, beside the page.
-          "absolute inset-y-0 right-0 z-20 flex flex-col border-l border-border bg-card";
+          "absolute inset-y-0 right-0 z-20 flex flex-col border-l border-border bg-card glass:border-transparent glass:glass-surface";
 
   // ⚠️ The spacer is what the page reflows around, as it does for the
   // sidebar's fold. It keeps the side panel's width under the full view too,
@@ -1025,7 +1025,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
         className={strip ? "assistant-peek-body invisible absolute inset-x-0 flex flex-col" : "flex min-h-0 flex-1 flex-col"}
       >
       {phone && chatFirst ? <SheetHandle onPeek={toPeek} /> : null}
-      <header className="flex h-11 shrink-0 items-center gap-1 border-b border-border px-2">
+      <header className="flex h-11 shrink-0 items-center gap-1 border-b border-border glass:border-transparent px-2">
         <Button
           variant="ghost"
           size="icon-sm"

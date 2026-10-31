@@ -21,7 +21,9 @@
        generated-app sandbox, Monaco/Shiki, and the contrast test). It is a
        mirror, and mirrors go stale — so themes.test.ts parses this
        stylesheet and fails if the two drift. Change a value in both.
-     • Do not reintroduce a second look. See DESIGN_SYSTEM.md §1.
+     • Do not reintroduce a second look. See DESIGN_SYSTEM.md §1. The one
+       bounded exception is the glass trial (D143, DESIGN_SYSTEM.md §0a),
+       whose blocks sit below `.light` and apply only under data-look.
    ──────────────────────────────────────────────────────────────────────── */
 
 :root {
@@ -268,6 +270,264 @@
   --sidebar-ring: hsl(198 89% 50%);
 }
 
+/* ── The glass look (D143, project-docs/specs/glass_look.md) ─────────────
+   Aroh's design language: Apple's current interface (the 26-series "Liquid
+   Glass" releases). Content fills the window. The controls that steer it
+   float above it as translucent glass. Source of record:
+   ../Aroh/apps/web/src/index.css and ../Aroh/docs/design.md.
+
+   ⚠️ A TRANSITION, not a second theme. Glass applies ONLY under
+   `<html data-look="glass">`. The server renders that attribute only when
+   the build gate NEXT_PUBLIC_UI_LOOK is `glass` (staging). The boot script
+   and the store remove it for a member who chose Classic. Production has no gate, so it never matches these blocks and
+   renders the classic `:root` / `.light` above, unchanged. GL-Z deletes the
+   classic blocks once the owner approves glass in production.
+
+   Rules for these blocks:
+     • They come AFTER `:root` and `.light`. themes.test.ts reads the FIRST
+       `:root {` and `.light {` in this file as classic.
+     • `html[data-look="glass"]` (0,1,1) out-specifies `:root` (0,1,0), and
+       `…].light` (0,2,1) out-specifies `.light`. The density and accent
+       inline styles on <html> still win over both.
+     • A token named here must exist in classic, or be on the glass-only list
+       of glassLook.test.ts. Each glass-only token has a classic fallback in
+       `@theme inline` below, so a classic page that meets one renders classic.
+     • Dark is the first block, light the second, as classic does. */
+html[data-look="glass"] {
+  /* SF Pro where the OS has it (Apple devices). Inter, its closest open
+     relative, everywhere else. */
+  --font-app: -apple-system, BlinkMacSystemFont, "SF Pro Text", var(--font-inter), "Segoe UI Variable Text", system-ui, sans-serif;
+  --font-app-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono", Consolas, monospace;
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", var(--font-inter), "Segoe UI Variable Display", system-ui, sans-serif;
+  --heading-tracking: -0.022em;
+
+  /* Apple's spring-like ease: quick out, long settle. */
+  --motion-duration: 0.28s;
+  --motion-easing: cubic-bezier(0.32, 0.72, 0, 1);
+  --sheet-duration: 220ms;
+  --sheet-easing: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* The one decorative motion of glass is the composer's working glow. The
+     classic accent glow on hover goes. */
+  --glow-strength: 0;
+  --glass-blur: 28px;
+  --elevation: 0 10px 34px rgb(0 0 0 / 0.55), 0 1px 3px rgb(0 0 0 / 0.3);
+
+  /* Larger, softer corners. The steps are Aroh's 6 · 8 · 12 · 18 · 22 · 28,
+     in rem so density scales them. Capsules use rounded-full. */
+  --radius: 0.75rem;
+  --glass-radius-sm: 0.375rem;
+  --glass-radius-md: 0.5rem;
+  --glass-radius-xl: 1.125rem;
+  --glass-radius-2xl: 1.375rem;
+  --glass-radius-3xl: 1.75rem;
+  /* A row inside a 22 px panel with an 8 px inset: 22 - 8 = 14 px, the
+     concentric corner of Aroh's sidebar rows. */
+  --glass-radius-row: 0.875rem;
+
+  --background: #000000;
+  --background-grouped: #000000;
+  --foreground: #f5f5f7;
+  --card: #1c1c1e;
+  --card-foreground: #f5f5f7;
+  --popover: #2c2c2e;
+  --popover-foreground: #f5f5f7;
+  --tooltip: #3a3a3c;
+  --tooltip-foreground: #f5f5f7;
+
+  /* The tint. Apple's dark-mode blue: 4.5 : 1 as text on black and on dark
+     cards. A member's or an organization's accent replaces it inline.
+     The ink on it is black, not Apple's white: white on #0a84ff is 3.65 : 1,
+     under AA for a button's label. `accentInk()` makes the same choice for
+     an accent this light. Open for the owner: glass_look.md §9 Q3. */
+  --primary: #0a84ff;
+  --primary-foreground: #000000;
+
+  /* Fills are translucent, as Apple's are, so they read on any surface. */
+  --secondary: rgb(118 118 128 / 0.24);
+  --secondary-foreground: #f5f5f7;
+  --muted: rgb(118 118 128 / 0.3);
+  --muted-foreground: #98989d;
+  /* Glass has one tint. `--accent` IS the tint, so the classic orange
+     highlight does not appear beside it, and a member's or an
+     organization's accent (which sets --primary inline) moves both. The
+     light block does not redefine these two: var() resolves on <html>, so
+     they follow the light --primary there. */
+  --accent: var(--primary);
+  --accent-foreground: var(--primary-foreground);
+  --field: rgb(118 118 128 / 0.18);
+  --segment: #636366;
+
+  /* Apple's higher-contrast status colours: they carry text. Red, blue and
+     violet sit a step lighter than Apple's, so each passes 4.5 : 1 on a
+     muted panel and on its own 10 % chip as well as on the card. */
+  --destructive: #ff7b72;
+  --destructive-foreground: #000000;
+  --success: #30d158;
+  --success-foreground: #000000;
+  --warning: #ffb340;
+  --warning-foreground: #000000;
+  /* A status blue, fixed: NOT the tint, so an accent change never repaints
+     what a status means (statusAccent.test.ts). */
+  --info: #5eb0ff;
+  --info-foreground: #000000;
+  --violet: #da8fff;
+  --violet-foreground: #000000;
+  /* The one categorical slot that misses 4.5 on the glass dark card
+     (#1c1c1e), a step lighter. The other eleven keep their classic values. */
+  --cat-10: hsl(240 85% 74%);
+
+  --border: rgb(84 84 88 / 0.5);
+  --input: rgb(84 84 88 / 0.65);
+  --ring: #0a84ff;
+
+  /* Apple system colours at full strength: icon tiles, switches, dots.
+     Never for text. */
+  --system-blue: #0a84ff;
+  --system-indigo: #5e5ce6;
+  --system-purple: #bf5af2;
+  --system-pink: #ff375f;
+  --system-red: #ff453a;
+  --system-orange: #ff9f0a;
+  --system-yellow: #ffd60a;
+  --system-green: #30d158;
+  --system-teal: #40c8e0;
+  --system-gray: #8e8e93;
+
+  /* Glass: chrome that floats over content. */
+  --glass-bg: rgb(30 30 32 / 0.66);
+  --glass-edge: rgb(255 255 255 / 0.1);
+  --glass-highlight: rgb(255 255 255 / 0.14);
+  --glass-shadow: 0 10px 34px rgb(0 0 0 / 0.55), 0 1px 3px rgb(0 0 0 / 0.3);
+  /* Menus: near-opaque, because a menu opened inside glass cannot blur what
+     is behind that glass (backdrop-filter stops at the nearest blurred
+     ancestor). */
+  --glass-thick-bg: rgb(40 40 43 / 0.95);
+  /* Content cards: a hairline and a soft lift instead of a border. */
+  --card-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.06);
+
+  /* The glyph on a solid icon tile, white in both modes, as in Apple's
+     Settings. It does not follow the tint, so a member's accent never
+     recolours a tile. On the light orange and green tiles it is about
+     2.2 : 1; each tile sits beside a title that says the same thing, so the
+     glyph is not the only carrier (WCAG 1.4.11). */
+  --tile-foreground: #ffffff;
+
+  /* The spectrum round the composer while a run is live. */
+  --glow-1: #0a84ff;
+  --glow-2: #64d2ff;
+  --glow-3: #ff9f0a;
+  --glow-4: #ff375f;
+  --glow-5: #409cff;
+
+  --sidebar-background: rgb(30 30 32 / 0.66);
+  --sidebar-foreground: #f5f5f7;
+  --sidebar-primary: #0a84ff;
+  --sidebar-primary-foreground: #000000;
+  --sidebar-accent: rgb(118 118 128 / 0.28);
+  --sidebar-accent-foreground: #f5f5f7;
+  --sidebar-border: rgb(255 255 255 / 0.08);
+  --sidebar-ring: #0a84ff;
+}
+
+/* ── The glass look, light ──────────────────────────────────────────────── */
+html[data-look="glass"].light {
+  --elevation: 0 10px 34px rgb(0 0 0 / 0.08), 0 1px 3px rgb(0 0 0 / 0.05);
+
+  /* Pages sit on Apple's grouped grey, and cards are white on it. The chat
+     reads on white: GL-4 sets its surface to --card. */
+  --background: #f2f2f7;
+  --background-grouped: #f2f2f7;
+  --foreground: #1d1d1f;
+  --card: #ffffff;
+  --card-foreground: #1d1d1f;
+  --popover: #ffffff;
+  --popover-foreground: #1d1d1f;
+  --tooltip: #1d1d1f;
+  --tooltip-foreground: #f5f5f7;
+
+  /* Apple blue, a shade deeper than iOS's #007aff, so text in the tint
+     passes 4.5 : 1 on white and on the grouped grey. */
+  --primary: #0068d6;
+  --primary-foreground: #ffffff;
+
+  --secondary: rgb(120 120 128 / 0.12);
+  --secondary-foreground: #1d1d1f;
+  --muted: rgb(120 120 128 / 0.16);
+  --muted-foreground: #6e6e73;
+  --field: #ffffff;
+  --segment: #ffffff;
+
+  --destructive: #c0001a;
+  --destructive-foreground: #ffffff;
+  --success: #146c2b;
+  --success-foreground: #ffffff;
+  --warning: #b02e00;
+  --warning-foreground: #ffffff;
+  --info: #0059b8;
+  --info-foreground: #ffffff;
+  --violet: #8944ab;
+  --violet-foreground: #ffffff;
+  /* The dark block's --cat-10 also matches here and out-specifies classic
+     `.light`, so light restates classic's light value. */
+  --cat-10: hsl(240 85% 56%);
+
+  --border: rgb(60 60 67 / 0.13);
+  --input: rgb(60 60 67 / 0.2);
+  --ring: #007aff;
+
+  --system-blue: #007aff;
+  --system-indigo: #5856d6;
+  --system-purple: #af52de;
+  --system-pink: #ff2d55;
+  --system-red: #ff3b30;
+  --system-orange: #ff9500;
+  --system-yellow: #ffcc00;
+  --system-green: #34c759;
+  --system-teal: #30b0c7;
+  --system-gray: #8e8e93;
+
+  --glass-bg: rgb(250 250 252 / 0.72);
+  --glass-edge: rgb(0 0 0 / 0.07);
+  --glass-highlight: rgb(255 255 255 / 0.9);
+  --glass-shadow: 0 10px 34px rgb(0 0 0 / 0.08), 0 1px 3px rgb(0 0 0 / 0.05);
+  --glass-thick-bg: rgb(248 248 250 / 0.94);
+  --card-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.07), 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 14px rgb(0 0 0 / 0.035);
+
+  --glow-1: #007aff;
+  --glow-2: #5ac8fa;
+  --glow-3: #ff9500;
+  --glow-4: #ff2d55;
+  --glow-5: #409cff;
+
+  --sidebar-background: rgb(250 250 252 / 0.72);
+  --sidebar-foreground: #1d1d1f;
+  --sidebar-primary: #0068d6;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgb(120 120 128 / 0.14);
+  --sidebar-accent-foreground: #1d1d1f;
+  --sidebar-border: rgb(60 60 67 / 0.1);
+  --sidebar-ring: #007aff;
+}
+
+/* Without backdrop blur, glass falls back to an opaque surface. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  html[data-look="glass"] {
+    --glass-bg: #1c1c1e;
+    --sidebar-background: #1c1c1e;
+  }
+  html[data-look="glass"].light {
+    --glass-bg: #f5f5f7;
+    --sidebar-background: #f5f5f7;
+  }
+}
+
+/* The variant: `glass:<class>` applies only under the attribute. Under
+   classic it matches nothing. `:where` adds no specificity, so a glass class
+   and the classic class it replaces compete by order, and Tailwind emits a
+   variant after the bare utility. */
+@custom-variant glass (&:where([data-look="glass"], [data-look="glass"] *));
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -332,19 +592,56 @@
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar-border: var(--sidebar-border);
+  /* Glass-only colour tokens (D143). Each falls back to the nearest classic token,
+     so a classic page that meets one renders classic. glassLook.test.ts
+     holds the list. */
+  --color-grouped: var(--background-grouped, var(--background));
+  --color-field: var(--field, var(--background));
+  --color-segment: var(--segment, var(--card));
+  --color-system-blue: var(--system-blue, var(--info));
+  --color-system-indigo: var(--system-indigo, var(--cat-10));
+  --color-system-purple: var(--system-purple, var(--violet));
+  --color-system-pink: var(--system-pink, var(--cat-7));
+  --color-system-red: var(--system-red, var(--destructive));
+  --color-system-orange: var(--system-orange, var(--warning));
+  --color-system-yellow: var(--system-yellow, var(--warning));
+  --color-system-green: var(--system-green, var(--success));
+  --color-system-teal: var(--system-teal, var(--cat-6));
+  --color-system-gray: var(--system-gray, var(--muted-foreground));
+  --color-tile-foreground: var(--tile-foreground, var(--primary-foreground));
+  --shadow-card: var(--card-shadow, none);
+  --shadow-glass: var(--glass-shadow, var(--elevation));
   --font-sans: var(--font-app);
   --font-mono: var(--font-app-mono);
+  /* The named text styles of glass, at Apple's iOS sizes, in rem so density
+     scales them. Nothing in glass is smaller than 12 px. A glass component
+     uses these, never text-[Npx]. Classic does not use them. */
+  --text-caption: 0.75rem;
+  --text-footnote: 0.8125rem;
+  --text-label: 0.875rem;
+  --text-subhead: 0.9375rem;
+  --text-callout: 1rem;
+  --text-body: 1.0625rem;
+  --text-headline: 1.1875rem;
+  --text-title: 1.375rem;
+  --text-title-lg: 1.75rem;
+  --text-largetitle: 2.125rem;
   /* The whole radius scale is derived from --radius so a theme controls the
      app's roundness with one value. At RapidTool's 0.75rem these resolve to
      exactly Tailwind's own defaults (8/10/12/12/16/24px), so the shipped look
      is unchanged; Fluent's 0.25rem squares everything off and Material's 1rem
      rounds it. max() keeps a small --radius from producing negative values. */
-  --radius-sm: max(0px, calc(var(--radius) - 4px));
-  --radius-md: max(0px, calc(var(--radius) - 2px));
+  /* Glass (D143) sets its own steps through `--glass-radius-*`. Classic never
+     defines those, so each step falls back to its classic value unchanged. */
+  --radius-sm: var(--glass-radius-sm, max(0px, calc(var(--radius) - 4px)));
+  --radius-md: var(--glass-radius-md, max(0px, calc(var(--radius) - 2px)));
   --radius-lg: var(--radius);
-  --radius-xl: var(--radius);
-  --radius-2xl: calc(var(--radius) + 4px);
-  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-xl: var(--glass-radius-xl, var(--radius));
+  --radius-2xl: var(--glass-radius-2xl, calc(var(--radius) + 4px));
+  --radius-3xl: var(--glass-radius-3xl, calc(var(--radius) + 12px));
+  /* `rounded-row` exists for glass only (used as `glass:rounded-row`). Its
+     classic fallback is the classic `rounded-lg`. */
+  --radius-row: var(--glass-radius-row, var(--radius));
 }
 
 /* Density: scales the root font size, and with it every rem-based size
@@ -432,6 +729,289 @@ body {
    than blur to separate layers. */
 .tech-elevated {
   box-shadow: var(--elevation);
+}
+
+/* ── Glass materials (D143) ───────────────────────────────────────────────
+   Use each one behind the variant (`glass:glass-chrome`), or in a component
+   that renders only in glass. glassLook.test.ts fails on a bare use.
+
+   The blur rule: backdrop-filter blurs only what is inside the nearest
+   ancestor that has a mask, a filter, opacity < 1 or its own
+   backdrop-filter. So never put a mask, a filter or an opacity on a
+   scroller that holds glass, and a menu opened inside glass takes
+   glass-menu (near opaque), not glass-chrome.
+
+   The containing-block rule (GL-3 review): backdrop-filter also makes the
+   element the containing block of every `position: fixed` descendant. A
+   fixed menu, popover or scrim inside it is then placed and clipped by that
+   element, not by the window. So a surface that HOLDS fixed children (the
+   rail, which holds the account menu and the row menus; the phone drawer)
+   takes glass-chrome-flat or glass-menu-flat, which carry the colour, the
+   edge and the shadow with no filter. */
+
+/* Floating chrome: translucent, blurred, a lit top edge and a hairline. */
+@utility glass-chrome {
+  background-color: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  box-shadow:
+    inset 0 0.5px 0 0 var(--glass-highlight),
+    0 0 0 0.5px var(--glass-edge),
+    var(--glass-shadow);
+}
+
+/* The menu material: glass thick enough to read over anything. */
+@utility glass-menu {
+  background-color: var(--glass-thick-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  box-shadow:
+    inset 0 0.5px 0 0 var(--glass-highlight),
+    0 0 0 0.5px var(--glass-edge),
+    var(--glass-shadow);
+}
+
+/* The same two materials with no filter, for a surface that holds
+   `position: fixed` children (the containing-block rule above) and has
+   nothing moving behind it: the rail sits on the plain grouped surface, and
+   the phone drawer on its scrim. Blur over a plain surface shows nothing,
+   so these lose no look. They create no containing block and no stacking
+   context, so a fixed menu inside stays placed, sized and layered by the
+   window. (A ::before layer under `isolation: isolate` was tried first: it
+   kept the blur, but the stacking context put the account menu UNDER the
+   page. Measured in Chromium 148, 2026-10-31.) */
+@utility glass-chrome-flat {
+  background-color: var(--glass-bg);
+  box-shadow:
+    inset 0 0.5px 0 0 var(--glass-highlight),
+    0 0 0 0.5px var(--glass-edge),
+    var(--glass-shadow);
+}
+
+@utility glass-menu-flat {
+  background-color: var(--glass-thick-bg);
+  box-shadow:
+    inset 0 0.5px 0 0 var(--glass-highlight),
+    0 0 0 0.5px var(--glass-edge),
+    var(--glass-shadow);
+}
+
+/* A content card: opaque, a hairline and a soft lift, no border. */
+@utility glass-surface {
+  background-color: var(--card);
+  box-shadow: var(--card-shadow);
+}
+
+/* A press answers the finger: a control dips while it is held. 160 ms is
+   Aroh's press, shorter than a change of state on purpose. The motion sits
+   behind `no-preference`, so under reduced motion the control holds still.
+   The gate lives inside the utility, so the variant form
+   `glass:glass-press` carries it too. (A nested `reduce` block here would
+   come before the file's main reduce block, which tests read first.) */
+@utility glass-press {
+  @media (prefers-reduced-motion: no-preference) {
+    transition:
+      transform 160ms var(--motion-easing),
+      background-color 160ms ease,
+      color 160ms ease,
+      opacity 160ms ease;
+    &:active:not(:disabled) {
+      transform: scale(0.96);
+    }
+  }
+}
+
+/* The scroll edge: content blurs and fades as it passes under a bar. It is
+   an overlay hung below the bar, never a mask on the scroller (the blur
+   rule). `--edge-color` is the surface of the page. */
+@utility glass-scroll-edge {
+  background: linear-gradient(to bottom, var(--edge-color, var(--background)) 20%, transparent);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  -webkit-mask-image: linear-gradient(to bottom, #000 35%, transparent);
+  mask-image: linear-gradient(to bottom, #000 35%, transparent);
+}
+
+/* ── Glass chat (GL-4, D143) ──────────────────────────────────────────────
+   The chat's own motion and materials. Each name carries the `glass-` prefix
+   and a component uses it only behind the variant (`glass:glass-glow-ring`),
+   so under classic it matches nothing. glassLook.test.ts fails on a bare use.
+
+   The animation of each one is a plain rule keyed on the variant's own class
+   (`.glass\:glass-glow-ring`), inside `html[data-look="glass"]`. motion.test.ts
+   reads plain rules, not `@utility` bodies, and it needs every keyframe
+   gated by `no-preference` in this section.
+
+   The working glow is the one decorative motion of glass. It means a run is
+   live and a message now steers it. It draws only while the run streams, and
+   it holds still under reduced motion. It is a SIBLING of the composer, never
+   an ancestor, so its filter does not break the composer's backdrop blur. */
+
+@property --glow-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes glass-glow-turn {
+  to {
+    --glow-angle: 360deg;
+  }
+}
+
+@keyframes glass-caret-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+
+@keyframes glass-dot-rise {
+  0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-2px); }
+}
+
+@keyframes glass-shimmer-sweep {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* The bloom: the box blurs the ring after the ring is cut, so both edges are soft. */
+@utility glass-working-glow {
+  pointer-events: none;
+  filter: blur(10px);
+  opacity: 0.95;
+}
+
+/* The spectrum, cut to a ring by a mask so the field itself stays clear. */
+@utility glass-glow-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 6px;
+  background: conic-gradient(from var(--glow-angle), var(--glow-1), var(--glow-2), var(--glow-3), var(--glow-4), var(--glow-5), var(--glow-1));
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+}
+
+/* The answer's own text styles. The headings of a Markdown body keep their
+   classic class strings (markdownChatGolden.test.ts holds them byte for byte),
+   so glass sizes them from the wrapper. They step up with the 17 px body. */
+@utility glass-prose {
+  & h1 {
+    font-size: var(--text-title);
+    border-bottom-color: transparent;
+  }
+  & h2 {
+    font-size: var(--text-headline);
+  }
+  & h3,
+  & h4 {
+    font-size: var(--text-body);
+  }
+}
+
+/* Three dots: the run has started and no word has arrived. */
+@utility glass-typing-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background-color: currentColor;
+  opacity: 0.6;
+}
+
+/* A card's icon is a solid tile in a system colour, with the ink of the tint
+   on it. `--tile` names the colour and defaults to system blue. The utility
+   goes on the card's frame and finds the icon that sits before the title (the
+   header lives in ui/Collapsible, which this slice does not edit). */
+@utility glass-card-tile {
+  & :is(svg, span.flex):has(+ [data-rollup-title]) {
+    box-sizing: border-box;
+    width: 1.75rem;
+    height: 1.75rem;
+    padding: 0.4375rem;
+    border-radius: 0.5rem;
+    background-color: var(--tile, var(--system-blue));
+    color: var(--tile-foreground);
+    align-items: center;
+    justify-content: center;
+  }
+  & [data-rollup-title] {
+    font-size: var(--text-subhead);
+  }
+}
+
+/* A sweeping highlight on the label of something that works. */
+@utility glass-shimmer-text {
+  background: linear-gradient(90deg, var(--muted-foreground) 0%, var(--foreground) 45%, var(--muted-foreground) 90%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* Each loop runs only for a member who has not asked for less motion. Under
+   reduced motion the glow holds still and still says "working", and the
+   dots and the shimmer hold still as well. The caret keeps the classic
+   `animate-pulse` of `lib/streamCaret.ts`, as it does in classic. */
+@media (prefers-reduced-motion: no-preference) {
+  html[data-look="glass"] .glass\:glass-glow-ring {
+    animation: glass-glow-turn 5s linear infinite;
+  }
+  html[data-look="glass"] .stream-caret {
+    animation: glass-caret-blink 1s ease-in-out infinite;
+  }
+  html[data-look="glass"] .glass\:glass-typing-dot {
+    animation: glass-dot-rise 1.2s ease-in-out infinite;
+  }
+  html[data-look="glass"] .glass\:glass-typing-dot:nth-child(2) {
+    animation-delay: 0.18s;
+  }
+  html[data-look="glass"] .glass\:glass-typing-dot:nth-child(3) {
+    animation-delay: 0.36s;
+  }
+  html[data-look="glass"] .glass\:glass-shimmer-text {
+    animation: glass-shimmer-sweep 2.2s linear infinite;
+  }
+}
+html[data-look="glass"] .stream-caret {
+  background-color: var(--primary);
+}
+
+/* The surfaces every app already uses take the glass materials. These two
+   rules are the widest lever of GL-1: each panel, popover, drawer and modal
+   that wears tech-glass becomes Aroh's glass with no change to its code. */
+html[data-look="glass"] .tech-glass {
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  border-color: transparent;
+  box-shadow:
+    inset 0 0.5px 0 0 var(--glass-highlight),
+    0 0 0 0.5px var(--glass-edge),
+    var(--glass-shadow);
+}
+html[data-look="glass"] .tech-glass-subtle {
+  background: var(--glass-thick-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  border-color: transparent;
+  box-shadow:
+    inset 0 0.5px 0 0 var(--glass-highlight),
+    0 0 0 0.5px var(--glass-edge),
+    var(--glass-shadow);
+}
+
+/* Glass type: SF Pro's tracking. Headlines tighten, as SF Pro Display does
+   at large sizes. */
+html[data-look="glass"] body {
+  letter-spacing: -0.006em;
+  font-optical-sizing: auto;
 }
 
 /* ── Control primitives ─────────────────────────────────────────────────
@@ -1887,6 +2467,26 @@ html.panel-swap::view-transition-new(assistant-panel) {
   }
 }
 
+/*
+ * A toolbar that reveals with `reveal-on-hover` also takes its CLICKS only
+ * when it shows. `opacity: 0` alone still takes a tap, so a tap on the end of
+ * a card would hit a hidden button. `group-hover:pointer-events-auto` is the
+ * broken spelling: Tailwind wraps it in `@media (hover: hover)`, which never
+ * matches on a touch-capable display, so the buttons are shown and dead.
+ * This rule has no media query, and it uses `:has(:focus-visible)`, never
+ * `:focus-within`, so a mouse click does not hold the toolbar live.
+ *
+ * Fence: `src/lib/revealOnHover.test.ts`.
+ */
+@utility reveal-on-hover-live {
+  pointer-events: none;
+
+  .group:hover &,
+  &:has(:focus-visible) {
+    pointer-events: auto;
+  }
+}
+
 /* ── A rail row's trailing zone (`components/ui/RailRow.tsx`) ─────────── */
 /*
  * One zone at the right end of a row holds two things in turn. At rest it
@@ -2022,10 +2622,18 @@ html.panel-swap::view-transition-new(assistant-panel) {
   }
 
   /* Themes set their own motion feel; honouring the OS preference has to
-     override whichever one is active. */
+     override whichever one is active. The glass block (D143) is more
+     specific than `:root`, so it is named here too, or glass would keep its
+     0.28 s and 220 ms under reduced motion. glassLook.test.ts fences it.
+     The classic rule stays as it was, so classic does not change. */
   :root {
     --motion-duration: 0.01ms;
     --spring-duration: 0.01ms;
+  }
+  html[data-look="glass"] {
+    --motion-duration: 0.01ms;
+    --spring-duration: 0.01ms;
+    --sheet-duration: 0.01ms;
   }
 
   *,

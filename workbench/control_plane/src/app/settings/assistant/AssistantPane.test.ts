@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { AssistantPaneView, NO_HANDLERS, type AssistantPaneViewProps } from "./AssistantPane";
+import { AssistantPaneView, BLOCK_EMPTY, NO_HANDLERS, type AssistantPaneViewProps } from "./AssistantPane";
 import { CAPS, EMPTY_PROFILE, type Profile } from "./lib/profile";
 
 const base: AssistantPaneViewProps = {
@@ -168,6 +168,20 @@ describe("the interview section (PZ-27)", () => {
     for (const word of ["Answered", "Asked", "Skipped", "Stopped asking", "Not asked yet"]) expect(html).toContain(word);
     expect(html).toContain("bg-success/10");
     expect(html).toContain("bg-warning/10");
+    expect(html).toContain("bg-info/10");
+    expect(html).toContain("text-info");
+  });
+
+  it("draws the Asked badge in the info tone and never in the accent (H-435)", () => {
+    const html = draw({ profile: withInterview });
+    const at = html.indexOf(">Asked<");
+    expect(at).toBeGreaterThan(0);
+    const badge = html.slice(html.lastIndexOf("<span", at), at);
+    expect(badge).toContain("bg-info/10");
+    expect(badge).toContain("text-info");
+    expect(badge).not.toContain("text-primary");
+    expect(badge).not.toContain("bg-primary");
+    expect(html).toContain("bg-secondary text-muted-foreground");
   });
 
   it("draws Reset only for an area that has a state", () => {
@@ -287,5 +301,44 @@ describe("language, facts and interview, in plain words", () => {
     expect(src).toMatch(/label: "Undo"[\s\S]{0,120}onAddFact\(gone\.text, gone\.kind, gone\.area\)/);
     expect(src).toMatch(/title: "Name deleted"[\s\S]{0,260}onAddAlias\(gone\.alias, gone\.email\)/);
     expect(src).toContain("addFact(text, kind, area)");
+  });
+  // PZ-20a: "What the assistant sees".
+  describe("What the assistant sees (PZ-20a)", () => {
+    const text = ["## About the member", 'Address them as "VJ".', "If they ask what you know about them, answer from this block only."].join(String.fromCharCode(10));
+
+    it("draws the text in a read-only block beside the download", () => {
+      const html = draw({ block: { status: "ready", enabled: true, text } });
+      expect(html).toContain("What the assistant sees");
+      expect(html).toContain("whitespace-pre-wrap");
+      expect(html).toContain("font-mono");
+      expect(html).toContain("answer from this block only.");
+      expect(html).toContain("In a chat, the assistant can add one reminder line to this text.");
+      expect(html.indexOf("What the assistant sees")).toBeLessThan(html.indexOf("Download my profile"));
+      expect(html).not.toContain("<textarea");
+    });
+
+    it("says so when the text is empty", () => {
+      const html = draw({ block: { status: "ready", enabled: true, text: "" } });
+      expect(html).toContain(BLOCK_EMPTY);
+      expect(html).toContain("The assistant sees nothing about you yet.");
+      expect(html).not.toContain("assistant-block-text");
+    });
+
+    it("draws a loading state", () => {
+      expect(draw({ block: { status: "loading" } })).toContain("assistant-block-loading");
+    });
+
+    it("draws an error with Retry, never the empty line", () => {
+      const html = draw({ block: { status: "error", error: "The assistant profile is not available now." } });
+      expect(html).toContain("The text did not load.");
+      expect(html).toContain("not available now");
+      expect(html).toContain("Retry");
+      expect(html).not.toContain(BLOCK_EMPTY);
+    });
+
+    it("draws nothing for an off org or when no state is given", () => {
+      expect(draw({ block: { status: "ready", enabled: false, text: "" } })).not.toContain("What the assistant sees");
+      expect(draw({})).not.toContain("What the assistant sees");
+    });
   });
 });

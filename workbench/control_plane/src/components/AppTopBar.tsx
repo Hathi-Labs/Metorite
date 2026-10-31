@@ -139,7 +139,7 @@ export function AppTopBar({
 
   if (compact || isMobile) {
     return (
-      <div data-app-bar="compact" className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-card px-2">
+      <div data-app-bar="compact" className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-card px-2 glass:relative glass:z-10 glass:border-b-0 glass:bg-transparent">
         {back ? <BackLink back={back} /> : null}
         <div className="flex min-w-0 flex-1">{name}</div>
         {actions || tools ? (
@@ -148,6 +148,7 @@ export function AppTopBar({
             {tools}
           </div>
         ) : null}
+        <ScrollEdgeBelow />
       </div>
     );
   }
@@ -161,7 +162,7 @@ export function AppTopBar({
   return (
     <div
       data-app-bar="desktop"
-      className="flex min-h-10 min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border bg-card px-2 py-1"
+      className="flex min-h-10 min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border bg-card px-2 py-1 glass:relative glass:z-10 glass:border-b-0 glass:bg-transparent"
     >
       {/* ⚠️ The LEFT group is ONE flex item that never wraps (round 3): the
           way back or the rail toggle, the divider, the icon and the name.
@@ -194,7 +195,23 @@ export function AppTopBar({
       {tools ? (
         <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1">{tools}</div>
       ) : null}
+      <ScrollEdgeBelow />
     </div>
+  );
+}
+
+/**
+ * Glass (D143, GL-3): content blurs and fades as it passes under the bar. An
+ * overlay hung below the bar, never a mask on a scroller (the blur rule in
+ * `globals.css`). Classic draws nothing: the box is `hidden` there.
+ */
+function ScrollEdgeBelow() {
+  return (
+    <div
+      aria-hidden
+      data-scroll-edge=""
+      className="pointer-events-none absolute inset-x-0 top-full z-10 hidden h-4 glass:block glass:glass-scroll-edge glass:[--edge-color:var(--background-grouped)]"
+    />
   );
 }
 

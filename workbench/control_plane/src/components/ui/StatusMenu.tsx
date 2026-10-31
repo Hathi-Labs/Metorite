@@ -377,7 +377,7 @@ export function StatusMenu({
             tabIndex={index === focused ? 0 : -1}
             onFocus={() => setFocused(index)}
             onClick={() => onPick(status.id)}
-            className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs outline-none hover:bg-muted focus-visible:bg-muted focus-visible:ring-1 focus-visible:ring-ring ${
+            className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs outline-none glass:rounded-lg hover:bg-muted focus-visible:bg-muted focus-visible:ring-1 focus-visible:ring-ring ${
               current ? "bg-muted font-medium" : ""
             }`}
           >

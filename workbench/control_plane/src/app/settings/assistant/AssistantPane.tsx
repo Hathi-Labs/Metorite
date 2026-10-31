@@ -51,6 +51,7 @@ import {
   deleteFact,
   errorText,
   fallbackAddress,
+  fetchBlock,
   fetchExport,
   fetchProfile,
   forgetAll,
@@ -71,6 +72,7 @@ import {
   withoutInterview,
   type Address,
   type Alias,
+  type ProfileBlock,
   type ExportFormat,
   type Fact,
   type FactKind,
@@ -93,6 +95,8 @@ export interface PaneHandlers {
   onDeleteAlias: (id: string) => Promise<boolean>;
   onForget: () => void;
   onRetry: () => void;
+  /** Load the text again after a failed load (PZ-20a). */
+  onRetryBlock: () => void;
   /** Download the member's own profile (PZ-9). */
   onExport: (format: ExportFormat) => Promise<boolean>;
   /** Open a fresh chat and send the Get to know me request (PZ-27). */
@@ -102,6 +106,12 @@ export interface PaneHandlers {
   /** Ask to reset the whole interview. A confirm dialog follows. */
   onResetInterview: () => void;
 }
+
+/** The state of "What the assistant sees" (PZ-20a). */
+export type BlockState =
+  | { status: "loading" }
+  | { status: "error"; error: string }
+  | ({ status: "ready" } & ProfileBlock);
 
 export interface AssistantPaneViewProps extends PaneHandlers {
   status: "loading" | "error" | "ready";
@@ -124,6 +134,8 @@ export interface AssistantPaneViewProps extends PaneHandlers {
   epoch?: number;
   /** The name the assistant uses while the Name field is empty, when known. */
   fallbackName?: { name: string; from: "preferred" | "display" } | null;
+  /** "What the assistant sees". Without it, the section does not draw. */
+  block?: BlockState;
 }
 
 const noop = async () => true;
@@ -139,6 +151,7 @@ export const NO_HANDLERS: PaneHandlers = {
   onDeleteAlias: noop,
   onForget: () => {},
   onRetry: () => {},
+  onRetryBlock: () => {},
   onExport: noop,
   onGetToKnow: () => {},
   onResetArea: noop,
@@ -153,6 +166,7 @@ const JUMPS = [
   { id: "assistant-facts", label: "What I remember" },
   { id: "assistant-interview", label: "Get to know me" },
   { id: "assistant-names", label: "Names for people" },
+  { id: "assistant-block", label: "What it sees" },
   { id: "assistant-download", label: "Download" },
   { id: "assistant-forget", label: "Forget" },
 ] as const;
@@ -176,6 +190,51 @@ function Section({
       </div>
       {children}
     </section>
+  );
+}
+
+/** The words for an empty text (PZ-20a). UI copy only: the server sends "". */
+export const BLOCK_EMPTY = "The assistant sees nothing about you yet.";
+
+/**
+ * "What the assistant sees" (PZ-20a). The text is the profile block that the
+ * assistant reads before a chat, word for word. Read only.
+ */
+function BlockSection({ block, onRetry }: { block: BlockState; onRetry: () => void }) {
+  if (block.status === "ready" && !block.enabled) return null;
+  return (
+    <Section
+      id="assistant-block"
+      title="What the assistant sees"
+      description="The exact text the assistant reads about you before a chat. Other members never see it."
+    >
+      {block.status === "loading" ? (
+        <div data-testid="assistant-block-loading">
+          <Skeleton className="h-24 w-full" />
+        </div>
+      ) : block.status === "error" ? (
+        <div role="alert" className="space-y-2 rounded-lg border border-border bg-card p-3">
+          <p className="text-xs text-foreground">The text did not load.</p>
+          <p className="text-xs text-muted-foreground">{block.error || "Try again."}</p>
+          <Button size="sm" variant="secondary" icon="RefreshCw" onClick={onRetry}>
+            Retry
+          </Button>
+        </div>
+      ) : block.text === "" ? (
+        <p className="text-xs text-muted-foreground">{BLOCK_EMPTY}</p>
+      ) : (
+        <pre
+          aria-label="The text the assistant reads about you"
+          data-testid="assistant-block-text"
+          className="whitespace-pre-wrap break-words rounded-lg border border-border bg-card p-3 font-mono text-xs text-foreground"
+        >
+          {block.text}
+        </pre>
+      )}
+      <p className="text-xs text-muted-foreground">
+        In a chat, the assistant can add one reminder line to this text.
+      </p>
+    </Section>
   );
 }
 
@@ -577,7 +636,7 @@ function FactsSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
 
 const STATE_TONES: Record<InterviewState | "open", BadgeTone> = {
   open: "neutral",
-  asked: "primary",
+  asked: "info",
   answered: "success",
   skipped: "warning",
   never: "neutral",
@@ -816,6 +875,7 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
       <FactsSection p={p} v={v} />
       <InterviewSection p={p} v={v} />
       <AliasesSection p={p} v={v} />
+      {v.block ? <BlockSection block={v.block} onRetry={v.onRetryBlock} /> : null}
       <Section
         id="assistant-download"
         title="Download my profile"
@@ -891,6 +951,25 @@ export default function AssistantPane() {
   const [confirmResetInterview, setConfirmResetInterview] = useState(false);
   const [epoch, setEpoch] = useState(0);
   const [fallbackName, setFallbackName] = useState<AssistantPaneViewProps["fallbackName"]>(null);
+  const [block, setBlock] = useState<BlockState>({ status: "loading" });
+  const [blockTry, setBlockTry] = useState(0);
+
+  // The text the assistant reads (PZ-20a). It loads again after each change
+  // of the profile, so the member sees what a save did. The old text stays
+  // on screen while the new text loads.
+  useEffect(() => {
+    if (status !== "ready") return;
+    let live = true;
+    fetchBlock()
+      .then((b) => live && setBlock({ status: "ready", ...b }))
+      .catch((e) =>
+        live &&
+        setBlock({ status: "error", error: e instanceof ProfileError ? e.message : errorText("", 502) }),
+      );
+    return () => {
+      live = false;
+    };
+  }, [status, profile, blockTry]);
 
   // The name the assistant uses while the Name field is empty. A failed read
   // leaves the plain rule, with no value.
@@ -1022,6 +1101,10 @@ export default function AssistantPane() {
       }),
     onResetInterview: () => setConfirmResetInterview(true),
     onRetry: () => void load(),
+    onRetryBlock: () => {
+      setBlock({ status: "loading" });
+      setBlockTry((n) => n + 1);
+    },
     onExport: (format) =>
       run(`export-${format}`, async () => {
         const file = await fetchExport(format);
@@ -1039,6 +1122,7 @@ export default function AssistantPane() {
       errors={errors}
       epoch={epoch}
       fallbackName={fallbackName}
+      block={block}
       confirmForget={confirmForget}
       onCancelForget={() => setConfirmForget(false)}
       confirmResetInterview={confirmResetInterview}

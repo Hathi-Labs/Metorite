@@ -2270,10 +2270,29 @@ The chat-speed work (#1313, #1323) owns latency. These points touch it:
    OA-5's harness is those evals. Share it, and do not build a second one.
 3. **The timing lines.** OA-5 reads `agent.run_timing` and
    `executor.run_setup_ms`. Keep their names and fields stable.
+   SPD-1 (Metorite #1126) adds `executor.setup_steps_ms`. A native streamed
+   run logs it once, just before its stream opens. Each field is the ms of
+   one setup step, measured from the step before, and `total_ms` is their
+   sum. So the line also counts `session_load` and `compose`, which come
+   after `run_setup_ms`. Fence: `tests/unit/test_setup_laps.py`.
 4. **OCR.** OA-3 adds time to `read_attachment`. It runs off the event
    loop with a cap, so it must not block other runs.
 5. **OA-1 adds tokens.** A task now holds the member's words. Expect a
    small rise in the input tokens of a delegated run.
+6. **Early setup reads (SPD-1 part 2).** In production, 53% of chat turns
+   came more than 5 minutes after the turn before. So three setup reads were
+   cold, and they ran one after another. A streamed run now starts them
+   together, after the access check and beside the agent load
+   (`executor._EarlyReads`). They are the knowledge index, the mailbox list
+   and the CRM facts. Each task reads in the run's own context. The
+   knowledge read and the mailbox read keep their own rules. The run awaits
+   these two cache fills before the first reader of the caches.
+   `_add_crm_facts_block` uses the early facts in place of its own read, and
+   only when its rule says to use facts. The early CRM read has a wider gate
+   than that rule: it cannot see whether the run holds a CRM tool. When an
+   admin turns the `crm` skill family off, the read still goes out, and the
+   run drops its value. The `finally` cancels a read that still runs.
+   Fence: `tests/unit/test_early_reads.py`.
 
 HANDOFF **H-412** carries these points to that session.
 

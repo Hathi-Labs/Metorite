@@ -385,6 +385,41 @@ export async function fetchExport(format: ExportFormat): Promise<{ body: Blob; f
   };
 }
 
+// ── Read as text (PZ-20a) ─────────────────────────────────────────────────
+
+/** The proxy path of the block. It takes no query. */
+export const BLOCK_PATH = "/api/auth/me/assistant-profile/block";
+
+/** What the assistant reads about the member. `text` is "" for no profile. */
+export interface ProfileBlock {
+  enabled: boolean;
+  text: string;
+}
+
+/**
+ * Fetch the text that the assistant reads about the member. A failed call
+ * throws a `ProfileError`, never an empty text, so a fault does not read as
+ * "the assistant sees nothing".
+ */
+export async function fetchBlock(): Promise<ProfileBlock> {
+  let res: Response;
+  try {
+    res = await fetch(BLOCK_PATH, { cache: "no-store" });
+  } catch {
+    throw new ProfileError(errorText("", 502), 0);
+  }
+  const data: unknown = await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail = data && typeof data === "object" ? (data as { detail?: unknown }).detail : undefined;
+    throw new ProfileError(errorText(detail, res.status), res.status);
+  }
+  const d = data as { enabled?: unknown; text?: unknown } | null;
+  if (!d || typeof d.enabled !== "boolean" || typeof d.text !== "string") {
+    throw new ProfileError(errorText("", 502), 502);
+  }
+  return { enabled: d.enabled, text: d.text };
+}
+
 // ── The interview list (PZ-27) ────────────────────────────────────────────
 
 /** The profile with one area back to open. The facts stay. */

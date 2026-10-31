@@ -34,6 +34,7 @@ from acb_auth import UserContext, get_current_user
 from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
 from gateway.routes.tasks.core import (
+    NO_THINKING,
     MyTaskModel,
     _parse_jsonb,
     _row_to_item,
@@ -294,7 +295,7 @@ async def _llm_capture(
             model=model, fallback_model="tier-fast",
             messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("title", "description", json=True)},
                       {"role": "user", "content": user}],
-            temperature=0.0, max_tokens=450,
+            temperature=0.0, max_tokens=450, thinking=dict(NO_THINKING),
             feature="tasks.capture_email",
             response_format={"type": "json_object"},
         )
@@ -1081,7 +1082,7 @@ async def _llm_detect_commitment(
             model=model, fallback_model="tier-fast",
             messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("title", "description", json=True)},
                       {"role": "user", "content": user}],
-            temperature=0.0, max_tokens=450,
+            temperature=0.0, max_tokens=450, thinking=dict(NO_THINKING),
             feature="tasks.capture_email",
             response_format={"type": "json_object"},
         )
