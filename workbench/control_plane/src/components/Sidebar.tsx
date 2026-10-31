@@ -368,7 +368,7 @@ export default function Sidebar() {
         }
       }}
       className={`sidebar-rail shrink-0 border-r flex flex-col overflow-hidden bg-sidebar border-sidebar-border glass:m-2 glass:rounded-2xl glass:border-r-0 glass:glass-chrome-flat ${
-        collapsed ? "w-14 glass:w-[4.75rem]" : "w-64"
+        collapsed ? "w-14 glass:w-20" : "w-64"
       }`}
     >
       {/* Header. With the full-width shell bar, the bar carries the logo and
@@ -417,7 +417,7 @@ export default function Sidebar() {
           <>
           {shellNav && (
             // The same column as a group's items, so Home lines up with them.
-            <div className={collapsed ? "flex flex-col gap-1 p-2 pb-0 glass:px-1" : "flex flex-col gap-0.5 px-2 pt-2"}>
+            <div className={collapsed ? "flex flex-col gap-1 p-2 pb-0 glass:px-0.5" : "flex flex-col gap-0.5 px-2 pt-2"}>
               <NavLink pane={home} pathname={pathname} collapsed={collapsed} onNavigate={armFold} shellNav />
             </div>
           )}
@@ -486,7 +486,7 @@ export default function Sidebar() {
 
       {/* All apps (NS-2): every app the member holds, each with its purpose. */}
       {shellNav && !accessLoading && launcherGroups(sections).length > 0 && (
-        <div className={`border-t border-sidebar-border ${collapsed ? "flex justify-center p-2 glass:px-1" : "px-2 py-2"}`}>
+        <div className={`border-t border-sidebar-border ${collapsed ? "flex justify-center p-2 glass:px-0.5" : "px-2 py-2"}`}>
           <button
             type="button"
             onClick={() => openLauncher()}
@@ -496,7 +496,7 @@ export default function Sidebar() {
             // `cc-link`: the house focus ring, as the account foot wears it.
             className={`cc-link flex items-center gap-2.5 rounded-lg glass:rounded-row text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${
               collapsed
-                ? "justify-center p-2.5 glass:w-full glass:flex-col glass:gap-0.5 glass:rounded-xl glass:px-0.5 glass:py-2"
+                ? "justify-center p-2.5 glass:w-full glass:flex-col glass:gap-0.5 glass:rounded-xl glass:px-0 glass:py-2"
                 : "w-full px-3 py-2 text-[13px] glass:text-subhead font-medium"
             }`}
           >
@@ -604,14 +604,14 @@ function AddAppsRow({
   const name = addAppsName(needs, badge?.label, needsFloor);
   if (collapsed) {
     return (
-      <div className="flex flex-col gap-1 p-2 glass:px-1" data-nav-add-apps="">
+      <div className="flex flex-col gap-1 p-2 glass:px-0.5" data-nav-add-apps="">
         <button
           type="button"
           onClick={onOpen}
           title={name}
           aria-label={name}
           aria-haspopup="dialog"
-          className="cc-link relative flex items-center justify-center rounded-lg glass:rounded-xl p-2.5 glass:flex-col glass:gap-0.5 glass:px-0.5 glass:py-2 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
+          className="cc-link relative flex items-center justify-center rounded-lg glass:rounded-xl p-2.5 glass:flex-col glass:gap-0.5 glass:px-0 glass:py-2 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
         >
           <RailIconSlot>
             <Icon name="Plus" size={18} className="shrink-0" />
@@ -775,7 +775,7 @@ function NavSectionBlock({
   if (collapsed) {
     return (
       <div data-nav-section={section.id}>
-        <div className="flex flex-col gap-1 p-2 glass:px-1">
+        <div className="flex flex-col gap-1 p-2 glass:px-0.5">
           {section.items.map((p) => (
             <NavLink
               key={p.href}
@@ -969,7 +969,7 @@ export function NavLink({
         }
         data-nav-row={pane.href}
         aria-label={name}
-        className={`rounded-lg glass:rounded-xl tech-transition flex items-center justify-center p-2.5 relative glass:flex-col glass:gap-0.5 glass:px-0.5 glass:py-2 ${
+        className={`rounded-lg glass:rounded-xl tech-transition flex items-center justify-center p-2.5 relative glass:flex-col glass:gap-0.5 glass:px-0 glass:py-2 ${
           active
             ? "bg-primary/15 glass:bg-primary/12 text-primary"
             : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
@@ -1127,7 +1127,7 @@ export function NeedsCount({ text }: { text: string }) {
  */
 function RailLabel({ children }: { children: ReactNode }) {
   return (
-    <span aria-hidden className="hidden w-full truncate text-center font-medium leading-tight glass:block glass:text-caption">
+    <span aria-hidden className="hidden w-full truncate text-center font-medium leading-tight glass:block glass:text-caption glass:tracking-tight">
       {children}
     </span>
   );
