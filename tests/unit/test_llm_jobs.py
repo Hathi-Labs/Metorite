@@ -394,8 +394,6 @@ _PR_1538 = ("PR 1538 owns this call: it sends thinking=dict(NO_THINKING). "
 #: An entry that matches no call does not fail, so a merge of the owning PR
 #: cannot turn main red.
 EXEMPT: dict[str, str] = {
-    _TASKS + "calendar.py::_llm_rank_day": (
-        "PR 1536 owns this call: it lifts the cap to 8000"),
     **{_TASKS + site: _PR_1538 for site in (
         "ai.py::_llm_propose", "ai.py::_find_parent_task", "ai.py::_llm_enrich",
         "ai.py::_llm_suggest_title", "ai.py::_llm_atomize",
