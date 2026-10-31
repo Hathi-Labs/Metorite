@@ -17,10 +17,19 @@ What this proves:
 - the flag name: a platform name of the env guard, a reload name, and a name
   that the staging tool may write, with the comment that it spends credits.
 
-Mutations, each red here: drop the sensitive-line rule of ``_keep``; let
-``member_texts`` skip ``typed_text``; let ``prompt_rows`` read
-``tool_events``; drop the brief-row check; drop ``enabled_for`` from
-``chat_summary_for``.
+Review round 1 (2026-10-31) adds:
+
+- the joined text: a number, an address in words or a run of digit words
+  that crosses the end of a line drops the whole answer (P1-a);
+- a sensitive line stays only when the member typed each sensitive term, and
+  a line with a form that ``grounded`` cannot match drops (P1-b);
+- a card answer is not a typed row (P1-c).
+
+Mutations, each red here: drop the sensitive-line rule of ``_keep``; drop
+the sensitive-term rule; drop the joined-text check (``_passes``); count a
+card answer as typed; let ``member_texts`` skip ``typed_text``; let
+``prompt_rows`` read ``tool_events``; drop the brief-row check; drop
+``enabled_for`` from ``chat_summary_for``.
 """
 
 from __future__ import annotations
@@ -208,6 +217,134 @@ def test_no_typed_words_ground_no_sensitive_line() -> None:
     out = summaries.check_answer(raw, "")
     assert out is not None
     assert (out.text, out.follow_ups) == ("Planned the deck.", ())
+
+
+# ── Review round 1, P1-a: a form that crosses the end of a line ─────────────
+
+#: The typed words of the probes of the verifier.
+PROBE_ROWS = [
+    _row("m1", "user", "Help me plan the Q3 pricing deck for Priya. "
+         "Keep the old price for current customers.", author_email=MEMBER),
+]
+
+
+def _stored_text_is_clean(out: summaries.Answer | None, words: str) -> None:
+    """The stored text, as one string, has no form that its words lack."""
+    if out is None:
+        return
+    whole = " ".join([out.text, *out.follow_ups])
+    assert not ap.needs_confirm(whole) or ap.grounded(whole, words), whole
+
+
+@pytest.mark.parametrize("text", [
+    "Call 98450\n12345 waits.",
+    "Call Priya on 98450. 12345 is the code.",
+    "Write to priya. At acme dot com the deck waits.",
+    "Planned the deck: nine eight four. Five oh one.",
+], ids=["over a line break", "over a full stop", "an address in words",
+        "digit words"])
+def test_a_form_across_the_end_of_a_line_writes_nothing(text: str) -> None:
+    words = summaries.member_words(PROBE_ROWS, MEMBER)
+    for line in summaries.sentences(text):
+        assert not ap.needs_confirm(line), "each line alone must pass"
+    assert summaries.check_answer(_answer(text), words) is None
+
+
+def test_a_form_across_the_follow_ups_or_into_them_writes_nothing() -> None:
+    words = summaries.member_words(PROBE_ROWS, MEMBER)
+    assert summaries.check_answer(
+        _answer("Planned the deck.", ["Call 98450", "12345 later"]), words) is None
+    assert summaries.check_answer(
+        _answer("Call Priya on 98450.", ["12345 is the code"]), words) is None
+
+
+def test_a_grounded_flagged_line_that_fails_the_whole_text_drops_alone() -> None:
+    """The joined text fails, so each flagged line drops, and the rest stays.
+    The stored text then passes the check as one string."""
+    rows = [_row("m1", "user", "send the deck to priya@acme.example", author_email=MEMBER)]
+    words = summaries.member_words(rows, MEMBER)
+    alone = summaries.check_answer(_answer("Send the deck to priya@acme.example."), words)
+    assert alone is not None and alone.text == "Send the deck to priya@acme.example."
+    out = summaries.check_answer(_answer(
+        "Planned the quarterly pricing review with many new ideas. "
+        "Send the deck to priya@acme.example."), words)
+    assert out is not None
+    assert out.text == "Planned the quarterly pricing review with many new ideas."
+    _stored_text_is_clean(out, words)
+
+
+# ── Review round 1, P1-b: the sensitive term and the forms with no token ────
+
+
+def test_a_sensitive_word_the_member_never_typed_drops_its_line() -> None:
+    rows = [_row("m1", "user", "Draft the reply to Ravi about the leave request "
+                 "for next week and copy Priya.", author_email=MEMBER)]
+    words = summaries.member_words(rows, MEMBER)
+    line = ("Draft the reply to Ravi about the leave request for next week and "
+            "his surgery, and copy Priya.")
+    assert ap.grounded(line, words), "80% of the words alone would keep it"
+    assert summaries.check_answer(_answer(line), words) is None
+
+
+def test_depression_and_a_third_partys_salary_drop() -> None:
+    words = summaries.member_words(PROBE_ROWS, MEMBER)
+    assert summaries.check_answer(_answer(
+        "Keep the old price for current customers in the pricing deck for "
+        "Priya despite depression."), words) is None
+    offer = [_row("m1", "user", "Send the revised offer letter to Kiran today and "
+                  "copy the hiring manager on the thread.", author_email=MEMBER)]
+    assert summaries.check_answer(_answer(
+        "Send the revised offer letter to Kiran today with the new salary and "
+        "copy the hiring manager on the thread."),
+        summaries.member_words(offer, MEMBER)) is None
+
+
+def test_a_domain_of_another_script_drops() -> None:
+    rows = [_row("m1", "user", "write to them about the deck", author_email=MEMBER)]
+    words = summaries.member_words(rows, MEMBER)
+    assert summaries.check_answer(_answer("Write to пример.рф about the deck."), words) is None
+
+
+@pytest.mark.parametrize("line", [
+    "Call the vendor on 98450\u200b12345 about the deck.",
+    "Call the vendor on 98450/12345 about the deck.",
+], ids=["a zero-width space", "a slash"])
+def test_a_number_split_by_a_hidden_mark_drops(line: str) -> None:
+    rows = [_row("m1", "user", "call the vendor about the deck", author_email=MEMBER)]
+    words = summaries.member_words(rows, MEMBER)
+    assert summaries.check_answer(_answer(line), words) is None
+
+
+def test_the_sensitive_terms_and_the_forms_with_no_token() -> None:
+    assert ap.sensitive_terms("Home-Loan, then my   health") == {"home loan", "my health"}
+    assert ap.sensitive_terms("transport and planning") == frozenset()
+    for value in ("Write to пример.рф", "priya at acme dot com", "mail priya (at) acme",
+                  "nine eight four five oh one", "acme . io"):
+        assert ap.confirm_form_without_token(value), value
+    for value in ("mail priya@acme.com", "call 98450 12345", "see https://acme.io/x",
+                  "acme-pay.io", "plain words", ""):
+        assert not ap.confirm_form_without_token(value), value
+
+
+# ── Review round 1, P1-c: a card answer is not a typed row ──────────────────
+
+
+def test_a_card_answer_is_not_a_typed_row() -> None:
+    from gateway.chat_recovery import compose_card_answer
+
+    card = compose_card_answer(
+        "Send the reply to ravi.k@vendor.example about his diagnosis report?", "APPROVE")
+    rows = [
+        _row("m1", "user", "Help me answer Ravi.", author_kind="human", author_email=MEMBER),
+        _row("m2", "user", card, author_kind="human", author_email=MEMBER),
+        _row("m3", "user", "My answer to your last question: yes", author_email=MEMBER),
+    ]
+    assert summaries.member_texts(rows, MEMBER) == ["Help me answer Ravi."]
+    assert all("ravi.k" not in w for _who, w in summaries.prompt_rows(rows, MEMBER))
+    words = summaries.member_words(rows, MEMBER)
+    assert summaries.check_answer(_answer(
+        "Sent the reply to ravi.k@vendor.example about his diagnosis report."),
+        words) is None
 
 
 # ── The caps ────────────────────────────────────────────────────────────────

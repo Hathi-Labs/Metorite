@@ -1141,6 +1141,38 @@ def is_sensitive(value: Any) -> bool:
     return bool(text) and _SENSITIVE.search(text) is not None
 
 
+def sensitive_terms(value: Any) -> frozenset[str]:
+    """Each word of :data:`SENSITIVE_WORDS` in *value*, folded, with one
+    space for each run of spaces or dashes. So "Home-Loan" is "home loan".
+
+    The chat summary of PZ-33 keeps a sensitive line only when the member's
+    typed words hold each of these terms (``gateway/assistant_summaries.py``).
+    Fence: ``tests/unit/test_chat_summary.py``.
+    """
+    return frozenset(re.sub(r"[\s\-]+", " ", hit.group(0))
+                     for hit in _SENSITIVE.finditer(fold(value)))
+
+
+def confirm_form_without_token(value: Any) -> bool:
+    """True when :func:`needs_confirm` flags a form of *value* that
+    :func:`grounded` cannot match as a token.
+
+    :func:`grounded` matches an address, a link, an ASCII domain and a number
+    as whole tokens. Each other form of :func:`needs_confirm` has no token:
+    an address in words, "(at)" or "[dot]", a domain behind another full
+    stop or a spaced dot, a domain of another script, and a run of digit
+    words. The text with the four token forms taken out shows them. The chat
+    summary of PZ-33 drops a line that holds one. Fence:
+    ``tests/unit/test_chat_summary.py``.
+    """
+    text = fold(value)
+    if not text:
+        return False
+    for pattern in (_GROUND_EMAIL, _GROUND_URL, _DOMAIN, _NUMBER):
+        text = pattern.sub(" ", text)
+    return needs_confirm(text)
+
+
 def grounded(value: Any, words: Any) -> bool:
     """True when the member's typed *words* of this turn hold *value*.
 

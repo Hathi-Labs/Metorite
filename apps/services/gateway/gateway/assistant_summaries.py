@@ -7,17 +7,23 @@ and §15.9. Migration: ``infra/postgres/318_chat_session_member_summary.sql``
 A summary covers one solo chat with Mira on the web, and only its member
 sees it. This module has two parts.
 
-**The store.** :func:`read`, :func:`mark`, :func:`write`,
-:func:`write_marked` and :func:`turn_off` are the only reads and writes of
-the column. Every other module calls them.
+**The store.** :func:`read`, :func:`mark`, :func:`write_marked`,
+:func:`turn_off`, :func:`clear_for_member` and :func:`clear_on_share` are the
+only reads and writes of the column. Every other module calls them.
 ``tests/unit/test_chat_summary_private.py`` fails when another module names
-the column.
+the column, and when a module that is not on its list imports this one.
 
 * Each function takes a session that the caller opened with
   ``acb_common.db.tenant_session(org)``, so RLS binds each statement to that
-  tenant. No function takes an org, opens a session or commits (R5).
-* The member is never an argument. The caller reads the member from
-  ``chat_session.user_id`` under RLS, never from a payload (R11).
+  tenant. :func:`clear_on_share` takes the sync ``acb_graph`` session of the
+  room routes. No function takes an org, opens a session or commits (R5).
+* Each caller checks the member. A statement finds the chat by its id only,
+  and RLS binds the tenant only. So a caller that acts for a member checks
+  that the chat is that member's own before it calls. The job of PZ-33b
+  reads the member from ``chat_session.user_id`` under RLS, never from a
+  payload (R11).
+* There is no plain write. A summary reaches the column only through
+  :func:`check_answer` and :func:`write_marked`.
 * A write sets ``member_summary`` only. It never changes ``updated_at``,
   ``last_preview`` or ``message_count``. So the chat keeps its place in the
   list, and the idle clock does not move. ``routes/chat.py`` keeps the same
@@ -27,23 +33,30 @@ the column.
   its WHERE.
 * The job of PZ-33b marks the chat before its model call (:func:`mark`). It
   writes the result with the mark in the WHERE (:func:`write_marked`). So a
-  Delete during the call wins, and the write changes nothing.
+  Delete, a Forget or a share during the call wins, and the write changes
+  nothing.
+* A clear (:func:`clear_for_member` for Forget and the purge,
+  :func:`clear_on_share` for a chat that stops being solo) takes the text,
+  the follow-ups and the mark away. A Delete stays ``off``. Each other chat
+  keeps a waterline: ``through`` names its newest row. So no job summarises
+  an old chat again until a new row comes.
 
 **The answer checks.** Pure functions, with no I/O.
 
 * :func:`member_texts`, :func:`member_words` and :func:`prompt_rows` choose
   what may reach the model. A row of the member counts only through
   ``acb_common.assistant_profile.typed_text``, so a pasted mail and a text of
-  more than 1,500 characters stay out. A row of Mira gives its ``content``
-  only. Tool events, reasoning, custom events, system rows and the brief row
-  (``brief-<date>``) stay out.
+  more than 1,500 characters stay out. A card answer stays out too, because
+  it quotes the question that the model wrote
+  (``gateway.chat_recovery.is_card_answer_text``). A row of Mira gives its
+  ``content`` only. Tool events, reasoning, custom events, system rows and
+  the brief row (``brief-<date>``) stay out.
 * :func:`check_answer` parses the answer of the model and applies the caps:
   at most 3 sentences and 400 characters of text, and at most 3 follow-ups of
-  120 characters each. It drops each line with a sensitive word
-  (``is_sensitive``), an address, a link or a long number (``needs_confirm``),
-  unless the typed words of the member hold that line (``grounded``). It
-  copies none of those rules. An answer that does not parse gives None, so
-  the job writes nothing.
+  120 characters each. :func:`_keep` gives the rule of a line, and the stored
+  text as one string must pass it too. It calls the rules of
+  ``acb_common.assistant_profile`` and copies none of them. An answer that
+  does not parse gives None, so the job writes nothing.
 
 The module imports no litellm and no streamed completion. PZ-33b makes the
 one model call through ``acb_llm.context.acompletion_with_fallback`` with the
@@ -56,14 +69,25 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from acb_common.assistant_profile import grounded, is_sensitive, needs_confirm, typed_text
+from acb_common.assistant_profile import (
+    confirm_form_without_token,
+    grounded,
+    is_sensitive,
+    needs_confirm,
+    sensitive_terms,
+    typed_text,
+)
 from acb_common.pg_text import storable
 from sqlalchemy import text
+
+from gateway.chat_recovery import is_card_answer_text
+from gateway.rooms import SOLO_ROOM_SQL
 
 #: The version of the stored shape.
 VERSION = 1
@@ -90,6 +114,9 @@ _ROW_BREAK = "\n;\n"
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
 #: The form of a stored time.
 _STAMP = "%Y-%m-%dT%H:%M:%SZ"
+#: A mark between two digits that ``needs_confirm`` does not read as a
+#: number joint. "98450/12345" reads as one number for the check.
+_DIGIT_JOINT = re.compile(r"(?<=\d)[/\\|_](?=\d)")
 
 
 class SummaryShapeError(ValueError):
@@ -121,8 +148,13 @@ def is_brief_row(row: Any) -> bool:
 
 def _is_member_row(row: Any, member: Any) -> bool:
     """True when *row* is a turn of *member*. In a solo chat only the member
-    writes a ``user`` row. A row that names another author never counts."""
+    writes a ``user`` row. A row that names another author never counts.
+
+    A card answer never counts. Its text quotes the question of the card,
+    which the model wrote, so it grounds nothing (``routes/agent.py``)."""
     if _field(row, "role") != "user" or is_brief_row(row):
+        return False
+    if is_card_answer_text(str(_field(row, "content") or "")):
         return False
     if _field(row, "author_kind") not in (None, "", "human"):
         return False
@@ -196,8 +228,10 @@ def prompt_rows(rows: Iterable[Any], member: Any, *,
 
 
 def _one_line(value: str) -> str:
-    """*value* with each run of white space as one space."""
-    return " ".join(value.split())
+    """*value* with each format character taken out, such as a zero-width
+    space, and each run of white space as one space."""
+    plain = "".join(ch for ch in value if unicodedata.category(ch) != "Cf")
+    return " ".join(plain.split())
 
 
 def sentences(value: str) -> list[str]:
@@ -205,14 +239,43 @@ def sentences(value: str) -> list[str]:
     return [s for s in (_one_line(p) for p in _SENTENCE_END.split(value)) if s]
 
 
+def _flagged(line: str) -> bool:
+    """True when *line* holds a sensitive word, an address, a link or a long
+    number. A slash, a bar or an underscore between two digits counts as a
+    number joint here."""
+    return (is_sensitive(line) or needs_confirm(line)
+            or needs_confirm(_DIGIT_JOINT.sub("-", line)))
+
+
 def _keep(line: str, words: str) -> bool:
-    """False for a line with a sensitive word, an address, a link or a long
-    number, unless the typed words of the member hold the whole line. The
-    rule over-drops on purpose: a lost line costs little, and a kept one
+    """True when the summary may store *line*. A line that is not flagged
+    stays. A flagged line stays only when each of these holds:
+
+    * the typed words of the member hold the line (``grounded``);
+    * they hold each sensitive term of the line (``sensitive_terms``). So 80%
+      of the words of a line is not enough when the member never typed the
+      sensitive word itself;
+    * the line has no form that ``grounded`` cannot match as a token
+      (``confirm_form_without_token``), such as an address in words or a
+      domain of another script.
+
+    The rule over-drops on purpose: a lost line costs little, and a kept one
     stores what the member did not say (D-PZ-16, D-PZ-28)."""
-    if not (is_sensitive(line) or needs_confirm(line)):
+    if not _flagged(line):
         return True
-    return grounded(line, words)
+    if not grounded(line, words):
+        return False
+    if not sensitive_terms(line) <= sensitive_terms(words):
+        return False
+    return not confirm_form_without_token(line)
+
+
+def _passes(text_lines: list[str], follow: list[str], words: str) -> bool:
+    """True when the text, the follow-ups and the two together each pass
+    :func:`_keep` as one string. A number or an address can cross the end of
+    a line, so a check of each line alone is not enough."""
+    groups = (text_lines, follow, text_lines + follow)
+    return all(_keep(" ".join(group), words) for group in groups if group)
 
 
 @dataclass(frozen=True)
@@ -267,6 +330,10 @@ def check_answer(raw: Any, words: Any) -> Answer | None:
       400 characters or less.
     * The follow-ups keep the first 3 items. An item that is not a string,
       that has more than 120 characters, or that :func:`_keep` refuses drops.
+    * Then the joined text, the joined follow-ups and the two together must
+      each pass :func:`_keep` (:func:`_passes`). If one fails, each flagged
+      line drops, even a grounded one, and the check runs again. If it still
+      fails, a form crosses the end of a line, and the answer gives None.
     * With no text and no follow-up left, the answer gives None.
     """
     data = _parse(raw)
@@ -289,6 +356,11 @@ def check_answer(raw: Any, words: Any) -> Answer | None:
         line = _one_line(item)
         if line and len(line) <= FOLLOW_UP_MAX and _keep(line, said):
             follow.append(line)
+    if not _passes(kept, follow, said):
+        kept = [line for line in kept if not _flagged(line)]
+        follow = [line for line in follow if not _flagged(line)]
+        if not _passes(kept, follow, said):
+            return None
     text_out = " ".join(kept)
     if not text_out and not follow:
         return None
@@ -380,10 +452,25 @@ def _value(answer: Answer, *, through: str, through_ms: int, at: datetime) -> st
 #
 # Each statement names the one column. None names `updated_at`,
 # `last_preview` or `message_count`. RLS of the caller's session binds the
-# tenant, and each statement finds the chat by its id only.
+# tenant, and a statement finds the chat by its id, or by its member for a
+# clear. The caller checks the member.
 
 #: True when the member deleted the summary of the chat.
 _OFF = "COALESCE(member_summary @> jsonb_build_object('off', true), false)"
+#: The bound tenant, named beside RLS, as each store module names it.
+_BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
+#: The newest row of the chat `s`, as a waterline.
+_NEWEST = """(SELECT m.{col} FROM chat_message m WHERE m.session_id = s.id
+                 ORDER BY m.timestamp_ms DESC, m.id DESC LIMIT 1)"""
+#: What a clear leaves: a Delete stays `off`. Each other chat keeps only a
+#: waterline at its newest row, so no job summarises its old rows again.
+_CLEARED = f"""CASE WHEN {_OFF}
+            THEN jsonb_build_object('v', {VERSION}, 'off', true)
+            ELSE jsonb_strip_nulls(jsonb_build_object(
+                     'v', {VERSION},
+                     'through', {_NEWEST.format(col="id")},
+                     'through_ms', {_NEWEST.format(col="timestamp_ms")}))
+       END"""
 
 READ_SQL = "SELECT member_summary FROM chat_session WHERE id = :sid"
 
@@ -415,8 +502,6 @@ UPDATE chat_session
    AND NOT {_OFF}
 """
 
-WRITE_SQL = _WRITE_HEAD + "RETURNING id\n"
-
 #: The write of the job: it changes the chat only while the mark is the one
 #: that the job wrote. So a Delete during the model call wins.
 WRITE_MARKED_SQL = (
@@ -433,6 +518,29 @@ UPDATE chat_session
 RETURNING id
 """
 
+#: Forget and the purge: each chat of the member in the bound org loses its
+#: summary. A chat with no summary and no row does not change.
+CLEAR_FOR_MEMBER_SQL = f"""
+UPDATE chat_session AS s
+   SET member_summary = {_CLEARED}
+ WHERE lower(s.user_id) = :member
+   AND s.organization_id = {_BOUND_ORG}
+   AND (s.member_summary IS NOT NULL
+        OR EXISTS (SELECT 1 FROM chat_message m WHERE m.session_id = s.id))
+RETURNING s.id
+"""
+
+#: A chat that stops being solo loses its summary: another party may now read
+#: the chat, and the summary is for its member only.
+CLEAR_ON_SHARE_SQL = f"""
+UPDATE chat_session AS s
+   SET member_summary = {_CLEARED}
+ WHERE s.id = :sid
+   AND s.member_summary IS NOT NULL
+   AND NOT {SOLO_ROOM_SQL}
+RETURNING s.id
+"""
+
 
 async def read(db: Any, session_id: str) -> Stored | None:
     """The summary of the chat *session_id*, or None for no chat and for a
@@ -447,20 +555,6 @@ async def mark(db: Any, session_id: str, *, through: str, at: datetime) -> bool:
     when no chat has the id, and when the chat reads ``off``."""
     row = (await db.execute(text(MARK_SQL), {
         "sid": session_id, "through": _through(through), "at": _stamp(at)})).first()
-    return row is not None
-
-
-async def write(db: Any, session_id: str, answer: Answer, *, through: str,
-                through_ms: int, at: datetime) -> bool:
-    """Store *answer* as the summary of the chat, through the row *through*.
-
-    The mark that is there stays. Answers False when no chat has the id, and
-    when the chat reads ``off``. The job of PZ-33b writes with
-    :func:`write_marked`, never with this."""
-    row = (await db.execute(text(WRITE_SQL), {
-        "sid": session_id,
-        "summary": _value(answer, through=through, through_ms=through_ms, at=at),
-    })).first()
     return row is not None
 
 
@@ -485,3 +579,30 @@ async def turn_off(db: Any, session_id: str) -> bool:
     the id. The caller checks that the chat is the member's own."""
     row = (await db.execute(text(OFF_SQL), {"sid": session_id})).first()
     return row is not None
+
+
+async def clear_for_member(db: Any, member: str) -> int:
+    """Clear each summary of *member* in the bound org, and answer the count.
+
+    Forget (PZ-35) and the member purge call it. A chat that reads ``off``
+    stays ``off``. Each other chat of the member keeps only a waterline at
+    its newest row, so the job writes no summary of an old chat again. A new
+    row starts a new summary while the member's switch is on. The member
+    comes from the session or the member record, never from request input.
+    """
+    who = _key(member)
+    if not who:
+        raise SummaryShapeError("member must be a non-empty address")
+    rows = (await db.execute(text(CLEAR_FOR_MEMBER_SQL), {"member": who})).fetchall()
+    return len(rows)
+
+
+def clear_on_share(s: Any, session_id: str) -> bool:
+    """Clear the summary of the chat *session_id* when it is no longer solo.
+
+    The room routes call it in their own transaction, with the sync
+    ``acb_graph`` session, after a participant joins and after the visibility
+    leaves ``private``. A solo chat does not change. A chat that reads
+    ``off`` stays ``off``. Answers True when a summary was cleared.
+    """
+    return s.execute(text(CLEAR_ON_SHARE_SQL), {"sid": session_id}).first() is not None
