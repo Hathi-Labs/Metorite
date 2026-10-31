@@ -309,8 +309,10 @@ describe("glass scrollbars", () => {
     // with no cue, and the glass rail cannot open.
     expect(GLOBALS).toMatch(/html\[data-look="glass"\] nav\[data-more-below\] \{[^}]*mask-image: linear-gradient\(to bottom/);
     const sidebar = readFileSync(join(SRC, "components", "Sidebar.tsx"), "utf8");
-    expect(sidebar).toContain('data-more-below={moreBelow ? "" : undefined}');
-    expect(sidebar).toMatch(/useMoreBelow\(\s*navRef,\s*useDocumentLook\(\) === "glass" && collapsed,/);
+    expect(sidebar).toContain('data-more-below={edges.below ? "" : undefined}');
+    expect(sidebar).toContain('data-more-above={edges.above ? "" : undefined}');
+    expect(sidebar).toMatch(/useScrollEdges\(\s*navRef,\s*useDocumentLook\(\) === "glass",/);
+    expect(GLOBALS).toMatch(/html\[data-look="glass"\] nav\[data-more-above\]\[data-more-below\] \{/);
   });
 });
 

@@ -199,7 +199,7 @@ const FOLD_KEYS =
  * chevron at the top of the window points at nothing, and a panel glyph
  * would copy the apps' own rail toggles beside it.
  */
-export function SidebarFoldButton({ mark }: { mark?: string } = {}) {
+export function SidebarFoldButton() {
   const fold = useSidebarFold();
   const anchorRef = useRef<HTMLElement>(null);
   const label = fold.collapsed ? "Expand sidebar" : "Collapse sidebar";
@@ -228,22 +228,6 @@ export function SidebarFoldButton({ mark }: { mark?: string } = {}) {
             aria-expanded={!fold.collapsed}
           />
         </span>
-      ) : fold.collapsed && mark ? (
-        // Folded: the organization's initial keeps the company in view
-        // (owner, 2026-10-09), and turns into the open glyph on hover or focus.
-        <button
-          ref={anchorRef as RefObject<HTMLButtonElement>}
-          key={fold.beacon}
-          onClick={fold.toggle}
-          data-sidebar-mark=""
-          className={`group relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-accent text-sm font-semibold text-sidebar-foreground tech-transition ${beaconClass}`}
-          title={`${label} (${FOLD_KEYS})`}
-          aria-label={label}
-          aria-expanded={false}
-        >
-          <span aria-hidden className="group-hover:opacity-0 group-focus-visible:opacity-0">{mark}</span>
-          <Icon name="ChevronsRight" size={16} className="absolute opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" />
-        </button>
       ) : (
         <button
           ref={anchorRef as RefObject<HTMLButtonElement>}

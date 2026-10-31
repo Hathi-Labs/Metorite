@@ -2258,6 +2258,105 @@ a.kb-subpage:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px
   transition: width var(--panel-duration) var(--panel-easing);
 }
 
+/* Hover to expand (owner, 2026-11-01). A folded rail's rows keep their
+   place while it widens, so the row under the pointer stays under it. Each
+   name takes no width while folded, fades in once the rail has widened, and
+   leaves at once when it narrows. The rows hold one geometry in both states
+   (below), so no icon moves on the way out or on the way back. */
+.sidebar-rail [data-rail-label] {
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: opacity 100ms ease-out;
+}
+.sidebar-rail[data-peek="open"] [data-rail-label] {
+  max-width: 12rem;
+  margin-left: 0.75rem;
+  opacity: 1;
+  transition: opacity 160ms ease-out 110ms;
+}
+/* One geometry for the folded rail, peeking or not, so nothing moves when
+   the peek ends (owner, 2026-11-01: "a slight shift between where the icons
+   are supposed to be"). An icon sits at a fixed left inset, the centred x of
+   an 18 px icon in a 40 px row, and never re-centres. A count or a dot
+   keeps its place on the icon's top-right corner, measured from the left,
+   so a wider row does not carry it away. The head's mark does the same. */
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"] [data-rail-row] {
+  justify-content: flex-start;
+  padding-left: 0.6875rem;
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"] [data-account-foot] [data-rail-row] {
+  padding-left: 0.375rem;
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"] [data-rail-row] > .absolute {
+  left: 1.625rem;
+  right: auto;
+}
+/* The head's brand clips to its mark while the rail is folded, and opens to
+   the name as the rail widens, at the rail's own pace. */
+html[data-look="glass"] .sidebar-rail [data-head-brand] {
+  max-width: 11rem;
+  overflow: hidden;
+  transition: max-width var(--panel-duration) var(--panel-easing);
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="open"]) [data-head-brand] {
+  max-width: 1.5rem;
+}
+/* A section's cap: the rule while folded, the name while it peeks. */
+.sidebar-rail[data-peek="open"] [data-rail-rule] {
+  display: none;
+}
+/* A wide count would sit on a row's name while it peeks, so the corner
+   count fades out and a trailing pill fades in at the row's end. Neither
+   moves. */
+.sidebar-rail [data-rail-trail] {
+  max-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  padding-inline: 0;
+  transition: opacity 100ms ease-out;
+}
+.sidebar-rail[data-peek="open"] [data-rail-trail] {
+  max-width: 4rem;
+  padding-inline: 0.375rem;
+  opacity: 1;
+  transition: opacity 160ms ease-out 110ms;
+}
+.sidebar-rail [data-rail-corner] {
+  transition: opacity 100ms ease-out;
+}
+.sidebar-rail[data-peek="open"] [data-rail-corner] {
+  opacity: 0;
+}
+/* While it peeks, the names read as the open sidebar's do. */
+html[data-look="glass"] .sidebar-rail[data-peek] [data-rail-row]:not([aria-current="page"]) [data-rail-label] {
+  color: color-mix(in srgb, var(--sidebar-foreground) 85%, transparent);
+}
+/* One material, folded or peeking (owner, 2026-11-01: "it sort of changes
+   color drastically"). One layer under the rail's content draws the rail's
+   own tint over the frame's colour, as the folded rail shows it, so over the
+   page it reads as the same panel, and the page shows through it, blurred.
+   The blur sits on this layer, never on the rail itself, so a fixed menu
+   inside the rail (the account menu) is not trapped by it. */
+html[data-look="glass"] .sidebar-rail[data-peek] {
+  background-color: transparent;
+}
+html[data-look="glass"] .sidebar-rail[data-peek]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  /* The rail's tint on top, the frame's colour under it: what the folded
+     rail shows, over the frame or over the page. */
+  background:
+    linear-gradient(var(--glass-bg), var(--glass-bg)),
+    color-mix(in srgb, var(--background-grouped) 88%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  backdrop-filter: blur(24px) saturate(1.4);
+}
+
 @keyframes sidebar-swap {
   from { opacity: 0; }
   to   { opacity: 1; }
@@ -2568,12 +2667,21 @@ html[data-look="glass"] *::-webkit-scrollbar-thumb {
 html[data-look="glass"] *:hover::-webkit-scrollbar-thumb {
   background-color: var(--scrollbar-thumb);
 }
-/* The folded rail hides its bar (task 998), so while apps sit below its edge
-   it fades there. `Sidebar.tsx` sets the attribute only in glass, and only
-   while the list can still scroll down. */
+/* The list fades at an edge while apps sit beyond it (task 998 hid the
+   folded rail's bar, and the open list's bar shows only on hover).
+   `Sidebar.tsx` sets each attribute only in glass, and only while the list
+   can still scroll that way. */
 html[data-look="glass"] nav[data-more-below] {
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
+}
+html[data-look="glass"] nav[data-more-above] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 2rem);
+  mask-image: linear-gradient(to bottom, transparent, #000 2rem);
+}
+html[data-look="glass"] nav[data-more-above][data-more-below] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 2rem, #000 calc(100% - 2.5rem), transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 2rem, #000 calc(100% - 2.5rem), transparent);
 }
 
 /* ── Reveal on hover ──────────────────────────────────────────────────── */
@@ -2756,6 +2864,14 @@ html[data-look="glass"] nav[data-more-below] {
   /* The fold still happens, at once. A still tint on the expand button
      replaces the pulse, so the member still sees where the sidebar went. */
   .sidebar-rail {
+    transition: none;
+  }
+  .sidebar-rail [data-rail-label],
+  .sidebar-rail [data-rail-trail],
+  .sidebar-rail [data-rail-corner] {
+    transition: none;
+  }
+  html[data-look="glass"] .sidebar-rail [data-head-brand] {
     transition: none;
   }
   /* The assistant opens, closes and changes form at once, as the fold does.

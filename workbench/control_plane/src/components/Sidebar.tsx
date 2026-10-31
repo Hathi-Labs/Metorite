@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type MouseEvent, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
 import { useSession, signOut } from "next-auth/react";
 import { forgetThisDevice } from "@/lib/push";
 import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
@@ -60,22 +60,32 @@ export default function Sidebar() {
   // needs to know what is inside the rail.
   const fold = useSidebarFold();
   const { collapsed: storedCollapsed, armedRef, foldForWork } = fold;
-  // Peek (owner, 2026-11-01): while the pointer rests on a folded rail's head,
-  // the whole sidebar shows over the page, and the page does not move. It
-  // ends when the pointer leaves it or the member opens an app. The mark in
-  // the head pins it open. Every draw below reads the folded state as peek
-  // leaves it, so the peek draws the open sidebar.
-  const [peek, setPeek] = useState(false);
+  // Hover to expand (owner, 2026-11-01: "have the sidebar open on hover ...
+  // and automatically contract when I move the mouse away"). A folded rail
+  // widens over the page while the pointer rests on it, and every row keeps
+  // its place: only the names fade in beside the icons, so the row under the
+  // pointer stays under it. The page never moves. It floats over the page
+  // until it has narrowed again ("closing"), and only then takes its slot
+  // back, so the page does not jump at the end. A touch never opens it.
+  // Keyboard focus inside opens it. The fold control pins it open.
+  const [peekPhase, setPeekPhase] = useState<"off" | "open" | "closing">("off");
   const peekTimer = useRef<number | undefined>(undefined);
-  const collapsed = storedCollapsed && !peek;
-  const startPeek = () => {
+  const collapsed = storedCollapsed;
+  const peeking = storedCollapsed && peekPhase !== "off";
+  const peekOpen = storedCollapsed && peekPhase === "open";
+  const openPeek = (delay: number) => {
     if (!storedCollapsed) return;
     window.clearTimeout(peekTimer.current);
-    peekTimer.current = window.setTimeout(() => setPeek(true), 180);
+    if (peekPhase === "open") return;
+    peekTimer.current = window.setTimeout(() => setPeekPhase("open"), peekPhase === "closing" ? 0 : delay);
   };
-  const endPeek = () => {
+  const closePeek = (delay: number) => {
     window.clearTimeout(peekTimer.current);
-    setPeek(false);
+    if (peekPhase === "off") return;
+    peekTimer.current = window.setTimeout(() => {
+      setPeekPhase("closing");
+      peekTimer.current = window.setTimeout(() => setPeekPhase("off"), PEEK_SETTLE_MS);
+    }, delay);
   };
   const armFold = fold.arm;
   // `placement === "bar"`: the full-width bar carries the logo and the
@@ -137,15 +147,19 @@ export default function Sidebar() {
   useEffect(() => {
     window.clearTimeout(peekTimer.current);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- the peek ends when the fold or the page changes
-    setPeek(false);
+    setPeekPhase("off");
   }, [storedCollapsed, pathname]);
-  // Glass: the folded rail fades at its foot while apps sit below it, since
-  // it has no bar to show that it scrolls (review of GL-10, a 1366x768 window).
+  useEffect(() => () => window.clearTimeout(peekTimer.current), []);
+  // Glass: the list fades at an edge while apps sit beyond it, folded or
+  // open, since a long list has no bar at rest to show that it scrolls
+  // (review of GL-10, a 1366x768 window; owner, 2026-11-01: "account for when
+  // we have more apps"). The head and the foot stay put, and only the list
+  // scrolls.
   const navRef = useRef<HTMLElement>(null);
-  const moreBelow = useMoreBelow(
+  const edges = useScrollEdges(
     navRef,
-    useDocumentLook() === "glass" && collapsed,
-    `${accessLoading}-${shellPending}-${railSections.length}`,
+    useDocumentLook() === "glass",
+    `${accessLoading}-${shellPending}-${railSections.length}-${collapsed}`,
   );
   /**
    * ONE predicate for "is there a workspace behind this person yet", used by
@@ -387,54 +401,60 @@ export default function Sidebar() {
     return null;
   }
 
-  // The organization's initial, for the folded rail's head.
-  const orgInitial = (access.organization.display_name || access.organization.slug || "").trim().charAt(0).toUpperCase();
 
   return (
     <>
-    {/* While it peeks, the rail keeps its place in the row, so the page does not move. */}
-    {peek ? <div aria-hidden data-sidebar-peek-space="" className="w-14 shrink-0 glass:m-2" /> : null}
+    {/* While it peeks, its slot stays in the row, so the page does not move. */}
+    {peeking ? <div aria-hidden data-sidebar-peek-space="" className="w-14 shrink-0 glass:m-2" /> : null}
     <aside
       ref={asideRef}
       data-collapsed={collapsed ? "true" : "false"}
-      data-peek={peek ? "" : undefined}
-      onMouseLeave={peek ? endPeek : undefined}
+      data-peek={peekOpen ? "open" : peeking ? "closing" : undefined}
+      onPointerEnter={storedCollapsed ? (e) => { if (e.pointerType !== "touch") openPeek(PEEK_OPEN_MS); } : undefined}
+      onPointerLeave={storedCollapsed ? (e) => { if (e.pointerType !== "touch") closePeek(PEEK_CLOSE_MS); } : undefined}
+      onFocus={storedCollapsed ? () => openPeek(0) : undefined}
+      onBlur={storedCollapsed ? (e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) closePeek(0); } : undefined}
       // A fold widens <main> but fires no window `resize`, and some layouts
       // measure only on that event. Tell them once the width settles.
       onTransitionEnd={(e) => {
-        if (e.target === e.currentTarget && e.propertyName === "width") {
+        // A peek floats over the page and changes no page width, so it asks
+        // no layout to measure again: a forced re-measure nudged the app
+        // (owner, 2026-11-01).
+        if (e.target === e.currentTarget && e.propertyName === "width" && peekPhase === "off") {
           window.dispatchEvent(new Event("resize"));
         }
       }}
       className={`sidebar-rail shrink-0 border-r flex flex-col overflow-hidden bg-sidebar border-sidebar-border glass:m-2 glass:rounded-2xl glass:border-r-0 glass:glass-chrome-flat ${
-        collapsed ? "w-14" : "w-64"
-      } ${peek ? "absolute inset-y-0 left-0 z-40 shadow-2xl glass:shadow-glass glass:bg-popover!" : ""}`}
+        collapsed && !peekOpen ? "w-14" : "w-64"
+      } ${peeking ? "absolute inset-y-0 left-0 z-40" : ""} ${peekOpen ? "shadow-2xl glass:shadow-glass" : ""}`}
     >
       {/* Header. With the full-width shell bar, the bar carries the logo and
           the fold control instead, so the logo stays in view when this rail
           folds (owner, 2026-10-09). */}
       {head && (
+        // One head in every state (owner, 2026-11-01: "the icon of the
+        // organization ... a different kind of behavior"). Its row keeps the
+        // open sidebar's width, so a folded rail shows only the mark, and a
+        // peek or the open sidebar reveals the name beside it as the rail
+        // widens: nothing is swapped. The mark sits on the icons' column.
         <div
           data-sidebar-head=""
-          onMouseEnter={storedCollapsed && !peek ? startPeek : undefined}
-          onMouseLeave={storedCollapsed && !peek ? endPeek : undefined}
-          className={`flex items-center border-b border-sidebar-border ${collapsed ? "justify-center p-3" : "justify-between px-4 py-4"} glass:border-b-0 ${collapsed ? "glass:px-0 glass:pt-3 glass:pb-1" : "glass:gap-2 glass:pl-3 glass:pr-2 glass:pt-3 glass:pb-1"}`}
+          className={`shrink-0 overflow-hidden border-b border-sidebar-border glass:border-b-0 ${collapsed ? "py-3" : "py-4"} glass:pt-3 glass:pb-1`}
         >
-          {!collapsed && (
-            // The customer's mark when they have uploaded one, ours when they
-            // have not. `maxWidth` is what stops a wide wordmark from pushing the
-            // collapse control off the 256px rail. One line, as the bar drew it.
-            <div className="min-w-0">
+          <div className="flex w-64 items-center gap-2 pl-4 pr-2">
+            <div data-head-brand="" className="min-w-0 flex-1">
+              {/* The customer's mark when they have uploaded one, ours when
+                  they have not. One line, as the bar drew it. */}
               <OrgBrandLockup fallbackCaption="Control Plane" height={24} maxWidth={176} compact />
             </div>
-          )}
-          {/* WS-51 S3: with the shell bar off, this head is the top of the
-              page, so the activity control sits here, beside the fold. The
-              one bell (NS-6) sits before it while its flag is on. */}
-          <div className={`flex items-center gap-1 ${collapsed ? "flex-col" : ""}`}>
-            {!barOn && dockOn ? <ShellBell /> : null}
-            {!barOn ? <ActivityControl /> : null}
-            <SidebarFoldButton mark={orgInitial || undefined} />
+            {/* WS-51 S3: with the shell bar off, this head is the top of the
+                page, so the activity control sits here, beside the fold. The
+                one bell (NS-6) sits before it while its flag is on. */}
+            <div className="flex shrink-0 items-center gap-1">
+              {!barOn && dockOn ? <ShellBell /> : null}
+              {!barOn ? <ActivityControl /> : null}
+              <SidebarFoldButton />
+            </div>
           </div>
         </div>
       )}
@@ -454,7 +474,8 @@ export default function Sidebar() {
       <nav
         ref={navRef}
         key={collapsed ? "rail" : "full"}
-        data-more-below={moreBelow ? "" : undefined}
+        data-more-below={edges.below ? "" : undefined}
+        data-more-above={edges.above ? "" : undefined}
         className={`sidebar-swap flex flex-col flex-1 overflow-y-auto overflow-x-hidden glass:overscroll-contain ${
           collapsed ? "scrollbar-hide" : "scrollbar-thin"
         }`}
@@ -543,12 +564,13 @@ export default function Sidebar() {
             aria-label="All apps"
             aria-haspopup="dialog"
             // `cc-link`: the house focus ring, as the account foot wears it.
-            className={`cc-link flex items-center gap-2.5 rounded-lg glass:rounded-row text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${
-              collapsed ? "justify-center p-2.5" : "w-full px-3 py-2 text-[13px] glass:text-subhead font-medium"
+            data-rail-row={collapsed ? "" : undefined}
+            className={`cc-link flex items-center rounded-lg glass:rounded-row text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${
+              collapsed ? "w-full justify-center p-2.5" : "w-full gap-2.5 px-3 py-2 text-[13px] glass:text-subhead font-medium"
             }`}
           >
             <Icon name="LayoutGrid" size={collapsed ? 18 : 16} className="glass:text-muted-foreground" />
-            {!collapsed && <span>All apps</span>}
+            {collapsed ? <RailPeekLabel>All apps</RailPeekLabel> : <span>All apps</span>}
           </button>
         </div>
       )}
@@ -659,9 +681,11 @@ function AddAppsRow({
           title={name}
           aria-label={name}
           aria-haspopup="dialog"
+          data-rail-row=""
           className="cc-link relative flex items-center justify-center rounded-lg glass:rounded-row p-2.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
         >
           <Icon name="Plus" size={18} className="shrink-0 glass:text-muted-foreground" />
+          <RailPeekLabel>Add apps</RailPeekLabel>
           {badge ? <NavBadge count={badge.count} tone={badge.tone} label={badge.label} placement="corner" /> : null}
           {meta?.kind === "needs" ? <NeedsDot /> : null}
         </button>
@@ -703,19 +727,27 @@ function AddAppsRow({
  * that could turn out not to exist.
  */
 /**
- * Whether a scroller holds more below its visible edge. `on` false skips the
- * work and says no. `content` changes when the list does, so a list that
- * loads after the first paint is measured again.
+ * Whether a scroller holds more above and below its visible edges. `on`
+ * false skips the work and says no. `content` changes when the list does, so
+ * a list that loads after the first paint is measured again.
  */
-function useMoreBelow(ref: RefObject<HTMLElement | null>, on: boolean, content: string): boolean {
-  const [more, setMore] = useState(false);
+function useScrollEdges(
+  ref: RefObject<HTMLElement | null>,
+  on: boolean,
+  content: string,
+): { above: boolean; below: boolean } {
+  const [edges, setEdges] = useState({ above: false, below: false });
   useEffect(() => {
     const el = ref.current;
     if (!on || !el) {
-      setMore(false);
+      setEdges({ above: false, below: false });
       return;
     }
-    const check = () => setMore(el.scrollTop + el.clientHeight < el.scrollHeight - 1);
+    const check = () => {
+      const above = el.scrollTop > 1;
+      const below = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+      setEdges((prev) => (prev.above === above && prev.below === below ? prev : { above, below }));
+    };
     check();
     el.addEventListener("scroll", check, { passive: true });
     const ro = new ResizeObserver(check);
@@ -726,7 +758,27 @@ function useMoreBelow(ref: RefObject<HTMLElement | null>, on: boolean, content: 
       ro.disconnect();
     };
   }, [ref, on, content]);
-  return more;
+  return edges;
+}
+
+/** Hover to expand: the rest before it opens, and the grace before it closes. */
+const PEEK_OPEN_MS = 150;
+const PEEK_CLOSE_MS = 250;
+/** How long the rail narrows: `--panel-duration`, with a little room. */
+const PEEK_SETTLE_MS = 340;
+
+/**
+ * A folded row's name. It takes no width while the rail is folded, and it
+ * fades in beside the icon while the rail peeks (`globals.css`, "Hover to
+ * expand"). The link's own name says it already, so it is hidden from
+ * assistive tech.
+ */
+function RailPeekLabel({ children }: { children: ReactNode }) {
+  return (
+    <span data-rail-label="" aria-hidden className="truncate text-[13px] font-medium glass:text-subhead">
+      {children}
+    </span>
+  );
 }
 
 function NavSkeleton({ collapsed }: { collapsed: boolean }) {
@@ -847,7 +899,17 @@ function NavSectionBlock({
   if (collapsed) {
     return (
       <div data-nav-section={section.id}>
-        <div className="flex flex-col gap-1 p-2">
+        {/* Glass: the section's cap, one height in both states. Folded it is a
+            short rule. While the rail peeks the section's name fades in, in
+            the same place, so no row moves (owner, 2026-11-01: "keep the
+            subsections of personal, across teams, etc."). */}
+        <div data-rail-heading="" aria-hidden className="relative hidden h-6 items-center pl-[7px] glass:flex">
+          <span data-rail-rule="" className="absolute left-[18px] h-px w-5 bg-sidebar-border" />
+          <span data-rail-label="" className="text-caption font-medium text-muted-foreground">
+            {section.label}
+          </span>
+        </div>
+        <div className="flex flex-col gap-1 p-2 glass:pt-0">
           {section.items.map((p) => (
             <NavLink
               key={p.href}
@@ -864,7 +926,7 @@ function NavSectionBlock({
             />
           ))}
         </div>
-        <div className="mx-3 border-t border-sidebar-border/50" />
+        <div className="mx-3 border-t border-sidebar-border/50 glass:hidden" />
       </div>
     );
   }
@@ -1040,6 +1102,7 @@ export function NavLink({
             : undefined
         }
         data-nav-row={pane.href}
+        data-rail-row=""
         aria-label={name}
         className={`rounded-lg glass:rounded-row tech-transition flex items-center justify-center p-2.5 relative ${
           active
@@ -1049,6 +1112,7 @@ export function NavLink({
       >
         {/* `shrink-0`: a squeezed rail must not shrink the icon (task 998). */}
         <Icon name={pane.icon} size={18} strokeWidth={active ? 2.5 : 2} className="shrink-0" />
+        <RailPeekLabel>{pane.label}</RailPeekLabel>
         {/* The icon has no text, so the link's name starts with the pane's. */}
         {badge !== undefined && badge > 0 && <span className="sr-only">{pane.label}</span>}
         <NavBadge
@@ -1223,15 +1287,22 @@ function NeedsYouRow({
       aria-label={rowLabel}
       title={collapsed ? rowLabel : undefined}
       data-nav-needs-you=""
+      data-rail-row={collapsed ? "" : undefined}
       className={`rounded-lg glass:rounded-row tech-transition text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground ${
         collapsed ? "relative flex items-center justify-center p-2.5" : "flex items-center gap-2.5 px-3 py-2 text-sm glass:text-sidebar-foreground/85"
       }`}
     >
       <Icon name="Inbox" size={collapsed ? 18 : 16} className="shrink-0 glass:text-muted-foreground" />
+      {collapsed ? <RailPeekLabel>Needs you</RailPeekLabel> : null}
       {collapsed ? (
-        <span className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 rounded-full bg-primary px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-primary-foreground">
-          {text}
-        </span>
+        <>
+          <span data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 rounded-full bg-primary px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-primary-foreground">
+            {text}
+          </span>
+          <span data-rail-trail="" aria-hidden className="ml-auto rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
+            {text}
+          </span>
+        </>
       ) : (
         <>
           <span className="font-medium text-[13px] glass:text-subhead">Needs you</span>
