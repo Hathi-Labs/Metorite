@@ -81,9 +81,12 @@ pgi() { if [ "$PG_MODE" = "local" ]; then "$@"; else docker exec -i "$PG_CONTAIN
 # container reads it. A plain PGOPTIONS=... before pgi would stay on the host.
 # The setting is a limit for one session, and it changes no server setting.
 #
-# ⚠️ Through a pooler, the pooler must pass the `options` startup parameter
-# on to the server. A pooler that refuses it fails the connection. H-441
-# holds the check of the production pooler.
+# ⚠️ MEASURED 2026-10-31: production restores through the Supabase session
+# pooler (PG_MODE=local, /etc/acb/root.env). That pooler takes the connection
+# and IGNORES the option: `show maintenance_work_mem` still reads 64MB. So
+# there this line changes nothing, and a large IVFFlat index still fails to
+# build. It works in docker mode and on a direct connection. H-441 holds the
+# fix for the pooler.
 # Fence: tests/unit/test_backup_deploy_wiring.py.
 restore_256() { pgi env "PGOPTIONS=-c maintenance_work_mem=256MB" pg_restore "$@"; }
 

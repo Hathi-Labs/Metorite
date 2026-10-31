@@ -148,6 +148,11 @@ it is not built. `box_hardening.md` §5 BH-6 owns the change.
     inside the `pg`/`pgi` seam or the `docker exec`. In `restore_db.sh`,
     `restore_256` is the one way to restore.
   - The setting is a limit for one session. It changes no server setting.
+  - ⚠️ **Measured 2026-10-31: the production pooler ignores it.** Production
+    restores through the Supabase session pooler. That pooler takes the
+    connection, and `show maintenance_work_mem` still reads 64MB. So a
+    disaster restore of production does not meet this rule yet. H-441
+    holds the fix.
   - Fences: `tests/unit/test_backup_deploy_wiring.py` (the verify container
     and `restore_db.sh`, in both modes) and `tests/unit/test_staging_box.py`
     (`staging_refresh.sh`).
