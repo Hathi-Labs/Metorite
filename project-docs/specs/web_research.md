@@ -52,11 +52,12 @@ The owner wants Mira to do in chat what a research agent does: search the web at
 | `fetch_page` | same file | Sends the URL to `https://r.jina.ai`. If that fails, it fetches the page itself with `follow_redirects=True` and strips tags with a regex. Cap of 8,000 characters |
 | Injection | `apps/services/orchestrator/orchestrator/_tool_injection.py` (line 2032) | Both tools are added to every agent |
 | The egress card | `packages/acb_skills/acb_skills/egress.py` | A direct egress tool such as `fetch_page` asks its card |
-| The SSRF check | `apps/services/gateway/gateway/outbound_guard.py` (line 137) | "True only when each address of host is public". The gateway uses it. `web_tools.py` does not |
+| The SSRF check | `packages/acb_common/acb_common/public_address.py` (`pinned_public_address`, `host_is_public`) | Shared since #1256. `gateway/outbound_guard.py` wraps it. `web_tools.py` does not use it |
+| The untrusted mark | `packages/acb_skills/acb_skills/untrusted.py` (`UntrustedFrame`) | The one convention for outside text, with the fence `tests/unit/test_untrusted_frame.py` |
 | A browser on the box | `apps/services/meeting_bot/` | Playwright 1.48 with Chromium in its own container. Proof that a browser worker can run here |
 | The coding session's network | `maf_coding_engine.md` §18.4 CA-4 (task 1032) | Spec only: an egress proxy with an allow-list, `web_fetch` and `web_search` inside the sandbox |
 
-**⚠️ A finding.** The direct fallback of `fetch_page` follows redirects and checks no address. A redirect to a private address is not refused in that code. The egress card lowers the risk, but nothing proves it closed. WEB-1 fixes it first.
+**⚠️ A finding.** The direct fallback of `fetch_page` follows redirects and checks no address. A redirect to a private address is not refused in that code. The egress card checks no address, so nothing else closes it. The code also sends a private target to Jina before any check. WEB-1 fixes it first.
 
 ---
 
@@ -69,11 +70,12 @@ The service lives in one package, `packages/acb_skills/acb_skills/web/`. It repl
 Every web read goes through one function. The rules:
 
 1. **Scheme.** `http` and `https` only.
-2. **Address.** Resolve the host. Refuse it unless each address is public. Connect to the address that was checked. The rule is the one in `outbound_guard.py`. WEB-1 moves it to `acb_common`, so the gateway and the orchestrator share one copy.
+2. **Address.** Resolve the host. Refuse it unless each address is public. Connect to the address that was checked. The rule is `acb_common.public_address`, which the gateway already uses. WEB-1 makes `web_tools.py` use it too, so the gateway and the orchestrator share one copy.
 3. **Redirects.** Follow them by hand, at most 5. Each hop passes rules 1 and 2 again.
 4. **Caps.** 20 seconds and 15 MB for each read. The reader output has its own cap, and an overflow spills through CTX-1 with a locator.
 5. **Type.** HTML, PDF, the Office types, CSV, JSON, plain text and images. Any other type is refused with its name.
-6. **The mark.** The output starts with a header (title, final URL, date, type) and is wrapped as untrusted outside text.
+6. **The mark.** `UntrustedFrame` wraps the output as outside text. The header (title, final URL, date, type) goes inside the frame, because a page controls it.
+7. **Jina.** A target passes rules 1 to 3 before any reader sees it, Jina included.
 
 ### 3.2 Readers
 
@@ -224,7 +226,7 @@ Research of 2026-11-01. The licence and the last commit of each repo were read f
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **WEB-1** | The fetch guard (§3.1). Move the public-address check to `acb_common`, and route every `fetch_page` read and redirect through it. Mark the output untrusted | A test refuses a URL that resolves to 127.0.0.1, 10.0.0.0/8, 169.254.169.254 and `::1`, and a public URL that redirects to one. The gateway's `outbound_guard.py` uses the same copy. The output carries the untrusted mark | HIGH | AGENT-SAFE |
+| **WEB-1** | The fetch guard (§3.1). Route every `fetch_page` read and redirect hop through `acb_common.public_address`, pinned to the checked address. Refuse a private target before Jina sees it. Wrap the output in `UntrustedFrame` | A test refuses a URL that resolves to 127.0.0.1, 10.0.0.0/8, 169.254.169.254 and `::1`, and a public URL that redirects to one. A private target sends no request to Jina. The gateway's `outbound_guard.py` uses the same copy. The output carries the untrusted mark | HIGH | AGENT-SAFE |
 | **WEB-2** | Trafilatura as the HTML reader. Jina becomes opt-in by `WEB_READER_REMOTE` | A test page gives its title and main text as Markdown with no menu text. With the flag off, the output is as before | STD | AGENT-SAFE |
 | **WEB-3** | MarkItDown for PDF, DOCX, PPTX, XLSX, CSV and EPUB, with pdfplumber as the fallback, and the CTX-1 spill for a long file | Each type reads from a fixture. A file over the cap spills with a locator | STD | AGENT-SAFE |
 | **WEB-4** | The search provider list (§3.3): SearXNG, ddgs, SerpAPI and the scholarly sources, offered only when ready | A provider with a failed health check is skipped. Each result names its provider and date. Results merge by URL | STD | AGENT-SAFE |
@@ -249,7 +251,9 @@ Each path was read on `f59a636b5`.
 - `packages/acb_skills/acb_skills/egress.py` (the egress card)
 - `packages/acb_skills/AGENTS.md` (item 4 names the web tools)
 - `apps/services/orchestrator/orchestrator/_tool_injection.py` (line 48, line 2032)
-- `apps/services/gateway/gateway/outbound_guard.py` (line 137, the public-address check)
+- `packages/acb_common/acb_common/public_address.py` (the shared public-address check)
+- `apps/services/gateway/gateway/outbound_guard.py` (its wrapper, and the pinned transport pattern `_PinnedTransport`)
+- `packages/acb_skills/acb_skills/untrusted.py` (`UntrustedFrame`)
 - `apps/services/meeting_bot/Dockerfile`, `apps/services/meeting_bot/README.md` (the browser container pattern)
 - `packages/acb_skills/acb_skills/tool_packs.py` (`PACKS`, `MAX_PACK_TOOLS`)
 - `project-docs/specs/maf_coding_engine.md` §18 (CA-4, the coding session's network)
