@@ -603,6 +603,11 @@ class Settings(BaseSettings):
     # opens none. Reader: `gateway.push.flags.prompt_allowed`. Spec:
     # calendar_events_reminders.md section 10.4.
     push_prompt_orgs: str = ""
+    # STU-B1: STUDIO_ORGS lists the org ids that may read the AI Studio
+    # action catalog (GET /studio/actions). `*` opens every org. Empty opens
+    # none. Reader: `gateway.routes.studio.flags.studio_allowed`. Spec:
+    # ai_studio.md section 3.2.
+    studio_orgs: str = ""
     vapid_public_key: str = ""
     vapid_private_key: str = ""
     vapid_subject: str = ""
