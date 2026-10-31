@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/ai_studio.md`` §3.5 and the §14 F1 row. Code:
 ``gateway/studio/skills_store.py``. Migration: the file that creates
-``studio_skills`` (319 at build).
+``studio_skills`` (320 at build).
 
 The store runs on a phase-4 promoted scratch database, as the non-privileged
 app role, so FORCE RLS binds. Two organizations, two members.

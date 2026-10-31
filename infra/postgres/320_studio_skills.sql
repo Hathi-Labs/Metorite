@@ -1,5 +1,5 @@
 -- ============================================================================
--- 319_studio_skills.sql — the skill store of AI Studio (WS-STU F1, Metorite
+-- 320_studio_skills.sql — the skill store of AI Studio (WS-STU F1, Metorite
 -- task 70761c91).
 --
 -- What: two new tables. `studio_skills` holds one skill of one organization:

@@ -1,7 +1,7 @@
 """The one writer of ``studio_skills`` and ``studio_skill_versions`` (WS-STU F1).
 
 Spec: ``project-docs/specs/ai_studio.md`` §3.5 and the §14 F1 row. Table:
-migration ``studio_skills`` (319 at build). ``tests/unit/test_studio_skills_r8.py``
+migration ``studio_skills`` (320 at build). ``tests/unit/test_studio_skills_r8.py``
 runs this SQL on a real Postgres.
 
 **Tenancy (R5).** Every function takes a session that the caller opened with
