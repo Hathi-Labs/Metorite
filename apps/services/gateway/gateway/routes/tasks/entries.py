@@ -289,7 +289,7 @@ def _zone(value: str | None) -> str | None:
 
 
 def _title(value: str | None) -> str:
-    clean = storable((value or "").strip())
+    clean: str = storable((value or "").strip())
     if not clean:
         raise HTTPException(status_code=422, detail="An entry needs a title.")
     if len(clean) > TITLE_MAX:
@@ -303,14 +303,14 @@ def _text(value: str | None) -> str | None:
     """Free text, with each character that Postgres refuses replaced."""
     if value is None:
         return None
-    clean = storable(value.strip())
+    clean: str = storable(value.strip())
     return clean or None
 
 
 def _url(value: str | None) -> str | None:
     """A join link: ``https://`` or ``http://`` only, so a link that runs
     script never reaches the event sheet."""
-    clean = storable((value or "").strip())
+    clean: str = storable((value or "").strip())
     if not clean:
         return None
     if not clean.lower().startswith(("https://", "http://")):
@@ -528,7 +528,7 @@ async def _require_my_series(db: Any, series_id: str, me: str, *, entry_id: str 
 @router.post("/calendar/entries", status_code=201, dependencies=_ON)
 async def create_entry(
     payload: EntryIn, user: UserContext = Depends(get_current_user),
-) -> dict:
+) -> dict[str, Any]:
     """Make one event of kind ``event`` and source ``metorite``, and the
     organizer row of the caller, in one transaction."""
     me = _member(user)
@@ -562,7 +562,7 @@ async def create_entry(
 async def update_entry(
     entry_id: UUID, payload: EntryPatch,
     user: UserContext = Depends(get_current_user),
-) -> dict:
+) -> dict[str, Any]:
     """Change one of my events. Any other row is a 404 and changes nothing.
 
     A time pair sent whole replaces the stored pair, so a PATCH can turn a

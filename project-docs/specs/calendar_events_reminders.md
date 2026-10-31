@@ -1163,6 +1163,7 @@ gate.
    `credentials_encrypted`, never in the environment (D96.3). The email
    app's row stays its own, so a disconnect in one app breaks nothing in
    the other.
+
    ⚠️ **`calendar_entries.connection_id` has NO cascade** (migration 319,
    the default NO ACTION). A Metorite event that CE-11 wrote out names the
    connection too, so a cascade would delete the member's own events. So
