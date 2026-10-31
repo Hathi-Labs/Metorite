@@ -7,7 +7,7 @@
  * ignored, and the node draws from its own props as it always did.
  *
  * This file holds the seam and the pure helpers. `GenerativeUINode.tsx`
- * holds the one renderer that reads them. Fence: `dataDoor.test.tsx`.
+ * holds the one renderer that reads them. Fence: `dataDoor.test.ts`.
  */
 import { createContext } from "react";
 
@@ -31,8 +31,34 @@ export interface ActionResult {
 
 /** The page's side of the seam. */
 export interface StudioDataDoor {
+  /** The app id plus "draft" or "live". It scopes the cache keys of this door. */
+  scope: string;
   read(source: StudioSource): Promise<Row[]>;
+  /**
+   * Run a typed action. ⚠️ `action` and `args` are written by a model.
+   * The server side of the door (B2) must refuse an id that the package did
+   * not declare, with 403. The client check is only a courtesy.
+   */
   run(action: string, args?: Record<string, unknown>): Promise<ActionResult>;
+}
+
+/** JSON with sorted keys at every depth. Null stays. Two equal reads give one string. */
+export function stableJson(v: unknown): string {
+  if (Array.isArray(v)) return "[" + v.map(stableJson).join(",") + "]";
+  if (isObject(v)) {
+    return "{" + Object.keys(v).sort()
+      .filter((k) => v[k] !== undefined)
+      .map((k) => JSON.stringify(k) + ":" + stableJson(v[k])).join(",") + "}";
+  }
+  return JSON.stringify(v === undefined ? null : v);
+}
+
+/** The cache key prefix of a door. `invalidate` with it drops all reads of the door. */
+export const doorPrefix = (door: StudioDataDoor): string => "studio:" + door.scope + ":";
+
+/** The cache key of one read through a door. */
+export function sourceKey(door: StudioDataDoor, source: StudioSource): string {
+  return doorPrefix(door) + source.action + ":" + stableJson(source.args ?? {});
 }
 
 /** A page supplies the Provider. Chat supplies none, so the value is `null`. */
@@ -59,18 +85,34 @@ export function bindsSource(type: string, props: Record<string, unknown>): boole
 /** A button's action: the old sentence, or a typed action. */
 export type ParsedAction =
   | { kind: "text"; text: string }
-  | { kind: "typed"; id: string; args?: Record<string, unknown>; message?: string };
+  | {
+    kind: "typed";
+    id: string;
+    args?: Record<string, unknown>;
+    message?: string;
+    /** What chat sends when no `message` exists: the text of the object, else the id. */
+    sentence: string;
+  };
 
-/** Read `props.action`. A string stays a string. An object needs a string `id`. */
+/**
+ * Read `props.action`. A string stays a string. An object with a string `id`
+ * is typed. An object with no `id` reads as text, as it did before: models
+ * send objects in string slots (`text()` picks `text ?? label ?? value`).
+ */
 export function parseAction(raw: unknown): ParsedAction | null {
   if (isObject(raw)) {
     const id = typeof raw.id === "string" ? raw.id.trim() : "";
-    if (!id) return null;
+    if (!id) {
+      const sentence = text(raw);
+      return sentence ? { kind: "text", text: sentence } : null;
+    }
+    const message = typeof raw.message === "string" && raw.message.trim() ? raw.message : undefined;
     return {
       kind: "typed",
       id,
       args: isObject(raw.args) ? raw.args : undefined,
-      message: typeof raw.message === "string" && raw.message.trim() ? raw.message : undefined,
+      message,
+      sentence: message ?? (text(raw) || id),
     };
   }
   const sentence = text(raw);
@@ -89,9 +131,9 @@ export function actionDisabled(
 }
 
 /**
- * Press a button. A string goes to `onAction`, as before. A typed action
- * goes to `door.run(id, args)` on a page. In chat (no door) it goes to
- * `onAction(message ?? id)`, so the card still reaches the member as a sentence.
+ * Press a button in chat. A string goes to `onAction`, as before. A typed
+ * action with no door goes to `onAction(message ?? text ?? id)`. With a door,
+ * `TypedActionButton` handles the press, so this does nothing.
  */
 export function pressAction(
   action: ParsedAction | null,
@@ -103,13 +145,10 @@ export function pressAction(
     onAction?.(action.text);
     return;
   }
-  if (door) {
-    void door.run(action.id, action.args).catch(() => {
-      // The page owns the error line. A failed run must not crash the card.
-    });
-    return;
-  }
-  onAction?.(action.message ?? action.id);
+  // On a page, `TypedActionButton` runs the action and owns its states.
+  // This path is for chat: the card reaches the member as a sentence.
+  if (door) return;
+  onAction?.(action.sentence);
 }
 
 /** What a bound block draws. */
@@ -117,12 +156,13 @@ export type BoundView = "loading" | "error" | "empty" | "rows";
 
 /** The pure state-to-view choice. Rows already read stay on screen. */
 export function boundView(state: {
-  data: Row[] | undefined;
+  data: Row[] | undefined | null;
   loading: boolean;
   error: string | null;
 }): BoundView {
   if (Array.isArray(state.data)) return state.data.length > 0 ? "rows" : "empty";
-  if (state.error) return "error";
+  // A door that answers with a non-array is a failure, not a long wait.
+  if (state.error || (!state.loading && state.data !== undefined && state.data !== null)) return "error";
   return "loading";
 }
 
@@ -137,10 +177,11 @@ export function gridData(
   rows: Row[],
 ): Record<string, unknown> {
   let columns = Array.isArray(data.columns) ? data.columns.map((c) => text(c)) : [];
-  if (columns.length === 0 && rows.length > 0) {
-    columns = Object.keys(rows[0]).filter((k) => k !== "id" && k !== "cells");
+  const clean = rows.filter((r) => r && typeof r === "object");
+  if (columns.length === 0 && clean.length > 0) {
+    columns = Object.keys(clean[0]).filter((k) => k !== "id" && k !== "cells");
   }
-  const mapped = rows.map((r) => {
+  const mapped = clean.map((r) => {
     if (Array.isArray(r.cells)) return r;
     const cell = (c: string) => {
       const v = r[c];
@@ -148,5 +189,6 @@ export function gridData(
     };
     return { ...(r.id !== undefined ? { id: r.id } : {}), cells: columns.map(cell) };
   });
-  return { ...data, columns, rows: mapped };
+  // A bound grid holds ids of any kind. The default `openBase` links tasks.
+  return { openBase: "", ...data, columns, rows: mapped };
 }

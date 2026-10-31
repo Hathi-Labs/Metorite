@@ -186,6 +186,10 @@ def test_a_source_prop_is_refused_in_chat_with_its_path() -> None:
     assert res["error"].startswith("ui.children[0].props.source:"), res["error"]
     assert "Studio page only" in res["error"]
     plain = '{"type":"table","props":{"columns":["a"],"rows":[["x"]]}}'
+    caption = '{"type":"text","props":{"text":"a","source":"Q3 board deck"}}'
+    assert _wa().genui_refusal(__import__("json").loads(caption)) is None
+    bad = '{"type":"table","props":{"source":{"action":"t.list"}}}'
+    assert _wa().genui_refusal(__import__("json").loads(bad)) is not None
     assert _wa().genui_refusal(__import__("json").loads(plain)) is None
 
 

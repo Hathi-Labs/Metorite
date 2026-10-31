@@ -9,17 +9,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
-import GenerativeUINode from "@/components/GenerativeUINode";
-import { cacheKey, clearAll, put } from "@/lib/dataCache";
+import GenerativeUINode, { BoundStatus } from "@/components/GenerativeUINode";
+import { clearAll, peek, put } from "@/lib/dataCache";
+import { ACTION_FAILED, pressOnce, runTyped } from "./TypedActionButton";
 import {
   type ActionResult, type Row, type StudioDataDoor, StudioDataContext,
-  actionDisabled, boundView, bindsSource, gridData, parseAction, parseSource, pressAction,
+  actionDisabled, boundView, sourceKey, stableJson, bindsSource, gridData, parseAction, parseSource, pressAction,
 } from "./dataDoor";
 
 function mockDoor(): StudioDataDoor & { reads: unknown[]; runs: unknown[][] } {
   const reads: unknown[] = [];
   const runs: unknown[][] = [];
   return {
+    scope: "app1:draft",
     reads,
     runs,
     read: async (source) => { reads.push(source); return [] as Row[]; },
@@ -28,7 +30,7 @@ function mockDoor(): StudioDataDoor & { reads: unknown[]; runs: unknown[][] } {
 }
 
 const SOURCE = { action: "tasks.list", args: { status: "open" } };
-const KEY = cacheKey("studio:tasks.list", { status: "open" });
+const KEY = sourceKey(mockDoor(), SOURCE);
 const TABLE = {
   type: "table",
   props: { source: SOURCE, columns: ["Name", "Owner"] },
@@ -122,11 +124,12 @@ describe("source parsing", () => {
 });
 
 describe("typed actions", () => {
-  it("a button sends its action id through the door", () => {
+  it("a button sends its action id through the door", async () => {
     const door = mockDoor();
     const action = parseAction({ id: "task.complete", args: { id: 7 }, message: "Complete task 7" });
     const onAction = vi.fn();
     pressAction(action, door, onAction);
+    await runTyped(door, action as Extract<NonNullable<typeof action>, { kind: "typed" }>);
     expect(door.runs).toEqual([["task.complete", { id: 7 }]]);
     expect(onAction).not.toHaveBeenCalled();
   });
@@ -136,6 +139,21 @@ describe("typed actions", () => {
     pressAction(parseAction({ id: "task.complete", message: "Complete task 7" }), null, onAction);
     pressAction(parseAction({ id: "task.complete" }), null, onAction);
     expect(onAction.mock.calls).toEqual([["Complete task 7"], ["task.complete"]]);
+  });
+
+  it("an object with no id reads as text, as before", () => {
+    const onAction = vi.fn();
+    pressAction(parseAction({ label: "Approve the plan" }), null, onAction);
+    pressAction(parseAction({ label: "Approve the plan" }), mockDoor(), onAction);
+    expect(onAction.mock.calls).toEqual([["Approve the plan"], ["Approve the plan"]]);
+    expect(parseAction({})).toBeNull();
+    expect(parseAction({ args: { a: 1 } })).toBeNull();
+  });
+
+  it("in chat, a typed action with an id and a label sends the label", () => {
+    const onAction = vi.fn();
+    pressAction(parseAction({ id: "approve", label: "Approve the plan" }), null, onAction);
+    expect(onAction.mock.calls).toEqual([["Approve the plan"]]);
   });
 
   it("the string action is unchanged, door or not", () => {
@@ -166,5 +184,96 @@ describe("typed actions", () => {
     expect(page).toContain("Done it");
     expect(page).not.toContain('disabled=""');
     expect(renderToStaticMarkup(createElement(GenerativeUINode, { spec }))).toContain('disabled=""');
+  });
+});
+
+describe("the cache key of a read", () => {
+  it("keeps nested args apart", () => {
+    const door = mockDoor();
+    const a = sourceKey(door, { action: "t.list", args: { filter: { status: "open" } } });
+    const b = sourceKey(door, { action: "t.list", args: { filter: { status: "done" } } });
+    expect(a).not.toBe(b);
+  });
+
+  it("keeps two scopes apart", () => {
+    const one = mockDoor();
+    const two = { ...mockDoor(), scope: "app2:draft" };
+    expect(sourceKey(one, SOURCE)).not.toBe(sourceKey(two, SOURCE));
+  });
+
+  it("does not merge a value with an ampersand into two args", () => {
+    const door = mockDoor();
+    expect(sourceKey(door, { action: "x", args: { a: "1&b=2" } }))
+      .not.toBe(sourceKey(door, { action: "x", args: { a: "1", b: "2" } }));
+  });
+
+  it("sorts keys at every depth and keeps null", () => {
+    expect(stableJson({ b: { d: 1, c: null }, a: 1 })).toBe(stableJson({ a: 1, b: { c: null, d: 1 } }));
+    expect(stableJson({ a: null })).not.toBe(stableJson({}));
+  });
+});
+
+describe("bound states", () => {
+  it("a non-array answer is an error, not a skeleton", () => {
+    expect(boundView({ data: {} as unknown as Row[], loading: false, error: null })).toBe("error");
+  });
+
+  it("draws the error state with a retry button and plain words", () => {
+    const html = renderToStaticMarkup(createElement(BoundStatus, { view: "error", onRetry: () => {} }));
+    expect(html).toContain("Could not load this list.");
+    expect(html).toContain("Try again");
+  });
+
+  it("draws the empty state, and names what is empty", () => {
+    expect(renderToStaticMarkup(createElement(BoundStatus, { view: "empty", onRetry: () => {} })))
+      .toContain("Nothing to show yet");
+    expect(renderToStaticMarkup(createElement(BoundStatus, { view: "empty", onRetry: () => {}, title: "tasks" })))
+      .toContain("No tasks yet");
+  });
+
+  it("a bound grid skips null rows and opens no task link by default", () => {
+    const out = gridData({ columns: ["Name"] }, [null as unknown as Row, { id: "u", Name: "A" }]);
+    expect(out.rows).toEqual([{ id: "u", cells: ["A"] }]);
+    expect(out.openBase).toBe("");
+    expect(gridData({ openBase: "/x/" }, []).openBase).toBe("/x/");
+  });
+});
+
+describe("TypedActionButton", () => {
+  const typed = parseAction({ id: "task.complete", args: { id: 7 } }) as Extract<
+    NonNullable<ReturnType<typeof parseAction>>, { kind: "typed" }
+  >;
+
+  it("pending blocks a second call", async () => {
+    const flag = { current: false };
+    let release: () => void = () => {};
+    const fn = vi.fn(() => new Promise<void>((r) => { release = r; }));
+    const first = pressOnce(flag, fn);
+    expect(await pressOnce(flag, fn)).toBe(false);
+    expect(fn).toHaveBeenCalledTimes(1);
+    release();
+    expect(await first).toBe(true);
+    expect(await pressOnce(flag, async () => {})).toBe(true);
+  });
+
+  it("ok drops the cached reads of the door", async () => {
+    const door = mockDoor();
+    put<Row[]>(KEY, [{ a: 1 }]);
+    const out = await runTyped(door, typed);
+    expect(out).toEqual({ ok: true, message: null });
+    expect(peek(KEY)).toBeUndefined();
+  });
+
+  it("ok:false shows the message of the result", async () => {
+    const door = { ...mockDoor(), run: async () => ({ ok: false, message: "No access to that task." }) };
+    expect(await runTyped(door, typed)).toEqual({ ok: false, message: "No access to that task." });
+    const bare = { ...mockDoor(), run: async () => ({ ok: false }) };
+    expect((await runTyped(bare, typed)).message).toBe(ACTION_FAILED);
+  });
+
+  it("a rejection shows the fallback line, not the error text", async () => {
+    const door = { ...mockDoor(), run: async () => { throw new Error("HTTP 500 boom"); } };
+    const out = await runTyped(door, typed);
+    expect(out).toEqual({ ok: false, message: "That did not work. Try again." });
   });
 });

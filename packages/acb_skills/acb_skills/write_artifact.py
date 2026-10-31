@@ -1407,9 +1407,15 @@ def genui_refusal(spec: dict) -> str | None:
                 "a markdown node with a nested list."
             )
         # `source` binds a node to a Studio page's data door (STU-D1). Chat
-        # has no door, so the key would do nothing there.
+        # has no door, so a binding would do nothing there. A string `source`
+        # is a harmless caption and passes.
         node_props = node.get("props")
-        if isinstance(node_props, dict) and "source" in node_props:
+        node_source = node_props.get("source") if isinstance(node_props, dict) else None
+        if (
+            isinstance(node_source, dict)
+            and isinstance(node_source.get("action"), str)
+            and node_source["action"].strip()
+        ):
             return f"{where}.props.source: source works on a Studio page only. Remove it."
         if kind == "template":
             props = node.get("props")

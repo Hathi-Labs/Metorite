@@ -50,11 +50,11 @@ import { isEmptyNode } from "@/lib/genUiFallback";
 import { plainTitle } from "@/lib/fencedText";
 import { tableCells, tableColumns, text } from "@/lib/genUiText";
 import { resolveIcon } from "@/lib/icons";
-import { cacheKey } from "@/lib/dataCache";
 import {
-  StudioDataContext, actionDisabled, boundView, bindsSource, gridData, parseAction, parseSource, pressAction,
-  type Row, type StudioDataDoor,
+  StudioDataContext, actionDisabled, boundView, bindsSource, gridData, parseAction, parseSource, pressAction, sourceKey,
+  type BoundView, type Row, type StudioDataDoor,
 } from "@/lib/studio/dataDoor";
+import { TypedActionButton } from "@/lib/studio/TypedActionButton";
 import { useCachedResource } from "@/lib/useCachedResource";
 import { type AccentHue, accentForHue } from "@/lib/statusAccent";
 
@@ -131,6 +131,37 @@ export { GenUiText };
  * A component of its own, because `Node` calls hooks before its guards and a
  * conditional hook is unsafe. `Node` mounts it only when a door exists.
  */
+/** The loading, error and empty states of a bound block. Words are plain. */
+export function BoundStatus({
+  view, onRetry, title,
+}: {
+  view: BoundView;
+  onRetry: () => void;
+  title?: string;
+}): React.ReactElement | null {
+  if (view === "loading") {
+    return (
+      <div className="space-y-2" aria-busy="true">
+        <Skeleton className="h-6 w-full" />
+        <Skeleton className="h-6 w-5/6" />
+        <Skeleton className="h-6 w-4/6" />
+      </div>
+    );
+  }
+  if (view === "error") {
+    return (
+      <div className="flex items-center gap-2 text-xs text-destructive" role="alert">
+        <span>Could not load this list.</span>
+        <Button type="button" variant="secondary" size="sm" onClick={onRetry}>Try again</Button>
+      </div>
+    );
+  }
+  if (view === "empty") {
+    return <EmptyState icon="Inbox" message={title ? `No ${title} yet` : "Nothing to show yet"} />;
+  }
+  return null;
+}
+
 function BoundSource({
   node, door, onAction, answered, onDecline, depth,
 }: {
@@ -144,32 +175,18 @@ function BoundSource({
   const props = (node.props ?? {}) as Record<string, unknown>;
   const source = parseSource(props.source);
   const { data, loading, error, refresh } = useCachedResource<Row[]>(
-    source ? cacheKey("studio:" + source.action, source.args) : null,
+    source ? sourceKey(door, source) : null,
     () => door.read(source as NonNullable<typeof source>),
   );
   const view = boundView({ data, loading, error });
-  if (view === "loading") {
-    return (
-      <div className="space-y-2" aria-busy="true">
-        <Skeleton className="h-6 w-full" />
-        <Skeleton className="h-6 w-5/6" />
-        <Skeleton className="h-6 w-4/6" />
-      </div>
-    );
+  if (view !== "rows") {
+    const title = s(props.title ?? (props.data as Record<string, unknown> | undefined)?.title, "");
+    return <BoundStatus view={view} onRetry={refresh} title={title} />;
   }
-  if (view === "error") {
-    return (
-      <div className="flex items-center gap-2 text-xs text-destructive" role="alert">
-        <span>{error}</span>
-        <Button type="button" variant="secondary" size="sm" onClick={refresh}>Try again</Button>
-      </div>
-    );
-  }
-  if (view === "empty") return <EmptyState icon="Inbox" message="Nothing to show yet" />;
   const rows = data as Row[];
   const { source: _drop, ...rest } = props;
   void _drop;
-  const bound: GenUINode = node.type === "template"
+  const bound: GenUINode = s(node.type) === "template"
     ? {
       ...node,
       props: {
@@ -399,6 +416,9 @@ function Node({
       // wears the theme's focus ring and state layer in both modes.
       const variant =
         tone === "primary" ? "primary" : tone === "danger" ? "destructive" : "secondary";
+      if (door && action?.kind === "typed") {
+        return <TypedActionButton door={door} action={action} label={label} variant={variant} />;
+      }
       return (
         <Button
           type="button"

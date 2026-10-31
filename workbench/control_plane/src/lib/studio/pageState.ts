@@ -33,7 +33,7 @@ export function encodePageState(state: PageState): string {
 /** Decode query parameters. Unknown keys are ignored. Never throws. */
 export function decodePageState(query: string | URLSearchParams): PageState {
   const p = typeof query === "string" ? new URLSearchParams(query) : query;
-  const filters: Record<string, string> = {};
+  const filters: Record<string, string> = Object.create(null);
   for (const [k, v] of p.entries()) {
     if (k.startsWith(FILTER_PREFIX) && k.length > FILTER_PREFIX.length && v) {
       filters[k.slice(FILTER_PREFIX.length)] = v;

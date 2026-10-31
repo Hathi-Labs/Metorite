@@ -550,7 +550,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **D8** | The Process flow block: a read-only workflow graph with run state | A running workflow's nodes show their state from the run console stream | STD | AGENT-SAFE |
 | **D9** | The Checklist block: playbook steps, each human step a task | Ticking a step completes its task in the one store | STD | AGENT-SAFE |
 | **D10** | The Map block | Records with a geo field show as pins. Visual review at 390 px | STD | **OWNER-GATE** for a paid tile key (STU-Q8). Otherwise AGENT-SAFE |
-| **D11** | The page layout: grid, tabs, side panel and the phone layout | Each block passes visual review at four widths down to 390 px | STD | AGENT-SAFE |
+| **D11** | The page layout: grid, tabs, side panel and the phone layout. Wire `pageState` to the URL | Each block passes visual review at four widths down to 390 px. A round-trip test shows `pageState` survives a reload through the URL | STD | AGENT-SAFE |
 | **D12** | The manifest conformance fence | A manifest with a colour, a pixel size or an unknown block fails to publish | LOW | AGENT-SAFE |
 
 ### Group E — Workflows in Studio
