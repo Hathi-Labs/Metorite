@@ -162,6 +162,7 @@ export default function LiveChart({ spec, bare = false, maxHeight, label }: {
     <div
       ref={box}
       data-chart-max-height={maxHeight}
+      className={bare ? undefined : "glass:rounded-[14px]! glass:border-transparent!"}
       {...(scrollProps ?? {})}
       style={
         bare

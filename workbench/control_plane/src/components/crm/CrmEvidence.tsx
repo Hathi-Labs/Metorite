@@ -30,7 +30,7 @@ export function crmEvidence(e: ToolEvent): React.ReactNode | null {
   const name = bareToolName(e.name);
   if (!CRM_CARD_SET.has(name) || placementOf(name) !== "evidence") return null;
   return (
-    <div data-crm-evidence="" className="min-w-0 rounded-md border border-border/60 bg-card/60 px-2.5 py-2">
+    <div data-crm-evidence="" className="min-w-0 rounded-md border border-border/60 bg-card/60 px-2.5 py-2 glass:rounded-[14px] glass:border-transparent glass:bg-secondary glass:px-3 glass:py-2.5">
       <ShowMore>
         <Readout result={e.result || ""} />
       </ShowMore>
