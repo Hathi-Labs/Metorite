@@ -541,7 +541,8 @@ def _parse_orgs(raw: str, star: bool = False) -> frozenset[str]:
     a secret, so the warning names the entry.
 
     *star* is True only for a reader that reads ``*`` as each org
-    (:func:`card_writes_for`). For any other reader ``*`` matches no org, so
+    (:func:`card_writes_for`, :func:`chat_summary_for`). For any other
+    reader ``*`` matches no org, so
     it warns as any entry that is not a uuid does. :func:`enabled_for` reads
     an empty list as each org, and ``*`` there turns the profile off.
     """
@@ -608,6 +609,40 @@ def card_writes_for(org_id: str | None) -> bool:
         raw = str(getattr(get_settings(), "assistant_profile_card_writes_orgs", "") or "")
         orgs = _parse_orgs(raw, star=True)
         return "*" in orgs or org in orgs
+    except Exception:
+        return False
+
+
+def chat_summary_for(org_id: str | None) -> bool:
+    """True when the chat summaries of PZ-33 are on for *org_id*. Fails closed.
+
+    ``ASSISTANT_CHAT_SUMMARY_ORGS`` (``assistant_chat_summary_orgs``) is a
+    comma list of organization ids, or ``*`` for each one. Empty means off,
+    which is the default. It is the one reader of the flag
+    (``personalization.md`` §15.8). The flag opens the summary job of PZ-33b
+    and the Settings section of PZ-35.
+
+    The profile must be on for the org too (:func:`enabled_for`). So the
+    master switch ``ASSISTANT_PROFILE_ENABLED`` off turns the summaries off,
+    whatever the list says.
+
+    The caller passes the bound tenant of the job or the server-side
+    ``UserContext``, never an id from request input (R5). It reads
+    ``get_settings()`` on each call, so a flag reload
+    (``gateway/flag_reload.py``) applies a change of the list with no
+    restart. Fence: ``tests/unit/test_chat_summary.py``.
+    """
+    try:
+        org = str(org_id or "").strip().lower()
+        if not org:
+            return False
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "assistant_chat_summary_orgs", "") or "")
+        orgs = _parse_orgs(raw, star=True)
+        if "*" not in orgs and org not in orgs:
+            return False
+        return enabled_for(org)
     except Exception:
         return False
 

@@ -62,6 +62,13 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - The answer holds the manifest and the state of the organization, never data of an app. The module opens no session.
    - Each args schema comes from `route.dependant` of the live route (AD-9), never from a hand list. `agent_oauth.door_available` decides each op.
    - Fences: `test_mcp_edge_app_door.py`, `test_mcp_edge_app_door_r8.py`, `test_app_door_coverage.py`.
+0p. assistant_summaries.py -- **The ONE reader and writer of `chat_session.member_summary`** (WS-63 PZ-33a, `personalization.md` §15.3). No other module names the column.
+   - Each function takes a session that the caller opened with `tenant_session(org)`. No function takes an org or a member. The caller reads the member from `chat_session.user_id` under RLS.
+   - ⚠️ A write sets that column only. It never changes `updated_at`, `last_preview` or `message_count`.
+   - ⚠️ `{"v": 1, "off": true}` is a Delete of the member. No mark and no write changes it. The marked write holds the mark in its WHERE, so a Delete during the model call wins.
+   - The answer checks are pure. They call `typed_text`, `is_sensitive`, `needs_confirm` and `grounded` of `acb_common.assistant_profile`, and copy none of them. An answer that does not parse writes nothing.
+   - The module imports no litellm and no streamed completion. No list, room, history or staff source imports it.
+   - Fences: `test_chat_summary.py`, `test_chat_summary_private.py`, `test_chat_summary_r8.py`.
 1. main.py -- **The app factory and the lifespan.** It also serves `/copilot/chat`, the AG-UI endpoint. ⚠️ **A loop's flag gate lives INSIDE its start function, never as an `if` in main.py.** So each flag has one reader. main.py starts and stops each loop UNCONDITIONALLY. Fences: `test_launch_defang_kill_switches.py`, `test_crm_zoho_sync.py`, `test_ingestion_consumer.py::test_gateway_lifespan_starts_the_consumer_and_stops_it_after_yield`.
 2. routes/agent.py -- **The agent run doors, the registry and the mutation inbox.**
    - **The endpoint check is the boundary of record.** The three run doors call `assert_can_run_agent`. The filtered `GET /agent` is UX only. Registry writes need `agents:manage`.
@@ -73,7 +80,7 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - 🔴 **Only the run's fold changes an agent reply, and the fold seals it.** No write updates a system row. ⚠️ The fold id comes from `routes/agent.py::fold_message_id`. Do not go back to `assistant-{thread}-{run_id}`.
    - 🔴 **Only the server creates an agent row or a system row.** Only `routes/agent.py` passes `mint=True`. ⚠️ `_ensure_session` runs at every run start, so it must never raise a role.
    - 🔴 **Each text and JSON value passes `acb_common.pg_text.storable` before a write.** Fence: `test_chat_nul_persist.py`.
-3a. routes/rooms.py + rooms.py + room_stream.py -- **The room layer** (`groups_sessions_authority.md`). `resolve_room_access(session_id, email)` is the single source of room authorization. ⚠️ A **missing session row** is permissive, but a **failed lookup** gives NO access. Agents live in `chat_session_agent`, not in `chat_session_participant`, because an agent has no access of its own.
+3a. routes/rooms.py + rooms.py + room_stream.py -- **The room layer** (`groups_sessions_authority.md`). `resolve_room_access(session_id, email)` is the single source of room authorization. ⚠️ A **missing session row** is permissive, but a **failed lookup** gives NO access. Agents live in `chat_session_agent`, not in `chat_session_participant`, because an agent has no access of its own. `SOLO_ROOM_SQL` is the rule of `room_is_solo` as SQL, for a chat and its own member (PZ-33a). A change to one form changes the other. Fence: `test_chat_summary_r8.py`.
 4. routes/oauth.py -- **OAuth for Zoho.** `GMAIL_SCOPES` in `email_ingestion/providers/gmail.py` is the one Gmail scope set. No other file may name a Google scope. Fence: `test_gmail_one_scope_set.py`.
 5. routes/integrations.py -- **The Integration Registry, the MCP servers and the plugins.**
    - **Every `provider_keys` call passes `organization_id=current_tenant()`.** Never take the org from `req.service`, a header or the body (R5, R11). Fence: `test_credential_tenant_threading.py`.
