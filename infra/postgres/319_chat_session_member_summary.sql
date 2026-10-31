@@ -1,9 +1,9 @@
 -- ============================================================================
--- 318_chat_session_member_summary.sql - a short summary of each private chat
+-- 319_chat_session_member_summary.sql - a short summary of each private chat
 -- (WS-63 PZ-33a, D142)
 -- ============================================================================
 -- Spec: project-docs/specs/personalization.md §15.3 (D-PZ-25) and §15.9
--- · R5 · R6 · R8.
+-- · R5 · R6 · R8. R1: 318 went to WS-66 RE-9b first, so this file is 319.
 --
 -- What: one nullable JSONB column, `chat_session.member_summary`. It holds
 --   the summary of one private chat with Mira: at most 3 sentences, and at

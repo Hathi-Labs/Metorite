@@ -1,8 +1,8 @@
 """The one reader and writer of ``chat_session.member_summary`` (WS-63 PZ-33a).
 
 Spec: ``project-docs/specs/personalization.md`` §15.3 (D-PZ-25 and D-PZ-28)
-and §15.9. Migration: ``infra/postgres/318_chat_session_member_summary.sql``
-(318 at build, R1).
+and §15.9. Migration: ``infra/postgres/319_chat_session_member_summary.sql``
+(319 at the merge, R1: 318 went to WS-66 RE-9b first).
 
 A summary covers one solo chat with Mira on the web, and only its member
 sees it. This module has two parts.
