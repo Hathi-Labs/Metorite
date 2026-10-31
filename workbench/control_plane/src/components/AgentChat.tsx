@@ -98,7 +98,7 @@ import {
   lastNonSteer,
   primaryAction,
   sendRoute,
-  sendShortcut,
+  enterSends, touchKeyboard,
   takeLeftoverQueue,
 } from "@/lib/chatSteer";
 import { canRetry, retryPlan } from "@/lib/chatRetry";
@@ -785,14 +785,6 @@ export default function AgentChat({
   // One plain note under the box: a steer the server refused, or a model
   // that cannot take one. The words are back in the box when it shows.
   const [composerNotice, setComposerNotice] = useState<string | null>(null);
-  // The send keys in the member's keyboard words: "⌘ ⏎" on a Mac. Read after
-  // mount, so the server's markup and the first client paint agree.
-  const [sendKeys, setSendKeys] = useState("Ctrl ⏎");
-  useEffect(() => {
-    const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- read once from the browser
-    setSendKeys(sendShortcut(nav.userAgentData?.platform || nav.platform || ""));
-  }, []);
 
   // A run is "active" while the ONE run state says it may still run
   // (`lib/runStatus.ts`, owner report 2026-10-19): starting, working, waiting
@@ -1744,10 +1736,9 @@ export default function AgentChat({
   }, [input]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Enter inserts a newline (the textarea default) — sending is the Send
-    // button's job, so a mid-thought Enter never fires the prompt early.
-    // Ctrl/Cmd+Enter stays as the deliberate keyboard send.
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    // Enter sends and Shift+Enter is a new line (owner, 2026-10-31). On a
+    // touch keyboard Enter stays a new line (`enterSends`, lib/chatSteer.ts).
+    if (enterSends({ ...e, isComposing: e.nativeEvent.isComposing }, touchKeyboard())) {
       e.preventDefault();
       handleSubmit(e as unknown as React.FormEvent);
       return;
@@ -2514,7 +2505,7 @@ export default function AgentChat({
               <RunStatusRow view={runView} placement="composer" />
             ) : !compact && !phoneChrome ? (
               <span className="hidden sm:inline text-[10px] glass:text-caption">
-                <kbd className="text-muted-foreground glass:font-sans">{sendKeys}</kbd> send · <kbd className="text-muted-foreground glass:font-sans">⏎</kbd> new line
+                <kbd className="text-muted-foreground glass:font-sans">⏎</kbd> send · <kbd className="text-muted-foreground glass:font-sans">⇧ ⏎</kbd> new line
               </span>
             ) : null}
           </div>

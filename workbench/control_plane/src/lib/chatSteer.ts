@@ -352,9 +352,24 @@ export function followUpRetryState(threadId: string): { tries: number; waiting: 
   return r ? { tries: r.tries, waiting: r.timer !== null } : undefined;
 }
 
-/** The keys that send, in the member's own keyboard words. */
-export function sendShortcut(platform: string): string {
-  return /mac|iphone|ipad|ipod/i.test(platform) ? "⌘ ⏎" : "Ctrl ⏎";
+/**
+ * Does this key press send the message? Enter sends, and Shift+Enter is a new
+ * line (owner, 2026-10-31). Ctrl or Cmd with Enter still sends. A touch
+ * keyboard has no Shift key, so there Enter stays a new line and the Send
+ * button sends. The Enter that ends an IME composition never sends.
+ */
+export function enterSends(
+  e: { key: string; shiftKey?: boolean; altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; isComposing?: boolean },
+  touch: boolean,
+): boolean {
+  if (e.key !== "Enter" || e.isComposing) return false;
+  if (e.ctrlKey || e.metaKey) return true;
+  return !touch && !e.shiftKey && !e.altKey;
+}
+
+/** A touch screen with no hover: its keyboard has no Shift+Enter. */
+export function touchKeyboard(): boolean {
+  return typeof window !== "undefined" && Boolean(window.matchMedia?.("(hover: none) and (pointer: coarse)").matches);
 }
 
 /**

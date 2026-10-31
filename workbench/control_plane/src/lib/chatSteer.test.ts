@@ -42,7 +42,7 @@ import {
   followUpRetryState,
   owedAfterSteer,
   scheduleFollowUpRetry,
-  sendShortcut,
+  enterSends,
   settleFollowUpAnswer,
   isSteered,
   lastNonSteer,
@@ -491,12 +491,18 @@ describe("Edit after a steer (round 2 of the review of #920)", () => {
 });
 
 describe("the send keys", () => {
-  it("say Cmd on a Mac and Ctrl elsewhere", () => {
-    expect(sendShortcut("MacIntel")).toBe("⌘ ⏎");
-    expect(sendShortcut("macOS")).toBe("⌘ ⏎");
-    expect(sendShortcut("iPhone")).toBe("⌘ ⏎");
-    expect(sendShortcut("Win32")).toBe("Ctrl ⏎");
-    expect(sendShortcut("")).toBe("Ctrl ⏎");
+  it("send on Enter, and make a new line on Shift+Enter", () => {
+    // Owner, 2026-10-31: Enter sends, and Shift+Enter is a new line.
+    expect(enterSends({ key: "Enter" }, false)).toBe(true);
+    expect(enterSends({ key: "Enter", shiftKey: true }, false)).toBe(false);
+    expect(enterSends({ key: "Enter", altKey: true }, false)).toBe(false);
+    expect(enterSends({ key: "Enter", ctrlKey: true }, false)).toBe(true);
+    expect(enterSends({ key: "Enter", metaKey: true }, false)).toBe(true);
+    // An IME composition's Enter picks the word. It never sends.
+    expect(enterSends({ key: "Enter", isComposing: true }, false)).toBe(false);
+    // A touch keyboard has no Shift: Enter is a new line, Send sends.
+    expect(enterSends({ key: "Enter" }, true)).toBe(false);
+    expect(enterSends({ key: "a" }, false)).toBe(false);
   });
 
   it("the composer bar gives the free width to the spacer, not the controls", () => {

@@ -44,7 +44,7 @@ import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
 import { isEdited } from "@/lib/chatEdit";
 import { cardAnswerOf, cardAnswerText } from "@/lib/cardAnswer";
 import CardAnswerContent from "@/components/CardAnswerContent";
-import { STEER_WAITING, isSteered } from "@/lib/chatSteer";
+import { STEER_WAITING, enterSends, isSteered, touchKeyboard } from "@/lib/chatSteer";
 import ChatSendButton from "@/components/ChatSendButton";
 import Button from "@/components/ui/Button";
 
@@ -451,9 +451,8 @@ function MessageBubble({
     : undefined;
 
   const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Enter inserts a newline (matches the main composer) — only Ctrl/Cmd+
-    // Enter (or the Send button) submits the edited message.
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    // The main composer's keys: Enter sends and Shift+Enter is a new line.
+    if (enterSends({ ...e, isComposing: e.nativeEvent.isComposing }, touchKeyboard())) {
       e.preventDefault();
       void handleEditSubmit();
     } else if (e.key === "Escape") {
