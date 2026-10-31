@@ -84,7 +84,8 @@
       "tests/unit/test_subdomain_host_vocabulary.py",
       "tests/unit/test_tenancy_boundary.py",
       "tests/unit/test_tenancy_insert_fence.py",
-      "tests/unit/test_tenant_coverage.py"
+      "tests/unit/test_tenant_coverage.py",
+      "tests/unit/test_worktree_remove.py"
     ],
     "process": [
       "tests/unit/test_chat_placement_classes.py",
