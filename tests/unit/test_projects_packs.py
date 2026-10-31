@@ -422,7 +422,8 @@ def test_the_bare_words_load_no_projects_pack(words: str) -> None:
 def test_the_projects_words_leave_out_the_bare_words() -> None:
     """Mutation: a bare word joins a list -> red."""
     bare = {"project", "projects", "calendar", "plan", "report", "delete", "reply",
-            "note", "deal", "pipeline", "email", "mail", "draft", "status", "view"}
+            "note", "deal", "pipeline", "email", "mail", "draft", "status", "view",
+            "nudge", "undo", "revert", "senders", "sender"}
     for slug in SLUGS:
         words = set(tp.PACKS[slug].words)
         assert words and not words & bare, (slug, words & bare)

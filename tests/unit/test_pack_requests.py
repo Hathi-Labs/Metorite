@@ -208,7 +208,7 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "merge_tasks": ("merge these two tasks",),
     "move_project": ("move the project under Sales",),
     "my_led_projects": ("which projects do I lead?",),
-    "nudge_task": ("nudge Ravi about the quote",),
+    "nudge_task": ("nudge the assignee of the quote task",),
     "revert_activity": ("undo that change",),
     "unarchive_project": ("unarchive the project Website Relaunch",),
     "unarchive_task": ("restore the archived task",),
@@ -243,6 +243,14 @@ CONTROLS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("what is the weather today?", ()),
     ("write a poem about autumn", ()),
     ("show the sales pipeline", ("crm-records",)),
+    # MT-1228 repair: a word that was too broad once loaded a pack for these.
+    ("nudge the prospect about the proposal", ()),
+    ("nudge the lead about the deal", ()),
+    ("undo that email I just sent", ("email",)),
+    ("undo that send", ()),
+    ("revert that draft", ()),
+    ("revert that deal update", ()),
+    ("what senders email me most about the crm deals", ("email", "crm-records")),
 )
 
 
