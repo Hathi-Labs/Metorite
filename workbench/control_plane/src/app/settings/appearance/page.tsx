@@ -271,6 +271,7 @@ function DesignSettings() {
  * opened from it. Per browser, like the rest of this tab.
  */
 function SidebarSettings() {
+  const glass = useAppearanceStore((s) => s.look) === "glass";
   const [on, setOn] = useState(() =>
     typeof window === "undefined" ? true : autoFoldEnabled(),
   );
@@ -284,6 +285,8 @@ function SidebarSettings() {
     setAutoFoldEnabled(next);
     setOn(next);
   };
+  // GL-10c: the glass rail never opens, so there is nothing to choose.
+  if (glass) return null;
   return (
     <section>
       <SectionHeading
