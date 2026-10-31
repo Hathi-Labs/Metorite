@@ -98,7 +98,8 @@ function isTyping(target: EventTarget | null): boolean {
 
 /**
  * Glass (D141, GL-3): each shell control floats as its own glass circle, as
- * Aroh's `GlassButton` does. Classic matches none of these classes.
+ * Aroh's `GlassButton` does. The bell and the activity control wear the same
+ * classes inside their own files. Classic matches none of these classes.
  */
 const GLASS_ROUND = "glass:glass-chrome glass:glass-press glass:rounded-full";
 
@@ -218,8 +219,8 @@ export function ShellFrame({
           field={unified ? <AskField /> : undefined}
           lead={lead}
           assistant={chatOn ? <ShellAssistantButton /> : null}
-          bell={dockOn ? <ShellBell className={GLASS_ROUND} /> : null}
-          activity={<ActivityControl className={GLASS_ROUND} />}
+          bell={dockOn ? <ShellBell /> : null}
+          activity={<ActivityControl />}
         />
       ) : null}
       {children}
