@@ -1198,6 +1198,8 @@ CHILD_TOOLS: dict[str, frozenset[str]] = {
         "intake_queue", "my_areas", "my_contexts", "notifications", "project_access",
         "project_views", "watchers"}),
     "projects-bulk": frozenset({"list_reminders", "my_led_projects"}),
+    # STU-G1: STUDIO_ORGS holds no org here, so the pack builds no tool.
+    "studio": frozenset(),
 }
 
 #: The calls that put an event on the run's stream: a card, a page move, a
@@ -1371,7 +1373,8 @@ async def test_the_tools_that_each_real_pack_gives_a_child(monkeypatch, slug: st
     from acb_skills.tool_guard import tool_name
 
     _owners(monkeypatch, **{EA: _module(), CRM: _crm_module(),
-                            PROJECTS: load_agent_module(PROJECTS_DIR)})
+                            PROJECTS: load_agent_module(PROJECTS_DIR),
+                            "studio-builder": load_agent_module("apps/agents/agent-studio-builder")})
     with _run():
         why, job = await _child(slug, held=True)
     want = CHILD_TOOLS[slug]
@@ -1382,7 +1385,8 @@ async def test_the_tools_that_each_real_pack_gives_a_child(monkeypatch, slug: st
 
 
 def _pack_owners() -> dict[str, Any]:
-    return {EA: _module(), CRM: _crm_module(), PROJECTS: load_agent_module(PROJECTS_DIR)}
+    return {EA: _module(), CRM: _crm_module(), PROJECTS: load_agent_module(PROJECTS_DIR),
+            "studio-builder": load_agent_module("apps/agents/agent-studio-builder")}
 
 
 def test_each_pack_tool_that_draws_is_a_display_tool() -> None:

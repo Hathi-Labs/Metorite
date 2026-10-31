@@ -101,7 +101,7 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
     family that the drift gate then refuses."""
     assert sf.pack_slugs() == (
         "email", "email-setup", "crm-records",
-        "projects", "projects-plan", "projects-structure", "projects-bulk",
+        "projects", "projects-plan", "projects-structure", "projects-bulk", "studio",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -417,7 +417,8 @@ def test_build_catalog_prices_a_pack_from_its_owner_tools() -> None:
     no section, so the rules block goes unpriced), or puts the pack tools in
     ``total_injected_tokens``."""
     modules = {EA: _email_module(), CRM: load_agent_module(CRM_DIR),
-               PROJECTS: load_agent_module(PROJECTS_DIR)}
+               PROJECTS: load_agent_module(PROJECTS_DIR),
+               "studio-builder": load_agent_module("apps/agents/agent-studio-builder")}
     owner = {tool_name(fn): fn for slug in sf.pack_slugs()
              for fn in tp.owner_tools(slug, modules[sf.SKILL_FAMILIES[slug]["owner"]])}
     assert len(owner) >= 58 + 8 + 120, "non-vacuity: the owners build their tools"
@@ -554,3 +555,81 @@ def test_no_crm_pack_tool_takes_an_organization_or_a_member_argument() -> None:
         assert not params & identity, (fn.__name__, sorted(params & identity))
     create = set(inspect.signature(inspect.unwrap(tools[1])).parameters)
     assert {"email", "organization_name"} <= create, "non-vacuity: the lead data is not identity"
+
+
+# -- 8. The studio pack (STU-G1, ai_studio.md section 6.2) -------------------
+
+STUDIO = "studio-builder"
+STUDIO_DIR = "apps/agents/agent-studio-builder"
+STUDIO_TOOLS = ("studio_draft", "studio_list_actions", "studio_outline",
+                "studio_patch", "studio_validate")
+
+
+def _studio_scope() -> set[str]:
+    cfg = json.loads((REPO / STUDIO_DIR / "config.json").read_text(encoding="utf-8"))
+    return set(cfg["own_tool_scope"])
+
+
+def test_the_studio_family_equals_the_owners_own_tool_scope_and_fits_the_cap() -> None:
+    """Mutation: add a tool to the family or to ``own_tool_scope`` alone -> red."""
+    family = sf.SKILL_FAMILIES["studio"]
+    assert family["owner"] == STUDIO and sf.is_pack("studio") and family["core"] is False
+    assert tuple(family["tools"]) == STUDIO_TOOLS
+    assert set(family["tools"]) == _studio_scope()
+    assert len(family["tools"]) == 5 <= tp.MAX_PACK_TOOLS == 35
+
+
+def test_the_studio_owner_is_in_the_static_agent_registry_and_the_catalog() -> None:
+    from gateway.routes.agent import _AGENT_REGISTRY
+
+    entry = next(a for a in _AGENT_REGISTRY if a["name"] == STUDIO)
+    assert entry["local_path"] == STUDIO_DIR and entry["agent_runtime"] == "maf"
+    catalog = json.loads((REPO / "agent_registry.json").read_text(encoding="utf-8"))
+    assert next(a for a in catalog if a["name"] == STUDIO)["local_path"] == STUDIO_DIR
+
+
+def test_the_built_studio_pack_is_the_five_tools_as_coroutines() -> None:
+    import inspect
+
+    tools = tp.owner_tools("studio", load_agent_module(STUDIO_DIR))
+    assert tuple(tool_name(fn) for fn in tools) == STUDIO_TOOLS
+    assert all(inspect.iscoroutinefunction(fn) for fn in tools)
+
+
+def test_the_studio_rules_name_only_tools_of_the_pack() -> None:
+    """Mutation: name a tool of another pack in the rules -> red."""
+    found = tp.PACKS["studio"]
+    named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", found.rules))
+    assert named and named <= set(STUDIO_TOOLS), named - set(STUDIO_TOOLS)
+    assert found.owner == STUDIO and found.delegation_refusal
+    assert tp.owner_packs(STUDIO) == ("studio",)
+    assert STUDIO in tp.NO_PERSONA_BULLETS
+
+
+def test_no_studio_tool_is_in_another_pack_or_an_injected_family() -> None:
+    mine = set(STUDIO_TOOLS)
+    for slug, fam in sf.SKILL_FAMILIES.items():
+        if slug != "studio":
+            assert not mine & set(fam["tools"]), slug
+
+
+def test_the_studio_pack_is_filtered_by_the_owner_key() -> None:
+    assert ti._PACK_OWNER_FILTERS[STUDIO] is ti._drop_pack_unless_studio
+
+
+async def test_the_studio_filter_empties_the_pack_for_an_org_not_in_studio_orgs(monkeypatch) -> None:
+    """Mutation: make the filter return the tools unchanged -> red."""
+    from gateway.routes.studio import flags
+
+    async def tool_a(): ...
+    tool_a.__name__ = "studio_draft"
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: "org-1")
+    monkeypatch.setattr(flags, "studio_orgs", lambda: frozenset())
+    kept, dropped = await ti._drop_pack_unless_studio([tool_a], [])
+    assert kept == [] and dropped == ["studio_draft"]
+    monkeypatch.setattr(flags, "studio_orgs", lambda: frozenset({"org-1"}))
+    kept, dropped = await ti._drop_pack_unless_studio([tool_a], [])
+    assert kept == [tool_a] and dropped == []
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: None)
+    kept, _ = await ti._drop_pack_unless_studio([tool_a], [])
+    assert kept == [], "no org fails closed"

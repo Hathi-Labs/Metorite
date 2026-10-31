@@ -3205,12 +3205,32 @@ async def _drop_pack_covered(
     return [], dropped
 
 
+async def _drop_pack_unless_studio(
+    tools: list[Any], dropped: list[str], *, held: bool = False,
+) -> tuple[list[Any], list[str]]:
+    """Build an empty ``studio`` pack for an org that ``STUDIO_ORGS`` lacks (STU-G1).
+
+    The reader is ``gateway.routes.studio.flags.studio_allowed``, the one that
+    the catalog route uses. The org is the run's own (:func:`_run_org_or_none`),
+    never an argument (R5). It fails closed: no org, no gateway or an error
+    gives no tool.
+    """
+    try:
+        from gateway.routes.studio.flags import studio_allowed
+        if studio_allowed(_run_org_or_none()):
+            return tools, dropped
+    except Exception as exc:  # fail closed
+        _log.info("executor.studio_flag_unread", error=str(exc)[:200])
+    return [], [*dropped, *(_tool_name(t) for t in tools)]
+
+
 #: The one pre-filter slot of :func:`_pack_tools`, by owner. A filter takes the
 #: built tools, the dropped names and the held answer, and gives both lists
 #: back, less what the owner's rules take out. It runs for the builds of every
 #: layer (a, b and c), so a rule of an owner lives here and nowhere else.
 _PACK_OWNER_FILTERS: dict[str, Callable[..., Awaitable[tuple[list[Any], list[str]]]]] = {
     "crm-assistant": _drop_pack_mirror_writes,
+    "studio-builder": _drop_pack_unless_studio,
     "projects-assistant": _drop_pack_covered,
 }
 

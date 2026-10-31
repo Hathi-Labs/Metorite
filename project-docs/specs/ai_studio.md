@@ -582,7 +582,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **G1** | The builder tools for Mira: draft, patch, validate, preview and list actions. Agent `studio-builder` | Each tool refuses an invalid patch with the validator's error. No tool runs code | STD | AGENT-SAFE |
+| **G1** | The builder tools for Mira: draft, patch, validate, outline and list actions. The tools are stateless, because the chat holds the manifest and A3 is Stage 2. A serialized manifest has a cap of 24,000 characters. Agent `studio-builder` owns the `studio` pack. It is not a second assistant, and Mira alone talks to the member. Preview waits for G4 | Each tool refuses an invalid patch with the validator's error, and the manifest stays as it was. No tool runs code. Verify: `uv run pytest tests/unit/test_studio_builder_tools.py tests/unit/test_studio_patch.py tests/unit/test_tool_packs_registry.py -q` | STD | AGENT-SAFE |
 | **G2** | The interview and the plan card (§6.2 steps 1 and 2) | A request makes at most five questions and one plan card. A stop on the card writes nothing | STD | AGENT-SAFE |
 | **G3** | The Studio build screen (§6.3) | Outline, preview and the shell's dock with `studio-builder`. `seams.test.ts` passes | STD | AGENT-SAFE |
 | **G4** | Preview on sample data, with a preview store and simulated sends | A preview write never reaches `app_data` of the live package. A send in preview leaves no message | HIGH | AGENT-SAFE |

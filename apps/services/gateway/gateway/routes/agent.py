@@ -754,6 +754,25 @@ _AGENT_REGISTRY: list[dict] = [
         "optional_integrations": [],
     },
     {
+        "name": "studio-builder",
+        "description": (
+            "Studio Builder - owns the studio tool pack: drafts, patches, "
+            "validates and outlines an AI Studio app manifest and lists the "
+            "actions an app may use. It is not a second assistant, and a "
+            "hand-off to it is refused."
+        ),
+        "tags": ["studio", "apps", "manifest"],
+        "status": "live",
+        # STU-G1: the OWNER of the `studio` tool pack (ai_studio.md section
+        # 6.2). The pack loader reads this entry for `local_path`
+        # (`_tool_injection._pack_owner_module`). The member talks to Mira
+        # only (D99, D125): the pack's delegation_refusal answers a hand-off.
+        "agent_runtime": "maf",
+        "local_path": "apps/agents/agent-studio-builder",
+        "integrations": [],
+        "optional_integrations": [],
+    },
+    {
         "name": "projects-assistant",
         "description": (
             "Projects Assistant — the AI chat inside the Projects app. Reads "
