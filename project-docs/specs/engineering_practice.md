@@ -157,7 +157,8 @@ come across with the outbound ones held off, by the pattern of
 `scripts/staging_refresh.sh`. Fence: `tests/unit/test_dev_up.py`.
 
 **What it cannot test.** The stack holds no keys. Mail sync, sending, WhatsApp,
-CRM sync, OAuth sign-in and model calls do not work. Test those on staging.
+CRM sync, OAuth sign-in and model calls do not work. The owner retired staging
+(D144), so §1.3.2 says where those get their check.
 
 **Why the ladder runs inside the container.** Measured 2026-10-30 on the
 Windows PC: `apply_migrations.sh` from Git Bash took 515 s for 310 files and
@@ -165,6 +166,183 @@ Windows PC: `apply_migrations.sh` from Git Bash took 515 s for 310 files and
 
 ⚠️ **Never point `pytest` at this database.** The suites reset what they touch
 (§1.1). `--env` prints `DEV_UP_*` names, never `DATABASE_URL`, for that reason.
+
+### 1.3 Preview, approve, gate, merge: the owner loop (D145)
+
+**Owner directive, 2026-10-31 (Metorite task LD-7).** Show the owner a change
+the moment it works. Run the full gates after the owner approves it. Move
+production once a day.
+
+```text
+build ──▶ preview ──▶ owner approves ──▶ local staging gate ──▶ merge ──▶ 21:30 UTC release
+            ▲               │
+            └── change it ◀─┘
+```
+
+**1. Build with the stack up.** Start `bash scripts/dev_up.sh` in the worktree
+when the slice starts, not when it ends. The gateway reloads and `next dev`
+reloads, so the preview is ready when the code is.
+
+**2. Preview.** When the slice works in the running app, send the owner one
+message, in chat and on the task. It holds these four items:
+
+- The URL of the page that shows the change, on `127.0.0.1`.
+- What changed, in three lines or fewer.
+- Where to click, step by step.
+- For a UI change, the captures of the `visual-review` skill.
+
+Then call `ask_on_task` with two options, **Approve** and **Change it**. In
+the same step, push the branch and open the PR as a draft. GitHub's
+`pr-check` then runs while the owner looks.
+
+A slice with nothing to see skips the preview. Docs, tests, a script and a
+refactor with no change in behaviour go straight to step 4.
+
+**3. The owner answers.**
+
+- **Approve:** go to step 4.
+- **Change it:** build again, then send a new preview.
+- **No answer in this session:** leave the PR as a draft and the question
+  open. The next session finds the answer in `my_work` as `run_answered`.
+
+**4. The local staging gate (LD-9).** Run `bash scripts/stage_local.sh` in the
+worktree. The independent verifier, and the reviewer by tier, run beside it.
+The gate tests the merge of the branch with today's `origin/main`, not the
+branch alone. It runs four steps:
+
+1. The full pr-check suite, in the `metorite-ci` distro (`scripts/ci_local.sh`).
+2. The production build: `next build` and `next start`, and the gateway with
+   no reload, as `acb_app` under FORCE RLS.
+3. The migration rehearsal. It restores last night's reduced copy at
+   production's migration ledger. Then `scripts/apply_migrations.sh`, the
+   runner that the deploy uses, applies the branch's new migrations.
+4. Smoke: health, `/version`, the tenant-isolation check and the Playwright
+   smoke set.
+
+A pass posts the commit status `local-staging` = `success` on the exact head
+commit, with a summary of the run. A failure posts `failure` and names the
+step. Fence: `tests/unit/test_stage_local.py` (LD-9).
+
+**5. Merge.** Run `bash scripts/premerge.sh > <log> 2>&1 && gh pr merge <n>
+--squash`. From LD-10, `premerge.sh` refuses a head commit with no
+`local-staging` pass. A new commit on the branch needs a new pass. LD-10 names
+its fence.
+
+**6. Production, once a day.** The release at 21:30 UTC ships the tip of
+`main` (§2 and `specs/staging_and_daily_release.md` §4). An agent dispatches
+`deploy.yml` only for a hotfix that the owner asks for, or when production is
+down. Report a merge as "reaches production at tonight's release". After the
+release, confirm `/version` `applied_sha`.
+
+**Until LD-8 to LD-10 land.** The preview runs on the demo seed. The gate is
+`bash scripts/ci_local.sh`, and then `premerge.sh`. Name the steps that ran in
+the PR body.
+
+**Steps 1 to 3 are advisory (R7).** No test makes a skipped preview fail. The
+owner sees a missing preview, because no approval arrives.
+
+#### 1.3.1 The production copy on this PC (LD-8a, LD-8b, LD-8c)
+
+**Status, 2026-10-31:** 🟠 specified, not built. The spec-auditor gave
+GO-NARROWED and split LD-8 into three slices. LD-8c goes first.
+
+**Owner approval, 2026-10-31, in chat.** Production writes a reduced copy each
+night (`scripts/staging_export.sh`). It holds the organizations in
+`STAGING_EXPORT_SLUGS`, minimised by `infra/staging/minimise.sql`. It is about
+83 MB, at `/var/lib/acb-staging-export/current/` on the production box. The
+files are `root:acb`, mode 0640, so `ssh metorite` (user `acb`) reads them with
+no sudo.
+
+**Measured 2026-10-31, and the reason LD-8c goes first:**
+
+- **The copy still holds secrets.** `minimise.sql` keeps `push_subscriptions`,
+  the live push keys of real devices (`endpoint`, `p256dh`, `auth`). It also
+  keeps `plugins.auth_config`, `whatsapp_member_links.code_hash` and
+  `whatsapp_pending_acts.confirm_code_hash`. No script deletes them.
+- **The nightly backup check fails.** On 2026-10-31 at 02:37 UTC, the restore
+  in the verify container stopped: "memory required is 65 MB,
+  maintenance_work_mem is 64 MB". The dump exists, but nobody proved it
+  restorable. `staging_export.sh` runs only after a good verify, so no copy
+  arrived.
+- So **no copy comes to this PC before LD-8c lands and the next backup
+  passes.** The owner approved a copy with its credentials blanked.
+
+**LD-8c: AGENT-SAFE to build, HIGH to land (deploy path).** It ships at the
+21:30 UTC release.
+
+- `scripts/backup_db.sh` starts the verify container with
+  `-c maintenance_work_mem=256MB`. Fence: `tests/unit/test_backup_deploy_wiring.py`.
+- `minimise.sql` truncates `push_subscriptions`, and blanks the three columns
+  above. Its step 6 name check also catches `p256dh`, `auth` and `code_hash`.
+  Fences: `tests/unit/test_staging_minimise_r8.py` (R8) and
+  `tests/unit/test_staging_export.py`.
+- Proof: the backup at 02:30 UTC on 2026-11-01 logs "restore verified", and a
+  new `current` copy appears.
+
+**LD-8a: `scripts/prod_copy.sh`. AGENT-SAFE, HIGH.**
+
+- It pulls the copy over `ssh metorite` with `scp` or `ssh ... tar`, because
+  Git Bash has no `rsync`. The target is `~/.metorite/prod-copy/<UTC date>/`.
+- It limits the folder to the current user with `icacls`: no inheritance, one
+  principal. NTFS ignores a POSIX mode, so the test checks the ACL.
+- It checks `SHA256SUMS`. It takes the age from the remote `stat -c %Y` of
+  `staging.dump`, prints it, and refuses a copy older than 36 hours.
+- It keeps the 2 newest copies. It refuses a target inside a git work tree. It
+  never prints the content of a file.
+- Fence: `tests/unit/test_prod_copy.py`, with `ssh` replaced by a stub
+  (`PROD_COPY_SSH`). It covers a bad checksum, a stale copy, the retention of
+  2, and a target inside a git work tree.
+
+**LD-8b: `bash scripts/dev_up.sh --data prod --as <email>`. AGENT-SAFE, HIGH.**
+
+- The dump is `pg_dump` 17 (archive format 1.16). So this mode uses
+  `pgvector/pgvector:pg17`. `.dev_up/state` records the data mode, and a switch
+  needs `--reset`.
+- It ports `scripts/staging_refresh.sh` steps 4 to 6 into the container, as one
+  `bash -c` run: the roles from `roles.txt`, the schemas and extensions from
+  `extensions.txt`, then `pg_restore --no-owner --no-acl` with the
+  `SCHEMA - public` entry left out. A line `pg_restore: error` stops it.
+- Before the gateway starts, it runs `DELETE FROM push_subscriptions`. This is
+  a second defence after LD-8c.
+- It skips the demo seed and the RLS promotion replay, because the copy holds
+  both. It grants `acb_app` (NOSUPERUSER NOBYPASSRLS). Then
+  `apply_migrations.sh` applies the branch's pending migrations.
+- It reads production's switches through `DEV_UP_FLAGS_FILE=<copy>/flags.env`
+  and the existing `flag_env`, so every held switch stays off. It never writes
+  `scripts/dev_up/prod_flags.env`.
+- `--as` names the member to sign in as. It must be an `app_user` with an
+  active `org_membership`. With no `--as`, it refuses and lists the active
+  members.
+- The web app reads `DEV_SIGNED_IN_EMAIL` in `src/lib/gateway.ts`, in the
+  `!isAuthEnabled` branch only. Production still returns no identity. Fence:
+  `src/lib/authFailsClosed.test.ts`. The UI gate of
+  `workbench/control_plane/AGENTS.md` applies.
+- Fences: new cases in `tests/unit/test_dev_up.py`. R8 on the restored copy:
+  `relforcerowsecurity` holds on the tenant tables, `push_subscriptions` has 0
+  rows, and `acb_app` reads 0 rows of another organization.
+
+**Non-goals.** No write to production. No change to the export schedule. The
+copy is never used by CI, never goes into git, a log, a PR or a chat message,
+and never leaves this PC.
+
+**Verify with:**
+
+```sh
+uv run pytest tests/unit/test_prod_copy.py tests/unit/test_dev_up.py \
+  tests/unit/test_staging_export.py tests/unit/test_staging_box.py \
+  tests/unit/test_backup_deploy_wiring.py -q
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_staging_minimise_r8.py -q
+cd workbench/control_plane && npx vitest run src/lib/authFailsClosed.test.ts
+```
+
+#### 1.3.2 What local staging cannot test
+
+This PC holds no production keys. So it cannot test OAuth sign-in on the real
+domain, mail, WhatsApp, CRM sync or model calls. It cannot test Caddy, the
+systemd units or `deploy/*.sh` on a box either. The release's own smoke jobs
+(`smoke` and `chat-smoke`) check those on production, and then the owner does.
+A flag that needs a live check still waits for the owner (D144 point 6).
 
 ## 2. Release: deploy is not release
 
