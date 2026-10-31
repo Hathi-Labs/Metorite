@@ -40,7 +40,7 @@ import { buildLinkChipIndex } from "@/lib/linkChips";
 import { pillsForTurn, taskRefModeForTurn } from "@/lib/projectsAgent";
 import { useRevalidateOnTools } from "@/lib/taskRefs";
 import AnswerDetails from "@/components/AnswerDetails";
-import { profileUsedIn } from "@/lib/profileMark";
+import { profileMarkShown } from "@/lib/profileMark";
 import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
 import { isEdited } from "@/lib/chatEdit";
 import { cardAnswerOf, cardAnswerText } from "@/lib/cardAnswer";
@@ -824,7 +824,7 @@ function MessageBubble({
               onRetry={onRetryMessage ? () => onRetryMessage(message) : undefined}
             />
           )}
-          {message.role === "assistant" && profileUsedIn(message.customEvents) && (
+          {profileMarkShown(message, viewerEmail) && (
             <Button
               variant="ghost"
               size="none"
