@@ -467,6 +467,7 @@ export default function Sidebar() {
             // The same column as a group's items, so Home lines up with them.
             <div className={collapsed ? "flex flex-col gap-1 p-2 pb-0" : "flex flex-col gap-0.5 px-2 pt-2"}>
               <NavLink pane={home} pathname={pathname} collapsed={collapsed} onNavigate={armFold} shellNav />
+              <NeedsYouRow counts={appNeeds} floors={navNeeds.floors} collapsed={collapsed} onNavigate={armFold} />
             </div>
           )}
           {railSections.map((section) => {
@@ -1184,10 +1185,62 @@ export function NavLink({
  * (`needsSuffix`). The phone drawer draws the same one.
  */
 export function NeedsCount({ text }: { text: string }) {
+  // Glass: the number lives on the one Needs you row, so an app's row shows
+  // a quiet dot (owner, 2026-11-01). The link's name and tooltip keep it.
   return (
     <span aria-hidden data-nav-needs="count" className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">
-      {text}
+      <span className="glass:hidden">{text}</span>
+      <span className="hidden h-1.5 w-1.5 rounded-full bg-muted-foreground glass:inline-block" />
     </span>
+  );
+}
+
+/**
+ * One row for everything that waits on the member (owner, 2026-11-01: "One
+ * 'Needs you' row"): the sum of the apps' needs counts, and the door to My
+ * Day's Needs you list. The app rows show a quiet dot. Nothing waits: no row.
+ */
+function NeedsYouRow({
+  counts,
+  floors,
+  collapsed,
+  onNavigate,
+}: {
+  counts: Record<string, number>;
+  floors: ReadonlySet<string>;
+  collapsed: boolean;
+  onNavigate: (e: MouseEvent) => void;
+}) {
+  const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+  if (total <= 0) return null;
+  const floor = [...floors].some((href) => (counts[href] ?? 0) > 0);
+  const text = floor ? `${total}+` : String(total);
+  const rowLabel = `Needs you, ${floor ? `${total} or more` : total}`;
+  return (
+    <Link
+      href="/#feed-group-needs_you"
+      onClick={onNavigate}
+      aria-label={rowLabel}
+      title={collapsed ? rowLabel : undefined}
+      data-nav-needs-you=""
+      className={`rounded-lg glass:rounded-row tech-transition text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground ${
+        collapsed ? "relative flex items-center justify-center p-2.5" : "flex items-center gap-2.5 px-3 py-2 text-sm glass:text-sidebar-foreground/85"
+      }`}
+    >
+      <Icon name="Inbox" size={collapsed ? 18 : 16} className="shrink-0 glass:text-muted-foreground" />
+      {collapsed ? (
+        <span className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 rounded-full bg-primary px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-primary-foreground">
+          {text}
+        </span>
+      ) : (
+        <>
+          <span className="font-medium text-[13px] glass:text-subhead">Needs you</span>
+          <span className="ml-auto rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
+            {text}
+          </span>
+        </>
+      )}
+    </Link>
   );
 }
 
