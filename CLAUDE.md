@@ -232,9 +232,9 @@ The owner retired staging (D144), and this PC does its job now.
 1. **Show the owner the change first.** Send the local URL, what changed, where
    to click and the captures. Then ask on the task: Approve or Change it.
 2. **Run the full gates after the approval.** `scripts/stage_local.sh` tests the
-   merge with today's `main`: the full suite, the production build, a migration
-   rehearsal on production's reduced copy, and smoke. A pass posts
-   `local-staging` on the head commit, and `premerge.sh` needs it.
+   merge with today's `main`. It runs the full suite and the production build.
+   It rehearses the migrations on production's reduced copy, and runs smoke.
+   A pass posts `local-staging` on the head commit, and `premerge.sh` needs it.
 3. **Production moves once a day, at 21:30 UTC.** Do not dispatch `deploy.yml`
    after a merge. Dispatch only for a hotfix the owner asks for, or when
    production is down.
