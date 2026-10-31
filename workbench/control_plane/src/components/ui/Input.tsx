@@ -29,7 +29,20 @@ const SIZES: Record<InputSize, string> = {
 const BASE =
   "cc-control rounded-lg border border-border bg-background text-foreground " +
   "placeholder:text-muted-foreground outline-none focus:border-primary/50 " +
-  "disabled:cursor-not-allowed disabled:opacity-60";
+  "disabled:cursor-not-allowed disabled:opacity-60 " +
+  // The glass look (D141, GL-2), all behind `glass:`. The ring of keyboard
+  // focus is GL-1's tinted outline; the border takes the tint on focus. A
+  // 16 px face on a touch screen stops iOS from zooming the page on focus,
+  // and it is pinned in px because density scales rem.
+  "glass:rounded-lg glass:border-input glass:bg-field glass:text-subhead " +
+  "glass:focus:border-primary/60 glass:pointer-coarse:text-[16px]";
+
+/** A single-line glass field is 36 px tall, and 44 px on a touch screen. */
+const GLASS_HEIGHT: Record<InputSize, string> = {
+  sm: "glass:h-8 glass:py-0 glass:pointer-coarse:h-11",
+  md: "glass:h-9 glass:py-0 glass:pointer-coarse:h-11",
+  lg: "glass:h-9 glass:py-0 glass:pointer-coarse:h-11",
+};
 
 /**
  * 🔴 **`w-full` USED TO LIVE IN `BASE`, AND IT SILENTLY ATE EVERY CALLER'S
@@ -102,7 +115,7 @@ export function Input({ inputSize = "md", icon, className = "", ...rest }: Input
   const field = (
     <input
       {...rest}
-      className={`${BASE} ${icon ? "w-full" : width} ${SIZES[inputSize]} ${icon ? "pl-8" : ""} ${styles}`}
+      className={`${BASE} ${icon ? "w-full" : width} ${SIZES[inputSize]} ${GLASS_HEIGHT[inputSize]} ${icon ? "pl-8" : ""} ${styles}`}
     />
   );
   if (!icon) return field;
@@ -221,7 +234,7 @@ export function Select({
     <div className={`relative ${width}`}>
       <select
         {...rest}
-        className={`${BASE} w-full ${SIZES[inputSize]} cursor-pointer appearance-none pr-7 disabled:cursor-not-allowed ${styles}`}
+        className={`${BASE} w-full ${SIZES[inputSize]} ${GLASS_HEIGHT[inputSize]} cursor-pointer appearance-none pr-7 disabled:cursor-not-allowed ${styles}`}
       >
         {children}
       </select>

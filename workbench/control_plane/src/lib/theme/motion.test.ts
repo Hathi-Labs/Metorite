@@ -215,13 +215,11 @@ const LAYOUT_MOTION_DEBT: Record<string, number> = {
   "app/email/components/automation/AnalyticsView.tsx": 1,
   "app/email/components/automation/ai-settings/RulesTab.tsx": 1,
   "app/email/components/automation/ai-settings/VoiceProfileDialog.tsx": 1,
-  "app/email/components/automation/ui.tsx": 1,
   "app/email/page.tsx": 2,
   // `.tech-transition` and `.cc-control`, the two token utilities.
   "app/globals.css": 2,
   "app/integrations/components/ApiKeysView.tsx": 3,
   "app/memory/page.tsx": 2,
-  "app/notes/components/MeetingPrep.tsx": 1,
   "app/observability/page.tsx": 1,
   "app/tasks/components/TaskListGrouped.tsx": 1,
   "components/AddAgentWizard.tsx": 1,
@@ -230,6 +228,10 @@ const LAYOUT_MOTION_DEBT: Record<string, number> = {
   "components/genUITemplates.tsx": 3,
   "components/ui/Collapsible.tsx": 1,
   "components/ui/ProgressBar.tsx": 1,
+  // The two classic knobs that slide by `left` (the email Toggle and the
+  // Meeting copilot). They moved here from `email/.../automation/ui.tsx` and
+  // `MeetingPrep.tsx` with GL-2, and the classic look keeps them.
+  "components/ui/Switch.tsx": 2,
   "lib/theme/sandbox-frame.ts": 1,
 };
 
