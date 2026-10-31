@@ -905,7 +905,7 @@ function NavSectionBlock({
             subsections of personal, across teams, etc."). */}
         <div data-rail-heading="" aria-hidden className="relative hidden h-6 items-center pl-[7px] glass:flex">
           <span data-rail-rule="" className="absolute left-[18px] h-px w-5 bg-sidebar-border" />
-          <span data-rail-label="" className="text-caption font-medium text-muted-foreground">
+          <span data-rail-label="" className="text-[11px] font-medium text-muted-foreground glass:text-caption">
             {section.label}
           </span>
         </div>
