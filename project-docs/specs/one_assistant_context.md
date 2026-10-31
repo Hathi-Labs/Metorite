@@ -2284,12 +2284,15 @@ The chat-speed work (#1313, #1323) owns latency. These points touch it:
    cold, and they ran one after another. A streamed run now starts them
    together, after the access check and beside the agent load
    (`executor._EarlyReads`). They are the knowledge index, the mailbox list
-   and the CRM facts. Each read keeps its own rule, and each task reads in
-   the run's own context. The run awaits the two cache fills before the
-   first reader of the caches. `_add_crm_facts_block` uses the early facts
-   in place of its own read, and only when its rule says to read. The
-   `finally` cancels a read that the run did not await. Fence:
-   `tests/unit/test_early_reads.py`.
+   and the CRM facts. Each task reads in the run's own context. The
+   knowledge read and the mailbox read keep their own rules. The run awaits
+   these two cache fills before the first reader of the caches.
+   `_add_crm_facts_block` uses the early facts in place of its own read, and
+   only when its rule says to use facts. The early CRM read has a wider gate
+   than that rule: it cannot see whether the run holds a CRM tool. When an
+   admin turns the `crm` skill family off, the read still goes out, and the
+   run drops its value. The `finally` cancels a read that still runs.
+   Fence: `tests/unit/test_early_reads.py`.
 
 HANDOFF **H-412** carries these points to that session.
 

@@ -1726,10 +1726,12 @@ async def _add_crm_facts_block(
 
     Chat speed SPD-1 part 2: *facts* is a read of ``crm_facts_for_run`` that
     the streamed run started early (``executor._EarlyReads``). The rule below
-    still decides whether the run reads facts at all. When it does, the
-    value of *facts* takes the place of a second read. When it does not, the
-    value is never used, and the run cancels the read. A read that failed
-    gives no rows, as a read here does.
+    still decides whether the run USES facts. When it does, the value of
+    *facts* takes the place of a second read. When it does not, the value is
+    never used. The early read has a wider gate than this rule (it cannot
+    see ``holds_crm``), so it may already have gone out by then, as the
+    member, and the run's ``finally`` cancels it only when it still runs. A
+    read that failed gives no rows, as a read here does.
     """
     held = frozenset(run_tools or ())
     try:

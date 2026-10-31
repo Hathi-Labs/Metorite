@@ -13,7 +13,10 @@ Mutations this file catches (R7):
   ``CRM_QUESTIONS_ORGS``, or with no verified solo member.
 * A task reads outside the run's context (the member or org of another run).
 * ``settle`` skips a cache fill, or lets a fault of one end the run.
-* ``close`` leaves a read running after the run ends.
+* ``close`` leaves a read running after the run ends, or leaves a fault
+  unread, so asyncio logs it.
+* A failed import of the email context ends the turn (it skips only the
+  mailbox read, as ``_prime_email_context`` does).
 * ``_add_crm_facts_block`` reads the facts a second time when an early read
   is there, uses an early read where its own rule says no read, or ends the
   run when the early read failed.
@@ -118,22 +121,28 @@ async def test_each_read_runs_in_the_context_of_its_own_run(reads) -> None:
     assert sorted(reads["facts"]) == ["run-a", "run-b"]
 
 
-async def test_settle_waits_for_both_caches_and_never_raises(monkeypatch) -> None:
+async def test_settle_waits_for_both_caches() -> None:
     done: list[str] = []
 
-    async def slow() -> None:
-        await asyncio.sleep(0.01)
-        done.append("knowledge")
+    async def slow(name: str, delay: float) -> None:
+        await asyncio.sleep(delay)
+        done.append(name)
 
+    early = ex._EarlyReads(asyncio.ensure_future(slow("knowledge", 0.01)),
+                           asyncio.ensure_future(slow("mailboxes", 0.03)))
+    await early.settle()
+    assert sorted(done) == ["knowledge", "mailboxes"], "a cache fill was not awaited"
+
+
+async def test_settle_never_raises() -> None:
     async def broken() -> None:
         raise RuntimeError("gateway down")
 
-    early = ex._EarlyReads(asyncio.ensure_future(slow()), asyncio.ensure_future(broken()))
+    early = ex._EarlyReads(asyncio.ensure_future(broken()), asyncio.ensure_future(broken()))
     await early.settle()  # must not raise
-    assert done == ["knowledge"]
 
 
-async def test_close_cancels_what_is_still_running() -> None:
+async def test_close_cancels_what_is_still_running_and_reads_each_fault() -> None:
     gate = asyncio.Event()
 
     async def never() -> list[Any]:
@@ -146,11 +155,28 @@ async def test_close_cancels_what_is_still_running() -> None:
     hung = asyncio.ensure_future(never())
     bad = asyncio.ensure_future(failed())
     await asyncio.sleep(0)
+    assert bad._log_traceback, "asyncio would log this fault as never retrieved"
     early = ex._EarlyReads(knowledge=bad, crm_facts=hung)
     early.close()
     await asyncio.sleep(0)
     assert hung.cancelled()
-    assert bad.done()  # its exception was read, so asyncio logs none
+    assert not bad._log_traceback, "close() reads the fault, so asyncio logs none"
+
+
+async def test_a_failed_import_skips_the_mailbox_read_and_never_ends_the_turn(
+    reads, monkeypatch,
+) -> None:
+    import sys
+
+    import acb_skills
+
+    monkeypatch.delattr(acb_skills, "email_chat_context", raising=False)
+    monkeypatch.setitem(sys.modules, "acb_skills.email_chat_context", None)
+    early = ex._EarlyReads.start("orchestrator", no_egress=False)
+    await early.settle()
+    assert early.mailboxes is None and reads["mailboxes"] == []
+    assert early.knowledge is not None and early.crm_facts is not None
+    early.close()
 
 
 async def test_the_block_uses_the_early_rows_and_reads_no_second_time(monkeypatch) -> None:

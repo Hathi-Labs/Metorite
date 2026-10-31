@@ -1448,7 +1448,13 @@ class _EarlyReads:
     * ``crm_facts`` is the value that :func:`_add_crm_facts_block` would read.
       That function keeps its own rule and only takes this value in place of
       its own read. It starts only for the orchestrator, outside a
-      ``no_egress`` run, for an org on ``CRM_QUESTIONS_ORGS``.
+      ``no_egress`` run, for an org on ``CRM_QUESTIONS_ORGS``. That gate is
+      WIDER than the rule of the block: the early read cannot see whether the
+      run will hold a CRM tool (an admin can turn the ``crm`` skill family
+      off). In that case the read still goes out, as the member, and the
+      block drops its value, so the model sees nothing of it. Reading the
+      toggle first would cost a sync DB read on the loop, which costs more
+      than the read it saves (review of SPD-1 part 2, P2).
 
     Each task copies the run's context when it starts, so it reads as the
     run's member and org, never a request field (R5). Nothing here writes
@@ -1476,9 +1482,12 @@ class _EarlyReads:
             member = _email_ctx_member()
             org = _current_run_org()
             if member and org:
-                from acb_skills import email_chat_context as ecc
-
-                mailboxes = asyncio.ensure_future(ecc.prime_mailboxes(str(org), member))
+                try:
+                    from acb_skills import email_chat_context as ecc
+                except ImportError:  # as _prime_email_context: no block, never the turn
+                    ecc = None
+                if ecc is not None:
+                    mailboxes = asyncio.ensure_future(ecc.prime_mailboxes(str(org), member))
             if not no_egress and _crm_questions_on(org):
                 crm_facts = asyncio.ensure_future(_early_crm_facts())
         return cls(knowledge, mailboxes, crm_facts)
