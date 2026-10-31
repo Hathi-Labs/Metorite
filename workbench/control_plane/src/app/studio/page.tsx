@@ -26,7 +26,7 @@ import { EmptyState } from "@/components/EmptyState";
 import FilterPills from "@/components/FilterPills";
 import Tabs from "@/components/Tabs";
 import ModuleStudio from "@/app/workflows/components/ModuleStudio";
-import { hasCapability } from "@/lib/access";
+import { canUseFeature } from "@/lib/access";
 import AppsGallery from "./components/AppsGallery";
 import WorkflowsGallery from "./components/WorkflowsGallery";
 
@@ -48,7 +48,7 @@ function StudioLibrary() {
 
   const kind = readKind(params.get("kind"));
   const tab = params.get("tab") === "modules" ? "modules" : "library";
-  const canBuildApps = hasCapability(access, "build.apps");
+  const canBuildApps = canUseFeature(access, "build.apps");
 
   function go(next: { kind?: Kind; tab?: string }) {
     const q = new URLSearchParams(params.toString());
