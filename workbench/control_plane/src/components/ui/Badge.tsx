@@ -39,7 +39,7 @@ export function badgeTone(tone: BadgeTone = "neutral"): string {
   return TONES[tone];
 }
 
-export type BadgeSize = "sm" | "xs";
+export type BadgeSize = "md" | "sm" | "xs";
 
 /**
  * Size is a PROP, not something a call site can pass through `className`.
@@ -50,6 +50,8 @@ export type BadgeSize = "sm" | "xs";
  * card meta lines, where a full-size badge crowds the row it annotates.
  */
 const SIZES: Record<BadgeSize, { chip: string; icon: number }> = {
+  /** 11 px, one line of 16 px: the chips of a calendar card, which is 21 px tall. */
+  md: { chip: "px-1 text-[11px] leading-4", icon: 11 },
   sm: { chip: "px-1.5 py-0.5 text-[10px]", icon: 11 },
   xs: { chip: "px-1 py-0.5 text-[9px]", icon: 10 },
 };

@@ -112,68 +112,153 @@ export function blockLines(
 // ── a block's card (the task block cards redesign, task 1124) ────────────────
 
 /** How tall a card is, by its length. The grid draws `mins / 60 * HOUR_PX - 2`
- *  pixels, so 30 minutes is 21 px, 60 is 44 px and 90 is 67 px. */
+ *  pixels, so 30 minutes is 21 px, 45 is 32 px, 60 is 44 px and 90 is 67 px. */
 export type BlockRows = "one" | "two" | "three";
+
+/** The always-visible Focus button of the current card. */
+export type FocusForm = "label" | "icon" | false;
 
 export type BlockLayout = {
   /** one: title and range on a single row. two: a title row and a meta row.
    *  three: the same, plus the optional lines of `blockLines`. */
   rows: BlockRows;
-  /** The time range sits on the title row (a one-row card only). */
-  rangeOnTitle: boolean;
   /** The title may wrap to two lines (a card of 2 hours or more). */
   wrapTitle: boolean;
-  /** The "Now" and "Overlaps" chips draw. A narrow one-row card drops them. */
+  /** The time range on the title row (a one-row card only). */
+  rangeOnTitle: "full" | "compact" | false;
+  /** The Focus button of the current card: a label, an icon, or none. */
+  focus: FocusForm;
+  /** The "Now" and "Overlaps" chips draw. */
   chips: boolean;
+  /** The check circle draws. A card under 90 px gives its room to the title. */
+  check: boolean;
+  /** The range on the meta row (a card of two or three rows). */
+  metaRange: "full" | "compact";
+  /** The "· 1h" length after the range. */
+  duration: boolean;
+  energy: boolean;
   crumb: "own" | "inline" | null;
-  outcome: boolean;
+  /** The "→ outcome" text: on its own line, or at the end of the meta row. */
+  outcome: false | "inline" | "own";
 };
 
+// Widths in px of what a one-row card can hold, at 11 px text. The title keeps
+// at least TITLE_MIN_PX, or 40% of the card, whichever is more.
+const TITLE_MIN_PX = 48;
+const TITLE_MIN_SHARE = 0.4;
+const ROW_BASE_PX = 34; // left bar and padding, the check circle and its gap
+const ROW_BASE_NO_CHECK_PX = 12; // the same, with no check circle
+const CHECK_MIN_PX = 90;
+const GAP_PX = 6;
+const W_FOCUS_LABEL = 56;
+const W_FOCUS_ICON = 20;
+const W_RANGE_FULL = 96;
+const W_RANGE_COMPACT = 62;
+const W_NOW_CHIP = 88;
+const W_OVERLAP_CHIP = 62;
+
 /**
- * What a card on the grid draws, from its length and its width.
+ * What a card on the grid draws, from its length and its REAL width in px.
  *
- * - Under 50 minutes: ONE row. 45 minutes is 32 px, and two rows need 34 px.
- * - 50 to 89 minutes: a title row and a meta row.
- * - 90 minutes or more: the lines of `blockLines` join them. From 120 minutes
- *   the title may wrap to two lines.
- * - A narrow card (the week view, or three lanes) drops the range from the
- *   title row first and keeps the title.
+ * - Under 45 minutes: ONE row. A 30-minute card is 21 px tall.
+ * - 45 to 89 minutes: a title row and a meta row. 45 minutes is 30 px inside
+ *   its border, which two 11 px lines just fill. A plain block keeps its
+ *   "→ outcome" from 45 minutes, as `blockLines` has it, and a step keeps its
+ *   crumb on the meta row. A third line does not fit at 11 px, so the outcome
+ *   ends the meta row here, where main drew it on its own line.
+ * - 90 minutes or more: the lines of `blockLines` have their own rows. From
+ *   120 minutes the title may wrap to two lines.
  *
- * `blockLines` still owns the crumb and the ribbon, so the two stay in step.
+ * The title keeps at least 48 px or 40% of the card. As the card narrows, a
+ * one-row card drops, in this order: the Focus label (the icon stays), the
+ * range (full, then compact, then none), the chips, and last the Focus icon.
+ * The Focus of the hover toolbar still reaches a card that lost its own.
  */
 export function blockLayout(
   mins: number,
-  narrow: boolean,
+  widthPx: number,
   isStep: boolean,
+  opts: { isNow?: boolean; overlaps?: boolean } = {},
 ): BlockLayout {
-  if (mins < 50) {
+  const title = Math.max(TITLE_MIN_PX, widthPx * TITLE_MIN_SHARE);
+  const lines = blockLines(mins, isStep);
+  const check = widthPx >= CHECK_MIN_PX;
+  const base = check ? ROW_BASE_PX : ROW_BASE_NO_CHECK_PX;
+  const meta = {
+    metaRange: widthPx >= 170 ? ("full" as const) : ("compact" as const),
+    duration: widthPx >= 150,
+    energy: widthPx >= 240,
+  };
+
+  if (mins < 45) {
+    let focus: FocusForm = opts.isNow ? "label" : false;
+    let range: "full" | "compact" | false = "full";
+    let chips = Boolean(opts.isNow || opts.overlaps);
+    const cost = () =>
+      base +
+      title +
+      (focus === "label" ? W_FOCUS_LABEL + GAP_PX : 0) +
+      (focus === "icon" ? W_FOCUS_ICON + GAP_PX : 0) +
+      (range === "full" ? W_RANGE_FULL + GAP_PX : 0) +
+      (range === "compact" ? W_RANGE_COMPACT + GAP_PX : 0) +
+      (chips
+        ? (opts.isNow ? W_NOW_CHIP + GAP_PX : 0) +
+          (opts.overlaps ? W_OVERLAP_CHIP + GAP_PX : 0)
+        : 0);
+    while (cost() > widthPx) {
+      if (focus === "label") focus = "icon";
+      else if (range === "full") range = "compact";
+      else if (range === "compact") range = false;
+      else if (chips) chips = false;
+      else if (focus === "icon") focus = false;
+      else break;
+    }
     return {
       rows: "one",
-      rangeOnTitle: !narrow,
       wrapTitle: false,
-      chips: !narrow,
+      rangeOnTitle: range,
+      focus,
+      chips,
+      check,
+      ...meta,
       crumb: null,
       outcome: false,
     };
   }
+
+  // Two or three rows: the title row holds the Focus button alone.
+  const room = widthPx - base - title;
+  const focus: FocusForm = !opts.isNow
+    ? false
+    : room >= W_FOCUS_LABEL + GAP_PX
+      ? "label"
+      : room >= W_FOCUS_ICON + GAP_PX
+        ? "icon"
+        : false;
+  const chips = widthPx >= 150;
   if (mins < 90) {
     return {
       rows: "two",
-      rangeOnTitle: false,
       wrapTitle: false,
-      chips: true,
-      crumb: isStep ? "inline" : null,
-      outcome: false,
+      rangeOnTitle: false,
+      focus,
+      chips,
+      check,
+      ...meta,
+      crumb: lines.crumb,
+      outcome: lines.outcome && widthPx >= 220 ? "inline" : false,
     };
   }
-  const lines = blockLines(mins, isStep);
   return {
     rows: "three",
+    wrapTitle: mins >= 120 && widthPx >= 140,
     rangeOnTitle: false,
-    wrapTitle: mins >= 120,
-    chips: true,
+    focus,
+    chips,
+    check,
+    ...meta,
     crumb: lines.crumb,
-    outcome: lines.outcome,
+    outcome: lines.outcome ? "own" : false,
   };
 }
 
@@ -206,6 +291,17 @@ export function fmtRange(
   const samePeriod = periodOf(a) === periodOf(b);
   if (opts.compact) return `${text(a, false)}–${text(b, false)}`;
   return `${text(a, !samePeriod)} – ${text(b, true)}`;
+}
+
+/** "4:39", the clock without AM or PM: the pill of the hour gutter. The hour
+ *  labels beside it carry the period. `locale` is for tests. */
+export function fmtClockShort(d: Date, locale?: string): string {
+  return new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" })
+    .formatToParts(d)
+    .filter((p) => p.type !== "dayPeriod")
+    .map((p) => p.value)
+    .join("")
+    .trim();
 }
 
 /** How far through a block "now" is, as a whole percent from 0 to 100. */

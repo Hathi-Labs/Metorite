@@ -1,8 +1,10 @@
 "use client";
 
 import Icon, { themedIcon } from "@/components/Icon";
+import Badge from "@/components/ui/Badge";
+import Button from "@/components/ui/Button";
 import { ParentCrumb } from "@/components/TaskMeta";
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   type EnergyWindow,
   type DayTemplate,
@@ -25,7 +27,7 @@ import {
   elapsedPct,
   snap,
   minutesInto,
-  fmtClock,
+  fmtClockShort,
   fmtLeft,
   fmtRange,
   leftText,
@@ -58,15 +60,21 @@ import {
 // One rule for each state. A state sets the accent bar and the tint, and it
 // never stacks with another. The surface is a token mixed into `--background`,
 // so it is opaque: no hour line and no now line shows through a card.
+//
+// The tints are light on purpose. Text on a card is `META` (below) or
+// `text-foreground`, and both clear 4.5 : 1 on every surface here, in light and
+// dark (DESIGN_SYSTEM.md §7, measured on 2026-10-31). `text-muted-foreground`
+// does not: it is 4.6 : 1 on white and falls under 4.5 on any tint.
 type CardTone = {
   bar: string;
+  /** The bar of the current block, before "now" fills it. */
+  track: string;
   border: string;
   rest: string;
   now: string;
   past: string;
-  /** The elapsed layer of the current block. */
+  /** The faint layer over the elapsed part of the current block. */
   elapsed: string;
-  chip: string;
 };
 const CARD_TONE: Record<
   "base" | "leveraged" | "one" | "conflict" | "done",
@@ -74,50 +82,53 @@ const CARD_TONE: Record<
 > = {
   base: {
     bar: "bg-primary",
+    track: "bg-primary/35",
     border: "border-primary/25 hover:border-primary/50",
-    rest: "bg-[color-mix(in_srgb,var(--primary)_10%,var(--background))]",
-    now: "bg-[color-mix(in_srgb,var(--primary)_14%,var(--background))]",
-    past: "bg-[color-mix(in_srgb,var(--primary)_5%,var(--background))]",
-    elapsed: "bg-primary/15",
-    chip: "bg-primary/15 text-primary",
+    rest: "bg-[color-mix(in_srgb,var(--primary)_5%,var(--background))]",
+    now: "bg-[color-mix(in_srgb,var(--primary)_7%,var(--background))]",
+    past: "bg-[color-mix(in_srgb,var(--primary)_3%,var(--background))]",
+    elapsed: "bg-primary/5",
   },
   leveraged: {
     bar: "bg-warning",
+    track: "bg-warning/35",
     border: "border-primary/25 hover:border-primary/50",
-    rest: "bg-[color-mix(in_srgb,var(--primary)_10%,var(--background))]",
-    now: "bg-[color-mix(in_srgb,var(--primary)_14%,var(--background))]",
-    past: "bg-[color-mix(in_srgb,var(--primary)_5%,var(--background))]",
-    elapsed: "bg-primary/15",
-    chip: "bg-primary/15 text-primary",
+    rest: "bg-[color-mix(in_srgb,var(--primary)_5%,var(--background))]",
+    now: "bg-[color-mix(in_srgb,var(--primary)_7%,var(--background))]",
+    past: "bg-[color-mix(in_srgb,var(--primary)_3%,var(--background))]",
+    elapsed: "bg-primary/5",
   },
   one: {
     bar: "bg-warning",
+    track: "bg-warning/35",
     border: "border-warning/40 hover:border-warning/70",
-    rest: "bg-[color-mix(in_srgb,var(--warning)_14%,var(--background))]",
-    now: "bg-[color-mix(in_srgb,var(--warning)_18%,var(--background))]",
-    past: "bg-[color-mix(in_srgb,var(--warning)_7%,var(--background))]",
-    elapsed: "bg-warning/15",
-    chip: "bg-warning/20 text-foreground",
+    rest: "bg-[color-mix(in_srgb,var(--warning)_8%,var(--background))]",
+    now: "bg-[color-mix(in_srgb,var(--warning)_10%,var(--background))]",
+    past: "bg-[color-mix(in_srgb,var(--warning)_4%,var(--background))]",
+    elapsed: "bg-warning/5",
   },
   conflict: {
     bar: "bg-destructive",
+    track: "bg-destructive/35",
     border: "border-destructive/35 hover:border-destructive/60",
-    rest: "bg-[color-mix(in_srgb,var(--destructive)_10%,var(--background))]",
-    now: "bg-[color-mix(in_srgb,var(--destructive)_14%,var(--background))]",
-    past: "bg-[color-mix(in_srgb,var(--destructive)_5%,var(--background))]",
-    elapsed: "bg-destructive/15",
-    chip: "bg-primary/15 text-primary",
+    rest: "bg-[color-mix(in_srgb,var(--destructive)_5%,var(--background))]",
+    now: "bg-[color-mix(in_srgb,var(--destructive)_8%,var(--background))]",
+    past: "bg-[color-mix(in_srgb,var(--destructive)_3%,var(--background))]",
+    elapsed: "bg-destructive/5",
   },
   done: {
     bar: "bg-success",
+    track: "bg-success/35",
     border: "border-success/25 hover:border-success/50",
-    rest: "bg-[color-mix(in_srgb,var(--success)_8%,var(--background))]",
-    now: "bg-[color-mix(in_srgb,var(--success)_8%,var(--background))]",
-    past: "bg-[color-mix(in_srgb,var(--success)_8%,var(--background))]",
-    elapsed: "bg-success/15",
-    chip: "bg-success/15 text-success",
+    rest: "bg-[color-mix(in_srgb,var(--success)_5%,var(--background))]",
+    now: "bg-[color-mix(in_srgb,var(--success)_5%,var(--background))]",
+    past: "bg-[color-mix(in_srgb,var(--success)_5%,var(--background))]",
+    elapsed: "bg-success/5",
   },
 };
+/** Secondary text on a card: `--muted-foreground` pulled 30% toward the
+ *  foreground, so it reads at 4.5 : 1 or more on each tint. */
+const META = "text-[color-mix(in_srgb,var(--muted-foreground),var(--foreground)_30%)]";
 
 // ── Day / Week hour grid ─────────────────────────────────────────────────────
 export function TimeGrid({
@@ -224,7 +235,26 @@ export function TimeGrid({
     y: number;
     item: MyTask;
     day: Date;
+    /** Opened from the keyboard: the menu takes the focus, and gives it back. */
+    kbd?: boolean;
+    /** The ⋯ button that opened it. */
+    button?: HTMLElement;
   } | null>(null);
+  // The width of a day column, so a card knows its real width in px.
+  const [colW, setColW] = useState(0);
+  const colObs = useRef<ResizeObserver | null>(null);
+  const measureCol = useCallback((el: HTMLDivElement | null) => {
+    colObs.current?.disconnect();
+    colObs.current = null;
+    if (!el) return;
+    setColW(Math.round(el.getBoundingClientRect().width));
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      setColW(Math.round(entries[0].contentRect.width));
+    });
+    ro.observe(el);
+    colObs.current = ro;
+  }, []);
   const [rctx, setRctx] = useState<{ x: number; y: number; row: CalReminder } | null>(null);
   const lpTimer = useRef<number | null>(null);
   const lpFired = useRef(false);
@@ -417,7 +447,7 @@ export function TimeGrid({
             >
               {/* the pill below hides the label it would sit on */}
               {!(
-                pillTop != null && Math.abs(pillTop - (h - dayStart) * HOUR_PX) < 9
+                pillTop != null && Math.abs(pillTop - (h - dayStart) * HOUR_PX) < 14
               ) && (
                 <span className="absolute right-2 top-0 -translate-y-1/2">
                   {h % 12 === 0 ? 12 : h % 12}
@@ -430,16 +460,16 @@ export function TimeGrid({
               line, so it never covers a card. */}
           {pillTop != null && (
             <span
-              className="pointer-events-none absolute right-1 -translate-y-1/2 rounded bg-primary px-1 text-[11px] font-semibold leading-4 tabular-nums text-primary-foreground shadow-sm"
+              className="pointer-events-none absolute right-0.5 -translate-y-1/2 whitespace-nowrap rounded bg-primary px-1 text-[11px] font-semibold leading-4 tabular-nums text-primary-foreground shadow-sm"
               style={{ top: pillTop }}
             >
-              {fmtClock(now)}
+              {fmtClockShort(now)}
             </span>
           )}
         </div>
 
         {/* Day columns */}
-        {days.map((day) => {
+        {days.map((day, di) => {
           const blocks = blocksForDay(items, day);
           const deadlines = deadlinesForDay(items, day);
           const today = sameDay(day, now);
@@ -471,6 +501,7 @@ export function TimeGrid({
           return (
             <div
               key={dayKey}
+              ref={di === 0 ? measureCol : undefined}
               onDragOver={(e) => {
                 e.preventDefault();
                 e.dataTransfer.dropEffect = "move";
@@ -709,7 +740,8 @@ export function TimeGrid({
                   One card anatomy: a 3 px accent bar carries the state colour,
                   the surface is opaque (so no hour line and no now line shows
                   through), and each state sets its own bar and tint without
-                  stacking (task 1124). */}
+                  stacking (task 1124). What a card draws follows its REAL
+                  width (`blockLayout`), not the view. */}
               {laid.map(({ block: b, lane, lanes }) => {
                 const end =
                   resizing?.id === b.item.id ? new Date(resizing.endMs) : b.end;
@@ -752,15 +784,18 @@ export function TimeGrid({
                         ),
                       )
                     : null;
-                // A week column, or three lanes, is narrow.
-                const narrow = days.length > 1 || lanes >= 3;
-                const veryNarrow = days.length > 1 && lanes > 1;
-                const layout = blockLayout(mins, narrow, Boolean(b.item.parent));
                 const leftPct = (lane / lanes) * 100;
                 const widthPct = 100 / lanes;
+                // The card's width in px: the column, split by its lanes.
+                const cardW = (colW || 600) * (widthPct / 100) - 4;
+                const layout = blockLayout(mins, cardW, Boolean(b.item.parent), {
+                  isNow,
+                  overlaps: conflict,
+                });
+                const one = layout.rows === "one";
                 const cardTop = Math.max(0, top) + 1;
-                // The elapsed layer runs from the card's top down to "now", so
-                // its lower edge meets the now line at both edges of the card.
+                // The elapsed part of the current block: a faint layer from
+                // the card's top down to "now", and the fill of the accent bar.
                 const elapsed = isNow ? elapsedPct(b.start, end, now) : 0;
                 const tone = isDone
                   ? CARD_TONE.done
@@ -772,30 +807,25 @@ export function TimeGrid({
                         ? CARD_TONE.leveraged
                         : CARD_TONE.base;
                 const surface = isPast ? tone.past : isNow ? tone.now : tone.rest;
-                const range = fmtRange(b.start, end, { compact: narrow });
-                // a one-row card is 21 px tall, so its toolbar buttons are smaller
-                const btnPad = layout.rows === "one" ? "p-px" : "p-0.5";
                 const planned = fmtLeft(Math.max(1, Math.round(mins)));
+                // A one-row card is 21 px tall, so its toolbar buttons are small.
+                const btnCls = `tech-transition relative rounded ${one ? "p-px" : "p-0.5"} focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:before:absolute pointer-coarse:before:-inset-1`;
                 const titleCls = [
                   "min-w-0 flex-1 text-left text-xs font-medium",
                   layout.wrapTitle ? "line-clamp-2" : "truncate",
-                  isDone
-                    ? "text-muted-foreground line-through"
-                    : isPast
-                      ? "text-muted-foreground"
-                      : "text-foreground",
+                  isDone || isPast ? `${META} ${isDone ? "line-through" : ""}` : "text-foreground",
                 ].join(" ");
+                const fullRange = fmtRange(b.start, end);
+                const compactRange = fmtRange(b.start, end, { compact: true });
                 const nowChip = isNow ? (
-                  <span
-                    className={`inline-flex shrink-0 items-center rounded px-1 text-[11px] font-medium leading-4 ${tone.chip}`}
-                  >
+                  <Badge tone="info" size="md" className="shrink-0 text-foreground!">
                     Now · {leftText(end, now)}
-                  </span>
+                  </Badge>
                 ) : null;
-                const overlapChip = conflict && !veryNarrow ? (
-                  <span className="inline-flex shrink-0 items-center rounded bg-destructive/15 px-1 text-[11px] font-medium leading-4 text-destructive">
+                const overlapChip = conflict ? (
+                  <Badge tone="destructive" size="md" className="shrink-0 text-foreground!">
                     Overlaps
-                  </span>
+                  </Badge>
                 ) : null;
                 const actualChip =
                   actualMins != null ? (
@@ -807,7 +837,7 @@ export function TimeGrid({
                           ? "text-warning"
                           : actualMins < plannedMins
                             ? "text-success"
-                            : "text-muted-foreground",
+                            : META,
                       ].join(" ")}
                     >
                       {actualMins === plannedMins
@@ -817,10 +847,17 @@ export function TimeGrid({
                     </span>
                   ) : null;
                 const lockMark = isFixed ? (
-                  <span title="Fixed — the planner does not move this block" className="inline-flex shrink-0">
+                  <span
+                    title="Fixed — the planner does not move this block"
+                    className={`inline-flex shrink-0 ${META}`}
+                  >
                     <Icon name="Lock" className="h-3 w-3" aria-label="Fixed" role="img" />
                   </span>
                 ) : null;
+                const openFocus = (e: React.MouseEvent) => {
+                  e.stopPropagation();
+                  onFocusMode(b.item);
+                };
                 return (
                   <div
                     key={b.item.id}
@@ -871,12 +908,8 @@ export function TimeGrid({
                       isNow ? "shadow-sm" : "",
                     ].join(" ")}
                   >
-                    {/* the one place a state shows its colour */}
-                    <span
-                      aria-hidden
-                      className={`absolute inset-y-0 left-0 w-[3px] ${tone.bar} ${isPast ? "opacity-50" : ""}`}
-                    />
-                    {/* elapsed part of the current block */}
+                    {/* elapsed part of the current block: a faint layer. No
+                        text sits on a dark band. */}
                     {elapsed > 0 && (
                       <span
                         aria-hidden
@@ -884,20 +917,38 @@ export function TimeGrid({
                         style={{ height: `${elapsed}%` }}
                       />
                     )}
+                    {/* the one place a state shows its colour. On the current
+                        block the elapsed part is solid and the rest is faint. */}
+                    <span
+                      aria-hidden
+                      className={`absolute inset-y-0 left-0 w-[3px] ${isNow ? tone.track : tone.bar} ${isPast ? "opacity-50" : ""}`}
+                    >
+                      {isNow && (
+                        <span
+                          className={`absolute inset-x-0 top-0 ${tone.bar}`}
+                          style={{ height: `${elapsed}%` }}
+                        />
+                      )}
+                    </span>
                     <div
                       className={[
                         "relative flex h-full min-w-0 flex-col pl-2 pr-1",
-                        layout.rows === "one" ? "justify-center" : "pt-0.5",
+                        layout.rows === "three" ? "pt-0.5" : "justify-center",
                       ].join(" ")}
                     >
                       <div
                         className={[
                           "flex min-w-0 gap-1.5",
                           layout.wrapTitle ? "items-start" : "items-center",
-                          // keep the labelled Focus button clear of the title
-                          isNow ? "pr-[62px]" : "",
+                          // keep the Focus button clear of the title
+                          layout.focus === "label"
+                            ? "pr-[62px]"
+                            : layout.focus === "icon"
+                              ? "pr-[26px]"
+                              : "",
                         ].join(" ")}
                       >
+                        {layout.check && (
                         <button
                           type="button"
                           onClick={(e) => {
@@ -916,21 +967,24 @@ export function TimeGrid({
                         >
                           <Icon name="Check" className="h-3 w-3" strokeWidth={3} />
                         </button>
+                        )}
                         {/* the title is a real button, so Tab reaches it. A click
                             bubbles to the card, which opens the task. */}
                         <button type="button" className={titleCls}>
                           {isOneThing && <span className="text-warning">★ </span>}
                           {b.item.title}
                         </button>
-                        {layout.rows === "one" && (
+                        {one && (
                           <>
                             {layout.chips && nowChip}
                             {layout.chips && overlapChip}
-                            {layout.chips && actualChip}
+                            {actualChip}
                             {lockMark}
-                            {layout.rangeOnTitle && !isNow && (
-                              <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
-                                {range}
+                            {layout.rangeOnTitle && (
+                              <span
+                                className={`shrink-0 text-[11px] tabular-nums ${META}`}
+                              >
+                                {layout.rangeOnTitle === "full" ? fullRange : compactRange}
                               </span>
                             )}
                           </>
@@ -943,61 +997,67 @@ export function TimeGrid({
                       {layout.crumb === "own" && (
                         <ParentCrumb
                           parent={b.item.parent}
-                          className="pl-[22px] text-[11px]! leading-[14px]!"
+                          className={`${layout.check ? "pl-[22px]" : ""} text-[11px]! leading-[14px]! ${META}!`}
                         />
                       )}
                       {/* outcome ribbon — why this block matters (tall blocks) */}
-                      {outcome && layout.outcome && (
-                        <div className="truncate pl-[22px] text-[11px] font-medium leading-[14px] text-warning">
+                      {outcome && layout.outcome === "own" && (
+                        <div className={`truncate ${layout.check ? "pl-[22px]" : ""} text-[11px] font-medium leading-[14px] text-warning`}>
                           → {outcome}
                         </div>
                       )}
-                      {layout.rows !== "one" && (
-                        <div className="flex min-w-0 items-center gap-1.5 pl-[22px] text-[11px] leading-[14px] text-muted-foreground">
-                          {nowChip}
-                          <span className={narrow ? "min-w-0 truncate tabular-nums" : "shrink-0 tabular-nums"}>
-                            {range}
-                            {!narrow && ` · ${planned}`}
+                      {!one && (
+                        <div
+                          className={`flex min-w-0 items-center gap-1.5 ${layout.check ? "pl-[22px]" : ""} text-[11px] leading-[14px] ${META}`}
+                        >
+                          {layout.chips && nowChip}
+                          <span className="shrink-0 tabular-nums">
+                            {layout.metaRange === "full" ? fullRange : compactRange}
+                            {layout.duration && ` · ${planned}`}
                           </span>
                           {layout.crumb === "inline" && (
                             <ParentCrumb
                               parent={b.item.parent}
-                              className="min-w-0 text-[11px]!"
+                              className={`min-w-0 text-[11px]! ${META}!`}
                             />
                           )}
-                          {!narrow && b.item.energy && (
+                          {layout.energy && b.item.energy && (
                             <span className="capitalize">· {b.item.energy}</span>
                           )}
                           {lockMark}
-                          {overlapChip}
+                          {layout.chips && overlapChip}
                           {actualChip}
+                          {outcome && layout.outcome === "inline" && (
+                            <span className="min-w-0 truncate font-medium text-warning">
+                              → {outcome}
+                            </span>
+                          )}
                         </div>
                       )}
                     </div>
                     {/* The toolbar: on hover and on keyboard focus, on a solid
-                        background so it never overlaps text. On the current
-                        block, Focus is a labelled button that is always there.
-                        Pin, unschedule and the rest are in the menu. */}
+                        background so it never overlaps text. Hidden, it takes
+                        no tap, so a tap on the card's end opens the task.
+                        The current block shows its own Focus button, as a
+                        label or an icon (`blockLayout`). Pin, unschedule and
+                        the rest are in the ⋯ menu. */}
                     <div
-                      className={`absolute right-1 z-[1] flex items-center gap-1 ${layout.rows === "one" ? "inset-y-0" : "top-0.5"}`}
+                      className={`absolute right-1 z-[1] flex items-center gap-1 ${one ? "inset-y-0" : "top-0.5"}`}
                     >
-                      <div className="reveal-on-hover flex items-center rounded border border-border bg-background shadow-sm">
-                        {!isDone && !isNow && (
+                      <div className="reveal-on-hover pointer-events-none flex items-center gap-0.5 rounded border border-border bg-background px-0.5 shadow-sm focus-within:pointer-events-auto group-hover:pointer-events-auto">
+                        {!isDone && !layout.focus && (
                           <button
                             type="button"
                             aria-label="Focus on this block"
                             title="Focus — full-screen room + timer"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onFocusMode(b.item);
-                            }}
-                            className={`tech-transition rounded ${btnPad} text-muted-foreground hover:text-primary focus-visible:ring-2 focus-visible:ring-ring`}
+                            onClick={openFocus}
+                            className={`${btnCls} text-muted-foreground hover:text-primary`}
                           >
                             <Icon name="Play" className="h-3.5 w-3.5" fill="currentColor" />
                           </button>
                         )}
                         {/* ★ commit / uncommit the One Thing (today only). */}
-                        {!isDone && sameDay(day, now) && !veryNarrow && (
+                        {!isDone && sameDay(day, now) && cardW >= 130 && (
                           <button
                             type="button"
                             aria-label={
@@ -1012,12 +1072,7 @@ export function TimeGrid({
                               e.stopPropagation();
                               onToggleOneThing(b.item.id);
                             }}
-                            className={[
-                              `tech-transition rounded ${btnPad} focus-visible:ring-2 focus-visible:ring-ring`,
-                              isOneThing
-                                ? "text-warning"
-                                : "text-muted-foreground hover:text-warning",
-                            ].join(" ")}
+                            className={`${btnCls} ${isOneThing ? "text-warning" : "text-muted-foreground hover:text-warning"}`}
                           >
                             <Icon
                               name="Star"
@@ -1029,30 +1084,54 @@ export function TimeGrid({
                         <button
                           type="button"
                           aria-label="More actions"
+                          aria-haspopup="menu"
+                          aria-expanded={ctx?.button != null && ctx.item.id === b.item.id}
                           title="More actions — pin, reschedule, remove"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setCtx({ x: e.clientX, y: e.clientY, item: b.item, day });
+                            // Anchor on the button. A keyboard press has
+                            // detail 0, so the menu takes the focus, and the
+                            // focus comes back here when it closes.
+                            const button = e.currentTarget;
+                            const r = button.getBoundingClientRect();
+                            setCtx({
+                              x: Math.max(4, r.right - 196),
+                              y: r.bottom + 2,
+                              item: b.item,
+                              day,
+                              kbd: e.detail === 0,
+                              button,
+                            });
                           }}
-                          className={`tech-transition rounded ${btnPad} text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring`}
+                          className={`${btnCls} text-muted-foreground hover:text-foreground`}
                         >
                           <Icon name="MoreHorizontal" className="h-3.5 w-3.5" />
                         </button>
                       </div>
-                      {isNow && (
-                        <button
-                          type="button"
+                      {layout.focus === "label" && (
+                        <Button
+                          variant="primary"
+                          size="none"
                           aria-label="Focus on this block"
                           title="Focus — full-screen room + timer"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onFocusMode(b.item);
-                          }}
-                          className="tech-transition inline-flex h-4 items-center gap-1 rounded bg-primary px-1.5 text-[11px] font-medium leading-none text-primary-foreground hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring"
+                          onClick={openFocus}
+                          className="h-4 gap-1 px-1.5 text-[11px] leading-none"
                         >
                           <Icon name="Play" className="h-3 w-3" fill="currentColor" />
                           Focus
-                        </button>
+                        </Button>
+                      )}
+                      {layout.focus === "icon" && (
+                        <Button
+                          variant="primary"
+                          size="none"
+                          aria-label="Focus on this block"
+                          title="Focus — full-screen room + timer"
+                          onClick={openFocus}
+                          className="h-4 w-4 p-0"
+                        >
+                          <Icon name="Play" className="h-3 w-3" fill="currentColor" />
+                        </Button>
                       )}
                     </div>
                     {/* drag the bottom edge to change duration */}
@@ -1164,7 +1243,13 @@ export function TimeGrid({
               x={ctx.x}
               y={ctx.y}
               items={menu}
-              onClose={() => setCtx(null)}
+              autoFocus={ctx.kbd}
+              onClose={() => {
+                const button = ctx.button;
+                const kbd = ctx.kbd;
+                setCtx(null);
+                if (kbd) button?.focus();
+              }}
             />
           );
         })()}

@@ -8,6 +8,7 @@ import {
   blockLayout,
   blockLines,
   elapsedPct,
+  fmtClockShort,
   fmtRange,
   layoutBlocks,
   leftText,
@@ -201,53 +202,134 @@ describe("blockLines — a one-hour step block fits (review of #492)", () => {
   });
 });
 
-describe("blockLayout — what a card draws, by length and width", () => {
-  it("draws one row up to 45 minutes", () => {
-    expect(blockLayout(30, false, false)).toMatchObject({
-      rows: "one",
-      rangeOnTitle: true,
+describe("blockLayout — what a card draws, by length and real width", () => {
+  it("draws one row under 45 minutes, and two rows from 45", () => {
+    expect(blockLayout(30, 400, false).rows).toBe("one");
+    expect(blockLayout(44, 400, false).rows).toBe("one");
+    expect(blockLayout(45, 400, false).rows).toBe("two");
+    expect(blockLayout(89, 400, false).rows).toBe("two");
+    expect(blockLayout(90, 400, false).rows).toBe("three");
+  });
+
+  it("keeps the full range on a wide one-row card", () => {
+    expect(blockLayout(30, 400, false)).toMatchObject({
+      rangeOnTitle: "full",
+      focus: false,
+      chips: false,
+    });
+  });
+
+  it("shortens the range, then drops it, as the card narrows", () => {
+    expect(blockLayout(30, 200, false).rangeOnTitle).toBe("compact");
+    expect(blockLayout(30, 110, false).rangeOnTitle).toBe(false);
+    expect(blockLayout(30, 76, false).rangeOnTitle).toBe(false);
+  });
+
+  it("drops the Focus label, then the range, then the chips, then the icon", () => {
+    const now = { isNow: true };
+    expect(blockLayout(30, 520, false, now)).toMatchObject({
+      focus: "label",
+      rangeOnTitle: "full",
       chips: true,
-      crumb: null,
-      outcome: false,
     });
-    expect(blockLayout(45, false, true).rows).toBe("one");
+    // 300 px: the label goes first, and the range after it.
+    expect(blockLayout(30, 300, false, now)).toMatchObject({
+      focus: "icon",
+      rangeOnTitle: false,
+      chips: true,
+    });
+    // 160 px: the chip goes, the icon stays.
+    expect(blockLayout(30, 160, false, now)).toMatchObject({
+      focus: "icon",
+      chips: false,
+    });
+    // A week card of 92 px or a lane of 76 px: the title keeps the room.
+    expect(blockLayout(30, 92, false, now)).toMatchObject({
+      focus: false,
+      rangeOnTitle: false,
+      chips: false,
+    });
+    expect(blockLayout(30, 76, false, now).focus).toBe(false);
   });
 
-  it("drops the range and the chips first on a narrow one-row card", () => {
-    const l = blockLayout(30, true, false);
-    expect(l.rows).toBe("one");
-    expect(l.rangeOnTitle).toBe(false);
-    expect(l.chips).toBe(false);
+  it("drops the Overlaps chip on a narrow overlapping pair", () => {
+    const o = { overlaps: true };
+    expect(blockLayout(30, 400, false, o).chips).toBe(true);
+    // 163 px, a day view of two lanes at 390 px: the title is not cut.
+    expect(blockLayout(30, 163, false, o).chips).toBe(false);
   });
 
-  it("draws a title row and a meta row from 50 to 89 minutes", () => {
-    expect(blockLayout(60, false, false)).toMatchObject({
-      rows: "two",
-      crumb: null,
-      outcome: false,
-      wrapTitle: false,
-    });
-    // A step puts its crumb on the meta row, as blockLines does under 90.
-    expect(blockLayout(60, true, true).crumb).toBe("inline");
-    expect(blockLayout(60, true, true).chips).toBe(true);
+  it("keeps a title room of 48 px or 40% of the card", () => {
+    const widths = [76, 92, 120, 163, 200, 300, 480, 900];
+    for (const w of widths) {
+      for (const opts of [{}, { isNow: true }, { overlaps: true }]) {
+        const l = blockLayout(30, w, false, opts);
+        const used =
+          34 +
+          (l.focus === "label" ? 62 : l.focus === "icon" ? 26 : 0) +
+          (l.rangeOnTitle === "full" ? 102 : l.rangeOnTitle === "compact" ? 68 : 0) +
+          (l.chips
+            ? ("isNow" in opts ? 94 : 0) + ("overlaps" in opts ? 68 : 0)
+            : 0);
+        expect(w - used).toBeGreaterThanOrEqual(Math.min(48, w - 34));
+        if (used > 34) expect(w - used).toBeGreaterThanOrEqual(Math.max(48, w * 0.4));
+      }
+    }
   });
 
-  it("takes the crumb and the ribbon from blockLines at 90 minutes or more", () => {
-    expect(blockLayout(90, false, true)).toMatchObject({
-      rows: "three",
-      crumb: "own",
-      outcome: true,
-      wrapTitle: false,
+  it("keeps the outcome from 45 minutes on a plain block, as blockLines does", () => {
+    expect(blockLayout(45, 400, false).outcome).toBe("inline");
+    expect(blockLayout(60, 400, false).outcome).toBe("inline");
+    expect(blockLayout(60, 150, false).outcome).toBe(false); // too narrow
+    expect(blockLayout(90, 400, false).outcome).toBe("own");
+    // A step under 90 minutes gives way, as in blockLines.
+    expect(blockLayout(60, 400, true).outcome).toBe(false);
+  });
+
+  it("keeps the crumb of a step on the meta row under 90 minutes", () => {
+    expect(blockLayout(45, 400, true).crumb).toBe("inline");
+    expect(blockLayout(60, 400, true).crumb).toBe("inline");
+    expect(blockLayout(90, 400, true).crumb).toBe("own");
+    expect(blockLayout(60, 400, false).crumb).toBe(null);
+  });
+
+  it("drops the check circle from a card under 90 px, and gives the room to the title", () => {
+    expect(blockLayout(30, 92, false).check).toBe(true);
+    expect(blockLayout(30, 89, false).check).toBe(false);
+    expect(blockLayout(60, 44, false).check).toBe(false);
+  });
+
+  it("sets the meta row by width", () => {
+    expect(blockLayout(60, 300, false)).toMatchObject({
+      metaRange: "full",
+      duration: true,
+      energy: true,
     });
-    expect(blockLayout(90, false, false)).toMatchObject({
-      crumb: null,
-      outcome: true,
+    expect(blockLayout(60, 120, false)).toMatchObject({
+      metaRange: "compact",
+      duration: false,
+      energy: false,
     });
   });
 
-  it("lets the title wrap from 120 minutes", () => {
-    expect(blockLayout(119, false, false).wrapTitle).toBe(false);
-    expect(blockLayout(120, false, false).wrapTitle).toBe(true);
+  it("keeps a Focus button on a two-row card by the room it has", () => {
+    expect(blockLayout(60, 300, false, { isNow: true }).focus).toBe("label");
+    expect(blockLayout(60, 130, false, { isNow: true }).focus).toBe("icon");
+    expect(blockLayout(60, 80, false, { isNow: true }).focus).toBe(false);
+  });
+
+  it("lets the title wrap from 120 minutes on a card that is wide enough", () => {
+    expect(blockLayout(119, 400, false).wrapTitle).toBe(false);
+    expect(blockLayout(120, 400, false).wrapTitle).toBe(true);
+    expect(blockLayout(120, 100, false).wrapTitle).toBe(false);
+  });
+});
+
+describe("fmtClockShort — the pill of the gutter", () => {
+  it("drops the period, so the pill fits the gutter", () => {
+    expect(fmtClockShort(new Date(2099, 5, 15, 12, 59), "en-US")).toBe("12:59");
+    expect(fmtClockShort(new Date(2099, 5, 15, 4, 39), "en-US")).toBe("4:39");
+    expect(fmtClockShort(new Date(2099, 5, 15, 16, 5), "en-GB")).toBe("16:05");
   });
 });
 
