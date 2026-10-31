@@ -1601,12 +1601,27 @@ D-PZ-20, and a check of `origin/main` at merge confirms them (R1).
 ## 15. Recent chats and open loops (ACCEPTED, 2026-10-30)
 
 **Status: ACCEPTED, 2026-10-30 (D141). Nothing is built.** Verified
-against code on 2026-10-31, at `origin/main` `57b91f721`. The Metorite epic
-is task 1129, "Recent chats and open loops". Task 1130 is this section.
+against code on 2026-10-31, at `origin/main` `ce57cf0c2`. The Metorite epic
+is task 1129, "Recent chats and open loops". Task 1130 is this section. The
+spec audit of 2026-10-31 split PZ-33 into PZ-33a and PZ-33b (§15.9).
 
 Each slice is AGENT-SAFE to build dark. A flip of a flag on a box is gate
 `enforcement-flip`. The one exception is the production flip of the
 summary job, which is owner-only (§15.8).
+
+**Paths.** A short name in §15 lives in one of these places.
+
+| Short name in §15 | Path |
+|---|---|
+| `executor.py`, `agents.py` | `apps/services/orchestrator/orchestrator/` |
+| `rooms.py`, `main.py`, `my_day_loop.py`, `assistant_summaries.py`, `jobs/`, `brief/`, `reach/`, `routes/` | `apps/services/gateway/gateway/` |
+| `members.py` | `apps/services/gateway/gateway/routes/admin/members.py` |
+| `feed.py`, `needs.py` | `apps/services/gateway/gateway/routes/shell/` |
+| `personal.py` | `apps/services/gateway/gateway/routes/projects/personal.py` |
+| `chat_brief.py` | `apps/services/gateway/gateway/routes/chat_brief.py` |
+| `profile_tools.py`, `tool_packs.py`, `skill_families.py` | `packages/acb_skills/acb_skills/` |
+| `writes.py` | `apps/skills/skill-projects/skill_projects/writes.py` |
+| `acb-staging-flag` | `deploy/hostinger/staging/acb-staging-flag` |
 
 ### 15.1 The owner's ask
 
@@ -1628,7 +1643,7 @@ owner made these calls:
 
 The slices, with their Metorite tasks:
 
-- PZ-33, chat summaries (task 1131).
+- PZ-33a and PZ-33b, chat summaries (task 1131).
 - PZ-34, the briefing at the start of a chat (task 1132).
 - PZ-35, the Settings controls (task 1133).
 - PZ-36, a promise that becomes a task (task 1134).
@@ -1684,11 +1699,20 @@ personal records.
 (`gateway/rooms.py:141` `room_is_solo`). A WhatsApp chat, a shared room, a
 chat with another agent and an archived chat get no summary.
 
+**Two slices (audit of 2026-10-31).** PZ-33 lands as two PRs. PZ-33a is the
+store: the migration, the one module with the answer checks, the solo SQL,
+the flag and the fences. PZ-33b is the job: the seed hook, the kind, the
+model call and the R8 tests of the job. §15.9 holds the acceptance of each.
+
 **Where a summary lives (D-PZ-25).** One nullable JSONB column,
 `chat_session.member_summary`. It takes the next free migration number at
 build time. That is 318 today, because 317 is the newest file. Take the
 number at build, and check it again at merge (R1, `scripts/premerge.sh`).
-The migration is expand only: nullable, no default and no backfill (R6).
+
+The migration is expand only (R6). It uses `ADD COLUMN IF NOT EXISTS`, with
+no default and no backfill. It starts with `SET lock_timeout = '5s';`, as
+migration 220 does (`infra/postgres/220_chat_message_run_integrity.sql:56`).
+So the file fails fast on a held lock, and the runner tries it again.
 
 The code shows why a column, and not a new table:
 
@@ -1701,8 +1725,9 @@ The code shows why a column, and not a new table:
   summary. The purge deletes the member's private chats
   (`routes/admin/members.py:773-774`), so it needs no new purge row.
 - **No reader gets it by accident.** Each read of `chat_session` names its
-  columns (`routes/chat.py`, `acb_skills/history_tools.py:77-92`). So no
-  list, room or search route returns the new column.
+  columns (`routes/chat.py`,
+  `packages/acb_skills/acb_skills/history_tools.py:77-92`). So no list, room
+  or search route returns the new column.
 - **No second home.** D-PZ-1 put the profile in the row that exists. A
   summary of a chat goes in the row of the chat for the same reason.
 
@@ -1729,80 +1754,121 @@ writes that chat again (§15.5).
 `apps/services/gateway/gateway/assistant_summaries.py` holds each read and
 each write. Every other module calls it. A write never changes
 `updated_at`, `last_preview` or `message_count`. So the chat keeps its place
-in the list, and the idle clock does not move. `routes/chat.py:427-433` keeps the same rule for an archive.
+in the list, and the idle clock does not move. `routes/chat.py:427-433`
+keeps the same rule for an archive.
 
 **One solo rule, in two forms.** `rooms.py` gains `SOLO_ROOM_SQL` beside
-`SESSION_VISIBLE_SQL` (`rooms.py:522`): visibility `private`, and no
-participant row other than the owner. The seed selects with it. The handler
-then checks `room_is_solo(resolve_room_access(...))` before it writes. A
-parity test runs both forms on the same rows.
+`SESSION_VISIBLE_SQL` (`rooms.py:522`). The SQL reads a NULL visibility as
+`private`, as `room_is_solo` does (`rooms.py:162`). It allows no participant
+row whose subject differs from `chat_session.user_id`, case-blind.
+
+A `group:` row and an `org` row each count as another party. A chat with no
+participant row is solo, because `_expand_members` (`rooms.py:328`) then
+names only `user_id`. The seed selects with the SQL. The handler then checks
+`room_is_solo(resolve_room_access(...))` before it writes.
 
 **When a chat is idle (D-PZ-26).** A chat is idle when its newest row is 30
-minutes old and no run is open. An open run is an agent row with
-`run_final_at` NULL (`infra/postgres/220_chat_message_run_integrity.sql:60`).
-The seed reads only the chats with a row in the last 7 days. A chat needs 2
-or more rows of the member that pass `typed_text`. A chat with fewer gets no
-summary, and so does a chat that holds only the day's brief.
+minutes old, and no agent row of the chat has `run_final_at` NULL
+(`infra/postgres/220_chat_message_run_integrity.sql:60`). The seed reads only
+the chats with a row in the last 7 days. A chat needs 2 or more rows of the
+member that pass `typed_text`. A chat with fewer gets no summary, and so
+does a chat that holds only the day's brief.
 
-**Which job writes it.** The shared job queue (`docs/job_queue.md`, BR-1a)
-is the one scheduler for this. No second loop, timer or `apscheduler` job
-comes.
+**Known effect: a row that never seals.** A run that crashed before the fold
+leaves an agent row with `run_final_at` NULL for ever. So does an agent row
+from before migration 220. The seed reads such a chat as open, so it never
+summarizes it. The 7-day window of the seed bounds the cost of the reads.
+§15 adds no fix.
+
+**The member's status.** The handler reads
+`gateway.my_day_loop.departed(org, member)`
+(`apps/services/gateway/gateway/my_day_loop.py:316`). The brief run and the
+Reach pass read the same function, through `reach.loop.resolve`
+(`reach/loop.py:155-171`). A member who left the org, or whose
+`app_user.status` is not `active`, gets no summary. A failed identity read
+raises `IdentityReadFailed`, and the queue tries again, because no mark
+exists yet. The seed reads only active members too (`MEMBERS_APP_SQL`,
+`packages/acb_common/acb_common/assistant_profile.py:191-198`).
+
+**Which job writes it (PZ-33b).** The shared job queue (`docs/job_queue.md`,
+BR-1a) is the one scheduler for this. No second loop, timer or `apscheduler`
+job comes. The seed hook follows `gateway/brief/planner.py:304-314`.
 
 1. A seed hook, `assistant_summaries.seed(org, now)`, joins
    `worker.seed_hooks` (`jobs/worker.py:419-422`).
 2. The hook runs once for each org and each 15-minute bucket.
 3. It returns at once when the flag is off for the org (§15.8).
-4. It selects at most 20 idle chats of the org (`SUMMARY_SEED_MAX`).
-5. It skips a member whose switch is off, through `members_app_prefs`
-   (`assistant_profile.py:218`) with the app `chat`.
-6. It skips a chat whose `through` or `mark.through` is its newest row id.
-7. It skips a chat that reads `off`.
-8. It enqueues the kind `assistant.chat_summary` with the payload
+4. It returns at once when `routing_is_on()` is False (below).
+5. It selects at most 20 idle chats of the org (`SUMMARY_SEED_MAX`).
+6. It skips a member whose switch is off, through `members_app_prefs`
+   (`packages/acb_common/acb_common/assistant_profile.py:218`), app `chat`.
+7. It skips a chat whose `through` or `mark.through` is its newest row id.
+8. It skips a chat that reads `off`.
+9. It enqueues the kind `assistant.chat_summary` with the payload
    `{session_id, through}`.
-9. The dedupe key is `summary:<session_id>:<through>`, so two workers give
-   one live job.
-10. `gateway/main.py` imports the module before the worker starts, as it
-    imports `gateway.brief.run` (`main.py:520-527`).
+10. The dedupe key is `summary:<session_id>:<through>`, so two workers give
+    one live job.
+11. `gateway/main.py` imports the module beside `import gateway.brief.run`
+    (`main.py:520-527`), before the worker starts.
 
 **At most one model call for each chat and newest row.** The idempotency
 key is the pair of the chat and the id of its newest row. The handler is
 `detached` and `idempotent=True`. It follows §5a of `docs/job_queue.md`:
 
-1. Read the chat in a short `tenant_session(org)`.
-2. Check the flag, the solo rule, the member's switch and the member's
+1. Check `routing_is_on()`. If it is False, give up with `RouterOff`.
+2. Read the chat in a short `tenant_session(org)`.
+3. Check the flag, the solo rule, the member's switch and the member's
    status.
-3. If `through` is the newest row id, settle `done` with no call.
-4. If `mark.through` is that id and no result exists, call `queue.give_up`
+4. If `through` is the newest row id, settle `done` with no call.
+5. If `mark.through` is that id and no result exists, call `queue.give_up`
    with `SummaryUncertain`.
-5. Commit the mark in its own short session, before the call.
-6. Call the model with no session open (see "The model call").
-7. Open a new session. Run `hold`, write the result and run `complete`
+6. Commit the mark in its own short session, before the call.
+7. Call the model with no session open (see "The model call").
+8. Open a new session. Run `hold`, write the result and run `complete`
    together.
-8. Put the mark in the `WHERE` of the write. Then a Delete in Settings
+9. Put the mark in the `WHERE` of the write. Then a Delete in Settings
    during the call wins, and the job writes nothing.
 
 A Router refusal for no credits (402) gives up with `OutOfCredits`. Any
 other fault gives up with `SummaryFailed`. The mark stays in each case, so
 the seed does not try the same rows again. The next new row of the chat
-starts a new try.
+starts a new try. The RLS of the bound org reads the `session_id` of the
+payload, so a session of another org finds no row.
 
 **A chat that goes on.** When the member writes in the chat again, the next
 idle time gives a new job. The prompt then holds the earlier summary and
 only the rows after `through_ms`. So a long chat costs little each time.
 
 **The model call (D-PZ-27).** The handler calls
-`acb_llm.context.acompletion_with_fallback` (`context.py:243`) with
-`model="tier-fast"`, `feature="assistant.chat_summary"` and a JSON answer.
-The WhatsApp group summary has the same shape
-(`routes/whatsapp/automation/groups.py:159-164`). With the Router on, the
-call goes through `completion_on_router` (`context.py:336-349`,
-`routed.py:237`). The Console then writes the `usage_event` row and draws
-the org's AI credits, under the hard cap of D19.3.
+`acb_llm.context.acompletion_with_fallback`
+(`packages/acb_llm/acb_llm/context.py:243`) with `model="tier-fast"`,
+`feature="assistant.chat_summary"` and a JSON answer. The WhatsApp group
+summary has the same shape (`routes/whatsapp/automation/groups.py:159-164`).
+With the Router on, the call goes through `completion_on_router`
+(`packages/acb_llm/acb_llm/context.py:336-349`,
+`packages/acb_llm/acb_llm/routed.py:237`). Only then does the Console write
+the `usage_event` row and draw the org's AI credits, under the hard cap of
+D19.3.
+
+**CODE: no summary with the Router off.** With the Router off,
+`_complete_with_fallback` calls litellm directly
+(`packages/acb_llm/acb_llm/context.py:351-382`). That path writes no
+`usage_event` row and draws no credit. So the seed hook and the handler
+each read `acb_llm.routed.routing_is_on()`
+(`packages/acb_llm/acb_llm/routed.py:99`) first. With False, the seed
+enqueues nothing, and the handler gives up with `RouterOff` and makes no
+call.
+
+With the Router on, a refused call fails, and it never falls back to
+litellm (D57.7, `packages/acb_llm/acb_llm/context.py:332-335`). Fence:
+`test_chat_summary_r8.py`, where a run with the Router off makes zero model
+calls.
 
 - The call runs inside `run_context_scope()` and
-  `bind_run_context(user=<member>, app="chat")` (`acb_common/_log.py:98`
-  and `:159`). So the usage row names the member, the app `chat` and the
-  agent `assistant.chat_summary`.
+  `bind_run_context(user=<member>, app="chat")`
+  (`packages/acb_common/acb_common/_log.py:98` and `:159`). So with the
+  Router on, the usage row names the member, the app `chat` and the agent
+  `assistant.chat_summary`.
 - The module never imports `litellm`, and never calls
   `acompletion_stream_text`. H-287 (`HANDOFF.md:211`) lists three paths
   that write no usage row. PZ-33 adds no fourth.
@@ -1817,7 +1883,7 @@ would happen later.
 What goes into the prompt:
 
 - Each row of the member, through `assistant_profile.typed_text`
-  (`assistant_profile.py:788`). A pasted mail and a message of more than
+  (`packages/acb_common/acb_common/assistant_profile.py:788`). A pasted mail and a message of more than
   1,500 characters give `""`, so they stay out. PZ-31 and PZ-32 use the
   same rule for "typed".
 - The `content` text of each row of Mira, and nothing else. Tool events,
@@ -1828,7 +1894,7 @@ What goes into the prompt:
 What the code drops from the answer:
 
 - A line with a sensitive word (`assistant_profile.is_sensitive`,
-  `assistant_profile.py:1098`), unless the member's typed rows hold it
+  `packages/acb_common/acb_common/assistant_profile.py:1098`), unless the member's typed rows hold it
   (`grounded`, `:1109`).
 - A line with an address, a link or a long number (`needs_confirm`,
   `:996`), unless the member's typed rows hold it.
@@ -1893,7 +1959,7 @@ posts that brief as the first turn of a fresh chat (`post_brief`,
 
 **The budget.** The block is at most 1,500 characters (`BRIEFING_MAX`),
 about 375 tokens. Over the cap it sheds whole items in one fixed order, as
-`render_block` sheds over `RENDER_MAX` (`assistant_profile.py:1721`). The
+`render_block` sheds over `RENDER_MAX` (`packages/acb_common/acb_common/assistant_profile.py:1721`). The
 tasks go first, from the end, and then the chats go, oldest first. It never
 cuts a line, and it keeps the header, the time line and the footer. With no
 item, there is no block.
@@ -1934,7 +2000,7 @@ tasks as data, as `_PROJECTS_RULES` does (`tool_packs.py:431-432`).
 
 ### 15.5 PZ-35: Settings: see, delete, switch off
 
-**The switch.** `APP_PREFERENCES` (`assistant_profile.py:81-86`) gains the
+**The switch.** `APP_PREFERENCES` (`packages/acb_common/acb_common/assistant_profile.py:81-86`) gains the
 app `chat` with one key, `summaries`, default `true`. The page writes it
 through the `PUT /auth/me/assistant-profile` of §4.3, with the key `apps`.
 A Forget keeps `apps`, so a member who turned summaries off stays off (§7
@@ -1955,7 +2021,7 @@ query.
 | `DELETE /auth/me/assistant-profile/summaries/{session_id}` | Delete one. A chat that the member does not own is a 404. The chat reads `{"v": 1, "off": true}` after it, so no job writes it again |
 | `DELETE /auth/me/assistant-profile/summaries` | Delete all. Each summary turns `off`. A new chat still gets a summary while the switch is on |
 
-The routes sit in `routes/admin/assistant_profile.py` (`me_router`), beside
+The routes sit in `apps/services/gateway/gateway/routes/admin/assistant_profile.py` (`me_router`), beside
 the profile routes. They call `assistant_summaries`, the one module.
 
 **The page.** Settings → Assistant settings
@@ -1969,14 +2035,14 @@ section shows only when the flag is on for the org.
 **Forget and offboarding (owner call 3).**
 
 - "Forget everything" (`DELETE /auth/me/assistant-profile`,
-  `routes/admin/assistant_profile.py:926`) sets `member_summary` to NULL on
+  `apps/services/gateway/gateway/routes/admin/assistant_profile.py:926`) sets `member_summary` to NULL on
   each chat of the member in the bound org.
 - A removal does the same. PZ-35 adds a call of
   `assistant_summaries.clear_for_member` to `members.forget_member_profile`
   (`members.py:97`).
 - A purge deletes the member's private chats (`members.py:773-774`), and
   each summary goes with its chat.
-- The export (`routes/admin/assistant_profile.py:826`) adds the summaries.
+- The export (`apps/services/gateway/gateway/routes/admin/assistant_profile.py:826`) adds the summaries.
 - The staging copy blanks the column, as it blanks the profile
   (`infra/staging/minimise.sql:124`).
 
@@ -2059,7 +2125,7 @@ the one long-term recall path of chat history. Its owner is the chat
 history tier of `memory_architecture.md` §9.1, and §15 owns none of its
 design. §15 adds one requirement: the search covers the summary text of
 the member's own solo chats, through `assistant_summaries`. Today
-`query_history` (`acb_skills/history_tools.py:132`) matches a substring with
+`query_history` (`packages/acb_skills/acb_skills/history_tools.py:132`) matches a substring with
 `ILIKE`. MEM-2 puts a full-text match in its place, as migration 314 did for
 mail.
 
@@ -2067,7 +2133,7 @@ mail.
 
 Each behaviour has one org list. Each list is empty by default, and `*`
 names each org. Each has one reader, which reads `get_settings()` at call
-time, as `card_writes_for` does (`assistant_profile.py:588-612`). Each name
+time, as `card_writes_for` does (`packages/acb_common/acb_common/assistant_profile.py:588-612`). Each name
 ends in `_ORGS`, so a SIGHUP reload applies a flip with no restart
 (`gateway/flag_reload.py:60-63`, `docs/flag_reload.md`). Each reader also
 needs `enabled_for(org)`, so the profile switch still turns the whole
@@ -2087,12 +2153,13 @@ feature off.
 - Each slice adds its name to `ALLOWED_KEYS` (`acb-staging-flag:173`), to
   `tests/unit/test_acb_staging_flag.py` and to
   `deploy/hostinger/staging/README.md`.
-- The env guard prefix `ASSISTANT_PROFILE_` (`env_guard.py:280-283`) does
+- The env guard prefix `ASSISTANT_PROFILE_` (`packages/acb_common/acb_common/env_guard.py:280-283`) does
   not cover the new names. Each slice adds its name to `PLATFORM_ENV_NAMES`
-  (`env_guard.py:108`). A test asserts `is_platform_env(name)`, as
+  (`packages/acb_common/acb_common/env_guard.py:108`). A test asserts `is_platform_env(name)`, as
   `test_brief_run.py:68` does.
-- PZ-33 also needs `JOB_QUEUE` on (`docs/job_queue.md` §6). With the queue
-  off, no summary comes. That flip is gate `enforcement-flip` too.
+- PZ-33b also needs `JOB_QUEUE` on (`docs/job_queue.md` §6), and the
+  Router on (§15.3). With either off, no summary comes. The flip of
+  `JOB_QUEUE` is gate `enforcement-flip` too.
 
 **Who may flip (D-PZ-35).** Each flip on staging, and the production flip
 of PZ-34 and PZ-36, is gate `enforcement-flip`. The production flip of
@@ -2110,16 +2177,56 @@ Each slice is one PR, and each lands dark. The tier follows
 
 | Slice | What | Done when | Gate · tier |
 |---|---|---|---|
-| **PZ-33** · task 1131 | The column (migration 318 at build, R1), `assistant_summaries.py`, `SOLO_ROOM_SQL`, the seed hook, the kind `assistant.chat_summary`, the checks of the answer and the flag | An R8 test: an idle solo chat gets one summary and one model call, with `feature="assistant.chat_summary"` and the member. A second tick and a retry make no second call. A mark with no result gives up with `SummaryUncertain`. A shared room, a chat of another agent, a WhatsApp chat, a member with the switch off and the flag off get none. Org A never reads or writes a chat of org B. The write leaves `updated_at` as it was. A pasted mail, a tool event and a sensitive line that the member did not type never reach the stored text. The two solo forms agree on the same rows | AGENT-SAFE · **HIGH** (a migration, tenancy, money). The flip of `ASSISTANT_CHAT_SUMMARY_ORGS` for a real org waits for PZ-35. The production flip is **OWNER-GATE** (§15.8) |
+| **PZ-33a** · task 1131 | The store. Migration 318 at build (R1): nullable JSONB `chat_session.member_summary`, `ADD COLUMN IF NOT EXISTS`, no default, no backfill, and `SET lock_timeout = '5s'` as in migration 220. `gateway/assistant_summaries.py`, the only reader and writer, with the pure answer checks: the 400-character cap, at most 3 follow-ups of 120 characters, the drop of a sensitive line, an address or a long number that the member did not type, and no write for an answer that does not parse. `SOLO_ROOM_SQL` beside `SESSION_VISIBLE_SQL`, and its parity test. `chat_summary_for(org)`. The flag in `settings.py`, in `PLATFORM_ENV_NAMES`, in `ALLOWED_KEYS` with the comment that it spends credits, in `test_acb_staging_flag.py` and in the staging README. The purge test and the private fence | Items 6 to 11 of the PZ-33 list below pass | AGENT-SAFE · **HIGH** (a migration, tenancy) |
+| **PZ-33b** · task 1131 | The job. The seed hook `assistant_summaries.seed(org, now)`, modelled on `gateway/brief/planner.py`. The detached, idempotent kind `assistant.chat_summary`. The model call and the rule of the Router off. The import beside `import gateway.brief.run` in `gateway/main.py`. The R8 tests of the job. The idle rule: 30 minutes after the newest row, no open run, and 2 or more typed rows of the member | Items 1 to 5 of the PZ-33 list below pass | AGENT-SAFE · **HIGH** (money, tenancy). The flip of `ASSISTANT_CHAT_SUMMARY_ORGS` for a real org waits for PZ-35. The production flip is **OWNER-GATE** (§15.8) |
 | **PZ-35** · task 1133 | The switch `apps.chat.summaries`, the three routes, the Settings section, the relays, Forget, removal, export and the staging blank | An R8 test: Delete turns the chat `off`, and the next tick writes nothing. Delete all, Forget everything and a removal clear the member's summaries in one org only. A chat of another member is a 404. The export holds the summaries. A vitest test covers the section and the confirm. The UI gate passes: four captures and a `Visual review:` line | AGENT-SAFE · STANDARD |
 | **PZ-34** · task 1132 | `_prime_member_briefing`, `_member_briefing_block`, the Redis store of the block, `BRIEFING_MAX` and the flag | A unit test: the block shows in a solo web run. It does not show in a shared room, a delegated run, a run with no member, a WhatsApp run or with the flag off. No block above it moves. Two turns of one chat get the same bytes. The block sheds tasks first, then the oldest chat, and stays at 1,500 characters or less. It never holds the current chat. An R8 test: the tasks come from `my_due_tasks`, and a chat or a task of another member never shows | AGENT-SAFE · **HIGH** (it puts the member's other chats into a run) |
 | **PZ-36** · task 1134 | `offer` on `create_personal_task`, the shared offer helper, the card text, the persona line and the flag | A test: an approved card makes one private task in the member's personal project. A decline, a second offer in the chat, a pasted mail, a Continue turn, WhatsApp, the flag off and the pack off each make no task. A refusal before the card draws nothing. A sensitive title asks twice. `test_profile_pz32.py` stays green with the shared helper | AGENT-SAFE · STANDARD (the one card guards the write, and the task is private) |
 | **PZ-22** grows · task 317 | `since` and `superseded_by` (§15.7) | A test: a replace keeps the old fact, the block hides it, and Undo restores it. The cap of 40 superseded facts holds. An edit in Settings stays in place | AGENT-SAFE · STANDARD |
 | **MEM-2** · task 821 | The full-text search of past chats, with the summaries (§15.7). Its design is MEM-2's own | An R8 test: a search finds a summary and a message of the member's own chat. It finds nothing of another member's private chat and nothing of another org | AGENT-SAFE · **HIGH** (a read across chats) |
 
-**The order.** PZ-33 comes first, and PZ-35 follows it. Only then may the
-PZ-33 flag open for a real org, because the member must see and delete a
-summary before one exists. PZ-34 needs PZ-33.
+**The PZ-33 list.** Each item names its slice and its test file. The R8
+file sets `pytestmark = _DB_GATE`, as `tests/unit/test_job_queue.py:119`
+does.
+
+1. An idle solo chat with Mira, with 2 or more typed rows of the member,
+   gets one summary. It gets one model call, with
+   `feature="assistant.chat_summary"` and the member bound. PZ-33b,
+   `test_chat_summary_r8.py`.
+2. A second tick and a retry make no second call. PZ-33b,
+   `test_chat_summary_r8.py`.
+3. A mark with no result gives up with `SummaryUncertain`. A Router 402
+   gives up with `OutOfCredits`. Any other fault gives up with
+   `SummaryFailed`, and the mark stays. With the Router off, the job gives
+   up with `RouterOff` and makes no call. PZ-33b, `test_chat_summary_r8.py`.
+4. A shared room, a chat with another agent and a WhatsApp chat get no
+   summary. An archived chat and a chat that reads `off` get none. A member
+   with the switch off and an org with the flag off get none too. PZ-33b,
+   `test_chat_summary_r8.py`.
+5. Org A never reads or writes a chat of org B. A payload with a foreign
+   `session_id` finds no row. PZ-33b, `test_chat_summary_r8.py`.
+6. The write leaves `updated_at`, `last_preview` and `message_count` as
+   they were. PZ-33a, `test_chat_summary_r8.py`.
+7. A pasted mail, a tool event and the brief row never reach the stored
+   text. Nor does a sensitive line that the member did not type. The caps
+   hold, and an answer that does not parse writes nothing. PZ-33a,
+   `test_chat_summary.py`.
+8. `SOLO_ROOM_SQL` and `room_is_solo` agree on the same rows. The rows hold
+   a NULL visibility, a mixed-case email, a `group:` row, an `org` row and
+   no participant rows. A legacy session with no participant rows is solo
+   through `_expand_members`. The SQL must run on a real database (R8), so
+   this test is in `test_chat_summary_r8.py`. PZ-33a.
+9. A Delete (`off`) during the call wins, and the job writes nothing,
+   because the mark is in the `WHERE`. PZ-33a, `test_chat_summary_r8.py`.
+10. The purge deletes the summary with the private chat. PZ-33a,
+    `test_chat_summary_r8.py`.
+11. No module other than `assistant_summaries.py` names `member_summary`.
+    The module imports no `litellm` and no `acompletion_stream_text`.
+    PZ-33a, `test_chat_summary_private.py`.
+
+**The order.** PZ-33a comes first, then PZ-33b, and PZ-35 follows them.
+Only then may the PZ-33 flag open for a real org, because the member must
+see and delete a summary before one exists. PZ-34 needs PZ-33b.
 
 PZ-36 needs nothing of PZ-33, so it may run beside it. PZ-22 may land at any
 time. MEM-2 indexes the summaries, so it lands after PZ-33.
@@ -2131,7 +2238,7 @@ Run from the repository root. R8 needs a database first:
 Each slice creates the test files that it names.
 
 ```bash
-# PZ-33
+# PZ-33a and PZ-33b
 uv run pytest tests/unit/test_chat_summary.py tests/unit/test_chat_summary_r8.py tests/unit/test_chat_summary_private.py -q
 uv run pytest tests/unit/test_job_queue.py tests/unit/test_tenant_coverage.py tests/unit/test_flag_reload.py tests/unit/test_acb_staging_flag.py -q
 # PZ-35
@@ -2168,7 +2275,7 @@ follow D-PZ-23, and a check of `origin/main` at merge confirms them (R1).
 | **D-PZ-24** | May Mira keep a summary of a private chat with no question each time? | Yes, for a solo web chat with Mira. Only the member sees it. Settings lists each one with Delete, and one switch turns them off. Forget and offboarding delete them |
 | **D-PZ-25** | Where does a summary live? | A nullable JSONB column, `chat_session.member_summary`, that one module reads and writes. Not a new table (§15.3) |
 | **D-PZ-26** | When is a chat idle, and which job writes? | 30 minutes after its newest row, with no open run. A seed hook of the job queue and the detached kind `assistant.chat_summary`. No second scheduler |
-| **D-PZ-27** | Who pays for the call? | The org, in AI credits. `tier-fast` through `acompletion_with_fallback`, so the Router writes a usage row. At most one call for each chat and newest row |
+| **D-PZ-27** | Who pays for the call? | The org, in AI credits. `tier-fast` through `acompletion_with_fallback` with the Router on, so the Router writes a usage row. With the Router off, no call runs. At most one call for each chat and newest row |
 | **D-PZ-28** | What may a summary keep? | What the member asked, decided or promised, and the follow-ups. No sensitive value, address or long number that the member did not type. Nothing of a pasted mail or a tool result. No inference of mood, health, traits or money |
 | **D-PZ-29** | Every turn, or the first turn only? | Every turn of the chat, with the same bytes. The first turn that finds no stored block builds it |
 | **D-PZ-30** | Which reader gives the open tasks? | `my_due_tasks`, the reader of the needs feed and so of the day's brief. No `loop.snapshot` on a chat turn |
@@ -2187,8 +2294,9 @@ answers.
    for the org.
    `TOOL_PACKS` and `TOOL_PACKS_ORGS` are owner-only (`work_plan.md` §6 D4).
    Default: build PZ-36 dark now, and the offer goes live with the pack.
-2. **The job queue (PZ-33).** PZ-33 runs only where `JOB_QUEUE` is on, and
-   the default is off. Default: turn it on for the staging test of PZ-33.
+2. **The job queue and the Router (PZ-33b).** PZ-33b runs only where
+   `JOB_QUEUE` is on and `routing_is_on()` is true. The default of
+   `JOB_QUEUE` is off. Default: turn it on for the staging test of PZ-33b.
 3. **The idle time.** Default: 30 minutes after the newest row.
 4. **How long a summary stays.** Default: as long as its chat, with no
    expiry of its own. The member can delete it at any time.
