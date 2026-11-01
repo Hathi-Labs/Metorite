@@ -38,6 +38,19 @@ export function skipsAppsStep(a: { chatFirst: boolean; phone: boolean }): boolea
   return a.chatFirst && a.phone;
 }
 
+/**
+ * The address with the founder's `?welcome=` mark taken out (OB-0). Every
+ * other part of the address stays. The dialog writes it with
+ * `history.replaceState`, which needs no server round trip. A
+ * `router.replace` waited on one, so on a slow server no way out closed the
+ * dialog.
+ */
+export function withoutWelcome(href: string, param = "welcome"): string {
+  const url = new URL(href);
+  url.searchParams.delete(param);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 // ── Is the dialog open now? ──────────────────────────────────────────────────
 
 let _welcomeOpen = false;

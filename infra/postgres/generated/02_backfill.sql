@@ -662,3 +662,6 @@ UPDATE studio_records SET organization_id = (SELECT id FROM organization WHERE s
 
 UPDATE studio_record_hot SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
+
+UPDATE goal_records SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
