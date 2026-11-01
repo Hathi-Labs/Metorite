@@ -1,11 +1,11 @@
 # AI Studio — skills, workflows and apps that a company builds for itself (WS-STU)
 
 > **Product:** Metorite · **Feature:** AI Studio (`/studio`) · **Updated:** 2026-10-31 · **Owner:** vjvarada
-> **Status:** 📐 **SPEC ONLY (STU-0).** Nothing in this spec is built yet. The pieces it reuses are built, and §16 names each one.
+> **Status:** 🔨 **B1 BUILT and dark (2026-10-31)** behind `STUDIO_ORGS`, which is empty on every box. Every other slice is spec only. The pieces it reuses are built, and §16 names each one.
 > **Verified against code on 2026-10-31 at `57b91f721`.** Each path in §16 was read on that commit.
-> **Board:** WS-STU in `work_plan.md` §2. **Decisions:** D127 (one app, three kinds), D139 (one coding harness), **D141** (Studio starts now, and a skill creator replaces the agent creator). D124, D130, D131 and D136 bind it too.
+> **Board:** WS-STU in `work_plan.md` §2. **Decisions:** D127 (one app, three kinds), D139 (one coding harness), **D141** (Studio starts now, and a skill creator replaces the agent creator), **D146** (the owner's answers of 2026-10-31: layered apps, a typed object store, first-party templates). D124, D130, D131 and D136 bind it too.
 > **Metorite:** project "AI Studio", umbrella epic #491, this spec task #1135. Each group of §14 has its own epic under #491.
-> **Gate summary:** every slice is AGENT-SAFE unless §14 says otherwise. Nine owner questions are open (§12). A slice that waits on a question says so.
+> **Gate summary:** every slice is AGENT-SAFE unless §14 says otherwise. The owner answered STU-Q1, Q2, Q3, Q5 and Q6 and the template question on 2026-10-31 (D146). Four questions stay open: Q4, Q7, Q8 and Q9 (§12).
 
 ---
 
@@ -15,7 +15,9 @@ Every company has work that no general product covers. A 3D-printer maker tracks
 
 **AI Studio is where a company builds what Metorite does not ship.** A member describes the need in chat. Mira asks a few questions, proposes a plan, and builds it from parts that Metorite already has. The result is one of four shapes (§2): a skill for Mira, an automated workflow, a small app, or all three together.
 
-**The bet is composition, not code.** A Studio app is data. It names objects, actions, workflows, views and a skill. One renderer draws its views in the one look, from the same blocks that Projects, the Calendar and the CRM use. So a generated app looks native, works on a phone, renders inside chat, and reaches outside agents through the MCP. The member never sees code. Code stays available as one sandboxed block for the rare case the blocks cannot cover (§5.4, slice L1).
+**The bet is composition first, and code in a box (D146).** A Studio app is data. It names objects, actions, workflows, views and a skill. One renderer draws its views in the one look, from the same blocks that Projects, the Calendar and the CRM use. So a generated app looks native, works on a phone, renders inside chat, and reaches outside agents through the MCP.
+
+**Four layers, each with its own containment (§3.7).** The manifest holds structure. Rules hold formulas, roll-ups, state machines and constraints. Logic modules hold computation, such as an MRP run. A custom UI block holds the rare screen that no block covers. Every layer reaches data only through the one action door. So a company can build a full inventory, procurement or manufacturing app with no hole in the platform.
 
 **The moat is the platform under the app.** Zapier, Airtable and Retool can draw a form. They cannot call Mira, read the company's tasks, CRM and mail with the viewer's own rights, ask on an approval card, or reach the same app from Claude Code over the MCP. Every Studio app gets all of that by construction.
 
@@ -32,6 +34,9 @@ Every company has work that no general product covers. A 3D-printer maker tracks
 5. **The skill creator** (§7): it replaces the Agent Workshop (D141).
 6. **The builder** (§6): Mira builds and edits a package in chat, with a preview on sample data.
 7. **Governance** (§9): private by default, an approval to share with the organization, versions, a kill switch, cost caps and audit.
+8. **Rules and logic** (§3.7): formula fields, roll-ups, state machines and constraints, and logic modules as catalog actions.
+9. **A typed object store** (§3.1): records with indexed fields, multi-record transactions and constraints, for ledgers, BOMs and large volumes.
+10. **First-party templates** (K3, K4): inventory, procurement, MRP-lite and the production schedule, built on Studio itself.
 
 ### 1.2 Non-goals
 
@@ -41,7 +46,8 @@ Every company has work that no general product covers. A 3D-printer maker tracks
 4. **No widening.** An app never shows a viewer a record that the viewer cannot open in its owning app (D12, D128.3).
 5. **No cross-company marketplace in this spec.** Templates are first-party. Sharing between organizations needs its own spec.
 6. **No agent creator.** A member builds a skill that Mira loads, not a second assistant (D125, D141).
-7. **No code execution on the box.** The code block (L1) waits on the off-box sandbox (D127.2, D130).
+7. **No member-authored code on the box.** A member's logic module (B5) and the code block (L1) run only on the off-box sandbox (D127.2, D130). First-party logic (B4) is reviewed repo code, like any gateway route.
+8. **No general ledger.** Accounting stays in Tally and Zoho Books. A Studio app posts to them through connectors.
 
 ---
 
@@ -138,7 +144,7 @@ A **package** is the unit that a member builds, versions, shares and installs. I
 
 An object is a typed record kind that the package owns: `visit`, `claim`, `asset`. It has fields of these types: text, long text, number, money, date, datetime, checkbox, select, multi-select, person, relation, file, url, email, phone and geo.
 
-- **Storage.** Records live in `app_data` (migration 114), keyed by app, object and record id, with the org's FORCE ROW LEVEL SECURITY. Slice C1 adds the typed field layer and the indexes. STU-Q5 asks whether a later, larger object platform (launch plan E10) replaces this store.
+- **Storage (D146, STU-Q5).** Records live in a **typed object store**, not in `app_data`. An object registry holds each object and its fields. Records are JSONB rows on shared tables with FORCE ROW LEVEL SECURITY, and no tenant gets its own DDL. Hot fields get indexes within a per-org budget. One action may write several records in one transaction, so a stock move writes both ledger rows or neither. Constraints run on each write, for example "stock never goes below zero". This is launch plan E10, brought into Studio. `app_data` stays the store of `window.cc` storage for a code-format app (L2).
 - **Relations reach built-in records.** A field can point to a task, a project, a CRM record or a person. The relation stores the id only. A read of the related record goes through its owning app, as the viewer, so a relation never shows what the viewer cannot open.
 - **A package may own no objects.** A connector app or an S1 workflow reads and writes other apps through actions only.
 
@@ -218,7 +224,7 @@ One JSON document holds the package. Slice A2 writes its schema and its one vali
   }],
   "actions": [
     {"id": "close_visit", "uses": "object:visit.update", "set": {"status": "done"}},
-    {"id": "tell_customer", "uses": "whatsapp.send_template"}
+    {"id": "tell_customer", "uses": "integration:whatsapp.send_template"}
   ],
   "views": [
     {"id": "board", "block": "board", "source": {"object": "visit"},
@@ -244,6 +250,28 @@ One JSON document holds the package. Slice A2 writes its schema and its one vali
   }
 }
 ```
+
+### 3.7 The four layers (D146)
+
+The owner chose the layered model on 2026-10-31 (STU-Q1). The layers grow in power, and each one is contained more tightly than the one before it.
+
+| Layer | What it covers | Containment | Slices |
+|---|---|---|---|
+| **1 · Manifest** | Objects, relations, product lines, views, workflows, permissions | Validated data. No code | A2, C1, D, E |
+| **2 · Rules** | Formula fields, roll-ups (stock on hand is the sum of the moves), state machines (a PO goes draft → approved → sent), constraints | An interpreted expression language with no I/O, no loops and a step cap | C6, C7 |
+| **3 · Logic modules** | Computation: an MRP run, a cost roll-up, reorder suggestions, a schedule | A typed function that the catalog serves as an action. It gets its input through the door and returns **proposed** writes. The platform applies them in one transaction, with an audit row and the member's card for class B or C | B4 first-party, B5 member-authored |
+| **4 · Custom UI block** | A shop-floor screen, a barcode scanner | A sandboxed frame with the `--cc-*` tokens only. Every call goes through the door | L1 |
+
+**Two kinds of logic module.** A **first-party** module (B4) is reviewed code in the repository, written by Metorite engineers. The MRP run of template K4 is one. A **member-authored** module (B5) runs only on the off-box sandbox, after SBX-9, because D127.2 keeps member code off the box. The workflow Module Studio (`workflows_app.md` §5) keeps its own scope and does not grow into this layer.
+
+**A worked example: inventory, procurement and MRP (templates K3 and K4).**
+
+- **Objects:** item (product line, unit, reorder point), location, stock move (the ledger), BOM and BOM line, vendor, purchase request, purchase order, work order, machine.
+- **Rules:** stock on hand as a roll-up, a purchase order above a set amount goes to a director, no negative stock.
+- **Logic:** the nightly MRP run explodes the BOMs, nets demand against stock and open orders, and proposes planned purchase orders and work orders.
+- **Workflows:** planned orders go for approval. An approved purchase order goes to the vendor by mail and to Tally. A goods receipt writes stock moves and then a QC human step.
+- **Views:** a stock dashboard, a purchase order board, a production timeline by machine, a BOM tree, a phone receipt form.
+- **Skill:** "What is short for next week's production?" and "Raise a PO for 200 nozzles from X."
 
 **The validator is the safety line.** It refuses an unknown block, an action that the catalog does not serve, a class X action, a colour, a pixel size, a credential-shaped string and a field that a view names but the object does not hold. Each error carries a JSON path and one sentence that a model can act on, as `lib/charts/kinds.mjs` does for charts today.
 
@@ -297,9 +325,9 @@ The renderer is `components/GenerativeUINode.tsx`, grown, not a second one. Toda
 1. **Data binding.** A node may carry `source`. The renderer resolves it through `useCachedResource` and the catalog door (B2), and passes the rows to the block.
 2. **Page state.** The selected record, the filters and the tab live in the URL, so a link opens the same view.
 3. **Typed actions.** A button names a catalog action, not a sentence. In chat, a typed action still reaches the member's card.
-4. **Lockstep.** `GENUI_NODE_TYPES` in `write_artifact.py` and the front end stay one list, under `test_genui_catalog_lockstep.py`.
+4. **Lockstep.** `GENUI_NODE_TYPES` in `write_artifact.py` and the front end stay one list, under `test_genui_catalog_lockstep.py`. `source` and the typed action are props of existing nodes, so no set changes. `genui_refusal` refuses `source` in chat.
 
-**Single owner.** `generative_ui_2.md` owns the catalog and the HITL rules of chat UI. D1 extends it and changes none of its rules. D1 takes its Phase 3 item "typed TEMPLATE_CATALOG generated into the backend", and the same PR updates that spec's §3 table and §6 phase list.
+**Single owner.** `generative_ui_2.md` owns the catalog and the HITL rules of chat UI. D1 extends it and changes none of its rules. D1 closes its Phase 3 item "typed TEMPLATE_CATALOG" as test-held, not generated, and the same PR updates that spec's §3 and §6.
 
 ### 5.3 Layout
 
@@ -399,7 +427,8 @@ The skill creator replaces the Agent Workshop (D141). A member does not build a 
 | Built piece | Fate |
 |---|---|
 | Workflow engine, editor, Copilot, Module Studio (`routes/workflows/`, `/workflows`) | **Keep.** The editor moves into Studio (A1). The engine does not change |
-| App Workshop tables (`apps`, `app_versions`, `app_grants`, `app_audit`, `app_data`, `app_templates`) | **Keep as the package store** (A3, C1). No second app table |
+| App Workshop tables (`apps`, `app_versions`, `app_grants`, `app_audit`, `app_templates`) | **Keep as the package store** (A3). No second app table |
+| `app_data` (the `window.cc` storage) | **Keep for code-format apps** (L2). Studio objects live in the typed object store of C1 (D146) |
 | App Workshop builder (Monaco, `SandboxedHtml`, `window.cc`) | **Becomes the code block** (L1). The code-first builder stops being the default |
 | `GenerativeUINode` and its templates | **Grows into the one renderer** (D1) |
 | Agent Workshop (`/build/agents`, a 404 today) and `AddAgentWizard` | **Retire** (F9). The skill creator replaces it |
@@ -435,19 +464,20 @@ Research of 2026-10-31. External sources are named, and the App Workshop RFC (`d
 
 ## 12. Open owner questions
 
-Each question has one recommendation. A slice that waits on a question says so in §14.
+Each question has one recommendation. A slice that waits on a question says so in §14. **The owner answered five questions and the template question on 2026-10-31, in chat (D146).**
 
-| Id | Question | Recommendation |
-|---|---|---|
-| **STU-Q1** | Is an app a declarative manifest drawn by one renderer, with code only as one sandboxed block? Or is it code first, as the App Workshop RFC planned? | **Manifest first.** One look, safe by construction, reliable for a model to write, renders in chat and on a phone, and needs no sandbox. Code stays as block L1 |
-| **STU-Q2** | Does the library show three kinds, Apps, Workflows and Skills, with "skill" as the member's name for a D127 tool pack? | **Yes.** An app may contain workflows and a skill. A workflow or a skill may also stand alone |
-| **STU-Q3** | Where do installed company apps show in the sidebar? | **Under Apps, after the built-in apps**, with a small "Company" label. Not a new section, and never a Center (D49) |
-| **STU-Q4** | Who may build? | **Every member builds private packages.** Owners and admins hold `studio:publish` and may grant it to a role |
-| **STU-Q5** | Where do app records live in v1? | **`app_data`, typed by C1**, with a cap per app. The larger object platform (launch plan E10) can replace it later behind the same actions |
-| **STU-Q6** | Which milestone? | **Stage 1 dark in M1 (December), Stage 2 to the pilots in M2.** Neither moves an M0 item |
-| **STU-Q7** | How is Studio priced? | **Inside the ₹500 seat.** Builds and runs spend AI credits through `usage_event`. No fee per app |
-| **STU-Q8** | Which map tiles? | **MapLibre with an OpenStreetMap-based tile host**, and a paid key only at scale |
-| **STU-Q9** | Can Mira start a build from any chat? | **Yes.** Chat starts it, and Studio finishes it |
+| Id | Question | Recommendation | Answer |
+|---|---|---|---|
+| **STU-Q1** | Is an app a declarative manifest drawn by one renderer, with code only as one sandboxed block? Or is it code first, as the App Workshop RFC planned? | Manifest first | ✅ **Layered** (D146.1): manifest, rules, logic modules, custom UI block, all through one door (§3.7). The owner asked for full integrated apps such as inventory, procurement and manufacturing |
+| **STU-Q2** | Does the library show three kinds, Apps, Workflows and Skills, with "skill" as the member's name for a D127 tool pack? | Yes | ✅ **Yes** (D146.2) |
+| **STU-Q3** | Where do installed company apps show in the sidebar? | Under Apps, after the built-in apps, with a small "Company" label. Never a Center (D49) | ✅ **Under Apps, after the built-in apps** (D146.3) |
+| **STU-Q4** | Who may build? | **Every member builds private packages.** Owners and admins hold `studio:publish` and may grant it to a role | Open |
+| **STU-Q5** | Where do app records live? | `app_data`, typed by C1, with a cap per app | ✅ **A typed object store now** (D146.4): launch plan E10 inside Studio (§3.1) |
+| **STU-Q6** | Which milestone? | Stage 1 dark in M1, Stage 2 to the pilots in M2 | ✅ **As recommended** (D146.5). Neither moves an M0 item |
+| **STU-Q7** | How is Studio priced? | **Inside the ₹500 seat.** Builds and runs spend AI credits through `usage_event`. No fee per app | Open |
+| **STU-Q8** | Which map tiles? | **MapLibre with an OpenStreetMap-based tile host**, and a paid key only at scale | Open |
+| **STU-Q9** | Can Mira start a build from any chat? | **Yes.** Chat starts it, and Studio finishes it | Open |
+| **STU-Q10** | Does Metorite ship first-party templates for inventory, procurement, MRP-lite and the production schedule, built on Studio? | Yes, in Stages 2 and 3 | ✅ **Yes** (D146.6): K3 and K4 |
 
 ---
 
@@ -477,35 +507,40 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
 | **A1** | The Studio pane at `/studio` (preview). One library lists apps (`apps`), workflows (`workflows`) and skills (F1, when it exists). `/workflows`, `/build/apps` and `/build/agents` redirect to it. `nav.ts` holds one preview pane in place of three | The three old routes answer 308 to `/studio`. `nav.test.ts` moves its preview count in the same PR. The library shows each kind with its owner and state. Visual review in four contexts | STD | AGENT-SAFE |
-| **A2** | The package manifest schema v1 and its one validator (Python, in `acb_common`), with a JSON Schema export and the TypeScript types | Each refusal of §3.6 has a test that fails with a JSON path and one sentence. The TypeScript types come from the schema, and a test holds them equal | STD | AGENT-SAFE. Waits on STU-Q1 |
-| **A3** | The package store: `apps` gains a nullable `format` (`code` or `manifest`) and `manifest jsonb`. No second app table | An expand-only migration (R6). R8: org B reads none of A's packages. `test_tenant_coverage.py` passes | HIGH | AGENT-SAFE. Waits on STU-Q1 |
+| **A2** | 🔨 **BUILT (2026-11-01).** Enum tokens are camelCase (`longText`, `multiSelect`, `mindMap`, `processFlow`), as the genUI node types are, and keys stay snake_case. Caps: depth 20, a string of 20,000 characters, a list of 500 items, a document of 256 KiB. The validator never raises on any JSON value. Credential shapes come from one list, `acb_common/secret_shapes.py` (J5 points the older copies at it). The package manifest schema v1 and its one validator: `packages/acb_common/acb_common/studio_manifest.py` (pydantic, pure data, no gateway import), the committed export `studio_manifest.schema.json`, and hand-written TypeScript types in `workbench/control_plane/src/lib/studio/manifest.ts` held equal by a parity test (no code generator, as the genUI lockstep does). `validate_manifest(doc, *, catalog=None)` takes the catalog as an input: a map of action id to class. With no catalog it checks structure only. **The `uses` grammar:** `object:<name>.(list|get|create|update|delete)`, `<app>.<op>`, `integration:<action>` or `workflow:<uuid>` (B1's ids). An `object:` action is checked against the package's own objects. **Not yet in v1:** `rules`, a state machine (C6), a formula or roll-up (C7) and a code block (L1) are reserved keys, and each refusal names the slice that lifts it. A logic module (B4) needs no key: it is a catalog action | Each refusal of §3.7 has a test that fails with a JSON path and one sentence: an unknown block, an action the catalog does not serve, a class X action, a colour, a pixel size, a credential-shaped string, a field that a view names and the object lacks, an undeclared submit, skill action or card, a bad relation, a duplicate id, a select with no options. The §3.6 example validates with no catalog and with a fake one. The committed JSON Schema equals the live export. `test_studio_manifest_ts_parity.py` holds the TypeScript types equal | STD | AGENT-SAFE |
+| **A3** | The package store: `apps` gains a nullable `format` (`code` or `manifest`) and `manifest jsonb`. No second app table | An expand-only migration (R6). R8: org B reads none of A's packages. `test_tenant_coverage.py` passes | HIGH | AGENT-SAFE |
 | **A4** | Publish, version, roll back and install, over `app_versions` | A rollback restores the older manifest in one call. An open workflow run keeps its version | STD | AGENT-SAFE |
 
 ### Group B — The action catalog
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **B1** | `GET /studio/actions`: the read-only catalog of §3.2 sources 1, 2 and 4. **Row:** `id`, `title`, `source` (`manifest`, `integration` or `workflow`), `class`, `input_schema` (where the source declares one, else null), `output_schema` (always null: no source declares one yet), `connection`, `app`. **Source 1:** each door op of `every_app()` through `door_ops()`. **Source 2:** each entry of `list_tools()` with an `integration`, read with no live probe and no availability. **Source 4:** the org's workflows with `status = 'published'`, id `workflow:<uuid>`, class B. **Class map:** a manifest row keeps `route.cls`. An integration tool with `read_only` is A, one with `destructive` or `open_world` is C, and every other is B. No row is X. **Route:** a new `gateway/routes/studio/` router, prefix `/studio`, gated by `require_feature_router("workflows")` until J1, mounted beside the workflows router in `main.py`. **Tenant:** `tenant_session` from `gateway/db.py`, the org from `UserContext`, never from input (R5). **Flag:** `STUDIO_ORGS` (`*` for all, default off) in `acb_common/settings.py`, read per call as `push/flags.py` does, and `STUDIO_` in `env_guard.py`. No invoke, no MCP door | `test_studio_catalog.py`: a not-listed org gets 404, a listed org and `*` get 200. The row count is the door ops plus the integration tools plus the published workflows, with no duplicate id. A draft or disabled workflow never appears. The class map holds row by row. No row is X. `test_studio_catalog_r8.py` (`pytestmark = _DB_GATE`): org B's published workflow never appears for org A, red first with the RLS-bound session removed | STD | AGENT-SAFE |
+| **B1** | 🔨 **BUILT, dark (2026-10-31).** Source 2 is empty until a workflow tool registers with an integration, and a tripwire test says so. A manifest row takes its input schema from `agent_apps.args_schema` (AD-9). A workflow row has a null input schema. `GET /studio/actions`: the read-only catalog of §3.2 sources 1, 2 and 4. **Row:** `id`, `title`, `source` (`manifest`, `integration` or `workflow`), `class`, `input_schema` (where the source declares one, else null), `output_schema` (always null: no source declares one yet), `connection`, `app`. **Source 1:** each door op of `every_app()` through `door_ops()`. **Source 2:** each entry of `list_tools()` with an `integration`, read with no live probe and no availability. **Source 4:** the org's workflows with `status = 'published'`, id `workflow:<uuid>`, class B. **Class map:** a manifest row keeps `route.cls`. An integration tool with `read_only` is A, one with `destructive` or `open_world` is C, and every other is B. No row is X. **Route:** a new `gateway/routes/studio/` router, prefix `/studio`, gated by `require_feature_router("workflows")` until J1, mounted beside the workflows router in `main.py`. **Tenant:** `tenant_session` from `gateway/db.py`, the org from `UserContext`, never from input (R5). **Flag:** `STUDIO_ORGS` (`*` for all, default off) in `acb_common/settings.py`, read per call as `push/flags.py` does, and `STUDIO_` in `env_guard.py`. No invoke, no MCP door | `test_studio_catalog.py`: a not-listed org gets 404, a listed org and `*` get 200. The row count is the door ops plus the integration tools plus the published workflows, with no duplicate id. A draft or disabled workflow never appears. The class map holds row by row. No row is X. `test_studio_catalog_r8.py` (`pytestmark = _DB_GATE`): org B's published workflow never appears for org A, red first with the RLS-bound session removed | STD | AGENT-SAFE |
 | **B1c** | Source 5: the package's own object actions and named actions | Each object of a stored manifest gives its five actions, and each named action appears once. Needs A2, A3 and C1 | STD | AGENT-SAFE |
 | **B1b** | Source 3: the tools of the organization's MCP servers, read from a cached `tools/list` | A tool with `readOnlyHint` is class A, and every other tool is B. A server of another org never appears | HIGH | AGENT-SAFE |
 | **B2** | The invoke door `POST /studio/apps/{id}/actions/{action}`. Class A runs as the viewer. Class B and C go through `request_confirmation` in chat, or `pending_actions` outside it. Class X and undeclared actions are refused | Each class has an R8 test, red first under a named mutation. An action that the package does not declare gets 403. A viewer without the right in the owning app gets that app's own refusal | HIGH | AGENT-SAFE |
 | **B3** | A published app's actions join the D136 door: `list_apps` and `describe_app` show it, and `app_read` and `app_write` reach it | Needs MCP-P1b. The MCP coverage fences pass. A package that is not shared with the caller does not appear | HIGH | AGENT-SAFE. After MCP-P1b |
+| **B4** | **First-party logic modules** (§3.7 layer 3): a typed function in the repository, served by the catalog as an action. It reads its input through B2, as the caller, and returns proposed writes. B2 applies them in one transaction | A module that returns writes to two objects applies both or neither. A proposed class B or C write waits for the member's card. A module that names an object the package does not hold is refused. The first module is the MRP run of K4 | HIGH | AGENT-SAFE |
+| **B5** | **Member-authored logic modules** on the off-box sandbox, with the same contract as B4 | The module runs with no network, no database link and no secret. A share to the organization needs an approval of one version (D130.3) | HIGH | AGENT-SAFE. After SBX-9 (D127.2) |
 
 ### Group C — Objects
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **C1** | Typed objects over `app_data`: the field types of §3.1, validation on each write, and a cap on records per app | Each field type refuses a bad value with its field name. R8: FORCE RLS holds, org B reads nothing. The cap refuses one record over it | HIGH | AGENT-SAFE. Waits on STU-Q5 |
+| **C1** | **The typed object store** (D146.4, §3.1): an object registry, record tables on shared JSONB rows, the field types of §3.1, validation on each write, and an index budget per org. No per-tenant DDL. Expand-only migration, next free number (R1) | Each field type refuses a bad value with its field name. R8: FORCE RLS holds on each table, and org B reads nothing. A hot field gets an index, and no org passes its budget. `test_tenant_coverage.py` passes | HIGH | AGENT-SAFE |
+| **C1b** | Multi-record writes and constraints: one action writes several records in one transaction, and a constraint runs on each write | A stock move writes two ledger rows or neither, also when the second write fails. A constraint "stock is never below zero" refuses the write that breaks it, with its name. R8 under two writers at once | HIGH | AGENT-SAFE |
 | **C2** | The object query: filter, sort, group, count, sum and average, paging and a cost guard | R8 on a real Postgres for each operator. A query over the guard stops with a clear error. An index plan is checked with EXPLAIN on 50,000 rows | HIGH | AGENT-SAFE |
 | **C3** | Record events: create, update and delete emit `studio.record.*` through `ingestion/event_hooks.py` | A workflow with a record trigger runs once for one change. The event carries the org | STD | AGENT-SAFE |
 | **C4** | Record history: each change names the actor and the old value | The history of one record lists each change in order | STD | AGENT-SAFE |
 | **C5** | Records join `search_company` through the one retrieval seam (D128) | A new record is found by Mira within five minutes. A record the viewer cannot open is never returned | HIGH | AGENT-SAFE |
+| **C6** | **State machines** (§3.7 layer 2): a status field names its allowed moves, and each move may have a guard rule and a required role | A move that the machine does not allow is refused. A guarded move ("a PO above the limit needs a director") is refused for any other role. Each move writes a history row (C4) | STD | AGENT-SAFE |
+| **C7** | **Formula and roll-up fields** in an interpreted expression language with no I/O, no loops and a step cap | A roll-up (stock on hand is the sum of the moves) updates within one minute of a write. A formula over the step cap stops with a clear error. An expression can read only the fields of its own package | STD | AGENT-SAFE |
 
 ### Group D — Blocks and the renderer
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **D1** | Data binding, page state and typed actions in `GenerativeUINode` (§5.2) | A node with `source` renders rows from a mocked door, with the default loading, empty and error states. A button sends its action id. The lockstep test passes | STD | AGENT-SAFE |
+| **D1** | Data binding, page state and typed actions in `GenerativeUINode` (§5.2) | A node with `source` renders rows from a mocked door, with the default loading, empty and error states. A button sends its action id. The lockstep test passes. **Built 2026-11-01 (STU-D1):** `table` and `dataGrid` bind, through `lib/studio/dataDoor.tsx`. **Narrowed:** page state is a pure encode and decode helper (`lib/studio/pageState.ts`), and the URL wiring waits for D11, since no Studio page mounts a bound node yet. Other blocks bind in D2 to D5 | STD | AGENT-SAFE |
 | **D2** | The Table, Form and Detail blocks, from the §3.1 field types | Each field type renders and validates in the form. Inline edit in the table calls the update action. Visual review in four contexts | STD | AGENT-SAFE |
 | **D3** | The Board block on `components/board/` | A drag between columns calls the update action once. A refused update puts the card back | STD | AGENT-SAFE |
 | **D4** | The Chart and Stat blocks on `lib/charts/kinds.mjs`, fed by an aggregate query | Each of the 13 kinds renders from a C2 result | LOW | AGENT-SAFE |
@@ -515,7 +550,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **D8** | The Process flow block: a read-only workflow graph with run state | A running workflow's nodes show their state from the run console stream | STD | AGENT-SAFE |
 | **D9** | The Checklist block: playbook steps, each human step a task | Ticking a step completes its task in the one store | STD | AGENT-SAFE |
 | **D10** | The Map block | Records with a geo field show as pins. Visual review at 390 px | STD | **OWNER-GATE** for a paid tile key (STU-Q8). Otherwise AGENT-SAFE |
-| **D11** | The page layout: grid, tabs, side panel and the phone layout | Each block passes visual review at four widths down to 390 px | STD | AGENT-SAFE |
+| **D11** | The page layout: grid, tabs, side panel and the phone layout. Wire `pageState` to the URL | Each block passes visual review at four widths down to 390 px. A round-trip test shows `pageState` survives a reload through the URL | STD | AGENT-SAFE |
 | **D12** | The manifest conformance fence | A manifest with a colour, a pixel size or an unknown block fails to publish | LOW | AGENT-SAFE |
 
 ### Group E — Workflows in Studio
@@ -533,7 +568,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **F1** | The skill store: a skill and its versions, tenant-scoped, private by default (§3.5) | Expand-only migration. R8: org B reads none. `test_tenant_coverage.py` passes | HIGH | AGENT-SAFE |
+| **F1** | The skill store: `studio_skills` and `studio_skill_versions` (immutable), tenant-scoped, private by default (§3.5). One expand-only migration in the shape of `315_brief_runs.sql`, with its own ENABLE, FORCE and policy, and a composite key so a version cannot point at another org's skill. Regenerate `infra/postgres/generated/` with `scripts/gen_tenant_migration.py`. A store module `gateway/studio/skills_store.py`, beside `gateway/brief/store.py`. **No route:** F2 owns the routes, and J1 owns the feature gate. The member purge (`routes/admin/members.py`) removes the member's skills | R8: org B reads none of org A's skills or versions, red first with FORCE removed. A skill is private by default. A stored version cannot be updated. Two `add_version` calls at once give two numbers or one clean refusal. `test_tenant_coverage.py` passes with a new case. `test_admin_member_purge.py` passes, and the purge removes the member's skills of this org only | HIGH | AGENT-SAFE |
 | **F2** | The skill creator in Studio: describe, draft, edit, publish (§7) | A member drafts, edits and publishes a private skill. Visual review in four contexts | STD | AGENT-SAFE |
 | **F3** | Published skills load as org tool packs in `tool_packs.choose` | A turn that matches a skill loads its actions and its rules. A skill of another member that is not shared never loads | HIGH | AGENT-SAFE. After WS-67 is live |
 | **F4** | Skill tests on a dry-run door | A test fails when the turn calls another action. No write leaves the dry-run door. A test run stops at its credit cap | STD | AGENT-SAFE |
@@ -557,9 +592,11 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 ### Group H — The shell
 
+**Since D147, H1 and H2 run on the package-host registry.** `package_host.md` owns the registry, the scopes, the lifetimes and the slots. PKG-8 moves H1 and H2 onto it, and J2, J3 and M1 share its install path (PKG-9 to PKG-12).
+
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **H1** | Installed apps in the sidebar, per org | An installed app shows for a member who may open it, and for no one else. `nav.test.ts` still counts only the built-in live panes | STD | AGENT-SAFE. Waits on STU-Q3 |
+| **H1** | Installed apps in the sidebar, per org | An installed app shows for a member who may open it, and for no one else. `nav.test.ts` still counts only the built-in live panes | STD | AGENT-SAFE |
 | **H2** | App jobs, needs, Home cards and search from the manifest into the shell seams | A job of an installed app shows in ⌘K "Do". A need shows in the bell | STD | AGENT-SAFE |
 | **H3** | Phone and WhatsApp: a skill's cards over WhatsApp | A skill's write on WhatsApp still asks once | STD | AGENT-SAFE |
 
@@ -585,6 +622,8 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 |---|---|---|---|---|
 | **K1** | App templates in `app_templates`: U7, U8, U15, U16, U19 and U9 first | Each template installs in one step and passes D12 | LOW | AGENT-SAFE |
 | **K2** | A template update to an installed app that a member changed | The update keeps each local change, or names the conflict | HIGH | AGENT-SAFE |
+| **K3** | **First-party template: inventory and procurement** (D146.6, §3.7 example). Items with product lines and units, locations, the stock ledger, vendors, purchase requests and purchase orders with an approval chain by amount, and goods receipt with a QC step. It posts to Tally or Zoho Books through a connector | It installs in one step and passes D12. A receipt writes stock moves that keep stock on hand right. A purchase order above the limit waits for a director | STD | AGENT-SAFE |
+| **K4** | **First-party template: MRP-lite and the production schedule** (D146.6). BOMs, work orders, machines, the nightly MRP run (a B4 module) and a production timeline by machine | On a fixed test set, the MRP run proposes the expected planned orders. Each planned order waits for approval. The timeline shows each work order on its machine | HIGH | AGENT-SAFE |
 | **L1** | The code block (§5.4) | Code runs with the `--cc-*` tokens only, and every bridge call goes through B2 | HIGH | AGENT-SAFE. After SBX-9 and CA-14 |
 | **L2** | Move existing App Workshop apps into packages with `format = code` | Each existing app opens and runs from Studio | STD | AGENT-SAFE |
 | **M1** | Pin a chat card or an artifact as a draft package page, with a 30-day expiry | A pinned page opens by link after the chat ends. It expires on its date, and its owner can restore it | STD | AGENT-SAFE |
@@ -595,10 +634,10 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 | Stage | Slices | What a member gets | Depends on |
 |---|---|---|---|
-| **1 · Studio opens** | A1, A2, B1, D1, E1, F1, F2, G1 | One Studio pane in preview, the skill creator for private skills, the catalog, and the manifest | A2 waits on STU-Q1, and F1 and F2 on STU-Q2. B1, D1, E1 and A1 wait on no question |
-| **2 · First apps** | A3, A4, B1c, B2, C1, C2, D2, D3, D4, D11, D12, F5, G2, G3, G4, G5, H1, J1, J2, K1 | Build, preview and publish an S2 app in chat. Tables, forms, boards and charts | STU-Q3 to Q5. F3 needs WS-67 live |
-| **3 · Automations and rich blocks** | B1b, C3, C4, D5 to D9, E2 to E6, F3, F4, F6, F7, H2, I1, I2, J3, J4 | S1 and S3 in full, connector apps, calendar, timeline, mind map, playbooks | H-328 for unattended runs. WS-67 for F3 |
-| **4 · Code, outside agents, scale** | B3, C5, D10, F8, F9, G6, G7, H3, K2, L1, L2, M1 | The code block, MCP access, pinned answers | MCP-P1b, SBX-9, CA-14 (#1042), MCP-P5 (#869) |
+| **1 · Studio opens** (M1, dark) | A1, A2, B1, D1, E1, F1, F2, G1 | One Studio pane in preview, the skill creator for private skills, the catalog, and the manifest | None. D146 answered STU-Q1 and Q2 |
+| **2 · First apps** (M2) | A3, A4, B1c, B2, C1, C1b, C2, C6, C7, D2, D3, D4, D11, D12, F5, G2, G3, G4, G5, H1, J1, J2, K1, K3 | Build, preview and publish an S2 app in chat. Tables, forms, boards and charts. The typed object store with rules. The inventory and procurement template | J1 waits on STU-Q4. F3 needs WS-67 live |
+| **3 · Automations and rich blocks** | B1b, B4, C3, C4, D5 to D9, E2 to E6, F3, F4, F6, F7, H2, I1, I2, J3, J4, K4 | S1 and S3 in full, connector apps, calendar, timeline, mind map, playbooks, first-party logic and the MRP-lite template | H-328 for unattended runs. WS-67 for F3 |
+| **4 · Code, outside agents, scale** | B3, B5, C5, D10, F8, F9, G6, G7, H3, K2, L1, L2, M1 | Member logic modules, the code block, MCP access, pinned answers | MCP-P1b, SBX-9, CA-14 (#1042), MCP-P5 (#869) |
 
 **The first dispatchable slice is B1.** It waits on no owner question, writes nothing, and every later group reads it.
 

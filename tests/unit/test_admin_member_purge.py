@@ -132,6 +132,8 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     fake.seed_rows("user_settings", {"user_id": PRIYA})
     # ── her two private reminders (WS-66 RM-1) ──
     fake.seed_rows("reminders", {"member_email": PRIYA}, {"member_email": PRIYA})
+    # ── her one private AI Studio skill (WS-STU F1) ──
+    fake.seed_rows("studio_skills", {"owner_email": PRIYA})
     return fake
 
 
@@ -481,6 +483,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "reminders": 2,
         # WS-BRIEF BR-4: the fake holds no brief of the member.
         "brief_runs": 0,
+        # WS-STU F1: her one private skill. The versions go by cascade.
+        "studio_skills": 1,
         # WS-63 PZ-9: her settings row of this org, with the profile.
         "member_settings": 1,
         # WS-66 PN-1: the fake holds no push device of the member.
@@ -714,6 +718,32 @@ def test_the_briefs_of_this_org_go_and_their_claims_by_cascade() -> None:
     assert keys.index("brief_runs") < keys.index("member_record")
     assert "brief_claims" in cascade_closure("brief_runs")
     assert "brief_claims" not in {r.table for r in _PURGE_DELETES}
+
+
+def test_the_skills_of_this_org_go_and_their_versions_by_cascade() -> None:
+    """WS-STU F1: the purge deletes the member's AI Studio skills.
+
+    In F1 a skill is private, and only its owner reads it, so a purge leaves
+    none behind. The clause names the owner and the bound org, because the
+    same address may hold skills in another org. ``studio_skill_versions``
+    is not a row of the list: its foreign key cascades from
+    ``studio_skills``, and the schema must keep it so.
+
+    ⚠️ Mutation-checked: dropping the entry fails here and in the count dict
+    above, and ``test_studio_skills_r8.py`` fails on the real database.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "studio_skills"]
+    assert rows.key == "studio_skills"
+    assert rows.where == f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("studio_skills") < keys.index("member_record")
+    assert "studio_skill_versions" in cascade_closure("studio_skills")
+    assert "studio_skill_versions" not in {r.table for r in _PURGE_DELETES}
 
 
 def test_the_two_halves_of_chat_session_partition_it() -> None:
