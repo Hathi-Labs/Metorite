@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -49,6 +50,19 @@ BLOCKS: tuple[str, ...] = (
 )  # fmt: skip
 
 OBJECT_OPS: tuple[str, ...] = ("list", "get", "create", "update", "delete")
+
+#: The class of each object verb (STU-B2a, ``ai_studio.md`` §3.2). It is the
+#: one source of the class of an ``object:<name>.<op>`` action. The B1 catalog
+#: (``catalog_rows``) gives the class of each other source. A read is A. A
+#: create or an update is B, because the app can undo it. A delete is C.
+#: ``test_studio_action_door.py`` holds these keys equal to :data:`OBJECT_OPS`.
+OBJECT_OP_CLASSES: dict[str, str] = {
+    "list": "A",
+    "get": "A",
+    "create": "B",
+    "update": "B",
+    "delete": "C",
+}
 
 #: The caps that bound the work. Each refusal names a path and one sentence.
 MAX_DOC_BYTES = 256 * 1024
@@ -100,6 +114,36 @@ class ManifestError(BaseModel):
 
     path: str
     message: str
+
+
+@dataclass(frozen=True)
+class UsesRef:
+    """The parts of one ``uses`` value of the A2 grammar (STU-B2a).
+
+    ``source`` is ``object``, ``manifest`` (an ``<app>.<op>`` door op),
+    ``integration`` or ``workflow``, the source names of the B1 catalog.
+    ``object`` and ``op`` are set for an ``object:`` value only.
+    """
+
+    source: Literal["object", "manifest", "integration", "workflow"]
+    object: str | None = None
+    op: str | None = None
+
+
+def parse_uses(uses: object) -> UsesRef | None:
+    """The parts of *uses*, or None when it is not of the A2 grammar."""
+    if not isinstance(uses, str):
+        return None
+    m = _USES_RE.fullmatch(uses)
+    if m is None:
+        return None
+    if m.group("obj"):
+        return UsesRef(source="object", object=m.group("obj"), op=m.group("op"))
+    if m.group("integ"):
+        return UsesRef(source="integration")
+    if m.group("wf"):
+        return UsesRef(source="workflow")
+    return UsesRef(source="manifest")
 
 
 # --- the schema ------------------------------------------------------------
