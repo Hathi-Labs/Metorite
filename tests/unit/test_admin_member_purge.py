@@ -764,10 +764,10 @@ def test_the_calendar_entries_of_this_org_go_before_any_connection() -> None:
     Only the owner changes an entry, so an entry that a purge left behind
     could never be deleted. Both clauses name the bound org, because the same
     address may hold entries in another org. The attendee rows of the
-    member's own entries go by the cascade of migration 324, so the seat
+    member's own entries go by the cascade of migration 326, so the seat
     clause leaves them out, and no row is counted twice.
 
-    ⚠️ ``calendar_entries.connection_id`` has NO cascade (migration 324). A
+    ⚠️ ``calendar_entries.connection_id`` has NO cascade (migration 326). A
     connection delete fails while an entry names it. So the delete loop of
     ``_PURGE_DELETES`` must run before ``purge_knowledge_member``, the one
     connection delete of the purge, and the registry must not cascade to the

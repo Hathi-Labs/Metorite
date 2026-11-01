@@ -34,7 +34,7 @@ to CE-9.
 **Time.** A timed entry takes ``starts_at`` and ``ends_at`` WITH a UTC offset.
 A naive time is a 422, because it reads in the zone of the database session.
 An all-day entry takes ``start_date`` and ``end_date`` as dates, with no zone
-shift, and ``end_date`` is EXCLUSIVE (migration 324). ``tz`` is stored once
+shift, and ``end_date`` is EXCLUSIVE (migration 326). ``tz`` is stored once
 ``zoneinfo`` knows it, and nothing here applies it. ``recurrence``,
 ``series_id`` and ``original_start`` are stored as given. CE-8 expands a
 series, and nothing here does.
@@ -65,7 +65,7 @@ NOTES_MAX = 10_000
 LOCATION_MAX = 500
 URL_MAX = 2_000
 RECURRENCE_MAX = 2_000
-#: Migration 324's status CHECK.
+#: Migration 326's status CHECK.
 STATUSES: tuple[str, ...] = ("confirmed", "tentative", "cancelled")
 
 _TIMED: tuple[str, str] = ("starts_at", "ends_at")
@@ -610,7 +610,7 @@ async def delete_entry(
     entry_id: UUID, user: UserContext = Depends(get_current_user),
 ) -> Response:
     """Delete one of my events, and its attendee rows by the cascade of
-    migration 324. Any other row is a 404 and deletes nothing.
+    migration 326. Any other row is a 404 and deletes nothing.
 
     A changed instance of a deleted series keeps its ``series_id``: the
     column has no foreign key, and CE-8 decides what a series delete does.
