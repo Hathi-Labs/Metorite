@@ -346,6 +346,19 @@ async def test_p2a_forget_keeps_a_delete_and_a_waterline_in_this_org_only(db) ->
             await _in(db.org_a, summaries.clear_for_member, " ")
 
 
+async def test_9_a_second_mark_of_the_same_row_refuses(db) -> None:
+    """Two claims can both read no mark. Only the first mark goes in, and
+    the first stamp stays. A mark of a newer row still goes in."""
+    sid = _chat(db, org=db.org_a, user_id=ALICE, subjects=(ALICE,))
+    later = datetime(2026, 10, 31, 11, 0, 0, tzinfo=UTC)
+    async with tenant_engine_scope(_app_dsn(db)):
+        assert await _in(db.org_a, summaries.mark, sid, through="m3", at=NOW)
+        assert await _in(db.org_a, summaries.mark, sid, through="m3", at=later) is False
+        got = await _in(db.org_a, summaries.read, sid)
+        assert (got.mark_through, got.mark_at) == ("m3", "2026-10-31T10:00:00Z")
+        assert await _in(db.org_a, summaries.mark, sid, through="m4", at=later)
+
+
 async def test_9_a_newer_mark_wins_over_an_older_write(db) -> None:
     sid = _chat(db, org=db.org_a, user_id=ALICE, subjects=(ALICE,))
     async with tenant_engine_scope(_app_dsn(db)):
@@ -999,6 +1012,26 @@ async def test_3_a_mark_with_no_result_gives_up_uncertain(job) -> None:
     _given_up(job, sid, "SummaryUncertain")
     assert job.console.calls == []
     assert _summary(job, sid)["mark"]["through"] == newest
+
+
+async def test_3_the_claim_that_loses_the_mark_makes_no_call(job, monkeypatch) -> None:
+    """A lost lease: the old claim and the new one both read no mark. The old
+    claim marks first, so the new claim gives up and makes no second call."""
+    from gateway import chat_summary_job
+
+    sid, newest = _job_chat(job, org=job.org_a)
+    real = chat_summary_job.read_job_chat
+
+    async def read_then_lose(db: Any, session_id: str) -> Any:
+        chat = await real(db, session_id)
+        async with tenant_session(job.org_a) as other:
+            assert await summaries.mark(other, session_id, through=newest, at=T)
+        return chat
+
+    monkeypatch.setattr(chat_summary_job, "read_job_chat", read_then_lose)
+    assert await _tick(job, job.org_a) == Counter(failed=1)
+    _given_up(job, sid, "SummaryUncertain")
+    assert job.console.calls == []
 
 
 async def test_3_a_402_gives_up_out_of_credits_and_the_mark_stays(job) -> None:

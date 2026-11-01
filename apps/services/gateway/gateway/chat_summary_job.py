@@ -33,7 +33,10 @@ with the id of a chat of another org finds no row.
    with no call and no mark, and so is a chat whose mark cannot be read.
 6. A mark of ``through`` with no result gives up with ``SummaryUncertain``:
    the call possibly ran, so no second call.
-7. The mark commits in its own session (``assistant_summaries.mark``).
+7. The mark commits in its own session (``assistant_summaries.mark``). The
+   mark refuses a row that it names already: a claim that lost its lease and
+   the claim after it can both read no mark. The one that loses gives up
+   with ``SummaryUncertain``, so only one call runs.
 8. The model call, with no session open, as the member
    (``acb_common._log.job_member_scope``, app ``chat``), with
    ``feature="assistant.chat_summary"`` and with no reasoning
@@ -77,6 +80,7 @@ from gateway.assistant_summaries import (
     member_texts,
     member_words,
     prompt_rows,
+    read,
     read_job_chat,
     seed,
     write_marked,
@@ -263,6 +267,25 @@ async def _load(org: str, sid: str, through: str,
     return chat, why
 
 
+async def _marked(org: str, claim: queue.Claim, sid: str, through: str,
+                  now: datetime) -> bool:
+    """Step 7. True when this claim wrote the mark, so it may make the call.
+    Else the job is settled. A mark of *through* that another claim wrote
+    with no result is uncertain. A chat that a Delete changed is ``done``."""
+    async with tenant_session(org) as db:  # the mark commits here
+        marked = await mark(db, sid, through=through, at=now)
+        found = None if marked else await read(db, sid)
+    if marked:
+        return True
+    if found is not None and found.through == through:
+        await _skip(org, claim, "summarised", now)
+    elif found is not None and found.mark_through == through:
+        await _give_up(org, claim, UNCERTAIN, now)
+    else:
+        await _skip(org, claim, "gone", now)
+    return False
+
+
 async def _store(org: str, claim: queue.Claim, sid: str, through: str, chat: JobChat,
                  raw: Any, now: datetime) -> None:
     """Steps 9 and 10: check the answer, check the room again, and write the
@@ -311,10 +334,7 @@ async def summarise(org: str, payload: dict[str, Any], claim: queue.Claim) -> No
     if not routed.routing_is_on():
         await _give_up(org, claim, ROUTER_OFF, now)
         return
-    async with tenant_session(org) as db:  # the mark commits here
-        marked = await mark(db, sid, through=through, at=now)
-    if not marked:
-        await _skip(org, claim, "gone", now)
+    if not await _marked(org, claim, sid, through, now):
         return
     try:
         raw = await _ask(chat.member, messages_for(chat))

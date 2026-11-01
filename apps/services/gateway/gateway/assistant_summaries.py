@@ -638,7 +638,9 @@ _CLEARED = f"""CASE WHEN {_OFF}
 READ_SQL = "SELECT member_summary FROM chat_session WHERE id = :sid"
 
 #: The intent mark of the job. It keeps the summary that is there, and a
-#: chat that reads `off` does not change.
+#: chat that reads `off` does not change. A mark of the same row refuses: a
+#: claim that lost its lease and the claim after it can both read no mark,
+#: and only one of them may make the call.
 MARK_SQL = f"""
 UPDATE chat_session
    SET member_summary =
@@ -650,6 +652,7 @@ UPDATE chat_session
                                          'at', CAST(:at AS text)))
  WHERE id = :sid
    AND NOT {_OFF}
+   AND (member_summary -> 'mark' ->> 'through') IS DISTINCT FROM CAST(:through AS text)
 RETURNING id
 """
 
@@ -715,7 +718,8 @@ async def read(db: Any, session_id: str) -> Stored | None:
 async def mark(db: Any, session_id: str, *, through: str, at: datetime) -> bool:
     """Set the intent mark of the job on the chat: the newest row id that it
     starts on, and the time. The summary that is there stays. Answers False
-    when no chat has the id, and when the chat reads ``off``."""
+    when no chat has the id, when the chat reads ``off``, and when the mark
+    already names *through*: another claim holds that call."""
     row = (await db.execute(text(MARK_SQL), {
         "sid": session_id, "through": _through(through), "at": _stamp(at)})).first()
     return row is not None
