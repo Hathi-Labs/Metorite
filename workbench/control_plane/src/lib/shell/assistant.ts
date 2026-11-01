@@ -171,14 +171,15 @@ export function onPageChange(a: {
  */
 /**
  * Whether a RUN may move the page by itself: a delegation to an app's
- * agent, or `show_in_app`. On a phone it may not (owner report,
- * 2026-10-22): the chat closed and the app opened while the member was
- * still talking, which was jarring. The phone keeps the chat open and
- * offers the page in a toast instead. A link the member taps still opens
- * (`onChatLink`). On a desktop the page moves beside the chat, as before.
+ * agent, or `show_in_app`. Only beside the side panel (owner, 2026-11-01),
+ * where the member sees the page and the chat together. The chat reaches
+ * the whole app from any form, so the full view and a phone keep the chat
+ * as it is, and nothing moves under it. No toast says so: "Opened X" covered
+ * the chat and confused (owner, 2026-11-01). A link the member taps still
+ * opens (`onChatLink`).
  */
-export function runMovesPage(a: { phone: boolean }): boolean {
-  return !a.phone;
+export function runMovesPage(a: { phone: boolean; form: AssistantMode }): boolean {
+  return !a.phone && a.form === "dock";
 }
 
 export function onChatLink(a: { phone: boolean; chatFirst: boolean }): "peek" | "close" | null {
@@ -246,12 +247,10 @@ export function stripText(a: { phase: RunPhase; statusText: string | null | unde
  *   again here) whose pane the member holds (`paneAt` over `sections`, their
  *   visible set), or the root. A closed assistant moves nothing, and so does
  *   `/connect`, `/signup`, `/settings` or a pane they lack (review of #1197).
- * - `dock`: a desktop full view becomes the side panel, so the page shows
- *   beside the chat.
- * - `offer`: on a phone nothing moves (`runMovesPage`). The chat stays open,
- *   and a toast offers the page (owner report, 2026-10-22).
+ * - Only beside the side panel (`runMovesPage`, owner 2026-11-01). The
+ *   full view and a phone move nothing and show nothing.
  *
- * `pane` is the pane the path opens, for the toast's label. Null for the root.
+ * `pane` is the pane the path opens. Null for the root.
  */
 export function navigateAct(a: {
   open: boolean;
@@ -263,8 +262,8 @@ export function navigateAct(a: {
   chatFirst: boolean;
   form: AssistantMode;
   canDock: boolean;
-}): { push: boolean; dock: boolean; offer: boolean; pane: NavPane | null } {
-  const none = { push: false, dock: false, offer: false, pane: null };
+}): { push: boolean; pane: NavPane | null } {
+  const none = { push: false, pane: null };
   if (!a.open || !a.threadId || a.threadId !== a.activeId) return none;
   const pathname = inAppPathname(a.path);
   if (pathname === null) return none;
@@ -275,8 +274,7 @@ export function navigateAct(a: {
     if (!pane || pane.launch !== "live" || pane.adminOnly) return none;
     if (pathname === "/settings" || pathname.startsWith("/settings/")) return none;
   }
-  if (!runMovesPage(a)) return { push: false, dock: false, offer: true, pane };
-  return { push: true, dock: a.form === "full" && a.canDock, offer: false, pane };
+  return { push: runMovesPage(a), pane };
 }
 
 /**

@@ -39,9 +39,9 @@
  *
  * **The app switch** (owner, 2026-10-12). When the live run of the open chat
  * calls the specialist of another app the member holds, the page moves to
- * that app, once per run and per app. A full view on a desktop becomes the
- * side panel for that moment, so the member sees the app. A toast offers
- * the way back.
+ * that app, once per run and per app. Only beside the side panel, and with
+ * no toast (owner, 2026-11-01, `runMovesPage`): the full view and a phone
+ * keep the chat as it is, since the chat reaches the whole app from there.
  *
  * Fences (R7): `assistant.test.ts`, `chatHistory.test.ts`, `seams.test.ts`.
  */
@@ -59,7 +59,6 @@ import { useSteadyRunView } from "@/components/RunStatusRow";
 import Button from "@/components/ui/Button";
 import { PillNavigateContext } from "@/components/ui/EntityPill";
 import { Input } from "@/components/ui/Input";
-import { useToast } from "@/components/ui/Toast";
 import type { ArtifactEntry } from "@/hooks/useAgentChat";
 import { useThreadNeedsInput } from "@/hooks/useActiveSessions";
 import { useChatMemories } from "@/hooks/useChatMemories";
@@ -746,7 +745,6 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const chat = useAssistantChat(st.open, { phone, chatFirst });
   const pathname = usePathname();
   const router = useRouter();
-  const toast = useToast();
   const { access, loading } = useAccess();
   const sections = useMemo(
     () => visibleSections(loading ? null : access.features, access.is_admin),
@@ -881,13 +879,6 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const raise = useCallback(() => setAssistantMode("full"), []);
 
   // ── The app switch ──────────────────────────────────────────────────────
-  // A tap on a phone toast's Open: the page, as a tapped link opens one.
-  const openFromPhone = (href: string) => {
-    router.push(href);
-    const how = onChatLink({ phone: true, chatFirst: liveRef.current.chatFirst });
-    if (how === "peek") setAssistantMode("peek");
-    else if (how === "close") closeAssistant();
-  };
   const movedRef = useRef<Set<string>>(new Set());
   const liveRef = useRef({ open: st.open, activeId: chat.activeId, pathname, sections, form, canDock, phone, chatFirst });
   useEffect(() => {
@@ -906,32 +897,14 @@ function AssistantSurface({ phone }: { phone: boolean }) {
       const target = switchTarget({ name, pathname: live.pathname, sections: live.sections, done: movedRef.current });
       if (!target) return;
       movedRef.current.add(target.href);
-      const back = live.pathname ?? "/";
-      // On a phone the chat stays open, and the toast offers the app
-      // (owner report, 2026-10-22, `runMovesPage`).
-      if (!runMovesPage(live)) {
-        toast.show({
-          key: `assistant-switch-${target.href}`,
-          variant: "success",
-          title: `${ASSISTANT_NAME} is working in ${target.label}`,
-          action: { label: `Open ${target.label}`, onClick: () => openFromPhone(target.href) },
-        });
-        return;
-      }
+      // Only beside the side panel, and with no toast (owner, 2026-11-01,
+      // `runMovesPage`). The full view and a phone keep the chat as it is.
+      if (!runMovesPage(live)) return;
       router.push(target.href);
-      // A full view hides the app it just opened.
-      if (live.form === "full" && live.canDock) setAssistantMode("dock");
-      toast.show({
-        key: `assistant-switch-${target.href}`,
-        variant: "success",
-        title: `Opened ${target.label}`,
-        description: `${ASSISTANT_NAME} is working in ${target.label}.`,
-        action: { label: "Go back", onClick: () => router.push(back) },
-      });
     },
     // WS-62 CF-3: the run opened a page with show_in_app. Once per turn is
     // the server's rule. The client checks the path again and acts.
-    onNavigate: ({ path, why, threadId }) => {
+    onNavigate: ({ path, threadId }) => {
       // Dark until the chat-first flag is on (review of #1197, P1).
       if (!chatFirstOn()) return;
       const live = liveRef.current;
@@ -939,31 +912,11 @@ function AssistantSurface({ phone }: { phone: boolean }) {
         open: live.open, threadId, activeId: live.activeId, path, sections: live.sections,
         phone, chatFirst: live.chatFirst, form: live.form, canDock: live.canDock,
       });
-      if (!path) return;
-      const label = act.pane?.label;
-      if (act.offer) {
-        // A phone keeps the chat open. The member opens the page from the
-        // toast, if they want it (owner report, 2026-10-22).
-        toast.show({
-          key: `assistant-open-${path}`,
-          variant: "success",
-          title: label ? `${label} is ready` : "A page is ready",
-          description: why || undefined,
-          action: { label: label ? `Open ${label}` : "Open", onClick: () => openFromPhone(path) },
-        });
-        return;
-      }
-      if (!act.push) return;
-      const back = live.pathname ?? "/";
+      // Only beside the side panel, and with no toast (owner, 2026-11-01):
+      // "Opened X" covered the chat and confused. The page itself moving
+      // beside the chat says it.
+      if (!path || !act.push) return;
       router.push(path);
-      if (act.dock) setAssistantMode("dock");
-      toast.show({
-        key: `assistant-open-${path}`,
-        variant: "success",
-        title: label ? `Opened ${label}` : "Opened a page",
-        description: why || undefined,
-        action: { label: "Go back", onClick: () => router.push(back) },
-      });
     },
   });
 

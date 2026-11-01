@@ -43,6 +43,7 @@ import {
   navigateAct,
   modeOnOpen,
   onChatLink,
+  runMovesPage,
   onPageChange,
   openAssistant,
   opensOnLanding,
@@ -484,7 +485,7 @@ describe("the chat opens a page: show_in_app (WS-62 CF-3)", () => {
     phone: false, chatFirst: true, form: "dock" as const, canDock: true,
   };
   const projects = paneAt("/projects", SECTIONS);
-  const none = { push: false, dock: false, offer: false, pane: null };
+  const none = { push: false, pane: null };
 
   it("the page line is dark: it is not in ASSISTANT_PERSONA, and the dock joins it behind chatFirstOn", () => {
     expect(ASSISTANT_PERSONA).not.toContain("show_in_app");
@@ -492,24 +493,26 @@ describe("the chat opens a page: show_in_app (WS-62 CF-3)", () => {
     expect(CHAT_FIRST_PERSONA_LINE).toContain("Then say what they will see, in one sentence.");
     const dock = read("lib/shell/AssistantDock.tsx");
     expect(dock).toContain("const personaText = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;");
-    expect(dock).toMatch(/onNavigate: \(\{ path, why, threadId \}\) => \{\s*\/\/[^\n]*\n\s*if \(!chatFirstOn\(\)\) return;/);
+    expect(dock).toMatch(/onNavigate: \(\{ path, threadId \}\) => \{\s*\/\/[^\n]*\n\s*if \(!chatFirstOn\(\)\) return;/);
   });
 
-  it("a desktop pushes the route and keeps the panel", () => {
-    expect(navigateAct(live)).toEqual({ push: true, dock: false, offer: false, pane: projects });
+  it("beside the side panel, the page moves with the chat", () => {
+    expect(navigateAct(live)).toEqual({ push: true, pane: projects });
+    expect(runMovesPage({ phone: false, form: "dock" })).toBe(true);
   });
 
-  it("a desktop full view becomes the panel, so the page shows", () => {
-    expect(navigateAct({ ...live, form: "full" })).toEqual({ push: true, dock: true, offer: false, pane: projects });
-    expect(navigateAct({ ...live, form: "full", canDock: false })).toEqual({ push: true, dock: false, offer: false, pane: projects });
+  // Owner, 2026-11-01: "only do that when the chat is on the sidebar, and not
+  // automate the UI when it is in full-screen mode chat". The chat reaches
+  // the whole app from any form.
+  it("the full view keeps the chat: nothing moves, and it stays full", () => {
+    expect(navigateAct({ ...live, form: "full" })).toEqual({ push: false, pane: projects });
+    expect(runMovesPage({ phone: false, form: "full" })).toBe(false);
   });
 
-  it("a phone keeps the chat open and offers the page (owner report, 2026-10-22)", () => {
-    expect(navigateAct({ ...live, phone: true, form: "full", canDock: false })).toEqual({ push: false, dock: false, offer: true, pane: projects });
-  });
-
-  it("a phone with the flag off keeps the chat open too", () => {
-    expect(navigateAct({ ...live, phone: true, chatFirst: false, form: "full", canDock: false })).toEqual({ push: false, dock: false, offer: true, pane: projects });
+  it("a phone keeps the chat, flag on or off", () => {
+    expect(navigateAct({ ...live, phone: true, form: "full", canDock: false })).toEqual({ push: false, pane: projects });
+    expect(navigateAct({ ...live, phone: true, chatFirst: false, form: "dock", canDock: false })).toEqual({ push: false, pane: projects });
+    expect(runMovesPage({ phone: true, form: "dock" })).toBe(false);
   });
 
   it("moves nothing while the assistant is closed, or for another chat", () => {
@@ -539,7 +542,7 @@ describe("the chat opens a page: show_in_app (WS-62 CF-3)", () => {
     for (const path of ["/connect/authorize", "/signup", "/settings/appearance", "/settings/organization", "/_next/x", "/centers/sales", "/nowhere"]) {
       expect(navigateAct({ ...live, path }), path).toEqual(none);
     }
-    expect(navigateAct({ ...live, path: "/" })).toEqual({ push: true, dock: false, offer: false, pane: null });
+    expect(navigateAct({ ...live, path: "/" })).toEqual({ push: true, pane: null });
     expect(navigateAct({ ...live, path: "/people/me" }).pane?.href).toBe("/people/me");
   });
 
@@ -559,15 +562,14 @@ describe("the chat opens a page: show_in_app (WS-62 CF-3)", () => {
     expect((hook.match(/evtName !== NAVIGATE_EVENT/g) ?? []).length).toBe(2);
   });
 
-  it("the dock acts through navigateAct, pushes the route and offers Go back", () => {
+  it("the dock acts through navigateAct and runMovesPage, and shows no toast (owner, 2026-11-01)", () => {
     const dock = read("lib/shell/AssistantDock.tsx");
-    expect(dock).toMatch(/onNavigate: \(\{ path, why, threadId \}\) => \{[\s\S]{0,400}?navigateAct\(/);
-    expect(dock).toMatch(/if \(!act\.push\) return;\s*const back = live\.pathname \?\? "\/";\s*router\.push\(path\);/);
-    expect(dock).toMatch(/if \(act\.dock\) setAssistantMode\("dock"\);/);
-    // A phone keeps the chat open: the toast offers the page (2026-10-22).
-    expect(dock).toMatch(/if \(act\.offer\) \{[\s\S]{0,500}?openFromPhone\(path\)[\s\S]{0,40}?return;/);
-    expect(dock).toMatch(/if \(!runMovesPage\(live\)\) \{[\s\S]{0,400}?openFromPhone\(target\.href\)[\s\S]{0,60}?return;/);
-    expect(dock).toMatch(/title: label \? `Opened \$\{label\}` : "Opened a page"/);
+    expect(dock).toMatch(/onNavigate: \(\{ path, threadId \}\) => \{[\s\S]{0,400}?navigateAct\(/);
+    expect(dock).toMatch(/if \(!path \|\| !act\.push\) return;\s*router\.push\(path\);/);
+    expect(dock).toMatch(/if \(!runMovesPage\(live\)\) return;\s*router\.push\(target\.href\);/);
+    // "Opened X" covered the chat and confused: no run toast, and a run never
+    // turns the full view into the side panel (`act.dock` is gone).
+    expect(dock).not.toMatch(/Opened \$\{|is working in \$\{|is ready"|useToast|act\.dock|act\.offer/);
   });
 });
 
@@ -862,12 +864,11 @@ describe("the strip in the dock's source: phone only, flag only", () => {
     expect(src).toContain("{phone && chatFirst ? <SheetHandle onPeek={toPeek} /> : null}");
     expect(src).toMatch(/\{phone && chatFirst \? \(\s*<Button[\s\S]{0,120}?icon="ChevronDown"\s*aria-label="Show as a strip"/);
     // Every way into the strip: the flag-gated handle and chevron (`toPeek`),
-    // the pill rule's "peek", and a phone toast's Open (`openFromPhone`,
-    // owner report 2026-10-22: a run no longer moves a phone's page by
-    // itself). All three read the flag.
-    expect((src.match(/setAssistantMode\("peek"\)/g) ?? []).length).toBe(3);
+    // and the pill rule's "peek". Both read the flag. The phone toast's Open
+    // went with the run toasts (owner, 2026-11-01).
+    expect((src.match(/setAssistantMode\("peek"\)/g) ?? []).length).toBe(2);
     expect(src).toContain('if (act === "peek") setAssistantMode("peek");');
-    expect(src).toContain('const how = onChatLink({ phone: true, chatFirst: liveRef.current.chatFirst });');
+    expect(src).not.toContain("openFromPhone");
   });
 
   it("the strip is the same element: the body wrapper is there in every form", () => {

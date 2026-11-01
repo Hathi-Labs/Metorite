@@ -1015,7 +1015,10 @@ export function FeedCard({
         <div className="min-w-0 flex-1">
           <h2 id={headingId} tabIndex={-1} className="flex min-w-0 items-center gap-1.5 rounded-sm text-sm font-medium text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">
             {card.href ? (
-              <Button href={card.href} variant="text" size="none" className="min-w-0 truncate text-foreground underline-offset-2 hover:underline">
+              // ⚠️ A block, not the Button's centred inline-flex: a long title
+              // centred in its box spilled out of BOTH ends, so its start was
+              // cut (owner, 2026-11-01). A block cuts at the end, with "…".
+              <Button href={card.href} variant="text" size="none" layout="block" className="min-w-0 truncate text-left text-foreground underline-offset-2 hover:underline">
                 {card.title}
               </Button>
             ) : (
