@@ -31,13 +31,12 @@ import {
   launcherGroups,
   shellNavOn,
   shellSidebar,
-  strayCount,
 } from "@/lib/shell/shellNav";
 import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
 import { latestShell, saveShellPrefs, useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
 import { EMPTY_SHELL, toggleStar } from "@/lib/shell/presets";
 import { foldHeading, isFolded, readFolds, writeFolds, type Folds } from "@/lib/shell/sidebarFolds";
-import { addAppsName, needsLabel, needsSuffix, rowMeta, rowName } from "@/lib/shell/navNeeds";
+import { needsLabel, needsSuffix, rowMeta, rowName } from "@/lib/shell/navNeeds";
 import { useNavNeeds } from "@/lib/shell/useNavNeeds";
 import { useMyDayCount } from "@/lib/shell/myDayCount";
 import { chatScope } from "@/lib/sessions";
@@ -188,22 +187,15 @@ export default function Sidebar() {
     total: runningTotal,
     needsTotal: runsWaiting,
   } = useRunActivity(railHrefs, canPoll);
-  // A run on a pane the sidebar does not show, Chat included, counts on
-  // "Add apps", the door to the hidden apps (`strayCount`).
-  const strayBadge = runBadge(
-    strayCount(runCounts, railHrefs),
-    strayCount(needsCounts, railHrefs),
-    strayCount(unreadCounts, railHrefs),
-  );
   // What needs the member in each app (owner, 2026-10-11): the one feed of
-  // My Day and the bell, counted on its app's row (`useNavNeeds`). An app
-  // the sidebar does not show counts on "Add apps", as a run does.
+  // My Day and the bell, counted on its app's row (`useNavNeeds`).
+  // ⚠️ "Add apps" carries NO count (owner, 2026-11-01: "why does this have
+  // a number ... the home's approvals view would have this"). What waits in
+  // an app the sidebar does not show, and a chat run that waits, counts on
+  // My Day, the one surface. The 2026-10-11 rule put it on Add apps.
   const heldHrefs = sections.flatMap((s) => s.items.map((p) => p.href));
   const navNeeds = useNavNeeds(shellNav && canPoll, heldHrefs);
   const appNeeds = navNeeds.counts;
-  const strayNeeds = strayCount(appNeeds, railHrefs);
-  // The stray count is a floor when any hidden app's count is one.
-  const strayFloor = [...navNeeds.floors].some((href) => !railHrefs.has(href));
 
   // Per-category fold state, kept per ACCOUNT (owner, 2026-10-11), so a
   // reload keeps it and another account on this browser never reads it
@@ -538,13 +530,7 @@ export default function Sidebar() {
             );
           })}
           {shellNav && (
-            <AddAppsRow
-              collapsed={collapsed}
-              onOpen={() => openLauncher(ADD_APPS_HINT)}
-              badge={strayBadge}
-              needs={strayNeeds}
-              needsFloor={strayFloor}
-            />
+            <AddAppsRow collapsed={collapsed} onOpen={() => openLauncher(ADD_APPS_HINT)} />
           )}
           </>
         )}
@@ -669,44 +655,25 @@ export default function Sidebar() {
  * open or folded. `e2e/shell-presets.spec.ts` measures that. It is a button
  * that opens a dialog, not a place, so it has no active state. `cc-link`
  * gives both forms the house focus ring, as the account foot wears it.
+ *
+ * It carries no count (owner, 2026-11-01). It is a door, not a place where
+ * things wait: My Day counts what waits in an app the sidebar does not show.
  */
-function AddAppsRow({
-  collapsed,
-  onOpen,
-  badge,
-  needs = 0,
-  needsFloor = false,
-}: {
-  collapsed: boolean;
-  onOpen: () => void;
-  /** Runs on apps the sidebar does not show (`strayCount`). */
-  badge: ReturnType<typeof runBadge>;
-  /** The needs rows in apps the sidebar does not show (`strayCount`). */
-  needs?: number;
-  /** That count is a floor: one hidden app's read stopped at its cap. */
-  needsFloor?: boolean;
-}) {
-  // The slot rule of an app row (`rowMeta`): a run badge wins it. The
-  // needs count stays in the name either way.
-  const meta = rowMeta(badge?.count, needs, needsFloor);
-  // One name for both forms, with the run badge's words and the needs.
-  const name = addAppsName(needs, badge?.label, needsFloor);
+function AddAppsRow({ collapsed, onOpen }: { collapsed: boolean; onOpen: () => void }) {
   if (collapsed) {
     return (
       <div className="flex flex-col gap-1 p-2" data-nav-add-apps="">
         <button
           type="button"
           onClick={onOpen}
-          title={name}
-          aria-label={name}
+          title="Add apps"
+          aria-label="Add apps"
           aria-haspopup="dialog"
           data-rail-row=""
           className="cc-link relative flex items-center justify-center rounded-lg glass:rounded-row p-2.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
         >
           <Icon name="Plus" size={18} className="shrink-0 glass:text-muted-foreground" />
           <RailPeekLabel>Add apps</RailPeekLabel>
-          {badge ? <NavBadge count={badge.count} tone={badge.tone} label={badge.label} placement="corner" /> : null}
-          {meta?.kind === "needs" ? <NeedsDot text={meta.text} /> : null}
         </button>
       </div>
     );
@@ -717,14 +684,11 @@ function AddAppsRow({
         type="button"
         onClick={onOpen}
         aria-haspopup="dialog"
-        aria-label={name === "Add apps" ? undefined : name}
         className="cc-link rounded-lg glass:rounded-row px-3 py-2 text-left text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
       >
         <span className="flex items-center gap-2.5">
           <Icon name="Plus" size={16} />
           <span className="text-[13px] glass:text-subhead">Add apps</span>
-          {badge ? <NavBadge count={badge.count} tone={badge.tone} label={badge.label} /> : null}
-          {meta?.kind === "needs" ? <NeedsCount text={meta.text} /> : null}
         </span>
       </button>
     </div>
