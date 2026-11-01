@@ -38,23 +38,34 @@ h. `list_apps`, `load_app`, the pins and `app_tools` skip a package, and
 
 **The mutations (R7).** Commit before each, and restore with git after.
 
-* M1. The migration: drop the CHECK ``apps_manifest_package``.
-  ``test_r8_the_checks_refuse_a_bad_package`` and
-  ``test_r8_a_package_at_the_store_limit_passes_the_check`` go red.
-* M2. The migration: drop the CHECK ``apps_format``.
-  ``test_r8_the_checks_refuse_a_bad_package[bad_format]`` goes red.
-* M3. The migration: ``DEFAULT 'manifest'``.
-  ``test_r8_an_insert_of_the_old_shape_reads_as_code`` goes red.
+Each result below was run on 2026-11-01, with both A3 suites.
+
+* M1. The migration: drop the CHECK ``apps_manifest_package``. Eleven tests
+  go red: the five package cases of
+  ``test_r8_the_checks_refuse_a_bad_package``,
+  ``test_r8_a_package_at_the_store_limit_passes_the_check``,
+  ``test_r8_a_manifest_that_jsonb_refuses_or_grows_writes_nothing``, the
+  three schema tests, and the size test of the hermetic twin.
+* M2. The migration: drop the CHECK ``apps_format``. The ``bad_format`` and
+  ``empty_format`` cases and the three schema tests go red.
+* M3. The migration: ``DEFAULT 'manifest'``. The ``promoted`` fixture seeds
+  ``apps`` with an INSERT of the old shape, and ``apps_manifest_package``
+  refuses it. So each test of this suite errors at setup, the old-shape test
+  too.
 * M4. ``packages_store.check_manifest``: drop the ``validate_manifest``
-  call. ``test_r8_an_invalid_manifest_writes_nothing`` goes red.
+  call. ``test_r8_an_invalid_manifest_writes_nothing`` and six tests of the
+  hermetic twin go red.
 * M5. Drop the guard ``format IS DISTINCT FROM 'manifest'`` in one reader at
   a time: ``load_app``, ``list_apps``, ``list_pinned_apps`` or
-  ``_granted_live_apps``. Its own ``test_r8_*_skips_a_package`` goes red.
+  ``_granted_live_apps``. Its own ``test_r8_*_skips_a_package`` goes red, and
+  so does ``test_each_app_workshop_reader_skips_a_package`` of the twin.
 * M6. ``packages_store.create_package``: use the plain manifest id as the
-  slug. ``test_r8_two_orgs_may_hold_one_manifest_id`` and
-  ``test_r8_a_slug_clash_with_another_org_leaks_nothing`` go red.
-* M7. The migration: drop the trigger ``apps_format_fixed``.
-  ``test_r8_the_format_of_an_app_never_changes`` goes red.
+  slug. ``test_r8_two_orgs_may_hold_one_manifest_id``,
+  ``test_r8_a_slug_clash_with_another_org_leaks_nothing`` and four more go
+  red.
+* M7. The migration: drop the trigger ``apps_format_fixed``. Both cases of
+  ``test_r8_the_format_of_an_app_never_changes`` and the three schema tests
+  go red.
 """
 
 from __future__ import annotations
