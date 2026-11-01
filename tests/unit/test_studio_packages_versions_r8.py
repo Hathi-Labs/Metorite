@@ -74,10 +74,31 @@ _VERSION_COLUMNS = (
     "release_notes, scope_set_hash, published_by, published_at::text, review_status")
 
 MUTATIONS = """
-Each result was run on 2026-11-01. Commit first, restore with git after.
+Each result was run on 2026-11-01, with this suite and group h of the twin.
+Commit first, and restore with git after.
 
-* M-a. ``publish_version``/``rollback``: ``get_package(.., for_update=True)``
-  without the lock. (see the report in the commit message)
+* M-a. Remove ``for_update=True`` from ``publish_version`` and ``rollback``.
+  ``test_r8_two_writers_on_two_connections_get_n_and_n_plus_1`` and two
+  hermetic lock tests go red.
+* M-b. Drop the ``owner_email`` filter from the statements.
+  ``test_r8_org_b_and_another_member_see_no_versions`` goes red, and so do
+  the filter tests of the twin.
+* M-c. Rollback moves only the pointer (no new version).
+  ``test_r8_a_rollback_to_v1_after_v2_makes_v3_and_restores_the_draft`` and
+  ``test_r8_a_publish_after_a_rollback_never_edits_an_old_row`` go red.
+* M-d. Rollback skips the draft copy. The same first test goes red.
+* M-e. Publish skips ``check_manifest``.
+  ``test_publish_and_rollback_run_check_manifest_on_the_stored_manifest``
+  goes red.
+* M-f. The audit commits outside the caller's transaction.
+  ``test_r8_a_failure_after_a_write_rolls_back_the_version_and_the_audit``
+  goes red.
+* M-g. Publish updates ``apps.manifest``.
+  ``test_publish_writes_the_version_the_pointer_and_the_audit_in_order``
+  goes red.
+* M-h. A string ``UPDATE app_versions`` or a call of ``propose`` in the
+  store. ``test_a_version_row_is_never_updated_or_deleted_and_no_review_is_proposed``
+  goes red.
 """
 
 
