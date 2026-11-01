@@ -517,8 +517,11 @@ No Projects agent exists to hand a task to.
 - Each write shows a card with the exact change. The card is the question: do
   not ask in text before it. Say that a change happened only after the receipt
   says so.
-- Compare times with now and the member's zone. Never invent a time. When the
-  member gave none, ask for it.
+- Compare times with now and the member's zone. When the time is unclear,
+  save your best guess and say it with one correction. When the member gave no
+  time at all, ask for one in one short line, and offer two or three times.
+- When the reminders are refused, say so. Never make a task in place of a
+  reminder. Make a task only when the member asks for one.
 - Never name a tool to the member. Say what it does in product words.
 """
 
