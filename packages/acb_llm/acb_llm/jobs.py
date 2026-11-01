@@ -97,7 +97,8 @@ The two seam guards
 Fence (R7): ``tests/unit/test_llm_jobs.py``. It walks the gateway, the
 orchestrator and the ``acb_*`` packages, and fails on a model call with a cap
 under 2000 that names no job and sends no ``thinking`` or
-``reasoning_effort``.
+``reasoning_effort``. A call with no cap has the seam default of 1024, and a
+cap the walk cannot read counts as small, so both need a job too.
 """
 from __future__ import annotations
 

@@ -14,7 +14,8 @@ What this file holds (R7):
 * The JSON guard and the empty-answer log, at each of the three seams.
 * **The fence.** It walks the gateway, the orchestrator and the ``acb_*``
   packages. A model call with a cap under 2000 must name a job, or send
-  ``thinking`` or ``reasoning_effort`` itself.
+  ``thinking`` or ``reasoning_effort`` itself. No cap is the seam default of
+  1024, and a cap the walk cannot read counts as small (repair round 1).
 
 Mutations this file catches:
 
@@ -399,6 +400,10 @@ ENTRY_POINTS = frozenset({
 #: A cap below this needs a job: the thinking of DeepSeek V4 can fill it.
 CAP_LIMIT = 2000
 
+#: The cap of a call that names none: the default of ``acompletion_with_fallback``
+#: and ``complete``. It is under the limit, so such a call needs a job too.
+DEFAULT_CAP = 1024
+
 #: The keywords that settle thinking for a call.
 SETTLED = frozenset({"job", "thinking", "reasoning_effort"})
 
@@ -406,7 +411,11 @@ SETTLED = frozenset({"job", "thinking", "reasoning_effort"})
 #: cap with no job, and the reason. An entry that matches no call does not
 #: fail, so a merge of the PR that owns the call cannot turn main red. Empty:
 #: the nine Tasks calls pass through ``thinking=dict(NO_THINKING)`` (PR 1538).
-EXEMPT: dict[str, str] = {}
+EXEMPT: dict[str, str] = {
+    "packages/acb_llm/acb_llm/client.py::complete_with_tools": (
+        "an agent's tool-calling turn. Its tier policy owns its thinking "
+        "(acb_skills.tier_policy), and its default cap is 4096"),
+}
 
 
 def _module_constants(tree: ast.Module) -> dict[str, Any]:
@@ -442,15 +451,27 @@ def _settled_in_extra(call: ast.Call) -> bool:
     return False
 
 
+def _passes_its_own_kwargs(call: ast.Call, fn: ast.AST | None) -> bool:
+    """A transport helper that is itself an entry point, such as the email
+    ``_llm_json``, forwards ``**extra`` and so its caller's job. Its callers
+    are fenced, so the forward settles the call. Any other ``**`` does not."""
+    if fn is None or getattr(fn, "name", "") not in ENTRY_POINTS:
+        return False
+    kwarg = getattr(getattr(fn, "args", None), "kwarg", None)
+    return kwarg is not None and any(
+        kw.arg is None and isinstance(kw.value, ast.Name) and kw.value.id == kwarg.arg
+        for kw in call.keywords)
+
+
 class _Walker(ast.NodeVisitor):
     def __init__(self, rel: str, constants: dict[str, Any]) -> None:
         self.rel, self.constants = rel, constants
-        self.stack: list[str] = []
+        self.stack: list[ast.AST] = []
         self.unsettled: list[str] = []
         self.bad_jobs: list[str] = []
 
     def _visit_fn(self, node: ast.AST) -> None:
-        self.stack.append(node.name)  # type: ignore[attr-defined]
+        self.stack.append(node)
         self.generic_visit(node)
         self.stack.pop()
 
@@ -465,14 +486,24 @@ class _Walker(ast.NodeVisitor):
         kws = {kw.arg: kw.value for kw in node.keywords if kw.arg}
         if name == "complete" and "tier" not in kws:
             return
-        where = f"{self.rel}::{self.stack[-1] if self.stack else '<module>'}"
+        fn = self.stack[-1] if self.stack else None
+        where = f"{self.rel}::{getattr(fn, 'name', '<module>')}"
         job = _value(kws.get("job"), self.constants)
         if "job" in kws and isinstance(job, str) and job not in JOBS:
             self.bad_jobs.append(f"{where} job={job!r}")
-        cap = _value(kws.get("max_tokens"), self.constants)
-        if not isinstance(cap, int) or cap >= CAP_LIMIT:
+        # The cap: a literal or a module constant. No cap is the seam default.
+        # A cap that the walk cannot read (a variable) counts as small, so the
+        # call must name its job (repair round 1: the blind spot).
+        if "max_tokens" not in kws:
+            cap: Any = DEFAULT_CAP
+        else:
+            cap = _value(kws["max_tokens"], self.constants)
+            if not isinstance(cap, int):
+                cap = ast.unparse(kws["max_tokens"])
+        if isinstance(cap, int) and cap >= CAP_LIMIT:
             return
-        if SETTLED & kws.keys() or _settled_in_extra(node) or where in EXEMPT:
+        if (SETTLED & kws.keys() or _settled_in_extra(node) or where in EXEMPT
+                or _passes_its_own_kwargs(node, fn)):
             return
         self.unsettled.append(f"{where}:{node.lineno} max_tokens={cap}")
 
@@ -566,11 +597,25 @@ def test_the_fence_can_fail() -> None:
         # The Tasks shape of PR 1538: a thinking= keyword settles it too.
         "    await acompletion_with_fallback(model='t', max_tokens=40,"
         " thinking=dict(NO_THINKING))\n"
+        # Repair round 1, the blind spot: no cap is the default of 1024, and
+        # a cap the walk cannot read counts as small.
+        "    await complete(tier=LLMTier.TIER_2, messages=[])\n"
+        "    await acompletion_with_fallback(model='t', max_tokens=cap)\n"
+        "    await complete(tier=LLMTier.TIER_2, messages=[], job='writing')\n"
+        "async def _llm_json(model, messages, *, max_tokens, **extra):\n"
+        "    await acompletion_with_fallback(model=model, max_tokens=max_tokens,"
+        " **extra)\n"
+        "async def other(model, **extra):\n"
+        "    await acompletion_with_fallback(model=model, max_tokens=500, **extra)\n"
     )
     walker = _walk_source("planted.py", planted)
     assert walker.unsettled == [
         "planted.py::pick:4 max_tokens=40",
         "planted.py::pick:5 max_tokens=300",
         "planted.py::pick:6 max_tokens=4",
+        "planted.py::pick:13 max_tokens=1024",
+        "planted.py::pick:14 max_tokens=cap",
+        # Only an entry point's own **extra forwards its caller's job.
+        "planted.py::other:19 max_tokens=500",
     ]
     assert walker.bad_jobs == ["planted.py::pick job='summary'"]

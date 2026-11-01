@@ -301,7 +301,7 @@ Every AI call names its job (task 1128). Pass `job="structured"`, `"writing"` or
 - A member or env tier keeps its tier, and the job still turns thinking off.
 - The Tasks calls send `thinking=dict(NO_THINKING)` (PR 1538). `tasks/core.py::NO_THINKING` is `acb_llm.jobs.THINKING_OFF`. Do not write a second literal of it.
 - An empty answer is no answer. Do not read it as "no match" or "nothing to say". The seam logs `acb_llm.empty_answer`, and the caller fails closed.
-- Fence: `tests/unit/test_llm_jobs.py`. It fails on a call with a cap under 2000 that names no job and sends no `thinking`.
+- Fence: `tests/unit/test_llm_jobs.py`. It fails on a call with a cap under 2000 that names no job and sends no `thinking`. A call with no cap, or with a cap that the walk cannot read, counts as under 2000.
 
 ### Mutation inbox flow
 1. Pending commits listed via GET /agent/mutations/pending
