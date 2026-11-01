@@ -290,11 +290,18 @@ describe("one surface for each app", () => {
     // Owner, 2026-10-31: the title bar and the app are one block.
     const shell = readFileSync(join(SRC, "components", "AppShell.tsx"), "utf8");
     expect(shell).toMatch(/const FULL_MAIN =\s*"[^"]*glass:rounded-2xl glass:bg-card glass:shadow-card"/);
-    expect(GLOBALS).toMatch(/html\[data-look="glass"\] main \.h-full\.bg-background \{\s*background-color: transparent;/);
-    // The title bar hangs no fade and no hairline: they drew the band.
+    expect(GLOBALS).toMatch(/html\[data-look="glass"\] main \.h-full\.bg-background:not\(aside\) \{\s*background-color: transparent;/);
+    // A panel over the page is no app root: the task panel stays opaque, or
+    // the board's text shows through it (owner, 2026-11-01).
+    const panel = readFileSync(join(SRC, "app", "projects", "components", "TaskPanel.tsx"), "utf8");
+    expect(panel).toMatch(/<aside\s+className=\{`[^`]*bg-background glass:bg-card`\}/);
+    // The title bar hangs no fade and no fill: they drew the band. It keeps
+    // its hairline (owner, 2026-11-01: "a horizontal separator line under
+    // the app headings, so that the cutoff scroll is more deliberate").
     const bar = readFileSync(join(SRC, "components", "AppTopBar.tsx"), "utf8");
     expect(bar).not.toContain("glass-scroll-edge");
-    expect(bar.match(/glass:border-b-0 glass:bg-transparent/g)?.length).toBe(2);
+    expect(bar.match(/border-b border-border bg-card [^"]*glass:bg-transparent"/g)?.length).toBe(2);
+    expect(bar).not.toContain("glass:border-b-0");
   });
 });
 
