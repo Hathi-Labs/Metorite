@@ -39,7 +39,7 @@ Commit before each.
 * M4. ``entries.py`` ``_instant``: read a time with no offset as UTC. A
   naive ``ends_at`` answered 201.
   ``test_r8_a_naive_time_and_a_bad_pair_are_a_422_and_write_nothing``.
-* M5. ``321_calendar_entries.sql``: drop the CHECK
+* M5. ``324_calendar_entries.sql``: drop the CHECK
   ``calendar_entries_external_pair`` (a half pair was stored), or the index
   ``calendar_entries_external_uq`` (a twin was stored). Each run alone.
   ``test_r8_a_written_out_event_gets_no_twin``.

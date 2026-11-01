@@ -1,5 +1,5 @@
 -- ============================================================================
--- 321_calendar_entries.sql — the event store of the Calendar (WS-CAL CE-4,
+-- 324_calendar_entries.sql — the event store of the Calendar (WS-CAL CE-4,
 -- D138).
 --
 -- What: two new tables. `calendar_entries` holds one time that is not a
@@ -46,7 +46,9 @@
 --
 -- The number is taken at build time (R1). It was 319 at first. On 2026-11-01
 -- origin/main took 319 (chat_session_member_summary) and 320 (studio_skills),
--- so this file moved to 321 before merge. Check it again at merge.
+-- so this file moved to 321. On 2026-11-01 main took 322 and 323, and open
+-- PR 1567 claims 321, so this file moved to 324 before merge. Check it
+-- again at merge.
 -- Pinned by tests/unit/test_calendar_entries_r8.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================

@@ -42,7 +42,7 @@ export function InfoNoticeView({
       data-chat-notice-marker
       data-tone="info"
       role="status"
-      className={`flex w-full min-w-0 max-w-full items-start gap-1.5 rounded-md px-2 py-1 text-[11px] ${MUTED.soft} ${MUTED.text}`}
+      className={`flex w-full min-w-0 max-w-full items-start gap-1.5 rounded-md px-2 py-1 text-[11px] glass:rounded-[10px] glass:px-3 glass:py-2 glass:text-footnote ${MUTED.soft} ${MUTED.text}`}
     >
       <Icon name="Info" size={12} className={`mt-0.5 shrink-0 ${INFO.text}`} />
       <p className="min-w-0 flex-1 leading-relaxed wrap-anywhere">
@@ -166,8 +166,10 @@ export function ErrorCardView({
       data-tone={notice ? "notice" : "error"}
       role={notice ? "status" : "alert"}
       className={[
-        "w-full min-w-0 max-w-full overflow-hidden rounded-lg border px-2.5 py-2",
-        notice ? "border-warning/40 bg-warning/10" : "border-destructive/40 bg-destructive/10",
+        "w-full min-w-0 max-w-full overflow-hidden rounded-lg border px-2.5 py-2 glass:glass-card-tile glass:rounded-[16px] glass:p-3",
+        notice
+          ? "border-warning/40 bg-warning/10 glass:[--tile:var(--system-orange)]"
+          : "border-destructive/40 bg-destructive/10 glass:[--tile:var(--system-red)]",
       ].join(" ")}
     >
       <RollupHeader
@@ -175,7 +177,7 @@ export function ErrorCardView({
         titleClassName={`font-semibold wrap-anywhere ${notice ? "text-foreground" : "text-destructive"}`}
       />
       <RollupBody>
-      <p className="mt-1 min-w-0 text-xs leading-relaxed text-foreground wrap-anywhere">{noticeBody(words, error.raw)}</p>
+      <p className="mt-1 min-w-0 text-xs leading-relaxed text-foreground wrap-anywhere glass:text-label">{noticeBody(words, error.raw)}</p>
       <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
         {onRetry && words.retry && (
           // The label may carry an address (the other-account Switch), so it
@@ -205,7 +207,7 @@ export function ErrorCardView({
       </div>
       {!notice && expanded && (
         <div className="mt-2 min-w-0 space-y-2" data-chat-error-fold>
-          <pre className="max-h-40 min-w-0 max-w-full overflow-auto whitespace-pre-wrap rounded-lg bg-muted/60 p-2 font-mono text-[10px] text-muted-foreground wrap-anywhere">
+          <pre className="max-h-40 min-w-0 max-w-full overflow-auto whitespace-pre-wrap rounded-lg bg-muted/60 p-2 font-mono text-[10px] text-muted-foreground wrap-anywhere glass:rounded-[10px] glass:bg-secondary glass:p-3 glass:text-caption">
             {error.raw || "(no error details)"}
           </pre>
           {error.ref && (

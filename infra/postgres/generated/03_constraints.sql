@@ -2522,6 +2522,54 @@ ALTER TABLE studio_skill_versions ADD CONSTRAINT studio_skill_versions_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS studio_skill_versions_org_idx ON studio_skill_versions (organization_id);
 
+-- studio_objects
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM studio_objects WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: studio_objects still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE studio_objects ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE studio_objects ADD CONSTRAINT studio_objects_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS studio_objects_org_idx ON studio_objects (organization_id);
+
+-- studio_object_fields
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM studio_object_fields WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: studio_object_fields still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE studio_object_fields ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE studio_object_fields ADD CONSTRAINT studio_object_fields_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS studio_object_fields_org_idx ON studio_object_fields (organization_id);
+
+-- studio_records
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM studio_records WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: studio_records still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE studio_records ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE studio_records ADD CONSTRAINT studio_records_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS studio_records_org_idx ON studio_records (organization_id);
+
+-- studio_record_hot
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM studio_record_hot WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: studio_record_hot still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE studio_record_hot ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE studio_record_hot ADD CONSTRAINT studio_record_hot_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS studio_record_hot_org_idx ON studio_record_hot (organization_id);
+
 -- calendar_entries
 DO $$
 BEGIN

@@ -129,7 +129,10 @@ const SIZES: Record<ButtonSize, string> = {
  * property is the one input that rule reads, so `glass:[--button-radius]`
  * wins with no change to the stylesheet.
  */
-const GLASS_BASE = "glass:glass-press glass:text-subhead glass:font-medium";
+// GL-6: a label never wraps. The narrow Calendar rail broke "New reminder"
+// onto two lines. The text size now comes from the size, so a toolbar button
+// reads smaller than a form button.
+const GLASS_BASE = "glass:glass-press glass:font-medium glass:whitespace-nowrap";
 const GLASS_CAPSULE = "glass:[--button-radius:9999px]";
 /**
  * A disabled primary keeps its dim look under the pointer: the hover rules
@@ -154,12 +157,17 @@ const GLASS_SELECTED: Record<ButtonVariant, string> = {
   destructive: "glass:hover:bg-destructive/15",
   text: "",
 };
+/**
+ * GL-6, the toolbar size. `sm` is 28 px with a 13 px face and sits in a
+ * toolbar row beside `Input sm` and `SelectButton`, which are 28 px too.
+ * `md` and `lg` are 32 px with a 14 px face. A touch screen gets 40 px.
+ */
 const GLASS_SIZES: Record<ButtonSize, string> = {
-  sm: "glass:h-8 glass:px-3.5 glass:py-0 glass:pointer-coarse:h-10",
-  md: "glass:h-8 glass:px-3.5 glass:py-0 glass:pointer-coarse:h-10",
-  lg: "glass:h-8 glass:px-3.5 glass:py-0 glass:pointer-coarse:h-10 glass:pointer-coarse:px-4",
+  sm: "glass:h-7 glass:px-3 glass:py-0 glass:text-footnote glass:pointer-coarse:h-10",
+  md: "glass:h-8 glass:px-3.5 glass:py-0 glass:text-label glass:pointer-coarse:h-10",
+  lg: "glass:h-8 glass:px-3.5 glass:py-0 glass:text-label glass:pointer-coarse:h-10 glass:pointer-coarse:px-4",
   "icon-xs": "glass:h-7 glass:w-7 glass:p-0 glass:pointer-coarse:h-10 glass:pointer-coarse:w-10",
-  "icon-sm": "glass:h-8 glass:w-8 glass:p-0 glass:pointer-coarse:h-10 glass:pointer-coarse:w-10",
+  "icon-sm": "glass:h-7 glass:w-7 glass:p-0 glass:pointer-coarse:h-10 glass:pointer-coarse:w-10",
   icon: "glass:h-8 glass:w-8 glass:p-0 glass:pointer-coarse:h-10 glass:pointer-coarse:w-10",
   /** Caller supplies its own box. */
   none: "",
@@ -177,6 +185,7 @@ export function glassButtonClasses(a: { variant: ButtonVariant; size: ButtonSize
   if (a.radius !== "keep" && a.variant !== "text") parts.push(GLASS_CAPSULE);
   parts.push(a.selected ? GLASS_SELECTED[a.variant] : GLASS_VARIANTS[a.variant]);
   if (a.variant !== "text") parts.push(GLASS_SIZES[a.size]);
+  else parts.push("glass:text-subhead");
   return parts.filter(Boolean).join(" ");
 }
 

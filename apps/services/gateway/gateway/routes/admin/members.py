@@ -832,7 +832,7 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # of these entries go by their `ON DELETE CASCADE` key. ⚠️ This row runs
     # before any connection delete of the purge (`purge_knowledge_member`
     # runs after the list), because `calendar_entries.connection_id` has NO
-    # cascade (migration 321).
+    # cascade (migration 324).
     _PersonRows("calendar_entries", "calendar_entries",
                 f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"),
     # The member's own rows on the entries of colleagues: their seat, RSVP

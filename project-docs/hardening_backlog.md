@@ -38,6 +38,13 @@ Add a section per feature as you build it. Example:
 | E-1 | Two-org test for email_threads | ... | ... |
 ```
 
+### Package host (WS-PKG)
+
+| # | Item | Why | Done when |
+|---|---|---|---|
+| PK-1 | Make `test_no_hand_kept_vocabulary_remains` scan `me.py` with `ast` | It checks three literal strings only. A hand-kept set of other hrefs, such as `/workflows` and `/people`, passes it (PKG-2 verify, 2026-11-01) | The test fails on any `frozenset` or `set` literal of strings that start with `/` in `me.py` |
+| PK-2 | Decide the `MAX_JOBS = 16` cap on the shell order body | `me.py` caps `newOrder` at 16, and the product has 23 jobs. A member's own "New" order is a short subset today, so nothing fails yet (PKG-2 verify, 2026-11-01) | The cap is the job count, or a test states why 16 is the limit |
+
 ### Knowledge (WS-61)
 
 | # | Item | Why | Done when |

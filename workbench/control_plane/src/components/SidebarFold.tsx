@@ -75,6 +75,11 @@ export function useSidebarFold(): SidebarFold {
   return fold;
 }
 
+/** The fold, or null where no provider is mounted (the phone layout). */
+export function useOptionalSidebarFold(): SidebarFold | null {
+  return useContext(FoldContext);
+}
+
 export function SidebarFoldProvider({
   placement,
   children,
@@ -86,9 +91,10 @@ export function SidebarFoldProvider({
   // provider only after access resolves, on the client, so there is no server
   // markup to disagree with. An effect would draw the open rail and then
   // animate it shut on every reload.
-  const [collapsed, setCollapsedState] = useState(() =>
+  const [storedCollapsed, setCollapsedState] = useState(() =>
     typeof window === "undefined" ? false : readCollapsed(),
   );
+  const collapsed = storedCollapsed;
   const armedRef = useRef(false);
   // `pulsing` says whether this fold's pulse still runs. It ends by itself,
   // and on the member's own toggle, so a later manual collapse does not pulse
@@ -106,8 +112,8 @@ export function SidebarFoldProvider({
     armedRef.current = false;
     setTipOpen(false);
     setPulsing(false);
-    setCollapsed(!collapsed);
-  }, [collapsed, setCollapsed]);
+    setCollapsed(!storedCollapsed);
+  }, [storedCollapsed, setCollapsed]);
 
   const arm = useCallback((e: MouseEvent) => {
     if (isPlainNavClick(e)) armedRef.current = true;
@@ -126,6 +132,19 @@ export function SidebarFoldProvider({
     setTipOpen(false);
     setCollapsed(false);
   }, [setCollapsed]);
+
+  // Ctrl+\ (Cmd+\ on a Mac) folds and opens the sidebar (owner, 2026-11-01).
+  // The fold button's tooltip names it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "\\" && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        toggle();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [toggle]);
 
   // The pulse runs three times (`.sidebar-beacon`, about 3.7s), then ends.
   useEffect(() => {
@@ -167,6 +186,10 @@ export function SidebarFoldProvider({
 
   return <FoldContext.Provider value={value}>{children}</FoldContext.Provider>;
 }
+
+/** The fold's keys, in the member's own keyboard words. */
+const FOLD_KEYS =
+  typeof navigator !== "undefined" && /mac|iphone|ipad/i.test(navigator.platform) ? "⌘\\" : "Ctrl+\\";
 
 /**
  * The fold control, and its tip. One component for both places.
@@ -211,11 +234,11 @@ export function SidebarFoldButton() {
           key={fold.beacon}
           onClick={fold.toggle}
           className={`shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${beaconClass}`}
-          title={label}
+          title={`${label} (${FOLD_KEYS})`}
           aria-label={label}
           aria-expanded={!fold.collapsed}
         >
-          {fold.collapsed ? <Icon name="ChevronRight" size={16} /> : <Icon name="ChevronLeft" size={16} />}
+          {fold.collapsed ? <Icon name="ChevronsRight" size={16} /> : <Icon name="ChevronsLeft" size={16} />}
         </button>
       )}
       {fold.tipOpen && fold.collapsed && (

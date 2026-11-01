@@ -66,6 +66,23 @@
         "feature": null,
         "note": "WS-55 EA-4b (D-EA-9). A link job to the AI agents view of Integrations: the connect card and the member's own agents. Every member holds it, so it needs no feature. The two jobs above keep integrations."
       }
+    ],
+    "nav": [
+      {
+        "href": "/integrations",
+        "feature": "integrations"
+      }
+    ],
+    "gates": [
+      {
+        "href": "/apis",
+        "feature": "integrations"
+      }
+    ],
+    "always_allowed": [
+      {
+        "href": "/integrations"
+      }
     ]
   }
 }

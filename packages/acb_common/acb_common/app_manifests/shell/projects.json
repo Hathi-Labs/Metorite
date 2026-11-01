@@ -50,6 +50,28 @@
         "feature": "projects",
         "note": "A root node in Projects is a SPACE (the tree grammar of migration 193), so the label names what opens: the New space row in the tree."
       }
+    ],
+    "nav": [
+      {
+        "href": "/projects",
+        "feature": "projects"
+      }
+    ],
+    "scope": [
+      {
+        "href": "/projects",
+        "source": "tasks"
+      }
+    ],
+    "also_serves": [
+      {
+        "agent": "projects-assistant",
+        "href": "/tasks"
+      },
+      {
+        "agent": "projects-assistant",
+        "href": "/calendar"
+      }
     ]
   }
 }

@@ -734,10 +734,10 @@ def test_the_calendar_entries_of_this_org_go_before_any_connection() -> None:
     Only the owner changes an entry, so an entry that a purge left behind
     could never be deleted. Both clauses name the bound org, because the same
     address may hold entries in another org. The attendee rows of the
-    member's own entries go by the cascade of migration 321, so the seat
+    member's own entries go by the cascade of migration 324, so the seat
     clause leaves them out, and no row is counted twice.
 
-    ⚠️ ``calendar_entries.connection_id`` has NO cascade (migration 321). A
+    ⚠️ ``calendar_entries.connection_id`` has NO cascade (migration 324). A
     connection delete fails while an entry names it. So the delete loop of
     ``_PURGE_DELETES`` must run before ``purge_knowledge_member``, the one
     connection delete of the purge, and the registry must not cascade to the
@@ -798,6 +798,33 @@ def test_the_skills_of_this_org_go_and_their_versions_by_cascade() -> None:
     assert keys.index("studio_skills") < keys.index("member_record")
     assert "studio_skill_versions" in cascade_closure("studio_skills")
     assert "studio_skill_versions" not in {r.table for r in _PURGE_DELETES}
+
+
+_STUDIO_OBJECT_TABLES = frozenset({
+    "studio_objects", "studio_object_fields", "studio_records", "studio_record_hot"})
+
+
+def test_the_records_of_studio_objects_stay() -> None:
+    """WS-STU C1: a Studio record is company data, as a `pm_tasks` row is (D63).
+
+    The purge deletes no row of the four object tables, by a clause or by a
+    cascade. An email in a person field of a record stays too. The package,
+    an `apps` row, stays on the KEEP side, because its foreign key cascades
+    to the objects and their records. A change to this rule is a decision,
+    so it must change this test on purpose.
+
+    ⚠️ Mutation-checked: a `_PersonRows` entry for `studio_records` fails here.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    named = {r.table for r in (*_PURGE_DELETES, *_PURGE_KEEPS)}
+    assert not named & _STUDIO_OBJECT_TABLES, sorted(named & _STUDIO_OBJECT_TABLES)
+    assert not _blast_radius() & _STUDIO_OBJECT_TABLES
+    assert "apps" in {r.table for r in _PURGE_KEEPS}
+    assert "apps" not in {r.table for r in _PURGE_DELETES}
+    assert cascade_closure("apps") >= _STUDIO_OBJECT_TABLES
 
 
 def test_the_two_halves_of_chat_session_partition_it() -> None:

@@ -36,7 +36,7 @@
   BUILT, 2026-10-30, dark** behind `PUSH_PROMPT_ORGS` (§10.4). No box
   has the flag on.
   **CE-4 (the event store) is BUILT, 2026-10-31, dark** behind
-  `CALENDAR_EVENTS` (migration 321, `routes/tasks/entries.py`, the
+  `CALENDAR_EVENTS` (migration 324, `routes/tasks/entries.py`, the
   `entries` key of `GET /projects/my/calendar`). No box has the flag on.
   CE-5 to CE-12 are not built.
 - **Board row:** **WS-CAL**. WS-66 for reminders and web push sits under
@@ -142,7 +142,7 @@ contract (R6) and is out of scope here.
 `calendar_entries`. Tenant-scoped, FORCE ROW LEVEL SECURITY at the
 `get_db()` seam (R5). Every column is nullable or has a default (R6), except
 `owner_email` and `title`. The one writer always fills those two, as for
-`reminders`. Migration 321 (CE-4) builds it.
+`reminders`. Migration 324 (CE-4) builds it.
 
 | Column | Meaning |
 |---|---|
@@ -167,7 +167,7 @@ contract (R6) and is out of scope here.
 | `provider_sync_state`, `provider_sync_error` | `pending`, `sent` or `failed`, and the last error (500 characters at most, no token). NULL means that the member wants no write-out. A failed write keeps the row, so the event is never lost |
 | `created_at`, `updated_at` | Times |
 
-The CHECKs of migration 321:
+The CHECKs of migration 324:
 
 - Exactly one time pair: a timed pair with `ends_at >= starts_at`, or an
   all-day pair with `end_date > start_date`.
@@ -1276,7 +1276,7 @@ gate.
    app's row stays its own, so a disconnect in one app breaks nothing in
    the other.
 
-   ⚠️ **`calendar_entries.connection_id` has NO cascade** (migration 321,
+   ⚠️ **`calendar_entries.connection_id` has NO cascade** (migration 324,
    the default NO ACTION). A Metorite event that CE-11 wrote out names the
    connection too, so a cascade would delete the member's own events. So
    the disconnect does three steps in one transaction:
@@ -1353,7 +1353,7 @@ needs no decision change.
 | **CE-1** Lead time on a task block | AGENT-SAFE. No change | `pm_task_personal.lead_minutes`. `user_settings.block_lead_minutes` and `event_lead_minutes`. `feed.py` reads the lead, not `SOON`. The block menu sets it | A lead of 10 gives `block_soon` 10 minutes before the start. No lead gives 30. The flag off gives 30 for every block | `tests/unit/test_calendar_lead_time.py` (R8, new) and `test_shell_feed.py` |
 | ~~**CE-2**~~ | **REPLACED by WS-66 (§10.1), D114** | — | — | — |
 | **CE-3** The composer and drag to draw | AGENT-SAFE. No change | The composer of §6.1 with Task and Reminder. Event shows only with `NEXT_PUBLIC_CALENDAR_EVENTS`. Drag to draw in `TimeGrid.tsx`. The **New at…** row in the Gap Filler | A drag from 14:00 to 15:00 makes a private task with that block in one save. Esc saves nothing. The keyboard alone can do it | `components/Composer.test.tsx` (new), the conformance suite, `src/lib/shell/seams.test.ts`, and a visual review |
-| **CE-4** The event store — ✅ **BUILT 2026-10-31, dark** (migration 321) | AGENT-SAFE after CE-0 Q1 | The two tables of §3.3. `POST`, `PATCH` and `DELETE` on `/tasks/calendar/entries` (`routes/tasks/entries.py`, under the `feature:tasks` router). The `entries` key of the read of §3.4. The member purge deletes the member's entries and seats. CE-4 writes ONE attendee row: the organizer row of the owner. The body takes no attendees. Attendee input, invite cards and RSVP belong to CE-9 | I see my entries. A colleague who is not an attendee sees none. Org B sees no row of org A. The flag off gives today's read. A PATCH or a DELETE of another member's entry, or of an `external` entry, answers 404 and changes nothing. A naive time is 422. A purged member leaves no entry. An all-day entry returns the same dates in every `tz` | `tests/unit/test_calendar_entries_r8.py` (R8, two orgs, M1 to M7), `test_admin_member_purge.py`, `test_tenant_coverage.py`, `test_tenancy_boundary.py` and `test_db_engine_seam.py` |
+| **CE-4** The event store — ✅ **BUILT 2026-10-31, dark** (migration 324) | AGENT-SAFE after CE-0 Q1 | The two tables of §3.3. `POST`, `PATCH` and `DELETE` on `/tasks/calendar/entries` (`routes/tasks/entries.py`, under the `feature:tasks` router). The `entries` key of the read of §3.4. The member purge deletes the member's entries and seats. CE-4 writes ONE attendee row: the organizer row of the owner. The body takes no attendees. Attendee input, invite cards and RSVP belong to CE-9 | I see my entries. A colleague who is not an attendee sees none. Org B sees no row of org A. The flag off gives today's read. A PATCH or a DELETE of another member's entry, or of an `external` entry, answers 404 and changes nothing. A naive time is 422. A purged member leaves no entry. An all-day entry returns the same dates in every `tz` | `tests/unit/test_calendar_entries_r8.py` (R8, two orgs, M1 to M7), `test_admin_member_purge.py`, `test_tenant_coverage.py`, `test_tenancy_boundary.py` and `test_db_engine_seam.py` |
 | **CE-5** Events in the UI | AGENT-SAFE after CE-3, CE-4 | The Event kind, the looks of §6.2, the sheet of §6.3, the all-day row and Month of §6.4 | No event shows in Tasks or Projects. An all-day event keeps its date in every zone | Vitest for the composer, `MonthGrid` and the all-day row, and `themes.test.ts` |
 | **CE-6** Event lead time and conflicts | AGENT-SAFE after CE-1, CE-4 | `event_soon` with class `interrupt`. `block_overlap` reads busy entries | A lead of 10 gives `event_soon` 10 minutes before. A free entry gives no overlap | `test_calendar_lead_time.py` and `test_shell_feed_r8.py` |
 | ~~**CE-7a**~~ | **REPLACED by RM-3 and RM-9 (§10.1), D114** | — | — | — |
