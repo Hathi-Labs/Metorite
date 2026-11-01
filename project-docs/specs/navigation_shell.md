@@ -285,6 +285,13 @@ sees whose workspace this is at all times (D51).
 - The fold tip points up at the bar's control. The fold rules of §3.2 do not
   change.
 
+**The frame since GL-12 (owner, 2026-11-01).** The shell bar draws no row.
+The one field is the Ask bar at the foot of the page column (`ChatBar.tsx`,
+`AskBar`). The bell is the sidebar's Needs you row, the activity control is
+the bar's "N running" pill and the Chat row's count, and the assistant opens
+from the bar. `glass_look.md` GL-12 has the detail. The paragraph below is
+the GL-11 frame it replaces.
+
 **The frame since 2026-11-01 (owner, GL-11).** The owner said: "the burger
 icon being outside the sidebar kind of puts me off". The sidebar now runs
 the full height, and it owns its head: the organization's lockup and the

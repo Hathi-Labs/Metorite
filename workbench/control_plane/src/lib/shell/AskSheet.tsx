@@ -73,14 +73,14 @@ export function AskSheet({ open }: { open: boolean }) {
       onTransitionEnd={(e) => {
         if (e.target === e.currentTarget && !open) setMounted(false);
       }}
-      className={`grid transition-[grid-template-rows] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none ${
+      className={`grid transition-[grid-template-rows] duration-(--panel-duration) ease-(--panel-easing) motion-reduce:transition-none ${
         open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
       }`}
     >
       <div className="min-h-0 overflow-hidden">
         <div
           data-ask-sheet-body=""
-          className={`transition-[opacity,transform] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none ${
+          className={`transition-[opacity,transform] duration-(--panel-duration) ease-(--panel-easing) motion-reduce:transition-none ${
             open ? "translate-y-0 opacity-100 delay-75" : "translate-y-2 opacity-0"
           }`}
         >

@@ -129,7 +129,7 @@ export function NeedsFlyout({ railRef, folded }: { railRef: RefObject<HTMLElemen
       onTransitionEnd={(e) => {
         if (e.target === e.currentTarget && !open) setMounted(false);
       }}
-      className={`fixed z-50 flex w-[23rem] origin-top-left flex-col overflow-hidden rounded-2xl border border-border bg-popover shadow-2xl transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none glass:border-transparent glass:glass-menu ${
+      className={`fixed z-50 flex w-[23rem] origin-top-left flex-col overflow-hidden rounded-2xl border border-border bg-popover shadow-2xl transition-[opacity,transform] duration-(--motion-duration) ease-(--motion-easing) motion-reduce:transition-none glass:border-transparent glass:glass-menu ${
         shown ? "translate-x-0 scale-100 opacity-100" : "-translate-x-2 scale-[0.98] opacity-0"
       }`}
     >
