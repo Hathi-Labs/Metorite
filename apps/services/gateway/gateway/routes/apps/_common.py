@@ -506,11 +506,24 @@ def workspace_dir(value: object) -> Path | None:
     return Path(raw) if raw.strip() else None
 
 
+def app_workspace_or_none(row: Any) -> Path | None:
+    """The workspace folder of an app for a READ, or None when it has none.
+
+    A read path (the detail of an app, the effective manifest of a run)
+    falls back to the stored manifest on None, so a row with an empty
+    ``workspace_path`` still reads, and never from the working directory."""
+    return workspace_dir(_field(row, "workspace_path"))
+
+
 def app_workspace(row: Any) -> Path:
-    """The workspace folder of an App Workshop app. An app with no folder
-    (an empty or blank ``workspace_path``) answers 409, never the working
-    directory. See :func:`workspace_dir`."""
-    workspace = workspace_dir(_field(row, "workspace_path"))
+    """The workspace folder of an App Workshop app, for a WRITE or a file
+    operation: publish, the file routes, sync, delete and rehydrate.
+
+    An app with no folder (an empty or blank ``workspace_path``) answers 409,
+    never the working directory. A writer calls this BEFORE its statement
+    commits, so the 409 comes before any write. A read path calls
+    :func:`app_workspace_or_none` instead. See :func:`workspace_dir`."""
+    workspace = app_workspace_or_none(row)
     if workspace is None:
         raise HTTPException(status_code=409, detail="This app has no workspace.")
     return workspace

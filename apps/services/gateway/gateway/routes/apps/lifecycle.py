@@ -23,6 +23,7 @@ from gateway.routes.apps._common import (
     _tenant_session,
     _uid,
     app_workspace,
+    app_workspace_or_none,
     apps_root,
     can_edit,
     can_view,
@@ -267,9 +268,11 @@ def _to_detail(
     live_scopes: list[str] | None = None,
     live_scope_set_hash: str | None = None,
 ) -> AppDetail:
-    workspace = app_workspace(row)
+    # A read: a row with no folder answers from the stored manifest, never
+    # from the working directory (WS-STU A3). Fence: test_studio_packages_store.py.
+    workspace = app_workspace_or_none(row)
     manifest = (
-        read_workspace_manifest(workspace)
+        (read_workspace_manifest(workspace) if workspace is not None else None)
         or parse_db_manifest(row.manifest)
     )
     editable = can_edit(row, user, grants)
@@ -279,7 +282,7 @@ def _to_detail(
         created_at=iso(row.created_at) or "",
         manifest=manifest,
         builder_session_id=row.builder_session_id,
-        workspace_path=str(workspace) if editable else None,
+        workspace_path=str(workspace) if editable and workspace is not None else None,
         needs_consent=needs_consent,
         live_scopes=live_scopes,
         live_scope_set_hash=live_scope_set_hash,
@@ -515,8 +518,15 @@ async def patch_app(
         raise HTTPException(status_code=422, detail="Invalid visibility")
     if "name" in fields and not str(fields["name"]).strip():
         raise HTTPException(status_code=422, detail="Name cannot be empty")
+    manifest_fields = {
+        k: v for k, v in fields.items()
+        if k in ("name", "icon", "description")
+    }
     async with _tenant_session() as db:
         row, grants = await get_app_or_404(db, slug, user, edit=True)
+        # The folder BEFORE the UPDATE: a row with no folder answers 409 and
+        # the session rolls back, so no write commits (WS-STU A3).
+        workspace = app_workspace(row) if manifest_fields else None
         if fields:
             sets = ", ".join(f"{k} = :{k}" for k in fields)
             await db.execute(
@@ -531,13 +541,9 @@ async def patch_app(
         row = (await db.execute(
             text("SELECT * FROM apps WHERE id = :id"), {"id": str(row.id)},
         )).fetchone()
-    manifest_fields = {
-        k: v for k, v in fields.items()
-        if k in ("name", "icon", "description")
-    }
-    if manifest_fields:
+    if workspace is not None:
         await asyncio.get_event_loop().run_in_executor(
-            None, _sync_workspace_manifest, app_workspace(row), manifest_fields,
+            None, _sync_workspace_manifest, workspace, manifest_fields,
         )
     return _to_detail(row, user, grants)
 
@@ -565,12 +571,14 @@ async def delete_app(
             raise HTTPException(
                 status_code=403, detail="Only the owner can hard-delete",
             )
+        # The folder BEFORE the DELETE: a row with no folder answers 409 and
+        # the session rolls back, so nothing is deleted (WS-STU A3).
+        workspace = app_workspace(row).resolve()
         await db.execute(
             text("DELETE FROM apps WHERE id = :id"), {"id": str(row.id)},
         )
     # Remove the workspace folder — but only when it's really under apps_root
     # (a corrupt workspace_path must never delete arbitrary directories).
-    workspace = app_workspace(row).resolve()
     root = apps_root().resolve()
     if workspace != root and workspace.is_relative_to(root):
         import shutil

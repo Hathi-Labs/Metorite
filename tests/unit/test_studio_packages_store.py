@@ -20,6 +20,8 @@ e. Each of the five App Workshop readers skips a package. An empty
    `workspace_path` never means the working directory.
 f. ``update_manifest`` refuses a new manifest id, and only the store writes
    a package (a source scan of ``apps/`` and ``packages/``).
+g. A read of a row with no folder (``_to_detail``, ``_effective_manifest``)
+   answers from the stored manifest, never 409 (fix round 2).
 """
 
 from __future__ import annotations
@@ -491,3 +493,49 @@ def test_only_the_package_store_writes_a_package() -> None:
     writers name no `format`, so each of their rows is `code`. The migration
     and the tests are outside apps/ and packages/."""
     assert package_writers() == {"apps/services/gateway/gateway/studio/packages_store.py"}
+
+
+def _detail_row(**patch: Any) -> SimpleNamespace:
+    """An `apps` row with every field that `lifecycle._to_detail` reads."""
+    fields: dict[str, Any] = {
+        "id": str(uuid.uuid4()), "slug": "old-app", "name": "Old app", "icon": "",
+        "description": "", "status": "draft", "visibility": "private",
+        "live_version": None, "owner_email": "ana@x.test", "updated_at": None,
+        "created_at": None, "is_template": False, "builder_session_id": None,
+        "manifest": {"name": "From the row", "entry": "index.html"},
+        "workspace_path": "",
+    }
+    fields.update(patch)
+    return SimpleNamespace(**fields)
+
+
+def test_a_read_of_a_row_with_no_folder_answers_from_the_stored_manifest(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix round 2. The detail of an app and the effective manifest of a run
+    are READS. A row with an empty or no `workspace_path` answers from the
+    stored manifest, never 409. The working directory holds an `app.json`,
+    and no read takes it."""
+    from acb_auth import UserContext, UserRole
+    from gateway.routes.apps import lifecycle, runtime
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "app.json").write_text(
+        json.dumps({"name": "From the working directory"}), encoding="utf-8")
+    ana = UserContext(email="ana@x.test", role=UserRole.EMPLOYEE)
+    stored = {"name": "From the row", "entry": "index.html"}
+    for blank in ("", "   ", None):
+        row = _detail_row(workspace_path=blank)
+        detail = lifecycle._to_detail(row, ana, [])
+        assert detail.manifest == stored, blank
+        assert detail.workspace_path is None, blank
+        assert runtime._effective_manifest(row) == stored, blank
+    # A row that has no `workspace_path` attribute at all, as a run's fake row.
+    assert runtime._effective_manifest(SimpleNamespace(manifest=stored)) == stored
+    # A real folder still reads its own app.json.
+    real = tmp_path / "real-app"
+    real.mkdir()
+    (real / "app.json").write_text(json.dumps({"name": "From the folder"}), encoding="utf-8")
+    row = _detail_row(workspace_path=str(real))
+    assert lifecycle._to_detail(row, ana, []).manifest == {"name": "From the folder"}
+    assert lifecycle._to_detail(row, ana, []).workspace_path == str(real)
+    assert runtime._effective_manifest(row) == {"name": "From the folder"}

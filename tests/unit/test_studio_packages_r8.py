@@ -37,6 +37,8 @@ h. `list_apps`, `load_app`, the pins, `app_tools` and the session-workspace
    rule `_app_workspace_for` skip a package, and still return a code app.
 i. `update_manifest` refuses a new manifest id, and the row keeps its
    manifest (fix round 1).
+j. A patch or a hard delete of an app with no folder answers 409 and writes
+   nothing (fix round 2).
 
 **The mutations (R7).** Commit before each, and restore with git after.
 
@@ -84,6 +86,18 @@ Fix round 1 (2026-11-01), with both A3 suites:
 * M11. A scratch copy of ``routes/apps/lifecycle.py`` whose INSERT writes
   ``format = 'manifest'``. ``test_only_the_package_store_writes_a_package``
   goes red.
+
+Fix round 2 (2026-11-01), with both A3 suites:
+
+* M12. ``lifecycle._to_detail``: call ``app_workspace`` again in place of
+  ``app_workspace_or_none``.
+  ``test_a_read_of_a_row_with_no_folder_answers_from_the_stored_manifest``
+  goes red.
+* M13. ``lifecycle.delete_app``: take the folder after the session again.
+  ``test_r8_a_write_to_an_app_with_no_folder_answers_409_and_writes_nothing``
+  goes red.
+* M14. ``lifecycle.patch_app``: take the folder after the session again. The
+  same test goes red.
 """
 
 from __future__ import annotations
@@ -755,3 +769,39 @@ def test_r8_app_workspace_for_skips_a_package(graph_on_promoted, tmp_path, monke
                   {"w": str(root / "pkg-folder"), "i": pkg.id})
     for write in (False, True):
         assert binds(root / "pkg-folder" / "index.html", write) is False, write
+
+
+def test_r8_a_write_to_an_app_with_no_folder_answers_409_and_writes_nothing(world) -> None:
+    """Fix round 2. `patch_app` and `delete_app` take the folder BEFORE their
+    statement. A row with `workspace_path = ''` answers 409, and the session
+    rolls back, so the name stays and the row stays."""
+    a = world.p.org_a
+    slug = f"nofolder-{TAG}"
+
+    async def seed() -> None:
+        async with tenant_session(a) as db:
+            await db.execute(text(_OLD_INSERT), {
+                "slug": slug, "m": ANA, "manifest": "{}", "wp": ""})
+    _go(world, seed)
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE apps SET status = 'archived' WHERE slug = :s"), {"s": slug})
+
+    async def write(action: str) -> int:
+        tok = bind_tenant(a)
+        try:
+            with pytest.raises(HTTPException) as exc:
+                if action == "patch":
+                    await lifecycle.patch_app(slug, lifecycle.AppPatch(name="Renamed"),
+                                              user=_user())
+                else:
+                    await lifecycle.delete_app(slug, user=_user())
+            return exc.value.status_code
+        finally:
+            release_tenant(tok)
+
+    assert _go(world, lambda: write("patch")) == 409
+    assert _go(world, lambda: write("delete")) == 409
+    with world.p.admin_engine.connect() as c:
+        rows = c.execute(text("SELECT name, status FROM apps WHERE slug = :s"),
+                         {"s": slug}).all()
+    assert [tuple(r) for r in rows] == [("Old app", "archived")]
