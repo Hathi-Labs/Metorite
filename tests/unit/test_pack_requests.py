@@ -214,6 +214,7 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "unarchive_task": ("restore the archived task",),
     "watch": ("watch this task",),
     # -- studio (STU-G1) --
+    "studio_describe": ("which field types can a studio app manifest use?",),
     "studio_draft": ("draft an app manifest in AI Studio",),
     "studio_interview": ("interview me about the studio app I want to build",),
     "studio_list_actions": ("which actions can my studio app use?",),
