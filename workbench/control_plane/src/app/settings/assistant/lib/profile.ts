@@ -420,6 +420,78 @@ export async function fetchBlock(): Promise<ProfileBlock> {
   return { enabled: d.enabled, text: d.text };
 }
 
+// ── Recent chats (PZ-35, `personalization.md` §15.5) ─────────────────────────
+
+/** One chat summary, as the gateway lists it. Only the member sees it. */
+export interface ChatSummary {
+  id: string;
+  title: string;
+  /** The date of the chat, ISO, or null. */
+  date: string | null;
+  text: string;
+  follow_ups: string[];
+}
+
+/** One page of summaries. `more` is true when the member has more than the page holds. */
+export interface SummariesPage {
+  summaries: ChatSummary[];
+  more: boolean;
+}
+
+/**
+ * What the profile read says about summaries: `enabled` is the flag of the
+ * organization (`summaries_enabled`), and `keep` is the switch of the member
+ * (`apps.chat.summaries`, on by default). Neither is part of the stored
+ * profile, so the pane holds them apart from `Profile`.
+ */
+export interface SummaryGate {
+  enabled: boolean;
+  keep: boolean;
+}
+
+export function summaryGate(raw: unknown): SummaryGate {
+  const r = (raw && typeof raw === "object" ? raw : {}) as {
+    summaries_enabled?: unknown;
+    apps?: { chat?: { summaries?: unknown } };
+  };
+  return { enabled: r.summaries_enabled === true, keep: r.apps?.chat?.summaries !== false };
+}
+
+/** The profile and the summary gate, from the one GET. */
+export async function fetchProfileAndGate(): Promise<{ profile: Profile; gate: SummaryGate }> {
+  const raw = await call<Partial<Profile>>("", "GET");
+  return { profile: normalize(raw), gate: summaryGate(raw) };
+}
+
+/** The switch "Keep chat summaries". Forget keeps it. */
+export const saveKeepSummaries = (value: boolean) =>
+  call("", "PUT", { key: "apps", value: { chat: { summaries: value } } });
+
+/** The list. A fault throws a `ProfileError`, never an empty list. */
+export async function fetchSummaries(): Promise<SummariesPage> {
+  const d = await call<Partial<SummariesPage>>("/summaries", "GET");
+  if (!d || !Array.isArray(d.summaries)) throw new ProfileError(errorText("", 502), 502);
+  return { summaries: d.summaries, more: d.more === true };
+}
+export const deleteSummary = (id: string) => call(`/summaries/${encodeURIComponent(id)}`, "DELETE");
+export const deleteAllSummaries = () => call("/summaries", "DELETE");
+
+/** The link that opens one chat (the chat app's `open-chat` action). */
+export function chatHref(id: string): string {
+  return `/chat?do=open-chat&fill.session=${encodeURIComponent(id)}`;
+}
+
+/** The words of the confirm of Delete all. They name the count. */
+export function deleteAllBody(page: SummariesPage): string {
+  return `This deletes all ${summaryCount(page)} chat summaries. The chats stay. You cannot undo this.`;
+}
+
+/** The count in the confirm of Delete all. A full page may hide more, so it says so. */
+export function summaryCount(page: SummariesPage): string {
+  const n = page.summaries.length;
+  return page.more ? `${n} or more` : String(n);
+}
+
 // ── The interview list (PZ-27) ────────────────────────────────────────────
 
 /** The profile with one area back to open. The facts stay. */

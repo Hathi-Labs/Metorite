@@ -72,7 +72,7 @@ const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** The id segment for the gateway path, or `null` for an id of the wrong shape. */
 export async function idSuffix(
-  kind: "facts" | "aliases",
+  kind: "facts" | "aliases" | "summaries",
   params: Promise<{ id: string }>,
 ): Promise<string | null> {
   const { id } = await params;
