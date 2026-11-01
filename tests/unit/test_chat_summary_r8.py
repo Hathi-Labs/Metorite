@@ -89,7 +89,7 @@ import structlog
 pytest.importorskip("sqlalchemy")
 
 import acb_graph.db as graph_db
-from acb_common.db import tenant_session
+from acb_common.db import bind_tenant, current_tenant, release_tenant, tenant_session
 from gateway import assistant_summaries as summaries
 from gateway.rooms import SOLO_ROOM_SQL, resolve_room_access, room_is_solo
 from sqlalchemy import create_engine, text
@@ -695,17 +695,25 @@ class _Console:
 
 
 class _Marks:
-    """The tenant Redis of the mail mark (``acb_skills.egress``). It holds the
-    chats with the mark. ``down`` makes each read fail."""
+    """The tenant Redis of the mail mark (``acb_skills.egress``). It holds
+    ``(org, chat)`` pairs and reads the tenant of the frame, as the prefix
+    wrapper does. ``down`` makes each read fail, and ``hang`` makes it wait.
+    ``asked`` holds each key that a read named."""
 
     def __init__(self) -> None:
-        self.marked: set[str] = set()
+        self.marked: set[tuple[str, str]] = set()
         self.down = False
+        self.hang = False
+        self.asked: list[str] = []
 
     async def exists(self, key: str) -> int:
+        self.asked.append(str(key))
+        if self.hang:
+            await asyncio.sleep(60)
         if self.down:
             raise ConnectionError("redis down")
-        return int(any(str(key).endswith(sid) for sid in self.marked))
+        org = str(current_tenant() or "")
+        return int(any(org == o and str(key).endswith(sid) for o, sid in self.marked))
 
     async def expire(self, key: str, seconds: int) -> bool:
         return True
@@ -1229,7 +1237,7 @@ async def test_4_a_chat_with_the_mail_mark_gets_no_call_and_no_mark(job) -> None
     assert summaries.check_answer(json.dumps({"text": words}), "") is not None
     sid, newest = _job_chat(job, org=job.org_a)
     clean, _ = _job_chat(job, org=job.org_a, newest=T - timedelta(hours=2))
-    job.marks.marked.add(sid)
+    job.marks.marked.add((job.org_a, sid))
     job.console.answer = {"text": words}
     assert await _tick(job, job.org_a) == Counter(done=1)
     assert _jobs(job, sid) == [], "the seed must skip a chat with the mark"
@@ -1292,6 +1300,33 @@ async def test_4_a_waterline_holds_until_the_member_types_again(job) -> None:
     assert "Book the review with Priya." in prompt and "Good morning." in prompt
     assert TYPED_1 not in prompt, "a row that a Delete covered must not come back"
     assert _summary(job, sid)["through"] == "m10"
+
+
+async def test_4_the_mail_read_binds_the_org_that_it_names(job) -> None:
+    """A frame with no tenant reads as clear, so the check binds the org of
+    the worker for the read. A mark of one org is no mark of another."""
+    sid, _newest = _job_chat(job, org=job.org_a)
+    job.marks.marked.add((job.org_a, sid))
+    assert await summaries.holds_mail(job.org_a, sid) is True, "no tenant is bound here"
+    token = bind_tenant(job.org_b)
+    try:
+        assert await summaries.holds_mail(job.org_b, sid) is False
+    finally:
+        release_tenant(token)
+
+
+@pytest.mark.parametrize("fault", ["down", "hang"])
+async def test_4_the_first_fault_ends_the_seed_for_the_tick(job, monkeypatch, fault) -> None:
+    """A hung Redis must cost 2 seconds and not 60 times 2 seconds. The seed
+    asks about one chat, stops, and enqueues nothing."""
+    monkeypatch.setattr(summaries, "MAIL_READ_TIMEOUT_S", 0.05)
+    made = [_job_chat(job, org=job.org_a, newest=T - timedelta(hours=1, minutes=i))[0]
+            for i in range(3)]
+    setattr(job.marks, fault, True)
+    assert await _tick(job, job.org_a) == Counter()
+    assert len(set(job.marks.asked)) == 1, job.marks.asked
+    assert made[0] in job.marks.asked[0]
+    assert job.console.calls == [] and _jobs(job) == []
 
 
 async def test_4_a_stored_switch_on_and_no_switch_read_as_on(job) -> None:

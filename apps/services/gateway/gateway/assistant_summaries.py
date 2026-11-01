@@ -84,6 +84,7 @@ Router on (§15.3). Fences: ``tests/unit/test_chat_summary.py``,
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -111,6 +112,7 @@ from acb_common.assistant_profile import (
     typed_text,
 )
 from acb_common.pg_text import storable
+from acb_skills import egress
 from sqlalchemy import text
 
 from gateway.chat_recovery import is_card_answer_text
@@ -835,6 +837,9 @@ SEED_ROWS = 20
 TYPED_ROWS_MIN = 2
 #: The most rows of one chat that the handler reads, the newest first.
 JOB_ROWS_MAX = 400
+#: The seconds that one read of the mail mark may take. A hung Redis then
+#: costs a tick 2 seconds, because the seed stops at the first fault.
+MAIL_READ_TIMEOUT_S = 2.0
 #: The app and the key of the member's switch, "Keep chat summaries"
 #: (PZ-35, §15.5). A missing value reads as on.
 SWITCH_APP = "chat"
@@ -853,11 +858,10 @@ def _mail_tool_names() -> tuple[str, ...]:
     """Each tool of a family that an agent of ``UNTRUSTED_INPUT_AGENTS`` owns,
     and :data:`MAIL_CORE_TOOLS`. The names come from the code, so a new mail
     tool joins the rule with no change here."""
-    from acb_skills.egress import UNTRUSTED_INPUT_AGENTS
     from acb_skills.skill_families import SKILL_FAMILIES
 
     owned = {str(name) for family in SKILL_FAMILIES.values()
-             if str(family.get("owner")) in UNTRUSTED_INPUT_AGENTS
+             if str(family.get("owner")) in egress.UNTRUSTED_INPUT_AGENTS
              for name in family["tools"]}
     return tuple(sorted(owned | set(MAIL_CORE_TOOLS)))
 
@@ -1102,30 +1106,41 @@ async def _gone(org: str, member: str) -> bool:
         return True
 
 
-async def holds_mail(org: str, session_id: str) -> bool:
-    """True when the chat can hold mail text, so it gets no call and no mark.
+async def mail_state(org: str, session_id: str) -> str:
+    """The mail mark of the chat: ``egress.MARK_CLEAR``, ``egress.MARK_MARKED``
+    or ``egress.MARK_UNKNOWN``. Unknown is a fault or a read over
+    :data:`MAIL_READ_TIMEOUT_S`, and it counts as mail.
 
-    ``acb_skills.egress.run_holds_mail`` is the one predicate of the chat
-    memory stores. A reply of Mira can quote a mail that she read, and
-    :func:`check_answer` cannot tell that from her own words. So a chat with
-    the mail mark gets no summary at all (the review of PZ-33b, P1).
+    ``egress.run_holds_mail`` is the one predicate of the chat memory stores,
+    and this is its second check here. :data:`MAIL_EVENTS_SQL` is the durable
+    rule, and the mark covers a run that the fold did not write yet.
 
     *org* comes from the worker. It is bound only for the read, as
     ``chat_fold._run_holds_mail`` binds it, because a frame with no tenant
-    reads as clear. A fault reads as mail, so the check fails closed."""
+    reads as clear."""
     from acb_common.db import bind_tenant, release_tenant
 
     token = None
+    context = {"session_id": session_id}
     try:
-        from acb_skills.egress import run_holds_mail
-
         token = bind_tenant(str(org))
-        return await run_holds_mail(AGENT, {"session_id": session_id})
-    except Exception as exc:  # fail closed: the chat holds mail
+        async with asyncio.timeout(MAIL_READ_TIMEOUT_S):
+            if not await egress.run_holds_mail(AGENT, context):
+                return egress.MARK_CLEAR
+            # The predicate says yes to a mark and to a fault. The seed stops
+            # at a fault, so this read says which one it is.
+            return await egress.session_mark_state(context, fail_closed=True)
+    except Exception as exc:  # fail closed, TimeoutError too: the chat holds mail
         _log.warning("assistant.chat_summary_mail_check_failed", error=type(exc).__name__)
-        return True
+        return egress.MARK_UNKNOWN
     finally:
         release_tenant(token)
+
+
+async def holds_mail(org: str, session_id: str) -> bool:
+    """True when the mark of the chat is not clear (:func:`mail_state`). The
+    chat then gets no call and no mark."""
+    return await mail_state(org, session_id) != egress.MARK_CLEAR
 
 
 async def seed(org: str, now: datetime) -> None:
@@ -1143,7 +1158,9 @@ async def seed(org: str, now: datetime) -> None:
     :data:`TYPED_ROWS_MIN` typed rows of the member (:func:`member_texts`),
     and one of them is after the waterline (:func:`rows_after`). Then
     ``my_day_loop.departed`` must say that the member did not leave, and the
-    chat must hold no mail (:func:`holds_mail`)."""
+    mark of the chat must be clear (:func:`mail_state`). The first fault of
+    that read ends the loop for this tick, so a hung Redis costs one read and
+    not one for each candidate."""
     from acb_common.db import tenant_session
     from acb_llm import routed
 
@@ -1179,7 +1196,12 @@ async def seed(org: str, now: datetime) -> None:
             continue
         if member not in left:
             left[member] = await _gone(org, member)
-        if left[member] or await holds_mail(org, str(chat.id)):
+        if left[member]:
+            continue
+        state = await mail_state(org, str(chat.id))
+        if state == egress.MARK_UNKNOWN:
+            break
+        if state != egress.MARK_CLEAR:
             continue
         picked.append(chat)
         if len(picked) >= SUMMARY_SEED_MAX:
