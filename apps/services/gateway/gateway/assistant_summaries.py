@@ -571,6 +571,25 @@ class Stored:
     #: The intent mark of the job: the row id that it started on, and when.
     mark_through: str | None = None
     mark_at: str | None = None
+    #: The time of the row of the mark. A paid call that stored nothing leaves
+    #: no ``through_ms``, and this keeps its waterline.
+    mark_ms: int | None = None
+
+    @property
+    def waterline(self) -> int | None:
+        """The newest row time that a summary, a clear or a paid call covers.
+        A next try needs a new turn of the member after it."""
+        return _waterline(self.through_ms, self.mark_ms)
+
+
+def _opt_ms(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _waterline(*values: Any) -> int | None:
+    """The newest of *values*. A value of another type reads as absent."""
+    times = [ms for ms in map(_opt_ms, values) if ms is not None]
+    return max(times, default=None)
 
 
 def _opt_text(value: Any) -> str | None:
@@ -593,16 +612,16 @@ def stored(raw: Any) -> Stored | None:
         return Stored(off=True)
     items = raw.get("follow_ups")
     follow = tuple(i for i in items if isinstance(i, str)) if isinstance(items, list) else ()
-    ms = raw.get("through_ms")
     intent = raw.get("mark") if isinstance(raw.get("mark"), dict) else {}
     return Stored(
         text=raw["text"] if isinstance(raw.get("text"), str) else "",
         follow_ups=follow,
         through=_opt_text(raw.get("through")),
-        through_ms=ms if isinstance(ms, int) and not isinstance(ms, bool) else None,
+        through_ms=_opt_ms(raw.get("through_ms")),
         at=_opt_text(raw.get("at")),
         mark_through=_opt_text(intent.get("through")),
         mark_at=_opt_text(intent.get("at")),
+        mark_ms=_opt_ms(intent.get("through_ms")),
     )
 
 
@@ -675,8 +694,10 @@ UPDATE chat_session
              THEN member_summary ELSE CAST('{{}}' AS jsonb) END)
        || jsonb_build_object(
               'v', {VERSION},
-              'mark', jsonb_build_object('through', CAST(:through AS text),
-                                         'at', CAST(:at AS text)))
+              'mark', jsonb_strip_nulls(jsonb_build_object(
+                          'through', CAST(:through AS text),
+                          'through_ms', CAST(:through_ms AS bigint),
+                          'at', CAST(:at AS text))))
  WHERE id = :sid
    AND NOT {_OFF}
    AND (member_summary -> 'mark' ->> 'through') IS DISTINCT FROM CAST(:through AS text)
@@ -743,14 +764,19 @@ async def read(db: Any, session_id: str) -> Stored | None:
     return None if row is None else stored(row[0])
 
 
-async def mark(db: Any, session_id: str, *, through: str, at: datetime) -> bool:
+async def mark(db: Any, session_id: str, *, through: str, at: datetime,
+               through_ms: int | None = None) -> bool:
     """Set the intent mark of the job on the chat: the newest row id that it
     starts on, and the time. The summary that is there stays. Answers False
     when no chat has the id, when the chat reads ``off``, when the mark
     already names *through* (another claim holds that call), and when
-    ``through`` already names it (a summary, a Delete or a Forget covers it)."""
+    ``through`` already names it (a summary, a Delete or a Forget covers it).
+
+    *through_ms* is the time of that row. It stays in the mark, so a paid call
+    that stores nothing still leaves a waterline (:attr:`Stored.waterline`)."""
     row = (await db.execute(text(MARK_SQL), {
-        "sid": session_id, "through": _through(through), "at": _stamp(at)})).first()
+        "sid": session_id, "through": _through(through), "at": _stamp(at),
+        "through_ms": through_ms})).first()
     return row is not None
 
 
@@ -928,7 +954,8 @@ OPEN_RUN_SQL = """EXISTS (
 #: newest row id is neither `through` nor `mark.through`, and the chat holds
 #: `:typed_min` short user rows or more. The seed then counts the typed rows
 #: of the member in Python (`member_texts`). `through_ms` is the waterline
-#: that a summary, a Delete or a Forget left. The window runs first, in its own
+#: that a summary, a Delete or a Forget left, and `mark_ms` is the one that a
+#: paid call left. The window runs first, in its own
 #: step: :data:`ELIGIBLE_SQL` reads the JSON of each agent row, and that read
 #: must stay on the chats of this window, not on each chat of the org.
 IDLE_SQL = f"""
@@ -944,7 +971,8 @@ WITH recent AS MATERIALIZED (
        AND newest.timestamp_ms BETWEEN :since_ms AND :idle_ms
 )
 SELECT s.id, s.user_id, r.newest_id, r.newest_ms,
-       s.member_summary -> 'through_ms' AS through_ms
+       s.member_summary -> 'through_ms' AS through_ms,
+       s.member_summary -> 'mark' -> 'through_ms' AS mark_ms
   FROM recent r
   JOIN chat_session s ON s.id = r.chat_id
  WHERE {ELIGIBLE_SQL}
@@ -1191,8 +1219,7 @@ async def seed(org: str, now: datetime) -> None:
         rows = typed.get(str(chat.id), [])
         if len(member_texts(rows, member)) < TYPED_ROWS_MIN:
             continue
-        through_ms = chat.through_ms if type(chat.through_ms) is int else None
-        if not member_texts(rows_after(rows, through_ms), member):
+        if not member_texts(rows_after(rows, _waterline(chat.through_ms, chat.mark_ms)), member):
             continue
         if member not in left:
             left[member] = await _gone(org, member)

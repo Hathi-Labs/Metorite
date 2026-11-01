@@ -1329,6 +1329,39 @@ async def test_4_the_first_fault_ends_the_seed_for_the_tick(job, monkeypatch, fa
     assert job.console.calls == [] and _jobs(job) == []
 
 
+@pytest.mark.parametrize("bad", ["fault", "nothing_kept"])
+async def test_4_a_paid_call_that_stores_nothing_needs_a_new_typed_row(job, bad) -> None:
+    """The verifier measured 1, 2, 3, 4 calls in four days with nothing
+    stored, because each new row of Mira moved the newest row. The mark keeps
+    the waterline, so daily spend is bounded by what members type."""
+    sid, newest = _job_chat(job, org=job.org_a)
+    if bad == "fault":
+        job.console.fault = RuntimeError("the vendor is down")
+    else:
+        job.console.content = "not json"
+    await _tick(job, job.org_a)
+    assert len(job.console.calls) == 1
+    stored = _summary(job, sid)
+    assert stored["mark"]["through"] == newest and "through_ms" not in stored
+    assert stored["mark"]["through_ms"] == _ms(T - timedelta(hours=1))
+    job.console.fault, job.console.content = None, None
+    for day in range(1, 4):
+        at = T + timedelta(days=day)
+        _row_at(job, job.org_a, sid, f"b{day}", "assistant", "Good morning.",
+                at - timedelta(hours=1))
+        assert await _tick(job, job.org_a, at) == Counter()
+    await _put(job, job.org_a, sid, "b3", T + timedelta(days=3, minutes=1))
+    assert await _tick(job, job.org_a, T + timedelta(days=3, minutes=1)) == Counter(done=1)
+    assert len(job.console.calls) == 1, "a row of Mira buys no call"
+    _row_at(job, job.org_a, sid, "m10", "user", "Book the review with Priya.",
+            T + timedelta(days=3, minutes=5))
+    assert await _tick(job, job.org_a, T + timedelta(days=4)) == Counter(done=1)
+    assert len(job.console.calls) == 2, "a new typed row buys one more"
+    prompt = json.dumps(job.console.calls[1]["payload"]["messages"])
+    assert TYPED_1 in prompt, "the retry reads the rows that no summary covers"
+    assert _summary(job, sid)["through"] == "m10"
+
+
 async def test_4_a_stored_switch_on_and_no_switch_read_as_on(job) -> None:
     """``apps.chat.summaries`` false turns the member's summaries off (above).
     True and a missing value read as on (PZ-35 declares the key later)."""

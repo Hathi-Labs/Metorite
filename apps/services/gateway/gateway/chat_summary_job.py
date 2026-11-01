@@ -182,7 +182,7 @@ def _why_not(chat: JobChat | None, through: str, switch: bool, now: datetime) ->
         return "not_idle"
     if len(member_texts(chat.rows, chat.member)) < TYPED_ROWS_MIN:
         return "few_typed_rows"
-    after = chat.stored.through_ms if chat.stored is not None else None
+    after = chat.stored.waterline if chat.stored is not None else None
     if not member_texts(rows_after(chat.rows, after), chat.member):
         return "nothing_new"
     if not switch:
@@ -272,13 +272,16 @@ async def _load(org: str, sid: str, through: str,
     return chat, why
 
 
-async def _marked(org: str, claim: queue.Claim, sid: str, through: str,
+async def _marked(org: str, claim: queue.Claim, sid: str, through: str, chat: JobChat,
                   now: datetime) -> bool:
     """Step 7. True when this claim wrote the mark, so it may make the call.
     Else the job is settled. A mark of *through* that another claim wrote
-    with no result is uncertain. A chat that a Delete changed is ``done``."""
+    with no result is uncertain. A chat that a Delete changed is ``done``.
+
+    The mark holds the time of its row. A paid call that stores nothing then
+    leaves a waterline, so a row of Mira alone never buys another call."""
     async with tenant_session(org) as db:  # the mark commits here
-        marked = await mark(db, sid, through=through, at=now)
+        marked = await mark(db, sid, through=through, at=now, through_ms=chat.newest_ms)
         found = None if marked else await read(db, sid)
     if marked:
         return True
@@ -339,7 +342,7 @@ async def summarise(org: str, payload: dict[str, Any], claim: queue.Claim) -> No
     if not routed.routing_is_on():
         await _give_up(org, claim, ROUTER_OFF, now)
         return
-    if not await _marked(org, claim, sid, through, now):
+    if not await _marked(org, claim, sid, through, chat, now):
         return
     try:
         raw = await _ask(chat.member, messages_for(chat))

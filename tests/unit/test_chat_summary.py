@@ -810,6 +810,16 @@ def test_an_answer_over_the_caps_cannot_be_built() -> None:
         summaries.Answer(text="")
 
 
+def test_pz33b_the_waterline_is_the_newest_of_the_summary_and_the_mark() -> None:
+    read = summaries.stored
+    assert read({"v": 1, "through": "m3", "through_ms": 17}).waterline == 17
+    assert read({"v": 1, "mark": {"through": "m4", "through_ms": 23}}).waterline == 23
+    assert read({"v": 1, "through_ms": 17, "mark": {"through_ms": 23}}).waterline == 23
+    assert read({"v": 1, "through_ms": 30, "mark": {"through_ms": 23}}).waterline == 30
+    assert read({"v": 1, "mark": {"through": "m4", "at": "x"}}).waterline is None
+    assert read({"v": 1, "through_ms": True, "mark": {"through_ms": "23"}}).waterline is None
+
+
 def test_the_stored_read_is_lenient() -> None:
     assert summaries.stored(None) is None
     assert summaries.stored("not json") is None
