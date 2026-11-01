@@ -29,8 +29,9 @@ Review round 1 (2026-10-31) adds:
 
 PZ-33b replaces the number joints of rounds 1 to 3 with ONE strict digit
 rule (``digit_runs``, ``personalization.md`` §15.9, "Open"). Each character
-that is not a letter joins two digits, and a run of 6 digits or more must be
-a run of the member's typed words. Digits of each script count, after NFKD.
+that is not a real letter joins two digits, and a run of 6 digits or more
+must be a run of the member's typed words. Digits of each script count,
+after NFKD. A modifier letter and a click letter read as marks.
 Every long-number probe of the three PZ-33a reviews is a drop here. A typed
 number in any marks, a version, a ratio, a short price and a 5-digit room
 stay. A time range, a date and a price of 6 digits or more that the member

@@ -42,17 +42,21 @@ feature as production does, and a 402 is the real ``RoutedRefusal``.
 
 - item 1: an idle solo chat with Mira, with 2 typed rows, gets one summary
   and one call, as the member, with ``feature="assistant.chat_summary"``,
-  and no session open during the call;
+  ``thinking`` off and no session open during the call. An empty or cut
+  answer logs a warning;
 - item 2: two seeds give one live job (the dedupe key), and a second tick
   and a retry make no second call;
-- item 3: a mark with no result gives up ``SummaryUncertain``, a 402 gives
-  up ``OutOfCredits``, another fault gives up ``SummaryFailed``, and the
-  mark stays. With the Router off the seed enqueues nothing, and a job gives
-  up ``RouterOff`` with no call;
-- item 4: a shared room, another agent, WhatsApp, an archived chat, a chat
-  that reads ``off``, a member whose switch is off, the flag off, a member
-  who left and a chat with one typed row get no call, from the seed or from
-  a job put in by hand;
+- item 3: a mark with no result gives up ``SummaryUncertain``, and so does
+  the claim that loses the mark. A 402 gives up ``OutOfCredits``, another
+  fault and a call over the limit give up ``SummaryFailed``, and the mark
+  stays. With the Router off the seed enqueues nothing, and a job gives up
+  ``RouterOff`` with no call;
+- item 4: a shared room, another agent, a mentioned agent, a row of another
+  agent, WhatsApp, an archived chat, a chat that reads ``off``, a member
+  whose switch is off, the flag off, a member who left, a chat with one typed
+  row, a chat with the mail mark and a chat whose mark cannot be read get no
+  call, from the seed or from a job put in by hand. A waterline holds until
+  the member types again;
 - item 5: org A never reads or writes a chat of org B. A payload with the id
   of a chat of org B finds no row.
 
@@ -63,7 +67,10 @@ Mutations, each red here: the write also sets ``updated_at = now()`` (item
 (P2-a); skip ``clear_on_share`` in the room routes (P2-b). PZ-33b: skip the
 Router check of the handler (RouterOff); drop the dedupe key of the seed
 (item 2); take ``SOLO_ROOM_SQL`` out of ``ELIGIBLE_SQL`` (item 4); store the
-answer with no ``check_answer`` (item 1, the sensitive line).
+answer with no ``check_answer`` (item 1, the sensitive line); drop
+``thinking`` from the call (item 1); drop ``holds_mail`` from the seed or
+the handler (item 4); let ``_is_mira_row`` and ``ELIGIBLE_SQL`` take any agent
+(item 4).
 """
 
 from __future__ import annotations

@@ -1727,7 +1727,10 @@ personal records.
 **Scope.** A summary covers one chat with Mira on the web
 (`agent_name = 'orchestrator'`). The room must be solo, by the rule of §5.1
 (`gateway/rooms.py:141` `room_is_solo`). A WhatsApp chat, a shared room, a
-chat with another agent and an archived chat get no summary.
+chat with another agent and an archived chat get no summary. A mentioned
+agent in the chat makes it a chat with another agent, and a row of another
+agent does too. A chat with the mail mark gets no summary either
+(`acb_skills.egress.run_holds_mail`).
 
 **Two slices (audit of 2026-10-31).** PZ-33 lands as two PRs. PZ-33a is the
 store: the migration, the one module with the answer checks, the solo SQL,
@@ -1829,7 +1832,11 @@ job comes. The seed hook follows `gateway/brief/planner.py:304-314`.
 2. The hook runs once for each org and each 15-minute bucket.
 3. It returns at once when the flag is off for the org (§15.8).
 4. It returns at once when `routing_is_on()` is False (below).
-5. It selects at most 20 idle chats of the org (`SUMMARY_SEED_MAX`).
+5. It selects at most 5 idle chats of the org (`SUMMARY_SEED_MAX`). The
+   worker runs the orgs in turn, and one job at a time. So the cap and the
+   30-second limit of the call hold one org to 150 seconds in a tick. The
+   `brief.run` of another org then does not start late. The review of PZ-33b
+   lowered the cap from 20.
 6. It skips a member whose switch is off, through `members_app_prefs`
    (`packages/acb_common/acb_common/assistant_profile.py:218`), app `chat`.
 7. It skips a chat whose `through` or `mark.through` is its newest row id.
@@ -1847,12 +1854,15 @@ key is the pair of the chat and the id of its newest row. The handler is
 
 1. Check `routing_is_on()`. If it is False, give up with `RouterOff`.
 2. Read the chat in a short `tenant_session(org)`.
-3. Check the flag, the solo rule, the member's switch and the member's
-   status.
+3. Check the flag, the solo rule, the member's switch, the member's status
+   and the mail mark.
 4. If `through` is the newest row id, settle `done` with no call.
 5. If `mark.through` is that id and no result exists, call `queue.give_up`
    with `SummaryUncertain`.
-6. Commit the mark in its own short session, before the call.
+6. Commit the mark in its own short session, before the call. The mark
+   refuses a row that it names already. Two claims can both read no mark.
+   The one that loses gives up with `SummaryUncertain`, so only one call
+   runs.
 7. Call the model with no session open (see "The model call").
 8. Open a new session. Run `hold`, write the result and run `complete`
    together.
@@ -1867,7 +1877,10 @@ payload, so a session of another org finds no row.
 
 **A chat that goes on.** When the member writes in the chat again, the next
 idle time gives a new job. The prompt then holds the earlier summary and
-only the rows after `through_ms`. So a long chat costs little each time.
+only the rows after `through_ms`. So a long chat costs little each time. A
+new row with no typed row of the member after `through_ms` starts no call,
+such as a brief or a reminder. A Delete, a Forget and a share each leave
+that waterline, so a row that they covered does not come back.
 
 **The model call (D-PZ-27).** The handler calls
 `acb_llm.context.acompletion_with_fallback`
@@ -1904,6 +1917,15 @@ calls.
   that write no usage row. PZ-33 adds no fourth.
 - The input is at most 12,000 characters, the newest rows first. The answer
   is at most 300 tokens.
+- The call sends `thinking={"type": "disabled"}`. `tier-fast` binds a DeepSeek
+  model that thinks by default, and the vendor counts the reasoning tokens
+  in the cap. With no such field, the reasoning spends the 300 tokens, and
+  `content` comes back empty. `test_tasks_ai_no_thinking.py` holds the
+  measure. An empty or cut answer logs `assistant.chat_summary_bad_answer`
+  at warning.
+- The call has a limit of 30 seconds (`CALL_TIMEOUT_S`). The Console client
+  waits 120 seconds, and the shared worker waits with it. A call over the
+  limit gives up with `SummaryFailed`.
 
 **What the prompt may keep (D-PZ-28).** The prompt asks for what the member
 asked, decided or promised, and for the result of what Mira did for them. It
@@ -1916,7 +1938,8 @@ What goes into the prompt:
   (`packages/acb_common/acb_common/assistant_profile.py:788`). A pasted mail and a message of more than
   1,500 characters give `""`, so they stay out. PZ-31 and PZ-32 use the
   same rule for "typed".
-- The `content` text of each row of Mira, and nothing else. Tool events,
+- The `content` text of each row whose author is Mira, and nothing else. A
+  row of another agent stays out. Tool events,
   reasoning, custom events and the brief row (`brief-<date>`,
   `routes/chat_brief.py:114`) stay out. So the body of a mail, a page or a
   file that a tool read never reaches the prompt.
@@ -2261,9 +2284,10 @@ each box.
   caller reached `check_answer`:
   - `assistant_summaries.digit_runs` reads the digits after NFKD, so a
     fullwidth, an Arabic-Indic, a Devanagari, a superscript and a circled
-    digit each count. Each character between two digits that is not a
-    letter (Unicode category L) joins them into one run. A letter ends a
-    run.
+    digit each count. Each character between two digits that is not a real
+    letter joins them into one run. A real letter is a character of the
+    Unicode category L. A modifier letter (Lm) and the click letters U+01C0
+    to U+01C3 read as marks, so they join too, and `98450ː12345` drops.
   - A line drops when it holds a run of 6 digits or more that is not a run
     of the member's typed words, read the same way. The digit strings must
     be equal. Each typed row is read alone, so two rows never join.
@@ -2275,14 +2299,16 @@ each box.
   - **The cost, accepted by the agent:** a time range, a date or a price of
     6 digits or more that the member did not type drops, for example
     `10:30–11:00` or `₹1,20,000`. The owner may overrule it.
-  - **The boundary:** a letter between two digit groups splits them, so
-    `98450x12345` is two runs of 5 digits and stays. A strict `xfail` in
-    `test_chat_summary.py` records it.
+  - **The boundary, the agent's call for the owner to overrule:** a real
+    letter between two digit groups ends a run. So `98450x12345` is two runs
+    of 5 digits and stays. A rule that reads across a letter would also join
+    `room 40512 and 40513`. A strict `xfail` in `test_chat_summary.py`
+    records it. §15.12 holds the question.
 
 **As built, PZ-33b (2026-11-01, dark).** Items 1 to 5 of the PZ-33 list
 pass. Item 7 passes for each long-number probe of the PZ-33a reviews. The
-two exceptions are the probes with a letter between the digit groups (see
-the boundary above). `ASSISTANT_CHAT_SUMMARY_ORGS` stays empty on each box.
+two exceptions are the probes with a real letter between the digit groups
+(see the boundary above). `ASSISTANT_CHAT_SUMMARY_ORGS` stays empty on each box.
 `JOB_QUEUE` and the Router must be on too, so no summary runs yet.
 
 - **The seed.** `assistant_summaries.seed(org, now)` joins
@@ -2290,16 +2316,26 @@ the boundary above). `ASSISTANT_CHAT_SUMMARY_ORGS` stays empty on each box.
   False. It also returns when `acb_llm.routed.routing_is_on()` is False.
   `IDLE_SQL` selects the candidates in one statement:
   - `ELIGIBLE_SQL`: Mira, the web, not archived, not `off`, and
-    `SOLO_ROOM_SQL`.
+    `SOLO_ROOM_SQL`. No `chat_session_agent` row and no agent row of the
+    chat names another agent.
   - The newest row is 30 minutes to 7 days old, and no run is open.
   - The newest row id is neither `through` nor `mark.through`.
   - The chat holds 2 short user rows or more.
 - **The checks of the seed in Python.** The seed reads the newest 20 short
   user rows of each candidate and counts the typed rows (`member_texts`).
-  It reads the switch of each active member through `MEMBERS_APP_SQL`, and
-  calls `my_day_loop.departed` once for each member. It reads at most 60
-  candidates (`SEED_SCAN_MAX`) and enqueues at most 20 jobs
-  (`SUMMARY_SEED_MAX`).
+  One typed row must be after the waterline (`rows_after`). It reads the
+  switch of each active member through `MEMBERS_APP_SQL`, and calls
+  `my_day_loop.departed` once for each member. It then reads the mail mark
+  (`holds_mail`). It reads at most 60 candidates (`SEED_SCAN_MAX`) and
+  enqueues at most 5 jobs (`SUMMARY_SEED_MAX`).
+- **The mail mark.** `assistant_summaries.holds_mail` asks
+  `acb_skills.egress.run_holds_mail("orchestrator", {"session_id": ...})`, the
+  one predicate of the chat memory stores. It binds the org for the read,
+  as `chat_fold._run_holds_mail` does, because a frame with no tenant reads
+  as clear. A fault reads as mail, so it fails closed. The seed checks it,
+  and the handler checks it again before the mark. A chat with the mark gets
+  no call and no mark. A reply of Mira can quote a mail, and `check_answer`
+  cannot tell that from her own words.
 - **The job.** `gateway/chat_summary_job.py` registers the detached,
   idempotent kind `assistant.chat_summary` with 3 tries, and adds the seed
   hook. `gateway/main.py` imports it beside `gateway.brief.run`. The
@@ -2311,26 +2347,34 @@ the boundary above). `ASSISTANT_CHAT_SUMMARY_ORGS` stays empty on each box.
   `chat_session.user_id`. A chat that fails a rule settles `done` with no
   call. The chat must be a row of the bound org, and `ELIGIBLE_SQL` must
   pass. `through` must be the newest row, with no summary of it yet. The
-  chat must be idle with no open run, and hold 2 typed rows. The switch must
-  be on, and the member must not have left. A failed status read raises
+  chat must be idle with no open run. It must hold 2 typed rows, and one of
+  them must be after the waterline. The switch must be on, the member must
+  not have left, and the chat must hold no mail. A failed status read raises
   before the mark, so the queue tries again.
 - **The give-ups.**
   - `RouterOff`: the Router is off. The job makes no call and writes no
     mark.
-  - `SummaryUncertain`: a mark of `through` with no result.
+  - `SummaryUncertain`: a mark of `through` with no result, or a mark that
+    another claim wrote after this claim read the chat.
   - `OutOfCredits`: the Router refused the call with a 402.
-  - `SummaryFailed`: any other fault, a failed room read, or a bad payload.
+  - `SummaryFailed`: any other fault, a call over 30 seconds, a failed room
+    read, or a bad payload.
   - The mark stays after a call.
 - **The call.** `acompletion_with_fallback` takes `model="tier-fast"`,
-  `feature="assistant.chat_summary"`, `source="chat"` and a JSON answer of
-  300 tokens at most. It runs inside `job_member_scope(member, app="chat")`.
+  `feature="assistant.chat_summary"`, `source="chat"`, `thinking` off and a
+  JSON answer of 300 tokens at most. It has 30 seconds. It runs inside
+  `job_member_scope(member, app="chat")`.
   That helper is `run_context_scope` and `bind_run_context`, with the
   member verified. It also drops a member that the task held before. The
   prompt holds the earlier summary and the rows after `through_ms`, through
   `prompt_rows`.
 - **The write.** `check_answer`, then `room_is_solo(resolve_room_access(...))`
   again, then `hold`, `write_marked` and `complete` in one session. An
-  answer that keeps nothing settles `done` with no write.
+  answer that keeps nothing settles `done` with no write. An empty or cut
+  answer logs `assistant.chat_summary_bad_answer` at warning first.
+  `check_answer` never raises on an answer of the model.
+- **A Delete.** The job honours `off` when it is there. It also honours the
+  `through` waterline, which is what a Delete of PZ-35 leaves.
 - **The member's switch** is `apps.chat.summaries` of the profile
   (`assistant_summaries.switch_on`). PZ-35 declares the key. Until then, a
   stored `false` turns it off, and a missing value reads on.
@@ -2464,3 +2508,6 @@ answers.
    expiry of its own. The member can delete it at any time.
 5. **The first org in production (PZ-33).** The flip is owner-only
    (D-PZ-35). Default: Hathi Labs first, after the staging test of PZ-35.
+6. **A number split by a real letter (PZ-33b).** The agent's call: a real
+   letter ends a digit run. So `98450x12345` stays in a summary as two runs
+   of 5 digits. Default: it stands until the owner overrules it.
