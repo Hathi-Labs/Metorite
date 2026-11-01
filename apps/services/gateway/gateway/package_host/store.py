@@ -61,9 +61,10 @@ can be the private install of another member.
 
 **The groups.** A member of a group is an ACTIVE member. That is the rule of
 the one group query, ``routes/projects/core._MY_GROUPS_SQL``. The store
-reuses that query, and adds the bound org. The member purge and the remove
-route keep the rows of ``org_group_member`` of a removed member. So the
-store counts that member in no group, as each other reader does.
+reuses that query, and adds the bound org. The remove route keeps the rows
+of ``org_group_member`` of a removed member (``remove_member_rows`` of
+``routes/admin/members.py``). So the store counts that member in no group,
+as each other reader does.
 
 **One lock for each org.** The first statement after the read of the bound
 org takes ``pg_advisory_xact_lock`` on ``package_install:<org>``. Each read
