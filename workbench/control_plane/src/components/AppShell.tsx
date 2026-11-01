@@ -73,8 +73,8 @@ import { addAppsName, rowMeta, rowName } from "@/lib/shell/navNeeds";
 import { useNavNeeds } from "@/lib/shell/useNavNeeds";
 import { shouldPollWorkspace } from "@/lib/access";
 import { useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
-import OrgBrandLockup, { BAR_LOCKUP } from "@/components/OrgBrandLockup";
-import { SidebarFoldButton, SidebarFoldProvider } from "@/components/SidebarFold";
+import OrgBrandLockup from "@/components/OrgBrandLockup";
+import { SidebarFoldProvider } from "@/components/SidebarFold";
 // The task manager's Focus Mode session (room + minimizable timer dock). Lives
 // in the SHELL so the running timer stays visible across every app in the
 // control plane; renders nothing when no focus session is active.
@@ -110,6 +110,18 @@ const MobileDrawerCtx = createContext<MobileDrawerCtx>({
 export function useMobileDrawer(): MobileDrawerCtx {
   return useContext(MobileDrawerCtx);
 }
+
+/**
+ * The page of the full frame. In glass (GL-10c) it is ONE rounded card on the
+ * grouped frame, so every app draws inside one surface and its inner panes
+ * clip to the card's corners. The margins match the rail's 8px inset.
+ * `overflow-auto` clips to the radius, so the card still scrolls its page.
+ * ⚠️ No `backdrop-filter`, `filter`, `transform`, `opacity` or `mask` here:
+ * each one makes the card the containing block of every fixed modal and menu
+ * inside an app (`globals.css`, the blur and containing-block note).
+ */
+const FULL_MAIN =
+  "min-h-0 min-w-0 flex-1 overflow-auto glass:mt-2 glass:mr-2 glass:mb-2 glass:rounded-2xl glass:bg-card glass:shadow-card";
 
 // ---------------------------------------------------------------------------
 // AppShell
@@ -242,32 +254,41 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     // than the window. `clip`, not `hidden`, because a script can scroll a
     // `hidden` box, and a reveal or a focus then shifts the whole shell.
     // Fence: `src/lib/scrollWithin.test.ts` and `e2e/email-composer-scroll.spec.ts`.
+    // The sidebar runs the full height and owns its head: the organization's
+    // logo and the fold control, on the thing it folds (owner, 2026-11-01,
+    // "Full-height sidebar"). The shell bar sits over the page column only.
+    // It replaces the full-width bar of 2026-10-09, whose fold control sat
+    // outside the sidebar.
     return (
-      <SidebarFoldProvider placement={frame === "full" ? "bar" : "rail"}>
-      <div data-app-shell="" className={`${frame === "full" ? "relative flex h-dvh flex-col overflow-clip" : "relative flex h-dvh overflow-clip"} glass:bg-grouped`}>
+      <SidebarFoldProvider placement="rail">
+      <div data-app-shell="" className="relative flex h-dvh overflow-clip glass:bg-grouped">
         {frame === "full" ? (
-          <ShellFrame lead={<BarBrand />}>
-            <div className="flex min-h-0 flex-1">
-              <Sidebar />
-              {/* D99: with the chat flag on, the assistant sits beside the
-                  page or over it. Its field is in the shell bar above (D102,
-                  2026-10-14). Only this frame carries it: production runs
-                  both shell flags. */}
-              {chatOn ? (
-                <AssistantWorkArea assistant={<AssistantDock />}>
-                  <main className="min-h-0 min-w-0 flex-1 overflow-auto">
-                    <AccountStateBanner />
-                    <AccessGate>{children}</AccessGate>
-                  </main>
-                </AssistantWorkArea>
-              ) : (
-                <main className="min-h-0 min-w-0 flex-1 overflow-auto">
-                  <AccountStateBanner />
-                  <AccessGate>{children}</AccessGate>
-                </main>
-              )}
+          <>
+            <Sidebar />
+            <div className="flex min-w-0 flex-1 flex-col">
+              <ShellFrame row={false}>
+                <div className="flex min-h-0 flex-1">
+                  {/* D99: with the chat flag on, the assistant sits beside the
+                      page or over it. Its field is in the shell bar above (D102,
+                      2026-10-14). Only this frame carries it: production runs
+                      both shell flags. */}
+                  {chatOn ? (
+                    <AssistantWorkArea assistant={<AssistantDock />}>
+                      <main className={FULL_MAIN}>
+                        <AccountStateBanner />
+                        <AccessGate>{children}</AccessGate>
+                      </main>
+                    </AssistantWorkArea>
+                  ) : (
+                    <main className={FULL_MAIN}>
+                      <AccountStateBanner />
+                      <AccessGate>{children}</AccessGate>
+                    </main>
+                  )}
+                </div>
+              </ShellFrame>
             </div>
-          </ShellFrame>
+          </>
         ) : (
           <Sidebar />
         )}
@@ -298,10 +319,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {/* WS-51 S3: the one activity panel, in every frame. Under the shell
             bar's right end when the bar is on. Near the top, beside the
             sidebar head that holds the control, when it is off. */}
-        <ActivityHost placement={frame === "classic" ? "top" : "end"} />
+        <ActivityHost placement={frame === "column" ? "end" : "top"} />
         {/* NS-6 slice 6a: the one bell's panel, placed as the activity panel
             is. With the flag off it is not mounted at all. */}
-        {dockOn ? <ShellBellHost placement={frame === "classic" ? "top" : "end"} /> : null}
+        {dockOn ? <ShellBellHost placement={frame === "column" ? "end" : "top"} /> : null}
         {/* WS-51 S5: unread marks, the finished toast, and the hidden tab's
             title and favicon. It draws nothing. */}
         <RunSignalsHost />
@@ -418,44 +439,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 // The full-width bar's first zone: the fold control and the logo
 // ---------------------------------------------------------------------------
 
-/**
- * The owner's words, 2026-10-09: "have the top bar extend the full width and
- * also always have the logo of the organization over there at the top. That
- * way, even when the leftmost sidebar is minimized, we'll always see the logo."
- *
- * So the zone is `w-64`, the open sidebar's width, and it KEEPS that width
- * when the sidebar folds. Open, the zone and the rail read as one column.
- * Folded, the logo stays where it was, and only the rail under it narrows.
- *
- * The fold control shows only when a sidebar does. A person with no
- * organization gets no sidebar (`Sidebar`'s `canPoll`), so a control that
- * folds nothing would be a broken button.
- */
-function BarBrand() {
-  const { access, loading } = useAccess();
-  const workspace = shouldPollWorkspace(access, loading);
-  return (
-    <div data-shell-brand className="flex w-64 shrink-0 items-center pr-2 glass:pl-2">
-      {/* ⚠️ The control sits in a column exactly as wide as the folded rail
-          (`w-14`), centred, so it is on the same vertical line as the rail's
-          icons below it (owner, 2026-10-10: "in line with all the icons of the
-          sidebar"). The logo then starts after a gap, not pressed against it.
-          Fence: `e2e/shell-bar.spec.ts` "the menu control is centred over the
-          folded rail's icons". */}
-      <div data-shell-fold-column className="flex w-14 shrink-0 items-center justify-center">
-        {workspace ? <SidebarFoldButton /> : null}
-      </div>
-      {/* 24px tall, one line: a 44px bar has no room for the sidebar's stack.
-          176px is the zone less the control's column, the gap and the padding.
-          The customer's logo alone (owner, 2026-10-11). The shell shows no
-          Metorite logo of its own since 2026-10-14, and the sidebar's foot is
-          the account. The Settings previews read the same `BAR_LOCKUP`. */}
-      <div className="ml-2 min-w-0">
-        <OrgBrandLockup fallbackCaption="Control Plane" {...BAR_LOCKUP} />
-      </div>
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Mobile bottom navigation bar — ChatGPT/DeepSeek-style 3-tab bar

@@ -35,8 +35,8 @@ function JsonView({ value }: { value: Json }): React.ReactElement {
         new Set(value.flatMap((row) => Object.keys(row as object))),
       );
       return (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
+        <div className="overflow-x-auto glass:rounded-[10px] glass:bg-secondary">
+          <table className="w-full text-left text-xs glass:text-footnote">
             <thead>
               <tr className="border-b border-border text-muted-foreground">
                 {cols.map((c) => (
@@ -147,7 +147,7 @@ export const CUSTOM_EVENT_RENDERERS: Record<string, CustomEventRenderer> = {
     const v = (value ?? {}) as Record<string, unknown>;
     return (
       <div className="space-y-1">
-        <div className="text-[12px] font-semibold text-foreground">
+        <div className="text-[12px] font-semibold text-foreground glass:text-subhead">
           {String(v.title ?? "Approval request")}
         </div>
         {v.detail != null && (
@@ -201,7 +201,7 @@ export default function GenerativeUIPanel({
       <ToolCardShell title="Interactive view" icon={<Icon name="LayoutTemplate" size={13} />} defaultCollapsed>
         <div className="space-y-3">
           {hasState && (
-            <div className="rounded-md bg-card/50 p-2">
+            <div className="rounded-md bg-card/50 p-2 glass:rounded-[10px] glass:bg-secondary glass:p-3">
               <JsonView value={shownState} />
             </div>
           )}
@@ -209,7 +209,7 @@ export default function GenerativeUIPanel({
             displayEvents.map((ev, i) => {
               const renderer = CUSTOM_EVENT_RENDERERS[ev.name];
               return (
-                <div key={i} className="rounded-md bg-card/50 p-2">
+                <div key={i} className="rounded-md bg-card/50 p-2 glass:rounded-[10px] glass:bg-secondary glass:p-3">
                   {renderer ? (
                     renderer(ev.value)
                   ) : (

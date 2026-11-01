@@ -143,12 +143,11 @@ export function AppTopBar({
         {back ? <BackLink back={back} /> : null}
         <div className="flex min-w-0 flex-1">{name}</div>
         {actions || tools ? (
-          <div className="flex shrink-0 items-center gap-0.5">
+          <div data-app-bar-actions className="flex shrink-0 items-center gap-0.5">
             {actions}
             {tools}
           </div>
         ) : null}
-        <ScrollEdgeBelow />
       </div>
     );
   }
@@ -176,7 +175,7 @@ export function AppTopBar({
             <Button
               variant="ghost"
               size="icon-sm"
-              selected={rail.open}
+              aria-expanded={rail.open}
               icon={rail.open ? "PanelLeftClose" : "PanelLeftOpen"}
               aria-label={railLabel(rail)}
               title={railLabel(rail)}
@@ -191,27 +190,11 @@ export function AppTopBar({
         ) : null}
         {name}
       </div>
-      {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
+      {actions ? <div data-app-bar-actions className="flex shrink-0 items-center gap-1">{actions}</div> : null}
       {tools ? (
         <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1">{tools}</div>
       ) : null}
-      <ScrollEdgeBelow />
     </div>
-  );
-}
-
-/**
- * Glass (D143, GL-3): content blurs and fades as it passes under the bar. An
- * overlay hung below the bar, never a mask on a scroller (the blur rule in
- * `globals.css`). Classic draws nothing: the box is `hidden` there.
- */
-function ScrollEdgeBelow() {
-  return (
-    <div
-      aria-hidden
-      data-scroll-edge=""
-      className="pointer-events-none absolute inset-x-0 top-full z-10 hidden h-4 glass:block glass:glass-scroll-edge glass:[--edge-color:var(--background-grouped)]"
-    />
   );
 }
 

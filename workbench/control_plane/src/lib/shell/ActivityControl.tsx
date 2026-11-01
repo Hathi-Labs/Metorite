@@ -48,6 +48,7 @@ import { onClear } from "@/lib/dataCache";
 import { wantLiveSteps } from "@/lib/liveRuns";
 import { visibleSections, type NavSection } from "@/lib/nav";
 import { openAssistant } from "./assistant";
+import { usePanelHeld } from "./panelHold";
 import { shellChatOn } from "./chatFlag";
 import {
   agentLabel,
@@ -367,10 +368,12 @@ export function ActivityHost({ placement }: { placement: ModalPlacement }) {
   const heldHrefs = useHeldHrefs();
   // D99: with the chat bar on, a row opens in the one assistant. Read once.
   const [chatOn] = useState(() => shellChatOn());
+  // While the Ask bar is on screen, it shows the runs out of itself.
+  const barHolds = usePanelHeld("runs");
   if (!workspace) return null;
   return (
     <ActivityPanel
-      open={open}
+      open={open && !barHolds}
       onClose={closeActivity}
       rows={rows}
       visibleHrefs={heldHrefs}

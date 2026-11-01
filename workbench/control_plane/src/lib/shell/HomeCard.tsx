@@ -57,7 +57,7 @@ export function HomeCard({
       aria-labelledby={headingId}
       data-testid={testId}
       data-home-card=""
-      className={`min-w-0 rounded-xl border border-border bg-card ${className}`}
+      className={`min-w-0 rounded-xl border border-border bg-card glass:rounded-[16px] glass:border-transparent glass:glass-raised ${className}`}
     >
       {eyebrow ? <div className="px-4 pt-3 text-xs text-muted-foreground">{eyebrow}</div> : null}
       <header className={`flex items-center gap-2 px-4 pb-2 ${eyebrow ? "pt-1" : "pt-3.5"}`}>
