@@ -660,3 +660,96 @@ def test_set_key_is_not_checked_on_a_non_object_action():
     d = copy.deepcopy(EXAMPLE)
     d["actions"][1]["set"] = {"anything": "x"}
     assert validate_manifest(d) == []
+
+
+# --- C1: the field rules come from the one field-type module ------------------
+
+
+def test_the_field_types_are_the_one_list_of_studio_fields():
+    """C1: `studio_fields.FIELD_TYPES` is the one list. A2 imports it, and the
+    schema enum and the `Literal` of `FieldDef` are that list."""
+    from acb_common import studio_fields
+
+    assert FIELD_TYPES is studio_fields.FIELD_TYPES
+    schema = Manifest.model_json_schema()
+    assert schema["$defs"]["FieldDef"]["properties"]["type"]["enum"] == list(FIELD_TYPES)
+    assert schema["$defs"]["FieldDef"]["properties"]["hot"] == {
+        "default": False, "title": "Hot", "type": "boolean"}
+
+
+def test_a_hot_field_of_a_hot_type_validates():
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"][3]["hot"] = True  # status, a select
+    d["objects"][0]["fields"][2]["hot"] = True  # when, a datetime
+    assert validate_manifest(d) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "patch", "path", "contains"),
+    [
+        (1, {"type": "text", "many": True, "hot": True}, ".hot", "`many` cannot be hot"),
+        (5, {"hot": True}, ".hot", "cannot be hot"),  # photos: a file
+        (4, {"hot": True}, ".hot", "cannot be hot"),  # site: a geo
+        (3, {"options": [f"o{i}" for i in range(101)]}, ".options", "at most 100"),
+        (3, {"options": ["planned", "planned"]}, ".options[1]", "twice"),
+        (1, {"options": ["a"]}, ".options", "Only a select"),
+        (1, {"to": "crm.account"}, ".to", "Only a relation"),
+        (3, {"type": "multiSelect", "many": True}, ".many", "no `many`"),
+    ],
+)
+def test_the_shared_spec_rules_refuse_with_a_path(field, patch, path, contains):
+    """C1: `_check_objects` calls `studio_fields.validate_field_spec`, the check
+    that the object store runs too, so a manifest that cannot install fails here."""
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"][field].update(patch)
+    one(d, f"$.objects[0].fields[{field}]{path}", contains=contains)
+
+
+def test_the_object_caps_of_c1_hold():
+    from acb_common import studio_fields
+
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"] = [
+        {"key": f"n{i}", "type": "number", "hot": i < studio_fields.MAX_HOT_PER_OBJECT + 1}
+        for i in range(studio_fields.MAX_FIELDS_PER_OBJECT + 1)
+    ]
+    for view in d["views"]:
+        view.update({"group_by": None, "card": None, "start": None, "fields": []})
+    d["actions"][0]["set"] = {}
+    paths = [e.path for e in validate_manifest(d)]
+    assert paths.count("$.objects[0].fields") == 2, paths
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"] = [{"name": f"o{i}"} for i in range(studio_fields.MAX_OBJECTS_PER_PACKAGE + 1)]
+    d.update(actions=[], views=[], workflows=[], skill=None, shell=None)
+    one(d, "$.objects", contains=f"at most {studio_fields.MAX_OBJECTS_PER_PACKAGE} objects")
+
+
+def test_a_package_with_more_hot_fields_than_an_org_holds_is_refused():
+    """C1 fix round 1: an org holds 24 hot fields in all, so a package with 28
+    installs on no org. Each object holds 7, below the cap of an object."""
+    from acb_common import studio_fields
+
+    d = copy.deepcopy(EXAMPLE)
+    d.update(actions=[], views=[], workflows=[], skill=None, shell=None)
+    d["objects"] = [
+        {"name": f"o{i}", "fields": [{"key": f"n{j}", "type": "number", "hot": True}
+                                     for j in range(7)]}
+        for i in range(4)
+    ]
+    one(d, "$.objects", contains=f"at most {studio_fields.MAX_HOT_PER_ORG} hot fields")
+    d["objects"] = d["objects"][:3]  # 21 hot fields
+    assert validate_manifest(d) == []
+
+
+def test_an_object_label_holds_at_most_the_store_cap():
+    from acb_common import studio_fields
+
+    cap = studio_fields.MAX_LABEL_CHARS
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["label"] = "v" * cap
+    assert validate_manifest(d) == []
+    d["objects"][0]["label"] = "v" * (cap + 1)
+    one(d, "$.objects[0].label", contains=str(cap))
+    schema = Manifest.model_json_schema()
+    label = schema["$defs"]["ObjectDef"]["properties"]["label"]
+    assert {"maxLength": cap, "type": "string"} in label["anyOf"]

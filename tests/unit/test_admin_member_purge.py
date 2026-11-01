@@ -776,6 +776,33 @@ def test_the_skills_of_this_org_go_and_their_versions_by_cascade() -> None:
     assert "studio_skill_versions" not in {r.table for r in _PURGE_DELETES}
 
 
+_STUDIO_OBJECT_TABLES = frozenset({
+    "studio_objects", "studio_object_fields", "studio_records", "studio_record_hot"})
+
+
+def test_the_records_of_studio_objects_stay() -> None:
+    """WS-STU C1: a Studio record is company data, as a `pm_tasks` row is (D63).
+
+    The purge deletes no row of the four object tables, by a clause or by a
+    cascade. An email in a person field of a record stays too. The package,
+    an `apps` row, stays on the KEEP side, because its foreign key cascades
+    to the objects and their records. A change to this rule is a decision,
+    so it must change this test on purpose.
+
+    ⚠️ Mutation-checked: a `_PersonRows` entry for `studio_records` fails here.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    named = {r.table for r in (*_PURGE_DELETES, *_PURGE_KEEPS)}
+    assert not named & _STUDIO_OBJECT_TABLES, sorted(named & _STUDIO_OBJECT_TABLES)
+    assert not _blast_radius() & _STUDIO_OBJECT_TABLES
+    assert "apps" in {r.table for r in _PURGE_KEEPS}
+    assert "apps" not in {r.table for r in _PURGE_DELETES}
+    assert cascade_closure("apps") >= _STUDIO_OBJECT_TABLES
+
+
 def test_the_two_halves_of_chat_session_partition_it() -> None:
     """The one table split by `visibility`. The two clauses must be
     complements — a gap would leave sessions belonging to nobody, an overlap

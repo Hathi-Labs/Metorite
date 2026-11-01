@@ -155,9 +155,10 @@ EXPECTED_SCOPED = {
     # WS-55 SW-10a (2026-10-25): the strands of agent runs (the fingerprint
     # of a nudge, and the recovery record).
     "pm_agent_run_strands",
-    # WS-PKG PKG-4 (2026-11-01): migration 321 puts `apps.organization_id`
-    # on the numbered ladder, because an install's foreign key names
-    # `apps (organization_id, id)`. Production has the column already.
+    # WS-STU C1 (2026-11-01): migration 323 puts `apps.organization_id` on
+    # the numbered ladder, because an object's foreign key names
+    # `apps (organization_id, id)`. Production has the column already. The
+    # open migration 321 (WS-PKG PKG-4) holds the same block.
     "apps",
 }
 
@@ -471,8 +472,9 @@ def test_the_frozen_count_matches_the_baseline() -> None:
     Putting it here as well was the first attempt, and
     `test_every_table_lands_in_exactly_one_bucket` rejected it — correctly.
     """
-    # 93 since 2026-11-01: `apps` left with migration 321 (WS-PKG PKG-4), the
-    # target of the composite foreign key of `package_install`.
+    # 93 since 2026-11-01: `apps` left with migrations 321 (WS-PKG PKG-4) and
+    # 323 (WS-STU C1), the target of the composite foreign keys of
+    # `package_install` and `studio_objects`.
     # 94 since 2026-10-11: ten `crm_*` tables left with migration 241 (WS-53
     # CRM-T1). The other three were blocked as homonyms, never in this list.
     # 104 since 2026-10-10: `user_settings` left with migration 239 (H-256,
