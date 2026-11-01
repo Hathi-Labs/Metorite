@@ -88,3 +88,61 @@ def test_a_long_title_is_clipped_and_a_bad_zone_falls_back_to_utc() -> None:
 def test_the_payload_url_passes_the_sender_s_path_check() -> None:
     # `PushMessage.payload` raises on a url that is not a path on this app.
     assert build("reminder_due", ROW, ORG, False).payload()
+
+
+# ── The morning summary (RX-5, calendar_events_reminders.md §5.11) ──────────
+
+
+@pytest.mark.parametrize("today,late,title", [
+    (3, 1, "3 due today, 1 overdue"),
+    (3, 0, "3 due today"),
+    (0, 1, "1 overdue"),
+])
+def test_the_title_gives_the_counts_and_leaves_out_a_zero(today, late, title) -> None:
+    assert push_message.due_title(today, late) == title
+
+
+def test_the_summary_gives_the_first_title_and_the_rest() -> None:
+    msg = push_message.build_due(due_today=3, overdue=1, first_title="  Call   the buyer ",
+                                 org_name=ORG, hide_details=False)
+    assert isinstance(msg, PushMessage)
+    assert msg.title == "3 due today, 1 overdue"
+    assert msg.body == "Call the buyer and 3 more"
+    assert (msg.url, msg.tag, msg.urgency) == ("/", push_message.DUE_TAG, "normal")
+    assert msg.ttl == push_message.ttl_of(push_message.DUE_SUMMARY) == 4 * 3600
+    assert json.loads(msg.payload())["url"] == "/"
+
+
+def test_one_task_has_no_and_more() -> None:
+    msg = push_message.build_due(due_today=1, overdue=0, first_title="Call the buyer",
+                                 org_name=ORG, hide_details=False)
+    assert msg.body == "Call the buyer"
+
+
+def test_hidden_details_keep_the_counts_and_drop_the_title() -> None:
+    msg = push_message.build_due(due_today=2, overdue=1, first_title="Call the buyer",
+                                 org_name=ORG, hide_details=True)
+    assert msg.title == "2 due today, 1 overdue"
+    assert msg.body == ORG
+    assert "buyer" not in msg.payload()
+    empty = push_message.build_due(due_today=1, overdue=0, first_title="x", org_name=" ",
+                                   hide_details=True)
+    assert empty.body == "Metorite"
+
+
+def test_a_long_title_is_cut_before_the_rest() -> None:
+    msg = push_message.build_due(due_today=2, overdue=0, first_title="x" * 200, org_name=ORG,
+                                 hide_details=False)
+    assert msg.body.endswith("… and 1 more")
+    assert len(msg.body) == push_message.TITLE_CLIP + len(" and 1 more")
+
+
+def test_a_read_at_its_cap_says_a_floor_and_never_a_false_split() -> None:
+    msg = push_message.build_due(due_today=1, overdue=199, first_title="Old task", org_name=ORG,
+                                 hide_details=False, capped=True)
+    assert msg.title == "200+ due or overdue"
+    assert msg.body == "Old task and 199+ more"
+
+
+def test_the_summary_is_no_reminder_kind() -> None:
+    assert push_message.DUE_SUMMARY not in push_message.KINDS

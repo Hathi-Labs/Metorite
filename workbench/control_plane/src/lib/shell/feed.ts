@@ -1002,21 +1002,28 @@ export function stateMark(card: Pick<FeedCard, "updated" | "still_open">): strin
   return null;
 }
 
-/** "My Tasks · Overdue": the app's name, a dot, and the state of the card. */
+/**
+ * "My Tasks · Overdue": the app's name, a dot, and the state of the card. The
+ * why line of a task due today says "Due today.", so the state stays out, and
+ * the row does not say it twice (RX-5).
+ */
 export function sourceLine(card: Pick<FeedCard, "app" | "kind">): string {
   const app = FEED_APP_NAMES[card.app as FeedApp] ?? card.app;
-  const state = FEED_KIND_LABELS[card.kind];
+  const state = card.kind === "due_today" ? null : FEED_KIND_LABELS[card.kind];
   return state ? `${app} · ${state}` : app;
 }
 
 /**
  * The time at the right of the source line: WHEN, never how long. The why
- * line already says "Due in 1 h 5 min.", so a duration here only repeats it
+ * line already says "Starts in 20 min.", so a duration here only repeats it
  * in a second format (MD-1b visual review).
  *
  * The member's own day gives the clock, through `fmtClock`, the one clock
  * that Today draws. Yesterday and tomorrow give the word. Six days either
  * side give the short weekday, such as "Mon", and older gives "12 Oct".
+ *
+ * A due date is a day, so a task due today gives no clock (RX-5). The stored
+ * hour means nothing, and the why line says "Due today".
  */
 export function cardTime(card: Pick<FeedCard, "kind" | "at">, nowMs: number): string {
   if (!card.at) return "";
@@ -1025,7 +1032,7 @@ export function cardTime(card: Pick<FeedCard, "kind" | "at">, nowMs: number): st
   const now = new Date(nowMs);
   const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const days = Math.round((day(at) - day(now)) / 86_400_000);
-  if (days === 0) return fmtClock(at);
+  if (days === 0) return card.kind === "due_today" ? "" : fmtClock(at);
   if (days === -1) return "Yesterday";
   if (days === 1) return "Tomorrow";
   if (Math.abs(days) <= 6) return at.toLocaleDateString(undefined, { weekday: "short" });

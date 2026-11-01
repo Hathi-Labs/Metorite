@@ -16,6 +16,12 @@ the org name goes in ``body``.
   the payload. The url still holds the reminder id, which is a UUID and says
   nothing.
 
+**The morning summary** (RX-5, ``calendar_events_reminders.md`` §5.11).
+:func:`build_due` makes the push of ``reach/due_push.py``. It is no reminder,
+so it has no reminder id and stays out of :data:`KINDS`. The title gives the
+counts and the body gives the first title. With the details hidden, the body
+is the org name: a count says nothing about a task.
+
 Fence: ``tests/unit/test_reach_push_message.py``.
 """
 
@@ -50,11 +56,23 @@ _KINDS: dict[str, tuple[Urgency, int]] = {
 #: pins it to ``REMINDER_KINDS`` of the needs path (``routes/shell/needs.py``).
 KINDS = frozenset(_KINDS)
 
+#: The kind of the morning summary of due tasks (RX-5).
+DUE_SUMMARY = "due_summary"
+#: Seconds that a summary stays useful. It holds the morning, and a day start
+#: missed by more than this plans nothing (``push_channel.too_late``).
+DUE_TTL_S = 4 * 3600
+#: A new summary replaces yesterday's on the device, so summaries do not stack.
+DUE_TAG = "due-summary"
+#: My Day is the home of the app.
+MY_DAY_URL = "/"
+
 
 def ttl_of(kind: str) -> int:
     """The time to live of *kind*, in seconds. The send step of RE-9b skips a
     planned row older than this (``reach/push_channel.py``), so a late retry
     never sends a push that the push service would already drop."""
+    if kind == DUE_SUMMARY:
+        return DUE_TTL_S
     if kind not in _KINDS:
         raise KeyError(kind)
     return _KINDS[kind][1]
@@ -113,3 +131,31 @@ def build(kind: str, reminder: Mapping[str, Any], org_name: str,
         title = f"{text} at {_clock(at)}" if at is not None else text
     return PushMessage(title=title, body=org, url=reminder_url(rid), tag=rid,
                        urgency=urgency, ttl=ttl)
+
+
+def due_title(due_today: int, overdue: int, *, capped: bool = False) -> str:
+    """``3 due today, 1 overdue``. A count of 0 stays out. A read that stopped
+    at its cap saw a floor and does not know the split, so it says so."""
+    if capped:
+        return f"{due_today + overdue}+ due or overdue"
+    parts = [f"{n} {words}" for n, words in ((due_today, "due today"), (overdue, "overdue"))
+             if n > 0]
+    return ", ".join(parts)
+
+
+def build_due(*, due_today: int, overdue: int, first_title: str, org_name: str,
+              hide_details: bool, capped: bool = False) -> PushMessage:
+    """The morning summary: the counts, then the first title and ``and 2
+    more``. A tap opens My Day. With the details hidden, the body is the org
+    name and no task title is in the payload."""
+    if hide_details:
+        body = (org_name or "").strip() or "Metorite"
+    else:
+        body = " ".join(str(first_title or "").split()) or "A task"
+        if len(body) > TITLE_CLIP:
+            body = body[: TITLE_CLIP - 1].rstrip() + "…"
+        more = due_today + overdue - 1
+        if more > 0:
+            body = f"{body} and {more}{'+' if capped else ''} more"
+    return PushMessage(title=due_title(due_today, overdue, capped=capped), body=body,
+                       url=MY_DAY_URL, tag=DUE_TAG, urgency="normal", ttl=DUE_TTL_S)

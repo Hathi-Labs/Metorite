@@ -77,6 +77,11 @@ org (:data:`_send_turn`). In the first round, each org may start rows only
 in its fair share of the time left, and always one row. A second round
 gives the time still left to the orgs that still hold rows.
 
+**The morning summary of due tasks** (RX-5). After the steps of an org, the
+tick calls ``reach.due_push.plan_org``, which plans at most one push for a
+member and a day. The send phase of the tick sends it with the reminders. The
+call makes no network call, and it never raises.
+
 **Dark by default.** With ``calendar_reminders`` off, :func:`start_reminder_loop`
 starts no task, and :func:`run_tick` does nothing.
 
@@ -99,7 +104,7 @@ from acb_common import get_logger
 from acb_common.db import bind_tenant, release_tenant, tenant_session
 from sqlalchemy import text
 
-from gateway.reach import push_channel
+from gateway.reach import due_push, push_channel
 from gateway.reminders import slot
 
 _log = get_logger("reminders.loop")
@@ -541,6 +546,7 @@ async def run_tick(now: datetime | None = None) -> dict[str, Counter[str]]:
         token = bind_tenant(org)
         try:
             counts = await run_org(org, now)
+            counts += await due_push.plan_org(org, now or _now(), _stopping.is_set)
             if counts:
                 out[org] = counts
         except Exception as exc:

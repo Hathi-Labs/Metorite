@@ -81,7 +81,7 @@ MAX_TTL_S = 600
 #: The longest life of an answer that holds a countdown (§8.4 item 3).
 COUNTDOWN_TTL_S = 60
 #: The why keys that count down (§8.4 item 3).
-COUNTDOWN_WHY_KEYS = frozenset({"starts_in", "due_soon"})
+COUNTDOWN_WHY_KEYS = frozenset({"starts_in"})
 #: A folded kind that adds a countdown clause to the why line of its card
 #: ("Its block starts in 20 min."). Item 3 names only the why keys, and a
 #: folded ``block_soon`` counts down too.
@@ -270,8 +270,9 @@ def signal_edges(signals: Iterable[Any]) -> list[datetime]:
             out.append(expires)
         due = _instant((getattr(signal, "facts", None) or {}).get("due_at"))
         if due is not None:
-            # The due time itself too: the needs view moves the task from
-            # due today to overdue then.
+            # The due time itself too, for a kind that holds an hour, such as
+            # a promise. A task due today turns overdue at the local midnight
+            # of ``day_edges``, never at a due time (RX-5).
             out += [due, due - SOON]
     return out
 

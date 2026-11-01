@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -36,6 +36,7 @@ from fastapi import HTTPException
 from gateway import capacity as cap
 from gateway import workload
 from gateway.routes.projects import analytics_capacity as route
+from gateway.routes.projects import due_day
 from sqlalchemy import text
 
 from tests.unit._sql_match import hits
@@ -252,6 +253,7 @@ class _FakeDB:
 
 class _Vis:
     unrestricted = True
+    email = "reader@x.test"
 
     @property
     def params(self) -> dict[str, Any]:
@@ -531,7 +533,8 @@ async def _run(seeded: dict[str, Any], *, hr: bool) -> tuple[dict[str, Any], dic
             where = load_open_where(scope_sql, vis)
             load_rows = (
                 await db.execute(text(load_sql(where)),
-                                 load_params(vis, seeded["here"]))
+                                 {**load_params(vis, seeded["here"]),
+                                  "day_start": due_day.day_start("UTC", datetime.now(UTC))})
             ).fetchall()
     finally:
         await eng.dispose()

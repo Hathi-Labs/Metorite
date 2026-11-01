@@ -1221,16 +1221,15 @@ def why(kind: str, facts: dict[str, Any], at: Any, now: datetime, tz: ZoneInfo,
         today: date) -> tuple[str, str]:
     """``(why_key, why)``: the template of a kind, filled from ``facts``."""
     if kind == "overdue":
+        # A due date is a day, so no line names a clock (RX-5). A task is
+        # overdue from the day after its date, so a late task is a day late.
         late = int(facts.get("days_late") or 0)
-        if late >= 1:
-            return "days_late", (f"Due {_when(facts.get('due_at'), tz, today)}. "
-                                 f"{late} day{'' if late == 1 else 's'} late.")
-        return "late_today", f"Due at {_clock(facts.get('due_at'), tz)} today."
+        days = f" {late} day{'' if late == 1 else 's'} late." if late >= 1 else ""
+        when = _when(facts.get("due_at"), tz, today)
+        return "days_late", (f"Due {when}.{days}" if when else "Overdue.")
     if kind == "due_today":
-        due = _instant(facts.get("due_at"))
-        if due is not None and due - now <= feed_rank.SOON:
-            return "due_soon", f"Due in {_duration(math.ceil((due - now).total_seconds() / 60))}."
-        return "due_today", f"Due today at {_clock(due, tz)}."
+        # A sentence, as each why line is: a folded clause follows it.
+        return "due_today", f"Due {_when(facts.get('due_at'), tz, today) or 'today'}."
     if kind == "notification":
         return _note_clause(facts, tz, today)
     if kind == "approval":

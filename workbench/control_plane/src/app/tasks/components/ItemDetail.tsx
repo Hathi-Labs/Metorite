@@ -15,6 +15,7 @@ import {
   durationLabel,
   formatStatus,
   initials,
+  dueLabel,
   isOverdue,
   relativeTime,
 } from "../lib/utils";
@@ -438,7 +439,7 @@ export function TaskDetail({
                 display={item.dueAt
                   ? <span className={`inline-flex items-center gap-1 ${overdue ? "font-medium text-destructive" : ""}`}>
                       {overdue ? <AppIcon name="AlertTriangle" className="h-3 w-3" /> : <AppIcon name="Clock" className="h-3 w-3" />}
-                      {relativeTime(item.dueAt)}
+                      {dueLabel(item.dueAt)}
                     </span>
                   : null}
               >
@@ -661,11 +662,11 @@ export function TaskDetail({
                   display={item.expectedBy
                     ? <span className={`inline-flex items-center gap-1 ${promiseLate ? "font-medium text-destructive" : ""}`}>
                         {promiseLate ? <AppIcon name="AlertTriangle" className="h-3 w-3" /> : <AppIcon name="Clock" className="h-3 w-3" />}
-                        {relativeTime(item.expectedBy)}
+                        {dueLabel(item.expectedBy)}
                       </span>
                     : <span className="text-sm text-muted-foreground/70">
                         {item.dueAt
-                          ? `not promised — judged on due ${relativeTime(item.dueAt)}`
+                          ? `not promised — judged on due ${dueLabel(item.dueAt)}`
                           : "not promised"}
                       </span>}
                 >

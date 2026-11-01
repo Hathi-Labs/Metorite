@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 
 import { CELL_ICON_NAME, CELL_META, type PriorityCell } from "@/app/tasks/lib/priority";
 import { accentForHue } from "@/lib/statusAccent";
-import { TASK_SOURCES, chipKind, taskMeta } from "@/lib/taskCard";
+import { TASK_SOURCES, chipKind, dueLabel, taskMeta } from "@/lib/taskCard";
 
 import type { TaskRow } from "./api";
 import {
@@ -202,7 +202,8 @@ describe("cardChips", () => {
       // the order a reader scans a column in. D78 names the matrix level.
       // Important and due in the past is Urgent.
       ["importance", "Urgent"],
-      ["due", "2h ago"],
+      // A due date is a day, so the chip says the day (RX-5).
+      ["due", dueLabel(hours(-2), NOW)],
       ["subtasks", "1/3"],
       ["tags:ops", "ops"],
     ]);

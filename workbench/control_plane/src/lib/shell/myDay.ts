@@ -11,7 +11,7 @@
  * Fence: `myDay.test.ts`.
  */
 import { NAV_SECTIONS } from "@/lib/nav";
-import { relativeTime } from "@/lib/taskCard";
+import { dueLabel, relativeTime } from "@/lib/taskCard";
 
 import { orderCards } from "./presets";
 import {
@@ -196,13 +196,18 @@ export function shownNeeds(
 }
 
 /**
- * A row's time, in muted words. A due row says when it was or is due, so
- * "Due 2d ago" and "Due in 3h". Any other row says how long ago it came.
+ * A row's time, in muted words. An overdue row says the day it was due, such
+ * as "Due 2d ago", and never a clock (RX-5). A row due today says nothing,
+ * because its group heading says "Due today". Any other row says how long ago
+ * it came.
  */
 export function rowTime(item: Pick<NeedsItem, "kind" | "at">, nowMs = Date.now()): string {
-  const rel = relativeTime(item.at, nowMs);
-  if (!rel) return "";
-  return item.kind === "overdue" || item.kind === "due_today" ? `Due ${rel}` : rel;
+  if (item.kind === "due_today") return "";
+  if (item.kind === "overdue") {
+    const day = dueLabel(item.at, nowMs);
+    return day ? `Due ${day}` : "";
+  }
+  return relativeTime(item.at, nowMs);
 }
 
 /** The member-facing name of each source app. */
