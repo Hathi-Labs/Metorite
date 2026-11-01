@@ -371,7 +371,7 @@ def test_the_mark_comes_before_each_whatsapp_path(monkeypatch) -> None:
 
     async def main() -> bool:
         with no_person_scope():
-            return await request_confirmation("Go?")
+            return await request_confirmation("Go?", non_interactive_default="approve")
 
     assert asyncio.run(main()) is False
 
