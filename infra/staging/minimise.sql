@@ -125,6 +125,9 @@ BEGIN
   -- The member's own words to the assistant (WS-63 PZ-9, personalization.md
   -- §7 point 5). No copy of the profile leaves production.
   UPDATE public.user_settings           SET assistant_profile = NULL;
+  -- The summary of a chat is the member's own words, shortened (WS-63 PZ-35,
+  -- personalization.md §15.5). No copy of it leaves production.
+  UPDATE public.chat_session            SET member_summary = NULL;
 
   -- 6. Nothing credential-shaped is left. Counters (`*_tokens`, `token_cost`)
   --    are numbers, so the text and binary types alone are checked, by type
