@@ -563,6 +563,102 @@ RETURNING s.id
 """
 
 
+# ── The member's own chats (PZ-35, Settings) ─────────────────────────────────
+
+#: The chats that Settings lists and Delete all turns off: the solo chats of
+#: the member in the bound org, each with a summary that is not ``off`` and
+#: holds a text or a follow-up. The member comes from the session.
+_MINE = f"""
+ WHERE lower(regexp_replace(s.user_id, '^[[:space:]]+|[[:space:]]+$', '', 'g')) = :member
+   AND s.organization_id = {_BOUND_ORG}
+   AND {SOLO_ROOM_SQL}
+"""
+_HAS_SUMMARY = f"""
+   AND jsonb_typeof(s.member_summary) = 'object'
+   AND NOT {_OFF.replace("member_summary", "s.member_summary")}
+   AND (COALESCE(s.member_summary ->> 'text', '') <> ''
+        OR (jsonb_typeof(s.member_summary -> 'follow_ups') = 'array'
+            AND jsonb_array_length(s.member_summary -> 'follow_ups') > 0))
+"""
+
+#: Named columns only (fence b).
+LIST_FOR_MEMBER_SQL = (
+    "SELECT s.id, s.title, s.updated_at, s.member_summary FROM chat_session AS s"
+    + _MINE + _HAS_SUMMARY
+    + " ORDER BY s.updated_at DESC, s.id DESC LIMIT :lim"
+)
+
+#: The Delete of one chat, with the member in the WHERE. Another member's id
+#: finds no row.
+OFF_FOR_MEMBER_SQL = (
+    f"UPDATE chat_session AS s SET member_summary = jsonb_build_object("
+    f"'v', {VERSION}, 'off', true)"
+    + _MINE + "   AND s.id = :sid RETURNING s.id"
+)
+
+#: Delete all: each listed chat of the member.
+OFF_ALL_FOR_MEMBER_SQL = (
+    f"UPDATE chat_session AS s SET member_summary = jsonb_build_object("
+    f"'v', {VERSION}, 'off', true)"
+    + _MINE + _HAS_SUMMARY + " RETURNING s.id"
+)
+
+#: The most chats that Settings lists.
+LIST_MAX = 50
+
+
+@dataclass(frozen=True)
+class Listed:
+    """One summary as Settings shows it."""
+
+    session_id: str
+    title: str
+    updated_at: datetime | None
+    text: str
+    follow_ups: tuple[str, ...]
+
+
+def _member_key(member: Any) -> str:
+    who = _key(member)
+    if not who:
+        raise SummaryShapeError("member must be a non-empty address")
+    return who
+
+
+async def list_for_member(db: Any, member: str, limit: int = LIST_MAX) -> list[Listed]:
+    """The summaries of the solo chats of *member*, newest first, at most
+    *limit* (50 at most). A chat that reads ``off`` and a chat with no text
+    and no follow-up stay out. The member comes from the session."""
+    cap = max(1, min(int(limit), LIST_MAX + 1))
+    rows = (await db.execute(text(LIST_FOR_MEMBER_SQL),
+                             {"member": _member_key(member), "lim": cap})).fetchall()
+    out: list[Listed] = []
+    for row in rows:
+        one = stored(row[3])
+        if one is None or one.off or not (one.text or one.follow_ups):
+            continue
+        out.append(Listed(session_id=str(row[0]), title=str(row[1] or ""),
+                          updated_at=row[2], text=one.text, follow_ups=one.follow_ups))
+    return out
+
+
+async def turn_off_for_member(db: Any, session_id: str, member: str) -> bool:
+    """The Delete of a member: the chat reads ``{"v": 1, "off": true}``.
+    The member is in the WHERE, so a chat of another member gives False and
+    stays as it was. The route answers 404 for False."""
+    row = (await db.execute(text(OFF_FOR_MEMBER_SQL),
+                            {"sid": session_id, "member": _member_key(member)})).first()
+    return row is not None
+
+
+async def turn_off_all_for_member(db: Any, member: str) -> int:
+    """Delete all: each listed summary of *member* reads ``off``. Answers
+    the count."""
+    rows = (await db.execute(text(OFF_ALL_FOR_MEMBER_SQL),
+                             {"member": _member_key(member)})).fetchall()
+    return len(rows)
+
+
 async def read(db: Any, session_id: str) -> Stored | None:
     """The summary of the chat *session_id*, or None for no chat and for a
     chat with no summary."""
