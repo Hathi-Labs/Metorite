@@ -22,6 +22,11 @@
         "meaning": "check and approve what the AI wants to send before it goes out",
         "feature": "approvals"
       }
+    ],
+    "nav": [
+      {
+        "href": "/approvals"
+      }
     ]
   }
 }

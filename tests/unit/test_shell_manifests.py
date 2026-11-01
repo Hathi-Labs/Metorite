@@ -15,11 +15,13 @@ from pathlib import Path
 
 import pytest
 from acb_common.app_manifests import shell_manifest
-from acb_common.app_manifests.shell_manifest import ShellManifestError, load_jobs
+from acb_common.app_manifests.shell_manifest import ShellManifestError, load_jobs, load_vocabulary
 from gateway.routes.shell import intent
 
 ROOT = Path(__file__).resolve().parents[2]
 GENERATED = ROOT / "workbench/control_plane/src/lib/shell/jobs.generated.ts"
+VOCABULARY = ROOT / "workbench/control_plane/src/lib/shell/vocabulary.generated.ts"
+ME = ROOT / "apps/services/gateway/gateway/routes/admin/me.py"
 REGISTRY = ROOT / "workbench/control_plane/src/lib/shell/registry.ts"
 INTENT = ROOT / "apps/services/gateway/gateway/routes/shell/intent.py"
 
@@ -176,6 +178,63 @@ def test_no_hand_kept_job_list_remains():
 def test_manifest_files_ship():
     files = sorted(shell_manifest.SHELL_DIR.glob("*.json"))
     assert files, "no shell manifest files found"
-    count = sum(len(json.loads(f.read_text(encoding="utf-8"))["contributes"]["jobs"]) for f in files)
+    count = sum(
+        len(json.loads(f.read_text(encoding="utf-8"))["contributes"].get("jobs", [])) for f in files
+    )
     assert count == len(ORDER) == 23
     assert not (shell_manifest.SHELL_DIR / "__init__.py").exists()
+
+
+def _vocab_write(folder: Path, name: str, contributes: dict) -> None:
+    doc = {"studio": 1, "kind": "system", "id": name, "contributes": contributes}
+    (folder / f"{name}.json").write_text(json.dumps(doc), encoding="utf-8")
+
+
+def test_vocabulary_ts_is_current():
+    want = _generator().render_vocabulary_ts(load_vocabulary())
+    have = VOCABULARY.read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert have == want, "vocabulary.generated.ts is stale: run `uv run python scripts/gen_shell_manifests.py`"
+
+
+def test_vocabulary_counts():
+    vocab = load_vocabulary()
+    assert len(vocab.panes) == 23
+    assert len(vocab.presets) == 8
+    assert len(vocab.cards) == 5
+    assert vocab.cards == ("needs", "today", "next", "team-pulse", "out-today")
+
+
+def test_vocabulary_loader_rejects_bad_files(tmp_path):
+    def attempt(**files: dict):
+        for p in tmp_path.glob("*.json"):
+            p.unlink()
+        for name, contributes in files.items():
+            _vocab_write(tmp_path, name, contributes)
+        return load_vocabulary(tmp_path)
+
+    ok = attempt(a={"nav": [{"href": "/a"}]}, home={"presets": [{"id": "p"}], "cards": [{"key": "c"}]})
+    assert (ok.panes, ok.presets, ok.cards) == (("/a",), ("p",), ("c",))
+    with pytest.raises(ShellManifestError, match="duplicate pane"):
+        attempt(a={"nav": [{"href": "/a"}]}, b={"nav": [{"href": "/a"}]})
+    with pytest.raises(ShellManifestError, match="only 'href'"):
+        attempt(a={"nav": [{"href": "/a", "label": "A"}]})
+    with pytest.raises(ShellManifestError, match=r"no '[?]'"):
+        attempt(a={"nav": [{"href": "/a?do=x"}]})
+    with pytest.raises(ShellManifestError, match=r"home.json only"):
+        attempt(a={"presets": [{"id": "p"}]})
+    with pytest.raises(ShellManifestError, match=r"home.json only"):
+        attempt(a={"cards": [{"key": "c"}]})
+    with pytest.raises(ShellManifestError, match="contributes must hold only"):
+        attempt(a={})
+    with pytest.raises(ShellManifestError, match="contributes must hold only"):
+        attempt(a={"nav": [], "surprise": []})
+    with pytest.raises(ShellManifestError, match="duplicate preset"):
+        attempt(home={"presets": [{"id": "p"}, {"id": "p"}]})
+
+
+def test_no_hand_kept_vocabulary_remains():
+    me = ME.read_text(encoding="utf-8")
+    assert "load_vocabulary()" in me
+    assert '"founder"' not in me
+    assert '"/tasks"' not in me
+    assert '"team-pulse"' not in me

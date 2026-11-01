@@ -79,6 +79,11 @@
         "feature": "crm",
         "note": "CRM-X2 (crm_platform.md section 19.6). Opens a list in the CRM, and saves nothing."
       }
+    ],
+    "nav": [
+      {
+        "href": "/crm"
+      }
     ]
   }
 }

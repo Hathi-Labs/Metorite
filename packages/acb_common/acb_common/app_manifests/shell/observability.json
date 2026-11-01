@@ -1,0 +1,12 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "observability",
+  "contributes": {
+    "nav": [
+      {
+        "href": "/observability"
+      }
+    ]
+  }
+}
