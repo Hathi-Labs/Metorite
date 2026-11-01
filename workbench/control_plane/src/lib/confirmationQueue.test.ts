@@ -83,15 +83,18 @@ describe("every parallel card is kept", () => {
   });
 
   // Mutation caught: a queue view that renders only the first card, or a
-  // pager that cannot reach the last.
-  it("every card is reachable through the pager", () => {
+  // switcher that cannot reach the last. The stack's tabs are the switcher
+  // (owner, 2026-11-01): one tab each, and the shown card's tab is selected.
+  it("every card is reachable through the stack's tabs", () => {
     const cards = run(TEN).cards;
     for (let i = 0; i < cards.length; i++) {
       const html = renderToStaticMarkup(
         createElement(ConfirmationQueue, { cards, onAnswer: () => {}, initialIndex: i }),
       );
       expect(html).toContain(`Task ${i + 1}`);
-      expect(html).toContain(`${i + 1} of 10`);
+      const tabs = html.match(/<button[^>]*role="tab"[^>]*>/g) ?? [];
+      expect(tabs).toHaveLength(10);
+      expect(tabs.findIndex((t) => t.includes('aria-selected="true"'))).toBe(i);
     }
   });
 });
@@ -498,7 +501,10 @@ describe("a card with rows", () => {
         onAnswer: () => {},
       }),
     );
-    expect(html).toContain("1 of 11");
+    // Eleven tabs, the first selected: the stack's switcher (owner, 2026-11-01).
+    const tabs = html.match(/<button[^>]*role="tab"[^>]*>/g) ?? [];
+    expect(tabs).toHaveLength(11);
+    expect(tabs[0]).toContain('aria-selected="true"');
     const approve = /<button[^>]*data-confirmation-approve[^>]*>/.exec(html)?.[0] ?? "";
     expect(approve).toContain('aria-disabled="true"');
   });
