@@ -1,21 +1,27 @@
-"""The access-tables latch never crosses a test boundary (task 1332).
-
-``acb_auth.access._tables_missing`` is a process-wide latch. The first
-``resolve_access`` that fails with "does not exist" sets it. From then on,
-every member in the process resolves to ``is_active=False`` with no query.
+"""Two pieces of process state never cross a test boundary (task 1332).
 
 pr-check run 41305223510 (shard 4/6) failed four admit tests in
 ``test_h3_rls_promotion_rehearsal.py`` and ``test_h6_identity_shadow.py``.
-An earlier suite in the same process had left the latch set. Both suites
-passed alone.
+They passed alone. A replay of that shard found a chain of two leaks:
 
-The guard is ``tests/conftest.py::_reset_the_access_tables_latch``. These two
-tests are its fence (R7). They run in file order. The first sets the latch
-through the real failure path and does not clean up. The second needs it OFF.
+1. ``test_crm_z10d_modules_r8.py`` left DATABASE_URL naming a database that
+   its module then dropped.
+2. ``test_delegated_artifact_card.py`` ran an agent run. Its access read met
+   that missing database and set ``acb_auth.access._tables_missing``, a
+   process-wide latch. From then on, every member resolved to
+   ``is_active=False`` with no query.
 
-Mutation: delete the guard, and the second test fails.
+``tests/conftest.py`` holds one guard for each:
+``_restore_the_database_url`` and ``_reset_the_access_tables_latch``. Each
+pair below is the fence of one guard (R7). The tests run in file order. The
+first test of a pair leaks on purpose and does not clean up. The second
+needs the state back.
+
+Mutation: delete a guard, and the second test of its pair fails.
 """
 from __future__ import annotations
+
+import os
 
 import acb_auth.access as access
 
@@ -70,10 +76,10 @@ _ACTIVE_ROW = {
 async def test_a_test_that_leaves_the_latch_set(monkeypatch) -> None:
     """The leak, made on purpose. ``monkeypatch`` restores the factory and
     the flag, but not the latch: ``resolve_access`` sets it by a ``global``
-    assignment, exactly as a real database with no ``app_user`` does."""
+    assignment. The error text is the one the replay measured."""
     monkeypatch.delenv("IDENTITY_CUTOVER", raising=False)
     monkeypatch.delenv("ACCESS_LEGACY_FALLBACK", raising=False)
-    missing = RuntimeError('relation "app_user" does not exist')
+    missing = RuntimeError('database "acb_tenant_h3rls" does not exist')
     monkeypatch.setattr(access, "_get_session_factory",
                         _factory(_Session(error=missing)))
 
@@ -97,3 +103,27 @@ async def test_the_next_test_starts_with_the_latch_off(monkeypatch) -> None:
     got = await access.resolve_access("live@latch.test", use_cache=False)
     assert got.is_active is True
     assert "member" in got.roles
+
+
+# ── DATABASE_URL ─────────────────────────────────────────────────────────────
+
+#: What DATABASE_URL held before the leak below. ``_MISSING`` stands for unset.
+_MISSING = object()
+_BEFORE_THE_LEAK: list[object] = []
+_DROPPED_DSN = "postgresql+psycopg://acb:acb@127.0.0.1:5434/acb_tenant_dropped"
+
+
+def test_a_test_that_leaves_the_database_url_set() -> None:
+    """The leak, made on purpose: a direct write, as the late exit of a
+    second concurrent ``tenant_engine_scope`` made one."""
+    _BEFORE_THE_LEAK[:] = [os.environ.get("DATABASE_URL", _MISSING)]
+    os.environ["DATABASE_URL"] = _DROPPED_DSN
+
+
+def test_the_next_test_starts_with_the_database_url_it_had() -> None:
+    """Alone, or after a shard boundary, nothing leaked and nothing is owed."""
+    if not _BEFORE_THE_LEAK:
+        return
+    assert os.environ.get("DATABASE_URL", _MISSING) == _BEFORE_THE_LEAK[0], (
+        "DATABASE_URL crossed a test boundary: "
+        "tests/conftest.py::_restore_the_database_url is gone or broken")
