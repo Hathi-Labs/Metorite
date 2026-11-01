@@ -819,11 +819,14 @@ def _needs_row(cond: Condition) -> bool:
 def _drive_rank(cond: Condition) -> int | None:
     """How well the hot rows of *cond* serve as the candidates: 0 for an
     index condition (a text match, a time), 1 for a scan of the field, 2 for
-    any value. None when *cond* cannot give the candidates."""
+    any value, 3 for ``ne`` (it keeps most rows). None when *cond* cannot
+    give the candidates."""
     if not cond.field.hot or _needs_row(cond):
         return None
     if cond.op == "is_empty":
         return None if cond.value else 2
+    if cond.op == "ne":
+        return 3
     col = _HOT_COLUMN[cond.field.type]
     if col == "v_ts" or (col == "v_text" and cond.op in ("eq", "in")):
         return 0

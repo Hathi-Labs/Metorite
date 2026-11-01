@@ -398,12 +398,17 @@ def test_r8_each_op_of_each_type_on_a_hot_and_a_cold_field(world, kind: str) -> 
 
 
 def test_r8_ne_matches_only_records_that_hold_a_value(world) -> None:
-    async def go() -> tuple[set[str], set[str]]:
+    """Alone, a hot `ne` gives the candidates. After `name` (r6, r7 and r8
+    hold a name and no hours), it tests each candidate."""
+    async def go() -> tuple[set[str], set[str], set[str]]:
         hot = await _query(world.a, world.visit, filter=[{"field": "hours", "op": "ne", "value": 5}])
         cold = await _query(world.a, world.visit, filter=[{"field": "c_hours", "op": "ne", "value": 5}])
-        return _labels(world, hot), _labels(world, cold)
+        after = await _query(world.a, world.visit, filter=[
+            {"field": "name", "op": "is_empty", "value": False},
+            {"field": "hours", "op": "ne", "value": 5}])
+        return _labels(world, hot), _labels(world, cold), _labels(world, after)
 
-    assert _run(world.p.app_url, go) == ({"r1", "r3", "r4"}, {"r1", "r3", "r4"})
+    assert _run(world.p.app_url, go) == ({"r1", "r3", "r4"},) * 3
 
 
 def test_r8_lt_and_lte_differ_at_the_boundary(world) -> None:
