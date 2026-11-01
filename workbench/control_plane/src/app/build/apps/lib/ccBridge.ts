@@ -389,14 +389,26 @@ function seg(v: unknown, what: string): string {
   return encodeURIComponent(v);
 }
 
+/**
+ * The words of a refused App Runtime call, for the app to show.
+ *
+ * `error` first: a 429 answers `{error: "ai_budget_exhausted"}`. Then FastAPI's
+ * `detail`, a string such as the 502 of an AI answer with no text (task
+ * 1128). Without it the app saw only "HTTP 502". The status is the last resort.
+ */
+export function refusalText(body: unknown, status: number): string {
+  if (body && typeof body === "object") {
+    const { error, detail } = body as { error?: unknown; detail?: unknown };
+    if (error !== undefined && error !== null) return String(error);
+    if (typeof detail === "string" && detail) return detail;
+  }
+  return `HTTP ${status}`;
+}
+
 async function jsonOrThrow(res: Response): Promise<unknown> {
   const body: unknown = await res.json().catch(() => null);
   if (!res.ok) {
-    const err =
-      body && typeof body === "object" && "error" in body
-        ? String((body as { error: unknown }).error)
-        : `HTTP ${res.status}`;
-    throw new Error(err);
+    throw new Error(refusalText(body, res.status));
   }
   return body;
 }
