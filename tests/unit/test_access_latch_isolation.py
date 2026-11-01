@@ -6,8 +6,8 @@ every member in the process resolves to ``is_active=False`` with no query.
 
 pr-check run 41305223510 (shard 4/6) failed four admit tests in
 ``test_h3_rls_promotion_rehearsal.py`` and ``test_h6_identity_shadow.py``.
-An earlier suite in the same process had left the latch set. Those suites
-passed alone, and on ``main``, because the shard boundary kept the two apart.
+An earlier suite in the same process had left the latch set. Both suites
+passed alone.
 
 The guard is ``tests/conftest.py::_reset_the_access_tables_latch``. These two
 tests are its fence (R7). They run in file order. The first sets the latch

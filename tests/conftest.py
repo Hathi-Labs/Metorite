@@ -322,9 +322,9 @@ def _reset_the_access_tables_latch():
 
     Measured 2026-11-01 (task 1332, pr-check run 41305223510, shard 4): four
     admit tests in ``test_h3_rls_promotion_rehearsal.py`` and
-    ``test_h6_identity_shadow.py`` failed only when a new test file moved
-    the shard boundary. Fifteen suites had each cleared the latch for
-    themselves. This clears it once, for every test.
+    ``test_h6_identity_shadow.py`` failed in one shard order and passed
+    alone. Nineteen suites guarded the latch one by one, and a suite that
+    forgot broke a suite that did not. This guard covers every test.
 
     ``sys.modules`` and not an import, so a test that never loads
     ``acb_auth`` pays nothing. Fence:
