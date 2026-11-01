@@ -158,7 +158,7 @@ EXPECTED_SCOPED = {
     # WS-STU C1 (2026-11-01): migration 323 puts `apps.organization_id` on
     # the numbered ladder, because an object's foreign key names
     # `apps (organization_id, id)`. Production has the column already. The
-    # open migration 321 (WS-PKG PKG-4) holds the same block.
+    # migration 324 (WS-PKG PKG-4, 321 at build) holds the same block.
     "apps",
 }
 
@@ -472,7 +472,7 @@ def test_the_frozen_count_matches_the_baseline() -> None:
     Putting it here as well was the first attempt, and
     `test_every_table_lands_in_exactly_one_bucket` rejected it — correctly.
     """
-    # 93 since 2026-11-01: `apps` left with migrations 321 (WS-PKG PKG-4) and
+    # 93 since 2026-11-01: `apps` left with migrations 324 (WS-PKG PKG-4) and
     # 323 (WS-STU C1), the target of the composite foreign keys of
     # `package_install` and `studio_objects`.
     # 94 since 2026-10-11: ten `crm_*` tables left with migration 241 (WS-53

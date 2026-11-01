@@ -1,7 +1,7 @@
 """WS-PKG PKG-4 — the package registry tables on a real database (R8).
 
 Spec: ``project-docs/specs/package_host.md`` §5.1 and the PKG-4 row of §10.
-Migration: the file that creates ``package_install`` (321 at build). This
+Migration: the file that creates ``package_install`` (321 at build, 324 at merge). This
 slice adds the tables only. No store writes them yet (PKG-5), so each write
 here is raw SQL as the app role, through ``acb_common.db.tenant_session``.
 

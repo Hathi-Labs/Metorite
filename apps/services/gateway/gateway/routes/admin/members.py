@@ -826,7 +826,7 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # WS-PKG PKG-4 (package_host.md §5.1 decision 5): the member's private
     # installs of THIS organization that nobody else sees. `scope_subject` is
     # the owner's address on a private install, and the CHECK
-    # `package_install_private_installer` (321) makes the owner its
+    # `package_install_private_installer` (324) makes the owner its
     # installer. A share with named people stays private (decision 3), and
     # the resolve shows the install to each grantee. So an install of an app
     # that the member shared stays: see `shared_private_app_installs` below.

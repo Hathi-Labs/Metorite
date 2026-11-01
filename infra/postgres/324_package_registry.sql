@@ -1,5 +1,5 @@
 -- ============================================================================
--- 321_package_registry.sql — the run-time registry of installed packages
+-- 324_package_registry.sql — the run-time registry of installed packages
 -- (WS-PKG PKG-4, Metorite task bb82b1f9).
 --
 -- What: two new tables and one new key on `apps`. `package_install` holds one
@@ -68,8 +68,9 @@
 --    `package_install_private_installer` makes the owner of a private
 --    install its installer, so the two sides find each row of the member.
 --
--- The number is taken at build time (R1). On 2026-11-01 origin/main held 320,
--- and no open pull request claimed 321. Check it again at merge. Pinned by
+-- The number was 321 at build time. At merge on 2026-11-01, origin/main held
+-- 320, 322 and 323, so the file took 324 (R1). The comments of 322 and 323
+-- still name 321, and they mean this file. Check it again at merge. Pinned by
 -- tests/unit/test_package_registry_r8.py, which finds this file by CONTENT,
 -- never by number (R1).
 -- ============================================================================
