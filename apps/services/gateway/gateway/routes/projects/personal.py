@@ -2449,6 +2449,17 @@ def _may_read_entries(user: Any) -> bool:
     return bool(check and check("feature:tasks"))
 
 
+def _http_read_wants_entries() -> bool:
+    """An HTTP read of ``/my/calendar`` asks for the entries (§3.4).
+
+    A dependency and not a query parameter, so no request can turn it off.
+    Only an in-process caller passes ``with_entries=False``: the My Day feed
+    (``routes/shell/feed.py``), which reads blocks and never entries, because
+    no lens other than the Calendar reads ``calendar_entries`` (repair round
+    1)."""
+    return True
+
+
 @router.get(
     "/my/calendar", response_model=CalendarRead, response_model_exclude_unset=True,
 )
@@ -2457,6 +2468,7 @@ async def my_calendar(
     end: str,
     include_done: bool = False,
     user: UserContext = Depends(get_current_user),
+    with_entries: bool = Depends(_http_read_wants_entries),
 ) -> CalendarRead:
     """My scheduled blocks in a window — the Calendar app's one read.
 
@@ -2545,7 +2557,7 @@ async def my_calendar(
         await attach_my_parents(db, params, items)
         # CE-4: the entries, in the same session. The flag is read first, so
         # with it off nothing else here runs.
-        if events_enabled() and _may_read_entries(user):
+        if with_entries and events_enabled() and _may_read_entries(user):
             entries = await read_my_entries(db, email, window["start"], window["end"])
 
     items.sort(key=calendar_key)

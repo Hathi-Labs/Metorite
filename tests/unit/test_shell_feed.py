@@ -186,9 +186,10 @@ class FeedFakes(Fakes):
         await self._enter("get_user_settings", user, {"user": user})
         return SimpleNamespace(timezone=self.zone, day_start_hour=self.day_start.get(user.email, 7))
 
-    async def my_calendar(self, start, end, include_done=False, *, user):
+    async def my_calendar(self, start, end, include_done=False, *, user, with_entries=True):
         await self._enter("my_calendar", user, {"user": user, "start": start, "end": end,
-                                                "include_done": include_done})
+                                                "include_done": include_done,
+                                                "with_entries": with_entries})
         lo, hi = datetime.fromisoformat(start), datetime.fromisoformat(end)
         rows = [dict(b) for b in self.blocks.get(user.email, [])
                 if lo <= datetime.fromisoformat(b["scheduled_start"]) < hi
@@ -924,6 +925,9 @@ class TestTheCalendarKinds:
         assert start == fakes._midnight()
         assert end - start == timedelta(days=feed.WEEK_DAYS)
         assert call["include_done"] is True
+        # CE-4 repair round 1: the feed never asks for calendar entries.
+        assert all(kw["with_entries"] is False
+                   for n, _, kw in fakes.calls if n == "my_calendar")
 
 
 class TestTheLinks:
@@ -1169,7 +1173,7 @@ class TestTheCallsStayInStep:
         from gateway.routes.projects.personal import my_calendar
 
         assert list(inspect.signature(my_calendar).parameters) == [
-            "start", "end", "include_done", "user"]
+            "start", "end", "include_done", "user", "with_entries"]
 
     def test_the_self_read_takes_only_the_member(self):
         from gateway.routes.people.selfservice import get_me
