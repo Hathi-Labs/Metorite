@@ -31,6 +31,12 @@
       {
         "href": "/email"
       }
+    ],
+    "scope": [
+      {
+        "href": "/email",
+        "source": "email"
+      }
     ]
   }
 }

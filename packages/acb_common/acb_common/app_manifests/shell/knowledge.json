@@ -90,6 +90,12 @@
       {
         "href": "/knowledge"
       }
+    ],
+    "scope": [
+      {
+        "href": "/knowledge",
+        "source": "knowledge"
+      }
     ]
   }
 }
