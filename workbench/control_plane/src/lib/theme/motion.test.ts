@@ -37,10 +37,19 @@ const MOTION_EXEMPT: Record<string, string> = {
   "chat-pulse-dot": "status",
   // A status loop. The three dots say the agent is working.
   "chat-typing-dot": "status",
-  // `swapPanelForm` in `lib/panelMotion.ts` starts no view transition under
-  // reduced motion, so these two never run for that member.
+  // `swapPanelForm` and `morphAskBox` in `lib/panelMotion.ts` start no view
+  // transition under reduced motion, so these two never run for that member.
   "panel-swap-out": "gated in panelMotion.ts",
   "panel-swap-in": "gated in panelMotion.ts",
+  // `morphAskBox` again: the side panel's picture while the Ask bar's box
+  // flies into it.
+  "ask-panel-in": "gated in panelMotion.ts",
+  // `swapStackCard`: a stack's change of card, which starts no view
+  // transition under reduced motion either.
+  "card-swap-throw": "gated in panelMotion.ts",
+  "card-swap-rise": "gated in panelMotion.ts",
+  "card-swap-return": "gated in panelMotion.ts",
+  "card-swap-sink": "gated in panelMotion.ts",
 };
 
 interface Block {
@@ -167,6 +176,7 @@ const RAW_MOTION = /cubic-bezier\(|duration-\[\d/g;
 const RAW_MOTION_EXEMPT: Record<string, string> = {
   "lib/panelMotion.ts": "the script mirror of --panel-easing. panelMotion.test.ts holds it to globals.css",
   "lib/theme/themes.ts": "the data mirror of globals.css. themes.test.ts holds it",
+  "lib/theme/glassTokens.ts": "the sandbox mirror of the glass --motion-easing. glassTokens.test.ts holds it to globals.css",
 };
 
 const RAW_MOTION_DEBT: Record<string, number> = {

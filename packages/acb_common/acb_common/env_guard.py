@@ -166,6 +166,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # child spends model tokens at the org's cost, so only the owner writes it
     # (work_plan.md §6 D4).
     "SPAWN_SUBAGENTS_ORGS",
+    # WS-63 PZ-33: the orgs that get a summary of each private chat. The job
+    # spends the org's AI credits with no request of the member, so only the
+    # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does
+    # not cover it.
+    "ASSISTANT_CHAT_SUMMARY_ORGS",
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",
@@ -279,7 +284,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     "KNOWLEDGE_",
     # WS-63 PZ-25: the assistant profile. ASSISTANT_PROFILE_ORGS opens it for
     # an org, so a tenant that set it could open it for every org on the box.
-    # The prefix covers ASSISTANT_PROFILE_CARD_WRITES_ORGS (PZ-32) too.
+    # The prefix covers ASSISTANT_PROFILE_CARD_WRITES_ORGS (PZ-32) too. It
+    # does not cover ASSISTANT_CHAT_SUMMARY_ORGS (PZ-33), which is an exact
+    # name above.
     "ASSISTANT_PROFILE_",
     # WS-66 PN-1: web push. VAPID_PRIVATE_KEY signs every push of the box, so
     # a tenant that set it would hold the key of every org's devices.
@@ -301,6 +308,8 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-OB OB-8: the push prompt. PUSH_PROMPT_ORGS opens the chat sheet for an
     # org, so a tenant that set it could open the sheet for every org.
     "PUSH_PROMPT_",
+    # STU-B1: STUDIO_ORGS opens the AI Studio catalog for an org.
+    "STUDIO_",
     # Agent runtime, sandbox and models.
     "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",

@@ -54,6 +54,7 @@ import Button from "@/components/ui/Button";
 import Modal, { type ModalPlacement } from "@/components/ui/Modal";
 import { onClear } from "@/lib/dataCache";
 
+import { usePanelHeld } from "./panelHold";
 import { cardsFor, seesApprovals } from "./myDay";
 import { needsKey } from "./needs";
 import { NeedsList, type NeedsYou, useNeedsYou } from "./NeedsYouCard";
@@ -433,6 +434,8 @@ export function ShellBellHost({ placement }: { placement: ModalPlacement }) {
   const needs = useNeedsYou(allowed, approvals);
   const open = useBellOpen();
   const { refresh } = needs;
+  // While the sidebar is on screen, it shows the needs beside its row.
+  const barHolds = usePanelHeld("needs");
 
   useNeedsPoll(allowed, refresh);
 
@@ -443,7 +446,7 @@ export function ShellBellHost({ placement }: { placement: ModalPlacement }) {
   if (!allowed) return null;
   return (
     <>
-      <BellPanel open={open} onClose={closeBell} needs={needs} placement={placement} />
+      <BellPanel open={open && !barHolds} onClose={closeBell} needs={needs} placement={placement} />
       <UndoToastFallback />
     </>
   );

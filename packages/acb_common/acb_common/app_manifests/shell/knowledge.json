@@ -1,0 +1,102 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "knowledge",
+  "contributes": {
+    "jobs": [
+      {
+        "id": "find-knowledge",
+        "label": "Find in Knowledge",
+        "position": 150,
+        "words": [
+          "knowledge",
+          "wiki",
+          "handbook",
+          "docs",
+          "manual",
+          "policy",
+          "policies",
+          "page"
+        ],
+        "icon": "FileSearch",
+        "app": "/knowledge",
+        "href": "/knowledge/search",
+        "meaning": "find a page, a policy, a handbook entry or a how-to the company wrote down",
+        "feature": "knowledge",
+        "note": "WS-61 KB-12 (knowledge_base.md section 11). The jobs landed with the promotion to live, and not before: held_jobs filters a job by feature and not by launch status. A link job to the Search view."
+      },
+      {
+        "id": "write-page",
+        "label": "Write a page",
+        "position": 160,
+        "words": [
+          "page",
+          "pages",
+          "article",
+          "wiki",
+          "knowledge",
+          "handbook"
+        ],
+        "icon": "FilePlus",
+        "app": "/knowledge",
+        "href": "/knowledge?do=write-page",
+        "meaning": "write a new page of company knowledge, such as a policy, a handbook entry or a how-to",
+        "feature": "knowledge",
+        "note": "WS-61 KB-12. Opens the New page form, and it saves nothing."
+      },
+      {
+        "id": "add-product",
+        "label": "Add a product",
+        "position": 170,
+        "words": [
+          "product",
+          "products",
+          "item",
+          "catalogue",
+          "catalog",
+          "knowledge",
+          "add",
+          "new"
+        ],
+        "icon": "Package",
+        "app": "/knowledge",
+        "href": "/knowledge?do=add-product",
+        "meaning": "add a product of the company to the Knowledge directory, with a name and other names",
+        "feature": "knowledge",
+        "note": "WS-61 KC-8e. Opens the KC-8d Add a product form. The layout listens for the ?do= and does nothing for a member with no space to write in. No fields: the form saves nothing."
+      },
+      {
+        "id": "add-topic",
+        "label": "Add a topic",
+        "position": 180,
+        "words": [
+          "topic",
+          "topics",
+          "subject",
+          "theme",
+          "knowledge",
+          "add",
+          "new"
+        ],
+        "icon": "Tag",
+        "app": "/knowledge",
+        "href": "/knowledge?do=add-topic",
+        "meaning": "add a topic to the Knowledge directory, with a name and other names",
+        "feature": "knowledge",
+        "note": "WS-61 KC-8e. Opens the KC-8d Add a topic form. The layout listens for the ?do= and does nothing for a member with no space to write in. No fields: the form saves nothing."
+      }
+    ],
+    "nav": [
+      {
+        "href": "/knowledge",
+        "feature": "knowledge"
+      }
+    ],
+    "scope": [
+      {
+        "href": "/knowledge",
+        "source": "knowledge"
+      }
+    ]
+  }
+}

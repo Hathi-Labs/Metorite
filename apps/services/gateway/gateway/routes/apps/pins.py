@@ -34,7 +34,10 @@ async def list_pinned_apps(
     user: UserContext = Depends(require_app_user),
 ) -> list[PinnedApp]:
     """This viewer's pinned apps, most-recently-pinned first — the sidebar's
-    query. Deliberately minimal payload (no manifest/status/etc.)."""
+    query. Deliberately minimal payload (no manifest/status/etc.).
+
+    A Studio package (format 'manifest', WS-STU A3) is not an App Workshop
+    app, so its pin never shows. Fence: test_studio_packages_r8.py."""
     async with _tenant_session() as db:
         rows = (await db.execute(
             text(
@@ -42,6 +45,7 @@ async def list_pinned_apps(
                    FROM app_pins p
                    JOIN apps a ON a.id = p.app_id
                    WHERE p.user_email = :email
+                     AND a.format IS DISTINCT FROM 'manifest'
                    ORDER BY p.created_at DESC"""
             ),
             {"email": _uid(user)},

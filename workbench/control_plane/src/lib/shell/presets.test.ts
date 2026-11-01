@@ -44,6 +44,7 @@ import {
 } from "./presets";
 import { JOBS, buildItems, heldPanes, rank } from "./registry";
 import { shellSidebar } from "./shellNav";
+import { GENERATED_CARD_KEYS, GENERATED_PANE_HREFS, GENERATED_PRESET_IDS } from "./vocabulary.generated";
 
 const ALL = PANES.map((p) => p.feature).filter((f): f is string => !!f);
 
@@ -117,8 +118,9 @@ describe("the subset rule: a preset never draws what the member does not hold (Â
 
   it("never pins a page about the member, even when one is named", () => {
     const sections = visibleSections(ALL, true);
+    // Appearance is an app since 2026-11-01 (owner), so a star keeps it.
     const stars = { pins: ["/people/me", "/settings/appearance", "/calendar"], known: PANES.map((p) => p.href) };
-    expect([...starredHrefs(stars, sections)!]).toEqual(["/calendar"]);
+    expect([...starredHrefs(stars, sections)!]).toEqual(["/calendar", "/settings/appearance"]);
   });
 });
 
@@ -266,7 +268,8 @@ describe("a star only where the save can land (round 2)", () => {
     expect([...STARRABLE].sort()).toEqual([...literal].sort());
     expect(PANES.some((p) => p.href.startsWith("/centers/"))).toBe(true);
     expect(STARRABLE.has("/people/me")).toBe(false);
-    expect(STARRABLE.has("/settings/appearance")).toBe(false);
+    // Appearance is a sidebar app a member stars on or off (owner, 2026-11-01).
+    expect(STARRABLE.has("/settings/appearance")).toBe(true);
     // Home is not a nav.ts pane, so it can never be starred away.
     expect(STARRABLE.has("/")).toBe(false);
   });
@@ -379,8 +382,9 @@ describe("the star model: only starred apps show, under their own category", () 
     const few = visibleSections(["tasks"], false);
     const saved = starsToSave(["/calendar"], few, { pins: ["/projects"], known: ["/projects"] });
     expect(saved.pins).toEqual(["/calendar", "/projects"]);
-    // Integrations is held by every member since D-EA-9 (2026-10-14).
-    expect(saved.known).toEqual(["/calendar", "/integrations"]);
+    // Integrations is held by every member since D-EA-9 (2026-10-14), and
+    // Appearance is an ungated app since 2026-11-01 (owner).
+    expect(saved.known).toEqual(["/calendar", "/settings/appearance", "/integrations"]);
   });
 });
 
@@ -390,5 +394,21 @@ describe("card order", () => {
     expect(orderCards(["needs", "today", "next"], ["today", "next"])).toEqual(["today", "next", "needs"]);
     // A card that is not built (Team pulse, NS-5) draws nothing.
     expect(orderCards(["needs", "today"], ["needs", "today", "team-pulse"])).toEqual(["needs", "today"]);
+  });
+});
+
+describe("the vocabulary comes from the shell manifests (WS-PKG PKG-2)", () => {
+  it("lists the same panes as nav.ts", () => {
+    // The /centers/... panes are withdrawn from the surface (D49) and are not in the vocabulary.
+    const hrefs = PANES.map((p) => p.href).filter((h) => !h.startsWith("/centers/"));
+    expect([...new Set(hrefs)].sort()).toEqual([...GENERATED_PANE_HREFS].sort());
+  });
+
+  it("lists the same preset ids as presets.ts, in order", () => {
+    expect([...PRESET_IDS]).toEqual([...GENERATED_PRESET_IDS]);
+  });
+
+  it("lists the same card keys as presets.ts, in order", () => {
+    expect([...CARD_KEYS]).toEqual([...GENERATED_CARD_KEYS]);
   });
 });

@@ -29,7 +29,10 @@ dark surface.
 
 `src/app/icon.svg` is the vector tab icon. It is written by hand from
 `metorite-logo.svg`, not by this script, because it switches black to white
-for a dark browser frame.
+for a dark browser frame. `public/favicon-needs.svg` and
+`public/favicon-reply.svg` are its twins with the dot, for the same reason:
+a dark tab strip lost the black comet of the PNGs (owner, 2026-11-01). They
+copy its path, cut the same ring, and draw the same dot as `with_dot`.
 """
 
 from pathlib import Path

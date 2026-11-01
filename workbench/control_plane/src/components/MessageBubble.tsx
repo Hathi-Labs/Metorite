@@ -40,11 +40,12 @@ import { buildLinkChipIndex } from "@/lib/linkChips";
 import { pillsForTurn, taskRefModeForTurn } from "@/lib/projectsAgent";
 import { useRevalidateOnTools } from "@/lib/taskRefs";
 import AnswerDetails from "@/components/AnswerDetails";
+import { profileMarkShown } from "@/lib/profileMark";
 import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
 import { isEdited } from "@/lib/chatEdit";
 import { cardAnswerOf, cardAnswerText } from "@/lib/cardAnswer";
 import CardAnswerContent from "@/components/CardAnswerContent";
-import { STEER_WAITING, isSteered } from "@/lib/chatSteer";
+import { STEER_WAITING, enterSends, isSteered, touchKeyboard } from "@/lib/chatSteer";
 import ChatSendButton from "@/components/ChatSendButton";
 import Button from "@/components/ui/Button";
 
@@ -451,9 +452,8 @@ function MessageBubble({
     : undefined;
 
   const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Enter inserts a newline (matches the main composer) — only Ctrl/Cmd+
-    // Enter (or the Send button) submits the edited message.
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    // The main composer's keys: Enter sends and Shift+Enter is a new line.
+    if (enterSends({ ...e, isComposing: e.nativeEvent.isComposing }, touchKeyboard())) {
       e.preventDefault();
       void handleEditSubmit();
     } else if (e.key === "Escape") {
@@ -596,7 +596,7 @@ function MessageBubble({
           <div className="max-w-[88%] sm:max-w-[78%]">
             <div
               onDoubleClick={startEdit}
-              className={`px-4 py-2.5 text-[13px] sm:text-sm leading-relaxed bg-primary/15 text-foreground rounded-2xl rounded-tr-md tech-transition ${cardAnswer ? "" : "glass:bg-primary glass:text-primary-foreground "}glass:text-body glass:sm:text-body glass:leading-normal glass:rounded-[20px] glass:rounded-br-[6px] ${startEdit ? `cursor-pointer select-none hover:bg-primary/20${cardAnswer ? "" : " glass:hover:bg-primary"}` : ""}`}
+              className={`px-4 py-2.5 text-[13px] sm:text-sm leading-relaxed bg-primary/15 text-foreground rounded-2xl rounded-tr-md tech-transition ${cardAnswer ? "" : "glass:bg-primary glass:text-primary-foreground "}glass:text-body glass:sm:text-body glass:leading-normal glass:rounded-[16px] glass:rounded-br-[6px] ${startEdit ? `cursor-pointer select-none hover:bg-primary/20${cardAnswer ? "" : " glass:hover:bg-primary"}` : ""}`}
               title={startEdit ? "Double-click to edit" : undefined}
             >
               {cardAnswer ? (
@@ -822,6 +822,20 @@ function MessageBubble({
               sessionId={sessionId}
               onRetry={onRetryMessage ? () => onRetryMessage(message) : undefined}
             />
+          )}
+          {profileMarkShown(message, viewerEmail) && (
+            <Button
+              variant="ghost"
+              size="none"
+              layout="inline-flex items-center"
+              href="/settings/assistant"
+              data-profile-mark=""
+              title="Your profile was used in this answer. Open Assistant settings."
+              className="gap-0.5 px-1 py-0.5 text-[10px]"
+            >
+              <Icon name="UserRound" size={11} />
+              Profile
+            </Button>
           )}
           {tierLabel && <AnswerDetails tierLabel={tierLabel} />}
           <div className="text-[10px] text-muted-foreground">{timestamp}</div>
