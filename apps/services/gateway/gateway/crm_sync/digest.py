@@ -687,7 +687,8 @@ async def digest_after_run(
     if result.reason not in ("off", "not_yet", "done_already"):
         _log.info("crm.digest.step", organization_id=org, reason=result.reason,
                   week=result.week, tries=result.tries, requests=result.requests,
-                  rejected=result.rejected, parts=result.parts, missing=result.missing,
+                  rejected=result.rejected, empty=result.empty,
+                  parts=result.parts, missing=result.missing,
                   request_ids=list(result.request_ids),
                   elapsed_ms=int((time.monotonic() - started) * 1000))
     return result

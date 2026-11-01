@@ -751,6 +751,8 @@ class TestTheStep:
         events = [c["event"] for c in caps]
         assert "crm.digest.empty_answer" in events
         assert "crm.digest.rejected" not in events
+        step = next(c for c in caps if c["event"] == "crm.digest.step")
+        assert step["empty"] == 1 and step["rejected"] == 0
 
     async def test_no_answer_stops_the_step(self, monkeypatch):
         state = _step_fakes(monkeypatch)
