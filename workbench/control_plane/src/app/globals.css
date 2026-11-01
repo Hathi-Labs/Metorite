@@ -2347,6 +2347,14 @@ html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="ope
 .sidebar-rail [data-rail-corner] {
   transition: opacity 100ms ease-out;
 }
+/* No count in the sidebar ever wraps (owner, 2026-11-01: "the numbers ...
+   never go to two lines across all the sidebar pills"). */
+.sidebar-rail [data-rail-corner],
+.sidebar-rail [data-rail-trail],
+.sidebar-rail [data-nav-needs] {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 .sidebar-rail[data-peek="open"] [data-rail-corner] {
   opacity: 0;
 }

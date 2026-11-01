@@ -706,7 +706,7 @@ function AddAppsRow({
           <Icon name="Plus" size={18} className="shrink-0 glass:text-muted-foreground" />
           <RailPeekLabel>Add apps</RailPeekLabel>
           {badge ? <NavBadge count={badge.count} tone={badge.tone} label={badge.label} placement="corner" /> : null}
-          {meta?.kind === "needs" ? <NeedsDot /> : null}
+          {meta?.kind === "needs" ? <NeedsDot text={meta.text} /> : null}
         </button>
       </div>
     );
@@ -837,10 +837,10 @@ function ChatRow({
       {running > 0 ? (
         collapsed ? (
           <>
-            <span data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 rounded-full bg-success px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-success-foreground">
+            <span data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 whitespace-nowrap rounded-full bg-success px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-success-foreground">
               {running}
             </span>
-            <span data-rail-trail="" aria-hidden className="ml-auto inline-flex items-center gap-1 rounded-full bg-success/15 px-1.5 text-[11px] font-semibold tabular-nums text-success glass:text-caption">
+            <span data-rail-trail="" aria-hidden className="ml-auto inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-success/15 px-1.5 text-[11px] font-semibold tabular-nums text-success glass:text-caption">
               <RunningDot />
               {running}
             </span>
@@ -848,7 +848,7 @@ function ChatRow({
         ) : (
           // The count alone, as the Needs you pill has it (owner, 2026-11-01:
           // "2 running" wrapped). The dot says it runs, the label says how many.
-          <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-success/15 px-1.5 text-[11px] font-semibold tabular-nums text-success glass:text-caption">
+          <span className="ml-auto inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-success/15 px-1.5 text-[11px] font-semibold tabular-nums text-success glass:text-caption">
             <RunningDot />
             {running}
           </span>
@@ -1203,9 +1203,9 @@ export function NavLink({
           label={badgeLabel ?? String(badge ?? 0)}
           placement="corner"
         />
-        {/* Folded, the needs count is a quiet dot. The number is in the
-            link's name and in its tooltip. */}
-        {meta?.kind === "needs" ? <NeedsDot /> : null}
+        {/* Folded, the needs count is a bubble on the icon's corner, and a
+            pill at the row's end while the rail peeks. */}
+        {meta?.kind === "needs" ? <NeedsDot text={meta.text} /> : null}
       </Link>
     );
   }
@@ -1325,18 +1325,16 @@ export function NavLink({
 // ---------------------------------------------------------------------------
 
 /**
- * The needs count in a row's trailing slot: a muted number in the type of a
- * `RailRow` count (`rail-row-meta`), with no fill and no colour of its own.
- * A screen reader skips it, because the link's name says it in words
- * (`needsSuffix`). The phone drawer draws the same one.
+ * The needs count in a row's trailing slot: the number in a pill, as the My
+ * Day row draws it (owner, 2026-11-01: "add number pills on the side bar like
+ * my day for email, messages, projects/tasks, calendar"). A screen reader
+ * skips it, because the link's name says it in words (`needsSuffix`). The
+ * phone drawer draws the same one.
  */
 export function NeedsCount({ text }: { text: string }) {
-  // Glass: the number lives on the one Needs you row, so an app's row shows
-  // a quiet dot (owner, 2026-11-01). The link's name and tooltip keep it.
   return (
-    <span aria-hidden data-nav-needs="count" className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">
-      <span className="glass:hidden">{text}</span>
-      <span className="hidden h-1.5 w-1.5 rounded-full bg-muted-foreground glass:inline-block" />
+    <span aria-hidden data-nav-needs="count" className="ml-auto shrink-0 whitespace-nowrap rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
+      {text}
     </span>
   );
 }
@@ -1393,15 +1391,15 @@ function MyDayRow({
       {total > 0 ? (
         collapsed ? (
           <>
-            <span data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 rounded-full bg-primary px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-primary-foreground">
+            <span data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 whitespace-nowrap rounded-full bg-primary px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-primary-foreground">
               {text}
             </span>
-            <span data-rail-trail="" aria-hidden className="ml-auto rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
+            <span data-rail-trail="" aria-hidden className="ml-auto whitespace-nowrap rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
               {text}
             </span>
           </>
         ) : (
-          <span className="ml-auto rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
+          <span className="ml-auto whitespace-nowrap rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
             {text}
           </span>
         )
@@ -1410,13 +1408,19 @@ function MyDayRow({
   );
 }
 
-/** The folded rail's form of the count: a small muted dot on the icon. */
-function NeedsDot() {
+/**
+ * The folded rail's form of the count, as the My Day row has it: a bubble on
+ * the icon's corner, and a pill at the row's end while the rail peeks.
+ */
+function NeedsDot({ text }: { text: string }) {
   return (
-    <span
-      aria-hidden
-      data-nav-needs="dot"
-      className="pointer-events-none absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-muted-foreground"
-    />
+    <>
+      <span aria-hidden data-nav-needs="dot" data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 whitespace-nowrap rounded-full bg-primary px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-primary-foreground">
+        {text}
+      </span>
+      <span aria-hidden data-rail-trail="" className="ml-auto whitespace-nowrap rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
+        {text}
+      </span>
+    </>
   );
 }

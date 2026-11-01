@@ -49,7 +49,7 @@ import Icon, { themedIcon } from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
-import { accentForHue } from "@/lib/statusAccent";
+import { accentForHue, type AccentHue } from "@/lib/statusAccent";
 import { onClear, read } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 import type { ActivityRow } from "@/lib/runActivity";
@@ -122,6 +122,21 @@ import {
 import { joinNeedsPoll } from "./ShellBell";
 
 const DANGER = accentForHue("red");
+
+/**
+ * The hue of each kind on My Day (owner, 2026-11-01: "some theme colours in
+ * the my day view"). One hue per app, from the one status colour vocabulary:
+ * a row's icon tile and its chip's icon wear it. The AI's own group is amber,
+ * as a run that waits is everywhere.
+ */
+const FEED_APP_HUE: Readonly<Record<string, AccentHue>> = {
+  tasks: "green",
+  projects: "green",
+  email: "blue",
+  approvals: "violet",
+  calendar: "red",
+};
+const appHue = (app: string) => accentForHue(FEED_APP_HUE[app] ?? "gray");
 
 /** The empty overlay. Never written: each change makes a new map. */
 const NO_ACTS: ActOverlay = new Map();
@@ -610,13 +625,21 @@ export function FeedColumn({
       <div role="toolbar" aria-label="Show one kind" data-feed-filter="" className="flex flex-wrap items-center gap-1.5">
         <FilterChip active={active === null} label="All" onClick={() => setOnly(null)} />
         {ai.length > 0 ? (
-          <FilterChip active={active === "ai"} icon="Sparkles" label="AI waiting" count={ai.length} onClick={() => setOnly("ai")} />
+          <FilterChip
+            active={active === "ai"}
+            icon="Sparkles"
+            iconClass={accentForHue("amber").text}
+            label="AI waiting"
+            count={ai.length}
+            onClick={() => setOnly("ai")}
+          />
         ) : null}
         {kinds.map(([app, n]) => (
           <FilterChip
             key={app}
             active={active === app}
             icon={feedAppIcon(app)}
+            iconClass={appHue(app).text}
             label={FEED_APP_NAMES[app as FeedApp] ?? app}
             count={n}
             onClick={() => setOnly(app)}
@@ -842,26 +865,23 @@ export function HandledRow({ entry, nowMs }: { entry: HandledEntry; nowMs: numbe
 function FilterChip({
   active,
   icon,
+  iconClass = "",
   label,
   count,
   onClick,
 }: {
   active: boolean;
   icon?: string;
+  /** The kind's hue on its icon (`appHue`). */
+  iconClass?: string;
   label: string;
   count?: number;
   onClick: () => void;
 }) {
+  // `selected` is the pressed state: the theme's soft tint, and aria-pressed.
   return (
-    <Button
-      variant={active ? "secondary" : "ghost"}
-      size="sm"
-      icon={icon}
-      aria-pressed={active}
-      data-feed-chip=""
-      onClick={onClick}
-      className={active ? "" : "text-muted-foreground"}
-    >
+    <Button variant="secondary" size="sm" selected={active} data-feed-chip="" onClick={onClick}>
+      {icon ? <Icon name={icon} size={13} className={`shrink-0 ${iconClass}`} /> : null}
       {label}
       {count !== undefined ? <span className="tabular-nums opacity-70">{count}</span> : null}
     </Button>
@@ -989,11 +1009,11 @@ export function FeedCard({
         data-feed-row=""
         className="flex min-w-0 items-center gap-3 px-3 py-2.5"
       >
-        <span aria-hidden className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground">
+        <span aria-hidden className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${appHue(card.app).soft} ${appHue(card.app).text}`}>
           <Icon name={feedAppIcon(card.app)} size={15} />
         </span>
         <div className="min-w-0 flex-1">
-          <h2 id={headingId} tabIndex={-1} className="flex min-w-0 items-center gap-1.5 text-sm font-medium text-foreground outline-none">
+          <h2 id={headingId} tabIndex={-1} className="flex min-w-0 items-center gap-1.5 rounded-sm text-sm font-medium text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">
             {card.href ? (
               <Button href={card.href} variant="text" size="none" className="min-w-0 truncate text-foreground underline-offset-2 hover:underline">
                 {card.title}
@@ -1010,7 +1030,7 @@ export function FeedCard({
             {mark ? (
               <>
                 {" · "}
-                <span className="font-medium text-foreground" data-feed-mark="">
+                <span className={`font-medium ${card.kind === "overdue" ? DANGER.text : "text-foreground"}`} data-feed-mark="">
                   {mark}
                 </span>
               </>
