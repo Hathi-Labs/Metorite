@@ -26,11 +26,11 @@ class ProviderRateLimited(Exception):
     """A provider refused a request for a rate limit, and its tries are spent.
 
     A typed error of a provider adds this class, as ``GmailRateLimited``
-    does. A cycle that gets it stops, and the next cycle comes soon. Only
-    cycles in a row that read nothing fail, and the loop then backs off
-    (WS-17 EM-G4a item 9, EM-G4b-f3). The scheduler reads it where it degrades
-    other failures, so a rate limit is never degraded (EM-G4b review round 1,
-    F2)."""
+    does. A cycle that gets it stops, and the next cycle comes soon. It is a
+    failure only after ``RATE_LIMIT_SOFT_SECS`` with no progress, and the loop
+    then backs off (WS-17 EM-G4a item 9, EM-G4b-f3). The scheduler reads it
+    where it degrades other failures, so a rate limit is never degraded
+    (EM-G4b review round 1, F2)."""
 
 
 class ProviderAttachmentFailed(Exception):

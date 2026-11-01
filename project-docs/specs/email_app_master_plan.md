@@ -10871,9 +10871,8 @@ holds no Gmail mailbox, and D-EM-35 keeps the Gmail connect hidden on a box with
 > fails the sync. The amendment binds when EM-G4b-f1 merges.
 
 > **Item 9 amended again (2026-11-01, EM-G4b-f3, §12.3.12.9).** A rate limit in a first import, a
-> sweep or the seed stops the cycle and shows no error, while the cycles read mail. After
-> `RATE_LIMIT_MAX_MISSES` cycles in a row that read nothing, it fails the sync again. A deep sync
-> keeps its error.
+> sweep or the seed stops the cycle and shows no error, while the cycles move. After
+> `RATE_LIMIT_SOFT_SECS` with no progress, it fails the sync again. A deep sync keeps its error.
 
 **The rules of the helper (the dispatch of 2026-10-05).**
 
@@ -11053,7 +11052,7 @@ the mutation table are at the end of this section.
 
 > **Later slices.** §12.3.12.8 (EM-G4b-f2) makes the first sweep go on after a rate limit.
 > §12.3.12.9 (EM-G4b-f3) paces each cycle under the quota of Google, and a rate limit stops being a
-> sync failure while the cycles read mail.
+> sync failure while the cycles move.
 
 **Gate.** 🟢 AGENT-SAFE · R8, because the cursor write is SQL. No migration:
 `email_accounts.last_history_id` holds the cursor.
@@ -13666,10 +13665,11 @@ next cycle started again.
 
 #### 12.3.12.9 EM-G4b-f3 — each cycle stays under the quota of Google
 
-**Status.** 🔨 Built on branch `mt-87552e7e-gmail-sweep`, not merged. Task 1223.
+**Status.** 🔨 Built on branch `mt-87552e7e-gmail-sweep`, not merged. Task 1223. The verifier failed
+the first build, and this section holds the fix round.
 
 **Gate.** 🟢 AGENT-SAFE. No migration and no flag. This slice repairs a sync that fails for each
-new large mailbox, so it has no off state.
+new large mailbox, so it has no off state and no kill switch.
 
 **The quota.** The [usage limits of Google](https://developers.google.com/workspace/gmail/api/reference/quota)
 set **6,000 quota units for each user, each project and each minute**. The limit binds a project
@@ -13694,40 +13694,98 @@ window of one minute.
   pace leaves free.
 - **D-G4b-f3-3. The meter spans cycles.** One provider serves one cycle, and the quota does not
   stop at a cycle. `_gmail_next_slot` is a dict in the process. One uvicorn worker runs acb-gateway,
-  as the mailbox locks of the scheduler assume.
-- **D-G4b-f3-4. One cycle reads at most `IMPORT_CYCLE_MAILS` (400).** Each mailbox has its own loop
-  task, so pacing holds up no other mailbox. A paced cycle does hold the mailbox lock, and a member
-  act waits at most `SYNC_LOCK_WAIT_SECS` (600) for it. 400 reads take 300 seconds. Then the cycle
-  stops, the recurring sweep runs, and the next cycle resumes at `import_reached_at`. The first
-  sweep stops at a label in the same way, unless it has no seed.
-- **D-G4b-f3-5. A deep sync does not stop at the share.** It has no resume point. It reads to the
-  end at the pace, and a rate limit keeps its error.
-- **D-G4b-f3-6. A rate limit only delays the mailbox while the cycles read mail.** Such a cycle
-  writes `sync_status = 'idle'`, so the banner of the Email app stays away. The loop comes back
-  after `SYNC_RESUME_SECS` (60), because one minute clears the window of Google. The doubling to
-  3,600 seconds stays for a real failure.
-- **D-G4b-f3-7. A refusal that does not end still shows.** After `RATE_LIMIT_MAX_MISSES` (10)
-  cycles in a row that read nothing, the rate limit is a failure again. The account shows the error,
-  and the loop backs off. A cycle that reads mail clears the count. The email sync log keeps the
-  error of each cycle.
+  as the mailbox locks of the scheduler assume. The key is `_lock_key`, so two forms of one UUID use
+  one meter. `remove_account_sync` drops the entry. `_leave_sync_lock` must not drop it, because
+  that function runs after each cycle.
+- **D-G4b-f3-4. One cycle has one share.** The share is `IMPORT_CYCLE_MAILS` (400), about 300
+  seconds. `mails_read` counts the mail of the cycle, across the import and the sweeps. Each read
+  stops at its next boundary after the share: the import after a batch, the first sweep after a
+  label, and the history read and the reset sweep after a page.
+- **D-G4b-f3-5. A deep sync has no share and keeps each error.** It has no resume point. A download
+  job reads its result through `download_failure`, so a soft result would let Process past run over
+  a range that it did not download.
+- **D-G4b-f3-6. A rate limit only delays the mailbox while the cycles move.** Such a cycle writes
+  `sync_status = 'idle'`, so the banner of the Email app stays away. The loop comes back after
+  `SYNC_RESUME_SECS` (60), because one minute clears the window of Google. The doubling to 3,600
+  seconds stays for a real failure.
+- **D-G4b-f3-7. A cycle moves when the import wrote mail, or when the cursor moved.** Mail in the
+  result is not enough. A first sweep with no seed reads the same INBOX in each cycle and stores
+  nothing, so that sweep does not count as progress.
+- **D-G4b-f3-8. A refusal that does not end still shows.** `RATE_LIMIT_SOFT_SECS` (600) after the
+  first cycle that moved nothing, the rate limit is a failure again. The rule counts time, so clicks
+  of "Sync now" cannot bring the error forward. A raised limit writes its own text. A
+  `rate_limited` result writes `_RATE_LIMIT_ERROR`. A cycle that moves clears the clock.
+- **D-G4b-f3-9. Only an error that IS the rate limit goes away.** A real import error stays, also
+  when the sweep of the same cycle is cut by a limit, or raises one.
+- **D-G4b-f3-10. The seed goes to the row before the import reads.** Phase (d) writes the cursor at
+  the end of a cycle, and a sweep that raises never reaches it. The next cycle then seeded a later
+  value. The import reads only older mail, so mail between the two seeds reached neither read. A
+  test showed this gap before the fix, and `_seed_and_store` closes it. The R8 fence runs it on real
+  SQL.
+- **D-G4b-f3-11. A paused import keeps its sweep.** The dispatch asked to end such a cycle with no
+  sweep, if that is safe. It is not safe. A mailbox of 100,000 mails imports for about 25 hours, and
+  owner answer Q2 says that new mail always syncs. So the sweep runs and shares the budget of the
+  cycle. After a spent share it reads its first page and stops at the page end. The mail of a normal
+  history read is small, so this costs little.
+- **D-G4b-f3-12. A reset sweep stops at its share and resumes.** Google allows about 100 full reads
+  a minute, so this read was never faster. The old code failed at 100 mails and started again from
+  the newest mail, so a large gap never finished. The sweep now stores
+  `{"v":1,"seed":...,"reset":[after,until]}`, where `until` is the oldest mail that it read. The next
+  cycle reads no seed and reads on with `before:`, as the import does. The end writes the seed of the
+  first cycle, so the history read gets each change made during the sweep. A rate limit after a
+  finished page ends the sweep in the same way.
+- **D-G4b-f3-13. A short reset sweep does not move.** A page that fails, or a fetch that a later
+  cycle can fix, writes no new point. So the stored cursor stays, the page reads again, and
+  `CATCH_UP_MAX_MISSES` still abandons a page that always fails. A page whose mail all has one second
+  cannot move the bound, so it counts as short too. With no seed the sweep reads on, because a cursor
+  could not hold its point.
+- **D-G4b-f3-14. An early stop runs no rerun.** The next cycle comes soon, so `_rerun_once` would
+  only hold the lock for a second share.
+
+**The lock hold.** A member act waits at most `SYNC_LOCK_WAIT_SECS` (600) for the mailbox lock. One
+paced read takes 0.75 seconds. A share of 400 mails is not the worst case, because each read stops
+at a boundary:
+
+| Cycle | Reads at the worst | Time |
+|---|---|---|
+| First import, one history page, 25 bodies | 499 + 100 + 25 | About 470 s |
+| History read, 25 bodies | 499 + 25 | About 395 s |
+| Reset sweep or first sweep, 25 bodies | 499 + 25 | About 395 s |
+| A full cycle with no early stop, then a rerun | 399 + 25 + 499 + 25 | About 710 s |
+| Deep sync | No bound | A member chose it |
+
+The rerun row passes the wait, and this slice leaves it. It needs a webhook during a cycle of almost
+one share, and then a second full share of new mail. The waiter then gets a busy result, and its job
+says so. A bound here would need a provider rule in the generic `_rerun_once`, which costs more than
+this rare case is worth.
 
 **Acceptance.** `tests/unit/test_gmail_rate_limits.py` and
 `tests/unit/test_gmail_history_cursor.py`, each in a section EM-G4b-f3, have the fences:
 
 1. Each call that a sync sends costs the units of the table of Google. The pace stays under 6,000.
 2. 200 paced reads leave no window of 60 seconds above the pace. Parallel fetches each book a slot,
-   a new provider waits for the slot of the last one, and two mailboxes have two meters.
+   a new provider waits for the slot of the last one, and two mailboxes have two meters. The key is
+   the key of the mailbox lock. The meter outlives a cycle, and a disconnect drops it.
 3. A cycle sets `quota_mailbox`. A call of a member never waits, also with a full meter.
-4. An import and a first sweep stop after the share of a cycle. One share takes less time than
-   `SYNC_LOCK_WAIT_SECS`. A sweep with no seed reads on.
-5. A rate limit in a first import shows no error, keeps the finished page and leaves the import open.
-6. A deep sync reads past the share, and a rate limit keeps its error.
-7. A refusal that reads nothing shows the error at the last miss. A cycle that reads mail clears
-   the count.
+4. An import, a first sweep and a history read stop after the share. The worst cycle is shorter than
+   `SYNC_LOCK_WAIT_SECS`. The sweep after a spent share reads one page. An early stop runs no rerun.
+   A first sweep with no seed reads on.
+5. A rate limit in a first import shows no error, keeps the finished page and leaves the import
+   open. A real import error stays on both routes.
+6. A deep sync reads past the share and keeps its error, also when the sweep after it raises.
+7. Twelve fast cycles stay soft. A refusal shows the error after `RATE_LIMIT_SOFT_SECS`, on the
+   raised route and on the result route. A sweep that rereads one INBOX is no progress. A cycle that
+   moves clears the clock.
 8. The loop sleeps `SYNC_RESUME_SECS` after an early stop, and the doubling stays for a failure.
+9. A reset sweep stops at its share, goes on with no seed read, and ends with the first seed. It
+   keeps its finished pages at a limit, and a limit on page 1 raises. A short sweep writes no new
+   point. A bound that cannot move counts as short. With no seed it reads on. Other cursor forms
+   do not read a reset cursor.
+10. A seed survives a sweep that raises, in a hermetic test and on real SQL.
 
-**The mutations.** Each mutation broke one line, a fence went red, and the line came back. All 28
-went red at the commit of this section. `test_gmail_rate_limits.py` is R, and
+**The mutations.** Each mutation broke one rule, a fence went red, and the code came back. All 53
+went red. M1 to M8, M11 to M13, M15 to M18 and M23 to M25 ran at `73769de26`, and neither their code
+nor their fence changed. The others ran on the fix round. `test_gmail_rate_limits.py` is R, and
 `test_gmail_history_cursor.py` is H.
 
 | Mutation | Fence that failed |
@@ -13750,24 +13808,57 @@ went red at the commit of this section. `test_gmail_rate_limits.py` is R, and
 | M16 A paused import ends | H `test_an_import_stops_after_its_share_of_a_cycle` |
 | M17 A deep sync stops at the share | H `test_a_deep_sync_reads_past_the_share_and_keeps_its_error` |
 | M18 A deep sync hides its rate limit | H `test_a_deep_sync_reads_past_the_share_and_keeps_its_error` |
-| M19 A refusal never shows | H `test_a_refusal_that_reads_nothing_shows_the_error_at_the_last_miss` |
+| M19 A refusal never shows | H `test_a_refusal_shows_the_error_after_the_soft_time` |
 | M20 A soft import keeps its error | H `test_a_rate_limit_in_a_first_import_shows_no_error_while_it_reads` |
-| M21 A clean cycle keeps the count | H `test_a_cycle_that_reads_mail_clears_the_count` |
+| M21 A clean cycle keeps the clock | H `test_a_cycle_that_moves_clears_the_clock` |
 | M22 A pause does not come soon | H `test_an_import_stops_after_its_share_of_a_cycle` |
 | M23 The loop ignores `resume_soon` | H `test_the_loop_comes_back_soon_after_an_early_stop` |
 | M24 An early stop counts as a failure | H `test_the_loop_comes_back_soon_after_an_early_stop` |
 | M25 An open import moves the watermark | H `test_a_rate_limit_in_a_first_import_shows_no_error_while_it_reads` |
 | M26 A raised limit shows the error | H `test_a_rate_limit_on_the_first_page_stops_the_cycle` |
-| M27 A raised limit forgets the import | H `test_a_limit_after_the_import_wrote_mail_clears_the_count` |
-| M28 A cycle that reads mail counts a miss | H `test_a_cycle_that_reads_mail_clears_the_count` |
+| M27 A raised limit forgets the import | H `test_a_limit_after_the_import_wrote_mail_clears_the_clock` |
+| M28 A cycle that moved keeps the clock | H `test_a_cycle_that_moves_clears_the_clock` |
+| M29 A deep sync goes soft | H `test_a_deep_sync_keeps_its_error_when_the_sweep_raises` |
+| M30 A partial sweep erases an import error | H `test_a_partial_sweep_keeps_a_real_import_error` |
+| M31 A raised limit erases an import error | H `test_a_raised_limit_keeps_a_real_import_error` |
+| M32 The result route writes no error | H `test_a_refusal_with_no_exception_writes_the_error` |
+| M33 Mail in the result counts as progress | H `test_a_refusal_with_no_exception_writes_the_error` |
+| M34 The clock restarts in each cycle | H `test_a_refusal_shows_the_error_after_the_soft_time` |
+| M35 Each refusal is a failure at once | H `test_a_rate_limit_on_the_first_page_stops_the_cycle` |
+| M36 The meter takes the raw id | H `test_a_cycle_keys_the_meter_like_the_mailbox_lock` |
+| M37 A disconnect keeps the meter | H `test_a_disconnect_forgets_the_meter_and_the_clock` |
+| M38 A disconnect keeps the clock | H `test_a_disconnect_forgets_the_meter_and_the_clock` |
+| M39 The meter goes with the lock | H `test_the_meter_outlives_a_cycle` |
+| M40 The history read ignores the share | H `test_the_sweep_after_a_spent_share_reads_one_page` |
+| M41 A rerun follows an early stop | H `test_a_rerun_waits_for_the_next_cycle_after_an_early_stop` |
+| M42 The reset sweep has no share | H `test_a_reset_sweep_stops_at_its_share_and_goes_on` |
+| M43 A reset with no seed stops | H `test_a_reset_sweep_with_no_seed_reads_on` |
+| M44 A short reset moves the point | H `test_a_short_reset_sweep_writes_no_new_point` |
+| M45 A limit loses the reset pages | H `test_a_limit_keeps_the_finished_pages_of_a_reset_sweep` |
+| M46 A limit on page 1 cuts the reset | H `test_a_limit_on_the_first_reset_page_raises` |
+| M47 A resumed reset seeds again | H `test_a_reset_sweep_stops_at_its_share_and_goes_on` |
+| M48 The reset cursor stays unread | H `test_a_reset_sweep_stops_at_its_share_and_goes_on` |
+| M49 A bound that cannot move loops | H `test_a_reset_sweep_that_cannot_move_counts_as_short` |
+| M50 The stopped page stays in the result | H `test_a_limit_keeps_the_finished_pages_of_a_reset_sweep` |
+| M51 The seed waits for phase (d) | H `test_a_seed_survives_a_sweep_that_raises` |
+| M52 A read is not counted | H `test_the_sweep_after_a_spent_share_reads_one_page` |
+| M53 The reset rereads from the newest mail | H `test_a_reset_sweep_stops_at_its_share_and_goes_on` |
 
 **Known limits.**
 
 - A large import takes time. It reads about 66 mails a minute, which is about 4,000 an hour.
 - A deep sync holds the mailbox lock for its whole read. 10,000 mails take about 2 hours.
+- A reset sweep delays new mail. The history read starts when the sweep ends, and a sweep of 5,000
+  mails takes about 90 minutes across its cycles.
+- A soft rate limit on "Sync now" returns ok, with `synced` at 0 or at the count of the import. The
+  member sees no error, and the loop goes on.
 - A call of a member and a hook of the new-mail pipeline do not book on the meter. They spend the
   free 1,200 units, and a heavy burst of them can still get a 403.
-- A restart empties the meter. The first calls after it can get a 403, and the next cycle goes on.
+- The table in `_quota_units` covers the calls of a cycle only. `trash`, `batchModify`, `insert`,
+  `import`, `watch` and `threads` have no price, because a member's provider sends them and sets no
+  `quota_mailbox`.
+- A restart empties the meter and the clock. The first calls after it can get a 403, and the next
+  cycle goes on.
 
 **Verify on production, after the release.**
 
