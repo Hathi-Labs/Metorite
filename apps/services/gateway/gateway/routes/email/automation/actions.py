@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from email_ingestion.llm_cap import llm_slot
+from email_ingestion.llm_cap import LLMBudgetExhausted, llm_slot
 from gateway import outbound_guard
 from gateway.routes.email.automation.assistant import EMAIL_TASK_TIERS
 from gateway.routes.email.automation.drafting import (
@@ -298,7 +298,23 @@ class TemplateFillFailed(Exception):
     error. The raw template, braces and all, never reaches a label, a
     subject or a draft. It is NOT ``LLMUnavailable``: the job keeps the
     actions that it already took.
+
+    The message is what the member reads in History, so it is one of the
+    fixed texts below. It says what happened, why, and what to do next
+    (``DESIGN_SYSTEM.md`` §10). It never holds model or mail text.
     """
+
+
+#: The History text of a template fill that got no text from the model.
+FILL_EMPTY = ("The AI could not fill this rule's template (it gave no text). "
+              "The action did not run. Open the email and run the rule again.")
+#: The History text of a template fill whose model call failed.
+FILL_FAILED = ("The AI could not fill this rule's template (the AI service did "
+               "not answer). The action did not run. Open the email and run the "
+               "rule again.")
+#: The History text of a template fill that the daily budget refused.
+FILL_BUDGET = ("This mailbox reached its daily AI limit. The action did not "
+               "run. Run the rule again tomorrow.")
 
 
 async def _render_template(template: str, email: dict[str, str]) -> str:
@@ -341,12 +357,15 @@ async def _render_template(template: str, email: dict[str, str]) -> str:
                 feature="email.template_fill", job="writing",
             )
         out = (resp.choices[0].message.content or "").strip()
+    except LLMBudgetExhausted as exc:
+        _log.warning("email.template_render_budget")
+        raise TemplateFillFailed(FILL_BUDGET) from exc
     except Exception as exc:
         _log.warning("email.template_render_failed", error=str(exc)[:200])
-        raise TemplateFillFailed("the template fill failed") from exc
+        raise TemplateFillFailed(FILL_FAILED) from exc
     if not out:
         _log.warning("email.template_render_empty")
-        raise TemplateFillFailed("the template fill gave no text")
+        raise TemplateFillFailed(FILL_EMPTY)
     return out
 
 

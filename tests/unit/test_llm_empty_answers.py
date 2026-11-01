@@ -145,21 +145,37 @@ async def test_a_blank_template_fill_raises_and_never_returns_braces(
         return _resp(content), "m"
 
     monkeypatch.setattr(llm_context, "acompletion_with_fallback", fake)
-    with pytest.raises(actions.TemplateFillFailed):
+    with pytest.raises(actions.TemplateFillFailed) as err:
         await actions._render_template('{{choose "urgent", "normal"}}', {"body": "x"})
+    assert str(err.value) == actions.FILL_EMPTY
     assert seen["job"] == "writing"
 
 
-async def test_a_failed_template_fill_raises(monkeypatch) -> None:
+@pytest.mark.parametrize(("error", "text"), [
+    (RuntimeError("vendor down: SECRET"), "FILL_FAILED"),
+    ("budget", "FILL_BUDGET"),
+])
+async def test_a_failed_template_fill_says_why_and_what_next(
+        monkeypatch, error, text) -> None:
+    """The member reads this in History: what happened, why, and the next
+    step (``DESIGN_SYSTEM.md`` §10). A spent daily budget has its own words.
+    No vendor text reaches it (repair round 1)."""
     import acb_llm.context as llm_context
+    from email_ingestion.llm_cap import LLMBudgetExhausted
     from gateway.routes.email.automation import actions
 
+    exc = LLMBudgetExhausted("limit 500") if error == "budget" else error
+
     async def boom(**_kw: Any) -> Any:
-        raise RuntimeError("vendor down")
+        raise exc
 
     monkeypatch.setattr(llm_context, "acompletion_with_fallback", boom)
-    with pytest.raises(actions.TemplateFillFailed):
+    with pytest.raises(actions.TemplateFillFailed) as err:
         await actions._render_template("{{summarize}}", {"body": "x"})
+    message = str(err.value)
+    assert message == getattr(actions, text)
+    assert "SECRET" not in message and len(message) <= 160
+    assert "did not run" in message and "again" in message
 
 
 async def test_a_static_template_asks_no_model() -> None:
@@ -189,7 +205,7 @@ async def test_a_blank_label_fill_fails_the_action_and_writes_no_label(
             account_id="acc-1", errors_out=errors)
     assert done == []
     label.assert_not_awaited()
-    assert errors == [{"type": "LABEL", "error": "the template fill gave no text"}]
+    assert errors == [{"type": "LABEL", "error": actions.FILL_EMPTY}]
 
 
 # ── email: the sender pin prompt says JSON ──────────────────────────────────
