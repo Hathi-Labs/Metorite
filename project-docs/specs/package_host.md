@@ -1,7 +1,7 @@
 # Package host — every app is a package, arranged around the person (WS-PKG)
 
 > **Product:** Metorite · **Feature:** the package host (the shell registry, installs, slots and the arrangement layer) · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. The rest of this spec is not built.
+> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-4 is built dark: the two tables of §5.1, the key on `apps` and the purge rows. No code reads or writes those tables yet. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. The rest of this spec is not built.
 > **Verified against code on 2026-11-01 at `f59a636b5`.** Each path in §12 was read on that commit.
 > **Board:** WS-PKG in `work_plan.md` §2.1. **Decision:** D147. D12, D49, D87, D89, D111, D127, D136, D141 and D146 bind it.
 > **Metorite:** project "Package Host", epic 1234, this spec task 1236. The slices PKG-1 to PKG-20 are tasks 1239 to 1258, in order.
@@ -79,9 +79,9 @@ This spec does not add a second app model. It grows the AI Studio package (`ai_s
 | `overrides` | this spec | The changes an overlay makes (§8.4) |
 | `objects`, `actions`, `views`, `workflows`, `skill` | `ai_studio.md` | Unchanged |
 
-**A2 is built** (#1562). The model and `validate_manifest` are in `packages/acb_common/acb_common/studio_manifest.py`. The JSON Schema is `studio_manifest.schema.json` beside it, and the TypeScript twin is `lib/studio/manifest.ts`. The model refuses an unknown key, so PKG-5 adds the fields of this table to that one model. Do not write a second model.
+**A2 is built** (#1562). The model and `validate_manifest` are in `packages/acb_common/acb_common/studio_manifest.py`. The JSON Schema is `studio_manifest.schema.json` beside it, and the TypeScript twin is `lib/studio/manifest.ts`. The model refuses an unknown key, so PKG-5a added the fields of this table to that one model. Do not write a second model.
 
-**The P0 files hold fragments.** Each file of §3.3 holds the `contributes` block of one built-in app. `shell_manifest.py` (PKG-1) reads the files and checks only what the loader needs. At PKG-5, `validate_manifest` checks the fragments too, and the loader keeps only the file read.
+**The P0 files hold fragments.** Each file of §3.3 holds the `contributes` block of one built-in app. `shell_manifest.py` (PKG-1) reads the files and checks only what the loader needs. Since PKG-5a, `validate_shell_manifests()` runs `validate_manifest` on the fragments too, and the loader keeps only the file read.
 
 ### 3.2 A built-in app
 
@@ -138,6 +138,13 @@ Each point keeps the seam that owns it today. Only the place where the seam read
 
 **A duplicate claim fails at install,** not at render. The install refuses with the point, the key and the package that holds it. This is the Cordis rule: "declaring a slot is claiming it".
 
+**Claim overlap.** Two claims on the same point and key conflict when their scopes overlap:
+- An `org` claim conflicts with every other claim on the same key.
+- A `group:g` claim conflicts with the claims of group g and with org claims.
+- A private claim of member u conflicts with the private claims of u, with org claims, and with claims of the groups of u.
+- Any claim conflicts with a key that a system package holds.
+- `triggers` allows many claims. `slot` allows many claims in PKG-5b, and PKG-14 enforces the limit that the host declares.
+
 ---
 
 ## 5. The registry
@@ -166,7 +173,8 @@ Constraints and indexes of `package_install`:
 - `UNIQUE (organization_id, id)`, the target of the child FK.
 - `UNIQUE (organization_id, app_id, scope_kind, scope_subject)`. One app has one install at each scope.
 - CHECK `version IS NOT NULL OR scope_kind = 'private'`. Only the owner runs a draft.
-- CHECK on `scope_subject`: `org` for `org`, a `group:` prefix for `group`, and a lower-case address with no prefix for `private`.
+- CHECK on `scope_subject`: `org` for `org`, a `group:` prefix for `group`, and a lower-case address for `private`. The address has the email shape of the CHECK in `272_knowledge_pages.sql`: one `@` and no whitespace. It has no `group:` prefix.
+- CHECK `scope_kind <> 'private' OR installed_by = scope_subject`. The owner of a private install made it, so the purge finds each row of a member.
 - A partial index on `(organization_id, ends_at) WHERE ends_at IS NOT NULL`, for the expiry job.
 
 **`package_contribution`**: one row for each claim of one install at one point (§4).
@@ -182,16 +190,20 @@ Constraints and indexes of `package_install`:
 
 The primary key is `(organization_id, install_id, point, key)`.
 
+**Check `app_grants` first.** PKG-5b must confirm in R8 that `app_grants` (from `114_custom_apps.sql`) is tenant-scoped through the generated phases. If it is not, PKG-5b reads it only through a join with the RLS-bound `apps` table.
+
 **Both tables** take the ENABLE, FORCE and policy block of `312_jobs.sql`, in DO blocks, through the `get_db()` seam (R5).
 
 **`apps` gains one key.** The migration adds `UNIQUE (organization_id, id)` to `apps`, so that the composite FK can point at it. `id` is the primary key already, so no row can break it. This is an expand step (R6).
 
+**`apps.organization_id` joins the numbered ladder.** A fresh ladder database has no `apps.organization_id`, because only the generated phases add it (H-104). So the migration first adds the column to a database that does not have it, as 209 and 223 do. Production has the column, and that step does nothing there.
+
 Five decisions that the columns carry:
 1. **`needs_setup` is not stored.** The resolve computes it from the needs (§5.2 step 4), so it can never be stale.
-2. **The scope grammar is D12's.** The code that writes a row (PKG-5 and later) passes each `scope_subject` through `normalize_grant_subject`. That function is in `acb_auth/permissions.py`. Do not copy it.
-3. **A share with named people stays `private`.** The people get rows in `app_grants`, the sharing table of `114_custom_apps.sql`. So `apps.visibility = people` maps to a private install plus grants. The resolve (PKG-5) shows a private install to its owner and to each grantee.
-4. **A duplicate claim is refused in code, not by an index.** Some points allow many claims (`triggers`, `slot`), and a private claim conflicts only with what its owner sees. PKG-5 checks the claims of §4 in the install transaction, under `pg_advisory_xact_lock` on the organization.
-5. **A purge deletes the member's private installs.** Their contributions go by the cascade. An org or group install that the member made stays, and the purge counts it. This follows the rule of `routes/admin/members.py`: "purge the person, keep their work".
+2. **The scope grammar is D12's.** The code that writes a row (PKG-5b and later) passes each `scope_subject` through `normalize_grant_subject`. That function is in `acb_auth/permissions.py`. Do not copy it.
+3. **A share with named people stays `private`.** The people get rows in `app_grants`, the sharing table of `114_custom_apps.sql`. So `apps.visibility = people` maps to a private install plus grants. The resolve (PKG-5b) shows a private install to its owner and to each grantee.
+4. **A duplicate claim is refused in code, not by an index.** Some points allow many claims (`triggers`, `slot`), and a private claim conflicts only with what its owner sees. PKG-5b checks the claims of §4 in the install transaction, under `pg_advisory_xact_lock` on the organization.
+5. **A purge deletes a private install of the member only when nobody else sees it.** Nobody else sees it when no `app_grants` row of its app names another subject. Its contributions go by the cascade. A private install that the member shared with named people stays, and the purge counts it (decision 3). An org or group install that the member made stays too, and the purge counts it. This follows the rule of `routes/admin/members.py`: "purge the person, keep their work".
 
 ### 5.2 One resolve call
 
@@ -204,6 +216,20 @@ Five decisions that the columns carry:
 5. Apply the arrangement (§9).
 
 The workbench caches the answer through `useCachedResource`. A change to an install bumps a version, and the cache reads again.
+
+**Response shape.** The response is `{"version": <content hash>, "contributions": {<point>: [{"key", "source": "system"|"org"|"group"|"private", "install_id": <uuid or null>, "needs_setup": bool, ...payload fields}]}}`.
+
+**Version.** `version` is a hash of the resolved content, so it needs no column. It is an ETag. The workbench reads it again within 10 seconds, so a paused install disappears in time (J3).
+
+**Step 2.** The resolve drops a paused, archived or expired install (`ends_at` in the past). A draft install (`version IS NULL`) shows to its owner only.
+
+**Step 2, private installs.** A private install shows to its owner and to each `app_grants` grantee. It still shows to the grantees after its owner leaves the org.
+
+**Step 3.** A contribution names its feature in `payload.feature`. A contribution with no feature shows to every member, as an unknown href does in the system gates.
+
+**Step 4.** In PKG-5b, a need names a feature or another package. A connection need belongs to a later slice, the connection check of `ai_studio.md` I1.
+
+**Step 5.** The arrangement (§9) is not in PKG-5b. PKG-5b orders by `position`, with the key as the tie-break.
 
 ### 5.3 Disposal
 
@@ -351,7 +377,8 @@ The `CENTERS` rows of `HREF_FEATURES` stay in code (D49).
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
 | **PKG-4** | The two tables of §5.1, the key on `apps`, the generated tenant files, and the purge rows of §5.1 decision 5 | Expand-only migration (R6). R8 in `tests/unit/test_package_registry_r8.py`: org B reads none of org A's rows, an unbound session reads none, a contribution cannot point at another org's install, and a delete of an install deletes its contributions. `test_tenant_coverage.py` passes with a new case `test_the_package_registry_tables_are_tenant_scoped`. `test_admin_member_purge.py` passes with the new rows | HIGH | AGENT-SAFE |
-| **PKG-5** | `GET /shell/manifest`, the resolve of §5.2. The fields of §3.1 join the A2 model, and `validate_manifest` checks the P0 files | R8: a private install shows for its owner only, a group install for its members only. A contribution with a feature the viewer lacks never shows. A duplicate claim fails at install | HIGH | AGENT-SAFE |
+| **PKG-5a** | The fields of §3.1 join the A2 model, and `validate_shell_manifests()` runs `validate_manifest` on the P0 files. **Built.** | `test_every_shell_manifest_passes_the_model` passes. The validator refuses a shell file with an unknown point or an unknown key. A `studio` manifest with no `name` still fails. The schema and the TypeScript twin match | STD | AGENT-SAFE |
+| **PKG-5b** | `GET /shell/manifest`, the resolve of §5.2, and the install store function (no route). PKG-8 adds the install route for Studio apps, and PKG-12 adds it for apps made in chat | R8: a private install shows for its owner and for each named grantee, a group install for its members only, an org install for its org only. A contribution with a feature the viewer lacks never shows. A paused, archived or expired install shows nothing. A duplicate claim makes the store function raise | HIGH | AGENT-SAFE |
 | **PKG-6** | The workbench reads the resolved manifest behind the flag | With the flag off, the shell is byte-for-byte as before. With it on, an org install shows in the sidebar, ⌘K and the bell. Visual review in four contexts | STD | AGENT-SAFE |
 | **PKG-7** | Features from installs pass the one entitlement seam | A feature that only an install declares is visible to a holder of `*`. The `FEATURES` tuple stays the system list | HIGH | AGENT-SAFE |
 | **PKG-8** | Studio H1 and H2 use this path. `ai_studio.md` §14 points here | An installed Studio app reaches every point of §4 through the registry. No Studio-only list exists | STD | AGENT-SAFE |
