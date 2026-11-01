@@ -2,6 +2,7 @@
 
 Status: **P0–P3 SHIPPED to main** (PR #71 merged, commit `7a5c72b2`) —
 **verified against code on 2026-08-03**.
+**2026-11-02 (task 1338):** the day plan can rank through the decision tier. It is BUILT and dark (`my_day.day_plan`, mode `off`). See §14.
 The day/week/month grid, drag-drop + resize timeboxing, energy/capacity prefs,
 the AI "Plan my day" planner, chat-with-calendar tools, auto-reschedule
 roll-over, deadline radar, and overlap detection are all live.
@@ -381,3 +382,52 @@ verify command has been rewritten; the old `-k` form was unsafe.)*
   Top-5 outcomes — has its acceptance, its AGENT-SAFE / OWNER-GATE label and its
   dependencies in **`calendar_focus_os.md` §9**, which is canonical for the
   F2/F3 surface. Do not write a second copy here.
+
+---
+
+## 14. The day plan through the decision tier (task 1338, 2026-11-02)
+
+**Decision.** "Rebuild my day" can rank the candidates with one `acb_llm.decide`
+request, not an LLM call. The owner asked for this on 2026-11-01: "can't it
+be faster using the decision tier?"
+
+**Numbers.** Production, 2026-11-02, 15 candidates, and the note "Reschedule
+all calls after 8 am. Keep deep work first."
+
+| Path | Time | Cost |
+|---|---|---|
+| `decide`, 15 `ScoreQuestion`s | 1.1 to 1.8 s | about USD 0.0001 |
+| `tier-fast` JSON (the old path, no thinking) | 3.2 to 4.9 s | about USD 0.002 |
+
+The score is a continuous number from 0 (first) to 3 (not today). Deep work
+scored 0.07 to 0.65 and calls scored 1.46 to 1.97. The sort followed the note
+in 3 of 3 runs.
+
+**Shape.** `routes/tasks/calendar_decide.py` owns it. It is not a second
+`decide` client: `decide_features.ask` and `shadow` make the call.
+
+- Feature `my_day.day_plan`, mode `off` by default, set by
+  `DECIDE_FEATURE_MODES` and `MY_DAY_DECIDE_ORGS`. It has no flag of its own.
+- The state holds the note for today, the standing preferences, the capacity,
+  the themed windows, the One Thing and every candidate. The task titles are
+  data.
+- One `ScoreQuestion` for each candidate. The levels are `first`, `next`,
+  `later` and `not_today`. The note overrides the standing preferences.
+- More than 16 candidates make one request for each 16, up to 3. Each request
+  carries the full state, so the scores stay comparable. The tasks past 48
+  follow in priority order.
+- The order is the score, and a tie keeps the current order. The One Thing is
+  first. A `not_today` task leaves the plan, unless the plan would be empty.
+  The packer still cuts to the capacity.
+- Energy: a candidate keeps its own tag, and deep work is `high`. The others
+  have no energy, and the packer takes the earliest fitting slot.
+- The row text comes from the level only ("First today.").
+
+**Modes.** `off` runs the LLM call only. `shadow` runs the LLM call, asks
+`decide` beside it and logs the comparison. `on` lets `decide` answer. A
+failure of `decide` (unavailable, timeout past `ON_BOUND_S`, a bad or partial
+answer) falls back to the LLM call, and then to the priority order. The worst
+wait is 10 s plus the LLM call, inside the 30 s limit of the BFF.
+
+Fence: `tests/unit/test_calendar_plan_decide.py`. Any mode other than `off`
+on a box is an owner flip (`enforcement-flip`).

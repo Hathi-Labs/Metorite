@@ -31,6 +31,7 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - ⚠️ A mode change needs a restart. 🔴 **Any value other than empty on a box is OWNER-GATE (H-166)**, and so is `DECIDE_ENABLED`.
    - `_ask_all` holds the one email cap permit. Never call `ask` or `shadow` inside `llm_slot`.
    - Fences: `test_email_decide_shadow.py`, `test_email_decide_questions.py`, `test_email_decide_on.py`, `test_email_llm_cap.py`, `test_email_insights_screen.py`.
+   - `my_day.day_plan` (`DAY_PLAN_FEATURES`) ranks "Rebuild my day" through `routes/tasks/calendar_decide.py`. It is not in `MY_DAY_FEATURES`, which holds the eight feed features. It may run `on`, and the LLM call is its fallback. Fence: `test_calendar_plan_decide.py`.
 0f. routes/workspace.py -- **The session file routes** (`maf_coding_engine.md` §7.5, §16.3).
    - **Every route that reads or writes a file by path opens it with `acb_skills.safe_open`.**
    - A session of a shared agent sees only its own `outputs/<thread slug>/` and `inputs/<thread slug>/`. `agent_paths.is_other_thread_rel` is the one rule. A loose file opens only for the session that began it.
