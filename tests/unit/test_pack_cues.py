@@ -40,9 +40,12 @@ WHEN = {
     "projects": (
         "Load for tasks, projects and my work: find, create, update, assign and complete. "
         "Also for a question on a named project or task."),
-    "projects-plan": "Load for team load, capacity, reports, a timeline or a plan from a goal.",
-    "projects-structure": "Load to change a project's statuses, fields, tags, access or saved views.",
-    "projects-bulk": "Load for two or more tasks at once, and to archive, move or delete.",
+    "projects-plan": "Load for team load, capacity, status reports, a timeline, a plan from a goal, task links, repeats, new projects or export.",
+    "projects-structure": "Load to change statuses, task types, custom fields, tags, project access, saved views, areas, notifications or the intake queue.",
+    "projects-bulk": "Load for many tasks at once, and to archive, delete, move, merge, attach a file, watch, nudge or undo a change.",
+    "projects-reminders": (
+        'Load for "remind me", and to list, move, snooze or resolve a reminder. '
+        "A reminder is not a task."),
     # STU-G1: the Studio builder pack.
     "studio": (
         "Load to build an app in AI Studio: draft, change and check its manifest, "
@@ -131,8 +134,11 @@ def test_the_bulk_rule_reaches_the_persona_of_a_run_that_holds_the_core_pack() -
 
 
 @pytest.mark.parametrize(("label", "base", "bulk_offered"), [
-    ("real base, trim off", 61, False),
-    ("org on the CRM list, trim off", 64, False),
+    # MT-1228: projects-bulk lost the 7 reminder tools (28 to 21), so it fits at
+    # the two real bases. The 70 case keeps the "not offered" path under test.
+    ("real base, trim off", 61, True),
+    ("org on the CRM list, trim off", 64, True),
+    ("a larger base, trim off", 70, False),
     ("trim on", 52, True),
 ])
 def test_the_bulk_rule_has_a_path_at_each_real_base(

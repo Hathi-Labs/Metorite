@@ -4600,8 +4600,8 @@ async def create_personal_task(
     block, YYYY-MM-DD HH:MM in their own zone: "block 8:30 to 10:30 for the
     call with Sharath" is one call. A task with a block is scheduled, so it
     lands as NEXT, not in the inbox. To block time for a task that exists,
-    use set_my_overlay. "Remind me to …" at a time is a reminder, not a
-    task: use set_reminder."""
+    use set_my_overlay. "Remind me to …" is a reminder, not a task, with or
+    without a time: use set_reminder."""
     label = str(title or "").strip()
     if not label:
         return "A task needs a title."
@@ -4927,6 +4927,8 @@ async def set_reminder(
     "YYYY-MM-DD morning": the tool takes the hour the member's day starts.
     When the time is unclear, do not ask first. Save your best guess, and
     say it with one correction: "09:00 tomorrow, or did you mean tonight?".
+    When the member gave no time at all, ask for one in one short line,
+    and offer two or three times that fit.
     kind is action (the default: the member confirms that they did it) or
     notice (it closes when opened, for a fact such as "the office closes
     early"). subject_kind (task, email_thread, crm_contact, wa_chat or
@@ -4935,8 +4937,9 @@ async def set_reminder(
     The member answers one card first. Then quote the time and the zone of
     the reply exactly, such as "Fri 31 Oct, 09:00 IST". Never say that a
     reminder is set when the reply does not say so. When reminders are not
-    on, or this chat cannot ask the member, the reply says so: then make a
-    private task with a block instead (create_personal_task)."""
+    on, or this chat cannot ask the member, the reply says so: tell the
+    member, and make no task in its place. A task is a different thing, so
+    make one only when the member asks for it."""
     gate = await _reminder_gate("set_reminder")
     if gate:
         return gate
