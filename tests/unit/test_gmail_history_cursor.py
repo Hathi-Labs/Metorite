@@ -1782,7 +1782,7 @@ def _row_state(admin: Any, account_id: str, pmid: str) -> tuple[str, str, int] |
 def _account_state(admin: Any, account_id: str) -> dict[str, Any]:
     with admin.connect() as c:
         return dict(c.execute(text(
-            "SELECT last_history_id, sync_status, initial_sync_done "
+            "SELECT last_history_id, sync_status, sync_error, initial_sync_done "
             "FROM email_accounts WHERE id = CAST(:a AS uuid)"),
             {"a": account_id}).mappings().one())
 
@@ -1835,7 +1835,7 @@ class TestTheCursorOnARealDatabase:
            archive and a read mark made in Gmail reach the row, and the
            cursor is the id of the last answer.
         3. A 5xx on one fetch keeps the old position in the stored cursor.
-        4. A rate limit fails the cycle, and the stored cursor stays.
+        4. A rate limit stops the cycle, and the stored cursor stays.
         5. The message syncs, and the cursor moves on."""
         _assert_non_priv(app_engine)
         p = promoted
@@ -1880,13 +1880,15 @@ class TestTheCursorOnARealDatabase:
             assert json.loads(held) == {"v": 1, "history_id": "520",
                                         "held_cycles": 1}
 
-            # 4. A rate limit fails the cycle, and the cursor stays.
+            # 4. A rate limit stops the cycle, and the cursor stays. The
+            # account shows no error, and the log row keeps it (EM-G4b-f3).
             fake.history = [_refuse(429, "rateLimitExceeded")]
             res = await real_cycle(_dsn(p), account, p.org_b)
-            assert "error" in res, res
+            assert res == {"synced": 0, "resume_soon": True}
             state = _account_state(p.admin_engine, account)
             assert state["last_history_id"] == held
-            assert state["sync_status"] == "error"
+            assert state["sync_status"] == "idle"
+            assert state["sync_error"] is None
 
             # 5. The message syncs, and the cursor moves on.
             fake.history = [_ok({"historyId": "540", "history": [_added("m3")]})]
