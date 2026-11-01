@@ -396,6 +396,9 @@ DEFAULT_PLANNING_PROMPT = (
 # tests/unit/test_calendar_plan_llm.py and tests/unit/test_tasks_ai_no_thinking.py.
 PLAN_MODEL = "tier-fast"
 PLAN_MAX_TOKENS = 2000
+#: The BFF proxy gives up at 30 s (`api/projects/[...path]/route.ts`). The rank
+#: stops well before that, and the plan falls to the priority order.
+PLAN_RANK_BOUND_S = 20
 
 
 def _empty_plan_reason(choice: Any, raw: str) -> str | None:
@@ -885,11 +888,17 @@ async def _replan_core(
                 prefs["planning_prompt"], tflines)
 
         # The decision tier ranks the day when `my_day.day_plan` is on (task
-        # 1338). In `off` (the default) this is the one call of before.
-        ordered_res, notes, rank_note = await _calendar_decide.rank_day(
-            _old_rank, cands, req.energy_note, req.capacity_mins, one_thing_id,
-            prefs["planning_prompt"], tflines, member=uid,
-            default_prompt=DEFAULT_PLANNING_PROMPT, rank_fallback=_rank_fallback)
+        # 1338). In `off` (the default) this is the one call of before. The
+        # bound covers decide and its fallback together.
+        try:
+            ordered_res, notes, rank_note = await asyncio.wait_for(
+                _calendar_decide.rank_day(
+                    _old_rank, cands, req.energy_note, req.capacity_mins, one_thing_id,
+                    prefs["planning_prompt"], tflines, member=uid,
+                    default_prompt=DEFAULT_PLANNING_PROMPT, rank_fallback=_rank_fallback),
+                PLAN_RANK_BOUND_S)
+        except TimeoutError:
+            ordered_res, rank_note = None, "the AI model took too long"
         if ordered_res is not None:
             ordered = ordered_res
     if not ordered:
