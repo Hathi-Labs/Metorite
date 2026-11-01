@@ -11,7 +11,9 @@ org. An INSERT writes no ``organization_id``: the column DEFAULT reads the
 bound tenant, and each statement filters on ``_BOUND_ORG`` too.
 
 **The caller owns the transaction.** No function here commits, rolls back or
-opens a transaction. So C1b can put several calls in one transaction. A
+opens a transaction. So C1b can put several calls in one transaction. The
+one SAVEPOINT is the query's (C2a, below), and it ends nothing of the
+caller's transaction. A
 refusal before a statement raises a :class:`ObjectStoreError`, a
 :class:`~acb_common.studio_fields.FieldError` or a
 :class:`~acb_common.studio_fields.RecordError`, and the session stays usable.
@@ -42,13 +44,29 @@ transactions each hold it, and then each waits for the other before it can
 take the exclusive lock of a registry change. That is a deadlock.
 ``test_studio_objects_r8.py`` runs the interleaving that deadlocked before.
 
-**Reads are by id only.** The list, the filter and the sort are C2. The one
-other read is :func:`get_object_by_name`: the door (B2) reads an object of one
-package by the name in its manifest. Each record
-function names the package, the object and the record. A statement finds the
-record only when the object row of the bound org has that package. So a door
-of one package cannot read or write a record of another package, also with a
-true object id.
+**The reads.** :func:`get_record` reads one record by its id. The door (B2)
+reads an object of one package by the name in its manifest
+(:func:`get_object_by_name`). :func:`query_records` (C2a) reads a page of the
+records of one object, with a filter and a sort. Each record function names
+the package and the object. A statement finds a record only when the object
+row of the bound org has that package. So a door of one package cannot read
+or write a record of another package, also with a true object id.
+
+**The query (C2a).** ``acb_common.studio_query`` holds the grammar: the
+shape, the ops of each type and the caps. This module holds the SQL, because
+it is the one module with SQL of the four tables. :func:`build_query` and
+:func:`build_count` are pure, and they bind each field key and each value.
+The SQL text takes a column name and an operator from a constant map only.
+A filter or a sort on a hot field reads ``studio_record_hot``. A filter on a
+field that is not hot reads ``data``, and only on at most
+:data:`~acb_common.studio_query.SMALL_OBJECT` candidate records
+(``hot_or_small``). The statements of a query run in a SAVEPOINT, each under a
+LOCAL ``statement_timeout``. A timeout rolls back the SAVEPOINT only, so the
+caller's transaction stays usable, and the old timeout comes back.
+⚠️ ``v_num`` takes no index condition as the app role, because no ``numeric``
+comparison is LEAKPROOF (``docs/rls_and_indexes.md``). So a number filter
+reads the hot rows of its field. A sort on a number still reads the index in
+order.
 
 ⚠️ The store does not authenticate. It only scopes. The actor of a write is
 an argument that the caller takes from the session, never from request input
@@ -60,12 +78,16 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
+from acb_common import studio_query
+from acb_common.paging import page_line
 from acb_common.studio_fields import (
+    HOT_TEXT_CHARS,
     MAX_FIELDS_PER_OBJECT,
     MAX_HOT_BACKFILL,
     MAX_HOT_PER_OBJECT,
@@ -83,7 +105,9 @@ from acb_common.studio_fields import (
     stored_field,
     validate_record,
 )
+from acb_common.studio_query import Condition, Query, QueryError
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 
@@ -682,3 +706,333 @@ async def delete_record(db: Any, object_id: str, record_id: str, *,
     return (await db.execute(text(_DELETE_RECORD_SQL), {
         "oid": oid, "rid": rid, "pid": pid})).first() is not None
 
+
+# --- the query (C2a) --------------------------------------------------------
+#
+# ⚠️ An f-string below takes only an int index `i`, a module constant, or a
+# local that holds SQL built here. A field key and a value are always binds.
+# `test_studio_query.py` reads the source of each `_q_*` and `build_*`
+# function, and fails on any other name in an f-string.
+
+#: The object of a query, of the package that the caller names. No lock.
+_QUERY_OBJECT_SQL = (
+    "SELECT id FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
+    "AND package_id = CAST(:pid AS uuid)"
+)
+
+#: The columns of a record, in the order that `_record` reads them.
+_QUERY_COLUMNS = (
+    "r.id::text, r.object_id::text, r.data, r.created_by, r.updated_by, "
+    "r.created_at, r.updated_at"
+)
+
+#: Each statement of a query reads the records of one object of one package.
+_QUERY_BASE = (
+    f"r.organization_id = {_BOUND_ORG} AND r.object_id = CAST(:oid AS uuid) "
+    f"AND {_IN_PACKAGE}"
+)
+
+#: The value column of `studio_record_hot` for each type of the op table.
+_HOT_COLUMN: Mapping[str, str] = {
+    "text": "v_text", "email": "v_text", "select": "v_text", "number": "v_num",
+    "money": "v_num", "date": "v_ts", "datetime": "v_ts", "checkbox": "v_bool",
+}
+assert set(_HOT_COLUMN) == set(studio_query.OPS_BY_TYPE), "each type of the op table has a column"
+
+#: The SQL type of each value column.
+_SQL_TYPE: Mapping[str, str] = {
+    "v_text": "text", "v_num": "numeric", "v_ts": "timestamptz", "v_bool": "boolean",
+}
+
+#: The comparison of each op that compares.
+_CMP: Mapping[str, str] = {"eq": "=", "ne": "<>", "lt": "<", "lte": "<=", "gt": ">", "gte": ">="}
+
+_TIMEOUT_READ_SQL = "SELECT current_setting('statement_timeout')"
+#: ``SET LOCAL`` as a function, so the value is a bind.
+_TIMEOUT_SQL = "SELECT set_config('statement_timeout', :ms, true)"
+#: The SQLSTATE of a statement that the timeout cancelled.
+_QUERY_CANCELED = "57014"
+
+
+@dataclass(frozen=True)
+class RecordPage:
+    """One page of the records of a query (C2a)."""
+
+    records: tuple[Record, ...]
+    #: The count of the records that match, when it is below
+    #: :data:`~acb_common.studio_query.TOTAL_CAP`. Else None.
+    total: int | None
+    #: :data:`~acb_common.studio_query.TOTAL_CAP` when the count reached it.
+    #: Else None.
+    total_at_least: int | None
+    offset: int
+    limit: int
+    #: The line of ``paging.page_line``: "" when the page holds everything.
+    line: str
+
+
+def _q_hot_row(i: int) -> str:
+    """The hot row of the field of condition *i*, for the record ``r``."""
+    return (
+        f"SELECT 1 FROM studio_record_hot h{i} "
+        f"WHERE h{i}.organization_id = {_BOUND_ORG} AND h{i}.object_id = CAST(:oid AS uuid) "
+        f"AND h{i}.field_key = CAST(:fk{i} AS text) AND h{i}.record_id = r.id"
+    )
+
+
+def _q_data(kind: str, i: int) -> str:
+    """The value of a field that is not hot, read from ``data`` with the
+    bound key of condition *i*, in the SQL type of its hot column."""
+    kref = f"CAST(:fk{i} AS text)"
+    if kind in ("text", "email", "select"):
+        return f"(r.data ->> {kref})"
+    if kind == "number":
+        return (f"(CASE WHEN jsonb_typeof(r.data -> {kref}) = 'number' "
+                f"THEN CAST(r.data ->> {kref} AS numeric) END)")
+    if kind == "money":
+        return (f"(CASE WHEN jsonb_typeof(r.data -> {kref} -> 'minor') = 'number' "
+                f"THEN CAST(r.data -> {kref} ->> 'minor' AS numeric) END)")
+    if kind == "date":
+        return (f"(CASE WHEN jsonb_typeof(r.data -> {kref}) = 'string' "
+                f"THEN CAST((r.data ->> {kref}) || 'T00:00:00Z' AS timestamptz) END)")
+    if kind == "datetime":
+        return (f"(CASE WHEN jsonb_typeof(r.data -> {kref}) = 'string' "
+                f"THEN CAST(r.data ->> {kref} AS timestamptz) END)")
+    return (f"(CASE WHEN jsonb_typeof(r.data -> {kref}) = 'boolean' "
+            f"THEN CAST(r.data ->> {kref} AS boolean) END)")
+
+
+def _q_compare(expr: str, i: int, cond: Condition, params: dict[str, Any]) -> str:
+    """A comparison of *expr* with the value of condition *i*."""
+    kind = _SQL_TYPE[_HOT_COLUMN[cond.field.type]]
+    if cond.op == "in":
+        params[f"v{i}"] = list(cond.value)
+        return f"{expr} = ANY(CAST(:v{i} AS {kind}[]))"
+    params[f"v{i}"] = cond.value
+    if cond.until is not None:  # eq on a day
+        params[f"u{i}"] = cond.until
+        return f"{expr} >= CAST(:v{i} AS {kind}) AND {expr} < CAST(:u{i} AS {kind})"
+    cmp = _CMP[cond.op]
+    return f"{expr} {cmp} CAST(:v{i} AS {kind})"
+
+
+def _q_text_eq(i: int, value: str, params: dict[str, Any]) -> str:
+    """Text eq on a hot field. ``v_text`` holds the first 256 characters, so a
+    value of 256 or more is checked against ``data`` too."""
+    params[f"v{i}"] = value
+    if len(value) < HOT_TEXT_CHARS:
+        return f"h{i}.v_text = CAST(:v{i} AS text)"
+    params[f"p{i}"] = value[:HOT_TEXT_CHARS]
+    return (f"h{i}.v_text = CAST(:p{i} AS text) "
+            f"AND r.data ->> CAST(:fk{i} AS text) = CAST(:v{i} AS text)")
+
+
+def _q_text_in(i: int, values: Sequence[str], params: dict[str, Any]) -> str:
+    """Text ``in`` on a hot field, with the check of :func:`_q_text_eq`."""
+    longs = [v for v in values if len(v) >= HOT_TEXT_CHARS]
+    params[f"v{i}"] = [v for v in values if len(v) < HOT_TEXT_CHARS]
+    frag = f"h{i}.v_text = ANY(CAST(:v{i} AS text[]))"
+    if not longs:
+        return frag
+    params[f"p{i}"] = [v[:HOT_TEXT_CHARS] for v in longs]
+    params[f"l{i}"] = longs
+    return (f"({frag} OR (h{i}.v_text = ANY(CAST(:p{i} AS text[])) "
+            f"AND r.data ->> CAST(:fk{i} AS text) = ANY(CAST(:l{i} AS text[]))))")
+
+
+def _q_contains(i: int, pattern: str, params: dict[str, Any]) -> str:
+    """Text ``contains`` on a hot field. A ``v_text`` of 256 characters may
+    hold a cut text, so the test then reads ``data``."""
+    params[f"v{i}"] = pattern
+    return (f"((char_length(h{i}.v_text) < {HOT_TEXT_CHARS} "
+            f"AND h{i}.v_text ILIKE CAST(:v{i} AS text) ESCAPE '\\') "
+            f"OR (char_length(h{i}.v_text) = {HOT_TEXT_CHARS} "
+            f"AND r.data ->> CAST(:fk{i} AS text) ILIKE CAST(:v{i} AS text) ESCAPE '\\'))")
+
+
+def _q_hot(i: int, cond: Condition, params: dict[str, Any]) -> str:
+    """Condition *i* on a hot field: a test of its hot row ``h<i>``. A record
+    with no value has no hot row, so only ``is_empty`` matches it."""
+    params[f"fk{i}"] = cond.field.key
+    row = _q_hot_row(i)
+    if cond.op == "is_empty":
+        return f"NOT EXISTS ({row})" if cond.value else f"EXISTS ({row})"
+    col = _HOT_COLUMN[cond.field.type]
+    if col == "v_text" and cond.op == "eq":
+        frag = _q_text_eq(i, cond.value, params)
+    elif col == "v_text" and cond.op == "ne":
+        frag = f"NOT ({_q_text_eq(i, cond.value, params)})"
+    elif col == "v_text" and cond.op == "in":
+        frag = _q_text_in(i, cond.value, params)
+    elif cond.op == "contains":
+        frag = _q_contains(i, cond.value, params)
+    else:
+        frag = _q_compare(f"h{i}.{col}", i, cond, params)
+    return f"EXISTS ({row} AND {frag})"
+
+
+def _q_cold(i: int, cond: Condition, params: dict[str, Any]) -> str:
+    """Condition *i* on a field that is not hot: a test of ``data``. A missing
+    value reads as NULL, so only ``is_empty`` matches it."""
+    params[f"fk{i}"] = cond.field.key
+    if cond.op == "is_empty":
+        if cond.value:
+            return f"(r.data -> CAST(:fk{i} AS text)) IS NULL"
+        return f"(r.data -> CAST(:fk{i} AS text)) IS NOT NULL"
+    expr = _q_data(cond.field.type, i)
+    if cond.op == "contains":
+        params[f"v{i}"] = cond.value
+        return f"{expr} ILIKE CAST(:v{i} AS text) ESCAPE '\\'"
+    return _q_compare(expr, i, cond, params)
+
+
+def _q_where(conditions: Sequence[Condition], params: dict[str, Any]) -> str:
+    parts = [_QUERY_BASE]
+    for i, cond in enumerate(conditions):
+        parts.append(_q_hot(i, cond, params) if cond.field.hot else _q_cold(i, cond, params))
+    return " AND ".join(parts)
+
+
+def build_query(query: Query, *, object_id: str, package_id: str, limit: int,
+                offset: int) -> tuple[str, dict[str, Any]]:
+    """The page statement of *query*, as its SQL and its binds. Pure.
+
+    With no sort, the records come in the order of their id. With a sort, the
+    statement reads the hot rows of the sort field in the order of the index,
+    then the record id. A record with no value of the sort field has no hot
+    row, so it is not in this statement. :func:`query_records` reads those
+    records after the others, in the order of their id.
+    """
+    params: dict[str, Any] = {"oid": object_id, "pid": package_id, "lim": limit, "off": offset}
+    where = _q_where(query.conditions, params)
+    if query.sort is None:
+        return (f"SELECT {_QUERY_COLUMNS} FROM studio_records r WHERE {where} "
+                "ORDER BY r.id LIMIT :lim OFFSET :off"), params
+    params["sk"] = query.sort.field.key
+    col = _HOT_COLUMN[query.sort.field.type]
+    dirn = " DESC" if query.sort.desc else ""
+    return (f"SELECT {_QUERY_COLUMNS} FROM studio_record_hot s JOIN studio_records r "
+            "ON r.organization_id = s.organization_id AND r.object_id = s.object_id "
+            "AND r.id = s.record_id "
+            f"WHERE s.organization_id = {_BOUND_ORG} AND s.object_id = CAST(:oid AS uuid) "
+            f"AND s.field_key = CAST(:sk AS text) AND {where} "
+            f"ORDER BY s.{col}{dirn}, r.id{dirn} LIMIT :lim OFFSET :off"), params
+
+
+def build_count(conditions: Sequence[Condition], *, object_id: str, package_id: str,
+                cap: int) -> tuple[str, dict[str, Any]]:
+    """The count of the records that meet *conditions*, up to *cap*. Pure."""
+    params: dict[str, Any] = {"oid": object_id, "pid": package_id, "cap": cap}
+    where = _q_where(conditions, params)
+    return (f"SELECT count(*) FROM (SELECT 1 FROM studio_records r WHERE {where} "
+            "LIMIT :cap) c"), params
+
+
+def _is_timeout(exc: DBAPIError) -> bool:
+    """True when the LOCAL ``statement_timeout`` cancelled the statement."""
+    orig = getattr(exc, "orig", None)
+    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    return code == _QUERY_CANCELED
+
+
+@asynccontextmanager
+async def _time_limit(db: Any) -> AsyncIterator[None]:
+    """Run the statements of a query in a SAVEPOINT, each under a LOCAL
+    ``statement_timeout`` of :data:`~acb_common.studio_query.TIMEOUT_MS`.
+
+    A timeout aborts the SAVEPOINT only, so the caller's transaction stays
+    usable (C1b joins several store calls in one). The old timeout comes back
+    after each query, also after a success.
+    """
+    old = str((await db.execute(text(_TIMEOUT_READ_SQL))).scalar_one())
+    try:
+        async with db.begin_nested():
+            await db.execute(text(_TIMEOUT_SQL), {"ms": str(studio_query.TIMEOUT_MS)})
+            yield
+    except DBAPIError as exc:
+        if _is_timeout(exc):
+            raise QueryError(studio_query.TIMEOUT, "The query took too long. Narrow the filter.") from None
+        raise
+    finally:
+        await db.execute(text(_TIMEOUT_SQL), {"ms": old})
+
+
+async def _count(db: Any, conditions: Sequence[Condition], oid: str, pid: str, cap: int) -> int:
+    sql, params = build_count(conditions, object_id=oid, package_id=pid, cap=cap)
+    return int((await db.execute(text(sql), params)).scalar_one())
+
+
+async def _rows(db: Any, query: Query, oid: str, pid: str, limit: int,
+                offset: int) -> list[Record]:
+    sql, params = build_query(query, object_id=oid, package_id=pid, limit=limit, offset=offset)
+    return [_record(r) for r in (await db.execute(text(sql), params)).all()]
+
+
+async def _check_hot_or_small(db: Any, query: Query, oid: str, pid: str) -> None:
+    """``hot_or_small``: a filter on a field that is not hot reads ``data``,
+    so it runs only when the hot filters leave at most
+    :data:`~acb_common.studio_query.SMALL_OBJECT` records."""
+    cold = query.cold()
+    if not cold:
+        return
+    small = studio_query.SMALL_OBJECT
+    if await _count(db, query.hot_only(), oid, pid, small + 1) > small:
+        key = cold[0].field.key
+        raise QueryError(
+            studio_query.NOT_INDEXED,
+            f"Field `{key}` is not hot, and the filter leaves more than {small} records to "
+            "check. Turn it hot, or add a filter on a hot field.", key)
+
+
+async def _tail(db: Any, query: Query, oid: str, pid: str, size: int, start: int,
+                head: Sequence[Record]) -> list[Record]:
+    """The records with no value of the sort field. They come after the
+    records with a value, in the order of their id."""
+    assert query.sort is not None
+    skip = 0
+    if not head and start > 0:
+        # The head page is empty, so at most `start` records hold a value.
+        has_value = Condition(query.sort.field, "is_empty", False)
+        skip = start - await _count(db, (*query.conditions, has_value), oid, pid, start)
+    no_value = Condition(query.sort.field, "is_empty", True)
+    return await _rows(db, Query((*query.conditions, no_value)), oid, pid,
+                       size - len(head), skip)
+
+
+async def query_records(db: Any, *, package_id: str, object_id: str, filter: Any = None,
+                        sort: Any = None, limit: Any = None,
+                        offset: Any = None) -> RecordPage | None:
+    """One page of the records of the object *object_id* of the package
+    *package_id*, with a filter and a sort (C2a). Answers None when the bound
+    org holds no such object in that package.
+
+    ``acb_common.studio_query`` checks the input. A refusal raises
+    :class:`~acb_common.studio_query.QueryError`, and the session stays
+    usable. A record with no value of the sort field comes after the records
+    with a value. The total is exact below
+    :data:`~acb_common.studio_query.TOTAL_CAP`.
+    """
+    oid = _uuid(object_id, "object_id")
+    pid = _uuid(package_id, "package_id")
+    start, size = studio_query.page_bounds(offset, limit)
+    studio_query.check_shape(filter, sort)
+    if (await db.execute(text(_QUERY_OBJECT_SQL), {"oid": oid, "pid": pid})).first() is None:
+        return None
+    query = studio_query.parse_query(await _fields(db, oid), filter, sort)
+    async with _time_limit(db):
+        await _check_hot_or_small(db, query, oid, pid)
+        count = await _count(db, query.conditions, oid, pid, studio_query.TOTAL_CAP)
+        exact = count < studio_query.TOTAL_CAP
+        rows = await _rows(db, query, oid, pid, size, start)
+        if query.sort is not None and len(rows) < size and (not exact or start + len(rows) < count):
+            rows += await _tail(db, query, oid, pid, size, start, rows)
+    shown = len(rows)
+    reach = studio_query.MAX_OFFSET
+    if exact:
+        line = page_line(count, start, shown, noun="records", reach=reach)
+    else:
+        line = page_line(None, start, shown, more=shown == size, noun="records", reach=reach)
+    return RecordPage(records=tuple(rows), total=count if exact else None,
+                      total_at_least=None if exact else count, offset=start, limit=size,
+                      line=line)

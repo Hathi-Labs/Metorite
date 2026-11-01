@@ -289,13 +289,20 @@ def test_the_migration_holds_the_rls_the_keys_and_the_caps() -> None:
 
 
 def test_the_store_holds_no_route_and_no_transaction() -> None:
-    """The caller owns the transaction, so C1b can join several calls."""
+    """The caller owns the transaction, so C1b can join several calls.
+
+    The one exception is the SAVEPOINT of the query (C2a): `_time_limit`
+    opens it with `begin_nested()`, and it ends nothing of the caller's
+    transaction. No other function opens one."""
     src = _STORE.read_text(encoding="utf-8")
     assert "APIRouter" not in src and "gateway.routes" not in src
     found: list[str] = []
-    for node in ast.walk(ast.parse(src)):
-        if isinstance(node, ast.Attribute) and node.attr in (
-                "commit", "rollback", "begin", "begin_nested"):
+    tree = ast.parse(src)
+    nested = [f.name for f in tree.body if isinstance(f, ast.FunctionDef | ast.AsyncFunctionDef)
+              for n in ast.walk(f) if isinstance(n, ast.Attribute) and n.attr == "begin_nested"]
+    assert nested == ["_time_limit"], nested
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in ("commit", "rollback", "begin"):
             found.append(node.attr)
         if isinstance(node, ast.Name) and node.id in (
                 "tenant_session", "get_db", "get_session_factory"):
