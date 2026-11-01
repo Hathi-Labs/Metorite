@@ -2049,8 +2049,8 @@ query.
 | Route | Does |
 |---|---|
 | `GET /auth/me/assistant-profile/summaries` | The member's summaries, newest first: the chat id, the title, the date, the text and the follow-ups. At most 50 in a page |
-| `DELETE /auth/me/assistant-profile/summaries/{session_id}` | Delete one. A chat that the member does not own is a 404. The chat reads `{"v": 1, "off": true}` after it, so no job writes it again |
-| `DELETE /auth/me/assistant-profile/summaries` | Delete all. Each summary turns `off`. A new chat still gets a summary while the switch is on |
+| `DELETE /auth/me/assistant-profile/summaries/{session_id}` | Delete one, after a confirm in Settings. A chat that the member does not own is a 404. The summary goes and the chat keeps a waterline at its newest row (`clear_one_for_member`), so no summary comes until a new message comes. A chat that reads `off` stays `off`. A chat write (`X-Profile-Via`) is a 422 |
+| `DELETE /auth/me/assistant-profile/summaries` | Delete all, after a confirm that names the count. It calls `clear_for_member`, as Forget does. A new message may bring a new summary while the switch is on |
 
 The routes sit in `apps/services/gateway/gateway/routes/admin/assistant_profile.py` (`me_router`), beside
 the profile routes. They call `assistant_summaries`, the one module.
@@ -2082,7 +2082,7 @@ section shows only when the flag is on for the org.
 - A chat that stops being solo loses its summary. The room routes call
   `assistant_summaries.clear_on_share` after a participant joins and after
   the visibility changes (PZ-33a, P2-b).
-- The export (`apps/services/gateway/gateway/routes/admin/assistant_profile.py:826`) adds the summaries.
+- The export (`apps/services/gateway/gateway/routes/admin/assistant_profile.py:826`) adds the summaries and a `more` key. With no profile but with summaries, it prints no "keeps nothing" line.
 - The staging copy blanks the column, as it blanks the profile
   (`infra/staging/minimise.sql:124`).
 
@@ -2370,7 +2370,7 @@ decision are in this table:
 | **D-PZ-30** | Which reader gives the open tasks? | `my_due_tasks`, the reader of the needs feed and so of the day's brief. No `loop.snapshot` on a chat turn |
 | **D-PZ-31** | How does a promise become a task? | `create_personal_task` with `offer=true`: once in a chat, typed words only, on the web, on its one card |
 | **D-PZ-32** | Do facts get dates? | Yes: `since` and `superseded_by`. A replaced fact stays, hidden |
-| **D-PZ-33** | What do Delete and Off do? | Delete removes the summary, and that chat gets no new one. Off stops new summaries and the chats of the briefing. The kept ones stay in the list until the member deletes them |
+| **D-PZ-33** | What do Delete and Off do? | **Owner decision, 2026-11-02, in chat (it overrules the first default):** Delete removes the summary now, and a new one may come later. Delete writes no `off`. The chat keeps a waterline, so a new summary comes only after a new message. Off stops new summaries and the chats of the briefing. The kept ones stay in the list until the member deletes them |
 | **D-PZ-34** | Where does long-term recall live? | MEM-2, one full-text search over past chats and their summaries. Mem0 and Graphiti stay retired (D132) |
 | **D-PZ-35** | Who may turn the summary job on in production? | The owner only (§6 D4), because the job spends each org's credits with no request of the member. Each other flip of §15 is gate `enforcement-flip` |
 
