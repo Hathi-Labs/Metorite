@@ -66,8 +66,9 @@ from tests.unit.test_tool_packs_choice import (
 REPO = Path(__file__).resolve().parents[2]
 PA = "projects-assistant"
 PROJECTS_DIR = REPO / "apps" / "agents" / "agent-projects"
-SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk")
-SIZES = {"projects": 23, "projects-plan": 35, "projects-structure": 34, "projects-bulk": 28}
+SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "projects-reminders")
+SIZES = {"projects": 23, "projects-plan": 35, "projects-structure": 34, "projects-bulk": 21,
+         "projects-reminders": 7}
 UUID = tc.UUID
 
 #: The eight tools that make ONE card for a batch, raised inside the tool body.
@@ -422,7 +423,8 @@ def test_the_bare_words_load_no_projects_pack(words: str) -> None:
 def test_the_projects_words_leave_out_the_bare_words() -> None:
     """Mutation: a bare word joins a list -> red."""
     bare = {"project", "projects", "calendar", "plan", "report", "delete", "reply",
-            "note", "deal", "pipeline", "email", "mail", "draft", "status", "view"}
+            "note", "deal", "pipeline", "email", "mail", "draft", "status", "view",
+            "nudge", "undo", "revert", "senders", "sender"}
     for slug in SLUGS:
         words = set(tp.PACKS[slug].words)
         assert words and not words & bare, (slug, words & bare)
@@ -535,7 +537,7 @@ def test_the_core_rules_name_the_other_packs_and_no_tool_of_them() -> None:
     assert "call load_skill_tools with the pack that you need" not in rules.lower()
     for slug in SLUGS[1:]:
         assert tp.PACKS[slug].rules.count("Use them yourself.") == 1
-    assert max(len(tp.rules_for(slug)) for slug in SLUGS) < 3400  # OA-8g: was 3300
+    assert max(len(tp.rules_for(slug)) for slug in SLUGS) < 3450  # OA-8g: was 3300; MT-1228: was 3400
 
 
 # ── 7. A covered organization ───────────────────────────────────────────────
@@ -1021,6 +1023,11 @@ def test_a_mixed_email_turn_keeps_email_and_the_core_pack_at_the_measured_base(
     Mutation: restore the unconditional drop -> only email loads -> red."""
     base = _real_base(orchestrator)
     choice = tp.choose(_surface_turn(words, surface), allowed=EVERY, base_tools=base)
+    if words == "Archive tasks named in this email":
+        # MT-1228: projects-bulk is 21 tools now, so email (31) + bulk fits the
+        # cap at base 56 and the bulk pack takes the place of the core pack.
+        assert choice.slugs == ("email", "projects-bulk"), (words, choice)
+        return
     assert choice.slugs[:2] == ("email", "projects") or (
         choice.slugs == ("email", "projects", "projects-bulk")), (words, choice)
     assert "projects" in choice.slugs and "projects" not in choice.skipped
@@ -1034,3 +1041,46 @@ def test_a_dropped_core_pack_is_recorded_in_skipped() -> None:
         allowed=EVERY, base_tools=56)
     assert choice.slugs == ("projects-plan",) and "projects" in choice.skipped
 
+
+# ── MT-1228. "Remind me" loads a pack that holds set_reminder ───────────────
+
+REMIND_TURNS = (
+    "remind me to call Ravi at 5pm",
+    "set a reminder for the board meeting",
+    "nudge me tomorrow at 9 about the invoice",
+    "don't let me forget to send the quote",
+    "Do not let me forget the audit",
+    "ping me at noon",
+)
+
+
+@pytest.mark.parametrize("words", REMIND_TURNS)
+def test_a_remind_turn_loads_a_pack_that_holds_set_reminder(words: str) -> None:
+    """Task 1228. A "remind me" turn made a private task, because the seven
+    reminder tools sat in ``projects-bulk`` and no reminder word loaded it.
+    Mutation: move ``set_reminder`` back to ``projects-bulk``, or drop the
+    reminder words -> no chosen pack holds the tool -> red."""
+    for base in (56, 75):
+        choice = tp.choose(_surface_turn(words), allowed=EVERY, base_tools=base)
+        held = [slug for slug in choice.slugs if "set_reminder" in _family(slug)]
+        assert held, (words, base, choice)
+
+
+def test_the_reminder_tools_are_in_one_pack_that_the_words_load() -> None:
+    """Mutation: split the seven tools over two packs, or lose one -> red."""
+    seven = {"list_reminders", "promote_reminder", "reopen_reminder",
+             "reschedule_reminder", "resolve_reminder", "set_reminder",
+             "update_reminder"}
+    assert set(_family("projects-reminders")) == seven
+    assert not seven & set(_family("projects-bulk"))
+    assert not seven & set(_family("projects"))
+
+
+@pytest.mark.parametrize("words", [
+    "create a task to call Ravi", "show my overdue tasks", "add a task for the quote",
+])
+def test_a_plain_task_turn_loads_no_reminder_pack(words: str) -> None:
+    """The control. A task turn keeps its packs. Mutation: add the bare word
+    "task" to the reminder words -> the pack joins a task turn -> red."""
+    choice = tp.choose(_surface_turn(words), allowed=EVERY, base_tools=56)
+    assert choice.slugs == ("projects",), (words, choice)
