@@ -1650,14 +1650,18 @@ async def test_a_rerun_waits_for_the_next_cycle_after_an_early_stop(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """Acceptance 4. The next cycle comes soon, so a rerun would only hold
     the mailbox lock for a second share."""
-    async def _no_cycle(*_a: Any, **_k: Any) -> dict[str, Any]:
-        raise AssertionError("the rerun ran")
+    reruns: list[str] = []
 
-    monkeypatch.setattr(sched, "_sync_cycle", _no_cycle)
+    async def _cycle(account_id: str, **_k: Any) -> dict[str, Any]:
+        reruns.append(account_id)
+        return {"synced": 0}
+
+    monkeypatch.setattr(sched, "_sync_cycle", _cycle)
     monkeypatch.setattr(sched, "_sync_rerun", {"acc-1"})
     stopped = {"synced": 100, "resume_soon": True}
 
     assert await sched._rerun_once("acc-1", "acc-1", ORG, stopped) == stopped
+    assert reruns == []
 
 
 def _stale_history(fake: _Gmail) -> None:
