@@ -1,7 +1,7 @@
 # Package host — every app is a package, arranged around the person (WS-PKG)
 
 > **Product:** Metorite · **Feature:** the package host (the shell registry, installs, slots and the arrangement layer) · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. The rest of this spec is not built.
+> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-4 is built dark: the two tables of §5.1, the key on `apps` and the purge rows. No code reads or writes those tables yet. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. The rest of this spec is not built.
 > **Verified against code on 2026-11-01 at `f59a636b5`.** Each path in §12 was read on that commit.
 > **Board:** WS-PKG in `work_plan.md` §2.1. **Decision:** D147. D12, D49, D87, D89, D111, D127, D136, D141 and D146 bind it.
 > **Metorite:** project "Package Host", epic 1234, this spec task 1236. The slices PKG-1 to PKG-20 are tasks 1239 to 1258, in order.
@@ -173,7 +173,8 @@ Constraints and indexes of `package_install`:
 - `UNIQUE (organization_id, id)`, the target of the child FK.
 - `UNIQUE (organization_id, app_id, scope_kind, scope_subject)`. One app has one install at each scope.
 - CHECK `version IS NOT NULL OR scope_kind = 'private'`. Only the owner runs a draft.
-- CHECK on `scope_subject`: `org` for `org`, a `group:` prefix for `group`, and a lower-case address with no prefix for `private`.
+- CHECK on `scope_subject`: `org` for `org`, a `group:` prefix for `group`, and a lower-case address for `private`. The address has the email shape of the CHECK in `272_knowledge_pages.sql`: one `@` and no whitespace. It has no `group:` prefix.
+- CHECK `scope_kind <> 'private' OR installed_by = scope_subject`. The owner of a private install made it, so the purge finds each row of a member.
 - A partial index on `(organization_id, ends_at) WHERE ends_at IS NOT NULL`, for the expiry job.
 
 **`package_contribution`**: one row for each claim of one install at one point (§4).
@@ -195,12 +196,14 @@ The primary key is `(organization_id, install_id, point, key)`.
 
 **`apps` gains one key.** The migration adds `UNIQUE (organization_id, id)` to `apps`, so that the composite FK can point at it. `id` is the primary key already, so no row can break it. This is an expand step (R6).
 
+**`apps.organization_id` joins the numbered ladder.** A fresh ladder database has no `apps.organization_id`, because only the generated phases add it (H-104). So the migration first adds the column to a database that does not have it, as 209 and 223 do. Production has the column, and that step does nothing there.
+
 Five decisions that the columns carry:
 1. **`needs_setup` is not stored.** The resolve computes it from the needs (§5.2 step 4), so it can never be stale.
 2. **The scope grammar is D12's.** The code that writes a row (PKG-5b and later) passes each `scope_subject` through `normalize_grant_subject`. That function is in `acb_auth/permissions.py`. Do not copy it.
 3. **A share with named people stays `private`.** The people get rows in `app_grants`, the sharing table of `114_custom_apps.sql`. So `apps.visibility = people` maps to a private install plus grants. The resolve (PKG-5b) shows a private install to its owner and to each grantee.
 4. **A duplicate claim is refused in code, not by an index.** Some points allow many claims (`triggers`, `slot`), and a private claim conflicts only with what its owner sees. PKG-5b checks the claims of §4 in the install transaction, under `pg_advisory_xact_lock` on the organization.
-5. **A purge deletes the member's private installs.** Their contributions go by the cascade. An org or group install that the member made stays, and the purge counts it. This follows the rule of `routes/admin/members.py`: "purge the person, keep their work".
+5. **A purge deletes a private install of the member only when nobody else sees it.** Nobody else sees it when no `app_grants` row of its app names another subject. Its contributions go by the cascade. A private install that the member shared with named people stays, and the purge counts it (decision 3). An org or group install that the member made stays too, and the purge counts it. This follows the rule of `routes/admin/members.py`: "purge the person, keep their work".
 
 ### 5.2 One resolve call
 
