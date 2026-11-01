@@ -15,7 +15,12 @@ from pathlib import Path
 
 import pytest
 from acb_common.app_manifests import shell_manifest
-from acb_common.app_manifests.shell_manifest import ShellManifestError, load_jobs, load_vocabulary
+from acb_common.app_manifests.shell_manifest import (
+    ShellManifestError,
+    load_gates,
+    load_jobs,
+    load_vocabulary,
+)
 from gateway.routes.shell import intent
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -216,8 +221,11 @@ def test_vocabulary_loader_rejects_bad_files(tmp_path):
     assert (ok.panes, ok.presets, ok.cards) == (("/a",), ("p",), ("c",))
     with pytest.raises(ShellManifestError, match="duplicate pane"):
         attempt(a={"nav": [{"href": "/a"}]}, b={"nav": [{"href": "/a"}]})
-    with pytest.raises(ShellManifestError, match="only 'href'"):
+    with pytest.raises(ShellManifestError, match="'href' and an optional 'feature' only"):
         attempt(a={"nav": [{"href": "/a", "label": "A"}]})
+    with pytest.raises(ShellManifestError, match="'href' and an optional 'feature' only"):
+        attempt(a={"nav": [{"feature": "a"}]})
+    assert attempt(a={"nav": [{"href": "/a", "feature": "x"}]}).panes == ("/a",)
     with pytest.raises(ShellManifestError, match=r"no '[?]'"):
         attempt(a={"nav": [{"href": "/a?do=x"}]})
     with pytest.raises(ShellManifestError, match=r"home.json only"):
@@ -238,3 +246,217 @@ def test_no_hand_kept_vocabulary_remains():
     assert '"founder"' not in me
     assert '"/tasks"' not in me
     assert '"team-pulse"' not in me
+
+
+# --- PKG-3a: SCOPE_APPS and ALSO_SERVES ---------------------------------------
+
+GATES_TS = VOCABULARY.with_name("gates.generated.ts")
+SEARCH_PY = ROOT / "apps/services/gateway/gateway/routes/shell/search.py"
+ASSISTANT_TS = VOCABULARY.with_name("assistant.ts")
+
+#: The two maps as they stood before the slice. This copy is FROZEN.
+FROZEN_SCOPE = {
+    "/email": "email",
+    "/projects": "tasks",
+    "/tasks": "tasks",
+    "/people": "people",
+    "/crm": "crm",
+    "/knowledge": "knowledge",
+}
+FROZEN_ALSO_SERVES = {"projects-assistant": ("/tasks", "/calendar")}
+
+
+def test_gates_ts_is_current():
+    want = _generator().render_gates_ts(load_gates())
+    have = GATES_TS.read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert have == want, "gates.generated.ts is stale: run `uv run python scripts/gen_shell_manifests.py`"
+
+
+def test_gates_equal_the_pre_slice_values():
+    gates = load_gates()
+    assert gates.scope == FROZEN_SCOPE
+    assert gates.also_serves == FROZEN_ALSO_SERVES
+    from gateway.routes.shell import search
+
+    assert search.SCOPE_APPS == FROZEN_SCOPE
+
+
+def test_gates_counts():
+    gates = load_gates()
+    assert len(gates.scope) == 6
+    assert sum(len(h) for h in gates.also_serves.values()) == 2
+
+
+def test_gates_loader_rejects_bad_files(tmp_path):
+    def attempt(**files: dict):
+        for p in tmp_path.glob("*.json"):
+            p.unlink()
+        for name, contributes in files.items():
+            _vocab_write(tmp_path, name, contributes)
+        return load_gates(tmp_path)
+
+    s = {"href": "/a", "source": "a"}
+    p = {"agent": "x", "href": "/a"}
+    ok = attempt(a={"scope": [s], "also_serves": [p]})
+    assert (ok.scope, ok.also_serves) == ({"/a": "a"}, {"x": ("/a",)})
+    with pytest.raises(ShellManifestError, match="must hold exactly"):
+        attempt(a={"scope": [{**s, "extra": "y"}]})
+    with pytest.raises(ShellManifestError, match="must hold exactly"):
+        attempt(a={"scope": [{"href": "/a"}]})
+    with pytest.raises(ShellManifestError, match="must hold exactly"):
+        attempt(a={"also_serves": [{"agent": "x"}]})
+    with pytest.raises(ShellManifestError, match=r"no '[?]'"):
+        attempt(a={"scope": [{"href": "/a?x=1", "source": "a"}]})
+    with pytest.raises(ShellManifestError, match=r"no '[?]'"):
+        attempt(a={"also_serves": [{"agent": "x", "href": "/a?x=1"}]})
+    with pytest.raises(ShellManifestError, match=r"no '[?]'"):
+        attempt(a={"scope": [{"href": "a", "source": "a"}]})
+    with pytest.raises(ShellManifestError, match="duplicate scope href"):
+        attempt(a={"scope": [s]}, b={"scope": [{"href": "/a", "source": "b"}]})
+    with pytest.raises(ShellManifestError, match="duplicate also_serves pair"):
+        attempt(a={"also_serves": [p, p]})
+
+
+def test_no_hand_kept_shell_map_remains():
+    import ast
+
+    tree = ast.parse(SEARCH_PY.read_text(encoding="utf-8"))
+    found = False
+    for node in ast.walk(tree):
+        targets = []
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        for t in targets:
+            if isinstance(t, ast.Name) and t.id == "SCOPE_APPS":
+                found = True
+                assert not isinstance(node.value, ast.Dict), (
+                    "SCOPE_APPS is a hand-kept dict literal: it must come from load_gates()"
+                )
+    assert found, "SCOPE_APPS moved out of search.py"
+    ts = ASSISTANT_TS.read_text(encoding="utf-8")
+    assert re.search(r"export const ALSO_SERVES[^=]*=\s*GENERATED_ALSO_SERVES\s*;", ts), (
+        "ALSO_SERVES in assistant.ts must be GENERATED_ALSO_SERVES"
+    )
+    assert not re.search(r"export const ALSO_SERVES[^=]*=\s*\{", ts), (
+        "ALSO_SERVES is a hand-kept object literal: it must come from gates.generated.ts"
+    )
+
+
+def test_eval_reads_the_same_also_serves():
+    from evals.routing import shell
+
+    assert shell.also_serves() == FROZEN_ALSO_SERVES
+
+
+# --- PKG-3b: HREF_FEATURES and ALWAYS_ALLOWED ---------------------------------
+
+ACCESS_TS = ROOT / "workbench/control_plane/src/lib/access.ts"
+
+#: HREF_FEATURES (without the CENTERS rows) as it stood in access.ts at acc5188d9.
+#: This copy is FROZEN. A missing pair leaves its route UNGUARDED (fail-open).
+FROZEN_HREF_FEATURES = {
+    "/chat": "chat",
+    "/email": "email",
+    "/inbox": "email",
+    "/whatsapp": "whatsapp",
+    "/memory": "memory",
+    "/tasks": "tasks",
+    "/calendar": "tasks",
+    "/notes": "notes",
+    "/crm": "crm",
+    "/projects": "projects",
+    "/people": "people",
+    "/knowledge": "knowledge",
+    "/dashboard": "dashboard",
+    "/observability": "observability",
+    "/artifacts": "artifacts",
+    "/workflows": "workflows",
+    "/settings/models": "models",
+    "/agents": "agents",
+    "/approvals": "approvals",
+    "/integrations": "integrations",
+    "/apis": "integrations",
+    "/build/agents": "build.agents",
+    "/build/apps": "build.apps",
+}
+#: ALWAYS_ALLOWED as it stood at acc5188d9, FROZEN. EXACT match. A wrong entry widens access.
+FROZEN_ALWAYS_ALLOWED = {
+    "/", "/signin", "/settings", "/settings/profile",
+    "/people/access", "/access", "/people/me", "/integrations",
+}
+
+
+def test_href_features_equal_the_pre_slice_pairs():
+    gates = load_gates()
+    assert len(gates.href_features) == 23
+    assert dict(gates.href_features) == FROZEN_HREF_FEATURES
+    assert set(gates.href_features) == set(FROZEN_HREF_FEATURES.items())
+
+
+def test_always_allowed_equals_the_pre_slice_list():
+    gates = load_gates()
+    assert len(gates.always_allowed) == 8
+    assert set(gates.always_allowed) == FROZEN_ALWAYS_ALLOWED
+    assert "/integrations/x" not in gates.always_allowed
+
+
+def test_gates_ts_carries_both_maps():
+    ts = GATES_TS.read_text(encoding="utf-8")
+    assert "GENERATED_HREF_FEATURES: ReadonlyArray<readonly [string, string]>" in ts
+    assert "GENERATED_ALWAYS_ALLOWED: readonly string[]" in ts
+
+
+def test_access_gate_loader_rejects_bad_files(tmp_path):
+    def attempt(**files: dict):
+        for p in tmp_path.glob("*.json"):
+            p.unlink()
+        for name, contributes in files.items():
+            _vocab_write(tmp_path, name, contributes)
+        return load_gates(tmp_path)
+
+    g = {"href": "/a", "feature": "a"}
+    ok = attempt(a={"nav": [{"href": "/n", "feature": "n"}], "gates": [g], "always_allowed": [{"href": "/z"}]})
+    assert ok.href_features == (("/n", "n"), ("/a", "a"))
+    assert ok.always_allowed == ("/z",)
+    with pytest.raises(ShellManifestError, match="'href' and an optional 'feature' only"):
+        attempt(a={"nav": [{"href": "/n", "feature": "n", "extra": "y"}]})
+    with pytest.raises(ShellManifestError, match="non-empty string"):
+        attempt(a={"nav": [{"href": "/n", "feature": ""}]})
+    with pytest.raises(ShellManifestError, match="non-empty string"):
+        attempt(a={"gates": [{"href": "/a", "feature": " "}]})
+    with pytest.raises(ShellManifestError, match="must hold exactly"):
+        attempt(a={"gates": [{**g, "extra": "y"}]})
+    with pytest.raises(ShellManifestError, match="duplicate gate href"):
+        attempt(a={"gates": [g, g]})
+    with pytest.raises(ShellManifestError, match="duplicate gate href"):
+        attempt(a={"nav": [{"href": "/a", "feature": "x"}]}, b={"gates": [g]})
+    with pytest.raises(ShellManifestError, match=r"no '[?]'"):
+        attempt(a={"gates": [{"href": "/a?x=1", "feature": "a"}]})
+    with pytest.raises(ShellManifestError, match=r"no '[?]'"):
+        attempt(a={"gates": [{"href": "a", "feature": "a"}]})
+    with pytest.raises(ShellManifestError, match="only 'href'"):
+        attempt(a={"always_allowed": [{"href": "/z", "extra": "y"}]})
+    with pytest.raises(ShellManifestError, match=r"no '[?]'"):
+        attempt(a={"always_allowed": [{"href": "z"}]})
+    with pytest.raises(ShellManifestError, match="duplicate always_allowed href"):
+        attempt(a={"always_allowed": [{"href": "/z"}, {"href": "/z"}]})
+
+
+def test_no_hand_kept_access_map_remains():
+    ts = ACCESS_TS.read_text(encoding="utf-8").replace("\r\n", "\n")
+    m = re.search(r"const HREF_FEATURES[^=]*=\s*\[(.*?)\n\];", ts, re.S)
+    assert m, "HREF_FEATURES moved out of access.ts"
+    body = re.sub(r"//[^\n]*", "", m.group(1))
+    assert "...GENERATED_HREF_FEATURES" in body
+    # Only the CENTERS spread and the generated spread may stand in the array (D49).
+    rest = re.sub(r"\.\.\.CENTERS\.map\(.*?\)\s*,", "", body, flags=re.S)
+    assert not re.search(r"""\[\s*["'`][^\]]*\]""", rest), (
+        "HREF_FEATURES holds a literal pair: it must come from the shell manifests"
+    )
+    a = re.search(r"const ALWAYS_ALLOWED[^=]*=\s*(.*?);", ts, re.S)
+    assert a, "ALWAYS_ALLOWED moved out of access.ts"
+    assert re.fullmatch(r"\[\s*\.\.\.GENERATED_ALWAYS_ALLOWED\s*\]", a.group(1).strip()), (
+        "ALWAYS_ALLOWED is a hand-kept list: it must be a copy of GENERATED_ALWAYS_ALLOWED"
+    )

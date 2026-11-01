@@ -2,15 +2,13 @@
  * The data door of a Studio page (`ai_studio.md` §5.2, slice STU-D1).
  *
  * A generative-UI node may carry `props.source`, a read the page runs
- * through its door. A page supplies the door with `StudioDataContext`. Chat
+ * through its door. A page supplies the door with `StudioDataContext` (`dataContext.tsx`). Chat
  * supplies none, so the context holds `null` there. Then `source` is
  * ignored, and the node draws from its own props as it always did.
  *
  * This file holds the seam and the pure helpers. `GenerativeUINode.tsx`
  * holds the one renderer that reads them. Fence: `dataDoor.test.ts`.
  */
-import { createContext } from "react";
-
 import { text } from "@/lib/genUiText";
 
 /** One row of a source. The block reads the keys it needs. */
@@ -60,9 +58,6 @@ export const doorPrefix = (door: StudioDataDoor): string => "studio:" + door.sco
 export function sourceKey(door: StudioDataDoor, source: StudioSource): string {
   return doorPrefix(door) + source.action + ":" + stableJson(source.args ?? {});
 }
-
-/** A page supplies the Provider. Chat supplies none, so the value is `null`. */
-export const StudioDataContext = createContext<StudioDataDoor | null>(null);
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);

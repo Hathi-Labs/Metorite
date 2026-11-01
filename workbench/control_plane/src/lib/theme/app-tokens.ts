@@ -36,6 +36,8 @@
  * app weeks later.
  */
 
+import { glassToken } from "./glassTokens";
+import type { Look } from "./look";
 import { THEME } from "./themes";
 import type { Theme, ThemeMode } from "./types";
 
@@ -92,8 +94,19 @@ function stripFontHandles(stack: string): string {
  * `<style>` in the iframe's initial document and the live `postMessage` patch
  * that follows a theme change — two consumers that must never disagree about
  * what a token means.
+ *
+ * `look` (D143, GL-10a): under the glass look the frame takes the glass
+ * value of every name `glassTokens.ts` lists, and the classic value of every
+ * other name. The NAMES never change. With no `look`, or `"classic"`, the
+ * block is byte for byte what it always was (`app-tokens.test.ts`).
  */
-export function appTokens(theme: Theme, mode: ThemeMode): [string, string][] {
+export function appTokens(theme: Theme, mode: ThemeMode, look: Look = "classic"): [string, string][] {
+  const classic = classicTokens(theme, mode);
+  if (look !== "glass") return classic;
+  return classic.map(([name, value]) => [name, glassToken(name, mode) ?? value]);
+}
+
+function classicTokens(theme: Theme, mode: ThemeMode): [string, string][] {
   const c = theme.colors[mode];
   const subs = { "--radius": theme.shape.radius };
 
@@ -161,8 +174,8 @@ export function appTokens(theme: Theme, mode: ThemeMode): [string, string][] {
  * The token block as a CSS declaration list (no selector), ready to drop into
  * a `:root { … }` rule.
  */
-export function appTokenCss(theme: Theme, mode: ThemeMode, indent = "    "): string {
-  return appTokens(theme, mode)
+export function appTokenCss(theme: Theme, mode: ThemeMode, indent = "    ", look: Look = "classic"): string {
+  return appTokens(theme, mode, look)
     .map(([k, v]) => `${indent}${k}: ${v};`)
     .join("\n");
 }
@@ -174,8 +187,8 @@ export function appTokenCss(theme: Theme, mode: ThemeMode, indent = "    "): str
  * document and a running app loses whatever the person had typed into it. The
  * frame instead receives these pairs and writes them onto its own `:root`.
  */
-export function appTokenMap(theme: Theme, mode: ThemeMode): Record<string, string> {
-  return Object.fromEntries(appTokens(theme, mode));
+export function appTokenMap(theme: Theme, mode: ThemeMode, look: Look = "classic"): Record<string, string> {
+  return Object.fromEntries(appTokens(theme, mode, look));
 }
 
 /**

@@ -5,10 +5,12 @@
   "contributes": {
     "nav": [
       {
-        "href": "/build/apps"
+        "href": "/build/apps",
+        "feature": "build.apps"
       },
       {
-        "href": "/build/agents"
+        "href": "/build/agents",
+        "feature": "build.agents"
       }
     ]
   }

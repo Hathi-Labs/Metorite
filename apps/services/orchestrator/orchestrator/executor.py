@@ -1657,6 +1657,20 @@ def _worker_refusal(agent_name: str) -> str | None:
         return None
 
 
+def _pack_only_refusal(agent_name: str) -> str | None:
+    """Why *agent_name* never runs as an agent, or None (STU-G1).
+
+    ``tool_packs.pack_only_refusal`` is the rule: a pack-only owner gives its
+    tools to a pack and never runs. It reads no run state, so it holds in
+    every run. Never raises."""
+    try:
+        from acb_skills.tool_packs import pack_only_refusal
+
+        return pack_only_refusal(agent_name)
+    except ImportError:
+        return None
+
+
 def _without_job_key(agent_name: str) -> dict[str, Any]:
     """The change that takes the job out of a derived run context, unless the
     run IS the worker. So a run that a child starts never inherits the job."""
@@ -4819,7 +4833,8 @@ async def run_agent(
     # WS-67 OA-9a: the third of three callers that ask `worker_refusal`. The
     # batch fallback of `call_agent` goes straight here, so the streaming seam
     # alone is not enough. Before any binding, so a refusal binds nothing.
-    _worker_refused = _worker_refusal(agent_name)
+    # STU-G1: a pack-only owner never runs, from any caller, in any run.
+    _worker_refused = _worker_refusal(agent_name) or _pack_only_refusal(agent_name)
     if _worker_refused is not None:
         raise AgentRunError(
             _worker_refused, agent_name=agent_name, run_id=run_id or "",

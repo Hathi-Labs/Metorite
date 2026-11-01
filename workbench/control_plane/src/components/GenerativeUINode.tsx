@@ -51,9 +51,10 @@ import { plainTitle } from "@/lib/fencedText";
 import { tableCells, tableColumns, text } from "@/lib/genUiText";
 import { resolveIcon } from "@/lib/icons";
 import {
-  StudioDataContext, actionDisabled, boundView, bindsSource, gridData, parseAction, parseSource, pressAction, sourceKey,
+  actionDisabled, boundView, bindsSource, gridData, parseAction, parseSource, pressAction, sourceKey,
   type BoundView, type Row, type StudioDataDoor,
 } from "@/lib/studio/dataDoor";
+import { StudioDataContext } from "@/lib/studio/dataContext";
 import { TypedActionButton } from "@/lib/studio/TypedActionButton";
 import { useCachedResource } from "@/lib/useCachedResource";
 import { type AccentHue, accentForHue } from "@/lib/statusAccent";
@@ -248,12 +249,12 @@ function Node({
         // The header is the fold's `<button>`: plain words, never a link
         // (review of #945, P2, `plainTitle`).
         return (
-          <div className="rounded-lg border border-border/60 bg-card/50 p-3">
+          <div className="rounded-lg border border-border/60 bg-card/50 p-3 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3 glass:glass-card-tile">
             <CollapsibleCardHeader
               title={title === null ? undefined : plainTitle(s(props.title))}
               quiet={title === null}
               className="text-sm"
-              titleClassName="font-semibold text-foreground"
+              titleClassName="font-semibold text-foreground glass:text-subhead"
             />
             <CollapsibleCardBody className={title !== null || fold.toggle ? "space-y-2 pt-2" : "space-y-2"}>
               {renderKids()}
@@ -262,9 +263,9 @@ function Node({
         );
       }
       return (
-        <div className="rounded-lg border border-border/60 bg-card/50 p-3 space-y-2">
+        <div className="rounded-lg border border-border/60 bg-card/50 p-3 space-y-2 glass:rounded-[10px] glass:border-transparent glass:bg-secondary">
           {title !== null && (
-            <div className="text-sm font-semibold text-foreground">{title}</div>
+            <div className="text-sm font-semibold text-foreground glass:text-subhead">{title}</div>
           )}
           {renderKids()}
         </div>
@@ -278,18 +279,18 @@ function Node({
       return <div className="flex flex-wrap items-center gap-2">{renderKids()}</div>;
 
     case "heading":
-      return <div className="text-sm font-semibold text-foreground"><GenUiText text={s(props.text)} /></div>;
+      return <div className="text-sm font-semibold text-foreground glass:text-subhead"><GenUiText text={s(props.text)} /></div>;
 
     case "text":
       return (
-        <p className={`text-[13px] leading-relaxed ${
+        <p className={`text-[13px] leading-relaxed glass:text-label ${
           props.muted ? "text-muted-foreground" : "text-foreground"
         }`}><GenUiText text={s(props.text)} /></p>
       );
 
     case "markdown":
       return (
-        <div className="min-w-0 text-[13px] leading-relaxed text-foreground">
+        <div className="min-w-0 text-[13px] leading-relaxed text-foreground glass:text-label">
           {/* Pills only inside a Projects turn (WS-27bm S9): the names
               resolve against that turn's tools through `EntityIndexContext`.
               Anywhere else this is plain Markdown. */}
@@ -305,14 +306,14 @@ function Node({
       const hue = TONE_HUE[s(props.tone, "neutral")];
       if (!hue) {
         return (
-          <span className="inline-block text-[10px] font-medium px-1.5 py-0.5 rounded border border-border text-muted-foreground bg-secondary/50">
+          <span className="inline-block text-[10px] font-medium px-1.5 py-0.5 rounded border border-border text-muted-foreground bg-secondary/50 glass:rounded-full glass:border-transparent glass:text-caption">
             <FencedText text={s(props.text)} />
           </span>
         );
       }
       const accent = accentForHue(hue);
       return (
-        <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded border border-transparent text-foreground ${accent.soft}`}>
+        <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded border border-transparent text-foreground ${accent.soft} glass:rounded-full glass:text-caption`}>
           <span aria-hidden className={`size-1.5 shrink-0 rounded-full ${accent.dot}`} />
           <FencedText text={s(props.text)} />
         </span>
@@ -325,7 +326,7 @@ function Node({
     case "keyValue": {
       const pairs = Array.isArray(props.pairs) ? props.pairs : [];
       return (
-        <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[12px]">
+        <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[12px] glass:rounded-[10px] glass:bg-secondary glass:p-3 glass:text-footnote">
           {pairs.map((p, i) => {
             const pair = (p ?? {}) as Record<string, unknown>;
             return (
@@ -349,10 +350,10 @@ function Node({
       const cols = tableColumns(props.columns, rows);
       const hasHeader = cols.some((c) => c.label.trim());
       return (
-        <div className="overflow-x-auto rounded-md border border-border/60">
-          <table className="w-full text-left text-[12px]">
+        <div className="overflow-x-auto rounded-md border border-border/60 glass:rounded-[10px] glass:border-transparent glass:bg-secondary">
+          <table className="w-full text-left text-[12px] glass:text-footnote">
             {hasHeader && (
-              <thead className="bg-secondary/60">
+              <thead className="bg-secondary/60 glass:bg-transparent">
                 <tr>{cols.map((c, i) => (
                   <th key={i} className="px-2 py-1 font-medium text-muted-foreground">{c.label}</th>
                 ))}</tr>
@@ -360,7 +361,7 @@ function Node({
             )}
             <tbody>
               {rows.map((r, ri) => (
-                <tr key={ri} className="border-t border-border/60">
+                <tr key={ri} className="border-t border-border/60 glass:border-border">
                   {tableCells(r, cols).map((cell, ci) => (
                     <td key={ci} className="px-2 py-1 text-foreground"><GenUiText text={cell} /></td>
                   ))}
@@ -377,7 +378,7 @@ function Node({
       const ordered = !!props.ordered;
       const Tag = ordered ? "ol" : "ul";
       return (
-        <Tag className={`ml-5 space-y-0.5 text-[13px] text-foreground ${
+        <Tag className={`ml-5 space-y-0.5 text-[13px] text-foreground glass:text-label ${
           ordered ? "list-decimal" : "list-disc"
         } list-outside marker:text-muted-foreground`}>
           {items.map((it, i) => <li key={i}><GenUiText text={s(it)} /></li>)}
@@ -387,7 +388,7 @@ function Node({
 
     case "code":
       return (
-        <pre className="rounded-md bg-muted border border-border p-2.5 overflow-x-auto text-[11px] text-foreground font-mono">
+        <pre className="rounded-md bg-muted border border-border p-2.5 overflow-x-auto text-[11px] text-foreground font-mono glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:text-caption">
           {s(props.text)}
         </pre>
       );
@@ -435,7 +436,7 @@ function Node({
     case "callout": {
       const accent = accentForHue(TONE_HUE[s(props.tone, "info")] ?? "blue");
       return (
-        <div className={`rounded-md border border-border border-l-2 px-3 py-2 space-y-1 ${accent.bar} ${accent.soft}`}>
+        <div className={`rounded-md border border-border border-l-2 px-3 py-2 space-y-1 glass:rounded-[10px] glass:border-transparent glass:border-l-0 ${accent.bar} ${accent.soft}`}>
           {props.title != null && (
             <div className="text-[12px] font-semibold text-foreground"><GenUiText text={s(props.title)} /></div>
           )}

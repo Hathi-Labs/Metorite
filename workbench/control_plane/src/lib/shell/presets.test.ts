@@ -118,8 +118,9 @@ describe("the subset rule: a preset never draws what the member does not hold (Â
 
   it("never pins a page about the member, even when one is named", () => {
     const sections = visibleSections(ALL, true);
+    // Appearance is an app since 2026-11-01 (owner), so a star keeps it.
     const stars = { pins: ["/people/me", "/settings/appearance", "/calendar"], known: PANES.map((p) => p.href) };
-    expect([...starredHrefs(stars, sections)!]).toEqual(["/calendar"]);
+    expect([...starredHrefs(stars, sections)!]).toEqual(["/calendar", "/settings/appearance"]);
   });
 });
 
@@ -267,7 +268,8 @@ describe("a star only where the save can land (round 2)", () => {
     expect([...STARRABLE].sort()).toEqual([...literal].sort());
     expect(PANES.some((p) => p.href.startsWith("/centers/"))).toBe(true);
     expect(STARRABLE.has("/people/me")).toBe(false);
-    expect(STARRABLE.has("/settings/appearance")).toBe(false);
+    // Appearance is a sidebar app a member stars on or off (owner, 2026-11-01).
+    expect(STARRABLE.has("/settings/appearance")).toBe(true);
     // Home is not a nav.ts pane, so it can never be starred away.
     expect(STARRABLE.has("/")).toBe(false);
   });
@@ -380,8 +382,9 @@ describe("the star model: only starred apps show, under their own category", () 
     const few = visibleSections(["tasks"], false);
     const saved = starsToSave(["/calendar"], few, { pins: ["/projects"], known: ["/projects"] });
     expect(saved.pins).toEqual(["/calendar", "/projects"]);
-    // Integrations is held by every member since D-EA-9 (2026-10-14).
-    expect(saved.known).toEqual(["/calendar", "/integrations"]);
+    // Integrations is held by every member since D-EA-9 (2026-10-14), and
+    // Appearance is an ungated app since 2026-11-01 (owner).
+    expect(saved.known).toEqual(["/calendar", "/settings/appearance", "/integrations"]);
   });
 });
 

@@ -25,7 +25,8 @@
     ],
     "nav": [
       {
-        "href": "/chat"
+        "href": "/chat",
+        "feature": "chat"
       }
     ]
   }

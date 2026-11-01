@@ -45,6 +45,23 @@
       {
         "key": "out-today"
       }
+    ],
+    "always_allowed": [
+      {
+        "href": "/"
+      },
+      {
+        "href": "/signin"
+      },
+      {
+        "href": "/settings"
+      },
+      {
+        "href": "/settings/profile"
+      },
+      {
+        "href": "/access"
+      }
     ]
   }
 }

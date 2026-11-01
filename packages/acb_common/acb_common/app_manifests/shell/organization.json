@@ -28,6 +28,12 @@
       {
         "href": "/settings/organization"
       }
+    ],
+    "gates": [
+      {
+        "href": "/settings/models",
+        "feature": "models"
+      }
     ]
   }
 }

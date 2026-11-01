@@ -612,7 +612,7 @@ export function FeedColumn({
         <Skeleton className="h-28 w-full rounded-xl" />
       </div>
     ) : (
-      <div className="rounded-xl border border-border bg-card px-2">
+      <div className="rounded-xl border border-border bg-card px-2 glass:rounded-[16px] glass:border-transparent glass:glass-raised">
         <CardError message="Your day could not load." onRetry={feed.refresh} />
       </div>
     );
@@ -629,7 +629,7 @@ export function FeedColumn({
           </div>
         ) : null}
         {groups.length === 0 ? (
-          <div className="flex items-center gap-2.5 rounded-xl border border-border bg-card px-4 py-4">
+          <div className="flex items-center gap-2.5 rounded-xl border border-border bg-card px-4 py-4 glass:rounded-[16px] glass:border-transparent glass:glass-raised">
             <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${accentForHue("green").soft}`}>
               <Icon name="Check" size={14} className={accentForHue("green").text} />
             </span>
@@ -709,7 +709,7 @@ export function FeedColumn({
               </span>
             </Button>
             {handledOpen ? (
-              <ul id="feed-handled-rows" className="mt-2 flex flex-col rounded-xl border border-border bg-card p-1.5">
+              <ul id="feed-handled-rows" className="mt-2 flex flex-col rounded-xl border border-border bg-card p-1.5 glass:rounded-[16px] glass:border-transparent glass:glass-raised">
                 {handled.map((entry, i) => (
                   <HandledRow key={`${entry.app}:${entry.href}:${entry.at ?? ""}:${i}`} entry={entry} nowMs={nowMs} />
                 ))}

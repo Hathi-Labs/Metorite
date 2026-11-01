@@ -24,7 +24,7 @@ export default function CardAnswerContent({ answer }: { answer: CardAnswer }) {
   const rejected = answer.decision === "reject";
   return (
     <div className="min-w-0 space-y-1" data-card-answer={answer.decision ?? "answer"}>
-      <p className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+      <p className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground glass:text-footnote">
         <Icon
           name={rejected ? "X" : "Check"}
           size={12}
@@ -38,7 +38,7 @@ export default function CardAnswerContent({ answer }: { answer: CardAnswer }) {
         </p>
       )}
       {answer.rows && answer.rows.length > 0 && (
-        <ul className="space-y-0.5 text-xs" aria-label="Rows you approved">
+        <ul className="space-y-0.5 text-xs glass:text-footnote" aria-label="Rows you approved">
           {answer.rows.map((label, i) => (
             <li key={i} className="flex min-w-0 items-start gap-1.5">
               <Icon name="Check" size={10} className="mt-[3px] shrink-0 text-muted-foreground" />
