@@ -32,11 +32,23 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useLiveRefresh } from "@/lib/liveRefresh";
-import { knownZone, refusalWords, UNREACHABLE_WORDS } from "@/lib/shell/reminderOpen";
+import {
+  clockText,
+  dateText,
+  instantIso,
+  offsetMinutes,
+  pad,
+  wallMinutes,
+  wallParts,
+  zonedToIso,
+  type ZonedTime,
+} from "@/lib/reminderClock";
+import type { ReminderKind, WriteResult } from "@/lib/reminderWrite";
+import { knownZone } from "@/lib/shell/reminderOpen";
 
 // ── The rows ─────────────────────────────────────────────────────────────────
 
-export type ReminderKind = "action" | "notice";
+export type { ReminderKind } from "@/lib/reminderWrite";
 
 /** The open states of a reminder (§5.3). The Calendar lists no other. */
 export type ReminderState = "scheduled" | "due" | "unconfirmed";
@@ -123,166 +135,26 @@ export function capGroups(g: ReminderGroups, limit: number | null): { groups: Re
 }
 
 // ── The zone ─────────────────────────────────────────────────────────────────
+//
+// The rules moved to `@/lib/reminderClock` (RX-6), so Tasks can use them. They
+// are re-exported here, so every caller and test of this file reads on.
 
-const formatters = new Map<string, Intl.DateTimeFormat>();
-
-/**
- * The zone of the grid: the browser's zone, else UTC. The grid draws its blocks
- * and day columns on the browser's wall clock, so a reminder must use the same
- * frame. The store's `settings.timezone` plays no part here. `knownZone` is the
- * one check of a zone name (`lib/shell/reminderOpen.ts`).
- */
-export function gridZone(browserZone?: string): string {
-  return knownZone(browserZone) ?? "UTC";
-}
-
-export interface WallParts {
-  year: number;
-  month: number; // 1-12
-  day: number;
-  hour: number;
-  minute: number;
-  second: number;
-}
-
-/** The wall clock of an instant in a zone. */
-export function wallParts(ms: number, zone: string): WallParts {
-  let fmt = formatters.get(zone);
-  if (!fmt) {
-    fmt = new Intl.DateTimeFormat("en-US", {
-      timeZone: zone,
-      hourCycle: "h23",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-    formatters.set(zone, fmt);
-  }
-  const out: Record<string, number> = {};
-  for (const p of fmt.formatToParts(new Date(ms))) {
-    if (p.type !== "literal") out[p.type] = Number(p.value);
-  }
-  return {
-    year: out.year,
-    month: out.month,
-    day: out.day,
-    hour: out.hour % 24,
-    minute: out.minute,
-    second: out.second,
-  };
-}
-
-/** The offset of a zone at an instant, in minutes east of UTC. */
-export function offsetMinutes(ms: number, zone: string): number {
-  const p = wallParts(ms, zone);
-  const wallAsUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
-  return Math.round((wallAsUtc - Math.floor(ms / 1000) * 1000) / 60000);
-}
-
-const pad = (n: number, w = 2) => String(Math.abs(n)).padStart(w, "0");
-
-/** "+05:30" or "-04:00". */
-export function offsetText(minutes: number): string {
-  return `${minutes < 0 ? "-" : "+"}${pad(Math.floor(Math.abs(minutes) / 60))}:${pad(Math.abs(minutes) % 60)}`;
-}
-
-/** "2026-10-31" for a wall date. */
-export function dateText(year: number, month: number, day: number): string {
-  return `${pad(year, 4)}-${pad(month)}-${pad(day)}`;
-}
-
-/** The instant of a date and a time on the wall of a zone, as ISO with the offset. */
-export interface ZonedTime {
-  iso: string;
-  ms: number;
-}
-
-/**
- * A wall date ("2026-10-31"), a wall time ("09:00") and an IANA zone, as an
- * ISO string WITH the offset ("2026-10-31T09:00:00+05:30"), or null when any
- * part is not valid.
- *
- * **A clock change.** A time that happens twice (the autumn overlap) takes its
- * first run. A time that never happens (the spring gap) moves forward by the
- * gap, so 02:30 in a skipped hour becomes 03:30. The offset in the text is the
- * offset of the instant that came out.
- */
-export function zonedToIso(date: string, time: string, zone: string): ZonedTime | null {
-  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
-  const t = /^(\d{2}):(\d{2})$/.exec(time);
-  if (!d || !t || !knownZone(zone)) return null;
-  const [y, mo, da] = [Number(d[1]), Number(d[2]), Number(d[3])];
-  const [h, mi] = [Number(t[1]), Number(t[2])];
-  const wall = Date.UTC(y, mo - 1, da, h, mi);
-  const back = new Date(wall);
-  if (back.getUTCFullYear() !== y || back.getUTCMonth() !== mo - 1 || back.getUTCDate() !== da || h > 23 || mi > 59) {
-    return null;
-  }
-  const before = offsetMinutes(wall - 86_400_000, zone);
-  const after = offsetMinutes(wall + 86_400_000, zone);
-  const fits = [...new Set([before, after])]
-    .map((o) => ({ o, ms: wall - o * 60_000 }))
-    .filter((c) => offsetMinutes(c.ms, zone) === c.o);
-  const ms = fits.length > 0 ? Math.min(...fits.map((c) => c.ms)) : wall - before * 60_000;
-  return { ms, iso: instantIso(ms, zone) };
-}
-
-/**
- * An instant on a whole minute as ISO WITH the offset of `zone` at that
- * instant ("2026-10-25T02:15:00+01:00"). The text and the instant agree, also
- * in the hour that a clock change repeats.
- */
-export function instantIso(ms: number, zone: string): string {
-  const p = wallParts(ms, zone);
-  return `${dateText(p.year, p.month, p.day)}T${pad(p.hour)}:${pad(p.minute)}:00${offsetText(offsetMinutes(ms, zone))}`;
-}
-
-/** The wall minute of the day (0-1439) of an instant in a zone. */
-export function wallMinutes(ms: number, zone: string): number {
-  const p = wallParts(ms, zone);
-  return p.hour * 60 + p.minute;
-}
-
-/** "9:30 AM" for an instant on the wall of a zone. */
-export function clockText(ms: number, zone: string): string {
-  return new Intl.DateTimeFormat(undefined, { timeZone: zone, hour: "numeric", minute: "2-digit" }).format(new Date(ms));
-}
-
-/** "Sat, 31 Oct, 9:30 AM" for an instant on the wall of a zone. */
-export function whenText(ms: number, zone: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    timeZone: zone,
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(ms));
-}
-
-/**
- * The default time of the form: the next half hour after `nowMs`, on the wall
- * of the zone. After 23:30 it is 00:00 of the next day.
- */
-export function defaultWhen(nowMs: number, zone: string): { date: string; time: string } {
-  const p = wallParts(nowMs, zone);
-  const next = (Math.floor((p.hour * 60 + p.minute) / 30) + 1) * 30;
-  const day = new Date(Date.UTC(p.year, p.month - 1, p.day + Math.floor(next / 1440)));
-  const mins = next % 1440;
-  return {
-    date: dateText(day.getUTCFullYear(), day.getUTCMonth() + 1, day.getUTCDate()),
-    time: `${pad(Math.floor(mins / 60))}:${pad(mins % 60)}`,
-  };
-}
-
-/** The date and the time of the form for an instant, on the wall of a zone. */
-export function wallInputs(ms: number, zone: string): { date: string; time: string } {
-  const p = wallParts(ms, zone);
-  return { date: dateText(p.year, p.month, p.day), time: `${pad(p.hour)}:${pad(p.minute)}` };
-}
+export {
+  clockText,
+  dateText,
+  defaultWhen,
+  gridZone,
+  instantIso,
+  offsetMinutes,
+  offsetText,
+  wallInputs,
+  wallMinutes,
+  wallParts,
+  whenText,
+  zonedToIso,
+  type WallParts,
+  type ZonedTime,
+} from "@/lib/reminderClock";
 
 // ── The form ─────────────────────────────────────────────────────────────────
 
@@ -578,47 +450,7 @@ export function firstReadRetry(settled: boolean, attempt: number): number | null
   return FIRST_READ_RETRY_MS[attempt] ?? null;
 }
 
-export type WriteResult = { ok: true } | { ok: false; words: string };
-
-/** The words of a create or a move that the server refused for no named reason. */
-const SAVE_FAILED_WORDS = "Metorite could not save the reminder. Try again.";
-
-async function write(
-  url: string,
-  body: Record<string, unknown>,
-  fetchImpl: typeof fetch,
-): Promise<WriteResult> {
-  try {
-    const res = await fetchImpl(url, {
-      method: "POST",
-      cache: "no-store",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (res.ok) return { ok: true };
-    const data: unknown = await res.json().catch(() => null);
-    return { ok: false, words: refusalWords(res.status, data, SAVE_FAILED_WORDS) };
-  } catch {
-    return { ok: false, words: UNREACHABLE_WORDS };
-  }
-}
-
-/** Create a standalone reminder. No subject fields (the link picker waits for CE-3). */
-export function createReminder(
-  a: { title: string; kind: ReminderKind; fireAt: string; tz: string },
-  fetchImpl: typeof fetch = fetch,
-): Promise<WriteResult> {
-  return write(BASE, { title: a.title, kind: a.kind, fire_at: a.fireAt, tz: a.tz }, fetchImpl);
-}
-
-/** Move a reminder to a named time through `/reschedule` (§5.4). */
-export function moveReminder(
-  id: string,
-  a: { fireAt: string; tz: string },
-  fetchImpl: typeof fetch = fetch,
-): Promise<WriteResult> {
-  return write(`${BASE}/${encodeURIComponent(id)}/reschedule`, { fire_at: a.fireAt, tz: a.tz }, fetchImpl);
-}
+export { createReminder, moveReminder, type WriteResult } from "@/lib/reminderWrite";
 
 /** The words of the busy guard: a second write while one runs does nothing. */
 export const BUSY_WORDS = "Wait for the last change to finish.";
