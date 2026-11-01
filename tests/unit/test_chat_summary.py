@@ -48,6 +48,7 @@ answer as typed; let ``member_texts`` skip ``typed_text``; let
 # ruff: noqa: RUF001 - the probes hold digits and marks of other scripts on purpose
 from __future__ import annotations
 
+import ast
 import json
 import random
 import re
@@ -580,6 +581,83 @@ def test_pz33b_the_boundary_a_real_letter_splits_a_number(text: str) -> None:
     records the boundary: it turns red when a change closes it."""
     words = summaries.member_words(PROBE_ROWS, MEMBER)
     assert summaries.check_answer(_answer(text), words) is None
+
+
+# ── PZ-33b: the durable mail rule ──────────────────────────────────────────
+
+ROOT_EMAIL_AGENT = ROOT / "apps" / "agents" / "agent-email-assistant" / "agents.py"
+
+
+def _email_agent_tools() -> set[str]:
+    """Each name of ``_TOOLS`` in the source of the email agent. The gateway
+    loads that agent at run time and cannot import it, so the fence reads it."""
+    tree = ast.parse(ROOT_EMAIL_AGENT.read_text(encoding="utf-8-sig"))
+    for node in tree.body:
+        if (isinstance(node, ast.Assign)
+                and any(getattr(t, "id", "") == "_TOOLS" for t in node.targets)):
+            return {item.id for item in node.value.elts if isinstance(item, ast.Name)}
+    raise AssertionError("the email agent has no _TOOLS list")
+
+
+def _is_mail_event(events: object) -> bool:
+    return re.search(summaries.MAIL_EVENT_RE, json.dumps(events), re.I) is not None
+
+
+def test_pz33b_each_tool_of_the_email_agent_is_a_mail_tool() -> None:
+    """A new tool of the email agent fails here until the rule holds it."""
+    tools = _email_agent_tools()
+    assert len(tools) >= 50, tools
+    assert tools <= set(summaries.MAIL_TOOLS), tools - set(summaries.MAIL_TOOLS)
+
+
+@pytest.mark.parametrize("name", [
+    "query_inbox", "read_thread", "list_senders", "compose_reply", "edit_draft", "send_draft",
+    "read_attachment", "narrow_and_read", "present_email_groups", "list_accounts", "read_email",
+    "read_email_attachment", "send_email", "query_history", "search_company",
+])
+def test_pz33b_each_mail_tool_of_production_is_in_the_rule(name: str) -> None:
+    assert name in summaries.MAIL_TOOLS
+    assert _is_mail_event([{"name": name, "args": {}, "result": "ok"}])
+
+
+def test_pz33b_the_rule_holds_each_tool_of_an_email_family() -> None:
+    from acb_skills.egress import UNTRUSTED_INPUT_AGENTS
+    from acb_skills.skill_families import SKILL_FAMILIES
+
+    families = [f for f in SKILL_FAMILIES.values() if f.get("owner") in UNTRUSTED_INPUT_AGENTS]
+    assert len(families) >= 2
+    assert {t for f in families for t in f["tools"]} <= set(summaries.MAIL_TOOLS)
+    # Each name goes into a SQL literal, so it must hold no quote.
+    assert all(re.fullmatch(r"[a-z0-9_]+", name) for name in summaries.MAIL_TOOLS)
+    assert "'" not in summaries.MAIL_EVENT_RE
+    assert "(?:" not in summaries.MAIL_EVENT_RE, "SQLAlchemy reads :name as a bind"
+
+
+@pytest.mark.parametrize("events", [
+    [{"name": "call_agent", "args": {"agent_name": "email-assistant", "task": "read it"}}],
+    [{"name": "delegate_to_agent", "args": {"agent": "email_assistant"}}],
+    [{"name": "email_assistant", "args": {"task": "read it"}}],
+    [{"name": "call_agent", "subAgentName": "Email-Assistant", "subAgentTools": []}],
+    [{"name": "call_agent", "subAgentTools": [{"name": "read_thread", "args": {}}]}],
+], ids=["call_agent", "delegate", "specialist", "sub-agent name", "sub-agent tool"])
+def test_pz33b_the_rule_reads_a_hand_off_to_the_email_agent(events: object) -> None:
+    assert _is_mail_event(events)
+
+
+@pytest.mark.parametrize("events", [
+    [], [{"name": "find_tasks", "args": {"q": "deck"}, "result": "3 tasks"}],
+    [{"name": "web_search", "args": {"query": "mail servers"}, "result": "a page on email"}],
+])
+def test_pz33b_the_rule_leaves_a_chat_with_no_mail_tool(events: object) -> None:
+    assert not _is_mail_event(events)
+
+
+def test_pz33b_the_other_reads_are_not_mail_tools() -> None:
+    """Each one was read in the code. The entity reads and the Projects read
+    hold no mail text. The timeline reads a store that takes no mail."""
+    for name in ("retrieve_entity_context", "retrieve_sales_context", "needs_attention",
+                 "search_timeline", "recall_timeline"):
+        assert name not in summaries.MAIL_TOOLS
 
 
 # ── PZ-33b: the bound on the shared worker ─────────────────────────────────

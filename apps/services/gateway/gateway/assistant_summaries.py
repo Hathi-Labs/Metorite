@@ -835,9 +835,54 @@ JOB_ROWS_MAX = 400
 SWITCH_APP = "chat"
 SWITCH_KEY = "summaries"
 
+#: The tools outside an email family whose answer can hold mail text. Each is
+#: a platform tool, so no family of ``email-assistant`` names it:
+#: `query_history` can copy mail from another chat, `search_company` quotes the
+#: subject and a passage of a mail, and `read_attachment` reads a file of a
+#: mail. `tests/unit/test_chat_summary.py` fails when a tool of the email agent
+#: is missing from :data:`MAIL_TOOLS`.
+MAIL_CORE_TOOLS = ("query_history", "read_attachment", "search_company")
+
+
+def _mail_tool_names() -> tuple[str, ...]:
+    """Each tool of a family that an agent of ``UNTRUSTED_INPUT_AGENTS`` owns,
+    and :data:`MAIL_CORE_TOOLS`. The names come from the code, so a new mail
+    tool joins the rule with no change here."""
+    from acb_skills.egress import UNTRUSTED_INPUT_AGENTS
+    from acb_skills.skill_families import SKILL_FAMILIES
+
+    owned = {str(name) for family in SKILL_FAMILIES.values()
+             if str(family.get("owner")) in UNTRUSTED_INPUT_AGENTS
+             for name in family["tools"]}
+    return tuple(sorted(owned | set(MAIL_CORE_TOOLS)))
+
+
+#: The tool names of the durable mail rule.
+MAIL_TOOLS = _mail_tool_names()
+#: The rule over the JSON text of `tool_events`. It matches the email agent
+#: under any spelling, which covers the specialist tool, the args of
+#: `call_agent` and `delegate_to_agent`, and `subAgentName`. It matches each
+#: mail tool as a whole JSON string, which covers `subAgentTools`. A match in
+#: a `result` is a false positive, and that is safe: the chat only gets no
+#: summary. There is no `(?:`, because SQLAlchemy would read `:name` as a bind.
+MAIL_EVENT_RE = 'email[-_]assistant|"(' + "|".join(MAIL_TOOLS) + ')"'
+
+#: True when an agent row of the chat `s` shows that the chat can hold mail
+#: text. This is the durable rule. The Redis mark can expire, be lost or fail
+#: to write, and this job reads old rows. `tool_events` stays: the fold writes
+#: it from the events of the run, and no write can shrink it
+#: (`routes/chat.py::MONOTONIC_MESSAGE_COLUMNS`). A value that is not an array
+#: cannot be read, so it counts as mail.
+MAIL_EVENTS_SQL = f"""EXISTS (
+        SELECT 1 FROM chat_message t
+         WHERE t.session_id = s.id AND t.role = 'assistant'
+           AND (jsonb_typeof(t.tool_events) IS DISTINCT FROM 'array'
+                OR CAST(t.tool_events AS text) ~* '{MAIL_EVENT_RE}'))"""
+
 #: True when the chat `s` is one that a summary may cover: a chat of the
 #: bound org with Mira on the web, not archived, not deleted by the member
-#: (`off`), and solo (`rooms.SOLO_ROOM_SQL`). No other agent is in the chat.
+#: (`off`), and solo (`rooms.SOLO_ROOM_SQL`). No other agent is in the chat,
+#: and no agent row shows a mail tool (:data:`MAIL_EVENTS_SQL`).
 #: A member can add a mentioned agent to a solo chat, and the chat stays
 #: solo (`routes/rooms.py`), so `s.agent_name` alone is not enough. An agent
 #: that left keeps its rows, so the rows count too. A NULL kind of an
@@ -858,6 +903,7 @@ ELIGIBLE_SQL = f"""(
                AND COALESCE(g.author_kind,
                             CASE g.role WHEN 'assistant' THEN 'agent' END) = 'agent'
                AND COALESCE(NULLIF(g.author_email, ''), '{AGENT}') <> '{AGENT}')
+        AND NOT {MAIL_EVENTS_SQL}
         AND {SOLO_ROOM_SQL}
     )"""
 
@@ -873,25 +919,33 @@ OPEN_RUN_SQL = """EXISTS (
 #: newest row id is neither `through` nor `mark.through`, and the chat holds
 #: `:typed_min` short user rows or more. The seed then counts the typed rows
 #: of the member in Python (`member_texts`). `through_ms` is the waterline
-#: that a summary, a Delete or a Forget left.
+#: that a summary, a Delete or a Forget left. The window runs first, in its own
+#: step: :data:`ELIGIBLE_SQL` reads the JSON of each agent row, and that read
+#: must stay on the chats of this window, not on each chat of the org.
 IDLE_SQL = f"""
-SELECT s.id, s.user_id, newest.id AS newest_id, newest.timestamp_ms AS newest_ms,
+WITH recent AS MATERIALIZED (
+    SELECT c.id AS chat_id, newest.id AS newest_id, newest.timestamp_ms AS newest_ms
+      FROM chat_session c
+     CROSS JOIN LATERAL (
+           SELECT m.id, m.timestamp_ms FROM chat_message m
+            WHERE m.session_id = c.id
+            ORDER BY m.timestamp_ms DESC, m.id DESC
+            LIMIT 1) AS newest
+     WHERE c.organization_id = {_BOUND_ORG}
+       AND newest.timestamp_ms BETWEEN :since_ms AND :idle_ms
+)
+SELECT s.id, s.user_id, r.newest_id, r.newest_ms,
        s.member_summary -> 'through_ms' AS through_ms
-  FROM chat_session s
- CROSS JOIN LATERAL (
-       SELECT m.id, m.timestamp_ms FROM chat_message m
-        WHERE m.session_id = s.id
-        ORDER BY m.timestamp_ms DESC, m.id DESC
-        LIMIT 1) AS newest
+  FROM recent r
+  JOIN chat_session s ON s.id = r.chat_id
  WHERE {ELIGIBLE_SQL}
-   AND newest.timestamp_ms BETWEEN :since_ms AND :idle_ms
-   AND newest.id IS DISTINCT FROM (s.member_summary ->> 'through')
-   AND newest.id IS DISTINCT FROM (s.member_summary -> 'mark' ->> 'through')
+   AND r.newest_id IS DISTINCT FROM (s.member_summary ->> 'through')
+   AND r.newest_id IS DISTINCT FROM (s.member_summary -> 'mark' ->> 'through')
    AND NOT {OPEN_RUN_SQL}
    AND (SELECT count(*) FROM chat_message u
          WHERE u.session_id = s.id AND u.role = 'user'
            AND length(u.content) <= :typed_max) >= :typed_min
- ORDER BY newest.timestamp_ms DESC, s.id
+ ORDER BY r.newest_ms DESC, s.id
  LIMIT :scan
 """
 

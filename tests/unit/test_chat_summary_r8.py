@@ -797,11 +797,15 @@ def job(graph_as_app, monkeypatch):
 def _job_chat(ns, *, org: str, member: str = ASHA, agent: str = "orchestrator",
               channel: str | None = None, archived: bool = False,
               subjects: tuple[str, ...] | None = None, typed: int = 2,
-              newest: datetime = T - timedelta(hours=1)) -> tuple[str, str]:
+              newest: datetime = T - timedelta(hours=1),
+              events: Any = None) -> tuple[str, str]:
     """One chat with its rows, seeded as the superuser: *typed* typed rows of
     the member, a pasted mail, a reply of Mira with a tool event, and Mira's
-    newest reply, sealed. Answers the chat id and the id of its newest row."""
+    newest reply, sealed. *events* replaces the tool events of that reply.
+    Answers the chat id and the id of its newest row."""
     sid = f"pz33b-{uuid.uuid4().hex[:12]}"
+    if events is None:
+        events = [{"name": "find_tasks", "args": {}, "result": TOOL_LEAK}]
     ns.made.append(sid)
     rows: list[tuple[str, str, str, str | None, str | None, datetime]] = []
     for i, words in enumerate([TYPED_1, TYPED_2][:typed]):
@@ -838,8 +842,7 @@ def _job_chat(ns, *, org: str, member: str = ASHA, agent: str = "orchestrator",
                 ":fin)"),
                 {"id": mid, "s": sid, "r": role, "c": words, "ts": _ms(at), "o": org,
                  "k": kind, "e": author,
-                 "te": json.dumps([{"name": "read_mail", "result": TOOL_LEAK}]
-                                  if mid == "a1" else []),
+                 "te": json.dumps(events if mid == "a1" else []),
                  "fin": at if role == "assistant" else None})
     return sid, "a2"
 
@@ -1131,6 +1134,59 @@ async def test_4_no_chat_of_the_list_gets_a_call_from_the_seed_or_a_job(job) -> 
     for name, (sid, _newest) in cases.items():
         expected = {"v": 1, "off": True} if name == "a chat that reads off" else None
         assert _summary(job, sid) == expected, name
+
+
+#: Each set of tool events that shows mail, with no mark in Redis. The mark
+#: can expire, be lost or fail to write, and these rows stay.
+MAIL_EVENTS: dict[str, Any] = {
+    "read_email at the top level": [
+        {"name": "read_email", "args": {"id": "e1"}, "result": "Hi team"}],
+    "read_thread only in a sub-agent": [
+        {"name": "call_agent", "args": {"agent_name": "projects-assistant"}, "result": "ok",
+         "subAgentName": "projects-assistant",
+         "subAgentTools": [{"name": "read_thread", "args": {"id": "t1"}}]}],
+    "call_agent that names the email agent": [
+        {"name": "call_agent", "args": {"agent_name": "email-assistant", "task": "read"},
+         "result": "ok"}],
+    "query_history": [{"name": "query_history", "args": {"query": "rates"}, "result": "ok"}],
+    "a value that is not an array": {"name": "find_tasks"},
+}
+
+
+async def test_4_the_tool_events_show_mail_with_no_mark_in_redis(job) -> None:
+    """The durable rule. Each chat gets no job and no call, and no mark exists
+    for any of them. A chat with only ``find_tasks`` still gets its job."""
+    cases = {name: _job_chat(job, org=job.org_a, events=events)
+             for name, events in MAIL_EVENTS.items()}
+    clean, _ = _job_chat(job, org=job.org_a, newest=T - timedelta(hours=2),
+                         events=[{"name": "find_tasks", "args": {}, "result": "3 tasks"}])
+    assert await _tick(job, job.org_a) == Counter(done=1)
+    assert [r.payload["session_id"] for r in _jobs(job)] == [clean]
+    assert len(job.console.calls) == 1
+    assert job.marks.marked == set(), "the rule needs no mark"
+    for sid, newest in cases.values():
+        await _put(job, job.org_a, sid, newest, T + timedelta(minutes=15))
+    assert await _tick(job, job.org_a, T + timedelta(minutes=15)) == Counter(done=len(cases))
+    assert len(job.console.calls) == 1, "the handler holds the rule too"
+    for name, (sid, _newest) in cases.items():
+        assert _summary(job, sid) is None, name
+
+
+async def test_4_a_mail_tool_in_an_old_row_of_a_chat_holds_it(job) -> None:
+    """The verifier's route: a chat from before the marks. Two new typed rows
+    come, and an old agent row still shows the mail tool."""
+    sid, _newest = _job_chat(job, org=job.org_a)
+    old = T - timedelta(days=30)
+    with job.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_message (id, session_id, role, content, timestamp_ms, "
+            "organization_id, author_kind, author_email, tool_events, run_final_at) VALUES "
+            "('old1', :s, 'assistant', 'Priya wrote about the rates.', :ts, CAST(:o AS uuid), "
+            "'agent', 'orchestrator', CAST(:te AS jsonb), :fin)"),
+            {"s": sid, "ts": _ms(old), "o": job.org_a, "fin": old,
+             "te": json.dumps([{"name": "query_inbox", "args": {}, "result": "ok"}])})
+    assert await _tick(job, job.org_a) == Counter()
+    assert job.console.calls == [] and _summary(job, sid) is None
 
 
 async def test_4_a_chat_with_the_mail_mark_gets_no_call_and_no_mark(job) -> None:
