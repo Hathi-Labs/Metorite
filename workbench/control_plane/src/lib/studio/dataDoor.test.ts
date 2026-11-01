@@ -13,9 +13,10 @@ import GenerativeUINode, { BoundStatus } from "@/components/GenerativeUINode";
 import { clearAll, peek, put } from "@/lib/dataCache";
 import { ACTION_FAILED, pressOnce, runTyped } from "./TypedActionButton";
 import {
-  type ActionResult, type Row, type StudioDataDoor, StudioDataContext,
+  type ActionResult, type Row, type StudioDataDoor,
   actionDisabled, boundView, sourceKey, stableJson, bindsSource, gridData, parseAction, parseSource, pressAction,
 } from "./dataDoor";
+import { StudioDataContext } from "./dataContext";
 
 function mockDoor(): StudioDataDoor & { reads: unknown[]; runs: unknown[][] } {
   const reads: unknown[] = [];
