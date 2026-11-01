@@ -760,6 +760,8 @@ _log = get_logger("assistant.chat_summary")
 
 #: The kind of the job queue that writes a summary (§15.3).
 KIND = "assistant.chat_summary"
+#: The one agent that a summary covers: Mira (§15.3).
+AGENT = "orchestrator"
 #: The tries of one job. A retry is safe, because the handler reads its mark
 #: first and makes no second call (``docs/job_queue.md`` §5a).
 ATTEMPTS = 3
@@ -963,6 +965,32 @@ async def _gone(org: str, member: str) -> bool:
         return True
 
 
+async def holds_mail(org: str, session_id: str) -> bool:
+    """True when the chat can hold mail text, so it gets no call and no mark.
+
+    ``acb_skills.egress.run_holds_mail`` is the one predicate of the chat
+    memory stores. A reply of Mira can quote a mail that she read, and
+    :func:`check_answer` cannot tell that from her own words. So a chat with
+    the mail mark gets no summary at all (the review of PZ-33b, P1).
+
+    *org* comes from the worker. It is bound only for the read, as
+    ``chat_fold._run_holds_mail`` binds it, because a frame with no tenant
+    reads as clear. A fault reads as mail, so the check fails closed."""
+    from acb_common.db import bind_tenant, release_tenant
+
+    token = None
+    try:
+        from acb_skills.egress import run_holds_mail
+
+        token = bind_tenant(str(org))
+        return await run_holds_mail(AGENT, {"session_id": session_id})
+    except Exception as exc:  # fail closed: the chat holds mail
+        _log.warning("assistant.chat_summary_mail_check_failed", error=type(exc).__name__)
+        return True
+    finally:
+        release_tenant(token)
+
+
 async def seed(org: str, now: datetime) -> None:
     """The ``worker.seed_hooks`` hook of PZ-33b (§15.3, "Which job writes it").
 
@@ -976,7 +1004,8 @@ async def seed(org: str, now: datetime) -> None:
     A chat gets a job when :data:`IDLE_SQL` selects it, its member is active
     with the switch on (:func:`member_switches`), the newest short rows hold
     :data:`TYPED_ROWS_MIN` typed rows of the member (:func:`member_texts`),
-    and ``my_day_loop.departed`` says that the member did not leave."""
+    ``my_day_loop.departed`` says that the member did not leave, and the chat
+    holds no mail (:func:`holds_mail`)."""
     from acb_common.db import tenant_session
     from acb_llm import routed
 
@@ -1008,7 +1037,7 @@ async def seed(org: str, now: datetime) -> None:
             continue
         if member not in left:
             left[member] = await _gone(org, member)
-        if left[member]:
+        if left[member] or await holds_mail(org, str(chat.id)):
             continue
         picked.append(chat)
         if len(picked) >= SUMMARY_SEED_MAX:

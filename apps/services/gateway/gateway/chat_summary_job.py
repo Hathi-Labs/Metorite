@@ -28,7 +28,9 @@ with the id of a chat of another org finds no row.
    more. A chat that fails one is ``done`` with no call. ``through`` stored
    already is ``done`` too.
 5. ``my_day_loop.departed``. A member who left is ``done``. A failed read
-   raises, and the queue tries again, because no mark exists yet.
+   raises, and the queue tries again, because no mark exists yet. Then
+   ``assistant_summaries.holds_mail``: a chat with the mail mark is ``done``
+   with no call and no mark, and so is a chat whose mark cannot be read.
 6. A mark of ``through`` with no result gives up with ``SummaryUncertain``:
    the call possibly ran, so no second call.
 7. The mark commits in its own session (``assistant_summaries.mark``).
@@ -68,6 +70,7 @@ from gateway.assistant_summaries import (
     TYPED_ROWS_MIN,
     JobChat,
     check_answer,
+    holds_mail,
     mark,
     member_switch_on,
     member_texts,
@@ -248,6 +251,8 @@ async def _load(org: str, sid: str, through: str,
 
         if await departed(org, chat.member) is not None:
             why = "departed"
+        elif await holds_mail(org, sid):
+            why = "holds_mail"
     return chat, why
 
 

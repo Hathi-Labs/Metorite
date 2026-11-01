@@ -658,6 +658,23 @@ class _Console:
         }
 
 
+class _Marks:
+    """The tenant Redis of the mail mark (``acb_skills.egress``). It holds the
+    chats with the mark. ``down`` makes each read fail."""
+
+    def __init__(self) -> None:
+        self.marked: set[str] = set()
+        self.down = False
+
+    async def exists(self, key: str) -> int:
+        if self.down:
+            raise ConnectionError("redis down")
+        return int(any(str(key).endswith(sid) for sid in self.marked))
+
+    async def expire(self, key: str, seconds: int) -> bool:
+        return True
+
+
 def _identity(ns, email: str, org: str, *, status: str = "active") -> None:
     """A member in *org*: the ``app_user`` row and the identity rows that
     ``my_day_loop.departed`` reads with the cutover on."""
@@ -699,6 +716,7 @@ def job(graph_as_app, monkeypatch):
     from acb_common import _log, get_settings
     from acb_common.settings import install_settings
     from acb_llm import routed
+    from acb_skills import egress
     from gateway import chat_summary_job
     from gateway.jobs import worker
 
@@ -723,6 +741,8 @@ def job(graph_as_app, monkeypatch):
     monkeypatch.setattr(routed, "routing_is_on", lambda: ns.router["on"])
     ns.console = _Console()
     monkeypatch.setattr(console_resolve, "chat_completion_on_console", ns.console)
+    ns.marks = _Marks()
+    monkeypatch.setattr(egress, "get_tenant_redis", lambda: ns.marks)
     vouch = getattr(_log, "_AUTOMATION_AGENT", None)
     if vouch is not None:
         vouch.set(None)
@@ -1024,6 +1044,41 @@ async def test_4_no_chat_of_the_list_gets_a_call_from_the_seed_or_a_job(job) -> 
     for name, (sid, _newest) in cases.items():
         expected = {"v": 1, "off": True} if name == "a chat that reads off" else None
         assert _summary(job, sid) == expected, name
+
+
+async def test_4_a_chat_with_the_mail_mark_gets_no_call_and_no_mark(job) -> None:
+    """``run_holds_mail`` is the one predicate of the chat memory stores. A
+    reply of Mira can quote a mail, and ``check_answer`` lets the line pass:
+    no number, no address and no sensitive word (review P1). So the seed
+    skips the chat, and so does a job put in by hand."""
+    words = "Priya's mail says the rates rise ten percent on Monday."
+    assert summaries.check_answer(json.dumps({"text": words}), "") is not None
+    sid, newest = _job_chat(job, org=job.org_a)
+    clean, _ = _job_chat(job, org=job.org_a, newest=T - timedelta(hours=2))
+    job.marks.marked.add(sid)
+    job.console.answer = {"text": words}
+    assert await _tick(job, job.org_a) == Counter(done=1)
+    assert _jobs(job, sid) == [], "the seed must skip a chat with the mark"
+    assert len(job.console.calls) == 1, "only the clean chat gets a call"
+    assert _summary(job, clean)["text"] == words
+    await _put(job, job.org_a, sid, newest, T + timedelta(minutes=15))
+    assert await _tick(job, job.org_a, T + timedelta(minutes=15)) == Counter(done=1)
+    assert len(job.console.calls) == 1
+    assert _summary(job, sid) is None, "no mark, so a later read can try again"
+
+
+async def test_4_a_mark_that_cannot_be_read_counts_as_mail(job) -> None:
+    """The check fails closed: with Redis down, no chat gets a call."""
+    sid, newest = _job_chat(job, org=job.org_a)
+    job.marks.down = True
+    assert await _tick(job, job.org_a) == Counter()
+    await _put(job, job.org_a, sid, newest, T + timedelta(minutes=15))
+    assert await _tick(job, job.org_a, T + timedelta(minutes=15)) == Counter(done=1)
+    assert job.console.calls == [] and _summary(job, sid) is None
+    # The next tick after Redis comes back summarises the chat.
+    job.marks.down = False
+    assert await _tick(job, job.org_a, T + timedelta(minutes=30)) == Counter(done=1)
+    assert _summary(job, sid)["text"] == SUMMARY["text"]
 
 
 async def test_4_a_stored_switch_on_and_no_switch_read_as_on(job) -> None:
