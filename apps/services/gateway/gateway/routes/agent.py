@@ -754,25 +754,6 @@ _AGENT_REGISTRY: list[dict] = [
         "optional_integrations": [],
     },
     {
-        "name": "studio-builder",
-        "description": (
-            "Studio Builder - owns the studio tool pack: drafts, patches, "
-            "validates and outlines an AI Studio app manifest and lists the "
-            "actions an app may use. It is not a second assistant, and a "
-            "hand-off to it is refused."
-        ),
-        "tags": ["studio", "apps", "manifest"],
-        "status": "live",
-        # STU-G1: the OWNER of the `studio` tool pack (ai_studio.md section
-        # 6.2). The pack loader reads this entry for `local_path`
-        # (`_tool_injection._pack_owner_module`). The member talks to Mira
-        # only (D99, D125): the pack's delegation_refusal answers a hand-off.
-        "agent_runtime": "maf",
-        "local_path": "apps/agents/agent-studio-builder",
-        "integrations": [],
-        "optional_integrations": [],
-    },
-    {
         "name": "projects-assistant",
         "description": (
             "Projects Assistant — the AI chat inside the Projects app. Reads "
@@ -851,6 +832,26 @@ _INTERNAL_AGENTS: list[dict] = [
         "description": "Runs one read-only job of spawn_subagents and ends with items.",
         "agent_runtime": "maf",
         "local_path": "apps/agents/agent-worker",
+        "integrations": [],
+        "optional_integrations": [],
+    },
+]
+
+# The owners of a tool pack that never run as an agent (STU-G1, ai_studio.md
+# section 6.2). An owner here only gives its tools to the pack of the one
+# assistant (D99, D125). Like the list above, it is in NO list that a picker,
+# a specialist tool, the registry block, the workflow catalog or a route reads.
+# The executor does not read it either, so no lookup by name can run one. Only
+# the pack loader reads it, for the folder of the owner
+# (`_tool_injection._import_pack_owner`). A hand-off to an owner here, and a
+# run of one, is refused in every run (`tool_packs.pack_only_refusal`).
+# Fence: tests/unit/test_tool_packs_registry.py, sections 8 and 9.
+_PACK_OWNER_AGENTS: list[dict] = [
+    {
+        "name": "studio-builder",
+        "description": "Owns the studio tool pack. It never runs as an agent.",
+        "agent_runtime": "maf",
+        "local_path": "apps/agents/agent-studio-builder",
         "integrations": [],
         "optional_integrations": [],
     },
@@ -2028,7 +2029,10 @@ async def register_agent(
 
     # WS-67 OA-9b hardening: the name of an internal agent is reserved. A
     # registered ``worker`` would share ``cache_root/worker`` with the spawn child.
-    if req.name.strip().lower() in {a["name"] for a in _INTERNAL_AGENTS}:
+    # STU-G1: the name of a pack-only owner is reserved too, so no registered
+    # agent shows in a list under the name of an owner that never runs.
+    reserved = {a["name"] for a in (*_INTERNAL_AGENTS, *_PACK_OWNER_AGENTS)}
+    if req.name.strip().lower() in reserved:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Agent name {req.name!r} is reserved for the platform.",

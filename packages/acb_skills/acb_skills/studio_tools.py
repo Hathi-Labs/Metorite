@@ -17,12 +17,22 @@ model holds the manifest in the chat turn and sends it back on each call.
 
 **One result shape.** Each manifest tool returns ``{ok, errors, diff,
 manifest}``. ``errors`` holds the validator's errors verbatim, as ``path`` and
-``message``. ``manifest`` is present only when the manifest is valid, so a
-refusal leaves the model with the manifest it sent.
+``message``, up to :data:`MAX_ERRORS` of them. ``manifest`` is present only
+when the manifest is valid, so a refusal leaves the model with the manifest it
+sent.
 
 **A cap.** A serialized manifest over :data:`MAX_MANIFEST_CHARS` characters is
 refused with one sentence, the outline and the size. ``TOOL_RESULT_SPILL`` is
 off by default, so the chat would carry the whole text on each call.
+
+**Every result stays under the cap.** The notes of a result (each key but
+``manifest``) hold at most :data:`MAX_MANIFEST_CHARS` characters as JSON, and
+a manifest comes back only when it is under the cap too. The cuts that hold
+it: :data:`MAX_ERRORS` errors and :data:`MAX_DIFF_LINES` diff lines, each
+list with one line that counts the rest. Each echoed text is one line with no
+control character, and has a length limit. In the worst case, each character
+of a cut text costs 2 characters of JSON (a quote or a backslash), and the
+limits below hold the sum under the cap with that cost.
 
 **The catalog comes over HTTP.** A package must not import the gateway. The
 tools read ``GET /studio/actions`` as the member, with the idiom of
@@ -57,6 +67,39 @@ MAX_ACTION_ROWS = 30
 
 #: The longest text of a brief that the skeleton keeps as the purpose.
 MAX_PURPOSE_CHARS = 300
+
+#: The longest app name that the skeleton takes from the brief. With the
+#: purpose and the id, a draft is far under the cap.
+MAX_NAME_CHARS = 80
+
+#: The most errors that one result shows. A longer list ends with one line
+#: that counts the rest. Worst case: 21 x (25 + 2 x (80 + 300)) = 16,485.
+MAX_ERRORS = 20
+
+#: The longest path and the longest message of one shown error.
+MAX_ERROR_PATH_CHARS = 80
+MAX_ERROR_MESSAGE_CHARS = 300
+
+#: The most diff lines that one result shows, with the same count line, and
+#: the longest line. Worst case: 21 x (3 + 2 x 100) = 4,263.
+MAX_DIFF_LINES = 20
+MAX_DIFF_LINE_CHARS = 100
+
+#: The longest name in the outline, and the longest line of it. A line that
+#: cannot hold each name ends with a count of the rest. The outline has seven
+#: lines. Worst case: 2 x (7 x 400 + 6) = 5,612. With the errors: 22,097.
+MAX_OUTLINE_NAME_CHARS = 80
+MAX_OUTLINE_LINE_CHARS = 400
+
+#: The longest action id that a row may hold. No id of the ``uses`` grammar is
+#: longer, so a longer id is not a usable action and its row is left out. An
+#: id is never cut, because a cut id names no action.
+MAX_ACTION_ID_CHARS = 128
+
+#: The longest title, and the longest class, source or connection, of a row.
+#: Worst case: 30 x (60 + 2 x (128 + 80 + 3 x 40)) = 21,480.
+MAX_ACTION_TITLE_CHARS = 80
+MAX_ACTION_TAG_CHARS = 40
 
 CATALOG_PATH = "/studio/actions"
 
@@ -131,7 +174,8 @@ async def _read_catalog() -> list[dict[str, Any]]:
         rows = None
     if not isinstance(rows, list):
         raise _Refused("The action catalog answered in a shape that this tool cannot read.")
-    return [r for r in rows if isinstance(r, dict) and isinstance(r.get("id"), str)]
+    return [r for r in rows if isinstance(r, dict) and isinstance(r.get("id"), str)
+            and len(r["id"]) <= MAX_ACTION_ID_CHARS]
 
 
 def _class_map(rows: list[dict[str, Any]]) -> dict[str, str]:
@@ -149,11 +193,58 @@ def _sentence(message: str, path: str = "$") -> list[dict[str, str]]:
     return [{"path": path, "message": message}]
 
 
+def _clip(value: Any, limit: int) -> str:
+    """*value* as text of at most *limit* characters, with no control character.
+
+    A control character becomes a space, so it costs 1 character of JSON and
+    not 6. A cut text ends with ``...``."""
+    text = value if isinstance(value, str) else str(value)
+    if len(text) > limit:
+        text = text[: limit - 3] + "..."
+    return "".join(ch if ch >= " " else " " for ch in text)
+
+
+def _line_of(value: Any, limit: int) -> str:
+    """*value* as one line of at most *limit* characters (:func:`_clip`), with
+    each run of white space made one space."""
+    text = value if isinstance(value, str) else str(value)
+    head = text[: limit * 4]  # so a huge text is never split in full
+    one = " ".join(head.split())
+    if len(head) < len(text):
+        one += " ..."
+    return _clip(one, limit)
+
+
+def _shown_errors(errors: list[dict[str, str]]) -> list[dict[str, str]]:
+    """The first :data:`MAX_ERRORS` errors, each cut, and one line that counts
+    the rest. An error under the limits stays verbatim."""
+    shown = [{"path": _clip(e.get("path", "$"), MAX_ERROR_PATH_CHARS),
+              "message": _clip(e.get("message", ""), MAX_ERROR_MESSAGE_CHARS)}
+             for e in errors[:MAX_ERRORS]]
+    rest = len(errors) - len(shown)
+    if rest > 0:
+        shown.append({"path": "$", "message": (
+            f"{rest} more errors are not shown. Fix the errors above, then check again.")})
+    return shown
+
+
+def _shown_diff(diff: list[str]) -> list[str]:
+    """The first :data:`MAX_DIFF_LINES` lines of *diff*, each cut, and one line
+    that counts the rest."""
+    shown = [_line_of(d, MAX_DIFF_LINE_CHARS) for d in diff[:MAX_DIFF_LINES]]
+    rest = len(diff) - len(shown)
+    if rest > 0:
+        shown.append(f"and {rest} more ops")
+    return shown
+
+
 def _result(
     ok: bool, errors: list[dict[str, str]], diff: list[str],
     manifest: dict[str, Any] | None = None, **extra: Any,
 ) -> dict[str, Any]:
-    out: dict[str, Any] = {"ok": ok, "errors": errors, "diff": diff}
+    """THE one shape of a result. It cuts the errors and the diff, so no path
+    of a tool can give a list over the cap."""
+    out: dict[str, Any] = {"ok": ok, "errors": _shown_errors(errors), "diff": _shown_diff(diff)}
     if ok and manifest is not None:
         out["manifest"] = manifest
     out.update(extra)
@@ -190,21 +281,43 @@ def _as_doc(manifest: Any) -> tuple[Any, dict[str, Any] | None]:
 # ── The outline (pure) ──────────────────────────────────────────────────────
 
 
+def _name(value: Any) -> str:
+    """One name of the outline: one line of at most :data:`MAX_OUTLINE_NAME_CHARS`."""
+    return _line_of(value, MAX_OUTLINE_NAME_CHARS)
+
+
 def _names(items: Any, key: str) -> list[str]:
     if not isinstance(items, list):
         return []
-    return [str(i[key]) for i in items if isinstance(i, dict) and isinstance(i.get(key), str)]
+    return [_name(i[key]) for i in items if isinstance(i, dict) and isinstance(i.get(key), str)]
 
 
 def _line(label: str, names: list[str]) -> str:
-    return f"{label} ({len(names)}): " + (", ".join(names) if names else "none")
+    """One line of the outline: the label, the count, and the names that fit in
+    :data:`MAX_OUTLINE_LINE_CHARS`. The line counts the names that do not fit."""
+    head = f"{label} ({len(names)}): "
+    if not names:
+        return head + "none"
+    budget = MAX_OUTLINE_LINE_CHARS - 24  # the room for ", and N more"
+    shown: list[str] = []
+    used = len(head)
+    for name in names:
+        add = len(name) + (2 if shown else 0)
+        if used + add > budget:
+            break
+        shown.append(name)
+        used += add
+    rest = len(names) - len(shown)
+    return head + ", ".join(shown) + (f", and {rest} more" if rest else "")
 
 
 def outline_text(manifest: Any) -> str:
     """A deterministic text of the counts and the names in *manifest*.
 
     Pure: the same manifest gives the same text. It reads any value and never
-    raises, so it also outlines a manifest that is not valid.
+    raises, so it also outlines a manifest that is not valid. It has seven
+    lines, each of at most :data:`MAX_OUTLINE_LINE_CHARS` characters, also for
+    a manifest far over the cap.
     """
     if not isinstance(manifest, dict):
         return "Not a manifest."
@@ -214,7 +327,7 @@ def outline_text(manifest: Any) -> str:
         for o in objects:
             if isinstance(o, dict) and isinstance(o.get("name"), str):
                 count = len(o["fields"]) if isinstance(o.get("fields"), list) else 0
-                objs.append(f"{o['name']} ({count} fields)")
+                objs.append(f"{_name(o['name'])} ({count} fields)")
     skill = manifest.get("skill")
     skill_line = "Skill: none"
     if isinstance(skill, dict):
@@ -222,8 +335,8 @@ def outline_text(manifest: Any) -> str:
         n = len(actions) if isinstance(actions, list) else 0
         skill_line = f"Skill: yes ({n} actions)"
     conns = manifest.get("connections")
-    conn_names = [str(c) for c in conns] if isinstance(conns, list) else []
-    head = f"App {manifest.get('id', '?')}: {manifest.get('name', '?')}"
+    conn_names = [_name(c) for c in conns] if isinstance(conns, list) else []
+    head = f"App {_name(manifest.get('id', '?'))}: {_name(manifest.get('name', '?'))}"
     return "\n".join([
         head,
         _line("Objects", objs),
@@ -246,7 +359,7 @@ def _slug(brief: str) -> str:
 
 def _skeleton(brief: str) -> dict[str, Any]:
     text = " ".join(brief.split())
-    title = " ".join(text.split()[:5]).strip(" .,;:") or "My app"
+    title = " ".join(text.split()[:5])[:MAX_NAME_CHARS].strip(" .,;:") or "My app"
     return {
         "studio": STUDIO_VERSION,
         "id": _slug(text),
@@ -326,18 +439,28 @@ async def studio_outline(manifest: dict[str, Any]) -> dict[str, Any]:
     doc, bad = _as_doc(manifest)
     if bad is not None:
         return bad
+    big = _too_big(doc)  # the outline and the size, and no manifest
+    if big is not None:
+        return big
     errors = validate_manifest(doc)
     return _result(not errors, _errors(errors), [], doc, outline=outline_text(doc),
                    size=_size(doc))
 
 
+def _tag(value: Any, limit: int) -> Any:
+    """A text field of a row, cut to *limit* (:func:`_line_of`). None stays None."""
+    return None if value is None else _line_of(value, limit)
+
+
 def _row(r: dict[str, Any]) -> dict[str, Any]:
+    """One action row. The id is whole (``_read_catalog`` keeps only an id of at
+    most :data:`MAX_ACTION_ID_CHARS`). Each other text is cut."""
     return {
         "id": r.get("id"),
-        "title": r.get("title"),
-        "class": r.get("class"),
-        "source": r.get("source"),
-        "connection": r.get("connection"),
+        "title": _tag(r.get("title"), MAX_ACTION_TITLE_CHARS),
+        "class": _tag(r.get("class"), MAX_ACTION_TAG_CHARS),
+        "source": _tag(r.get("source"), MAX_ACTION_TAG_CHARS),
+        "connection": _tag(r.get("connection"), MAX_ACTION_TAG_CHARS),
     }
 
 

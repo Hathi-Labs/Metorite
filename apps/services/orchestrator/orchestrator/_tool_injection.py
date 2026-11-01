@@ -3000,8 +3000,8 @@ def _pack_owner_module(owner: str) -> Any | None:
     module once for this process and keeps it. It keeps a failure for
     :data:`PACK_OWNER_RETRY_S`, so a broken owner costs one import in that
     window, never one for each build or each catalog read. The path comes
-    from the STATIC ``_AGENT_REGISTRY`` only, never from a dynamic
-    registration, because a pack owner is an in-repo agent.
+    from the two STATIC lists only, never from a dynamic registration,
+    because a pack owner is an in-repo agent (:func:`_import_pack_owner`).
     """
     if owner in _PACK_OWNER_MODULES:
         return _PACK_OWNER_MODULES[owner]
@@ -3020,6 +3020,10 @@ def _pack_owner_module(owner: str) -> Any | None:
 def _import_pack_owner(owner: str) -> Any | None:
     """Import the module of *owner* from its registry path, or None.
 
+    The path comes from ``_PACK_OWNER_AGENTS`` first, then from
+    ``_AGENT_REGISTRY``. An owner in the first list never runs as an agent
+    (STU-G1), and this loader is the only code that reads that list.
+
     A module that raises at import gives None and a warning. ``SystemExit``
     counts as such a failure, so an owner that calls ``sys.exit`` cannot stop
     the process. ``KeyboardInterrupt`` and the other ``BaseException`` kinds
@@ -3030,12 +3034,13 @@ def _import_pack_owner(owner: str) -> Any | None:
     from pathlib import Path
 
     try:
-        from gateway.routes.agent import _AGENT_REGISTRY
+        from gateway.routes.agent import _AGENT_REGISTRY, _PACK_OWNER_AGENTS
     except Exception as exc:  # no gateway in this process: no owner
         _log.warning("executor.pack_owner_unavailable", owner=owner,
                      error_type=type(exc).__name__)
         return None
-    entry = next((a for a in _AGENT_REGISTRY if a.get("name") == owner), None)
+    entry = next((a for a in (*_PACK_OWNER_AGENTS, *_AGENT_REGISTRY)
+                  if a.get("name") == owner), None)
     local = str((entry or {}).get("local_path") or "")
     path = Path(local) / "agents.py"
     if not local or not path.is_file():
@@ -3205,22 +3210,30 @@ async def _drop_pack_covered(
     return [], dropped
 
 
-async def _drop_pack_unless_studio(
-    tools: list[Any], dropped: list[str], *, held: bool = False,
-) -> tuple[list[Any], list[str]]:
-    """Build an empty ``studio`` pack for an org that ``STUDIO_ORGS`` lacks (STU-G1).
+def _studio_open() -> bool:
+    """True when ``STUDIO_ORGS`` holds the org of this run (STU-G1).
 
     The reader is ``gateway.routes.studio.flags.studio_allowed``, the one that
     the catalog route uses. The org is the run's own (:func:`_run_org_or_none`),
     never an argument (R5). It fails closed: no org, no gateway or an error
-    gives no tool.
+    reads as closed. The pack filter and the loader plan both ask it, so the
+    loader never offers a pack that builds no tool.
     """
     try:
         from gateway.routes.studio.flags import studio_allowed
-        if studio_allowed(_run_org_or_none()):
-            return tools, dropped
+        return bool(studio_allowed(_run_org_or_none()))
     except Exception as exc:  # fail closed
         _log.info("executor.studio_flag_unread", error=str(exc)[:200])
+        return False
+
+
+async def _drop_pack_unless_studio(
+    tools: list[Any], dropped: list[str], *, held: bool = False,
+) -> tuple[list[Any], list[str]]:
+    """Build an empty ``studio`` pack for an org that ``STUDIO_ORGS`` lacks
+    (STU-G1, :func:`_studio_open`)."""
+    if _studio_open():
+        return tools, dropped
     return [], [*dropped, *(_tool_name(t) for t in tools)]
 
 
@@ -3825,6 +3838,10 @@ async def _plan_pack_loader(
         # OA-8b: a covered org loads no Projects pack, so the loader cannot
         # reach the owner and the specialist stays (``_drop_pack_covered``).
         if owner == "projects-assistant" and _run_covered(owner):
+            return False
+        # STU-G1: an org that STUDIO_ORGS lacks gets an empty studio pack
+        # (``_drop_pack_unless_studio``), so the loader cannot offer it.
+        if owner == "studio-builder" and not _studio_open():
             return False
         if owner in tool_packs.NO_PERSONA_BULLETS and owner not in bullets:
             return True  # by design the persona has no text of this owner (OA-8a)

@@ -279,12 +279,14 @@ def test_the_cap_is_24000_characters() -> None:
     assert st.MAX_MANIFEST_CHARS == 24_000
 
 
-@pytest.mark.parametrize("tool", ["validate", "patch"])
+@pytest.mark.parametrize("tool", ["validate", "patch", "outline"])
 async def test_a_manifest_over_the_cap_is_refused_with_the_outline_and_size(catalog, tool) -> None:
     big = _big()
     assert st._size(big) > st.MAX_MANIFEST_CHARS
     if tool == "validate":
         out = await st.studio_validate(big)
+    elif tool == "outline":
+        out = await st.studio_outline(big)
     else:
         out = await st.studio_patch(big, [{"op": "add", "path": "/x", "value": 1}])
     assert out["ok"] is False and "manifest" not in out
@@ -332,9 +334,174 @@ async def test_outline_tool_shape_and_validity() -> None:
 
 
 async def test_outline_of_an_oversized_manifest_gives_the_size() -> None:
+    """Mutation: drop the cap check from ``studio_outline`` -> the manifest
+    comes back -> red."""
     big = _big()
     out = await st.studio_outline(big)
     assert out["outline"].startswith("App big") and out["size"] == st._size(big)
+    assert out["ok"] is False and "manifest" not in out
+
+
+def _valid_huge() -> dict:
+    """A VALID manifest of more than 200,000 characters."""
+    return {"studio": 1, "id": "huge", "name": "Huge", "purpose": "p", "connections": [],
+            "actions": [], "views": [], "workflows": [],
+            "objects": [{"name": f"o{i}", "label": "x" * 19_000, "fields": []}
+                        for i in range(11)]}
+
+
+async def test_a_valid_manifest_over_the_cap_never_comes_back_whole(catalog) -> None:
+    huge = _valid_huge()
+    assert validate_manifest(huge) == [], "non-vacuity: the manifest is valid"
+    assert st._size(huge) > 200_000
+    for out in (await st.studio_outline(huge), await st.studio_validate(huge)):
+        assert out["ok"] is False and "manifest" not in out
+        assert st._size(out) <= st.MAX_MANIFEST_CHARS
+
+
+async def test_the_errors_are_cut_with_a_count_of_the_rest(catalog) -> None:
+    """400 bad action ids gave 49,000 characters. Mutation: drop the cut in
+    ``_result`` -> 400 errors -> red."""
+    m = await _valid()
+    m["actions"] = [{"id": f"Bad Id {i}", "uses": "tasks.create"} for i in range(400)]
+    assert st._size(m) < st.MAX_MANIFEST_CHARS, "non-vacuity: under the cap"
+    every = validate_manifest(m, catalog=CLASSES)
+    assert len(every) > st.MAX_ERRORS
+    out = await st.studio_validate(m)
+    assert len(out["errors"]) == st.MAX_ERRORS + 1
+    assert out["errors"][: st.MAX_ERRORS] == [
+        {"path": e.path, "message": e.message} for e in every[: st.MAX_ERRORS]]
+    rest = len(every) - st.MAX_ERRORS
+    assert out["errors"][-1]["message"].startswith(f"{rest} more errors are not shown.")
+    assert st._size(out) <= st.MAX_MANIFEST_CHARS
+
+
+async def test_one_long_connection_is_cut_in_the_outline() -> None:
+    """One connection of 60,000 characters gave a refusal of 60,000.
+    Mutation: drop the name cut in ``outline_text`` -> red."""
+    m = {"studio": 1, "id": "c", "name": "C", "purpose": "p", "connections": ["z" * 60_000]}
+    text = st.outline_text(m)
+    assert "Connections (1): " in text
+    assert all(len(line) <= st.MAX_OUTLINE_LINE_CHARS for line in text.split("\n"))
+    out = await st.studio_outline(m)
+    assert out["ok"] is False and "manifest" not in out
+    assert st._size(out) <= st.MAX_MANIFEST_CHARS
+
+
+def test_a_long_outline_line_counts_the_names_it_cannot_hold() -> None:
+    m = {"id": "a", "name": "A", "connections": [f"conn{i}" for i in range(5_000)]}
+    line = next(x for x in st.outline_text(m).split("\n") if x.startswith("Connections"))
+    assert line.startswith("Connections (5000): conn0, conn1")
+    assert len(line) <= st.MAX_OUTLINE_LINE_CHARS
+    shown, rest = line.split(": ", 1)[1].rsplit(", and ", 1)
+    assert rest.endswith(" more")
+    assert len(shown.split(", ")) + int(rest.split()[0]) == 5_000
+
+
+async def test_a_long_diff_is_cut_with_a_count_of_the_rest(catalog) -> None:
+    m = await _valid()
+    ops = [{"op": "replace", "path": "/name", "value": f"N{i}"} for i in range(150)]
+    out = await st.studio_patch(m, ops)
+    assert out["ok"], out
+    assert out["diff"][: st.MAX_DIFF_LINES] == ["replace /name"] * st.MAX_DIFF_LINES
+    assert out["diff"][-1] == f"and {150 - st.MAX_DIFF_LINES} more ops"
+    assert len(out["diff"]) == st.MAX_DIFF_LINES + 1
+
+
+def test_a_shown_error_is_cut_and_a_short_one_stays_verbatim() -> None:
+    """No validator message is near the limits today, so a direct case holds
+    the cut. Mutation: drop the path or the message cut -> red."""
+    short = {"path": "$.actions[0].id", "message": "The id `Bad Id` is not valid."}
+    long_ = {"path": "$." + "k" * 5_000, "message": "m" * 5_000 + "\x00\n"}
+    shown = st._shown_errors([short, long_])
+    assert shown[0] == short
+    assert len(shown[1]["path"]) == st.MAX_ERROR_PATH_CHARS
+    assert len(shown[1]["message"]) == st.MAX_ERROR_MESSAGE_CHARS
+    assert shown[1]["message"].endswith("...")
+    assert all(ch >= " " for ch in st._clip("a\x00b\x1fc\nd", 50)), "no control character"
+
+
+def _notes(out: dict) -> dict:
+    return {k: v for k, v in out.items() if k != "manifest"}
+
+
+#: The text that costs the most JSON: each quote takes 2 characters.
+_Q = '"'
+
+
+def _worst_manifest() -> dict:
+    """Under the cap, with long quoted names, a long key and many bad ids."""
+    return {"studio": 1, "id": _Q * 300, "name": _Q * 300, "purpose": "p",
+            _Q * 2000: 1,
+            "connections": [_Q * 1000] * 2,
+            "objects": [{"name": _Q * 300, "fields": []}] * 3,
+            "actions": [{"id": _Q * 40, "uses": _Q * 40} for _ in range(50)],
+            "views": [], "workflows": []}
+
+
+async def _every_return(monkeypatch) -> list[tuple[str, dict]]:
+    """A result of each return path of each tool, with the inputs that once
+    grew a result past the cap, and with the text that costs the most JSON."""
+    _serve(monkeypatch)
+    m = await _valid()
+    worst = _worst_manifest()
+    assert st._size(worst) <= st.MAX_MANIFEST_CHARS, "non-vacuity: the worst is under the cap"
+    long_path = "/" + _Q * 30_000
+    outs: list[tuple[str, dict]] = [
+        ("draft ok", await st.studio_draft("Track " + "x" * 50_000 + " orders " + "w " * 10_000)),
+        ("draft quotes", await st.studio_draft(_Q * 30_000 + " " + "w " * 10_000)),
+        ("draft long word", await st.studio_draft("x" * 100_000)),
+        ("draft empty", await st.studio_draft("")),
+        ("validate worst", await st.studio_validate(worst)),
+        ("validate huge", await st.studio_validate(_valid_huge())),
+        ("validate bad json", await st.studio_validate("{" + _Q * 50_000)),
+        ("outline worst", await st.studio_outline(worst)),
+        ("outline huge", await st.studio_outline({"connections": [_Q * 60_000] * 50,
+                                                  "id": _Q * 9_000, "name": _Q * 9_000})),
+        ("outline ok", await st.studio_outline(m)),
+        ("outline many names", await st.studio_outline(
+            {"id": "n", "name": "N", "connections": [f"{_Q * 70}{i}" for i in range(2_000)]})),
+        ("validate many errors", await st.studio_validate(
+            {**m, "actions": [{"id": f"Bad Id {i}", "uses": "tasks.create"} for i in range(400)]})),
+        ("patch bad path", await st.studio_patch(m, [{"op": "replace", "path": long_path,
+                                                      "value": 1}])),
+        ("patch many ops", await st.studio_patch(m, [
+            {"op": "add", "path": "/" + _Q * 90, "value": 1}] * 200)),
+        ("patch worst", await st.studio_patch(worst, [{"op": "replace", "path": "/purpose",
+                                                        "value": "q"}])),
+        ("patch big index", await st.studio_patch(
+            m, [{"op": "add", "path": "/objects/" + "9" * 5000, "value": {}}])),
+    ]
+    _serve(monkeypatch, status=500, body={})
+    outs.append(("validate worst, no catalog", await st.studio_validate(worst)))
+    rows = [{"id": f"a.op{i}", "title": _Q * 20_000, "class": _Q * 5_000,
+             "source": _Q * 5_000, "connection": _Q * 5_000} for i in range(80)]
+    rows.append({"id": "x" * 5_000, "title": "a long id", "class": "A"})
+    _serve(monkeypatch, body={"actions": rows})
+    outs.append(("list actions", await st.studio_list_actions()))
+    _serve(monkeypatch, status=404, body={})
+    outs.append(("list actions refused", await st.studio_list_actions()))
+    return outs
+
+
+async def test_every_return_path_of_every_tool_stays_under_the_cap(monkeypatch) -> None:
+    """The notes of a result (each key but the manifest) stay under the cap,
+    and a manifest comes back only under the cap. Mutation: drop any one cut
+    (errors, diff, outline names, outline lines, row texts) -> red."""
+    outs = await _every_return(monkeypatch)
+    for label, out in outs:
+        assert {"ok", "errors", "diff"} <= set(out), label
+        assert st._size(_notes(out)) <= st.MAX_MANIFEST_CHARS, (label, st._size(_notes(out)))
+        if "manifest" in out:
+            assert out["ok"] is True, label
+            assert st._size(out["manifest"]) <= st.MAX_MANIFEST_CHARS, label
+    by = dict(outs)
+    assert len(by["validate worst"]["errors"]) == st.MAX_ERRORS + 1, "non-vacuity: the cut ran"
+    assert by["outline worst"]["errors"], "non-vacuity: the outline holds errors"
+    assert by["list actions"]["total"] == 80, "the row with a long id is left out"
+    assert all(len(r["title"]) <= st.MAX_ACTION_TITLE_CHARS for r in by["list actions"]["actions"])
+    assert "past the end" in by["patch big index"]["errors"][0]["message"]
+    assert by["draft ok"]["ok"] and len(by["draft ok"]["manifest"]["name"]) <= st.MAX_NAME_CHARS
 
 
 # -- list actions ------------------------------------------------------------

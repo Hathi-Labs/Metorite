@@ -24,6 +24,11 @@ PATCH_OPS: tuple[str, ...] = ("add", "replace", "remove")
 #: The most ops in one patch.
 MAX_OPS = 200
 
+#: The most digits of an array index. A longer index is past the end of any
+#: list, and ``int`` refuses a text of more than 4,300 digits with a
+#: ``ValueError`` that is not a :class:`PatchError`.
+MAX_INDEX_DIGITS = 9
+
 
 class PatchError(ValueError):
     """One refusal, as one sentence the model can act on."""
@@ -54,15 +59,14 @@ def _index(token: str, length: int, path: str, *, append_ok: bool) -> int:
     """The array index of *token*. ``-`` is the end, when *append_ok*."""
     if token == "-":
         if not append_ok:
-            raise PatchError(f"The path `{path}` ends in `-`, which only `add` may use.")
+            raise PatchError(f"The path `{_show(path)}` ends in `-`, which only `add` may use.")
         return length
     if not token.isascii() or not token.isdigit() or (len(token) > 1 and token[0] == "0"):
-        raise PatchError(f"The path `{path}` needs an array index, not `{_show(token)}`.")
-    idx = int(token)
+        raise PatchError(f"The path `{_show(path)}` needs an array index, not `{_show(token)}`.")
     limit = length if append_ok else length - 1
-    if idx > limit:
-        raise PatchError(f"The path `{path}` is past the end of the list, which has {length} items.")
-    return idx
+    if len(token) > MAX_INDEX_DIGITS or int(token) > limit:
+        raise PatchError(f"The path `{_show(path)}` is past the end of the list, which has {length} items.")
+    return int(token)
 
 
 def _walk(doc: Any, tokens: Sequence[str], path: str) -> Any:
@@ -71,12 +75,12 @@ def _walk(doc: Any, tokens: Sequence[str], path: str) -> Any:
     for token in tokens[:-1]:
         if isinstance(node, dict):
             if token not in node:
-                raise PatchError(f"The path `{path}` does not exist: no `{_show(token)}` there.")
+                raise PatchError(f"The path `{_show(path)}` does not exist: no `{_show(token)}` there.")
             node = node[token]
         elif isinstance(node, list):
             node = node[_index(token, len(node), path, append_ok=False)]
         else:
-            raise PatchError(f"The path `{path}` goes through a value that has no children.")
+            raise PatchError(f"The path `{_show(path)}` goes through a value that has no children.")
     return node
 
 
@@ -110,7 +114,7 @@ def _apply_tokens(doc: Any, kind: str, tokens: list[str], path: str, value: Any)
     if isinstance(parent, dict):
         present = last in parent
         if kind in ("replace", "remove") and not present:
-            raise PatchError(f"The path `{path}` does not exist, so `{kind}` cannot act on it.")
+            raise PatchError(f"The path `{_show(path)}` does not exist, so `{kind}` cannot act on it.")
         if kind == "remove":
             del parent[last]
         else:
@@ -123,7 +127,7 @@ def _apply_tokens(doc: Any, kind: str, tokens: list[str], path: str, value: Any)
         else:
             del parent[_index(last, len(parent), path, append_ok=False)]
     else:
-        raise PatchError(f"The path `{path}` goes through a value that has no children.")
+        raise PatchError(f"The path `{_show(path)}` goes through a value that has no children.")
     return doc
 
 

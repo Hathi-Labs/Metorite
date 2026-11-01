@@ -1,7 +1,7 @@
 # AI Studio — skills, workflows and apps that a company builds for itself (WS-STU)
 
-> **Product:** Metorite · **Feature:** AI Studio (`/studio`) · **Updated:** 2026-10-31 · **Owner:** vjvarada
-> **Status:** 🔨 **B1 BUILT and dark (2026-10-31)** behind `STUDIO_ORGS`, which is empty on every box. Every other slice is spec only. The pieces it reuses are built, and §16 names each one.
+> **Product:** Metorite · **Feature:** AI Studio (`/studio`) · **Updated:** 2026-11-01 · **Owner:** vjvarada
+> **Status:** 🔨 **B1 BUILT and dark (2026-10-31)** behind `STUDIO_ORGS`, which is empty on every box. **A2 BUILT (2026-11-01).** **G1 BUILT and dark (2026-11-01):** the `studio` tool pack loads only where tool packs are on, and it builds no tool for an org that `STUDIO_ORGS` lacks. Every other slice is spec only. The pieces it reuses are built, and §16 names each one.
 > **Verified against code on 2026-10-31 at `57b91f721`.** Each path in §16 was read on that commit.
 > **Board:** WS-STU in `work_plan.md` §2. **Decisions:** D127 (one app, three kinds), D139 (one coding harness), **D141** (Studio starts now, and a skill creator replaces the agent creator), **D146** (the owner's answers of 2026-10-31: layered apps, a typed object store, first-party templates). D124, D130, D131 and D136 bind it too.
 > **Metorite:** project "AI Studio", umbrella epic #491, this spec task #1135. Each group of §14 has its own epic under #491.
@@ -582,7 +582,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **G1** | The builder tools for Mira: draft, patch, validate, outline and list actions. The tools are stateless, because the chat holds the manifest and A3 is Stage 2. A serialized manifest has a cap of 24,000 characters. Agent `studio-builder` owns the `studio` pack. It is not a second assistant, and Mira alone talks to the member. Preview waits for G4 | Each tool refuses an invalid patch with the validator's error, and the manifest stays as it was. No tool runs code. Verify: `uv run pytest tests/unit/test_studio_builder_tools.py tests/unit/test_studio_patch.py tests/unit/test_tool_packs_registry.py -q` | STD | AGENT-SAFE |
+| **G1** | 🔨 **BUILT, dark (2026-11-01).** The builder tools for Mira: draft, patch, validate, outline and list actions. The tools are stateless, because the chat holds the manifest and A3 is Stage 2. A serialized manifest has a cap of 24,000 characters, and each tool result stays under that cap too. Agent `studio-builder` owns the `studio` pack. It is not a second assistant, and Mira alone talks to the member. It never runs as an agent: it is in no agent list (`_PACK_OWNER_AGENTS` in `gateway/routes/agent.py`), and every run refuses a hand-off to it or a run of it (`tool_packs.pack_only_refusal`). Preview waits for G4 | Each tool refuses an invalid patch with the validator's error, and the manifest stays as it was. No tool runs code. Verify: `uv run pytest tests/unit/test_studio_builder_tools.py tests/unit/test_studio_patch.py tests/unit/test_tool_packs_registry.py -q` | STD | AGENT-SAFE |
 | **G2** | The interview and the plan card (§6.2 steps 1 and 2) | A request makes at most five questions and one plan card. A stop on the card writes nothing | STD | AGENT-SAFE |
 | **G3** | The Studio build screen (§6.3) | Outline, preview and the shell's dock with `studio-builder`. `seams.test.ts` passes | STD | AGENT-SAFE |
 | **G4** | Preview on sample data, with a preview store and simulated sends | A preview write never reaches `app_data` of the live package. A send in preview leaves no message | HIGH | AGENT-SAFE |

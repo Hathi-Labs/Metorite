@@ -579,13 +579,50 @@ def test_the_studio_family_equals_the_owners_own_tool_scope_and_fits_the_cap() -
     assert len(family["tools"]) == 5 <= tp.MAX_PACK_TOOLS == 35
 
 
-def test_the_studio_owner_is_in_the_static_agent_registry_and_the_catalog() -> None:
-    from gateway.routes.agent import _AGENT_REGISTRY
+def test_the_studio_owner_is_in_no_registry_list() -> None:
+    """The owner never runs, so it is in no list that a member, a picker or a
+    specialist tool reads. As ``worker`` in ``test_subagent_worker.py``.
+    Mutation: put the owner back in ``_AGENT_REGISTRY`` or in
+    ``agent_registry.json`` -> red."""
+    from gateway.routes import agent as routes
 
-    entry = next(a for a in _AGENT_REGISTRY if a["name"] == STUDIO)
-    assert entry["local_path"] == STUDIO_DIR and entry["agent_runtime"] == "maf"
+    assert STUDIO not in {a["name"] for a in routes._AGENT_REGISTRY}
+    assert STUDIO not in routes._KNOWN_AGENTS
+    assert STUDIO not in {a["name"] for a in routes._INTERNAL_AGENTS}
+    assert [a["name"] for a in routes._PACK_OWNER_AGENTS] == [STUDIO]
+    assert routes._PACK_OWNER_AGENTS[0]["local_path"] == STUDIO_DIR
+    assert {a["name"] for a in routes._PACK_OWNER_AGENTS} == tp.PACK_ONLY_OWNERS
+    # And not in the deploy registry that the gateway reads at start.
     catalog = json.loads((REPO / "agent_registry.json").read_text(encoding="utf-8"))
-    assert next(a for a in catalog if a["name"] == STUDIO)["local_path"] == STUDIO_DIR
+    assert STUDIO not in json.dumps(catalog)
+
+
+def test_only_the_pack_loader_reads_the_owner_list() -> None:
+    """The picker, the specialist tools, the registry block and the executor
+    lookups read other lists. A list that none of them reads cannot show the
+    owner or run it. Mutation: read ``_PACK_OWNER_AGENTS`` in the executor
+    -> red."""
+    readers = sorted(
+        path.relative_to(REPO).as_posix()
+        for base in ("apps", "packages")
+        for path in (REPO / base).rglob("*.py")
+        if "node_modules" not in path.parts
+        and "_PACK_OWNER_AGENTS" in path.read_text(encoding="utf-8", errors="replace")
+    )
+    assert readers == [
+        "apps/agents/agent-studio-builder/agents.py",  # a comment
+        "apps/services/gateway/gateway/routes/agent.py",  # the definition
+        "apps/services/orchestrator/orchestrator/_tool_injection.py",  # the pack loader
+        "packages/acb_skills/acb_skills/tool_packs.py",  # a comment
+    ]
+
+
+def test_the_pack_loader_finds_the_owner_in_the_owner_list() -> None:
+    """Mutation: ``_import_pack_owner`` reads ``_AGENT_REGISTRY`` alone -> no
+    module -> red."""
+    module = ti._import_pack_owner(STUDIO)
+    assert module is not None and callable(module._agent_tools)
+    assert tuple(tool_name(fn) for fn in tp.owner_tools("studio", module)) == STUDIO_TOOLS
 
 
 def test_the_built_studio_pack_is_the_five_tools_as_coroutines() -> None:
@@ -633,3 +670,188 @@ async def test_the_studio_filter_empties_the_pack_for_an_org_not_in_studio_orgs(
     monkeypatch.setattr(ti, "_run_org_or_none", lambda: None)
     kept, _ = await ti._drop_pack_unless_studio([tool_a], [])
     assert kept == [], "no org fails closed"
+
+
+# -- 9. The studio owner is hidden and never runs (STU-G1 fix round 1) -------
+
+
+def test_the_specialist_tools_do_not_show_the_studio_owner(monkeypatch) -> None:
+    """Mutation: the owner joins ``_AGENT_REGISTRY`` -> Mira gets a
+    ``studio_builder`` tool -> red."""
+    import orchestrator.agents as pkg
+    from gateway.routes import agent as routes
+
+    monkeypatch.setattr(routes, "_load_dynamic_agents", lambda: [])
+    names = {getattr(t, "name", "") for t in pkg._mod._load_specialist_agents_as_tools()}
+    assert "studio_builder" not in names and STUDIO not in names
+    assert "projects_assistant" in names, "the list must not be empty"
+
+
+def test_the_registry_block_does_not_name_the_studio_owner(monkeypatch) -> None:
+    from gateway.routes import agent as routes
+
+    monkeypatch.setattr(routes, "_load_dynamic_agents", lambda: [])
+    ti._build_registry_block.cache_clear()
+    try:
+        block = ti._build_registry_block()
+    finally:
+        ti._build_registry_block.cache_clear()
+    assert "projects-assistant" in block, "non-vacuity: the block lists agents"
+    assert STUDIO not in block
+
+
+def test_the_agent_list_does_not_show_the_studio_owner(monkeypatch) -> None:
+    """``GET /agent`` feeds the ``/chat`` picker and the Agent Registry."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from gateway.routes import agent as routes
+
+    monkeypatch.setattr(routes, "_load_dynamic_agents", lambda: [])
+    monkeypatch.setattr(routes, "_declared_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(routes, "_load_agent_aliases", lambda: {})
+    user = SimpleNamespace(has_permission=lambda _p: True, can_run_agent=lambda _n: True)
+    names = {a["name"] for a in asyncio.run(routes.list_agents(user=user))}
+    assert "projects-assistant" in names, "non-vacuity"
+    assert STUDIO not in names
+
+
+@pytest.mark.parametrize("name", [STUDIO, "agent-studio-builder", "Studio-Builder"])
+def test_the_name_gate_refuses_the_studio_owner(monkeypatch, name: str) -> None:
+    """``/agent/run`` and ``/agent/run/stream`` pass each name through
+    ``_validate_agent_name``. Mutation: the owner joins a registry list -> red."""
+    from fastapi import HTTPException
+    from gateway.routes import agent as routes
+
+    monkeypatch.setattr(routes, "_load_dynamic_agents", lambda: [])
+    with pytest.raises(HTTPException) as err:
+        routes._validate_agent_name(name)
+    assert err.value.status_code == 422
+    assert routes._validate_agent_name("projects-assistant") == "projects-assistant"
+
+
+def test_pack_only_refusal_names_only_the_pack_only_owners() -> None:
+    for name in (STUDIO, "agent-studio-builder", " Studio-Builder "):
+        assert tp.pack_only_refusal(name) == tp.PACK_ONLY_REFUSED, name
+    for name in ("projects-assistant", EA, CRM, "worker", "orchestrator", "", None, "studio"):
+        assert tp.pack_only_refusal(name) is None, name
+
+
+def _studio_record(*slugs: str) -> Any:
+    turn = tp.PackTurn("org-1", "sess-1", tp._member_part("jane@acme.test"), 1, (), "", True)
+    return tp.PackRun.of(turn, tp.Choice((), {}, {}), [(s, False) for s in slugs])
+
+
+def test_a_hand_off_to_the_studio_owner_is_refused_in_every_run() -> None:
+    """Before this fix the refusal ran only while a run held the pack, so an
+    org outside STUDIO_ORGS reached a sub-run with the five tools and no
+    filter. Mutation: ``delegation_refusal`` returns None with no record ->
+    red."""
+    from acb_skills.write_artifact import artifact_context_scope
+
+    with artifact_context_scope():  # an empty frame: no record at all
+        assert tp.delegation_refusal(STUDIO) == tp.PACK_ONLY_REFUSED
+    assert tp.delegation_refusal(STUDIO, {}) == tp.PACK_ONLY_REFUSED
+    other = {tp.PACKS_KEY: _studio_record("email")}
+    assert tp.delegation_refusal(STUDIO, other, starts=True) == tp.PACK_ONLY_REFUSED
+    assert STUDIO not in other[tp.PACKS_KEY].handed, "a refused hand-off never starts"
+    # A run that holds the pack answers the pack's own text, which is true there.
+    held = {tp.PACKS_KEY: _studio_record("studio")}
+    assert tp.delegation_refusal(STUDIO, held) == tp.PACKS["studio"].delegation_refusal
+    # Any other agent keeps its old answer.
+    assert tp.delegation_refusal("projects-assistant", {}) is None
+
+
+@pytest.fixture()
+def _bound_frame():
+    """An own artifact-context scope with a run bound, as an executor frame."""
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    with artifact_context_scope():
+        bind_artifact_context(run_id="run-s", agent_name="orchestrator", no_egress=False)
+        yield
+
+
+@pytest.fixture()
+def _no_load(monkeypatch):
+    """Any agent load fails the test: the refusal comes before every load."""
+    from orchestrator import executor
+
+    def _boom(*_a, **_k):
+        raise AssertionError("an agent was loaded before the refusal")
+
+    monkeypatch.setattr(executor, "load_agent", _boom)
+    return executor
+
+
+async def test_call_agent_refuses_the_studio_owner(_bound_frame, _no_load) -> None:
+    from acb_skills.agent_tools import call_agent
+
+    assert await call_agent(STUDIO, "build an app") == tp.PACK_ONLY_REFUSED
+
+
+async def test_call_agents_parallel_refuses_the_studio_owner(_bound_frame, _no_load) -> None:
+    from acb_skills.agent_tools import call_agents_parallel
+
+    text = await call_agents_parallel(json.dumps([{"agent": STUDIO, "message": "x"}]))
+    assert tp.PACK_ONLY_REFUSED in text
+
+
+async def test_call_agent_background_refuses_the_studio_owner(_bound_frame, _no_load) -> None:
+    """A background run asks no pack refusal (section 4.3.1), so it asks this
+    one. Mutation: drop the ask -> a background run starts -> red."""
+    from acb_skills.agent_tools import call_agent_background
+
+    assert await call_agent_background(STUDIO, "x") == tp.PACK_ONLY_REFUSED
+
+
+async def test_the_streaming_seam_refuses_the_studio_owner(_bound_frame, _no_load) -> None:
+    """The seam of each specialist tool and of ``delegate_to_agent``."""
+    text = await _no_load._run_sub_agent_streaming(STUDIO, "x", "run-1", None)
+    assert text == tp.PACK_ONLY_REFUSED
+
+
+async def test_run_agent_refuses_the_studio_owner(_bound_frame, _no_load) -> None:
+    """The direct run and the batch fallback. Mutation: drop the ask in
+    ``run_agent`` -> the load runs -> red."""
+    with pytest.raises(_no_load.AgentRunError) as err:
+        await _no_load.run_agent(STUDIO, {"message": "x"}, run_id="run-2")
+    assert str(err.value) == tp.PACK_ONLY_REFUSED
+
+
+def test_the_name_of_the_owner_is_reserved_at_registration(monkeypatch) -> None:
+    """A registered agent with the owner's name would show in every list. As
+    ``test_worker_is_a_reserved_name``. Mutation: reserve the internal list
+    alone -> the register goes on -> red."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from fastapi import BackgroundTasks, HTTPException
+    from gateway.routes import agent as routes
+
+    monkeypatch.setattr(routes, "_load_dynamic_agents", lambda: [])
+    saved: list[Any] = []
+    monkeypatch.setattr(routes, "_save_dynamic_agents", lambda a: saved.append(a))
+    req = routes.RegisterAgentRequest(name=STUDIO, description="x", local_path=str(REPO))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(routes.register_agent(
+            req, BackgroundTasks(), user=SimpleNamespace(email="o@x.test")))
+    assert exc.value.status_code == 409 and "reserved" in str(exc.value.detail)
+    assert saved == []
+
+
+@pytest.mark.parametrize("open_", [True, False])
+async def test_the_loader_offers_the_studio_pack_only_where_studio_orgs_holds_the_org(
+    monkeypatch, open_: bool,
+) -> None:
+    """``_available`` of the loader plan asks the same check as the pack
+    filter, so the loader never offers a pack that builds no tool. Mutation:
+    drop the studio check from ``_available`` -> offered when closed -> red."""
+    monkeypatch.setattr(ti, "_loader_agent_ok", lambda _agent: True)
+    monkeypatch.setattr(ti, "_pack_owner_module", lambda _owner: object())
+    monkeypatch.setattr(ti, "_studio_open", lambda: open_)
+    plan = await ti._plan_pack_loader(
+        object(), frozenset({"studio"}), [], builds=[], current=40, pool=[], persona="",
+        bullets={}, agent_name="orchestrator", no_egress=False, is_authorized=None)
+    assert ("studio" in plan.offered) is open_
+    assert (STUDIO in plan.via_loader) is open_

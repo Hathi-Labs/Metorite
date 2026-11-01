@@ -9,8 +9,12 @@ tools in a Studio turn. The tools are in ``acb_skills.studio_tools`` and this
 module keeps no copy. They are stateless, read the action catalog over HTTP
 as the member, and take no org or member argument.
 
-Registered as a MAF agent (name "studio-builder"). ``build_agents()`` is the
-Dynamic Agent Loader entry point.
+It never runs as an agent. The name "studio-builder" is in no agent list: not
+the registry, the picker, a specialist tool or the registry block. Only the
+pack loader reads its folder, from ``gateway.routes.agent._PACK_OWNER_AGENTS``.
+A hand-off to it, and a run of it, is refused in every run
+(``tool_packs.pack_only_refusal``). ``build_agents()`` stays because the
+folder fences build each agent folder (``tests/unit/test_agent_voice.py``).
 """
 
 from __future__ import annotations

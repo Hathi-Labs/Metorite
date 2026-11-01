@@ -72,6 +72,8 @@ __all__ = [
     "MAX_REQUEST_TOOLS",
     "PACKS",
     "PACKS_KEY",
+    "PACK_ONLY_OWNERS",
+    "PACK_ONLY_REFUSED",
     "PACK_RUN_KEY",
     "SURFACE",
     "SURFACE_MAX",
@@ -99,6 +101,7 @@ __all__ = [
     "owner_scope",
     "owner_tools",
     "pack",
+    "pack_only_refusal",
     "pack_write_refusal",
     "packs_on",
     "persona_for",
@@ -1668,6 +1671,35 @@ def _rules_block(
     return block
 
 
+#: STU-G1. The owners of a pack that never run as an agent. Such an owner only
+#: gives its tools to the pack of the one assistant (D99, D125). It is in no
+#: agent list (``gateway.routes.agent._PACK_OWNER_AGENTS``), and a hand-off to
+#: it, or a run of it, is refused in every run (:func:`pack_only_refusal`). A
+#: sub-run of the owner would build its tools with no pack filter, so the
+#: ``STUDIO_ORGS`` check would not run. Fence:
+#: ``tests/unit/test_tool_packs_registry.py``, sections 8 and 9.
+PACK_ONLY_OWNERS: frozenset[str] = frozenset({"studio-builder"})
+
+#: The answer to a hand-off to a pack-only owner, or a run of one, when the run
+#: does not hold its pack. It is true in every run, also in an org where the
+#: pack builds no tool.
+PACK_ONLY_REFUSED = (
+    "Not run. That name is not an agent that takes a task. "
+    "Do the work with your own tools, or tell the member what you cannot do."
+)
+
+
+def pack_only_refusal(agent_name: Any) -> str | None:
+    """The refusal of a hand-off to *agent_name*, or of a run of it, when it is
+    a pack-only owner (:data:`PACK_ONLY_OWNERS`), else None. It reads no run
+    state, so it holds in every run. The callers are
+    :func:`delegation_refusal`, ``executor.run_agent`` and
+    ``agent_tools.call_agent_background``."""
+    name = str(agent_name or "").strip().lower()
+    bare = name[len("agent-"):] if name.startswith("agent-") else name
+    return PACK_ONLY_REFUSED if {name, bare} & PACK_ONLY_OWNERS else None
+
+
 def delegation_refusal(
     agent_name: Any, ctx: Mapping[str, Any] | None = None, *, starts: bool = False,
 ) -> str | None:
@@ -1699,19 +1731,25 @@ def delegation_refusal(
     (:meth:`PackRun.handoff_starts`), with no await between the answer and
     the record. The ask after a fan-out, which only frames an answer, passes
     no *starts*.
+
+    STU-G1: a hand-off to a pack-only owner (:data:`PACK_ONLY_OWNERS`) is
+    refused in every run, also with no record and in a delegated run. A run
+    that holds the owner's pack answers the pack's own text, and any other
+    run answers :data:`PACK_ONLY_REFUSED`.
     """
+    only = pack_only_refusal(agent_name)
     if ctx is None:
         try:
             from acb_skills.write_artifact import artifact_context
 
             ctx = artifact_context()
         except Exception:
-            return None
+            return only
     run = (ctx or {}).get(PACKS_KEY)
     if not isinstance(run, PackRun):
-        return None
+        return only
     name = str(agent_name or "")
-    refused = run.refusal(name)
+    refused = run.refusal(name) or only
     if refused is None and starts:
         run.handoff_starts(name)
     elif starts and refused is not None and refused == run.wrote_refusal(name):
@@ -2031,10 +2069,13 @@ def plan_loader(
         owner = SKILL_FAMILIES[slug].get("owner")
         # OA-8b: an owner that the run holds no pack of, and that cannot load
         # (a covered org, no module), offers nothing: its load would only
-        # answer "not available".
+        # answer "not available". STU-G1: a pack-only owner too. It has no
+        # specialist and no persona text, so a False *available* means that
+        # its pack builds no tool (an org that STUDIO_ORGS lacks).
         holds_owner = any(SKILL_FAMILIES[h].get("owner") == owner for h in held_set
                           if h in SKILL_FAMILIES)
-        if (available is not None and owner in SPECIALIST_STAYS_UNTIL_REACHED
+        if (available is not None
+                and owner in SPECIALIST_STAYS_UNTIL_REACHED | PACK_ONLY_OWNERS
                 and not holds_owner and not available(str(owner))):
             continue
         if _fits(slug, cut.get(str(owner), 0) if owner in via else 0):

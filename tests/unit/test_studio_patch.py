@@ -8,7 +8,13 @@ from __future__ import annotations
 import copy
 
 import pytest
-from acb_common.studio_patch import MAX_OPS, PatchError, apply_patch, parse_pointer
+from acb_common.studio_patch import (
+    MAX_INDEX_DIGITS,
+    MAX_OPS,
+    PatchError,
+    apply_patch,
+    parse_pointer,
+)
 
 
 def _doc() -> dict:
@@ -112,6 +118,32 @@ def test_dash_only_works_for_add(kind) -> None:
 def test_a_bad_array_index_is_refused(token) -> None:
     with pytest.raises(PatchError, match="array index"):
         apply_patch(_doc(), [{"op": "add", "path": f"/a/b/{token}", "value": 1}])
+
+
+@pytest.mark.parametrize("digits", [MAX_INDEX_DIGITS + 1, 4_301, 50_000])
+@pytest.mark.parametrize("kind", ["add", "replace", "remove"])
+def test_an_index_with_too_many_digits_is_past_the_end(kind, digits) -> None:
+    """``int`` refuses a text of more than 4,300 digits with a ``ValueError``
+    that is not a ``PatchError``. Mutation: drop the digit cap -> the
+    ValueError escapes -> red."""
+    op = {"op": kind, "path": "/a/b/" + "9" * digits, "value": 1}
+    with pytest.raises(PatchError, match="past the end") as err:
+        apply_patch(_doc(), [op])
+    assert len(str(err.value)) < 200, "the sentence echoes a cut path"
+
+
+def test_the_largest_index_that_fits_the_cap_still_reads() -> None:
+    with pytest.raises(PatchError, match="past the end"):
+        apply_patch(_doc(), [{"op": "add", "path": "/a/b/" + "9" * MAX_INDEX_DIGITS, "value": 1}])
+    assert apply_patch(_doc(), [{"op": "add", "path": "/a/b/3", "value": 4}])["a"]["b"] == [1, 2, 3, 4]
+
+
+@pytest.mark.parametrize("path", ["/nope/" + "x" * 5_000, "/a/b/" + "-x" * 3_000,
+                                  "/s/" + "y" * 5_000])
+def test_a_long_path_is_cut_in_the_sentence(path) -> None:
+    with pytest.raises(PatchError) as err:
+        apply_patch(_doc(), [{"op": "replace", "path": path, "value": 1}])
+    assert len(str(err.value)) < 300
 
 
 # -- the ops that do not exist -----------------------------------------------
