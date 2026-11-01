@@ -521,7 +521,8 @@ async def test_a_fault_of_the_reader_falls_back_to_the_strip(monkeypatch) -> Non
 async def test_the_local_read_keeps_the_event_loop_going(monkeypatch) -> None:
     """A page of 15 MB, the cap on the wire. Trafilatura reads its first
     MAX_LOCAL_HTML_BYTES in a thread, so the loop goes on. Run on the loop,
-    this read stops the loop for about half a second."""
+    this read stops the loop for about 670 ms on each try. A busy machine
+    can add one long pause, so the fence takes the best of three tries."""
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(web_tools._READER_POOL, web_tools._extract_markdown,
                                "<html><body><p>warm</p></body></html>")
@@ -531,9 +532,14 @@ async def test_the_local_read_keeps_the_event_loop_going(monkeypatch) -> None:
     _Net(pages={(HOST, "/julia"): lambda _r: httpx.Response(
         200, headers={"content-type": "text/html"}, stream=_Socket(body))}).install(monkeypatch)
     _Dns({HOST: [PUBLIC_IP]}).install(monkeypatch)
-    out, gap = await _longest_gap(web_tools.fetch_page(URL, max_chars=web_tools.MAX_CHARS))
-    assert "Word word" in out
-    assert gap < _LOOP_GAP_S, f"one read stopped the event loop for {gap * 1000:.0f} ms"
+    gaps: list[float] = []
+    for _try in range(3):
+        out, gap = await _longest_gap(web_tools.fetch_page(URL, max_chars=web_tools.MAX_CHARS))
+        assert "Word word" in out
+        gaps.append(gap)
+        if gap < _LOOP_GAP_S:
+            break
+    assert min(gaps) < _LOOP_GAP_S, f"each read stopped the event loop: {gaps}"
 
 
 async def test_the_reader_never_passes_its_bound(monkeypatch) -> None:

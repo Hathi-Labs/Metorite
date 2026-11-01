@@ -689,7 +689,7 @@ def _strip_html(raw: str) -> str:
     return _BLANK_RE.sub("\n\n", text).strip()
 
 
-def _html_bytes(answer: _Answer, limit: int = MAX_HTML_BYTES) -> bytes:
+def _html_bytes(answer: _Answer, limit: int) -> bytes:
     """The first ``limit`` bytes of the body of ``answer``, and no more.
 
     The ONE cut of the bytes of a page that a read decodes. The strip uses
@@ -712,7 +712,7 @@ async def _direct_text(walk: _Walk) -> tuple[str, str]:
     if not 200 <= answer.status < 300:
         return "", f"HTTP {answer.status}"
     try:
-        text = _strip_html(await _decode(_html_bytes(answer), answer.charset))
+        text = _strip_html(await _decode(_html_bytes(answer, MAX_HTML_BYTES), answer.charset))
     except Exception as exc:  # a fault of the strip is not a raise of the tool
         return "", _fault(exc)
     return text, "" if text else "empty answer"
