@@ -101,7 +101,8 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
     family that the drift gate then refuses."""
     assert sf.pack_slugs() == (
         "email", "email-setup", "crm-records",
-        "projects", "projects-plan", "projects-structure", "projects-bulk", "studio",
+        "projects", "projects-plan", "projects-structure", "projects-bulk",
+        "projects-reminders", "studio",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
