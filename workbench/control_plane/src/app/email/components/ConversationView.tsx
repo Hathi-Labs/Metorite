@@ -20,7 +20,7 @@ import { getSignatureText, stripSignature } from "../lib/signature";
 import { RecipientInput } from "./RecipientInput";
 import { draftRecipients, ownAddresses, replyRecipients } from "../lib/mailbox";
 import { TaskCaptureModal, type CommitmentContext } from "./TaskCaptureModal";
-import { ContactTrigger, RecipientList } from "./ContactCard";
+import { ContactTrigger, RecipientSummary } from "./ContactCard";
 import {
   autosaveWait, createAutosave, failedSaveStatus, saveFailureText, sendFailureText,
   type DraftStatus,
@@ -254,13 +254,10 @@ export function ConversationView({
               <div className="px-3 pb-3">
                 <div className="flex items-start justify-between gap-2 mb-2">
                   {/* Every recipient of each mail of a thread: To, Cc and the
-                      Bcc of a mail the member sent. One cut line hid the Cc
-                      (owner report, 2026-10-24). */}
-                  <div className="min-w-0 space-y-0.5 text-[11px]">
-                    <RecipientList label="To" people={m.to} accountId={m.accountId} />
-                    <RecipientList label="Cc" people={m.cc ?? []} accountId={m.accountId} />
-                    <RecipientList label="Bcc" people={m.bcc ?? []} accountId={m.accountId} />
-                  </div>
+                      Bcc of a mail the member sent, in one line until the
+                      member asks (owner, 2026-11-01). The Cc stays in the
+                      line by name: one cut line hid it (2026-10-24). */}
+                  <RecipientSummary to={m.to} cc={m.cc} bcc={m.bcc} accountId={m.accountId} className="min-w-0 space-y-0.5 text-[11px]" />
                   {/* A direct child: the row measures this line for its width. */}
                   {renderActions?.(view)}
                 </div>

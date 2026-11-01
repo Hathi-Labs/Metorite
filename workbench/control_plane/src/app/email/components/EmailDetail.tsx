@@ -37,7 +37,7 @@ import { AttachmentList } from "./AttachmentList";
 import { getSignatureText, seededBody, stripSignature } from "../lib/signature";
 import { RecipientInput } from "./RecipientInput";
 import { ConversationView, DraftCard, isDraftEmail } from "./ConversationView";
-import { ContactTrigger, RecipientList } from "./ContactCard";
+import { ContactTrigger, RecipientSummary } from "./ContactCard";
 import { LabelMenu } from "./LabelMenu";
 import { LabelChip } from "./LabelChip";
 import { MessageTimelineModal } from "./MessageTimelineModal";
@@ -1521,24 +1521,15 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 &lt;{email.from.email}&gt;
               </span>
             </div>
-            <div className="mt-0.5">
-              <RecipientList
-                label="To"
-                people={email.to}
-                accountId={email.accountId}
-              />
-            </div>
-            <RecipientList
-              label="Cc"
-              people={email.cc ?? []}
+            {/* To, Cc and Bcc in one line until the member asks (owner,
+                2026-11-01). A Bcc shows only on a mail the member sent:
+                the provider gives no Bcc of a received mail. */}
+            <RecipientSummary
+              to={email.to}
+              cc={email.cc}
+              bcc={email.bcc}
               accountId={email.accountId}
-            />
-            {/* A Bcc shows only on a mail the member sent: the provider
-                gives no Bcc of a received mail. */}
-            <RecipientList
-              label="Bcc"
-              people={email.bcc ?? []}
-              accountId={email.accountId}
+              className="mt-0.5"
             />
             <div className="text-xs text-muted-foreground">
               {fullDateLabel(email.receivedAt)}

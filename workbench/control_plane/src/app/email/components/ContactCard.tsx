@@ -21,10 +21,11 @@
 
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getContactCard } from "../lib/api";
 import { useEmailStore } from "../lib/emailStore";
+import { addressSet, recipientGroups, rollsUp, summarize, summaryText } from "../lib/recipientSummary";
 import {
   ContactCard as ContactCardData,
   EmailAddress,
@@ -256,6 +257,86 @@ export function RecipientList({
           </ContactTrigger>
         </span>
       ))}
+    </div>
+  );
+}
+
+/**
+ * The recipients of a mail, rolled up to one line until the member asks
+ * (owner, 2026-11-01: "roll it up and only see it when needed"). The rule
+ * is `lib/recipientSummary.ts`: names only, "you" for the member, the Cc
+ * kept in the line, and "+N" for the rest. "Details" opens the full list,
+ * name and address. A mail with few recipients shows the full list at once.
+ */
+export function RecipientSummary({
+  to,
+  cc,
+  bcc,
+  accountId,
+  className = "",
+}: {
+  to?: EmailAddress[];
+  cc?: EmailAddress[];
+  bcc?: EmailAddress[];
+  accountId?: string;
+  className?: string;
+}) {
+  const accounts = useEmailStore((s) => s.accounts);
+  const mine = useMemo(() => addressSet(accounts.map((a) => a.emailAddress)), [accounts]);
+  const [open, setOpen] = useState(false);
+  const groups = recipientGroups(to, cc, bcc);
+  if (groups.length === 0) return null;
+  const full = groups.map((g) => <RecipientList key={g.label} label={g.label} people={[...g.people]} accountId={accountId} />);
+  if (!rollsUp(groups)) return <div className={className}>{full}</div>;
+  const summary = summarize(groups, mine);
+  const toggle = (
+    <Button
+      variant="text"
+      size="none"
+      aria-expanded={open}
+      aria-label={open ? "Hide the recipients' addresses" : `Show every recipient: ${summaryText(summary)}`}
+      data-recipient-details=""
+      onClick={(e) => {
+        // The header sits in a clickable row on a thread.
+        e.stopPropagation();
+        setOpen((o) => !o);
+      }}
+      className="ml-1 shrink-0 gap-0.5 text-xs text-muted-foreground hover:text-foreground"
+    >
+      {open ? "Hide" : "Details"}
+      <AppIcon name="ChevronDown" size={12} className={`shrink-0 tech-transition ${open ? "rotate-180" : ""}`} />
+    </Button>
+  );
+  return open ? (
+    <div className={className} data-recipient-summary="open">
+      {full}
+      {toggle}
+    </div>
+  ) : (
+    <div className={`flex min-w-0 items-center text-xs text-muted-foreground ${className}`} data-recipient-summary="">
+      <span className="min-w-0 truncate">
+        {summary.map((g, gi) => (
+          <span key={g.label}>
+            {gi > 0 ? <span aria-hidden>{" · "}</span> : null}
+            <span className="text-muted-foreground/70">{g.label.toLowerCase()}</span>{" "}
+            {g.shown.map((n, i) => (
+              <span key={`${n.person.email}-${i}`}>
+                {i > 0 ? ", " : null}
+                <ContactTrigger
+                  contact={n.person}
+                  accountId={accountId}
+                  title={n.person.name && n.person.name !== n.person.email ? `${n.person.name} <${n.person.email}>` : n.person.email}
+                  className={`hover:text-primary hover:underline tech-transition ${n.text === "you" ? "" : "text-foreground/85"}`}
+                >
+                  {n.text}
+                </ContactTrigger>
+              </span>
+            ))}
+            {g.more > 0 ? <span className="tabular-nums">{` +${g.more}`}</span> : null}
+          </span>
+        ))}
+      </span>
+      {toggle}
     </div>
   );
 }
