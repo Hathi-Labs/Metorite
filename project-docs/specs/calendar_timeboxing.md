@@ -2,7 +2,6 @@
 
 Status: **P0–P3 SHIPPED to main** (PR #71 merged, commit `7a5c72b2`) —
 **verified against code on 2026-08-03**.
-**2026-11-02 (task 1338):** the day plan can rank through the decision tier. It is BUILT and dark (`my_day.day_plan`, mode `off`). See §14.
 The day/week/month grid, drag-drop + resize timeboxing, energy/capacity prefs,
 the AI "Plan my day" planner, chat-with-calendar tools, auto-reschedule
 roll-over, deadline radar, and overlap detection are all live.
@@ -12,6 +11,8 @@ client credentials on the VPS) and parts of P5 remain deferred (see cross-map,
 (`80722e17`, migration `97_gtd_planning_prefs.sql`) and **recurring day-template
 windows** (migration `98_gtd_day_templates.sql`) — both live; see
 `calendar_focus_os.md` §7.
+
+**Update 2026-11-02 (task 1338).** The day plan can rank through the decision tier. It is built and dark as `my_day.day_plan`. See §14.
 
 **Update 2026-08-01 (doc-truth pass):** the old "draft PR / nothing auto-deploys
 until reviewed + merged" caveat is obsolete — PR #71 merged
