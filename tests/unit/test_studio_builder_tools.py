@@ -343,11 +343,17 @@ async def test_outline_of_an_oversized_manifest_gives_the_size() -> None:
 
 
 def _valid_huge() -> dict:
-    """A VALID manifest of more than 200,000 characters."""
+    """A VALID manifest of more than 200,000 characters.
+
+    STU-C1 caps a label at 120 characters, so the size comes from the most
+    objects (50) with the most fields (60) each. It stays under A2's 256 KiB.
+    """
     return {"studio": 1, "id": "huge", "name": "Huge", "purpose": "p", "connections": [],
             "actions": [], "views": [], "workflows": [],
-            "objects": [{"name": f"o{i}", "label": "x" * 19_000, "fields": []}
-                        for i in range(11)]}
+            "objects": [{"name": f"o{i}", "label": f"Object {i}",
+                         "fields": [{"key": f"f{j}", "type": "text", "label": "x" * 32}
+                                    for j in range(60)]}
+                        for i in range(50)]}
 
 
 async def test_a_valid_manifest_over_the_cap_never_comes_back_whole(catalog) -> None:

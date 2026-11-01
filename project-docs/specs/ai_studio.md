@@ -1,7 +1,7 @@
 # AI Studio — skills, workflows and apps that a company builds for itself (WS-STU)
 
 > **Product:** Metorite · **Feature:** AI Studio (`/studio`) · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 🔨 **In build.** A2, A3, B1, D1, F1, F2a, G1 and G2 are built, and §14 holds the state of each slice. B1 and F2a are dark behind `STUDIO_ORGS`, which is empty on every box. A3, the package store, has no route and no caller yet. The `studio` tool pack of G1 and G2 gives tools only where tool packs are on, and only to an org in `STUDIO_ORGS`. The pieces it reuses are built, and §16 names each one.
+> **Status:** 🔨 **In build.** A2, A3, B1, C1, D1, F1, F2a, G1 and G2 are built, and §14 holds the state of each slice. B1 and F2a are dark behind `STUDIO_ORGS`, which is empty on every box. A3, the package store, and C1, the typed object store, have no route and no caller yet. The `studio` tool pack of G1 and G2 gives tools only where tool packs are on, and only to an org in `STUDIO_ORGS`. The pieces it reuses are built, and §16 names each one.
 > **Verified against code on 2026-11-01 at `82157e5fd`.** Each path in §16 was read on that commit.
 > **Board:** WS-STU in `work_plan.md` §2. **Decisions:** D127 (one app, three kinds), D139 (one coding harness), **D141** (Studio starts now, and a skill creator replaces the agent creator), **D146** (the owner's answers of 2026-10-31: layered apps, a typed object store, first-party templates). D124, D130, D131 and D136 bind it too.
 > **Metorite:** project "AI Studio", umbrella epic #491, this spec task #1135. Each group of §14 has its own epic under #491.
@@ -134,7 +134,7 @@ A **package** is the unit that a member builds, versions, shares and installs. I
   Mira   →  │  Skill     when to use · instructions · cards     │ → a tool pack per turn
             │  Workflows triggers → steps → approvals           │ → the built MAF engine
             │  Actions   one catalog: read · write · send       │ → app doors, connections, MCP
-            │  Objects   typed records, tenant-scoped           │ → app_data (FORCE RLS)
+            │  Objects   typed records, tenant-scoped           │ → studio_records (FORCE RLS)
             └───────────────────────────────────────────────────┘
 ```
 
@@ -144,7 +144,12 @@ A **package** is the unit that a member builds, versions, shares and installs. I
 
 An object is a typed record kind that the package owns: `visit`, `claim`, `asset`. It has fields of these types: text, long text, number, money, date, datetime, checkbox, select, multi-select, person, relation, file, url, email, phone and geo.
 
-- **Storage (D146, STU-Q5).** Records live in a **typed object store**, not in `app_data`. An object registry holds each object and its fields. Records are JSONB rows on shared tables with FORCE ROW LEVEL SECURITY, and no tenant gets its own DDL. Hot fields get indexes within a per-org budget. One action may write several records in one transaction, so a stock move writes both ledger rows or neither. Constraints run on each write, for example "stock never goes below zero". This is launch plan E10, brought into Studio. `app_data` stays the store of `window.cc` storage for a code-format app (L2).
+- **Storage (D146, STU-Q5).** Records live in a **typed object store**, not in `app_data`. An object registry holds each object and its fields. Records are JSONB rows on shared tables with FORCE ROW LEVEL SECURITY, and no tenant gets its own DDL. Hot fields get indexes within a per-org budget. `app_data` stays the store of `window.cc` storage for a code-format app (L2).
+- **What C1 built** (migration `323_studio_objects.sql`). `studio_objects` holds an object of a package (an `apps` row). `studio_object_fields` holds its fields, and `studio_records` holds its records. `studio_record_hot` is the index side table. It holds one row for each value of a hot field, under three fixed btrees that every org shares. Each foreign key is a pair with `organization_id`, and each one cascades, so a deleted package leaves no record.
+- **The rules of a value** are in one module, `acb_common/studio_fields.py`. The A2 validator and the store call it, and PKG-13 will too. A number, a money amount and a coordinate stay below 10^15, with no exponent. Money is `{"minor": <whole number>, "currency": "INR"}`. A datetime is kept in UTC. A person is a lower-case member email. A relation and a file store `{"id": ...}` only.
+- **The caps.** An object holds at most 8 hot fields and 60 fields. An org holds at most 24 hot fields and 200 objects. A package holds at most 50 objects. A record holds at most 64 KiB of JSON. A field turns hot only on an object of at most 50,000 records, and the store fills its rows in the same transaction.
+- **Still to come.** One action may write several records in one transaction, so a stock move writes both ledger rows or neither. Constraints run on each write, for example "stock never goes below zero". C1b builds both. C2 builds the query, and C2 rechecks a hot text match against `data`, because `v_text` holds the first 256 characters only.
+- **A write outside the store.** A raw SQL write that skips `objects_store.py` can leave a stale hot row. The one-writer fence reads the Python under `apps/` and `packages/` only, so it does not see a script or a manual statement.
 - **Relations reach built-in records.** A field can point to a task, a project, a CRM record or a person. The relation stores the id only. A read of the related record goes through its owning app, as the viewer, so a relation never shows what the viewer cannot open.
 - **A package may own no objects.** A connector app or an S1 workflow reads and writes other apps through actions only.
 
@@ -543,7 +548,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **C1** | **The typed object store** (D146.4, §3.1): an object registry, record tables on shared JSONB rows, the field types of §3.1, validation on each write, and an index budget per org. No per-tenant DDL. Expand-only migration, next free number (R1) | Each field type refuses a bad value with its field name. R8: FORCE RLS holds on each table, and org B reads nothing. A hot field gets an index, and no org passes its budget. `test_tenant_coverage.py` passes | HIGH | AGENT-SAFE |
+| **C1** | 🔨 **BUILT, dark (2026-11-01).** No route, no flag and no UI reach it. Migration `323_studio_objects.sql` copies the two `apps` blocks of 321 (PKG-4) byte for byte, so the two files apply in either order. **The typed object store** (D146.4, §3.1): an object registry, record tables on shared JSONB rows, the field types of §3.1, validation on each write, and an index budget per org. No per-tenant DDL. Expand-only migration, next free number (R1). **Built:** `acb_common/studio_fields.py` holds the 16 types and the one check of a spec and of a value. A2 imports `FIELD_TYPES` and `validate_field_spec` from it, and A2's `FieldDef` gained `hot`. `gateway/studio/objects_store.py` is the one writer. It holds define, add a field, turn a field hot or cold, and drop for the registry. It holds create, get, update and delete for one record. A read is by id only. Each record function takes a required `package_id`, so a door of one package cannot reach a record of another package. The caller owns the transaction, so C1b can join several calls. **The rules:** a hot field has one of eight types: text, select, number, money, date, datetime, checkbox or email. A hot field takes no `many`. A number is below 10^15 in size, and a value that is not zero is at least 1e-4 in size, because the check refuses a float in exponent form. `v_text` holds the first 256 characters of a text. The options of a select must differ by more than case. A URL holds no user name and no password. A stored field reads with no authoring check, so a stricter rule binds a new spec only. **The lock order:** every write takes the advisory lock of the org first, then the row lock of the object. The org lock is exclusive, so the writes of one org run one at a time. **Hard delete:** a hard delete of the package deletes all its records by cascade (`routes/apps/lifecycle.py:566`). A confirm step that names the records belongs to A4 or J4. **Not built:** no TypeScript twin of the value check. D2 adds it, with a parity test as A2 has | Each field type refuses a bad value with its field name. R8: FORCE RLS holds on each table, and org B reads nothing. A hot field gets an index, and no org passes its budget. `test_tenant_coverage.py` passes. **The budget:** at most 8 hot fields for each object and 24 for each org. The store refuses first, and the trigger `studio_object_fields_hot_budget` refuses too, also under two writers at once. A field turns hot only on an object of at most 50,000 records. A record holds at most 64 KiB (65,536 bytes) of JSON. **Tests:** `test_studio_fields.py` (each type, the spec rules, three fences). `test_studio_objects_r8.py` (`pytestmark = _DB_GATE`): FORCE RLS on all four tables, org B reads and writes nothing, each composite key refuses a row of another org, a hot row on each write, the 9th and the 25th hot field, two writers at once, the 64 KiB cap, the 50,000 cap, the cascades. `test_admin_member_purge.py`: no purge row and no cascade reaches a record | HIGH | AGENT-SAFE |
 | **C1b** | Multi-record writes and constraints: one action writes several records in one transaction, and a constraint runs on each write | A stock move writes two ledger rows or neither, also when the second write fails. A constraint "stock is never below zero" refuses the write that breaks it, with its name. R8 under two writers at once | HIGH | AGENT-SAFE |
 | **C2** | The object query: filter, sort, group, count, sum and average, paging and a cost guard | R8 on a real Postgres for each operator. A query over the guard stops with a clear error. An index plan is checked with EXPLAIN on 50,000 rows | HIGH | AGENT-SAFE |
 | **C3** | Record events: create, update and delete emit `studio.record.*` through `ingestion/event_hooks.py` | A workflow with a record trigger runs once for one change. The event carries the org | STD | AGENT-SAFE |
@@ -663,7 +668,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 ## 16. Current file paths
 
-Each path was read on `82157e5fd`.
+Each path was read on `82157e5fd`. A3 and C1 added their paths after that commit.
 
 **Backend**
 
@@ -672,6 +677,8 @@ Each path was read on `82157e5fd`.
 - `apps/services/gateway/gateway/studio/skills_store.py` — the F1 skill store, the one writer of `studio_skills` and `studio_skill_versions` (migration `infra/postgres/320_studio_skills.sql`)
 - `apps/services/gateway/gateway/studio/packages_store.py` — the A3 package store, the one writer of a Studio package in `apps` (migration `infra/postgres/322_apps_format.sql`). A3 added it after `82157e5fd`
 - `apps/services/gateway/gateway/routes/apps/_common.py` (`load_app`, `workspace_dir`), `lifecycle.py` (`list_apps`), `pins.py` (`list_pinned_apps`), and `routes/workspace.py` (`_app_workspace_for`) — the App Workshop readers that skip a package
+- `apps/services/gateway/gateway/studio/objects_store.py` — the C1 object store, the one writer of `studio_objects`, `studio_object_fields`, `studio_records` and `studio_record_hot` (migration `infra/postgres/323_studio_objects.sql`)
+- `packages/acb_common/acb_common/studio_fields.py` — the C1 field types and the one check of a spec and of a value. `studio_manifest.py` (A2) imports it
 - `apps/services/gateway/gateway/routes/studio/` — `actions.py` (B1, `GET /studio/actions` and `catalog_rows`), `flags.py` (the `STUDIO_ORGS` reader) and `skills.py` (F2a, the skill routes on the same router)
 - `packages/acb_common/acb_common/settings.py`, `env_guard.py` — where an `*_ORGS` flag is declared and guarded
 - `packages/acb_common/acb_common/app_manifests/__init__.py` (`every_app`, `door_ops`)
@@ -729,3 +736,7 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 | No App Workshop list, slug route, pin, agent tool or session workspace shows a package | New with A3: `tests/unit/test_studio_packages_r8.py` and `tests/unit/test_studio_packages_store.py` |
 | An empty `workspace_path` never means the working directory | New with A3: `tests/unit/test_studio_packages_store.py` |
 | Only `packages_store.py` writes a package | New with A3: `test_only_the_package_store_writes_a_package` in `tests/unit/test_studio_packages_store.py` |
+| One field-type module. No other module holds a tuple, a list or a `Literal` of the type names | New with C1: `tests/unit/test_studio_fields.py::test_one_field_type_module` |
+| One writer. Only `gateway/studio/objects_store.py` runs SQL against the four object tables | New with C1: `tests/unit/test_studio_fields.py::test_one_writer_of_the_four_tables` |
+| The hot budget: 8 for each object and 24 for each org, also under two writers at once | New with C1: the trigger `studio_object_fields_hot_budget` and `tests/unit/test_studio_objects_r8.py` |
+| A record is company data, so the member purge deletes none | New with C1: `tests/unit/test_admin_member_purge.py::test_the_records_of_studio_objects_stay` |

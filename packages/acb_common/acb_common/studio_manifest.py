@@ -39,14 +39,21 @@ from acb_common.app_manifests.base import APP_ID_PATTERN, CLASSES, OP_PATTERN, U
 from acb_common.app_manifests.shell_manifest import _CONTRIBUTES_KEYS as _P0_POINTS
 from acb_common.app_manifests.shell_manifest import SHELL_DIR
 from acb_common.secret_shapes import SECRET_SHAPES, is_secret_key
+from acb_common.studio_fields import (
+    FIELD_TYPES,
+    MAX_FIELDS_PER_OBJECT,
+    MAX_HOT_PER_OBJECT,
+    MAX_HOT_PER_ORG,
+    MAX_LABEL_CHARS,
+    MAX_OBJECTS_PER_PACKAGE,
+    NAME_PATTERN,
+    validate_field_spec,
+)
 
 STUDIO_VERSION = 1
 
-FIELD_TYPES: tuple[str, ...] = (
-    "text", "longText", "number", "money", "date", "datetime", "checkbox",
-    "select", "multiSelect", "person", "relation", "file", "url", "email",
-    "phone", "geo",
-)  # fmt: skip
+#: The one list of field types is `studio_fields.FIELD_TYPES` (C1). This module
+#: imports it and keeps no copy, and a caller may import it from here too.
 
 BLOCKS: tuple[str, ...] = (
     "table", "form", "detail", "board", "chart", "stat", "calendar",
@@ -88,9 +95,8 @@ RESERVED_BLOCKS: dict[str, str] = {"code": "L1", "custom": "L1", "customUi": "L1
 #: Subtrees that hold member data, not structure. The reserved-key scan skips them.
 _DATA_KEYS = frozenset({"set", "where", "when", "args"})
 
-_NAME = r"[a-z][a-z0-9_]{0,47}"
+_NAME = NAME_PATTERN
 _DASHED = r"[a-z][a-z0-9_-]{0,47}"
-_RELATION_TO = re.compile(rf"{APP_ID_PATTERN}\.{_NAME}")
 _OPS = "|".join(OBJECT_OPS)
 # `fullmatch` everywhere: Python `$` also matches before a final newline.
 _USES_RE = re.compile(
@@ -130,21 +136,22 @@ class _Strict(BaseModel):
 
 class FieldDef(_Strict):
     key: str = Field(pattern=rf"^{_NAME}$")
-    type: Literal[
-        "text", "longText", "number", "money", "date", "datetime", "checkbox",
-        "select", "multiSelect", "person", "relation", "file", "url", "email",
-        "phone", "geo",
-    ]  # fmt: skip
+    # The one list, `studio_fields.FIELD_TYPES`. A tuple in `Literal[...]` is
+    # the same as its members written out, so the schema export is unchanged.
+    type: Literal[FIELD_TYPES]  # type: ignore[valid-type]
     label: str | None = None
     required: bool = False
     many: bool = False
     options: list[str] | None = None
     to: str | None = None
+    #: The field gets a row in the index side table of C1 (`studio_record_hot`).
+    hot: bool = False
 
 
 class ObjectDef(_Strict):
     name: str = Field(pattern=rf"^{_NAME}$")
-    label: str | None = None
+    #: The CHECK `studio_objects_label` of C1 holds the same cap.
+    label: str | None = Field(default=None, max_length=MAX_LABEL_CHARS)
     fields: list[FieldDef] = Field(default_factory=list)
 
 
@@ -561,22 +568,25 @@ def _check_view(
 
 
 def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[ManifestError]) -> None:
+    """The field rules are `studio_fields.validate_field_spec`, the one check
+    that the object store runs too. This adds the JSON path and the caps."""
+    if len(m.objects) > MAX_OBJECTS_PER_PACKAGE:
+        out.append(_err("$.objects", f"A package holds at most {MAX_OBJECTS_PER_PACKAGE} objects."))
+    # An org holds this many hot fields in all, so a package with more installs nowhere.
+    if sum(f.hot for o in m.objects for f in o.fields) > MAX_HOT_PER_ORG:
+        out.append(_err(
+            "$.objects", f"A package holds at most {MAX_HOT_PER_ORG} hot fields, the budget of an org."))
     for oi, o in enumerate(m.objects):
-        _dupes([f.key for f in o.fields], f"$.objects[{oi}].fields", "field key", out)
+        base = f"$.objects[{oi}].fields"
+        _dupes([f.key for f in o.fields], base, "field key", out)
+        if len(o.fields) > MAX_FIELDS_PER_OBJECT:
+            out.append(_err(base, f"An object holds at most {MAX_FIELDS_PER_OBJECT} fields."))
+        if sum(f.hot for f in o.fields) > MAX_HOT_PER_OBJECT:
+            out.append(_err(base, f"An object holds at most {MAX_HOT_PER_OBJECT} hot fields."))
         for fi, f in enumerate(o.fields):
-            p = f"$.objects[{oi}].fields[{fi}]"
-            if f.type in ("select", "multiSelect") and not f.options:
-                out.append(_err(f"{p}.options", "A select field needs at least one option."))
-            if f.type == "relation":
-                if not f.to:
-                    out.append(_err(f"{p}.to", "A relation field needs a `to` target."))
-                elif f.to not in objects and not _RELATION_TO.fullmatch(f.to):
-                    out.append(
-                        _err(
-                            f"{p}.to",
-                            f"Not a declared object or an <app>.<object> target.{_got(f.to)}",
-                        )
-                    )
+            for problem in validate_field_spec(f.model_dump(), objects=objects):
+                tail = "" if problem.got is None else _got(problem.got)
+                out.append(_err(f"{base}[{fi}].{problem.path}", problem.message + tail))
 
 
 def _check_skill_ref(
