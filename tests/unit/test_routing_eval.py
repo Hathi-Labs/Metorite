@@ -117,10 +117,10 @@ def test_a_specialist_and_a_live_app_with_no_case_fail() -> None:
 
 
 def test_a_preview_pane_and_a_specialist_on_an_asks_case_fail() -> None:
-    preview = Case("X2", "Build an app.", "/build/apps", "app-builder")
+    preview = Case("X2", "Build an app.", "/studio", "app-builder")
     asks = Case("X3", "Do it.", None, "projects-assistant", asks=True)
     problems = _catalog([*ds.CASES, preview, asks])
-    assert "X2: the app '/build/apps' is a preview pane, not a live pane" in problems, problems
+    assert "X2: the app '/studio' is a preview pane, not a live pane" in problems, problems
     assert "X3: a case that asks first names no specialist" in problems, problems
 
 
