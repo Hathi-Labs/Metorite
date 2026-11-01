@@ -59,6 +59,12 @@ h. The member purge deletes the member's skills of this org, and their
 * M6. ``skills_store.py``: drop the float branch of ``_check_values``.
   ``test_r8_a_refused_body_writes_nothing`` and the grown-body cases of
   ``test_the_store_refuses_a_body_that_jsonb_refuses_or_grows`` go red.
+* M7. ``skills_store.create_skill``: use ``_SLUG_RE.match`` again in place
+  of ``fullmatch``. The ``slug_final_newline`` case of
+  ``test_the_store_refuses_text_that_postgres_refuses`` goes red.
+* M8. ``skills_store._text``: drop the NUL check or the UTF-8 check. The
+  ``nul`` or the ``surrogate`` cases of
+  ``test_the_store_refuses_text_that_postgres_refuses`` go red.
 """
 
 from __future__ import annotations
@@ -305,7 +311,7 @@ def test_r8_a_slug_is_unique_for_each_owner(world) -> None:
     assert anas.slug == bens.slug == other.slug == slug
     assert len({anas.id, bens.id, other.id}) == 3
     assert (anas.owner_email, bens.owner_email) == (ANA, BEN)
-    assert out["message"] == "You already have a skill with this name"
+    assert out["message"] == "You already have a skill with this name. Choose another name."
     assert [s.id for s in out["ben_lists"]] == [bens.id]
     assert _count(world, "studio_skills") == 3
     # The table refuses a second row of one owner on its own, not only the store.
@@ -322,6 +328,7 @@ def test_r8_a_slug_is_unique_for_each_owner(world) -> None:
     ({"slug": "Bad Slug"}, "studio_skills_slug"),
     ({"slug": "a--b"}, "studio_skills_slug"),
     ({"slug": "a" * 65}, "studio_skills_slug"),
+    ({"slug": "quote\n"}, "studio_skills_slug"),
     ({"name": "   "}, "studio_skills_name"),
     ({"name": "n" * 121}, "studio_skills_name"),
     ({"desc": "d" * 1025}, "studio_skills_description"),
@@ -385,6 +392,30 @@ def test_the_store_refuses_a_bad_write_before_the_db() -> None:
                                      description="d" * 1025)
 
     asyncio.run(go())
+
+
+@pytest.mark.parametrize(("kw", "bad"), [
+    ({"slug": "quote\n"}, "\n"),
+    ({"name": "Quotes\x00"}, "\x00"),
+    ({"name": "Quotes \ud83d"}, "\ud83d"),
+    ({"name": "\udfff"}, "\udfff"),
+    ({"description": "Prices\x00 and terms"}, "\x00"),
+    ({"description": "Half \ud83d of a pair"}, "\ud83d"),
+], ids=["slug_final_newline", "name_nul", "name_lone_surrogate", "name_only_surrogate",
+        "description_nul", "description_lone_surrogate"])
+def test_the_store_refuses_text_that_postgres_refuses(kw: dict[str, str], bad: str) -> None:
+    """Python's ``$`` matches before a final newline, which the CHECK
+    ``studio_skills_slug`` refuses. Postgres refuses a NUL and a lone
+    surrogate in a text column. The store refuses each with a
+    SkillStoreError, and never a DBAPIError. The session is None, so a call
+    that reached the database fails on it. The text names the field, and it
+    does not echo the value."""
+    args = {"name": "Quotes", "slug": "quote", "description": "", **kw}
+    with pytest.raises(store.SkillStoreError) as refused:
+        asyncio.run(store.create_skill(None, ANA, **args))
+    message = str(refused.value)
+    assert next(iter(kw)) in message
+    assert bad not in message and "Quotes" not in message and "Prices" not in message
 
 
 def test_the_content_hash_is_canonical() -> None:

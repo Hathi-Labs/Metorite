@@ -125,6 +125,16 @@ async def _workflow_rows() -> list[dict[str, Any]]:
     return rows
 
 
+async def catalog_rows() -> list[dict[str, Any]]:
+    """Every row of the catalog: the door ops, the integration tools, and the
+    published workflows of the bound org. The one source of the catalog.
+    ``routes/studio/skills.py`` checks a skill's actions against it.
+
+    ⚠️ It opens its own ``_tenant_session()`` for the workflows. A caller runs
+    it BEFORE it opens a session of its own, so no request holds two."""
+    return [*_manifest_rows(), *_integration_rows(), *await _workflow_rows()]
+
+
 @router.get("/actions")
 async def list_actions(
     user: UserContext = Depends(get_current_user),
@@ -132,5 +142,4 @@ async def list_actions(
     """The catalog. 404 while ``STUDIO_ORGS`` does not hold the caller's org."""
     if not flags.studio_allowed(getattr(user, "organization_id", None)):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
-    actions = [*_manifest_rows(), *_integration_rows(), *await _workflow_rows()]
-    return {"actions": actions}
+    return {"actions": await catalog_rows()}

@@ -29,9 +29,11 @@ import re
 from pathlib import Path
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
+
+from tests.unit._tenant_ladder import apply_ladder
 
 _URL = os.environ.get("TENANT_LADDER_DATABASE_URL", "")
 
@@ -55,8 +57,24 @@ def _async_url() -> str:
     return _URL.replace("+psycopg", "+asyncpg")
 
 
+@pytest.fixture(scope="module")
+def built():
+    """The tenant schema, built by this file.
+
+    ⚠️ Without it, this file passed only when an earlier module in the same
+    shard had built the schema. A new test file moved the shard split, and all
+    eight cases failed with "relation pm_task_statuses does not exist".
+    `apply_ladder` is idempotent, so a second call does nothing.
+    """
+    eng = create_engine(_URL, future=True)
+    with eng.begin() as connection:
+        apply_ladder(connection)
+    yield
+    eng.dispose()
+
+
 @pytest.fixture
-async def conn():
+async def conn(built):
     engine = create_async_engine(_async_url(), future=True, poolclass=NullPool)
     async with engine.begin() as connection:
         yield connection

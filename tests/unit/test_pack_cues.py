@@ -43,6 +43,10 @@ WHEN = {
     "projects-plan": "Load for team load, capacity, reports, a timeline or a plan from a goal.",
     "projects-structure": "Load to change a project's statuses, fields, tags, access or saved views.",
     "projects-bulk": "Load for two or more tasks at once, and to archive, move or delete.",
+    # STU-G1: the Studio builder pack.
+    "studio": (
+        "Load to build an app in AI Studio: draft, change and check its manifest, "
+        "and find the actions it may use."),
 }
 
 

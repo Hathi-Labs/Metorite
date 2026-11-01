@@ -5,7 +5,8 @@
   "contributes": {
     "nav": [
       {
-        "href": "/workflows"
+        "href": "/workflows",
+        "feature": "workflows"
       }
     ]
   }
