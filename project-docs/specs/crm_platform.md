@@ -12168,3 +12168,75 @@ Mirror mode offers none of these writes. The server guard (`assert_writable`) st
 Files: `components/RecordPicker.tsx`, `components/QuickCreateModal.tsx`, `components/FieldsPanel.tsx`, `components/RecordSheet.tsx`, `lib/recordPicker.ts`, `lib/fields.ts`, `lib/store.ts`. Fence: `components/crmU16.test.ts`.
 
 Left out on purpose: the duplicate warning (CRM-S5), "Create another", and a company picker on a lead.
+
+### 20.21 CRM-U17: one way to save, one set of words, and three defects (2026-11-01)
+
+**Status.** 📝 Specified 2026-11-01. Owner choice, 2026-11-01: point 6 of the CRM UX brainstorm and the three defects come first. Metorite task #1318, under the CRM epic.
+
+**Gate.** AGENT-SAFE. No flag and no migration. One gateway change: the label of one system field (`routes/crm/core.py:706`). Everything else is frontend.
+
+**Evidence.** The read-only inventory of origin/main `fc1b5edb6`, 2026-11-01. CRM settings use nine save patterns. Two places open a modal on top of a modal. All three defects are real. Paths below are under `workbench/control_plane/src/app/crm/` unless a path says otherwise.
+
+**Slices.** U17a goes first. U17b follows, because it changes the same files.
+
+| Slice | What | Size |
+|---|---|---|
+| CRM-U17a | The three defects, a refused edit keeps the input, no modal on a modal, one set of words | M |
+| CRM-U17b | `SaveMark` and `useAction` (UXD-5 items 1, 2 and 8, task #908), and the CRM settings use them | M to L |
+
+#### CRM-U17a
+
+1. **Native modules show in the rail.** `page.tsx:203` reads the modules in Mirror mode only, so a Native org gets no "More modules" group. Read them in both modes. The server already returns the Native modules that hold records (`routes/crm/modules.py:241-264`). Correct its old docstring at `:429`.
+2. **No raw module name.** `lib/modules.ts:128-133` `moduleLabel` falls back to the API name. The fallback becomes a readable name: `service_requests` reads "Service requests". `ModuleRecordSheet.tsx:146` uses the same helper.
+3. **Loading is not empty.** The statuses start as `[]` (`lib/store.ts:315-317`), and `loadVocabulary` has no loading state (`:359-370`). The store records "loading", "loaded" and "failed" for the vocabulary.
+   - Until the first read lands, the stage list, the lead statuses, the lost reasons and the read-only lists (`SettingsCards.tsx:55`, `:124`) show a loading row.
+   - A failed read shows its reason and Retry.
+   - "No stages yet" and the other empty lines show only after a read that returned no rows.
+   - The loading, empty and loaded states keep one height (M1).
+4. **A refused stage edit keeps the input.** `saveStatus` re-reads in `finally` (`lib/store.ts:820-823`). The new object then fails the draft base check (`lib/settings.ts:420-422`), and the boxes snap back. After a refusal, the draft stays. The reason shows next to Save.
+5. **No modal on a modal.**
+   - The stage delete confirm (`PipelineSettings.tsx:1185`) and the field retire confirm (`FieldStudio.tsx:600`, `FieldStudioFieldDialog.tsx:445`) open inside another Modal. Each becomes a confirm step in the same Modal, or the first Modal closes before the confirm opens.
+   - The answer of the sum picker (`OpenQuestions.tsx:725`) and "Use" in the suggestion preview (`Suggestions.tsx:109`) raise a toast while their Modal is open. `components/ui/Toast.tsx:102-110` forbids that. The Modal closes first.
+6. **One set of words.**
+
+   | Now | New | Where |
+   |---|---|---|
+   | Probability | Win chance | `components/FieldsPanel.tsx:146`, the system field label at `routes/crm/core.py:706`, the messages at `lib/settings.ts:201`, `:206-208`, `:328` |
+   | hidden, Hidden, "Show this column on the board" | Hidden, and the box "Hide on the board" (checked means hidden), with the hint "A hidden stage still shows while it holds a deal." | `PipelineSettings.tsx:837-842`, `:1368`, `FieldsCard.tsx:128` |
+   | "The server refuses…", "the order shown is the server's", "not set up on this server", "The server restarted…" | Words that say what happened and what to do, with no "server" | `PipelineSettings.tsx:1188`, `lib/settings.ts:153-154`, `lib/syncHealth.ts:159`, `:163`, `lib/cutoverSwitch.ts:200` |
+   | `Gateway error ${status}` | "That did not work. Try again." with no status code | `lib/api.ts:124`, the fallback of every CRM refusal that has no detail |
+   | A raw type id (`textarea`, `multiselect`) | The `TYPE_LABELS` word, through `typeLabel` | `FieldMapCard.tsx:314`, `ConvertMappingCard.tsx:91`. The fallback of `lib/fieldStudio.ts:96` becomes readable too |
+   | A raw id (`max_dwell_days`, a JSON list of keys, `won`, `lost`) | The field's label, and "Won" or "Lost" | `lib/settings.ts:206`, `:222`, `:232`, `components/StatusPill.tsx:197-199` |
+
+   Kept on purpose. "Retire" in the field studio is a different act: the field leaves every form and list. "Pause syncing this" is a different act too. "Picklist" and "Lookup" copy Zoho (U12). The words of the Field map draft and its "column" stay, because CRM-U13c rewrites that card.
+
+**Done when (U17a).**
+1. In a Native org whose custom module holds records, the rail shows the module under "More modules", with its label.
+2. No title, subtitle or list label shows a raw API name.
+3. On a slow network the stages page shows a loading row and never "No stages yet". A failed read shows its reason and Retry.
+4. A refused stage edit keeps every typed value, and the reason shows next to Save.
+5. No Modal opens while another Modal is open, and no toast rises over an open Modal.
+6. A grep of `src/app/crm` finds none of the old words of item 6 in a string that a user reads.
+7. `npx tsc --noEmit` passes. `npx vitest run src/app/crm` passes, except the six known CRLF failures.
+8. The `visual-review` captures (light mode, compact density, a changed accent, 390 px) of the stage settings, the rail with a Native module, and the stage delete confirm.
+
+#### CRM-U17b
+
+1. **The shared parts.** Build `SaveMark` (`src/components/ui/SaveMark.tsx`) and `useAction` (`src/lib/useAction.ts`) to the contract of `DESIGN_SYSTEM.md` §12, plus the one helper that turns a failure into words (UXD-5 item 8). They are UXD-5 items 1, 2 and 8. The rest of UXD-5 stays in task #908.
+   - `SaveMark` shows "Saving…" after 300 ms, then "Saved ✓", and fades. A failure sits in its place with Retry.
+   - A reversible change registers its undo in `lib/undo.ts`. Ctrl+Z undoes it, and the SaveMark shows "Undo" while "Saved ✓" shows. This puts Undo where the eye is (§12 beat 3), and no toast rises for a change that is on the screen.
+2. **The CRM settings use them.** Each control that saves on change shows a SaveMark beside it. These are Access, the order of stages and lost reasons, the Hidden boxes, Column order "Custom", the selects of "When a lead converts", the Sync health boxes, the field studio order and Restore, and the rename of a lost reason.
+   - A reversible change offers Undo.
+   - A failure shows in the SaveMark and keeps the input.
+   - The page banner shows only when a page fails to load.
+   - The toasts "Access saved" and "Record names saved" go, because the SaveMark shows the result.
+3. **Business rules.** "Remove" deletes a rule at once with no way back (`BusinessRules.tsx:129`). It offers Undo, which writes the rule again.
+
+Left out on purpose. The stage edit Modal and the field dialog stay. The pipeline editor on the board (brainstorm point 3) and the form designer (point 4) replace them later. The two steps of the Field map stay for CRM-U13c.
+
+**Done when (U17b).**
+1. Unit tests for each beat of `useAction`: the 300 ms pending, Saved, Undo through `lib/undo.ts`, the rollback, Retry, the kept input, and one submit for each intent (M3).
+2. Each control of item 2 shows "Saved ✓" after a save and its reason after a failure. Ctrl+Z undoes the last reversible change.
+3. The `visual-review` captures of the SaveMark in its three states, in the four contexts.
+
+Fences (R7): the tests that hold each changed string and each beat. In build mode the slice adds no new fence file (`engineering_practice.md` §7a).
