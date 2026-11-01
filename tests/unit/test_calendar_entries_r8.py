@@ -299,10 +299,22 @@ def test_the_migration_holds_the_rules_of_the_spec() -> None:
     assert set(ce.STATUSES) == values("calendar_entries_status")
     # `end_date` is exclusive: the CHECK refuses an empty all-day entry.
     assert "end_date > start_date" in _check(sql, "calendar_entries_time")
-    # No cascade and no SET NULL on the connection (the supervisor's ruling).
-    line = next(x for x in sql.splitlines() if x.strip().startswith("connection_id"))
-    assert "REFERENCES integration_connections (id)" in line
-    assert "ON DELETE" not in line
+    # No cascade and no SET NULL on the connection (the supervisor's ruling),
+    # and both keys hold the org (repair round 1).
+    fk = re.search(r"CONSTRAINT calendar_entries_connection_fk(.*?),\n", sql, re.S)
+    assert fk, "no calendar_entries_connection_fk"
+    assert "FOREIGN KEY (organization_id, connection_id)" in fk.group(1)
+    assert "REFERENCES integration_connections (organization_id, id)" in fk.group(1)
+    assert "ON DELETE" not in fk.group(1)
+    entry_fk = re.search(r"CONSTRAINT calendar_entry_attendees_entry_fk(.*?),\n", sql, re.S)
+    assert entry_fk and "FOREIGN KEY (organization_id, entry_id)" in entry_fk.group(1)
+    assert "ON DELETE CASCADE" in entry_fk.group(1)
+    # A key of one column could name a row of another org.
+    assert not re.search(r"REFERENCES (integration_connections|calendar_entries) \(id\)", sql)
+    # The FK check of a connection delete has a partial index to use.
+    index = re.search(r"calendar_entries_connection_idx\s+ON calendar_entries(.*?);", sql, re.S)
+    assert index and "(organization_id, connection_id)" in index.group(1)
+    assert "WHERE connection_id IS NOT NULL" in index.group(1)
     # The key of a provider event names no kind and no source (W1).
     index = re.search(r"calendar_entries_external_uq\s+ON calendar_entries(.*?);", sql, re.S)
     assert index and "kind" not in index.group(1) and "source" not in index.group(1)
@@ -648,14 +660,29 @@ async def test_r8_a_written_out_event_gets_no_twin(world) -> None:
     # A half pair escapes the key, so the CHECK refuses it.
     _refused(world, world.org, "calendar_entries_external_pair", external_id="ev-2")
     _refused(world, world.org, "calendar_entries_external_pair", connection_id=conn_id)
-    # Two rows of one pair in one org fail. The same pair in another org is
-    # another key.
+    # Two rows of one pair in one org fail.
     with world.p.admin_engine.begin() as conn:
         _insert(conn, world.org, connection_id=conn_id, external_id="ev-3")
     _refused(world, world.org, "calendar_entries_external_uq", connection_id=conn_id,
              external_id="ev-3")
+
+
+async def test_r8_a_key_never_names_a_row_of_another_org(world) -> None:
+    """Repair round 1: both keys hold the org. A row of org A that names a
+    connection or an entry of org B is refused, even by the superuser, so a
+    later delete of org B cannot fail on the NO ACTION key."""
+    theirs = _seed_connection(world, member=ALICE)  # a connection of org B
+    _refused(world, world.other, "calendar_entries_connection_fk",
+             connection_id=theirs, external_id="ev-x")
     with world.p.admin_engine.begin() as conn:
-        _insert(conn, world.other, connection_id=conn_id, external_id="ev-3")
+        entry_b = _insert(conn, world.org, title="Org B entry")
+    with pytest.raises(sa_exc.IntegrityError) as refused:
+        _seed_attendee(world, str(entry_b.id), member=BOB, org=world.other)
+    assert '"calendar_entry_attendees_entry_fk"' in str(refused.value), str(refused.value)
+    # The same rows in their own org are fine.
+    with world.p.admin_engine.begin() as conn:
+        _insert(conn, world.org, connection_id=theirs, external_id="ev-x")
+    _seed_attendee(world, str(entry_b.id), member=BOB)
 
 
 async def test_r8_the_write_out_checks_refuse_a_bad_state(world) -> None:

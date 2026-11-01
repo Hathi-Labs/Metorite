@@ -16,8 +16,9 @@
 -- Depends on: 130_org_access_control.sql (organization),
 --             245_integration_connections.sql (integration_connections).
 --
--- Expand only (R6): two new tables and their indexes. No rename, no drop and
--- no change to an existing table. Old code names no new object. A NOT NULL
+-- Expand only (R6): two new tables and their indexes, and one unique key on
+-- `integration_connections` (organization_id, id), which its primary key
+-- already makes true. No rename and no drop. Old code names no new object. A NOT NULL
 -- with no default stands only on a column of a NEW table that the one writer
 -- always fills (`owner_email`, `title`, `entry_id`). This is the shape of 307.
 -- Idempotent per infra/postgres/README.md: CREATE TABLE IF NOT EXISTS, CREATE
@@ -53,6 +54,28 @@
 -- ============================================================================
 
 BEGIN;
+
+-- The keys hold the org (repair round 1). A key of one column would let a row
+-- of org A name a connection or an entry of org B, and then a delete of org B
+-- would fail on the NO ACTION key. So each key below is (organization_id, id).
+-- `integration_connections.id` is its primary key, so (organization_id, id)
+-- is unique already. The index and the constraint only state it, and the
+-- index build cannot fail. Expand only (R6): old code names neither.
+CREATE UNIQUE INDEX IF NOT EXISTS integration_connections_org_id_uq
+    ON integration_connections (organization_id, id);
+DO $uq$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'integration_connections_org_id_uq'
+           AND conrelid = 'integration_connections'::regclass
+    ) THEN
+        ALTER TABLE integration_connections
+            ADD CONSTRAINT integration_connections_org_id_uq
+            UNIQUE USING INDEX integration_connections_org_id_uq;
+    END IF;
+END
+$uq$;
 
 CREATE TABLE IF NOT EXISTS calendar_entries (
     organization_id  UUID NOT NULL
@@ -99,9 +122,10 @@ CREATE TABLE IF NOT EXISTS calendar_entries (
     crm_contact_id   UUID NULL,
     meeting_id       UUID NULL,
     source           TEXT NOT NULL DEFAULT 'metorite',
-    -- The account of a synced or written-out entry. NO ACTION on delete, on
-    -- purpose (see the header and the column comment).
-    connection_id    UUID NULL REFERENCES integration_connections (id),
+    -- The account of a synced or written-out entry. Its key is
+    -- calendar_entries_connection_fk below: NO ACTION on delete, on purpose
+    -- (see the header and the column comment).
+    connection_id    UUID NULL,
     external_id      TEXT NULL,
     etag             TEXT NULL,
     external_url     TEXT NULL,
@@ -112,6 +136,15 @@ CREATE TABLE IF NOT EXISTS calendar_entries (
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (id),
+    -- The target of the attendee key, so an attendee row names an entry of
+    -- its own org.
+    CONSTRAINT calendar_entries_org_id_uq UNIQUE (organization_id, id),
+    -- The connection of the SAME org. NO ACTION: a delete of a connection
+    -- that an entry names fails. MATCH SIMPLE, so a NULL connection_id
+    -- passes.
+    CONSTRAINT calendar_entries_connection_fk
+        FOREIGN KEY (organization_id, connection_id)
+        REFERENCES integration_connections (organization_id, id),
     CONSTRAINT calendar_entries_owner_email CHECK (
         owner_email <> '' AND owner_email = lower(owner_email)),
     CONSTRAINT calendar_entries_title CHECK (
@@ -167,11 +200,18 @@ CREATE INDEX IF NOT EXISTS calendar_entries_owner_date_idx
 CREATE INDEX IF NOT EXISTS calendar_entries_recurring_idx
     ON calendar_entries (organization_id, owner_email)
     WHERE recurrence IS NOT NULL;
--- The rows of one connection, for the sync and the disconnect of CE-10.
+-- The rows of one connection, for the sync and the disconnect of CE-10, and
+-- the check of calendar_entries_connection_fk when a connection row goes. It
+-- is partial, so it holds no row of an event with no connection, and a read
+-- of the whole org cannot pick it.
 CREATE INDEX IF NOT EXISTS calendar_entries_connection_idx
-    ON calendar_entries (organization_id, connection_id);
--- One row for each provider event of each connection, for EVERY source, so
--- a second sync adds nothing and a written-out event gets no twin.
+    ON calendar_entries (organization_id, connection_id)
+    WHERE connection_id IS NOT NULL;
+-- One row for each provider event of each connection, for EVERY source. So a
+-- sync that runs again adds no row, and a written-out SINGLE event gets no
+-- twin. A written-out SERIES is not covered: CE-10 must skip an instance
+-- whose recurringEventId is the external_id of a metorite row on the same
+-- connection (spec §8.1 item 5).
 CREATE UNIQUE INDEX IF NOT EXISTS calendar_entries_external_uq
     ON calendar_entries (organization_id, connection_id, external_id)
     WHERE connection_id IS NOT NULL AND external_id IS NOT NULL;
@@ -185,7 +225,8 @@ CREATE TABLE IF NOT EXISTS calendar_entry_attendees (
                      REFERENCES organization (id) ON DELETE CASCADE
                      DEFAULT current_setting('app.tenant_id', true)::uuid,
     id               UUID NOT NULL DEFAULT gen_random_uuid(),
-    entry_id         UUID NOT NULL REFERENCES calendar_entries (id) ON DELETE CASCADE,
+    -- Its key is calendar_entry_attendees_entry_fk below, with the org.
+    entry_id         UUID NOT NULL,
     -- Set when the person is a member of this organization, lower case.
     -- NULL for a guest. Only this column gives a member the entry (§4.1).
     member_email     TEXT NULL,
@@ -198,6 +239,10 @@ CREATE TABLE IF NOT EXISTS calendar_entry_attendees (
     lead_minutes     INTEGER NULL,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (id),
+    -- The entry of the SAME org. A delete of the entry deletes its rows.
+    CONSTRAINT calendar_entry_attendees_entry_fk
+        FOREIGN KEY (organization_id, entry_id)
+        REFERENCES calendar_entries (organization_id, id) ON DELETE CASCADE,
     CONSTRAINT calendar_entry_attendees_role CHECK (
         role IN ('organizer', 'attendee')),
     CONSTRAINT calendar_entry_attendees_rsvp CHECK (
@@ -275,9 +320,11 @@ COMMENT ON COLUMN calendar_entries.connection_id IS
 COMMENT ON COLUMN calendar_entries.external_id IS
     'Unique per connection and external id for EVERY source '
     '(calendar_entries_external_uq). A Metorite event written out keeps '
-    'source=metorite and gets its provider id here. The read sync updates '
-    'it, never copies it. Google singleEvents=true gives each series '
-    'instance its own id, so the key holds for instances.';
+    'source=metorite and gets its provider id here. The read sync finds '
+    'that row by the key and updates it. A written-out series is not '
+    'covered: with singleEvents=true the provider sends each instance with '
+    'its own id, so CE-10 skips an instance whose recurringEventId is the '
+    'external_id of a metorite row on the same connection.';
 COMMENT ON COLUMN calendar_entries.push_to_provider IS
     'The provider whose connection this event is written to (CE-11). NULL '
     'means the switch is off.';
