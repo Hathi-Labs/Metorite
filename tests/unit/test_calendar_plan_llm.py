@@ -1,18 +1,21 @@
-"""The day-plan AI call gives a thinking model room to answer (task 1123).
+"""The day-plan AI call is a fast, structured choice with no reasoning.
 
 On 2026-10-30 every "Rebuild my day" call on production failed. The member's
 chat model was tier-powerful (deepseek-v4-pro), which thinks before it answers.
 Its thinking counts against max_tokens. With a cap of 1200, the Router logged
-exactly 1200 completion tokens for each call, and the content came back empty.
-`json.loads("")` then raised, and the plan ignored the member's note.
+exactly 1200 completion tokens for each call, and the content came back empty
+(task 1123). Then the cap went to 8000 with thinking on. On 2026-11-01 one call
+used all 8000 tokens, another 6023, and the plan outran the 30 s limit of the
+BFF, so the member saw "Projects gateway unreachable".
 
-These tests fake `acompletion_with_fallback` and pin three things:
-- the call asks for `PLAN_MAX_TOKENS`, and that cap leaves room to think;
+These tests fake `acompletion_with_fallback` and pin four things:
+- the call runs on `PLAN_MODEL` (tier-fast) and asks for no reasoning;
+- its cap `PLAN_MAX_TOKENS` fits the JSON answer, not a long think;
 - an empty answer that ended on the cap gives a reason that names the cap;
 - a good JSON answer still gives the ordered plan.
 
-Mutation: set `max_tokens=1200` again, and `test_the_call_leaves_room_to_think`
-fails.
+Mutations: drop `thinking=` from the call, or set the cap back to 8000, and
+`test_the_call_asks_for_no_reasoning_on_the_fast_tier` fails.
 """
 from __future__ import annotations
 
@@ -52,15 +55,26 @@ def fake_llm(monkeypatch):
 
 
 def _rank(note: str | None = "calls after 8 am"):
-    return asyncio.run(cal._llm_rank_day(_CANDS, note, 360, "tier-powerful"))
+    return asyncio.run(cal._llm_rank_day(_CANDS, note, 360, cal.PLAN_MODEL))
 
 
-def test_the_call_leaves_room_to_think(fake_llm):
+def test_the_call_asks_for_no_reasoning_on_the_fast_tier(fake_llm):
     _rank()
     assert len(fake_llm.calls) == 1
-    assert fake_llm.calls[0]["max_tokens"] == cal.PLAN_MAX_TOKENS
-    # The JSON answer needs about 1000 tokens. The rest is room to think.
-    assert cal.PLAN_MAX_TOKENS >= 4000
+    call = fake_llm.calls[0]
+    assert call["model"] == cal.PLAN_MODEL == "tier-fast"
+    assert call["thinking"] == {"type": "disabled"}
+    assert call["max_tokens"] == cal.PLAN_MAX_TOKENS
+    # The JSON answer needs about 1000 tokens. No room for a long think.
+    assert 1500 <= cal.PLAN_MAX_TOKENS <= 3000
+
+
+def test_the_plan_route_uses_the_fast_tier_not_the_members_chat_model():
+    import inspect
+
+    src = inspect.getsource(cal)
+    assert 'task_models(db, uid))["chat"]' not in src
+    assert "req.capacity_mins, PLAN_MODEL, one_thing_id" in src
 
 
 def test_an_empty_answer_at_the_cap_names_the_cap(fake_llm):

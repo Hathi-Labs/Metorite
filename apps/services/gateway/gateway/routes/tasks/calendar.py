@@ -34,6 +34,7 @@ from acb_common.db import TenantUnbound
 from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
 from gateway.routes.tasks.core import (
+    NO_THINKING,
     # `_get_db` is used ONLY by the auto-rollover sweep's org enumeration at the
     # bottom of this file (H4 — the RLS-EXEMPT `organization` read; see the
     # comment there); every request handler AND per-user rollover uses
@@ -383,13 +384,17 @@ DEFAULT_PLANNING_PROMPT = (
     "constraints or mood I give for today."
 )
 
-# The answer cap of the day-plan call. The member's "chat" model can be a
-# model that thinks before it answers (tier-powerful is deepseek-v4-pro), and
-# its thinking counts against max_tokens. At 1200 every call on 2026-10-30
-# spent the whole cap on thinking and returned empty content (task 1123). The
-# JSON answer itself needs about 1000 tokens, so the rest is room to think.
-# Fence: tests/unit/test_calendar_plan_llm.py.
-PLAN_MAX_TOKENS = 8000
+# The day plan is a fast, structured choice: which candidates go today, in what
+# order, at what energy. The packer places them. So the call asks for no
+# reasoning, on the fast tier, with a cap that fits the JSON answer (about
+# 1000 tokens). History (task 1123): at a cap of 1200 on tier-powerful, the
+# thinking used the cap and the answer was empty. At 8000 with thinking on, one
+# call on 2026-11-01 still used all 8000 tokens and another 6023, and the plan
+# outran the 30 s limit of the BFF (`api/projects/[...path]/route.ts`), so the
+# member saw "Projects gateway unreachable". Fences:
+# tests/unit/test_calendar_plan_llm.py and tests/unit/test_tasks_ai_no_thinking.py.
+PLAN_MODEL = "tier-fast"
+PLAN_MAX_TOKENS = 2000
 
 
 def _empty_plan_reason(choice: Any, raw: str) -> str | None:
@@ -505,6 +510,7 @@ async def _llm_rank_day(
             messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("summary", json=True)},
                       {"role": "user", "content": user}],
             temperature=0.2, max_tokens=PLAN_MAX_TOKENS,
+            thinking=dict(NO_THINKING),
             response_format={"type": "json_object"},
         )
         choice = resp.choices[0]
@@ -872,10 +878,8 @@ async def _replan_core(
     ranked_by = "ai"
     rank_note: str | None = None
     if cands:
-        from gateway.routes.tasks.settings import task_models
-        model = (await task_models(db, uid))["chat"]
         ordered_res, notes, rank_note = await _llm_rank_day(
-            cands, req.energy_note, req.capacity_mins, model, one_thing_id,
+            cands, req.energy_note, req.capacity_mins, PLAN_MODEL, one_thing_id,
             prefs["planning_prompt"], tflines)
         if ordered_res is not None:
             ordered = ordered_res
