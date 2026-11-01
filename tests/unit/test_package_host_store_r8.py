@@ -40,8 +40,26 @@ e. The store installs only a Studio package of the bound org that is not
 f. ``sharing.OTHERS_SEE_THE_INSTALL`` holds its three tests in SQL.
 g. ``app_grants`` is tenant-scoped (§5.1, "Check app_grants first").
 
-**R7: mutations.** Each ran on 2026-11-01, and each made this suite red.
-The PKG-5b part 1 report lists them.
+**R7: red first, then mutate.** Commit before each mutation, and restore
+with git after. Each mutation ran on 2026-11-01 and gave the result below.
+
+* M1. ``store.py``: drop the ``_LOCK_SQL`` statement.
+  ``test_r8_two_installs_of_one_key_at_once_give_one_winner`` goes red
+  (install 2 does not wait), and so does the order test of the hermetic twin.
+* M2. ``sharing.py``: drop the ``granted_by`` test.
+  ``test_r8_only_a_share_by_the_owner_to_another_address_counts`` goes red,
+  and so do the text pin and the consent and other-owner cases of
+  ``test_admin_member_purge.py``.
+* M3. ``sharing.py``: drop the ``@`` test. The same R8 case goes red, and so
+  do the text pin and the two agent cases of ``test_admin_member_purge.py``.
+* M4. ``store.py``: take the kind from the raw ``scope_subject``. The
+  ``GROUP:x@y.test`` case of the 422 test and
+  ``test_r8_the_kind_comes_from_the_normalised_scope`` go red, and so do
+  three cases of the hermetic twin.
+* M5. ``store.py``: drop the group rule of a new private claim. The case
+  ``ops`` then ``ana`` of the overlap test goes red. Drop the private rule of
+  a new group claim instead, and the cases ``ana`` then ``ops`` and ``cat``
+  then ``eng`` go red.
 """
 
 from __future__ import annotations
@@ -265,23 +283,27 @@ def test_r8_a_duplicate_claim_names_the_point_the_key_and_the_holder(world) -> N
     assert _installs_of(world, "p2") == 0
 
 
+#: The scopes of the overlap cases by name, so each test id is the same in
+#: each process. The values carry the tag of the run.
+_SCOPES = {"org": "org", "ops": OPS, "eng": ENG, "ana": ANA, "ben": BEN, "cat": CAT}
+
 #: (the scope of the claim that exists, the scope of the new claim, conflict).
-#: Ana and Ben are in OPS, and Cat is in ENG (the world fixture).
+#: Ana and Ben are in ops, and Cat is in eng (the world fixture).
 _OVERLAP = [
     ("org", "org", True),
-    ("org", OPS, True),
-    ("org", ANA, True),
-    (OPS, "org", True),
-    (OPS, OPS, True),
-    (OPS, ENG, False),
-    (OPS, ANA, True),
-    (OPS, CAT, False),
-    (ANA, "org", True),
-    (ANA, ANA, True),
-    (ANA, BEN, False),
-    (ANA, OPS, True),
-    (ANA, ENG, False),
-    (CAT, ENG, True),
+    ("org", "ops", True),
+    ("org", "ana", True),
+    ("ops", "org", True),
+    ("ops", "ops", True),
+    ("ops", "eng", False),
+    ("ops", "ana", True),
+    ("ops", "cat", False),
+    ("ana", "org", True),
+    ("ana", "ana", True),
+    ("ana", "ben", False),
+    ("ana", "ops", True),
+    ("ana", "eng", False),
+    ("cat", "eng", True),
 ]
 
 
@@ -289,8 +311,9 @@ _OVERLAP = [
 def test_r8_the_overlap_of_two_scopes_follows_section_4(
     world, held: str, new: str, conflict: bool,
 ) -> None:
-    """§4 from both sides. A private claim of Ana and an OPS claim conflict
-    in either order of install, because Ana is in OPS."""
+    """§4 from both sides. A private claim of Ana and an ops claim conflict
+    in either order of install, because Ana is in ops."""
+    held, new = _SCOPES[held], _SCOPES[new]
     first = _run(world, **_args(world, "p1", contributions=[_claim("k")], **_scope(held)))
     assert isinstance(first, store.Install), first
     got = _run(world, **_args(world, "p2", contributions=[_claim("k")], **_scope(new)))

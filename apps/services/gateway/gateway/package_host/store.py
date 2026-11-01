@@ -59,7 +59,10 @@ with the point, the key and the holder.
 org takes ``pg_advisory_xact_lock`` on ``package_install:<org>``. Each read
 that decides the write runs after it, so two installs of one org run one at
 a time. Two claims of one key then give one winner and one
-:class:`ClaimTaken`. The lock ends with the caller's transaction.
+:class:`ClaimTaken`. The lock ends with the caller's transaction. A caller
+that also locks the row of the app in ``apps`` in the same transaction calls
+:func:`install` first, so the org lock always comes first (advisory: no fence
+holds this order yet).
 
 **Before the database.** Each check of the arguments runs before the first
 statement: the address, the scope, the version, the end date, and each
