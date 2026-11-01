@@ -56,7 +56,8 @@
 -- The member purge (gateway/routes/admin/members.py) deletes the member's
 -- goals of the bound org.
 -- The number is taken at build time (R1). On 2026-11-01 origin/main held 320,
--- and open branches claimed 321, 322 and 323. Check it again at merge.
+-- 322 (322_apps_format.sql) and 323 (323_studio_objects.sql, STU-C1). An open
+-- branch claimed 321 (PKG-4). Check it again at merge.
 -- Pinned by tests/unit/test_goal_record_r8.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================
@@ -111,9 +112,13 @@ CREATE TABLE IF NOT EXISTS goal_records (
     CONSTRAINT goal_records_version CHECK (version >= 1),
     CONSTRAINT goal_records_round_cap CHECK (round_cap BETWEEN 1 AND 10000),
     CONSTRAINT goal_records_round_count CHECK (round_count >= 0),
+    -- Postgres sorts NaN above every number, so `>= 0` alone takes a NaN.
+    -- Each NUMERIC CHECK refuses NaN by name.
     CONSTRAINT goal_records_cost_cap CHECK (
-        cost_cap_credits > 0 AND cost_cap_credits <= 1000000000),
-    CONSTRAINT goal_records_cost_used CHECK (cost_used_credits >= 0),
+        cost_cap_credits <> 'NaN'
+        AND cost_cap_credits > 0 AND cost_cap_credits <= 1000000000),
+    CONSTRAINT goal_records_cost_used CHECK (
+        cost_used_credits <> 'NaN' AND cost_used_credits >= 0),
     -- The cap stops the job: an active goal is under both caps.
     CONSTRAINT goal_records_active_under_caps CHECK (
         state <> 'active'

@@ -292,7 +292,7 @@ bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"   # R8 needs
 uv run python scripts/affected_tests.py --run
 uv run pytest tests/unit/test_web_fetch_guard.py tests/unit/test_web_readers.py tests/unit/test_web_search_providers.py -q
 uv run pytest tests/unit/test_goal_record_r8.py -q -rs                 # WEB-10. R8: it skips with no database
-uv run ruff check packages/acb_skills packages/acb_common apps/services/orchestrator
+uv run ruff check packages/acb_skills packages/acb_common apps/services/orchestrator --select F821,F601,F602,F502,F7,B006   # the blocking set of pr-check. The full set holds old findings
 bash scripts/ci_local.sh
 ```
 

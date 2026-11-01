@@ -21,9 +21,10 @@ is not a pass.
 
 a. The migration applies, and the table has ENABLE and FORCE RLS.
 b. Org B reads and writes none of org A's goals. A member reads only their
-   own goals.
+   own goals. The store filters on the bound org too, so RLS is not the
+   only guard.
 c. A stale update is refused, and the row does not change. Two racing
-   updates give one winner.
+   updates give one winner, and so do two racing rounds.
 d. The cap stops a job with ``cap_reached``, for rounds and for cost. An
    active goal is always under both caps, on the database too.
 e. The CHECKs refuse an unknown block code and each other bad row. The
@@ -44,6 +45,10 @@ g. The member purge deletes the member's goals of the bound org only.
 * M2. ``goal_store._UPDATE_SQL``: drop ``AND version = :v``.
   ``test_r8_two_racing_updates_give_one_winner`` and
   ``test_r8_many_racing_updates_give_one_winner`` go red.
+* M2b. ``goal_store._ROUND_SQL``: drop ``AND version = :v``.
+  ``test_r8_two_racing_rounds_give_one_winner`` goes red. The trigger does
+  not catch it, because ``version = version + 1`` still raises the version
+  by one.
 * M3. ``goal_store.cap_block``: use ``>`` in place of ``>=``.
   ``test_cap_block_is_the_one_cap_rule``,
   ``test_r8_the_round_cap_stops_the_job_with_cap_reached`` and
@@ -51,6 +56,9 @@ g. The member purge deletes the member's goals of the bound org only.
 * M4. The migration: drop the CHECK ``goal_records_active_under_caps``.
   The ``active_at_round_cap`` and ``active_at_cost_cap`` cases of
   ``test_r8_the_checks_refuse_a_bad_row`` go red.
+* M4b. The migration: drop ``cost_used_credits <> 'NaN'``. The
+  ``cost_used_nan`` case of ``test_r8_the_checks_refuse_a_bad_row`` goes
+  red.
 * M5. The migration: drop the trigger ``goal_records_guard``.
   ``test_r8_the_identity_of_a_goal_cannot_change`` and
   ``test_r8_an_update_must_raise_the_version_by_one`` go red.
@@ -61,6 +69,9 @@ g. The member purge deletes the member's goals of the bound org only.
   general refusal of an unknown field still refuses it, with another text.
   ``test_r8_the_store_refuses_an_objective_change_and_the_row_stays`` goes
   red.
+* M8. ``goal_store._LIST_SQL``: drop ``organization_id = {_BOUND_ORG} AND``.
+  ``test_r8_the_store_filters_on_the_bound_org_without_rls`` and
+  ``test_the_migration_holds_the_checks_the_rls_and_the_trigger`` go red.
 """
 
 from __future__ import annotations
@@ -213,6 +224,9 @@ def test_the_migration_holds_the_checks_the_rls_and_the_trigger() -> None:
             if "INSERT INTO" in stmt:
                 columns = stmt.split("INSERT INTO", 1)[1].split(")", 1)[0]
                 assert "organization_id" not in columns, name
+            else:
+                # Each read and each write filters on the bound org, not on RLS only.
+                assert f"WHERE organization_id = {store._BOUND_ORG}" in stmt, name
 
 
 def test_the_store_opens_no_session_and_holds_no_route() -> None:
@@ -493,6 +507,35 @@ def test_r8_a_member_reads_and_writes_only_their_own_goals(world) -> None:
     assert _row(world, out["goal"].id)["version"] == 1
 
 
+def test_r8_the_store_filters_on_the_bound_org_without_rls(world) -> None:
+    """Each statement of the store filters on ``_BOUND_ORG`` too, not on RLS
+    only. The superuser bypasses RLS, so here only the store's own filter
+    keeps org A's goal away from a session bound to org B."""
+    a, b = world.p.org_a, world.p.org_b
+    goal = _go(world, lambda: _create(a))
+
+    async def go() -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        async with tenant_engine_scope(_dsn(world.p.admin_engine.url)), tenant_session(b) as db:
+            # The positive control: RLS does not hide the row here.
+            out["raw"] = (await db.execute(text(
+                "SELECT count(*) FROM goal_records WHERE member_email = :m"),
+                {"m": ANA})).scalar_one()
+            out["get"] = await store.get_goal(db, ANA, goal.id)
+            out["list"] = await store.list_goals(db, ANA)
+            out["update"] = await store.update_goal(db, ANA, goal.id, 1, state="cancelled")
+            out["round"] = await store.record_round(db, ANA, goal.id, 1, 5)
+        return out
+
+    out = asyncio.run(go())
+    assert out["raw"] == 1
+    assert out["get"] is None and out["list"] == []
+    assert out["update"] is None and out["round"] is None
+    row = _row(world, goal.id)
+    assert (row["state"], row["version"], row["round_count"]) == ("active", 1, 0)
+    assert str(row["organization_id"]) == a
+
+
 # ── c. Compare-and-set ─────────────────────────────────────────────────────
 
 
@@ -590,6 +633,53 @@ def test_r8_many_racing_updates_give_one_winner(world) -> None:
     assert len(winners) == 1 and len(losers) == 4, got
     row = _row(world, goal_id)
     assert row["version"] == 2 and row["round_cap"] == winners[0].round_cap
+
+
+def test_r8_two_racing_rounds_give_one_winner(world, monkeypatch) -> None:
+    """Both writers pass the pre-read at version 1, then race. A barrier
+    holds each writer after its pre-read until the other writer read too, so
+    no sleep sets the order. Then the UPDATE of ``_ROUND_SQL`` is the only
+    guard. The first UPDATE holds the row lock. The second waits for the
+    commit, finds version 2, and changes nothing. So no round and no cost is
+    lost, and a job cannot run past its cost cap."""
+    a = world.p.org_a
+    real_read = store._read_for_write
+    costs = (2, 3)
+
+    async def go() -> dict[str, Any]:
+        goal = await _create(a, cost_cap_credits=10)
+        both_read = asyncio.Barrier(len(costs))
+        seen: list[int] = []
+
+        async def read_then_wait(*args: Any) -> store.Goal | None:
+            got = await real_read(*args)
+            assert got is not None
+            seen.append(got.version)
+            await asyncio.wait_for(both_read.wait(), timeout=30)
+            return got
+
+        monkeypatch.setattr(store, "_read_for_write", read_then_wait)
+
+        async def one(cost: int) -> Any:
+            async with tenant_session(a) as db:
+                return await store.record_round(db, ANA, goal.id, 1, cost)
+
+        got = await asyncio.gather(*(one(c) for c in costs), return_exceptions=True)
+        return {"goal": goal, "got": list(got), "seen": seen}
+
+    out = _go(world, go)
+    got = out["got"]
+    assert out["seen"] == [1, 1], got
+    winners = [(c, g) for c, g in zip(costs, got, strict=True) if isinstance(g, store.Goal)]
+    losers = [g for g in got if isinstance(g, store.StaleGoal)]
+    assert len(winners) == 1 and len(losers) == 1, got
+    [(cost, won)] = winners
+    # The loser passed the pre-read, so the UPDATE refused it, not the read.
+    assert losers[0].current_version is None
+    assert (won.version, won.round_count, won.cost_used_credits) == (2, 1, Decimal(cost))
+    row = _row(world, out["goal"].id)
+    assert (row["version"], row["round_count"], row["state"]) == (2, 1, "active")
+    assert row["cost_used_credits"] == Decimal(cost)
 
 
 # ── d. The caps ────────────────────────────────────────────────────────────
@@ -759,13 +849,20 @@ def test_r8_a_final_goal_never_changes(world, final: str) -> None:
      "goal_records_cost_cap"),
     ({"ccap": Decimal("1000000000.0001")}, "goal_records_cost_cap"),
     ({"used": Decimal("-1")}, "goal_records_cost_used"),
+    # Postgres sorts NaN above every number. The goal is blocked, so the CHECK
+    # of the caps does not refuse the row first.
+    ({"state": "blocked", "block": "needs_member", "used": Decimal("NaN")},
+     "goal_records_cost_used"),
+    ({"state": "blocked", "block": "needs_member", "ccap": Decimal("NaN")},
+     "goal_records_cost_cap"),
     ({"rc": 40, "cap": 40}, "goal_records_active_under_caps"),
     ({"used": Decimal("10"), "ccap": Decimal("10")}, "goal_records_active_under_caps"),
 ], ids=["unknown_block_code", "blocked_with_no_code", "active_with_a_code",
         "done_with_no_finish", "active_with_a_finish", "unknown_state", "kind_final_newline",
         "kind_upper", "member_upper", "member_empty", "objective_blank", "objective_long",
         "version_0", "round_cap_0", "round_cap_over", "round_count_negative", "cost_cap_0",
-        "cost_cap_over", "cost_used_negative", "active_at_round_cap", "active_at_cost_cap"])
+        "cost_cap_over", "cost_used_negative", "cost_used_nan", "cost_cap_nan",
+        "active_at_round_cap", "active_at_cost_cap"])
 def test_r8_the_checks_refuse_a_bad_row(world, params, constraint) -> None:
     err = _refused(world, world.p.org_a, _RAW_GOAL, _goal_params(**params))
     assert constraint in err
