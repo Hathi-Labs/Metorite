@@ -1639,6 +1639,22 @@ async def test_a_cycle_that_reads_mail_clears_the_count(
     assert sched._rate_limit_misses == {}
 
 
+async def test_a_limit_after_the_import_wrote_mail_clears_the_count(
+        fake: _Gmail, cycle: SimpleNamespace) -> None:
+    """Acceptance 7. The import wrote mail, and the sweep of the same cycle
+    raised. The mailbox moved, so the cycle is no miss."""
+    sched._rate_limit_misses[sched._lock_key("acc-1")] = 9
+    fake.listing = _import_pages(["m1"])
+    _serve(fake, "m1")
+    fake.history = [REFUSED]
+
+    res = await cycle.run(_row(**FIRST_IMPORT), from_loop=True)
+
+    assert res == {"synced": 1, "resume_soon": True}
+    assert sched._rate_limit_misses == {}
+    assert _shows_no_error(cycle)
+
+
 def _loop_sleeps(monkeypatch: pytest.MonkeyPatch,
                  results: list[dict[str, Any]]) -> Callable[[], Any]:
     """Run the loop over *results*, and return the sleep after each one."""

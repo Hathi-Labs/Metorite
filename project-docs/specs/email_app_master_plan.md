@@ -13726,11 +13726,40 @@ window of one minute.
    the count.
 8. The loop sleeps `SYNC_RESUME_SECS` after an early stop, and the doubling stays for a failure.
 
-**The mutations.** Each mutation broke the code, a fence went red, and the code came back:
+**The mutations.** Each mutation broke one line, a fence went red, and the line came back. All 28
+went red at the commit of this section. `test_gmail_rate_limits.py` is R, and
+`test_gmail_history_cursor.py` is H.
 
 | Mutation | Fence that failed |
 |---|---|
-| See the pull request | The pull request lists each mutation with its result |
+| M1 A full read costs 20 | R `test_each_call_costs_the_units_of_google` |
+| M2 A read with no format costs 20 | R `test_each_call_costs_the_units_of_google` |
+| M3 The pace passes the limit | R `test_the_pace_leaves_room_under_the_limit_of_google` |
+| M4 The bearer does not wait | R `test_a_cycle_never_passes_the_pace_in_any_minute` |
+| M5 The meter does not space the calls | R `test_a_cycle_never_passes_the_pace_in_any_minute` |
+| M6 A member waits on the meter | R `test_a_429_waits_for_retry_after_and_succeeds` |
+| M7 One meter for all mailboxes | R `test_two_mailboxes_have_two_meters` |
+| M8 A retry books no slot | R `test_a_paced_try_books_a_slot_of_its_own` |
+| M9 The sweep has no share | H `test_a_first_sweep_gives_the_lock_back_after_its_share` |
+| M10 A sweep with no seed stops | H `test_a_first_sweep_with_no_seed_reads_past_its_share` |
+| M11 A cut after a label loses the labels | H `test_a_rate_limit_in_the_first_sweep_keeps_the_finished_labels` |
+| M12 The sweep cursor stays unread | R `test_a_rate_limit_past_the_tries_fails_the_sync` |
+| M13 INBOX is not first | R `test_a_rate_limit_past_the_tries_fails_the_sync` |
+| M14 The cycle names no mailbox | H `test_a_cycle_paces_its_calls_and_a_bare_provider_does_not` |
+| M15 The import has no share | H `test_an_import_stops_after_its_share_of_a_cycle` |
+| M16 A paused import ends | H `test_an_import_stops_after_its_share_of_a_cycle` |
+| M17 A deep sync stops at the share | H `test_a_deep_sync_reads_past_the_share_and_keeps_its_error` |
+| M18 A deep sync hides its rate limit | H `test_a_deep_sync_reads_past_the_share_and_keeps_its_error` |
+| M19 A refusal never shows | H `test_a_refusal_that_reads_nothing_shows_the_error_at_the_last_miss` |
+| M20 A soft import keeps its error | H `test_a_rate_limit_in_a_first_import_shows_no_error_while_it_reads` |
+| M21 A clean cycle keeps the count | H `test_a_cycle_that_reads_mail_clears_the_count` |
+| M22 A pause does not come soon | H `test_an_import_stops_after_its_share_of_a_cycle` |
+| M23 The loop ignores `resume_soon` | H `test_the_loop_comes_back_soon_after_an_early_stop` |
+| M24 An early stop counts as a failure | H `test_the_loop_comes_back_soon_after_an_early_stop` |
+| M25 An open import moves the watermark | H `test_a_rate_limit_in_a_first_import_shows_no_error_while_it_reads` |
+| M26 A raised limit shows the error | H `test_a_rate_limit_on_the_first_page_stops_the_cycle` |
+| M27 A raised limit forgets the import | H `test_a_limit_after_the_import_wrote_mail_clears_the_count` |
+| M28 A cycle that reads mail counts a miss | H `test_a_cycle_that_reads_mail_clears_the_count` |
 
 **Known limits.**
 
