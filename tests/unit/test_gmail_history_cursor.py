@@ -1906,7 +1906,7 @@ class TestTheCursorOnARealDatabase:
             release_tenant(cleared)
             _drop(p.admin_engine, account)
 
-    async def test_a_partial_cycle_writes_the_page_cursor_and_backs_off(
+    async def test_a_partial_cycle_writes_the_page_cursor_and_comes_back_soon(
         self, promoted, app_engine, fake, real_cycle, monkeypatch,  # noqa: F811
     ):
         """Acceptance 7, M4 (D-G4b-f1-2), through the real loop and the real
@@ -1916,7 +1916,8 @@ class TestTheCursorOnARealDatabase:
            each try. ``last_history_id`` holds the ``id`` of the last record
            of page 2. The mail of pages 1 and 2 lands, and the mail of page
            3 does not. ``last_synced_at`` stays, ``sync_status`` is
-           ``idle``, and the loop backs off.
+           ``idle``, and the loop comes back soon with no back-off
+           (EM-G4b-f3).
         2. The next loop cycle sends that position as ``startHistoryId``.
            The mail of page 3 lands, the cursor is the last answer, and the
            loop does not back off."""
@@ -1973,7 +1974,7 @@ class TestTheCursorOnARealDatabase:
                     "SELECT last_synced_at FROM email_accounts "
                     "WHERE id = CAST(:a AS uuid)"),
                     {"a": account}).scalar_one() == watermark
-            assert backoffs == [(True, 600)], backoffs
+            assert backoffs == [(False, 0)], backoffs
 
             # 2. The next cycle reads from the page-2 position.
             fake.history = [_ok({"historyId": "300", "history": [
