@@ -52,8 +52,11 @@ import { useToast } from "@/components/ui/Toast";
 import { accentForHue } from "@/lib/statusAccent";
 import { onClear, read } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
+import type { ActivityRow } from "@/lib/runActivity";
 
 import {
+  FEED_APP_NAMES,
+  type FeedApp,
   FEED_SHOWN,
   GROUP_LABELS,
   PENDING,
@@ -103,6 +106,7 @@ import {
   runMenuAct,
   stateItem,
 } from "./feedState";
+import { AiWaitingGroup } from "./AiWaitingCard";
 import { CardError, HomeCard, rowMover } from "./HomeCard";
 import { emptyNeedsLine } from "./myDay";
 import { carryNeeds, needsKey, runAct } from "./needs";
@@ -558,11 +562,14 @@ function useSeenObserver(feed: Pick<Feed, "answer" | "seen">, active: boolean) {
 export function FeedColumn({
   feed,
   now,
+  ai = [],
   className = "",
 }: {
   feed: Feed;
   /** The page's clock, by the minute. A render reads no clock itself. */
   now: Date | null;
+  /** The assistant runs that wait on the member (`useAiWaiting`), the first group. */
+  ai?: readonly ActivityRow[];
   className?: string;
 }) {
   const [shown, setShown] = useState(FEED_SHOWN);
@@ -583,6 +590,40 @@ export function FeedColumn({
   const { groups: allGroups, hidden } = view;
   const groups = allGroups.filter((g) => g.id !== "later");
   const later = allGroups.find((g) => g.id === "later");
+  // One kind at a time (owner, 2026-11-01: "not too cognitively loading").
+  // A chip per kind with its count. "All" is the default. A kind that empties
+  // falls back to All.
+  const [only, setOnly] = useState<string | null>(null);
+  const appCounts = new Map<string, number>();
+  for (const g of groups) for (const c of g.cards) appCounts.set(c.app, (appCounts.get(c.app) ?? 0) + 1);
+  const kinds = [...appCounts.entries()].sort((a, b) => b[1] - a[1]);
+  const active = only === "ai" ? (ai.length > 0 ? "ai" : null) : only !== null && appCounts.has(only) ? only : null;
+  const filtered = active !== null;
+  const shownGroups =
+    active === null
+      ? groups
+      : active === "ai"
+        ? []
+        : groups.map((g) => ({ ...g, cards: g.cards.filter((c) => c.app === active) })).filter((g) => g.cards.length > 0);
+  const chips =
+    kinds.length + (ai.length > 0 ? 1 : 0) > 1 ? (
+      <div role="toolbar" aria-label="Show one kind" data-feed-filter="" className="flex flex-wrap items-center gap-1.5">
+        <FilterChip active={active === null} label="All" onClick={() => setOnly(null)} />
+        {ai.length > 0 ? (
+          <FilterChip active={active === "ai"} icon="Sparkles" label="AI waiting" count={ai.length} onClick={() => setOnly("ai")} />
+        ) : null}
+        {kinds.map(([app, n]) => (
+          <FilterChip
+            key={app}
+            active={active === app}
+            icon={feedAppIcon(app)}
+            label={FEED_APP_NAMES[app as FeedApp] ?? app}
+            count={n}
+            onClick={() => setOnly(app)}
+          />
+        ))}
+      </div>
+    ) : null;
   const sentinel = useRevealOnScroll(reveal, hidden > 0);
   const nowMs = now?.getTime() ?? null;
   const failed = feed.answer ? feedFailedLines(feed.answer.sources, feed.answer.source_apps) : [];
@@ -599,6 +640,7 @@ export function FeedColumn({
         error={feed.menuErrors[card.signal_id] ?? card.acts.flatMap(actRows).map((r) => feed.errors[r]).find(Boolean)}
         onAct={(a, from) => feed.act(card, a, from)}
         onMenu={(choice) => feed.menu(card, choice)}
+        layout="row"
       />
     </div>
   );
@@ -619,6 +661,7 @@ export function FeedColumn({
   } else {
     body = (
       <div className="flex flex-col gap-5">
+        {ai.length > 0 && (active === null || active === "ai") ? <AiWaitingGroup rows={ai} /> : null}
         {fresh > 0 ? (
           // §7 rule 4: a new card never moves the cards under the pointer.
           // It waits here, and enters on a click or on the next visit.
@@ -636,12 +679,17 @@ export function FeedColumn({
             <span className="text-sm text-muted-foreground">{emptyNeedsLine(failed.length > 0)}</span>
           </div>
         ) : null}
-        {groups.map((group) => (
+        {shownGroups.map((group) => (
           <div key={group.id} role="group" aria-labelledby={`feed-group-${group.id}`} data-feed-group={group.id}>
-            <div id={`feed-group-${group.id}`} className="px-1 pb-2 text-xs font-medium text-muted-foreground">
-              {group.label}
+            <div className="flex items-center gap-1.5 px-1 pb-2 text-xs font-medium text-muted-foreground">
+              <span id={`feed-group-${group.id}`}>{group.label}</span>
+              <span className="tabular-nums opacity-70" data-feed-group-count="">
+                {group.cards.length}
+              </span>
             </div>
-            <div className="flex flex-col gap-3">{group.cards.map(drawCard)}</div>
+            {/* One surface per group, a row per card (owner, 2026-11-01:
+                optimise My Day). The rows part with a hairline. */}
+            <div className="flex flex-col divide-y divide-border/60 overflow-hidden rounded-xl border border-border bg-card glass:rounded-[16px] glass:border-transparent glass:glass-raised">{group.cards.map(drawCard)}</div>
             {cappedLinks(group, capped, feed.answer?.source_apps).map((link) => (
               <div key={link.app} className="flex justify-center pt-1">
                 <Button
@@ -658,14 +706,14 @@ export function FeedColumn({
             ))}
           </div>
         ))}
-        {hidden > 0 ? (
+        {!filtered && hidden > 0 ? (
           <div ref={sentinel} className="flex justify-center">
             <Button variant="ghost" size="sm" icon="ChevronDown" onClick={reveal}>
               Show {Math.min(hidden, FEED_SHOWN)} more
             </Button>
           </div>
         ) : null}
-        {later ? (
+        {!filtered && later ? (
           // Later draws folded, with its count (MD-2b).
           <div role="group" aria-labelledby="feed-group-later" data-feed-group="later">
             {/* The same size and weight as the other group labels. */}
@@ -684,13 +732,13 @@ export function FeedColumn({
               </span>
             </Button>
             {laterOpen ? (
-              <div id="feed-later-cards" className="flex flex-col gap-3 pt-2">
+              <div id="feed-later-cards" className="mt-2 flex flex-col divide-y divide-border/60 overflow-hidden rounded-xl border border-border bg-card glass:rounded-[16px] glass:border-transparent glass:glass-raised">
                 {later.cards.map(drawCard)}
               </div>
             ) : null}
           </div>
         ) : null}
-        {handled.length > 0 ? (
+        {!filtered && handled.length > 0 ? (
           // Handled draws folded, after Later, with its count (MD-2c). It is
           // a list of what closed, never cards: it holds no act and no menu.
           <div role="group" aria-labelledby="feed-group-handled" data-feed-group="handled">
@@ -717,7 +765,7 @@ export function FeedColumn({
             ) : null}
           </div>
         ) : null}
-        {hidden === 0 && groups.length > 0 ? (
+        {!filtered && hidden === 0 && groups.length > 0 ? (
           <p className="px-1 text-center text-xs text-muted-foreground">You are caught up.</p>
         ) : null}
       </div>
@@ -732,6 +780,7 @@ export function FeedColumn({
       <h2 tabIndex={-1} data-leave-focus="" className="sr-only">
         Your day
       </h2>
+      {chips}
       {body}
       {failed.length > 0 || stale ? (
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1">
@@ -789,6 +838,36 @@ export function HandledRow({ entry, nowMs }: { entry: HandledEntry; nowMs: numbe
   );
 }
 
+/** One chip of the column's filter: a kind, its icon and its count. */
+function FilterChip({
+  active,
+  icon,
+  label,
+  count,
+  onClick,
+}: {
+  active: boolean;
+  icon?: string;
+  label: string;
+  count?: number;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      variant={active ? "secondary" : "ghost"}
+      size="sm"
+      icon={icon}
+      aria-pressed={active}
+      data-feed-chip=""
+      onClick={onClick}
+      className={active ? "" : "text-muted-foreground"}
+    >
+      {label}
+      {count !== undefined ? <span className="tabular-nums opacity-70">{count}</span> : null}
+    </Button>
+  );
+}
+
 /** An id that is safe in `id` and `aria-labelledby`: no spaces, no odd marks. */
 const safeId = (raw: string) => raw.replace(/[^A-Za-z0-9_:-]/g, "-");
 
@@ -824,6 +903,7 @@ export function FeedCard({
   error,
   onAct,
   onMenu,
+  layout = "card",
 }: {
   card: Card;
   /** `null` before the client clock exists: the card then prints no time. */
@@ -834,6 +914,12 @@ export function FeedCard({
   onAct: (act: FeedAct, from: HTMLElement) => void;
   /** A menu act. With none, the card draws no menu. */
   onMenu?: (choice: MenuChoice) => void;
+  /**
+   * `card` is the framed card. `row` is a dense row inside its group's one
+   * surface (owner, 2026-11-01): the app's icon, the headline as the door,
+   * one meta line (source and why), and the acts at the row's end.
+   */
+  layout?: "card" | "row";
 }) {
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const opener = useRef<HTMLElement | null>(null);
@@ -890,6 +976,111 @@ export function FeedCard({
       ) : null}
     </span>
   );
+  if (layout === "row") {
+    const testId = `feed-card-${safeId(card.signal_id)}`;
+    const headingId = `home-card-${testId}`;
+    // An overdue row says its date in the why line, and its group is red.
+    const showTime = time && card.kind !== "overdue";
+    return (
+      <section
+        aria-labelledby={headingId}
+        data-testid={testId}
+        data-home-card=""
+        data-feed-row=""
+        className="flex min-w-0 items-center gap-3 px-3 py-2.5"
+      >
+        <span aria-hidden className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground">
+          <Icon name={feedAppIcon(card.app)} size={15} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 id={headingId} tabIndex={-1} className="flex min-w-0 items-center gap-1.5 text-sm font-medium text-foreground outline-none">
+            {card.href ? (
+              <Button href={card.href} variant="text" size="none" className="min-w-0 truncate text-foreground underline-offset-2 hover:underline">
+                {card.title}
+              </Button>
+            ) : (
+              <span className="truncate">{card.title}</span>
+            )}
+            {card.state === "new" ? (
+              <span role="img" aria-label="New" data-feed-new="" className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+            ) : null}
+          </h2>
+          <p className="truncate text-xs text-muted-foreground" data-feed-source="">
+            {sourceLine(card)}
+            {mark ? (
+              <>
+                {" · "}
+                <span className="font-medium text-foreground" data-feed-mark="">
+                  {mark}
+                </span>
+              </>
+            ) : null}
+            {card.why ? <span data-feed-why="">{` · ${card.why}`}</span> : null}
+          </p>
+          {error ? (
+            <p role="alert" className={`text-xs ${DANGER.text}`}>
+              {error}
+            </p>
+          ) : null}
+        </div>
+        {showTime ? <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{time}</span> : null}
+        {acts.length > 0 ? (
+          // Quiet in a row (owner, 2026-11-01): a neutral first act and
+          // text for the rest, so a list of rows is not a wall of buttons.
+          <div className="flex shrink-0 items-center gap-1">
+            {acts.map((a, i) =>
+              a.way === "tap" ? (
+                <Button
+                  key={a.id}
+                  variant={i === 0 ? "secondary" : "ghost"}
+                  size="sm"
+                  icon={a.act === "done" ? "Check" : "CheckCheck"}
+                  data-feed-act={i}
+                  data-row-act=""
+                  data-leaves-card={actLeavesCard(card, a) ? "" : undefined}
+                  aria-label={`${a.label}: ${card.title}`}
+                  onClick={(e) => onAct(a, e.currentTarget)}
+                >
+                  {a.label}
+                </Button>
+              ) : (
+                <Button
+                  key={a.id}
+                  href={a.href ?? card.href}
+                  variant={i === 0 ? "secondary" : "ghost"}
+                  size="sm"
+                  data-feed-act={i}
+                  data-feed-open=""
+                >
+                  {a.label}
+                </Button>
+              ),
+            )}
+          </div>
+        ) : null}
+        {withMenu ? (
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            icon="MoreHorizontal"
+            aria-label={`More for ${card.title}`}
+            aria-haspopup="menu"
+            aria-expanded={menuAt !== null}
+            data-feed-menu=""
+            className="shrink-0"
+            onClick={(e) => {
+              opener.current = e.currentTarget;
+              const r = e.currentTarget.getBoundingClientRect();
+              setMenuAt({ x: Math.max(4, r.right - 200), y: r.bottom + 4 });
+            }}
+          />
+        ) : null}
+        {withMenu && menuAt ? (
+          <ContextMenu x={menuAt.x} y={menuAt.y} autoFocus items={cardMenuItems(onMenu)} onClose={closeMenu} />
+        ) : null}
+      </section>
+    );
+  }
   return (
     <HomeCard
       title={card.title}

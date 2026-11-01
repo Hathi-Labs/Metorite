@@ -36,7 +36,7 @@
  */
 import Link from "next/link";
 import { useSession } from "next-auth/react";
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 import TodayCard, { useTodayItems } from "@/app/calendar/components/TodayCard";
 import { UndoToast } from "@/app/tasks/components/UndoToast";
@@ -62,7 +62,8 @@ import { cardOrderFor, cardsFor, dateLine, failedLines, seesApprovals, summaryLi
 import { myDayFeedOn, myDayFeedOnServer } from "./myDayFlag";
 import { BUILT_CARDS } from "./presets";
 import { homePane } from "./shellNav";
-import AiWaitingCard from "./AiWaitingCard";
+import AiWaitingCard, { useAiWaiting } from "./AiWaitingCard";
+import { publishMyDayCount } from "./myDayCount";
 import { useShellPrefs } from "./shellPrefs";
 
 // The feed flag goes through `useSyncExternalStore`, as `/` reads its own:
@@ -106,6 +107,9 @@ export default function MyDay() {
 
   const cards = cardsFor(accessLoading ? [] : access.features, access.is_admin);
   const needs = useNeedsYou(!accessLoading && cards.needs, seesApprovals(access.features, access.is_admin));
+  // The AI runs that wait on the member: a group of the page, and part of
+  // its one count, as the sidebar's My Day row counts them.
+  const aiWaiting = useAiWaiting();
   const today = useTodayItems(!accessLoading && cards.today, now);
   const feedOn = useSyncExternalStore(noSubscribe, myDayFeedOn, myDayFeedOnServer);
   const briefOn = useSyncExternalStore(noSubscribe, briefCardOn, briefCardOnServer);
@@ -154,14 +158,24 @@ export default function MyDay() {
         ? null
         : fromFeed && feedAnswer
           ? summaryLine(
-              feedNeedsCount(feedAnswer, feed.marked, feed.hidden),
+              feedNeedsCount(feedAnswer, feed.marked, feed.hidden) + aiWaiting.length,
               todayCount,
               feedFailedLines(feedAnswer.sources, feedAnswer.source_apps).length > 0,
               // A stale answer under a failed refresh keeps its count, and
               // loses its claim: the claim may be yesterday's (fix round 1).
               handledClaim(feedAnswer) && !feed.error,
             )
-          : summaryLine(needs.count ?? 0, todayCount, failedLines(needs.sources).length > 0);
+          : summaryLine((needs.count ?? 0) + aiWaiting.length, todayCount, failedLines(needs.sources).length > 0);
+  // The sidebar's My Day row says the same number as the sentence.
+  const pageCount =
+    fromFeed && feedAnswer
+      ? feedNeedsCount(feedAnswer, feed.marked, feed.hidden) + aiWaiting.length
+      : needs.count !== undefined
+        ? needs.count + aiWaiting.length
+        : null;
+  useEffect(() => {
+    if (pageCount !== null) publishMyDayCount(pageCount);
+  }, [pageCount]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -202,8 +216,9 @@ export default function MyDay() {
       ) : null}
 
       {/* The AI runs that wait on the member (owner, 2026-11-01: Needs you
-          folds into My Day). It draws nothing when no run waits. */}
-      {!accessLoading ? <AiWaitingCard className="mt-6" /> : null}
+          folds into My Day). The feed holds it in its column. The cards
+          layout draws it here. It draws nothing when no run waits. */}
+      {!accessLoading && !feedOn ? <AiWaitingCard className="mt-6" /> : null}
 
       {accessLoading || briefPending || (!feedOn && layoutPending) ? (
         <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-3" aria-hidden>
@@ -232,7 +247,7 @@ export default function MyDay() {
             <TodayCard today={today} now={now} className="xl:sticky xl:top-4 xl:col-start-3 xl:row-start-1" />
           ) : null}
           {cards.needs ? (
-            <FeedColumn feed={feed} now={now} className="xl:col-span-2 xl:col-start-1 xl:row-start-1" />
+            <FeedColumn feed={feed} now={now} ai={aiWaiting} className="xl:col-span-2 xl:col-start-1 xl:row-start-1" />
           ) : null}
         </div>
       ) : (

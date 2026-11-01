@@ -39,6 +39,7 @@ import { EMPTY_SHELL, toggleStar } from "@/lib/shell/presets";
 import { foldHeading, isFolded, readFolds, writeFolds, type Folds } from "@/lib/shell/sidebarFolds";
 import { addAppsName, needsLabel, needsSuffix, rowMeta, rowName } from "@/lib/shell/navNeeds";
 import { useNavNeeds } from "@/lib/shell/useNavNeeds";
+import { useMyDayCount } from "@/lib/shell/myDayCount";
 import { chatScope } from "@/lib/sessions";
 import { ContextMenu } from "@/components/ContextMenu";
 import { useToast } from "@/components/ui/Toast";
@@ -499,8 +500,7 @@ export default function Sidebar() {
               <MyDayRow
                 pane={home}
                 active={isActive(pathname, home.href)}
-                counts={appNeeds}
-                floors={navNeeds.floors}
+                count={navNeeds.total}
                 waiting={runsWaiting}
                 collapsed={collapsed}
                 onNavigate={armFold}
@@ -1352,25 +1352,27 @@ export function NeedsCount({ text }: { text: string }) {
 function MyDayRow({
   pane,
   active,
-  counts,
-  floors,
+  count,
   waiting = 0,
   collapsed,
   onNavigate,
 }: {
   pane: NavPane;
   active: boolean;
-  counts: Record<string, number>;
-  floors: ReadonlySet<string>;
+  /** My Day's own number, the one its sentence says (`useNavNeeds`). */
+  count: number;
   /** AI runs that wait on the member's answer or confirmation (HITL). */
   waiting?: number;
   collapsed: boolean;
   onNavigate: (e: MouseEvent) => void;
 }) {
-  const total = Object.values(counts).reduce((sum, n) => sum + n, 0) + waiting;
-  const floor = [...floors].some((href) => (counts[href] ?? 0) > 0);
-  const text = floor ? `${total}+` : String(total);
-  const rowLabel = total > 0 ? `${pane.label}, ${floor ? `${total} or more` : total} need you` : pane.label;
+  // One number with the page: its sentence counts the feed and the AI runs
+  // that wait (owner, 2026-11-01). Before My Day drew in this tab, the needs
+  // view's count stands in.
+  const said = useMyDayCount();
+  const total = said ?? count + waiting;
+  const text = total > 99 ? "99+" : String(total);
+  const rowLabel = total > 0 ? `${pane.label}, ${total} need you` : pane.label;
   return (
     <Link
       href={pane.href}

@@ -2311,12 +2311,6 @@ html[data-look="glass"] .sidebar-rail[data-collapsed="true"] [data-rail-row] > [
   top: 0.125rem;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--background-grouped) 30%, var(--card));
 }
-/* The Ask bar floats at the foot of the page column (owner, 2026-11-01).
-   While it shows, the page card keeps a strip clear for it, so it never
-   covers a page's own last row or its composer (WhatsApp, Email). */
-html[data-look="glass"] main:has(~ [data-ask-bar]) {
-  padding-bottom: 4.25rem;
-}
 /* The head's brand clips to its mark while the rail is folded, and opens to
    the name as the rail widens, at the rail's own pace. It keeps one width,
    and a clip moves, not the layout (motion.test.ts G3). */
