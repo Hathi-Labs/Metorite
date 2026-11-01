@@ -838,6 +838,13 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
                 "scope_kind = 'private' AND lower(scope_subject) = :email"
                 f" AND organization_id = {_BOUND_ORG}"
                 f" AND NOT {_OTHERS_SEE_THE_APP}"),
+    # WS-WEB WEB-10: the member's goal records of THIS organization. A goal
+    # is private to its member, and only the member reads it, so a purged
+    # member leaves none behind. The clause names the bound org beside RLS,
+    # as `studio_skills` does, so the same address in another org keeps its
+    # goals. No table hangs off `goal_records`.
+    _PersonRows("goal_records", "goal_records",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # WS-63 PZ-9 (personalization.md §7 point 6): the member's settings row
     # of THIS organization, and with it the assistant profile. The row is the
     # member's own preferences, so the whole row goes. A member has one row

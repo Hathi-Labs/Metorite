@@ -65,13 +65,13 @@ Mira acts for each person without being asked, within limits that the person see
 | Reach requests table | `infra/postgres/271_reach_requests.sql` | `source` is `TEXT NOT NULL` with **no CHECK**. The allow-list is only the Python set |
 | Today's approvals | `gateway/chat_supersede.py`, `routes/email/automation/held_card.py`, `infra/postgres/66_pending_actions.sql` | `request_confirmation` asks the acting member in a chat. `pending_actions` has no approver column. Neither knows a run with no person |
 | Nudges and watches in chat | `apps/skills/skill-projects/skill_projects/manifest.py` (lines 304, 313, 487) | `nudge_task`, `set_reminder` and `watch`. `watch` follows one task or project. Nothing holds "keep watching X for me" |
-| The goal record | WEB-10 (`web_research.md` §6) | **Not built.** No `goal_records` table and no `cap_reached` exist in any code file |
+| The goal record | WEB-10 (`web_research.md` §6.1) | **Built dark.** Migration 325 and `acb_common/goal_store.py` hold `goal_records` and `cap_reached`. No code calls them yet |
 | The credit ledger | `apps/services/customer_console/customer_console/credits.py` | `usage_event` rows live here, in the console service |
 | The trust ladder | `work_plan.md` §3, D131 | Decided 2026-10-27 |
 
 **⚠️ Two changes since the task text.**
 
-1. **AUTO-8 cannot use `goal_records` or `cap_reached` yet.** WEB-10 is not built. AUTO-8 either waits for WEB-10, or it builds the cap on its own counters and adopts the goal record later. §9 picks the second path, so AUTO-8 does not wait.
+1. **AUTO-8 uses the goal record.** WEB-10 merged on 2026-11-01. `goal_store.record_round` holds the rounds and the cost, and it returns `cap_reached`. AUTO-8 calls it and keeps no counters of its own.
 2. **AUTO-6 has no CHECK to widen.** The task says to add `automation` to the allowed `tell_me` sources "with its CHECK". `reach_requests.source` has no CHECK. The change is one word in the Python set `SOURCES`, plus a plan-text word in `reach/plan.py` line 299.
 
 ---
@@ -248,7 +248,7 @@ The source is the research comment of 2026-11-02 on epic 807. The owner asked: c
 | **AUTO-9** (1393) | The chase. Needs AUTO-5 and PZ-36 (task 1134) | A quiet task gets a nudge after the set time. An answer stops the chase. Three unanswered nudges tell the member once. A nudge never reaches someone who cannot open the task | STD | AGENT-SAFE. D145 preview |
 | **AUTO-10** (1394) | What Mira already told me: one read tool over the Reach ledger and the run ledger. Needs AUTO-6 | A watch reports a change and not the same fact twice. "What are you watching?" lists the member's watches with their last result, and only the member's own runs | STD | AGENT-SAFE |
 
-**The cap of AUTO-8 does not wait for WEB-10.** AUTO-8 keeps its round, time and credit counters in its own run row. When WEB-10 lands, the goal record may hold them, and AUTO-8 adopts it. This keeps AUTO-8 off the critical path of WEB.
+**The cap of AUTO-8 is the goal record.** WEB-10 is on main, so AUTO-8 writes its rounds and its credits through `goal_store.record_round`. A time cap stays in the run, because the goal record holds no clock.
 
 ### Build order and parallel work
 
