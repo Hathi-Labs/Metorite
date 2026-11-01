@@ -13,6 +13,9 @@ import {
   PANEL_SWAP_CLASS,
   PANEL_SWAP_NAME,
   PANEL_TOKENS,
+  STACK_SWAP_CLASS,
+  STACK_SWAP_NAME,
+  STACK_SWAP_WAY_ATTR,
   formDurationMs,
   isMoving,
   isShown,
@@ -21,6 +24,7 @@ import {
   pickFocusReturn,
   prefersReducedMotion,
   swapPanelForm,
+  swapStackCard,
   type FocusCandidate,
   type PanelPhase,
 } from "./panelMotion";
@@ -410,5 +414,78 @@ describe("the Ask bar and the composer are one box (owner, 2026-11-01)", () => {
     expect(bar).toContain('morphAskBox("into-chat", open)');
     expect(read("components/AgentChat.tsx")).toContain("data-chat-composer");
     expect(DOCK).toContain('onClick={() => morphAskBox("into-bar", closeAssistant)}');
+  });
+});
+
+describe("a stack's change of card moves as a deck does (owner, 2026-11-01)", () => {
+  const g = globalThis as Record<string, unknown>;
+  const saved = { window: g.window, document: g.document };
+  afterEach(() => {
+    g.window = saved.window;
+    g.document = saved.document;
+  });
+
+  function fakeDom(reduced: boolean, withApi = true) {
+    const classes = new Set<string>();
+    const attrs = new Map<string, string>();
+    const props = new Map<string, string>();
+    let finish: () => void = () => {};
+    const start = vi.fn((update: () => void) => {
+      update();
+      return { finished: new Promise<void>((r) => (finish = r)) };
+    });
+    g.window = { matchMedia: () => ({ matches: reduced }) };
+    g.document = {
+      documentElement: {
+        classList: { add: (c: string) => classes.add(c), remove: (c: string) => classes.delete(c) },
+        setAttribute: (k: string, v: string) => attrs.set(k, v),
+        removeAttribute: (k: string) => attrs.delete(k),
+      },
+      ...(withApi ? { startViewTransition: start } : {}),
+    };
+    const card = {
+      style: { setProperty: (k: string, v: string) => props.set(k, v), removeProperty: (k: string) => props.delete(k) },
+    } as unknown as HTMLElement;
+    return { start, classes, attrs, props, card, finish: () => finish() };
+  }
+
+  it("names the shown card, says the way, and cleans up at the end", async () => {
+    for (const way of ["next", "prev"] as const) {
+      const dom = fakeDom(false);
+      const update = vi.fn();
+      expect(swapStackCard(dom.card, way, update)).toBe(true);
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(dom.props.get("view-transition-name")).toBe(STACK_SWAP_NAME);
+      expect(dom.classes.has(STACK_SWAP_CLASS)).toBe(true);
+      expect(dom.attrs.get(STACK_SWAP_WAY_ATTR)).toBe(way);
+      dom.finish();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(dom.props.size + dom.classes.size + dom.attrs.size).toBe(0);
+    }
+  });
+
+  it("is a plain change with reduced motion, or with no view transitions", () => {
+    for (const [reduced, api] of [[true, true], [false, false]] as const) {
+      const dom = fakeDom(reduced, api);
+      const update = vi.fn();
+      expect(swapStackCard(dom.card, "next", update)).toBe(false);
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(dom.classes.size).toBe(0);
+    }
+  });
+
+  it("the CSS throws the top card on both ways, and the stack routes every change through it", () => {
+    for (const way of ["next", "prev"]) {
+      expect(GLOBALS).toContain(`html.${STACK_SWAP_CLASS}[${STACK_SWAP_WAY_ATTR}="${way}"]::view-transition-old(${STACK_SWAP_NAME})`);
+      expect(GLOBALS).toContain(`html.${STACK_SWAP_CLASS}[${STACK_SWAP_WAY_ATTR}="${way}"]::view-transition-new(${STACK_SWAP_NAME})`);
+    }
+    const stack = read("components/ui/CardStack.tsx");
+    expect(stack).toContain('swapStackCard(topRef.current, to > index ? "next" : "prev"');
+    // The tabs, the arrow keys and a full swipe all go through `go`.
+    expect(stack).toContain("onClick={() => go(i)}");
+    expect(stack).toContain("go(next);");
+    expect(stack).toMatch(/go\(index \+ step, \(\) => \{/);
+    expect(stack).not.toMatch(/\bonGo\(index \+ step\)/);
   });
 });

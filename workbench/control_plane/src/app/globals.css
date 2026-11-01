@@ -2684,6 +2684,61 @@ html.ask-morph::view-transition-new(ask-panel) {
   }
 }
 
+/* A change of card moves as the deck does (`swapStackCard`, owner
+   2026-11-01: "make the animation for the task cards better when I switch
+   between the cards"). Forward, the card left is thrown to the left and
+   turned, as a swipe throws it, and the next one rises from the deck on the
+   spring. Back is the mirror: the card comes back from the left on the
+   spring, and the one left sinks into the deck. The card that moves to the
+   side is always on top. The page does not cross-fade: the tabs and the
+   deck's edges stay live under the card. */
+/* ⚠️ The card on top stays SOLID while it moves, and fades only at its far
+   end. A card that faded the whole way let the one under it show through,
+   and the two read as a double exposure (measured 2026-11-01). The card
+   below is whole from the start: it is the deck's next card. */
+@keyframes card-swap-throw {
+  55%  { opacity: 1; }
+  100% { transform: translateX(-55%) rotate(-8deg); opacity: 0; }
+}
+@keyframes card-swap-rise {
+  from { transform: translateY(10px) scale(0.96); }
+}
+@keyframes card-swap-return {
+  0%  { transform: translateX(-55%) rotate(-8deg); opacity: 0; }
+  35% { opacity: 1; }
+}
+@keyframes card-swap-sink {
+  70%  { opacity: 1; }
+  100% { transform: translateY(10px) scale(0.96); opacity: 0; }
+}
+html.card-swap::view-transition-old(root),
+html.card-swap::view-transition-new(root) {
+  animation: none;
+}
+html.card-swap::view-transition-group(stack-card) {
+  animation-duration: var(--panel-duration);
+  animation-timing-function: var(--panel-easing);
+}
+html.card-swap::view-transition-old(stack-card),
+html.card-swap::view-transition-new(stack-card) {
+  transform-origin: 50% 100%;
+  mix-blend-mode: normal;
+}
+html.card-swap[data-card-swap="next"]::view-transition-old(stack-card) {
+  z-index: 1;
+  animation: card-swap-throw var(--panel-duration) var(--panel-easing) both;
+}
+html.card-swap[data-card-swap="next"]::view-transition-new(stack-card) {
+  animation: card-swap-rise var(--spring-duration) var(--spring-easing) both;
+}
+html.card-swap[data-card-swap="prev"]::view-transition-old(stack-card) {
+  animation: card-swap-sink var(--panel-duration) var(--panel-easing) both;
+}
+html.card-swap[data-card-swap="prev"]::view-transition-new(stack-card) {
+  z-index: 1;
+  animation: card-swap-return var(--spring-duration) var(--spring-easing) both;
+}
+
 /* ── Scrollbars ────────────────────────────────────────────── */
 /*
    ⚠️ THE DEFAULT, not an opt-in. Owner report, 2026-09-20: "the scroll bar

@@ -364,3 +364,55 @@ export function morphAskBox(way: AskMorph, update: () => void): boolean {
     return false;
   }
 }
+
+// ── A stack's card, to the next one or back ──────────────────────────────────
+
+/** The `view-transition-name` of a stack's shown card while it changes. */
+export const STACK_SWAP_NAME = "stack-card";
+/** The class on `<html>` that scopes the card change's CSS. */
+export const STACK_SWAP_CLASS = "card-swap";
+/** The attribute on `<html>` that says which way the stack moves. */
+export const STACK_SWAP_WAY_ATTR = "data-card-swap";
+
+let _stackSeq = 0;
+
+/**
+ * Show another card of a stack (`components/ui/CardStack.tsx`, owner
+ * 2026-11-01: "make the animation for the task cards better when I switch
+ * between the cards"). Forward, the card the member leaves is thrown to the
+ * side, as a swipe throws it, and the next one rises from the deck behind.
+ * Back is the mirror: the card comes back from the side, and the one left
+ * sinks into the deck. The CSS is `html.card-swap` in `globals.css`.
+ *
+ * The change is plain with reduced motion and where the browser has no view
+ * transitions. Returns true when a transition started.
+ */
+export function swapStackCard(card: HTMLElement | null, way: "next" | "prev", update: () => void): boolean {
+  const doc = typeof document !== "undefined" ? document : null;
+  const start = (doc as (Document & { startViewTransition?: StartViewTransition }) | null)?.startViewTransition;
+  if (!doc || !card || typeof start !== "function" || prefersReducedMotion()) {
+    update();
+    return false;
+  }
+  card.style.setProperty("view-transition-name", STACK_SWAP_NAME);
+  doc.documentElement.classList.add(STACK_SWAP_CLASS);
+  doc.documentElement.setAttribute(STACK_SWAP_WAY_ATTR, way);
+  const mine = ++_stackSeq;
+  const done = () => {
+    if (mine !== _stackSeq) return;
+    card.style.removeProperty("view-transition-name");
+    doc.documentElement.classList.remove(STACK_SWAP_CLASS);
+    doc.documentElement.removeAttribute(STACK_SWAP_WAY_ATTR);
+  };
+  try {
+    // The shown card is one element that changes its content, so it keeps
+    // its name across the change, as the panel does in `swapPanelForm`.
+    const vt = start.call(doc, () => flushSync(update));
+    vt.finished.then(done, done);
+    return true;
+  } catch {
+    done();
+    update();
+    return false;
+  }
+}
