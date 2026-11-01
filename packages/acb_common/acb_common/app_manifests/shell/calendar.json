@@ -40,7 +40,8 @@
           "title": "what to remind them of, in their own words, without 'remind me to'"
         },
         "feature": "projects",
-        "note": "RX-6 (2026-11-02): the capture job stopped taking 'remind'. This job opens the New reminder form on /calendar. It saves nothing when it opens. The job needs feature:projects, because the reminder routes answer 403 to a member who holds feature:tasks only."
+        "bar_feature": "projects",
+        "note": "RX-6 (2026-11-02): the capture job stopped taking 'remind'. This job opens the New reminder form on /calendar. It saves nothing when it opens. The job needs feature:projects, because the reminder routes answer 403 to a member who holds feature:tasks only. So the pane alone does not gate it, and bar_feature keeps the bar from offering it to that member."
       }
     ],
     "nav": [

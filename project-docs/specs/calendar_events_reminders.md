@@ -974,11 +974,12 @@ is `tests/unit/test_reminder_tools.py`.
   mark lives on the session. So `no_egress` alone is not enough.
   `egress.write_must_show_card` is the one reader. It reads
   `no_egress_for_this_run`, then the mark through `run_holds_mail`. The card
-  shows for a held run, a run with no context, a run that cannot ask the
-  member, a delegated run, a run with no session or no tenant, a marked
-  session, and an unknown mark or a Redis fault. The card goes through
-  `writes._confirm`, the one door. `writes._reminder_acts_at_once` is the only
-  caller. It is not a general CF-6 seam. Only these five tools read it.
+  shows for a held run, a run with no context, and a run that cannot ask the
+  member. It shows for a delegated run, and for a run with no session or no
+  tenant. A marked session, an unknown mark and a Redis fault show it too. The
+  card goes through `writes._confirm`, the one door.
+  `writes._reminder_acts_at_once` is the only caller. It is not a general CF-6
+  seam. Only these five tools read it.
 - **One reminder for one ask.** With no card, a model retry, a double tool
   call or a double click reaches `POST /my/reminders` twice. So the route takes
   a transaction-level advisory lock on the member. It then looks for an open
@@ -1090,7 +1091,9 @@ is `tests/unit/test_reminder_tools.py`.
   "New reminder", opens `/calendar?do=new-reminder`, and the Calendar opens its
   New reminder form. The job saves nothing when it opens. It needs
   `feature:projects`, because the routes answer 403 to a member with `tasks`
-  alone. The composer of CE-3 is not built, so the job fills the title only.
+  alone. The Calendar pane takes `tasks`, so `bar_feature` gates the job in the
+  command bar too. The composer of CE-3 is not built, so the job fills the
+  title only.
 - **The other doors (RX-6, built).** The Tasks quick capture, kind "Remind",
   now makes a real reminder at a date and a time through the create route.
   It no longer sets `defer_until`, and it makes no task. The task detail has a

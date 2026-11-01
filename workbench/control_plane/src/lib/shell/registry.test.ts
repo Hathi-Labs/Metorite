@@ -117,9 +117,16 @@ describe("an admin who names the roster opens it, not the invite form", () => {
 });
 
 describe("the reminder job (WS-66 RX-6)", () => {
-  // The job opens on the Calendar, so the member must hold that pane.
-  const items = buildItems([...HELD, pane("/calendar", "Calendar", "Your day")]);
+  // The job opens on the Calendar, so the member must hold that pane. The
+  // routes answer 403 with no feature:projects, so the job needs that too.
+  const panes = [...HELD, pane("/calendar", "Calendar", "Your day")];
+  const items = buildItems(panes, undefined, ["tasks", "projects"]);
   const top = (query: string) => rank({ items, query, context: null, recent: [] })[0]?.key;
+
+  it("is not offered to a member who holds tasks only", () => {
+    const keys = buildItems(panes, undefined, ["tasks"]).map((i) => i.key);
+    expect(keys).not.toContain("do:set-reminder");
+  });
 
   it("takes the words remind and reminder, and the capture job no longer does", () => {
     expect(top("remind")).toBe("do:set-reminder");

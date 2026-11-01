@@ -75,7 +75,7 @@ PRE_SLICE_TS = [
     ('capture', 'New task', ['task', 'todo', 'to-do', 'capture', 'add', 'note'], '/projects', '/projects?do=capture', 'CirclePlus', None, ('tasks', '/tasks?do=capture')),
     ('compose', 'Write an email', ['email', 'mail', 'compose', 'send', 'message', 'write'], '/email', '/email?do=compose', 'PenSquare', None, None),
     ('plan-day', 'Plan my day', ['calendar', 'schedule', 'plan', 'day', 'timebox', 'today', 'agenda'], '/calendar', '/calendar', 'CalendarClock', None, None),
-    ('set-reminder', 'New reminder', ['remind', 'reminder', 'nudge'], '/calendar', '/calendar?do=new-reminder', 'BellPlus', None, None),
+    ('set-reminder', 'New reminder', ['remind', 'reminder', 'nudge'], '/calendar', '/calendar?do=new-reminder', 'BellPlus', 'projects', None),
     ('new-project', 'New space', ['space', 'project', 'workspace', 'department', 'board'], '/projects', '/projects?do=new-project', 'FolderPlus', None, None),
     ('new-chat', 'New chat', ['chat', 'conversation', 'assistant', 'ai', 'talk', 'thread'], '/chat', '/chat?do=new-chat', 'MessageSquarePlus', None, None),
     ('invite', 'Invite a member', ['invite', 'join', 'onboard', 'welcome', 'newcomer'], '/settings/organization', '/settings/organization?do=invite', 'UserPlus', None, None),

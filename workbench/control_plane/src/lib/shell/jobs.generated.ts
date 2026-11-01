@@ -31,13 +31,14 @@ export const GENERATED_JOBS: readonly ShellJob[] = [
     icon: "CalendarClock",
   },
   {
-    // RX-6 (2026-11-02): the capture job stopped taking 'remind'. This job opens the New reminder form on /calendar. It saves nothing when it opens. The job needs feature:projects, because the reminder routes answer 403 to a member who holds feature:tasks only.
+    // RX-6 (2026-11-02): the capture job stopped taking 'remind'. This job opens the New reminder form on /calendar. It saves nothing when it opens. The job needs feature:projects, because the reminder routes answer 403 to a member who holds feature:tasks only. So the pane alone does not gate it, and bar_feature keeps the bar from offering it to that member.
     id: "set-reminder",
     label: "New reminder",
     words: ["remind", "reminder", "nudge"],
     app: "/calendar",
     href: "/calendar?do=new-reminder",
     icon: "BellPlus",
+    feature: "projects",
   },
   {
     // A root node in Projects is a SPACE (the tree grammar of migration 193), so the label names what opens: the New space row in the tree.
