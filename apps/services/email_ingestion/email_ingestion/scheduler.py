@@ -65,6 +65,7 @@ from email_ingestion.post_sync import (
 )
 from email_ingestion.providers.base import ProviderRateLimited
 from email_ingestion.providers.factory import build_provider
+from email_ingestion.providers.gmail import forget_quota_mailbox
 from email_ingestion.reconcile import (
     import_reconcile_candidates,
     reconcile_full_snapshot,
@@ -129,14 +130,22 @@ CATCH_UP_MAX_MISSES = 6
 #: Google counts its limit in windows of one minute, so one minute clears it.
 SYNC_RESUME_SECS = 60
 
-#: Rate-limited cycles in a row that read no mail, for each mailbox
-#: (EM-G4b-f3). It lives in this process, as ``_catch_up_misses`` does.
-_rate_limit_misses: dict[str, int] = {}
+#: The time of the first rate limit that moved nothing, for each mailbox
+#: (EM-G4b-f3). A time and not a count, so that clicks of "Sync now" cannot
+#: bring the error forward. It lives in this process, as
+#: ``_catch_up_misses`` does.
+_rate_limit_since: dict[str, float] = {}
 
-#: After this many such cycles the mailbox shows the error and the loop backs
-#: off as for a failure, so a long refusal cannot stay out of sight. With
-#: ``SYNC_RESUME_SECS`` this is about 10 minutes.
-RATE_LIMIT_MAX_MISSES = 10
+#: After this long with no progress the mailbox shows the error and the loop
+#: backs off as for a failure, so a long refusal cannot stay out of sight.
+RATE_LIMIT_SOFT_SECS = 600
+
+#: The error of a cycle that a rate limit stopped with no exception. The Email
+#: app shows it in the banner.
+_RATE_LIMIT_ERROR = (
+    "The mail provider refuses this mailbox for a rate limit. "
+    "The sync tries again."
+)
 
 #: Why a first import stopped early. The next cycle resumes it in both cases.
 _IMPORT_PAUSED = "paused"
@@ -346,6 +355,13 @@ _RATE_LIMITED_ACCOUNT = text(
        WHERE id = :id"""
 )
 
+#: The seed of a first import, before the import reads (EM-G4b-f3).
+_STORE_SEED = text(
+    """UPDATE email_accounts
+       SET last_history_id = :seed, updated_at = now()
+       WHERE id = :id"""
+)
+
 _IMPORT_ERROR_LOG = text(
     """UPDATE email_sync_log
        SET status = 'error', error_message = :import_error
@@ -414,17 +430,17 @@ def _next_backoff(current: int, interval: int, *, failed: bool) -> int:
 def _rate_limit_is_soft(account_id: str, *, progress: bool) -> bool:
     """True when a rate limit only delays this mailbox (EM-G4b-f3).
 
-    A cycle that read mail clears the count. A cycle that read nothing adds
-    one. From ``RATE_LIMIT_MAX_MISSES`` the limit is a failure, until a cycle
-    reads mail, so the member sees a refusal that does not end."""
+    A cycle that moved clears the clock. The first cycle that moved nothing
+    starts it. ``RATE_LIMIT_SOFT_SECS`` after that the limit is a failure,
+    until a cycle moves, so the member sees a refusal that does not end."""
     key = _lock_key(account_id)
     if progress:
-        _rate_limit_misses.pop(key, None)
+        _rate_limit_since.pop(key, None)
         return True
-    misses = _rate_limit_misses.get(key, 0) + 1
-    _rate_limit_misses[key] = misses
-    logger.info("sync.rate_limit_miss account=%s misses=%d", account_id, misses)
-    return misses < RATE_LIMIT_MAX_MISSES
+    now = time.monotonic()
+    since = _rate_limit_since.setdefault(key, now)
+    logger.info("sync.rate_limit_miss account=%s secs=%d", account_id, now - since)
+    return now - since < RATE_LIMIT_SOFT_SECS
 
 
 async def _close_orphaned_syncs(db: Any, organization_id: str) -> None:
@@ -767,23 +783,45 @@ def _cycle_result(
 
 
 def _early_stop(
-    account_id: str, sync_result: Any, imported: int,
+    account_id: str, sync_result: Any, history_id: Any, *, imported: int,
     import_error: str | None, import_stop: str | None,
 ) -> tuple[str | None, bool]:
-    """The import error of a cycle, and whether the loop comes back soon
-    (EM-G4b-f3).
+    """The error of a cycle, and whether the loop comes back soon (EM-G4b-f3).
 
     An import that read its share goes on soon. A rate limit only delays the
-    mailbox while the cycles read mail, so such a cycle shows no error and
-    the loop does not back off. Each other cycle clears the count."""
-    if (import_stop == _IMPORT_RATE_LIMITED
-            or getattr(sync_result, "rate_limited", False) is True):
-        progress = imported > 0 or bool(sync_result.messages)
-        if _rate_limit_is_soft(account_id, progress=progress):
-            return None, True
-        return import_error, False
-    _rate_limit_misses.pop(_lock_key(account_id), None)
-    return import_error, import_stop == _IMPORT_PAUSED
+    mailbox while the cycles move, so such a cycle shows no error and the
+    loop does not back off. Each other cycle clears the clock.
+
+    A cycle moves when the import wrote mail, or when the cursor moved. Mail
+    in the result is not enough: a sweep with no seed reads the same labels
+    in each cycle and stores nothing. Only an import error that IS the rate
+    limit goes away. Each other import error stays."""
+    limited_import = import_stop == _IMPORT_RATE_LIMITED
+    if not limited_import and getattr(sync_result, "rate_limited", False) is not True:
+        _rate_limit_since.pop(_lock_key(account_id), None)
+        return import_error, import_stop == _IMPORT_PAUSED
+    cursor = getattr(sync_result, "new_history_id", None)
+    moved = imported > 0 or cursor not in (None, history_id)
+    if not _rate_limit_is_soft(account_id, progress=moved):
+        return import_error or _RATE_LIMIT_ERROR, False
+    kept = None if limited_import else import_error
+    return kept, kept is None
+
+
+def _raised_limit_is_soft(
+    account_id: str, exc: Exception, *, deep: bool | None, imported: int,
+    import_error: str | None, import_stop: str | None,
+) -> bool:
+    """True when the exception of a cycle only delays the mailbox (EM-G4b-f3).
+
+    A deep sync keeps each error, because a download job reads its result
+    (``download_failure``) and has no resume point. A cycle whose import
+    failed for another reason keeps that failure too."""
+    if deep or not isinstance(exc, ProviderRateLimited):
+        return False
+    if import_error is not None and import_stop != _IMPORT_RATE_LIMITED:
+        return False
+    return _rate_limit_is_soft(account_id, progress=imported > 0)
 
 
 def _next_cursor(
@@ -872,6 +910,22 @@ async def _seed_before_import(
         logger.warning("sync.seed_failed account=%s error=%s",
                        account_id, type(exc).__name__)
         return history_id
+
+
+async def _seed_and_store(
+    org: str, account_id: str, provider: Any, history_id: Any,
+) -> Any:
+    """``_seed_before_import``, with a new seed stored at once (EM-G4b-f3).
+
+    Phase (d) writes the cursor at the end of a cycle. A sweep that raises
+    never reaches it. The next cycle would then seed a later value, and mail
+    that arrived between the two seeds would reach neither the import, which
+    reads older mail, nor the history."""
+    seeded = await _seed_before_import(account_id, provider, history_id)
+    if seeded and seeded != history_id:
+        async with tenant_session(org) as db:
+            await db.execute(_STORE_SEED, {"id": account_id, "seed": seeded})
+    return seeded
 
 
 def _oldest_received(messages: list[Any]) -> datetime | None:
@@ -1401,7 +1455,9 @@ async def _rerun_once(
     if key not in _sync_rerun or _sync_lock_users.get(key, 0) > 1:
         return result
     _sync_rerun.discard(key)
-    if not isinstance(result, dict) or result.get("error"):
+    # An early stop comes back soon, so a rerun would only hold the lock.
+    if (not isinstance(result, dict) or result.get("error")
+            or result.get("resume_soon")):
         return result
     logger.info("sync.rerun account_id=%s", account_id)
     try:
@@ -1565,9 +1621,11 @@ async def _sync_cycle(
     # during the sync rotated (EM-T4c).
     provider: Any = None
     store: Any = None
-    # The error path reads this one, to tell a delay from a stalled mailbox
+    # The error path reads these three, to tell a delay from a failure
     # (EM-G4b-f3).
     imported = 0
+    import_error: str | None = None
+    import_stop: str | None = None
     try:
         # ── (a) the account row, the 'syncing' status and the log row ──────
         async with tenant_session(org) as db:
@@ -1623,7 +1681,7 @@ async def _sync_cycle(
         provider = build_provider(provider_name, creds)
         # A cycle runs in the background, so it paces its Gmail calls. The
         # call of a member builds no cycle, so it never waits (EM-G4b-f3).
-        provider.quota_mailbox = account_id
+        provider.quota_mailbox = _lock_key(account_id)
 
         if not await provider.authenticate():
             raise RuntimeError("Provider authentication failed")
@@ -1658,14 +1716,12 @@ async def _sync_cycle(
         # newest first, and only the first import writes progress (EM-T6b
         # items 4 to 8). A caller forces a deep sync with ``deep=True``.
         first_import = deep is None and not getattr(row, "initial_sync_done", False)
-        import_error: str | None = None
         stopped_at_limit = False
-        import_stop: str | None = None
         if first_import or deep:
             # With no cursor, the seed comes BEFORE the import, so the sweep
             # below reads each change made during the import (EM-G4b E-B3).
-            history_id = await _seed_before_import(
-                account_id, provider, history_id)
+            history_id = await _seed_and_store(
+                org, account_id, provider, history_id)
             # A failed import does not raise. Phase (d) records its error,
             # and the next cycle resumes it (fix round 2). The storage limit
             # stops it after a batch (EM-T6c item 5).
@@ -1698,7 +1754,8 @@ async def _sync_cycle(
         )
         _log_delta_shadow(account_id, sync_result)
         import_error, resume_soon = _early_stop(
-            account_id, sync_result, imported, import_error, import_stop)
+            account_id, sync_result, history_id, imported=imported,
+            import_error=import_error, import_stop=import_stop)
         # Fix rounds 3 and 4: whether phase (d) keeps the watermark, the note
         # of a short catch-up, and whether the loop backs off. Only a loop
         # cycle counts toward the abandon (``_watermark_outcome``).
@@ -1833,8 +1890,9 @@ async def _sync_cycle(
 
         # A rate limit only delays the mailbox (EM-G4b-f3). The log row below
         # keeps the error, and the account shows none.
-        soft = (isinstance(exc, ProviderRateLimited)
-                and _rate_limit_is_soft(account_id, progress=imported > 0))
+        soft = _raised_limit_is_soft(
+            account_id, exc, deep=deep, imported=imported,
+            import_error=import_error, import_stop=import_stop)
 
         # A refresh during the sync may have rotated the tokens (EM-T4c).
         # Encrypt them BEFORE the block opens, so a failure here cannot roll
@@ -2186,6 +2244,11 @@ async def remove_account_sync(account_id: str) -> None:
 
     Call this after deleting an account or toggling sync_enabled off.
     """
+    # Not in ``_leave_sync_lock``: that runs after each cycle, and the quota
+    # of Google spans cycles (EM-G4b-f3).
+    key = _lock_key(account_id)
+    _rate_limit_since.pop(key, None)
+    forget_quota_mailbox(key)
     async with _scheduler_lock:
         task = _scheduler_tasks.pop(account_id, None)
         if task:
