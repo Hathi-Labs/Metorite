@@ -1,0 +1,39 @@
+{
+  "name": "Studio Builder",
+  "app": "workflows",
+  "description": "The owner of the studio tool pack. It holds the builder tools of AI Studio: draft an app manifest from a brief, patch it, validate it, outline it and list the actions an app may use. The main assistant loads these tools in a Studio turn. This agent is not a second assistant, and a hand-off to it is refused.",
+  "version": "0.1.0",
+  "author": "Metorite",
+  "tags": [
+    "studio",
+    "apps",
+    "manifest"
+  ],
+  "integrations": [],
+  "optional_integrations": [],
+  "runtime": "maf",
+  "sharing": {
+    "instancing": "shared",
+    "visibility": "organization",
+    "shareable": false,
+    "outputs_visibility": "instance"
+  },
+  "icon": "Hammer",
+  "category": "apps",
+  "tool_scope": [
+    "ask_questions",
+    "remember",
+    "recall_timeline",
+    "save_memory",
+    "make_report"
+  ],
+  "own_tool_scope": [
+    "studio_draft",
+    "studio_interview",
+    "studio_list_actions",
+    "studio_outline",
+    "studio_patch",
+    "studio_plan",
+    "studio_validate"
+  ]
+}

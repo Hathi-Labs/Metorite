@@ -336,7 +336,8 @@ def test_the_surface_slugs_and_the_clean_value() -> None:
     assert tp.PACKS["projects"].surface_slugs == ("projects", "tasks", "calendar")
     assert tp.PACKS["email"].surface_slugs == ("email",)
     assert tp.PACKS["email-setup"].surface_slugs == ()
-    assert tp.surfaces() == {"email", "crm", "projects", "tasks", "calendar"}
+    # STU-G1: the studio pack names the Studio surface.
+    assert tp.surfaces() == {"email", "crm", "projects", "tasks", "calendar", "studio"}
     for slug in ("projects", "tasks", "calendar"):
         assert tp.clean_surface(slug) == slug and tp.clean_surface(f" {slug.upper()} ") == slug
     for bad in ("notes", "projects/x", "", None, 4, "tasks" + "x" * 40):

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
 import { useSession, signOut } from "next-auth/react";
 import { forgetThisDevice } from "@/lib/push";
 import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
@@ -15,15 +15,16 @@ import { useRunActivity } from "@/hooks/useActiveSessions";
 import { runBadge } from "@/lib/runActivity";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
 import { SidebarFoldButton, useSidebarFold } from "@/components/SidebarFold";
-import { ActivityControl } from "@/lib/shell/ActivityControl";
+import { useDocumentLook } from "@/lib/theme/glassTokens";
 import { shellDockOn } from "@/lib/shell/dockFlag";
-import { ShellBell } from "@/lib/shell/ShellBell";
+import { shellChatOn } from "@/lib/shell/chatFlag";
 import { shellBarOn } from "@/lib/shell/registry";
 import ThemeToggle from "@/components/ThemeToggle";
 import { AccountFoot, SidebarAccountFooter, useAccounts } from "@/components/AccountSwitcher";
 import AppLauncher from "@/lib/shell/AppLauncher";
 import {
   ADD_APPS_HINT,
+  CHAT_PANE_HREF,
   accountLinks,
   homePane,
   isActive,
@@ -38,6 +39,7 @@ import { EMPTY_SHELL, toggleStar } from "@/lib/shell/presets";
 import { foldHeading, isFolded, readFolds, writeFolds, type Folds } from "@/lib/shell/sidebarFolds";
 import { addAppsName, needsLabel, needsSuffix, rowMeta, rowName } from "@/lib/shell/navNeeds";
 import { useNavNeeds } from "@/lib/shell/useNavNeeds";
+import { useMyDayCount } from "@/lib/shell/myDayCount";
 import { chatScope } from "@/lib/sessions";
 import { ContextMenu } from "@/components/ContextMenu";
 import { useToast } from "@/components/ui/Toast";
@@ -58,7 +60,34 @@ export default function Sidebar() {
   // 2026-10-09). This rail reads it, and runs the work listener below, which
   // needs to know what is inside the rail.
   const fold = useSidebarFold();
-  const { collapsed, armedRef, foldForWork } = fold;
+  const { collapsed: storedCollapsed, armedRef, foldForWork } = fold;
+  // Hover to expand (owner, 2026-11-01: "have the sidebar open on hover ...
+  // and automatically contract when I move the mouse away"). A folded rail
+  // widens over the page while the pointer rests on it, and every row keeps
+  // its place: only the names fade in beside the icons, so the row under the
+  // pointer stays under it. The page never moves. It floats over the page
+  // until it has narrowed again ("closing"), and only then takes its slot
+  // back, so the page does not jump at the end. A touch never opens it.
+  // Keyboard focus inside opens it. The fold control pins it open.
+  const [peekPhase, setPeekPhase] = useState<"off" | "open" | "closing">("off");
+  const peekTimer = useRef<number | undefined>(undefined);
+  const collapsed = storedCollapsed;
+  const peeking = storedCollapsed && peekPhase !== "off";
+  const peekOpen = storedCollapsed && peekPhase === "open";
+  const openPeek = (delay: number) => {
+    if (!storedCollapsed) return;
+    window.clearTimeout(peekTimer.current);
+    if (peekPhase === "open") return;
+    peekTimer.current = window.setTimeout(() => setPeekPhase("open"), peekPhase === "closing" ? 0 : delay);
+  };
+  const closePeek = (delay: number) => {
+    window.clearTimeout(peekTimer.current);
+    if (peekPhase === "off") return;
+    peekTimer.current = window.setTimeout(() => {
+      setPeekPhase("closing");
+      peekTimer.current = window.setTimeout(() => setPeekPhase("off"), PEEK_SETTLE_MS);
+    }, delay);
+  };
   const armFold = fold.arm;
   // `placement === "bar"`: the full-width bar carries the logo and the
   // control, so this rail draws no head.
@@ -67,6 +96,7 @@ export default function Sidebar() {
   const [barOn] = useState(() => shellBarOn());
   // NS-6: and the one bell, with its own flag on, beside the activity control.
   const [dockOn] = useState(() => shellDockOn());
+  const [chatOn] = useState(() => shellChatOn());
   const asideRef = useRef<HTMLElement>(null);
   const { data: session } = useSession();
   // The account switcher (MT-1k A2). Off, `accounts.enabled` is false and the
@@ -116,6 +146,23 @@ export default function Sidebar() {
   const railSections = shellNav
     ? shellSidebar(sections, shell.loading ? undefined : shell.layout)
     : sections;
+  useEffect(() => {
+    window.clearTimeout(peekTimer.current);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the peek ends when the fold or the page changes
+    setPeekPhase("off");
+  }, [storedCollapsed, pathname]);
+  useEffect(() => () => window.clearTimeout(peekTimer.current), []);
+  // Glass: the list fades at an edge while apps sit beyond it, folded or
+  // open, since a long list has no bar at rest to show that it scrolls
+  // (review of GL-10, a 1366x768 window; owner, 2026-11-01: "account for when
+  // we have more apps"). The head and the foot stay put, and only the list
+  // scrolls.
+  const navRef = useRef<HTMLElement>(null);
+  const edges = useScrollEdges(
+    navRef,
+    useDocumentLook() === "glass",
+    `${accessLoading}-${shellPending}-${railSections.length}-${collapsed}`,
+  );
   /**
    * ONE predicate for "is there a workspace behind this person yet", used by
    * the two polls below AND by the `return null` further down.
@@ -134,7 +181,13 @@ export default function Sidebar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [railSections.map((s) => s.items.map((p) => p.href).join(",")).join("|")],
   );
-  const { byApp: runCounts, needsByApp: needsCounts, unreadByApp: unreadCounts } = useRunActivity(railHrefs, canPoll);
+  const {
+    byApp: runCounts,
+    needsByApp: needsCounts,
+    unreadByApp: unreadCounts,
+    total: runningTotal,
+    needsTotal: runsWaiting,
+  } = useRunActivity(railHrefs, canPoll);
   // A run on a pane the sidebar does not show, Chat included, counts on
   // "Add apps", the door to the hidden apps (`strayCount`).
   const strayBadge = runBadge(
@@ -356,39 +409,61 @@ export default function Sidebar() {
     return null;
   }
 
+
   return (
+    <>
+    {/* While it peeks, its slot stays in the row, so the page does not move. */}
+    {peeking ? <div aria-hidden data-sidebar-peek-space="" className="w-14 shrink-0 glass:m-2" /> : null}
     <aside
       ref={asideRef}
       data-collapsed={collapsed ? "true" : "false"}
+      data-peek={peekOpen ? "open" : peeking ? "closing" : undefined}
+      onPointerEnter={storedCollapsed ? (e) => { if (e.pointerType !== "touch") openPeek(PEEK_OPEN_MS); } : undefined}
+      onPointerLeave={storedCollapsed ? (e) => { if (e.pointerType !== "touch") closePeek(PEEK_CLOSE_MS); } : undefined}
+      onFocus={storedCollapsed ? () => openPeek(0) : undefined}
+      onBlur={storedCollapsed ? (e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) closePeek(0); } : undefined}
       // A fold widens <main> but fires no window `resize`, and some layouts
       // measure only on that event. Tell them once the width settles.
       onTransitionEnd={(e) => {
-        if (e.target === e.currentTarget && e.propertyName === "width") {
+        // A peek floats over the page and changes no page width, so it asks
+        // no layout to measure again: a forced re-measure nudged the app
+        // (owner, 2026-11-01).
+        if (e.target === e.currentTarget && e.propertyName === "width" && peekPhase === "off") {
           window.dispatchEvent(new Event("resize"));
         }
       }}
       className={`sidebar-rail shrink-0 border-r flex flex-col overflow-hidden bg-sidebar border-sidebar-border glass:m-2 glass:rounded-2xl glass:border-r-0 glass:glass-chrome-flat ${
-        collapsed ? "w-14" : "w-64"
-      }`}
+        collapsed && !peekOpen ? "w-14" : "w-64"
+      } ${peeking ? "absolute inset-y-0 left-0 z-40" : ""} ${peekOpen ? "shadow-2xl glass:shadow-glass" : ""}`}
     >
       {/* Header. With the full-width shell bar, the bar carries the logo and
           the fold control instead, so the logo stays in view when this rail
           folds (owner, 2026-10-09). */}
       {head && (
-        <div className={`flex items-center border-b border-sidebar-border ${collapsed ? "justify-center p-3" : "justify-between px-4 py-4"}`}>
-          {!collapsed && (
-            // The customer's mark when they have uploaded one, ours when they
-            // have not. `maxWidth` is what stops a wide wordmark from pushing the
-            // collapse control off the 256px rail.
-            <OrgBrandLockup fallbackCaption="Control Plane" maxWidth={152} />
-          )}
-          {/* WS-51 S3: with the shell bar off, this head is the top of the
-              page, so the activity control sits here, beside the fold. The
-              one bell (NS-6) sits before it while its flag is on. */}
-          <div className={`flex items-center gap-1 ${collapsed ? "flex-col" : ""}`}>
-            {!barOn && dockOn ? <ShellBell /> : null}
-            {!barOn ? <ActivityControl /> : null}
-            <SidebarFoldButton />
+        // One head in every state (owner, 2026-11-01: "the icon of the
+        // organization ... a different kind of behavior"). Its row keeps the
+        // open sidebar's width, so a folded rail shows only the mark, and a
+        // peek or the open sidebar reveals the name beside it as the rail
+        // widens: nothing is swapped. The mark sits on the icons' column.
+        <div
+          data-sidebar-head=""
+          className={`shrink-0 overflow-hidden border-b border-sidebar-border glass:border-b-0 ${collapsed ? "py-3" : "py-4"} glass:pt-3 glass:pb-1`}
+        >
+          <div className="flex w-64 items-center gap-2 pl-4 pr-2">
+            <div data-head-brand="" className="min-w-0 flex-1">
+              {/* The customer's mark when they have uploaded one, ours when
+                  they have not. One line, as the bar drew it. */}
+              <OrgBrandLockup fallbackCaption="Control Plane" height={24} maxWidth={176} compact />
+            </div>
+            {/* WS-51 S3: with the shell bar off, this head is the top of the
+                page, so the activity control sits here, beside the fold. The
+                one bell (NS-6) sits before it while its flag is on. */}
+            <div className="flex shrink-0 items-center gap-1">
+              {/* The head holds only the fold (owner, 2026-11-01). The bell is
+                  the Needs you row, the runs show on the Chat row and in the
+                  Ask bar, and the Ask bar opens the assistant. */}
+              <SidebarFoldButton />
+            </div>
           </div>
         </div>
       )}
@@ -406,8 +481,11 @@ export default function Sidebar() {
       {/* `key` swaps the whole list on a fold, so the new shape fades in while
           the width moves (`.sidebar-swap`), rather than snapping. */}
       <nav
+        ref={navRef}
         key={collapsed ? "rail" : "full"}
-        className={`sidebar-swap flex flex-col flex-1 overflow-y-auto overflow-x-hidden ${
+        data-more-below={edges.below ? "" : undefined}
+        data-more-above={edges.above ? "" : undefined}
+        className={`sidebar-swap flex flex-col flex-1 overflow-y-auto overflow-x-hidden glass:overscroll-contain ${
           collapsed ? "scrollbar-hide" : "scrollbar-thin"
         }`}
       >
@@ -418,7 +496,18 @@ export default function Sidebar() {
           {shellNav && (
             // The same column as a group's items, so Home lines up with them.
             <div className={collapsed ? "flex flex-col gap-1 p-2 pb-0" : "flex flex-col gap-0.5 px-2 pt-2"}>
-              <NavLink pane={home} pathname={pathname} collapsed={collapsed} onNavigate={armFold} shellNav />
+              {/* My Day holds what needs the member: one row, one page. */}
+              <MyDayRow
+                pane={home}
+                active={isActive(pathname, home.href)}
+                count={navNeeds.total}
+                waiting={runsWaiting}
+                collapsed={collapsed}
+                onNavigate={armFold}
+              />
+              {chatOn ? (
+                <ChatRow collapsed={collapsed} running={runningTotal} active={isActive(pathname, CHAT_PANE_HREF)} onNavigate={armFold} />
+              ) : null}
             </div>
           )}
           {railSections.map((section) => {
@@ -494,12 +583,13 @@ export default function Sidebar() {
             aria-label="All apps"
             aria-haspopup="dialog"
             // `cc-link`: the house focus ring, as the account foot wears it.
-            className={`cc-link flex items-center gap-2.5 rounded-lg glass:rounded-row text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${
-              collapsed ? "justify-center p-2.5" : "w-full px-3 py-2 text-[13px] glass:text-subhead font-medium"
+            data-rail-row={collapsed ? "" : undefined}
+            className={`cc-link flex items-center rounded-lg glass:rounded-row text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${
+              collapsed ? "w-full justify-center p-2.5" : "w-full gap-2.5 px-3 py-2 text-[13px] glass:text-subhead font-medium"
             }`}
           >
-            <Icon name="LayoutGrid" size={collapsed ? 18 : 16} className="glass:text-primary" />
-            {!collapsed && <span>All apps</span>}
+            <Icon name="LayoutGrid" size={collapsed ? 18 : 16} className="glass:text-muted-foreground" />
+            {collapsed ? <RailPeekLabel>All apps</RailPeekLabel> : <span>All apps</span>}
           </button>
         </div>
       )}
@@ -560,6 +650,7 @@ export default function Sidebar() {
         </div>
       )}
     </aside>
+    </>
   );
 }
 
@@ -609,11 +700,13 @@ function AddAppsRow({
           title={name}
           aria-label={name}
           aria-haspopup="dialog"
+          data-rail-row=""
           className="cc-link relative flex items-center justify-center rounded-lg glass:rounded-row p-2.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
         >
-          <Icon name="Plus" size={18} className="shrink-0 glass:text-primary" />
+          <Icon name="Plus" size={18} className="shrink-0 glass:text-muted-foreground" />
+          <RailPeekLabel>Add apps</RailPeekLabel>
           {badge ? <NavBadge count={badge.count} tone={badge.tone} label={badge.label} placement="corner" /> : null}
-          {meta?.kind === "needs" ? <NeedsDot /> : null}
+          {meta?.kind === "needs" ? <NeedsDot text={meta.text} /> : null}
         </button>
       </div>
     );
@@ -652,6 +745,124 @@ function AddAppsRow({
  * rail that then fills. Nothing here is a link, so there is nothing to click
  * that could turn out not to exist.
  */
+/**
+ * Whether a scroller holds more above and below its visible edges. `on`
+ * false skips the work and says no. `content` changes when the list does, so
+ * a list that loads after the first paint is measured again.
+ */
+function useScrollEdges(
+  ref: RefObject<HTMLElement | null>,
+  on: boolean,
+  content: string,
+): { above: boolean; below: boolean } {
+  const [edges, setEdges] = useState({ above: false, below: false });
+  useEffect(() => {
+    const el = ref.current;
+    if (!on || !el) {
+      setEdges({ above: false, below: false });
+      return;
+    }
+    const check = () => {
+      const above = el.scrollTop > 1;
+      const below = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+      setEdges((prev) => (prev.above === above && prev.below === below ? prev : { above, below }));
+    };
+    check();
+    el.addEventListener("scroll", check, { passive: true });
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    for (const child of Array.from(el.children)) ro.observe(child);
+    return () => {
+      el.removeEventListener("scroll", check);
+      ro.disconnect();
+    };
+  }, [ref, on, content]);
+  return edges;
+}
+
+/** Hover to expand: the rest before it opens, and the grace before it closes. */
+const PEEK_OPEN_MS = 150;
+const PEEK_CLOSE_MS = 250;
+/** How long the rail narrows: `--panel-duration`, with a little room. */
+const PEEK_SETTLE_MS = 340;
+
+/**
+ * A folded row's name. It takes no width while the rail is folded, and it
+ * fades in beside the icon while the rail peeks (`globals.css`, "Hover to
+ * expand"). The link's own name says it already, so it is hidden from
+ * assistive tech.
+ */
+function RailPeekLabel({ children }: { children: ReactNode }) {
+  return (
+    <span data-rail-label="" aria-hidden className="truncate text-[13px] font-medium glass:text-subhead">
+      {children}
+    </span>
+  );
+}
+
+/**
+ * The chat, as a place (owner, 2026-11-01: "add an AI chat icon on the
+ * left-hand side sidebar so that we can access the full-screen mode"). It
+ * opens the full chat, where the conversations live. The Ask bar opens the
+ * chat beside the page. Its badge is the count of live runs.
+ */
+function ChatRow({
+  collapsed,
+  running,
+  active,
+  onNavigate,
+}: {
+  collapsed: boolean;
+  running: number;
+  active: boolean;
+  onNavigate: (e: MouseEvent) => void;
+}) {
+  const rowLabel = running > 0 ? `Chat, ${running} running` : "Chat";
+  return (
+    <Link
+      href={CHAT_PANE_HREF}
+      onClick={onNavigate}
+      aria-label={rowLabel}
+      title={collapsed ? rowLabel : undefined}
+      data-nav-chat=""
+      data-rail-row={collapsed ? "" : undefined}
+      className={`rounded-lg glass:rounded-row tech-transition ${
+        active
+          ? "bg-primary/15 text-primary glass:bg-sidebar-accent glass:text-sidebar-foreground"
+          : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
+      } ${collapsed ? "relative flex items-center justify-center p-2.5" : "flex items-center gap-2.5 px-3 py-2 text-sm glass:text-sidebar-foreground/85"}`}
+    >
+      <Icon name="Sparkles" size={collapsed ? 18 : 16} className="shrink-0 glass:text-muted-foreground" />
+      {collapsed ? <RailPeekLabel>Chat</RailPeekLabel> : <span className="font-medium text-[13px] glass:text-subhead">Chat</span>}
+      {running > 0 ? (
+        collapsed ? (
+          <>
+            <span data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 whitespace-nowrap rounded-full bg-success px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-success-foreground">
+              {running}
+            </span>
+            <span data-rail-trail="" aria-hidden className="ml-auto inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-success/15 px-1.5 text-[11px] font-semibold tabular-nums text-success glass:text-caption">
+              <RunningDot />
+              {running}
+            </span>
+          </>
+        ) : (
+          // The count alone, as the Needs you pill has it (owner, 2026-11-01:
+          // "2 running" wrapped). The dot says it runs, the label says how many.
+          <span className="ml-auto inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-success/15 px-1.5 text-[11px] font-semibold tabular-nums text-success glass:text-caption">
+            <RunningDot />
+            {running}
+          </span>
+        )
+      ) : null}
+    </Link>
+  );
+}
+
+/** The live dot of a run count: it pulses while a run is live. */
+function RunningDot() {
+  return <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-success motion-safe:animate-pulse" />;
+}
+
 function NavSkeleton({ collapsed }: { collapsed: boolean }) {
   // Two groups of four, which is the shape of a typical resolved sidebar.
   return (
@@ -770,7 +981,17 @@ function NavSectionBlock({
   if (collapsed) {
     return (
       <div data-nav-section={section.id}>
-        <div className="flex flex-col gap-1 p-2">
+        {/* Glass: the section's cap, one height in both states. Folded it is a
+            short rule. While the rail peeks the section's name fades in, in
+            the same place, so no row moves (owner, 2026-11-01: "keep the
+            subsections of personal, across teams, etc."). */}
+        <div data-rail-heading="" aria-hidden className="relative hidden h-6 items-center pl-[7px] glass:flex">
+          <span data-rail-rule="" className="absolute left-[18px] h-px w-5 bg-sidebar-border" />
+          <span data-rail-label="" className="text-[11px] font-medium text-muted-foreground glass:text-caption">
+            {section.label}
+          </span>
+        </div>
+        <div className="flex flex-col gap-1 p-2 glass:pt-0">
           {section.items.map((p) => (
             <NavLink
               key={p.href}
@@ -787,7 +1008,7 @@ function NavSectionBlock({
             />
           ))}
         </div>
-        <div className="mx-3 border-t border-sidebar-border/50" />
+        <div className="mx-3 border-t border-sidebar-border/50 glass:hidden" />
       </div>
     );
   }
@@ -963,15 +1184,17 @@ export function NavLink({
             : undefined
         }
         data-nav-row={pane.href}
+        data-rail-row=""
         aria-label={name}
         className={`rounded-lg glass:rounded-row tech-transition flex items-center justify-center p-2.5 relative ${
           active
-            ? "bg-primary/15 glass:bg-primary/10 text-primary"
+            ? "bg-primary/15 text-primary glass:bg-sidebar-accent glass:text-sidebar-foreground"
             : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
         }`}
       >
         {/* `shrink-0`: a squeezed rail must not shrink the icon (task 998). */}
         <Icon name={pane.icon} size={18} strokeWidth={active ? 2.5 : 2} className="shrink-0" />
+        <RailPeekLabel>{pane.label}</RailPeekLabel>
         {/* The icon has no text, so the link's name starts with the pane's. */}
         {badge !== undefined && badge > 0 && <span className="sr-only">{pane.label}</span>}
         <NavBadge
@@ -980,16 +1203,18 @@ export function NavLink({
           label={badgeLabel ?? String(badge ?? 0)}
           placement="corner"
         />
-        {/* Folded, the needs count is a quiet dot. The number is in the
-            link's name and in its tooltip. */}
-        {meta?.kind === "needs" ? <NeedsDot /> : null}
+        {/* Folded, the needs count is a bubble on the icon's corner, and a
+            pill at the row's end while the rail peeks. */}
+        {meta?.kind === "needs" ? <NeedsDot text={meta.text} /> : null}
       </Link>
     );
   }
 
+  // Glass (owner's reference, 2026-10-31): white labels and grey icons, and
+  // the open app takes a neutral fill. The tint is for what a member acts on.
   const tone = active
-    ? "bg-primary/15 glass:bg-primary/10 text-primary"
-    : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground";
+    ? "bg-primary/15 text-primary glass:bg-sidebar-accent glass:text-sidebar-foreground"
+    : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground glass:text-sidebar-foreground/85";
   const link = (
       <Link
         key={pane.href}
@@ -1011,7 +1236,7 @@ export function NavLink({
         className={`rounded-lg glass:rounded-row tech-transition px-3 py-2 text-sm ${onRowMenu ? "min-w-0 flex-1" : tone}`}
       >
         <div className="flex items-center gap-2.5">
-          <Icon name={pane.icon} size={16} strokeWidth={active ? 2.5 : 2} className="glass:text-primary" />
+          <Icon name={pane.icon} size={16} strokeWidth={active ? 2.5 : 2} className={active ? "glass:text-sidebar-foreground" : "glass:text-muted-foreground"} />
           <span className="font-medium text-[13px] glass:text-subhead">{pane.label}</span>
           {/* With a menu, the badge gives its place to the "···" on hover or
               focus, as a `RailRow` count does (`rail-row-meta`). It is
@@ -1100,26 +1325,102 @@ export function NavLink({
 // ---------------------------------------------------------------------------
 
 /**
- * The needs count in a row's trailing slot: a muted number in the type of a
- * `RailRow` count (`rail-row-meta`), with no fill and no colour of its own.
- * A screen reader skips it, because the link's name says it in words
- * (`needsSuffix`). The phone drawer draws the same one.
+ * The needs count in a row's trailing slot: the number in a pill, as the My
+ * Day row draws it (owner, 2026-11-01: "add number pills on the side bar like
+ * my day for email, messages, projects/tasks, calendar"). A screen reader
+ * skips it, because the link's name says it in words (`needsSuffix`). The
+ * phone drawer draws the same one.
  */
 export function NeedsCount({ text }: { text: string }) {
   return (
-    <span aria-hidden data-nav-needs="count" className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">
+    <span aria-hidden data-nav-needs="count" className="ml-auto shrink-0 whitespace-nowrap rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
       {text}
     </span>
   );
 }
 
-/** The folded rail's form of the count: a small muted dot on the icon. */
-function NeedsDot() {
+/**
+ * My Day, with everything that waits on the member (owner, 2026-11-01: "fold
+ * needs you into my day from the side bar, so that there is only one
+ * surface. Open as a page"). The count is the apps' needs counts and the AI
+ * runs that wait on an answer. The row opens the My Day page, where the AI
+ * waiting card and the Needs you list hold them. The app rows show a quiet
+ * dot.
+ */
+function MyDayRow({
+  pane,
+  active,
+  count,
+  waiting = 0,
+  collapsed,
+  onNavigate,
+}: {
+  pane: NavPane;
+  active: boolean;
+  /** My Day's own number, the one its sentence says (`useNavNeeds`). */
+  count: number;
+  /** AI runs that wait on the member's answer or confirmation (HITL). */
+  waiting?: number;
+  collapsed: boolean;
+  onNavigate: (e: MouseEvent) => void;
+}) {
+  // One number with the page: its sentence counts the feed and the AI runs
+  // that wait (owner, 2026-11-01). Before My Day drew in this tab, the needs
+  // view's count stands in.
+  const said = useMyDayCount();
+  const total = said ?? count + waiting;
+  const text = total > 99 ? "99+" : String(total);
+  const rowLabel = total > 0 ? `${pane.label}, ${total} need you` : pane.label;
   return (
-    <span
-      aria-hidden
-      data-nav-needs="dot"
-      className="pointer-events-none absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-muted-foreground"
-    />
+    <Link
+      href={pane.href}
+      onClick={onNavigate}
+      aria-label={rowLabel}
+      aria-current={active ? "page" : undefined}
+      title={collapsed ? rowLabel : undefined}
+      data-nav-my-day=""
+      data-rail-row={collapsed ? "" : undefined}
+      className={`rounded-lg glass:rounded-row tech-transition ${
+        active
+          ? "bg-primary/15 text-primary glass:bg-sidebar-accent glass:text-sidebar-foreground"
+          : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
+      } ${collapsed ? "relative flex items-center justify-center p-2.5" : "flex items-center gap-2.5 px-3 py-2 text-sm glass:text-sidebar-foreground/85"}`}
+    >
+      <Icon name={pane.icon} size={collapsed ? 18 : 16} className="shrink-0 glass:text-muted-foreground" />
+      {collapsed ? <RailPeekLabel>{pane.label}</RailPeekLabel> : <span className="font-medium text-[13px] glass:text-subhead">{pane.label}</span>}
+      {total > 0 ? (
+        collapsed ? (
+          <>
+            <span data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 whitespace-nowrap rounded-full bg-primary px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-primary-foreground">
+              {text}
+            </span>
+            <span data-rail-trail="" aria-hidden className="ml-auto whitespace-nowrap rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
+              {text}
+            </span>
+          </>
+        ) : (
+          <span className="ml-auto whitespace-nowrap rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
+            {text}
+          </span>
+        )
+      ) : null}
+    </Link>
+  );
+}
+
+/**
+ * The folded rail's form of the count, as the My Day row has it: a bubble on
+ * the icon's corner, and a pill at the row's end while the rail peeks.
+ */
+function NeedsDot({ text }: { text: string }) {
+  return (
+    <>
+      <span aria-hidden data-nav-needs="dot" data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 whitespace-nowrap rounded-full bg-primary px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-primary-foreground">
+        {text}
+      </span>
+      <span aria-hidden data-rail-trail="" className="ml-auto whitespace-nowrap rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
+        {text}
+      </span>
+    </>
   );
 }

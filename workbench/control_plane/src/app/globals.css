@@ -314,19 +314,25 @@ html[data-look="glass"] {
   --glass-blur: 28px;
   --elevation: 0 10px 34px rgb(0 0 0 / 0.55), 0 1px 3px rgb(0 0 0 / 0.3);
 
-  /* Larger, softer corners. The steps are Aroh's 6 · 8 · 12 · 18 · 22 · 28,
-     in rem so density scales them. Capsules use rounded-full. */
+  /* Softer corners at desktop proportions (owner, 2026-10-31: the elements
+     were larger than needed). The steps are 6 · 8 · 12 · 14 · 16 · 20, in rem
+     so density scales them. Aroh's 18 · 22 · 28 are phone corners. Capsules
+     use rounded-full. */
   --radius: 0.75rem;
   --glass-radius-sm: 0.375rem;
   --glass-radius-md: 0.5rem;
-  --glass-radius-xl: 1.125rem;
-  --glass-radius-2xl: 1.375rem;
-  --glass-radius-3xl: 1.75rem;
-  /* A row inside a 22 px panel with an 8 px inset: 22 - 8 = 14 px, the
-     concentric corner of Aroh's sidebar rows. */
-  --glass-radius-row: 0.875rem;
+  --glass-radius-xl: 0.875rem;
+  --glass-radius-2xl: 1rem;
+  --glass-radius-3xl: 1.25rem;
+  /* A row inside a 16 px panel with a 6 px inset: 16 - 6 = 10 px, the
+     concentric corner of a sidebar row. */
+  --glass-radius-row: 0.625rem;
 
-  --background: #000000;
+  /* The frame and the content card (GL-10). The shell, the top bar and the
+     rail sit on the grouped frame. Each app renders inside ONE rounded card
+     on `--background`, one step lighter than the frame in dark and white in
+     light, so every app's panes share the card's corners. */
+  --background: #121214;
   --background-grouped: #000000;
   --foreground: #f5f5f7;
   --card: #1c1c1e;
@@ -435,9 +441,9 @@ html[data-look="glass"] {
 html[data-look="glass"].light {
   --elevation: 0 10px 34px rgb(0 0 0 / 0.08), 0 1px 3px rgb(0 0 0 / 0.05);
 
-  /* Pages sit on Apple's grouped grey, and cards are white on it. The chat
-     reads on white: GL-4 sets its surface to --card. */
-  --background: #f2f2f7;
+  /* The frame is Apple's grouped grey, and the content card is white
+     (GL-10). Cards inside an app keep their hairline on the white card. */
+  --background: #ffffff;
   --background-grouped: #f2f2f7;
   --foreground: #1d1d1f;
   --card: #ffffff;
@@ -529,6 +535,15 @@ html[data-look="glass"].light {
    variant after the bare utility. */
 @custom-variant glass (&:where([data-look="glass"], [data-look="glass"] *));
 
+/* "Touch" means a phone or a small tablet: a finger is the only pointer AND
+   the window is narrower than a laptop's. Tailwind's own `pointer-coarse` is
+   `(pointer: coarse)`. A Windows laptop with a touch screen can report
+   coarse, and even no hover, while its member uses the trackpad, so every
+   control drew at its 40 to 44 px touch size (owner, 2026-11-01: "the pills
+   ... seem a little large", twice). The window width is the signal a hybrid
+   device cannot get wrong: from 1024 px, a control takes the desktop size. */
+@custom-variant pointer-coarse (@media (hover: none) and (pointer: coarse) and (max-width: 1023px));
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -614,19 +629,22 @@ html[data-look="glass"].light {
   --shadow-glass: var(--glass-shadow, var(--elevation));
   --font-sans: var(--font-app);
   --font-mono: var(--font-app-mono);
-  /* The named text styles of glass, at Apple's iOS sizes, in rem so density
+  /* The named text styles of glass, at desktop sizes (owner, 2026-10-31:
+     "the UI/UX elements are a little larger than needed"). Apple's iOS sizes
+     (body 17) are for a phone held close. A desktop reads body at 15 and UI
+     labels at 13 to 14, as macOS and the work apps do. In rem, so density
      scales them. Nothing in glass is smaller than 12 px. A glass component
-     uses these, never text-[Npx]. Classic does not use them. */
+     uses these, never text-[Npx]. */
   --text-caption: 0.75rem;
   --text-footnote: 0.8125rem;
-  --text-label: 0.875rem;
-  --text-subhead: 0.9375rem;
-  --text-callout: 1rem;
-  --text-body: 1.0625rem;
-  --text-headline: 1.1875rem;
-  --text-title: 1.375rem;
-  --text-title-lg: 1.75rem;
-  --text-largetitle: 2.125rem;
+  --text-label: 0.8125rem;
+  --text-subhead: 0.875rem;
+  --text-callout: 0.875rem;
+  --text-body: 0.9375rem;
+  --text-headline: 1rem;
+  --text-title: 1.25rem;
+  --text-title-lg: 1.5rem;
+  --text-largetitle: 1.75rem;
   /* The whole radius scale is derived from --radius so a theme controls the
      app's roundness with one value. At RapidTool's 0.75rem these resolve to
      exactly Tailwind's own defaults (8/10/12/12/16/24px), so the shipped look
@@ -882,6 +900,93 @@ body {
   opacity: 0.95;
 }
 
+/* The colour edge round the chat (GL-10, owner 2026-10-31: "the color
+   highlight around the chat interface is missing"). The glow element is
+   always present in glass and says its state in `data-glow`:
+     rest      a still, soft spectrum: the chat is here, waiting for words
+     live      Aroh's turning spectrum, at full strength: a run is live, and
+               a message now steers it (the one decorative motion)
+     waiting   still and bright: the run waits on the member (attention
+               never loops, DESIGN_SYSTEM.md §4b)
+   `data-glow-focus="true"` (the composer has focus) lifts the rest state;
+   it is the composer's focus cue in glass, beside its ring.
+   An element with no `data-glow` is the GL-4 markup, which rendered only
+   while live, so it keeps the live look. */
+html[data-look="glass"] .glass\:glass-working-glow {
+  transition: opacity var(--motion-duration) var(--motion-easing);
+}
+html[data-look="glass"] .glass\:glass-working-glow[data-glow="rest"] {
+  opacity: 0.6;
+  inset: -0.3125rem;
+}
+html[data-look="glass"] .glass\:glass-working-glow[data-glow="rest"][data-glow-focus="true"] {
+  opacity: 0.95;
+}
+html[data-look="glass"] .glass\:glass-working-glow[data-glow="waiting"] {
+  opacity: 0.85;
+}
+html[data-look="glass"] .glass\:glass-working-glow[data-glow="live"] {
+  opacity: 1;
+  inset: -0.5rem;
+  filter: blur(14px);
+}
+/* The top-bar Ask field is 32 px high, so its edge is a thinner, tighter
+   ring than the composer's. */
+html[data-look="glass"] [data-testid="ask-glow"].glass\:glass-working-glow {
+  inset: -0.125rem;
+  filter: blur(6px);
+}
+html[data-look="glass"] [data-testid="ask-glow"] > .glass\:glass-glow-ring {
+  padding: 3px;
+}
+/* The field's own edge brightens with the bloom: on focus, and while a run
+   is live or waits on the member. The field follows its glow, so `+` reads
+   the glow's state. */
+html[data-look="glass"] [data-glow-focus="true"] + .glass\:glass-spectrum-edge::before,
+html[data-look="glass"] [data-glow="live"] + .glass\:glass-spectrum-edge::before,
+html[data-look="glass"] [data-glow="waiting"] + .glass\:glass-spectrum-edge::before {
+  opacity: 1;
+}
+
+/* The crisp edge of the field itself (GL-10, owner 2026-10-31). On a white
+   page the bloom alone fades to a pastel haze, so the field carries a 2 px
+   hairline in the same spectrum. It replaces the blue focus outline: focus
+   lifts the hairline and the bloom together. The field must be positioned. */
+@utility glass-spectrum-edge {
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 2px;
+    pointer-events: none;
+    background: conic-gradient(from var(--glow-angle), var(--glow-1), var(--glow-2), var(--glow-3), var(--glow-4), var(--glow-5), var(--glow-1));
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(#000 0 0) content-box exclude,
+      linear-gradient(#000 0 0);
+    opacity: 0.6;
+    transition: opacity var(--motion-duration) var(--motion-easing);
+  }
+}
+
+/* A card in the chat thread, one step above the page surface (owner,
+   2026-10-31: the cards did not lift from the page). The page and the chat
+   are the card colour, so a card takes the popover step: #2c2c2e on #1c1c1e
+   in dark, white with the card shadow in light, as Aroh's cards on its
+   thread. Never on a panel or a page: those are the surface itself. */
+@utility glass-raised {
+  /* Inside the card, "the card" is this surface: a template's inline
+     `var(--card)` fill (a table head, a column, a chart box) blends with it
+     instead of drawing a darker block. */
+  --card: var(--popover);
+  background-color: var(--popover);
+  box-shadow: var(--card-shadow);
+}
+
 /* The spectrum, cut to a ring by a mask so the field itself stays clear. */
 @utility glass-glow-ring {
   position: absolute;
@@ -930,7 +1035,7 @@ body {
    goes on the card's frame and finds the icon that sits before the title (the
    header lives in ui/Collapsible, which this slice does not edit). */
 @utility glass-card-tile {
-  & :is(svg, span.flex):has(+ [data-rollup-title]) {
+  & :is(svg, span.flex):not([data-rollup-chevron]):has(+ [data-rollup-title]) {
     box-sizing: border-box;
     width: 1.75rem;
     height: 1.75rem;
@@ -961,7 +1066,16 @@ body {
    dots and the shimmer hold still as well. The caret keeps the classic
    `animate-pulse` of `lib/streamCaret.ts`, as it does in classic. */
 @media (prefers-reduced-motion: no-preference) {
+  /* Only a live run turns the spectrum. At rest and while the run waits on
+     the member, it holds still. */
   html[data-look="glass"] .glass\:glass-glow-ring {
+    animation: glass-glow-turn 5s linear infinite;
+  }
+  html[data-look="glass"] [data-glow="rest"] > .glass\:glass-glow-ring,
+  html[data-look="glass"] [data-glow="waiting"] > .glass\:glass-glow-ring {
+    animation: none;
+  }
+  html[data-look="glass"] [data-glow="live"] + .glass\:glass-spectrum-edge::before {
     animation: glass-glow-turn 5s linear infinite;
   }
   html[data-look="glass"] .stream-caret {
@@ -1098,6 +1212,11 @@ select optgroup {
   letter-spacing: var(--control-label-tracking);
   text-transform: var(--control-label-transform);
   transition: all var(--motion-duration) var(--motion-easing);
+}
+/* Glass: what a member types is text, not a label. The label weight made a
+   draft reply read as bold (owner, 2026-11-01). */
+html[data-look="glass"] .cc-control:is(input, textarea) {
+  font-weight: 400;
 }
 
 /* Keyboard focus only — a mouse click should not draw a ring.
@@ -2139,6 +2258,143 @@ a.kb-subpage:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px
   transition: width var(--panel-duration) var(--panel-easing);
 }
 
+/* Hover to expand (owner, 2026-11-01). A folded rail's rows keep their
+   place while it widens, so the row under the pointer stays under it. Each
+   name takes no width while folded, fades in once the rail has widened, and
+   leaves at once when it narrows. The rows hold one geometry in both states
+   (below), so no icon moves on the way out or on the way back. */
+.sidebar-rail [data-rail-label] {
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: opacity 100ms ease-out;
+}
+.sidebar-rail[data-peek="open"] [data-rail-label] {
+  max-width: 12rem;
+  margin-left: 0.75rem;
+  opacity: 1;
+  transition: opacity 160ms ease-out 110ms;
+}
+/* One geometry for the folded rail, peeking or not, so nothing moves when
+   the peek ends (owner, 2026-11-01: "a slight shift between where the icons
+   are supposed to be"). An icon sits at a fixed left inset, the centred x of
+   an 18 px icon in a 40 px row, and never re-centres. A count or a dot
+   keeps its place on the icon's top-right corner, measured from the left,
+   so a wider row does not carry it away. The head's mark does the same. */
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"] [data-rail-row] {
+  justify-content: flex-start;
+  padding-left: 0.6875rem;
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"] [data-account-foot] [data-rail-row] {
+  padding-left: 0.375rem;
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"] [data-rail-row] > .absolute {
+  left: 1.625rem;
+  right: auto;
+}
+/* A count sits on the icon's top-right corner, and it may cross the rail's
+   edge (owner, 2026-11-01: "the color number bubble ... on top of the bar's
+   boundaries"). At rest the folded rail does not clip, and its list reaches
+   8 px past the rail, over the frame's gap, so a wide count ("26+") draws
+   whole. A ring in the rail's tone parts it from the icon. A peek clips
+   again: there the count fades and the row's trailing pill shows it. */
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek]) {
+  overflow: visible;
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"] > nav {
+  margin-right: -0.5rem;
+  padding-right: 0.5rem;
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"] [data-rail-row] > [data-rail-corner] {
+  left: 1.25rem;
+  top: 0.125rem;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--background-grouped) 30%, var(--card));
+}
+/* The head's brand clips to its mark while the rail is folded, and opens to
+   the name as the rail widens, at the rail's own pace. It keeps one width,
+   and a clip moves, not the layout (motion.test.ts G3). */
+html[data-look="glass"] .sidebar-rail [data-head-brand] {
+  max-width: 11rem;
+  overflow: hidden;
+  clip-path: inset(0 0 0 0);
+  transition: clip-path var(--panel-duration) var(--panel-easing);
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="open"]) [data-head-brand] {
+  clip-path: inset(0 calc(100% - 1.5rem) 0 0);
+}
+/* A folded rail shows the organization's square mark, and the open sidebar
+   its wide logo (owner, 2026-11-01). Until the mark has drawn, the wide logo
+   stays, clipped to its left. */
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="open"]) [data-head-brand] [data-brand-mark] {
+  display: flex;
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="open"]) [data-head-brand]:has([data-brand-mark]) [data-brand-wide] {
+  display: none;
+}
+/* A section's cap: the rule while folded, the name while it peeks. */
+.sidebar-rail[data-peek="open"] [data-rail-rule] {
+  display: none;
+}
+/* A wide count would sit on a row's name while it peeks, so the corner
+   count fades out and a trailing pill fades in at the row's end. Neither
+   moves. */
+.sidebar-rail [data-rail-trail] {
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 0;
+  padding-inline: 0;
+  transition: opacity 100ms ease-out;
+}
+.sidebar-rail[data-peek="open"] [data-rail-trail] {
+  max-width: 4rem;
+  padding-inline: 0.375rem;
+  opacity: 1;
+  transition: opacity 160ms ease-out 110ms;
+}
+.sidebar-rail [data-rail-corner] {
+  transition: opacity 100ms ease-out;
+}
+/* No count in the sidebar ever wraps (owner, 2026-11-01: "the numbers ...
+   never go to two lines across all the sidebar pills"). */
+.sidebar-rail [data-rail-corner],
+.sidebar-rail [data-rail-trail],
+.sidebar-rail [data-nav-needs] {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.sidebar-rail[data-peek="open"] [data-rail-corner] {
+  opacity: 0;
+}
+/* While it peeks, the names read as the open sidebar's do. */
+html[data-look="glass"] .sidebar-rail[data-peek] [data-rail-row]:not([aria-current="page"]) [data-rail-label] {
+  color: color-mix(in srgb, var(--sidebar-foreground) 85%, transparent);
+}
+/* One material, folded or peeking (owner, 2026-11-01: "it sort of changes
+   color drastically"). One layer under the rail's content draws the rail's
+   own tint over the frame's colour, as the folded rail shows it, so over the
+   page it reads as the same panel, and the page shows through it, blurred.
+   The blur sits on this layer, never on the rail itself, so a fixed menu
+   inside the rail (the account menu) is not trapped by it. */
+html[data-look="glass"] .sidebar-rail[data-peek] {
+  background-color: transparent;
+}
+html[data-look="glass"] .sidebar-rail[data-peek]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  /* The rail's tint on top, the frame's colour under it: what the folded
+     rail shows, over the frame or over the page. */
+  background:
+    linear-gradient(var(--glass-bg), var(--glass-bg)),
+    color-mix(in srgb, var(--background-grouped) 88%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  backdrop-filter: blur(24px) saturate(1.4);
+}
+
 @keyframes sidebar-swap {
   from { opacity: 0; }
   to   { opacity: 1; }
@@ -2207,6 +2463,11 @@ a.kb-subpage:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px
 .assistant-panel[data-shown] {
   opacity: 1;
   transform: none;
+}
+/* In glass the side panel sits 8 px in from the window's edge, so it rides
+   out its own width plus that gap. */
+html[data-look="glass"] .assistant-panel[data-panel-form="dock"]:not([data-shown]) {
+  transform: translateX(calc(100% + 0.5rem));
 }
 .assistant-panel[data-moving][data-panel-form="dock"] {
   transition: transform var(--panel-duration) var(--panel-easing);
@@ -2425,6 +2686,42 @@ html.panel-swap::view-transition-new(assistant-panel) {
   display: none;
 }
 
+/* Glass scrollbars (GL-10, owner 2026-10-31: "scroll wheel on side is
+   bad"). Apple draws the thumb only while you are over the pane, so a
+   floating panel never shows a grey bar along its edge. The thumb is
+   transparent until the pointer is over the scroller, then it is the same
+   thin pill as classic. Keyboard and wheel scrolling do not change. Both
+   syntaxes, for the reason the classic block gives. `.scrollbar-hide` still
+   wins: it sets the width to none, and these rules set only the colour. */
+html[data-look="glass"] * {
+  scrollbar-color: transparent transparent;
+}
+html[data-look="glass"] *:hover {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+html[data-look="glass"] *::-webkit-scrollbar-thumb {
+  background-color: transparent;
+}
+html[data-look="glass"] *:hover::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+}
+/* The list fades at an edge while apps sit beyond it (task 998 hid the
+   folded rail's bar, and the open list's bar shows only on hover).
+   `Sidebar.tsx` sets each attribute only in glass, and only while the list
+   can still scroll that way. */
+html[data-look="glass"] nav[data-more-below] {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
+}
+html[data-look="glass"] nav[data-more-above] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 2rem);
+  mask-image: linear-gradient(to bottom, transparent, #000 2rem);
+}
+html[data-look="glass"] nav[data-more-above][data-more-below] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 2rem, #000 calc(100% - 2.5rem), transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 2rem, #000 calc(100% - 2.5rem), transparent);
+}
+
 /* ── Reveal on hover ──────────────────────────────────────────────────── */
 /*
  * 🔴 `opacity-0 group-hover:opacity-100` HIDES THE CONTROL FOREVER on a
@@ -2607,6 +2904,14 @@ html.panel-swap::view-transition-new(assistant-panel) {
   .sidebar-rail {
     transition: none;
   }
+  .sidebar-rail [data-rail-label],
+  .sidebar-rail [data-rail-trail],
+  .sidebar-rail [data-rail-corner] {
+    transition: none;
+  }
+  html[data-look="glass"] .sidebar-rail [data-head-brand] {
+    transition: none;
+  }
   /* The assistant opens, closes and changes form at once, as the fold does.
      `usePanelPhase` and `swapPanelForm` skip the moving phases too. */
   .assistant-spacer[data-moving],
@@ -2644,3 +2949,42 @@ html.panel-swap::view-transition-new(assistant-panel) {
   }
 }
 
+/* ── GL-6, app group B: Projects, Tasks, People, Knowledge, Approvals,
+   Organisation, Integrations, Settings ──────────────────────────────────
+   Two floors that glass sets for the whole look. They live here because the
+   apps hold hundreds of `text-[10px]`, `text-[11px]` and `uppercase` uses.
+   A per-class edit would touch every file, and GL-Z2 folds the classes later.
+   • Nothing in glass is smaller than 12 px (the `--text-caption` step).
+   • A small heading is sentence case. The uppercase micro-label belongs to
+     classic. A badge keeps its shape and loses only the capitals.
+   The `main` scope keeps the shell chrome and the chat out of the rule. */
+html[data-look="glass"] main :is(.text-\[9px\], .text-\[10px\], .text-\[11px\]) {
+  font-size: var(--text-caption);
+}
+html[data-look="glass"] :is(main, [role="dialog"], [role="menu"], [role="listbox"]) .uppercase {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* ── GL-10, one surface (owner, 2026-10-31) ───────────────────────────────
+   The content card is the app's surface (`AppShell`'s FULL_MAIN, bg-card).
+   An app root that fills the card and paints the page colour would draw a
+   second tone under the title bar, so in glass it takes the card's surface.
+   Its panes keep their own. */
+html[data-look="glass"] main .h-full.bg-background {
+  background-color: transparent;
+}
+
+/* ── GL-6, controls slice: the toolbar size ────────────────────────────────
+   One height for a toolbar row: 28 px. `Input sm`, `SelectButton`, `Button sm`
+   and a segment track all draw it. A title-bar action is a toolbar control, so
+   a text button there takes the same size, whatever size the app asked for.
+   The rule is unlayered, so it beats the utility classes of `Button`. An icon
+   button carries `glass:w-*` and keeps its own box. A touch screen keeps 40 px. */
+@media (min-width: 1024px) {
+  html[data-look="glass"] [data-app-bar-actions] .cc-button:not([class*="glass:w-"]) {
+    height: 1.75rem;
+    padding-inline: 0.75rem;
+    font-size: var(--text-footnote);
+  }
+}

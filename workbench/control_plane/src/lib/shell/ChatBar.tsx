@@ -34,8 +34,12 @@ import { useSession } from "next-auth/react";
 
 import { useAccess } from "@/components/AccessProvider";
 import Icon from "@/components/Icon";
+import { useRunActivity } from "@/hooks/useActiveSessions";
+import { shouldPollWorkspace } from "@/lib/access";
 import { visibleSections } from "@/lib/nav";
 
+import { closeActivity, openActivity, useActivityOpen } from "./ActivityControl";
+import { AskSheet, useAskSheetHost } from "./AskSheet";
 import { ChatNudge } from "./ChatNudge";
 import { ResultList, resultOptionId, useBarResults } from "./CommandBar";
 import { heldPanes } from "./registry";
@@ -63,8 +67,9 @@ export function AssistantWorkArea({ children, assistant }: { children: ReactNode
   const covered = st.open && effectiveMode(st.mode, 0, false) === "full";
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col" inert={covered} data-assistant-covered={covered ? "" : undefined}>
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" inert={covered} data-assistant-covered={covered ? "" : undefined}>
         {children}
+        <AskBar />
       </div>
       {assistant}
     </div>
@@ -122,8 +127,66 @@ function useHere() {
   return { here: paneAt(pathname, sections), panes: heldPanes(sections) };
 }
 
-/** The one field, in the middle of the shell bar. */
-export function AskField() {
+/**
+ * Two starts per app for the Ask bar, shown while it has focus and no words
+ * (owner, 2026-11-01, prototype). A start is a whole question.
+ */
+const ASK_STARTS: Record<string, readonly string[]> = {
+  "/": ["What needs me today?", "Summarise yesterday for me"],
+  "/email": ["Draft replies to the emails that need me", "Summarise today's inbox"],
+  "/whatsapp": ["Who is waiting on a reply?", "Summarise today's chats"],
+  "/projects": ["What is slipping this week?", "Plan my week"],
+  "/tasks": ["What should I do next?", "Plan my day"],
+  "/calendar": ["Plan my day", "Find 30 minutes for a review this week"],
+  "/crm": ["Summarise my open deals", "Who should I follow up with?"],
+  "/people": ["Who is free this week?", "Who knows about lighting design?"],
+  "/knowledge": ["What do we know about this client?", "Summarise our pricing notes"],
+  "/artifacts": ["Find my latest report", "Summarise my recent files"],
+  "/approvals": ["What waits for my approval?", "Which approvals are urgent?"],
+};
+const ASK_STARTS_ANY: readonly string[] = ["What can you help me with here?", "Summarise this page"];
+
+/**
+ * The Ask bar (owner, 2026-11-01): the one field, at the foot of every page.
+ * It asks AND searches: words show the matching apps, people, records and
+ * acts above it, Enter on a row opens it, and Enter with no row asks the
+ * assistant, which opens beside the page. Ctrl+K and "/" put the cursor here.
+ * There is no field at the top any more. It hides while the assistant is
+ * open, which has its own composer, and on /chat.
+ */
+function AskBar() {
+  const st = useAssistant();
+  const pathname = usePathname();
+  // WhatsApp's own composer sits at the foot of its page, so the bar would
+  // cover it. There the assistant opens from Ctrl+J and the Chat row.
+  if (st.open || pathname?.startsWith("/chat") || pathname?.startsWith("/whatsapp")) return null;
+  return <AskBarFoot />;
+}
+
+/** The mounted bar: it holds the runs list (`AskSheet.tsx`). */
+function AskBarFoot() {
+  const barRef = useRef<HTMLDivElement>(null);
+  const sheet = useActivityOpen();
+  useAskSheetHost(barRef, sheet);
+  return (
+    <div data-ask-bar="" className="pointer-events-none absolute inset-x-0 bottom-5 z-30 flex justify-center px-6">
+      <div ref={barRef} className="pointer-events-auto w-full max-w-[36rem]">
+        <AskField placement="foot" sheet={sheet} />
+      </div>
+    </div>
+  );
+}
+
+/** The one field: in the shell bar, or at the foot of the page (`placement`). */
+export function AskField({
+  placement = "bar",
+  sheet = false,
+}: { placement?: "bar" | "foot"; sheet?: boolean } = {}) {
+  const foot = placement === "foot";
+  // At the foot the bar shows live runs, only while there are some: the AI's
+  // work in progress, where the member talks to the AI (owner, 2026-11-01).
+  const { access: runAccess, loading: runLoading } = useAccess();
+  const { total: running } = useRunActivity(null, foot && shouldPollWorkspace(runAccess, runLoading));
   const { here, panes } = useHere();
   const facts = useCurrentFacts();
   const chip = contextChipText(here, facts);
@@ -132,6 +195,7 @@ export function AskField() {
   const shell = useShellPrefs();
   const [text, setText] = useState("");
   const [showing, setShowing] = useState(false);
+  const [focused, setFocused] = useState(false);
   // The highlighted result by its KEY, as the modal holds it: Find rows land
   // late and move the rows around them. Null is the field, where Enter asks.
   const [activeKey, setActiveKey] = useState<string | null>(null);
@@ -218,10 +282,59 @@ export function AskField() {
         e.preventDefault();
         ask();
       }}
-      className="relative w-full max-w-xl shrink"
+      className={foot ? "relative w-full" : "relative w-full max-w-xl shrink"}
     >
-      <div className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background px-3 tech-transition focus-within:border-primary/50 hover:border-primary/40">
-        <Icon name="Sparkles" size={15} className="shrink-0 text-primary" />
+      {/* At the foot: two starts for this app, while the field has focus and
+          no words. A start is a whole question, and a click asks it. */}
+      {foot && focused && !text && !sheet ? (
+        <div data-ask-starts="" className="absolute inset-x-0 bottom-full mb-2 flex flex-wrap justify-center gap-1.5">
+          {(ASK_STARTS[here?.href ?? ""] ?? ASK_STARTS_ANY).map((s) => (
+            <button
+              key={s}
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                fieldRef.current?.blur();
+                openAssistant({ text: s });
+              }}
+              className="cc-link rounded-full border border-border bg-card px-3 py-1 text-xs text-foreground hover:bg-secondary glass:border-transparent glass:glass-chrome glass:text-footnote"
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {/* Glass only (GL-10b): the colour edge round the field, at rest. A
+          SIBLING of the field, never its ancestor, so the blur holds. */}
+      <div className="relative">
+      <div aria-hidden data-testid="ask-glow" data-glow="rest" data-glow-focus={focused ? "true" : "false"} className={`hidden glass:block glass:glass-working-glow absolute -inset-1 ${foot ? "rounded-[24px]" : "rounded-full"}`}>
+        <div className="glass:glass-glow-ring" />
+      </div>
+      {/* At the foot the bar is a surface that grows: the sheet rises above
+          the field (`AskSheet.tsx`), and the colour edge runs round both. Its
+          corner stays 22 px, the capsule's own, so it grows and never morphs. */}
+      <div
+        data-ask-surface={foot ? "" : undefined}
+        data-sheet={foot && sheet ? "runs" : undefined}
+        className={
+          foot
+            ? `relative z-10 flex flex-col overflow-hidden rounded-[22px] border border-border bg-card shadow-lg transition-[background-color] duration-300 glass:border-transparent glass:glass-spectrum-edge ${
+                sheet ? "glass:glass-menu" : "glass:glass-chrome"
+              }`
+            : "contents"
+        }
+      >
+      {foot ? <AskSheet open={sheet} /> : null}
+      <div
+        onFocusCapture={() => setFocused(true)}
+        onBlurCapture={() => setFocused(false)}
+        className={
+          foot
+            ? "flex h-11 shrink-0 items-center gap-2 pl-4 pr-2"
+            : "flex h-8 items-center gap-2 rounded-lg border border-border bg-background px-3 tech-transition focus-within:border-primary/50 hover:border-primary/40 glass:relative glass:z-10 glass:rounded-full glass:border-transparent glass:bg-transparent glass:glass-chrome glass:focus-within:border-transparent glass:glass-spectrum-edge"
+        }
+      >
+        <Icon name="Sparkles" size={foot ? 16 : 15} className="shrink-0 text-primary" />
         {/* A bare field inside the bar's own box: the box is the control's
             border and focus ring, so the field draws neither (as the old
             fake field did). */}
@@ -232,13 +345,15 @@ export function AskField() {
             setText(e.target.value);
             setActiveKey(null);
             setShowing(e.target.value.trim().length > 0);
+            // Words mean ask or search: the sheet folds away for the results.
+            if (sheet && e.target.value.trim()) closeActivity();
           }}
           onKeyDown={onKeyDown}
           onBlur={() => {
             setShowing(false);
             setActiveKey(null);
           }}
-          placeholder={BAR_PLACEHOLDER}
+          placeholder={foot ? "Ask or search…" : BAR_PLACEHOLDER}
           role="combobox"
           aria-expanded={panel}
           aria-controls="askfield-list"
@@ -252,20 +367,61 @@ export function AskField() {
           <span
             data-ask-field-context=""
             title="The assistant sees where you are"
-            className="hidden max-w-48 shrink-0 truncate rounded bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground lg:inline"
+            className={`max-w-48 shrink-0 truncate rounded bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground ${foot ? "inline glass:rounded-full glass:px-2 glass:text-caption" : "hidden lg:inline"}`}
           >
             {chip}
           </span>
         ) : null}
-        <kbd className="shrink-0 rounded border border-border px-1.5 py-0.5 font-sans text-[10px] text-muted-foreground">
-          {keyLabel}
-        </kbd>
+        {foot && running > 0 ? (
+          <button
+            type="button"
+            data-ask-running=""
+            aria-expanded={sheet}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => (sheet ? closeActivity() : openActivity())}
+            title={sheet ? "Hide the runs" : "See the runs"}
+            className={`flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold tabular-nums tech-transition glass:text-caption ${
+              sheet ? "bg-success text-success-foreground" : "bg-success/15 text-success hover:bg-success/25"
+            }`}
+          >
+            <span aria-hidden className={`h-1.5 w-1.5 rounded-full motion-safe:animate-pulse ${sheet ? "bg-success-foreground" : "bg-success"}`} />
+            {running} running
+          </button>
+        ) : null}
+        {foot ? (
+          // The side panel alone, with no words (owner, 2026-11-01: "what if
+          // I want to open only the sidebar?"). Its own header has the full
+          // view, and the sidebar's Chat row opens the full chat.
+          <button
+            type="button"
+            aria-label="Open the chat beside the page"
+            title={`Chat beside the page (${keyLabel.replace("K", "J")})`}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => {
+              closeActivity();
+              openAssistant({ mode: "dock" });
+            }}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition"
+          >
+            <Icon name="PanelRight" size={15} />
+          </button>
+        ) : (
+          <kbd className="shrink-0 rounded border border-border px-1.5 py-0.5 font-sans text-[10px] text-muted-foreground">
+            {keyLabel}
+          </kbd>
+        )}
+      </div>
+      </div>
       </div>
 
       {panel ? (
         <div
           data-ask-field-results=""
-          className="absolute left-0 right-0 top-full z-50 mt-1 flex max-h-[70vh] flex-col overflow-hidden rounded-lg border border-border bg-popover shadow-lg"
+          // At the foot the list opens upward, and the Ask row stays nearest
+          // the field: the column is reversed, the reading order is not.
+          className={`absolute left-0 right-0 z-50 flex overflow-hidden rounded-lg border border-border bg-popover shadow-lg ${
+            foot ? "bottom-full mb-2 max-h-[60vh] flex-col-reverse glass:rounded-2xl" : "top-full mt-1 max-h-[70vh] flex-col"
+          }`}
         >
           {/* The field's own act, nearest the field: Enter asks. A click here
               asks too. It is not an option of the list, so the list stays one

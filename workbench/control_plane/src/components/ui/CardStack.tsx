@@ -127,7 +127,7 @@ export default function CardStack({ total, index, onGo, keys, noun, children }: 
       <div
         role="status"
         data-card-stack-banner=""
-        className="flex min-w-0 items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-1.5 text-xs text-primary"
+        className="flex min-w-0 items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-1.5 text-xs text-primary glass:rounded-[10px] glass:border-transparent glass:bg-primary/12 glass:px-3 glass:text-footnote"
       >
         <Icon name="Layers" size={14} className="shrink-0" />
         <span className="min-w-0 flex-1 font-medium">{stackBanner(total, noun)}</span>
@@ -168,7 +168,7 @@ export default function CardStack({ total, index, onGo, keys, noun, children }: 
               key={i}
               aria-hidden
               data-card-stack-edge=""
-              className={`absolute inset-0 rounded-lg border border-primary/30 bg-card shadow-sm ${nudge && i === 0 ? "card-stack-lift" : ""}`}
+              className={`absolute inset-0 rounded-lg border border-primary/30 bg-card shadow-sm glass:rounded-[16px] glass:border-transparent glass:glass-raised ${nudge && i === 0 ? "card-stack-lift" : ""}`}
               style={{
                 transform: `translateY(${y}px) scale(${scale}) rotate(${rotate}deg)`,
                 transition: dragging ? undefined : "transform var(--spring-duration) var(--spring-easing)",
@@ -179,7 +179,7 @@ export default function CardStack({ total, index, onGo, keys, noun, children }: 
           );
         })}
         <div
-          className={`relative rounded-lg bg-background ${nudge ? "card-stack-nudge" : ""}`}
+          className={`relative rounded-lg bg-background glass:rounded-[16px] ${nudge ? "card-stack-nudge" : ""}`}
           data-nudge={nudge ? "" : undefined}
           style={topStyle}
           onTransitionEnd={() => setSettling(false)}

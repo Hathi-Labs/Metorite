@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 from acb_auth import UserContext, UserRole, build_access, get_current_user
+from acb_common.app_manifests.shell_manifest import load_vocabulary
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from gateway.routes.admin import me
@@ -28,7 +29,7 @@ from gateway.routes.shell.intent import JOBS
 ROOT = Path(__file__).resolve().parents[2]
 NAV = ROOT / "workbench" / "control_plane" / "src" / "lib" / "nav.ts"
 PRESETS = ROOT / "workbench" / "control_plane" / "src" / "lib" / "shell" / "presets.ts"
-REGISTRY = ROOT / "workbench" / "control_plane" / "src" / "lib" / "shell" / "registry.ts"
+REGISTRY = ROOT / "workbench" / "control_plane" / "src" / "lib" / "shell" / "jobs.generated.ts"
 
 
 class _Result:
@@ -335,17 +336,29 @@ class TestOneVocabulary:
 
     def test_the_panes_are_nav_ts_s(self) -> None:
         source = NAV.read_text(encoding="utf-8")
-        assert set(re.findall(r'href: "(/[^"]*)"', source)) == me.SHELL_PANES
+        panes = set(re.findall(r'href: "(/[^"]*)"', source))
+        assert panes == me.SHELL_PANES == set(load_vocabulary().panes)
 
     def test_the_presets_are_presets_ts_s(self) -> None:
         source = PRESETS.read_text(encoding="utf-8")
         ids = set(re.findall(r'^\s+id: "([a-z-]+)",$', source, re.M))
-        assert ids == me.SHELL_PRESETS
+        assert ids == me.SHELL_PRESETS == set(load_vocabulary().presets)
         assert len(ids) == 8
 
     def test_the_cards_are_presets_ts_s(self) -> None:
         source = PRESETS.read_text(encoding="utf-8")
-        assert _ts_list(source, "CARD_KEYS") == me.SHELL_CARDS
+        cards = _ts_list(source, "CARD_KEYS")
+        assert cards == me.SHELL_CARDS == set(load_vocabulary().cards)
+
+    def test_the_gateway_sets_derive_from_the_manifest(self) -> None:
+        vocab = load_vocabulary()
+        for got, want in (
+            (me.SHELL_PANES, vocab.panes),
+            (me.SHELL_PRESETS, vocab.presets),
+            (me.SHELL_CARDS, vocab.cards),
+        ):
+            assert isinstance(got, frozenset)
+            assert got == frozenset(want)
 
     def test_the_jobs_are_the_command_bar_s(self) -> None:
         """The PUT checks job ids against the gateway's list (`intent.py`).
@@ -353,8 +366,8 @@ class TestOneVocabulary:
         So this reads the TypeScript, as `TestOneJobList` does, and it fails
         when the two lists drift."""
         source = REGISTRY.read_text(encoding="utf-8")
-        match = re.search(r"export const JOBS[^=]*=\s*\[(.*?)\n\];", source, re.S)
-        assert match, "JOBS not found in registry.ts"
+        match = re.search(r"export const GENERATED_JOBS[^=]*=\s*\[(.*?)\n\];", source, re.S)
+        assert match, "GENERATED_JOBS not found in jobs.generated.ts"
         ts_ids = set(re.findall(r'^\s+id: "([a-z-]+)",$', match.group(1), re.M))
         assert len(ts_ids) >= 10
         assert me._job_ids() == ts_ids

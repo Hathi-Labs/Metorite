@@ -90,6 +90,10 @@ export interface ChatMessage {
    *  `role: "user"` covers every human in the thread, not just the reader.
    *  Absent on pre-authorship rows, which render exactly as they always did. */
   authorKind?: "human" | "agent" | "system";
+  /** The member who started the run that wrote this agent turn, as the
+   *  server stored it. Absent on a live turn and on an older row. The
+   *  "used your profile" mark draws only for this member (PZ-20b). */
+  runMemberEmail?: string;
   /** The reader is not cleared to see this turn; `content` is a notice, not the
    *  original text. Render it as a boundary holding, never as an error. */
   redacted?: boolean;

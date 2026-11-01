@@ -40,6 +40,7 @@ from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger
+from acb_common.assistant_profile import PROFILE_USED_EVENT
 from acb_common.pg_text import storable
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from gateway.rooms import (
@@ -568,7 +569,7 @@ def _get_messages(
         cols = (
             "SELECT id, role, content, timestamp_ms, tool_events, progress_lines, "
             "reasoning, agent_state, custom_events, author_email, author_kind, "
-            "authority FROM chat_message WHERE session_id = :sid"
+            "authority, run_member_email FROM chat_message WHERE session_id = :sid"
             # S14 (§20): the gateway mints the agent row of a run with no
             # content before the first checkpoint. A reader does not see it
             # until it holds content, a tool event, a custom event or
@@ -613,6 +614,28 @@ REDACTION_NOTICE = (
     "content is not shown to you."
 )
 
+#: The custom events that only the member who ran the turn reads (PZ-20b,
+#: ``personalization.md`` §13.3 item 1). The "used your profile" mark says
+#: that the run member's own profile holds something. A solo chat can be
+#: shared later, so another reader of the same row never gets it.
+RUN_MEMBER_ONLY_EVENTS = frozenset({PROFILE_USED_EVENT})
+
+
+def _events_for_reader(events: list[Any], run_member: Any, viewer: str) -> list[Any]:
+    """*events* of one row as *viewer* may read them.
+
+    The member of the run (``run_member_email``) reads them all. Every other
+    reader, and every reader of a row that names no run member, gets them
+    without :data:`RUN_MEMBER_ONLY_EVENTS`. The member is the stored column
+    and the reader is the session, never a request field (R5). Fence:
+    ``tests/unit/test_profile_used_event.py``.
+    """
+    member = run_member.strip().lower() if isinstance(run_member, str) else ""
+    if member and member == (viewer or "").strip().lower():
+        return events
+    return [e for e in events
+            if not (isinstance(e, dict) and e.get("name") in RUN_MEMBER_ONLY_EVENTS)]
+
 
 def _render_message(
     r: Any, viewer: str, held: frozenset[str] | None,
@@ -627,7 +650,12 @@ def _render_message(
 
     ``authority`` is NULL on every solo and pre-135 row, which is why this
     function is a no-op for them rather than a filter they have to pass.
+
+    PZ-20b: a custom event of :data:`RUN_MEMBER_ONLY_EVENTS` reaches only the
+    member who ran the turn (:func:`_events_for_reader`). ``runMemberEmail``
+    goes out too, so the bubble can check the same rule a second time.
     """
+    run_member = getattr(r, "run_member_email", None)
     body = {
         "id": r.id,
         "role": r.role,
@@ -637,9 +665,10 @@ def _render_message(
         "progressLines": r.progress_lines or [],
         "reasoning": r.reasoning,
         "agentState": r.agent_state,
-        "customEvents": r.custom_events or [],
+        "customEvents": _events_for_reader(r.custom_events or [], run_member, viewer),
         "authorEmail": getattr(r, "author_email", None),
         "authorKind": getattr(r, "author_kind", None),
+        "runMemberEmail": run_member,
     }
 
     authority = getattr(r, "authority", None)

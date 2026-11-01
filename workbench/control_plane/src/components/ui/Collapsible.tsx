@@ -159,6 +159,14 @@ export const CARD_PANEL_MOTION =
 export const CARD_FRAME_CLASS = "rounded-lg border border-border bg-card/40 px-2.5 py-1.5";
 
 /**
+ * The glass frame of a rollup card that draws its own frame (`header="frame"`,
+ * D143 GL-10): the 22 px settled surface and its solid icon tile. A card that
+ * passes `header="own"` draws its own glass frame, so this is not part of
+ * `CARD_FRAME_CLASS`: two frames would compete.
+ */
+const GLASS_ROLLUP_FRAME = "glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-4 glass:glass-card-tile";
+
+/**
  * ⚠️ **The body has no hanging indent** (owner feedback, 2026-10-10). It
  * lined up under the TITLE once, past the chevron and the icon, and that
  * left about 60 px of empty column at the left of every receipt row. Now the
@@ -308,7 +316,7 @@ export function CollapsibleCardHeader({
       <span
         data-rollup-chevron=""
         aria-hidden
-        className={`flex shrink-0 text-muted-foreground transition-transform duration-200 ease-out group-hover:text-foreground motion-reduce:transition-none ${shut ? "-rotate-90" : ""}`}
+        className={`flex shrink-0 text-muted-foreground transition-transform duration-200 ease-out group-hover:text-foreground motion-reduce:transition-none glass:order-last glass:ml-auto ${shut ? "-rotate-90" : ""}`}
       >
         <Icon name="ChevronDown" size={12} />
       </span>
@@ -448,7 +456,7 @@ export function CollapsibleCard({
           ) : (
             // The frame stays in the tree when the card is short (as
             // `contents`, which draws no box), so the body never remounts.
-            <div data-rollup-frame="" className={toggle ? CARD_FRAME_CLASS : "contents"}>
+            <div data-rollup-frame="" className={toggle ? `${CARD_FRAME_CLASS} ${GLASS_ROLLUP_FRAME}` : "contents"}>
               {toggle ? <CollapsibleCardHeader /> : null}
               <CollapsibleCardBody className={toggle ? "pt-1.5" : ""}>{children}</CollapsibleCardBody>
             </div>

@@ -213,6 +213,14 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "unarchive_project": ("unarchive the project Website Relaunch",),
     "unarchive_task": ("restore the archived task",),
     "watch": ("watch this task",),
+    # -- studio (STU-G1) --
+    "studio_draft": ("draft an app manifest in AI Studio",),
+    "studio_interview": ("interview me about the studio app I want to build",),
+    "studio_list_actions": ("which actions can my studio app use?",),
+    "studio_outline": ("outline my studio app",),
+    "studio_patch": ("change the title in the app manifest",),
+    "studio_plan": ("plan the studio app",),
+    "studio_validate": ("validate the app manifest",),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),

@@ -70,7 +70,7 @@ emit_generative_ui({
 Lucide-only via `resolveIcon` (bundled, no network — Font Awesome rejected to
 keep one icon system, per DESIGN_SYSTEM.md).
 
-## 3. Template library (Phase 1 catalog — 16 templates)
+## 3. Template library (Phase 1 catalog — 19 templates)
 
 Display: `weatherCard`, `statDashboard`, `barChart`, `sparkTrend`,
 `comparison`, `progressTracker` *(pre-existing)* + `recipeCard` (meta chips,
@@ -100,6 +100,18 @@ The docstring keeps the names only. `write_artifact.GENUI_TEMPLATE_SHAPES`
 holds each `data` string of the catalog, word for word, and the tool returns
 a shape when the model sends a template with no `data`. The same fence holds
 the shapes to the catalog.
+
+**Data binding (STU-D1, `ai_studio.md` §5.2).** A `table` node and the
+`dataGrid` template may carry a `source` prop: `{ action, args? }`. A Studio
+page supplies `StudioDataContext` (`lib/studio/dataDoor.tsx`). The renderer
+then reads the rows through that door. Chat supplies no door. There the
+renderer skips `source`, and the card draws from its own props. The tool
+refuses `source` in `emit_generative_ui` (`genui_refusal`).
+
+**Typed actions (STU-D1).** A button `action` may be an object:
+`{ id, args?, message? }`. The string form does not change. On a page, the
+object form runs `door.run(id, args)`. In chat it sends `message ?? id` to
+`onAction`, so the card still reaches the member as a sentence.
 
 ## 4. Scenario → element mapping (brainstorm; build on demand)
 
@@ -154,9 +166,10 @@ pattern, delete the bespoke HTML.
   re-open from the Files/Artifacts viewer; template gallery page in the
   workbench for eyeballing the library.
 - **Phase 3:** live-updating templates (agent re-emits with same `title` →
-  in-place update — the store already replaces same-id tabs); typed
-  TEMPLATE_CATALOG (zod) generated into the backend docstring to kill the
-  hand-mirrored contract; A2UI/MCP-UI payload interop assessment (chat_ux §12).
+  in-place update — the store already replaces same-id tabs).
+  `test_genui_catalog_lockstep.py` holds the hand-mirrored contract.
+  STU-D1 closes this item as test-held, not generated. zod is not a
+  dependency, and `ai_studio.md` A2 says no code generator. Also: A2UI/MCP-UI payload interop assessment (chat_ux §12).
 - **Cleanup backlog:** migrate genUI primitive hardcoded hexes
   (`ICON_TONE`, badge/callout classes, `TONE_COLOR`) to semantic tokens;
   DESIGN_SYSTEM rule says never raw hex.

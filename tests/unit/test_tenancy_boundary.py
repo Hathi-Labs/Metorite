@@ -155,6 +155,11 @@ EXPECTED_SCOPED = {
     # WS-55 SW-10a (2026-10-25): the strands of agent runs (the fingerprint
     # of a nudge, and the recovery record).
     "pm_agent_run_strands",
+    # WS-STU C1 (2026-11-01): migration 323 puts `apps.organization_id` on
+    # the numbered ladder, because an object's foreign key names
+    # `apps (organization_id, id)`. Production has the column already. The
+    # open migration 321 (WS-PKG PKG-4) holds the same block.
+    "apps",
 }
 
 #: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `people`
@@ -182,8 +187,6 @@ BASELINE_UNSCOPED = {
 # app_*
     "app_audit", "app_data", "app_files", "app_grants", "app_pins",
     "app_tool_grants", "app_versions",
-# apps_*
-    "apps",
 # audit_*
     "audit_event",
 # chat_*
@@ -469,10 +472,12 @@ def test_the_frozen_count_matches_the_baseline() -> None:
     Putting it here as well was the first attempt, and
     `test_every_table_lands_in_exactly_one_bucket` rejected it — correctly.
     """
+    # 93 since 2026-11-01: `apps` left with migration 323 (WS-STU C1), the
+    # target of the composite foreign key of `studio_objects`.
     # 94 since 2026-10-11: ten `crm_*` tables left with migration 241 (WS-53
     # CRM-T1). The other three were blocked as homonyms, never in this list.
     # 104 since 2026-10-10: `user_settings` left with migration 239 (H-256,
     # one settings row for each organization of a member).
     # 105 since 2026-10-09: `org_settings` left with migration 234 (the logo
     # and the default look, keyed per organization).
-    assert len(BASELINE_UNSCOPED) == 94
+    assert len(BASELINE_UNSCOPED) == 93

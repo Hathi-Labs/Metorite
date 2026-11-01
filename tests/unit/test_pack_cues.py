@@ -46,6 +46,10 @@ WHEN = {
     "projects-reminders": (
         'Load for "remind me", and to list, move, snooze or resolve a reminder. '
         "A reminder is not a task."),
+    # STU-G1: the Studio builder pack.
+    "studio": (
+        "Load to build an app in AI Studio: draft, change and check its manifest, "
+        "and find the actions it may use."),
 }
 
 
