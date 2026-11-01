@@ -210,8 +210,9 @@ let _swapSeq = 0;
 
 interface ViewTransitionLike {
   finished: Promise<unknown>;
+  skipTransition?: () => void;
 }
-type StartViewTransition = (update: () => void) => ViewTransitionLike;
+type StartViewTransition = (update: () => void | Promise<void>) => ViewTransitionLike;
 
 /**
  * Change the panel's form inside a view transition, where the browser has
@@ -245,6 +246,116 @@ export function swapPanelForm(panel: HTMLElement | null, update: () => void): bo
     // `flushSync`: the browser takes its "after" picture when this returns,
     // so React must have drawn the new form by then.
     const vt = start.call(doc, () => flushSync(update));
+    vt.finished.then(done, done);
+    return true;
+  } catch {
+    done();
+    update();
+    return false;
+  }
+}
+
+// ── The Ask bar into the chat, and back ──────────────────────────────────────
+
+/** The `view-transition-name` of the one box while it moves. */
+export const ASK_MORPH_NAME = "ask-box";
+/** The `view-transition-name` of the side panel while the box flies into it. */
+export const ASK_MORPH_PANEL_NAME = "ask-panel";
+/** The class on `<html>` that scopes the morph's CSS to this one transition. */
+export const ASK_MORPH_CLASS = "ask-morph";
+/** The attribute on `<html>` that says which way the box goes (`AskMorph`). */
+export const ASK_MORPH_WAY_ATTR = "data-ask-morph";
+/** The Ask bar's box (`ChatBar.tsx`). */
+export const ASK_BOX_SELECTOR = "[data-ask-surface]";
+/** The open assistant's composer (`AgentChat.tsx`). A phone's strip shows none. */
+export const COMPOSER_SELECTOR =
+  '.assistant-panel[data-assistant="dock"] [data-chat-composer], .assistant-panel[data-assistant="full"] [data-chat-composer]';
+
+/** Which way the box goes: the bar into the chat's composer, or back. */
+export type AskMorph = "into-chat" | "into-bar";
+
+/** Tries for the arriving box, a frame apart. */
+const MORPH_FIND_TRIES = 3;
+
+let _morphSeq = 0;
+/** The elements that carry a morph name after the change. */
+let _morphNamed: HTMLElement[] = [];
+
+function nameForMorph(el: HTMLElement, name: string): void {
+  el.style.setProperty("view-transition-name", name);
+  _morphNamed.push(el);
+}
+
+function clearMorphNames(): void {
+  for (const el of _morphNamed) el.style.removeProperty("view-transition-name");
+  _morphNamed = [];
+}
+
+/**
+ * Open or close the assistant so the Ask bar and the chat's composer read as
+ * ONE box (owner, 2026-11-01: "the chat box at the bottom morphs into the
+ * chat box in the side bar, to make the user understand in fact it's the
+ * same box"). The box that leaves carries the name before the change, and
+ * the box that arrives carries it after, so the browser glides the one into
+ * the other.
+ *
+ * ⚠️ Into the side panel, the panel takes a name too. The browser's glide
+ * follows its target live, and a composer that rode the panel in from off
+ * the edge carried the box past the window's edge first (measured
+ * 2026-11-01). So the panel sits in its place from the change on, and its
+ * picture slides in (`globals.css`). Out of the panel, the panel slides out
+ * as it always does, and the bar holds still.
+ *
+ * The change is plain where no box can arrive (a page with no bar, a phone's
+ * strip), where the browser has no view transitions, and with reduced
+ * motion. Returns true when a transition started.
+ */
+export function morphAskBox(way: AskMorph, update: () => void): boolean {
+  const doc = typeof document !== "undefined" ? document : null;
+  const start = (doc as (Document & { startViewTransition?: StartViewTransition }) | null)?.startViewTransition;
+  const [fromSel, toSel] = way === "into-chat" ? [ASK_BOX_SELECTOR, COMPOSER_SELECTOR] : [COMPOSER_SELECTOR, ASK_BOX_SELECTOR];
+  const from = doc?.querySelector<HTMLElement>(fromSel) ?? null;
+  if (!doc || !from || typeof start !== "function" || prefersReducedMotion()) {
+    update();
+    return false;
+  }
+  clearMorphNames();
+  from.style.setProperty("view-transition-name", ASK_MORPH_NAME);
+  doc.documentElement.classList.add(ASK_MORPH_CLASS);
+  doc.documentElement.setAttribute(ASK_MORPH_WAY_ATTR, way);
+  const mine = ++_morphSeq;
+  const done = () => {
+    // A newer morph owns the names and the class (`swapPanelForm`'s rule).
+    if (mine !== _morphSeq) return;
+    from.style.removeProperty("view-transition-name");
+    clearMorphNames();
+    doc.documentElement.classList.remove(ASK_MORPH_CLASS);
+    doc.documentElement.removeAttribute(ASK_MORPH_WAY_ATTR);
+  };
+  let vt: ViewTransitionLike | null = null;
+  const change = async () => {
+    flushSync(update);
+    // ⚠️ Two boxes with one name stop the transition. The composer stays
+    // mounted when the panel closes, so the leaving box drops the name now.
+    // The browser took its picture before the change.
+    from.style.removeProperty("view-transition-name");
+    // ⚠️ The panel mounts on its first open one render late, so its composer
+    // can come a task after the change.
+    let to = doc.querySelector<HTMLElement>(toSel);
+    for (let i = 1; !to && i < MORPH_FIND_TRIES; i++) {
+      await new Promise((r) => setTimeout(r, 16));
+      to = doc.querySelector<HTMLElement>(toSel);
+    }
+    if (!to || mine !== _morphSeq) {
+      vt?.skipTransition?.();
+      return;
+    }
+    nameForMorph(to, ASK_MORPH_NAME);
+    const panel = way === "into-chat" ? to.closest<HTMLElement>('.assistant-panel[data-panel-form="dock"]') : null;
+    if (panel) nameForMorph(panel, ASK_MORPH_PANEL_NAME);
+  };
+  try {
+    vt = start.call(doc, change);
     vt.finished.then(done, done);
     return true;
   } catch {

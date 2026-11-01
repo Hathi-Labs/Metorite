@@ -37,10 +37,13 @@ const MOTION_EXEMPT: Record<string, string> = {
   "chat-pulse-dot": "status",
   // A status loop. The three dots say the agent is working.
   "chat-typing-dot": "status",
-  // `swapPanelForm` in `lib/panelMotion.ts` starts no view transition under
-  // reduced motion, so these two never run for that member.
+  // `swapPanelForm` and `morphAskBox` in `lib/panelMotion.ts` start no view
+  // transition under reduced motion, so these two never run for that member.
   "panel-swap-out": "gated in panelMotion.ts",
   "panel-swap-in": "gated in panelMotion.ts",
+  // `morphAskBox` again: the side panel's picture while the Ask bar's box
+  // flies into it.
+  "ask-panel-in": "gated in panelMotion.ts",
 };
 
 interface Block {
