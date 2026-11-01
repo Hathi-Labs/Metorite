@@ -356,6 +356,22 @@ async def test_the_router_seam_forwards_the_job_and_logs_an_empty_answer(router)
     assert line["model"] == "deepseek/deepseek-v4-pro" and line["max_tokens"] == 300
 
 
+async def test_a_direct_router_call_gets_the_json_word(router) -> None:
+    """``completion_on_router`` is a seam of its own (``shell/intent._fill``
+    calls it). JSON mode with no "json" in a message gets the sentence there
+    too (repair round 1)."""
+    from acb_llm.routed import completion_on_router
+
+    router["content"] = "{}"
+    await completion_on_router(
+        tier="tier-fast", messages=[{"role": "user", "content": "x"}],
+        max_tokens=200, temperature=0.0, extra={"response_format": _JSON},
+        job="structured")
+    [payload] = router["payloads"]
+    assert payload["messages"][0] == {"role": "system", "content": JSON_ASK}
+    assert payload["response_format"] == _JSON
+
+
 async def test_complete_on_the_router_now_forwards_its_options(router) -> None:
     """``_routed_text`` dropped every option before task 1128, so a job could
     not reach the Router from ``complete``."""

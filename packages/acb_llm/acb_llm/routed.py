@@ -248,7 +248,8 @@ async def completion_on_router(
 
     ``job`` names the kind of work (:mod:`acb_llm.jobs`, task 1128). It sets
     thinking and the cap floor. ``thinking`` goes to the Console, which drops
-    it for a chain step whose model does not take it. An answer with no text
+    it for a chain step whose model does not take it. JSON mode gets the word
+    "json" (:func:`acb_llm.jobs.ensure_json_word`). An answer with no text
     and no tool call logs ``acb_llm.empty_answer`` and is still returned.
 
     Raises:
@@ -259,10 +260,13 @@ async def completion_on_router(
     """
     from acb_auth.console_resolve import chat_completion_on_console
 
-    from acb_llm.jobs import apply_job, note_empty_answer
+    from acb_llm.jobs import apply_job, ensure_json_word, note_empty_answer
 
     # Idempotent, so a seam that applied the job already changes nothing here.
     max_tokens, extra = apply_job(job, max_tokens=max_tokens, extra=dict(extra or {}))
+    # JSON mode needs the word "json" in a message, or the vendor answers 400.
+    # A direct caller of this seam (`shell/intent._fill`) gets the guard too.
+    messages = ensure_json_word(messages, extra.get("response_format"))
 
     # An explicit `source` beats the inferred one: Custom Apps all run through
     # one module, so only the caller knows which app it is. It goes IN, so the
