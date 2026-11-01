@@ -1457,7 +1457,7 @@ export default function EmailPage() {
           <div className="min-h-0 overflow-y-auto px-3 py-3">
             <DisclosureStep
               provider={reconnecting.provider}
-              backLabel="Cancel"
+              dialog
               onBack={() => setReconnecting(null)}
               onAcknowledge={(disclosure) => {
                 setReconnecting(null);

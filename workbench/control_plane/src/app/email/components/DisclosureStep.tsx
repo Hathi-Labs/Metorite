@@ -39,14 +39,14 @@ export function DisclosureStep({
   provider,
   onBack,
   onAcknowledge,
-  backLabel = DISCLOSURE_COPY.back,
+  dialog = false,
 }: {
   provider: ConnectProviderId;
   onBack: () => void;
   /** The member ticked the box and left for the provider. */
   onAcknowledge: (disclosure: string) => void;
-  /** The words of the way out. A dialog with no step behind it says "Cancel". */
-  backLabel?: string;
+  /** True in a dialog with no step behind it. The way out then reads "Cancel". */
+  dialog?: boolean;
 }) {
   const words = DISCLOSURE_COPY[provider];
   const [agreed, setAgreed] = useState(false);
@@ -109,8 +109,8 @@ export function DisclosureStep({
       </label>
 
       <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-        <Button variant="ghost" size="sm" icon="ArrowLeft" onClick={onBack}>
-          {backLabel}
+        <Button variant="ghost" size="sm" icon={dialog ? undefined : "ArrowLeft"} onClick={onBack}>
+          {dialog ? DISCLOSURE_COPY.cancel : DISCLOSURE_COPY.back}
         </Button>
         {provider === "gmail" ? (
           <GoogleButton disabled={!agreed} onClick={go} />

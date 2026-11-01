@@ -242,7 +242,7 @@ export const DISCLOSURE_VERSION = "2026-11-draft";
  * version with new words would record a tick for words the member never saw.
  */
 export const DISCLOSURE_PIN =
-  "2026-11-draft:f345bdc1f2475c1f7b48a31e91b1d9609bff4f42262ae83b358bc558111b156c";
+  "2026-11-draft:588678146d4b6bcafcef25340493fde9911a0df8a0c40e115a0d9de110055f84";
 
 /** The privacy page. The step opens it in a new tab. */
 export const PRIVACY_POLICY_URL = "https://metorite.com/privacy.html";
@@ -314,6 +314,7 @@ const AI_PROCESSORS: DisclosureSection = {
 export const DISCLOSURE_COPY: Readonly<Record<ConnectProviderId, DisclosureWords>> & {
   readonly privacy: string;
   readonly back: string;
+  readonly cancel: string;
 } = {
   gmail: {
     title: "Before you connect Gmail",
@@ -397,6 +398,7 @@ export const DISCLOSURE_COPY: Readonly<Record<ConnectProviderId, DisclosureWords
   },
   privacy: "Read our privacy policy",
   back: "Back",
+  cancel: "Cancel",
 };
 
 /**
