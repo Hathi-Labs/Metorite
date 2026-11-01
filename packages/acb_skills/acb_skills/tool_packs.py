@@ -640,7 +640,7 @@ _PROJECTS_BULK_WORDS = (
     "projects do i lead", "projects i lead", "projects i own",
     "projects i manage", "projects that i lead", "led projects", "nudge the task", "nudge about the task", "nudge on the task", "nudge the assignee",
     "undo that change", "undo the change", "undo my change",
-    "undo this change", "undo the last change",  
+    "undo this change", "undo the last change",
     "revert the change", "revert this change", "watch this task",
     "watch the task", "watch that task", "watch this project",
     "watch the project", "stop watching", "unwatch", "follow this task",
