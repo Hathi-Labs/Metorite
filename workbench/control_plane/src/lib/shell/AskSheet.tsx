@@ -5,7 +5,7 @@
  * OUT of the bar. "Instead of showing me a card the chat box can expand in
  * height to show me what is happening." The bar's own surface grows upward,
  * so the AI's work shows where the member talks to the AI, and the field
- * stays under it. Needs you is the sidebar's (`NeedsFlyout.tsx`).
+ * stays under it. Needs you is My Day's (the sidebar's My Day row).
  *
  * - **The same list.** `ActivityList` is the activity panel's own code.
  * - **Open and close.** The bar's "N running" pill opens and shuts it. Esc,

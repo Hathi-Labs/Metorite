@@ -17,8 +17,6 @@ import OrgBrandLockup from "@/components/OrgBrandLockup";
 import { SidebarFoldButton, useSidebarFold } from "@/components/SidebarFold";
 import { useDocumentLook } from "@/lib/theme/glassTokens";
 import { shellDockOn } from "@/lib/shell/dockFlag";
-import { closeBell, openBell, useBellOpen } from "@/lib/shell/ShellBell";
-import { NeedsFlyout } from "@/lib/shell/NeedsFlyout";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { shellBarOn } from "@/lib/shell/registry";
 import ThemeToggle from "@/components/ThemeToggle";
@@ -41,6 +39,7 @@ import { EMPTY_SHELL, toggleStar } from "@/lib/shell/presets";
 import { foldHeading, isFolded, readFolds, writeFolds, type Folds } from "@/lib/shell/sidebarFolds";
 import { addAppsName, needsLabel, needsSuffix, rowMeta, rowName } from "@/lib/shell/navNeeds";
 import { useNavNeeds } from "@/lib/shell/useNavNeeds";
+import { useMyDayCount } from "@/lib/shell/myDayCount";
 import { chatScope } from "@/lib/sessions";
 import { ContextMenu } from "@/components/ContextMenu";
 import { useToast } from "@/components/ui/Toast";
@@ -415,8 +414,6 @@ export default function Sidebar() {
     <>
     {/* While it peeks, its slot stays in the row, so the page does not move. */}
     {peeking ? <div aria-hidden data-sidebar-peek-space="" className="w-14 shrink-0 glass:m-2" /> : null}
-    {/* Needs you opens beside its row, over the page (owner, 2026-11-01). */}
-    {shellNav && dockOn ? <NeedsFlyout railRef={asideRef} folded={collapsed} /> : null}
     <aside
       ref={asideRef}
       data-collapsed={collapsed ? "true" : "false"}
@@ -499,15 +496,14 @@ export default function Sidebar() {
           {shellNav && (
             // The same column as a group's items, so Home lines up with them.
             <div className={collapsed ? "flex flex-col gap-1 p-2 pb-0" : "flex flex-col gap-0.5 px-2 pt-2"}>
-              <NavLink pane={home} pathname={pathname} collapsed={collapsed} onNavigate={armFold} shellNav />
-              <NeedsYouRow
-                counts={appNeeds}
-                floors={navNeeds.floors}
+              {/* My Day holds what needs the member: one row, one page. */}
+              <MyDayRow
+                pane={home}
+                active={isActive(pathname, home.href)}
+                count={navNeeds.total}
                 waiting={runsWaiting}
                 collapsed={collapsed}
                 onNavigate={armFold}
-                bell={dockOn}
-                onOpenList={() => closePeek(0)}
               />
               {chatOn ? (
                 <ChatRow collapsed={collapsed} running={runningTotal} active={isActive(pathname, CHAT_PANE_HREF)} onNavigate={armFold} />
@@ -710,7 +706,7 @@ function AddAppsRow({
           <Icon name="Plus" size={18} className="shrink-0 glass:text-muted-foreground" />
           <RailPeekLabel>Add apps</RailPeekLabel>
           {badge ? <NavBadge count={badge.count} tone={badge.tone} label={badge.label} placement="corner" /> : null}
-          {meta?.kind === "needs" ? <NeedsDot /> : null}
+          {meta?.kind === "needs" ? <NeedsDot text={meta.text} /> : null}
         </button>
       </div>
     );
@@ -841,21 +837,30 @@ function ChatRow({
       {running > 0 ? (
         collapsed ? (
           <>
-            <span data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 rounded-full bg-success px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-success-foreground">
+            <span data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 whitespace-nowrap rounded-full bg-success px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-success-foreground">
               {running}
             </span>
-            <span data-rail-trail="" aria-hidden className="ml-auto rounded-full bg-success/15 px-1.5 text-[11px] font-semibold tabular-nums text-success glass:text-caption">
-              {running} running
+            <span data-rail-trail="" aria-hidden className="ml-auto inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-success/15 px-1.5 text-[11px] font-semibold tabular-nums text-success glass:text-caption">
+              <RunningDot />
+              {running}
             </span>
           </>
         ) : (
-          <span className="ml-auto rounded-full bg-success/15 px-1.5 text-[11px] font-semibold tabular-nums text-success glass:text-caption">
-            {running} running
+          // The count alone, as the Needs you pill has it (owner, 2026-11-01:
+          // "2 running" wrapped). The dot says it runs, the label says how many.
+          <span className="ml-auto inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-success/15 px-1.5 text-[11px] font-semibold tabular-nums text-success glass:text-caption">
+            <RunningDot />
+            {running}
           </span>
         )
       ) : null}
     </Link>
   );
+}
+
+/** The live dot of a run count: it pulses while a run is live. */
+function RunningDot() {
+  return <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-success motion-safe:animate-pulse" />;
 }
 
 function NavSkeleton({ collapsed }: { collapsed: boolean }) {
@@ -1198,9 +1203,9 @@ export function NavLink({
           label={badgeLabel ?? String(badge ?? 0)}
           placement="corner"
         />
-        {/* Folded, the needs count is a quiet dot. The number is in the
-            link's name and in its tooltip. */}
-        {meta?.kind === "needs" ? <NeedsDot /> : null}
+        {/* Folded, the needs count is a bubble on the icon's corner, and a
+            pill at the row's end while the rail peeks. */}
+        {meta?.kind === "needs" ? <NeedsDot text={meta.text} /> : null}
       </Link>
     );
   }
@@ -1320,111 +1325,102 @@ export function NavLink({
 // ---------------------------------------------------------------------------
 
 /**
- * The needs count in a row's trailing slot: a muted number in the type of a
- * `RailRow` count (`rail-row-meta`), with no fill and no colour of its own.
- * A screen reader skips it, because the link's name says it in words
- * (`needsSuffix`). The phone drawer draws the same one.
+ * The needs count in a row's trailing slot: the number in a pill, as the My
+ * Day row draws it (owner, 2026-11-01: "add number pills on the side bar like
+ * my day for email, messages, projects/tasks, calendar"). A screen reader
+ * skips it, because the link's name says it in words (`needsSuffix`). The
+ * phone drawer draws the same one.
  */
 export function NeedsCount({ text }: { text: string }) {
-  // Glass: the number lives on the one Needs you row, so an app's row shows
-  // a quiet dot (owner, 2026-11-01). The link's name and tooltip keep it.
   return (
-    <span aria-hidden data-nav-needs="count" className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">
-      <span className="glass:hidden">{text}</span>
-      <span className="hidden h-1.5 w-1.5 rounded-full bg-muted-foreground glass:inline-block" />
+    <span aria-hidden data-nav-needs="count" className="ml-auto shrink-0 whitespace-nowrap rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
+      {text}
     </span>
   );
 }
 
 /**
- * One row for everything that waits on the member (owner, 2026-11-01: "One
- * 'Needs you' row"): the sum of the apps' needs counts, and the door to My
- * Day's Needs you list. The app rows show a quiet dot. Nothing waits: no row.
+ * My Day, with everything that waits on the member (owner, 2026-11-01: "fold
+ * needs you into my day from the side bar, so that there is only one
+ * surface. Open as a page"). The count is the apps' needs counts and the AI
+ * runs that wait on an answer. The row opens the My Day page, where the AI
+ * waiting card and the Needs you list hold them. The app rows show a quiet
+ * dot.
  */
-function NeedsYouRow({
-  counts,
-  floors,
+function MyDayRow({
+  pane,
+  active,
+  count,
+  waiting = 0,
   collapsed,
   onNavigate,
-  bell,
-  waiting = 0,
-  onOpenList,
 }: {
-  counts: Record<string, number>;
-  floors: ReadonlySet<string>;
+  pane: NavPane;
+  active: boolean;
+  /** My Day's own number, the one its sentence says (`useNavNeeds`). */
+  count: number;
   /** AI runs that wait on the member's answer or confirmation (HITL). */
   waiting?: number;
-  /** Runs before the list opens: a peeking rail folds back under it. */
-  onOpenList?: () => void;
   collapsed: boolean;
   onNavigate: (e: MouseEvent) => void;
-  /** The one bell is on: the row opens its panel, so the member triages
-   *  without leaving the page. Off, it opens My Day's list. */
-  bell: boolean;
 }) {
-  const bellOpen = useBellOpen();
-  // One count of what waits on the member: the feed (tasks, mail,
-  // approvals) and the AI runs that ask for an answer (owner, 2026-11-01).
-  const total = Object.values(counts).reduce((sum, n) => sum + n, 0) + waiting;
-  if (total <= 0) return null;
-  const floor = [...floors].some((href) => (counts[href] ?? 0) > 0);
-  const text = floor ? `${total}+` : String(total);
-  const rowLabel = `Needs you, ${floor ? `${total} or more` : total}`;
+  // One number with the page: its sentence counts the feed and the AI runs
+  // that wait (owner, 2026-11-01). Before My Day drew in this tab, the needs
+  // view's count stands in.
+  const said = useMyDayCount();
+  const total = said ?? count + waiting;
+  const text = total > 99 ? "99+" : String(total);
+  const rowLabel = total > 0 ? `${pane.label}, ${total} need you` : pane.label;
   return (
     <Link
-      href="/#feed-group-needs_you"
-      onClick={(e) => {
-        if (bell) {
-          // The list opens beside the row, and a second press shuts it.
-          e.preventDefault();
-          if (bellOpen) closeBell();
-          else {
-            onOpenList?.();
-            openBell();
-          }
-          return;
-        }
-        onNavigate(e);
-      }}
+      href={pane.href}
+      onClick={onNavigate}
       aria-label={rowLabel}
-      aria-expanded={bell ? bellOpen : undefined}
+      aria-current={active ? "page" : undefined}
       title={collapsed ? rowLabel : undefined}
-      data-nav-needs-you=""
+      data-nav-my-day=""
       data-rail-row={collapsed ? "" : undefined}
-      className={`rounded-lg glass:rounded-row tech-transition text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground ${
-        collapsed ? "relative flex items-center justify-center p-2.5" : "flex items-center gap-2.5 px-3 py-2 text-sm glass:text-sidebar-foreground/85"
-      }`}
+      className={`rounded-lg glass:rounded-row tech-transition ${
+        active
+          ? "bg-primary/15 text-primary glass:bg-sidebar-accent glass:text-sidebar-foreground"
+          : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
+      } ${collapsed ? "relative flex items-center justify-center p-2.5" : "flex items-center gap-2.5 px-3 py-2 text-sm glass:text-sidebar-foreground/85"}`}
     >
-      <Icon name="Bell" size={collapsed ? 18 : 16} className="shrink-0 glass:text-muted-foreground" />
-      {collapsed ? <RailPeekLabel>Needs you</RailPeekLabel> : null}
-      {collapsed ? (
-        <>
-          <span data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 rounded-full bg-primary px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-primary-foreground">
+      <Icon name={pane.icon} size={collapsed ? 18 : 16} className="shrink-0 glass:text-muted-foreground" />
+      {collapsed ? <RailPeekLabel>{pane.label}</RailPeekLabel> : <span className="font-medium text-[13px] glass:text-subhead">{pane.label}</span>}
+      {total > 0 ? (
+        collapsed ? (
+          <>
+            <span data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 whitespace-nowrap rounded-full bg-primary px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-primary-foreground">
+              {text}
+            </span>
+            <span data-rail-trail="" aria-hidden className="ml-auto whitespace-nowrap rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
+              {text}
+            </span>
+          </>
+        ) : (
+          <span className="ml-auto whitespace-nowrap rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
             {text}
           </span>
-          <span data-rail-trail="" aria-hidden className="ml-auto rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
-            {text}
-          </span>
-        </>
-      ) : (
-        <>
-          <span className="font-medium text-[13px] glass:text-subhead">Needs you</span>
-          <span className="ml-auto rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
-            {text}
-          </span>
-        </>
-      )}
+        )
+      ) : null}
     </Link>
   );
 }
 
-/** The folded rail's form of the count: a small muted dot on the icon. */
-function NeedsDot() {
+/**
+ * The folded rail's form of the count, as the My Day row has it: a bubble on
+ * the icon's corner, and a pill at the row's end while the rail peeks.
+ */
+function NeedsDot({ text }: { text: string }) {
   return (
-    <span
-      aria-hidden
-      data-nav-needs="dot"
-      className="pointer-events-none absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-muted-foreground"
-    />
+    <>
+      <span aria-hidden data-nav-needs="dot" data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 whitespace-nowrap rounded-full bg-primary px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-primary-foreground">
+        {text}
+      </span>
+      <span aria-hidden data-rail-trail="" className="ml-auto whitespace-nowrap rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
+        {text}
+      </span>
+    </>
   );
 }
