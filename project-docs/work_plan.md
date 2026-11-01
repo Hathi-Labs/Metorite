@@ -143,6 +143,7 @@ The core function brief sets the phases (D119). Customer zero comes first inside
 12. **A real second organization**: MT-1j-exec provisions it and runs the smoke. E-58 and BR-14 follow.
 13. **Pay** (Phase 2): H-14, the rate card and the spend gate (D123), SC-5, H-292 and H-287.
 14. **The Phase 2 brief tasks**: BR-10, BR-11, BR-12, BR-9, BR-8, BR-13 and BR-15.
+15. **Project alignment and the proactive agent** (M2, D150 and D151): the order is in `specs/project_alignment.md` §10 and `specs/proactive_agent.md` §9. H-328 comes first for any second org.
 
 **The full item list is in Metorite**, in the HathiLabs project Metorite, under the epics that §2.1 names.
 
@@ -169,6 +170,8 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · Stage 1 in M1, Stage 2 in M2 (D146) | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141, D146 · STU-0 merged · next B1 (the read-only action catalog), then the Stage 1 slices of §15 |
 | WS-PKG | **Package host**: every app is a package, and Metorite reshapes itself around the organization and the person | 🟢 active · started 2026-11-01 (D147) · M1 | `specs/package_host.md` | Metorite: project "Package Host", epic 1234 · D89, D127, D136, D141, D146, D147 · Studio H1, H2, J2, J3 and M1 run on this registry · next PKG-1 (one manifest source for the ⌘K jobs, no behaviour change), then PKG-2, PKG-3 and PKG-4 |
 | WS-WEB | **Web research**: search, read any page or file, crawl, browse and research jobs for Mira, on open-source parts | 🟢 active · started 2026-11-01 (D148) · M1 | `specs/web_research.md` | Metorite: project "Agent Tooling", epic 1235 · D85, D117, D139, D148 · WS-43 CA-4 (task 1032) calls this service · gates WEB-Q1 (SearXNG) for WEB-5 · 2026-11-01: WEB-1 built (the fetch guard), next WEB-2, then WEB-3 and WEB-4 |
+| WS-ALN | **Project alignment**: Metorite knows the project of each task, checks work against the project's accepted rules, and asks a person and the lead when work deviates | 🟢 active · started 2026-11-02 (D150) · M2 | `specs/project_alignment.md` | Metorite: project "Projects/Tasks App", epic 1368 · reports to WS-PT · D75, D100, D104, D140, D150 and workflows G5 · ALN-Q1 to ALN-Q5 run on working defaults, which are not owner decisions (`project_alignment.md` §14) · ALN-0 is this spec · next ALN-1 (the durable trigger), ALN-2 and ALN-4 in parallel, then ALN-5, ALN-6, ALN-7 · ALN-5 needs the rule store of SW-31 (task 1048) |
+| WS-AUTO | **Proactive agent**: Mira acts for each person without being asked, within limits that the person sees | 🟢 active · started 2026-11-02 (D151) · M2 | `specs/proactive_agent.md` | Metorite: project "Automations", epic 807 · D103, D124, D131, D151 and workflows G5 · AUTO-2 first slice and AUTO-3 (D131) are merged · AUTO-Q1 runs on a working default, which is not an owner decision (`proactive_agent.md` §12) · H-328 (task 856) blocks any second org · next AUTO-7 and AUTO-6 in parallel, then AUTO-8, AUTO-1, AUTO-4, AUTO-5, AUTO-9, AUTO-10 |
 | WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) · `specs/glass_look.md` (phase GL, D143) | Metorite: epic 492, sub-epic UX-D, task 1125 (GL) · UI-G1 is built · **GL (owner, 2026-10-31): Aroh's glass look, LIVE in production since 2026-10-31 05:38 UTC behind `NEXT_PUBLIC_UI_LOOK` (GL-9 done on the owner's word; staging no longer exists). GL-0 to GL-4 built (gate and tokens, primitives, shell, chat). GL-10, GL-11 and GL-12 are built (GL-12, 2026-11-01: the Ask bar at the foot, no top bar, Needs you beside its sidebar row) (GL-11, 2026-11-01: desktop proportions, raised chat cards, the full-height sidebar with hover to expand) (cards, rail, chat edge). **GL-Z1 is built, 2026-10-31 (D149): glass is the only look, and the Design switch and the gate are gone.** Next GL-Z2 (fold each `glass:` class into a plain class, then delete the classic token blocks), then GL-5 and GL-6** · then UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
 | WS-WH | **Writing Help** | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 493 · next WA-1 |
 | WS-CHAT | **AI chat**: Mira, the one assistant | 🟢 active · M1 | `specs/one_assistant_context.md` · `specs/chat_first_surface.md` | Metorite: project AI Chat Interface, epic 470 · a parallel session owns it · next #469 with BR-5, #471, WS-58, SUB-1 (the sub-agent policy for OA-9) |
@@ -5008,6 +5011,40 @@ Owner directive, 2026-10-31, in chat. It ends the trial that D143 point 2 opened
 4. **GL-Z2 is the contract half.** A codemod folds each `glass:` class into a plain class. Then the classic token blocks, the `data-look` attribute and the `glass:` variant go.
 5. **New work targets glass.** An agent no longer writes a classic fallback. An agent looks at each surface fresh, and tunes it for glass.
 6. **This closes D143 point 2, and it ends the exceptions to D69.1 and D69.3.** The look is one again, and `DESIGN_SYSTEM.md` §0 says so.
+
+### D150 — Metorite checks work against the project's accepted rules, and asks a person when work deviates (2026-11-02)
+
+Owner directive, 2026-11-02, in chat. Board: **WS-ALN**. Owning spec: `specs/project_alignment.md`. Metorite: project "Projects/Tasks App", epic 1368, spec task 1369. It extends D75, D100, D104 and D140, and changes none of their rules.
+
+```text
+"build out the entire project plan and start executing"
+```
+
+The owner asked for this after the request that Metorite should know the project of each task, and alert a person and the product manager when work deviates from the architecture document. The owner left ALN-Q1 to ALN-Q5 open. The build runs on the working default of each (`project_alignment.md` §14). A working default is not an owner decision.
+
+1. **A deviation has three answers.** Fix the work, accept an exception, or change the document. Each answer goes on the record.
+2. **The check is a `decide` feature on a job.** It is not a second rule engine (workflows G5). The trigger is a durable, tenant-bound job, and not the best-effort event bus.
+3. **Shadow first.** The mode order is `off`, `shadow`, `on` (D100). An eval gate decides when the checker may speak. The owner flips the flag that spends credits.
+4. **The checker judges work items, never people.** Metorite keeps no score per person. A task in a personal project is never checked.
+5. **One store of rules.** The rules extend the store that SW-31 plans (`pm_agent_guidance`). Mira proposes a rule with a quote, and a lead accepts it (D104). The server verifies each quote.
+6. **The pin is its own table.** `kb_links` has no version and no state, so a pin of a page to a project is a row of `pm_project_authorities`.
+7. **Suggest, never assign.** Mira suggests the project of a captured task, and one tap accepts (D-PC-13, ALN-Q3).
+
+**What stays open.** ALN-Q1 to ALN-Q5 (`project_alignment.md` §14).
+
+### D151 — Mira acts for each person without being asked, within limits that the person sees (2026-11-02)
+
+Owner directive, 2026-11-02, in chat, the same approval as D150. Board: **WS-AUTO**. Owning spec: `specs/proactive_agent.md`. Metorite: project "Automations", epic 807, spec task 1396. It extends D103, D124, D129 and D131, and changes none of their rules.
+
+1. **The workflows engine owns the triggers.** There is no second scheduler (workflows G5).
+2. **The job queue owns the capped headless turn.** It runs on `jobs/worker.py` with `unattended.run_guarded`, with a credit cap on each turn.
+3. **Reach and My Day are the only mouth.** An unattended turn says nothing, or makes one `tell_me()` call.
+4. **A standing watch is a template.** It is a time watch, an event watch, a digest or a chase. It is never a raw cron prompt.
+5. **A run with no person present cannot approve its own action.** The D131 ladder stands, and its five acts always ask.
+6. **H-328 blocks any second org** that uses a schedule, event or webhook run.
+7. **The build order** is H-328, AUTO-7, AUTO-8, AUTO-6, AUTO-1, AUTO-4, AUTO-5, AUTO-9, AUTO-10.
+
+**What stays open.** AUTO-Q1 (`proactive_agent.md` §12). The build runs on its working default, which is not an owner decision.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
