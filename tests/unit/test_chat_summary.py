@@ -174,6 +174,18 @@ def test_a_user_row_of_another_author_is_not_the_members() -> None:
     assert summaries.member_texts(legacy, MEMBER) == ["Plan the offsite."]
 
 
+def test_pz33b_a_reply_of_another_agent_stays_out_of_the_prompt() -> None:
+    """A member can add a mentioned agent to a solo chat. Its text is not a
+    reply of Mira. A legacy row names no author, and it is hers."""
+    rows = [_row("a1", "assistant", "CRM agent: Acme paid 4.2 lakh",
+                 author_kind="agent", author_email="crm-assistant"),
+            _row("a2", "assistant", "Sure, I saved it.",
+                 author_kind="agent", author_email="orchestrator"),
+            _row("a3", "assistant", "An older reply.")]
+    assert summaries.prompt_rows(rows, MEMBER) == [
+        ("mira", "Sure, I saved it."), ("mira", "An older reply.")]
+
+
 def test_the_prompt_keeps_the_newest_rows_under_the_cap() -> None:
     rows = [_row(f"a{i}", "assistant", f"{i:03d}" + "x" * 97) for i in range(200)]
     kept = summaries.prompt_rows(rows, MEMBER)

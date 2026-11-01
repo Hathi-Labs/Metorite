@@ -801,6 +801,11 @@ def _job_chat(ns, *, org: str, member: str = ASHA, agent: str = "orchestrator",
                 "organization_id) VALUES (:s, :subject, :r, CAST(:o AS uuid))"),
                 {"s": sid, "subject": subject, "r": "owner" if i == 0 else "member",
                  "o": org})
+        # Each chat has its own agent as the primary row, as migration 139 and
+        # the run doors leave it. So this row alone must exclude no chat.
+        c.execute(text(
+            "INSERT INTO chat_session_agent (session_id, agent_name, role, organization_id) "
+            "VALUES (:s, :a, 'primary', CAST(:o AS uuid))"), {"s": sid, "a": agent, "o": org})
         for mid, role, words, kind, author, at in rows:
             c.execute(text(
                 "INSERT INTO chat_message (id, session_id, role, content, timestamp_ms, "
@@ -813,6 +818,27 @@ def _job_chat(ns, *, org: str, member: str = ASHA, agent: str = "orchestrator",
                                   if mid == "a1" else []),
                  "fin": at if role == "assistant" else None})
     return sid, "a2"
+
+
+def _mention(ns, org: str, sid: str, agent: str = "crm-assistant") -> None:
+    """Add a mentioned agent to the chat, as ``routes/rooms.py`` does. The
+    chat stays solo: an agent is no participant."""
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_session_agent (session_id, agent_name, role, organization_id) "
+            "VALUES (:s, :a, 'mentioned', CAST(:o AS uuid))"), {"s": sid, "a": agent, "o": org})
+
+
+def _reply_of(ns, org: str, sid: str, agent: str = "crm-assistant") -> None:
+    """A sealed row of another agent, with its text. The agent may have left
+    the room: its row stays."""
+    at = T - timedelta(hours=2)
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_message (id, session_id, role, content, timestamp_ms, "
+            "organization_id, author_kind, author_email, run_final_at) VALUES ('g1', :s, "
+            "'assistant', 'CRM agent: Acme paid 4.2 lakh', :ts, CAST(:o AS uuid), 'agent', "
+            ":a, :fin)"), {"s": sid, "ts": _ms(at), "o": org, "a": agent, "fin": at})
 
 
 def _jobs(ns, sid: str | None = None) -> list[Any]:
@@ -1031,6 +1057,10 @@ async def test_4_no_chat_of_the_list_gets_a_call_from_the_seed_or_a_job(job) -> 
     async with tenant_engine_scope(_app_dsn(job)):
         assert await _in(job.org_a, summaries.turn_off, deleted)
     cases["a chat that reads off"] = (deleted, "a2")
+    cases["a mentioned agent"] = _job_chat(job, org=job.org_a)
+    _mention(job, job.org_a, cases["a mentioned agent"][0])
+    cases["a row of another agent"] = _job_chat(job, org=job.org_a)
+    _reply_of(job, job.org_a, cases["a row of another agent"][0])
     # The 7-day window bounds the reads of the seed only.
     _job_chat(job, org=job.org_a, newest=T - timedelta(days=8))
     assert await _tick(job, job.org_a) == Counter()

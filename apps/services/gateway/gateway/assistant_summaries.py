@@ -118,6 +118,9 @@ from gateway.rooms import SOLO_ROOM_SQL
 
 #: The version of the stored shape.
 VERSION = 1
+#: The one agent that a summary covers: Mira (§15.3). The agent name is the
+#: ``author_email`` of each of her rows (``routes/chat.py::_attribute``).
+AGENT = "orchestrator"
 #: The caps of a summary (§15.3): the text, its sentences, the follow-ups
 #: and each follow-up.
 TEXT_MAX = 400
@@ -195,10 +198,16 @@ def _is_member_row(row: Any, member: Any) -> bool:
 
 
 def _is_mira_row(row: Any) -> bool:
-    """True when *row* is a reply of the agent, and not the brief row."""
+    """True when *row* is a reply of Mira, and not the brief row. A legacy row
+    names no author, and a chat with Mira has one agent. A row of another
+    agent never counts: the text of a mentioned agent is not a reply of
+    Mira, and :data:`ELIGIBLE_SQL` refuses such a chat too."""
     if _field(row, "role") != "assistant" or is_brief_row(row):
         return False
-    return _field(row, "author_kind") in (None, "", "agent")
+    if _field(row, "author_kind") not in (None, "", "agent"):
+        return False
+    author = _key(_field(row, "author_email"))
+    return not author or author == AGENT
 
 
 def member_texts(rows: Iterable[Any], member: Any) -> list[str]:
@@ -760,8 +769,6 @@ _log = get_logger("assistant.chat_summary")
 
 #: The kind of the job queue that writes a summary (§15.3).
 KIND = "assistant.chat_summary"
-#: The one agent that a summary covers: Mira (§15.3).
-AGENT = "orchestrator"
 #: The tries of one job. A retry is safe, because the handler reads its mark
 #: first and makes no second call (``docs/job_queue.md`` §5a).
 ATTEMPTS = 3
@@ -787,13 +794,27 @@ SWITCH_KEY = "summaries"
 
 #: True when the chat `s` is one that a summary may cover: a chat of the
 #: bound org with Mira on the web, not archived, not deleted by the member
-#: (`off`), and solo (`rooms.SOLO_ROOM_SQL`). It binds no parameter.
+#: (`off`), and solo (`rooms.SOLO_ROOM_SQL`). No other agent is in the chat.
+#: A member can add a mentioned agent to a solo chat, and the chat stays
+#: solo (`routes/rooms.py`), so `s.agent_name` alone is not enough. An agent
+#: that left keeps its rows, so the rows count too. A NULL kind of an
+#: `assistant` row reads as an agent, as `routes/chat.py` reads it. It binds
+#: no parameter.
 ELIGIBLE_SQL = f"""(
         s.organization_id = {_BOUND_ORG}
-        AND s.agent_name = 'orchestrator'
+        AND s.agent_name = '{AGENT}'
         AND s.channel IS NULL
         AND s.archived_at IS NULL
         AND NOT COALESCE(s.member_summary @> jsonb_build_object('off', true), false)
+        AND NOT EXISTS (
+            SELECT 1 FROM chat_session_agent ag
+             WHERE ag.session_id = s.id AND ag.agent_name <> '{AGENT}')
+        AND NOT EXISTS (
+            SELECT 1 FROM chat_message g
+             WHERE g.session_id = s.id
+               AND COALESCE(g.author_kind,
+                            CASE g.role WHEN 'assistant' THEN 'agent' END) = 'agent'
+               AND COALESCE(NULLIF(g.author_email, ''), '{AGENT}') <> '{AGENT}')
         AND {SOLO_ROOM_SQL}
     )"""
 
