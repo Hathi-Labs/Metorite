@@ -33,6 +33,7 @@ from acb_auth import UserContext, get_current_user
 from acb_common.db import TenantUnbound
 from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
+from gateway.routes.tasks import calendar_decide as _calendar_decide
 from gateway.routes.tasks.core import (
     NO_THINKING,
     # `_get_db` is used ONLY by the auto-rollover sweep's org enumeration at the
@@ -878,9 +879,17 @@ async def _replan_core(
     ranked_by = "ai"
     rank_note: str | None = None
     if cands:
-        ordered_res, notes, rank_note = await _llm_rank_day(
-            cands, req.energy_note, req.capacity_mins, PLAN_MODEL, one_thing_id,
-            prefs["planning_prompt"], tflines)
+        async def _old_rank() -> tuple[list[dict] | None, str | None, str | None]:
+            return await _llm_rank_day(
+                cands, req.energy_note, req.capacity_mins, PLAN_MODEL, one_thing_id,
+                prefs["planning_prompt"], tflines)
+
+        # The decision tier ranks the day when `my_day.day_plan` is on (task
+        # 1338). In `off` (the default) this is the one call of before.
+        ordered_res, notes, rank_note = await _calendar_decide.rank_day(
+            _old_rank, cands, req.energy_note, req.capacity_mins, one_thing_id,
+            prefs["planning_prompt"], tflines, member=uid,
+            default_prompt=DEFAULT_PLANNING_PROMPT, rank_fallback=_rank_fallback)
         if ordered_res is not None:
             ordered = ordered_res
     if not ordered:
