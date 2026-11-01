@@ -206,16 +206,14 @@ def model_takes(model: str, param: str) -> bool:
     that litellm cannot place reads as False, so the parameter is dropped.
     The Console keeps the same rule for a chain step
     (``customer_console/reasoning.py``), because it cannot import this package.
-    """
-    try:
-        import litellm
 
-        name, provider, _key, _base = litellm.get_llm_provider(model)
-        supported = litellm.get_supported_openai_params(
-            model=name, custom_llm_provider=provider) or []
-    except Exception:  # a model that litellm cannot place takes nothing
-        return False
-    return param in supported
+    The litellm read lives in ``acb_llm.client``, which already imports
+    litellm. This module imports no vendor SDK
+    (``tests/unit/test_no_direct_ai_vendor_calls.py``).
+    """
+    from acb_llm.client import litellm_takes_param
+
+    return litellm_takes_param(model, param)
 
 
 def params_for_model(extra: dict[str, Any], model: str) -> dict[str, Any]:

@@ -17,12 +17,34 @@ from pathlib import Path
 from typing import Any
 
 from acb_common import get_logger
-from litellm import acompletion  # type: ignore[import-untyped]
+from litellm import (  # type: ignore[import-untyped]
+    acompletion,
+    get_llm_provider,
+    get_supported_openai_params,
+)
 
 from acb_llm.model_limits import STUB_MARKER
 from acb_llm.prompt_cache import apply_prompt_caching
 
 _log = get_logger("acb_llm")
+
+
+def litellm_takes_param(model: str, param: str) -> bool:
+    """Whether litellm sends *param* to *model* without a 400 (task 1128).
+
+    The rule behind :func:`acb_llm.jobs.model_takes`. It lives here because
+    this module already imports litellm, and the import stays the one
+    statement that ``tests/unit/test_no_direct_ai_vendor_calls.py`` counts.
+    Both helpers read litellm's tables and send no request. A model that
+    litellm cannot place reads as False.
+    """
+    try:
+        name, provider, _key, _base = get_llm_provider(model)
+        supported = get_supported_openai_params(
+            model=name, custom_llm_provider=provider) or []
+    except Exception:  # a model that litellm cannot place takes nothing
+        return False
+    return param in supported
 
 # Error substrings that indicate a transient failure worth retrying.
 _TRANSIENT_ERRORS = (
