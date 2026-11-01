@@ -587,6 +587,10 @@ provenance strip, the CSV table view and the read-only storage meter. The
 chat card gets its three acts.
 The "Chats" filter keeps slice 6c's door. Behind `NEXT_PUBLIC_ARTIFACT_LIBRARY`.
 
+**First:** `_sync_purge` (`acb_memory/blob_store.py:329`) deletes the blob and
+history rows and leaves the `artifacts` row. With the registry on, a deleted
+chat would list files with no bytes. Fix this before the flag flips.
+
 Done when: a search for a word inside a markdown artifact finds it. A star
 sets `keep`. Trash hides it from All and shows it in Trash with a purge date.
 Restore brings it back. Rename changes the title and not the path. The
