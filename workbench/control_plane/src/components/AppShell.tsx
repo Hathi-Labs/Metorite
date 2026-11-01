@@ -266,7 +266,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <>
             <Sidebar />
             <div className="flex min-w-0 flex-1 flex-col">
-              <ShellFrame>
+              <ShellFrame row={false}>
                 <div className="flex min-h-0 flex-1">
                   {/* D99: with the chat flag on, the assistant sits beside the
                       page or over it. Its field is in the shell bar above (D102,
@@ -319,10 +319,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {/* WS-51 S3: the one activity panel, in every frame. Under the shell
             bar's right end when the bar is on. Near the top, beside the
             sidebar head that holds the control, when it is off. */}
-        <ActivityHost placement={frame === "classic" ? "top" : "end"} />
+        <ActivityHost placement={frame === "column" ? "end" : "top"} />
         {/* NS-6 slice 6a: the one bell's panel, placed as the activity panel
             is. With the flag off it is not mounted at all. */}
-        {dockOn ? <ShellBellHost placement={frame === "classic" ? "top" : "end"} /> : null}
+        {dockOn ? <ShellBellHost placement={frame === "column" ? "end" : "top"} /> : null}
         {/* WS-51 S5: unread marks, the finished toast, and the hidden tab's
             title and favicon. It draws nothing. */}
         <RunSignalsHost />
