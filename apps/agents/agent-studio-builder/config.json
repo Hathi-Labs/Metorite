@@ -29,9 +29,11 @@
   ],
   "own_tool_scope": [
     "studio_draft",
+    "studio_interview",
     "studio_list_actions",
     "studio_outline",
     "studio_patch",
+    "studio_plan",
     "studio_validate"
   ]
 }

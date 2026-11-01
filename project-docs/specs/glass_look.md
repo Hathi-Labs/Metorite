@@ -57,6 +57,25 @@ Fences: `glassLook.test.ts` (one surface, the rail fades, the colour edge),
 `assistant.test.ts` (`dockFoldsNav`), `chatSteer.test.ts` (`enterSends`),
 `nav.test.ts`, `shellNav.test.ts`, `presets.test.ts` and the shell e2e specs.
 
+**GL-12 is BUILT, 2026-11-01 (task #1233).** The owner approved the Ask bar
+design the same day ("new design is approved").
+- **No top bar.** Each app starts at the top of its card.
+- **One Ask bar at the foot of the page.** It asks and it searches: words
+  show results above it, and Enter asks the assistant, which opens beside the
+  page. Ctrl+K and "/" focus it. A button opens the side panel with no words.
+  It hides while the assistant is open, and on /chat. While it shows, the
+  page card keeps a clear strip at its foot, so it covers no row.
+- **Runs rise out of the bar.** The "N running" pill grows the bar upward
+  into the live runs (`AskSheet.tsx`).
+- **Needs you lives on the sidebar only,** with a bell. Its list opens beside
+  its row (`NeedsFlyout.tsx`). The AI runs that wait on the member come first,
+  then the feed with its approvals group. Its count adds both.
+- **Chat row.** The sidebar's Chat row opens the full chat and counts the
+  live runs. The sidebar's head holds only the brand and the fold.
+
+`panelHold.ts` keeps the two Modal panels shut while the bar or the sidebar
+shows their lists. The Modals stay for a layout with neither.
+
 **GL-10b is BUILT on its branch, 2026-10-31, not yet merged** (task #1233). It
 takes the rest of the chat into glass: the session list, the empty state, the
 hint row, the action bar, the artifact panels, and the colour edge. The edge

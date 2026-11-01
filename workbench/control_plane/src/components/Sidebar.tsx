@@ -16,15 +16,17 @@ import { runBadge } from "@/lib/runActivity";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
 import { SidebarFoldButton, useSidebarFold } from "@/components/SidebarFold";
 import { useDocumentLook } from "@/lib/theme/glassTokens";
-import { ActivityControl } from "@/lib/shell/ActivityControl";
 import { shellDockOn } from "@/lib/shell/dockFlag";
-import { ShellBell } from "@/lib/shell/ShellBell";
+import { closeBell, openBell, useBellOpen } from "@/lib/shell/ShellBell";
+import { NeedsFlyout } from "@/lib/shell/NeedsFlyout";
+import { shellChatOn } from "@/lib/shell/chatFlag";
 import { shellBarOn } from "@/lib/shell/registry";
 import ThemeToggle from "@/components/ThemeToggle";
 import { AccountFoot, SidebarAccountFooter, useAccounts } from "@/components/AccountSwitcher";
 import AppLauncher from "@/lib/shell/AppLauncher";
 import {
   ADD_APPS_HINT,
+  CHAT_PANE_HREF,
   accountLinks,
   homePane,
   isActive,
@@ -95,6 +97,7 @@ export default function Sidebar() {
   const [barOn] = useState(() => shellBarOn());
   // NS-6: and the one bell, with its own flag on, beside the activity control.
   const [dockOn] = useState(() => shellDockOn());
+  const [chatOn] = useState(() => shellChatOn());
   const asideRef = useRef<HTMLElement>(null);
   const { data: session } = useSession();
   // The account switcher (MT-1k A2). Off, `accounts.enabled` is false and the
@@ -179,7 +182,13 @@ export default function Sidebar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [railSections.map((s) => s.items.map((p) => p.href).join(",")).join("|")],
   );
-  const { byApp: runCounts, needsByApp: needsCounts, unreadByApp: unreadCounts } = useRunActivity(railHrefs, canPoll);
+  const {
+    byApp: runCounts,
+    needsByApp: needsCounts,
+    unreadByApp: unreadCounts,
+    total: runningTotal,
+    needsTotal: runsWaiting,
+  } = useRunActivity(railHrefs, canPoll);
   // A run on a pane the sidebar does not show, Chat included, counts on
   // "Add apps", the door to the hidden apps (`strayCount`).
   const strayBadge = runBadge(
@@ -406,6 +415,8 @@ export default function Sidebar() {
     <>
     {/* While it peeks, its slot stays in the row, so the page does not move. */}
     {peeking ? <div aria-hidden data-sidebar-peek-space="" className="w-14 shrink-0 glass:m-2" /> : null}
+    {/* Needs you opens beside its row, over the page (owner, 2026-11-01). */}
+    {shellNav && dockOn ? <NeedsFlyout railRef={asideRef} folded={collapsed} /> : null}
     <aside
       ref={asideRef}
       data-collapsed={collapsed ? "true" : "false"}
@@ -451,8 +462,9 @@ export default function Sidebar() {
                 page, so the activity control sits here, beside the fold. The
                 one bell (NS-6) sits before it while its flag is on. */}
             <div className="flex shrink-0 items-center gap-1">
-              {!barOn && dockOn ? <ShellBell /> : null}
-              {!barOn ? <ActivityControl /> : null}
+              {/* The head holds only the fold (owner, 2026-11-01). The bell is
+                  the Needs you row, the runs show on the Chat row and in the
+                  Ask bar, and the Ask bar opens the assistant. */}
               <SidebarFoldButton />
             </div>
           </div>
@@ -488,7 +500,18 @@ export default function Sidebar() {
             // The same column as a group's items, so Home lines up with them.
             <div className={collapsed ? "flex flex-col gap-1 p-2 pb-0" : "flex flex-col gap-0.5 px-2 pt-2"}>
               <NavLink pane={home} pathname={pathname} collapsed={collapsed} onNavigate={armFold} shellNav />
-              <NeedsYouRow counts={appNeeds} floors={navNeeds.floors} collapsed={collapsed} onNavigate={armFold} />
+              <NeedsYouRow
+                counts={appNeeds}
+                floors={navNeeds.floors}
+                waiting={runsWaiting}
+                collapsed={collapsed}
+                onNavigate={armFold}
+                bell={dockOn}
+                onOpenList={() => closePeek(0)}
+              />
+              {chatOn ? (
+                <ChatRow collapsed={collapsed} running={runningTotal} active={isActive(pathname, CHAT_PANE_HREF)} onNavigate={armFold} />
+              ) : null}
             </div>
           )}
           {railSections.map((section) => {
@@ -778,6 +801,60 @@ function RailPeekLabel({ children }: { children: ReactNode }) {
     <span data-rail-label="" aria-hidden className="truncate text-[13px] font-medium glass:text-subhead">
       {children}
     </span>
+  );
+}
+
+/**
+ * The chat, as a place (owner, 2026-11-01: "add an AI chat icon on the
+ * left-hand side sidebar so that we can access the full-screen mode"). It
+ * opens the full chat, where the conversations live. The Ask bar opens the
+ * chat beside the page. Its badge is the count of live runs.
+ */
+function ChatRow({
+  collapsed,
+  running,
+  active,
+  onNavigate,
+}: {
+  collapsed: boolean;
+  running: number;
+  active: boolean;
+  onNavigate: (e: MouseEvent) => void;
+}) {
+  const rowLabel = running > 0 ? `Chat, ${running} running` : "Chat";
+  return (
+    <Link
+      href={CHAT_PANE_HREF}
+      onClick={onNavigate}
+      aria-label={rowLabel}
+      title={collapsed ? rowLabel : undefined}
+      data-nav-chat=""
+      data-rail-row={collapsed ? "" : undefined}
+      className={`rounded-lg glass:rounded-row tech-transition ${
+        active
+          ? "bg-primary/15 text-primary glass:bg-sidebar-accent glass:text-sidebar-foreground"
+          : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
+      } ${collapsed ? "relative flex items-center justify-center p-2.5" : "flex items-center gap-2.5 px-3 py-2 text-sm glass:text-sidebar-foreground/85"}`}
+    >
+      <Icon name="Sparkles" size={collapsed ? 18 : 16} className="shrink-0 glass:text-muted-foreground" />
+      {collapsed ? <RailPeekLabel>Chat</RailPeekLabel> : <span className="font-medium text-[13px] glass:text-subhead">Chat</span>}
+      {running > 0 ? (
+        collapsed ? (
+          <>
+            <span data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 rounded-full bg-success px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-success-foreground">
+              {running}
+            </span>
+            <span data-rail-trail="" aria-hidden className="ml-auto rounded-full bg-success/15 px-1.5 text-[11px] font-semibold tabular-nums text-success glass:text-caption">
+              {running} running
+            </span>
+          </>
+        ) : (
+          <span className="ml-auto rounded-full bg-success/15 px-1.5 text-[11px] font-semibold tabular-nums text-success glass:text-caption">
+            {running} running
+          </span>
+        )
+      ) : null}
+    </Link>
   );
 }
 
@@ -1269,13 +1346,26 @@ function NeedsYouRow({
   floors,
   collapsed,
   onNavigate,
+  bell,
+  waiting = 0,
+  onOpenList,
 }: {
   counts: Record<string, number>;
   floors: ReadonlySet<string>;
+  /** AI runs that wait on the member's answer or confirmation (HITL). */
+  waiting?: number;
+  /** Runs before the list opens: a peeking rail folds back under it. */
+  onOpenList?: () => void;
   collapsed: boolean;
   onNavigate: (e: MouseEvent) => void;
+  /** The one bell is on: the row opens its panel, so the member triages
+   *  without leaving the page. Off, it opens My Day's list. */
+  bell: boolean;
 }) {
-  const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+  const bellOpen = useBellOpen();
+  // One count of what waits on the member: the feed (tasks, mail,
+  // approvals) and the AI runs that ask for an answer (owner, 2026-11-01).
+  const total = Object.values(counts).reduce((sum, n) => sum + n, 0) + waiting;
   if (total <= 0) return null;
   const floor = [...floors].some((href) => (counts[href] ?? 0) > 0);
   const text = floor ? `${total}+` : String(total);
@@ -1283,8 +1373,21 @@ function NeedsYouRow({
   return (
     <Link
       href="/#feed-group-needs_you"
-      onClick={onNavigate}
+      onClick={(e) => {
+        if (bell) {
+          // The list opens beside the row, and a second press shuts it.
+          e.preventDefault();
+          if (bellOpen) closeBell();
+          else {
+            onOpenList?.();
+            openBell();
+          }
+          return;
+        }
+        onNavigate(e);
+      }}
       aria-label={rowLabel}
+      aria-expanded={bell ? bellOpen : undefined}
       title={collapsed ? rowLabel : undefined}
       data-nav-needs-you=""
       data-rail-row={collapsed ? "" : undefined}
@@ -1292,7 +1395,7 @@ function NeedsYouRow({
         collapsed ? "relative flex items-center justify-center p-2.5" : "flex items-center gap-2.5 px-3 py-2 text-sm glass:text-sidebar-foreground/85"
       }`}
     >
-      <Icon name="Inbox" size={collapsed ? 18 : 16} className="shrink-0 glass:text-muted-foreground" />
+      <Icon name="Bell" size={collapsed ? 18 : 16} className="shrink-0 glass:text-muted-foreground" />
       {collapsed ? <RailPeekLabel>Needs you</RailPeekLabel> : null}
       {collapsed ? (
         <>
