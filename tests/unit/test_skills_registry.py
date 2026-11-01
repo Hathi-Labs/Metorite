@@ -107,13 +107,14 @@ def _owner_universe(owner: str) -> set[str]:
     from pathlib import Path
 
     from acb_skills.narrowing import TOOL_NAME as NARROW
-    from gateway.routes.agent import _AGENT_REGISTRY
+    from gateway.routes.agent import _AGENT_REGISTRY, _PACK_OWNER_AGENTS
 
     from tests.unit._native_maf_harness import REPO_ROOT, load_agent_module
 
     # The directory comes from the registry: ``crm-assistant`` lives in
-    # ``apps/agents/agent-crm`` (WS-67 OA-8a).
-    entry = next(a for a in _AGENT_REGISTRY if a.get("name") == owner)
+    # ``apps/agents/agent-crm`` (WS-67 OA-8a). STU-G1: a pack-only owner is in
+    # the owner list, which the pack loader reads first.
+    entry = next(a for a in (*_PACK_OWNER_AGENTS, *_AGENT_REGISTRY) if a.get("name") == owner)
     rel = str(entry["local_path"])
     cfg = json.loads((Path(REPO_ROOT) / rel / "config.json").read_text(encoding="utf-8"))
     module = load_agent_module(rel)

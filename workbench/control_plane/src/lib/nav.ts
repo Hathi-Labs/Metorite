@@ -510,10 +510,12 @@ export const NAV_SECTIONS: NavSection[] = [
         // preference, not an admin capability. The org-wide default on the
         // same page is authorized at the gateway.
         href: "/settings/appearance",
-        team: "personal",
+        // A sidebar app in Admin, beside Organisation and Integrations, and a
+        // member stars it on or off in All apps like any app (owner,
+        // 2026-11-01: "keep it on the sidebar ... add or remove them in the
+        // favorites"). It left the account menu.
+        team: "admin",
         blurb: "Light or dark, spacing and accent colour",
-        door: "account",
-        setting: true,
         label: "Appearance",
         icon: "Palette",
         // "Themes ·" led this line until 2026-08-31. The theming engine is

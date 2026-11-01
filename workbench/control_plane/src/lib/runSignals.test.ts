@@ -39,7 +39,9 @@ import { HIDDEN_MS } from "@/lib/liveRuns";
 import { activityRows, chatLink, runBadge, runStatusText, type ActivityRow } from "@/lib/runActivity";
 import {
   FAVICON_NEEDS,
+  FAVICON_NEEDS_SVG,
   FAVICON_REPLY,
+  FAVICON_REPLY_SVG,
   MISSES_TO_FINISH,
   OPEN_ELSEWHERE_TTL_MS,
   RESTART_WINDOW_MS,
@@ -561,19 +563,43 @@ describe("the hidden tab's title and favicon", () => {
     expect(doc.title).toBe("Metorite Control Plane");
   });
 
+  it("an SVG link takes the SVG twin, which follows a dark tab strip; the .ico link keeps the PNG (owner, 2026-11-01)", () => {
+    const ico = new FakeLink({ rel: "icon", href: "/favicon.ico?abc", type: "image/x-icon" });
+    const svg = new FakeLink({ rel: "icon", href: "/icon.svg?def", type: "image/svg+xml" });
+    const doc = fakeDoc([ico, svg]);
+    doc.visibilityState = "hidden";
+    applyTabSignal(doc, 1, 0);
+    expect(ico.getAttribute("href")).toBe(FAVICON_NEEDS);
+    expect(svg.getAttribute("href")).toBe(FAVICON_NEEDS_SVG);
+    expect(svg.getAttribute("type")).toBe("image/svg+xml");
+    applyTabSignal(doc, 0, 1);
+    expect(svg.getAttribute("href")).toBe(FAVICON_REPLY_SVG);
+    doc.visibilityState = "visible";
+    applyTabSignal(doc, 0, 1);
+    expect(svg.getAttribute("href")).toBe("/icon.svg?def");
+    expect(svg.getAttribute("type")).toBe("image/svg+xml");
+    // The twins are the app's own comet with the same switch to white.
+    const own = read("app/icon.svg");
+    for (const f of [FAVICON_NEEDS_SVG, FAVICON_REPLY_SVG]) {
+      const twin = readFileSync(fileURLToPath(new URL(`../../public${f}`, import.meta.url)), "utf-8");
+      expect(twin, f).toContain("@media (prefers-color-scheme:dark){.a{fill:#ffffff}}");
+      expect(twin, f).toContain(own.match(/ d="([^"]+)"/)![1]);
+    }
+  });
+
   it("adds a link when the page has none, and takes it away on restore", () => {
     const doc = fakeDoc([]);
     doc.visibilityState = "hidden";
     applyTabSignal(doc, 0, 2);
     expect(doc.appended).toHaveLength(1);
-    expect(doc.appended[0].getAttribute("href")).toBe(FAVICON_REPLY);
+    expect(doc.appended[0].getAttribute("href")).toBe(FAVICON_REPLY_SVG);
     doc.visibilityState = "visible";
     applyTabSignal(doc, 0, 2);
     expect(doc.appended[0].removed).toBe(true);
   });
 
   it("swaps to pre-made files, and draws no canvas", () => {
-    for (const f of [FAVICON_NEEDS, FAVICON_REPLY]) {
+    for (const f of [FAVICON_NEEDS, FAVICON_REPLY, FAVICON_NEEDS_SVG, FAVICON_REPLY_SVG]) {
       expect(existsSync(fileURLToPath(new URL(`../../public${f}`, import.meta.url))), f).toBe(true);
     }
     for (const f of ["lib/runSignals.ts", "lib/shell/RunSignals.tsx"]) {

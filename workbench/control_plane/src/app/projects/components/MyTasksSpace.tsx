@@ -155,7 +155,7 @@ export function MyTasksActionRow({
   onCapture: () => void;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-1 px-3 pb-2 pt-1.5" data-my-tasks-tabs="">
+    <div className="flex flex-wrap items-center gap-1 px-3 pb-2 pt-1.5 glass:px-4 glass:pb-2.5" data-my-tasks-tabs="">
       <ModeSwitch
         modes={MODE_OPTIONS}
         mode={view.attention ? null : view.mode}
@@ -203,7 +203,7 @@ export function MyTasksChips({
   onChip: (next: MyTasksChip) => void;
 }) {
   return (
-    <div className="border-b border-border px-3 py-1.5" data-my-tasks-chips="">
+    <div className="border-b border-border px-3 py-1.5 glass:px-4 glass:py-2" data-my-tasks-chips="">
       <ScrollStrip label="My tasks lists" className="gap-1">
         {MY_TASKS_CHIPS.map((entry) => {
           const count = chipCount(summary, entry.id);

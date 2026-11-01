@@ -404,8 +404,10 @@ def _require_open(row: Any) -> None:
 
 async def _ledger(
     db: Any, reminder_id: Any, event: str, detail: dict[str, Any] | None = None,
-) -> None:
-    """One ``reminder_events`` row, in the caller's transaction.
+    *, channel: str | None = None,
+) -> str:
+    """One ``reminder_events`` row, in the caller's transaction. Answers the
+    id of the row.
 
     ``organization_id`` comes from the column default, the bound tenant. The
     ledger has no member column: a read of it must join ``reminders`` on
@@ -414,15 +416,21 @@ async def _ledger(
     ``at`` is ``clock_timestamp()``, not the column default ``now()``. One
     PATCH can write two rows, and ``now()`` is the same instant for each row
     of one transaction, so the order of the two would be lost.
+
+    *channel* names the channel of a delivery (``push``), and stays NULL for
+    a change. The id is the second half of the dedupe key of a web push
+    (WS-66 RE-9b, ``reach/push_channel.py``), so each step gets its own push.
     """
-    await db.execute(
+    rid = (await db.execute(
         text(
-            "INSERT INTO reminder_events (reminder_id, event, detail, at) "
+            "INSERT INTO reminder_events (reminder_id, event, detail, at, channel) "
             "VALUES (CAST(:rid AS uuid), :event, CAST(:detail AS jsonb), "
-            "clock_timestamp())"
+            "clock_timestamp(), :channel) RETURNING id::text"
         ),
-        {"rid": str(reminder_id), "event": event, "detail": json.dumps(detail or {})},
-    )
+        {"rid": str(reminder_id), "event": event, "detail": json.dumps(detail or {}),
+         "channel": channel},
+    )).scalar_one()
+    return str(rid)
 
 
 async def _bump(user: Any, me: str) -> None:

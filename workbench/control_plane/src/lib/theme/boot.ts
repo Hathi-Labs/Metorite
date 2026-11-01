@@ -38,16 +38,15 @@ import {
   SCOPE_SEPARATOR,
   STORAGE_KEYS,
 } from "./storage";
-import { glassGateOn, LOOK_ATTRIBUTE } from "./look";
 
 /**
  * The script source. Generated rather than hand-written so the density scale
  * and storage keys stay in lockstep with the modules that own them.
  *
- * The look (D143): with the glass gate on, the server renders the attribute,
- * and this script removes it for a member who chose Classic. With the gate
- * off, the script holds no look code at all, so a production page cannot
- * reach glass whatever its storage says. `glassLook.test.ts` fences both.
+ * The look (D149): glass is the only look, and the server renders it. The
+ * script holds no look code, so it cannot add or remove the attribute. It
+ * only clears the `cc-look` key that the old Design switch left behind.
+ * `glassLook.test.ts` fences both.
  */
 export function themeBootScript(): string {
   const scales = JSON.stringify(DENSITY_SCALE);
@@ -55,9 +54,9 @@ export function themeBootScript(): string {
   const accentInkProps = JSON.stringify(ACCENT_INK_PROPERTIES);
   const mode = JSON.stringify(MODE_STORAGE_KEY);
   const sep = JSON.stringify(SCOPE_SEPARATOR);
-  const look = glassGateOn()
-    ? `if(ls.getItem(k(${JSON.stringify(STORAGE_KEYS.look)}))==="classic")d.removeAttribute(${JSON.stringify(LOOK_ATTRIBUTE)});\n`
-    : "";
+  // A member who chose Classic stored this key. Nothing reads it now.
+  const look = `try{ls.removeItem(k(${JSON.stringify(STORAGE_KEYS.look)}));}catch(e){}
+`;
 
   return `(function(){try{
 var d=document.documentElement,ls=window.localStorage;

@@ -173,7 +173,7 @@ export function AccountSidebar({
       <>
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-4 border-b border-sidebar-border flex-shrink-0">
-        <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">
+        <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold glass:normal-case glass:tracking-normal glass:text-footnote">
           Accounts
         </span>
         <button
@@ -345,7 +345,7 @@ export function AccountSidebar({
       {/* Email Automation — sits between accounts and folders */}
       {showAutomation && (
         <div className="flex-shrink-0 px-2 py-2.5">
-          <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] tracking-widest uppercase text-muted-foreground font-semibold">
+          <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] tracking-widest uppercase text-muted-foreground font-semibold glass:normal-case glass:tracking-normal glass:text-caption">
             <AppIcon name="Zap" size={11} className="text-primary" />
             <span>Email Automation</span>
           </div>

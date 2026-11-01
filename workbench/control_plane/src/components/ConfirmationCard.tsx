@@ -335,8 +335,9 @@ export default function ConfirmationCard({
     <section
       aria-label={fenced ? unfenced(summary) : summary}
       data-confirmation-card=""
-      // Glass only (GL-4): it wants an answer, so it is tinted, with an orange tile.
-      className={`${CARD_FRAME_CLASS} glass:glass-card-tile glass:[--tile:var(--system-orange)] glass:rounded-[22px] glass:border-primary/20 glass:bg-primary/[0.05] glass:p-3`}
+      // Glass only (GL-4): it wants an answer, so it is the raised card with a
+      // hairline in the tint, and an orange tile.
+      className={`${CARD_FRAME_CLASS} glass:glass-card-tile glass:[--tile:var(--system-orange)] glass:rounded-[16px] glass:border-primary/35 glass:glass-raised glass:p-4`}
     >
       <div className="flex min-w-0 items-center gap-2">
         <div className="min-w-0 flex-1">

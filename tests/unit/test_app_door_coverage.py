@@ -129,7 +129,7 @@ def test_the_manifest_module_imports_the_standard_library_only():
             if isinstance(node, ast.ImportFrom) and node.module:
                 assert node.module.split(".")[0] in {"__future__", "acb_common", "collections",
                                                      "dataclasses", "typing", "functools",
-                                                     "json", "re"}, (path.name, node.module)
+                                                     "json", "re", "pathlib"}, (path.name, node.module)
                 if node.module.startswith("acb_common"):
                     assert node.module.startswith("acb_common.app_manifests"), node.module
             if isinstance(node, ast.Import):

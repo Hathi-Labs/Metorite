@@ -52,9 +52,11 @@ from gateway.routes.projects.tree import (
     NODE_DESCENDANTS_SQL,
     node_counts_sql,
 )
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
+
+from tests.unit._tenant_ladder import apply_ladder
 
 _TENANT_URL = os.environ.get("TENANT_LADDER_DATABASE_URL", "").strip()
 
@@ -82,8 +84,24 @@ def _async_url() -> str:
     return url
 
 
+@pytest.fixture(scope="module")
+def built():
+    """The tenant schema, built by this file.
+
+    ⚠️ Without it, this file passes only when an earlier module in the same
+    shard has built the schema. Its sibling `test_projects_move_sql_asyncpg.py`
+    failed that way when a new test file moved the shard split.
+    `apply_ladder` is idempotent, so a second call does nothing.
+    """
+    eng = create_engine(_TENANT_URL, future=True)
+    with eng.begin() as connection:
+        apply_ladder(connection)
+    yield
+    eng.dispose()
+
+
 @pytest.fixture
-async def async_engine():
+async def async_engine(built):
     """One engine per test, and the scope is not negotiable.
 
     ⚠️ A module-scoped engine binds its pool to the FIRST test's event loop,

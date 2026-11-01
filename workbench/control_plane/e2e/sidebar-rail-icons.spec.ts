@@ -73,7 +73,7 @@ test("every app icon in the folded rail keeps 18px while the rail scrolls", asyn
   // The folded rail's bar takes no width, so the icons sit in its centre.
   expect(await nav(page).evaluate((el) => (el as HTMLElement).offsetWidth - el.clientWidth)).toBe(0);
 
-  const icons = nav(page).locator("a[data-nav-row] > svg, [data-nav-add-apps] button > svg");
+  const icons = nav(page).locator("a[data-nav-row] svg, [data-nav-add-apps] button svg");
   expect(await icons.count()).toBeGreaterThan(3);
   const widths = await icons.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().width));
   for (const width of widths) expect(width).toBeCloseTo(18, 0);
@@ -88,7 +88,8 @@ test("an icon keeps 18px even when a bar takes the rail's width", async ({ page 
   });
   expect(await nav(page).evaluate((el) => (el as HTMLElement).offsetWidth - el.clientWidth)).toBeGreaterThan(0);
 
-  const icons = nav(page).locator("a[data-nav-row] > svg, [data-nav-add-apps] button > svg");
+  const icons = nav(page).locator("a[data-nav-row] svg, [data-nav-add-apps] button svg");
+  expect(await icons.count()).toBeGreaterThan(3);
   const widths = await icons.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().width));
   for (const width of widths) expect(width).toBeCloseTo(18, 0);
 });

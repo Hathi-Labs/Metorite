@@ -28,12 +28,14 @@ on:
       - "apps/agents/agent-whatsapp-assistant/**"
       - "apps/services/gateway/gateway/routes/whatsapp/transport/**"
       # NS-6 6d: the routing eval drives the one assistant and every specialist
-      # it calls. It reads the registry, and the persona, the panes and
-      # ALSO_SERVES from the shell's own source.
+      # it calls. It reads the registry, the persona and the panes from the
+      # shell's own source. It reads ALSO_SERVES from the shell manifests (PKG-3a).
       - "apps/agents/**"
       - "apps/services/gateway/gateway/routes/agent.py"
       - "workbench/control_plane/src/lib/nav.ts"
       - "workbench/control_plane/src/lib/shell/assistant.ts"
+      - "workbench/control_plane/src/lib/shell/gates.generated.ts"
+      - "packages/acb_common/acb_common/app_manifests/shell/**"
       - "workbench/control_plane/src/lib/shell/AssistantDock.tsx"
       - ".github/workflows/skill-eval.yml"
   workflow_dispatch:

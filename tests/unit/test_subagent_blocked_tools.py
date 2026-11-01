@@ -77,6 +77,8 @@ ASK_THE_MEMBER = [
 DRAW_A_CARD = [
     "show_in_app", "render_board", "render_tasks", "render_timeline", "open_in_app",
     "show_view",
+    # STU-G2: the Studio plan card waits on one confirmation card
+    "studio_plan",
 ]
 SPECIALISTS = [
     "apis_config", "app_builder", "crm_assistant", "email_assistant",

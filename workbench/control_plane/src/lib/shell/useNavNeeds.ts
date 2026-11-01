@@ -35,9 +35,14 @@ export interface NavNeeds {
   counts: Record<string, number>;
   /** The rows whose count is a floor: "15+", "15 or more need you". */
   floors: ReadonlySet<string>;
+  /**
+   * My Day's own number: the feed's count, the one its sentence says
+   * ("19 things need you"). The My Day row shows it, so the two agree.
+   */
+  total: number;
 }
 
-const NONE: NavNeeds = { counts: {}, floors: new Set() };
+const NONE: NavNeeds = { counts: {}, floors: new Set(), total: 0 };
 
 /**
  * `on` is false where the rows draw no count (the shell nav is off, or the
@@ -51,11 +56,11 @@ export function useNavNeeds(on: boolean, held: readonly string[]): NavNeeds {
   // The hrefs arrive as a new array on each render, so the memo keys on
   // their text.
   const heldKey = held.join(",");
-  const { byApp, floors } = needs;
+  const { byApp, floors, count } = needs;
   const failed = needs.error !== null;
   return useMemo(() => {
     if (!on || !allowed || failed) return NONE;
     const set = new Set(heldKey.split(",").filter(Boolean));
-    return { counts: needsByHref(byApp, set), floors: floorHrefs(floors, set) };
-  }, [on, allowed, failed, byApp, floors, heldKey]);
+    return { counts: needsByHref(byApp, set), floors: floorHrefs(floors, set), total: count ?? 0 };
+  }, [on, allowed, failed, byApp, floors, count, heldKey]);
 }

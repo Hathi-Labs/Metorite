@@ -5682,9 +5682,9 @@ function ProjectsWorkspace() {
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <header className="shrink-0 border-b border-border">
             {/* Title row — what you are looking at, and nothing else. */}
-            <div className="flex min-w-0 items-baseline gap-2 px-3 pt-2">
+            <div className="flex min-w-0 items-baseline gap-2 px-3 pt-2 glass:px-4 glass:pt-3.5 glass:pb-1">
               <h2
-                className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium text-foreground"
+                className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium text-foreground glass:text-subhead glass:font-semibold"
                 title={title}
               >
                 <span className="min-w-0 truncate">{title}</span>
@@ -5733,7 +5733,7 @@ function ProjectsWorkspace() {
               // `flex-wrap`: with the chat docked the canvas loses 26rem, and
               // an action row that cannot wrap paints its right half over the
               // chat column (measured at 1440, 2026-09-23).
-              <div className="flex flex-wrap items-center gap-1 px-3 pb-2 pt-1.5">
+              <div className="flex flex-wrap items-center gap-1 px-3 pb-2 pt-1.5 glass:px-4 glass:pb-2.5">
                 <ModeSwitch
                   modes={MODE_OPTIONS}
                   mode={shownMode}

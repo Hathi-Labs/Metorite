@@ -133,7 +133,7 @@ export interface EntityPillProps {
  * (`0.82em`). In rem it followed the density scale while the chat body,
  * sized in px, did not, so at compact density the pills shrank alone.
  */
-const SHAPE = "px-1 py-px text-[0.9em] leading-snug align-middle font-normal";
+const SHAPE = "px-1 py-px text-[0.9em] leading-snug align-middle font-normal glass:rounded-full glass:px-2";
 
 /**
  * The widest a pill grows. In running text it stops at 16rem. With `fit` (a

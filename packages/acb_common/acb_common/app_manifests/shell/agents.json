@@ -1,0 +1,13 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "agents",
+  "contributes": {
+    "nav": [
+      {
+        "href": "/agents",
+        "feature": "agents"
+      }
+    ]
+  }
+}

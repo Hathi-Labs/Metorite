@@ -20,6 +20,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AwayBadge } from "./components/AbsencePanel";
 import PageHeader from "@/components/PageHeader";
+import { Input } from "@/components/ui/Input";
 
 import { Avatar } from "./components/Avatar";
 import { PersonEditor } from "./components/PersonEditor";
@@ -150,7 +151,8 @@ export default function PeoplePage() {
               login badge and the picker's "no login — cannot see the task"
               warning (D-PC-12) both stay.
             */}
-          <input
+          <Input
+            icon="Search"
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder={
@@ -159,7 +161,7 @@ export default function PeoplePage() {
                 : "Search name, title or department…"
             }
             aria-label="Search the directory"
-            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
+            className="w-full"
           />
           <div className="mt-2 flex flex-wrap gap-1 text-xs">
             <Chip active={department === null} onClick={() => setDepartment(null)}>
@@ -338,7 +340,7 @@ function Chip({
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-md px-2 py-1 ${
+      className={`rounded-md px-2 py-1 glass:rounded-full glass:px-3 ${
         active ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-muted"
       }`}
     >

@@ -236,8 +236,6 @@ export const themeStorage = {
     // removing the accent cannot leave orphaned ink behind.
     tabWrite(STORAGE_KEYS.accentInk, c ? accentInk(c) || null : null);
   },
-  getLook: () => read(inTab(STORAGE_KEYS.look)),
-  setLook: (l: string | null) => tabWrite(STORAGE_KEYS.look, l),
   getOrgDensity: () => read(inTab(STORAGE_KEYS.orgDensity)) as Density | null,
   setOrgDensity: (d: Density) => tabWrite(STORAGE_KEYS.orgDensity, d),
   /** The colour mode of this tab's scope, or the bare key with no scope. */

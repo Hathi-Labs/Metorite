@@ -293,7 +293,14 @@ describe("every live pane carries its manifest (D89)", () => {
 
   it("puts only pages about the member in the account menu", () => {
     const account = PANES.filter((p) => p.door === "account").map((p) => p.href);
-    expect(account).toEqual(["/people/me", "/settings/appearance"]);
+    expect(account).toEqual(["/people/me"]);
+  });
+
+  it("gives Appearance a sidebar door in Admin, starred like any app (owner, 2026-11-01)", () => {
+    const look = PANES.find((p) => p.href === "/settings/appearance")!;
+    expect(look.team).toBe("admin");
+    expect(look.door ?? "sidebar").toBe("sidebar");
+    expect(look.setting).toBeUndefined();
   });
 
   it("gives Organisation a sidebar door in Admin, as an app (owner, 2026-10-09)", () => {
@@ -305,10 +312,7 @@ describe("every live pane carries its manifest (D89)", () => {
   });
 
   it("marks only preferences as settings, so All apps lists apps", () => {
-    expect(PANES.filter((p) => p.setting).map((p) => p.href)).toEqual([
-      "/people/me",
-      "/settings/appearance",
-    ]);
+    expect(PANES.filter((p) => p.setting).map((p) => p.href)).toEqual(["/people/me"]);
     // A setting is never a sidebar door: it has no place to show then.
     expect(PANES.filter((p) => p.setting && p.door !== "account")).toEqual([]);
   });

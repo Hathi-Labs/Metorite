@@ -1,0 +1,13 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "dashboard",
+  "contributes": {
+    "nav": [
+      {
+        "href": "/dashboard",
+        "feature": "dashboard"
+      }
+    ]
+  }
+}

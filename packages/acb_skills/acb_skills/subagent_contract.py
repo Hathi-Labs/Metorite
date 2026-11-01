@@ -174,6 +174,8 @@ DISPLAY_TOOLS = frozenset({
     "render_board", "render_tasks", "render_timeline",
     # the Projects reads that move the member's page (skill_projects.nav)
     "open_in_app", "show_view",
+    # the Studio plan card (STU-G2): a read-only pack tool that awaits one card
+    "studio_plan",
 })
 
 #: Tools that add model calls of their own, and so break the 4-round cap of a

@@ -314,6 +314,13 @@ export interface SelectButtonProps {
   invalid?: boolean;
 }
 
+/**
+ * GL-6. The trigger joins the glass field family of `Input sm`: 28 px, a
+ * capsule, the field fill and the input border. A touch screen gets 44 px.
+ */
+const GLASS_TRIGGER =
+  "glass:h-7 glass:rounded-full glass:border-input glass:bg-field glass:px-3 glass:text-footnote glass:hover:bg-field glass:pointer-coarse:h-11";
+
 export function SelectButton({
   label,
   value,
@@ -416,7 +423,7 @@ export function SelectButton({
         aria-controls={open ? listId : undefined}
         disabled={disabled}
         onClick={() => dispatch({ type: "toggle" })}
-        className={`cc-control flex h-7 w-full items-center gap-1 rounded-md border border-border bg-card px-2 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 ${className}`}
+        className={`cc-control flex h-7 w-full items-center gap-1 rounded-md border border-border bg-card px-2 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 ${GLASS_TRIGGER} ${className}`}
       >
         {/* Task #417: the chosen icon or colour, before its name. */}
         {current ? <OptionMark option={current} /> : null}

@@ -162,10 +162,13 @@ read_file() {
 readonly NAME_RE='^[A-Z][A-Z0-9_]{1,63}$'
 # EXACT names, never a glob (fix round 1). A glob such as *_ENABLED let in
 # owner-gated, money and third-party switches. Each name below is read in
-# packages/acb_common/acb_common/settings.py. None is owner-only, none spends
-# money and none reaches an outside party, with ONE exception:
+# packages/acb_common/acb_common/settings.py. None is owner-only on staging,
+# and none reaches an outside party. Two of them spend credits.
 # KNOWLEDGE_EMBED (and KNOWLEDGE_EMBED_SWEEP, which lands with KB-3c) spends
 # tier-embed credits. The owner asked for embeddings on staging, so it stays.
+# ASSISTANT_CHAT_SUMMARY_ORGS (WS-63 PZ-33) opens a job that spends tier-fast
+# credits of each listed org, with no request of the member. A flip here is
+# gate enforcement-flip. Its production flip is owner-only (D-PZ-35).
 # Left out on purpose: DECIDE_ENABLED (owner-only, it sends content to a third
 # party), DECIDE_FEATURE_MODES (owner gate H-166 on a box) and
 # NARROWING_AGENTS (each agent added spends Router credits).
@@ -185,6 +188,7 @@ readonly ALLOWED_KEYS=(
   ASSISTANT_PROFILE_ENABLED
   ASSISTANT_PROFILE_ORGS
   ASSISTANT_PROFILE_CARD_WRITES_ORGS
+  ASSISTANT_CHAT_SUMMARY_ORGS
   ATTACHMENT_OCR
   JOB_QUEUE
   UNATTENDED_LEDGER

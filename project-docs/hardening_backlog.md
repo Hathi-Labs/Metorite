@@ -38,6 +38,17 @@ Add a section per feature as you build it. Example:
 | E-1 | Two-org test for email_threads | ... | ... |
 ```
 
+### Package host (WS-PKG)
+
+| # | Item | Why | Done when |
+|---|---|---|---|
+| PK-1 | Make `test_no_hand_kept_vocabulary_remains` scan `me.py` with `ast` | It checks three literal strings only. A hand-kept set of other hrefs, such as `/workflows` and `/people`, passes it (PKG-2 verify, 2026-11-01) | The test fails on any `frozenset` or `set` literal of strings that start with `/` in `me.py` |
+| PK-2 | Decide the `MAX_JOBS = 16` cap on the shell order body | `me.py` caps `newOrder` at 16, and the product has 23 jobs. A member's own "New" order is a short subset today, so nothing fails yet (PKG-2 verify, 2026-11-01) | The cap is the job count, or a test states why 16 is the limit |
+| PK-3 | Add the install keys of the member purge to `PURGE_LABELS` | `PURGE_LABELS` in `workbench/control_plane/src/app/settings/organization/OrganizationAdmin.tsx` has no label for `private_app_installs`, `shared_app_installs` or `shared_private_app_installs`. `purgeLabel` then shows "shared app installss". No row exists until PKG-5 writes one (PKG-4 review, 2026-11-01) | Each of the three keys has a label before PKG-5 merges |
+| PK-4 | Count a contribution payload as jsonb text in the PKG-5 writer | The CHECK of 324 counts `octet_length(payload::text)`, and jsonb writes its text with added spaces. A writer that counts the JSON that it sends can pass a payload that the CHECK refuses. The member then gets a 500. The store of 320 counts the jsonb text for this reason (PKG-4 review, 2026-11-01) | The PKG-5 writer refuses a payload over 65536 bytes of jsonb text with a 422, and an R8 test holds the edge |
+| PK-5 | Make the test of the generated set read the phases 01 to 03 too | `test_tenant_coverage.py:470` checks only the table set of `generated/04_policies.sql`. A wrong hand edit to `01_add_columns.sql`, `02_backfill.sql` or `03_constraints.sql` passes it. This gap is older than PKG-4 (PKG-4 review, 2026-11-01) | The test fails when a phase file from 01 to 03 differs from the output of the generator |
+| PK-6 | Set a Node heap size on the `tsc --noEmit` step of the CI Frontend job | The step in `pr-check.yml` (about line 717) sets no heap size. It ran out of memory once on PR 1567, and a rerun passed. Metorite task 1304 holds this item | The step sets `NODE_OPTIONS=--max-old-space-size`, and 20 runs in a row pass with no rerun |
+
 ### Knowledge (WS-61)
 
 | # | Item | Why | Done when |
@@ -91,3 +102,10 @@ Add a section per feature as you build it. Example:
 | RM-H12 | Add a render test for "a reminder takes no capacity" | The RM-5 acceptance has a unit fence only (call arguments in source and a pure rule). Vitest runs in node only, so no test renders the grid and counts lanes or capacity with a reminder present (RM-5 verify, 2026-10-30) | A render test shows the capacity meter and the lanes do not change when a reminder is added |
 | RM-H13 | Draw two reminders at the same minute apart | `remindersOnDay` gives each its own pin at the same `top`, so one pin draws on top of the other. Only the top pin takes a click, a drag or a key, and the lower one has no handle on the grid. The panel still lists both (RM-5 repair 2, 2026-10-30) | Pins at one minute stack or merge into one handle with a count, and each reminder can open, with a test |
 | RM-H14 | Find a clean place for the compact bell in Week | Over a block, the compact bell sits on the left edge of the column (`-left-2`, 16 px). In Week the edge is between two day columns, so the bell covers the left edge of a block, and can cover the right edge of a block in the column before it. The line now stops at a block's edge (`pinSegments`), but that gives the bell no free place in a one-lane column (RM-5 visual review VP2-E, 2026-10-30) | The compact bell covers no block in Day or Week at 1440, with a capture |
+
+### Web research (WS-WEB)
+
+| # | Item | Why | Done when |
+|---|---|---|---|
+| WB-1 | Move `_PinnedTransport` to `acb_common`, and put the gateway's two pinned copies on it | `web_tools.py` holds the third copy of the pin, beside `outbound_guard.send` and `outbound_guard._PinnedTransport`. A package cannot import the gateway, so WEB-1 copied the pattern. Three copies can drift (WEB-1 review, 2026-11-01) | One pinned transport lives in `acb_common`. `web_tools.py` and `outbound_guard.py` use it, and no other copy of the pin is left |
+| WB-2 | Read a page once when Jina is on | The walk reads the page, and then Jina reads it again from its own network. So the site sees two reads for one call (WEB-1 review, 2026-11-01) | WEB-2's local reader reads the body of the walk. A test shows that one call reads the page once |

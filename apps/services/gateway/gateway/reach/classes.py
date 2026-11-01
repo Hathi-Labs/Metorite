@@ -6,7 +6,8 @@ A class says how far a card may reach the member:
 * ``brief`` — goes into the morning brief.
 * ``interrupt`` — may interrupt, inside the budget, and is in the brief too.
 * ``urgent`` — reaches like ``interrupt``, and may use the urgent allowance.
-  Only a "Tell me on WhatsApp" request is ``urgent`` today (RE-5, §11.3).
+  A "Tell me on WhatsApp" request can be ``urgent`` (RE-5, §11.3), and so is
+  a due reminder on web push (WS-66 RE-9b).
 
 An unknown kind is ``none``, so a new provider reaches nobody until it adds
 its row here. ``tests/unit/test_reach_plan.py`` fails when a kind that a
@@ -65,14 +66,17 @@ REACH_CLASS: dict[str, str] = {
     # KB-9b slice 2: a source stopped syncing, for the member who connected it
     # (only that member gets the card). It may interrupt, inside the budget.
     "source_sync_failed": "interrupt",
-    # WS-66 RM-2 (calendar_events_reminders.md §5.6): the member's own
-    # reminders interrupt nobody for now. RE-9 raises them to `urgent`,
-    # `interrupt` and `brief` on web push, with the D114.3 budget exception.
-    # ⚠️ A class does not keep a card out of the brief: the brief takes every
-    # open card of Now and Needs you. `NOT_ON_WHATSAPP` below does that.
-    "reminder_due": "none",
-    "reminder_check": "none",
-    "reminder_unconfirmed": "none",
+    # WS-66 RE-9b (calendar_events_reminders.md §5.6, decision 3): the
+    # member's own reminders reach the member by web push only
+    # (`reach/push_channel.py`). `reminder_due` is `urgent`: it may break
+    # quiet hours, with its own cap of 10 a day (D114.3). `reminder_check` is
+    # `interrupt`, inside the interrupt cap and never in quiet hours.
+    # `reminder_unconfirmed` is `brief`, so it sends no push in quiet hours.
+    # ⚠️ A class does not keep a card off WhatsApp. `NOT_ON_WHATSAPP` below
+    # does that, so the Reach loop never sends a reminder (D114.7).
+    "reminder_due": "urgent",
+    "reminder_check": "interrupt",
+    "reminder_unconfirmed": "brief",
     # "Tell me on WhatsApp" (RE-5, §11.3). A rule or a workflow at ``normal``
     # interrupts. The member's own request, and a rule at ``urgent``, are
     # ``urgent`` (below).

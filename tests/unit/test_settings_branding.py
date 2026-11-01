@@ -413,3 +413,37 @@ def test_a_white_style_whose_image_is_broken_degrades_to_the_logo() -> None:
 def test_an_unknown_style_reads_as_same() -> None:
     logo = {"dataUri": "data:image/png;base64,AA==", "mime": "image/png", "width": 2, "height": 1, "byteSize": 1}
     assert st._coerce_branding({"logo": logo, "darkStyle": "neon"}).darkStyle == "same"
+
+
+# -- The square mark (owner, 2026-11-01) ---------------------------------------
+
+
+def _b64(data: bytes) -> str:
+    return base64.b64encode(data).decode()
+
+
+def test_a_square_mark_is_stored_and_returned_beside_the_logo(saved: dict) -> None:
+    body = st.BrandingUpload(logoBase64=_b64(png(600, 160)), logoMarkBase64=_b64(png(96, 96)))
+    out = st.put_branding(body, user=_User())  # type: ignore[arg-type]
+    assert out.logoMark is not None
+    assert (out.logoMark.width, out.logoMark.height) == (96, 96)
+    assert saved["value"]["logoMark"]["width"] == 96
+    # A stored row reads the mark back.
+    assert st._coerce_branding(saved["value"]).logoMark is not None
+
+
+def test_a_mark_that_is_not_near_square_is_refused(saved: dict) -> None:
+    body = st.BrandingUpload(logoBase64=_b64(png(600, 160)), logoMarkBase64=_b64(png(300, 96)))
+    with pytest.raises(st.HTTPException) as err:
+        st.put_branding(body, user=_User())  # type: ignore[arg-type]
+    assert err.value.status_code == 400
+    assert "key" not in saved
+
+
+def test_an_upload_with_no_mark_stores_none_and_an_old_row_reads_none(saved: dict) -> None:
+    out = st.put_branding(_upload(png(600, 160)), user=_User())  # type: ignore[arg-type]
+    assert out.logoMark is None
+    assert saved["value"]["logoMark"] is None
+    old_row = {k: v for k, v in saved["value"].items() if k != "logoMark"}
+    assert st._coerce_branding(old_row).logoMark is None
+

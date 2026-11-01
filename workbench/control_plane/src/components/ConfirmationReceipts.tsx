@@ -40,7 +40,7 @@ export default function ConfirmationReceipts({
             key={r.key}
             data-confirmation-receipt={r.kind}
             role={r.kind === "refused" ? "alert" : "status"}
-            className="flex items-start gap-1.5 text-xs text-muted-foreground"
+            className="flex items-start gap-1.5 text-xs text-muted-foreground glass:text-footnote"
           >
             <Icon
               name={look.icon}

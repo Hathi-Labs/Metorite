@@ -156,7 +156,8 @@ export default function Tabs({
     >
       <div
         // Glass (D143, GL-2): Aroh's TabBar, a capsule track holding capsule segments.
-        className="flex items-center gap-0.5 p-0.5 rounded-lg bg-secondary/50 glass:rounded-full glass:bg-secondary glass:p-[3px]"
+        // GL-6: the track is 28 px, the toolbar size. Each segment is 24 px.
+        className="flex items-center gap-0.5 p-0.5 rounded-lg bg-secondary/50 glass:rounded-full glass:bg-secondary glass:p-0.5"
         role="tablist"
       >
         {tabs.map((t) => {
@@ -168,7 +169,7 @@ export default function Tabs({
               aria-selected={active}
               onClick={() => onTabChange(t.id)}
               title={t.note}
-              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium tech-transition whitespace-nowrap glass:h-8 glass:rounded-full glass:px-3.5 glass:py-0 glass:text-subhead glass:pointer-coarse:h-9 ${
+              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium tech-transition whitespace-nowrap glass:h-6 glass:rounded-full glass:px-3 glass:py-0 glass:text-footnote glass:pointer-coarse:h-9 ${
                 active
                   ? "bg-card text-foreground shadow-sm glass:bg-segment glass:shadow-md"
                   : "text-muted-foreground hover:text-foreground"

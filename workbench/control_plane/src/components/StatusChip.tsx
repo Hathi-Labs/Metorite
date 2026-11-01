@@ -43,7 +43,7 @@ export function StatusChip({
     <span
       {...(ariaLabel ? { role: "img", "aria-label": ariaLabel, title: ariaLabel } : {})}
       className={[
-        "inline-flex items-center gap-1 rounded-full border border-transparent px-1.5 py-0.5 text-[10px] font-medium",
+        "inline-flex items-center gap-1 rounded-full border border-transparent px-1.5 py-0.5 text-[10px] font-medium glass:px-2 glass:text-caption",
         accent.soft,
         accent.text,
         className,

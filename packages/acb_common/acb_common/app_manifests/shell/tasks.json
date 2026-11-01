@@ -1,0 +1,19 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "tasks",
+  "contributes": {
+    "nav": [
+      {
+        "href": "/tasks",
+        "feature": "tasks"
+      }
+    ],
+    "scope": [
+      {
+        "href": "/tasks",
+        "source": "tasks"
+      }
+    ]
+  }
+}

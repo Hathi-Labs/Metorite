@@ -1,17 +1,16 @@
 /**
- * The glass look's fences (D143, `project-docs/specs/glass_look.md` §6).
+ * The glass look's fences (D143, D149, `project-docs/specs/glass_look.md` §6).
  *
- * Glass ships beside classic for a bounded time, and production must keep
- * classic byte for byte until the owner says otherwise. These tests hold
- * the four rules that make that true:
+ * Glass is the only look (D149, GL-Z1). The classic token blocks stay in
+ * `globals.css` until GL-Z2 folds them away. These tests hold the rules:
  *
- *   1. The gate decides. With NEXT_PUBLIC_UI_LOOK unset, nothing resolves to
- *      glass and the boot script holds no look code at all.
+ *   1. Nothing can turn classic back on. The server renders the attribute,
+ *      the boot script never touches it, and no gate or switch exists.
  *   2. The glass token blocks come after the classic ones, and the classic
  *      blocks hold no glass-only token. `themes.test.ts` holds the classic
  *      values themselves.
  *   3. A glass-only class appears in a component only behind the `glass:`
- *      variant, so it matches nothing under classic.
+ *      variant. GL-Z2 retires this fence with the variant.
  *   4. The glass text pairs pass contrast, measured on the CSS itself, with
  *      each translucent fill blended over the surface it sits on.
  */
@@ -20,11 +19,11 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { themeBootScript } from "./boot";
 import { contrastRatio, luminance, parseColor } from "./contrast";
-import { glassGateOn, resolveLook } from "./look";
+import * as look from "./look";
 
 const SRC = fileURLToPath(new URL("../..", import.meta.url));
 const GLOBALS = readFileSync(join(SRC, "app", "globals.css"), "utf8");
@@ -69,64 +68,51 @@ const GLASS_ONLY_TOKENS = [
   ...[1, 2, 3, 4, 5].map((n) => `--glow-${n}`),
 ];
 
-afterEach(() => {
-  vi.unstubAllEnvs();
-});
+// ── 1. Glass is the only look (D149) ─────────────────────────────────────────
 
-// ── 1. The gate ──────────────────────────────────────────────────────────────
-
-describe("the look gate", () => {
-  it("is off unless the build says glass", () => {
-    vi.stubEnv("NEXT_PUBLIC_UI_LOOK", "");
-    expect(glassGateOn()).toBe(false);
-    vi.stubEnv("NEXT_PUBLIC_UI_LOOK", "classic");
-    expect(glassGateOn()).toBe(false);
-    vi.stubEnv("NEXT_PUBLIC_UI_LOOK", "Glass");
-    expect(glassGateOn()).toBe(false);
-    vi.stubEnv("NEXT_PUBLIC_UI_LOOK", "glass");
-    expect(glassGateOn()).toBe(true);
+describe("glass is the only look", () => {
+  it("leaves no gate, no resolver and no setter in look.ts", () => {
+    expect(Object.keys(look).sort()).toEqual(["GLASS_LOOK", "LOOK_ATTRIBUTE"]);
   });
 
-  it("resolves every stored choice to classic when the gate is off", () => {
-    // A browser that chose glass on staging must still get classic on
-    // production, where the gate is off.
-    vi.stubEnv("NEXT_PUBLIC_UI_LOOK", "");
-    for (const stored of [null, "glass", "classic", "anything"]) {
-      expect(resolveLook(stored)).toBe("classic");
-    }
+  it("renders the attribute in the root layout with no condition", () => {
+    const layout = readFileSync(join(SRC, "app", "layout.tsx"), "utf8");
+    expect(layout).toMatch(/const lookAttributes = \{ \[LOOK_ATTRIBUTE\]: GLASS_LOOK \};/);
+    expect(layout).not.toMatch(/glassGateOn|UI_LOOK/);
   });
 
-  it("defaults to glass with the gate on, and honours Classic", () => {
-    vi.stubEnv("NEXT_PUBLIC_UI_LOOK", "glass");
-    expect(resolveLook(null)).toBe("glass");
-    expect(resolveLook("glass")).toBe("glass");
-    expect(resolveLook("classic")).toBe("classic");
+  it("reads no build flag anywhere in src", () => {
+    const offenders = sourceFiles().filter((rel) =>
+      /NEXT_PUBLIC_UI_LOOK|glassGateOn|resolveLook/.test(readFileSync(join(SRC, rel), "utf8")),
+    );
+    expect(offenders).toEqual([]);
   });
 
-  it("puts no look code in the boot script when the gate is off", () => {
-    vi.stubEnv("NEXT_PUBLIC_UI_LOOK", "");
+  it("holds no Design switch in Settings → Appearance", () => {
+    const page = readFileSync(join(SRC, "app", "settings", "appearance", "page.tsx"), "utf8");
+    expect(page).not.toMatch(/DesignSettings|setLook|label="Classic"/);
+  });
+
+  it("gives the appearance store no look", () => {
+    const store = readFileSync(join(SRC, "lib", "theme", "store.ts"), "utf8");
+    expect(store).not.toMatch(/setLook|applyLook|resolveLook/);
+  });
+
+  it("never touches the look attribute in the boot script", () => {
     const script = themeBootScript();
     expect(script).not.toContain("data-look");
-    expect(script).not.toContain("cc-look");
-  });
-
-  it("lets the boot script remove the look for a member who chose Classic", () => {
-    vi.stubEnv("NEXT_PUBLIC_UI_LOOK", "glass");
-    const script = themeBootScript();
-    expect(script).toContain('"cc-look"');
-    expect(script).toContain('removeAttribute("data-look")');
-    // It only ever REMOVES the look. The server renders it, so a script that
-    // could add it would be a second way in.
     expect(script).not.toContain("setAttribute");
+    expect(script).not.toContain("removeAttribute");
   });
 
-  it("runs the boot script with no error in both gate states", () => {
-    for (const gate of ["", "glass"]) {
-      vi.stubEnv("NEXT_PUBLIC_UI_LOOK", gate);
-      // The script swallows its own errors, so a syntax error is the only
-      // way it can fail. `new Function` parses it.
-      expect(() => new Function(themeBootScript())).not.toThrow();
-    }
+  it("clears the key that the old Design switch stored", () => {
+    expect(themeBootScript()).toContain('removeItem(k("cc-look"))');
+  });
+
+  it("parses the boot script", () => {
+    // The script swallows its own errors, so a syntax error is the only
+    // way it can fail. `new Function` parses it.
+    expect(() => new Function(themeBootScript())).not.toThrow();
   });
 });
 
@@ -265,6 +251,70 @@ function utilityOf(token: string): string {
  * comment says where that is decided.
  */
 const GLASS_ONLY_FILES: string[] = [];
+
+// ── The colour edge and the scrollbars (GL-10) ───────────────────────────────
+
+describe("the colour edge round the chat", () => {
+  it("turns only while a run is live: rest and waiting hold still", () => {
+    // DESIGN_SYSTEM.md §4b: only a status loops, and attention never loops.
+    // The rule must sit inside the no-preference gate with the turn itself.
+    const gate = GLOBALS.indexOf("@media (prefers-reduced-motion: no-preference)", GLOBALS.indexOf("glass-glow-turn 5s") - 400);
+    const body = GLOBALS.slice(gate, GLOBALS.indexOf("\n}\n", gate));
+    expect(body).toContain("animation: glass-glow-turn 5s linear infinite;");
+    expect(body).toMatch(/\[data-glow="rest"\] > \.glass\\:glass-glow-ring,\s*html\[data-look="glass"\] \[data-glow="waiting"\] > \.glass\\:glass-glow-ring \{\s*animation: none;/);
+  });
+
+  it("styles each state the chat can be in", () => {
+    for (const state of ["rest", "live", "waiting"]) {
+      expect(GLOBALS, state).toContain(`.glass\\:glass-working-glow[data-glow="${state}"]`);
+    }
+  });
+
+  it("gives each field a crisp spectrum edge that turns only while a run is live", () => {
+    // On a white page the bloom alone fades to a haze (owner, 2026-10-31).
+    expect(GLOBALS).toContain("@utility glass-spectrum-edge");
+    const gate = GLOBALS.indexOf("@media (prefers-reduced-motion: no-preference)", GLOBALS.indexOf("glass-glow-turn 5s") - 400);
+    const body = GLOBALS.slice(gate, GLOBALS.indexOf("\n}\n", gate));
+    expect(body).toMatch(/\[data-glow="live"\] \+ \.glass\\:glass-spectrum-edge::before \{\s*animation: glass-glow-turn 5s/);
+    for (const rel of ["components/AgentChat.tsx", "lib/shell/ChatBar.tsx"]) {
+      const text = readFileSync(join(SRC, rel), "utf8");
+      expect(text, rel).toContain("glass:glass-spectrum-edge");
+      // The edge is the focus cue in glass. A second, blue outline drew two rings.
+      expect(text, rel).not.toContain("glass:focus-within:outline-primary");
+    }
+  });
+});
+
+describe("one surface for each app", () => {
+  it("draws the content card in the card colour, and an app root takes it", () => {
+    // Owner, 2026-10-31: the title bar and the app are one block.
+    const shell = readFileSync(join(SRC, "components", "AppShell.tsx"), "utf8");
+    expect(shell).toMatch(/const FULL_MAIN =\s*"[^"]*glass:rounded-2xl glass:bg-card glass:shadow-card"/);
+    expect(GLOBALS).toMatch(/html\[data-look="glass"\] main \.h-full\.bg-background \{\s*background-color: transparent;/);
+    // The title bar hangs no fade and no hairline: they drew the band.
+    const bar = readFileSync(join(SRC, "components", "AppTopBar.tsx"), "utf8");
+    expect(bar).not.toContain("glass-scroll-edge");
+    expect(bar.match(/glass:border-b-0 glass:bg-transparent/g)?.length).toBe(2);
+  });
+});
+
+describe("glass scrollbars", () => {
+  it("hide the thumb until the pointer is over the pane", () => {
+    expect(GLOBALS).toMatch(/html\[data-look="glass"\] \* \{\s*scrollbar-color: transparent transparent;/);
+    expect(GLOBALS).toMatch(/html\[data-look="glass"\] \*:hover \{\s*scrollbar-color: var\(--scrollbar-thumb\) transparent;/);
+  });
+
+  it("fade the barless rail at its foot while apps sit below it", () => {
+    // Review of GL-10: at 1366x768 the rail hid Organisation and Integrations
+    // with no cue, and the glass rail cannot open.
+    expect(GLOBALS).toMatch(/html\[data-look="glass"\] nav\[data-more-below\] \{[^}]*mask-image: linear-gradient\(to bottom/);
+    const sidebar = readFileSync(join(SRC, "components", "Sidebar.tsx"), "utf8");
+    expect(sidebar).toContain('data-more-below={edges.below ? "" : undefined}');
+    expect(sidebar).toContain('data-more-above={edges.above ? "" : undefined}');
+    expect(sidebar).toMatch(/useScrollEdges\(\s*navRef,\s*useDocumentLook\(\) === "glass",/);
+    expect(GLOBALS).toMatch(/html\[data-look="glass"\] nav\[data-more-above\]\[data-more-below\] \{/);
+  });
+});
 
 describe("glass-only classes", () => {
   it("appear only behind the glass: variant", () => {

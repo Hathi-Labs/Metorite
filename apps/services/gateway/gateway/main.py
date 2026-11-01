@@ -1990,6 +1990,15 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # AI Studio (project-docs/specs/ai_studio.md): STU-B1, the read-only
+    # action catalog (prefix /studio). Dark behind STUDIO_ORGS.
+    from gateway.routes.studio import router as _studio_router
+
+    app.include_router(_studio_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-58 MD-5a — the My Day change sink (my_day_feed.md §8.2, §8.4 items 1
     # and 20). A `pm.*` event bumps the org's feed version with one Redis
     # increment, and runs no SQL. Its OWN try, apart from the workflows block,

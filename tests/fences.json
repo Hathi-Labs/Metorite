@@ -18,6 +18,8 @@
       "tests/unit/test_caddy_auth_gate.py",
       "tests/unit/test_chat_hardening.py",
       "tests/unit/test_chat_payload_identity_claims.py",
+      "tests/unit/test_chat_summary.py",
+      "tests/unit/test_chat_summary_private.py",
       "tests/unit/test_ci_unit_guard.py",
       "tests/unit/test_client_route_contract.py",
       "tests/unit/test_compose_ports_local.py",
@@ -112,7 +114,8 @@
       "tests/unit/test_projects_field_parity.py",
       "tests/unit/test_projects_report_sections_lockstep.py",
       "tests/unit/test_projects_ui_actions.py",
-      "tests/unit/test_reference_links.py"
+      "tests/unit/test_reference_links.py",
+      "tests/unit/test_shell_manifests.py"
     ]
   },
   "ts": {

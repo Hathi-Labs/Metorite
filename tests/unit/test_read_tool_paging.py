@@ -229,8 +229,14 @@ ALLOWED: dict[str, str] = {
         'answer names its size and how to read the rest.',
     'packages/acb_skills/acb_skills/todo_tools.py::manage_todo_list::title[:120]':
         'Text, not rows: the cut shortens one string.',
-    'packages/acb_skills/acb_skills/web_tools.py::fetch_page::text[:max_chars]':
+    'packages/acb_skills/acb_skills/web_tools.py::frame_page::text[:limit]':
         "Text: one web page, cut and marked '[... truncated'. max_chars asks for more.",
+    'packages/acb_skills/acb_skills/web_tools.py::_direct_text::answer.body[:MAX_HTML_BYTES]':
+        'Bytes of one web page, not rows: the HTML that the fallback strips on the '
+        'event loop has a bound (WEB-1 repair 2). WEB-2 replaces this reader.',
+    'packages/acb_skills/acb_skills/web_tools.py::_jina_read::body[:MAX_MARKDOWN_BYTES]':
+        "Bytes of one web page, not rows: four bytes for each character of MAX_CHARS, so "
+        "the text still fills the ceiling, and frame_page marks the cut (WEB-1 repair 2).",
     'apps/agents/agent-email-assistant/agents.py::_inbox_card_parts::rows[:_CARD_MESSAGE_LINES]':
         "A confirm card's message lines (#1019). It ends with '+N more', and the act takes every message.",
     'apps/agents/agent-email-assistant/agents.py::_card_name::\' \'.join(\'\'.join((ch for ch in text if ch not in \'"\\\'`()[]{}\')).split())[:80]':
@@ -242,6 +248,24 @@ ALLOWED: dict[str, str] = {
     'apps/skills/skill-projects/skill_projects/guarded.py::_convert_list::names[:CONVERT_LIST_LIMIT]':
         "A confirm card's list of child names (WS-64 OP-10 fix round 1). It ends with "
         "'and N more', the card states the full count, and the convert takes every child.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_clip::text[:limit - 3]":
+        "Text, not rows: the cut shortens one string.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_line_of::text[:limit * 4]":
+        "Text, not rows: the cut shortens one string.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_skeleton::' '.join(text.split()[:5])[:MAX_NAME_CHARS]":
+        "Text: the first five words of a brief, joined, then cut. Words, not rows.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_skeleton::text.split()[:5]":
+        "Text: the first five words of a brief become a draft name. Words, not rows.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_skeleton::text[:MAX_PURPOSE_CHARS]":
+        "Text, not rows: the cut shortens one string.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_skeleton::title[:1]":
+        "Text: the first letter of a name, upper-cased. Not rows.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_slug::re.sub('^[^a-z]+', '', words)[:40]":
+        "Text, not rows: the cut shortens one string.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_shown_diff::diff[:MAX_DIFF_LINES]":
+        "The cut list ends with one line that counts the rest ('... N more'). Each patch call returns the diff again.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_shown_errors::errors[:MAX_ERRORS]":
+        "The cut list ends with one line that counts the rest ('... N more'). The errors come back after each patch, so none is lost for good.",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
@@ -256,8 +280,11 @@ ALLOWED: dict[str, str] = {
 #: and says so (65). WS-64 OP-10 fix round 1 capped the convert card's list
 #: of child names as the app's dialog caps it, and it says "and N more" (66).
 #: WS-27bn RA-3 added the waiting card's cut, the sibling of the card's
-#: `rows[:rows_max]`. Its text prints every row with no cut (67).
-ALLOWED_CEILING = 67
+#: `rows[:rows_max]`. Its text prints every row with no cut (67). STU-G1 added nine cuts in
+#: `studio_tools.py`: seven cut one string, and two end with a '... N more'
+#: line (76). WEB-1 repair 2 bounded the text work of `fetch_page` on the
+#: event loop: two byte cuts of one page, each with its reason (78).
+ALLOWED_CEILING = 78
 
 
 def _stringy(node: ast.AST) -> bool:

@@ -24,6 +24,8 @@ import {
   DOCK_MAX,
   DOCK_MIN,
   DOCK_MIN_VIEWPORT,
+  DOCK_ROOMY_VIEWPORT,
+  dockFoldsNav,
   STALE_CHAT_MS,
   STRIP_TEXT_MAX,
   __resetAssistantForTests,
@@ -109,6 +111,13 @@ describe("the two forms", () => {
   it("below the floor the side panel floats over the page, and a phone has none", () => {
     expect(dockFloats(DOCK_MIN_VIEWPORT, false)).toBe(false);
     expect(dockFloats(DOCK_MIN_VIEWPORT - 1, false)).toBe(true);
+    // Owner, 2026-11-01: the panel sits beside the page on a 1280 window,
+    // and a tight window folds the app sidebar instead of floating the panel.
+    expect(dockFloats(1280, false)).toBe(false);
+    expect(dockFoldsNav(1280, false)).toBe(true);
+    expect(dockFoldsNav(DOCK_ROOMY_VIEWPORT, false)).toBe(false);
+    expect(dockFoldsNav(DOCK_MIN_VIEWPORT - 1, false)).toBe(false);
+    expect(dockFoldsNav(1280, true)).toBe(false);
     expect(dockFloats(390, true)).toBe(false);
   });
 
@@ -952,8 +961,9 @@ describe("the chat's chrome on a phone (CF-8, chat_first_surface.md §4.8)", () 
 
   it("the chat drops its agent row and its Share row on the phone, and keeps the room on", () => {
     const src = chat();
-    expect(src).toMatch(/\{!compact && !phoneChrome && \(\s*<div data-chat-agent-row=""/);
-    expect(src).toMatch(/\{!compact && !phoneChrome && \(\s*<div data-chat-room-row=""/);
+    // One guard holds both rows: the glass head puts them on one line (GL-10).
+    expect(src).toMatch(/\{!compact && !phoneChrome && \(\s*<div data-chat-head=""[^>]*>\s*<div data-chat-agent-row=""/);
+    expect(src).toMatch(/<div data-chat-head=""[\s\S]*?data-chat-agent-row=""[\s\S]*?<div data-chat-room-row=""/);
     expect(src).toContain("useRoom(sessionId, viewerEmail, { enabled: !compact });");
   });
 
@@ -983,7 +993,7 @@ describe("the chat's chrome on a phone (CF-8, chat_first_surface.md §4.8)", () 
 
   it("the header keeps five controls on the phone, and Files moves into the \"…\" control", () => {
     const src = dock();
-    expect(src).toContain('const phoneTap = phoneChrome ? "h-11 w-11" : "";');
+    expect(src).toContain('const phoneTap = phoneChrome ? "h-11 w-11 glass:h-11 glass:w-11 glass:pointer-coarse:h-11 glass:pointer-coarse:w-11" : "";');
     expect((src.match(/className=\{phoneTap\}/g) ?? []).length).toBe(4);
     expect(src).toContain(") : chat.activeId && !phoneChrome ? (");
     expect(src).toMatch(/label: "This chat's files"/);

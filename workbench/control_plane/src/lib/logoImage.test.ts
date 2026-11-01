@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
   adviseDarkStyle,
   contentBounds,
+  markBox,
   detectBackground,
   fitAspect,
   inkStats,
@@ -174,5 +175,46 @@ describe("the pixel edits", () => {
     const p = img(2, 1, CLEAR, BRAND_BLUE, { x: 0, y: 0, w: 2, h: 1 });
     toWhite(p);
     expect(Array.from(p.data.slice(0, 4))).toEqual(BRAND_BLUE);
+  });
+});
+
+describe("the square mark inside a logo (owner, 2026-11-01)", () => {
+  /** A logo on clear ground: a symbol at the left, a gap, then a long word. */
+  function lockupLogo(): Pixels {
+    const p = img(200, 40, CLEAR, BRAND_BLUE, { x: 10, y: 5, w: 30, h: 30 });
+    // The wordmark: x 60..190, a little shorter than the symbol.
+    for (let y = 10; y < 30; y++) {
+      for (let x = 60; x < 190; x++) {
+        const i = (y * p.width + x) * 4;
+        p.data[i] = 0;
+        p.data[i + 1] = 0;
+        p.data[i + 2] = 0;
+        p.data[i + 3] = 255;
+      }
+    }
+    return p;
+  }
+
+  it("squares the symbol at the left of a lockup, with a margin, not the word", () => {
+    const box = markBox(lockupLogo());
+    expect(box.w).toBe(box.h);
+    // The symbol is 30 px, so the square is 38 px, centred on it.
+    expect(box.w).toBe(38);
+    expect(box.x + box.w / 2).toBe(25);
+    expect(box.y + box.h / 2).toBe(20);
+  });
+
+  it("keeps a logo that is already a symbol whole", () => {
+    const box = markBox(img(64, 64, CLEAR, BRAND_BLUE, { x: 12, y: 12, w: 40, h: 40 }));
+    expect(box.w).toBe(50);
+    expect(box.x + box.w / 2).toBe(32);
+  });
+
+  it("takes the left square of a wordmark with no symbol", () => {
+    const box = markBox(img(200, 40, CLEAR, BLACK, { x: 10, y: 10, w: 180, h: 20 }));
+    expect(box.w).toBe(box.h);
+    expect(box.w).toBe(25);
+    // Whole pixels: the centre may sit half a pixel off.
+    expect(Math.abs(box.x + box.w / 2 - 20)).toBeLessThanOrEqual(1);
   });
 });

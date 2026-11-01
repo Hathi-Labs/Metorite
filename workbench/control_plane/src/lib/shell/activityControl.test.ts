@@ -357,16 +357,19 @@ describe("the shell owns the control, with the shell bar on or off", () => {
 
   // Review of #815. Mutation: drop the sidebar's control, and with the shell
   // bar flag off the desktop shows nothing.
-  it("with the shell bar off, the sidebar head draws it", () => {
+  it("GL-12: the Ask bar's pill opens it, and the sidebar's Chat row counts the runs", () => {
     const side = read("components/Sidebar.tsx");
-    expect(side).toMatch(/\{!barOn \? <ActivityControl \/> : null\}/);
-    expect(side).toMatch(/useState\(\(\) => shellBarOn\(\)\)/);
+    expect(side).not.toMatch(/<ActivityControl/);
+    expect(side).toMatch(/<ChatRow collapsed=\{collapsed\} running=\{runningTotal\}/);
+    const bar = read("lib/shell/ChatBar.tsx");
+    expect(bar).toMatch(/data-ask-running=""/);
+    expect(bar).toMatch(/\(sheet \? closeActivity\(\) : openActivity\(\)\)/);
   });
 
   it("AppShell mounts the one panel in every layout, with no flag around it", () => {
     const shell = read("components/AppShell.tsx");
     expect(shell.match(/<ActivityHost\b/g)?.length).toBe(2); // desktop, phone
-    expect(shell).toMatch(/<ActivityHost placement=\{frame === "classic" \? "top" : "end"\} \/>/);
+    expect(shell).toMatch(/<ActivityHost placement=\{frame === "column" \? "end" : "top"\} \/>/);
     expect(shell).toMatch(/<ActivityHost placement="sheet" \/>/);
     // The phone drawer draws the control outside the shell bar's gate.
     const drawer = shell.slice(shell.indexOf("NS-1 on the phone"));

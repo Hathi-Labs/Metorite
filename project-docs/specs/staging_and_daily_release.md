@@ -1,5 +1,7 @@
 # Staging and the daily release — a second deployment that takes every merge
 
+**Status update, 2026-10-31:** staging is retired (D144). The daily release and the dispatch stay.
+
 **Status:** 🟠 **PROPOSED, 2026-10-15. Revised 2026-10-16:** staging goes on the dev box (§5).
 
 **Built:** 🔨 phase 1, the daily clock (§5.7), 🔨 phase 2 (§5.8 and §5.9), and 🔨 the code of phases 4 and 5 (§5.11).
@@ -492,7 +494,7 @@ Each part below has its fence.
 
 | Part | Where | What it does | Fence |
 |---|---|---|---|
-| The reduction | `infra/staging/minimise.sql` | On a restore of production, keeps the organizations in `keep_slugs`, deletes every row of every other one, keeps an identity only for a kept member, and blanks each credential. It refuses on an unknown slug, on an unclassified table, and on a credential left behind | `test_staging_minimise_r8.py` |
+| The reduction | `infra/staging/minimise.sql` | On a restore of production, keeps the organizations in `keep_slugs`, deletes every row of every other one, keeps an identity only for a kept member, and blanks each credential. Since LD-8c (2026-10-31) it also empties `push_subscriptions`, blanks the plugin auth and the hashes of the WhatsApp codes, and closes each open WhatsApp act. It refuses on an unknown slug, on an unclassified table, and on a credential left behind | `test_staging_minimise_r8.py` |
 | The export | `scripts/staging_export.sh`, called by `backup_db.sh --verify-restore` | Runs the reduction in the nightly verify container on the production box, then dumps it with the roles, the extensions, production's feature switches and checksums. Off while `STAGING_EXPORT_SLUGS` is unset. Its failure never fails the backup | `test_staging_export.py` |
 | The rebuild | `scripts/staging_refresh.sh`, `acb-staging-refresh.timer` at 03:30 UTC | Pulls the export, checks it, rebuilds the Postgres 17 database, gives the gateway the non-owner `acb_app` role, copies the switches with every outbound one held off, and deploys the `staging` ref | `test_staging_box.py` |
 | The box | `deploy/hostinger/bootstrap_staging.sh` | Firewall first, the packages, the `acb` user, Node 20.20.2 private to `acb`, the checkout, the env files with fresh secrets, the database, and the first rebuild | `test_staging_box.py` |

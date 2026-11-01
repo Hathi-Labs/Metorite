@@ -567,12 +567,20 @@ export function AccountFoot({
           aria-haspopup="dialog"
           aria-expanded={open}
           aria-label={`Account and settings: ${active.email}`}
+          data-rail-row={collapsed ? "" : undefined}
           title={tip}
           className={`cc-link group flex items-center rounded-lg text-left hover:bg-sidebar-accent tech-transition ${
-            collapsed ? "justify-center p-1.5" : "w-full gap-2.5 px-2 py-1.5"
+            collapsed ? "w-full justify-center p-1.5" : "w-full gap-2.5 px-2 py-1.5"
           }`}
         >
           <Avatar email={active.email} name={active.name} size="sm" />
+          {/* Folded, the name waits beside the avatar for the rail to peek
+              (Sidebar.tsx, hover to expand). The button's name says it. */}
+          {collapsed ? (
+            <span data-rail-label="" aria-hidden className="truncate text-[13px] font-medium text-sidebar-foreground/90">
+              {name ?? active.email}
+            </span>
+          ) : null}
           {!collapsed && (
             <>
               <span className="min-w-0 flex-1">

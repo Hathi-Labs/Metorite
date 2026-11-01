@@ -935,7 +935,11 @@ async def call_agent_background(agent_name: str, message: str) -> str:
     """
     run_id = str(_uuid.uuid4())
 
-    refusal = _delegation_refusal(agent_name)
+    # STU-G1: a background run keeps delegation (§4.3.1), so it asks no pack
+    # refusal. A pack-only owner never runs at all, so it asks that one.
+    from acb_skills.tool_packs import pack_only_refusal
+
+    refusal = _delegation_refusal(agent_name) or pack_only_refusal(agent_name)
     if refusal:
         return refusal
 

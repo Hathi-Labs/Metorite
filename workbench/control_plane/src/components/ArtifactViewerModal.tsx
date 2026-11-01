@@ -548,12 +548,12 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       {/* Modal — full-width on mobile, constrained on desktop. pb-safe protects against iOS rounded corners. */}
-      <div className="relative flex flex-col w-full max-w-4xl max-h-[90vh] sm:rounded-lg border-0 sm:border border-border bg-background shadow-2xl overflow-hidden sm:mx-4">
+      <div className="relative flex flex-col w-full max-w-4xl max-h-[90vh] sm:rounded-lg border-0 sm:border border-border bg-background shadow-2xl overflow-hidden sm:mx-4 glass:sm:rounded-[22px] glass:sm:border-transparent glass:glass-surface">
         {/* Header */}
         {/* On a phone the name and the close button take the first row and the
             actions wrap to a second one. At 390 wide the one-row header cut
             the name to two letters (S8 visual review). */}
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-3 shrink-0">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-3 shrink-0 glass:border-transparent">
           <div className="order-1 flex min-w-0 flex-1 basis-40 items-center gap-2">
             <span className="min-w-0 truncate text-sm font-semibold text-foreground" title={entry.name}>{entry.name}</span>
             <span className="text-xs text-muted-foreground truncate hidden sm:block">{entry.path}</span>
@@ -568,7 +568,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                 {(isMarkdown || renderable) && (
                   <button
                     onClick={handleTogglePreview}
-                    className={`rounded px-2 py-1 text-xs transition-colors ${
+                    className={`rounded px-2 py-1 text-xs glass:rounded-full glass:px-3 glass:text-caption transition-colors ${
                       showPreview
                         ? "bg-primary/10 text-primary"
                         : "bg-secondary text-muted-foreground hover:text-foreground"
@@ -581,14 +581,14 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                 <button
                   onClick={handleSave}
                   disabled={saving}
-                  className="rounded px-2 py-1 text-xs text-success bg-secondary hover:bg-success/10 transition-colors disabled:opacity-50"
+                  className="rounded px-2 py-1 text-xs glass:rounded-full glass:px-3 glass:text-caption text-success bg-secondary hover:bg-success/10 transition-colors disabled:opacity-50"
                 >
                   {saving ? "Saving…" : "Save"}
                 </button>
                 <button
                   onClick={handleCancelEdit}
                   disabled={saving}
-                  className="rounded px-2 py-1 text-xs text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
+                  className="rounded px-2 py-1 text-xs glass:rounded-full glass:px-3 glass:text-caption text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
                 >
                   Cancel
                 </button>
@@ -598,7 +598,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                 {(renderable || state.status === "report") && (
                   <button
                     onClick={() => setShowSource((v) => !v)}
-                    className="rounded px-2 py-1 text-xs text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
+                    className="rounded px-2 py-1 text-xs glass:rounded-full glass:px-3 glass:text-caption text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
                     title={showSource ? "Show the rendered artifact" : "Show the source"}
                   >
                     {showSource ? "Preview" : "Code"}
@@ -607,7 +607,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                 <a
                   href={downloadUrl}
                   download={entry.name}
-                  className="rounded px-2 py-1 text-xs text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
+                  className="rounded px-2 py-1 text-xs glass:rounded-full glass:px-3 glass:text-caption text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
                 >
                   Download
                 </a>
@@ -615,7 +615,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                   <a
                     href={pdfUrl}
                     download={pdfNameFor(entry.name)}
-                    className="rounded px-2 py-1 text-xs text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
+                    className="rounded px-2 py-1 text-xs glass:rounded-full glass:px-3 glass:text-caption text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
                   >
                     Download PDF
                   </a>
@@ -623,7 +623,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                 {editable && (
                   <button
                     onClick={handleStartEdit}
-                    className="rounded px-2 py-1 text-xs text-primary bg-secondary hover:bg-primary/10 transition-colors"
+                    className="rounded px-2 py-1 text-xs glass:rounded-full glass:px-3 glass:text-caption text-primary bg-secondary hover:bg-primary/10 transition-colors"
                     title="Edit file"
                   >
                     Edit
@@ -632,7 +632,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                 {deletable && (
                   <button
                     onClick={handleDelete}
-                    className="rounded px-2 py-1 text-xs text-destructive bg-secondary hover:bg-destructive/10 transition-colors"
+                    className="rounded px-2 py-1 text-xs glass:rounded-full glass:px-3 glass:text-caption text-destructive bg-secondary hover:bg-destructive/10 transition-colors"
                     title="Delete file"
                   >
                     Delete

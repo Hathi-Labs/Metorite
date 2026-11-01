@@ -41,6 +41,7 @@
  * Pure and framework-free, so the node-env vitest holds it.
  */
 
+import { parseAction } from "@/lib/studio/dataDoor";
 import { bareToolName } from "@/lib/toolSteps";
 
 export type Placement = "ask" | "evidence" | "write" | "answer";
@@ -413,7 +414,7 @@ function hasControl(node: unknown, depth: number): boolean {
   if (depth > MAX_DEPTH || !node || typeof node !== "object") return false;
   const n = node as Record<string, unknown>;
   const props = (n.props && typeof n.props === "object" ? n.props : {}) as Record<string, unknown>;
-  if (n.type === "button" && typeof props.action === "string" && props.action) return true;
+  if (n.type === "button" && parseAction(props.action) !== null) return true;
   if (n.type === "template" && typeof props.name === "string" && ASK_TEMPLATES.has(props.name)) {
     return true;
   }

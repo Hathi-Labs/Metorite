@@ -564,3 +564,57 @@ SESSION_VISIBLE_SQL = """
         )
     )
 """
+
+
+#: The chat ``s`` is solo for its own member, ``s.user_id``: the rule of
+#: :func:`room_is_solo`, as SQL (``personalization.md`` §15.3, PZ-33a).
+#:
+#: The job of PZ-33b selects its chats with it, and then checks
+#: ``room_is_solo(resolve_room_access(id, user_id, ...))`` before it writes.
+#: So the two forms must agree on each row. The rule, part by part:
+#:
+#: * a NULL or empty visibility reads as ``private``, and only ``private``
+#:   is solo. The compare is exact, as in :func:`room_is_solo`;
+#: * the member, ``s.user_id`` with no outer space, is not empty;
+#: * with no participant row, the chat is solo when ``s.user_id`` holds an
+#:   ``@``, because :func:`_expand_members` then names only ``user_id``;
+#: * with participant rows, the chat is solo when they hold ONE subject, and
+#:   that subject is ``s.user_id``, with no outer space and case-blind. A
+#:   ``group:`` or ``org`` row, or a row of another member, is another party.
+#:
+#: It binds no parameter. A caller adds it to a statement whose
+#: ``chat_session`` alias is ``s``, as :data:`SESSION_VISIBLE_SQL` is added.
+#: It uses no ``%`` and no backslash, so it is safe in each driver. Fence:
+#: ``tests/unit/test_chat_summary_r8.py`` (parity with
+#: :func:`room_is_solo`, R8).
+SOLO_ROOM_SQL = """
+    (
+        COALESCE(NULLIF(s.visibility, ''), 'private') = 'private'
+        AND regexp_replace(COALESCE(s.user_id, ''),
+                           '^[[:space:]]+|[[:space:]]+$', '', 'g') <> ''
+        AND (
+            (
+                strpos(s.user_id, '@') > 0
+                AND NOT EXISTS (
+                    SELECT 1 FROM chat_session_participant sp0
+                    WHERE sp0.session_id = s.id
+                )
+            )
+            OR (
+                (
+                    SELECT count(DISTINCT sp1.subject)
+                    FROM chat_session_participant sp1
+                    WHERE sp1.session_id = s.id
+                ) = 1
+                AND NOT EXISTS (
+                    SELECT 1 FROM chat_session_participant sp2
+                    WHERE sp2.session_id = s.id
+                      AND lower(regexp_replace(sp2.subject,
+                                '^[[:space:]]+|[[:space:]]+$', '', 'g'))
+                          <> lower(regexp_replace(s.user_id,
+                                   '^[[:space:]]+|[[:space:]]+$', '', 'g'))
+                )
+            )
+        )
+    )
+"""

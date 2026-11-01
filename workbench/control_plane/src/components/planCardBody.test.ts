@@ -133,7 +133,7 @@ describe("the plan card at rest", () => {
 
   it("draws in the chat card's frame, with a container for the narrow layout (change 9)", () => {
     const html = plan();
-    expect(html.startsWith('<div data-plan-card="" class="@container min-w-0"')).toBe(true);
+    expect(classicMarkup(html).startsWith('<div data-plan-card="" class="@container min-w-0"')).toBe(true);
     expect(html).toContain("@[34rem]:flex-row");
   });
 

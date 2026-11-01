@@ -362,7 +362,7 @@ export default function WhatsAppPage() {
     <div className="flex h-full min-h-0 bg-background text-foreground">
       {/* ── Spine: triage streams ─────────────────────────────────── */}
       <nav className="w-52 shrink-0 space-y-0.5 border-r border-border p-2 flex flex-col">
-        <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">
+        <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70 glass:normal-case glass:tracking-normal glass:text-caption glass:font-semibold glass:text-muted-foreground">
           Triage
         </div>
         {STREAMS.map((s) => {
@@ -389,7 +389,7 @@ export default function WhatsAppPage() {
             (W16) — filter the queue to a label without leaving triage. */}
         {labels.length > 0 && (
           <div className="mt-3">
-            <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">
+            <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70 glass:normal-case glass:tracking-normal glass:text-caption glass:font-semibold glass:text-muted-foreground">
               Labels
             </div>
             {labels.map((l) => {
@@ -579,7 +579,7 @@ function TriageDrawer({
     (streams as unknown as Record<string, number>)[key] ?? 0;
   return (
     <div className="p-2">
-      <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">
+      <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70 glass:normal-case glass:tracking-normal glass:text-caption glass:font-semibold glass:text-muted-foreground">
         Triage
       </div>
       {STREAMS.map((s) => {
@@ -614,7 +614,7 @@ function TriageDrawer({
       })}
       {labels.length > 0 && (
         <div className="mt-2 border-t border-border pt-2">
-          <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">
+          <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70 glass:normal-case glass:tracking-normal glass:text-caption glass:font-semibold glass:text-muted-foreground">
             Labels
           </div>
           {labels.map((l) => {
@@ -650,7 +650,7 @@ function TriageDrawer({
       )}
       {accounts.length > 1 && (
         <div className="mt-2 border-t border-border pt-2">
-          <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">
+          <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70 glass:normal-case glass:tracking-normal glass:text-caption glass:font-semibold glass:text-muted-foreground">
             Number
           </div>
           {accounts.map((a) => (
