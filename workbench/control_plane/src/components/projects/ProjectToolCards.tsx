@@ -43,6 +43,8 @@ import { useOverflowTip } from "@/components/ui/OverflowTip";
 import { LEGEND, parseTaskRows, taskRowFacts, type ProjectTaskRow } from "@/lib/projectToolRows";
 import { statusAccent } from "@/lib/statusAccent";
 import { noteReminderReceipt } from "@/lib/shell/reminderOpen";
+import { readReminderReceipt } from "@/lib/reminderReceipt";
+import ReminderReceiptCard from "./ReminderReceiptCard";
 import { glassToneFrame } from "@/components/glassCard";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
@@ -630,7 +632,9 @@ export function forPeople(result: string): string {
 export function forPeopleFenced(result: string): string {
   return withoutLegend(result)
     .split("\n")
-    .filter((l) => !/^\s*(?:[a-z_]+_id|link|done):/.test(l))
+    // `fire_at`, `zone`, `undo` and `was_*` are the lines of a reminder
+    // receipt (RX-2): its card reads them, a person does not.
+    .filter((l) => !/^\s*(?:[a-z_]+_id|link|done|fire_at|zone|undo|was_[a-z_]+):/.test(l))
     // A gateway refusal leads with the route (`Projects PUT /projects/...: `).
     // The member needs the reason, not the address it came from.
     .map((l) =>
@@ -1103,6 +1107,31 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
   );
 }
 
+/** Whether a tool event is the receipt of a reminder write that happened. */
+export function isReminderReceipt(e: ToolEvent): boolean {
+  const result = (e.result || "").trim();
+  return (
+    classifyActionResult(result, e.status, e.name) === "done" && readReminderReceipt(e.name, result) !== null
+  );
+}
+
+/** The reminder card of one receipt, with the same store note as a plain receipt. */
+function ReminderReceiptHost({ event: e }: { event: ToolEvent }) {
+  const result = (e.result || "").trim();
+  const receipt = readReminderReceipt(e.name, result);
+  const openTask = useOpenTask();
+  // The page's store learns the new state, as for any receipt (RM-4).
+  useEffect(() => {
+    if (!isFreshReceipt(e)) return;
+    noteReminderReceipt(e.name, result);
+    announceChange(e.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
+  }, [e.id]);
+  if (!receipt) return null;
+  const meta = ACTION_META[e.name] ?? { icon: "Bell", label: genericLabel(e.name) };
+  return <ReminderReceiptCard id={e.id} label={meta.label} receipt={receipt} openTask={openTask} />;
+}
+
 /** A label for a tool this file has no entry for — the generic card. */
 function genericLabel(name: string): string {
   const words = name.replace(/_/g, " ").trim();
@@ -1129,6 +1158,12 @@ export default function ProjectToolCards({ toolEvents }: { toolEvents?: ToolEven
     const meta = INFO_META[e.name];
     if (meta) {
       items.push(<InfoCard key={e.id} event={e} icon={meta.icon} label={meta.label} />);
+      continue;
+    }
+    // A reminder the chat set, changed or moved draws as the reminder itself
+    // (RX-2). A refusal or a cancel still draws as a plain receipt.
+    if (isReminderReceipt(e)) {
+      items.push(<ReminderReceiptHost key={e.id} event={e} />);
       continue;
     }
     // A write, known or new. A new one draws the generic receipt from its

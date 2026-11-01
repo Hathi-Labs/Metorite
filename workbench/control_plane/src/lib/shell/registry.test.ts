@@ -116,6 +116,22 @@ describe("an admin who names the roster opens it, not the invite form", () => {
   });
 });
 
+describe("the reminder job (WS-66 RX-6)", () => {
+  // The job opens on the Calendar, so the member must hold that pane.
+  const items = buildItems([...HELD, pane("/calendar", "Calendar", "Your day")]);
+  const top = (query: string) => rank({ items, query, context: null, recent: [] })[0]?.key;
+
+  it("takes the words remind and reminder, and the capture job no longer does", () => {
+    expect(top("remind")).toBe("do:set-reminder");
+    expect(top("reminder")).toBe("do:set-reminder");
+    expect(top("new reminder")).toBe("do:set-reminder");
+    expect(top("task")).toBe("do:capture");
+    const capture = items.find((i) => i.key === "do:capture");
+    expect(capture?.words).not.toContain("remind");
+    expect(capture?.words).not.toContain("reminder");
+  });
+});
+
 describe("score and rank", () => {
   const items = buildItems(HELD);
   const top = (query: string, context: string | null = null, recent: string[] = []) =>
@@ -124,7 +140,6 @@ describe("score and rank", () => {
   it("finds a job by the words a member would type, not only its label", () => {
     expect(top("new email")).toBe("do:compose");
     expect(top("compose")).toBe("do:compose");
-    expect(top("remind me")).toBe("do:capture");
     expect(top("who")).toBe("do:find-person");
     expect(top("create a task")).toBe("do:capture");
     expect(top("open projects")).toBe("go:/projects");
@@ -196,7 +211,6 @@ describe("the CRM jobs (WS-53 CRM-X2)", () => {
   it("leaves the words of other jobs with them", () => {
     expect(top("contact")).toBe("do:find-person");
     expect(top("colleague")).toBe("do:find-person");
-    expect(top("remind me")).toBe("do:capture");
   });
 
   it("offers none of them to a member without the CRM", () => {

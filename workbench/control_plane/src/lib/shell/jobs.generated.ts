@@ -8,7 +8,7 @@ export const GENERATED_JOBS: readonly ShellJob[] = [
     // The owning pane is Projects since the OP-4 flip (2026-10-25): My Tasks left the nav, and its inbox is the My work section of Projects. WS-64: a member who lacks feature:projects but holds feature:tasks gets the job at /tasks?do=capture (the fallback).
     id: "capture",
     label: "New task",
-    words: ["task", "todo", "to-do", "capture", "add", "remind", "reminder", "note"],
+    words: ["task", "todo", "to-do", "capture", "add", "note"],
     app: "/projects",
     href: "/projects?do=capture",
     icon: "CirclePlus",
@@ -29,6 +29,15 @@ export const GENERATED_JOBS: readonly ShellJob[] = [
     app: "/calendar",
     href: "/calendar",
     icon: "CalendarClock",
+  },
+  {
+    // RX-6 (2026-11-02): the capture job stopped taking 'remind'. This job opens the New reminder form on /calendar. It saves nothing when it opens. The job needs feature:projects, because the reminder routes answer 403 to a member who holds feature:tasks only.
+    id: "set-reminder",
+    label: "New reminder",
+    words: ["remind", "reminder", "nudge"],
+    app: "/calendar",
+    href: "/calendar?do=new-reminder",
+    icon: "BellPlus",
   },
   {
     // A root node in Projects is a SPACE (the tree grammar of migration 193), so the label names what opens: the New space row in the tree.

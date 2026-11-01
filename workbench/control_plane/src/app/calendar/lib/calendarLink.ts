@@ -19,11 +19,15 @@
  * Fence: `calendarLink.test.ts`.
  */
 
+import { parseReminderId } from "@/lib/shell/reminderOpen";
+
 import { HOUR_PX } from "../components/shared";
 
 /** The query names of the link. The gateway writes them by these names. */
 export const DATE_PARAM = "date";
 export const AT_PARAM = "at";
+/** `?reminder=<id>` opens the Reminders panel and marks that row (RX-2). */
+export const REMINDER_PARAM = "reminder";
 
 /** A clock on the grid, in the member's own zone. */
 export interface ClockTime {
@@ -37,6 +41,8 @@ export interface CalendarLink {
   date: Date | null;
   /** The time to scroll to, or `null` for the current hour. */
   at: ClockTime | null;
+  /** The reminder to mark in the Reminders panel, or `null`. */
+  reminder: string | null;
 }
 
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -68,7 +74,8 @@ export function calendarLinkFromSearch(
 ): CalendarLink | null {
   const date = parseLinkDate(search?.get(DATE_PARAM));
   const at = parseLinkClock(search?.get(AT_PARAM));
-  return date || at ? { date, at } : null;
+  const reminder = parseReminderId(search?.get(REMINDER_PARAM)) ?? null;
+  return date || at || reminder ? { date, at, reminder } : null;
 }
 
 /**

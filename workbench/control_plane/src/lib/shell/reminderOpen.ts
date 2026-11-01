@@ -40,10 +40,15 @@ import type { AssistantFacts } from "./assistant";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** The reminder id in `raw`, lower case, or undefined when it is not a UUID. */
+export function parseReminderId(raw: string | null | undefined): string | undefined {
+  const text = raw?.trim() ?? "";
+  return UUID_RE.test(text) ? text.toLowerCase() : undefined;
+}
+
 /** The reminder id of a chat link, or undefined when it is not a UUID. */
 export function reminderParam(params: URLSearchParams): string | undefined {
-  const raw = params.get("reminder")?.trim() ?? "";
-  return UUID_RE.test(raw) ? raw.toLowerCase() : undefined;
+  return parseReminderId(params.get("reminder"));
 }
 
 /** The route that opens a reminder in one chat. */
