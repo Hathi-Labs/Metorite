@@ -2249,19 +2249,31 @@ each box.
   `test_chat_summary_r8.py`. The first two are in the `safety` list of
   `tests/fences.json`. Fence (c) of the private test is an allow list of
   the importers of the module: today the room routes and the purge.
-- ⚠️ **Open, blocks PZ-33b and the flag.** After three review rounds, the
-  number rule of `check_answer` still stores a long number that the member
-  did not type in rare forms, for example `98450!!!!12345` or
-  `98450 , , 12345`. The wider rule of round 3 also drops a time range or a
-  lakh price that the member did not type. Each fix of the punctuation
-  between digit groups found a new form, so round 3 is the last patch of
-  that kind. Today no code reaches `check_answer`: fence (c) lets only the
-  room routes and the purge import the module, and only for the two clear
-  functions. **PZ-33b replaces the rule before any caller:** a line drops
-  when its digits, read across any characters that are not letters, form a
-  run of 6 or more that the member did not type. A time range or a price
-  that the member did not type then drops too. The agent accepts that cost
-  for a private summary of two or three lines, and the owner may overrule it.
+- **Closed by PZ-33b (2026-11-01): the strict digit rule.** After three
+  review rounds, the number rule of `check_answer` still stored some long
+  numbers that the member did not type. Two examples are `98450!!!!12345`
+  and `98450 , , 12345`. Each fix of the punctuation between digit groups
+  found a new form. PZ-33b put ONE rule in place of the joints, before any
+  caller reached `check_answer`:
+  - `assistant_summaries.digit_runs` reads the digits after NFKD, so a
+    fullwidth, an Arabic-Indic, a Devanagari, a superscript and a circled
+    digit each count. Each character between two digits that is not a
+    letter (Unicode category L) joins them into one run. A letter ends a
+    run.
+  - A line drops when it holds a run of 6 digits or more that is not a run
+    of the member's typed words, read the same way. The digit strings must
+    be equal. Each typed row is read alone, so two rows never join.
+  - `grounded` reads both sides with each run as one number, so a typed
+    number stays in any marks. A joint that holds an `@` stays, so an
+    address keeps its shape.
+  - The sensitive-term rule, the card rule, the address and domain rules and
+    the joined-text check stay.
+  - **The cost, accepted by the agent:** a time range, a date or a price of
+    6 digits or more that the member did not type drops, for example
+    `10:30–11:00` or `₹1,20,000`. The owner may overrule it.
+  - **The boundary:** a letter between two digit groups splits them, so
+    `98450x12345` is two runs of 5 digits and stays. A strict `xfail` in
+    `test_chat_summary.py` records it.
 
 **The PZ-33 list.** Each item names its slice and its test file. The R8
 file sets `pytestmark = _DB_GATE`, as `tests/unit/test_job_queue.py:119`

@@ -61,6 +61,9 @@ the column, and when a module that is not on its list imports this one.
   text as one string must pass it too. It calls the rules of
   ``acb_common.assistant_profile`` and copies none of them. An answer that
   does not parse gives None, so the job writes nothing.
+* The strict digit rule (PZ-33b, :func:`digit_runs`): each character that is
+  not a letter joins two digits, and a run of 6 digits or more must be a run
+  that the member typed. Digits of each script count, after NFKD.
 
 The module imports no litellm and no streamed completion. PZ-33b makes the
 one model call through ``acb_llm.context.acompletion_with_fallback`` with the
@@ -80,6 +83,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from acb_common.assistant_profile import (
+    CONFIRM_DIGITS,
     confirm_form_without_token,
     fold,
     grounded,
@@ -119,12 +123,10 @@ _ROW_BREAK = "\n;\n"
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
 #: The form of a stored time.
 _STAMP = "%Y-%m-%dT%H:%M:%SZ"
-#: One to three marks between two digits, with spaces around them or not.
-#: ``needs_confirm`` reads only a space, a dot, a dash and a bracket as a
-#: number joint. So for this check "98450/12345", "98450 – 12345",
-#: "98450! 12345" and "984, 501, 2345" each read as one number (review rounds
-#: 1 and 2). An underscore counts too, as it did in round 1.
-_DIGIT_JOINT = re.compile(r"(?<=\d)\s*(?:[^\w\s]|_){1,3}\s*(?=\d)")
+#: The fewest digits of a run that the member must have typed (the strict
+#: digit rule of PZ-33b, :func:`digit_runs`). The profile guard counts the
+#: same number of digits (``assistant_profile.CONFIRM_DIGITS``).
+RUN_DIGITS = CONFIRM_DIGITS
 #: A domain in words behind the end of a sentence: "acme. Example dot com".
 #: ``needs_confirm`` reads a domain in words only after "at". It runs on
 #: folded text.
@@ -251,18 +253,114 @@ def sentences(value: str) -> list[str]:
     return [s for s in (_one_line(p) for p in _SENTENCE_END.split(value)) if s]
 
 
-def _joint(text: str) -> str:
-    """*text* with each mark of :data:`_DIGIT_JOINT` as a dash. Each typed
-    row keeps its own joints: the row break stays, so two rows never join
-    into one number."""
-    return _ROW_BREAK.join(_DIGIT_JOINT.sub("-", part) for part in text.split(_ROW_BREAK))
+# ── The strict digit rule (PZ-33b) ──────────────────────────────────────────
+#
+# Three review rounds of PZ-33a each found a new mark between two digit groups
+# that the rule of a joint missed, such as "98450!!!!12345" or "98450 , ,
+# 12345". So PZ-33b reads digits in one way only: each character that is not a
+# letter joins two digits. A letter is a character of the Unicode category L.
+# A space, a mark, a symbol, an underscore, a format character and a line
+# break each join. A run of RUN_DIGITS digits or more must be a run of the
+# member's typed words, read the same way. So a time range, a date or a price
+# of six digits or more that the member did not type drops too. The agent
+# accepted that cost for a private summary of two or three lines.
+
+
+def _read_digits(value: str) -> str:
+    """*value* after NFKD, with each digit of any script as an ASCII digit.
+    So a fullwidth, an Arabic-Indic, a Devanagari, a superscript and a
+    circled digit each read as the digit that it shows."""
+    out: list[str] = []
+    for ch in unicodedata.normalize("NFKD", value):
+        digit = unicodedata.digit(ch, None)
+        out.append(ch if digit is None else str(digit))
+    return "".join(out)
+
+
+def _is_letter(ch: str) -> bool:
+    return unicodedata.category(ch).startswith("L")
+
+
+def digit_runs(value: Any) -> list[str]:
+    """Each run of digits in *value*, in order, as ASCII digits only.
+
+    The digits are read through :func:`_read_digits`. Each character between
+    two digits that is not a letter joins them into one run. A letter ends a
+    run. So "98450!!!!12345", "98450 , , 12345" and "98450\\n12345" are each
+    the one run "9845012345", and "98450x12345" is two runs."""
+    runs: list[str] = []
+    run: list[str] = []
+    for ch in _read_digits(str(value or "")):
+        if "0" <= ch <= "9":
+            run.append(ch)
+        elif _is_letter(ch) and run:
+            runs.append("".join(run))
+            run = []
+    if run:
+        runs.append("".join(run))
+    return runs
+
+
+def _typed_runs(words: str) -> set[str]:
+    """The digit runs of the member's typed words. Each typed row is read
+    alone, so two rows never join into one run (:data:`_ROW_BREAK`)."""
+    return {run for part in words.split(_ROW_BREAK) for run in digit_runs(part)}
+
+
+def _long_runs(line: str) -> list[str]:
+    return [run for run in digit_runs(line) if len(run) >= RUN_DIGITS]
+
+
+def _runs_typed(line: str, words: str) -> bool:
+    """True when each run of :data:`RUN_DIGITS` digits or more in *line* is a
+    whole run of the member's typed words. The digit strings must be equal:
+    a part of a longer typed run does not count."""
+    long = _long_runs(line)
+    return not long or set(long) <= _typed_runs(words)
+
+
+def _one_number(text: str) -> str:
+    """*text* with each digit run of :func:`digit_runs` as one number of
+    ASCII digits: the characters between two digits of a run go. A joint
+    that holds an "@" stays, so an address keeps its shape.
+
+    ``grounded`` reads a number across a space, a dot, a dash and a bracket
+    only. Both of its sides go through this function first, so a number
+    that the member typed with other marks still matches."""
+    out: list[str] = []
+    held: list[str] = []
+    in_run = False
+    for ch in _read_digits(text):
+        if "0" <= ch <= "9":
+            if not (in_run and "@" not in held):
+                out.extend(held)
+            held = []
+            out.append(ch)
+            in_run = True
+        elif _is_letter(ch):
+            out.extend(held)
+            held = []
+            out.append(ch)
+            in_run = False
+        elif in_run:
+            held.append(ch)
+        else:
+            out.append(ch)
+    out.extend(held)
+    return "".join(out)
+
+
+def _one_number_words(words: str) -> str:
+    """:func:`_one_number` of each typed row alone. The row break stays, so
+    two rows never join into one number."""
+    return _ROW_BREAK.join(_one_number(part) for part in words.split(_ROW_BREAK))
 
 
 def _flagged(line: str) -> bool:
-    """True when *line* holds a sensitive word, an address, a link, a long
-    number (:func:`_joint`) or a domain in words behind the end of a
-    sentence (:data:`_SPOKEN_DOT`)."""
-    return (is_sensitive(line) or needs_confirm(line) or needs_confirm(_joint(line))
+    """True when *line* holds a sensitive word, an address, a link, a run of
+    :data:`RUN_DIGITS` digits or more (:func:`digit_runs`), or a domain in
+    words behind the end of a sentence (:data:`_SPOKEN_DOT`)."""
+    return (is_sensitive(line) or needs_confirm(line) or bool(_long_runs(line))
             or _SPOKEN_DOT.search(fold(line)) is not None)
 
 
@@ -270,9 +368,11 @@ def _keep(line: str, words: str) -> bool:
     """True when the summary may store *line*. A line that is not flagged
     stays. A flagged line stays only when each of these holds:
 
-    * the typed words of the member hold the line (``grounded``). Both sides
-      read each number through :func:`_joint`, so "98450 – 12345" needs the
-      member to have typed that one number;
+    * each long digit run of the line is a run of the typed words of the
+      member (:func:`_runs_typed`, the strict digit rule);
+    * the typed words hold the line (``grounded``). Both sides read each
+      number through :func:`_one_number`, so a typed number matches in any
+      marks;
     * they hold each sensitive term of the line (``sensitive_terms``). So 80%
       of the words of a line is not enough when the member never typed the
       sensitive word itself;
@@ -284,7 +384,9 @@ def _keep(line: str, words: str) -> bool:
     stores what the member did not say (D-PZ-16, D-PZ-28)."""
     if not _flagged(line):
         return True
-    if not grounded(_joint(line), _joint(words)):
+    if not _runs_typed(line, words):
+        return False
+    if not grounded(_one_number(line), _one_number_words(words)):
         return False
     if not sensitive_terms(line) <= sensitive_terms(words):
         return False

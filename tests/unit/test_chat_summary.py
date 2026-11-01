@@ -24,17 +24,27 @@ Review round 1 (2026-10-31) adds:
 - a sensitive line stays only when the member typed each sensitive term, and
   a line with a form that ``grounded`` cannot match drops (P1-b);
 - a card answer is not a typed row (P1-c), with a leading space too;
-- review round 2: one to three marks between two digits join one number,
-  for the flag and for the grounding, and a domain in words behind the end
-  of a sentence is flagged (``_DIGIT_JOINT``, ``_SPOKEN_DOT``).
+- review round 2: a domain in words behind the end of a sentence is flagged
+  (``_SPOKEN_DOT``).
+
+PZ-33b replaces the number joints of rounds 1 to 3 with ONE strict digit
+rule (``digit_runs``, ``personalization.md`` §15.9, "Open"). Each character
+that is not a letter joins two digits, and a run of 6 digits or more must be
+a run of the member's typed words. Digits of each script count, after NFKD.
+Every long-number probe of the three PZ-33a reviews is a drop here. A typed
+number in any marks, a version, a ratio, a short price and a 5-digit room
+stay. A time range, a date and a price of 6 digits or more that the member
+did not type drop: the agent accepted that cost.
 
 Mutations, each red here: drop the sensitive-line rule of ``_keep``; drop
 the sensitive-term rule; drop the joined-text check (``_passes``); put the
-round-1 ``_DIGIT_JOINT`` back; count a card answer as typed; let ``member_texts`` skip ``typed_text``; let
+punctuation joint of round 3 back in place of ``digit_runs``; count a card
+answer as typed; let ``member_texts`` skip ``typed_text``; let
 ``prompt_rows`` read ``tool_events``; drop the brief-row check; drop
 ``enabled_for`` from ``chat_summary_for``.
 """
 
+# ruff: noqa: RUF001 - the probes hold digits and marks of other scripts on purpose
 from __future__ import annotations
 
 import json
@@ -380,6 +390,166 @@ def test_round_2_two_typed_rows_never_join_into_one_number() -> None:
             _row("m2", "user", "Ticket 12345 is open.", author_email=MEMBER)]
     words = summaries.member_words(rows, MEMBER)
     assert summaries.check_answer(_answer("Call 98450–12345 today."), words) is None
+
+
+# ── PZ-33b: the strict digit rule ──────────────────────────────────────────
+
+#: Two typed rows that each hold one half of a number (review rounds 1 to 3).
+HALVES_APART = [_row("m1", "user", "Room 98450 is booked.", author_email=MEMBER),
+                _row("m2", "user", "Ticket 12345 is open.", author_email=MEMBER)]
+#: Both halves in one typed row, with words between them.
+HALVES_ONE_ROW = [_row("m1", "user", "Room 98450 is booked and ticket 12345 is open.",
+                       author_email=MEMBER)]
+#: The two halves at the edges of two typed rows (review round 3).
+HALVES_AT_THE_EDGES = [_row("m1", "user", "Call 98450", author_email=MEMBER),
+                       _row("m2", "user", "12345 today", author_email=MEMBER)]
+
+#: Each long-number probe of the three PZ-33a reviews: the answer text, the
+#: follow-ups and the typed rows. Each stored a number that the member did
+#: not type, before PZ-33b or in a round before it.
+STRICT_DROPS: list[tuple[str, str, list[str], list[dict[str, object]] | None]] = [
+    # Round 1 and its verifier.
+    ("a line break", "Call 98450\n12345 waits.", [], None),
+    ("a full stop", "Call Priya on 98450. 12345 is the code.", [], None),
+    ("a bang and a space", "Call 98450! 12345 waits.", [], None),
+    ("halves in two rows", "Call 98450\n12345 waits.", [], HALVES_APART),
+    ("halves in one row", "Call 98450\n12345 waits.", [], HALVES_ONE_ROW),
+    ("Arabic-Indic digits", "Call ٩٨٤٥٠١٢٣٤٥ today.", [], None),
+    ("Arabic-Indic, split", "Call ٩٨٤٥٠\n١٢٣٤٥ waits.", [], None),
+    ("fullwidth digits, split", "Call ９８４５０\n１２３４５ waits.", [], None),
+    ("Devanagari digits, split", "Call ९८४५०\n१२३४५ waits.", [], None),
+    ("a spaced hyphen", "Call 98450 - 12345 today.", [], None),
+    ("a zero-width space", "Call the vendor on 98450​12345 about the deck.", [], None),
+    ("a slash", "Call the vendor on 98450/12345 about the deck.", [], None),
+    # Round 2.
+    ("a plain phone", "Call 98450 12345 today.", [], None),
+    ("three parts with commas", "Call 984, 501, 2345 today.", [], None),
+    ("an en dash", "Call 98450–12345 today.", [], None),
+    ("an en dash over the follow-up", "Call Priya on 98450 –", ["12345 later"], None),
+    ("a comma over the follow-up", "Call Priya on 98450,", ["12345 later"], None),
+    # Round 3.
+    ("a minus sign", "Call 98450−12345 today.", [], None),
+    ("a figure dash", "Call 98450‒12345 today.", [], None),
+    ("a non-breaking hyphen", "Call 98450‑12345 today.", [], None),
+    ("a dot leader", "Call 98450…12345 today.", [], None),
+    ("a spaced minus sign", "Call 98450 − 12345 today.", [], None),
+    ("a no-break space", "Call 98450 12345 today.", [], None),
+    ("an ideographic comma", "Call 98450、12345 today.", [], None),
+    ("spaces only", "Call 98450 12345 6 today.", [], None),
+    ("four bangs", "Call 98450!!!!12345 today.", [], None),
+    ("four commas", "Call 98450,,,,12345 today.", [], None),
+    ("spaced commas", "Call 98450 , , 12345 today.", [], None),
+    ("spaced bangs", "Call 98450 ! ! 12345 today.", [], None),
+    ("spaced underscores", "Call 98450 _ _ 12345 today.", [], None),
+    ("a slash over the follow-up", "Call Priya on 98450/", ["12345 later"], None),
+    ("four bangs over the follow-up", "Call Priya on 98450!!!!", ["12345 later"], None),
+    ("spaced commas over the follow-up", "Call Priya on 98450 , ,", ["12345 later"], None),
+    ("halves apart, a comma", "Call 98450, 12345 today.", [], HALVES_APART),
+    ("halves apart, a space", "Call 98450 12345 today.", [], HALVES_APART),
+    ("halves at the edges, an en dash", "Call 98450–12345 today.", [], HALVES_AT_THE_EDGES),
+    ("halves at the edges, a comma", "Call 98450, 12345 today.", [], HALVES_AT_THE_EDGES),
+    ("superscript digits, a bang", "Call ⁹⁸⁴⁵⁰!¹²³⁴⁵ today.", [], None),
+    ("superscript digits, a comma", "Call ⁹⁸⁴⁵⁰, ¹²³⁴⁵ today.", [], None),
+    ("circled digits, a bang", "Call ⑨⑧④⑤⓪!①②③④⑤ today.", [], None),
+    ("fullwidth digits, a fullwidth bang", "Call ９８４５０！１２３４５ today.", [], None),
+    ("superscript digits", "Call ⁹⁸⁴⁵⁰¹²³⁴⁵ today.", [], None),
+]
+
+
+@pytest.mark.parametrize(("text", "follow", "rows"), [p[1:] for p in STRICT_DROPS],
+                         ids=[p[0] for p in STRICT_DROPS])
+def test_pz33b_each_long_number_probe_of_the_reviews_drops(
+        text: str, follow: list[str], rows: list[dict[str, object]] | None) -> None:
+    words = summaries.member_words(PROBE_ROWS if rows is None else rows, MEMBER)
+    assert summaries.check_answer(_answer(text, follow), words) is None
+
+
+@pytest.mark.parametrize("text", [
+    "Call 98450!!!!12345 today.", "Call 98450 , , 12345 today.",
+    "Call 98450 _ _ 12345 today.", "Call 98450–12345 today.",
+    "Call ９８４５０／１２３４５ today.", "Call ٩٨٤٥٠ ١٢٣٤٥ today.",
+    "Call 98450 12345 today.",
+])
+@pytest.mark.parametrize("typed", ["call 98450-12345 today", "call 98450 12345 today",
+                                   "call 98450/12345 today"])
+def test_pz33b_a_typed_number_stays_in_any_marks(text: str, typed: str) -> None:
+    rows = [_row("m1", "user", typed, author_email=MEMBER)]
+    out = summaries.check_answer(_answer(text), summaries.member_words(rows, MEMBER))
+    assert out is not None and out.text == text
+
+
+@pytest.mark.parametrize("text", [
+    "Planned the deck. Send it to Priya.",
+    "Ship the deck v2.3.1 to Priya.",
+    "Use a 3:2 ratio for the deck.",
+    "Keep the old price of ₹1,200 for current customers.",
+    "Room 40512 is booked for the review.",
+    "Meet at 10:30 for the Q3, 2026 plan.",
+    "The team won 3-2, 4-1 this week.",
+], ids=["two sentences", "a version", "a ratio", "a price of 4 digits",
+        "a room of 5 digits", "a time and a quarter", "two scores"])
+def test_pz33b_a_short_run_stays(text: str) -> None:
+    out = summaries.check_answer(_answer(text), summaries.member_words(PROBE_ROWS, MEMBER))
+    assert out is not None and out.text == text
+
+
+@pytest.mark.parametrize(("text", "typed"), [
+    ("Meet Priya 10:30–11:00 on the deck.", "meet priya 10:30–11:00 on the deck"),
+    ("The deck is due 31/10/2026 for Priya.", "the deck is due 31/10/2026 for priya"),
+    ("Keep the old price of ₹1,20,000 for current customers.",
+     "keep the old price of rs 1,20,000 for current customers"),
+], ids=["a time range", "a date", "a lakh price"])
+def test_pz33b_the_accepted_cost_a_long_run_stays_only_when_typed(text: str, typed: str) -> None:
+    """A time range, a date and a price of 6 digits or more drop when the
+    member did not type them (the cost that the agent accepted, §15.9), and
+    stay when the member did."""
+    untyped = summaries.member_words(PROBE_ROWS, MEMBER)
+    assert summaries.check_answer(_answer(text), untyped) is None
+    rows = [_row("m1", "user", typed, author_email=MEMBER)]
+    out = summaries.check_answer(_answer(text), summaries.member_words(rows, MEMBER))
+    assert out is not None and out.text == text
+
+
+def test_pz33b_a_part_of_a_longer_typed_run_does_not_count() -> None:
+    """The digit strings must be equal. The member typed the country code,
+    so a number without it is not a run of the typed words."""
+    rows = [_row("m1", "user", "call +91 98450 12345 today", author_email=MEMBER)]
+    words = summaries.member_words(rows, MEMBER)
+    assert summaries.check_answer(_answer("Call +91 98450 12345 today."), words) is not None
+    assert summaries.check_answer(_answer("Call 98450 12345 today."), words) is None
+
+
+def test_pz33b_an_address_keeps_its_shape_for_the_grounding() -> None:
+    """The joint of an address ("@") stays when a number becomes one run, so
+    a typed domain never grounds an address of the same digits."""
+    rows = [_row("m1", "user", "write to a1.2b.example about the deck", author_email=MEMBER)]
+    words = summaries.member_words(rows, MEMBER)
+    assert summaries.check_answer(_answer("Write to a1.2b.example about the deck."),
+                                  words) is not None
+    assert summaries.check_answer(_answer("Write to a1@2b.example about the deck."),
+                                  words) is None
+
+
+def test_pz33b_the_digit_runs() -> None:
+    assert summaries.digit_runs("98450!!!!12345") == ["9845012345"]
+    assert summaries.digit_runs("98450 , , 12345 and 77") == ["9845012345", "77"]
+    assert summaries.digit_runs("Room 12, floor 3") == ["12", "3"]
+    assert summaries.digit_runs("٩٨٤ ९८४ ９８４ ⁹⁸⁴ ⑨⑧④") == ["984984984984984"]
+    assert summaries.digit_runs("v2.3.1 then 10:30") == ["231", "1030"]
+    assert summaries.digit_runs("") == [] and summaries.digit_runs(None) == []
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "a letter ends a run (the strict rule of PZ-33b, §15.9). A number split "
+    "by a letter is two runs. The owner may widen the rule"))
+@pytest.mark.parametrize("text", ["Call 98450x12345 today.", "Call 98450 x 12345 today."],
+                         ids=["an x", "a spaced x"])
+def test_pz33b_the_boundary_a_letter_splits_a_number(text: str) -> None:
+    """Two probes of review round 3 put a letter between the digit groups.
+    The rule reads a letter as the end of a run, so these stay today. This
+    test records the boundary: it turns red when a change closes it."""
+    words = summaries.member_words(PROBE_ROWS, MEMBER)
+    assert summaries.check_answer(_answer(text), words) is None
 
 
 # ── Review round 1, P1-c: a card answer is not a typed row ──────────────────
