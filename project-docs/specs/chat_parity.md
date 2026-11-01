@@ -7,7 +7,7 @@ a debt list, so CI passes. P-1 (Calendar and Tasks) is the next slice.
 
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
-ceilings in `chat_parity.py` are the baseline at `origin/main` `bdb75484f`.
+ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.
 From that point they only go down.
 
 **Epic:** Metorite task 1238. Written 2026-11-01.
