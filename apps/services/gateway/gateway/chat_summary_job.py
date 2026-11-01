@@ -33,13 +33,14 @@ with the id of a chat of another org finds no row.
    the call possibly ran, so no second call.
 7. The mark commits in its own session (``assistant_summaries.mark``).
 8. The model call, with no session open, as the member
-   (``acb_common._log.job_member_scope``, app ``chat``) and with
-   ``feature="assistant.chat_summary"``. A Router refusal for credits (402)
-   gives up with ``OutOfCredits``. Any other fault gives up with
-   ``SummaryFailed``. The mark stays, so the seed does not try these rows
-   again.
+   (``acb_common._log.job_member_scope``, app ``chat``), with
+   ``feature="assistant.chat_summary"`` and with no reasoning
+   (:data:`NO_THINKING`). A Router refusal for credits (402) gives up with
+   ``OutOfCredits``. Any other fault gives up with ``SummaryFailed``. The
+   mark stays, so the seed does not try these rows again.
 9. ``check_answer`` checks the answer. An answer that keeps nothing is
-   ``done`` with no write.
+   ``done`` with no write. An empty or cut answer logs
+   ``assistant.chat_summary_bad_answer`` at warning.
 10. ``room_is_solo(resolve_room_access(...))`` again, then ``hold``,
     ``write_marked`` (the mark in its WHERE) and ``complete`` in one
     session. A chat that a Delete, a Forget or a share changed during the
@@ -86,6 +87,14 @@ FEATURE = "assistant.chat_summary"
 MODEL = "tier-fast"
 #: The most tokens of the answer (§15.3).
 ANSWER_TOKENS = 300
+#: The reasoning budget of the call: none. ``tier-fast`` binds a DeepSeek
+#: model that thinks by default, and the vendor counts the reasoning tokens
+#: in the cap. With no such field the model spends the 300 tokens on
+#: reasoning and ``content`` comes back empty, so each idle chat is billed and
+#: nothing is stored. ``tests/unit/test_tasks_ai_no_thinking.py`` measured 19
+#: of 20 calls that stopped at the cap. ``routes/email/automation/replyzero.py``
+#: measured 98%. The Router forwards the field (``acb_llm.routed._FORWARDABLE``).
+NO_THINKING: dict[str, str] = {"type": "disabled"}
 
 #: The named reasons of a give-up (``docs/job_queue.md`` §5a). The log line
 #: holds the text before the first colon only.
@@ -191,8 +200,17 @@ async def _ask(member: str, messages: list[dict[str, str]]) -> Any:
     with job_member_scope(member, app="chat"):
         resp, _used = await context.acompletion_with_fallback(
             model=MODEL, messages=messages, max_tokens=ANSWER_TOKENS, temperature=0.2,
-            source="chat", feature=FEATURE, response_format={"type": "json_object"})
-    return resp.choices[0].message.content
+            source="chat", feature=FEATURE, response_format={"type": "json_object"},
+            thinking=dict(NO_THINKING))
+    choice = resp.choices[0]
+    content = choice.message.content
+    finish = getattr(choice, "finish_reason", None)
+    if not content or finish == "length":
+        # The call was billed. An empty or cut answer must not settle in
+        # silence. The line holds no word of the answer.
+        _log.warning("assistant.chat_summary_bad_answer", finish_reason=finish,
+                     chars=len(content or ""))
+    return content
 
 
 async def _room_is_solo(org: str, session_id: str, member: str) -> bool | None:

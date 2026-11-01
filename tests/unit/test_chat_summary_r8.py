@@ -76,6 +76,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+import structlog
 
 pytest.importorskip("sqlalchemy")
 
@@ -629,13 +630,16 @@ def _checked_out() -> int:
 class _Console:
     """``chat_completion_on_console``, the one fake: it records each call and
     answers as the Console does. ``status`` 402 is the refusal for credits.
-    ``fault`` raises in place of an answer."""
+    ``fault`` raises in place of an answer. ``content`` replaces the JSON of
+    :attr:`answer`, and ``finish`` is the ``finish_reason`` of the answer."""
 
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.status = 200
         self.fault: Exception | None = None
         self.answer: dict[str, Any] = dict(SUMMARY)
+        self.content: str | None = None
+        self.finish = "stop"
 
     async def __call__(self, payload: dict[str, Any], **attribution: Any) -> tuple[int, Any]:
         self.calls.append({"payload": payload, "attribution": attribution,
@@ -646,8 +650,10 @@ class _Console:
             return self.status, {"detail": "out of credits"}
         return 200, {
             "id": f"cmpl-{len(self.calls)}", "model": "fake/model",
-            "choices": [{"index": 0, "finish_reason": "stop", "message": {
-                "role": "assistant", "content": json.dumps(self.answer)}}],
+            "choices": [{"index": 0, "finish_reason": self.finish, "message": {
+                "role": "assistant",
+                "content": json.dumps(self.answer) if self.content is None else self.content,
+            }}],
             "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
         }
 
@@ -840,6 +846,8 @@ async def test_1_an_idle_solo_chat_gets_one_summary_and_one_call(job) -> None:
     assert call["payload"]["model"] == "tier-fast"
     assert call["payload"]["max_tokens"] == 300
     assert call["payload"]["response_format"] == {"type": "json_object"}
+    # tier-fast thinks by default, and the reasoning spends the cap (P0).
+    assert call["payload"]["thinking"] == {"type": "disabled"}
     assert call["checked_out"] == 0, "no session may be open during the model call"
     prompt = json.dumps(call["payload"]["messages"])
     assert TYPED_1 in prompt and REPLY in prompt
@@ -868,6 +876,30 @@ async def test_1_the_answer_goes_through_check_answer(job) -> None:
     stored = _summary(job, sid)
     assert stored["text"] == "Planned the Q3 pricing deck for Priya."
     assert stored["follow_ups"] == ["Send the deck to Priya by Friday"]
+
+
+async def test_1_an_empty_answer_at_the_cap_logs_a_warning_and_stores_nothing(job) -> None:
+    """The model stopped at the cap, and ``content`` came back empty. The
+    call was billed, so the job says so at warning. The mark stays."""
+    sid, newest = _job_chat(job, org=job.org_a)
+    job.console.content, job.console.finish = "", "length"
+    with structlog.testing.capture_logs() as caps:
+        assert await _tick(job, job.org_a) == Counter(done=1)
+    bad = [c for c in caps if c.get("event") == "assistant.chat_summary_bad_answer"]
+    assert len(bad) == 1 and bad[0]["log_level"] == "warning"
+    assert (bad[0]["finish_reason"], bad[0]["chars"]) == ("length", 0)
+    stored = _summary(job, sid)
+    assert "text" not in stored and stored["mark"]["through"] == newest
+
+
+async def test_1_a_cut_answer_logs_a_warning_with_no_word_of_it(job) -> None:
+    sid, _newest = _job_chat(job, org=job.org_a)
+    job.console.content, job.console.finish = '{"text": "Planned the Q3 pri', "length"
+    with structlog.testing.capture_logs() as caps:
+        assert await _tick(job, job.org_a) == Counter(done=1)
+    bad = [c for c in caps if c.get("event") == "assistant.chat_summary_bad_answer"]
+    assert len(bad) == 1 and "Planned" not in json.dumps(bad[0], default=str)
+    assert "text" not in _summary(job, sid)
 
 
 # ── Item 2: one live job, and no second call ────────────────────────────────
