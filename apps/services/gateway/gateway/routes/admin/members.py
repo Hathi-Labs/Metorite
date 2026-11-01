@@ -812,6 +812,15 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # J2 decides if a shared one stays.
     _PersonRows("studio_skills", "studio_skills",
                 f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-PKG PKG-4 (package_host.md §5.1 decision 5): the member's private
+    # installs of THIS organization. Only the owner sees a private install,
+    # so a purged member leaves none behind. `scope_subject` is the owner's
+    # address on a private install. The contributions, `package_contribution`,
+    # go by their `ON DELETE CASCADE` key to `package_install`. A group or an
+    # org install that the member made stays: see `shared_app_installs` below.
+    _PersonRows("private_app_installs", "package_install",
+                "scope_kind = 'private' AND lower(scope_subject) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
     # WS-63 PZ-9 (personalization.md §7 point 6): the member's settings row
     # of THIS organization, and with it the assistant profile. The row is the
     # member's own preferences, so the whole row goes. A member has one row
@@ -871,6 +880,16 @@ _PURGE_KEEPS: tuple[_PersonRows, ...] = (
     # whole, so the table is on one side only.
     _PersonRows("agent_run_strands", "pm_agent_run_strands",
                 "lower(member_email) = :email"),
+    # WS-PKG PKG-4 (package_host.md §5.1 decision 5): the group and org
+    # installs that the member made. Other people use them, so they stay, as
+    # a shared room does. `scope_kind <> 'private'` is load-bearing: it is the
+    # complement of the delete side's `scope_kind = 'private'`, so no install
+    # is counted on both sides. The two clauses name different person
+    # columns, because a private install belongs to its `scope_subject` and a
+    # shared one to its `installed_by`.
+    _PersonRows("shared_app_installs", "package_install",
+                "scope_kind <> 'private' AND lower(installed_by) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
 )
 
 

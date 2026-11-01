@@ -2521,3 +2521,27 @@ ALTER TABLE studio_skill_versions ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE studio_skill_versions ADD CONSTRAINT studio_skill_versions_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS studio_skill_versions_org_idx ON studio_skill_versions (organization_id);
+
+-- package_install
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM package_install WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: package_install still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE package_install ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE package_install ADD CONSTRAINT package_install_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS package_install_org_idx ON package_install (organization_id);
+
+-- package_contribution
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM package_contribution WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: package_contribution still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE package_contribution ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE package_contribution ADD CONSTRAINT package_contribution_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS package_contribution_org_idx ON package_contribution (organization_id);

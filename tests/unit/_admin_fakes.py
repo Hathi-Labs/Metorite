@@ -55,8 +55,10 @@ _PERSON_ADDR = re.compile(r"lower\((\w+)\) = :(email|actor)")
 _PERSON_ADDR_CS = re.compile(r"(?<!lower\()\b(\w+) = :(email|actor)")
 #: ``<col> = CAST(:uid AS uuid)``
 _PERSON_UID = re.compile(r"(\w+) = CAST\(:uid AS uuid\)")
-#: ``visibility = 'private'`` / ``visibility <> 'private'``
-_PERSON_VIS = re.compile(r"visibility (=|<>) 'private'")
+#: ``visibility = 'private'`` / ``visibility <> 'private'``, and the same split
+#: on ``scope_kind`` (``package_install``, WS-PKG PKG-4). The column comes from
+#: the statement, so a clause that drops the split changes the answer.
+_PERSON_VIS = re.compile(r"\b(visibility|scope_kind) (=|<>) 'private'")
 #: ``<col> IS NULL`` / ``<col> IS NOT NULL`` — how the GTD store's LOCAL half
 #: is told from its SYNCED half (`account_id`). Read from the statement like
 #: everything else here, so a clause that drops the filter changes the answer.
@@ -332,9 +334,9 @@ class _FakeDB:
             raise AssertionError(f"unscoped person clause in fake: {s}")
         vis = _PERSON_VIS.search(s)
         if vis:
-            wants_private = vis.group(1) == "="
+            vis_col, wants_private = vis.group(1), vis.group(2) == "="
             found = [
-                r for r in found if (r.get("visibility", "private") == "private") is wants_private
+                r for r in found if (r.get(vis_col, "private") == "private") is wants_private
             ]
         for nul in _PERSON_NULL.finditer(s):
             col, negated = nul.group(1), bool(nul.group(2))

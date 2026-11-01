@@ -134,6 +134,14 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     fake.seed_rows("reminders", {"member_email": PRIYA}, {"member_email": PRIYA})
     # ── her one private AI Studio skill (WS-STU F1) ──
     fake.seed_rows("studio_skills", {"owner_email": PRIYA})
+    # ── her app installs (WS-PKG PKG-4): one private, and two that she made
+    #    for the org and for a group. The private one goes, the two stay. ──
+    fake.seed_rows(
+        "package_install",
+        {"scope_kind": "private", "scope_subject": PRIYA, "installed_by": PRIYA},
+        {"scope_kind": "org", "scope_subject": "org", "installed_by": PRIYA},
+        {"scope_kind": "group", "scope_subject": "group:ops", "installed_by": PRIYA},
+    )
     return fake
 
 
@@ -485,6 +493,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "brief_runs": 0,
         # WS-STU F1: her one private skill. The versions go by cascade.
         "studio_skills": 1,
+        # WS-PKG PKG-4: her one private install. The claims go by cascade.
+        "private_app_installs": 1,
         # WS-63 PZ-9: her settings row of this org, with the profile.
         "member_settings": 1,
         # WS-66 PN-1: the fake holds no push device of the member.
@@ -503,6 +513,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "knowledge_proposals": 0,
         # WS-55 SW-10a: the fake holds no strand of her agent runs. They stay.
         "agent_run_strands": 0,
+        # WS-PKG PKG-4: the org install and the group install she made.
+        "shared_app_installs": 2,
     }
 
 
@@ -559,13 +571,14 @@ def test_no_audit_table_appears_on_the_delete_side_at_all() -> None:
         "the two audit tables are not even reported as kept, so an admin "
         "cannot tell they survived"
     )
-    # And no table is on both sides except the one that is legitimately
-    # split, by a column the schema forces on us, asserted to be an exact
-    # complement below. (The retired task store was split too, until
+    # And no table is on both sides except the two that are legitimately
+    # split, by a column the schema forces on us, each asserted below.
+    # `chat_session` splits on `visibility`, and `package_install` (WS-PKG
+    # PKG-4) on `scope_kind`. (The retired task store was split too, until
     # migration 217 dropped it.)
-    assert not (deleted_tables & kept_tables) - {"chat_session"}, (
+    assert not (deleted_tables & kept_tables) - {"chat_session", "package_install"}, (
         "a table is both deleted and kept; only chat_session (by visibility) "
-        "is legitimately split"
+        "and package_install (by scope_kind) are legitimately split"
     )
 
 
@@ -757,6 +770,66 @@ def test_the_two_halves_of_chat_session_partition_it() -> None:
 
     assert deleted.where == "lower(user_id) = :email AND visibility = 'private'"
     assert kept.where == "lower(user_id) = :email AND visibility <> 'private'"
+
+
+def test_the_two_halves_of_package_install_do_not_overlap() -> None:
+    """WS-PKG PKG-4 (``package_host.md`` §5.1 decision 5). The purge deletes
+    the member's private installs of this org, and keeps and counts the group
+    and org installs that the member made.
+
+    The split is on ``scope_kind``, so no install is on both sides. The two
+    clauses name different person columns on purpose: a private install
+    belongs to its ``scope_subject`` (the owner), and a shared one to its
+    ``installed_by``. So the pair is disjoint, not the one-predicate
+    complement of ``chat_session``. That is safe only because no table on the
+    delete side cascades into ``package_install``: the kept rows are still
+    there at the commit. The last assertion holds that, and
+    ``test_no_keep_clause_survives_a_cascade_on_the_delete_side`` would fail
+    if a migration changed it.
+
+    ⚠️ Mutation-checked: dropping ``scope_kind <> 'private'`` from the KEEP
+    clause fails here, and the count dict above then reads 3 kept installs.
+    ``test_package_registry_r8.py`` runs both clauses on a real database.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [deleted] = [r for r in _PURGE_DELETES if r.table == "package_install"]
+    [kept] = [r for r in _PURGE_KEEPS if r.table == "package_install"]
+    assert deleted.key == "private_app_installs"
+    assert kept.key == "shared_app_installs"
+    assert deleted.where == (
+        "scope_kind = 'private' AND lower(scope_subject) = :email"
+        f" AND organization_id = {_BOUND_ORG}")
+    assert kept.where == (
+        "scope_kind <> 'private' AND lower(installed_by) = :email"
+        f" AND organization_id = {_BOUND_ORG}")
+    assert (_conjuncts(deleted.where)[0], _conjuncts(kept.where)[0]) == (
+        "scope_kind = 'private'", "scope_kind <> 'private'")
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("private_app_installs") < keys.index("member_record")
+    # The claims go by cascade, so no list names them.
+    assert "package_contribution" in cascade_closure("package_install")
+    assert "package_contribution" not in {
+        r.table for r in (*_PURGE_DELETES, *_PURGE_KEEPS)}
+    assert "package_install" not in _blast_radius()
+
+
+async def test_her_private_install_goes_and_her_shared_installs_stay(
+    db: _FakeDB,
+) -> None:
+    """The behavioural half of the rule above: after the purge, the org
+    install and the group install that she made are still there."""
+    from gateway.routes.admin.members import purge_member
+
+    out = await purge_member(PRIYA, admin=OWNER)
+
+    left = db.rows["package_install"]
+    assert sorted(r["scope_kind"] for r in left) == ["group", "org"]
+    assert out.deleted["private_app_installs"] == 1
+    assert out.kept["shared_app_installs"] == 2
 
 
 # ── The cross-table half: what the delete side cascades away ────────────────

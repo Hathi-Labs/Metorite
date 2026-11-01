@@ -1,7 +1,7 @@
 # Package host — every app is a package, arranged around the person (WS-PKG)
 
 > **Product:** Metorite · **Feature:** the package host (the shell registry, installs, slots and the arrangement layer) · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 📐 **SPEC ONLY (PKG-0).** Nothing in this spec is built.
+> **Status:** 🔨 **IN BUILD.** PKG-1 merged in #1560. Branch `ws-pkg-4-mt-bb82b1f9` holds PKG-4, dark: the two tables of §5.1, the key on `apps` and the purge rows. The migration is the file that creates `package_install` (321 at build). No code reads or writes the tables yet. The other slices are not built.
 > **Verified against code on 2026-11-01 at `f59a636b5`.** Each path in §12 was read on that commit.
 > **Board:** WS-PKG in `work_plan.md` §2.1. **Decision:** D147. D12, D49, D87, D89, D111, D127, D136, D141 and D146 bind it.
 > **Metorite:** project "Package Host", epic 1234, this spec task 1236. The slices PKG-1 to PKG-20 are tasks 1239 to 1258, in order.
@@ -184,7 +184,7 @@ The primary key is `(organization_id, install_id, point, key)`.
 
 **Both tables** take the ENABLE, FORCE and policy block of `312_jobs.sql`, in DO blocks, through the `get_db()` seam (R5).
 
-**`apps` gains one key.** The migration adds `UNIQUE (organization_id, id)` to `apps`, so that the composite FK can point at it. `id` is the primary key already, so no row can break it. This is an expand step (R6).
+**`apps` gains one key.** The migration adds `UNIQUE (organization_id, id)` to `apps`, so that the composite FK can point at it. `id` is the primary key already, so no row can break it. This is an expand step (R6). A fresh ladder database has no `apps.organization_id`, because only the generated phases add it (H-104). So the migration first adds the column to a database that does not have it, as 209 and 223 do. Production has the column, and that step does nothing there.
 
 Five decisions that the columns carry:
 1. **`needs_setup` is not stored.** The resolve computes it from the needs (§5.2 step 4), so it can never be stale.
