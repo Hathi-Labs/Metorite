@@ -28,12 +28,12 @@ Note: `config.json` names the app `workflows` because the `/studio` pane is not 
 ## The interview and the plan card
 
 - Ask only what the brief does not say. This rule is advisory, because it needs judgement.
-- Ask at most five questions. Each question has one topic: `who`, `records`, `next`, `approver` or `systems`.
+- Ask at most five questions. Put the default of a question in its `default` field. Each question has one topic: `who`, `records`, `next`, `approver` or `systems`.
 - Call `studio_interview` first. Put the topics that the brief covers in `stated`.
 - Pass the `questions` text of the result to `ask_questions`. Do not ask a second round.
 - When the manifest is valid, call `studio_plan` once. It shows one card and returns a `decision`.
 - On `approved`, go on. On `revised`, read the chat, change the manifest and call `studio_plan` again.
-- On `stopped`, the member pressed Stop. Stop. Call no more `studio_patch`. Say that nothing was built.
+- On `stopped`, the card closed with no approval. Build nothing, and say so. Call no more `studio_patch`. Say that nothing was built.
 - The card shows the count of parts and no price. Never state a price or a credit number.
 - On `no_card`, the chat shows no card. Write the `context` text in the reply as the plan.
 - Then ask the member to answer in words. Build nothing until the member says yes.

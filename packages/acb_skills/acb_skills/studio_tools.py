@@ -313,15 +313,22 @@ def _as_doc(manifest: Any) -> tuple[Any, dict[str, Any] | None]:
 # ── The outline (pure) ──────────────────────────────────────────────────────
 
 
-def _name(value: Any) -> str:
-    """One name of the outline: one line of at most :data:`MAX_OUTLINE_NAME_CHARS`."""
-    return _line_of(value, MAX_OUTLINE_NAME_CHARS)
+def _name(value: Any, fence: bool = False) -> str:
+    """One name of the outline: one line of at most :data:`MAX_OUTLINE_NAME_CHARS`.
+
+    With *fence*, the name is data from the manifest and shows inside « »,
+    without a « or » of its own (as ``knowledge_tools`` does)."""
+    text = _line_of(value, MAX_OUTLINE_NAME_CHARS)
+    if not fence:
+        return text
+    return "«" + text.replace("«", "").replace("»", "") + "»"
 
 
-def _names(items: Any, key: str) -> list[str]:
+def _names(items: Any, key: str, fence: bool = False) -> list[str]:
     if not isinstance(items, list):
         return []
-    return [_name(i[key]) for i in items if isinstance(i, dict) and isinstance(i.get(key), str)]
+    return [_name(i[key], fence) for i in items
+            if isinstance(i, dict) and isinstance(i.get(key), str)]
 
 
 def _line(label: str, names: list[str]) -> str:
@@ -343,13 +350,14 @@ def _line(label: str, names: list[str]) -> str:
     return head + ", ".join(shown) + (f", and {rest} more" if rest else "")
 
 
-def outline_text(manifest: Any) -> str:
+def outline_text(manifest: Any, fence: bool = False) -> str:
     """A deterministic text of the counts and the names in *manifest*.
 
     Pure: the same manifest gives the same text. It reads any value and never
     raises, so it also outlines a manifest that is not valid. It has seven
     lines, each of at most :data:`MAX_OUTLINE_LINE_CHARS` characters, also for
-    a manifest far over the cap.
+    a manifest far over the cap. With *fence*, each name from the manifest shows
+    inside « » (the plan card does this, because a name is free text).
     """
     if not isinstance(manifest, dict):
         return "Not a manifest."
@@ -359,7 +367,7 @@ def outline_text(manifest: Any) -> str:
         for o in objects:
             if isinstance(o, dict) and isinstance(o.get("name"), str):
                 count = len(o["fields"]) if isinstance(o.get("fields"), list) else 0
-                objs.append(f"{_name(o['name'])} ({count} fields)")
+                objs.append(f"{_name(o['name'], fence)} ({count} fields)")
     skill = manifest.get("skill")
     skill_line = "Skill: none"
     if isinstance(skill, dict):
@@ -367,14 +375,15 @@ def outline_text(manifest: Any) -> str:
         n = len(actions) if isinstance(actions, list) else 0
         skill_line = f"Skill: yes ({n} actions)"
     conns = manifest.get("connections")
-    conn_names = [_name(c) for c in conns] if isinstance(conns, list) else []
-    head = f"App {_name(manifest.get('id', '?'))}: {_name(manifest.get('name', '?'))}"
+    conn_names = [_name(c, fence) for c in conns] if isinstance(conns, list) else []
+    head = (f"App {_name(manifest.get('id', '?'), fence)}: "
+            f"{_name(manifest.get('name', '?'), fence)}")
     return "\n".join([
         head,
         _line("Objects", objs),
-        _line("Actions", _names(manifest.get("actions"), "id")),
-        _line("Views", _names(manifest.get("views"), "id")),
-        _line("Workflows", _names(manifest.get("workflows"), "id")),
+        _line("Actions", _names(manifest.get("actions"), "id", fence)),
+        _line("Views", _names(manifest.get("views"), "id", fence)),
+        _line("Workflows", _names(manifest.get("workflows"), "id", fence)),
         skill_line,
         _line("Connections", conn_names),
     ])
@@ -518,6 +527,15 @@ def _clean_options(raw: Any, index: int) -> tuple[list[dict[str, Any]] | None, s
     return out, None
 
 
+def _default_of(q: dict[str, Any]) -> str | None:
+    """The ``default`` of a question, by the rules of ``ask_questions``
+    (``ask_tools.card_default``): a text that is not blank, cut at a word. A
+    skip uses it, and the card shows it."""
+    from acb_skills import ask_tools
+
+    return ask_tools.card_default(q)
+
+
 def _clean_question(
     q: Any, i: int, seen: list[str], known: list[str],
 ) -> tuple[dict[str, Any] | None, str | None]:
@@ -546,6 +564,9 @@ def _clean_question(
     }
     if options:
         entry["options"] = options
+    default = _default_of(q)
+    if default:
+        entry["default"] = default
     for flag in ("multiSelect", "allowFreeformInput", "required"):
         if isinstance(q.get(flag), bool):
             entry[flag] = q[flag]
@@ -616,10 +637,10 @@ def plan_card_text(manifest: Any) -> str:
     text fits the context limit of the card (4,000 characters). It holds no
     price and no turn count: no number stands next to "credit"."""
     return "\n".join([
-        outline_text(manifest),
+        outline_text(manifest, fence=True),
         f"Parts: {parts_count(manifest)}",
         COST_LINE,
-        "Approve to start the build. Stop to build nothing. To change the plan, tell me in chat.",
+        "Approve to start the build. Reject to build nothing. To change the plan, tell me in chat.",
     ])
 
 
@@ -639,7 +660,7 @@ async def studio_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     checked = await _checked(doc, [])
     if not checked["ok"]:
         return _result(False, checked["errors"], [])  # no card for an invalid manifest
-    title = f"Build {_name(doc.get('name', '?'))}?"
+    title = f"Build {_name(doc.get('name', '?'), True)}?"
     detail = f"{parts_count(doc)} parts. {COST_LINE}"
     context = plan_card_text(doc)
     from acb_skills import ask_tools
@@ -648,7 +669,7 @@ async def studio_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     # run's, never an input.
     answer = await ask_tools.request_confirmation(
         title, detail, context, non_interactive_default="deny", close_on_steer=True,
-        responder=_current_user_email() or None)
+        responder=_current_user_email() or None, fenced=True)
     if answer is True:
         decision = "approved"
     elif answer is ask_tools.REVISED:
