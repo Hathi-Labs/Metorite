@@ -15,7 +15,8 @@ entry lives here, beside the table it reads.
 **Who sees an entry (§4.1, D138 Q2).** RLS binds the ORGANIZATION only. The
 person is a second axis: the owner, and each member with an attendee row that
 names them in ``member_email``. Nobody else. A guest row (``member_email``
-NULL) gives nobody the entry. :data:`VISIBLE_SQL` holds the read rule once.
+NULL) gives nobody the entry. :data:`OWNER_ARM` and :data:`ATTENDEE_ARM`
+hold the read rule once, as the two arms of :func:`_visible_ids`.
 
 **Who changes an entry.** Only its owner, and only an entry of kind
 ``event``. :data:`MINE_SQL` holds that rule once, and the load, the UPDATE
@@ -411,30 +412,56 @@ _MINE_FOR_UPDATE_SQL = (
     f"WHERE id = CAST(:id AS uuid) AND {MINE_SQL} FOR UPDATE"
 )
 
-#: The ONE rule of who sees an entry (§4.1, D138 Q2): the owner, or a member
-#: with an attendee row that names them in `member_email`. The join below
-#: matches `member_email` only, so a guest row never matches a member.
-VISIBLE_SQL = "(e.owner_email = :me OR a.id IS NOT NULL)"
+#: The ONE rule of who sees an entry (§4.1, D138 Q2), in two arms: the
+#: owner, or a member with an attendee row that names them in
+#: `member_email`. The attendee arm reads `member_email` only, so a guest row
+#: never matches a member.
+OWNER_ARM = "e.owner_email = :me"
+ATTENDEE_ARM = "x.member_email = :me"
 
-_SELECT_SQL = (
-    "SELECT e.*, a.role AS my_role, a.rsvp AS my_rsvp, "
-    "a.lead_minutes AS my_lead_minutes "
-    "FROM calendar_entries e "
-    "LEFT JOIN calendar_entry_attendees a "
-    "ON a.entry_id = e.id AND a.member_email = :me "
-)
 
-#: The window `[start, end)`. A timed entry overlaps it, and an entry of no
-#: length counts at its start. An all-day entry is compared by date, on the
-#: UTC window with one day of slack on each side, as `projects/calendar.py`
-#: does. The client places it, and only the client knows the zone of the
-#: viewer.
-_WINDOW_SQL = (
-    "((e.starts_at IS NOT NULL AND e.starts_at < :end "
-    "  AND (e.ends_at > :start OR e.starts_at = :start)) "
-    " OR (e.start_date IS NOT NULL AND e.start_date < :end_date "
-    "  AND e.end_date > :start_date))"
-)
+def _visible_ids(conditions: tuple[str, ...]) -> str:
+    """A UNION of the ids that I may see and that meet one of *conditions*.
+
+    Each condition names the entry as ``e``. For each condition, one SELECT
+    takes :data:`OWNER_ARM` and one takes :data:`ATTENDEE_ARM`. So each
+    SELECT can use its own index: (org, owner, start) for the owner, and
+    (org, member, entry) for an attendee. An OR across the two arms made the
+    planner read the whole org (repair round 1, the EXPLAIN is in
+    ``test_calendar_entries_r8.py``).
+    """
+    parts: list[str] = []
+    for cond in conditions:
+        parts.append(f"SELECT e.id FROM calendar_entries e WHERE {OWNER_ARM} AND {cond}")
+        parts.append(
+            "SELECT e.id FROM calendar_entry_attendees x "
+            "JOIN calendar_entries e "
+            "ON e.organization_id = x.organization_id AND e.id = x.entry_id "
+            f"WHERE {ATTENDEE_ARM} AND {cond}"
+        )
+    return " UNION ".join(parts)
+
+
+def _select_sql(conditions: tuple[str, ...]) -> str:
+    """The entries of :func:`_visible_ids`, each with MY attendee row."""
+    return (
+        "SELECT e.*, a.role AS my_role, a.rsvp AS my_rsvp, "
+        "a.lead_minutes AS my_lead_minutes "
+        f"FROM ({_visible_ids(conditions)}) v "
+        "JOIN calendar_entries e ON e.id = v.id "
+        "LEFT JOIN calendar_entry_attendees a "
+        "ON a.entry_id = e.id AND a.member_email = :me"
+    )
+
+
+#: The window `[start, end)`, as two conditions, one for each index. A timed
+#: entry overlaps it, and an entry of no length counts at its start. An
+#: all-day entry is compared by date, on the UTC window with one day of slack
+#: on each side, as `projects/calendar.py` does. The client places it, and
+#: only the client knows the zone of the viewer.
+_TIMED_SQL = "e.starts_at < :end AND (e.ends_at > :start OR e.starts_at = :start)"
+_ALL_DAY_SQL = "e.start_date < :end_date AND e.end_date > :start_date"
+_WINDOW = (_TIMED_SQL, _ALL_DAY_SQL)
 
 _ORDER_SQL = (
     " ORDER BY COALESCE(e.start_date, (e.starts_at AT TIME ZONE 'UTC')::date), "
@@ -462,28 +489,36 @@ async def read_my_entries(
     """The entries in ``[start, end)`` that I own or attend, on *db*.
 
     The caller opened *db* with the tenant session, so RLS gives the org, and
-    :data:`VISIBLE_SQL` gives the person. *me* is the session's address,
-    lower case. A cancelled entry comes back with its ``status`` (CE-8 hides
-    it). A repeat rule is not expanded (CE-8).
+    the two arms of :func:`_visible_ids` give the person. *me* is the
+    session's address, lower case. A cancelled entry comes back with its
+    ``status`` (CE-8 hides it). A repeat rule is not expanded (CE-8).
     """
     if "@" not in me:
         return []
     params = {
         "me": me, "start": start, "end": end,
-        "start_date": start.astimezone(UTC).date() - timedelta(days=1),
-        "end_date": end.astimezone(UTC).date() + timedelta(days=1),
+        "start_date": _utc_day(start, -1),
+        "end_date": _utc_day(end, 1),
     }
-    rows = (await db.execute(
-        text(f"{_SELECT_SQL} WHERE {VISIBLE_SQL} AND {_WINDOW_SQL}{_ORDER_SQL}"),
-        params,
-    )).fetchall()
+    rows = (await db.execute(text(_select_sql(_WINDOW) + _ORDER_SQL), params)).fetchall()
     return [_out(row, me) for row in rows]
+
+
+def _utc_day(when: datetime, slack: int) -> date:
+    """The UTC date of *when*, moved by *slack* days, inside the range of
+    ``date``. A window at the edge of the calendar (year 1 or year 9999)
+    then reads the entries as any window does, and never raises
+    ``OverflowError`` (repair round 1)."""
+    try:
+        return when.astimezone(UTC).date() + timedelta(days=slack)
+    except OverflowError:
+        return date.max if slack > 0 else date.min
 
 
 async def _read_one(db: Any, entry_id: Any, me: str) -> dict[str, Any]:
     """One entry in the shape of the read, under the same rule, or 404."""
     row = (await db.execute(
-        text(f"{_SELECT_SQL} WHERE e.id = CAST(:id AS uuid) AND {VISIBLE_SQL}"),
+        text(_select_sql(("e.id = CAST(:id AS uuid)",))),
         {"id": str(entry_id), "me": me},
     )).fetchone()
     if row is None:
@@ -507,19 +542,40 @@ async def _load_mine(db: Any, entry_id: UUID, me: str) -> Any:
 
 
 async def _require_my_series(db: Any, series_id: str, me: str, *, entry_id: str | None) -> None:
-    """``series_id`` names one of MY events, and not the entry itself.
+    """``series_id`` names a master: one of MY events, not the entry itself,
+    and not an instance of another series. An entry that is already the
+    master of others cannot become an instance. So a link is one step deep,
+    and no cycle such as A to B and B to A can form (repair round 1).
 
-    It is stored as given (CE-8 expands it). The check stops a link from my
-    entry to an entry of a colleague, which CE-8 could otherwise read.
+    It is stored as given (CE-8 expands it). The check also stops a link
+    from my entry to an entry of a colleague, which CE-8 could otherwise
+    read. The master row is locked for the transaction, so two crossed
+    writes wait for each other and cannot both pass.
     """
     if entry_id is not None and series_id == entry_id:
         raise HTTPException(status_code=422, detail="An entry cannot be its own series.")
-    row = (await db.execute(
-        text(f"SELECT 1 FROM calendar_entries WHERE id = CAST(:sid AS uuid) AND {MINE_SQL}"),
+    master = (await db.execute(
+        text(
+            "SELECT series_id FROM calendar_entries "
+            f"WHERE id = CAST(:sid AS uuid) AND {MINE_SQL} FOR UPDATE"
+        ),
         {"sid": series_id, "me": me},
     )).fetchone()
-    if row is None:
+    if master is None:
         raise HTTPException(status_code=422, detail="series_id names no event of yours.")
+    if master.series_id is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="series_id names an instance of another series. Name its master.",
+        )
+    if entry_id is not None and (await db.execute(
+        text("SELECT 1 FROM calendar_entries WHERE series_id = CAST(:id AS uuid) LIMIT 1"),
+        {"id": entry_id},
+    )).fetchone() is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="This entry is the master of a series, so it cannot join another series.",
+        )
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────

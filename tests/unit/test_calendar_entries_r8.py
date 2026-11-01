@@ -47,8 +47,9 @@ Commit before each.
   purge row. The superuser run deleted org A's entry too (3, not 2).
   ``test_r8_a_member_purge_leaves_no_entry[superuser]``.
 * M7. ``members.py``: drop the ``calendar_entries`` purge row. The
-  Knowledge connection delete then failed on
-  ``calendar_entries_connection_id_fkey``, so the order is load-bearing.
+  Knowledge connection delete then failed on the connection key
+  (``calendar_entries_connection_fk`` since repair round 1), so the order is
+  load-bearing.
   ``test_r8_a_member_purge_leaves_no_entry[app]``.
 """
 
@@ -401,6 +402,73 @@ async def test_r8_a_colleague_who_is_not_an_attendee_sees_none_and_changes_nothi
 # ── Org B sees no row of org A ───────────────────────────────────────────
 
 
+def _plan(app_engine: Any, org: str, sql: str) -> str:  # noqa: F811
+    """The EXPLAIN text of *sql*, as the app role bound to *org*, with
+    sequential scans off, so the plan shows which index each part can use."""
+    with app_engine.begin() as conn:
+        conn.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": org})
+        conn.execute(text("SET LOCAL enable_seqscan = off"))
+        return "\n".join(r[0] for r in conn.execute(text("EXPLAIN " + sql)))
+
+
+async def test_r8_the_read_uses_the_owner_and_the_attendee_indexes(
+    world, app_engine,  # noqa: F811
+) -> None:
+    """Repair round 1. An OR across the owner and the attendee arm made the
+    planner read the whole org: a bitmap scan on the org of 66,000 rows, 15.6
+    ms, on a private copy. The UNION of :func:`entries._visible_ids` reads
+    the owner index and the attendee index, 2.4 ms on the same rows, and
+    the same 5 entries. This test runs the plan of the route's own SQL."""
+    # Enough rows of other owners that a read of the whole org costs more
+    # than the owner and attendee indexes, as in a real org.
+    seed = [f"seed{n}@entries-r8.test" for n in range(40)]
+    with world.p.admin_engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO calendar_entries (organization_id, owner_email, kind, source, "
+            "title, starts_at, ends_at) SELECT CAST(:o AS uuid), "
+            "(CAST(:seed AS text[]))[1 + g % 40], 'event', 'metorite', 't', "
+            "TIMESTAMPTZ '2026-01-01' + (g % 365) * INTERVAL '1 day', "
+            "TIMESTAMPTZ '2026-01-01' + (g % 365) * INTERVAL '1 day' + INTERVAL '1 hour' "
+            "FROM generate_series(1, 20000) g"), {"o": world.org, "seed": seed})
+        conn.execute(text(
+            "INSERT INTO calendar_entry_attendees (organization_id, entry_id, member_email, "
+            "role) SELECT organization_id, id, owner_email, 'organizer' "
+            "FROM calendar_entries WHERE owner_email = ANY(:seed)"), {"seed": seed})
+        conn.execute(text("ANALYZE calendar_entries"))
+        conn.execute(text("ANALYZE calendar_entry_attendees"))
+    try:
+        await _plan_check(world, app_engine)
+    finally:
+        with world.p.admin_engine.begin() as conn:
+            conn.execute(text("DELETE FROM calendar_entries WHERE owner_email = ANY(:s)"),
+                         {"s": seed})
+
+
+async def _plan_check(world: Any, app_engine: Any) -> None:  # noqa: F811
+    async with _client(world, world.org) as c:
+        await _create(c, ALICE)
+    sql = ce._select_sql(ce._WINDOW) + ce._ORDER_SQL
+    for name, value in (
+        (":me", f"'{BOB}'"), (":start_date", "DATE '2026-03-08'"),
+        (":end_date", "DATE '2026-03-17'"),
+        (":start", "TIMESTAMPTZ '2026-03-09T00:00:00Z'"),
+        (":end", "TIMESTAMPTZ '2026-03-16T00:00:00Z'"),
+    ):
+        sql = sql.replace(name, value)
+    plan = _plan(app_engine, world.org, sql)
+    # Each scan of the entries is an owner index or the primary key, never an
+    # index of the whole org, and the attendee arm reads the member index.
+    scans = set(re.findall(r"Scan using (\w+) on calendar_entries ", plan))
+    owner = {"calendar_entries_owner_start_idx", "calendar_entries_owner_date_idx"}
+    assert scans & owner, plan
+    assert scans <= owner | {"calendar_entries_pkey"}, plan
+    assert "calendar_entry_attendees_member_idx" in plan, plan
+    assert "Seq Scan" not in plan and "Bitmap" not in plan, plan
+    route_sql = ce._select_sql(ce._WINDOW)
+    assert " OR a.id" not in route_sql
+    assert ce.OWNER_ARM in route_sql and ce.ATTENDEE_ARM in route_sql
+
+
 async def test_r8_org_b_sees_no_row_of_org_a(world, app_engine) -> None:  # noqa: F811
     async with _client(world, world.other) as c:
         theirs = await _create(c, ALICE, title="Org A only")
@@ -475,6 +543,36 @@ async def test_r8_the_flag_off_gives_todays_read_and_404_on_every_route(
 # ── Time ─────────────────────────────────────────────────────────────────
 
 
+async def test_r8_the_feed_never_runs_the_entry_query(world, monkeypatch) -> None:
+    """Repair round 1 (§3.4: no lens other than the Calendar reads
+    ``calendar_entries``). The My Day feed calls ``my_calendar`` twice, for
+    the week and for the day. With the flag on, neither call may run the
+    entry query: here it raises. The HTTP read of the Calendar still runs
+    it, once."""
+    from gateway.routes.shell import feed
+
+    calls: list[str] = []
+    in_feed = {"now": True}
+
+    async def counted(*args: Any, **kwargs: Any) -> list:
+        calls.append("read")
+        if in_feed["now"]:
+            raise AssertionError("the feed ran the entry query")
+        return []
+
+    async with _client(world, world.org) as c:
+        await _create(c, ALICE)
+        monkeypatch.setattr(personal, "read_my_entries", counted)
+        alice = _user(ALICE, "feature:projects", "feature:tasks")
+        await feed._calendar(alice)
+        await feed._people(alice)
+        assert calls == []
+        in_feed["now"] = False
+        resp = await c.get(READ, params=WEEK, headers=_as(ALICE))
+    assert resp.status_code == 200, resp.text
+    assert calls == ["read"], "the Calendar read must still run the entry query"
+
+
 async def test_r8_an_all_day_entry_keeps_its_dates_in_every_zone(world) -> None:
     kolkata_day = {"start": "2026-03-08T00:00:00+05:30", "end": "2026-03-09T00:00:00+05:30"}
     # 8 March 2026 is the day Los Angeles moves its clock.
@@ -503,6 +601,47 @@ async def test_r8_an_all_day_entry_keeps_its_dates_in_every_zone(world) -> None:
     for entry_id in made:
         row = _row(world, entry_id)
         assert (str(row.start_date), str(row.end_date)) == ("2026-03-08", "2026-03-09")
+
+
+def test_a_window_at_the_edge_of_the_calendar_has_a_day_in_range() -> None:
+    """Repair round 1: the one day of slack never leaves the range of
+    ``date``, also when the UTC form of the instant does not exist."""
+    from datetime import date, timedelta, timezone
+
+    india, new_york = timezone(timedelta(hours=5, minutes=30)), timezone(timedelta(hours=-5))
+    assert ce._utc_day(datetime(1, 1, 1, tzinfo=UTC), -1) == date.min
+    assert ce._utc_day(datetime(1, 1, 1, tzinfo=india), -1) == date.min
+    assert ce._utc_day(datetime(9999, 12, 31, tzinfo=UTC), 1) == date.max
+    assert ce._utc_day(datetime(9999, 12, 31, 23, tzinfo=new_york), 1) == date.max
+    assert ce._utc_day(datetime(2026, 3, 9, 1, tzinfo=india), -1) == date(2026, 3, 7)
+
+
+@pytest.mark.parametrize("window", [
+    {"start": "0001-01-01", "end": "2026-03-16"},
+    {"start": "2026-03-09", "end": "9999-12-31"},
+    {"start": "0001-01-01", "end": "9999-12-31"},
+])
+async def test_r8_a_window_at_the_edge_of_the_calendar_reads_as_today(
+    world, monkeypatch, window: dict,
+) -> None:
+    """Repair round 1: year 1 or year 9999 raised ``OverflowError``, a 500,
+    with the flag on. Now the read answers as with the flag off, and it
+    also returns the entries in the window."""
+    async with _client(world, world.org) as c:
+        resp = await c.post(
+            "/projects/my/tasks",
+            json={"title": "Write the brief", "scheduled_start": TIMED["starts_at"],
+                  "scheduled_end": TIMED["ends_at"]},
+            headers=_as(ALICE),
+        )
+        assert resp.status_code == 201, resp.text
+        made = await _create(c, ALICE)
+        on = await c.get(READ, params=window, headers=_as(ALICE))
+        _flag(monkeypatch, False)
+        off = await c.get(READ, params=window, headers=_as(ALICE))
+    assert on.status_code == off.status_code == 200, (on.text, off.text)
+    assert [e["id"] for e in on.json()["entries"]] == [made["id"]]
+    assert {k: v for k, v in on.json().items() if k != "entries"} == off.json()
 
 
 async def test_r8_a_naive_time_and_a_bad_pair_are_a_422_and_write_nothing(world) -> None:
@@ -573,6 +712,33 @@ async def test_r8_a_patch_switches_the_pair_and_a_delete_takes_the_attendees(wor
 
 
 # ── An external entry is the sync's, never a route's ────────────────────
+
+
+async def test_r8_a_series_link_is_one_step_and_never_a_cycle(world) -> None:
+    """Repair round 1. A PATCH of A to master B, then of B to master A, both
+    passed, and made a cycle. Now a master cannot be an instance, and a
+    master of others cannot join a series. Each refusal is a 422 that
+    changes nothing."""
+    async with _client(world, world.org) as c:
+        a, b, cc = [(await _create(c, ALICE, title=name))["id"] for name in "ABC"]
+        ok = await c.patch(f"{BASE}/{a}", json={"series_id": b}, headers=_as(ALICE))
+        assert ok.status_code == 200 and ok.json()["series_id"] == b, ok.text
+        for entry, master, word in (
+            (b, a, "instance"),   # B to A: A is an instance of B, so a cycle
+            (cc, a, "instance"),  # C to A: A is an instance, not a master
+            (b, cc, "master"),    # B to C: B is the master of A
+        ):
+            resp = await c.patch(f"{BASE}/{entry}", json={"series_id": master},
+                                 headers=_as(ALICE))
+            assert resp.status_code == 422 and word in resp.json()["detail"], resp.text
+        resp = await c.post(BASE, json={"title": "D", **TIMED, "series_id": a},
+                            headers=_as(ALICE))
+        assert resp.status_code == 422, resp.text
+        resp = await c.post(BASE, json={"title": "D", **TIMED, "series_id": b},
+                            headers=_as(ALICE))
+        assert resp.status_code == 201, resp.text
+    assert _row(world, b).series_id is None and _row(world, cc).series_id is None
+    assert str(_row(world, a).series_id) == b
 
 
 async def test_r8_patch_and_delete_of_an_external_entry_answer_404(world) -> None:
@@ -726,7 +892,7 @@ async def test_r8_a_connection_that_an_entry_names_cannot_be_deleted(world) -> N
     with pytest.raises(sa_exc.IntegrityError) as refused, world.p.admin_engine.begin() as conn:
         conn.execute(text("DELETE FROM integration_connections WHERE id = CAST(:c AS uuid)"),
                      {"c": conn_id})
-    assert '"calendar_entries_connection_id_fkey"' in str(refused.value)
+    assert '"calendar_entries_connection_fk"' in str(refused.value)
     with world.p.admin_engine.begin() as conn:
         conn.execute(
             text(
