@@ -184,7 +184,7 @@ The source is the research comment of 2026-11-02 on epic 807. The owner asked: c
 | Question | What Open Instinct does | Source line |
 |---|---|---|
 | What wakes it? | An inbound message or webhook, a schedule polled every 30 seconds, an operator task, or another agent. It has no heartbeat and no poll loop. The agent never decides to start | `packages/inkbox/src/events.ts:350-380`, `packages/core/src/scheduler.ts:355-377` |
-| Whether to speak | The code has little. The prompt says to reply with nothing. Event ids dedupe. Refusal notices have a limit. The cap of 3 messages a day is only a requirement | `prompt.ts:230-231`, `runtime.ts:104`, `notifier.ts:49-62`, `docs/research/REQUIREMENTS.md:393-434` |
+| Whether to speak | The code has little. The prompt says to reply with nothing. Event ids dedupe. Refusal notices have a limit. The cap of 3 messages a day is only a requirement | `prompt.ts:230-231`, `runtime.ts:104`, `notifier.ts:49-62`, its requirements document, lines 393-434 |
 | On the fly | `schedule_create` is a tool, so the agent makes its own cron job in chat. It has no watch-list type. A watch is a prompt on a timer | `packages/core/src/core-tools.ts:123-148` |
 | Safety | A scheduled run has `ownerTurn=false` and cannot settle its own approval. This is its best idea | `core-tools.ts:255-262`, `runtime.ts:607-611` |
 
@@ -193,7 +193,7 @@ The source is the research comment of 2026-11-02 on epic 807. The owner asked: c
 1. A standing watch that the agent writes in chat, as templates and not raw cron (AUTO-5).
 2. Silent by default (AUTO-6).
 3. An unattended run cannot approve itself (AUTO-7).
-4. The follow-up cadence of 3 days, 3 nudges, then escalate (AUTO-9). The source is a requirement, not code: `docs/research/REQUIREMENTS.md:239-245`.
+4. The follow-up cadence of 3 days, 3 nudges, then escalate (AUTO-9). The source is a requirement, not code: its requirements document, lines 239-245.
 
 **We do not take.**
 
