@@ -40,41 +40,65 @@ fetch_page(url, max_chars=8000) -> str
        :data:`MAX_CHARS`. The text work runs on the event loop, so it has its
        own bounds. The direct read decodes and strips the first
        :data:`MAX_HTML_BYTES`, and the Jina read decodes the first
-       :data:`MAX_MARKDOWN_BYTES`. A decode gives the loop a turn after each
-       :data:`_DECODE_STEP` bytes.
+       :data:`MAX_MARKDOWN_BYTES`. The local reader of rule 8 decodes the
+       first :data:`MAX_LOCAL_HTML_BYTES`. A decode gives the loop a turn
+       after each :data:`_DECODE_STEP` bytes.
     6. **Jina.** Jina Reader (``https://r.jina.ai``) gets the ORIGINAL URL
        only after the walk ends. Each hop that the walk reached passed rules
        1 to 3. A network fault can end the walk early, and then Jina's own
        network follows the hops that the walk did not reach. A refused URL
        sends Jina nothing. The Jina host is fixed, and its request follows no
-       redirect. Jina's text wins. The direct read of rule 4 is the fallback.
+       redirect. For an org that rule 8 does not cover, Jina reads first and
+       its text wins. The direct read of rule 4 is the fallback.
     7. **The mark.** :func:`frame_page` puts the text in a ``WEB PAGE`` block
        of ``acb_skills.untrusted.UntrustedFrame``. The header (the URL that
-       gave the text, and the type) sits inside the block, because the page
-       controls it. Jina's text names the URL that Jina read, and the direct
-       text names the last hop. The note sits before the block. The cut to
-       ``max_chars`` comes before the frame, so the close line is never cut.
+       gave the text, the title, the date and the type) sits inside the
+       block, because the page controls it. A header line appears only when
+       it has a value. Jina's text names the URL that Jina read, and the
+       direct text names the last hop. The note sits before the block. The
+       cut to ``max_chars`` comes before the frame, so the close line is
+       never cut.
+    8. **Readers (WEB-2).** ``WEB_RESEARCH_ORGS`` turns them on for the org
+       of the run (:func:`web_research_on`). The tool reads the flag on each
+       call, and the org comes from the run binding, never from input (R5).
+       For an HTML type (``text/html``, ``application/xhtml+xml`` or no
+       type), Trafilatura reads the first :data:`MAX_LOCAL_HTML_BYTES` of the
+       body that the walk got. It gives the main text as Markdown, and the
+       title and the date for the header. It runs in :data:`_READER_POOL`,
+       a pool of two threads of its own, because the address check uses the
+       default pool. A call waits for it at most :data:`READER_TIMEOUT_S`. A
+       timeout, a fault or an empty result gives the strip of rule 5. Each
+       other type gets that strip, and one line before the note says that its
+       reader comes later (WEB-3). Jina gets the URL of the call only when
+       ``WEB_READER_REMOTE`` is ``jina`` and the local text is shorter than
+       :data:`MIN_LOCAL_CHARS`. Then Jina's text wins when it is longer.
 
     A refusal returns one line that names the host of the URL and the reason,
     never the path or the query. A page controls the host of a redirect, so
     a line outside the block never names it. The tool never raises.
 
-    Known limit: Jina sees each public URL until WEB-2 makes it opt-in.
+    Known limit: an org that ``WEB_RESEARCH_ORGS`` does not hold still sends
+    each public URL to Jina. A timeout of the local reader does not stop its
+    thread. The pool of two threads bounds the CPU that a hostile page takes.
 
     ``acb_skills`` cannot import ``gateway``, because a package never imports
     a service. So :class:`_PinnedTransport` is a small local copy of the
     pattern of ``gateway.outbound_guard._PinnedTransport``. The address rule
     itself is NOT copied.
 
-    Fence: ``tests/unit/test_web_fetch_guard.py``.
+    Fences: ``tests/unit/test_web_fetch_guard.py`` (rules 1 to 7) and
+    ``tests/unit/test_web_readers.py`` (rule 8).
 """
 from __future__ import annotations
 
 import asyncio
 import codecs
 import http.cookiejar
+import json
 import re
+import sys
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import httpx
@@ -242,6 +266,25 @@ MAX_MARKDOWN_BYTES = 4 * MAX_CHARS
 #: The bytes of one decode step. In some codecs a bad byte costs about
 #: 200 ns, so the loop gets a turn after each step.
 _DECODE_STEP = 64 * 1024
+#: WEB-2: the most bytes of HTML that the local reader decodes and gives to
+#: Trafilatura. The reader holds the GIL in parts, so this bound is the bound
+#: of the pause of the event loop. Measured on the dev PC on 2026-11-01 with
+#: hostile pages of many small tags: 192 KiB paused the loop for 81 ms at
+#: most, and 256 KiB for 155 ms, past the 150 ms budget of the fence.
+MAX_LOCAL_HTML_BYTES = 192 * 1024
+#: Seconds that a call waits for the local reader. Then the strip reads. On a
+#: real page the reader took 3 s at most, and on a hostile one 11 s.
+READER_TIMEOUT_S = 8.0
+#: With ``WEB_READER_REMOTE=jina``, local text shorter than this asks Jina.
+MIN_LOCAL_CHARS = 200
+#: The content types that the local reader reads. ``""`` is no type.
+_HTML_TYPES = frozenset({"text/html", "application/xhtml+xml", ""})
+#: The one value of ``WEB_READER_REMOTE`` that asks a remote reader.
+_REMOTE_JINA = "jina"
+#: The pool of the local reader. It is not the default pool, because the
+#: address check of each hop runs there (``asyncio.to_thread``). So a slow
+#: page cannot hold up a lookup, and at most two pages use the CPU at once.
+_READER_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="web-reader")
 
 _SCHEMES = ("http", "https")
 _REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
@@ -249,7 +292,16 @@ _REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
 _HOST_IN_MESSAGE = 100
 #: The longest content type that the header of a page names.
 _TYPE_IN_HEADER = 100
+#: The longest title and date that the header of a page names (WEB-2).
+_TITLE_IN_HEADER = 300
+_DATE_IN_HEADER = 40
 _NOTE = "The text below is a web page from outside Metorite."
+#: The line before the note when the local reader has no reader for the type
+#: (WEB-2). It names no value of the page, so it can sit outside the block.
+_OTHER_TYPE_LINE = ("fetch_page reads this file type as plain text only. "
+                    "PDF and Office reading comes later (WEB-3).")
+#: The control characters and line breaks that a header line drops.
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+")
 #: Only gzip is asked for, because :func:`_read_capped` decodes it with a cap.
 _PAGE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Metorite fetch_page)",
@@ -621,7 +673,8 @@ async def _jina_read(url: httpx.URL) -> tuple[str, str]:
 
 #: The naive HTML strip of the direct read. Each pattern runs in linear time
 #: on text that the page wrote: no pattern scans past the next ``<`` again,
-#: and an open script block ends at the end of the text. WEB-2 replaces it.
+#: and an open script block ends at the end of the text. It is the fallback
+#: of the local reader of WEB-2, and the reader of each type that is not HTML.
 _BLOCK_RE = re.compile(r"(?is)<(script|style|noscript)[^<>]*>.*?(?:</\1\s*>|\Z)")
 _TAG_RE = re.compile(r"<[^<>]+>")
 _SPACE_RE = re.compile(r"[ \t]+")
@@ -634,6 +687,15 @@ def _strip_html(raw: str) -> str:
     text = _TAG_RE.sub(" ", text)
     text = _SPACE_RE.sub(" ", text)
     return _BLANK_RE.sub("\n\n", text).strip()
+
+
+def _html_bytes(answer: _Answer, limit: int = MAX_HTML_BYTES) -> bytes:
+    """The first ``limit`` bytes of the body of ``answer``, and no more.
+
+    The ONE cut of the bytes of a page that a read decodes. The strip uses
+    :data:`MAX_HTML_BYTES`, and the local reader uses
+    :data:`MAX_LOCAL_HTML_BYTES`."""
+    return answer.body[:limit]
 
 
 async def _direct_text(walk: _Walk) -> tuple[str, str]:
@@ -650,10 +712,220 @@ async def _direct_text(walk: _Walk) -> tuple[str, str]:
     if not 200 <= answer.status < 300:
         return "", f"HTTP {answer.status}"
     try:
-        text = _strip_html(await _decode(answer.body[:MAX_HTML_BYTES], answer.charset))
+        text = _strip_html(await _decode(_html_bytes(answer), answer.charset))
     except Exception as exc:  # a fault of the strip is not a raise of the tool
         return "", _fault(exc)
     return text, "" if text else "empty answer"
+
+
+# ── The local reader (WEB-2, spec section 3.2) ───────────────────────────────
+
+
+def _research_orgs() -> frozenset[str]:
+    """The entries of ``WEB_RESEARCH_ORGS``, read now. A fault gives none."""
+    try:
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "web_research_orgs", "") or "")
+    except Exception:  # never turn the reader on after a fault
+        return frozenset()
+    return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+
+
+def web_research_on(org: object) -> bool:
+    """True when ``WEB_RESEARCH_ORGS`` holds organization *org*, or ``*``.
+
+    THE one reader of the flag. Empty means off, and so does an empty *org*
+    or a fault in the settings read. The caller passes the bound tenant of
+    the run, never a value from request input (R5)."""
+    org_id = str(org or "").strip().lower()
+    if not org_id:
+        return False
+    entries = _research_orgs()
+    return "*" in entries or org_id in entries
+
+
+def _run_org() -> str:
+    """The tenant of the run on this frame, from the run binding only (R5).
+
+    It asks ``orchestrator.executor._current_run_org`` when the executor is
+    loaded, and else the bound tenant of ``acb_common.db``. It never imports
+    the executor, because that import takes seconds on the event loop, and
+    with no executor no run of it is on this frame. ``""`` when none
+    resolves, so the caller fails closed."""
+    executor = sys.modules.get("orchestrator.executor")
+    reader = getattr(executor, "_current_run_org", None)
+    try:
+        if reader is not None:
+            return str(reader() or "").strip()
+        from acb_common.db import current_tenant
+
+        return str(current_tenant() or "").strip()
+    except Exception:  # fail closed: no org gives the WEB-1 read
+        return ""
+
+
+def _local_reader_on() -> bool:
+    """True when the local reader serves the run on this frame. Read on each
+    call, on the event loop, before any hop. An empty flag resolves no org."""
+    return bool(_research_orgs()) and web_research_on(_run_org())
+
+
+def _remote_reader() -> str:
+    """``"jina"`` when ``WEB_READER_REMOTE`` is ``jina``, else ``""``.
+
+    Read on each call. Each other value, and a fault, means no remote
+    reader, so Jina gets nothing."""
+    try:
+        from acb_common import get_settings
+
+        value = str(getattr(get_settings(), "web_reader_remote", "") or "")
+    except Exception:
+        return ""
+    return _REMOTE_JINA if value.strip().lower() == _REMOTE_JINA else ""
+
+
+@dataclass(frozen=True)
+class _Local:
+    """What the local reader gave for one page.
+
+    ``title`` and ``date`` come from the page. ``other_type`` is True when
+    the type has no reader yet, so the strip gave the text."""
+
+    text: str
+    fault: str = ""
+    title: str = ""
+    date: str = ""
+    other_type: bool = False
+
+
+def _is_html(content_type: str) -> bool:
+    """True for a type of :data:`_HTML_TYPES`. Parameters do not count."""
+    return content_type.split(";", 1)[0].strip().lower() in _HTML_TYPES
+
+
+def _one_line(text: object) -> str:
+    """``text`` as one line: each control character and each run of white
+    space becomes one space. A header line of a page never breaks."""
+    return " ".join(_CONTROL_RE.sub(" ", str(text or "")).split())
+
+
+def _scalar(value: str) -> str:
+    """One value of Trafilatura's front matter. It writes a plain value, or a
+    JSON string when the value holds a special character."""
+    if value.startswith('"'):
+        try:
+            loaded = json.loads(value)
+        except ValueError:
+            return value
+        return loaded if isinstance(loaded, str) else value
+    return value
+
+
+def _front_matter(markdown: str) -> tuple[dict[str, str], str]:
+    """``(fields, text)``: the front matter of Trafilatura's Markdown, and
+    the text after it.
+
+    Trafilatura writes ``---``, one ``name: value`` line for each field, and
+    ``---``. A value with a line break or a special character is a JSON
+    string, so no field line is ``---``. A title that holds ``---`` cannot
+    end the front matter. With no front matter, ``fields`` is empty."""
+    lines = markdown.split("\n")
+    if lines[0] != "---" or "---" not in lines[1:]:
+        return {}, markdown
+    end = lines.index("---", 1)
+    fields: dict[str, str] = {}
+    for line in lines[1:end]:
+        name, sep, value = line.partition(": ")
+        if sep:
+            fields[name.strip()] = _scalar(value.strip())
+    return fields, "\n".join(lines[end + 1:])
+
+
+def _extract_markdown(html: str) -> _Local | None:
+    """Trafilatura's Markdown of ``html``, or None. It runs in a thread of
+    :data:`_READER_POOL`, never on the event loop.
+
+    The import costs about one second, so the thread pays it, and only on
+    the first call. ``extract`` gets the text and no URL, so it fetches
+    nothing. ``html`` is text, not bytes: Trafilatura inflates bytes that
+    look compressed, and that would pass the bound of the decode."""
+    from trafilatura import extract
+
+    markdown = extract(html, output_format="markdown", with_metadata=True,
+                       include_comments=False, favor_precision=True)
+    if not markdown:
+        return None
+    fields, text = _front_matter(markdown)
+    text = text.strip()
+    if not text:
+        return None
+    return _Local(text, title=fields.get("title", ""), date=fields.get("date", ""))
+
+
+async def _read_html(answer: _Answer) -> _Local | None:
+    """The local reader's text of an HTML answer, or None.
+
+    It decodes the first :data:`MAX_LOCAL_HTML_BYTES` on the event loop, in
+    steps. Then a thread of :data:`_READER_POOL` runs Trafilatura, and the
+    call waits at most :data:`READER_TIMEOUT_S`. A timeout or a fault gives
+    None, so the strip reads."""
+    try:
+        html = await _decode(_html_bytes(answer, MAX_LOCAL_HTML_BYTES), answer.charset)
+        loop = asyncio.get_running_loop()
+        async with asyncio.timeout(READER_TIMEOUT_S):
+            return await loop.run_in_executor(_READER_POOL, _extract_markdown, html)
+    except Exception:  # a timeout or a fault of the reader: the strip reads
+        return None
+
+
+async def _local_text(walk: _Walk) -> _Local:
+    """The text of the walk's answer from the local reader.
+
+    An HTML type goes to Trafilatura first. Each other type, and an HTML
+    page that Trafilatura cannot read, gets the strip of :func:`_direct_text`.
+    A network fault or an answer that is not 2xx gives the fault."""
+    answer = walk.answer
+    if answer is not None and 200 <= answer.status < 300:
+        if not _is_html(answer.content_type):
+            text, fault = await _direct_text(walk)
+            return _Local(text, fault, other_type=True)
+        page = await _read_html(answer)
+        if page is not None:
+            return page
+    text, fault = await _direct_text(walk)
+    return _Local(text, fault)
+
+
+async def _read_locally(walk: _Walk, max_chars: int) -> str:
+    """The output of :func:`fetch_page` when the local reader serves the run.
+
+    Jina gets the URL of the call only when ``WEB_READER_REMOTE`` is
+    ``jina`` and the local text is shorter than :data:`MIN_LOCAL_CHARS`.
+    Then Jina's text wins when it is longer."""
+    page = await _local_text(walk)
+    text, source, title, date = page.text, walk.target.url, page.title, page.date
+    other_type = page.other_type
+    ask_jina = _remote_reader() == _REMOTE_JINA and len(text) < MIN_LOCAL_CHARS
+    jina_fault = ""
+    if ask_jina:
+        jina_text, jina_fault = await _jina_read(walk.first.url)
+        if len(jina_text) > len(text):
+            text, source, title, date = jina_text, walk.first.url, "", ""
+            other_type = False
+    if not text:
+        host = walk.first.host
+        line = (f"fetch_page could not read the page on host {host[:_HOST_IN_MESSAGE]}. "
+                f"Local reader: {page.fault or 'empty answer'}.")
+        if ask_jina:
+            line += f" Jina Reader: {jina_fault or 'empty answer'}."
+        return line
+    content_type = walk.answer.content_type if walk.answer else ""
+    # The frame passes over up to MAX_CHARS characters on the loop, so it
+    # gets its own step, as in fetch_page.
+    await asyncio.sleep(0)
+    out = frame_page(text, source, content_type, max_chars, title=title, date=date)
+    return f"{_OTHER_TYPE_LINE}\n{out}" if other_type else out
 
 
 def _refusal(refused: _Refused) -> str:
@@ -678,11 +950,15 @@ def char_limit(max_chars: object) -> int:
 
 
 def frame_page(text: str, url: object, content_type: str = "",
-               max_chars: object = DEFAULT_CHARS) -> str:
+               max_chars: object = DEFAULT_CHARS, *, title: object = "",
+               date: object = "") -> str:
     """The output of :func:`fetch_page` for the text of one page.
 
     It gives the note, then ONE closed ``WEB PAGE`` block with the header
-    inside it. The cut to :func:`char_limit` comes before the frame, so the
+    inside it. The header lines are URL, Title, Date and Type, in that
+    order, and a line appears only when it has a value. The title and the
+    date become one line each (:func:`_one_line`). No code parses the
+    header. The cut to :func:`char_limit` comes before the frame, so the
     close line is never cut. The eval fixture of ``fetch_page`` calls it too,
     so the fixture gives the shape of the real tool."""
     limit = char_limit(max_chars)
@@ -690,6 +966,11 @@ def frame_page(text: str, url: object, content_type: str = "",
     if cut:
         text = text[:limit]
     header = f"URL: {url}"
+    title, date = _one_line(title), _one_line(date)
+    if title:
+        header += f"\nTitle: {title[:_TITLE_IN_HEADER]}"
+    if date:
+        header += f"\nDate: {date[:_DATE_IN_HEADER]}"
     if content_type:
         header += f"\nType: {content_type[:_TYPE_IN_HEADER]}"
     frame = UntrustedFrame.new()
@@ -703,7 +984,7 @@ def frame_page(text: str, url: object, content_type: str = "",
 async def fetch_page(url: str, max_chars: int = 8000) -> str:
     """Fetch a public web page and return its text.
 
-    Jina AI Reader gives Markdown. If it fails, the page's HTML is stripped
+    A reader gives Markdown. If it fails, the page's HTML is stripped
     to text. Only public addresses are read, and each redirect is checked.
     A call can take about 40 seconds.
 
@@ -723,10 +1004,15 @@ async def fetch_page(url: str, max_chars: int = 8000) -> str:
     # module docstring (WEB-1): a public address for each hop, a pin to it,
     # 15 MB and 20 seconds for each read, and a frame of outside text.
     max_chars = char_limit(max_chars)
+    # WEB-2: the flag and the org of the run, read on each call on this
+    # frame, before any hop. Off, the read below is the WEB-1 read.
+    local = _local_reader_on()
     try:
         walk = await _walk(url)
     except _Refused as refused:
         return _refusal(refused)
+    if local:
+        return await _read_locally(walk, max_chars)
 
     # The header names the URL that gave the text. Jina read the URL of the
     # call, and the direct read read the last hop of the walk.

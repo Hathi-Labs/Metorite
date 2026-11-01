@@ -38,6 +38,12 @@ dependencies = [
     "onnxruntime==1.30.0",
     "pypdfium2==5.14.0",
     "pillow==12.3.0",
+    # fetch_page (WS-WEB WEB-2, web_research.md §3.2) reads the main text of
+    # an HTML page with Trafilatura (Apache-2.0). The pin is exact, as above.
+    # It brings courlan, htmldate, justext, lxml-html-clean, dateparser,
+    # babel and tld. We take tld under MPL-1.1. No package of this closure
+    # is AGPL. Fence: tests/unit/test_no_agpl_dependency.py.
+    "trafilatura==2.3.1",
 ]
 
 [build-system]

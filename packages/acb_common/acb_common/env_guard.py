@@ -292,6 +292,11 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # a tenant that set it would hold the key of every org's devices.
     # WEB_PUSH_ENABLED is the switch, and the `_ENABLED` suffix covers it too.
     "VAPID_", "WEB_PUSH_",
+    # WS-WEB WEB-2: web research. WEB_RESEARCH_ORGS gives an org the local
+    # page reader, and WEB_READER_REMOTE=jina sends each URL of those orgs to
+    # a third party. A tenant that set either would change it for every org
+    # on the box, so only the owner writes them.
+    "WEB_RESEARCH_", "WEB_READER_",
     # WS-66 RM-1: reminders. CALENDAR_REMINDERS is the switch of the reminder
     # routes, so a tenant that set it could turn them on for every org.
     "CALENDAR_REMINDERS",

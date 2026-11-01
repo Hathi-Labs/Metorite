@@ -1,7 +1,7 @@
 # Web research — Mira reads the web at large, on open-source parts (WS-WEB)
 
 > **Product:** Metorite · **Feature:** web search, page and file reading, crawling, browsing and research jobs for the one assistant · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 🔨 **IN BUILD.** WEB-1 (the fetch guard) is built, 2026-11-01, and WEB-2 is next. `web_search` and `fetch_page` existed before WEB-0 (§2).
+> **Status:** 🔨 **IN BUILD.** WEB-1 (the fetch guard) is built, 2026-11-01. WEB-2 (the local HTML reader) is built dark behind `WEB_RESEARCH_ORGS`, 2026-11-01, and WEB-3 is next. `web_search` and `fetch_page` existed before WEB-0 (§2).
 > **Verified against code on 2026-11-01 at `f59a636b5`.** Each path in §12 was read on that commit.
 > **Board:** WS-WEB in `work_plan.md` §2.1. **Decision:** D148. D85, D117, D124, D129, D130 and D139 bind it.
 > **Metorite:** project "Agent Tooling", epic 1235, this spec task 1237. The slices WEB-1 to WEB-12 are tasks 1259 to 1270, in order.
@@ -89,7 +89,17 @@ The guard picks the reader by the content type.
 | A hard PDF (tables, scans, layout) | **Docling** | MIT | The web worker |
 | Any page, when the owner opts in | Jina Reader (`r.jina.ai`) | Hosted | A third party |
 
-**Fallback order for HTML:** Trafilatura. Then the worker render when the text is empty or too short. Then Jina, only when `WEB_READER_REMOTE=jina` is set.
+**Fallback order for HTML:** Trafilatura. Then the worker render when the text is empty or too short. Then Jina, only when `WEB_READER_REMOTE=jina` is set and the local text is under 200 characters.
+
+**As built, WEB-2 (2026-11-01).** The rules are rule 8 of the module docstring of `web_tools.py`.
+
+- `WEB_RESEARCH_ORGS` turns the local reader on for an org. `web_research_on` is its one reader. The tool reads it on each call, and the org comes from the run binding. Off, `fetch_page` gives the WEB-1 output, byte for byte.
+- Trafilatura 2.3.1 reads an HTML type: `text/html`, `application/xhtml+xml` or no type. It gets the first 192 KiB, as text and never as bytes, because it inflates bytes that look compressed. At 256 KiB a hostile page held the event loop for 155 ms, past the budget of 150 ms.
+- It runs in a pool of two threads of its own, and a call waits for it at most 8 seconds. A timeout, a fault or an empty result gives the regex strip of WEB-1.
+- The header lines are URL, Title, Date and Type. A line appears only when it has a value.
+- Each other type gets the regex strip, and one line says that its reader comes with WEB-3.
+- `WEB_READER_REMOTE=jina` asks Jina last, only when the local text is under 200 characters. Jina's text wins when it is longer.
+- Fences: `tests/unit/test_web_readers.py` and `tests/unit/test_no_agpl_dependency.py`.
 
 ### 3.3 Search providers
 
