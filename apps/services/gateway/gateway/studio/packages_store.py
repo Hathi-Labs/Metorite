@@ -39,7 +39,8 @@ the INSERT, and so the manifest id never changes either:
 
 **Private and a draft.** A new package has ``visibility = 'private'``,
 ``status = 'draft'`` and ``workspace_path = ''``, because it has no files. No
-function here changes the visibility, the status or the format. The trigger
+function here changes the visibility or the format. Only :func:`publish_version`
+and :func:`rollback` change the status, and only to ``live``. The trigger
 ``apps_format_fixed`` refuses a change of ``format`` on the database too.
 
 **Versions (A4).** :func:`publish_version` and :func:`rollback` write
@@ -68,6 +69,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from acb_common.secret_shapes import looks_like_secret
 from acb_common.studio_manifest import ManifestError, validate_manifest
 from sqlalchemy import text
 
@@ -175,6 +177,8 @@ _AUDIT_SQL = (
 
 #: The longest release note, in characters.
 MAX_NOTES_CHARS = 2000
+#: The version column is an INT4.
+MAX_VERSION = 2**31 - 1
 #: The refusal of a rollback to the live version.
 ROLLBACK_LIVE = "That version is already the live version."
 
@@ -439,9 +443,38 @@ def _notes(notes: object) -> str:
         raise _refuse("$.notes", "The release notes are text.")
     if "\x00" in notes:
         raise _refuse("$.notes", "The release notes hold a NUL character. Remove it.")
+    try:
+        notes.encode("utf-8")
+    except UnicodeEncodeError:
+        raise _refuse("$.notes", "The release notes hold a lone surrogate. Remove it.") from None
+    if looks_like_secret(notes):
+        raise _refuse("$.notes", "The release notes look like a secret. Remove it.")
     if len(notes) > MAX_NOTES_CHARS:
         raise _refuse("$.notes", f"The release notes are longer than {MAX_NOTES_CHARS} characters.")
     return notes
+
+
+def _version_number(version: object) -> int:
+    """A version is an int from 1 to :data:`MAX_VERSION`. The refusal names no value."""
+    if isinstance(version, bool) or not isinstance(version, int) or not 1 <= version <= MAX_VERSION:
+        raise PackageStoreError(f"version must be an integer from 1 to {MAX_VERSION}")
+    return version
+
+
+def _catalog(catalog: object) -> Mapping[str, str]:
+    """A missing catalog would skip the catalog checks, so it is refused."""
+    if not isinstance(catalog, Mapping):
+        raise PackageStoreError("catalog is required: pass a map of action id to class")
+    return catalog
+
+
+def _check_publishable(doc: dict[str, Any], catalog: Mapping[str, str]) -> str:
+    """The JSON text of *doc* after :func:`check_manifest` and A2's checks WITH the catalog."""
+    encoded = check_manifest(doc)
+    errors = validate_manifest(doc, catalog=catalog)
+    if errors:
+        raise PackageStoreError("The manifest is not valid.", errors)
+    return encoded
 
 
 def _sha256(encoded: str) -> str:
@@ -490,13 +523,11 @@ async def publish_version(db: Any, member: str, package_id: str, notes: str, *,
     m = _member(member)
     pid = _package_id(package_id)
     note = _notes(notes)
+    known = _catalog(catalog)
     current = await get_package(db, m, pid, for_update=True)
     if current is None:
         return None
-    encoded = check_manifest(current.manifest)
-    errors = validate_manifest(current.manifest, catalog=catalog)
-    if errors:
-        raise PackageStoreError("The manifest is not valid.", errors)
+    encoded = _check_publishable(current.manifest, known)
     version = await _append_version(db, m, pid, encoded, note)
     await db.execute(text(_PUBLISH_POINT_SQL), {"m": m, "id": pid, "v": version.version})
     await _audit(db, m, pid, version.version, "publish", {
@@ -504,8 +535,8 @@ async def publish_version(db: Any, member: str, package_id: str, notes: str, *,
     return version
 
 
-async def rollback(db: Any, member: str, package_id: str,
-                   version: int) -> PackageVersion | None:
+async def rollback(db: Any, member: str, package_id: str, version: int, *,
+                   catalog: Mapping[str, str]) -> PackageVersion | None:
     """Roll the package back to *version*. History stays append-only.
 
     ⚠️ This OVERWRITES THE DRAFT. In one transaction under the row lock it
@@ -517,13 +548,15 @@ async def rollback(db: Any, member: str, package_id: str,
 
     Answers None for a missing package or a missing version. Raises
     :class:`PackageStoreError` (:data:`ROLLBACK_LIVE`) for the live version.
-    The copy needs no catalog: it only restores a manifest that a publish
-    accepted. :func:`check_manifest` still runs, so the draft write is safe.
+    *catalog* is required, as for :func:`publish_version`. The copy runs
+    :func:`check_manifest` and A2's checks WITH the catalog before any write,
+    so a version with an action that the catalog withdrew or reclassified is
+    refused, and the draft stays as it is.
     """
     m = _member(member)
     pid = _package_id(package_id)
-    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
-        raise PackageStoreError("version must be a positive integer")
+    version = _version_number(version)
+    known = _catalog(catalog)
     current = await get_package(db, m, pid, for_update=True)
     if current is None:
         return None
@@ -532,7 +565,7 @@ async def rollback(db: Any, member: str, package_id: str,
         return None
     if current.live_version == version:
         raise PackageStoreError(ROLLBACK_LIVE)
-    encoded = check_manifest(old.manifest)
+    encoded = _check_publishable(old.manifest, known)
     new = await _append_version(db, m, pid, encoded, f"Rollback to version {version}.")
     await db.execute(text(_ROLLBACK_POINT_SQL), {
         "m": m, "id": pid, "manifest": encoded, "name": old.manifest["name"],
@@ -555,6 +588,7 @@ async def list_versions(db: Any, member: str, package_id: str) -> list[PackageVe
 async def get_version(db: Any, member: str, package_id: str,
                       version: int) -> PackageVersion | None:
     """One version, with its manifest, or None."""
+    _version_number(version)
     row = (await db.execute(text(_VERSION_GET_SQL), {
         "m": _member(member), "id": _package_id(package_id), "v": version})).first()
     return None if row is None else _version(row)

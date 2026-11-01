@@ -620,7 +620,9 @@ def test_publish_of_a_missing_package_answers_none_and_writes_nothing() -> None:
     assert len(db.calls) == 1
 
 
-@pytest.mark.parametrize("notes", [None, 5, "a\x00b", "x" * (store.MAX_NOTES_CHARS + 1)])
+@pytest.mark.parametrize("notes", [
+    None, 5, "a\x00b", "x" * (store.MAX_NOTES_CHARS + 1), "ok " + chr(0xD800) + " notes",
+    "token sk-ant-api03-" + "a" * 40])
 def test_bad_release_notes_are_refused_before_the_db(notes: Any) -> None:
     db = _FakeDb()
     with pytest.raises(store.PackageStoreError):
@@ -632,7 +634,7 @@ def test_rollback_copies_the_old_manifest_into_a_new_version_and_the_draft() -> 
     old = _manifest(name="Old name")
     cur = _manifest(name="New name")
     db = _FakeDb(_pkg_row(cur, live=2), _ver_row(old, 1), _ver_row(old, 3))
-    new = _run(store.rollback(db, "ana@x.test", str(uuid.uuid4()), 1))
+    new = _run(store.rollback(db, "ana@x.test", str(uuid.uuid4()), 1, catalog={}))
     assert new is not None and new.version == 3
     assert _verbs(db) == ["SELECT id::text, slug,", "SELECT v.app_id::text, v.version,",
                           "INSERT INTO app_versions", "UPDATE apps SET",
@@ -651,22 +653,22 @@ def test_rollback_refuses_the_live_version_and_a_missing_one() -> None:
     doc = _manifest()
     live = _FakeDb(_pkg_row(doc, live=2), _ver_row(doc, 2))
     with pytest.raises(store.PackageStoreError) as exc:
-        _run(store.rollback(live, "ana@x.test", str(uuid.uuid4()), 2))
+        _run(store.rollback(live, "ana@x.test", str(uuid.uuid4()), 2, catalog={}))
     assert str(exc.value) == store.ROLLBACK_LIVE
     assert len(live.calls) == 2
     missing = _FakeDb(_pkg_row(doc, live=2))
-    assert _run(store.rollback(missing, "ana@x.test", str(uuid.uuid4()), 9)) is None
+    assert _run(store.rollback(missing, "ana@x.test", str(uuid.uuid4()), 9, catalog={})) is None
     assert len(missing.calls) == 2
     none = _FakeDb()
-    assert _run(store.rollback(none, "ana@x.test", str(uuid.uuid4()), 1)) is None
+    assert _run(store.rollback(none, "ana@x.test", str(uuid.uuid4()), 1, catalog={})) is None
     assert len(none.calls) == 1
 
 
-@pytest.mark.parametrize("version", [0, -1, True, "1", None, 1.5])
+@pytest.mark.parametrize("version", [0, -1, True, "1", None, 1.5, 2**31, 2**63])
 def test_rollback_refuses_a_bad_version_number_before_the_db(version: Any) -> None:
     db = _FakeDb()
     with pytest.raises(store.PackageStoreError):
-        _run(store.rollback(db, "ana@x.test", str(uuid.uuid4()), version))
+        _run(store.rollback(db, "ana@x.test", str(uuid.uuid4()), version, catalog={}))
     assert db.calls == []
 
 
@@ -730,5 +732,44 @@ def test_publish_and_rollback_run_check_manifest_on_the_stored_manifest(
     old = _manifest(name="Older")
     _run(store.rollback(
         _FakeDb(_pkg_row(doc, live=2), _ver_row(old, 1), _ver_row(old, 3)),
-        "ana@x.test", str(uuid.uuid4()), 1))
+        "ana@x.test", str(uuid.uuid4()), 1, catalog={}))
     assert seen == ["Stored", "Older"]
+
+
+def test_a_refusal_of_notes_or_version_echoes_no_value() -> None:
+    sur = "ok " + chr(0xD800) + " notes"
+    secret = "sk-ant-api03-" + "a" * 40
+    for call in (
+        lambda db: store.publish_version(db, "ana@x.test", str(uuid.uuid4()), sur, catalog={}),
+        lambda db: store.publish_version(db, "ana@x.test", str(uuid.uuid4()), secret, catalog={}),
+        lambda db: store.rollback(db, "ana@x.test", str(uuid.uuid4()), 2**31, catalog={}),
+        lambda db: store.get_version(db, "ana@x.test", str(uuid.uuid4()), 2**31),
+    ):
+        db = _FakeDb()
+        with pytest.raises(store.PackageStoreError) as exc:
+            _run(call(db))
+        shown = str(exc.value) + " ".join(e.message for e in exc.value.errors)
+        assert "sk-ant" not in shown and "2147483648" not in shown and "notes" not in shown.replace(
+            "release notes", "")
+        assert db.calls == []
+
+
+def test_a_missing_catalog_is_refused_before_any_statement() -> None:
+    for call in (
+        lambda db: store.publish_version(
+            db, "ana@x.test", str(uuid.uuid4()), "", catalog=None),  # type: ignore[arg-type]
+        lambda db: store.rollback(
+            db, "ana@x.test", str(uuid.uuid4()), 1, catalog=None),  # type: ignore[arg-type]
+    ):
+        db = _FakeDb()
+        with pytest.raises(store.PackageStoreError):
+            _run(call(db))
+        assert db.calls == []
+
+
+def test_a_rollback_to_a_version_the_catalog_no_longer_serves_writes_nothing() -> None:
+    old = _manifest(actions=[*MANIFEST["actions"], _CAT_MANIFEST_ACTION])
+    db = _FakeDb(_pkg_row(_manifest(), live=2), _ver_row(old, 1))
+    with pytest.raises(store.PackageStoreError):
+        _run(store.rollback(db, "ana@x.test", str(uuid.uuid4()), 1, catalog={}))
+    assert _verbs(db) == ["SELECT id::text, slug,", "SELECT v.app_id::text, v.version,"]

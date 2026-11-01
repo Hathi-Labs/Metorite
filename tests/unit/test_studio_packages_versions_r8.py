@@ -251,7 +251,7 @@ def test_r8_a_rollback_to_v1_after_v2_makes_v3_and_restores_the_draft(world) -> 
         await _publish(a, pkg.id, "Two.")
         before = _versions(world, pkg.id)
         async with tenant_session(a) as db:
-            v3 = await store.rollback(db, ANA, pkg.id, 1)
+            v3 = await store.rollback(db, ANA, pkg.id, 1, catalog=CATALOG)
         return pkg, before, v3
 
     pkg, before, v3 = _go(world, go)
@@ -281,11 +281,11 @@ def test_r8_a_publish_after_a_rollback_never_edits_an_old_row(world) -> None:
         await _edit(a, pkg.id, _manifest(name="Quotes two"))
         await _publish(a, pkg.id)
         async with tenant_session(a) as db:
-            await store.rollback(db, ANA, pkg.id, 1)
+            await store.rollback(db, ANA, pkg.id, 1, catalog=CATALOG)
         before = _versions(world, pkg.id)
         await _publish(a, pkg.id, "Four.")
         async with tenant_session(a) as db:
-            await store.rollback(db, ANA, pkg.id, 2)
+            await store.rollback(db, ANA, pkg.id, 2, catalog=CATALOG)
         return pkg, before
 
     pkg, before = _go(world, go)
@@ -305,10 +305,10 @@ def test_r8_a_rollback_to_the_live_version_or_a_missing_one_writes_nothing(world
         await _publish(a, pkg.id)
         out: dict[str, Any] = {"pkg": pkg}
         async with tenant_session(a) as db:
-            out["missing"] = await store.rollback(db, ANA, pkg.id, 9)
+            out["missing"] = await store.rollback(db, ANA, pkg.id, 9, catalog=CATALOG)
         try:
             async with tenant_session(a) as db:
-                await store.rollback(db, ANA, pkg.id, 2)
+                await store.rollback(db, ANA, pkg.id, 2, catalog=CATALOG)
         except store.PackageStoreError as exc:
             out["live"] = str(exc)
         return out
@@ -339,7 +339,7 @@ def test_r8_org_b_and_another_member_see_no_versions(world) -> None:
                     await store.list_versions(db, member, pkg.id),
                     await store.get_version(db, member, pkg.id, 1),
                     await store.publish_version(db, member, pkg.id, "x", catalog=CATALOG),
-                    await store.rollback(db, member, pkg.id, 1))
+                    await store.rollback(db, member, pkg.id, 1, catalog=CATALOG))
         return out
 
     out = _go(world, go)
@@ -360,7 +360,7 @@ def test_r8_a_code_app_has_no_versions_through_the_package_store(world) -> None:
                 "RETURNING id::text"), {"s": f"old-{TAG}", "m": ANA})).one()
         async with tenant_session(a) as db:
             return (await store.publish_version(db, ANA, row[0], "", catalog=CATALOG),
-                    await store.rollback(db, ANA, row[0], 1),
+                    await store.rollback(db, ANA, row[0], 1, catalog=CATALOG),
                     await store.list_versions(db, ANA, row[0]))
 
     assert _go(world, go) == (None, None, [])
@@ -455,7 +455,7 @@ def test_r8_a_failure_after_a_write_rolls_back_the_version_and_the_audit(world) 
         await _publish(a, pkg.id)
         with pytest.raises(RuntimeError):
             async with tenant_session(a) as db:
-                await store.rollback(db, ANA, pkg.id, 1)
+                await store.rollback(db, ANA, pkg.id, 1, catalog=CATALOG)
                 raise RuntimeError("the caller fails after the store")
         return pkg
 
@@ -464,3 +464,27 @@ def test_r8_a_failure_after_a_write_rolls_back_the_version_and_the_audit(world) 
     assert [(k, v) for k, v, _e, _d in _audit(world, pkg.id)] == [("publish", 1), ("publish", 2)]
     status, live, manifest, *_ = _app(world, pkg.id)
     assert (status, live) == ("live", 2) and json.loads(manifest)["name"] == "Quotes two"
+
+
+# ── i. A rollback checks the catalog (fix round 1) ─────────────────────────
+
+
+def test_r8_a_rollback_to_a_version_the_catalog_withdrew_writes_nothing(world) -> None:
+    a = world.p.org_a
+    with_action = _manifest(
+        actions=[*MANIFEST["actions"], {"id": "lead", "uses": "crm.create_lead", "set": {}}])
+
+    async def go() -> Any:
+        pkg = await _create(a, doc=with_action)
+        await _publish(a, pkg.id, "One.")
+        await _edit(a, pkg.id, _manifest(name="Quotes two"))
+        await _publish(a, pkg.id, "Two.")
+        before = (_versions(world, pkg.id), _app(world, pkg.id), _audit(world, pkg.id))
+        with pytest.raises(store.PackageStoreError) as exc:
+            async with tenant_session(a) as db:
+                await store.rollback(db, ANA, pkg.id, 1, catalog={})
+        assert exc.value.errors
+        return pkg, before
+
+    pkg, before = _go(world, go)
+    assert (_versions(world, pkg.id), _app(world, pkg.id), _audit(world, pkg.id)) == before
