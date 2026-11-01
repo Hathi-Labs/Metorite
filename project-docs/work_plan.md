@@ -176,7 +176,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-DOC | **Docs and repo cleanup** | 🟢 active · M1 | none yet | Metorite: epic 522 (Developer Workflow) · next DOC-1, DOC-2 |
 | WS-BRIEF | **Core brief**: brief tasks with no earlier plan line | 🟢 active · M1 | `specs/core_brief.md` (PROPOSED) | Metorite: epics 479 (Proactive Intelligence) and 480 (Secrets & Security), connectors in epic 481, automations in sub-epic AUTO of epic 479 · gate AUTO-3 (the trust ladder) · BR-1a built, dark (`JOB_QUEUE`, `docs/job_queue.md`) · AUTO-2 built, dark (`UNATTENDED_LEDGER`, `docs/job_queue.md` §9) · BR-4 slice 1 built: migration 315 and `gateway/brief/store.py`, with no producer · next BR-1b-a, BR-2a |
 | WS-IR | **Issue Reporting** | 🟢 active · M0 | none yet | Metorite: epic 475 (Observability & Alerts) · D126 · next IR-0, IR-1, IR-2 |
-| WS-OB | **Onboarding and Help** | 🟢 active · M1 | none yet. OB-8: `specs/calendar_events_reminders.md` §10.4 | Metorite: Onboarding project · next OB-1, HLP-1, ADM-1. OB-8 (the chat push prompt) BUILT 2026-10-30, dark |
+| WS-OB | **Onboarding and Help** | 🟢 active · M1 | `specs/onboarding.md` (D150). OB-8: `specs/calendar_events_reminders.md` §10.4 | Metorite: Onboarding project, epic 669 · OB-0 (the founder's welcome closes at once) BUILT 2026-11-02 on a branch · OB-0b (a new founder lands with no apps, HIGH) BUILT on a branch · next OB-0c, OB-1a, OB-1b, OB-2 · HLP-1, ADM-1. OB-8 (the chat push prompt) BUILT 2026-10-30, dark |
 
 ### 2.2 Earlier rows (WS-0 to WS-67)
 
@@ -5008,6 +5008,15 @@ Owner directive, 2026-10-31, in chat. It ends the trial that D143 point 2 opened
 4. **GL-Z2 is the contract half.** A codemod folds each `glass:` class into a plain class. Then the classic token blocks, the `data-look` attribute and the `glass:` variant go.
 5. **New work targets glass.** An agent no longer writes a classic fallback. An agent looks at each surface fresh, and tunes it for glass.
 6. **This closes D143 point 2, and it ends the exceptions to D69.1 and D69.3.** The look is one again, and `DESIGN_SYSTEM.md` §0 says so.
+
+### D150 — Onboarding: one welcome dialog, then a Get started card (2026-11-02)
+
+Owner decision, 2026-11-02, in chat, on the four defaults of `specs/onboarding.md` §9. Board: **WS-OB**. The owner accepted each default.
+
+1. **D-OB-1. The first visit skips "Choose the apps for your sidebar".** The answer's defaults apply, and "+ Add apps" changes them later. "Change my layout" keeps both steps. This amends the owner's step of 2026-10-11 for the first visit only.
+2. **D-OB-2. The founder's dialog loses its invite step.** The Get started card's `invite_team` does the invite in place. This amends the third step of CP-2c (owner, 2026-08-24).
+3. **D-OB-3. The founder's four default steps** are `invite_team`, `connect_email`, `first_project` and `ask_assistant`.
+4. **D-OB-4. The card leaves My Day for good when the last step is done.** A later setup item goes to the setup coach (D110), not back onto the card.
 
 ## 4. Single-owner registry (who owns duplicated work)
 

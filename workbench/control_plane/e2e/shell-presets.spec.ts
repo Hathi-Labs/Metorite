@@ -406,6 +406,47 @@ test("a founder's welcome follows the question and the apps, one dialog at a tim
   await expect(page).toHaveURL(/\/settings\/appearance$/);
 });
 
+// ── OB-0: every way out closes the founder's welcome at once ────────────────
+//
+// Owner report 2026-11-01: on production the dialog did not close. Each way
+// out called `router.replace`, which waits on the server, and the dialog
+// stayed until that round trip ended. Here every RSC request hangs, as a slow
+// server's does. Mutation, seen to fail first: put `router.replace(pathname)`
+// back in `close`, and all three cases fail with the dialog still open.
+
+const founderWelcome = (page: Page) => page.getByRole("dialog", { name: "Your organization is ready" });
+const FOUNDER = { ...MEMBER, is_admin: true, roles: ["owner"] };
+
+test.describe("a slow server never holds the founder's welcome open", () => {
+  const ways: Array<[string, (page: Page) => Promise<void>]> = [
+    ["the header's X", (page) => founderWelcome(page).getByRole("button", { name: "Close" }).click()],
+    ["Escape", (page) => page.keyboard.press("Escape")],
+    ["Explore on my own first", (page) => founderWelcome(page).getByRole("button", { name: "Explore on my own first" }).click()],
+  ];
+  for (const [name, leave] of ways) {
+    test(`${name} closes it at once on My Day`, async ({ page }) => {
+      await stub(page, { ...EMPTY, answered: "skipped" }, { me: FOUNDER, myDay: true });
+      await page.goto("/?welcome=new-org");
+      await expect(founderWelcome(page)).toBeVisible();
+      await page.route("**/*", (route) => (route.request().headers()["rsc"] === "1" ? undefined : route.fallback()));
+      await leave(page);
+      await expect(page.getByRole("dialog")).toHaveCount(0, { timeout: 1_000 });
+      await expect(page).toHaveURL(/localhost:\d+\/$/);
+    });
+  }
+
+  test("Back after Invite my team does not bring it back", async ({ page }) => {
+    await stub(page, { ...EMPTY, answered: "skipped" }, { me: FOUNDER, myDay: true });
+    await page.goto("/?welcome=new-org");
+    await founderWelcome(page).getByRole("button", { name: "Invite my team" }).click();
+    await expect(page).toHaveURL(/\/settings\/organization$/);
+    await page.goBack();
+    await expect(page).toHaveURL(/localhost:\d+\/$/);
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(founderWelcome(page)).toHaveCount(0);
+  });
+});
+
 // ── Round 2: a write fault never traps the member ───────────────────────────
 
 const SAVE_FAILED = "Couldn't save that. We'll ask again next time.";
