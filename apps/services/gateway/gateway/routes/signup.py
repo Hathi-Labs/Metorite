@@ -59,7 +59,7 @@ from __future__ import annotations
 import re
 from typing import Annotated, Any
 
-from acb_auth import UserContext, get_current_user
+from acb_auth import UserContext, get_current_user, invalidate_access
 from acb_auth.access import membership_of, org_owner_of
 from acb_auth.console_resolve import (
     CONSOLE_UNAVAILABLE,
@@ -519,6 +519,16 @@ async def provision_signup(
         # nothing" contract), so the org works dark only once step 1 commits.
         _log.error("signup.tenant_provision_failed", error=str(exc)[:200])
         return _refuse(CONSOLE_UNAVAILABLE)
+
+    # ── Step 1.1 · drop the refusal this request's own auth check cached ─────
+    # OB-0b (owner report 2026-11-01). `get_current_user` resolved this person
+    # BEFORE step 1, when they had no `app_user` row, and `resolve_access`
+    # caches that refusal for 60 s. The founder's first `/auth/me` after the
+    # redirect read it: no features, not an admin, and My Day said "Nothing is
+    # enabled for your account yet". Right after step 1, so a step-2 failure
+    # below still leaves the new owner resolving fresh. Fence:
+    # `test_signup_provision_route.py`, `TestTheFounderResolvesFresh`.
+    invalidate_access(email)
 
     # ── Step 1.4 · the FOUNDER's directory row is written by the DATABASE ────
     # Migration 206's trigger on `app_user` writes it with the row the
