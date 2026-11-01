@@ -2323,6 +2323,15 @@ html[data-look="glass"] .sidebar-rail [data-head-brand] {
 html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="open"]) [data-head-brand] {
   clip-path: inset(0 calc(100% - 1.5rem) 0 0);
 }
+/* A folded rail shows the organization's square mark, and the open sidebar
+   its wide logo (owner, 2026-11-01). Until the mark has drawn, the wide logo
+   stays, clipped to its left. */
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="open"]) [data-head-brand] [data-brand-mark] {
+  display: flex;
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="open"]) [data-head-brand]:has([data-brand-mark]) [data-brand-wide] {
+  display: none;
+}
 /* A section's cap: the rule while folded, the name while it peeks. */
 .sidebar-rail[data-peek="open"] [data-rail-rule] {
   display: none;

@@ -34,6 +34,7 @@ import {
   contentBounds,
   detectBackground,
   inkStats,
+  markBox,
 } from "@/lib/logoImage";
 import { type OrgBranding, type OrgLogo, precheckLogoFile } from "@/lib/orgBranding";
 import { THEME } from "@/lib/theme/themes";
@@ -42,6 +43,8 @@ export interface LogoSave {
   logoBase64: string;
   logoDarkBase64: string | null;
   darkStyle: DarkStyle;
+  /** The square mark for the folded sidebar (owner, 2026-11-01). */
+  logoMarkBase64?: string | null;
 }
 
 const STAGE_W = 520;
@@ -121,6 +124,7 @@ export default function LogoEditor({
   initialStyle = null,
   initialOwn = null,
   savedMain = null,
+  savedMark = null,
 }: {
   source: Source;
   fileName: string;
@@ -133,6 +137,8 @@ export default function LogoEditor({
   initialOwn?: OwnDark | null;
   /** The saved logo's bytes, when the editor reopens it. Sent back unchanged. */
   savedMain?: string | null;
+  /** The saved square mark's bytes, when the editor reopens the logo. */
+  savedMark?: string | null;
 }) {
   const reopened = savedMain !== null;
   const bg: Background = useMemo(() => detectBackground(source.pixels), [source]);
@@ -199,7 +205,52 @@ export default function LogoEditor({
     else setStyle(id);
   };
   const darkImage: Rendered | null = chosen === "white" ? white : chosen === "own" && own ? ownRendered : null;
-  const payload = savePayload({ main, savedMain, chosen, white, own, ownRendered, ownRemoveBg });
+
+  // ── The square mark (owner, 2026-11-01) ─────────────────────────────────
+  // Made from the logo by default (`markBox`: its symbol, or its first
+  // letter), or the admin's own file. A reopened logo keeps its saved mark
+  // until the admin changes it.
+  const autoMarkBox: Box = useMemo(() => markBox(source.pixels, bg), [source, bg]);
+  const [markOwn, setMarkOwn] = useState<OwnDark | null>(null);
+  const [keepSavedMark, setKeepSavedMark] = useState(Boolean(savedMark));
+  const [markError, setMarkError] = useState("");
+  const markInput = useRef<HTMLInputElement>(null);
+  const [markRendered, setMarkRendered] = useState<Rendered | null>(null);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      if (markOwn) {
+        const mbg = detectBackground(markOwn.source.pixels);
+        const c = contentBounds(markOwn.source.pixels, mbg);
+        const side = Math.max(c.w, c.h);
+        const square: Box = { x: c.x + c.w / 2 - side / 2, y: c.y + c.h / 2 - side / 2, w: side, h: side };
+        setMarkRendered(renderLogo(markOwn.source, square, { removeBackground: mbg.kind === "solid" ? mbg.rgb : null }));
+      } else {
+        setMarkRendered(renderLogo(source, autoMarkBox, { removeBackground: removeBg ? solidRgb : null }));
+      }
+    });
+    return () => cancelAnimationFrame(id);
+  }, [markOwn, source, autoMarkBox, removeBg, solidRgb]);
+  const usingSavedMark = keepSavedMark && !markOwn && Boolean(savedMark);
+  const markUri = usingSavedMark ? `data:image/png;base64,${savedMark}` : (markRendered?.dataUri ?? null);
+  const markBase64 = usingSavedMark ? savedMark : (markRendered?.base64 ?? null);
+  const pickMark = async (file: File | undefined) => {
+    if (markInput.current) markInput.current.value = "";
+    if (!file) return;
+    const complaint = precheckLogoFile(file);
+    if (complaint) {
+      setMarkError(complaint);
+      return;
+    }
+    try {
+      setMarkOwn({ source: await decodeFile(file), name: file.name });
+      setMarkError("");
+    } catch (e) {
+      setMarkError(e instanceof Error ? e.message : "That file could not be opened.");
+    }
+  };
+
+  const basePayload = savePayload({ main, savedMain, chosen, white, own, ownRendered, ownRemoveBg });
+  const payload = basePayload ? { ...basePayload, logoMarkBase64: markBase64 } : null;
 
   // Redraw on every change, one frame later, so a drag stays smooth.
   useEffect(() => {
@@ -375,6 +426,66 @@ export default function LogoEditor({
             </div>
           ) : null}
           {ownError ? <p className="text-xs text-destructive">{ownError}</p> : null}
+        </section>
+
+        {/* The square mark, for the folded sidebar (owner, 2026-11-01). */}
+        <section aria-labelledby="logo-mark" className="flex flex-col gap-2">
+          <h3 id="logo-mark" className="text-sm font-semibold text-foreground">
+            Square mark
+          </h3>
+          <p className="text-xs text-muted-foreground">
+            The folded sidebar shows a square.{" "}
+            {markOwn
+              ? `From ${markOwn.name}.`
+              : usingSavedMark
+                ? "This is your saved mark."
+                : "Made from your logo: its symbol, or its first letter."}
+          </p>
+          <input
+            ref={markInput}
+            type="file"
+            accept={LOGO_PICK_ACCEPT}
+            className="hidden"
+            data-testid="logo-mark-input"
+            onChange={(e) => void pickMark(e.target.files?.[0])}
+          />
+          <div className="flex flex-wrap items-center gap-3">
+            {(["light", "dark"] as const).map((mode) => (
+              <div
+                key={mode}
+                data-testid={`logo-mark-preview-${mode}`}
+                title={mode === "light" ? "Light mode" : "Dark mode"}
+                className="flex h-14 w-14 items-center justify-center rounded-lg border"
+                style={modeVars(mode)}
+              >
+                {markUri ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={markUri}
+                    alt=""
+                    className={`h-8 w-8 object-contain ${mode === "dark" && chosen === "plate" ? "rounded bg-white p-0.5" : ""}`}
+                  />
+                ) : null}
+              </div>
+            ))}
+            <Button variant="secondary" size="sm" icon="Upload" onClick={() => markInput.current?.click()}>
+              Upload a square mark
+            </Button>
+            {markOwn || usingSavedMark ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon="Wand2"
+                onClick={() => {
+                  setMarkOwn(null);
+                  setKeepSavedMark(false);
+                }}
+              >
+                Make it from the logo
+              </Button>
+            ) : null}
+          </div>
+          {markError ? <p className="text-xs text-destructive">{markError}</p> : null}
         </section>
 
         {/* The shell bar's top-left, in both modes, from the shell's own mark
