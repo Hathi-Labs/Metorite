@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * /workflows/[id] — the visual workflow editor (RFC §5: three panes + run
+ * /studio/workflows/[id] — the visual workflow editor (RFC §5: three panes + run
  * console; spec F2–F6). React Flow canvas; palette + inspector are served
  * from the gateway catalog; Test ▸ runs the draft and streams per-node
  * status onto the canvas over SSE.
@@ -41,13 +41,13 @@ import "@xyflow/react/dist/style.css";
 import { useTheme } from "next-themes";
 import { useAccess } from "@/components/AccessProvider";
 import { hasCapability } from "@/lib/access";
-import CopilotPanel from "../components/CopilotPanel";
-import NodeInspector from "../components/NodeInspector";
-import NodePalette, { type PaletteDrop } from "../components/NodePalette";
-import RunConsole from "../components/RunConsole";
-import TriggerPanel from "../components/TriggerPanel";
-import WorkflowEdge from "../components/WorkflowEdge";
-import WorkflowNode, { type CCNodeData } from "../components/WorkflowNode";
+import CopilotPanel from "@/app/workflows/components/CopilotPanel";
+import NodeInspector from "@/app/workflows/components/NodeInspector";
+import NodePalette, { type PaletteDrop } from "@/app/workflows/components/NodePalette";
+import RunConsole from "@/app/workflows/components/RunConsole";
+import TriggerPanel from "@/app/workflows/components/TriggerPanel";
+import WorkflowEdge from "@/app/workflows/components/WorkflowEdge";
+import WorkflowNode, { type CCNodeData } from "@/app/workflows/components/WorkflowNode";
 import {
   ApiError,
   disableWorkflow,
@@ -59,7 +59,7 @@ import {
   runWorkflow,
   updateWorkflow,
   validateWorkflow,
-} from "../lib/api";
+} from "@/app/workflows/lib/api";
 import type {
   Catalog,
   GraphIssue,
@@ -70,7 +70,7 @@ import type {
   WorkflowDetail,
   WorkflowGraph,
   WorkflowGraphNode,
-} from "../lib/types";
+} from "@/app/workflows/lib/types";
 
 const nodeTypes = { ccNode: WorkflowNode };
 const edgeTypes = { ccEdge: WorkflowEdge };
@@ -921,7 +921,7 @@ function EditorInner({ id }: { id: string }) {
       <div className="flex flex-col items-center justify-center h-full gap-3">
         <p className="text-sm text-destructive">{loadError}</p>
         <button
-          onClick={() => router.push("/workflows")}
+          onClick={() => router.push("/studio")}
           className="text-xs text-muted-foreground hover:text-foreground underline"
         >
           Back to workflows
@@ -944,7 +944,7 @@ function EditorInner({ id }: { id: string }) {
       {/* Topbar */}
       <div className="flex items-center gap-2 px-3 sm:px-4 py-2 border-b border-border shrink-0">
         <Link
-          href="/workflows"
+          href="/studio"
           className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary tech-transition"
         >
           <Icon name="ArrowLeft" className="w-4 h-4" />

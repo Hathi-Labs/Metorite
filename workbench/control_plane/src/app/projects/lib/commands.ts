@@ -171,7 +171,7 @@ const GO_KEYS: ReadonlyArray<{ href: string; key: string }> = [
   { href: "/email", key: "e" },
   { href: "/dashboard", key: "d" },
   { href: "/crm", key: "c" },
-  { href: "/workflows", key: "w" },
+  { href: "/studio", key: "w" },
   { href: "/memory", key: "m" },
 ];
 

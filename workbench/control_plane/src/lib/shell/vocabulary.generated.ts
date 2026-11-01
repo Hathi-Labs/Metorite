@@ -21,11 +21,9 @@ export const GENERATED_PANE_HREFS: readonly string[] = [
   "/people",
   "/people/me",
   "/projects",
-  "/build/apps",
-  "/build/agents",
+  "/studio",
   "/tasks",
   "/whatsapp",
-  "/workflows",
 ];
 
 export const GENERATED_PRESET_IDS: readonly string[] = [

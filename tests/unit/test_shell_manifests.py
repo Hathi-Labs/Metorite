@@ -206,7 +206,7 @@ def test_vocabulary_ts_is_current():
 
 def test_vocabulary_counts():
     vocab = load_vocabulary()
-    assert len(vocab.panes) == 23
+    assert len(vocab.panes) == 21
     assert len(vocab.presets) == 8
     assert len(vocab.cards) == 5
     assert vocab.cards == ("needs", "today", "next", "team-pulse", "out-today")
@@ -375,6 +375,7 @@ FROZEN_HREF_FEATURES = {
     "/dashboard": "dashboard",
     "/observability": "observability",
     "/artifacts": "artifacts",
+    "/studio": "workflows",  # STU-A1 added this pair
     "/workflows": "workflows",
     "/settings/models": "models",
     "/agents": "agents",
@@ -393,7 +394,7 @@ FROZEN_ALWAYS_ALLOWED = {
 
 def test_href_features_equal_the_pre_slice_pairs():
     gates = load_gates()
-    assert len(gates.href_features) == 23
+    assert len(gates.href_features) == 24
     assert dict(gates.href_features) == FROZEN_HREF_FEATURES
     assert set(gates.href_features) == set(FROZEN_HREF_FEATURES.items())
 

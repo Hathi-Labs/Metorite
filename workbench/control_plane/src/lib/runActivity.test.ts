@@ -28,7 +28,7 @@ describe("one agent → app mapping", () => {
     ["projects-assistant", "/projects"],
     ["task-manager", "/tasks"],
     ["email-assistant", "/email"],
-    ["app-builder", "/build/apps"],
+    ["app-builder", "/studio"],
     // WS-53 CRM-X2: the CRM pane names its agent, so its runs count there.
     ["crm-assistant", "/crm"],
     ["research-agent", "/chat"],
@@ -83,7 +83,7 @@ describe("the count on each app", () => {
       "/chat": 2,
       "/projects": 2,
       "/tasks": 1,
-      "/build/apps": 1,
+      "/studio": 1,
     });
   });
 

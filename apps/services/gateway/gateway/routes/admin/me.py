@@ -268,7 +268,7 @@ SHELL_PRESETS: frozenset[str] = frozenset(_VOCABULARY.presets)
 SHELL_CARDS: frozenset[str] = frozenset(_VOCABULARY.cards)
 SHELL_PANES: frozenset[str] = frozenset(_VOCABULARY.panes)
 
-#: Caps on each list. There are 23 panes, 5 cards and 23 jobs today.
+#: Caps on each list. There are 21 panes, 5 cards and 23 jobs today.
 MAX_PINS = 24
 MAX_CARDS = 8
 MAX_JOBS = 16

@@ -3,7 +3,7 @@
   "kind": "system",
   "id": "workflows",
   "contributes": {
-    "nav": [
+    "gates": [
       {
         "href": "/workflows",
         "feature": "workflows"
